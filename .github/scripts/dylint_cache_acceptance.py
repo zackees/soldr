@@ -28,7 +28,7 @@ WATCHDOG_IDLE_SECS=180
 WATCHDOG_POLL_SECS=10
 # The external watchdog below is progress-aware. Keep soldr's wall-clock
 # timeout only as a last-resort backstop for a continuously noisy failure.
-export SOLDR_CARGO_WAIT_TIMEOUT_SECS=1200
+export SOLDR_CARGO_WAIT_TIMEOUT_SECS=900
 export SOLDR_DAEMON_TOKIO_CONSOLE=1
 
 cp -a "$REPO/ci/fixtures/dylint-cache" /tmp/dylint-acceptance/a
@@ -50,7 +50,7 @@ run_case() {
   (
     cd "$work"
     CARGO_TARGET_DIR="$target" \
-      TOKIO_CONSOLE_RECORD_PATH="/tmp/dylint-acceptance/diagnostics/$name.tokio" \
+      SOLDR_DAEMON_TOKIO_CONSOLE_RECORD_PATH="/tmp/dylint-acceptance/diagnostics/$name.tokio" \
       "$SOLDR" cargo dylint --all \
         > >(tee -a "$live_log") \
         2> >(tee -a "$live_log" >&2)
@@ -58,12 +58,26 @@ run_case() {
   command_pid="$!"
   (
     last_progress="$(meaningful_output_size "$live_log")"
+    read -r last_cpu last_io last_target last_pids \
+      < <(process_activity_counters "$command_pid" "$target")
     idle_secs=0
     while kill -0 "$command_pid" 2>/dev/null; do
       sleep "$WATCHDOG_POLL_SECS"
       current_progress="$(meaningful_output_size "$live_log")"
-      if [[ "$current_progress" != "$last_progress" ]]; then
+      read -r current_cpu current_io current_target current_pids \
+        < <(process_activity_counters "$command_pid" "$target")
+      cpu_delta="$((current_cpu - last_cpu))"
+      io_delta="$((current_io - last_io))"
+      if [[ "$current_progress" != "$last_progress" ||
+            "$current_target" != "$last_target" ||
+            "$current_pids" != "$last_pids" ||
+            "$cpu_delta" -ge 1000000000 ||
+            "$io_delta" -ge 8388608 ]]; then
         last_progress="$current_progress"
+        last_cpu="$current_cpu"
+        last_io="$current_io"
+        last_target="$current_target"
+        last_pids="$current_pids"
         idle_secs=0
         continue
       fi
@@ -83,7 +97,10 @@ run_case() {
         echo "=== native stacks ==="
         pids=()
         mapfile -t descendants < <(descendant_pids "$command_pid")
-        for pid in "$command_pid" "${descendants[@]}"; do
+        daemon_pid="$(verified_daemon_pid || true)"
+        candidates=("$command_pid" "${descendants[@]}")
+        [[ -z "$daemon_pid" ]] || candidates+=("$daemon_pid")
+        for pid in "${candidates[@]}"; do
           test -r "/proc/$pid/cmdline" || continue
           command_line="$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)"
           case "$command_line" in
@@ -101,7 +118,7 @@ run_case() {
         ' bash "${pids[@]}" || echo "WATCHDOG: native stack collection hit its 120s global budget"
       } >"$dump" 2>&1
       cat "$dump" >&2
-      terminate_tree "$command_pid"
+      terminate_scope "$command_pid"
       break
     done
   ) &
@@ -156,13 +173,69 @@ descendant_pids() {
   done < <(pgrep -P "$parent" 2>/dev/null || true)
 }
 
-terminate_tree() {
-  parent="$1"
-  while read -r child; do
-    [[ -n "$child" ]] || continue
-    terminate_tree "$child"
-  done < <(pgrep -P "$parent" 2>/dev/null || true)
-  kill -TERM "$parent" 2>/dev/null || true
+verified_daemon_pid() {
+  pid_file="$SOLDR_CACHE_DIR/cache/soldr-daemon/daemon.pid"
+  [[ -r "$pid_file" ]] || return 1
+  read -r pid <"$pid_file"
+  [[ "$pid" =~ ^[0-9]+$ && -r "/proc/$pid/environ" ]] || return 1
+  exe="$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)"
+  stem="$(basename "$exe")"
+  case "$stem" in
+    soldr|soldr-daemon) ;;
+    *) return 1 ;;
+  esac
+  tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null |
+    grep -Fxq "SOLDR_CACHE_DIR=$SOLDR_CACHE_DIR" || return 1
+  printf '%s\n' "$pid"
+}
+
+scoped_pids() {
+  root="$1"
+  kill -0 "$root" 2>/dev/null && printf '%s\n' "$root"
+  descendant_pids "$root"
+  verified_daemon_pid || true
+}
+
+process_activity_counters() {
+  root="$1"
+  target="$2"
+  cpu=0
+  io=0
+  pid_list=""
+  while read -r pid; do
+    [[ -n "$pid" && -r "/proc/$pid/schedstat" ]] || continue
+    read -r runtime _ <"/proc/$pid/schedstat" || continue
+    bytes="$(awk '/^(read_bytes|write_bytes):/ { bytes += $2 } END { print bytes + 0 }' \
+      "/proc/$pid/io" 2>/dev/null || printf '0\n')"
+    cpu="$((cpu + runtime))"
+    io="$((io + bytes))"
+    pid_list="${pid_list},${pid}"
+  done < <(scoped_pids "$root" | sort -n -u)
+  target_state="-"
+  if [[ -d "$target" ]]; then
+    target_state="$(
+      find "$target" -type f -printf '%T@:%s\n' 2>/dev/null |
+        sort -n | tail -n 1
+    )"
+  fi
+  printf '%s %s %s %s\n' \
+    "$cpu" "$io" "${target_state:--}" "${pid_list:--}"
+}
+
+terminate_scope() {
+  root="$1"
+  mapfile -t scoped < <(scoped_pids "$root" | sort -rn -u)
+  ((${#scoped[@]} == 0)) || kill -TERM "${scoped[@]}" 2>/dev/null || true
+  for _ in {1..5}; do
+    sleep 1
+    mapfile -t survivors < <(scoped_pids "$root" | sort -rn -u)
+    ((${#survivors[@]} == 0)) && return 0
+  done
+  # Re-scan after the grace period so children created during TERM cannot
+  # escape. Every PID is either rooted at this command or is the daemon
+  # verified against this acceptance cache and executable identity.
+  mapfile -t survivors < <(scoped_pids "$root" | sort -rn -u)
+  ((${#survivors[@]} == 0)) || kill -KILL "${survivors[@]}" 2>/dev/null || true
 }
 
 dump_one_pid() {

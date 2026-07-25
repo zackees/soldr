@@ -1322,6 +1322,14 @@ mod daemon_spawn_image_tests {
             (OsString::from("HOME"), OsString::from("/home/runner")),
             (OsString::from("ZCCACHE_DISABLE"), OsString::from("1")),
             (OsString::from("soldr_lowercase"), OsString::from("kept")),
+            (
+                OsString::from("SOLDR_DAEMON_TOKIO_CONSOLE_RECORD_PATH"),
+                OsString::from("/tmp/daemon.tokio"),
+            ),
+            (
+                OsString::from("TOKIO_CONSOLE_RECORD_PATH"),
+                OsString::from("/tmp/not-forwarded.tokio"),
+            ),
         ];
         let forwarded = filter_forwarded_env(vars);
         assert_eq!(
@@ -1333,6 +1341,10 @@ mod daemon_spawn_image_tests {
                 ),
                 (OsString::from("SOLDR_TRUST_MODE"), OsString::from("strict")),
                 (OsString::from("soldr_lowercase"), OsString::from("kept")),
+                (
+                    OsString::from("SOLDR_DAEMON_TOKIO_CONSOLE_RECORD_PATH"),
+                    OsString::from("/tmp/daemon.tokio"),
+                ),
             ]
         );
     });
