@@ -128,6 +128,43 @@ fn dylint_library_bootstrap_requires_direct_output(args: &[String]) -> bool {
     false
 }
 
+/// Preserve zccache's worktree-independent output contract for the one Rust
+/// compile we deliberately execute outside zccache. The daemon normally adds
+/// `--remap-path-prefix=<worktree>=.` when `ZCCACHE_PATH_REMAP=auto`; without
+/// the same flag here, Dylint's lint-library `.so` embeds its checkout path.
+/// That makes the raw library bytes (and therefore the Dylint cache-input
+/// hash) differ between otherwise identical sibling worktrees.
+fn dylint_library_bootstrap_remap_arg_from(
+    dylint_library_bootstrap: bool,
+    path_remap: Option<&std::ffi::OsStr>,
+    worktree_root: Option<&std::ffi::OsStr>,
+) -> Option<std::ffi::OsString> {
+    if !dylint_library_bootstrap
+        || !path_remap
+            .and_then(std::ffi::OsStr::to_str)
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("auto"))
+    {
+        return None;
+    }
+    let root = worktree_root.filter(|value| !value.is_empty())?;
+    let mut arg = std::ffi::OsString::from("--remap-path-prefix=");
+    arg.push(root);
+    arg.push("=.");
+    Some(arg)
+}
+
+fn dylint_library_bootstrap_remap_arg(
+    dylint_library_bootstrap: bool,
+) -> Option<std::ffi::OsString> {
+    let path_remap = std::env::var_os(crate::cache_lib::ZCCACHE_PATH_REMAP_ENV_VAR);
+    let worktree_root = std::env::var_os(crate::cache_lib::ZCCACHE_WORKTREE_ROOT_ENV_VAR);
+    dylint_library_bootstrap_remap_arg_from(
+        dylint_library_bootstrap,
+        path_remap.as_deref(),
+        worktree_root.as_deref(),
+    )
+}
+
 /// Cargo nests the workspace compiler inside the outer wrapper as
 /// `<outer> <workspace-compiler> <real-compiler> <compile-args...>`.
 /// Once soldr has selected the workspace compiler, that wrapper-only
@@ -329,14 +366,21 @@ pub(crate) fn run_rustc_wrapper(
             Ok(code) => Ok(code),
             Err(failure) if crate::compile_dispatch::should_fall_back_to_direct_rustc(&failure) => {
                 crate::compile_dispatch::log_direct_exec_fallback_once(&failure);
-                direct_exec_tool(tool_arg, tool_stem, &compile_args, None)
+                direct_exec_tool(tool_arg, tool_stem, &compile_args, None, None)
             }
             Err(failure) => Err(failure.into_soldr_error()),
         };
         return result;
     }
 
-    direct_exec_tool(tool_arg, tool_stem, &compile_args, Some(profile))
+    let remap_arg = dylint_library_bootstrap_remap_arg(dylint_library_bootstrap);
+    direct_exec_tool(
+        tool_arg,
+        tool_stem,
+        &compile_args,
+        remap_arg.as_deref(),
+        Some(profile),
+    )
 }
 
 /// Direct (uncached) exec of the wrapped tool — the non-daemon path.
@@ -349,11 +393,15 @@ fn direct_exec_tool(
     tool_arg: &str,
     tool_stem: &str,
     effective_args: &[String],
+    extra_rustc_arg: Option<&std::ffi::OsStr>,
     profile: Option<WrapperProfile>,
 ) -> Result<i32, SoldrError> {
     let tool_path = resolve_wrapper_tool_path(tool_arg, tool_stem)?;
 
     let mut command = std::process::Command::new(&tool_path);
+    if let Some(arg) = extra_rustc_arg {
+        command.arg(arg);
+    }
     command.args(&effective_args[2..]);
     crate::binaries::apply_resolved_toolchain_homes(&mut command, &tool_path);
     suppress_windows_console_window(&mut command);
@@ -629,6 +677,36 @@ mod tests {
         let ordinary = wrapper_argv(&["--out-dir=/tmp/target/release/deps"]);
         assert!(dylint_library_bootstrap_requires_direct_output(&dylint));
         assert!(!dylint_library_bootstrap_requires_direct_output(&ordinary));
+    });
+
+    crate::timed_test!(dylint_library_direct_output_keeps_auto_path_remap, {
+        assert_eq!(
+            dylint_library_bootstrap_remap_arg_from(
+                true,
+                Some(std::ffi::OsStr::new("auto")),
+                Some(std::ffi::OsStr::new("/tmp/worktree-a")),
+            )
+            .as_deref(),
+            Some(std::ffi::OsStr::new(
+                "--remap-path-prefix=/tmp/worktree-a=."
+            ))
+        );
+        assert_eq!(
+            dylint_library_bootstrap_remap_arg_from(
+                false,
+                Some(std::ffi::OsStr::new("auto")),
+                Some(std::ffi::OsStr::new("/tmp/worktree-a")),
+            ),
+            None
+        );
+        assert_eq!(
+            dylint_library_bootstrap_remap_arg_from(
+                true,
+                Some(std::ffi::OsStr::new("off")),
+                Some(std::ffi::OsStr::new("/tmp/worktree-a")),
+            ),
+            None
+        );
     });
 
     crate::timed_test!(clippy_driver_routes_through_embedded_zccache, {
