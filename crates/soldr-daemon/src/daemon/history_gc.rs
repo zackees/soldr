@@ -10,17 +10,21 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub const DEFAULT_MAX_AGE: Duration = Duration::from_secs(4 * 24 * 60 * 60);
 pub const DEFAULT_MAX_BYTES: u64 = 1024 * 1024 * 1024;
 const SANITIZED_MIGRATION_MARKER: &str = ".sanitized-history-v1";
+const LEGACY_SESSION_FILES_MIGRATION_MARKER: &str = ".legacy-session-files-v1";
 const COMPLETE_MARKER: &str = ".complete-v2";
 const PUBLISHING_MARKER: &str = ".publishing-v2";
 const ABANDONED_PUBLISHING_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+const LEGACY_SESSION_FILE_NAMES: [&str; 2] = ["last-session.log", "last-session.jsonl"];
 
 #[derive(Debug, Clone)]
 pub struct HistoryGcOptions {
     pub now: SystemTime,
     pub max_age: Duration,
     pub max_bytes: u64,
-    /// Remove every completed pre-redaction archive on the first pass after
-    /// zccache#1149.  The marker is persisted inside the owning root.
+    /// Run one-time completed-history migrations. This removes every
+    /// pre-redaction archive after zccache#1149 and strips the stale fixed
+    /// `last-session` files introduced by the embedded-service transition.
+    /// Markers are persisted inside the owning root.
     pub migrate_pre_redaction: bool,
 }
 
@@ -42,10 +46,12 @@ pub struct HistoryGcReport {
     pub age_removed: usize,
     pub size_removed: usize,
     pub migration_removed: usize,
+    pub legacy_files_removed: usize,
     pub failed: usize,
     pub bytes_before: u64,
     pub bytes_after: u64,
     pub bytes_reclaimed: u64,
+    pub legacy_bytes_reclaimed: u64,
     pub database_rows_updated: u64,
 }
 
@@ -155,7 +161,7 @@ where
             return report;
         }
     };
-    let records: HashMap<_, _> = records
+    let mut records: HashMap<_, _> = records
         .into_iter()
         .map(|record| (record.session_id, record))
         .collect();
@@ -254,6 +260,83 @@ where
 
     let migration_due =
         options.migrate_pre_redaction && !root.join(SANITIZED_MIGRATION_MARKER).is_file();
+    let legacy_migration_due = options.migrate_pre_redaction
+        && !root.join(LEGACY_SESSION_FILES_MIGRATION_MARKER).is_file();
+    let mut legacy_migration_pending = false;
+    if legacy_migration_due {
+        let mut rows_to_clear = Vec::new();
+        for entry in &mut candidates {
+            let has_legacy_paths = records
+                .get(&entry.session_id)
+                .and_then(|record| record.log_paths.as_ref())
+                .is_some_and(|paths| {
+                    paths.session_log_path.is_some()
+                        || paths.journal_path.is_some()
+                        || paths.archived_session_log_path.is_some()
+                        || paths.archived_journal_path.is_some()
+                });
+            let complete = entry.path.join(COMPLETE_MARKER).is_file();
+            if entry.active || !complete {
+                match contains_legacy_session_files(&entry.path) {
+                    Ok(has_files) => {
+                        legacy_migration_pending |= has_files || has_legacy_paths;
+                    }
+                    Err(_) => {
+                        report.failed += 1;
+                        legacy_migration_pending = true;
+                    }
+                }
+                continue;
+            }
+
+            let mut entry_failed = false;
+            for file_name in LEGACY_SESSION_FILE_NAMES {
+                match remove_legacy_session_file(&paths.root, &entry.path, file_name) {
+                    Ok(Some(bytes)) => {
+                        report.legacy_files_removed += 1;
+                        report.legacy_bytes_reclaimed =
+                            report.legacy_bytes_reclaimed.saturating_add(bytes);
+                        report.bytes_reclaimed = report.bytes_reclaimed.saturating_add(bytes);
+                        entry.bytes = entry.bytes.saturating_sub(bytes);
+                    }
+                    Ok(None) => {}
+                    Err(_) => {
+                        report.failed += 1;
+                        entry_failed = true;
+                    }
+                }
+            }
+            if entry_failed {
+                legacy_migration_pending = true;
+            } else if has_legacy_paths {
+                rows_to_clear.push(entry.session_id);
+            }
+        }
+        if !rows_to_clear.is_empty() {
+            match db::clear_legacy_archive_paths(db_path, &rows_to_clear) {
+                Ok(updated) => {
+                    report.database_rows_updated =
+                        report.database_rows_updated.saturating_add(updated);
+                    for session_id in &rows_to_clear {
+                        let Some(paths) = records
+                            .get_mut(session_id)
+                            .and_then(|record| record.log_paths.as_mut())
+                        else {
+                            continue;
+                        };
+                        paths.session_log_path = None;
+                        paths.journal_path = None;
+                        paths.archived_session_log_path = None;
+                        paths.archived_journal_path = None;
+                    }
+                }
+                Err(_) => {
+                    report.failed += 1;
+                    legacy_migration_pending = true;
+                }
+            }
+        }
+    }
     candidates.sort_by(|left, right| {
         left.completed_at
             .cmp(&right.completed_at)
@@ -275,13 +358,16 @@ where
         }
     }
 
-    let mut bytes_after_plan = report.bytes_before.saturating_sub(
-        candidates
-            .iter()
-            .filter(|entry| selected.contains_key(&entry.session_id))
-            .map(|entry| entry.bytes)
-            .sum::<u64>(),
-    );
+    let mut bytes_after_plan = report
+        .bytes_before
+        .saturating_sub(report.legacy_bytes_reclaimed)
+        .saturating_sub(
+            candidates
+                .iter()
+                .filter(|entry| selected.contains_key(&entry.session_id))
+                .map(|entry| entry.bytes)
+                .sum::<u64>(),
+        );
     for entry in &candidates {
         if entry.active || selected.contains_key(&entry.session_id) {
             continue;
@@ -347,7 +433,59 @@ where
     {
         report.failed += 1;
     }
+    if legacy_migration_due
+        && report.failed == 0
+        && !legacy_migration_pending
+        && std::fs::create_dir_all(&root)
+            .and_then(|()| {
+                std::fs::write(
+                    root.join(LEGACY_SESSION_FILES_MIGRATION_MARKER),
+                    b"complete\n",
+                )
+            })
+            .is_err()
+    {
+        report.failed += 1;
+    }
     report
+}
+
+fn contains_legacy_session_files(archive_dir: &Path) -> std::io::Result<bool> {
+    for file_name in LEGACY_SESSION_FILE_NAMES {
+        match std::fs::symlink_metadata(archive_dir.join(file_name)) {
+            Ok(_) => return Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(false)
+}
+
+fn remove_legacy_session_file(
+    owned_root: &Path,
+    archive_dir: &Path,
+    file_name: &str,
+) -> std::io::Result<Option<u64>> {
+    crate::cache_lib::path_safety::validate_owned_directory(owned_root, archive_dir)?;
+    let path = archive_dir.join(file_name);
+    let metadata = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if crate::cache_lib::path_safety::is_link_or_reparse(&metadata) || !metadata.is_file() {
+        return Err(std::io::Error::other(format!(
+            "refusing non-regular legacy history artifact {}",
+            path.display()
+        )));
+    }
+    let bytes = metadata.len();
+    // Revalidate immediately before the destructive operation. The archive
+    // was safe when enumerated, but another process may have replaced its
+    // numeric directory with a symlink/junction in the meantime.
+    crate::cache_lib::path_safety::validate_owned_directory(owned_root, archive_dir)?;
+    std::fs::remove_file(&path)?;
+    Ok(Some(bytes))
 }
 
 fn system_time_from_millis(value: i64) -> Option<SystemTime> {
@@ -476,6 +614,91 @@ mod tests {
             .join(SANITIZED_MIGRATION_MARKER)
             .is_file());
     });
+
+    crate::timed_test!(
+        legacy_session_file_migration_preserves_build_scoped_history,
+        {
+            // Regression for #1827: migrate only completed archives and keep
+            // their build-scoped stats and sanitized compile journal.
+            let temp = tempfile::tempdir().unwrap();
+            let paths = SoldrPaths::with_root(temp.path().join("owned"));
+            let db_path = paths.root.join("state.redb");
+            let completed = history_root(&paths).join("31");
+            let active = history_root(&paths).join("32");
+            for archive in [&completed, &active] {
+                std::fs::create_dir_all(archive).unwrap();
+                std::fs::write(archive.join("last-session.log"), b"stale-secret").unwrap();
+                std::fs::write(archive.join("last-session.jsonl"), b"stale-secret").unwrap();
+                std::fs::write(archive.join("last-session-stats.json"), b"stats").unwrap();
+                std::fs::write(archive.join("compile_journal.jsonl"), b"build-scoped").unwrap();
+            }
+            mark_history_complete(&completed).unwrap();
+            mark_history_publishing(&active).unwrap();
+            db::upsert_build(&db_path, &record(31, Some(1), &completed)).unwrap();
+            db::upsert_build(&db_path, &record(32, Some(2), &active)).unwrap();
+
+            let options = HistoryGcOptions {
+                now: UNIX_EPOCH + Duration::from_millis(3),
+                max_age: Duration::MAX,
+                max_bytes: u64::MAX,
+                migrate_pre_redaction: true,
+            };
+            let report = sweep(&paths, &db_path, &options);
+            assert_eq!(report.legacy_files_removed, 2);
+            assert_eq!(report.legacy_bytes_reclaimed, 24);
+            assert!(!completed.join("last-session.log").exists());
+            assert!(!completed.join("last-session.jsonl").exists());
+            assert!(completed.join("last-session-stats.json").is_file());
+            assert!(completed.join("compile_journal.jsonl").is_file());
+            assert!(active.join("last-session.log").is_file());
+            assert!(active.join("last-session.jsonl").is_file());
+            assert!(!history_root(&paths)
+                .join(LEGACY_SESSION_FILES_MIGRATION_MARKER)
+                .exists());
+
+            let completed_record = db::get_build(&db_path, 31).unwrap().unwrap();
+            let completed_paths = completed_record.log_paths.unwrap();
+            assert!(completed_paths.archived_session_log_path.is_none());
+            assert!(completed_paths.archived_journal_path.is_none());
+            assert!(completed_paths.archived_session_stats_path.is_some());
+            assert!(completed_paths.archived_compile_journal_path.is_some());
+
+            mark_history_complete(&active).unwrap();
+            let report = sweep(&paths, &db_path, &options);
+            assert_eq!(report.legacy_files_removed, 2);
+            assert!(!active.join("last-session.log").exists());
+            assert!(!active.join("last-session.jsonl").exists());
+            assert!(history_root(&paths)
+                .join(LEGACY_SESSION_FILES_MIGRATION_MARKER)
+                .is_file());
+        }
+    );
+
+    #[cfg(unix)]
+    crate::timed_test!(
+        legacy_session_file_migration_rejects_swapped_archive_link,
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let paths = SoldrPaths::with_root(temp.path().join("owned"));
+            let archive = history_root(&paths).join("41");
+            let external = temp.path().join("external");
+            std::fs::create_dir_all(&archive).unwrap();
+            std::fs::create_dir_all(&external).unwrap();
+            std::fs::write(archive.join("last-session.log"), b"owned").unwrap();
+            std::fs::write(external.join("last-session.log"), b"external").unwrap();
+
+            // Simulate a replacement after enumeration but before the
+            // migration unlinks a child artifact.
+            std::fs::remove_dir_all(&archive).unwrap();
+            std::os::unix::fs::symlink(&external, &archive).unwrap();
+
+            assert!(remove_legacy_session_file(&paths.root, &archive, "last-session.log").is_err());
+            assert_eq!(
+                std::fs::read(external.join("last-session.log")).unwrap(),
+                b"external"
+            );
+        }
+    );
 
     crate::timed_test!(
         abandoned_unfinished_database_row_does_not_block_retention,

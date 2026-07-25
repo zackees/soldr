@@ -1903,7 +1903,7 @@ crate::timed_test!(zlib_ng_arm_wrapper_written_only_for_aarch64_msvc, {
     assert_eq!((key, value), (key2, value2));
 });
 
-crate::timed_test!(journal_miss_reasons_parse_jsonl_before_log_fallback, {
+crate::timed_test!(journal_miss_reasons_parse_build_scoped_jsonl, {
     let body = [
         r#"{"outcome":"hit","miss_reason":"ignored"}"#,
         r#"{"outcome":"miss","miss_reason":"context_not_found"}"#,
@@ -1950,36 +1950,13 @@ crate::timed_test!(miss_reasons_do_not_fall_back_to_full_global_journal, {
         r#"{"outcome":"miss","miss_reason":"old_build"}"#,
     )
     .expect("write old global journal");
-    let session_journal = root.path().join("last-session.jsonl");
-    let session_log = root.path().join("last-session.log");
-
-    let reasons = read_build_miss_reasons(None, &session_journal, &session_log);
+    let reasons = read_build_miss_reasons(None);
 
     assert!(
         reasons.is_empty(),
         "missing archived tail must not parse unrelated global journal entries"
     );
 });
-
-crate::timed_test!(
-    miss_reasons_fall_back_to_session_journal_when_tail_missing,
-    {
-        let root = tempfile::tempdir().expect("temp root");
-        let session_journal = root.path().join("last-session.jsonl");
-        let session_log = root.path().join("last-session.log");
-        std::fs::write(
-            &session_journal,
-            r#"{"outcome":"miss","miss_reason":"session_build"}"#,
-        )
-        .expect("write session journal");
-
-        let reasons = read_build_miss_reasons(None, &session_journal, &session_log);
-
-        assert_eq!(reasons.len(), 1);
-        assert_eq!(reasons[0].reason, "session_build");
-        assert_eq!(reasons[0].count, 1);
-    }
-);
 
 crate::timed_test!(compile_journal_tail_archive_keeps_current_build_only, {
     let root = tempfile::tempdir().expect("temp root");
@@ -2227,6 +2204,94 @@ crate::timed_test!(
                     "fallback path re-derives the aggregate from (empty) events"
                 );
             }
+        }
+    }
+);
+
+crate::timed_test!(
+    persist_build_log_history_excludes_stale_legacy_session_files,
+    {
+        // Regression for #1827: fixed-name legacy files belong to no current
+        // embedded-service build and must never enter per-build history.
+        let root = tempfile::tempdir().expect("temp root");
+        let paths = SoldrPaths::with_root(root.path().join("soldr"));
+        let session_dir = root.path().join("zc");
+        std::fs::create_dir_all(&session_dir).expect("session dir");
+        let session = crate::zccache_lifecycle::ZccacheBuildSession {
+            cache_dir: session_dir.clone(),
+            cache_dir_env: false,
+            session_id: "stale-global-session".to_string(),
+            session_log_path: session_dir.join("last-session.log"),
+            journal_path: session_dir.join("last-session.jsonl"),
+            session_stats_path: session_dir.join("last-session-stats.json"),
+        };
+        let sentinel = "DO_NOT_ARCHIVE_THIS_LEGACY_SECRET";
+        std::fs::write(&session.session_log_path, sentinel).expect("legacy log");
+        std::fs::write(
+            &session.journal_path,
+            format!(r#"{{"env":[["TOKEN","{sentinel}"]]}}"#),
+        )
+        .expect("legacy journal");
+        std::fs::write(
+            &session.session_stats_path,
+            r#"{"status":"ok","hits":1,"misses":0,"compilations":1}"#,
+        )
+        .expect("stats");
+
+        let compile_journal = embedded_compile_journal_path(&paths);
+        std::fs::create_dir_all(compile_journal.parent().unwrap()).expect("journal parent");
+        let mut compile_journal_start_len = 0;
+        for (build_session_id, crate_name) in [(5150, "first"), (5151, "second")] {
+            use std::io::Write as _;
+            let mut journal = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&compile_journal)
+                .expect("open compile journal");
+            writeln!(
+                journal,
+                "{{\"outcome\":\"hit\",\"crate_name\":\"{crate_name}\"}}"
+            )
+            .expect("append compile journal");
+            drop(journal);
+
+            persist_build_log_history_inner(&BuildLogHistoryRequest {
+                paths: &paths,
+                build_session_id,
+                repo_root: Path::new("/repo"),
+                started_at_ms: 1_000,
+                session: &session,
+                compile_journal_start_len,
+                exit_code: 0,
+                ended_at_ms: 2_000,
+                daemon_finalized: true,
+            })
+            .expect("persist history");
+            compile_journal_start_len = std::fs::metadata(&compile_journal)
+                .expect("journal metadata")
+                .len();
+
+            let archive = build_log_history_dir(&paths, build_session_id);
+            assert!(!archive.join("last-session.log").exists());
+            assert!(!archive.join("last-session.jsonl").exists());
+            let archive_body = std::fs::read_to_string(archive.join("compile_journal.jsonl"))
+                .expect("build-scoped journal");
+            assert!(archive_body.contains(crate_name));
+            assert!(!archive_body.contains(sentinel));
+
+            let record = crate::daemon::db::get_build(
+                &crate::cache_lib::data_db_path(&paths),
+                build_session_id,
+            )
+            .expect("read build")
+            .expect("record");
+            let log_paths = record.log_paths.expect("log paths");
+            assert!(log_paths.session_log_path.is_none());
+            assert!(log_paths.journal_path.is_none());
+            assert!(log_paths.archived_session_log_path.is_none());
+            assert!(log_paths.archived_journal_path.is_none());
+            assert!(log_paths.archived_session_stats_path.is_some());
+            assert!(log_paths.archived_compile_journal_path.is_some());
         }
     }
 );

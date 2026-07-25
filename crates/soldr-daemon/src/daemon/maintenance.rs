@@ -419,8 +419,10 @@ fn run_local_components(
         },
     );
     out.history = ComponentOutcome {
-        items_removed: (history.age_removed + history.size_removed + history.migration_removed)
-            as u64,
+        items_removed: (history.age_removed
+            + history.size_removed
+            + history.migration_removed
+            + history.legacy_files_removed) as u64,
         bytes_reclaimed: history.bytes_reclaimed,
         error: (history.failed > 0).then(|| format!("{} history deletion errors", history.failed)),
     };

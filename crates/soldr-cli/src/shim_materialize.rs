@@ -7,11 +7,42 @@
 //! unavailable.
 
 use crate::core::SoldrError;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 pub(crate) const LINK_MODE_HARDLINK: &str = "hardlink";
 pub(crate) const LINK_MODE_COPY: &str = "copy";
 pub(crate) const LINK_MODE_HARDLINK_OR_COPY: &str = "hardlink-or-copy";
+const MATERIALIZATION_MEMO_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct FileStamp {
+    len: u64,
+    modified_ns: u128,
+    #[cfg(unix)]
+    dev: u64,
+    #[cfg(unix)]
+    ino: u64,
+    #[cfg(unix)]
+    ctime: i64,
+    #[cfg(unix)]
+    ctime_nsec: i64,
+    #[cfg(windows)]
+    volume_serial_number: u32,
+    #[cfg(windows)]
+    file_index: u64,
+    #[cfg(windows)]
+    creation_time: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct MaterializationMemo {
+    version: u32,
+    source_path: String,
+    source: FileStamp,
+    target: FileStamp,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MaterializeResult {
@@ -40,7 +71,26 @@ pub(crate) fn materialize_executable(
     source: &Path,
     target: &Path,
 ) -> Result<MaterializeResult, SoldrError> {
+    // Regression for #1831: these shims are large copies on installations
+    // where the Soldr binary and cache live on different volumes. Rehashing
+    // both files for every cargo invocation made a no-op build reread
+    // hundreds of MiB before Cargo could start.
+    if materialization_memo_matches(source, target) {
+        return Ok(MaterializeResult {
+            created: false,
+            link_mode: LINK_MODE_HARDLINK_OR_COPY,
+        });
+    }
+    let verified_snapshot = materialization_memo(source, target);
     if executable_matches(target, source)? {
+        if let Some(verified) = verified_snapshot.as_ref() {
+            write_materialization_memo_if_unchanged(
+                source,
+                target,
+                &verified.source,
+                Some(&verified.target),
+            );
+        }
         return Ok(MaterializeResult {
             created: false,
             link_mode: LINK_MODE_HARDLINK_OR_COPY,
@@ -95,6 +145,21 @@ pub(crate) fn materialize_executable(
     for attempt in 0..PUBLISH_ATTEMPTS {
         match std::fs::rename(&tmp, target) {
             Ok(()) => {
+                // Re-verify after publication before memoizing. This is
+                // intentionally a cold-path hash for cross-volume copies:
+                // it closes the source/target mutation window, while every
+                // subsequent unchanged call takes the metadata-only memo.
+                let verified_snapshot = materialization_memo(source, target);
+                if executable_matches(target, source).unwrap_or(false) {
+                    if let Some(verified) = verified_snapshot.as_ref() {
+                        write_materialization_memo_if_unchanged(
+                            source,
+                            target,
+                            &verified.source,
+                            Some(&verified.target),
+                        );
+                    }
+                }
                 return Ok(MaterializeResult {
                     created: true,
                     link_mode,
@@ -103,8 +168,17 @@ pub(crate) fn materialize_executable(
             Err(err) => last_error = Some(err),
         }
 
+        let verified_snapshot = materialization_memo(source, target);
         if executable_matches(target, source).unwrap_or(false) {
             let _ = std::fs::remove_file(&tmp);
+            if let Some(verified) = verified_snapshot.as_ref() {
+                write_materialization_memo_if_unchanged(
+                    source,
+                    target,
+                    &verified.source,
+                    Some(&verified.target),
+                );
+            }
             return Ok(MaterializeResult {
                 created: false,
                 link_mode: LINK_MODE_HARDLINK_OR_COPY,
@@ -121,8 +195,17 @@ pub(crate) fn materialize_executable(
         }
     }
 
+    let verified_snapshot = materialization_memo(source, target);
     if executable_matches(target, source).unwrap_or(false) {
         let _ = std::fs::remove_file(&tmp);
+        if let Some(verified) = verified_snapshot.as_ref() {
+            write_materialization_memo_if_unchanged(
+                source,
+                target,
+                &verified.source,
+                Some(&verified.target),
+            );
+        }
         return Ok(MaterializeResult {
             created: false,
             link_mode: LINK_MODE_HARDLINK_OR_COPY,
@@ -155,6 +238,113 @@ fn tmp_path_for(target: &Path) -> PathBuf {
     PathBuf::from(path)
 }
 
+fn materialization_memo_path(target: &Path) -> PathBuf {
+    let mut path = target.as_os_str().to_os_string();
+    path.push(".materialized-v1.json");
+    PathBuf::from(path)
+}
+
+fn file_stamp(path: &Path) -> Option<FileStamp> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let modified_ns = metadata
+        .modified()
+        .ok()?
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some(FileStamp {
+            len: metadata.len(),
+            modified_ns,
+            dev: metadata.dev(),
+            ino: metadata.ino(),
+            ctime: metadata.ctime(),
+            ctime_nsec: metadata.ctime_nsec(),
+        })
+    }
+    #[cfg(windows)]
+    {
+        use std::mem::MaybeUninit;
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+        };
+        let file = std::fs::File::open(path).ok()?;
+        let mut info = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+        // SAFETY: `file` owns a valid handle and `info` has the exact storage
+        // required by GetFileInformationByHandle.
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, info.as_mut_ptr()) } == 0
+        {
+            // Do not create a weak size+mtime memo when stable file identity
+            // is unavailable. The caller falls back to the content hash.
+            return None;
+        }
+        // SAFETY: the successful call initialized the full structure.
+        let info = unsafe { info.assume_init() };
+        Some(FileStamp {
+            len: metadata.len(),
+            modified_ns,
+            volume_serial_number: info.dwVolumeSerialNumber,
+            file_index: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+            creation_time: (u64::from(info.ftCreationTime.dwHighDateTime) << 32)
+                | u64::from(info.ftCreationTime.dwLowDateTime),
+        })
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        Some(FileStamp {
+            len: metadata.len(),
+            modified_ns,
+        })
+    }
+}
+
+fn materialization_memo(source: &Path, target: &Path) -> Option<MaterializationMemo> {
+    Some(MaterializationMemo {
+        version: MATERIALIZATION_MEMO_VERSION,
+        source_path: source.as_os_str().to_string_lossy().into_owned(),
+        source: file_stamp(source)?,
+        target: file_stamp(target)?,
+    })
+}
+
+fn materialization_memo_matches(source: &Path, target: &Path) -> bool {
+    let path = materialization_memo_path(target);
+    let Ok(raw) = std::fs::read(path) else {
+        return false;
+    };
+    let Ok(saved) = serde_json::from_slice::<MaterializationMemo>(&raw) else {
+        return false;
+    };
+    materialization_memo(source, target).is_some_and(|current| current == saved)
+}
+
+fn write_materialization_memo_if_unchanged(
+    source: &Path,
+    target: &Path,
+    expected_source: &FileStamp,
+    expected_target: Option<&FileStamp>,
+) -> bool {
+    let Some(memo) = materialization_memo(source, target) else {
+        return false;
+    };
+    if &memo.source != expected_source
+        || expected_target.is_some_and(|expected| &memo.target != expected)
+    {
+        return false;
+    }
+    let Ok(raw) = serde_json::to_vec(&memo) else {
+        return false;
+    };
+    // This is a performance memo, not authoritative state. A partial or
+    // racing write cannot produce a false match: parse failure falls back to
+    // the content hash, while a complete memo is validated against both
+    // files' current metadata before use.
+    std::fs::write(materialization_memo_path(target), raw).is_ok()
+}
+
 pub(crate) fn executable_matches(target: &Path, source: &Path) -> Result<bool, SoldrError> {
     let Ok(target_meta) = std::fs::metadata(target) else {
         return Ok(false);
@@ -164,6 +354,13 @@ pub(crate) fn executable_matches(target: &Path, source: &Path) -> Result<bool, S
     };
     if target_meta.len() != source_meta.len() {
         return Ok(false);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if target_meta.dev() == source_meta.dev() && target_meta.ino() == source_meta.ino() {
+            return Ok(true);
+        }
     }
     Ok(blake3_file(target)? == blake3_file(source)?)
 }
@@ -201,6 +398,61 @@ mod tests {
         assert!(materialize_executable(&source, &target).unwrap().created);
         let second = materialize_executable(&source, &target).unwrap();
         assert!(!second.created);
+    });
+
+    crate::timed_test!(unchanged_copy_uses_validated_materialization_memo, {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = fake_source(&tmp, b"fake-soldr-v1");
+        let target = tmp.path().join("rustc");
+        materialize_executable(&source, &target).unwrap();
+        // Force the cross-volume fallback shape: the normal tempdir path
+        // creates a hardlink, whose contents naturally change with source.
+        std::fs::remove_file(&target).unwrap();
+        std::fs::copy(&source, &target).unwrap();
+        let copied = materialization_memo(&source, &target).unwrap();
+        assert!(write_materialization_memo_if_unchanged(
+            &source,
+            &target,
+            &copied.source,
+            Some(&copied.target),
+        ));
+
+        assert!(materialization_memo_matches(&source, &target));
+        let second = materialize_executable(&source, &target).unwrap();
+        assert!(!second.created);
+
+        let original_modified = std::fs::metadata(&source).unwrap().modified().unwrap();
+        std::fs::remove_file(&source).unwrap();
+        std::fs::write(&source, b"fake-soldr-v2").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&source)
+            .unwrap()
+            .set_modified(original_modified)
+            .unwrap();
+        assert!(!materialization_memo_matches(&source, &target));
+        let replaced = materialize_executable(&source, &target).unwrap();
+        assert!(replaced.created);
+        assert_eq!(std::fs::read(target).unwrap(), b"fake-soldr-v2");
+    });
+
+    crate::timed_test!(memo_rejects_source_change_after_content_verification, {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = fake_source(&tmp, b"fake-soldr-v1");
+        let target = tmp.path().join("rustc");
+        std::fs::copy(&source, &target).unwrap();
+        let verified = materialization_memo(&source, &target).unwrap();
+        assert!(executable_matches(&target, &source).unwrap());
+
+        std::fs::remove_file(&source).unwrap();
+        std::fs::write(&source, b"fake-soldr-v2").unwrap();
+        assert!(!write_materialization_memo_if_unchanged(
+            &source,
+            &target,
+            &verified.source,
+            Some(&verified.target),
+        ));
+        assert!(!materialization_memo_path(&target).exists());
     });
 
     crate::timed_test!(

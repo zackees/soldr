@@ -413,10 +413,6 @@ fn persist_build_log_history_inner(request: &BuildLogHistoryRequest<'_>) -> Resu
             )
         });
 
-    let archived_session_log_path =
-        copy_session_artifact(&session.session_log_path, &archive_dir, "last-session.log");
-    let archived_journal_path =
-        copy_session_artifact(&session.journal_path, &archive_dir, "last-session.jsonl");
     let archived_session_stats_path = copy_session_artifact(
         &session.session_stats_path,
         &archive_dir,
@@ -442,14 +438,6 @@ fn persist_build_log_history_inner(request: &BuildLogHistoryRequest<'_>) -> Resu
         archived_compile_journal_path
             .as_ref()
             .map(|path| Path::new(path.as_str())),
-        archived_journal_path
-            .as_ref()
-            .map(|path| Path::new(path.as_str()))
-            .unwrap_or(&session.journal_path),
-        archived_session_log_path
-            .as_ref()
-            .map(|path| Path::new(path.as_str()))
-            .unwrap_or(&session.session_log_path),
     );
     // soldr#1536: when the daemon acknowledged BuildSessionEnd, the
     // record read above already carries the finalized crate-count /
@@ -474,12 +462,17 @@ fn persist_build_log_history_inner(request: &BuildLogHistoryRequest<'_>) -> Resu
     record.log_paths = Some(crate::daemon::protocol::BuildLogPaths {
         zccache_session_id: Some(session.session_id.clone()),
         cache_dir: Some(session.cache_dir.display().to_string()),
-        session_log_path: Some(session.session_log_path.display().to_string()),
-        journal_path: Some(session.journal_path.display().to_string()),
+        // The embedded service no longer updates zccache's fixed
+        // `last-session` files. Recording or archiving them here would attach
+        // stale cumulative data (and potentially old environment values) to
+        // every new build. The build-scoped compile-journal tail above is the
+        // authoritative diagnostic payload.
+        session_log_path: None,
+        journal_path: None,
         session_stats_path: Some(session.session_stats_path.display().to_string()),
         compile_journal_path: Some(compile_journal_path.display().to_string()),
-        archived_session_log_path,
-        archived_journal_path,
+        archived_session_log_path: None,
+        archived_journal_path: None,
         archived_session_stats_path,
         archived_compile_journal_path,
         // soldr#1368: private managed-zccache daemons are gone; the
@@ -836,20 +829,10 @@ fn read_build_cache_summary(
 
 fn read_build_miss_reasons(
     compile_journal_path: Option<&Path>,
-    session_journal_path: &Path,
-    session_log_path: &Path,
 ) -> Vec<crate::daemon::protocol::BuildMissReason> {
-    if let Some(compile_journal_path) = compile_journal_path {
-        let from_compile_journal = read_build_miss_reasons_from_journal(compile_journal_path);
-        if !from_compile_journal.is_empty() {
-            return from_compile_journal;
-        }
-    }
-    let from_session_journal = read_build_miss_reasons_from_journal(session_journal_path);
-    if !from_session_journal.is_empty() {
-        return from_session_journal;
-    }
-    read_build_miss_reasons_from_log(session_log_path)
+    compile_journal_path
+        .map(read_build_miss_reasons_from_journal)
+        .unwrap_or_default()
 }
 
 fn read_build_miss_reasons_from_journal(
@@ -887,35 +870,6 @@ fn parse_build_miss_reasons_from_journal(
     sorted_miss_reasons(counts)
 }
 
-fn read_build_miss_reasons_from_log(
-    log_path: &Path,
-) -> Vec<crate::daemon::protocol::BuildMissReason> {
-    let Ok(raw) = std::fs::read_to_string(log_path) else {
-        return Vec::new();
-    };
-    parse_build_miss_reasons_from_log(&raw)
-}
-
-fn parse_build_miss_reasons_from_log(
-    log_body: &str,
-) -> Vec<crate::daemon::protocol::BuildMissReason> {
-    let mut counts: BTreeMap<String, u64> = BTreeMap::new();
-    for line in log_body.lines().filter(|line| line.contains("[MISS]")) {
-        let reason = extract_miss_reason(line).unwrap_or_else(|| "unknown".to_string());
-        *counts.entry(reason).or_insert(0) += 1;
-    }
-    if counts.is_empty() {
-        for line in log_body
-            .lines()
-            .filter(|line| line.contains("verdict=Miss"))
-        {
-            let reason = extract_miss_reason(line).unwrap_or_else(|| "unknown".to_string());
-            *counts.entry(reason).or_insert(0) += 1;
-        }
-    }
-    sorted_miss_reasons(counts)
-}
-
 fn sorted_miss_reasons(
     counts: BTreeMap<String, u64>,
 ) -> Vec<crate::daemon::protocol::BuildMissReason> {
@@ -925,26 +879,6 @@ fn sorted_miss_reasons(
         .collect();
     reasons.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.reason.cmp(&b.reason)));
     reasons
-}
-
-fn extract_miss_reason(line: &str) -> Option<String> {
-    if let Some(rest) = line.split("(reason:").nth(1) {
-        let reason = rest.split(')').next()?.trim();
-        if !reason.is_empty() {
-            return Some(reason.to_string());
-        }
-    }
-    if let Some(rest) = line.split("reason=").nth(1) {
-        let reason = rest
-            .split_whitespace()
-            .next()?
-            .trim_matches(|c: char| matches!(c, ',' | ';' | ')' | ']'))
-            .trim();
-        if !reason.is_empty() {
-            return Some(reason.to_string());
-        }
-    }
-    None
 }
 
 fn json_u64(value: &serde_json::Value, key: &str) -> Option<u64> {
