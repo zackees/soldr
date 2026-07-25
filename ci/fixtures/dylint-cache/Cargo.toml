@@ -9,4 +9,3 @@ members = ["lint"]
 
 [workspace.metadata.dylint]
 libraries = [{ path = "lint" }]
-

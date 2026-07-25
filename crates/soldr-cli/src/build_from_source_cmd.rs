@@ -219,6 +219,13 @@ pub fn execute_plan(plan: &BuildPlan) -> Result<BuildReport, SoldrError> {
             .arg("--root")
             .arg(&staging_root)
             .arg("--force")
+            // Source acquisition must not inherit the caller workspace's
+            // rust-toolchain.toml or .cargo/config.toml. Besides making a
+            // managed tool build depend on unrelated project policy, rustup
+            // proxies can race while auto-installing listed components when
+            // Cargo starts parallel build scripts. The staging root is an
+            // intentionally manifest-free, neutral working directory.
+            .current_dir(&staging_root)
             .env("PATH", &staging_path_env)
             // Strip stale jobserver env so the nested cargo doesn't try
             // to attach to fds it cannot see (see soldr #283).
