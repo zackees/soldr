@@ -26,6 +26,8 @@ SOLDR=/target/debug/soldr
 REPO="$(pwd)"
 WATCHDOG_IDLE_SECS=180
 WATCHDOG_POLL_SECS=10
+WATCHDOG_INACTIVE_GRACE_SECS=60
+WATCHDOG_POST_CAPTURE_SECS=300
 # The external watchdog below is progress-aware. Keep soldr's wall-clock
 # timeout only as a last-resort backstop for a continuously noisy failure.
 export SOLDR_CARGO_WAIT_TIMEOUT_SECS=900
@@ -61,6 +63,9 @@ run_case() {
     read -r last_cpu last_io last_target last_pids \
       < <(process_activity_counters "$command_pid" "$target")
     idle_secs=0
+    inactive_secs=0
+    post_capture_secs=0
+    captured=0
     while kill -0 "$command_pid" 2>/dev/null; do
       sleep "$WATCHDOG_POLL_SECS"
       current_progress="$(meaningful_output_size "$live_log")"
@@ -68,23 +73,48 @@ run_case() {
         < <(process_activity_counters "$command_pid" "$target")
       cpu_delta="$((current_cpu - last_cpu))"
       io_delta="$((current_io - last_io))"
-      if [[ "$current_progress" != "$last_progress" ||
-            "$current_target" != "$last_target" ||
-            "$current_pids" != "$last_pids" ||
-            "$cpu_delta" -ge 1000000000 ||
-            "$io_delta" -ge 8388608 ]]; then
-        last_progress="$current_progress"
-        last_cpu="$current_cpu"
-        last_io="$current_io"
-        last_target="$current_target"
-        last_pids="$current_pids"
+      semantic_progress=0
+      # CPU/I/O is deliberately not semantic progress: a busy-spin hang
+      # must still trigger a stack/Tokio snapshot. Output, artifacts, and
+      # process-phase changes are the signals that postpone capture.
+      [[ "$current_progress" == "$last_progress" &&
+         "$current_target" == "$last_target" &&
+         "$current_pids" == "$last_pids" ]] || semantic_progress=1
+      process_active=0
+      [[ "$cpu_delta" -lt 1000000000 &&
+         "$io_delta" -lt 8388608 ]] || process_active=1
+      last_progress="$current_progress"
+      last_cpu="$current_cpu"
+      last_io="$current_io"
+      last_target="$current_target"
+      last_pids="$current_pids"
+
+      if [[ "$semantic_progress" -eq 1 ]]; then
         idle_secs=0
+        inactive_secs=0
+        post_capture_secs=0
+        captured=0
         continue
       fi
       idle_secs="$((idle_secs + WATCHDOG_POLL_SECS))"
-      if [[ "$idle_secs" -lt "$WATCHDOG_IDLE_SECS" ]]; then
+
+      if [[ "$captured" -eq 1 ]]; then
+        # Activity protects a healthy, quiet compiler from immediate
+        # termination, but only for a bounded post-capture grace period.
+        post_capture_secs="$((post_capture_secs + WATCHDOG_POLL_SECS))"
+        if [[ "$process_active" -eq 1 ]]; then
+          inactive_secs=0
+        else
+          inactive_secs="$((inactive_secs + WATCHDOG_POLL_SECS))"
+        fi
+        if [[ "$inactive_secs" -ge "$WATCHDOG_INACTIVE_GRACE_SECS" ||
+              "$post_capture_secs" -ge "$WATCHDOG_POST_CAPTURE_SECS" ]]; then
+          terminate_scope "$command_pid"
+          break
+        fi
         continue
       fi
+      [[ "$idle_secs" -ge "$WATCHDOG_IDLE_SECS" ]] || continue
 
       dump="/tmp/dylint-acceptance/diagnostics/$name-stacks.txt"
       fired="/tmp/dylint-acceptance/diagnostics/$name-watchdog-fired"
@@ -118,8 +148,9 @@ run_case() {
         ' bash "${pids[@]}" || echo "WATCHDOG: native stack collection hit its 120s global budget"
       } >"$dump" 2>&1
       cat "$dump" >&2
-      terminate_scope "$command_pid"
-      break
+      captured=1
+      inactive_secs=0
+      post_capture_secs=0
     done
   ) &
   watchdog_pid="$!"
