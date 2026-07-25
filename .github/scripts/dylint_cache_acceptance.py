@@ -24,8 +24,11 @@ rm -rf /tmp/dylint-acceptance
 mkdir -p /tmp/dylint-acceptance/diagnostics
 SOLDR=/target/debug/soldr
 REPO="$(pwd)"
-WATCHDOG_SECS=150
-export SOLDR_CARGO_WAIT_TIMEOUT_SECS=300
+WATCHDOG_IDLE_SECS=180
+WATCHDOG_POLL_SECS=10
+# The external watchdog below is progress-aware. Keep soldr's wall-clock
+# timeout only as a last-resort backstop for a continuously noisy failure.
+export SOLDR_CARGO_WAIT_TIMEOUT_SECS=1200
 export SOLDR_DAEMON_TOKIO_CONSOLE=1
 
 cp -a "$REPO/ci/fixtures/dylint-cache" /tmp/dylint-acceptance/a
@@ -41,35 +44,50 @@ git -C /tmp/dylint-acceptance/a worktree add -q /tmp/dylint-acceptance/b HEAD
 
 run_case() {
   name="$1"; work="$2"; target="$3"
+  live_log="/tmp/dylint-acceptance/diagnostics/$name-live.log"
+  : >"$live_log"
   start="$(date +%s%3N)"
   (
     cd "$work"
     CARGO_TARGET_DIR="$target" \
       TOKIO_CONSOLE_RECORD_PATH="/tmp/dylint-acceptance/diagnostics/$name.tokio" \
-      "$SOLDR" cargo dylint --all
+      "$SOLDR" cargo dylint --all \
+        > >(tee -a "$live_log") \
+        2> >(tee -a "$live_log" >&2)
   ) &
   command_pid="$!"
   (
-    sleep "$WATCHDOG_SECS"
-    if kill -0 "$command_pid" 2>/dev/null; then
+    last_progress="$(meaningful_output_size "$live_log")"
+    idle_secs=0
+    while kill -0 "$command_pid" 2>/dev/null; do
+      sleep "$WATCHDOG_POLL_SECS"
+      current_progress="$(meaningful_output_size "$live_log")"
+      if [[ "$current_progress" != "$last_progress" ]]; then
+        last_progress="$current_progress"
+        idle_secs=0
+        continue
+      fi
+      idle_secs="$((idle_secs + WATCHDOG_POLL_SECS))"
+      if [[ "$idle_secs" -lt "$WATCHDOG_IDLE_SECS" ]]; then
+        continue
+      fi
+
       dump="/tmp/dylint-acceptance/diagnostics/$name-stacks.txt"
       fired="/tmp/dylint-acceptance/diagnostics/$name-watchdog-fired"
       : >"$fired"
       {
-        echo "WATCHDOG: $name still running after ${WATCHDOG_SECS}s"
+        echo "WATCHDOG: $name produced no meaningful output for ${WATCHDOG_IDLE_SECS}s"
         date -u
         echo "=== process tree ==="
         ps -eo pid,ppid,pgid,stat,etimes,wchan:32,args --forest
         echo "=== native stacks ==="
         pids=()
-        for proc in /proc/[0-9]*; do
-          pid="${proc##*/}"
-          test -r "$proc/environ" -a -r "$proc/cmdline" || continue
-          tr '\0' '\n' <"$proc/environ" 2>/dev/null |
-            grep -Fxq "SOLDR_CACHE_DIR=$SOLDR_CACHE_DIR" || continue
-          command_line="$(tr '\0' ' ' <"$proc/cmdline" 2>/dev/null || true)"
+        mapfile -t descendants < <(descendant_pids "$command_pid")
+        for pid in "$command_pid" "${descendants[@]}"; do
+          test -r "/proc/$pid/cmdline" || continue
+          command_line="$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)"
           case "$command_line" in
-            *"/target/debug/soldr"*|*"cargo-dylint"*|*"dylint-driver"*|*"rustc"*|*"zccache"*)
+            *"/target/debug/soldr"*|*"cargo build"*|*"cargo-dylint"*|*"dylint-driver"*|*"rustc"*|*"zccache"*)
               pids+=("$pid")
               ;;
           esac
@@ -83,7 +101,9 @@ run_case() {
         ' bash "${pids[@]}" || echo "WATCHDOG: native stack collection hit its 120s global budget"
       } >"$dump" 2>&1
       cat "$dump" >&2
-    fi
+      terminate_tree "$command_pid"
+      break
+    done
   ) &
   watchdog_pid="$!"
   set +e
@@ -114,6 +134,35 @@ run_case() {
         ($report[0].last_session | type) == "object"),
       hits:($report[0].last_session.stats.hits // $report[0].last_session.hits // 0),
       misses:($report[0].last_session.stats.misses // $report[0].last_session.misses // 0)}'
+}
+
+meaningful_output_size() {
+  # soldr's once-per-minute heartbeat proves that its parent wait loop is
+  # alive, but it must not mask a child that has stopped making progress.
+  awk '
+    !index($0, "soldr: cargo diagnostic capture still running") {
+      bytes += length($0) + 1
+    }
+    END { print bytes + 0 }
+  ' "$1"
+}
+
+descendant_pids() {
+  parent="$1"
+  while read -r child; do
+    [[ -n "$child" ]] || continue
+    printf '%s\n' "$child"
+    descendant_pids "$child"
+  done < <(pgrep -P "$parent" 2>/dev/null || true)
+}
+
+terminate_tree() {
+  parent="$1"
+  while read -r child; do
+    [[ -n "$child" ]] || continue
+    terminate_tree "$child"
+  done < <(pgrep -P "$parent" 2>/dev/null || true)
+  kill -TERM "$parent" 2>/dev/null || true
 }
 
 dump_one_pid() {
