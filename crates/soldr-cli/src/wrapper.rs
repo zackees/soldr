@@ -100,10 +100,7 @@ fn routes_through_embedded_zccache(tool_stem: &str) -> bool {
 /// Dylint builds lint libraries before setting `DYLINT_LIBS` for the linted
 /// crate. That bootstrap uses `dylint-link` as the linker, which creates an
 /// additional toolchain-suffixed library beside rustc's declared output.
-/// Compiling in zccache's staging directory would strand that linker side
-/// effect there, so keep only this bootstrap phase direct. The subsequent
-/// driver compilation has `DYLINT_LIBS` and remains cacheable.
-fn dylint_library_bootstrap_requires_direct_output(args: &[String]) -> bool {
+fn is_dylint_library_bootstrap(args: &[String]) -> bool {
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         let out_dir = if arg == "--out-dir" {
@@ -128,41 +125,92 @@ fn dylint_library_bootstrap_requires_direct_output(args: &[String]) -> bool {
     false
 }
 
-/// Preserve zccache's worktree-independent output contract for the one Rust
-/// compile we deliberately execute outside zccache. The daemon normally adds
-/// `--remap-path-prefix=<worktree>=.` when `ZCCACHE_PATH_REMAP=auto`; without
-/// the same flag here, Dylint's lint-library `.so` embeds its checkout path.
-/// That makes the raw library bytes (and therefore the Dylint cache-input
-/// hash) differ between otherwise identical sibling worktrees.
-fn dylint_library_bootstrap_remap_arg_from(
-    dylint_library_bootstrap: bool,
-    path_remap: Option<&std::ffi::OsStr>,
-    worktree_root: Option<&std::ffi::OsStr>,
-) -> Option<std::ffi::OsString> {
-    if !dylint_library_bootstrap
-        || !path_remap
-            .and_then(std::ffi::OsStr::to_str)
-            .is_some_and(|value| value.trim().eq_ignore_ascii_case("auto"))
-    {
-        return None;
-    }
-    let root = worktree_root.filter(|value| !value.is_empty())?;
-    let mut arg = std::ffi::OsString::from("--remap-path-prefix=");
-    arg.push(root);
-    arg.push("=.");
-    Some(arg)
+#[derive(Debug, PartialEq, Eq)]
+struct DylintLibrarySidecarPlan {
+    rustc_output: std::path::PathBuf,
+    dylint_sidecar: std::path::PathBuf,
 }
 
-fn dylint_library_bootstrap_remap_arg(
-    dylint_library_bootstrap: bool,
-) -> Option<std::ffi::OsString> {
-    let path_remap = std::env::var_os(crate::cache_lib::ZCCACHE_PATH_REMAP_ENV_VAR);
-    let worktree_root = std::env::var_os(crate::cache_lib::ZCCACHE_WORKTREE_ROOT_ENV_VAR);
-    dylint_library_bootstrap_remap_arg_from(
-        dylint_library_bootstrap,
-        path_remap.as_deref(),
-        worktree_root.as_deref(),
-    )
+/// Reconstruct the extra output that `dylint-link` creates after linking a
+/// lint cdylib. zccache owns rustc's declared output, so on either a miss or a
+/// hit Soldr can copy that restored byte-identical library to Dylint's stable
+/// toolchain-suffixed name. This keeps the bootstrap cacheable without
+/// teaching the generic artifact collector about linker-specific side effects.
+fn dylint_library_sidecar_plan_from(
+    args: &[String],
+    toolchain: Option<&std::ffi::OsStr>,
+) -> Option<DylintLibrarySidecarPlan> {
+    if !is_dylint_library_bootstrap(args) {
+        return None;
+    }
+    let toolchain = toolchain?.to_str()?.trim();
+    if toolchain.is_empty() {
+        return None;
+    }
+    let mut crate_name = None;
+    let mut crate_type_is_dynamic = false;
+    let mut out_dir = None;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--crate-name" {
+            crate_name = iter.next().cloned();
+        } else if let Some(value) = arg.strip_prefix("--crate-name=") {
+            crate_name = Some(value.to_string());
+        } else if arg == "--crate-type" {
+            crate_type_is_dynamic = iter
+                .next()
+                .is_some_and(|value| value.split(',').any(|kind| kind == "cdylib"));
+        } else if let Some(value) = arg.strip_prefix("--crate-type=") {
+            crate_type_is_dynamic = value.split(',').any(|kind| kind == "cdylib");
+        } else if arg == "--out-dir" {
+            out_dir = iter.next().map(std::path::PathBuf::from);
+        } else if let Some(value) = arg.strip_prefix("--out-dir=") {
+            out_dir = Some(std::path::PathBuf::from(value));
+        }
+    }
+    if !crate_type_is_dynamic {
+        return None;
+    }
+    let crate_name = crate_name?;
+    let out_dir = out_dir?;
+    let rustc_output = out_dir.join(format!(
+        "{}{}{}",
+        std::env::consts::DLL_PREFIX,
+        crate_name,
+        std::env::consts::DLL_SUFFIX
+    ));
+    let sidecar_dir = if out_dir.file_name() == Some(std::ffi::OsStr::new("deps")) {
+        out_dir.parent()?.to_path_buf()
+    } else {
+        out_dir
+    };
+    let dylint_sidecar = sidecar_dir.join(format!(
+        "{}{}@{}{}",
+        std::env::consts::DLL_PREFIX,
+        crate_name,
+        toolchain,
+        std::env::consts::DLL_SUFFIX
+    ));
+    Some(DylintLibrarySidecarPlan {
+        rustc_output,
+        dylint_sidecar,
+    })
+}
+
+fn materialize_dylint_library_sidecar(
+    plan: Option<&DylintLibrarySidecarPlan>,
+) -> Result<(), SoldrError> {
+    let Some(plan) = plan else {
+        return Ok(());
+    };
+    std::fs::copy(&plan.rustc_output, &plan.dylint_sidecar).map_err(|error| {
+        SoldrError::Other(format!(
+            "failed to materialize Dylint lint library {} from cached rustc output {}: {error}",
+            plan.dylint_sidecar.display(),
+            plan.rustc_output.display()
+        ))
+    })?;
+    Ok(())
 }
 
 /// Cargo nests the workspace compiler inside the outer wrapper as
@@ -282,14 +330,13 @@ pub(crate) fn run_rustc_wrapper(
     // and let the existing direct-exec tool-spawn path below handle
     // them instead of the zccache routing block.
     let zccache_routed_tool = routes_through_embedded_zccache(tool_stem);
-    let dylint_library_bootstrap = dylint_library_bootstrap_requires_direct_output(&compile_args);
-    let non_cacheable =
-        zccache_routed_tool && (is_non_cacheable_rustc(&compile_args) || dylint_library_bootstrap);
+    let dylint_library_sidecar = dylint_library_sidecar_plan_from(
+        &compile_args,
+        std::env::var_os("RUSTUP_TOOLCHAIN").as_deref(),
+    );
+    let non_cacheable = zccache_routed_tool && is_non_cacheable_rustc(&compile_args);
     if non_cacheable {
-        tracing::debug!(
-            "soldr: {tool_stem} invocation is non-cacheable; bypassing zccache \
-             (dylint_library_bootstrap={dylint_library_bootstrap})"
-        );
+        tracing::debug!("soldr: {tool_stem} invocation is non-cacheable; bypassing zccache");
         profile.mark("non_cacheable_bypass");
     }
 
@@ -333,7 +380,11 @@ pub(crate) fn run_rustc_wrapper(
             crate::binaries::apply_resolved_toolchain_homes(&mut command, &tool_path);
             suppress_windows_console_window(&mut command);
             let status = command.status()?;
-            return Ok(status.code().unwrap_or(1));
+            let code = status.code().unwrap_or(1);
+            if code == 0 {
+                materialize_dylint_library_sidecar(dylint_library_sidecar.as_ref())?;
+            }
+            return Ok(code);
         }
 
         // L1 (issue #977 / #980 L1): dispatch the rustc invocation to
@@ -366,21 +417,17 @@ pub(crate) fn run_rustc_wrapper(
             Ok(code) => Ok(code),
             Err(failure) if crate::compile_dispatch::should_fall_back_to_direct_rustc(&failure) => {
                 crate::compile_dispatch::log_direct_exec_fallback_once(&failure);
-                direct_exec_tool(tool_arg, tool_stem, &compile_args, None, None)
+                direct_exec_tool(tool_arg, tool_stem, &compile_args, None)
             }
             Err(failure) => Err(failure.into_soldr_error()),
         };
+        if result.as_ref().is_ok_and(|code| *code == 0) {
+            materialize_dylint_library_sidecar(dylint_library_sidecar.as_ref())?;
+        }
         return result;
     }
 
-    let remap_arg = dylint_library_bootstrap_remap_arg(dylint_library_bootstrap);
-    direct_exec_tool(
-        tool_arg,
-        tool_stem,
-        &compile_args,
-        remap_arg.as_deref(),
-        Some(profile),
-    )
+    direct_exec_tool(tool_arg, tool_stem, &compile_args, Some(profile))
 }
 
 /// Direct (uncached) exec of the wrapped tool — the non-daemon path.
@@ -393,15 +440,11 @@ fn direct_exec_tool(
     tool_arg: &str,
     tool_stem: &str,
     effective_args: &[String],
-    extra_rustc_arg: Option<&std::ffi::OsStr>,
     profile: Option<WrapperProfile>,
 ) -> Result<i32, SoldrError> {
     let tool_path = resolve_wrapper_tool_path(tool_arg, tool_stem)?;
 
     let mut command = std::process::Command::new(&tool_path);
-    if let Some(arg) = extra_rustc_arg {
-        command.arg(arg);
-    }
     command.args(&effective_args[2..]);
     crate::binaries::apply_resolved_toolchain_homes(&mut command, &tool_path);
     suppress_windows_console_window(&mut command);
@@ -669,43 +712,86 @@ mod tests {
         assert!(!is_non_cacheable_rustc(&argv));
     });
 
-    crate::timed_test!(dylint_library_out_dir_preserves_linker_side_effects, {
+    crate::timed_test!(dylint_library_out_dir_is_detected, {
         let dylint = wrapper_argv(&[
             "--out-dir",
             "/tmp/target/dylint/libraries/nightly-x86_64/release/deps",
         ]);
         let ordinary = wrapper_argv(&["--out-dir=/tmp/target/release/deps"]);
-        assert!(dylint_library_bootstrap_requires_direct_output(&dylint));
-        assert!(!dylint_library_bootstrap_requires_direct_output(&ordinary));
+        assert!(is_dylint_library_bootstrap(&dylint));
+        assert!(!is_dylint_library_bootstrap(&ordinary));
     });
 
-    crate::timed_test!(dylint_library_direct_output_keeps_auto_path_remap, {
+    crate::timed_test!(dylint_library_sidecar_plan_uses_declared_rustc_output, {
+        let out_dir = std::path::PathBuf::from("/tmp/target/dylint/libraries/nightly/release/deps");
+        let args = wrapper_argv(&[
+            "--crate-name",
+            "soldr_dylint_fixture_lint",
+            "--crate-type=cdylib",
+            "--out-dir",
+            out_dir.to_str().unwrap(),
+        ]);
+        let plan =
+            dylint_library_sidecar_plan_from(&args, Some(std::ffi::OsStr::new("nightly"))).unwrap();
+
         assert_eq!(
-            dylint_library_bootstrap_remap_arg_from(
-                true,
-                Some(std::ffi::OsStr::new("auto")),
-                Some(std::ffi::OsStr::new("/tmp/worktree-a")),
-            )
-            .as_deref(),
-            Some(std::ffi::OsStr::new(
-                "--remap-path-prefix=/tmp/worktree-a=."
+            plan.rustc_output,
+            out_dir.join(format!(
+                "{}soldr_dylint_fixture_lint{}",
+                std::env::consts::DLL_PREFIX,
+                std::env::consts::DLL_SUFFIX
             ))
         );
         assert_eq!(
-            dylint_library_bootstrap_remap_arg_from(
-                false,
-                Some(std::ffi::OsStr::new("auto")),
-                Some(std::ffi::OsStr::new("/tmp/worktree-a")),
-            ),
+            plan.dylint_sidecar,
+            out_dir.parent().unwrap().join(format!(
+                "{}soldr_dylint_fixture_lint@nightly{}",
+                std::env::consts::DLL_PREFIX,
+                std::env::consts::DLL_SUFFIX
+            ))
+        );
+    });
+
+    crate::timed_test!(dylint_library_sidecar_requires_cdylib_and_toolchain, {
+        let args = wrapper_argv(&[
+            "--crate-name=lint",
+            "--crate-type=lib",
+            "--out-dir=/tmp/target/dylint/libraries/nightly/release/deps",
+        ]);
+        assert_eq!(
+            dylint_library_sidecar_plan_from(&args, Some(std::ffi::OsStr::new("nightly"))),
             None
         );
+        let args = wrapper_argv(&[
+            "--crate-name=lint",
+            "--crate-type=cdylib",
+            "--out-dir=/tmp/target/dylint/libraries/nightly/release/deps",
+        ]);
+        assert_eq!(dylint_library_sidecar_plan_from(&args, None), None);
+    });
+
+    crate::timed_test!(dylint_library_sidecar_copies_cached_output, {
+        let temp = tempfile::tempdir().unwrap();
+        let rustc_output = temp.path().join(format!(
+            "{}lint{}",
+            std::env::consts::DLL_PREFIX,
+            std::env::consts::DLL_SUFFIX
+        ));
+        let dylint_sidecar = temp.path().join(format!(
+            "{}lint@nightly{}",
+            std::env::consts::DLL_PREFIX,
+            std::env::consts::DLL_SUFFIX
+        ));
+        std::fs::write(&rustc_output, b"cached lint library").unwrap();
+        let plan = DylintLibrarySidecarPlan {
+            rustc_output,
+            dylint_sidecar: dylint_sidecar.clone(),
+        };
+
+        materialize_dylint_library_sidecar(Some(&plan)).unwrap();
         assert_eq!(
-            dylint_library_bootstrap_remap_arg_from(
-                true,
-                Some(std::ffi::OsStr::new("off")),
-                Some(std::ffi::OsStr::new("/tmp/worktree-a")),
-            ),
-            None
+            std::fs::read(dylint_sidecar).unwrap(),
+            b"cached lint library"
         );
     });
 
