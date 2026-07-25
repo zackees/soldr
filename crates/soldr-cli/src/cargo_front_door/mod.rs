@@ -2758,6 +2758,16 @@ async fn dylint_link_bin_dir(paths: &SoldrPaths) -> Result<std::path::PathBuf, S
     eprintln!("soldr: fetching dylint-link...");
     match crate::fetch::fetch_tool_for_host_with_paths("dylint-link", &version, paths).await {
         Ok(result) => {
+            if let Err(error) = validated_dylint_link_prebuilt(&result) {
+                if dylint_link_prebuilt_smoke_failed(&error) {
+                    eprintln!(
+                        "soldr: dylint-link prebuilt is not executable on this host ({error}); \
+                         building pinned source fallback..."
+                    );
+                    return source_built_dylint_bin_dir("dylint-link", paths);
+                }
+                return Err(error);
+            }
             if result.cached {
                 eprintln!("soldr: using cached dylint-link v{}", result.version);
             } else {
@@ -2783,6 +2793,11 @@ async fn dylint_link_bin_dir(paths: &SoldrPaths) -> Result<std::path::PathBuf, S
         }
         Err(error) => Err(error),
     }
+}
+
+fn validated_dylint_link_prebuilt(result: &crate::fetch::FetchResult) -> Result<(), SoldrError> {
+    let target = crate::core::TargetTriple::host()?;
+    crate::fetch::smoke_test_or_evict(&result.binary_path, "dylint-link", &target)
 }
 
 fn source_built_dylint_bin_dir(

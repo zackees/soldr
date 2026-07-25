@@ -553,7 +553,13 @@ fn smoke_command(
     command
 }
 
-fn smoke_test_or_evict(
+/// Validate an installed tool binary and evict it when it cannot execute.
+///
+/// Most callers use this immediately after extraction. It is public within
+/// the unpublished workspace so higher-level selectors can also revalidate
+/// cache and catalogue hits whose host compatibility may change independently
+/// of their archive integrity.
+pub fn smoke_test_or_evict(
     binary_path: &std::path::Path,
     cache_name: &str,
     target: &TargetTriple,

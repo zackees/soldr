@@ -883,6 +883,28 @@ crate::timed_test!(
     }
 );
 
+crate::timed_test!(cached_dylint_link_is_revalidated_and_evicted, {
+    let temp = tempfile::tempdir().unwrap();
+    let binary = temp.path().join(if cfg!(windows) {
+        "dylint-link.exe"
+    } else {
+        "dylint-link"
+    });
+    std::fs::write(&binary, b"not an executable").unwrap();
+    let result = crate::fetch::FetchResult {
+        binary_path: binary.clone(),
+        version: "6.0.1".into(),
+        cached: true,
+    };
+
+    let error = validated_dylint_link_prebuilt(&result).unwrap_err();
+    assert!(dylint_link_prebuilt_smoke_failed(&error));
+    assert!(
+        !binary.exists(),
+        "incompatible cached prebuilt must be evicted before source fallback"
+    );
+});
+
 crate::timed_test!(managed_dylint_always_uses_pinned_source_build, {
     assert!(requires_managed_dylint_source_build("dylint"));
     for subcommand in ["nextest", "zigbuild", "xwin", "audit"] {
