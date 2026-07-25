@@ -49,13 +49,16 @@ git -C /tmp/dylint-acceptance/a worktree add -q /tmp/dylint-acceptance/b HEAD
 
 snapshot_zccache_logs() {
   name="$1"
-  log_dir="$SOLDR_CACHE_DIR/cache/zccache/logs"
+  cache_root="$SOLDR_CACHE_DIR/cache/zccache"
   snapshot_dir="/tmp/dylint-acceptance/diagnostics/$name-zccache"
   mkdir -p "$snapshot_dir"
-  test -d "$log_dir" || return 0
-  find "$log_dir" -maxdepth 1 -type f \
-    \( -name 'compile_journal.jsonl*' -o -name 'last-session*.json*' \) \
-    -exec cp -p '{}' "$snapshot_dir/" ';'
+  test -d "$cache_root" || return 0
+  (
+    cd "$cache_root"
+    find . -type f \
+      \( -name 'compile_journal.jsonl*' -o -name 'last-session*.json*' \) \
+      -exec cp --parents -p '{}' "$snapshot_dir/" ';'
+  )
 }
 
 run_case() {
