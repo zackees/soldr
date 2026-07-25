@@ -35,7 +35,7 @@ struct CargoPrepareMemoKey {
 struct FileIdentity {
     path: PathBuf,
     len: u64,
-    modified_ns: u128,
+    modified_ns: Option<u128>,
     sha256: Option<String>,
 }
 
@@ -481,12 +481,23 @@ fn cargo_prepare_memo_path(
 
 fn file_identity(path: &Path, hash_contents: bool) -> Option<FileIdentity> {
     let metadata = std::fs::metadata(path).ok()?;
-    let modified_ns = metadata
-        .modified()
-        .ok()?
-        .duration_since(UNIX_EPOCH)
-        .ok()?
-        .as_nanos();
+    // A content hash is authoritative. Rustup may touch its small
+    // `lib/rustlib/components` manifest without changing the bytes, and
+    // including that redundant mtime turns an unchanged warm invocation into
+    // a false memo miss. Large, unhashed binaries retain the cheaper
+    // size+mtime identity.
+    let modified_ns = if hash_contents {
+        None
+    } else {
+        Some(
+            metadata
+                .modified()
+                .ok()?
+                .duration_since(UNIX_EPOCH)
+                .ok()?
+                .as_nanos(),
+        )
+    };
     let sha256 = if hash_contents {
         let digest = Sha256::digest(std::fs::read(path).ok()?);
         Some(format!("{digest:x}"))
@@ -1065,6 +1076,16 @@ mod tests {
         std::fs::write(&components, b"rustc-test\n").expect("write components");
 
         let original = toolchain_identity(&key, &toolchain).expect("initial identity");
+        filetime::set_file_mtime(
+            &components,
+            filetime::FileTime::from_unix_time(1_800_000_000, 0),
+        )
+        .expect("touch components without changing contents");
+        let touched = toolchain_identity(&key, &toolchain).expect("touched identity");
+        assert_eq!(
+            original, touched,
+            "content-hashed manifests must ignore mtime-only changes"
+        );
         std::fs::write(&components, b"rustc-test\nrustfmt-preview-test\n")
             .expect("change components");
         let changed = toolchain_identity(&key, &toolchain).expect("changed identity");

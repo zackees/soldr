@@ -1982,9 +1982,18 @@ timed_test!(
         let second_rustup = install_logging_fake_rustup(&rustup_log);
         let cargo = install_logging_fake_cargo(&cargo_log);
         let (_, rustc, _) = install_fake_toolchain(&cargo_log);
+        let host_triple = soldr_cli::core::TargetTriple::host()
+            .expect("detect test host triple")
+            .triple();
 
         let seed_toolchain = |home: &Path, channel: &str| {
-            let toolchain = home.join("toolchains").join(format!("{channel}-test-host"));
+            // Match rustup's real channel-alias layout. A synthetic
+            // `<channel>-test-host` directory can coexist with the real
+            // host-qualified alias under CI and correctly makes production
+            // memo lookup reject the otherwise ambiguous channel.
+            let toolchain = home
+                .join("toolchains")
+                .join(format!("{channel}-{host_triple}"));
             fs::create_dir_all(toolchain.join("bin")).expect("create fake toolchain bin");
             fs::create_dir_all(toolchain.join("lib").join("rustlib"))
                 .expect("create fake toolchain rustlib");
