@@ -49,3 +49,11 @@ def test_initial_dylint_bootstrap_is_inside_monitored_cold_case() -> None:
     assert (
         "The cold case intentionally owns first-time cargo-dylint and driver" in script
     )
+
+
+def test_cross_worktree_registration_trace_is_collected() -> None:
+    script = dylint_acceptance.BASH
+    assert (
+        "ZCCACHE_INNER_TRACE=/tmp/dylint-acceptance/diagnostics/"
+        "context-registration-trace.jsonl"
+    ) in script

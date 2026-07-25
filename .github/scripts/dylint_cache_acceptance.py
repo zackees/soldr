@@ -35,6 +35,7 @@ WATCHDOG_POST_CAPTURE_SECS=300
 # terminates a semantic stall, including a continuously busy-spin process.
 export SOLDR_CARGO_WAIT_TIMEOUT_SECS=0
 export SOLDR_DAEMON_TOKIO_CONSOLE=1
+export ZCCACHE_INNER_TRACE=/tmp/dylint-acceptance/diagnostics/context-registration-trace.jsonl
 MODE="${SOLDR_DYLINT_ACCEPTANCE_MODE:-full}"
 
 cp -a "$REPO/ci/fixtures/dylint-cache" /tmp/dylint-acceptance/a
