@@ -49,7 +49,6 @@ const LEGACY_ALLOWLIST: &[&str] = &[
     "crates/soldr-cli/src/binaries.rs",
     "crates/soldr-cli/src/cache/session.rs",
     "crates/soldr-cache/src/cache_lib/auto_gc.rs",
-    "crates/soldr-cache/src/cache_lib/auto_target_gc.rs",
     "crates/soldr-cache/src/cache_lib/gc.rs",
     "crates/soldr-cache/src/cache_lib/mod.rs",
     "crates/soldr-cache/src/cache_lib/prune_target_tests.rs",

@@ -65,7 +65,7 @@ fn resolve_target_directory(
         child_command,
         cargo_target_dir.as_deref(),
         test_cargo_bin.as_deref(),
-        super::resolve_target_dir_for_gc,
+        super::resolve_target_dir_for_hooks,
     )
 }
 

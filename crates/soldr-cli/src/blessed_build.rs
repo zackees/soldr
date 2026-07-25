@@ -242,9 +242,7 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
         let dsymutil_available = match ensure_dsymutil_on_path(&mut prep) {
             Ok(()) => true,
             Err(error) => {
-                eprintln!(
-                    "soldr build: {error}; disabling packed Darwin debuginfo for this build"
-                );
+                eprintln!("soldr build: {error}; disabling packed Darwin debuginfo for this build");
                 false
             }
         };
@@ -300,11 +298,7 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
                 // and this is strictly better than falling back to GNU
                 // ld, which cannot link Mach-O at all.
                 let use_lld_linker = darwin_should_use_lld(managed_llvm_available);
-                let lld_flag = if use_lld_linker {
-                    " -fuse-ld=lld"
-                } else {
-                    ""
-                };
+                let lld_flag = if use_lld_linker { " -fuse-ld=lld" } else { "" };
                 let cflags = format!(
                     "--target={clang_arch_target} -isysroot {sdk_str} \
                      -mmacosx-version-min=11.0{lld_flag}"

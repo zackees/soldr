@@ -1070,49 +1070,39 @@ fn cargo_args_are_cacheable_for_watch_with_toolchain_pin() {
 }
 
 // -------------------------------------------------------------------------
-// Auto target-GC flag stripping (#485). The soldr-private flags get pulled
-// out of the arg vector before cargo ever sees them. The env var path is
-// covered separately because it touches process state.
+// Retired target-GC flags remain stripped as compatibility no-ops (#1818).
 // -------------------------------------------------------------------------
 
 #[test]
 fn strip_no_gc_target_flag_removes_combined_form() {
-    let (cleaned, opt) = strip_no_gc_target_flags(&argv(&["build", "--no-gc-target", "--release"]));
+    let cleaned = strip_no_gc_target_flags(&argv(&["build", "--no-gc-target", "--release"]));
     assert_eq!(cleaned, argv(&["build", "--release"]));
-    assert!(opt.before);
-    assert!(opt.after);
 }
 
 #[test]
 fn strip_no_gc_target_flag_removes_before_only() {
-    let (cleaned, opt) = strip_no_gc_target_flags(&argv(&["check", "--no-gc-target-before"]));
+    let cleaned = strip_no_gc_target_flags(&argv(&["check", "--no-gc-target-before"]));
     assert_eq!(cleaned, argv(&["check"]));
-    assert!(opt.before);
-    assert!(!opt.after);
 }
 
 #[test]
 fn strip_no_gc_target_flag_removes_after_only() {
-    let (cleaned, opt) =
+    let cleaned =
         strip_no_gc_target_flags(&argv(&["build", "--no-gc-target-after", "--workspace"]));
     assert_eq!(cleaned, argv(&["build", "--workspace"]));
-    assert!(!opt.before);
-    assert!(opt.after);
 }
 
 #[test]
 fn strip_no_gc_target_flag_default_no_op() {
-    let (cleaned, opt) = strip_no_gc_target_flags(&argv(&["build", "--release"]));
+    let cleaned = strip_no_gc_target_flags(&argv(&["build", "--release"]));
     assert_eq!(cleaned, argv(&["build", "--release"]));
-    assert!(!opt.before);
-    assert!(!opt.after);
 }
 
 #[test]
 fn strip_no_gc_target_flag_passes_through_after_separator() {
     // Flags after `--` belong to the program cargo runs and must not be
     // touched. This mirrors how `--no-trampoline` is handled.
-    let (cleaned, opt) = strip_no_gc_target_flags(&argv(&[
+    let cleaned = strip_no_gc_target_flags(&argv(&[
         "run",
         "--bin",
         "foo",
@@ -1131,61 +1121,16 @@ fn strip_no_gc_target_flag_passes_through_after_separator() {
             "--no-gc-target-after",
         ])
     );
-    assert!(!opt.before);
-    assert!(!opt.after);
 }
 
 #[test]
 fn strip_no_gc_target_flag_handles_repeated_flags() {
-    let (cleaned, opt) = strip_no_gc_target_flags(&argv(&[
+    let cleaned = strip_no_gc_target_flags(&argv(&[
         "build",
         "--no-gc-target-before",
         "--no-gc-target-after",
     ]));
     assert_eq!(cleaned, argv(&["build"]));
-    assert!(opt.before);
-    assert!(opt.after);
-}
-
-#[test]
-fn env_disables_target_gc_truthy_values() {
-    let _lock = ENV_LOCK.lock().unwrap();
-    for value in ["1", "true", "yes", "anything"] {
-        let _guard = EnvVarGuard::set(NO_GC_TARGET_ENV_VAR, value);
-        let merged = GcTargetOptOut::default().merged_with_env();
-        assert!(
-            merged.before && merged.after,
-            "env value {value:?} should force both opt-outs"
-        );
-    }
-}
-
-#[test]
-fn env_disables_target_gc_falsey_values_dont_opt_out() {
-    let _lock = ENV_LOCK.lock().unwrap();
-    for value in ["", "0", "false", "False"] {
-        let _guard = EnvVarGuard::set(NO_GC_TARGET_ENV_VAR, value);
-        let merged = GcTargetOptOut::default().merged_with_env();
-        assert!(
-            !merged.before && !merged.after,
-            "env value {value:?} must not opt out"
-        );
-    }
-}
-
-#[test]
-fn env_disables_target_gc_preserves_explicit_flag_opt_outs() {
-    // If --no-gc-target-before is on the cli, the env var being unset
-    // must not silently re-enable the after pass.
-    let _lock = ENV_LOCK.lock().unwrap();
-    let _guard = EnvVarGuard::remove(NO_GC_TARGET_ENV_VAR);
-    let merged = GcTargetOptOut {
-        before: true,
-        after: false,
-    }
-    .merged_with_env();
-    assert!(merged.before);
-    assert!(!merged.after);
 }
 
 // Issue #755: cargo built-in verbs must not trigger the fuzzy "did you

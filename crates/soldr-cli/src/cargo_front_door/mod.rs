@@ -16,7 +16,6 @@
 //! `--no-gc-target*` flag stripping, the cargo output-capture wrappers,
 //! the known-subcommand fetch hook, and the build-session bookkeeping.
 
-use crate::cache_lib::auto_target_gc::{auto_prune_target, render_summary, AutoPrunePhase};
 use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
 use crate::fetch::VersionSpec;
 use crate::trampoline::{
@@ -1049,16 +1048,10 @@ where
     Ok(lease)
 }
 
-/// Soldr-private opt-out flags for the auto target-GC hooks (#485).
-/// Stripped from the arg vector before forwarding to cargo, since
-/// cargo doesn't understand them.
+/// Retired target-GC opt-out flags, still stripped for compatibility.
 pub(crate) const NO_GC_TARGET_FLAG: &str = "--no-gc-target";
 pub(crate) const NO_GC_TARGET_BEFORE_FLAG: &str = "--no-gc-target-before";
 pub(crate) const NO_GC_TARGET_AFTER_FLAG: &str = "--no-gc-target-after";
-/// Env-var fallback for the wrapper-side path where cargo can't
-/// forward flags to soldr. Treated as equivalent to `--no-gc-target`
-/// when set to a non-empty value.
-pub(crate) const NO_GC_TARGET_ENV_VAR: &str = "SOLDR_NO_GC_TARGET";
 
 const INHERITED_SOLDR_WORKSPACE_ENV_VARS: &[&str] = &[
     crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR,
@@ -1127,35 +1120,6 @@ impl Drop for FreshSoldrWorkspaceEnvGuard {
     }
 }
 
-/// Outcome of stripping the `--no-gc-target*` flags from a cargo arg
-/// vector. Mirrors the env-var fallback so callers can union all
-/// inputs into a single before/after decision.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct GcTargetOptOut {
-    pub before: bool,
-    pub after: bool,
-}
-
-impl GcTargetOptOut {
-    fn merged_with_env(mut self) -> Self {
-        if env_disables_target_gc() {
-            self.before = true;
-            self.after = true;
-        }
-        self
-    }
-}
-
-fn env_disables_target_gc() -> bool {
-    std::env::var_os(NO_GC_TARGET_ENV_VAR)
-        .map(|v| {
-            let s = v.to_string_lossy();
-            let t = s.trim();
-            !t.is_empty() && !t.eq_ignore_ascii_case("0") && !t.eq_ignore_ascii_case("false")
-        })
-        .unwrap_or(false)
-}
-
 fn env_flag_truthy(key: &str) -> bool {
     std::env::var_os(key)
         .map(|v| {
@@ -1179,12 +1143,10 @@ pub(crate) fn zccache_disable_requested() -> bool {
     env_flag_truthy("ZCCACHE_DISABLE")
 }
 
-/// Remove soldr-private `--no-gc-target*` flags from the arg vector and
-/// return the cleaned slice plus which passes the caller asked to skip.
+/// Remove retired `--no-gc-target*` flags from the argument vector.
 /// Flags after the `--` separator are passed through untouched.
-pub(crate) fn strip_no_gc_target_flags(args: &[String]) -> (Vec<String>, GcTargetOptOut) {
+pub(crate) fn strip_no_gc_target_flags(args: &[String]) -> Vec<String> {
     let mut cleaned = Vec::with_capacity(args.len());
-    let mut opt_out = GcTargetOptOut::default();
     let mut past_separator = false;
     for arg in args {
         if past_separator {
@@ -1197,28 +1159,23 @@ pub(crate) fn strip_no_gc_target_flags(args: &[String]) -> (Vec<String>, GcTarge
             continue;
         }
         match arg.as_str() {
-            NO_GC_TARGET_FLAG => {
-                opt_out.before = true;
-                opt_out.after = true;
-            }
-            NO_GC_TARGET_BEFORE_FLAG => opt_out.before = true,
-            NO_GC_TARGET_AFTER_FLAG => opt_out.after = true,
+            NO_GC_TARGET_FLAG | NO_GC_TARGET_BEFORE_FLAG | NO_GC_TARGET_AFTER_FLAG => {}
             _ => cleaned.push(arg.clone()),
         }
     }
-    (cleaned, opt_out)
+    cleaned
 }
 
-/// Resolve the cargo `target/` directory that an auto-prune pass should
-/// operate on. Mirrors cargo's resolution order:
+/// Resolve the Cargo `target/` directory used by front-door hooks.
+/// Mirrors Cargo's resolution order:
 /// 1. `--target-dir <DIR>` inside the arg list.
 /// 2. `CARGO_TARGET_DIR` env var (if non-empty).
 /// 3. `<workspace_root>/target` derived from the nearest enclosing
 ///    `Cargo.toml` to cwd.
 ///
-/// Returns `None` when no manifest can be found cheaply — the auto-hook
-/// silently skips in that case rather than guessing.
-fn resolve_target_dir_for_gc(args: &[String]) -> Option<std::path::PathBuf> {
+/// Returns `None` when no manifest can be found cheaply so callers can
+/// skip rather than guess.
+fn resolve_target_dir_for_hooks(args: &[String]) -> Option<std::path::PathBuf> {
     if let Some(value) = disk::cargo_arg_value(args, "--target-dir") {
         return Some(disk::absolutize_path(std::path::PathBuf::from(value)));
     }
@@ -1274,55 +1231,6 @@ fn canonicalize_future_path(path: &std::path::Path) -> std::path::PathBuf {
     }
 
     path.to_path_buf()
-}
-
-fn emit_auto_prune_summary(outcome: &crate::cache_lib::auto_target_gc::AutoPruneOutcome) {
-    if let Some(line) = render_summary(outcome) {
-        eprintln!("{line}");
-    }
-}
-
-/// Pre-cargo target-GC pass (#485), made restore-aware for issue #1558.
-///
-/// The keep-latest prune ranks hash families by recency and keeps only
-/// one family per artifact prefix. A rust-plan restore into a fresh
-/// `target/` legitimately materializes multiple live hash families per
-/// prefix (build-dependency vs. normal-dependency variants of the same
-/// crate, differing feature unification), all carrying the bundle's
-/// preserved timestamps. Running the destructive pass between the
-/// restore and the cargo launch therefore discarded families Cargo was
-/// about to declare Fresh, converting a correct restore into a wave of
-/// `Compiling` units ("target GC pruning 64 restored hash families").
-///
-/// When the immediately preceding verified restore materialized at
-/// least one file, the pass is skipped for this invocation only:
-/// * The protection is keyed to the verified plan — the restore itself
-///   validated toolchain/target/profile/inputs via the plan cache key,
-///   and it only runs into a target with zero populated `.fingerprint/`
-///   dirs (the #480 guard), so the tree content IS the verified bundle.
-/// * It expires conservatively — nothing is persisted; the post-build
-///   GC pass still runs unconditionally, after Cargo has re-established
-///   authoritative `invoked.timestamp` recency, so genuinely stale
-///   families are still pruned in the same build.
-/// * Unknown or partial state (no plan, skipped restore, zero files
-///   restored, restore error) falls back to today's GC behavior.
-///
-/// Returns `None` when the pass was skipped, otherwise the prune
-/// outcome for the caller to render.
-pub(crate) fn run_pre_cargo_target_gc(
-    target_dir: &std::path::Path,
-    restore_outcome: &crate::rust_plan::RustPlanRestoreOutcome,
-) -> Option<crate::cache_lib::auto_target_gc::AutoPruneOutcome> {
-    if let Some(restored) = restore_outcome.materialized_file_count() {
-        eprintln!(
-            "soldr: target-gc (before): skipped for {}; rust-plan restore just \
-             materialized {restored} file(s) — deferring to the post-build pass so \
-             cargo evaluates the restored hash families first (#1558)",
-            target_dir.display()
-        );
-        return None;
-    }
-    Some(auto_prune_target(target_dir, AutoPrunePhase::Before))
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -1580,11 +1488,8 @@ pub(crate) async fn run_cargo_front_door(
         }
     }
 
-    // Strip soldr-private auto target-GC opt-out flags before any other
-    // arg-vector handling so downstream code (trampolines, cargo spawn)
-    // never sees them. The env-var fallback is unioned in below.
-    let (args_owned, gc_opt_out) = strip_no_gc_target_flags(args);
-    let gc_opt_out = gc_opt_out.merged_with_env();
+    // Retain the old target-GC flags as stripped compatibility no-ops.
+    let args_owned = strip_no_gc_target_flags(args);
     let (args_owned, explicit_toolchain) = subcommand::strip_cargo_toolchain_directive(&args_owned);
     let explicit_toolchain = explicit_toolchain.as_deref();
     let args: &[String] = &args_owned;
@@ -1993,27 +1898,6 @@ pub(crate) async fn run_cargo_front_door(
         }
     }
 
-    // Pre-compile target-GC (#485). Only on build-like cargo invocations
-    // (build/check/test/run/...) and only when the user hasn't opted out
-    // via --no-gc-target / --no-gc-target-before / SOLDR_NO_GC_TARGET.
-    // Uses the rust_plan target_dir when available so the hook respects
-    // any CARGO_TARGET_DIR / --target-dir override the same way cargo
-    // and rust_plan do.
-    //
-    // Restore-aware since issue #1558: when the verified rust-plan
-    // restore above just materialized files into a fresh target/, the
-    // destructive keep-latest pass is skipped so Cargo — the freshness
-    // authority — evaluates the restored hash families first. See
-    // `run_pre_cargo_target_gc`.
-    if build_like_cargo && !gc_opt_out.before {
-        let target_dir = cache_plan.target_dir_for_hooks(args);
-        if let Some(dir) = target_dir.as_deref() {
-            if let Some(outcome) = run_pre_cargo_target_gc(dir, &restore_outcome) {
-                emit_auto_prune_summary(&outcome);
-            }
-        }
-    }
-
     // Capture when stderr is not a terminal (CI / Docker
     // / `soldr cargo build 2>file`) so the cargo_diagnostics scanner can
     // recognize the missing-host-tool failure pattern from #422 and
@@ -2204,19 +2088,6 @@ pub(crate) async fn run_cargo_front_door(
                 cache_plan.record_cargo_artifact_closure(paths, !paths.is_empty())?;
             }
             cache_plan.save_rust_artifacts(restore_outcome)?;
-            // Post-compile target-GC (#485). Same gating as the pre-pass —
-            // build-like cargo, no opt-out, resolve dir consistently with the
-            // pre-pass. The active-cargo-lock guard inside `auto_prune_target`
-            // is what keeps a parallel `cargo` in the same `target/` from
-            // racing this pass; we never emit a stderr line when that guard
-            // engages.
-            if build_like_cargo && !gc_opt_out.after {
-                let target_dir = cache_plan.target_dir_for_hooks(args);
-                if let Some(dir) = target_dir.as_deref() {
-                    let outcome = auto_prune_target(dir, AutoPrunePhase::After);
-                    emit_auto_prune_summary(&outcome);
-                }
-            }
             if let Some(plan) = trampoline_plan.as_ref() {
                 refresh_sidecar_after_cargo(plan);
             }

@@ -11,6 +11,4 @@ source file blows past the project's 1,000-LOC ceiling. Wired in via
 - `warm_restore.rs` / `prepopulated_target.rs` — warm-restore short-circuit.
 - `manifest.rs` / `bundle_walk.rs` — thin-slice manifest emission.
 - `orphan_rmeta.rs` — orphan-rmeta pruning after a failed build.
-- `restore_gc_protection.rs` — issue #1558: pre-cargo target GC must not
-  prune hash families a verified rust-plan restore just materialized.
 - `wire_compat.rs` — plan protobuf encode/decode compatibility.
