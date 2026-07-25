@@ -1887,6 +1887,15 @@ For bootstrap verification of another Rust project:
 
 ---
 
+## Compiler-cache fallback output
+
+A managed front-door build reports cache unavailability once per build
+session, including the number of affected compiler invocations and the full
+`compile-daemon-fallbacks.jsonl` path. Per-compile reasons stay in that
+structured log and are not replayed as cached compiler diagnostics. On the
+first build after upgrading, Soldr also removes matching notices persisted by
+older versions from that target directory's fingerprint diagnostics.
+
 ## Summary
 
 The key design rule is simple:
