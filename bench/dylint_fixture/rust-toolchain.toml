@@ -1,0 +1,10 @@
+[toolchain]
+# The fixture's app/dep_user/macros crates build with the same stable
+# toolchain as the rest of the soldr repo. Do NOT pin a nightly here:
+# cargo-dylint 6.0.1 resolves its own driver toolchain per lint library
+# (see lints/ban_forbidden_fn) independently of this file — soldr's
+# `cargo dylint` front door auto-selects the nightly the driver needs.
+# Pinning a nightly at the workspace root would be redundant and would
+# force every non-lint crate in this fixture onto nightly too.
+channel = "1.94.1"
+profile = "minimal"

@@ -3029,6 +3029,48 @@ fn requires_managed_dylint_source_build(sub: &str) -> bool {
     sub == "dylint"
 }
 
+/// Pick the cargo-dylint binary to use given the outcome of the managed
+/// prebuilt fetch, falling back to the pinned source build when the
+/// prebuilt is unusable on this host.
+///
+/// Split out of `ensure_known_subcommand_tool` so the fallback policy is
+/// unit-testable without a network round-trip: the fetch outcome is an
+/// already-resolved `Result` and the source build is a closure.
+///
+/// The failure this exists for is a *smoke-test* failure, not a download
+/// failure. `fetch_tool_for_host_with_paths` runs `--version` on the
+/// extracted binary (soldr#936, `smoke_test_or_evict`) and evicts it on a
+/// non-zero exit, so upstream's GLIBC_2.39-linked 6.0.1 asset downloads
+/// fine on Debian 12 and then fails the probe with a loader error — which
+/// is exactly the `Err` arm below.
+#[cfg(test)]
+fn resolve_dylint_binary<S>(
+    crate_name: &str,
+    fetched: Result<crate::fetch::FetchResult, SoldrError>,
+    source_build: S,
+) -> Result<std::path::PathBuf, SoldrError>
+where
+    S: FnOnce() -> Result<std::path::PathBuf, SoldrError>,
+{
+    match fetched {
+        Ok(result) => {
+            if result.cached {
+                eprintln!("soldr: using cached {} v{}", crate_name, result.version);
+            } else {
+                eprintln!("soldr: downloaded {} v{}", crate_name, result.version);
+            }
+            Ok(result.binary_path)
+        }
+        Err(error) => {
+            eprintln!(
+                "soldr: prebuilt cargo-dylint is unusable on this host ({error}); \
+                 falling back to pinned source build..."
+            );
+            source_build()
+        }
+    }
+}
+
 fn insert_cargo_global_args(args: &[String], cargo_args: &[String]) -> Vec<String> {
     if cargo_args.is_empty() {
         return args.to_vec();

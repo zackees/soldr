@@ -25,13 +25,17 @@
 //!   with a directive listing the supported names. This keeps the verb
 //!   focused on tools soldr actually bundles — generic `cargo install`
 //!   passthrough belongs in `soldr cargo install`, not here.
-//! - **Direct cargo invocation.** Resolves cargo via
+//! - **Direct cargo invocation, cached rustc.** Resolves cargo via
 //!   `binaries::resolve_toolchain_binary("cargo")` and clears inherited
-//!   `RUSTC_WRAPPER` / `RUSTC_WORKSPACE_WRAPPER` so the spawn bypasses
-//!   wrapper injection. If this verb routed through soldr's own wrapper
-//!   machinery the inner `cargo install` would re-enter soldr's cache
-//!   logic recursively — see `crates/soldr-cli/src/toolchain.rs`'s
-//!   `cargo_install_plugin` for the same pattern.
+//!   `RUSTC_WRAPPER` / `RUSTC_WORKSPACE_WRAPPER` so the spawn never
+//!   re-enters soldr's cargo front-door machinery recursively — see
+//!   `crates/soldr-cli/src/toolchain.rs`'s `cargo_install_plugin` for
+//!   the same pattern. It then opts back into compile caching by
+//!   pointing `RUSTC_WRAPPER` at soldr's compiler-named zccache
+//!   wrapper shim (issue #1788), so tool source builds hit the shared
+//!   object cache instead of recompiling every dependency cold on each
+//!   fresh machine/container. `SOLDR_SOURCE_BUILD_CACHE=off` (or the
+//!   standard `ZCCACHE_DISABLE=1`) restores the fully-uncached spawn.
 //! - **Default version comes from the registry.** `version: None`
 //!   resolves through `known_tools::lookup_by_crate(tool).pinned_version`
 //!   so the default matches what every other soldr resolution path uses
@@ -157,6 +161,56 @@ pub fn resolve_plan(
 }
 
 /// Source-build result returned to [`run`] for printing.
+/// Kill switch for routing source-build rustc invocations through
+/// soldr's managed zccache wrapper. Falsy values (`0` / `false` / `no` /
+/// `off`, case-insensitive) restore the historical fully-uncached
+/// behavior. `ZCCACHE_DISABLE` (the standard cache kill switch) is
+/// honored too.
+pub(crate) const SOURCE_BUILD_CACHE_ENV_VAR: &str = "SOLDR_SOURCE_BUILD_CACHE";
+
+fn source_build_cache_disabled() -> bool {
+    let falsy = |value: std::ffi::OsString| {
+        let value = value.to_string_lossy().trim().to_ascii_lowercase();
+        matches!(value.as_str(), "0" | "false" | "no" | "off")
+    };
+    if std::env::var_os(SOURCE_BUILD_CACHE_ENV_VAR).is_some_and(falsy) {
+        return true;
+    }
+    // ZCCACHE_DISABLE is truthy-to-disable (opposite polarity).
+    std::env::var_os("ZCCACHE_DISABLE").is_some_and(|value| {
+        let value = value.to_string_lossy().trim().to_ascii_lowercase();
+        matches!(value.as_str(), "1" | "true" | "yes" | "on")
+    })
+}
+
+/// Route the source-build `cargo install`'s rustc invocations through
+/// soldr's compiler-named zccache wrapper shim so tool source builds
+/// (notably cargo-dylint on hosts without a prebuilt asset) hit the
+/// shared object cache instead of recompiling every dependency from
+/// scratch on each fresh machine/container (issue #1788). Best-effort:
+/// if the shim cannot be materialized the build simply runs uncached,
+/// exactly like the historical behavior. The wrapper itself degrades to
+/// a direct rustc exec when the cache daemon is unavailable, so this
+/// never adds a hard dependency to the bootstrap path.
+fn apply_source_build_cache_wrapper(command: &mut std::process::Command) {
+    if source_build_cache_disabled() {
+        return;
+    }
+    let Ok(paths) = SoldrPaths::new() else {
+        return;
+    };
+    match crate::binaries::rustc_wrapper_shim_binary(&paths) {
+        Ok(shim) => {
+            command.env("RUSTC_WRAPPER", &shim);
+        }
+        Err(error) => {
+            eprintln!(
+                "soldr build-from-source: cache wrapper unavailable, building uncached: {error}"
+            );
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct BuildReport {
     pub binary: PathBuf,
@@ -195,9 +249,11 @@ pub(crate) fn cached_build_is_valid(plan: &BuildPlan) -> Result<bool, SoldrError
 
 /// Actually invoke `cargo install <tool>@<version> --target <triple>
 /// --root <staging>` and move the resulting binary into the per-(tool,
-/// version, triple) install dir. Bypasses `RUSTC_WRAPPER` /
-/// `RUSTC_WORKSPACE_WRAPPER` injection by resolving cargo through
-/// [`resolve_toolchain_binary`] directly and scrubbing inherited wrappers.
+/// version, triple) install dir. Resolves cargo through
+/// [`resolve_toolchain_binary`] directly, scrubs inherited wrappers, and
+/// then opts into soldr's own compiler-named zccache wrapper (unless
+/// `SOLDR_SOURCE_BUILD_CACHE=off`) so the build's rustc invocations are
+/// cached without re-entering the cargo front door.
 pub fn execute_plan(plan: &BuildPlan) -> Result<BuildReport, SoldrError> {
     // Honour the standard tool-fetch retry budget so transient crates.io /
     // registry hiccups don't spuriously fail the source-build verb.
@@ -260,11 +316,12 @@ pub fn execute_plan(plan: &BuildPlan) -> Result<BuildReport, SoldrError> {
             // to attach to fds it cannot see (see soldr #283).
             .env_remove("MAKEFLAGS")
             .env_remove("CARGO_MAKEFLAGS")
-            // Belt-and-suspenders: explicitly clear rustc wrapper env so
-            // an accidentally-inherited soldr wrapper doesn't re-enter the
-            // cache layer during this bootstrap/source-build cargo install.
+            // An accidentally-inherited wrapper env must never leak into
+            // this spawn; caching, when enabled, is opted into explicitly
+            // below with soldr's own compiler-named wrapper shim.
             .env_remove("RUSTC_WRAPPER")
             .env_remove("RUSTC_WORKSPACE_WRAPPER");
+        apply_source_build_cache_wrapper(&mut command);
         suppress_windows_console_window(&mut command);
 
         let status = run_cargo_install_attempt(&mut command, plan)?;
@@ -698,5 +755,36 @@ mod tests {
             msg.to_lowercase().contains("triple") || msg.to_lowercase().contains("target"),
             "error should mention target/triple, got: {msg}",
         );
+    });
+
+    crate::timed_test!(source_build_cache_gate_honors_both_kill_switches, {
+        // Serialize against other env-mutating tests in this binary.
+        let restore = |key: &str, previous: Option<std::ffi::OsString>| match previous {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        };
+        let prev_cache = std::env::var_os(SOURCE_BUILD_CACHE_ENV_VAR);
+        let prev_disable = std::env::var_os("ZCCACHE_DISABLE");
+
+        std::env::remove_var(SOURCE_BUILD_CACHE_ENV_VAR);
+        std::env::remove_var("ZCCACHE_DISABLE");
+        assert!(!source_build_cache_disabled(), "default must be cached");
+
+        std::env::set_var(SOURCE_BUILD_CACHE_ENV_VAR, "off");
+        assert!(source_build_cache_disabled());
+        std::env::set_var(SOURCE_BUILD_CACHE_ENV_VAR, "0");
+        assert!(source_build_cache_disabled());
+        std::env::set_var(SOURCE_BUILD_CACHE_ENV_VAR, "on");
+        assert!(!source_build_cache_disabled());
+        std::env::remove_var(SOURCE_BUILD_CACHE_ENV_VAR);
+
+        std::env::set_var("ZCCACHE_DISABLE", "1");
+        assert!(
+            source_build_cache_disabled(),
+            "the standard zccache kill switch must also disable source-build caching"
+        );
+
+        restore(SOURCE_BUILD_CACHE_ENV_VAR, prev_cache);
+        restore("ZCCACHE_DISABLE", prev_disable);
     });
 }

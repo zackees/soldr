@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = [
+    "app",
+    "dep_user",
+    "macros",
+    "lints/ban_forbidden_fn",
+]
+
+# cargo-dylint discovers lint libraries via this glob and builds/runs each
+# one with its own (independently resolved) driver toolchain, regardless of
+# the `channel` pinned in rust-toolchain.toml at the workspace root. This is
+# also why `lints/ban_forbidden_fn` is safe to list as a normal workspace
+# member above even though its `src/lib.rs` requires `#![feature(rustc_private)]`
+# — `cargo dylint --all --workspace` never invokes a bare `cargo build
+# --workspace` that would try (and fail) to compile it under the stable
+# toolchain; it always builds each `lints/*` entry through its own resolved
+# toolchain first.
+[workspace.metadata.dylint]
+libraries = [
+    { path = "lints/*" },
+]

@@ -16,7 +16,8 @@
 //! child environment so a nested `soldr <external-tool>` invocation
 //! sees the sentinel and does NOT re-install another shim layer.
 
-use crate::core::SoldrError;
+use crate::core::{SoldrError, SoldrPaths};
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 /// Sentinel that signals "you were invoked under a soldr shim dir;
@@ -45,12 +46,21 @@ const DYLINT_SHIMMED_TOOLS: &[&str] = &[
 /// Drop-on-exit guard that removes the shim directory best-effort.
 /// Holding the guard alive across the child's run is the caller's
 /// responsibility.
+///
+/// `persistent` shim dirs (see [`build_dylint_shim_dir`]) are shared,
+/// soldr-owned state keyed by the running soldr binary's identity —
+/// dropping the guard must NOT delete them, since a concurrent
+/// invocation may still be reading the same directory.
 pub(crate) struct ShimDirGuard {
     pub(crate) path: PathBuf,
+    persistent: bool,
 }
 
 impl Drop for ShimDirGuard {
     fn drop(&mut self) {
+        if self.persistent {
+            return;
+        }
         let _ = std::fs::remove_dir_all(&self.path);
     }
 }
@@ -80,8 +90,103 @@ pub(crate) fn build_shim_dir() -> Result<ShimDirGuard, SoldrError> {
 /// Dylint sanitizes standard Rust environment variables before invoking its
 /// nested tools. Its scoped shim set also includes rustup so Soldr can restore
 /// the selected nightly from the retained SOLDR_DYLINT_* identity.
+///
+/// Unlike [`build_shim_dir`], this reuses a stable soldr-owned
+/// directory (`<soldr_root>/dylint/shims/v1/<key>/`) across top-level
+/// `soldr cargo dylint` runs instead of materializing a fresh temp dir
+/// each time — cargo-dylint's nested cargo/rustc re-entries pay for
+/// this directory on every invocation, so a warm reuse skips the
+/// per-file hardlink/copy work entirely. Falls back to the ephemeral
+/// tempdir path if the persistent location cannot be resolved (e.g.
+/// no home directory available).
 pub(crate) fn build_dylint_shim_dir() -> Result<ShimDirGuard, SoldrError> {
-    build_shim_dir_for(DYLINT_SHIMMED_TOOLS)
+    match persistent_dylint_shim_dir() {
+        Ok(guard) => Ok(guard),
+        Err(_) => build_shim_dir_for(DYLINT_SHIMMED_TOOLS),
+    }
+}
+
+fn persistent_dylint_shim_dir() -> Result<ShimDirGuard, SoldrError> {
+    let paths = SoldrPaths::new()?;
+    let soldr_bin = crate::shim_materialize::soldr_binary_source()?;
+    let base = paths.root.join("dylint").join("shims").join("v1");
+    persistent_shim_dir_in(&base, &soldr_bin, DYLINT_SHIMMED_TOOLS)
+}
+
+/// Pure, injectable-base-dir implementation of the persistent shim dir
+/// logic, split out so unit tests can point `base` at a tempdir instead
+/// of the real `~/.soldr/dylint/shims/v1`.
+fn persistent_shim_dir_in(
+    base: &Path,
+    soldr_bin: &Path,
+    tools: &[&str],
+) -> Result<ShimDirGuard, SoldrError> {
+    let key = dylint_shim_dir_key(soldr_bin)?;
+    let dir_path = base.join(&key);
+
+    if shim_dir_is_complete(&dir_path, tools) {
+        return Ok(ShimDirGuard {
+            path: dir_path,
+            persistent: true,
+        });
+    }
+
+    std::fs::create_dir_all(&dir_path).map_err(SoldrError::Io)?;
+    for tool in tools {
+        write_shim(&dir_path, tool, soldr_bin)?;
+    }
+    // Best-effort: drop sibling key dirs from previous soldr binary
+    // identities. A concurrent run may still hold one of these open
+    // (Windows can't delete an in-use exe) — ignore failures, they are
+    // harmless and self-heal on the next successful prune.
+    prune_stale_sibling_shim_dirs(base, &key);
+    Ok(ShimDirGuard {
+        path: dir_path,
+        persistent: true,
+    })
+}
+
+/// True when `dir` already contains every expected shim executable, so
+/// a warm run can skip rebuilding it entirely.
+fn shim_dir_is_complete(dir: &Path, tools: &[&str]) -> bool {
+    tools.iter().all(|tool| shim_tool_path(dir, tool).is_file())
+}
+
+/// Cheap, stable identity for the currently-running soldr binary: hash
+/// its resolved path, byte length, and modification time (nanoseconds
+/// since the epoch). Deliberately does NOT hash the binary's contents
+/// — that would mean re-reading the whole executable on every dylint
+/// invocation, defeating the point of caching.
+fn dylint_shim_dir_key(soldr_bin: &Path) -> Result<String, SoldrError> {
+    let metadata = std::fs::metadata(soldr_bin).map_err(SoldrError::Io)?;
+    let mtime_nanos = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+
+    // `DefaultHasher::new()` uses fixed (non-randomized) keys, so the
+    // digest is stable across separate soldr processes — unlike
+    // `RandomState`-seeded hashers, which would mint a new key dir on
+    // every invocation and defeat the cache entirely.
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    soldr_bin.to_string_lossy().hash(&mut hasher);
+    metadata.len().hash(&mut hasher);
+    mtime_nanos.hash(&mut hasher);
+    Ok(format!("{:016x}", hasher.finish()))
+}
+
+fn prune_stale_sibling_shim_dirs(base: &Path, keep_key: &str) {
+    let Ok(entries) = std::fs::read_dir(base) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy() == keep_key {
+            continue;
+        }
+        let _ = std::fs::remove_dir_all(entry.path());
+    }
 }
 
 fn build_shim_dir_for(tools: &[&str]) -> Result<ShimDirGuard, SoldrError> {
@@ -98,7 +203,10 @@ fn build_shim_dir_for(tools: &[&str]) -> Result<ShimDirGuard, SoldrError> {
     for tool in tools {
         write_shim(&dir_path, tool, &soldr_bin)?;
     }
-    Ok(ShimDirGuard { path: dir_path })
+    Ok(ShimDirGuard {
+        path: dir_path,
+        persistent: false,
+    })
 }
 
 pub(crate) fn shim_tool_path(dir: &Path, tool: &str) -> PathBuf {
@@ -232,4 +340,104 @@ mod tests {
         std::env::remove_var(SOLDR_DISABLE_CHILD_SHIMS_ENV_VAR);
         assert!(!active);
     }
+
+    // -----------------------------------------------------------------
+    // Persistent dylint shim dir (nested cargo-dylint re-entry overhead
+    // reduction). Uses `persistent_shim_dir_in` with a tempdir `base` so
+    // these tests never touch the real `~/.soldr/dylint/shims/v1`.
+    // -----------------------------------------------------------------
+
+    fn fake_soldr_bin(dir: &Path, content: &[u8]) -> PathBuf {
+        let path = dir.join("fake-soldr-bin");
+        std::fs::write(&path, content).expect("write fake soldr binary");
+        path
+    }
+
+    crate::timed_test!(persistent_shim_dir_reuses_existing_complete_dir, {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let base = temp.path().join("base");
+        let bin = fake_soldr_bin(temp.path(), b"stub");
+        let tools: &[&str] = &["cargo", "rustc"];
+
+        let first = persistent_shim_dir_in(&base, &bin, tools).expect("first build");
+        for tool in tools {
+            assert!(
+                shim_tool_path(&first.path, tool).is_file(),
+                "missing shim for {tool}"
+            );
+        }
+
+        let second = persistent_shim_dir_in(&base, &bin, tools).expect("second call reuses dir");
+        assert_eq!(
+            first.path, second.path,
+            "same soldr-binary identity must resolve to the same shim dir"
+        );
+    });
+
+    crate::timed_test!(persistent_shim_dir_rebuilds_when_a_shim_file_is_missing, {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let base = temp.path().join("base");
+        let bin = fake_soldr_bin(temp.path(), b"stub");
+        let tools: &[&str] = &["cargo", "rustc"];
+
+        let first = persistent_shim_dir_in(&base, &bin, tools).expect("first build");
+        let cargo_shim = shim_tool_path(&first.path, "cargo");
+        std::fs::remove_file(&cargo_shim).expect("remove one shim to simulate a partial dir");
+        assert!(!cargo_shim.is_file());
+
+        let rebuilt =
+            persistent_shim_dir_in(&base, &bin, tools).expect("rebuild after missing shim file");
+        assert_eq!(
+            rebuilt.path, first.path,
+            "the key is unchanged, so the dir must be repaired in place, not relocated"
+        );
+        assert!(
+            cargo_shim.is_file(),
+            "the missing shim must be rewritten on the next call"
+        );
+    });
+
+    #[test]
+    fn persistent_shim_dir_guard_survives_drop() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let base = temp.path().join("base");
+        let bin = fake_soldr_bin(temp.path(), b"stub");
+        let tools: &[&str] = &["cargo"];
+
+        let dir_path = {
+            let guard = persistent_shim_dir_in(&base, &bin, tools).expect("build");
+            assert!(guard.persistent, "dylint shim dirs must be persistent");
+            guard.path.clone()
+        }; // guard dropped here
+
+        assert!(
+            dir_path.is_dir(),
+            "persistent shim dirs must NOT be deleted when the guard drops"
+        );
+    }
+
+    crate::timed_test!(persistent_shim_dir_prunes_stale_sibling_keys, {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let base = temp.path().join("base");
+        let bin_path = temp.path().join("fake-soldr-bin");
+        std::fs::write(&bin_path, b"stub").expect("write fake binary");
+        let tools: &[&str] = &["cargo"];
+
+        let first = persistent_shim_dir_in(&base, &bin_path, tools).expect("first build");
+
+        // Change the binary's content (and therefore length) so the key
+        // changes on the next call, forcing a fresh build.
+        std::fs::write(&bin_path, b"stub-with-different-length").expect("rewrite fake binary");
+
+        let second = persistent_shim_dir_in(&base, &bin_path, tools).expect("second build");
+        assert_ne!(
+            first.path, second.path,
+            "a changed binary identity must mint a new key dir"
+        );
+        assert!(
+            !first.path.is_dir(),
+            "the previous key dir is now a stale sibling and must be pruned"
+        );
+        assert!(second.path.is_dir());
+    });
 }

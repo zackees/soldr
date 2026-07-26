@@ -2616,3 +2616,70 @@ reason=daemon unavailable\n";
     );
     assert_eq!(std::fs::read(&later).unwrap(), notice);
 });
+
+// soldr#1788: cargo-dylint prebuilt fallback. Upstream's 6.0.1 Linux GNU
+// asset is linked against GLIBC_2.39, so it downloads cleanly on Debian 12
+// and then fails `smoke_test_or_evict`'s `--version` probe. These cover the
+// policy in `resolve_dylint_binary` without touching the network.
+
+crate::timed_test!(dylint_uses_prebuilt_when_fetch_succeeds, {
+    let mut source_build_ran = false;
+    let fetched = Ok(crate::fetch::FetchResult {
+        binary_path: PathBuf::from("/managed/bin/cargo-dylint"),
+        version: "6.0.1".to_string(),
+        cached: false,
+    });
+
+    let resolved = resolve_dylint_binary("cargo-dylint", fetched, || {
+        source_build_ran = true;
+        Ok(PathBuf::from("/source/bin/cargo-dylint"))
+    })
+    .expect("successful fetch must resolve");
+
+    assert_eq!(resolved, PathBuf::from("/managed/bin/cargo-dylint"));
+    assert!(
+        !source_build_ran,
+        "a usable prebuilt must not trigger the source build"
+    );
+});
+
+crate::timed_test!(dylint_falls_back_to_source_build_when_smoke_test_fails, {
+    let mut source_build_ran = false;
+    // Shaped like the real `smoke_test_or_evict` error: the download
+    // succeeded, the `--version` probe did not.
+    let fetched = Err(SoldrError::Other(
+        "smoke test failed: cargo-dylint binary at /managed/bin/cargo-dylint \
+         did not respond to --version / --help — likely a corrupted download \
+         (see soldr#936)"
+            .to_string(),
+    ));
+
+    let resolved = resolve_dylint_binary("cargo-dylint", fetched, || {
+        source_build_ran = true;
+        Ok(PathBuf::from("/source/bin/cargo-dylint"))
+    })
+    .expect("smoke-test failure must fall back, not propagate");
+
+    assert!(
+        source_build_ran,
+        "an unusable prebuilt must trigger the pinned source build"
+    );
+    assert_eq!(resolved, PathBuf::from("/source/bin/cargo-dylint"));
+});
+
+crate::timed_test!(dylint_source_build_failure_propagates, {
+    // The fallback must not swallow a genuine source-build failure —
+    // otherwise a broken pinned build degrades into a confusing
+    // "cargo-dylint not found" further downstream.
+    let fetched = Err(SoldrError::Other("prebuilt unusable".to_string()));
+
+    let error = resolve_dylint_binary("cargo-dylint", fetched, || {
+        Err(SoldrError::Other("pinned source build failed".to_string()))
+    })
+    .expect_err("source-build failure must propagate");
+
+    assert!(
+        error.to_string().contains("pinned source build failed"),
+        "unexpected error: {error}"
+    );
+});

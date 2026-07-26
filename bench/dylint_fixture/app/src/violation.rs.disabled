@@ -1,0 +1,32 @@
+// Not compiled by default (`.disabled` extension, not `.rs`). This is a
+// drop-in replacement for `main.rs` that adds one live call site to
+// `dep_user::forbidden_marker_fn`, which `lints/ban_forbidden_fn` forbids.
+//
+// `bench/dylint_perf.py --expect-fail` copies this file's contents over
+// `app/src/main.rs`, runs `soldr cargo dylint --all --workspace`, asserts
+// the run fails with the `ban_forbidden_fn` diagnostic, then restores the
+// original `main.rs` (always, via try/finally).
+
+use dep_user::{forbidden_marker_fn, parse_config, Config};
+use macros::Greet;
+use serde::Serialize;
+
+#[derive(Serialize, Greet)]
+struct Fixture {
+    name: String,
+}
+
+fn main() {
+    let fixture = Fixture {
+        name: "dylint-fixture".to_string(),
+    };
+    println!("{}", fixture.greet());
+
+    let raw = r#"{"name": "demo", "count": 3}"#;
+    let value = parse_config(raw).expect("valid json");
+    let config = Config::from_value(&value).expect("config parses");
+    println!("config: {} x{}", config.name, config.count);
+
+    // Live trigger site for the `ban_forbidden_fn` dylint lint.
+    println!("{}", forbidden_marker_fn());
+}
