@@ -1511,6 +1511,14 @@ pub(crate) async fn run_cargo_front_door(
     cache_enabled: bool,
     trust_inherited_soldr_env: bool,
 ) -> Result<i32, SoldrError> {
+    // Per-phase timing for the pre-Cargo front door (#1843). On a fully
+    // warm no-op, `soldr cargo check --workspace` spends ~740 ms here
+    // before Cargo is spawned at all — more than Cargo itself reports.
+    // `WrapperProfile` already instruments the per-rustc wrapper, but a
+    // warm no-op never invokes rustc, so that path prints nothing and the
+    // cost was unattributable. Zero-cost unless SOLDR_PROFILE_STARTUP is set.
+    let mut profile = crate::startup_profile::WrapperProfile::new();
+
     if cargo_args_use_reserved_no_cache(args) {
         return Err(SoldrError::Other(
             "`--no-cache` must appear before `cargo`, as in `soldr --no-cache cargo build`".into(),
@@ -1551,6 +1559,7 @@ pub(crate) async fn run_cargo_front_door(
             crate::daemon::lifecycle::preflight_displace_stale_daemon(&paths);
         }
     }
+    profile.mark("daemon_preflight");
 
     // Retain the old target-GC flags as stripped compatibility no-ops.
     let (args_without_dylint_cook_flag, dylint_dependency_cook) =
@@ -1601,6 +1610,7 @@ pub(crate) async fn run_cargo_front_door(
     };
 
     crate::toolchain::ensure_cargo_toolchain(explicit_toolchain)?;
+    profile.mark("ensure_cargo_toolchain");
     let paths = SoldrPaths::new()?;
     paths.ensure_dirs()?;
     let dylint_requested = first_cargo_subcommand(args) == Some("dylint");
@@ -1626,6 +1636,9 @@ pub(crate) async fn run_cargo_front_door(
         .or(explicit_toolchain);
     let cargo = resolve_toolchain_binary_for_channel("cargo", effective_toolchain)?;
     let rustc = resolve_toolchain_binary_for_channel("rustc", effective_toolchain)?;
+    // Deliberately uncached for the ambient default (`binaries.rs`), so this
+    // is up to two `rustup which` subprocesses on every invocation.
+    profile.mark("resolve_toolchain_binaries");
     let cargo_bin_dir = cargo
         .parent()
         .ok_or_else(|| SoldrError::Other("failed to resolve cargo bin directory".into()))?
@@ -1799,6 +1812,10 @@ pub(crate) async fn run_cargo_front_door(
     if build_like_cargo {
         cook_hydrate::maybe_hydrate(args, &paths, &rustc);
     }
+    // Nothing here is memoized: a recursive walk hashing every Cargo.toml,
+    // plus `rustc -V`, `git config --get remote.origin.url` and
+    // `git branch --show-current` subprocesses, plus a daemon CookLookup.
+    profile.mark("cook_hydrate");
 
     let cargo_profile_debug_default = if build_like_cargo {
         profile_debug::maybe_apply_cargo_profile_debug_default(&mut command, args, &paths)?
@@ -1829,6 +1846,7 @@ pub(crate) async fn run_cargo_front_door(
         // commands and out of the rustc-wrapper hot path.
         gc::emit_startup_target_warning_if_due();
     }
+    profile.mark("gc_startup_warning");
     let dylint_shim_guard = if dylint_plan.is_some() && crate::shim_dir::should_install_shims() {
         Some(crate::shim_dir::build_dylint_shim_dir()?)
     } else {
@@ -1887,6 +1905,7 @@ pub(crate) async fn run_cargo_front_door(
     // flags doesn't silently rewire the prefetch decision.
     let mut cache_plan =
         CargoCachePlan::finalize(cache_enabled_for_cargo, cache_plan_prefetch).await?;
+    profile.mark("cache_plan_finalize");
     cache_plan.apply_to_command(&mut command, native_cache_target.as_deref())?;
     if dylint_plan.is_some() && cache_plan.uses_managed_zccache() {
         command.env(
@@ -1964,6 +1983,9 @@ pub(crate) async fn run_cargo_front_door(
             );
         }
     }
+    // Two full recursive walks of target/ plus a `cargo metadata`
+    // subprocess. Only runs without a zccache session (i.e. --no-cache).
+    profile.mark("no_cache_detach");
 
     // Target-registry memoization for the wrapper hot path (#440).
     // Without this, every rustc invocation re-opens redb and writes
@@ -1988,6 +2010,7 @@ pub(crate) async fn run_cargo_front_door(
                 ),
             }
             apply_target_registry_memo(&mut command, dir, &paths);
+            profile.mark("target_registry_memo");
         }
     }
 
@@ -2040,6 +2063,9 @@ pub(crate) async fn run_cargo_front_door(
             );
         }
     })?;
+    // Blocking shared flock on root-maintenance.lock (waits out any
+    // daemon maintenance pass) plus a synchronous BuildSessionStart IPC.
+    profile.mark("begin_build_session");
     // soldr#1368 observability restore: snapshot the embedded zccache
     // compile counters just before cargo runs so `finish_zccache_session`
     // can diff start-vs-end into the per-build hit/miss summary written to
@@ -2049,6 +2075,9 @@ pub(crate) async fn run_cargo_front_door(
     }
     let compile_journal_start_len = file_len(&embedded_compile_journal_path(&paths));
     let compile_fallback_cursor = crate::compile_dispatch::compile_daemon_fallback_cursor(&paths);
+    // Everything above is pure soldr overhead the user pays before Cargo
+    // starts. Emit the breakdown here so the total excludes Cargo itself.
+    profile.finish_labeled("cargo front door", "pre_spawn_tail");
     let cargo_run_result: CargoRunResult = if capture_cargo_artifacts {
         let target_dir = cache_plan
             .target_dir_for_hooks(args)
