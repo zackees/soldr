@@ -1,0 +1,26 @@
+# dylint-link is a wrapper around the default linker (cc) that additionally
+# emits lib<name>@<toolchain>.so -- the filename dylint actually looks for.
+# Without this, `cargo dylint` builds the crate fine and then fails with
+# "Could not find .../libban_forbidden_fn@<toolchain>.so despite successful
+# build", because plain cc only produces libban_forbidden_fn.so.
+#
+# This lives in the lint package rather than the fixture root on purpose:
+# dylint builds the library with current_dir(package.root), and hoisting it
+# to bench/dylint_fixture/ would also force the linker on `app` and
+# `dep_user`, which must link normally.
+#
+# Cargo only honors `linker` in [target.<triple>] tables -- cfg-style tables
+# support runner/rustflags but not linker -- so the triples are listed out.
+# soldr puts dylint-link on PATH (see dylint_link_bin_dir, soldr#1816).
+
+[target.x86_64-unknown-linux-gnu]
+linker = "dylint-link"
+
+[target.aarch64-unknown-linux-gnu]
+linker = "dylint-link"
+
+[target.x86_64-apple-darwin]
+linker = "dylint-link"
+
+[target.aarch64-apple-darwin]
+linker = "dylint-link"
