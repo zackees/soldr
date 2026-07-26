@@ -153,12 +153,29 @@ fn run_main(raw_args: Vec<String>) -> i32 {
         // each boundary down to the exec call.
         let mut profile = startup_profile::WrapperProfile::new();
         profile.mark("args_collected");
+        // Deliberately NOT calling `global_upgrade::maybe_delegate` here
+        // (#1847). That policy decides which soldr owns a *user-facing*
+        // invocation; a wrapper invocation is an internal callback Cargo
+        // makes once per compile unit, so the question is both wrong and
+        // ruinously expensive to ask here:
+        //
+        // * Wrong — delegating mid-build would swap the compiler wrapper,
+        //   and therefore the daemon/cache peer, partway through a build.
+        //   The top-level soldr that launched Cargo already applied the
+        //   policy for this build.
+        // * Expensive — `probe_version` spawns the global soldr binary and
+        //   blocks on `--version`. Measured at 52-61 ms here, which showed
+        //   up as `pin_check_done` consuming 99.5% of every wrapper
+        //   invocation (37-48 ms of a 37-48 ms total). Multiplied by every
+        //   compile unit, that is ~20 s on a 500-unit build.
+        //
+        // The `--as` version pin below is a different question and still
+        // applies: an explicitly pinned soldr version must stay in force
+        // for the wrapper too, or the build would mix versions.
         if let Some(version) = soldr_as_env_pin() {
             if should_trampoline(&version) {
                 return block_on_exit_code(run_trampoline(&version, &raw_args[1..]));
             }
-        } else if let Some(code) = crate::global_upgrade::maybe_delegate(&raw_args) {
-            return code;
         }
         profile.mark("pin_check_done");
         return wrapper::run_rustc_wrapper(&raw_args, profile).unwrap_or_else(report_and_exit);
