@@ -188,8 +188,12 @@ fn direct_status_current_version(paths: &SoldrPaths) -> Option<u32> {
     let pid = direct_pid_file_live(paths)?;
     let sock = crate::daemon::client::default_sock_path(paths);
     let status_pid = crate::daemon::client::status(&sock).ok()?.pid;
-    preflight_identity_matches(Some(pid), Some(status_pid), current_version_claim_matches(paths))
-        .then_some(pid)
+    preflight_identity_matches(
+        Some(pid),
+        Some(status_pid),
+        current_version_claim_matches(paths),
+    )
+    .then_some(pid)
 }
 
 fn preflight_identity_matches(
@@ -197,9 +201,7 @@ fn preflight_identity_matches(
     status_pid: Option<u32>,
     current_version_claim: bool,
 ) -> bool {
-    current_version_claim
-        && recorded_live_pid.is_some()
-        && recorded_live_pid == status_pid
+    current_version_claim && recorded_live_pid.is_some() && recorded_live_pid == status_pid
 }
 
 /// Version-blind occupancy check: is the singleton endpoint held by a
@@ -1737,18 +1739,15 @@ mod spawn_lock_tests {
         }
     }
 
-    crate::timed_test!(
-        preflight_requires_endpoint_status_to_match_recorded_pid,
-        {
-            // Regression for #1832 and the PID-reuse review finding: a live
-            // same-stem PID plus a current claim is insufficient when no
-            // daemon answers on the recorded endpoint.
-            assert!(!preflight_identity_matches(Some(41), None, true));
-            assert!(!preflight_identity_matches(Some(41), Some(42), true));
-            assert!(!preflight_identity_matches(Some(41), Some(41), false));
-            assert!(preflight_identity_matches(Some(41), Some(41), true));
-        }
-    );
+    crate::timed_test!(preflight_requires_endpoint_status_to_match_recorded_pid, {
+        // Regression for #1832 and the PID-reuse review finding: a live
+        // same-stem PID plus a current claim is insufficient when no
+        // daemon answers on the recorded endpoint.
+        assert!(!preflight_identity_matches(Some(41), None, true));
+        assert!(!preflight_identity_matches(Some(41), Some(42), true));
+        assert!(!preflight_identity_matches(Some(41), Some(41), false));
+        assert!(preflight_identity_matches(Some(41), Some(41), true));
+    });
 
     #[test]
     fn current_version_claim_matches_only_for_this_build() {

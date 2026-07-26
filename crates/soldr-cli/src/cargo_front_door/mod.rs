@@ -40,6 +40,7 @@ pub(crate) mod cook_hydrate;
 mod darwin_embed;
 mod disk;
 mod inputs;
+mod log_summary;
 mod no_cache_detach;
 mod profile_debug;
 mod subcommand;
@@ -366,12 +367,17 @@ struct BuildLogHistoryRequest<'a> {
     daemon_finalized: bool,
 }
 
-fn persist_build_log_history(request: BuildLogHistoryRequest<'_>) {
+/// Returns the `BuildLogPaths` that were recorded on the build row, so the
+/// caller can name them in the end-of-build log summary (soldr#1813). `None`
+/// means every attempt failed and nothing was persisted.
+fn persist_build_log_history(
+    request: BuildLogHistoryRequest<'_>,
+) -> Option<crate::daemon::protocol::BuildLogPaths> {
     let build_session_id = request.build_session_id;
     let mut last_error = None;
     for attempt in 0..BUILD_HISTORY_RETRY_ATTEMPTS {
         match persist_build_log_history_inner(&request) {
-            Ok(()) => return,
+            Ok(log_paths) => return Some(log_paths),
             Err(err) => {
                 last_error = Some(err);
                 if attempt + 1 < BUILD_HISTORY_RETRY_ATTEMPTS {
@@ -385,9 +391,12 @@ fn persist_build_log_history(request: BuildLogHistoryRequest<'_>) {
             "soldr warning: failed to persist logs history for build {build_session_id}: {err}"
         );
     }
+    None
 }
 
-fn persist_build_log_history_inner(request: &BuildLogHistoryRequest<'_>) -> Result<(), SoldrError> {
+fn persist_build_log_history_inner(
+    request: &BuildLogHistoryRequest<'_>,
+) -> Result<crate::daemon::protocol::BuildLogPaths, SoldrError> {
     let BuildLogHistoryRequest {
         paths,
         build_session_id,
@@ -459,7 +468,7 @@ fn persist_build_log_history_inner(request: &BuildLogHistoryRequest<'_>) -> Resu
             .map(|ended| (ended - record.started_at_ms).max(0) as u64)
             .unwrap_or(0),
     );
-    record.log_paths = Some(crate::daemon::protocol::BuildLogPaths {
+    let log_paths = crate::daemon::protocol::BuildLogPaths {
         zccache_session_id: Some(session.session_id.clone()),
         cache_dir: Some(session.cache_dir.display().to_string()),
         // The embedded service no longer updates zccache's fixed
@@ -478,7 +487,8 @@ fn persist_build_log_history_inner(request: &BuildLogHistoryRequest<'_>) -> Resu
         // soldr#1368: private managed-zccache daemons are gone; the
         // field stays on the wire for older records.
         private_daemon_name: None,
-    });
+    };
+    record.log_paths = Some(log_paths.clone());
 
     crate::daemon::db::upsert_build(&db_path, &record)
         .map_err(|e| SoldrError::Other(format!("write build history: {e}")))?;
@@ -498,7 +508,7 @@ fn persist_build_log_history_inner(request: &BuildLogHistoryRequest<'_>) -> Resu
         migrate_pre_redaction: false,
     };
     let _ = crate::daemon::history_gc::sweep(paths, &db_path, &retention);
-    Ok(())
+    Ok(log_paths)
 }
 
 fn build_log_history_dir(paths: &SoldrPaths, build_session_id: u64) -> PathBuf {
@@ -529,7 +539,7 @@ fn write_always_on_build_log(
     ended_at_ms: i64,
     exit_code: i32,
     compile_journal_start_len: u64,
-) {
+) -> Option<PathBuf> {
     let request = crate::build_log::BuildLogRequest {
         paths,
         session_id,
@@ -541,8 +551,14 @@ fn write_always_on_build_log(
         compile_journal_path: Some(embedded_compile_journal_path(paths)),
         compile_journal_start_len,
     };
-    if let Err(err) = crate::build_log::write_build_log(&request) {
-        eprintln!("soldr warning: failed to write build log: {err}");
+    // soldr#1813: the written path is returned so the end-of-build log summary
+    // can name a file it knows exists, rather than a location it guessed.
+    match crate::build_log::write_build_log(&request) {
+        Ok(path) => Some(path),
+        Err(err) => {
+            eprintln!("soldr warning: failed to write build log: {err}");
+            None
+        }
     }
 }
 
@@ -560,18 +576,23 @@ fn compile_fallback_summary_message(count: usize, path: &Path) -> String {
     )
 }
 
+/// Returns the fallback-log path only when *this* session appended to it, so
+/// the end-of-build summary (soldr#1813) lists it as a log this build wrote
+/// rather than as a location that merely exists.
 fn emit_compile_fallback_summary(
     paths: &SoldrPaths,
     cursor: &crate::compile_dispatch::CompileFallbackCursor,
     session_id: u64,
-) {
+) -> Option<PathBuf> {
     match crate::compile_dispatch::compile_daemon_fallback_count_since(paths, cursor, session_id) {
-        Ok((0, _)) => {}
+        Ok((0, _)) => None,
         Ok((count, path)) => {
             eprintln!("{}", compile_fallback_summary_message(count, &path));
+            Some(path)
         }
         Err(error) => {
             eprintln!("soldr warning: failed to summarize compiler-cache fallbacks: {error}");
+            None
         }
     }
 }
@@ -2105,7 +2126,7 @@ pub(crate) async fn run_cargo_front_door(
             let cleanup = cleanup_after_aborted_cargo_run(&cache_plan, args, timeout);
             let finish_result =
                 cache_plan.finish_zccache_session(command_lifetime_shutdown_timeout);
-            if let Some(session) = cache_plan.zccache_session() {
+            let build_log_paths = if let Some(session) = cache_plan.zccache_session() {
                 persist_build_log_history(BuildLogHistoryRequest {
                     paths: &paths,
                     build_session_id: session_id,
@@ -2116,9 +2137,11 @@ pub(crate) async fn run_cargo_front_door(
                     exit_code: -1,
                     ended_at_ms,
                     daemon_finalized,
-                });
-            }
-            write_always_on_build_log(
+                })
+            } else {
+                None
+            };
+            let build_log = write_always_on_build_log(
                 &paths,
                 session_id,
                 &session_repo_root,
@@ -2130,7 +2153,16 @@ pub(crate) async fn run_cargo_front_door(
             );
             crate::cache_lib::build_active::set(false);
             drop(build_activity_lease);
-            emit_compile_fallback_summary(&paths, &compile_fallback_cursor, session_id);
+            let compile_fallback_log =
+                emit_compile_fallback_summary(&paths, &compile_fallback_cursor, session_id);
+            // soldr#1813: an aborted/timed-out cargo run is exactly when the
+            // user most needs the log paths, and this arm always returns early —
+            // so the summary is emitted here too rather than at the shared tail.
+            log_summary::emit_session_log_summary(&log_summary::SessionLogs {
+                build_log,
+                build_log_paths,
+                compile_fallback_log,
+            });
             if let Err(finish_err) = finish_result {
                 eprintln!(
                     "soldr warning: failed to finish zccache session after aborted cargo run: {finish_err}"
@@ -2180,7 +2212,8 @@ pub(crate) async fn run_cargo_front_door(
         }
     };
     let captured_stderr_for_diagnosis = diagnostic_capture;
-    emit_compile_fallback_summary(&paths, &compile_fallback_cursor, session_id);
+    let compile_fallback_log =
+        emit_compile_fallback_summary(&paths, &compile_fallback_cursor, session_id);
 
     // Phase 2: send BuildSessionEnd before the success/failure
     // branches do any further work. Best-effort — never affects the
@@ -2246,7 +2279,7 @@ pub(crate) async fn run_cargo_front_door(
     }
 
     let finish_result = cache_plan.finish_zccache_session(command_lifetime_shutdown_timeout);
-    if let Some(session) = cache_plan.zccache_session() {
+    let build_log_paths = if let Some(session) = cache_plan.zccache_session() {
         persist_build_log_history(BuildLogHistoryRequest {
             paths: &paths,
             build_session_id: session_id,
@@ -2257,9 +2290,11 @@ pub(crate) async fn run_cargo_front_door(
             exit_code: status.code().unwrap_or(-1),
             ended_at_ms,
             daemon_finalized,
-        });
-    }
-    write_always_on_build_log(
+        })
+    } else {
+        None
+    };
+    let build_log = write_always_on_build_log(
         &paths,
         session_id,
         &session_repo_root,
@@ -2269,6 +2304,14 @@ pub(crate) async fn run_cargo_front_door(
         status.code().unwrap_or(-1),
         compile_journal_start_len,
     );
+    // soldr#1813: tell the user where the logs went. Printed here because this
+    // is the last point both the success and the compiler-failure paths pass
+    // through — everything below can bail out via `?` or the zthreads retry.
+    log_summary::emit_session_log_summary(&log_summary::SessionLogs {
+        build_log,
+        build_log_paths,
+        compile_fallback_log,
+    });
     // History is now copied, sanitized, indexed, and marked complete. Keep the
     // lease through that publication boundary so migration GC cannot remove a
     // half-written archive.
