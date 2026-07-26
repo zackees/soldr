@@ -70,6 +70,46 @@ def test_docker_runner_targets_the_per_root_container(monkeypatch) -> None:
     command = seen[0]
     assert command[:2] == ["docker", "exec"]
     assert expected in command, f"container {expected!r} missing from {command!r}"
-    # `docker exec ... -w <workdir> <container> <argv...>`
-    assert command[command.index(expected) - 1] == runner.container_fixture_dir
-    assert command[command.index(expected) + 1 :] == ["soldr", "cargo", "dylint"]
+    # `docker exec ... -w <workdir> <container> sh -c '<path prefix>' sh <argv...>`
+    at = command.index(expected)
+    assert command[at - 1] == runner.container_fixture_dir
+    # The argv survives the PATH wrapper unmodified, at the tail.
+    assert command[-3:] == ["soldr", "cargo", "dylint"]
+    # ...and the wrapper is what puts the container-built soldr on PATH,
+    # which is the whole reason `soldr cargo dylint` resolves at all.
+    assert any(dylint_perf.SOLDR_BIN_DIR in part for part in command[at:])
+
+
+def test_main_drives_a_full_docker_bench_without_api_drift(monkeypatch) -> None:
+    """Run main() with only the subprocess layer faked.
+
+    The two call-site regressions above were each found by *running* the
+    benchmark, not by a test -- and a third (`ensure_runner` taking a `Runner`
+    rather than a source-root `Path` since #1835) survived the first repair
+    because the tests only poked at individual helpers.
+
+    So exercise the real wiring: everything in perf_local runs for real, and
+    only `subprocess.run` and `ensure_image` are stubbed. Any future signature
+    drift across the dylint_perf <-> perf_local boundary fails here.
+    """
+    dylint_perf = load_dylint_perf()
+    perf_local = dylint_perf.load_perf_local()
+
+    def fake_run(command, **kwargs):
+        # `docker inspect <container>` with no --format is the existence probe;
+        # a non-zero exit means "absent", which sends ensure_runner down the
+        # create-volumes-and-container path. Returning 0 with empty stdout
+        # instead would make it json.loads("").
+        if "inspect" in command and "--format" not in command:
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(dylint_perf.shutil, "which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr(perf_local, "ensure_image", lambda _root: "sha256:test-image")
+    monkeypatch.setattr(perf_local.subprocess, "run", fake_run)
+    monkeypatch.setattr(dylint_perf.subprocess, "run", fake_run)
+    # load_perf_local() is called inside main(); hand back the instance we
+    # already patched rather than a pristine second import.
+    monkeypatch.setattr(dylint_perf, "load_perf_local", lambda: perf_local)
+
+    assert dylint_perf.main([]) == 0

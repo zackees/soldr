@@ -1,7 +1,11 @@
 #![feature(rustc_private)]
 
+// No `extern crate rustc_lint;` here on purpose: declare_late_lint! emits one
+// itself, and declaring it again is E0259 ("defined multiple times"). The
+// `use rustc_lint::...` below still resolves through the macro's declaration.
+// zccache's dylints do the same — they declare rustc_ast/errors/hir/span and
+// deliberately omit rustc_lint.
 extern crate rustc_hir;
-extern crate rustc_lint;
 extern crate rustc_span;
 
 use rustc_hir::{Expr, ExprKind, QPath};
