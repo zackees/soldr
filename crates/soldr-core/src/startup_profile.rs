@@ -108,6 +108,16 @@ impl WrapperProfile {
     /// soldr-side code that runs — calling it after the spawn for
     /// the eventual zccache process is too late.
     pub fn finish(self, last_phase: &'static str) {
+        self.finish_labeled("wrapper invocation", last_phase);
+    }
+
+    /// Same as [`finish`](Self::finish) but names the scope being
+    /// measured. The wrapper hot path is not the only place worth
+    /// attributing: `soldr cargo ...` pays a fixed front-door cost
+    /// before Cargo is ever spawned, and on a fully warm no-op that
+    /// cost — not compilation — dominates the wall clock (#1843).
+    /// Reusing this type keeps one output format for both scopes.
+    pub fn finish_labeled(self, scope: &str, last_phase: &'static str) {
         if !self.enabled {
             return;
         }
@@ -117,7 +127,7 @@ impl WrapperProfile {
 
         let mut buf = String::with_capacity(64 * self.phases.len() + 128);
         buf.push_str(&format!(
-            "soldr-profile: wrapper invocation breakdown (pid={})\n",
+            "soldr-profile: {scope} breakdown (pid={})\n",
             std::process::id()
         ));
 
