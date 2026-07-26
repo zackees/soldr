@@ -76,6 +76,12 @@ def load_perf_local() -> ModuleType:
     if spec is None or spec.loader is None:
         raise RuntimeError("unable to load ci/perf_local.py")
     module = importlib.util.module_from_spec(spec)
+    # Register before exec: @dataclass resolves annotations through
+    # sys.modules[cls.__module__], which is None for an unregistered module.
+    # perf_local grew a frozen `Runner` dataclass in #1835, so an
+    # unregistered import now dies with "'NoneType' object has no attribute
+    # '__dict__'". tests/test_perf_local.py carries the same two lines.
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -121,6 +127,9 @@ class DockerRunner:
     def __init__(self, perf_local: ModuleType, source_root: Path) -> None:
         self.perf_local = perf_local
         self.source_root = source_root
+        # Runners are per-checkout-root since #1835, so the container name has
+        # to be derived rather than read off a module-level constant.
+        self.container = perf_local.runner_for(source_root).container
         self.container_fixture_dir = perf_local.container_workdir(source_root, FIXTURE_DIR)
         self.target_dir = f"{self.container_fixture_dir}/target"
 
@@ -133,7 +142,7 @@ class DockerRunner:
         command = ["docker", "exec"]
         for key, value in (extra_env or {}).items():
             command.extend(["-e", f"{key}={value}"])
-        command.extend(["-w", self.container_fixture_dir, self.perf_local.CONTAINER, *argv])
+        command.extend(["-w", self.container_fixture_dir, self.container, *argv])
         return subprocess.run(command, capture_output=True, text=True, check=False)
 
     def run(self, argv: list[str]) -> subprocess.CompletedProcess[str]:
