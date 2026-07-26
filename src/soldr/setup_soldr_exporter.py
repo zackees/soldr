@@ -15,7 +15,6 @@ HELPER_SCRIPT_PATHS = (
     Path("contracts/zccache-runtime.v1.json"),
 )
 
-PUBLIC_ACTION_REPO = "zackees/setup-soldr"
 PUBLIC_README = """# setup-soldr
 
 Public GitHub Action for installing one released `soldr` binary, provisioning the resolved Rust toolchain with `rustup`, and restoring a cacheable runner-local root for Soldr, Cargo, and rustup state.
