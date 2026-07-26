@@ -56,6 +56,9 @@ VIOLATION_FILE = FIXTURE_DIR / "app" / "src" / "violation.rs.disabled"
 
 DYLINT_CMD = ["soldr", "cargo", "dylint", "--all", "--workspace"]
 
+# Where `ensure_soldr` puts the binary under test inside the container.
+SOLDR_BIN_DIR = "/target/debug"
+
 # What `cold` clears, and where. Docker defaults match the paths the
 # soldr-perf-local container actually uses (root home, named /root/.soldr
 # volume); host defaults are the ordinary user-home locations. Override via
@@ -70,9 +73,7 @@ DIAGNOSTIC_MARKERS = ("forbidden_marker_fn", "ban_forbidden_fn", "BAN_FORBIDDEN_
 
 def load_perf_local() -> ModuleType:
     """Import ci/perf_local.py by path — it's a script, not a package."""
-    spec = importlib.util.spec_from_file_location(
-        "perf_local", REPO_ROOT / "ci" / "perf_local.py"
-    )
+    spec = importlib.util.spec_from_file_location("perf_local", REPO_ROOT / "ci" / "perf_local.py")
     if spec is None or spec.loader is None:
         raise RuntimeError("unable to load ci/perf_local.py")
     module = importlib.util.module_from_spec(spec)
@@ -137,13 +138,45 @@ class DockerRunner:
         return (self.target_dir, soldr_home, driver_dir)
 
     def _exec(
-        self, argv: list[str], extra_env: dict[str, str] | None = None
+        self,
+        argv: list[str],
+        extra_env: dict[str, str] | None = None,
+        workdir: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
         command = ["docker", "exec"]
         for key, value in (extra_env or {}).items():
             command.extend(["-e", f"{key}={value}"])
-        command.extend(["-w", self.container_fixture_dir, self.container, *argv])
+        # Put the freshly-built soldr first on PATH. Prepending inside a shell
+        # rather than passing `-e PATH=...` keeps the image's own PATH (cargo,
+        # rustup) intact instead of forcing us to restate it here.
+        wrapped = ["sh", "-c", f'PATH="{SOLDR_BIN_DIR}:$PATH"; exec "$@"', "sh", *argv]
+        command.extend(["-w", workdir or self.container_fixture_dir, self.container, *wrapped])
         return subprocess.run(command, capture_output=True, text=True, check=False)
+
+    def ensure_soldr(self) -> None:
+        """Build the soldr under test into the container's target volume.
+
+        The soldr-cook-dev image ships a bare Rust toolchain and perf_local
+        only ever invokes `cargo`, so nothing puts `soldr` on PATH -- the
+        benchmark's `soldr cargo dylint` died with exit 127. Build it once,
+        before any timed scenario: soldr is the tool under test, not part of
+        the workload being measured.
+
+        This lands in /target (the runner's cargo target volume), which the
+        cold scenario does not clear -- cold wipes the fixture's target, the
+        soldr state root, and the driver cache.
+        """
+        print("[setup] building soldr in container (one-time)...", file=sys.stderr)
+        result = self._exec(
+            ["cargo", "build", "-p", "soldr-cli", "--bin", "soldr"],
+            extra_env={"CARGO_TARGET_DIR": "/target"},
+            workdir="/repo",
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                "failed to build soldr in the container "
+                f"(exit {result.returncode})\n{result.stdout}\n{result.stderr}"
+            )
 
     def run(self, argv: list[str]) -> subprocess.CompletedProcess[str]:
         return self._exec(argv, extra_env={"CARGO_TARGET_DIR": self.target_dir})
@@ -329,8 +362,16 @@ def main(argv: list[str]) -> int:
             except RuntimeError as error:
                 print(f"error: {error}", file=sys.stderr)
                 return 1
-            perf_local.ensure_runner(source_root, image_id)
+            # ensure_runner takes the Runner descriptor, not the root path
+            # (#1835). Passing the Path fails deep inside with a confusing
+            # "'WindowsPath' object has no attribute 'source_root'".
+            perf_local.ensure_runner(perf_local.runner_for(source_root), image_id)
             runner = DockerRunner(perf_local, source_root)
+            try:
+                runner.ensure_soldr()
+            except RuntimeError as error:
+                print(f"error: {error}", file=sys.stderr)
+                return 1
             if args.soldr_home is None:
                 detected = runner.detect_soldr_home()
                 if detected:
