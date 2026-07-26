@@ -41,6 +41,7 @@ MODE="${SOLDR_DYLINT_ACCEPTANCE_MODE:-full}"
 
 cp -a "$REPO/ci/fixtures/dylint-cache" /tmp/dylint-acceptance/a
 git init -q /tmp/dylint-acceptance/a
+git config --global --add safe.directory /tmp/dylint-acceptance/a
 git -C /tmp/dylint-acceptance/a rev-parse --git-dir >/dev/null
 git -C /tmp/dylint-acceptance/a config user.email fixture@soldr.invalid
 git -C /tmp/dylint-acceptance/a config user.name "Soldr Fixture"
