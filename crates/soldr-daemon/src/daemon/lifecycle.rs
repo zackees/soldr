@@ -184,6 +184,24 @@ fn is_live_current_version_direct(paths: &SoldrPaths) -> Option<u32> {
     current_version_claim_matches(paths).then_some(pid)
 }
 
+fn direct_status_current_version(paths: &SoldrPaths) -> Option<u32> {
+    let pid = direct_pid_file_live(paths)?;
+    let sock = crate::daemon::client::default_sock_path(paths);
+    let status_pid = crate::daemon::client::status(&sock).ok()?.pid;
+    preflight_identity_matches(Some(pid), Some(status_pid), current_version_claim_matches(paths))
+        .then_some(pid)
+}
+
+fn preflight_identity_matches(
+    recorded_live_pid: Option<u32>,
+    status_pid: Option<u32>,
+    current_version_claim: bool,
+) -> bool {
+    current_version_claim
+        && recorded_live_pid.is_some()
+        && recorded_live_pid == status_pid
+}
+
 /// Version-blind occupancy check: is the singleton endpoint held by a
 /// live soldr daemon process at all? Accepts both the sibling
 /// `soldr-daemon` binary and the via-self `soldr` form (CI / slim
@@ -321,7 +339,14 @@ pub fn preflight_displace_stale_daemon(paths: &SoldrPaths) {
     if !displacement_enabled() {
         return;
     }
-    if is_live_current_version(paths).is_some() {
+    // Regression for #1832: use Soldr's bounded direct status handshake here.
+    // The general `is_live_current_version` route probes both the optional
+    // broker and a full executable identity hash; together those added tens
+    // of seconds to every warm cargo invocation. Requiring the status PID to
+    // match the live PID-file process prevents PID reuse from accepting an
+    // unrelated same-stem process, while the normal status wire exchange
+    // still proves that the current-protocol daemon owns the endpoint.
+    if direct_status_current_version(paths).is_some() {
         return;
     }
     let recorded_process_is_alive = read_pid_file(paths).is_some_and(|(pid, _)| pid_is_alive(pid));
@@ -1711,6 +1736,19 @@ mod spawn_lock_tests {
             None => std::env::remove_var(SOLDR_DAEMON_DISPLACE_ENV),
         }
     }
+
+    crate::timed_test!(
+        preflight_requires_endpoint_status_to_match_recorded_pid,
+        {
+            // Regression for #1832 and the PID-reuse review finding: a live
+            // same-stem PID plus a current claim is insufficient when no
+            // daemon answers on the recorded endpoint.
+            assert!(!preflight_identity_matches(Some(41), None, true));
+            assert!(!preflight_identity_matches(Some(41), Some(42), true));
+            assert!(!preflight_identity_matches(Some(41), Some(41), false));
+            assert!(preflight_identity_matches(Some(41), Some(41), true));
+        }
+    );
 
     #[test]
     fn current_version_claim_matches_only_for_this_build() {
