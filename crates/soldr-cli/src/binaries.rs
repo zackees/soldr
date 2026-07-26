@@ -2,8 +2,8 @@
 //! `main.rs` as part of issue #339.
 
 use crate::core::{
-    command_output_with_timeout, suppress_windows_console_window, SoldrError, SoldrPaths,
-    TargetTriple,
+    command_output_with_timeout, read_rust_toolchain_manifest, suppress_windows_console_window,
+    SoldrError, SoldrPaths, TargetTriple,
 };
 use crate::fetch::VersionSpec;
 use crate::{
@@ -307,8 +307,71 @@ fn probe_direct_toolchain_binary(
 
     explicit_rustup_toolchain_binary(tool)
         .or_else(|| repo_local_rustup_toolchain_binary(tool, start_dir))
+        .or_else(|| manifest_pinned_toolchain_binary(tool, start_dir))
         .or_else(|| explicit_cargo_home_binary(tool))
         .or_else(|| repo_local_cargo_home_binary(tool, start_dir))
+}
+
+/// Resolve `tool` from the channel pinned by the nearest
+/// `rust-toolchain.toml`.
+///
+/// Falling through to `rustup which` costs a subprocess, and the cargo
+/// front door resolves two tools (`cargo` and `rustc`) on every
+/// invocation — ~130 ms combined on Windows (#1843). The probes above
+/// cannot cover the common case: [`explicit_rustup_toolchain_binary`]
+/// needs `RUSTUP_HOME` exported, and both it and the repo-local variant
+/// give up when more than one toolchain is installed, which is true of
+/// any host that has ever added a nightly.
+///
+/// A pinned channel makes the answer derivable without asking rustup:
+/// the manifest is what rustup would consult, and the directory layout
+/// is `<rustup_home>/toolchains/<channel>-<host>/bin/<tool>`. Unlike the
+/// ambient default — which can change under us without any cache key
+/// changing, hence the deliberate non-caching documented on
+/// [`resolve_toolchain_binary_for_channel`] — this reads the pin fresh
+/// each time, so it stays correct when the manifest is edited.
+///
+/// Returns `None` unless the executable is actually present, so a
+/// pinned-but-not-yet-installed channel still falls through to rustup.
+fn manifest_pinned_toolchain_binary(
+    tool: &str,
+    start_dir: Option<&std::path::Path>,
+) -> Option<std::path::PathBuf> {
+    let manifest_dir = find_ancestor_file_dir(start_dir, "rust-toolchain.toml")?;
+    let channel = read_rust_toolchain_manifest(&manifest_dir).ok()?.channel?;
+    let channel = channel.trim();
+    if channel.is_empty() {
+        return None;
+    }
+
+    let toolchains = crate::core::resolve_rustup_home()?.join("toolchains");
+    let host = TargetTriple::host().ok()?;
+    // rustup directories are `<channel>-<host>`, but a channel may already
+    // carry the host suffix (`nightly-2026-01-18-x86_64-pc-windows-msvc`).
+    [format!("{channel}-{}", host.triple()), channel.to_string()]
+        .into_iter()
+        .find_map(|dir| executable_in_dir(&toolchains.join(dir).join("bin"), tool))
+}
+
+/// Nearest ancestor directory containing the file `relative`.
+///
+/// Mirrors [`find_ancestor_dir`] but matches a file rather than a
+/// directory, and returns the containing directory rather than the match
+/// itself — `read_rust_toolchain_manifest` takes a workspace root.
+fn find_ancestor_file_dir(
+    start_dir: Option<&std::path::Path>,
+    relative: &str,
+) -> Option<std::path::PathBuf> {
+    let start = start_dir?;
+    let mut current = std::fs::canonicalize(start).unwrap_or_else(|_| start.to_path_buf());
+    loop {
+        if current.join(relative).is_file() {
+            return Some(current);
+        }
+        if !current.pop() {
+            return None;
+        }
+    }
 }
 
 fn explicit_cargo_home_binary(tool: &str) -> Option<std::path::PathBuf> {
@@ -749,6 +812,63 @@ fn sibling_binary(stem: &str) -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    crate::timed_test!(find_ancestor_file_dir_locates_nearest_manifest, {
+        let root = tempfile::tempdir().expect("tempdir");
+        let nested = root.path().join("crates").join("inner");
+        std::fs::create_dir_all(&nested).expect("mkdir");
+        std::fs::write(
+            root.path().join("rust-toolchain.toml"),
+            "[toolchain]
+",
+        )
+        .expect("write manifest");
+
+        let found = find_ancestor_file_dir(Some(&nested), "rust-toolchain.toml")
+            .expect("manifest ancestor");
+        let expected = std::fs::canonicalize(root.path()).unwrap_or_else(|_| root.path().into());
+        assert_eq!(found, expected);
+
+        // A tree with no manifest must fall through rather than guess.
+        let bare = tempfile::tempdir().expect("tempdir");
+        assert!(find_ancestor_file_dir(Some(bare.path()), "rust-toolchain.toml").is_none());
+    });
+
+    crate::timed_test!(manifest_pinned_binary_matches_rustup_layout, {
+        let root = tempfile::tempdir().expect("tempdir");
+        let workspace = root.path().join("ws");
+        std::fs::create_dir_all(&workspace).expect("mkdir ws");
+        std::fs::write(
+            workspace.join("rust-toolchain.toml"),
+            "[toolchain]
+channel = \"1.94.1\"
+",
+        )
+        .expect("write manifest");
+
+        // Lay out the toolchain exactly as rustup does: <channel>-<host>/bin.
+        let host = TargetTriple::host().expect("host triple");
+        let bin = root
+            .path()
+            .join("rustup")
+            .join("toolchains")
+            .join(format!("1.94.1-{}", host.triple()))
+            .join("bin");
+        std::fs::create_dir_all(&bin).expect("mkdir bin");
+        let tool = if cfg!(windows) { "cargo.exe" } else { "cargo" };
+        std::fs::write(bin.join(tool), b"").expect("write tool");
+
+        // Without a rustup home pointing at that layout the probe must decline
+        // rather than fabricate a path, leaving `rustup which` to answer.
+        let resolved = manifest_pinned_toolchain_binary("cargo", Some(&workspace));
+        if let Some(resolved) = resolved {
+            assert!(
+                resolved.is_file(),
+                "probe returned a non-existent path: {}",
+                resolved.display()
+            );
+        }
+    });
 
     crate::timed_test!(managed_wrapper_shim_has_compiler_identity, {
         let root = tempfile::tempdir().expect("tempdir");
