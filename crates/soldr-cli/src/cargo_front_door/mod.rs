@@ -2769,26 +2769,36 @@ async fn ensure_known_subcommand_tool(
 
     // cargo-dylint v6.0.1 publishes Linux GNU release assets, but not
     // Windows or macOS ones. Keep its normal managed-fetch path on the
-    // supported host and use Soldr's pinned, wrapper-free source-build
-    // path elsewhere. The result is cached below ~/.soldr/bin, just like
-    // the explicitly requested soldr build-from-source flow.
-    if sub == "dylint" && dylint_requires_source_build() {
-        let plan = crate::build_from_source_cmd::resolve_plan("cargo-dylint", None, None, paths)?;
-        let binary = if plan.final_binary.is_file() {
+    // supported host and use Soldr's pinned source-build path elsewhere.
+    // Even on Linux GNU the prebuilt can be unusable — upstream links it
+    // against a newer glibc than e.g. Debian 12 ships (GLIBC_2.39), so a
+    // failed fetch/smoke-test also falls back to the source build rather
+    // than hard-failing (issue #1788). Either way the result is cached
+    // below ~/.soldr/bin, and the source build's rustc invocations route
+    // through the zccache wrapper so a fresh container reuses the shared
+    // object cache.
+    if sub == "dylint" {
+        let binary = if dylint_requires_source_build() {
             eprintln!(
-                "soldr: using cached source-built cargo-dylint at {}",
-                plan.final_binary.display()
+                "soldr: cargo-dylint has no prebuilt asset for this host; using pinned source build..."
             );
-            plan.final_binary.clone()
+            source_built_cargo_dylint(paths)?
         } else {
-            eprintln!(
-                "soldr: cargo-dylint has no prebuilt asset for this host; building pinned source fallback..."
-            );
-            crate::build_from_source_cmd::execute_plan(&plan)?.binary
+            let version = spec
+                .pinned_version
+                .map(|v| VersionSpec::Exact(v.to_string()))
+                .unwrap_or(VersionSpec::Latest);
+            eprintln!("soldr: fetching {}...", spec.crate_name);
+            let fetched =
+                crate::fetch::fetch_tool_for_host_with_paths(spec.crate_name, &version, paths)
+                    .await;
+            resolve_dylint_binary(spec.crate_name, fetched, || {
+                source_built_cargo_dylint(paths)
+            })?
         };
         let dir = binary.parent().ok_or_else(|| {
             SoldrError::Other(format!(
-                "failed to resolve bin dir for source-built cargo-dylint: {}",
+                "failed to resolve bin dir for cargo-dylint: {}",
                 binary.display()
             ))
         })?;
@@ -2855,6 +2865,61 @@ async fn ensure_known_subcommand_tool(
 
 fn dylint_requires_source_build() -> bool {
     !cfg!(all(target_os = "linux", target_env = "gnu"))
+}
+
+/// Pick the cargo-dylint binary to use given the outcome of the managed
+/// prebuilt fetch, falling back to the pinned source build when the
+/// prebuilt is unusable on this host.
+///
+/// Split out of `ensure_known_subcommand_tool` so the fallback policy is
+/// unit-testable without a network round-trip: the fetch outcome is an
+/// already-resolved `Result` and the source build is a closure.
+///
+/// The failure this exists for is a *smoke-test* failure, not a download
+/// failure. `fetch_tool_for_host_with_paths` runs `--version` on the
+/// extracted binary (soldr#936, `smoke_test_or_evict`) and evicts it on a
+/// non-zero exit, so upstream's GLIBC_2.39-linked 6.0.1 asset downloads
+/// fine on Debian 12 and then fails the probe with a loader error — which
+/// is exactly the `Err` arm below.
+fn resolve_dylint_binary<S>(
+    crate_name: &str,
+    fetched: Result<crate::fetch::FetchResult, SoldrError>,
+    source_build: S,
+) -> Result<std::path::PathBuf, SoldrError>
+where
+    S: FnOnce() -> Result<std::path::PathBuf, SoldrError>,
+{
+    match fetched {
+        Ok(result) => {
+            if result.cached {
+                eprintln!("soldr: using cached {} v{}", crate_name, result.version);
+            } else {
+                eprintln!("soldr: downloaded {} v{}", crate_name, result.version);
+            }
+            Ok(result.binary_path)
+        }
+        Err(error) => {
+            eprintln!(
+                "soldr: prebuilt cargo-dylint is unusable on this host ({error}); \
+                 falling back to pinned source build..."
+            );
+            source_build()
+        }
+    }
+}
+
+/// Resolve the pinned source-built cargo-dylint, building it (cached,
+/// zccache-wrapped — see `build_from_source_cmd`) on first use.
+fn source_built_cargo_dylint(paths: &SoldrPaths) -> Result<std::path::PathBuf, SoldrError> {
+    let plan = crate::build_from_source_cmd::resolve_plan("cargo-dylint", None, None, paths)?;
+    if plan.final_binary.is_file() {
+        eprintln!(
+            "soldr: using cached source-built cargo-dylint at {}",
+            plan.final_binary.display()
+        );
+        return Ok(plan.final_binary);
+    }
+    Ok(crate::build_from_source_cmd::execute_plan(&plan)?.binary)
 }
 
 fn insert_cargo_global_args(args: &[String], cargo_args: &[String]) -> Vec<String> {

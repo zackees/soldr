@@ -1,0 +1,15 @@
+[package]
+name = "dylint-fixture-app"
+version = "0.1.0"
+edition = "2021"
+publish = false
+build = "build.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+dep_user = { path = "../dep_user" }
+macros = { path = "../macros" }
+
+[[bin]]
+name = "dylint-fixture-app"
+path = "src/main.rs"
