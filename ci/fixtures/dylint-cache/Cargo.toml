@@ -1,0 +1,11 @@
+[package]
+name = "dylint_cache_fixture"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+members = ["lint"]
+
+[workspace.metadata.dylint]
+libraries = [{ path = "lint" }]

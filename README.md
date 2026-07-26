@@ -207,6 +207,7 @@ soldr nextest run              # == soldr cargo nextest run
 soldr maturin build --release
 soldr cargo-dylint check
 soldr rustfmt src/main.rs
+soldr dylint cook --workspace --all-targets  # exact-nightly dependency warmup
 ```
 
 Rustfmt still runs through Soldr. Recursive invocations always execute the real

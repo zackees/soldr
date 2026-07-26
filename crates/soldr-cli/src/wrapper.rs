@@ -19,7 +19,7 @@ pub(crate) fn is_wrapper_invocation(arg: &str) -> bool {
         .and_then(std::ffi::OsStr::to_str)
         .unwrap_or(arg);
 
-    WRAPPER_PASSTHROUGH_TOOLS.contains(&stem)
+    WRAPPER_PASSTHROUGH_TOOLS.contains(&stem) || stem == "dylint-driver"
 }
 
 /// Detect rustc-style compiler invocations cargo issues through
@@ -94,7 +94,7 @@ pub(crate) fn is_non_cacheable_rustc(args: &[String]) -> bool {
 }
 
 fn routes_through_embedded_zccache(tool_stem: &str) -> bool {
-    matches!(tool_stem, "rustc" | "clippy-driver")
+    tool_stem == "dylint-driver" || WRAPPER_PASSTHROUGH_TOOLS.contains(&tool_stem)
 }
 
 /// Cargo nests the workspace compiler inside the outer wrapper as
@@ -288,8 +288,7 @@ pub(crate) fn run_rustc_wrapper(
         // propagated to cargo unchanged. `SOLDR_DAEMON_REQUIRED=1`
         // restores the pre-#1300 hard-fail for CI lanes that want to
         // catch daemon regressions.
-        let result = match crate::compile_dispatch::compile_via_daemon_detailed(&compile_args[1..])
-        {
+        return match crate::compile_dispatch::compile_via_daemon_detailed(&compile_args[1..]) {
             Ok(code) => Ok(code),
             Err(failure) if crate::compile_dispatch::should_fall_back_to_direct_rustc(&failure) => {
                 crate::compile_dispatch::log_direct_exec_fallback_once(&failure);
@@ -297,7 +296,6 @@ pub(crate) fn run_rustc_wrapper(
             }
             Err(failure) => Err(failure.into_soldr_error()),
         };
-        return result;
     }
 
     direct_exec_tool(tool_arg, tool_stem, &compile_args, Some(profile))

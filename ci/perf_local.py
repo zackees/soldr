@@ -47,6 +47,7 @@ VOLUME_PREFIX = "soldr-perf"
 # Bumped from "1": schema 1 runners are the pre-per-root shared containers.
 RUNNER_SCHEMA = "2"
 LABEL_PREFIX = "io.soldr.perf-local"
+PTRACE_ENV = "SOLDR_PERF_LOCAL_PTRACE"
 
 # The global names this script used before per-root isolation. These are NOT
 # dead: `bench/cook_in_docker.sh` mounts soldr-perf-target and
@@ -195,6 +196,7 @@ def expected_labels(source_root: Path, image_id: str) -> dict[str, str]:
         f"{LABEL_PREFIX}.schema": RUNNER_SCHEMA,
         f"{LABEL_PREFIX}.image-id": image_id,
         f"{LABEL_PREFIX}.source-root": str(source_root.resolve()),
+        f"{LABEL_PREFIX}.ptrace": "1" if ptrace_enabled() else "0",
     }
 
 
@@ -262,6 +264,8 @@ def runner_matches(info: dict[str, object], labels: dict[str, str]) -> bool:
 
 def create_command(runner: Runner, image_id: str) -> list[str]:
     command = ["docker", "create", "--name", runner.container, "--init"]
+    if ptrace_enabled():
+        command.extend(["--cap-add=SYS_PTRACE", "--security-opt", "seccomp=unconfined"])
     for key, value in expected_labels(runner.source_root, image_id).items():
         command.extend(["--label", f"{key}={value}"])
     command.extend(
@@ -285,6 +289,10 @@ def create_command(runner: Runner, image_id: str) -> list[str]:
         ]
     )
     return command
+
+
+def ptrace_enabled() -> bool:
+    return os.environ.get(PTRACE_ENV, "").strip().lower() in ("1", "true", "yes")
 
 
 def exec_command(runner: Runner, argv: list[str], workdir: str, *, tty: bool) -> list[str]:

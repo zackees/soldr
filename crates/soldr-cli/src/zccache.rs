@@ -298,6 +298,10 @@ pub(crate) enum RustcWrapperPlan {
 }
 
 impl RustcWrapperPlan {
+    pub(crate) fn is_managed_zccache(&self) -> bool {
+        matches!(self, Self::ManagedZccache(_))
+    }
+
     pub(crate) fn session(&self) -> Option<&ZccacheBuildSession> {
         match self {
             Self::ManagedZccache(plan) => Some(&plan.session),

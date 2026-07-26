@@ -58,7 +58,7 @@ const SOURCE_BUILD_INSTALL_ATTEMPTS: u32 = 3;
 /// (see module doc): generic crate source-build belongs in
 /// `soldr cargo install`. New entries must be soldr-bundled tools where
 /// upstream's release coverage misses a target soldr depends on.
-pub const SUPPORTED_TOOLS: &[&str] = &["crgx", "cargo-chef", "cargo-dylint"];
+pub const SUPPORTED_TOOLS: &[&str] = &["crgx", "cargo-chef", "cargo-dylint", "dylint-link"];
 
 /// Initial back-off between failed `cargo install` retries. Mirrors
 /// the previous managed-install 10s baseline so callers
@@ -218,6 +218,35 @@ pub struct BuildReport {
     pub sidecar: PathBuf,
 }
 
+/// Validate a previously published source build before an automatic caller
+/// reuses it. `execute_plan` writes the sidecar only after the binary copy is
+/// complete, so a missing or mismatched sidecar also detects interrupted
+/// publication.
+pub(crate) fn cached_build_is_valid(plan: &BuildPlan) -> Result<bool, SoldrError> {
+    if !plan.final_binary.is_file() {
+        return Ok(false);
+    }
+    let sidecar = plan.final_binary.with_extension("sha256");
+    let Ok(contents) = std::fs::read_to_string(&sidecar) else {
+        return Ok(false);
+    };
+    let mut fields = contents.split_whitespace();
+    let Some(expected_hash) = fields.next() else {
+        return Ok(false);
+    };
+    let Some(expected_name) = fields.next() else {
+        return Ok(false);
+    };
+    if fields.next().is_some()
+        || expected_hash.len() != 64
+        || !expected_hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || plan.final_binary.file_name().and_then(|name| name.to_str()) != Some(expected_name)
+    {
+        return Ok(false);
+    }
+    Ok(sha256_of_file(&plan.final_binary)? == expected_hash.to_ascii_lowercase())
+}
+
 /// Actually invoke `cargo install <tool>@<version> --target <triple>
 /// --root <staging>` and move the resulting binary into the per-(tool,
 /// version, triple) install dir. Resolves cargo through
@@ -275,6 +304,13 @@ pub fn execute_plan(plan: &BuildPlan) -> Result<BuildReport, SoldrError> {
             .arg("--root")
             .arg(&staging_root)
             .arg("--force")
+            // Source acquisition must not inherit the caller workspace's
+            // rust-toolchain.toml or .cargo/config.toml. Besides making a
+            // managed tool build depend on unrelated project policy, rustup
+            // proxies can race while auto-installing listed components when
+            // Cargo starts parallel build scripts. The staging root is an
+            // intentionally manifest-free, neutral working directory.
+            .current_dir(&staging_root)
             .env("PATH", &staging_path_env)
             // Strip stale jobserver env so the nested cargo doesn't try
             // to attach to fds it cannot see (see soldr #283).
@@ -434,7 +470,7 @@ fn run_cargo_install_attempt(
     }
 }
 
-fn sha256_of_file(path: &Path) -> Result<String, SoldrError> {
+pub(crate) fn sha256_of_file(path: &Path) -> Result<String, SoldrError> {
     use sha2::{Digest, Sha256};
     let mut file = std::fs::File::open(path)
         .map_err(|e| SoldrError::Other(format!("open {}: {e}", path.display())))?;
@@ -605,6 +641,14 @@ mod tests {
         )
         .expect("cargo-dylint resolve");
         assert_eq!(dylint.version, "6.0.1");
+        let dylint_link = resolve_plan(
+            "dylint-link",
+            Some("x86_64-pc-windows-msvc".to_string()),
+            None,
+            &paths,
+        )
+        .expect("dylint-link resolve");
+        assert_eq!(dylint_link.version, dylint.version);
 
         // Explicit --version still wins.
         let explicit = resolve_plan(
@@ -625,6 +669,60 @@ mod tests {
         .expect("cargo-chef v-prefixed version");
         assert_eq!(v_prefixed.version, "0.1.42");
     });
+
+    crate::timed_test!(
+        cached_build_validation_rejects_partial_missing_and_mismatched_sidecars,
+        {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let paths = synthetic_paths(tmp.path());
+            let plan = resolve_plan(
+                "dylint-link",
+                Some("x86_64-unknown-linux-gnu".to_string()),
+                None,
+                &paths,
+            )
+            .expect("resolve");
+            std::fs::create_dir_all(&plan.install_dir).unwrap();
+            std::fs::write(&plan.final_binary, b"partial").unwrap();
+
+            assert!(
+                !cached_build_is_valid(&plan).unwrap(),
+                "a partial binary without its commit sidecar must be rejected"
+            );
+
+            let sidecar = plan.final_binary.with_extension("sha256");
+            std::fs::write(
+                &sidecar,
+                format!(
+                    "{}  {}\n",
+                    "0".repeat(64),
+                    plan.final_binary.file_name().unwrap().to_string_lossy()
+                ),
+            )
+            .unwrap();
+            assert!(
+                !cached_build_is_valid(&plan).unwrap(),
+                "a mismatched sidecar must be rejected"
+            );
+
+            let digest = sha256_of_file(&plan.final_binary).unwrap();
+            std::fs::write(
+                &sidecar,
+                format!(
+                    "{digest}  {}\n",
+                    plan.final_binary.file_name().unwrap().to_string_lossy()
+                ),
+            )
+            .unwrap();
+            assert!(cached_build_is_valid(&plan).unwrap());
+
+            std::fs::write(&plan.final_binary, b"tampered-after-sidecar").unwrap();
+            assert!(
+                !cached_build_is_valid(&plan).unwrap(),
+                "a binary changed after publication must be rejected"
+            );
+        }
+    );
 
     crate::timed_test!(windows_triple_uses_exe_suffix, {
         let tmp = tempfile::tempdir().expect("tempdir");

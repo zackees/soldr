@@ -398,6 +398,56 @@ steps stay on the regular Soldr cache lifecycle; `cargo-dylint` is fetched from 
 Linux GNU release asset or source-built from the pinned registry version on Windows
 and macOS.
 
+For Dylint builds, Soldr installs an absolute `soldr-dylint` compiler shim.
+Ordinary dependency and lint-library compilation follows
+`soldr-dylint -> rustc`; workspace analysis follows
+`soldr-dylint -> dylint-driver -> rustc`. The compiler cache keys the driver,
+loaded lint-library contents, and Dylint configuration. It caches individual
+compiler outputs and diagnostics, never a command-level lint verdict: the real
+Dylint pass executes on every invocation, so changed source is always analyzed.
+Cargo incremental state accelerates repeated work in the same target tree,
+while Soldr's object cache enables clean-target and sibling-worktree reuse.
+
+### `soldr dylint cook`
+
+Prepare external dependencies for a real Dylint pass without mixing its
+nightly artifacts into the repository's ordinary stable build tree:
+
+```bash
+soldr dylint cook --workspace --all-targets
+soldr dylint cook --plan-only --json
+```
+
+The command resolves one exact Dylint nightly from the verified
+soldr-toolchain catalogue (or an explicit `--toolchain nightly-YYYY-MM-DD`),
+then verifies the installed compiler's full release and commit identity. It
+reconstructs a dependency skeleton and runs a check-shaped pass through
+Soldr's normal compilation cache. `RUSTC_WORKSPACE_WRAPPER` and every
+`DYLINT_*` library variable are removed for this phase, so custom lint
+libraries are loaded only by the later real Dylint invocation.
+
+Outputs live under `target/dylint/target/<nightly>/`, matching Dylint 6's own
+workspace-check directory. The warm marker includes the observed compiler
+commit, manifests, lockfile, selected target/profile/features/packages,
+configuration, and wrapper identity. Workspace source contents are excluded,
+so editing only a local source file preserves the external-dependency layer.
+Conflicting nightly requirements from configured lint-library paths fail
+instead of selecting one heuristically.
+
+`--plan-only --json` does not install a missing toolchain. Its stable
+`schema_version: 1` result includes `compiler`, `target_directory`,
+`build_shape`, `cache_key`, and `outcome`. A plan-only result can report a
+verified hit only when the installed compiler identity, marker, and target
+payload all match. A normal invocation verifies the compiler again after any
+restore/install and reports `miss` after cooking or `skip` when the complete
+layer is already warm.
+
+Shape options are `--target`, `--release` / `--profile`, `--workspace`,
+repeatable `--package`, `--features`, `--all-features`,
+`--no-default-features`, `--all-targets`, `--tests`, `--benches`,
+`--examples`, repeatable `--config`, `--locked`, `--frozen`, and `--offline`.
+Ordinary `soldr cook` behavior is unchanged.
+
 ### `soldr cook`
 
 Content-addressable dependency pre-build (issue #359). `cook` is a shim
@@ -1729,7 +1779,7 @@ Commands:
 | `SOLDR_DYLINT_PREPARE_TTL_SECS` | Freshness window (seconds) for the dylint prepared-toolchain marker under `<soldr root>/dylint/prepared/v1/`. A fresh, valid marker lets a warm top-level `soldr cargo dylint` skip the nightly-map HTTP fetch and the `rustup component list` / `rustc -vV` probes entirely. `0` means never trust the marker (every run pays the full cold path). | `86400` (24 h) |
 | `SOLDR_DYLINT_REVERIFY` | Truthy (`1`/`true`) bypasses the dylint prepared-toolchain marker and always re-runs the full catalogue-fetch + rustup verification path. Use after manually mutating the nightly toolchain or when diagnosing identity mismatches. | unset |
 | `SOLDR_SOURCE_BUILD_CACHE` | Falsy (`0`/`false`/`no`/`off`) restores the historical fully-uncached `cargo install` spawn for `soldr build-from-source` and the cargo-dylint source-build fallback. By default those builds route rustc through soldr's zccache wrapper so fresh machines/containers reuse the shared object cache instead of recompiling every dependency (issue #1788). `ZCCACHE_DISABLE=1` also disables it. | unset (cached) |
-| `SOLDR_TOOLCHAIN_BIN_CACHE` | `off` (case-insensitive) disables the in-process memo and on-disk cache (`<soldr root>/cache/toolchain-bins/v1/<channel>/<tool>.path`) for channel-scoped `rustup which` binary resolution. The cache saves one `rustup which` subprocess spawn per tool per nested cargo-dylint re-entry; entries self-invalidate when the cached path no longer exists. | unset (on) |
+| `SOLDR_TOOLCHAIN_BIN_CACHE` | `off` (case-insensitive) disables the in-process memo and on-disk cache (`<soldr root>/cache/toolchain-bins/v2/<rustup-home+host-scope>/<channel>/<tool>.path`) for channel-scoped `rustup which` binary resolution. The cache saves one `rustup which` subprocess spawn per tool per nested cargo-dylint re-entry; entries self-invalidate when the cached path no longer exists, and the v2 scope prevents one toolchain home or host architecture from reusing another's path. | unset (on) |
 | `DYLINT_DRIVER_PATH` | Soldr sets this on the dylint child process tree to `<soldr root>/dylint/drivers` (a stable soldr-owned home for cargo-dylint's per-toolchain driver builds) **only when the caller has not already set it** — an explicit caller value always wins. A fixed path means warm runs reuse the already-built driver and CI caches have a deterministic path to restore. | soldr-injected |
 | `SOLDR_TARGET_CACHE_MODE` | **Master toggle for target-cache.** `thin` enables thin-slice mode (zccache saves the rmeta/dep-info skeleton, restores it before `cargo build`). `full` enables full-target mode (zccache saves+restores the entire `target/` tree). `off` / `false` / `0` / `no` / empty / unset disables the feature entirely — `maybe_prepare_rust_artifact_plan` short-circuits to `Ok(None)` and no surrounding code (front-door, GC, registry) does any "free" work on this path. Designed for CI runners that can persist `~/.cache/zccache/` across runs; **off by default** because a local dev machine has nothing to save it to. CI workflows that want it set this explicitly (typically via `setup-soldr`). See [Target cache](#target-cache-default-off) for the contract. | unset (off) |
 | `SOLDR_TARGET_CACHE_TAR_THREADS` | Reader-thread count for the target-cache tar walk in zccache, AND for soldr's own thin-slice manifest walk (issue #272). `auto` lets each side pick a vCPU-bounded count (capped at 8). `1` disables parallelism (sequential walk). Any positive integer sets an explicit count, clamped to `[1, 8]` on the soldr side. soldr validates the value at the cargo front door and uses it when statting bundle files for the `manifest.v2.json` thin-slice manifest; the bulk multi-GB `target/` tar walk lives in zccache. | unset (`auto`) |

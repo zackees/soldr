@@ -827,8 +827,13 @@ pub(crate) fn acquire_spawn_lock(paths: &SoldrPaths) -> Option<std::fs::File> {
 /// full spawn-retry budget, and every compile fell back to direct
 /// uncached rustc (the soldr#1657 degradation path firing on all of CI).
 /// All soldr-owned configuration must survive the spawn boundary, so the
-/// whole `SOLDR_*` namespace is overlaid onto the baseline.
+/// whole `SOLDR_*` namespace is overlaid onto the baseline. The embedded
+/// zccache trace below is the sole non-Soldr diagnostic exception.
 const FORWARDED_ENV_PREFIX: &str = "SOLDR_";
+/// zccache's opt-in, write-only diagnostic trace. The embedded backend runs
+/// inside soldr-daemon, so this one zccache variable must cross the scrubbed
+/// daemon-spawn boundary for a caller to collect the trace it requested.
+const ZCCACHE_INNER_TRACE_ENV: &str = "ZCCACHE_INNER_TRACE";
 
 fn forwarded_soldr_env() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
     filter_forwarded_env(std::env::vars_os())
@@ -845,9 +850,8 @@ fn filter_forwarded_env(
             // Env names compare case-insensitively on Windows; match the
             // FBUILD_* passthrough in FastLED/fbuild#1170 and accept any
             // casing of the prefix on every platform.
-            name.to_string_lossy()
-                .to_ascii_uppercase()
-                .starts_with(FORWARDED_ENV_PREFIX)
+            let name = name.to_string_lossy().to_ascii_uppercase();
+            name.starts_with(FORWARDED_ENV_PREFIX) || name == ZCCACHE_INNER_TRACE_ENV
         })
         .collect()
 }
@@ -1406,32 +1410,55 @@ mod daemon_spawn_image_tests {
     use crate::core::SoldrPaths;
     use tempfile::TempDir;
 
-    crate::timed_test!(forwarded_env_keeps_soldr_namespace_only, {
-        use std::ffi::OsString;
-        let vars = vec![
-            (
-                OsString::from("SOLDR_CACHE_DIR"),
-                OsString::from("/tmp/ci-root"),
-            ),
-            (OsString::from("SOLDR_TRUST_MODE"), OsString::from("strict")),
-            (OsString::from("PATH"), OsString::from("/usr/bin")),
-            (OsString::from("HOME"), OsString::from("/home/runner")),
-            (OsString::from("ZCCACHE_DISABLE"), OsString::from("1")),
-            (OsString::from("soldr_lowercase"), OsString::from("kept")),
-        ];
-        let forwarded = filter_forwarded_env(vars);
-        assert_eq!(
-            forwarded,
-            vec![
+    crate::timed_test!(
+        forwarded_env_keeps_soldr_namespace_and_embedded_trace_only,
+        {
+            use std::ffi::OsString;
+            let vars = vec![
                 (
                     OsString::from("SOLDR_CACHE_DIR"),
                     OsString::from("/tmp/ci-root"),
                 ),
                 (OsString::from("SOLDR_TRUST_MODE"), OsString::from("strict")),
+                (OsString::from("PATH"), OsString::from("/usr/bin")),
+                (OsString::from("HOME"), OsString::from("/home/runner")),
+                (OsString::from("ZCCACHE_DISABLE"), OsString::from("1")),
                 (OsString::from("soldr_lowercase"), OsString::from("kept")),
-            ]
-        );
-    });
+                (
+                    OsString::from("SOLDR_DAEMON_TOKIO_CONSOLE_RECORD_PATH"),
+                    OsString::from("/tmp/daemon.tokio"),
+                ),
+                (
+                    OsString::from("TOKIO_CONSOLE_RECORD_PATH"),
+                    OsString::from("/tmp/not-forwarded.tokio"),
+                ),
+                (
+                    OsString::from("zccache_inner_trace"),
+                    OsString::from("/tmp/context-registration.jsonl"),
+                ),
+            ];
+            let forwarded = filter_forwarded_env(vars);
+            assert_eq!(
+                forwarded,
+                vec![
+                    (
+                        OsString::from("SOLDR_CACHE_DIR"),
+                        OsString::from("/tmp/ci-root"),
+                    ),
+                    (OsString::from("SOLDR_TRUST_MODE"), OsString::from("strict")),
+                    (OsString::from("soldr_lowercase"), OsString::from("kept")),
+                    (
+                        OsString::from("SOLDR_DAEMON_TOKIO_CONSOLE_RECORD_PATH"),
+                        OsString::from("/tmp/daemon.tokio"),
+                    ),
+                    (
+                        OsString::from("zccache_inner_trace"),
+                        OsString::from("/tmp/context-registration.jsonl"),
+                    ),
+                ]
+            );
+        }
+    );
 
     #[cfg(windows)]
     crate::timed_test!(windows_env_overlay_replaces_case_insensitively_and_sorts, {

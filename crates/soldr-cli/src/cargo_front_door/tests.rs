@@ -868,6 +868,104 @@ fn cargo_args_are_cacheable_for_every_registry_inner_build_subcommand() {
     }
 }
 
+crate::timed_test!(
+    dylint_link_source_fallback_is_limited_to_missing_or_unrunnable_prebuilts,
+    {
+        assert!(dylint_link_prebuilt_requires_source_fallback(
+            &SoldrError::UnsupportedPlatform(
+                "asset matching failed: no asset matches target aarch64-apple-darwin".into()
+            )
+        ));
+        assert!(dylint_link_prebuilt_requires_source_fallback(
+            &SoldrError::Other("smoke test failed: dylint-link needs a newer GLIBC".into())
+        ));
+        assert!(!dylint_link_prebuilt_requires_source_fallback(
+            &SoldrError::Network("release download failed".into())
+        ));
+        assert!(!dylint_link_prebuilt_requires_source_fallback(
+            &SoldrError::Other("checksum pin mismatch".into())
+        ));
+    }
+);
+
+crate::timed_test!(cached_dylint_link_is_revalidated_and_evicted, {
+    let temp = tempfile::tempdir().unwrap();
+    let binary = temp.path().join(if cfg!(windows) {
+        "dylint-link.exe"
+    } else {
+        "dylint-link"
+    });
+    std::fs::write(&binary, b"not an executable").unwrap();
+    let result = crate::fetch::FetchResult {
+        binary_path: binary.clone(),
+        version: "6.0.1".into(),
+        cached: true,
+    };
+
+    let error = validated_dylint_link_prebuilt(&result).unwrap_err();
+    assert!(dylint_link_prebuilt_requires_source_fallback(&error));
+    assert!(
+        !binary.exists(),
+        "incompatible cached prebuilt must be evicted before source fallback"
+    );
+});
+
+crate::timed_test!(cached_source_built_dylint_link_is_reused_before_network, {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = SoldrPaths::with_root(temp.path().join("soldr"));
+    let plan = crate::build_from_source_cmd::resolve_plan("dylint-link", None, None, &paths)
+        .expect("resolve source-built dylint-link");
+    std::fs::create_dir_all(&plan.install_dir).unwrap();
+    std::fs::write(&plan.final_binary, b"complete source-built dylint-link").unwrap();
+    let digest = crate::build_from_source_cmd::sha256_of_file(&plan.final_binary).unwrap();
+    std::fs::write(
+        plan.final_binary.with_extension("sha256"),
+        format!(
+            "{digest}  {}\n",
+            plan.final_binary.file_name().unwrap().to_string_lossy()
+        ),
+    )
+    .unwrap();
+
+    let selected = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(dylint_link_bin_dir(&paths))
+        .expect("valid source-built cache must short-circuit remote resolution");
+
+    assert_eq!(selected, plan.install_dir);
+});
+
+crate::timed_test!(managed_dylint_always_uses_pinned_source_build, {
+    assert!(requires_managed_dylint_source_build("dylint"));
+    for subcommand in ["nextest", "zigbuild", "xwin", "audit"] {
+        assert!(
+            !requires_managed_dylint_source_build(subcommand),
+            "{subcommand} must retain the generic prebuilt/PATH-first policy"
+        );
+    }
+});
+
+crate::timed_test!(dylint_dependency_cook_marker_is_private_to_front_door, {
+    let args = vec![
+        "+nightly-2026-04-16".to_string(),
+        DYLINT_DEPENDENCY_COOK_FLAG.to_string(),
+        "check".to_string(),
+        "--".to_string(),
+        DYLINT_DEPENDENCY_COOK_FLAG.to_string(),
+    ];
+    let (cleaned, found) = strip_dylint_dependency_cook_flag(&args);
+    assert!(found);
+    assert_eq!(
+        cleaned,
+        [
+            "+nightly-2026-04-16",
+            "check",
+            "--",
+            DYLINT_DEPENDENCY_COOK_FLAG
+        ]
+    );
+});
+
 #[test]
 fn cargo_args_are_not_cacheable_for_static_analysis_tools() {
     // The three static-analysis tools in the registry don't spawn

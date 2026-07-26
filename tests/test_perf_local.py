@@ -57,6 +57,25 @@ def test_create_command_uses_one_named_runner_and_persistent_volumes(tmp_path: P
     assert command[-3:] == ["tail", "-f", "/dev/null"]
 
 
+def test_create_command_enables_ptrace_only_when_requested(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv(perf_local.PTRACE_ENV, "1")
+    runner = perf_local.runner_for(tmp_path)
+    command = perf_local.create_command(runner, "sha256:image")
+
+    assert "--cap-add=SYS_PTRACE" in command
+    assert ["--security-opt", "seccomp=unconfined"] == command[
+        command.index("--security-opt") : command.index("--security-opt") + 2
+    ]
+    assert f"{perf_local.LABEL_PREFIX}.ptrace=1" in command
+
+    monkeypatch.delenv(perf_local.PTRACE_ENV)
+    command = perf_local.create_command(runner, "sha256:image")
+    assert "--cap-add=SYS_PTRACE" not in command
+    assert f"{perf_local.LABEL_PREFIX}.ptrace=0" in command
+
+
 def test_sibling_checkouts_never_share_a_runner_or_volume(tmp_path: Path) -> None:
     """soldr / soldr2 / soldr3 must be fully isolated.
 

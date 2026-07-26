@@ -836,6 +836,12 @@ async fn shutdown_compile_service(state: &Arc<State>) {
 /// tokio_unstable"`; otherwise it degrades to a warning (see
 /// [`maybe_init_tokio_console`]).
 pub const TOKIO_CONSOLE_ENV_VAR: &str = "SOLDR_DAEMON_TOKIO_CONSOLE";
+/// Optional soldr-owned bridge to console-subscriber's recording path.
+///
+/// Detached daemons intentionally start from a scrubbed environment and
+/// forward only `SOLDR_*`, so callers cannot rely on the upstream
+/// `TOKIO_CONSOLE_RECORD_PATH` variable crossing the spawn boundary.
+pub const TOKIO_CONSOLE_RECORD_PATH_ENV_VAR: &str = "SOLDR_DAEMON_TOKIO_CONSOLE_RECORD_PATH";
 
 fn tokio_console_requested() -> bool {
     std::env::var(TOKIO_CONSOLE_ENV_VAR)
@@ -860,7 +866,14 @@ fn maybe_init_tokio_console() {
     if !tokio_console_requested() {
         return;
     }
-    match std::panic::catch_unwind(console_subscriber::spawn) {
+    let spawn = || {
+        let mut builder = console_subscriber::Builder::default().with_default_env();
+        if let Some(path) = std::env::var_os(TOKIO_CONSOLE_RECORD_PATH_ENV_VAR) {
+            builder = builder.recording_path(path);
+        }
+        builder.spawn()
+    };
+    match std::panic::catch_unwind(spawn) {
         Ok(console_layer) => {
             use tracing_subscriber::prelude::*;
             let _ = tracing_subscriber::registry()

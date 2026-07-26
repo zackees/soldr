@@ -1517,6 +1517,14 @@ mod private_root_tests {
         );
         assert!(!first.cached, "first compile must populate the cache");
         assert_eq!(first.cache_outcome, 2, "first compile must be a miss");
+        let flush = cold_service
+            .flush()
+            .await
+            .expect("flush cold service before inspecting durable state");
+        assert!(
+            flush.is_complete(),
+            "cold service durability barrier must complete before archive: {flush:?}"
+        );
         let cold_stats = cold_service
             .inner
             .stats()
