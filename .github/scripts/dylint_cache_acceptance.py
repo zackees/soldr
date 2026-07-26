@@ -41,7 +41,6 @@ MODE="${SOLDR_DYLINT_ACCEPTANCE_MODE:-full}"
 
 cp -a "$REPO/ci/fixtures/dylint-cache" /tmp/dylint-acceptance/a
 git init -q /tmp/dylint-acceptance/a
-git config --global --add safe.directory /tmp/dylint-acceptance/a
 git -C /tmp/dylint-acceptance/a rev-parse --git-dir >/dev/null
 git -C /tmp/dylint-acceptance/a config user.email fixture@soldr.invalid
 git -C /tmp/dylint-acceptance/a config user.name "Soldr Fixture"
@@ -396,7 +395,9 @@ hash_libraries() {
 # Keep target directories beneath their worktree roots. zccache deliberately
 # normalizes paths inside each root; arbitrary external target directories
 # are distinct user-selected paths and therefore are not cross-worktree keys.
-run_symbolized_watchdog_smoke
+if [[ "$MODE" == "full" ]]; then
+  run_symbolized_watchdog_smoke
+fi
 run_case cold /tmp/dylint-acceptance/a /tmp/dylint-acceptance/a/target
 hash_libraries cold /tmp/dylint-acceptance/a/target
 if [[ "$MODE" == "sibling-diagnostic" ]]; then
@@ -501,7 +502,11 @@ def main() -> int:
         ) as process:
             assert process.stdin is not None
             assert process.stdout is not None
-            process.stdin.write(BASH)
+            # `TextIOWrapper` translates `\n` to CRLF on a Windows caller.
+            # Bash receives this recipe over stdin inside the Linux runner, so
+            # write UTF-8 bytes directly and preserve Unix line endings.
+            process.stdin.buffer.write(BASH.encode())
+            process.stdin.buffer.flush()
             process.stdin.close()
             for line in process.stdout:
                 output_lines.append(line)
