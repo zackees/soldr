@@ -3,13 +3,16 @@
 
 use crate::core::{
     command_output_with_timeout, suppress_windows_console_window, SoldrError, SoldrPaths,
+    TargetTriple,
 };
 use crate::fetch::VersionSpec;
 use crate::{
     REAL_TOOLCHAIN_BINARY_ENV_PREFIX, TEST_CARGO_BIN_ENV_VAR, TEST_RUSTC_BIN_ENV_VAR,
     TEST_RUSTUP_BIN_ENV_VAR, TEST_ZCCACHE_BIN_ENV_VAR,
 };
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 /// Escape hatch: `SOLDR_TOOLCHAIN_BIN_CACHE=off` disables both the
@@ -48,23 +51,25 @@ pub(crate) fn resolve_toolchain_binary_for_channel(
         return Ok(path);
     }
 
-    let cache_enabled = !toolchain_bin_cache_disabled();
+    let cache_scope = (!toolchain_bin_cache_disabled())
+        .then(ToolchainBinCacheScope::current)
+        .flatten();
 
-    if cache_enabled {
-        if let Some(path) = toolchain_bin_memo_lookup(channel, tool) {
+    if let Some(scope) = cache_scope.as_ref() {
+        if let Some(path) = toolchain_bin_memo_lookup(scope, channel, tool) {
             return Ok(path);
         }
-        if let Some(path) = disk_cache_lookup(channel, tool) {
-            toolchain_bin_memo_store(channel, tool, path.clone());
+        if let Some(path) = disk_cache_lookup(scope, channel, tool) {
+            toolchain_bin_memo_store(scope, channel, tool, path.clone());
             return Ok(path);
         }
     }
 
     let resolved = resolve_toolchain_binary_with_optional_channel(tool, Some(channel), None)?;
 
-    if cache_enabled && resolved.is_file() {
-        toolchain_bin_memo_store(channel, tool, resolved.clone());
-        disk_cache_store(channel, tool, &resolved);
+    if let Some(scope) = cache_scope.as_ref().filter(|_| resolved.is_file()) {
+        toolchain_bin_memo_store(scope, channel, tool, resolved.clone());
+        disk_cache_store(scope, channel, tool, &resolved);
     }
 
     Ok(resolved)
@@ -76,21 +81,75 @@ fn toolchain_bin_cache_disabled() -> bool {
         .unwrap_or(false)
 }
 
-type ToolchainBinMemo = Mutex<HashMap<(String, String), std::path::PathBuf>>;
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ToolchainBinCacheScope {
+    rustup_home: PathBuf,
+    host_triple: String,
+}
+
+impl ToolchainBinCacheScope {
+    fn current() -> Option<Self> {
+        Self::from_home(
+            crate::core::resolve_rustup_home()?,
+            TargetTriple::host().ok()?.triple().to_string(),
+            &std::env::current_dir().ok()?,
+        )
+    }
+
+    fn from_home(rustup_home: PathBuf, host_triple: String, cwd: &Path) -> Option<Self> {
+        let absolute = if rustup_home.is_absolute() {
+            rustup_home
+        } else {
+            cwd.join(rustup_home)
+        };
+        let rustup_home = std::fs::canonicalize(&absolute).unwrap_or(absolute);
+        rustup_home.is_absolute().then_some(Self {
+            rustup_home,
+            host_triple,
+        })
+    }
+
+    fn stable_key(&self) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(self.rustup_home.to_string_lossy().as_bytes());
+        hasher.update([0]);
+        hasher.update(self.host_triple.as_bytes());
+        format!("{:x}", hasher.finalize())
+    }
+}
+
+type ToolchainBinMemoKey = (ToolchainBinCacheScope, String, String);
+type ToolchainBinMemo = Mutex<HashMap<ToolchainBinMemoKey, PathBuf>>;
 
 fn toolchain_bin_memo() -> &'static ToolchainBinMemo {
     static MEMO: OnceLock<ToolchainBinMemo> = OnceLock::new();
     MEMO.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn toolchain_bin_memo_lookup(channel: &str, tool: &str) -> Option<std::path::PathBuf> {
-    let memo = toolchain_bin_memo().lock().ok()?;
-    memo.get(&(channel.to_string(), tool.to_string())).cloned()
+fn toolchain_bin_memo_lookup(
+    scope: &ToolchainBinCacheScope,
+    channel: &str,
+    tool: &str,
+) -> Option<PathBuf> {
+    let key = (scope.clone(), channel.to_string(), tool.to_string());
+    let mut memo = toolchain_bin_memo().lock().ok()?;
+    let candidate = memo.get(&key).cloned()?;
+    if candidate.is_file() {
+        Some(candidate)
+    } else {
+        memo.remove(&key);
+        None
+    }
 }
 
-fn toolchain_bin_memo_store(channel: &str, tool: &str, path: std::path::PathBuf) {
+fn toolchain_bin_memo_store(
+    scope: &ToolchainBinCacheScope,
+    channel: &str,
+    tool: &str,
+    path: PathBuf,
+) {
     if let Ok(mut memo) = toolchain_bin_memo().lock() {
-        memo.insert((channel.to_string(), tool.to_string()), path);
+        memo.insert((scope.clone(), channel.to_string(), tool.to_string()), path);
     }
 }
 
@@ -117,27 +176,30 @@ fn sanitize_toolchain_for_path(channel: &str) -> String {
         .collect()
 }
 
-/// `<cache_root>/toolchain-bins/v1/<sanitized-toolchain>/<tool>.path`
+/// `<cache_root>/toolchain-bins/v2/<scope>/<sanitized-toolchain>/<tool>.path`
 /// Split out with an explicit `cache_root` parameter so unit tests can
 /// point it at a tempdir instead of the real `~/.soldr/cache`.
 fn toolchain_bin_disk_cache_path_in(
-    cache_root: &std::path::Path,
+    cache_root: &Path,
+    scope: &ToolchainBinCacheScope,
     channel: &str,
     tool: &str,
-) -> std::path::PathBuf {
+) -> PathBuf {
     cache_root
         .join("toolchain-bins")
-        .join("v1")
+        .join("v2")
+        .join(scope.stable_key())
         .join(sanitize_toolchain_for_path(channel))
         .join(format!("{tool}.path"))
 }
 
 fn disk_cache_lookup_in(
-    cache_root: &std::path::Path,
+    cache_root: &Path,
+    scope: &ToolchainBinCacheScope,
     channel: &str,
     tool: &str,
-) -> Option<std::path::PathBuf> {
-    let cache_file = toolchain_bin_disk_cache_path_in(cache_root, channel, tool);
+) -> Option<PathBuf> {
+    let cache_file = toolchain_bin_disk_cache_path_in(cache_root, scope, channel, tool);
     let contents = std::fs::read_to_string(&cache_file).ok()?;
     let candidate = std::path::PathBuf::from(contents.trim());
     if candidate.is_file() {
@@ -148,12 +210,13 @@ fn disk_cache_lookup_in(
 }
 
 fn disk_cache_store_in(
-    cache_root: &std::path::Path,
+    cache_root: &Path,
+    scope: &ToolchainBinCacheScope,
     channel: &str,
     tool: &str,
-    resolved: &std::path::Path,
+    resolved: &Path,
 ) {
-    let cache_file = toolchain_bin_disk_cache_path_in(cache_root, channel, tool);
+    let cache_file = toolchain_bin_disk_cache_path_in(cache_root, scope, channel, tool);
     let Some(parent) = cache_file.parent() else {
         return;
     };
@@ -165,16 +228,16 @@ fn disk_cache_store_in(
     let _ = std::fs::write(&cache_file, format!("{}\n", resolved.display()));
 }
 
-fn disk_cache_lookup(channel: &str, tool: &str) -> Option<std::path::PathBuf> {
+fn disk_cache_lookup(scope: &ToolchainBinCacheScope, channel: &str, tool: &str) -> Option<PathBuf> {
     let paths = SoldrPaths::new().ok()?;
-    disk_cache_lookup_in(&paths.cache, channel, tool)
+    disk_cache_lookup_in(&paths.cache, scope, channel, tool)
 }
 
-fn disk_cache_store(channel: &str, tool: &str, resolved: &std::path::Path) {
+fn disk_cache_store(scope: &ToolchainBinCacheScope, channel: &str, tool: &str, resolved: &Path) {
     let Ok(paths) = SoldrPaths::new() else {
         return;
     };
-    disk_cache_store_in(&paths.cache, channel, tool, resolved);
+    disk_cache_store_in(&paths.cache, scope, channel, tool, resolved);
 }
 
 fn resolve_toolchain_binary_with_optional_channel(
@@ -838,6 +901,13 @@ mod tests {
     // `~/.soldr/cache`.
     // -----------------------------------------------------------------
 
+    fn test_scope(home: &Path, host: &str) -> ToolchainBinCacheScope {
+        ToolchainBinCacheScope {
+            rustup_home: home.to_path_buf(),
+            host_triple: host.to_string(),
+        }
+    }
+
     #[test]
     fn sanitize_toolchain_for_path_replaces_unsafe_characters() {
         assert_eq!(
@@ -852,7 +922,8 @@ mod tests {
 
     crate::timed_test!(disk_cache_lookup_returns_none_when_uncached, {
         let root = tempfile::tempdir().expect("tempdir");
-        assert!(disk_cache_lookup_in(root.path(), "nightly-2026-01-18", "rustc").is_none());
+        let scope = test_scope(root.path(), "x86_64-unknown-linux-gnu");
+        assert!(disk_cache_lookup_in(root.path(), &scope, "nightly-2026-01-18", "rustc").is_none());
     });
 
     crate::timed_test!(disk_cache_round_trips_a_resolved_path, {
@@ -861,42 +932,98 @@ mod tests {
         // exists, so materialize a real file to point at.
         let resolved = root.path().join("rustc-real");
         std::fs::write(&resolved, b"stub").expect("write stub binary");
+        let scope = test_scope(root.path(), "x86_64-unknown-linux-gnu");
 
-        disk_cache_store_in(root.path(), "nightly-2026-01-18", "rustc", &resolved);
-        let looked_up = disk_cache_lookup_in(root.path(), "nightly-2026-01-18", "rustc")
+        disk_cache_store_in(
+            root.path(),
+            &scope,
+            "nightly-2026-01-18",
+            "rustc",
+            &resolved,
+        );
+        let looked_up = disk_cache_lookup_in(root.path(), &scope, "nightly-2026-01-18", "rustc")
             .expect("cache hit after store");
         assert_eq!(looked_up, resolved);
 
         let cache_file =
-            toolchain_bin_disk_cache_path_in(root.path(), "nightly-2026-01-18", "rustc");
+            toolchain_bin_disk_cache_path_in(root.path(), &scope, "nightly-2026-01-18", "rustc");
         assert!(cache_file.is_file());
-        assert!(cache_file.starts_with(root.path().join("toolchain-bins").join("v1")));
+        assert!(cache_file.starts_with(root.path().join("toolchain-bins").join("v2")));
     });
 
     crate::timed_test!(disk_cache_ignores_stale_entry_whose_target_is_gone, {
         let root = tempfile::tempdir().expect("tempdir");
         let resolved = root.path().join("rustc-real");
         std::fs::write(&resolved, b"stub").expect("write stub binary");
-        disk_cache_store_in(root.path(), "nightly-2026-01-18", "rustc", &resolved);
+        let scope = test_scope(root.path(), "x86_64-unknown-linux-gnu");
+        disk_cache_store_in(
+            root.path(),
+            &scope,
+            "nightly-2026-01-18",
+            "rustc",
+            &resolved,
+        );
 
         std::fs::remove_file(&resolved).expect("remove target to simulate staleness");
 
         assert!(
-            disk_cache_lookup_in(root.path(), "nightly-2026-01-18", "rustc").is_none(),
+            disk_cache_lookup_in(root.path(), &scope, "nightly-2026-01-18", "rustc").is_none(),
             "a cache entry pointing at a missing file must not be trusted"
         );
     });
 
-    #[test]
-    fn toolchain_bin_memo_round_trips() {
-        let path = std::path::PathBuf::from("/does/not/matter/rustc");
-        assert!(toolchain_bin_memo_lookup("memo-test-channel", "rustc").is_none());
-        toolchain_bin_memo_store("memo-test-channel", "rustc", path.clone());
+    crate::timed_test!(toolchain_bin_memo_revalidates_and_evicts_stale_paths, {
+        let root = tempfile::tempdir().expect("tempdir");
+        let scope = test_scope(root.path(), "x86_64-unknown-linux-gnu");
+        let path = root.path().join("compiler");
+        std::fs::write(&path, b"stub").expect("write binary");
+        assert!(toolchain_bin_memo_lookup(&scope, "memo-test-channel", "rustc").is_none());
+        toolchain_bin_memo_store(&scope, "memo-test-channel", "rustc", path.clone());
         assert_eq!(
-            toolchain_bin_memo_lookup("memo-test-channel", "rustc"),
-            Some(path)
+            toolchain_bin_memo_lookup(&scope, "memo-test-channel", "rustc"),
+            Some(path.clone())
         );
-    }
+        std::fs::remove_file(path).expect("remove memoized binary");
+        assert!(toolchain_bin_memo_lookup(&scope, "memo-test-channel", "rustc").is_none());
+    });
+
+    crate::timed_test!(toolchain_bin_cache_scope_separates_homes_and_hosts, {
+        let root = tempfile::tempdir().expect("tempdir");
+        let home_a = root.path().join("home-a");
+        let home_b = root.path().join("home-b");
+        let a = test_scope(&home_a, "x86_64-unknown-linux-gnu");
+        let b = test_scope(&home_b, "x86_64-unknown-linux-gnu");
+        let c = test_scope(&home_a, "aarch64-unknown-linux-gnu");
+        assert_ne!(a.stable_key(), b.stable_key());
+        assert_ne!(a.stable_key(), c.stable_key());
+    });
+
+    crate::timed_test!(
+        toolchain_bin_cache_scope_absolutizes_relative_homes_per_cwd,
+        {
+            let root = tempfile::tempdir().expect("tempdir");
+            let cwd_a = root.path().join("checkout-a");
+            let cwd_b = root.path().join("checkout-b");
+            std::fs::create_dir_all(&cwd_a).expect("cwd a");
+            std::fs::create_dir_all(&cwd_b).expect("cwd b");
+            let relative = PathBuf::from(".rustup");
+            let a = ToolchainBinCacheScope::from_home(
+                relative.clone(),
+                "x86_64-unknown-linux-gnu".to_string(),
+                &cwd_a,
+            )
+            .expect("scope a");
+            let b = ToolchainBinCacheScope::from_home(
+                relative,
+                "x86_64-unknown-linux-gnu".to_string(),
+                &cwd_b,
+            )
+            .expect("scope b");
+            assert!(a.rustup_home.is_absolute());
+            assert!(b.rustup_home.is_absolute());
+            assert_ne!(a.stable_key(), b.stable_key());
+        }
+    );
 
     #[test]
     fn toolchain_bin_cache_disabled_only_on_off_value() {
