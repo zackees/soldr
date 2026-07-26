@@ -1,0 +1,6 @@
+[toolchain]
+# Dylint 6.0.1's upstream template pins this isolated matching nightly.
+# Soldr observes its rustc release + commit and includes both in cache keys.
+channel = "nightly-2026-04-16"
+components = ["rustc-dev", "rust-src", "llvm-tools-preview"]
+profile = "minimal"

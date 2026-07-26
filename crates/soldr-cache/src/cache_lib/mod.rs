@@ -11,7 +11,6 @@ use std::{
 };
 
 pub mod auto_gc;
-pub mod auto_target_gc;
 pub mod build_active;
 pub mod cargo_global_cache;
 pub mod cargo_lock;
@@ -145,8 +144,8 @@ pub const ZCCACHE_SESSION_ID_ENV_VAR: &str = "ZCCACHE_SESSION_ID";
 /// `RecordCompile` events to a single build session.
 pub const SOLDR_BUILD_SESSION_ID_ENV_VAR: &str = "SOLDR_BUILD_SESSION_ID";
 
-/// Managed zccache binary path propagated from the soldr front door into
-/// wrapper-mode children.
+/// Legacy external-zccache binary variable retained for compatibility tests.
+/// The normal cache route uses Soldr IPC and the embedded service.
 pub const ZCCACHE_BINARY_ENV_VAR: &str = "SOLDR_ZCCACHE_BIN";
 
 /// Supported zccache cache-root override used for Soldr-owned artifact state.

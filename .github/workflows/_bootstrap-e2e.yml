@@ -279,3 +279,51 @@ jobs:
         with:
           name: soldr-${{ inputs.target }}
           path: ${{ steps.soldr_binary.outputs.path }}
+
+      # soldr#1799 — surface build XML logs + JSONL compile journals so
+      # toolchain-home leakage and warm-run recompile storms are
+      # diagnosable from the Actions UI. Printed as separate steps and
+      # uploaded as a downloadable artifact.
+      - name: Print build XML logs
+        if: always()
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $roots = @("$HOME/.soldr", "$HOME/.soldr-dev", "${{ runner.temp }}/bootstrap-e2e-${{ inputs.target }}")
+          $files = @($roots | Where-Object { Test-Path $_ } | ForEach-Object {
+            Get-ChildItem -Path $_ -Recurse -Filter *.xml -ErrorAction SilentlyContinue
+          } | Where-Object { $_.DirectoryName -match 'logs' })
+          if ($files.Count -eq 0) { Write-Host 'No build XML logs found.' }
+          foreach ($f in $files) {
+            Write-Host "===== $($f.FullName) ====="
+            Get-Content $f.FullName
+          }
+
+      - name: Print JSONL compile journals
+        if: always()
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $roots = @("$HOME/.soldr", "$HOME/.soldr-dev", "${{ runner.temp }}/bootstrap-e2e-${{ inputs.target }}")
+          $files = @($roots | Where-Object { Test-Path $_ } | ForEach-Object {
+            Get-ChildItem -Path $_ -Recurse -Include *.jsonl, *.stats.json -ErrorAction SilentlyContinue
+          } | Where-Object { $_.DirectoryName -match 'logs' })
+          if ($files.Count -eq 0) { Write-Host 'No JSONL compile journals found.' }
+          foreach ($f in $files) {
+            Write-Host "===== $($f.FullName) ====="
+            Get-Content $f.FullName
+          }
+
+      - name: Upload build log artifacts
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: build-logs-bootstrap-${{ inputs.target }}
+          if-no-files-found: ignore
+          path: |
+            ~/.soldr/logs/
+            ~/.soldr-dev/logs/
+            ~/.soldr/cache/zccache/logs/
+            ~/.soldr-dev/cache/zccache/logs/
+            ${{ runner.temp }}/bootstrap-e2e-${{ inputs.target }}/**/logs/

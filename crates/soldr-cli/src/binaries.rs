@@ -3,12 +3,22 @@
 
 use crate::core::{
     command_output_with_timeout, suppress_windows_console_window, SoldrError, SoldrPaths,
+    TargetTriple,
 };
 use crate::fetch::VersionSpec;
 use crate::{
     REAL_TOOLCHAIN_BINARY_ENV_PREFIX, TEST_CARGO_BIN_ENV_VAR, TEST_RUSTC_BIN_ENV_VAR,
     TEST_RUSTUP_BIN_ENV_VAR, TEST_ZCCACHE_BIN_ENV_VAR,
 };
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+
+/// Escape hatch: `SOLDR_TOOLCHAIN_BIN_CACHE=off` disables both the
+/// in-process memo and the on-disk cache for channel-scoped
+/// `rustup which` resolution (see [`resolve_toolchain_binary_for_channel`]).
+pub(crate) const TOOLCHAIN_BIN_CACHE_ENV_VAR: &str = "SOLDR_TOOLCHAIN_BIN_CACHE";
 
 pub(crate) fn resolve_toolchain_binary(tool: &str) -> Result<std::path::PathBuf, SoldrError> {
     if let Some(path) = toolchain_binary_override(tool) {
@@ -23,6 +33,12 @@ pub(crate) fn resolve_toolchain_binary(tool: &str) -> Result<std::path::PathBuf,
     resolve_toolchain_binary_with_optional_channel(tool, None, start_dir.as_deref())
 }
 
+/// Resolve `tool` for an explicit, immutable `channel` (e.g.
+/// `nightly-2026-01-18`), memoizing the result in-process and on disk
+/// so nested cargo-dylint re-entries don't each pay a fresh `rustup
+/// which` subprocess spawn. The ambient-default lookup (no channel) is
+/// intentionally NOT disk-cached: it is not keyed by anything stable —
+/// the default toolchain can change without any cache key changing.
 pub(crate) fn resolve_toolchain_binary_for_channel(
     tool: &str,
     channel: Option<&str>,
@@ -35,7 +51,193 @@ pub(crate) fn resolve_toolchain_binary_for_channel(
         return Ok(path);
     }
 
-    resolve_toolchain_binary_with_optional_channel(tool, Some(channel), None)
+    let cache_scope = (!toolchain_bin_cache_disabled())
+        .then(ToolchainBinCacheScope::current)
+        .flatten();
+
+    if let Some(scope) = cache_scope.as_ref() {
+        if let Some(path) = toolchain_bin_memo_lookup(scope, channel, tool) {
+            return Ok(path);
+        }
+        if let Some(path) = disk_cache_lookup(scope, channel, tool) {
+            toolchain_bin_memo_store(scope, channel, tool, path.clone());
+            return Ok(path);
+        }
+    }
+
+    let resolved = resolve_toolchain_binary_with_optional_channel(tool, Some(channel), None)?;
+
+    if let Some(scope) = cache_scope.as_ref().filter(|_| resolved.is_file()) {
+        toolchain_bin_memo_store(scope, channel, tool, resolved.clone());
+        disk_cache_store(scope, channel, tool, &resolved);
+    }
+
+    Ok(resolved)
+}
+
+fn toolchain_bin_cache_disabled() -> bool {
+    std::env::var_os(TOOLCHAIN_BIN_CACHE_ENV_VAR)
+        .map(|value| value.to_string_lossy().trim().eq_ignore_ascii_case("off"))
+        .unwrap_or(false)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ToolchainBinCacheScope {
+    rustup_home: PathBuf,
+    host_triple: String,
+}
+
+impl ToolchainBinCacheScope {
+    fn current() -> Option<Self> {
+        Self::from_home(
+            crate::core::resolve_rustup_home()?,
+            TargetTriple::host().ok()?.triple().to_string(),
+            &std::env::current_dir().ok()?,
+        )
+    }
+
+    fn from_home(rustup_home: PathBuf, host_triple: String, cwd: &Path) -> Option<Self> {
+        let absolute = if rustup_home.is_absolute() {
+            rustup_home
+        } else {
+            cwd.join(rustup_home)
+        };
+        let rustup_home = std::fs::canonicalize(&absolute).unwrap_or(absolute);
+        rustup_home.is_absolute().then_some(Self {
+            rustup_home,
+            host_triple,
+        })
+    }
+
+    fn stable_key(&self) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(self.rustup_home.to_string_lossy().as_bytes());
+        hasher.update([0]);
+        hasher.update(self.host_triple.as_bytes());
+        format!("{:x}", hasher.finalize())
+    }
+}
+
+type ToolchainBinMemoKey = (ToolchainBinCacheScope, String, String);
+type ToolchainBinMemo = Mutex<HashMap<ToolchainBinMemoKey, PathBuf>>;
+
+fn toolchain_bin_memo() -> &'static ToolchainBinMemo {
+    static MEMO: OnceLock<ToolchainBinMemo> = OnceLock::new();
+    MEMO.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn toolchain_bin_memo_lookup(
+    scope: &ToolchainBinCacheScope,
+    channel: &str,
+    tool: &str,
+) -> Option<PathBuf> {
+    let key = (scope.clone(), channel.to_string(), tool.to_string());
+    let mut memo = toolchain_bin_memo().lock().ok()?;
+    let candidate = memo.get(&key).cloned()?;
+    if candidate.is_file() {
+        Some(candidate)
+    } else {
+        memo.remove(&key);
+        None
+    }
+}
+
+fn toolchain_bin_memo_store(
+    scope: &ToolchainBinCacheScope,
+    channel: &str,
+    tool: &str,
+    path: PathBuf,
+) {
+    if let Ok(mut memo) = toolchain_bin_memo().lock() {
+        memo.insert((scope.clone(), channel.to_string(), tool.to_string()), path);
+    }
+}
+
+/// Sanitize a toolchain channel string for use as a single path
+/// component. Rustup channel names are already path-safe in practice
+/// (`nightly-2026-01-18`, `1.94.1-x86_64-pc-windows-msvc`) but this
+/// defends against any unexpected separator/traversal characters.
+fn sanitize_toolchain_for_path(channel: &str) -> String {
+    // Collapse `..` before the per-character pass. The result is used as a
+    // directory component in `toolchain_bin_disk_cache_path_in`, so a channel
+    // of `..` would otherwise walk out of the cache root. Dots have to stay
+    // legal individually or version channels like `1.94.1` lose their
+    // readable directory name, which is why this can't just deny '.'.
+    channel
+        .replace("..", "_")
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// `<cache_root>/toolchain-bins/v2/<scope>/<sanitized-toolchain>/<tool>.path`
+/// Split out with an explicit `cache_root` parameter so unit tests can
+/// point it at a tempdir instead of the real `~/.soldr/cache`.
+fn toolchain_bin_disk_cache_path_in(
+    cache_root: &Path,
+    scope: &ToolchainBinCacheScope,
+    channel: &str,
+    tool: &str,
+) -> PathBuf {
+    cache_root
+        .join("toolchain-bins")
+        .join("v2")
+        .join(scope.stable_key())
+        .join(sanitize_toolchain_for_path(channel))
+        .join(format!("{tool}.path"))
+}
+
+fn disk_cache_lookup_in(
+    cache_root: &Path,
+    scope: &ToolchainBinCacheScope,
+    channel: &str,
+    tool: &str,
+) -> Option<PathBuf> {
+    let cache_file = toolchain_bin_disk_cache_path_in(cache_root, scope, channel, tool);
+    let contents = std::fs::read_to_string(&cache_file).ok()?;
+    let candidate = std::path::PathBuf::from(contents.trim());
+    if candidate.is_file() {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
+fn disk_cache_store_in(
+    cache_root: &Path,
+    scope: &ToolchainBinCacheScope,
+    channel: &str,
+    tool: &str,
+    resolved: &Path,
+) {
+    let cache_file = toolchain_bin_disk_cache_path_in(cache_root, scope, channel, tool);
+    let Some(parent) = cache_file.parent() else {
+        return;
+    };
+    // Best-effort: a write failure here must never fail resolution —
+    // the caller already has a good `resolved` path in hand.
+    if std::fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let _ = std::fs::write(&cache_file, format!("{}\n", resolved.display()));
+}
+
+fn disk_cache_lookup(scope: &ToolchainBinCacheScope, channel: &str, tool: &str) -> Option<PathBuf> {
+    let paths = SoldrPaths::new().ok()?;
+    disk_cache_lookup_in(&paths.cache, scope, channel, tool)
+}
+
+fn disk_cache_store(scope: &ToolchainBinCacheScope, channel: &str, tool: &str, resolved: &Path) {
+    let Ok(paths) = SoldrPaths::new() else {
+        return;
+    };
+    disk_cache_store_in(&paths.cache, scope, channel, tool, resolved);
 }
 
 fn resolve_toolchain_binary_with_optional_channel(
@@ -224,6 +426,35 @@ pub(crate) fn apply_implicit_toolchain_homes(command: &mut std::process::Command
     apply_managed_toolchain_homes_if_available(command, start_dir.as_deref());
 }
 
+/// Apply homes that match a toolchain binary Soldr already resolved.
+///
+/// Rustup discovery and bootstrap intentionally use Soldr's managed homes,
+/// but a concrete host binary must keep the caller's host Rustup context.
+/// Mixing a host Cargo/rustfmt proxy with Soldr's default-less managed
+/// `RUSTUP_HOME` makes Rustup report that no default toolchain is configured.
+pub(crate) fn apply_resolved_toolchain_homes(
+    command: &mut std::process::Command,
+    binary: &std::path::Path,
+) {
+    let start_dir = std::env::current_dir().ok();
+    crate::core::apply_implicit_toolchain_homes(command, start_dir.as_deref());
+
+    let Ok(paths) = SoldrPaths::new() else {
+        return;
+    };
+    let managed_cargo_home = crate::fetch::managed_cargo_home(&paths);
+    let managed_rustup_home = crate::fetch::managed_rustup_home(&paths);
+    if path_is_within(binary, &managed_cargo_home) || path_is_within(binary, &managed_rustup_home) {
+        apply_managed_toolchain_homes_if_available(command, start_dir.as_deref());
+    }
+}
+
+fn path_is_within(path: &std::path::Path, root: &std::path::Path) -> bool {
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    path.starts_with(root)
+}
+
 fn apply_managed_toolchain_homes_if_available(
     command: &mut std::process::Command,
     start_dir: Option<&std::path::Path>,
@@ -231,18 +462,47 @@ fn apply_managed_toolchain_homes_if_available(
     let Ok(paths) = SoldrPaths::new() else {
         return;
     };
+    apply_managed_cargo_home_if_available_for_paths(command, start_dir, &paths);
+    apply_managed_rustup_home_if_available_for_paths(command, start_dir, &paths);
+}
+
+/// Apply only Soldr's managed Cargo home when it is implicit and available.
+///
+/// Tool-acquisition paths use this after [`apply_resolved_toolchain_homes`]:
+/// plugins still install into Soldr's managed Cargo root, while a host-owned
+/// Cargo binary keeps its host Rustup context.
+pub(crate) fn apply_managed_cargo_home_if_available(command: &mut std::process::Command) {
+    let start_dir = std::env::current_dir().ok();
+    let Ok(paths) = SoldrPaths::new() else {
+        return;
+    };
+    apply_managed_cargo_home_if_available_for_paths(command, start_dir.as_deref(), &paths);
+}
+
+fn apply_managed_cargo_home_if_available_for_paths(
+    command: &mut std::process::Command,
+    start_dir: Option<&std::path::Path>,
+    paths: &SoldrPaths,
+) {
     if std::env::var_os(crate::core::CARGO_HOME_ENV_VAR).is_none()
         && find_ancestor_dir(start_dir, ".cargo").is_none()
     {
-        let managed = crate::fetch::managed_cargo_home(&paths);
+        let managed = crate::fetch::managed_cargo_home(paths);
         if managed.is_dir() {
             command.env(crate::core::CARGO_HOME_ENV_VAR, managed);
         }
     }
+}
+
+fn apply_managed_rustup_home_if_available_for_paths(
+    command: &mut std::process::Command,
+    start_dir: Option<&std::path::Path>,
+    paths: &SoldrPaths,
+) {
     if std::env::var_os(crate::core::RUSTUP_HOME_ENV_VAR).is_none()
         && find_ancestor_dir(start_dir, ".rustup").is_none()
     {
-        let managed = crate::fetch::managed_rustup_home(&paths);
+        let managed = crate::fetch::managed_rustup_home(paths);
         if managed.is_dir() {
             command.env(crate::core::RUSTUP_HOME_ENV_VAR, managed);
         }
@@ -354,9 +614,57 @@ pub(crate) fn rustc_wrapper_shim_binary(
     Ok(target)
 }
 
+/// Materialize the dedicated Dylint wrapper identity used when cargo-dylint
+/// nests its workspace driver inside `RUSTC_WRAPPER`.
+pub(crate) fn dylint_wrapper_shim_binary(
+    paths: &SoldrPaths,
+) -> Result<std::path::PathBuf, SoldrError> {
+    let target = paths
+        .versioned_shims_dir()
+        .join(format!("soldr-dylint{}", std::env::consts::EXE_SUFFIX));
+    let source = crate::shim_materialize::soldr_binary_source()?;
+    crate::shim_materialize::materialize_executable(&source, &target)?;
+    Ok(target)
+}
+
 /// Materialize the daemon's stable process/service identity next to soldr.
 pub(crate) fn soldr_daemon_binary() -> Result<std::path::PathBuf, SoldrError> {
     materialize_runtime_alias("soldr-daemon")
+}
+
+/// Ensure compiler-side daemon recovery has a canonically named executable.
+///
+/// The managed Cargo front door normally injects this handoff once for every
+/// compiler child. Direct `RUSTC_WRAPPER` / `zccache-soldr` invocations do not
+/// have that parent, so recover it lazily after the first failed daemon probe.
+/// Reuse an existing sibling without hashing; only first use materializes the
+/// multicall alias.
+pub(crate) fn ensure_daemon_executable_handoff() -> Result<std::path::PathBuf, SoldrError> {
+    let env_var = crate::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR;
+    if let Some(configured) = non_empty_env_path(env_var).filter(|path| {
+        path.is_file()
+            && path
+                .file_stem()
+                .and_then(std::ffi::OsStr::to_str)
+                .is_some_and(|stem| stem.eq_ignore_ascii_case("soldr-daemon"))
+    }) {
+        return Ok(configured);
+    }
+
+    let current = std::env::current_exe().map_err(SoldrError::from)?;
+    let sibling = current.parent().map(|parent| {
+        parent.join(if cfg!(windows) {
+            "soldr-daemon.exe"
+        } else {
+            "soldr-daemon"
+        })
+    });
+    let daemon = sibling
+        .filter(|path| path.is_file())
+        .map(Ok)
+        .unwrap_or_else(soldr_daemon_binary)?;
+    std::env::set_var(env_var, &daemon);
+    Ok(daemon)
 }
 
 fn materialize_runtime_alias(stem: &str) -> Result<std::path::PathBuf, SoldrError> {
@@ -452,6 +760,22 @@ mod tests {
         assert_eq!(
             wrapper.file_stem().and_then(std::ffi::OsStr::to_str),
             Some("rustc")
+        );
+        assert_eq!(
+            wrapper.parent(),
+            Some(paths.versioned_shims_dir().as_path())
+        );
+    });
+
+    crate::timed_test!(dylint_wrapper_shim_has_dedicated_identity, {
+        let root = tempfile::tempdir().expect("tempdir");
+        let paths = SoldrPaths::with_root(root.path().join("soldr"));
+        let wrapper = dylint_wrapper_shim_binary(&paths).expect("materialize Dylint wrapper");
+
+        assert!(wrapper.is_file(), "missing {}", wrapper.display());
+        assert_eq!(
+            wrapper.file_stem().and_then(std::ffi::OsStr::to_str),
+            Some("soldr-dylint")
         );
         assert_eq!(
             wrapper.parent(),
@@ -568,5 +892,167 @@ mod tests {
         assert_eq!(spec.binary_name, "soldr");
         assert_eq!(spec.repo, Some(("zackees", "soldr")));
         assert_eq!(spec.cargo_subcommand, None);
+    }
+
+    // -----------------------------------------------------------------
+    // Channel-scoped rustup-which disk cache (nested dylint re-entry
+    // overhead reduction). These use the `_in` variants with an
+    // injected `cache_root` tempdir so they never touch the real
+    // `~/.soldr/cache`.
+    // -----------------------------------------------------------------
+
+    fn test_scope(home: &Path, host: &str) -> ToolchainBinCacheScope {
+        ToolchainBinCacheScope {
+            rustup_home: home.to_path_buf(),
+            host_triple: host.to_string(),
+        }
+    }
+
+    #[test]
+    fn sanitize_toolchain_for_path_replaces_unsafe_characters() {
+        assert_eq!(
+            sanitize_toolchain_for_path("nightly-2026-01-18"),
+            "nightly-2026-01-18"
+        );
+        assert_eq!(
+            sanitize_toolchain_for_path("weird/../channel:name"),
+            "weird___channel_name"
+        );
+    }
+
+    crate::timed_test!(disk_cache_lookup_returns_none_when_uncached, {
+        let root = tempfile::tempdir().expect("tempdir");
+        let scope = test_scope(root.path(), "x86_64-unknown-linux-gnu");
+        assert!(disk_cache_lookup_in(root.path(), &scope, "nightly-2026-01-18", "rustc").is_none());
+    });
+
+    crate::timed_test!(disk_cache_round_trips_a_resolved_path, {
+        let root = tempfile::tempdir().expect("tempdir");
+        // The disk cache only trusts entries whose target file still
+        // exists, so materialize a real file to point at.
+        let resolved = root.path().join("rustc-real");
+        std::fs::write(&resolved, b"stub").expect("write stub binary");
+        let scope = test_scope(root.path(), "x86_64-unknown-linux-gnu");
+
+        disk_cache_store_in(
+            root.path(),
+            &scope,
+            "nightly-2026-01-18",
+            "rustc",
+            &resolved,
+        );
+        let looked_up = disk_cache_lookup_in(root.path(), &scope, "nightly-2026-01-18", "rustc")
+            .expect("cache hit after store");
+        assert_eq!(looked_up, resolved);
+
+        let cache_file =
+            toolchain_bin_disk_cache_path_in(root.path(), &scope, "nightly-2026-01-18", "rustc");
+        assert!(cache_file.is_file());
+        assert!(cache_file.starts_with(root.path().join("toolchain-bins").join("v2")));
+    });
+
+    crate::timed_test!(disk_cache_ignores_stale_entry_whose_target_is_gone, {
+        let root = tempfile::tempdir().expect("tempdir");
+        let resolved = root.path().join("rustc-real");
+        std::fs::write(&resolved, b"stub").expect("write stub binary");
+        let scope = test_scope(root.path(), "x86_64-unknown-linux-gnu");
+        disk_cache_store_in(
+            root.path(),
+            &scope,
+            "nightly-2026-01-18",
+            "rustc",
+            &resolved,
+        );
+
+        std::fs::remove_file(&resolved).expect("remove target to simulate staleness");
+
+        assert!(
+            disk_cache_lookup_in(root.path(), &scope, "nightly-2026-01-18", "rustc").is_none(),
+            "a cache entry pointing at a missing file must not be trusted"
+        );
+    });
+
+    crate::timed_test!(toolchain_bin_memo_revalidates_and_evicts_stale_paths, {
+        let root = tempfile::tempdir().expect("tempdir");
+        let scope = test_scope(root.path(), "x86_64-unknown-linux-gnu");
+        let path = root.path().join("compiler");
+        std::fs::write(&path, b"stub").expect("write binary");
+        assert!(toolchain_bin_memo_lookup(&scope, "memo-test-channel", "rustc").is_none());
+        toolchain_bin_memo_store(&scope, "memo-test-channel", "rustc", path.clone());
+        assert_eq!(
+            toolchain_bin_memo_lookup(&scope, "memo-test-channel", "rustc"),
+            Some(path.clone())
+        );
+        std::fs::remove_file(path).expect("remove memoized binary");
+        assert!(toolchain_bin_memo_lookup(&scope, "memo-test-channel", "rustc").is_none());
+    });
+
+    crate::timed_test!(toolchain_bin_cache_scope_separates_homes_and_hosts, {
+        let root = tempfile::tempdir().expect("tempdir");
+        let home_a = root.path().join("home-a");
+        let home_b = root.path().join("home-b");
+        let a = test_scope(&home_a, "x86_64-unknown-linux-gnu");
+        let b = test_scope(&home_b, "x86_64-unknown-linux-gnu");
+        let c = test_scope(&home_a, "aarch64-unknown-linux-gnu");
+        assert_ne!(a.stable_key(), b.stable_key());
+        assert_ne!(a.stable_key(), c.stable_key());
+    });
+
+    crate::timed_test!(
+        toolchain_bin_cache_scope_absolutizes_relative_homes_per_cwd,
+        {
+            let root = tempfile::tempdir().expect("tempdir");
+            let cwd_a = root.path().join("checkout-a");
+            let cwd_b = root.path().join("checkout-b");
+            std::fs::create_dir_all(&cwd_a).expect("cwd a");
+            std::fs::create_dir_all(&cwd_b).expect("cwd b");
+            let relative = PathBuf::from(".rustup");
+            let a = ToolchainBinCacheScope::from_home(
+                relative.clone(),
+                "x86_64-unknown-linux-gnu".to_string(),
+                &cwd_a,
+            )
+            .expect("scope a");
+            let b = ToolchainBinCacheScope::from_home(
+                relative,
+                "x86_64-unknown-linux-gnu".to_string(),
+                &cwd_b,
+            )
+            .expect("scope b");
+            assert!(a.rustup_home.is_absolute());
+            assert!(b.rustup_home.is_absolute());
+            assert_ne!(a.stable_key(), b.stable_key());
+        }
+    );
+
+    #[test]
+    fn toolchain_bin_cache_disabled_only_on_off_value() {
+        // Test seam: mutate the process-global env var, observe the
+        // gate, then restore whatever was there before so this test
+        // does not leak state into others in the binary.
+        let previous = std::env::var_os(TOOLCHAIN_BIN_CACHE_ENV_VAR);
+
+        std::env::set_var(TOOLCHAIN_BIN_CACHE_ENV_VAR, "off");
+        assert!(toolchain_bin_cache_disabled());
+
+        std::env::set_var(TOOLCHAIN_BIN_CACHE_ENV_VAR, "OFF");
+        assert!(
+            toolchain_bin_cache_disabled(),
+            "gate must be case-insensitive"
+        );
+
+        std::env::set_var(TOOLCHAIN_BIN_CACHE_ENV_VAR, "on");
+        assert!(!toolchain_bin_cache_disabled());
+
+        std::env::remove_var(TOOLCHAIN_BIN_CACHE_ENV_VAR);
+        assert!(
+            !toolchain_bin_cache_disabled(),
+            "unset must default to enabled"
+        );
+
+        match previous {
+            Some(value) => std::env::set_var(TOOLCHAIN_BIN_CACHE_ENV_VAR, value),
+            None => std::env::remove_var(TOOLCHAIN_BIN_CACHE_ENV_VAR),
+        }
     }
 }

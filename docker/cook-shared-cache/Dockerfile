@@ -31,7 +31,11 @@
 #       -e SOLDR_COOK_DOCKER_HARNESS=1 -w /work soldr-cook-dev \
 #       cargo test --workspace -- --include-ignored cook_index
 
-FROM rust:1.94.1-bookworm
+# Dylint 6.0.1's official GNU/Linux binary requires glibc 2.39 and embeds
+# its CI checkout path, so soldr rejects it as non-relocatable and builds
+# cargo-dylint from source. Trixie keeps the runner compatible with both
+# that upstream probe and the resulting host-local binary.
+FROM rust:1.94.1-trixie
 
 # Build tools needed by the soldr-cli workspace and the integration
 # tests (linker, pkg-config, git for origin-URL probes in PRs 2/3).
@@ -46,6 +50,8 @@ RUN apt-get update \
        cmake \
        ninja-build \
        jq \
+       gdb \
+       procps \
        zstd \
     && rm -rf /var/lib/apt/lists/*
 
@@ -57,7 +63,7 @@ RUN rustup default 1.94.1 \
 # CARGO_HOME explicit so the `soldr-perf-cargo-home` named volume mount
 # point is unambiguous. Without this the path depends on the base
 # image's $HOME inheritance — `/root/.cargo` happens to be the default
-# for the `rust:bookworm` image but pinning it makes future image
+# for the official `rust` image but pinning it makes future image
 # migrations safe.
 ENV CARGO_HOME=/root/.cargo
 

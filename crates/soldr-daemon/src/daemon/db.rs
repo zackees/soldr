@@ -247,6 +247,55 @@ pub fn mark_archives_unavailable(
     Ok(updated)
 }
 
+/// Clear only the stale fixed-name zccache session artifacts from completed
+/// history rows. Build-scoped stats and compile-journal archives remain
+/// available (#1827).
+pub fn clear_legacy_archive_paths(
+    db_path: &Path,
+    session_ids: &[u64],
+) -> Result<u64, RegistryError> {
+    if session_ids.is_empty() {
+        return Ok(0);
+    }
+    let ids = session_ids
+        .iter()
+        .copied()
+        .collect::<std::collections::HashSet<_>>();
+    let db = open_db(db_path)?;
+    init_tables(&db)?;
+    let txn = db.begin_write()?;
+    let mut updated = 0_u64;
+    {
+        let mut builds = txn.open_table(BUILDS)?;
+        for id in ids {
+            let Some(row) = builds.get(id)? else {
+                continue;
+            };
+            let mut record = decode_build_row(row.value())?;
+            drop(row);
+            let Some(paths) = record.log_paths.as_mut() else {
+                continue;
+            };
+            if paths.archived_session_log_path.is_none()
+                && paths.archived_journal_path.is_none()
+                && paths.session_log_path.is_none()
+                && paths.journal_path.is_none()
+            {
+                continue;
+            }
+            paths.session_log_path = None;
+            paths.journal_path = None;
+            paths.archived_session_log_path = None;
+            paths.archived_journal_path = None;
+            let bytes = prost_tagged_bytes(&wire::build_record_to_wire(&record));
+            builds.insert(id, bytes.as_slice())?;
+            updated += 1;
+        }
+    }
+    txn.commit()?;
+    Ok(updated)
+}
+
 /// Read-modify-write finalization of a BuildRecord in ONE redb open +
 /// write txn (soldr#1536). The per-call [`open_db`] cost grows with the
 /// db file size, so the session-end path avoids paying it twice for a

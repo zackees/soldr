@@ -194,3 +194,54 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             soldr zccache stop
           }
+
+      # soldr#1799 — surface the per-build XML logs and the JSONL compile
+      # journals from CI compiles so toolchain-home leakage and warm-run
+      # recompile storms are diagnosable straight from the Actions UI.
+      # Printed as two separate steps (XML vs JSONL/JSON) and uploaded as
+      # a downloadable artifact. Roots covered: the default soldr homes
+      # (~/.soldr, ~/.soldr-dev) used by the build step, and the isolated
+      # SOLDR_CACHE_DIR tree used by the test steps.
+      - name: Print build XML logs
+        if: always()
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $roots = @("$HOME/.soldr", "$HOME/.soldr-dev", "${{ runner.temp }}/soldr-self-tests")
+          $files = @($roots | Where-Object { Test-Path $_ } | ForEach-Object {
+            Get-ChildItem -Path $_ -Recurse -Filter *.xml -ErrorAction SilentlyContinue
+          } | Where-Object { $_.DirectoryName -match 'logs' })
+          if ($files.Count -eq 0) { Write-Host 'No build XML logs found.' }
+          foreach ($f in $files) {
+            Write-Host "===== $($f.FullName) ====="
+            Get-Content $f.FullName
+          }
+
+      - name: Print JSONL compile journals
+        if: always()
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $roots = @("$HOME/.soldr", "$HOME/.soldr-dev", "${{ runner.temp }}/soldr-self-tests")
+          $files = @($roots | Where-Object { Test-Path $_ } | ForEach-Object {
+            Get-ChildItem -Path $_ -Recurse -Include *.jsonl, *.stats.json -ErrorAction SilentlyContinue
+          } | Where-Object { $_.DirectoryName -match 'logs' })
+          if ($files.Count -eq 0) { Write-Host 'No JSONL compile journals found.' }
+          foreach ($f in $files) {
+            Write-Host "===== $($f.FullName) ====="
+            Get-Content $f.FullName
+          }
+
+      - name: Upload build log artifacts
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: build-logs-${{ inputs.target }}
+          if-no-files-found: ignore
+          path: |
+            ~/.soldr/logs/
+            ~/.soldr-dev/logs/
+            ~/.soldr/cache/zccache/logs/
+            ~/.soldr-dev/cache/zccache/logs/
+            ${{ runner.temp }}/soldr-self-tests/**/logs/

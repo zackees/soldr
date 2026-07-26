@@ -2493,9 +2493,9 @@ dependencies = [
 
 [[package]]
 name = "running-process"
-version = "4.6.0"
+version = "4.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf0356f69757ad31567c9ba44cc6be901228c449122d20cd2567e49a99eec549"
+checksum = "3d5325b33edc17445ec07177a2fb78136045207d3d1864373e1404d055e4f9c2"
 dependencies = [
  "anyhow",
  "blake3",
@@ -2845,7 +2845,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-cache"
-version = "0.8.21"
+version = "0.8.24"
 dependencies = [
  "filetime",
  "fs2",
@@ -2870,7 +2870,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-cli"
-version = "0.8.21"
+version = "0.8.24"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -2914,7 +2914,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-core"
-version = "0.8.21"
+version = "0.8.24"
 dependencies = [
  "fs2",
  "prost",
@@ -2930,7 +2930,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-daemon"
-version = "0.8.21"
+version = "0.8.24"
 dependencies = [
  "console-subscriber",
  "fs2",
@@ -2955,7 +2955,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-fetch"
-version = "0.8.21"
+version = "0.8.24"
 dependencies = [
  "flate2",
  "fs2",
@@ -4103,6 +4103,7 @@ version = "1.12.17"
 dependencies = [
  "serde",
  "serde_json",
+ "zccache-core",
 ]
 
 [[package]]
@@ -4172,6 +4173,7 @@ name = "zccache-compiler"
 version = "1.12.17"
 dependencies = [
  "clang",
+ "serde_json",
  "thiserror",
  "zccache-core",
  "zccache-hash",
@@ -4256,6 +4258,7 @@ dependencies = [
  "thiserror",
  "tracing",
  "uuid",
+ "zccache-compiler",
  "zccache-core",
  "zccache-hash",
 ]

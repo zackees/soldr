@@ -16,7 +16,6 @@
 //! `--no-gc-target*` flag stripping, the cargo output-capture wrappers,
 //! the known-subcommand fetch hook, and the build-session bookkeeping.
 
-use crate::cache_lib::auto_target_gc::{auto_prune_target, render_summary, AutoPrunePhase};
 use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
 use crate::fetch::VersionSpec;
 use crate::trampoline::{
@@ -26,9 +25,7 @@ use crate::zccache::{
     cache_lifecycle_from_env, command_lifetime_shutdown_timeout, CacheLifecycle,
     SOLDR_CACHE_LIFECYCLE_ENV_VAR, SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS_ENV_VAR,
 };
-use crate::{
-    apply_implicit_toolchain_homes, gc, resolve_toolchain_binary_for_channel, ZccacheSourceArg,
-};
+use crate::{gc, resolve_toolchain_binary_for_channel};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -43,6 +40,7 @@ pub(crate) mod cook_hydrate;
 mod darwin_embed;
 mod disk;
 mod inputs;
+mod log_summary;
 mod no_cache_detach;
 mod profile_debug;
 mod subcommand;
@@ -369,12 +367,17 @@ struct BuildLogHistoryRequest<'a> {
     daemon_finalized: bool,
 }
 
-fn persist_build_log_history(request: BuildLogHistoryRequest<'_>) {
+/// Returns the `BuildLogPaths` that were recorded on the build row, so the
+/// caller can name them in the end-of-build log summary (soldr#1813). `None`
+/// means every attempt failed and nothing was persisted.
+fn persist_build_log_history(
+    request: BuildLogHistoryRequest<'_>,
+) -> Option<crate::daemon::protocol::BuildLogPaths> {
     let build_session_id = request.build_session_id;
     let mut last_error = None;
     for attempt in 0..BUILD_HISTORY_RETRY_ATTEMPTS {
         match persist_build_log_history_inner(&request) {
-            Ok(()) => return,
+            Ok(log_paths) => return Some(log_paths),
             Err(err) => {
                 last_error = Some(err);
                 if attempt + 1 < BUILD_HISTORY_RETRY_ATTEMPTS {
@@ -388,9 +391,12 @@ fn persist_build_log_history(request: BuildLogHistoryRequest<'_>) {
             "soldr warning: failed to persist logs history for build {build_session_id}: {err}"
         );
     }
+    None
 }
 
-fn persist_build_log_history_inner(request: &BuildLogHistoryRequest<'_>) -> Result<(), SoldrError> {
+fn persist_build_log_history_inner(
+    request: &BuildLogHistoryRequest<'_>,
+) -> Result<crate::daemon::protocol::BuildLogPaths, SoldrError> {
     let BuildLogHistoryRequest {
         paths,
         build_session_id,
@@ -416,10 +422,6 @@ fn persist_build_log_history_inner(request: &BuildLogHistoryRequest<'_>) -> Resu
             )
         });
 
-    let archived_session_log_path =
-        copy_session_artifact(&session.session_log_path, &archive_dir, "last-session.log");
-    let archived_journal_path =
-        copy_session_artifact(&session.journal_path, &archive_dir, "last-session.jsonl");
     let archived_session_stats_path = copy_session_artifact(
         &session.session_stats_path,
         &archive_dir,
@@ -445,14 +447,6 @@ fn persist_build_log_history_inner(request: &BuildLogHistoryRequest<'_>) -> Resu
         archived_compile_journal_path
             .as_ref()
             .map(|path| Path::new(path.as_str())),
-        archived_journal_path
-            .as_ref()
-            .map(|path| Path::new(path.as_str()))
-            .unwrap_or(&session.journal_path),
-        archived_session_log_path
-            .as_ref()
-            .map(|path| Path::new(path.as_str()))
-            .unwrap_or(&session.session_log_path),
     );
     // soldr#1536: when the daemon acknowledged BuildSessionEnd, the
     // record read above already carries the finalized crate-count /
@@ -474,21 +468,27 @@ fn persist_build_log_history_inner(request: &BuildLogHistoryRequest<'_>) -> Resu
             .map(|ended| (ended - record.started_at_ms).max(0) as u64)
             .unwrap_or(0),
     );
-    record.log_paths = Some(crate::daemon::protocol::BuildLogPaths {
+    let log_paths = crate::daemon::protocol::BuildLogPaths {
         zccache_session_id: Some(session.session_id.clone()),
         cache_dir: Some(session.cache_dir.display().to_string()),
-        session_log_path: Some(session.session_log_path.display().to_string()),
-        journal_path: Some(session.journal_path.display().to_string()),
+        // The embedded service no longer updates zccache's fixed
+        // `last-session` files. Recording or archiving them here would attach
+        // stale cumulative data (and potentially old environment values) to
+        // every new build. The build-scoped compile-journal tail above is the
+        // authoritative diagnostic payload.
+        session_log_path: None,
+        journal_path: None,
         session_stats_path: Some(session.session_stats_path.display().to_string()),
         compile_journal_path: Some(compile_journal_path.display().to_string()),
-        archived_session_log_path,
-        archived_journal_path,
+        archived_session_log_path: None,
+        archived_journal_path: None,
         archived_session_stats_path,
         archived_compile_journal_path,
         // soldr#1368: private managed-zccache daemons are gone; the
         // field stays on the wire for older records.
         private_daemon_name: None,
-    });
+    };
+    record.log_paths = Some(log_paths.clone());
 
     crate::daemon::db::upsert_build(&db_path, &record)
         .map_err(|e| SoldrError::Other(format!("write build history: {e}")))?;
@@ -508,7 +508,7 @@ fn persist_build_log_history_inner(request: &BuildLogHistoryRequest<'_>) -> Resu
         migrate_pre_redaction: false,
     };
     let _ = crate::daemon::history_gc::sweep(paths, &db_path, &retention);
-    Ok(())
+    Ok(log_paths)
 }
 
 fn build_log_history_dir(paths: &SoldrPaths, build_session_id: u64) -> PathBuf {
@@ -539,7 +539,7 @@ fn write_always_on_build_log(
     ended_at_ms: i64,
     exit_code: i32,
     compile_journal_start_len: u64,
-) {
+) -> Option<PathBuf> {
     let request = crate::build_log::BuildLogRequest {
         paths,
         session_id,
@@ -551,8 +551,14 @@ fn write_always_on_build_log(
         compile_journal_path: Some(embedded_compile_journal_path(paths)),
         compile_journal_start_len,
     };
-    if let Err(err) = crate::build_log::write_build_log(&request) {
-        eprintln!("soldr warning: failed to write build log: {err}");
+    // soldr#1813: the written path is returned so the end-of-build log summary
+    // can name a file it knows exists, rather than a location it guessed.
+    match crate::build_log::write_build_log(&request) {
+        Ok(path) => Some(path),
+        Err(err) => {
+            eprintln!("soldr warning: failed to write build log: {err}");
+            None
+        }
     }
 }
 
@@ -560,6 +566,123 @@ fn file_len(path: &Path) -> u64 {
     std::fs::metadata(path)
         .map(|metadata| metadata.len())
         .unwrap_or(0)
+}
+
+fn compile_fallback_summary_message(count: usize, path: &Path) -> String {
+    format!(
+        "soldr: compiler cache unavailable for {count} compiler invocation(s); \
+         used direct compiler. Full details: {}",
+        path.display()
+    )
+}
+
+/// Returns the fallback-log path only when *this* session appended to it, so
+/// the end-of-build summary (soldr#1813) lists it as a log this build wrote
+/// rather than as a location that merely exists.
+fn emit_compile_fallback_summary(
+    paths: &SoldrPaths,
+    cursor: &crate::compile_dispatch::CompileFallbackCursor,
+    session_id: u64,
+) -> Option<PathBuf> {
+    match crate::compile_dispatch::compile_daemon_fallback_count_since(paths, cursor, session_id) {
+        Ok((0, _)) => None,
+        Ok((count, path)) => {
+            eprintln!("{}", compile_fallback_summary_message(count, &path));
+            Some(path)
+        }
+        Err(error) => {
+            eprintln!("soldr warning: failed to summarize compiler-cache fallbacks: {error}");
+            None
+        }
+    }
+}
+
+const FALLBACK_OUTPUT_SCRUB_MARKER: &str = ".soldr-fallback-output-scrub-v1";
+const FALLBACK_OUTPUT_SCRUB_LOCK: &str = ".soldr-fallback-output-scrub-v1.lock";
+
+#[derive(Debug, PartialEq, Eq)]
+enum FallbackOutputScrub {
+    AlreadyDone,
+    DeferredForActiveBuild(PathBuf),
+    Complete(usize),
+}
+
+/// Remove fallback notices persisted by older Soldr versions from Cargo's
+/// fingerprint diagnostics. The migration is target-local and marker-gated,
+/// so warm builds pay only one metadata lookup after the first successful
+/// scan. Replacing changed files via a temporary file deliberately breaks any
+/// hardlink instead of mutating a shared cache blob in place.
+fn scrub_cached_fallback_diagnostics_once(
+    target_dir: &Path,
+) -> Result<FallbackOutputScrub, SoldrError> {
+    std::fs::create_dir_all(target_dir)?;
+    let marker = target_dir.join(FALLBACK_OUTPUT_SCRUB_MARKER);
+    if marker.exists() {
+        return Ok(FallbackOutputScrub::AlreadyDone);
+    }
+
+    let lock_path = target_dir.join(FALLBACK_OUTPUT_SCRUB_LOCK);
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)?;
+    fs2::FileExt::lock_exclusive(&lock)?;
+    if marker.exists() {
+        return Ok(FallbackOutputScrub::AlreadyDone);
+    }
+
+    // Retain Cargo's real lock handles through the complete scan and marker
+    // publication. If another build already owns this target, defer without a
+    // marker so a later invocation retries after that build has quiesced.
+    let _cargo_locks = match crate::cache_lib::cargo_lock::probe(target_dir)? {
+        crate::cache_lib::cargo_lock::CargoLockProbe::Idle(guard) => guard,
+        crate::cache_lib::cargo_lock::CargoLockProbe::Active(path) => {
+            return Ok(FallbackOutputScrub::DeferredForActiveBuild(path));
+        }
+    };
+
+    let mut scrubbed = 0;
+    for entry in jwalk::WalkDir::new(target_dir)
+        .follow_links(false)
+        .max_depth(6)
+        .skip_hidden(false)
+    {
+        let entry = entry.map_err(std::io::Error::other)?;
+        if !entry.file_type().is_file()
+            || !entry.file_name().to_string_lossy().starts_with("output-")
+        {
+            continue;
+        }
+        let path = entry.path();
+        if !path
+            .components()
+            .any(|component| component.as_os_str() == std::ffi::OsStr::new(".fingerprint"))
+        {
+            continue;
+        }
+
+        let original = std::fs::read(&path)?;
+        let filtered =
+            crate::zccache_embedded::strip_internal_soldr_fallback_notices(original.clone());
+        if filtered == original {
+            continue;
+        }
+
+        no_cache_detach::prepare_path_for_replacement(&path)?;
+        let parent = path.parent().unwrap_or(target_dir);
+        let permissions = std::fs::metadata(&path)?.permissions();
+        let mut replacement = tempfile::NamedTempFile::new_in(parent)?;
+        replacement.write_all(&filtered)?;
+        replacement.flush()?;
+        replacement.persist(&path).map_err(|error| error.error)?;
+        std::fs::set_permissions(&path, permissions)?;
+        scrubbed += 1;
+    }
+
+    std::fs::write(marker, [])?;
+    Ok(FallbackOutputScrub::Complete(scrubbed))
 }
 
 /// Wait for the embedded compile journal to contain the expected number
@@ -727,20 +850,10 @@ fn read_build_cache_summary(
 
 fn read_build_miss_reasons(
     compile_journal_path: Option<&Path>,
-    session_journal_path: &Path,
-    session_log_path: &Path,
 ) -> Vec<crate::daemon::protocol::BuildMissReason> {
-    if let Some(compile_journal_path) = compile_journal_path {
-        let from_compile_journal = read_build_miss_reasons_from_journal(compile_journal_path);
-        if !from_compile_journal.is_empty() {
-            return from_compile_journal;
-        }
-    }
-    let from_session_journal = read_build_miss_reasons_from_journal(session_journal_path);
-    if !from_session_journal.is_empty() {
-        return from_session_journal;
-    }
-    read_build_miss_reasons_from_log(session_log_path)
+    compile_journal_path
+        .map(read_build_miss_reasons_from_journal)
+        .unwrap_or_default()
 }
 
 fn read_build_miss_reasons_from_journal(
@@ -778,35 +891,6 @@ fn parse_build_miss_reasons_from_journal(
     sorted_miss_reasons(counts)
 }
 
-fn read_build_miss_reasons_from_log(
-    log_path: &Path,
-) -> Vec<crate::daemon::protocol::BuildMissReason> {
-    let Ok(raw) = std::fs::read_to_string(log_path) else {
-        return Vec::new();
-    };
-    parse_build_miss_reasons_from_log(&raw)
-}
-
-fn parse_build_miss_reasons_from_log(
-    log_body: &str,
-) -> Vec<crate::daemon::protocol::BuildMissReason> {
-    let mut counts: BTreeMap<String, u64> = BTreeMap::new();
-    for line in log_body.lines().filter(|line| line.contains("[MISS]")) {
-        let reason = extract_miss_reason(line).unwrap_or_else(|| "unknown".to_string());
-        *counts.entry(reason).or_insert(0) += 1;
-    }
-    if counts.is_empty() {
-        for line in log_body
-            .lines()
-            .filter(|line| line.contains("verdict=Miss"))
-        {
-            let reason = extract_miss_reason(line).unwrap_or_else(|| "unknown".to_string());
-            *counts.entry(reason).or_insert(0) += 1;
-        }
-    }
-    sorted_miss_reasons(counts)
-}
-
 fn sorted_miss_reasons(
     counts: BTreeMap<String, u64>,
 ) -> Vec<crate::daemon::protocol::BuildMissReason> {
@@ -816,26 +900,6 @@ fn sorted_miss_reasons(
         .collect();
     reasons.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.reason.cmp(&b.reason)));
     reasons
-}
-
-fn extract_miss_reason(line: &str) -> Option<String> {
-    if let Some(rest) = line.split("(reason:").nth(1) {
-        let reason = rest.split(')').next()?.trim();
-        if !reason.is_empty() {
-            return Some(reason.to_string());
-        }
-    }
-    if let Some(rest) = line.split("reason=").nth(1) {
-        let reason = rest
-            .split_whitespace()
-            .next()?
-            .trim_matches(|c: char| matches!(c, ',' | ';' | ')' | ']'))
-            .trim();
-        if !reason.is_empty() {
-            return Some(reason.to_string());
-        }
-    }
-    None
 }
 
 fn json_u64(value: &serde_json::Value, key: &str) -> Option<u64> {
@@ -1051,16 +1115,11 @@ where
     Ok(lease)
 }
 
-/// Soldr-private opt-out flags for the auto target-GC hooks (#485).
-/// Stripped from the arg vector before forwarding to cargo, since
-/// cargo doesn't understand them.
+/// Retired target-GC opt-out flags, still stripped for compatibility.
 pub(crate) const NO_GC_TARGET_FLAG: &str = "--no-gc-target";
 pub(crate) const NO_GC_TARGET_BEFORE_FLAG: &str = "--no-gc-target-before";
 pub(crate) const NO_GC_TARGET_AFTER_FLAG: &str = "--no-gc-target-after";
-/// Env-var fallback for the wrapper-side path where cargo can't
-/// forward flags to soldr. Treated as equivalent to `--no-gc-target`
-/// when set to a non-empty value.
-pub(crate) const NO_GC_TARGET_ENV_VAR: &str = "SOLDR_NO_GC_TARGET";
+pub(crate) const DYLINT_DEPENDENCY_COOK_FLAG: &str = "--soldr-dylint-dependency-cook";
 
 const INHERITED_SOLDR_WORKSPACE_ENV_VARS: &[&str] = &[
     crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR,
@@ -1129,35 +1188,6 @@ impl Drop for FreshSoldrWorkspaceEnvGuard {
     }
 }
 
-/// Outcome of stripping the `--no-gc-target*` flags from a cargo arg
-/// vector. Mirrors the env-var fallback so callers can union all
-/// inputs into a single before/after decision.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct GcTargetOptOut {
-    pub before: bool,
-    pub after: bool,
-}
-
-impl GcTargetOptOut {
-    fn merged_with_env(mut self) -> Self {
-        if env_disables_target_gc() {
-            self.before = true;
-            self.after = true;
-        }
-        self
-    }
-}
-
-fn env_disables_target_gc() -> bool {
-    std::env::var_os(NO_GC_TARGET_ENV_VAR)
-        .map(|v| {
-            let s = v.to_string_lossy();
-            let t = s.trim();
-            !t.is_empty() && !t.eq_ignore_ascii_case("0") && !t.eq_ignore_ascii_case("false")
-        })
-        .unwrap_or(false)
-}
-
 fn env_flag_truthy(key: &str) -> bool {
     std::env::var_os(key)
         .map(|v| {
@@ -1181,12 +1211,10 @@ pub(crate) fn zccache_disable_requested() -> bool {
     env_flag_truthy("ZCCACHE_DISABLE")
 }
 
-/// Remove soldr-private `--no-gc-target*` flags from the arg vector and
-/// return the cleaned slice plus which passes the caller asked to skip.
+/// Remove retired `--no-gc-target*` flags from the argument vector.
 /// Flags after the `--` separator are passed through untouched.
-pub(crate) fn strip_no_gc_target_flags(args: &[String]) -> (Vec<String>, GcTargetOptOut) {
+pub(crate) fn strip_no_gc_target_flags(args: &[String]) -> Vec<String> {
     let mut cleaned = Vec::with_capacity(args.len());
-    let mut opt_out = GcTargetOptOut::default();
     let mut past_separator = false;
     for arg in args {
         if past_separator {
@@ -1199,28 +1227,40 @@ pub(crate) fn strip_no_gc_target_flags(args: &[String]) -> (Vec<String>, GcTarge
             continue;
         }
         match arg.as_str() {
-            NO_GC_TARGET_FLAG => {
-                opt_out.before = true;
-                opt_out.after = true;
-            }
-            NO_GC_TARGET_BEFORE_FLAG => opt_out.before = true,
-            NO_GC_TARGET_AFTER_FLAG => opt_out.after = true,
+            NO_GC_TARGET_FLAG | NO_GC_TARGET_BEFORE_FLAG | NO_GC_TARGET_AFTER_FLAG => {}
             _ => cleaned.push(arg.clone()),
         }
     }
-    (cleaned, opt_out)
+    cleaned
 }
 
-/// Resolve the cargo `target/` directory that an auto-prune pass should
-/// operate on. Mirrors cargo's resolution order:
+fn strip_dylint_dependency_cook_flag(args: &[String]) -> (Vec<String>, bool) {
+    let mut cleaned = Vec::with_capacity(args.len());
+    let mut found = false;
+    let mut past_separator = false;
+    for arg in args {
+        if arg == "--" {
+            past_separator = true;
+        }
+        if !past_separator && arg == DYLINT_DEPENDENCY_COOK_FLAG {
+            found = true;
+        } else {
+            cleaned.push(arg.clone());
+        }
+    }
+    (cleaned, found)
+}
+
+/// Resolve the Cargo `target/` directory used by front-door hooks.
+/// Mirrors Cargo's resolution order:
 /// 1. `--target-dir <DIR>` inside the arg list.
 /// 2. `CARGO_TARGET_DIR` env var (if non-empty).
 /// 3. `<workspace_root>/target` derived from the nearest enclosing
 ///    `Cargo.toml` to cwd.
 ///
-/// Returns `None` when no manifest can be found cheaply — the auto-hook
-/// silently skips in that case rather than guessing.
-fn resolve_target_dir_for_gc(args: &[String]) -> Option<std::path::PathBuf> {
+/// Returns `None` when no manifest can be found cheaply so callers can
+/// skip rather than guess.
+fn resolve_target_dir_for_hooks(args: &[String]) -> Option<std::path::PathBuf> {
     if let Some(value) = disk::cargo_arg_value(args, "--target-dir") {
         return Some(disk::absolutize_path(std::path::PathBuf::from(value)));
     }
@@ -1276,55 +1316,6 @@ fn canonicalize_future_path(path: &std::path::Path) -> std::path::PathBuf {
     }
 
     path.to_path_buf()
-}
-
-fn emit_auto_prune_summary(outcome: &crate::cache_lib::auto_target_gc::AutoPruneOutcome) {
-    if let Some(line) = render_summary(outcome) {
-        eprintln!("{line}");
-    }
-}
-
-/// Pre-cargo target-GC pass (#485), made restore-aware for issue #1558.
-///
-/// The keep-latest prune ranks hash families by recency and keeps only
-/// one family per artifact prefix. A rust-plan restore into a fresh
-/// `target/` legitimately materializes multiple live hash families per
-/// prefix (build-dependency vs. normal-dependency variants of the same
-/// crate, differing feature unification), all carrying the bundle's
-/// preserved timestamps. Running the destructive pass between the
-/// restore and the cargo launch therefore discarded families Cargo was
-/// about to declare Fresh, converting a correct restore into a wave of
-/// `Compiling` units ("target GC pruning 64 restored hash families").
-///
-/// When the immediately preceding verified restore materialized at
-/// least one file, the pass is skipped for this invocation only:
-/// * The protection is keyed to the verified plan — the restore itself
-///   validated toolchain/target/profile/inputs via the plan cache key,
-///   and it only runs into a target with zero populated `.fingerprint/`
-///   dirs (the #480 guard), so the tree content IS the verified bundle.
-/// * It expires conservatively — nothing is persisted; the post-build
-///   GC pass still runs unconditionally, after Cargo has re-established
-///   authoritative `invoked.timestamp` recency, so genuinely stale
-///   families are still pruned in the same build.
-/// * Unknown or partial state (no plan, skipped restore, zero files
-///   restored, restore error) falls back to today's GC behavior.
-///
-/// Returns `None` when the pass was skipped, otherwise the prune
-/// outcome for the caller to render.
-pub(crate) fn run_pre_cargo_target_gc(
-    target_dir: &std::path::Path,
-    restore_outcome: &crate::rust_plan::RustPlanRestoreOutcome,
-) -> Option<crate::cache_lib::auto_target_gc::AutoPruneOutcome> {
-    if let Some(restored) = restore_outcome.materialized_file_count() {
-        eprintln!(
-            "soldr: target-gc (before): skipped for {}; rust-plan restore just \
-             materialized {restored} file(s) — deferring to the post-build pass so \
-             cargo evaluates the restored hash families first (#1558)",
-            target_dir.display()
-        );
-        return None;
-    }
-    Some(auto_prune_target(target_dir, AutoPrunePhase::Before))
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -1502,12 +1493,53 @@ fn maybe_apply_rustfmt_zccache_shim(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ZthreadsRetryContext {
+    original_cargo_args: Vec<String>,
+    cache_enabled: bool,
+    trust_inherited_soldr_env: bool,
+}
+
+impl ZthreadsRetryContext {
+    fn new(
+        original_cargo_args: &[String],
+        cache_enabled: bool,
+        trust_inherited_soldr_env: bool,
+    ) -> Self {
+        Self {
+            original_cargo_args: original_cargo_args.to_vec(),
+            cache_enabled,
+            trust_inherited_soldr_env,
+        }
+    }
+
+    fn cli_args(&self) -> Vec<String> {
+        let mut retry_args = Vec::with_capacity(self.original_cargo_args.len() + 3);
+        if !self.cache_enabled {
+            retry_args.push(String::from("--no-cache"));
+        }
+        if self.trust_inherited_soldr_env {
+            retry_args.push(String::from("--trust-inherited-soldr-env"));
+        }
+        retry_args.push(String::from("cargo"));
+        retry_args.extend_from_slice(&self.original_cargo_args);
+        retry_args
+    }
+}
+
 pub(crate) async fn run_cargo_front_door(
     args: &[String],
     cache_enabled: bool,
-    zccache_source: ZccacheSourceArg,
     trust_inherited_soldr_env: bool,
 ) -> Result<i32, SoldrError> {
+    // Per-phase timing for the pre-Cargo front door (#1843). On a fully
+    // warm no-op, `soldr cargo check --workspace` spends ~740 ms here
+    // before Cargo is spawned at all — more than Cargo itself reports.
+    // `WrapperProfile` already instruments the per-rustc wrapper, but a
+    // warm no-op never invokes rustc, so that path prints nothing and the
+    // cost was unattributable. Zero-cost unless SOLDR_PROFILE_STARTUP is set.
+    let mut profile = crate::startup_profile::WrapperProfile::new();
+
     if cargo_args_use_reserved_no_cache(args) {
         return Err(SoldrError::Other(
             "`--no-cache` must appear before `cargo`, as in `soldr --no-cache cargo build`".into(),
@@ -1521,6 +1553,12 @@ pub(crate) async fn run_cargo_front_door(
 
     let trust_inherited_soldr_env =
         trust_inherited_soldr_env || env_flag_truthy(crate::TRUST_INHERITED_SOLDR_ENV_VAR);
+    // The stable-rustc fallback re-enters this front door. Snapshot the
+    // caller-facing contract before toolchain directives and Soldr-private
+    // Cargo flags are normalized so the retry performs the same processing
+    // exactly once.
+    let zthreads_retry_context =
+        ZthreadsRetryContext::new(args, cache_enabled, trust_inherited_soldr_env);
     let _fresh_workspace_env =
         FreshSoldrWorkspaceEnvGuard::apply_unless_trusted(trust_inherited_soldr_env);
 
@@ -1542,12 +1580,12 @@ pub(crate) async fn run_cargo_front_door(
             crate::daemon::lifecycle::preflight_displace_stale_daemon(&paths);
         }
     }
+    profile.mark("daemon_preflight");
 
-    // Strip soldr-private auto target-GC opt-out flags before any other
-    // arg-vector handling so downstream code (trampolines, cargo spawn)
-    // never sees them. The env-var fallback is unioned in below.
-    let (args_owned, gc_opt_out) = strip_no_gc_target_flags(args);
-    let gc_opt_out = gc_opt_out.merged_with_env();
+    // Retain the old target-GC flags as stripped compatibility no-ops.
+    let (args_without_dylint_cook_flag, dylint_dependency_cook) =
+        strip_dylint_dependency_cook_flag(args);
+    let args_owned = strip_no_gc_target_flags(&args_without_dylint_cook_flag);
     let (args_owned, explicit_toolchain) = subcommand::strip_cargo_toolchain_directive(&args_owned);
     let explicit_toolchain = explicit_toolchain.as_deref();
     let args: &[String] = &args_owned;
@@ -1593,6 +1631,7 @@ pub(crate) async fn run_cargo_front_door(
     };
 
     crate::toolchain::ensure_cargo_toolchain(explicit_toolchain)?;
+    profile.mark("ensure_cargo_toolchain");
     let paths = SoldrPaths::new()?;
     paths.ensure_dirs()?;
     let dylint_requested = first_cargo_subcommand(args) == Some("dylint");
@@ -1618,29 +1657,30 @@ pub(crate) async fn run_cargo_front_door(
         .or(explicit_toolchain);
     let cargo = resolve_toolchain_binary_for_channel("cargo", effective_toolchain)?;
     let rustc = resolve_toolchain_binary_for_channel("rustc", effective_toolchain)?;
+    // Deliberately uncached for the ambient default (`binaries.rs`), so this
+    // is up to two `rustup which` subprocesses on every invocation.
+    profile.mark("resolve_toolchain_binaries");
     let cargo_bin_dir = cargo
         .parent()
         .ok_or_else(|| SoldrError::Other("failed to resolve cargo bin directory".into()))?
         .to_path_buf();
     let existing_path = std::env::var_os("PATH");
-    // L3 (soldr#980): kick off the managed zccache binary fetch +
-    // extract + redb init on a background tokio task NOW. The rest of
-    // this front-door pipeline — known-subcommand fetch, env scrub,
-    // session-id stamp, target-registry memoization, pre-GC, low-disk
-    // probe, profile_debug detection, linker injection — does not
-    // depend on the resolved zccache path. Overlapping its wall-clock
-    // cost with that synchronous setup is worth ~1-2 s on cold builds
-    // where the binary is not already on disk. On warm builds the
-    // background future resolves effectively immediately so the join
-    // at `CargoCachePlan::finalize` is free.
+    // Build the embedded-cache session plan on a background Tokio task while
+    // the rest of the front-door pipeline performs known-subcommand fetch,
+    // environment scrubbing, session-id stamping, target-registry
+    // memoization, pre-GC, low-disk probing, profile_debug detection, and
+    // linker injection. Since soldr#1368 this no longer downloads or extracts
+    // a zccache binary; it prepares cache-root, rust-plan, and session state
+    // for the service embedded in soldr-daemon. On warm builds the background
+    // future resolves effectively immediately so the join at
+    // `CargoCachePlan::finalize` is free.
     //
     // We intentionally spawn after the run-trampoline branch above because
     // that path exits without spawning cargo, and we don't
     // want to start a fetch we'll just drop. `cache_enabled` here is
     // the same flag the original synchronous `CargoCachePlan::prepare`
     // gated on; passing `false` produces a no-op `Disabled` prefetch.
-    let cache_plan_prefetch =
-        cache_plan::CargoCachePlanPrefetch::start(cache_enabled, &paths, zccache_source);
+    let cache_plan_prefetch = cache_plan::CargoCachePlanPrefetch::start(cache_enabled, &paths);
 
     // If the user invoked a known ecosystem subcommand (e.g. `cargo nextest`),
     // fetch the corresponding `cargo-<sub>` binary and prepend its directory to
@@ -1667,12 +1707,13 @@ pub(crate) async fn run_cargo_front_door(
 
     let mut command = std::process::Command::new(&cargo);
     command.args(args);
-    apply_implicit_toolchain_homes(&mut command);
+    crate::binaries::apply_resolved_toolchain_homes(&mut command, &cargo);
     suppress_windows_console_window(&mut command);
-    // These soldr control variables are consumed by this front-door
-    // process. Letting cargo inherit them leaks daemon lifecycle policy
-    // into build scripts and test binaries that may spawn nested soldr.
+    // These Soldr control variables are consumed by this front-door
+    // process. Letting Cargo inherit them leaks daemon lifecycle or retry
+    // policy into build scripts and test binaries that may spawn nested Soldr.
     scrub_soldr_cache_lifecycle_env_for_child_cargo(&mut command);
+    command.env_remove(zthreads_fallback::ATTEMPTED_ENV);
     if !trust_inherited_soldr_env {
         scrub_inherited_soldr_workspace_env_for_child_cargo(&mut command);
     }
@@ -1725,6 +1766,15 @@ pub(crate) async fn run_cargo_front_door(
     }
     if let Some(plan) = &dylint_plan {
         plan.apply_to_command(&mut command);
+    }
+    if dylint_dependency_cook {
+        command.env_remove("RUSTC_WORKSPACE_WRAPPER");
+        for (name, _) in std::env::vars_os() {
+            let text = name.to_string_lossy();
+            if text.starts_with("DYLINT_") || text == "ZCCACHE_DYLINT_CACHE_INPUT_HASH" {
+                command.env_remove(name);
+            }
+        }
     }
 
     // Apply subcommand-derived env overrides (e.g. CC_<triple>=clang-cl
@@ -1783,6 +1833,10 @@ pub(crate) async fn run_cargo_front_door(
     if build_like_cargo {
         cook_hydrate::maybe_hydrate(args, &paths, &rustc);
     }
+    // Nothing here is memoized: a recursive walk hashing every Cargo.toml,
+    // plus `rustc -V`, `git config --get remote.origin.url` and
+    // `git branch --show-current` subprocesses, plus a daemon CookLookup.
+    profile.mark("cook_hydrate");
 
     let cargo_profile_debug_default = if build_like_cargo {
         profile_debug::maybe_apply_cargo_profile_debug_default(&mut command, args, &paths)?
@@ -1813,6 +1867,7 @@ pub(crate) async fn run_cargo_front_door(
         // commands and out of the rustc-wrapper hot path.
         gc::emit_startup_target_warning_if_due();
     }
+    profile.mark("gc_startup_warning");
     let dylint_shim_guard = if dylint_plan.is_some() && crate::shim_dir::should_install_shims() {
         Some(crate::shim_dir::build_dylint_shim_dir()?)
     } else {
@@ -1871,7 +1926,14 @@ pub(crate) async fn run_cargo_front_door(
     // flags doesn't silently rewire the prefetch decision.
     let mut cache_plan =
         CargoCachePlan::finalize(cache_enabled_for_cargo, cache_plan_prefetch).await?;
+    profile.mark("cache_plan_finalize");
     cache_plan.apply_to_command(&mut command, native_cache_target.as_deref())?;
+    if dylint_plan.is_some() && cache_plan.uses_managed_zccache() {
+        command.env(
+            "RUSTC_WRAPPER",
+            crate::binaries::dylint_wrapper_shim_binary(&paths)?,
+        );
+    }
 
     cache_plan.prepare_rust_artifact_plan(
         &cargo,
@@ -1926,7 +1988,7 @@ pub(crate) async fn run_cargo_front_door(
 
     // A preceding cached build may have materialized immutable outputs as
     // protected hardlinks to cache blobs. Whenever the finalized wrapper plan
-    // has no managed zccache session, detach shared target files locally
+    // has no embedded-cache session, detach shared target files locally
     // before the unmediated compiler can overwrite them. This must not depend
     // on the daemon being responsive. Conservatively include `install`:
     // configuration can select a persistent target root without a visible
@@ -1942,6 +2004,9 @@ pub(crate) async fn run_cargo_front_door(
             );
         }
     }
+    // Two full recursive walks of target/ plus a `cargo metadata`
+    // subprocess. Only runs without a zccache session (i.e. --no-cache).
+    profile.mark("no_cache_detach");
 
     // Target-registry memoization for the wrapper hot path (#440).
     // Without this, every rustc invocation re-opens redb and writes
@@ -1953,28 +2018,20 @@ pub(crate) async fn run_cargo_front_door(
     if build_like_cargo {
         let target_dir_for_memo: Option<std::path::PathBuf> = cache_plan.target_dir_for_hooks(args);
         if let Some(dir) = target_dir_for_memo.as_deref() {
-            apply_target_registry_memo(&mut command, dir, &paths);
-        }
-    }
-
-    // Pre-compile target-GC (#485). Only on build-like cargo invocations
-    // (build/check/test/run/...) and only when the user hasn't opted out
-    // via --no-gc-target / --no-gc-target-before / SOLDR_NO_GC_TARGET.
-    // Uses the rust_plan target_dir when available so the hook respects
-    // any CARGO_TARGET_DIR / --target-dir override the same way cargo
-    // and rust_plan do.
-    //
-    // Restore-aware since issue #1558: when the verified rust-plan
-    // restore above just materialized files into a fresh target/, the
-    // destructive keep-latest pass is skipped so Cargo — the freshness
-    // authority — evaluates the restored hash families first. See
-    // `run_pre_cargo_target_gc`.
-    if build_like_cargo && !gc_opt_out.before {
-        let target_dir = cache_plan.target_dir_for_hooks(args);
-        if let Some(dir) = target_dir.as_deref() {
-            if let Some(outcome) = run_pre_cargo_target_gc(dir, &restore_outcome) {
-                emit_auto_prune_summary(&outcome);
+            match scrub_cached_fallback_diagnostics_once(dir) {
+                Ok(FallbackOutputScrub::AlreadyDone | FallbackOutputScrub::Complete(0)) => {}
+                Ok(FallbackOutputScrub::DeferredForActiveBuild(_)) => {}
+                Ok(FallbackOutputScrub::Complete(count)) => eprintln!(
+                    "soldr: removed {count} stale compiler-cache fallback notice file(s) from {}",
+                    dir.display()
+                ),
+                Err(error) => eprintln!(
+                    "soldr warning: failed to remove stale compiler-cache fallback notices from {}: {error}",
+                    dir.display()
+                ),
             }
+            apply_target_registry_memo(&mut command, dir, &paths);
+            profile.mark("target_registry_memo");
         }
     }
 
@@ -2027,6 +2084,9 @@ pub(crate) async fn run_cargo_front_door(
             );
         }
     })?;
+    // Blocking shared flock on root-maintenance.lock (waits out any
+    // daemon maintenance pass) plus a synchronous BuildSessionStart IPC.
+    profile.mark("begin_build_session");
     // soldr#1368 observability restore: snapshot the embedded zccache
     // compile counters just before cargo runs so `finish_zccache_session`
     // can diff start-vs-end into the per-build hit/miss summary written to
@@ -2035,6 +2095,10 @@ pub(crate) async fn run_cargo_front_door(
         crate::cache::capture_build_baseline(&session.cache_dir, &session.session_id);
     }
     let compile_journal_start_len = file_len(&embedded_compile_journal_path(&paths));
+    let compile_fallback_cursor = crate::compile_dispatch::compile_daemon_fallback_cursor(&paths);
+    // Everything above is pure soldr overhead the user pays before Cargo
+    // starts. Emit the breakdown here so the total excludes Cargo itself.
+    profile.finish_labeled("cargo front door", "pre_spawn_tail");
     let cargo_run_result: CargoRunResult = if capture_cargo_artifacts {
         let target_dir = cache_plan
             .target_dir_for_hooks(args)
@@ -2062,7 +2126,7 @@ pub(crate) async fn run_cargo_front_door(
             let cleanup = cleanup_after_aborted_cargo_run(&cache_plan, args, timeout);
             let finish_result =
                 cache_plan.finish_zccache_session(command_lifetime_shutdown_timeout);
-            if let Some(session) = cache_plan.zccache_session() {
+            let build_log_paths = if let Some(session) = cache_plan.zccache_session() {
                 persist_build_log_history(BuildLogHistoryRequest {
                     paths: &paths,
                     build_session_id: session_id,
@@ -2073,9 +2137,11 @@ pub(crate) async fn run_cargo_front_door(
                     exit_code: -1,
                     ended_at_ms,
                     daemon_finalized,
-                });
-            }
-            write_always_on_build_log(
+                })
+            } else {
+                None
+            };
+            let build_log = write_always_on_build_log(
                 &paths,
                 session_id,
                 &session_repo_root,
@@ -2087,6 +2153,16 @@ pub(crate) async fn run_cargo_front_door(
             );
             crate::cache_lib::build_active::set(false);
             drop(build_activity_lease);
+            let compile_fallback_log =
+                emit_compile_fallback_summary(&paths, &compile_fallback_cursor, session_id);
+            // soldr#1813: an aborted/timed-out cargo run is exactly when the
+            // user most needs the log paths, and this arm always returns early —
+            // so the summary is emitted here too rather than at the shared tail.
+            log_summary::emit_session_log_summary(&log_summary::SessionLogs {
+                build_log,
+                build_log_paths,
+                compile_fallback_log,
+            });
             if let Err(finish_err) = finish_result {
                 eprintln!(
                     "soldr warning: failed to finish zccache session after aborted cargo run: {finish_err}"
@@ -2136,6 +2212,8 @@ pub(crate) async fn run_cargo_front_door(
         }
     };
     let captured_stderr_for_diagnosis = diagnostic_capture;
+    let compile_fallback_log =
+        emit_compile_fallback_summary(&paths, &compile_fallback_cursor, session_id);
 
     // Phase 2: send BuildSessionEnd before the success/failure
     // branches do any further work. Best-effort — never affects the
@@ -2168,19 +2246,6 @@ pub(crate) async fn run_cargo_front_door(
                 cache_plan.record_cargo_artifact_closure(paths, !paths.is_empty())?;
             }
             cache_plan.save_rust_artifacts(restore_outcome)?;
-            // Post-compile target-GC (#485). Same gating as the pre-pass —
-            // build-like cargo, no opt-out, resolve dir consistently with the
-            // pre-pass. The active-cargo-lock guard inside `auto_prune_target`
-            // is what keeps a parallel `cargo` in the same `target/` from
-            // racing this pass; we never emit a stderr line when that guard
-            // engages.
-            if build_like_cargo && !gc_opt_out.after {
-                let target_dir = cache_plan.target_dir_for_hooks(args);
-                if let Some(dir) = target_dir.as_deref() {
-                    let outcome = auto_prune_target(dir, AutoPrunePhase::After);
-                    emit_auto_prune_summary(&outcome);
-                }
-            }
             if let Some(plan) = trampoline_plan.as_ref() {
                 refresh_sidecar_after_cargo(plan);
             }
@@ -2214,7 +2279,7 @@ pub(crate) async fn run_cargo_front_door(
     }
 
     let finish_result = cache_plan.finish_zccache_session(command_lifetime_shutdown_timeout);
-    if let Some(session) = cache_plan.zccache_session() {
+    let build_log_paths = if let Some(session) = cache_plan.zccache_session() {
         persist_build_log_history(BuildLogHistoryRequest {
             paths: &paths,
             build_session_id: session_id,
@@ -2225,9 +2290,11 @@ pub(crate) async fn run_cargo_front_door(
             exit_code: status.code().unwrap_or(-1),
             ended_at_ms,
             daemon_finalized,
-        });
-    }
-    write_always_on_build_log(
+        })
+    } else {
+        None
+    };
+    let build_log = write_always_on_build_log(
         &paths,
         session_id,
         &session_repo_root,
@@ -2237,6 +2304,14 @@ pub(crate) async fn run_cargo_front_door(
         status.code().unwrap_or(-1),
         compile_journal_start_len,
     );
+    // soldr#1813: tell the user where the logs went. Printed here because this
+    // is the last point both the success and the compiler-failure paths pass
+    // through — everything below can bail out via `?` or the zthreads retry.
+    log_summary::emit_session_log_summary(&log_summary::SessionLogs {
+        build_log,
+        build_log_paths,
+        compile_fallback_log,
+    });
     // History is now copied, sanitized, indexed, and marked complete. Keep the
     // lease through that publication boundary so migration GC cannot remove a
     // half-written archive.
@@ -2259,7 +2334,11 @@ pub(crate) async fn run_cargo_front_door(
             ) && !resolved_toolchain_is_nightly(explicit_toolchain)
             {
                 emit_zthreads_fallback_warning(&plan.value);
-                return retry_zthreads_without_flag(args, explicit_toolchain, &plan);
+                return retry_zthreads_without_flag(
+                    &zthreads_retry_context,
+                    explicit_toolchain,
+                    &plan,
+                );
             }
         } else if !env_flag_truthy(zthreads_fallback::ATTEMPTED_ENV)
             && zthreads_fallback::diagnostic_matches(
@@ -2301,13 +2380,13 @@ fn emit_zthreads_fallback_warning(value: &str) {
 }
 
 fn retry_zthreads_without_flag(
-    args: &[String],
+    context: &ZthreadsRetryContext,
     explicit_toolchain: Option<&str>,
     plan: &zthreads_fallback::FallbackPlan,
 ) -> Result<i32, SoldrError> {
     let exe = std::env::current_exe()?;
     let mut command = std::process::Command::new(exe);
-    command.arg("cargo").args(args);
+    command.args(context.cli_args());
     command.env(zthreads_fallback::ATTEMPTED_ENV, "1");
     if let Some(toolchain) = explicit_toolchain {
         command.env("RUSTUP_TOOLCHAIN", toolchain);
@@ -2708,6 +2787,9 @@ async fn ensure_known_subcommand_tool(
                 "soldr: deferring to {exe_name} on PATH at {} (set SOLDR_FORCE_MANAGED_CARGO_SUBCOMMANDS=1 to override)",
                 path.display()
             );
+            if sub == "dylint" && find_on_path("dylint-link").is_none() {
+                extra_bin_dirs.push(dylint_link_bin_dir(paths).await?);
+            }
             // Even when cargo-zigbuild is provided by the host, it
             // still shells out to `zig`. Run the transitive bootstrap
             // before returning so the deferred-on-PATH branch doesn't
@@ -2729,55 +2811,43 @@ async fn ensure_known_subcommand_tool(
         }
     }
 
-    // cargo-dylint v6.0.1 publishes Linux GNU release assets, but not
-    // Windows or macOS ones. Keep its normal managed-fetch path on the
-    // supported host and use Soldr's pinned, wrapper-free source-build
-    // path elsewhere. The result is cached below ~/.soldr/bin, just like
-    // the explicitly requested soldr build-from-source flow.
-    if sub == "dylint" && dylint_requires_source_build() {
-        let plan = crate::build_from_source_cmd::resolve_plan("cargo-dylint", None, None, paths)?;
-        let binary = if plan.final_binary.is_file() {
-            eprintln!(
-                "soldr: using cached source-built cargo-dylint at {}",
-                plan.final_binary.display()
-            );
-            plan.final_binary.clone()
-        } else {
-            eprintln!(
-                "soldr: cargo-dylint has no prebuilt asset for this host; building pinned source fallback..."
-            );
-            crate::build_from_source_cmd::execute_plan(&plan)?.binary
-        };
-        let dir = binary.parent().ok_or_else(|| {
-            SoldrError::Other(format!(
-                "failed to resolve bin dir for source-built cargo-dylint: {}",
-                binary.display()
-            ))
-        })?;
-        extra_bin_dirs.push(dir.to_path_buf());
-        append_subcommand_transitive_bin_dirs(
-            sub,
+    // Dylint v6.0.1's published cargo-dylint binary is not relocatable:
+    // its driver manifest embeds the release runner's absolute
+    // `/home/runner/work/dylint/dylint/driver` path. For managed
+    // resolution, source-build the pinned cargo-dylint crate on every host
+    // so the installed driver source remains available and the result is
+    // portable across libc versions. A user-provided cargo-dylint on PATH
+    // remains an intentional override under the generic PATH-first policy.
+    // `dylint-link` is resolved separately and may still use its healthy
+    // official prebuilt.
+    if requires_managed_dylint_source_build(sub) {
+        return dylint_source_build_bootstrap(
             args,
             paths,
-            &mut extra_bin_dirs,
-            &mut extra_env,
-            &mut extra_cargo_args,
+            extra_bin_dirs,
+            extra_env,
+            extra_cargo_args,
+            "cargo-dylint v6.0.1's official binary is not relocatable",
         )
-        .await?;
-        return Ok(SubcommandToolBootstrap {
-            bin_dirs: extra_bin_dirs,
-            env: extra_env,
-            cargo_args: extra_cargo_args,
-        });
+        .await;
     }
+
     let version = spec
         .pinned_version
         .map(|v| VersionSpec::Exact(v.to_string()))
         .unwrap_or(VersionSpec::Latest);
 
     eprintln!("soldr: fetching {}...", spec.crate_name);
-    let result =
-        crate::fetch::fetch_tool_for_host_with_paths(spec.crate_name, &version, paths).await?;
+    let result = match crate::fetch::fetch_tool_for_host_with_paths(
+        spec.crate_name,
+        &version,
+        paths,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => return Err(error),
+    };
 
     if result.cached {
         eprintln!(
@@ -2815,8 +2885,196 @@ async fn ensure_known_subcommand_tool(
     })
 }
 
-fn dylint_requires_source_build() -> bool {
-    !cfg!(all(target_os = "linux", target_env = "gnu"))
+async fn dylint_source_build_bootstrap(
+    args: &[String],
+    paths: &SoldrPaths,
+    mut extra_bin_dirs: Vec<std::path::PathBuf>,
+    mut extra_env: Vec<(String, String)>,
+    mut extra_cargo_args: Vec<String>,
+    reason: &str,
+) -> Result<SubcommandToolBootstrap, SoldrError> {
+    eprintln!("soldr: {reason}; preparing pinned source fallback...");
+    extra_bin_dirs.push(source_built_dylint_bin_dir("cargo-dylint", paths)?);
+    extra_bin_dirs.push(dylint_link_bin_dir(paths).await?);
+    append_subcommand_transitive_bin_dirs(
+        "dylint",
+        args,
+        paths,
+        &mut extra_bin_dirs,
+        &mut extra_env,
+        &mut extra_cargo_args,
+    )
+    .await?;
+    Ok(SubcommandToolBootstrap {
+        bin_dirs: extra_bin_dirs,
+        env: extra_env,
+        cargo_args: extra_cargo_args,
+    })
+}
+
+async fn dylint_link_bin_dir(paths: &SoldrPaths) -> Result<std::path::PathBuf, SoldrError> {
+    if let Some(directory) = cached_source_built_dylint_bin_dir("dylint-link", paths)? {
+        eprintln!(
+            "soldr: using cached source-built dylint-link at {}",
+            directory.display()
+        );
+        return Ok(directory);
+    }
+    let pinned_version = crate::fetch::known_tools::lookup_by_crate("dylint-link")
+        .and_then(|spec| spec.pinned_version)
+        .ok_or_else(|| SoldrError::Other("dylint-link must have a registry pin".into()))?;
+    let version = VersionSpec::Exact(pinned_version.to_string());
+    eprintln!("soldr: fetching dylint-link...");
+    match crate::fetch::fetch_tool_for_host_with_paths("dylint-link", &version, paths).await {
+        Ok(result) => {
+            if let Err(error) = validated_dylint_link_prebuilt(&result) {
+                if dylint_link_prebuilt_requires_source_fallback(&error) {
+                    eprintln!(
+                        "soldr: dylint-link prebuilt is unavailable or not executable on this host ({error}); \
+                         building pinned source fallback..."
+                    );
+                    return source_built_dylint_bin_dir("dylint-link", paths);
+                }
+                return Err(error);
+            }
+            if result.cached {
+                eprintln!("soldr: using cached dylint-link v{}", result.version);
+            } else {
+                eprintln!("soldr: downloaded dylint-link v{}", result.version);
+            }
+            result
+                .binary_path
+                .parent()
+                .map(std::path::Path::to_path_buf)
+                .ok_or_else(|| {
+                    SoldrError::Other(format!(
+                        "failed to resolve bin dir for fetched dylint-link: {}",
+                        result.binary_path.display()
+                    ))
+                })
+        }
+        Err(error) if dylint_link_prebuilt_requires_source_fallback(&error) => {
+            eprintln!(
+                "soldr: dylint-link prebuilt is unavailable or not executable on this host ({error}); \
+                 building pinned source fallback..."
+            );
+            source_built_dylint_bin_dir("dylint-link", paths)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn validated_dylint_link_prebuilt(result: &crate::fetch::FetchResult) -> Result<(), SoldrError> {
+    let target = crate::core::TargetTriple::host()?;
+    crate::fetch::smoke_test_or_evict(&result.binary_path, "dylint-link", &target)
+}
+
+fn source_built_dylint_bin_dir(
+    tool: &str,
+    paths: &SoldrPaths,
+) -> Result<std::path::PathBuf, SoldrError> {
+    if let Some(directory) = cached_source_built_dylint_bin_dir(tool, paths)? {
+        eprintln!(
+            "soldr: using cached source-built {tool} at {}",
+            directory.display()
+        );
+        return Ok(directory);
+    }
+    let plan = crate::build_from_source_cmd::resolve_plan(tool, None, None, paths)?;
+    let binary = crate::build_from_source_cmd::execute_plan(&plan)?.binary;
+    binary
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .ok_or_else(|| {
+            SoldrError::Other(format!(
+                "failed to resolve bin dir for source-built {tool}: {}",
+                binary.display()
+            ))
+        })
+}
+
+fn cached_source_built_dylint_bin_dir(
+    tool: &str,
+    paths: &SoldrPaths,
+) -> Result<Option<std::path::PathBuf>, SoldrError> {
+    let plan = crate::build_from_source_cmd::resolve_plan(tool, None, None, paths)?;
+    if !crate::build_from_source_cmd::cached_build_is_valid(&plan)? {
+        if plan.final_binary.exists() || plan.final_binary.with_extension("sha256").exists() {
+            eprintln!(
+                "soldr: rejecting incomplete or mismatched source-built {tool} cache at {}",
+                plan.final_binary.display()
+            );
+        }
+        return Ok(None);
+    }
+    plan.final_binary
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .map(Some)
+        .ok_or_else(|| {
+            SoldrError::Other(format!(
+                "failed to resolve bin dir for cached source-built {tool}: {}",
+                plan.final_binary.display()
+            ))
+        })
+}
+
+fn dylint_link_prebuilt_requires_source_fallback(error: &SoldrError) -> bool {
+    // The fetcher uses this typed variant when the release has no asset for
+    // the current host (Dylint 6.0.1 publishes Linux assets only). Network,
+    // checksum, and trust failures use other variants and must remain hard
+    // errors rather than being masked by a source build.
+    matches!(error, SoldrError::UnsupportedPlatform(_))
+        || matches!(
+            error,
+            SoldrError::Other(message) if message.starts_with("smoke test failed:")
+        )
+}
+
+fn requires_managed_dylint_source_build(sub: &str) -> bool {
+    sub == "dylint"
+}
+
+/// Pick the cargo-dylint binary to use given the outcome of the managed
+/// prebuilt fetch, falling back to the pinned source build when the
+/// prebuilt is unusable on this host.
+///
+/// Split out of `ensure_known_subcommand_tool` so the fallback policy is
+/// unit-testable without a network round-trip: the fetch outcome is an
+/// already-resolved `Result` and the source build is a closure.
+///
+/// The failure this exists for is a *smoke-test* failure, not a download
+/// failure. `fetch_tool_for_host_with_paths` runs `--version` on the
+/// extracted binary (soldr#936, `smoke_test_or_evict`) and evicts it on a
+/// non-zero exit, so upstream's GLIBC_2.39-linked 6.0.1 asset downloads
+/// fine on Debian 12 and then fails the probe with a loader error — which
+/// is exactly the `Err` arm below.
+#[cfg(test)]
+fn resolve_dylint_binary<S>(
+    crate_name: &str,
+    fetched: Result<crate::fetch::FetchResult, SoldrError>,
+    source_build: S,
+) -> Result<std::path::PathBuf, SoldrError>
+where
+    S: FnOnce() -> Result<std::path::PathBuf, SoldrError>,
+{
+    match fetched {
+        Ok(result) => {
+            if result.cached {
+                eprintln!("soldr: using cached {} v{}", crate_name, result.version);
+            } else {
+                eprintln!("soldr: downloaded {} v{}", crate_name, result.version);
+            }
+            Ok(result.binary_path)
+        }
+        Err(error) => {
+            eprintln!(
+                "soldr: prebuilt cargo-dylint is unusable on this host ({error}); \
+                 falling back to pinned source build..."
+            );
+            source_build()
+        }
+    }
 }
 
 fn insert_cargo_global_args(args: &[String], cargo_args: &[String]) -> Vec<String> {

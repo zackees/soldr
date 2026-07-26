@@ -38,6 +38,27 @@ pub fn maybe_hydrate(args: &[String], paths: &SoldrPaths, rustc: &Path) {
     let _ = try_hydrate(args, paths, rustc);
 }
 
+/// Whether computing a cook lookup key can still pay off.
+///
+/// Deliberately conservative in both directions:
+///
+/// * An **explicitly empty** index (`entries == 0`) is the one case we
+///   skip on. Nothing can match, so the key work is pure waste.
+/// * A status reply **without** cook stats means "unknown" — an older
+///   daemon predating the field would otherwise lose hydration it used
+///   to perform, so we fall through and behave exactly as before.
+/// * An **unreachable** daemon skips too: [`client::cook_lookup`] talks
+///   to the same socket and cannot succeed either, so the key work would
+///   be discarded a few hundred milliseconds later regardless. This does
+///   not suppress hydration that would otherwise have happened — it only
+///   stops paying for a lookup that is already guaranteed to fail.
+fn cook_lookup_is_worthwhile(sock: &Path) -> bool {
+    match client::status(sock) {
+        Ok(info) => info.cook_stats.is_none_or(|stats| stats.entries > 0),
+        Err(_) => false,
+    }
+}
+
 fn try_hydrate(args: &[String], paths: &SoldrPaths, rustc: &Path) -> Option<()> {
     let manifest_path = crate::trampoline::find_nearest_manifest()?;
     let manifest_dir = manifest_path.parent()?.to_path_buf();
@@ -59,6 +80,21 @@ fn try_hydrate(args: &[String], paths: &SoldrPaths, rustc: &Path) -> Option<()> 
         return None;
     }
 
+    let sock = client::default_sock_path(paths);
+    // Building the lookup key below is expensive: a recursive walk that
+    // hashes every Cargo.toml, plus three subprocesses (`rustc -V`,
+    // `git config --get remote.origin.url`, `git branch --show-current`).
+    // Measured at ~138 ms per invocation on Windows (#1843).
+    //
+    // Cook is opt-in — the index stays empty until `soldr cook` populates
+    // it — so for most users every one of those milliseconds computes a
+    // key for an index that cannot possibly match. Ask the daemon first:
+    // one Status round-trip is far cheaper, and it is the same daemon the
+    // lookup would talk to anyway.
+    if !cook_lookup_is_worthwhile(&sock) {
+        return None;
+    }
+
     let recipe_hash = compute_recipe_hash_proxy(&manifest_dir)?;
     let triple = resolve_target_triple(&manifest_dir, args)?;
     let profile_name = resolve_profile_name(args);
@@ -69,7 +105,6 @@ fn try_hydrate(args: &[String], paths: &SoldrPaths, rustc: &Path) -> Option<()> 
     let rustc_version = rustc_version_string(rustc)?;
     let origin = origin_url(&manifest_dir);
 
-    let sock = client::default_sock_path(paths);
     let lineage = branch_lineage(&manifest_dir);
     let outcome = client::cook_lookup_with_branch_lineage(
         &sock,

@@ -279,9 +279,9 @@ fn long_root_help_expands_intro_and_zccache_details() {
     let help = Cli::command().render_long_help().to_string();
 
     assert!(help.contains("soldr wraps cargo and the rustup toolchain"));
-    assert!(help.contains("Pick the zccache runtime backing the compilation cache."));
-    assert!(help.contains("`managed` (default) uses the zccache service compiled into soldr"));
-    assert!(help.contains("`system` uses the `zccache` on PATH"));
+    assert!(help.contains("Select the zccache integration backing the compilation cache."));
+    assert!(help.contains("`managed` (default) uses the zccache service compiled into"));
+    assert!(help.contains("`system` is retained as a compatibility spelling"));
 }
 
 #[test]

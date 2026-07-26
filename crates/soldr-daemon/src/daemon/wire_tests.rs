@@ -3,7 +3,8 @@
 
 use super::*;
 use crate::daemon::protocol::{
-    BuildCacheSummary, BuildLogPaths, BuildMissReason, Response, StatusInfo,
+    BuildCacheSummary, BuildLogPaths, BuildMissReason, CacheFlushInfo, CacheFlushStepInfo,
+    Response, ShutdownAck, StatusInfo,
 };
 
 crate::timed_test!(record_target_touch_round_trips, {
@@ -34,6 +35,34 @@ crate::timed_test!(flush_caches_request_round_trips, {
         decode_request(&bytes).expect("decode"),
         Request::FlushCaches
     ));
+});
+
+crate::timed_test!(cache_flush_response_preserves_incomplete_step_details, {
+    let info = CacheFlushInfo {
+        complete: false,
+        pending_writes_drained: true,
+        index_writer_drained: true,
+        steps: vec![
+            CacheFlushStepInfo {
+                step: "artifact_store".into(),
+                status: "completed".into(),
+                error: None,
+            },
+            CacheFlushStepInfo {
+                step: "depgraph".into(),
+                status: "failed".into(),
+                error: Some("disk full".into()),
+            },
+        ],
+        artifact_entries: 41,
+        metadata_entries: 73,
+    };
+    let decoded =
+        decode_response(&encode_response(&Response::CacheFlushed(info.clone()))).expect("decode");
+    match decoded {
+        Response::CacheFlushed(decoded) => assert_eq!(decoded, info),
+        other => panic!("expected CacheFlushed, got {other:?}"),
+    }
 });
 
 crate::timed_test!(compile_stats_verb_round_trips, {
@@ -132,6 +161,7 @@ crate::timed_test!(status_response_round_trips_with_cook_stats, {
     let info = StatusInfo {
         version: 7,
         pid: 4242,
+        generation: 1_700_000_000_123,
         uptime_secs: 60,
         request_count: 17,
         cook_stats: Some(CookStats {
@@ -155,6 +185,35 @@ crate::timed_test!(status_response_round_trips_with_cook_stats, {
         Response::Status(decoded_info) => assert_eq!(decoded_info, info),
         other => panic!("unexpected variant: {other:?}"),
     }
+});
+
+crate::timed_test!(shutdown_ack_round_trips_responder_generation, {
+    let response = Response::ShuttingDown(ShutdownAck {
+        pid: 4242,
+        generation: 1_700_000_000_123,
+    });
+    let bytes = encode_response(&response);
+    assert!(matches!(
+        decode_response(&bytes).expect("decode"),
+        Response::ShuttingDown(ShutdownAck {
+            pid: 4242,
+            generation: 1_700_000_000_123,
+        })
+    ));
+});
+
+crate::timed_test!(legacy_empty_shutdown_ack_decodes_with_zero_identity, {
+    // v17 encoded WireResponse.shutting_down as an empty nested message.
+    // v18 must continue to decode that shape so the client can pair it with
+    // the immediately preceding v17 Status response.
+    let legacy_bytes = [0x12, 0x00];
+    assert!(matches!(
+        decode_response(&legacy_bytes).expect("decode legacy shutdown ack"),
+        Response::ShuttingDown(ShutdownAck {
+            pid: 0,
+            generation: 0,
+        })
+    ));
 });
 
 crate::timed_test!(cook_hit_response_round_trips, {

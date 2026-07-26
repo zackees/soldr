@@ -65,7 +65,7 @@ fn resolve_target_directory(
         child_command,
         cargo_target_dir.as_deref(),
         test_cargo_bin.as_deref(),
-        super::resolve_target_dir_for_gc,
+        super::resolve_target_dir_for_hooks,
     )
 }
 
@@ -100,7 +100,7 @@ fn resolve_target_directory_with_env(
     let mut probe = std::process::Command::new(tool);
     probe.args(["metadata", "--format-version", "1", "--no-deps"]);
     probe.args(crate::rust_plan::cargo_metadata_passthrough_args(args));
-    crate::apply_implicit_toolchain_homes(&mut probe);
+    crate::binaries::apply_resolved_toolchain_homes(&mut probe, tool);
     suppress_windows_console_window(&mut probe);
     probe.env_remove("MAKEFLAGS");
     probe.env_remove("CARGO_MAKEFLAGS");
@@ -388,6 +388,35 @@ fn prepare_file(parent: &OpenDirectory, name: &OsStr) -> Result<PreparedFile, So
     prepare_file_with_final_rename(parent, name, |directory, temp_name, final_name| {
         directory.rename(temp_name, directory, final_name)
     })
+}
+
+/// Make one target file safe to replace without mutating a shared cache blob.
+///
+/// The fallback-output migration uses this before publishing filtered
+/// diagnostics. In particular, the Windows path needs the same
+/// `FileDispositionInfoEx` handling as the full no-cache preflight when the
+/// target entry is a protected read-only hardlink.
+pub(super) fn prepare_path_for_replacement(path: &Path) -> Result<(), SoldrError> {
+    let parent = path.parent().ok_or_else(|| {
+        SoldrError::Other(format!(
+            "cannot prepare target file without a parent: {}",
+            path.display()
+        ))
+    })?;
+    let name = path.file_name().ok_or_else(|| {
+        SoldrError::Other(format!(
+            "cannot prepare target file without a name: {}",
+            path.display()
+        ))
+    })?;
+    let directory = open_target_root(parent)?.ok_or_else(|| {
+        SoldrError::Other(format!(
+            "target file parent disappeared while preparing {}",
+            path.display()
+        ))
+    })?;
+    let _ = prepare_file(&directory, name)?;
+    Ok(())
 }
 
 fn prepare_file_with_final_rename(

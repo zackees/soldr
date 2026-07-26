@@ -1,0 +1,21 @@
+[package]
+name = "ban_forbidden_fn"
+version = "0.1.0"
+description = "Forbid calls to dep_user::forbidden_marker_fn; soldr#1788 dylint perf fixture"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Pinned to match cargo-dylint 6.0.1, the version soldr pins in
+# crates/soldr-fetch/src/fetch/known_tools.rs (`pinned_version: Some("6.0.1")`).
+# dylint_linting is versioned in lockstep with cargo-dylint upstream
+# (trailofbits/dylint), so this is a plain crates.io version pin rather than
+# the git-rev pin the zccache ban_tmp_literal reference uses (that pin was
+# for an interim fix ahead of a crates.io release; 6.0.1 is already released).
+dylint_linting = "6.0.1"
+
+[package.metadata.rust-analyzer]
+rustc_private = true

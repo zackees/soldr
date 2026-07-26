@@ -245,8 +245,8 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
     },
     // Phase 5 — web/wasm + cache. Top-level tools invoked directly.
     // `cargo-dylint` is the compiler-plugin runner used by `soldr lint`.
-    // Upstream publishes Linux GNU archives; other hosts use Soldr's
-    // source-build fallback in the cargo front door (soldr#1721).
+    // Dylint 6.0.1's archive embeds its CI checkout path, so managed cargo
+    // front-door resolution source-builds this exact pin on every host.
     ToolSpec {
         crate_name: "cargo-dylint",
         cargo_subcommand: Some("dylint"),
@@ -255,6 +255,16 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         tag_prefix: None,
         pinned_version: Some("6.0.1"),
         wraps_inner_cargo_build: true, // Dylint runs cargo check-like builds.
+    },
+    // Companion linker required by every Dylint lint-library package.
+    ToolSpec {
+        crate_name: "dylint-link",
+        cargo_subcommand: None,
+        binary_name: "dylint-link",
+        repo: Some(("trailofbits", "dylint")),
+        tag_prefix: None,
+        pinned_version: Some("6.0.1"),
+        wraps_inner_cargo_build: false,
     },
     ToolSpec {
         crate_name: "wasm-pack",
@@ -541,6 +551,7 @@ mod tests {
             "trunk",
             "sccache",
             "maturin",
+            "dylint-link",
         ] {
             let spec = lookup_by_crate(crate_name)
                 .unwrap_or_else(|| panic!("missing registry entry for {crate_name}"));

@@ -143,7 +143,14 @@ After two pushes to the same branch, you should be able to confirm the cache lin
    - run: soldr cache
    ```
 
-   The output includes the managed zccache root and status lines from zccache. For a healthy warm build, look for non-zero cached compilations or hit counts, plus the `zccache rust-plan restore/save` JSON summaries emitted by `soldr cargo ...`. If `build-cache-hit=true` but zccache still reports zero cached compilations, the build-artifact cache restored but did not produce compiler-cache reuse; check whether the target-cache layer also restored and whether Cargo invalidated fingerprints before zccache could hit.
+   The output includes the embedded zccache cache root and daemon-reported
+   counters. For a healthy warm build, look for non-zero cached compilations
+   or hit counts, plus the `zccache rust-plan restore/save` JSON summaries
+   emitted by `soldr cargo ...`. If `build-cache-hit=true` but zccache still
+   reports zero cached compilations, the build-artifact cache restored but did
+   not produce compiler-cache reuse; check whether the target-cache layer also
+   restored and whether Cargo invalidated fingerprints before zccache could
+   hit.
 
 ## Debugging Target-Cache Restores That Still Rebuild
 

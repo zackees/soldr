@@ -5,8 +5,8 @@
 //! wrapper path was removed in #980 L1 second pass — embedded is mandatory.
 
 use crate::core::{suppress_windows_console_window, SoldrError};
+use crate::resolve_toolchain_binary;
 use crate::startup_profile::WrapperProfile;
-use crate::{apply_implicit_toolchain_homes, resolve_toolchain_binary};
 
 /// Known toolchain binaries that cargo may invoke through RUSTC_WRAPPER
 /// or RUSTC_WORKSPACE_WRAPPER. When soldr is set as a wrapper, cargo
@@ -19,7 +19,7 @@ pub(crate) fn is_wrapper_invocation(arg: &str) -> bool {
         .and_then(std::ffi::OsStr::to_str)
         .unwrap_or(arg);
 
-    WRAPPER_PASSTHROUGH_TOOLS.contains(&stem)
+    WRAPPER_PASSTHROUGH_TOOLS.contains(&stem) || stem == "dylint-driver"
 }
 
 /// Detect rustc-style compiler invocations cargo issues through
@@ -94,7 +94,7 @@ pub(crate) fn is_non_cacheable_rustc(args: &[String]) -> bool {
 }
 
 fn routes_through_embedded_zccache(tool_stem: &str) -> bool {
-    matches!(tool_stem, "rustc" | "clippy-driver")
+    tool_stem == "dylint-driver" || WRAPPER_PASSTHROUGH_TOOLS.contains(&tool_stem)
 }
 
 /// Cargo nests the workspace compiler inside the outer wrapper as
@@ -256,7 +256,8 @@ pub(crate) fn run_rustc_wrapper(
             profile.finish("before_test_override_spawn");
             let mut command = std::process::Command::new(&zccache_bin);
             command.args(&compile_args[1..]);
-            apply_implicit_toolchain_homes(&mut command);
+            let tool_path = resolve_wrapper_tool_path(&compile_args[1], tool_stem)?;
+            crate::binaries::apply_resolved_toolchain_homes(&mut command, &tool_path);
             suppress_windows_console_window(&mut command);
             let status = command.status()?;
             return Ok(status.code().unwrap_or(1));
@@ -287,8 +288,7 @@ pub(crate) fn run_rustc_wrapper(
         // propagated to cargo unchanged. `SOLDR_DAEMON_REQUIRED=1`
         // restores the pre-#1300 hard-fail for CI lanes that want to
         // catch daemon regressions.
-        let result = match crate::compile_dispatch::compile_via_daemon_detailed(&compile_args[1..])
-        {
+        return match crate::compile_dispatch::compile_via_daemon_detailed(&compile_args[1..]) {
             Ok(code) => Ok(code),
             Err(failure) if crate::compile_dispatch::should_fall_back_to_direct_rustc(&failure) => {
                 crate::compile_dispatch::log_direct_exec_fallback_once(&failure);
@@ -296,7 +296,6 @@ pub(crate) fn run_rustc_wrapper(
             }
             Err(failure) => Err(failure.into_soldr_error()),
         };
-        return result;
     }
 
     direct_exec_tool(tool_arg, tool_stem, &compile_args, Some(profile))
@@ -314,17 +313,11 @@ fn direct_exec_tool(
     effective_args: &[String],
     profile: Option<WrapperProfile>,
 ) -> Result<i32, SoldrError> {
-    // Resolve the tool binary. If it's already a full path, use it
-    // directly. Otherwise resolve via rustup.
-    let tool_path: std::path::PathBuf = if std::path::Path::new(tool_arg).is_absolute() {
-        tool_arg.into()
-    } else {
-        resolve_toolchain_binary(tool_stem)?
-    };
+    let tool_path = resolve_wrapper_tool_path(tool_arg, tool_stem)?;
 
-    let mut command = std::process::Command::new(tool_path);
+    let mut command = std::process::Command::new(&tool_path);
     command.args(&effective_args[2..]);
-    apply_implicit_toolchain_homes(&mut command);
+    crate::binaries::apply_resolved_toolchain_homes(&mut command, &tool_path);
     suppress_windows_console_window(&mut command);
     if let Some(profile) = profile {
         profile.finish("before_tool_spawn");
@@ -332,6 +325,24 @@ fn direct_exec_tool(
     let status = command.status()?;
 
     Ok(status.code().unwrap_or(1))
+}
+
+/// Resolve a wrapper compiler identity before deriving its toolchain homes.
+/// Cargo may pass an absolute path, a relative path with components, or a bare
+/// tool name. Every wrapper execution path must classify and execute the same
+/// compiler Cargo supplied.
+fn resolve_wrapper_tool_path(
+    tool_arg: &str,
+    tool_stem: &str,
+) -> Result<std::path::PathBuf, SoldrError> {
+    let tool_path = std::path::Path::new(tool_arg);
+    if tool_path.is_absolute() {
+        Ok(tool_path.to_path_buf())
+    } else if tool_path.components().count() > 1 {
+        Ok(std::env::current_dir()?.join(tool_path))
+    } else {
+        resolve_toolchain_binary(tool_stem)
+    }
 }
 
 struct StdinSourceFile {

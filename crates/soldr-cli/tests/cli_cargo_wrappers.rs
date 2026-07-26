@@ -13,44 +13,6 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-fn fake_cargo_fmt_script(log_path: &Path, source_path: &Path, rustfmt: &Path) -> String {
-    #[cfg(windows)]
-    {
-        format!(
-            "@echo off\n\
-             set \"fmt=%RUSTFMT%\"\n\
-             if not defined RUSTFMT set \"fmt={2}\"\n\
-             echo cargo fmt rustfmt=%fmt% env_rustfmt=%RUSTFMT% cache=%SOLDR_CACHE_ENABLED%>>\"{0}\"\n\
-             if \"%~1\"==\"fmt\" (\n\
-               call \"%fmt%\" \"{1}\"\n\
-               exit /b %ERRORLEVEL%\n\
-             )\n\
-             echo unsupported fake cargo fmt invocation %* 1>&2\n\
-             exit /b 1\n",
-            log_path.display(),
-            source_path.display(),
-            rustfmt.display()
-        )
-    }
-    #[cfg(not(windows))]
-    {
-        format!(
-            "#!/bin/sh\n\
-             fmt=\"${{RUSTFMT:-{2}}}\"\n\
-             echo \"cargo fmt rustfmt=$fmt env_rustfmt=${{RUSTFMT:-}} cache=${{SOLDR_CACHE_ENABLED:-}}\" >> \"{0}\"\n\
-             if [ \"$1\" = \"fmt\" ]; then\n\
-               \"$fmt\" \"{1}\"\n\
-               exit $?\n\
-             fi\n\
-             echo \"unsupported fake cargo fmt invocation: $*\" >&2\n\
-             exit 1\n",
-            log_path.display(),
-            source_path.display(),
-            rustfmt.display()
-        )
-    }
-}
-
 fn fake_cargo_doc_script(log_path: &Path, source_path: &Path, rustdoc: &Path) -> String {
     #[cfg(windows)]
     {
@@ -159,24 +121,6 @@ fn fake_cargo_miri_script(log_path: &Path) -> String {
     }
 }
 
-fn install_fake_cargo_fmt_toolchain(
-    log_path: &Path,
-    source_path: &Path,
-) -> (PathBuf, PathBuf, PathBuf, PathBuf, PathBuf) {
-    let (rustup, cargo, rustc, rustfmt) = install_fake_rustup_toolchain(log_path);
-    let tool_dir = cargo
-        .parent()
-        .expect("fake cargo should live in a tool dir")
-        .to_path_buf();
-    let zccache = fake_script_path(&tool_dir, "zccache");
-    write_fake_script(
-        &cargo,
-        &fake_cargo_fmt_script(log_path, source_path, &rustfmt),
-    );
-    write_fake_script(&zccache, &fake_zccache_script(log_path));
-    (rustup, cargo, rustc, rustfmt, zccache)
-}
-
 fn install_fake_cargo_doc_toolchain(
     log_path: &Path,
     source_path: &Path,
@@ -218,14 +162,6 @@ fn install_fake_direct_rustc_like_toolchain(
     );
     write_fake_script(&zccache, &fake_zccache_script(log_path));
     (rustup, rustc, clippy_driver, zccache, tool_dir)
-}
-
-fn write_rustfmt_source(cache_root: &Path) -> PathBuf {
-    let src_dir = cache_root.join("src");
-    fs::create_dir_all(&src_dir).expect("failed to create rustfmt source dir");
-    let source_path = src_dir.join("lib.rs");
-    fs::write(&source_path, "fn main( ) {}\n").expect("failed to write rustfmt source");
-    source_path
 }
 
 fn write_rustc_like_source(cache_root: &Path) -> PathBuf {
@@ -950,16 +886,20 @@ fn rustfmt_file_invocation_routes_through_zccache_formatter() {
 }
 
 #[test]
-fn rustfmt_file_invocation_uses_embedded_format_cache_without_external_cli() {
+fn rustfmt_recursive_runs_while_explicit_skip_children_uses_embedded_cache() {
     let cache_root = unique_temp_dir("rustfmt-embedded-formatter");
     let log_path = cache_root.join("tool.log");
     let source_path = write_rustfmt_source(&cache_root);
     let (rustup, _, _, _) = install_fake_rustup_toolchain(&log_path);
     let format_cache_root = cache_root.join("explicit-zccache");
 
-    let run = || {
-        isolated_soldr_command()
-            .arg("rustfmt")
+    let run = |skip_children: bool| {
+        let mut command = isolated_soldr_command();
+        command.arg("rustfmt");
+        if skip_children {
+            command.args(["--config", "skip_children=true"]);
+        }
+        command
             .arg(&source_path)
             .current_dir(&cache_root)
             .env("SOLDR_CACHE_DIR", &cache_root)
@@ -975,7 +915,7 @@ fn rustfmt_file_invocation_uses_embedded_format_cache_without_external_cli() {
             .output()
             .expect("failed to run soldr rustfmt through the embedded format cache")
     };
-    let output = run();
+    let output = run(false);
 
     assert!(
         output.status.success(),
@@ -996,12 +936,36 @@ fn rustfmt_file_invocation_uses_embedded_format_cache_without_external_cli() {
         "embedded format cache should pass the source file to rustfmt: {log}"
     );
 
-    let cached_output = run();
+    let recursive_output = run(false);
     assert!(
-        cached_output.status.success(),
-        "cached rustfmt invocation failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&cached_output.stdout),
-        String::from_utf8_lossy(&cached_output.stderr)
+        recursive_output.status.success(),
+        "second recursive rustfmt invocation failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&recursive_output.stdout),
+        String::from_utf8_lossy(&recursive_output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(&log_path)
+            .expect("failed to reread fake rustfmt log")
+            .lines()
+            .filter(|line| line.starts_with("rustfmt "))
+            .count(),
+        2,
+        "recursive rustfmt must run again so changed child modules cannot be missed"
+    );
+
+    let nonrecursive_first = run(true);
+    assert!(
+        nonrecursive_first.status.success(),
+        "first nonrecursive rustfmt invocation failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&nonrecursive_first.stdout),
+        String::from_utf8_lossy(&nonrecursive_first.stderr)
+    );
+    let nonrecursive_cached = run(true);
+    assert!(
+        nonrecursive_cached.status.success(),
+        "cached nonrecursive rustfmt invocation failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&nonrecursive_cached.stdout),
+        String::from_utf8_lossy(&nonrecursive_cached.stderr)
     );
     let cached_log = fs::read_to_string(&log_path).expect("failed to reread fake rustfmt log");
     assert_eq!(
@@ -1009,8 +973,8 @@ fn rustfmt_file_invocation_uses_embedded_format_cache_without_external_cli() {
             .lines()
             .filter(|line| line.starts_with("rustfmt "))
             .count(),
-        1,
-        "second identical invocation should hit the embedded format cache: {cached_log}"
+        3,
+        "only explicit skip_children=true may hit the embedded marker cache: {cached_log}"
     );
     assert!(
         format_cache_root.join("fmt").is_dir(),
@@ -1854,3 +1818,371 @@ fn explicit_toolchain_home_env_vars_win_over_repo_local_homes() {
         "repo-local homes should not leak into explicit-home runs: {log}"
     );
 }
+
+timed_test!(
+    cargo_front_door_memoizes_successful_toolchain_preparation,
+    Duration::from_secs(60),
+    {
+        let workspace = unique_temp_dir("cargo-toolchain-prepare-memo");
+        let soldr_root = workspace.join("soldr-root");
+        let rustup_home = workspace.join("rustup-home");
+        let toolchain = rustup_home.join("toolchains").join("1.94.1-test-host");
+        let rustup_log = workspace.join("rustup.log");
+        let cargo_log = workspace.join("cargo.log");
+        let rustup = install_logging_fake_rustup(&rustup_log);
+        let cargo = install_logging_fake_cargo(&cargo_log);
+        let (_, rustc, _) = install_fake_toolchain(&cargo_log);
+
+        fs::create_dir_all(toolchain.join("bin")).expect("create fake toolchain bin");
+        fs::create_dir_all(toolchain.join("lib").join("rustlib"))
+            .expect("create fake toolchain rustlib");
+        fs::write(toolchain.join("bin").join("rustc"), b"fake-rustc-v1")
+            .expect("seed fake rustc identity");
+        fs::write(
+            toolchain.join("lib").join("rustlib").join("components"),
+            b"rustc-test-host\nrustfmt-preview-test-host\nclippy-preview-test-host\n",
+        )
+        .expect("seed fake component identity");
+        seed_rust_toolchain_toml(
+            &workspace,
+            "[toolchain]\nchannel = \"1.94.1\"\nprofile = \"minimal\"\ncomponents = [\"rustfmt\", \"clippy\"]\n",
+        );
+
+        let run = || {
+            isolated_soldr_command()
+                .args(["--no-cache", "cargo", "--version"])
+                .current_dir(&workspace)
+                .env("SOLDR_CACHE_DIR", &soldr_root)
+                .env_remove("SOLDR_ROOT")
+                .env("RUSTUP_HOME", &rustup_home)
+                .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+                .env("SOLDR_TEST_CARGO_BIN", &cargo)
+                .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+                .env("PATH", isolated_test_path())
+                .env_remove("RUSTUP_TOOLCHAIN")
+                .output()
+                .expect("run soldr cargo front door")
+        };
+
+        let first = run();
+        assert!(
+            first.status.success(),
+            "first cargo invocation failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&first.stdout),
+            String::from_utf8_lossy(&first.stderr)
+        );
+        let first_rustup = read_logged_rustup_invocations(&rustup_log);
+        assert!(
+            !first_rustup.is_empty(),
+            "first invocation must prepare through rustup"
+        );
+
+        fs::write(&rustup_log, b"").expect("clear fake rustup log");
+        let second = run();
+        assert!(
+            second.status.success(),
+            "second cargo invocation failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&second.stdout),
+            String::from_utf8_lossy(&second.stderr)
+        );
+        assert!(
+            read_logged_rustup_invocations(&rustup_log).is_empty(),
+            "matching warm invocation must launch zero rustup subprocesses"
+        );
+    }
+);
+
+timed_test!(
+    cargo_front_door_never_memoizes_failed_toolchain_preparation,
+    Duration::from_secs(60),
+    {
+        let workspace = unique_temp_dir("cargo-toolchain-prepare-failure");
+        let soldr_root = workspace.join("soldr-root");
+        let rustup_home = workspace.join("rustup-home");
+        let toolchain = rustup_home.join("toolchains").join("1.94.1-test-host");
+        let rustup_log = workspace.join("rustup.log");
+        let cargo_log = workspace.join("cargo.log");
+        let rustup = install_failing_fake_rustup(&rustup_log);
+        let cargo = install_logging_fake_cargo(&cargo_log);
+        let (_, rustc, _) = install_fake_toolchain(&cargo_log);
+
+        fs::create_dir_all(toolchain.join("bin")).expect("create fake toolchain bin");
+        fs::create_dir_all(toolchain.join("lib").join("rustlib"))
+            .expect("create fake toolchain rustlib");
+        fs::write(toolchain.join("bin").join("rustc"), b"fake-rustc-v1")
+            .expect("seed fake rustc identity");
+        fs::write(
+            toolchain.join("lib").join("rustlib").join("components"),
+            b"rustc-test-host\n",
+        )
+        .expect("seed fake component identity");
+        seed_rust_toolchain_toml(
+            &workspace,
+            "[toolchain]\nchannel = \"1.94.1\"\nprofile = \"minimal\"\n",
+        );
+
+        let run = || {
+            isolated_soldr_command()
+                .args(["--no-cache", "cargo", "--version"])
+                .current_dir(&workspace)
+                .env("SOLDR_CACHE_DIR", &soldr_root)
+                .env_remove("SOLDR_ROOT")
+                .env("RUSTUP_HOME", &rustup_home)
+                .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+                .env("SOLDR_TEST_CARGO_BIN", &cargo)
+                .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+                .env("PATH", isolated_test_path())
+                .env_remove("RUSTUP_TOOLCHAIN")
+                .output()
+                .expect("run soldr cargo front door")
+        };
+
+        let failed = run();
+        assert!(
+            !failed.status.success(),
+            "failing preparation unexpectedly succeeded"
+        );
+        let memo_dir = soldr_root.join("cache").join("toolchain-prepare-v1");
+        assert!(
+            !memo_dir.exists()
+                || fs::read_dir(&memo_dir)
+                    .expect("read memo dir")
+                    .next()
+                    .is_none(),
+            "failed preparation must not write a success memo"
+        );
+
+        write_fake_script(&rustup, &fake_logging_rustup_script(&rustup_log));
+        fs::write(&rustup_log, b"").expect("clear fake rustup log");
+        let retried = run();
+        assert!(
+            retried.status.success(),
+            "retry after failed preparation failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&retried.stdout),
+            String::from_utf8_lossy(&retried.stderr)
+        );
+        assert!(
+            !read_logged_rustup_invocations(&rustup_log).is_empty(),
+            "retry must prepare again instead of trusting a failed attempt"
+        );
+    }
+);
+
+timed_test!(
+    cargo_front_door_invalidates_toolchain_preparation_memo,
+    Duration::from_secs(180),
+    {
+        let workspace = unique_temp_dir("cargo-toolchain-prepare-invalidation");
+        let soldr_root = workspace.join("soldr-root");
+        let first_rustup_home = workspace.join("rustup-home-a");
+        let second_rustup_home = workspace.join("rustup-home-b");
+        let rustup_log = workspace.join("rustup.log");
+        let cargo_log = workspace.join("cargo.log");
+        let first_rustup = install_logging_fake_rustup(&rustup_log);
+        let second_rustup = install_logging_fake_rustup(&rustup_log);
+        let cargo = install_logging_fake_cargo(&cargo_log);
+        let (_, rustc, _) = install_fake_toolchain(&cargo_log);
+        let host_triple = soldr_cli::core::TargetTriple::host()
+            .expect("detect test host triple")
+            .triple();
+
+        let seed_toolchain = |home: &Path, channel: &str| {
+            // Match rustup's real channel-alias layout. A synthetic
+            // `<channel>-test-host` directory can coexist with the real
+            // host-qualified alias under CI and correctly makes production
+            // memo lookup reject the otherwise ambiguous channel.
+            let toolchain = home
+                .join("toolchains")
+                .join(format!("{channel}-{host_triple}"));
+            fs::create_dir_all(toolchain.join("bin")).expect("create fake toolchain bin");
+            fs::create_dir_all(toolchain.join("lib").join("rustlib"))
+                .expect("create fake toolchain rustlib");
+            fs::write(
+                toolchain.join("bin").join("rustc"),
+                format!("fake-rustc-{channel}"),
+            )
+            .expect("seed fake rustc identity");
+            fs::write(
+                toolchain.join("lib").join("rustlib").join("components"),
+                b"rustc-test-host\nrustfmt-preview-test-host\nclippy-preview-test-host\n",
+            )
+            .expect("seed fake component identity");
+            toolchain
+        };
+        let first_194 = seed_toolchain(&first_rustup_home, "1.94.1");
+        let _first_195 = seed_toolchain(&first_rustup_home, "1.95.0");
+        let second_195 = seed_toolchain(&second_rustup_home, "1.95.0");
+
+        let run =
+            |manifest: &str, rustup_home: &Path, rustup: &Path, explicit_channel: Option<&str>| {
+                seed_rust_toolchain_toml(&workspace, manifest);
+                let mut command = isolated_soldr_command();
+                command.args(["--no-cache", "cargo"]);
+                if let Some(channel) = explicit_channel {
+                    command.arg(format!("+{channel}"));
+                }
+                command
+                    .arg("--version")
+                    .current_dir(&workspace)
+                    .env("SOLDR_CACHE_DIR", &soldr_root)
+                    .env_remove("SOLDR_ROOT")
+                    .env("RUSTUP_HOME", rustup_home)
+                    .env("SOLDR_TEST_RUSTUP_BIN", rustup)
+                    .env("SOLDR_TEST_CARGO_BIN", &cargo)
+                    .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+                    .env("PATH", isolated_test_path())
+                    .env_remove("RUSTUP_TOOLCHAIN")
+                    .output()
+                    .expect("run soldr cargo front door")
+            };
+        let assert_prepares = |label: &str, output: std::process::Output, rustup_log: &Path| {
+            assert!(
+                output.status.success(),
+                "{label} invocation failed\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                !read_logged_rustup_invocations(rustup_log).is_empty(),
+                "{label} must invalidate the memo and prepare through rustup"
+            );
+        };
+        let base = "[toolchain]\nchannel = \"1.94.1\"\nprofile = \"minimal\"\ncomponents = [\"rustfmt\"]\ntargets = [\"wasm32-unknown-unknown\"]\n";
+
+        assert_prepares(
+            "initial",
+            run(base, &first_rustup_home, &first_rustup, None),
+            &rustup_log,
+        );
+        let memo_dir = soldr_root.join("cache").join("toolchain-prepare-v1");
+        let memo_entries = || {
+            let mut entries = fs::read_dir(&memo_dir)
+                .into_iter()
+                .flatten()
+                .filter_map(Result::ok)
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            entries.sort();
+            entries
+        };
+        let initial_memos = memo_entries();
+        fs::write(&rustup_log, b"").expect("clear rustup log");
+        let warm = run(base, &first_rustup_home, &first_rustup, None);
+        let warm_invocations = read_logged_rustup_invocations(&rustup_log);
+        assert!(
+            warm.status.success(),
+            "warm invocation failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&warm.stdout),
+            String::from_utf8_lossy(&warm.stderr)
+        );
+        assert!(
+            warm_invocations.is_empty(),
+            "unchanged warm invocation must use the memo\n\
+             initial memos: {initial_memos:#?}\n\
+             warm memos: {:#?}\n\
+             warm rustup invocations: {warm_invocations:#?}\n\
+             warm stderr:\n{}",
+            memo_entries(),
+            String::from_utf8_lossy(&warm.stderr)
+        );
+
+        let variants = [
+            (
+                "profile",
+                "[toolchain]\nchannel = \"1.94.1\"\nprofile = \"default\"\ncomponents = [\"rustfmt\"]\ntargets = [\"wasm32-unknown-unknown\"]\n",
+            ),
+            (
+                "components",
+                "[toolchain]\nchannel = \"1.94.1\"\nprofile = \"default\"\ncomponents = [\"rustfmt\", \"clippy\"]\ntargets = [\"wasm32-unknown-unknown\"]\n",
+            ),
+            (
+                "targets",
+                "[toolchain]\nchannel = \"1.94.1\"\nprofile = \"default\"\ncomponents = [\"rustfmt\", \"clippy\"]\ntargets = [\"wasm32-unknown-unknown\", \"x86_64-unknown-linux-musl\"]\n",
+            ),
+            (
+                "channel",
+                "[toolchain]\nchannel = \"1.95.0\"\nprofile = \"default\"\ncomponents = [\"rustfmt\", \"clippy\"]\ntargets = [\"wasm32-unknown-unknown\", \"x86_64-unknown-linux-musl\"]\n",
+            ),
+        ];
+        for (label, manifest) in variants {
+            fs::write(&rustup_log, b"").expect("clear rustup log");
+            assert_prepares(
+                label,
+                run(manifest, &first_rustup_home, &first_rustup, None),
+                &rustup_log,
+            );
+        }
+        let channel_195 = variants.last().expect("channel variant").1;
+
+        fs::write(&rustup_log, b"").expect("clear rustup log");
+        assert_prepares(
+            "explicit channel",
+            run(
+                channel_195,
+                &first_rustup_home,
+                &first_rustup,
+                Some("1.95.0"),
+            ),
+            &rustup_log,
+        );
+
+        fs::write(&rustup_log, b"").expect("clear rustup log");
+        assert_prepares(
+            "rustup binary",
+            run(
+                channel_195,
+                &first_rustup_home,
+                &second_rustup,
+                Some("1.95.0"),
+            ),
+            &rustup_log,
+        );
+
+        fs::write(&rustup_log, b"").expect("clear rustup log");
+        assert_prepares(
+            "rustup home",
+            run(
+                channel_195,
+                &second_rustup_home,
+                &second_rustup,
+                Some("1.95.0"),
+            ),
+            &rustup_log,
+        );
+
+        fs::write(
+            second_195.join("lib").join("rustlib").join("components"),
+            b"rustc-test-host\n",
+        )
+        .expect("mutate component state");
+        fs::write(&rustup_log, b"").expect("clear rustup log");
+        assert_prepares(
+            "installed components",
+            run(
+                channel_195,
+                &second_rustup_home,
+                &second_rustup,
+                Some("1.95.0"),
+            ),
+            &rustup_log,
+        );
+
+        fs::remove_dir_all(&second_195).expect("remove active toolchain");
+        fs::write(&rustup_log, b"").expect("clear rustup log");
+        assert_prepares(
+            "missing toolchain",
+            run(
+                channel_195,
+                &second_rustup_home,
+                &second_rustup,
+                Some("1.95.0"),
+            ),
+            &rustup_log,
+        );
+
+        assert!(
+            first_194.is_dir(),
+            "unrelated installed toolchain should remain intact"
+        );
+    }
+);

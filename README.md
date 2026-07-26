@@ -169,13 +169,19 @@ When you run `soldr`, the tool should do the obvious thing:
 - pick MSVC on Windows by default
 - fetch the tool you asked for
 - cache it locally
-- run the built-in zccache service so Rust builds get transparent caching without manual wrapper setup
+- host its embedded zccache service so Rust builds get transparent caching
+  without manual wrapper or daemon setup
 
 If soldr solves that one problem well, it becomes a super tool: the command you reach for first, because it makes the rest of the stack behave.
 
 - **Tool acquisition** (the crgx half): Need `maturin`, `cargo-dylint`, or any crate binary? soldr fetches a pre-built binary from GitHub Releases in seconds. No `cargo install` from source. Cached locally for instant reuse. On `0.5.x`, this is still an upstream trust decision rather than a repo-side trust guarantee; see [docs/TRUST_BOUNDARIES.md](./docs/TRUST_BOUNDARIES.md).
 
-- **Compilation caching** (the zccache half): `soldr cargo ...` uses the zccache service compiled into Soldr. soldr owns the daemon/session wiring and keeps its object store under the active Soldr root at `cache/zccache/daemon-state/embedded-v1/<zccache-version>/objects`, so production and development roots remain isolated.
+- **Compilation caching** (the zccache half): `soldr cargo ...` routes rustc
+  invocations through the zccache service embedded in `soldr-daemon`. zccache
+  is compiled into the Soldr binaries; there is no separately downloaded or
+  standalone zccache daemon. Soldr owns the build-session wiring and keeps its
+  object store under the active Soldr root at
+  `cache/zccache/daemon-state/embedded-v1/<zccache-version>/objects`.
 
 ```bash
 # Build through soldr's front door:
@@ -201,7 +207,13 @@ soldr nextest run              # == soldr cargo nextest run
 soldr maturin build --release
 soldr cargo-dylint check
 soldr rustfmt src/main.rs
+soldr dylint cook --workspace --all-targets  # exact-nightly dependency warmup
 ```
+
+Rustfmt still runs through Soldr. Recursive invocations always execute the real
+formatter because Cargo's explicit crate-root argv does not include child
+modules that rustfmt discovers itself. A content-marker shortcut is used only
+for invocations that explicitly set `skip_children=true`.
 
 ## Use soldr as your PEP 517 build backend (instead of maturin)
 
@@ -305,7 +317,11 @@ flowchart TD
     B -->|"anything else<br/>maturin · cargo-nextest · cbindgen · ..."| E["<b>Tool-fetch mode</b><br/>resolve via known_tools,<br/>download from GitHub Releases,<br/>exec the fetched binary."]
 ```
 
-When you run `soldr cargo build`, the two other modes both come into play. soldr acts as the dispatch-mode front door, then cargo re-invokes soldr once per crate as the RUSTC_WRAPPER — that second soldr is the cache-mode instance that talks to the managed zccache daemon:
+When you run `soldr cargo build`, the two other modes both come into play.
+soldr acts as the dispatch-mode front door, then cargo re-invokes soldr once
+per crate as the `RUSTC_WRAPPER` — that second soldr is the cache-mode
+instance that sends the compile to the zccache service embedded in
+`soldr-daemon`:
 
 ```mermaid
 sequenceDiagram
@@ -314,30 +330,38 @@ sequenceDiagram
     participant S1 as soldr (front door)
     participant C as cargo
     participant S2 as soldr (RUSTC_WRAPPER)
-    participant Z as zccache daemon
+    participant D as soldr-daemon
+    participant Z as embedded zccache
     participant R as real rustc
 
     U->>S1: soldr cargo build --release
     S1->>S1: dispatch mode: cargo verb
-    S1->>Z: start managed zccache if needed
     S1->>C: exec cargo (RUSTC_WRAPPER=soldr)
     loop per crate
         C->>S2: soldr [path-to-rustc] [args]
-        S2->>Z: query cache (hash of inputs)
+        S2->>D: stream compile request
+        D->>Z: compile (hash inputs)
         alt cache hit
-            Z-->>S2: cached artifact
+            Z-->>D: cached artifact
+            D-->>S2: streamed result
             S2-->>C: emit artifact, exit 0
         else cache miss
             Z->>R: forward to rustc
             R-->>Z: fresh artifact
             Z->>Z: store keyed by input hash
-            Z-->>S2: artifact
+            Z-->>D: artifact
+            D-->>S2: streamed result
             S2-->>C: emit artifact, exit 0
         end
     end
     C-->>S1: build complete
     S1-->>U: exit
 ```
+
+The wrapper may run from a compiler-named multicall shim, but daemon recovery
+always executes a canonical `soldr-daemon` alias. A daemon-lifetime singleton
+lock, bind-before-publish startup, and PID/socket ownership checks prevent an
+older or idle-timed-out process from deleting a newer daemon's endpoint.
 
 Tool fetches are much simpler — no cargo, no rustc, no wrapper handshake:
 
@@ -378,10 +402,10 @@ If you also have many separate test binaries, consider consolidating them under 
 
 ## Design goals
 
-- **One obvious command**: Fetch tools, pick the right Windows target, and run through managed zccache through the same entry point.
+- **One obvious command**: Fetch tools, pick the right Windows target, and run through Soldr's embedded zccache service through the same entry point.
 - **Front-door builds**: `soldr cargo ...` is the primary build UX.
-- **Invisible caching**: `soldr cargo ...` uses a soldr-managed zccache by default, with `soldr --no-cache cargo ...` as the opt-out.
-- **Real cache controls**: `soldr status`, `soldr cache`, and `soldr clean` report and manage the soldr-managed zccache state, while `soldr purge` removes all Soldr-managed cache artifacts for bug clearing and benchmarking.
+- **Invisible caching**: `soldr cargo ...` uses the zccache service embedded in `soldr-daemon` by default, with `soldr --no-cache cargo ...` as the opt-out.
+- **Real cache controls**: `soldr status`, `soldr cache`, and `soldr clean` report and manage embedded-zccache state, while `soldr purge` removes all Soldr-managed cache artifacts for bug clearing and benchmarking.
 - **One cache boundary**: official soldr keeps its tools and cache state under `~/.soldr/`; development builds use `~/.soldr-dev/`. Use `SOLDR_CACHE_DIR` to select an explicit root.
 - **Bounded while idle**: the long-lived daemon owns only its selected root,
   checks pressure every five minutes, expires old state daily, and installs no

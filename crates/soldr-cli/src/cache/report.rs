@@ -44,7 +44,7 @@ pub(super) struct CacheReportOutput {
     /// integration test locks this contract in.
     last_session: Option<serde_json::Value>,
     /// Output of `zccache analyze --json` over the per-session journal,
-    /// when the managed zccache supports it. `null` otherwise.
+    /// when an analyzer surface is available. `null` otherwise.
     rollups: Option<serde_json::Value>,
     /// Empty for now — populated by future rule passes that turn the
     /// session + rollups into AI-readable diagnoses.
@@ -78,8 +78,8 @@ fn collect_cache_report_output_for_workspace(
     paths: &SoldrPaths,
     workspace_root: &Path,
 ) -> Result<CacheReportOutput, SoldrError> {
-    // soldr#1368: no private managed-zccache daemon any more — report on
-    // the shared soldr-managed zccache dir.
+    // soldr#1368: no private standalone zccache daemon any more — report on
+    // the shared Soldr-owned embedded-service directory.
     let zccache_dir = managed_zccache_cache_dir(paths)?;
     let global_stats_path = crate::cache_lib::session_stats_path(&zccache_dir);
     let global_journal_path = crate::cache_lib::session_journal_path(&zccache_dir);
@@ -111,9 +111,8 @@ fn collect_cache_report_output_for_workspace(
             }
         }
     } else {
-        notes.push(
-            "last_session: file missing — run a build with managed zccache first".to_string(),
-        );
+        notes
+            .push("last_session: file missing — run a cache-enabled Soldr build first".to_string());
         None
     };
 
@@ -126,7 +125,7 @@ fn collect_cache_report_output_for_workspace(
     let rollups: Option<serde_json::Value> = None;
     if journal_present {
         notes.push(
-            "rollups: `zccache analyze` is unavailable — compile caching runs through the              soldr-daemon embedded zccache service (see `soldr daemon status`)"
+            "rollups: `zccache analyze` is unavailable — compile caching runs through the soldr-daemon embedded zccache service (see `soldr daemon status`)"
                 .to_string(),
         );
     } else {

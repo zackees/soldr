@@ -16,6 +16,15 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+/// Private parent-to-wrapper handoff for the canonical daemon executable.
+///
+/// Cargo invokes Soldr through compiler-named hardlinks such as `rustc`.
+/// Spawning a long-lived daemon from that `current_exe()` gives the process a
+/// `rustc` executable identity, which the PID-recycling safety gate must reject.
+/// The Cargo front door therefore materializes a `soldr-daemon` alias and
+/// passes its absolute path through this variable.
+pub const SOLDR_DAEMON_EXE_ENV_VAR: &str = "SOLDR_INTERNAL_DAEMON_EXE";
+
 #[derive(Debug)]
 pub enum LifecycleError {
     Io(std::io::Error),
@@ -130,6 +139,13 @@ fn direct_pid_file_live_for_stem(paths: &SoldrPaths, expected_stem: &str) -> Opt
 /// and revert to the pre-#1495 "first daemon wins" behavior.
 pub(crate) const SOLDR_DAEMON_DISPLACE_ENV: &str = "SOLDR_DAEMON_DISPLACE";
 
+/// Normal upper bound for an acknowledged graceful shutdown.
+///
+/// Embedded cache persistence may legitimately take minutes on a large or
+/// slow cache. Once a daemon acknowledges shutdown callers wait for that exact
+/// generation and never convert this deadline into permission to signal it.
+pub const GRACEFUL_SHUTDOWN_WAIT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+
 pub(crate) fn displacement_enabled() -> bool {
     match std::env::var(SOLDR_DAEMON_DISPLACE_ENV) {
         Ok(v) => {
@@ -168,6 +184,26 @@ fn is_live_current_version_direct(paths: &SoldrPaths) -> Option<u32> {
     current_version_claim_matches(paths).then_some(pid)
 }
 
+fn direct_status_current_version(paths: &SoldrPaths) -> Option<u32> {
+    let pid = direct_pid_file_live(paths)?;
+    let sock = crate::daemon::client::default_sock_path(paths);
+    let status_pid = crate::daemon::client::status(&sock).ok()?.pid;
+    preflight_identity_matches(
+        Some(pid),
+        Some(status_pid),
+        current_version_claim_matches(paths),
+    )
+    .then_some(pid)
+}
+
+fn preflight_identity_matches(
+    recorded_live_pid: Option<u32>,
+    status_pid: Option<u32>,
+    current_version_claim: bool,
+) -> bool {
+    current_version_claim && recorded_live_pid.is_some() && recorded_live_pid == status_pid
+}
+
 /// Version-blind occupancy check: is the singleton endpoint held by a
 /// live soldr daemon process at all? Accepts both the sibling
 /// `soldr-daemon` binary and the via-self `soldr` form (CI / slim
@@ -193,45 +229,105 @@ fn pid_is_soldr_daemon(pid: u32) -> bool {
         ) || pid_exe_stem_matches(pid, "soldr"))
 }
 
-/// Displace the stale daemon currently holding the endpoint so a
-/// current-version daemon can take over (soldr#1495). Graceful first:
-/// ask it to shut down over the wire (works for a same-`PROTOCOL_VERSION`
-/// stale release). If that does not evict it within the budget, fall back
-/// to a verified-PID signal (SIGTERM→SIGKILL / TerminateProcess) — always
-/// re-verifying the PID is alive and still a soldr daemon before
-/// signalling. On success the stale PID file, socket, and version claim
-/// are removed so the successor can bind cleanly. Returns whether the
-/// endpoint was freed.
-pub fn displace_stale_daemon(paths: &SoldrPaths) -> bool {
-    let Some(pid) = stale_daemon_occupies_endpoint(paths) else {
-        // Nothing live is holding the endpoint; clear any stale files.
-        cleanup_after_displacement(paths);
-        return true;
-    };
+/// Result of waiting for one acknowledged daemon generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShutdownWaitOutcome {
+    /// The acknowledged PID is no longer alive.
+    Exited,
+    /// The endpoint now reports a different daemon generation.
+    Replaced,
+    /// The acknowledged generation could not be proven gone in time.
+    TimedOut,
+}
 
+impl ShutdownWaitOutcome {
+    pub fn is_complete(self) -> bool {
+        matches!(self, Self::Exited | Self::Replaced)
+    }
+}
+
+fn classify_shutdown_observation(
+    responder: crate::daemon::protocol::ShutdownAck,
+    responder_pid_alive: bool,
+    endpoint_identity: Option<(u32, u64)>,
+) -> Option<ShutdownWaitOutcome> {
+    if !responder_pid_alive {
+        return Some(ShutdownWaitOutcome::Exited);
+    }
+    endpoint_identity
+        .filter(|identity| *identity != (responder.pid, responder.generation))
+        .map(|_| ShutdownWaitOutcome::Replaced)
+}
+
+/// Wait for the exact daemon that acknowledged shutdown.
+///
+/// Endpoint unavailability alone is not success: the accept loop stops before
+/// the cache flush does. Conversely, a different status generation proves the
+/// acknowledged responder was replaced even if its PID was reused.
+pub fn wait_for_shutdown_responder(
+    sock_path: &Path,
+    responder: crate::daemon::protocol::ShutdownAck,
+    timeout: Duration,
+) -> ShutdownWaitOutcome {
+    let started = Instant::now();
+    loop {
+        let responder_pid_alive = pid_is_alive(responder.pid);
+        if timeout.is_zero() || started.elapsed() >= timeout {
+            return classify_shutdown_observation(responder, responder_pid_alive, None)
+                .unwrap_or(ShutdownWaitOutcome::TimedOut);
+        }
+        let endpoint_identity = crate::daemon::client::status(sock_path)
+            .ok()
+            .map(|status| (status.pid, status.generation));
+        if let Some(outcome) =
+            classify_shutdown_observation(responder, responder_pid_alive, endpoint_identity)
+        {
+            return outcome;
+        }
+        let remaining = timeout.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return ShutdownWaitOutcome::TimedOut;
+        }
+        std::thread::sleep(Duration::from_millis(50).min(remaining));
+    }
+}
+
+/// Displace the stale daemon currently holding the endpoint so a
+/// current-version daemon can take over (soldr#1495). Graceful IPC is always
+/// attempted first, including for historical daemons whose executable was
+/// accidentally named `rustc`. A verified-PID signal is permitted only when
+/// no shutdown acknowledgement was received. Once acknowledged, the daemon
+/// owns its graceful flush to completion and is never force-killed.
+pub fn displace_stale_daemon(paths: &SoldrPaths) -> bool {
+    let verified_pid = stale_daemon_occupies_endpoint(paths);
+    let recorded_live_pid = read_pid_file(paths)
+        .map(|(pid, _)| pid)
+        .filter(|pid| pid_is_alive(*pid));
     append_lifecycle_event(paths, "displace-stale-requested");
 
-    // 1) Graceful wire shutdown.
     let sock = crate::daemon::client::default_sock_path(paths);
-    let _ = crate::daemon::client::shutdown(&sock);
-    if wait_for_pid_exit(pid, Duration::from_secs(5)) {
-        cleanup_after_displacement(paths);
-        return true;
+    match crate::daemon::client::shutdown(&sock) {
+        Ok(responder) => {
+            return wait_for_shutdown_responder(&sock, responder, Duration::from_secs(5))
+                .is_complete();
+        }
+        Err(crate::daemon::client::ClientError::NotRunning) if recorded_live_pid.is_none() => {
+            return true;
+        }
+        Err(_) => {}
     }
 
-    // 2) Verified-PID kill fallback (protocol-mismatched daemon can't
-    //    answer the wire Shutdown verb).
+    // No acknowledgement: a protocol-mismatched daemon can only be stopped
+    // through a currently verified Soldr process identity.
+    let Some(pid) = verified_pid else {
+        return false;
+    };
     if pid_is_soldr_daemon(pid) {
         append_lifecycle_event(paths, "displace-kill-fallback");
         terminate_pid(pid, None);
         wait_for_pid_exit(pid, Duration::from_secs(5));
     }
-
-    let freed = !pid_is_alive(pid);
-    if freed {
-        cleanup_after_displacement(paths);
-    }
-    freed
+    !pid_is_alive(pid)
 }
 
 /// One-shot preflight for the managed-build front door (soldr#1495).
@@ -245,23 +341,26 @@ pub fn preflight_displace_stale_daemon(paths: &SoldrPaths) {
     if !displacement_enabled() {
         return;
     }
-    if is_live_current_version(paths).is_some() {
+    // Regression for #1832: use Soldr's bounded direct status handshake here.
+    // The general `is_live_current_version` route probes both the optional
+    // broker and a full executable identity hash; together those added tens
+    // of seconds to every warm cargo invocation. Requiring the status PID to
+    // match the live PID-file process prevents PID reuse from accepting an
+    // unrelated same-stem process, while the normal status wire exchange
+    // still proves that the current-protocol daemon owns the endpoint.
+    if direct_status_current_version(paths).is_some() {
         return;
     }
-    if stale_daemon_occupies_endpoint(paths).is_some() {
-        displace_stale_daemon(paths);
-    }
-}
-
-fn cleanup_after_displacement(paths: &SoldrPaths) {
-    remove_pid_file(paths);
-    crate::daemon::broker_discovery::remove_root_version_claim(paths);
-    // Unix domain socket file must be unlinked before a new daemon can
-    // bind the same path. On Windows the named pipe has no filesystem
-    // artifact, so this is a no-op there.
+    let recorded_process_is_alive = read_pid_file(paths).is_some_and(|(pid, _)| pid_is_alive(pid));
     #[cfg(unix)]
+    let endpoint_artifact_exists = crate::cache_lib::daemon_sock_path(paths).exists();
+    #[cfg(windows)]
+    let endpoint_artifact_exists = false;
+    if stale_daemon_occupies_endpoint(paths).is_some()
+        || recorded_process_is_alive
+        || endpoint_artifact_exists
     {
-        let _ = fs::remove_file(crate::cache_lib::daemon_sock_path(paths));
+        displace_stale_daemon(paths);
     }
 }
 
@@ -278,6 +377,14 @@ fn wait_for_pid_exit(pid: u32, timeout: Duration) -> bool {
         std::thread::sleep(Duration::from_millis(50).min(remaining));
     }
     !pid_is_alive(pid)
+}
+
+/// Wait until a daemon PID is no longer alive. A zero timeout is an
+/// instantaneous observation. Callers capture the PID before sending the
+/// shutdown request so removal of the PID file cannot be mistaken for process
+/// exit.
+pub fn wait_for_daemon_exit(pid: u32, timeout: Duration) -> bool {
+    wait_for_pid_exit(pid, timeout)
 }
 
 #[cfg(unix)]
@@ -319,8 +426,9 @@ fn terminate_pid(pid: u32, _deadline: Option<Instant>) {
     }
     // SAFETY: OpenProcess for a verified soldr-daemon PID; TerminateProcess
     // is the Windows equivalent of SIGKILL (the daemon holds no
-    // filesystem lock we need graceful about — cleanup_after_displacement
-    // removes the pid file + version claim).
+    // filesystem lock we need graceful about. Stale shared claims are
+    // intentionally reclaimed only by the next startup, never by a retiring
+    // daemon after a check-then-unlink race).
     let h = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
     if h.is_null() {
         return;
@@ -341,10 +449,6 @@ pub fn write_pid_file(paths: &SoldrPaths) -> Result<(), LifecycleError> {
     let contents = format!("{pid}\n{}\n", exe.display());
     fs::write(daemon_pid_path(paths), contents)?;
     Ok(())
-}
-
-pub fn remove_pid_file(paths: &SoldrPaths) {
-    let _ = fs::remove_file(daemon_pid_path(paths));
 }
 
 #[derive(Serialize)]
@@ -442,11 +546,23 @@ fn try_spawn_detached_until_with_idle_timeout(
     // backend mandatory. The daemon subcommand is already a clap-
     // matched verb in `cli_args.rs`; the `soldr-daemon` argv[0] alias
     // routes through the main binary.
+    let configured = configured_daemon_executable(std::env::var_os(SOLDR_DAEMON_EXE_ENV_VAR));
     let sibling = crate::daemon::service_definition::sibling_daemon_binary(&current);
-    let (daemon_src, daemon_via_self) = if sibling.exists() {
+    let (daemon_src, daemon_via_self) = if let Some(configured) = configured {
+        (configured, false)
+    } else if sibling.exists() {
         (sibling, false)
-    } else {
+    } else if executable_has_stem(&current, "soldr") {
         (current.clone(), true)
+    } else {
+        return Err(LifecycleError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "refusing to spawn soldr-daemon from compiler-named executable {}; \
+                 the caller must provide a canonical image through {SOLDR_DAEMON_EXE_ENV_VAR}",
+                current.display()
+            ),
+        )));
     };
 
     let paths = SoldrPaths::new().ok();
@@ -499,6 +615,22 @@ fn try_spawn_detached_until_with_idle_timeout(
 
     spawn_prepared_daemon(&prepared, paths.as_ref(), deadline)?;
     Ok(Some(prepared))
+}
+
+fn configured_daemon_executable(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    let path = PathBuf::from(value?);
+    (path.is_file()
+        && executable_has_stem(
+            &path,
+            crate::daemon::backend_handle_adoption::SOLDR_DAEMON_SERVICE_NAME,
+        ))
+    .then_some(path)
+}
+
+fn executable_has_stem(path: &Path, expected: &str) -> bool {
+    path.file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|stem| stem.eq_ignore_ascii_case(expected))
 }
 
 /// Retry a daemon spawn from an image prepared by
@@ -597,7 +729,6 @@ fn ensure_startup_deadline_remaining(deadline: Option<Instant>) -> Result<(), Li
 
 fn displace_stale_daemon_before(paths: &SoldrPaths, deadline: Instant) -> bool {
     let Some(pid) = stale_daemon_occupies_endpoint(paths) else {
-        cleanup_after_displacement(paths);
         return true;
     };
     if Instant::now() >= deadline {
@@ -618,11 +749,7 @@ fn displace_stale_daemon_before(paths: &SoldrPaths, deadline: Instant) -> bool {
         }
     }
 
-    let freed = !pid_is_alive(pid);
-    if freed {
-        cleanup_after_displacement(paths);
-    }
-    freed
+    !pid_is_alive(pid)
 }
 
 /// Resolve the on-disk image the daemon child will exec from.
@@ -716,6 +843,46 @@ pub(crate) fn acquire_spawn_lock(paths: &SoldrPaths) -> Option<std::fs::File> {
     }
 }
 
+/// Env-var name prefix forwarded from the spawning process into the
+/// detached daemon on top of running-process's user-baseline environment.
+///
+/// running-process 4.6.1 rebuilds a scrubbed login environment on Unix
+/// (Windows has always done so via `CreateEnvironmentBlock`), which
+/// silently dropped `SOLDR_CACHE_DIR`: the daemon bound its socket under
+/// the default `~/.soldr` root while wrappers polled
+/// `$SOLDR_CACHE_DIR/cache/soldr-daemon/sock`, hit `NotRunning` for the
+/// full spawn-retry budget, and every compile fell back to direct
+/// uncached rustc (the soldr#1657 degradation path firing on all of CI).
+/// All soldr-owned configuration must survive the spawn boundary, so the
+/// whole `SOLDR_*` namespace is overlaid onto the baseline. The embedded
+/// zccache trace below is the sole non-Soldr diagnostic exception.
+const FORWARDED_ENV_PREFIX: &str = "SOLDR_";
+/// zccache's opt-in, write-only diagnostic trace. The embedded backend runs
+/// inside soldr-daemon, so this one zccache variable must cross the scrubbed
+/// daemon-spawn boundary for a caller to collect the trace it requested.
+const ZCCACHE_INNER_TRACE_ENV: &str = "ZCCACHE_INNER_TRACE";
+
+fn forwarded_soldr_env() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    filter_forwarded_env(std::env::vars_os())
+}
+
+/// Pure filter behind [`forwarded_soldr_env`], split out so tests can
+/// exercise it without mutating the process environment (parallel test
+/// cases in this binary read the real env).
+fn filter_forwarded_env(
+    vars: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    vars.into_iter()
+        .filter(|(name, _)| {
+            // Env names compare case-insensitively on Windows; match the
+            // FBUILD_* passthrough in FastLED/fbuild#1170 and accept any
+            // casing of the prefix on every platform.
+            let name = name.to_string_lossy().to_ascii_uppercase();
+            name.starts_with(FORWARDED_ENV_PREFIX) || name == ZCCACHE_INNER_TRACE_ENV
+        })
+        .collect()
+}
+
 #[cfg(unix)]
 fn spawn_detached_inner(daemon: &Path, args: &[String]) -> Result<(), std::io::Error> {
     use std::os::unix::process::CommandExt;
@@ -723,7 +890,7 @@ fn spawn_detached_inner(daemon: &Path, args: &[String]) -> Result<(), std::io::E
 
     let mut cmd = Command::new(daemon);
     let baseline = running_process::environment::user_baseline_environment()?;
-    cmd.env_clear().envs(baseline);
+    cmd.env_clear().envs(baseline).envs(forwarded_soldr_env());
     cmd.args(args).stdin(Stdio::null());
     // Diagnostic redirect: spawn the daemon's stderr/stdout to a
     // log file under the soldr cache root so a startup crash leaves
@@ -785,7 +952,7 @@ fn spawn_detached_self_inner(soldr_self: &Path, args: &[String]) -> Result<(), s
 
     let mut cmd = Command::new(soldr_self);
     let baseline = running_process::environment::user_baseline_environment()?;
-    cmd.env_clear().envs(baseline);
+    cmd.env_clear().envs(baseline).envs(forwarded_soldr_env());
     // The process that discovers a missing daemon may itself be the
     // `zccache-soldr` hardlink. Force argv[0] back to the main CLI identity;
     // otherwise multicall dispatch treats `daemon` as a compiler path and
@@ -923,7 +1090,7 @@ fn spawn_detached_windows_no_inherit(
 
     let application: Vec<u16> = program.as_os_str().encode_wide().chain(Some(0)).collect();
     let mut command_line = build_windows_command_line(argv0, args);
-    let environment = running_process::environment::user_baseline_environment_block()?;
+    let environment = merged_windows_environment_block()?;
     // SAFETY: STARTUPINFOW and PROCESS_INFORMATION are plain Win32 POD
     // structs. Zero initialization is the documented baseline before setting
     // STARTUPINFOW.cb and passing both structs to CreateProcessW.
@@ -961,6 +1128,63 @@ fn spawn_detached_windows_no_inherit(
     Ok(())
 }
 
+/// Windows counterpart of the Unix `envs(forwarded_soldr_env())` overlay:
+/// take running-process's user-baseline pairs, overlay the current
+/// process's `SOLDR_*` variables (env names compare case-insensitively on
+/// Windows), and serialize to the sorted, double-NUL-terminated UTF-16
+/// block `CreateProcessW` expects with `CREATE_UNICODE_ENVIRONMENT`.
+#[cfg(windows)]
+fn merged_windows_environment_block() -> Result<Vec<u16>, std::io::Error> {
+    let pairs = running_process::environment::user_baseline_environment()?;
+    Ok(build_windows_environment_block(merge_env_overlay(
+        pairs,
+        forwarded_soldr_env(),
+    )))
+}
+
+#[cfg(windows)]
+fn merge_env_overlay(
+    mut base: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+    overlay: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    fn key_upper(name: &std::ffi::OsStr) -> String {
+        name.to_string_lossy().to_uppercase()
+    }
+    for (name, value) in overlay {
+        match base
+            .iter_mut()
+            .find(|(existing, _)| key_upper(existing) == key_upper(&name))
+        {
+            Some(slot) => slot.1 = value,
+            None => base.push((name, value)),
+        }
+    }
+    base.sort_by_key(|(name, _)| key_upper(name));
+    base
+}
+
+#[cfg(windows)]
+fn build_windows_environment_block(
+    pairs: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let mut block = Vec::new();
+    for (name, value) in pairs {
+        block.extend(name.encode_wide());
+        block.push('=' as u16);
+        block.extend(value.encode_wide());
+        block.push(0);
+    }
+    // An empty environment block is still two NULs: one for the (absent)
+    // final entry, one terminating the block.
+    if block.is_empty() {
+        block.push(0);
+    }
+    block.push(0);
+    block
+}
+
 #[cfg(windows)]
 fn build_windows_command_line(program: &Path, args: &[String]) -> Vec<u16> {
     use std::ffi::OsStr;
@@ -983,7 +1207,78 @@ pub(crate) fn pid_is_alive(pid: u32) -> bool {
     // SAFETY: kill(pid, 0) is a well-defined liveness probe — no
     // signal is delivered, the syscall just returns 0 if the pid
     // exists and the caller has permission to signal it.
-    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    if unsafe { libc::kill(pid as libc::pid_t, 0) } != 0 {
+        return false;
+    }
+    // Unix retains an exited child in the process table as a zombie until its
+    // parent reaps it. `kill(pid, 0)` still succeeds for that entry, but the
+    // daemon has definitively exited and cannot serve IPC. Treat zombie/dead
+    // task states as stopped so synchronous shutdown does not deadlock with a
+    // parent waiting to reap after this probe returns.
+    !pid_is_zombie(pid)
+}
+
+/// True when `pid` names a process that has exited but is still awaiting
+/// collection by its parent.
+///
+/// Every platform without a probe answers `false`, which degrades to the
+/// pre-existing `kill(pid, 0)`-only behavior rather than reporting a live
+/// daemon as stopped.
+#[cfg(unix)]
+fn pid_is_zombie(pid: u32) -> bool {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            return false;
+        };
+        // The comm field is parenthesized and may itself contain spaces, so the
+        // state character is the first byte after the LAST ") ".
+        let Some((_, tail)) = stat.rsplit_once(") ") else {
+            return false;
+        };
+        matches!(tail.as_bytes().first(), Some(b'Z' | b'X'))
+    }
+
+    // macOS/iOS have no /proc. `proc_pidinfo(PROC_PIDTBSDINFO)` is the
+    // supported libproc query for a process's BSD state; `pbi_status` reports
+    // `SZOMB` for an unreaped child. Without this branch a daemon spawned as a
+    // direct child stays "alive" to `kill(pid, 0)` forever, so every
+    // synchronous shutdown wait burns its full timeout — the darwin-only CI
+    // break where `daemon stop` sat out all 300s of
+    // `GRACEFUL_SHUTDOWN_WAIT_TIMEOUT` on an already-exited daemon.
+    #[cfg(target_vendor = "apple")]
+    {
+        let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+        // `arg` MUST be non-zero: for PROC_PIDTBSDINFO the kernel only falls
+        // back to `proc_find_zombref` when `arg != 0` (xnu bsd/kern/proc_info.c).
+        // With `arg == 0` a zombie fails the `proc_find` lookup and the call
+        // returns ESRCH, which would defeat the entire purpose of this probe.
+        const FIND_ZOMBIE: u64 = 1;
+        // SAFETY: `proc_pidinfo` writes at most `size` bytes into the buffer and
+        // reports how many it wrote. The struct is plain-old-data and is only
+        // read after a full-size write is confirmed.
+        let written = unsafe {
+            libc::proc_pidinfo(
+                pid as libc::c_int,
+                libc::PROC_PIDTBSDINFO,
+                FIND_ZOMBIE,
+                info.as_mut_ptr().cast(),
+                size,
+            )
+        };
+        if written != size {
+            return false;
+        }
+        // SAFETY: the call above filled the whole struct.
+        unsafe { info.assume_init() }.pbi_status == libc::SZOMB
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "android", target_vendor = "apple")))]
+    {
+        let _ = pid;
+        false
+    }
 }
 
 #[cfg(windows)]
@@ -1095,11 +1390,147 @@ pub(crate) fn pid_exe_stem_matches(pid: u32, expected_stem: &str) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(all(test, unix))]
+mod pid_liveness_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    // An exited-but-unreaped child must read as stopped.
+    //
+    // `kill(pid, 0)` succeeds for a zombie on every unix, so without a
+    // per-platform state probe `wait_for_shutdown_responder` never observes
+    // `Exited` and burns its whole timeout. This regression is silent on Linux
+    // (which has `/proc/<pid>/stat`) and fatal on macOS, which is exactly how
+    // it reached CI.
+    crate::timed_test!(exited_unreaped_child_is_not_alive, {
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "exit 0"])
+            .spawn()
+            .expect("spawn probe child");
+        let pid = child.id();
+
+        // Deliberately do NOT reap before probing — a reaped pid disappears
+        // from the process table and would pass for the wrong reason.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut observed_stopped = false;
+        while Instant::now() < deadline {
+            if !pid_is_alive(pid) {
+                observed_stopped = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+
+        // Reap only after the assertion input is captured.
+        let _ = child.wait();
+        assert!(
+            observed_stopped,
+            "an exited, unreaped child must not report as alive; \
+             pid {pid} still looked live after 10s"
+        );
+    });
+}
+
 #[cfg(test)]
 mod daemon_spawn_image_tests {
     use super::*;
     use crate::core::SoldrPaths;
     use tempfile::TempDir;
+
+    crate::timed_test!(
+        forwarded_env_keeps_soldr_namespace_and_embedded_trace_only,
+        {
+            use std::ffi::OsString;
+            let vars = vec![
+                (
+                    OsString::from("SOLDR_CACHE_DIR"),
+                    OsString::from("/tmp/ci-root"),
+                ),
+                (OsString::from("SOLDR_TRUST_MODE"), OsString::from("strict")),
+                (OsString::from("PATH"), OsString::from("/usr/bin")),
+                (OsString::from("HOME"), OsString::from("/home/runner")),
+                (OsString::from("ZCCACHE_DISABLE"), OsString::from("1")),
+                (OsString::from("soldr_lowercase"), OsString::from("kept")),
+                (
+                    OsString::from("SOLDR_DAEMON_TOKIO_CONSOLE_RECORD_PATH"),
+                    OsString::from("/tmp/daemon.tokio"),
+                ),
+                (
+                    OsString::from("TOKIO_CONSOLE_RECORD_PATH"),
+                    OsString::from("/tmp/not-forwarded.tokio"),
+                ),
+                (
+                    OsString::from("zccache_inner_trace"),
+                    OsString::from("/tmp/context-registration.jsonl"),
+                ),
+            ];
+            let forwarded = filter_forwarded_env(vars);
+            assert_eq!(
+                forwarded,
+                vec![
+                    (
+                        OsString::from("SOLDR_CACHE_DIR"),
+                        OsString::from("/tmp/ci-root"),
+                    ),
+                    (OsString::from("SOLDR_TRUST_MODE"), OsString::from("strict")),
+                    (OsString::from("soldr_lowercase"), OsString::from("kept")),
+                    (
+                        OsString::from("SOLDR_DAEMON_TOKIO_CONSOLE_RECORD_PATH"),
+                        OsString::from("/tmp/daemon.tokio"),
+                    ),
+                    (
+                        OsString::from("zccache_inner_trace"),
+                        OsString::from("/tmp/context-registration.jsonl"),
+                    ),
+                ]
+            );
+        }
+    );
+
+    #[cfg(windows)]
+    crate::timed_test!(windows_env_overlay_replaces_case_insensitively_and_sorts, {
+        use std::ffi::OsString;
+        let base = vec![
+            (OsString::from("Path"), OsString::from("C:\\Windows")),
+            (OsString::from("soldr_cache_dir"), OsString::from("stale")),
+        ];
+        let overlay = vec![(
+            OsString::from("SOLDR_CACHE_DIR"),
+            OsString::from("D:\\temp\\setup-soldr-soldr"),
+        )];
+        let merged = merge_env_overlay(base, overlay);
+        assert_eq!(
+            merged,
+            vec![
+                (OsString::from("Path"), OsString::from("C:\\Windows")),
+                (
+                    OsString::from("soldr_cache_dir"),
+                    OsString::from("D:\\temp\\setup-soldr-soldr"),
+                ),
+            ]
+        );
+
+        let block = build_windows_environment_block(merged);
+        let rendered = String::from_utf16_lossy(&block);
+        assert!(rendered.contains("Path=C:\\Windows\0"));
+        assert!(rendered.contains("soldr_cache_dir=D:\\temp\\setup-soldr-soldr\0"));
+        assert!(
+            block.ends_with(&[0, 0]),
+            "block must be double-NUL terminated"
+        );
+    });
+
+    crate::timed_test!(detached_spawn_args_preserve_requested_idle_timeout, {
+        assert_eq!(
+            detached_spawn_args(false, Some(7)),
+            ["--foreground", "--idle-timeout-secs", "7"]
+        );
+        assert_eq!(
+            detached_spawn_args(true, Some(0)),
+            ["daemon", "start", "--foreground", "--idle-timeout", "0"]
+        );
+        assert_eq!(detached_spawn_args(false, None), ["--foreground"]);
+    });
 
     #[cfg(unix)]
     crate::timed_test!(via_self_daemon_forces_main_cli_argv0, {
@@ -1198,6 +1629,45 @@ mod daemon_spawn_image_tests {
         std::fs::write(&src, b"soldr").expect("write soldr");
         assert_eq!(resolve_daemon_spawn_image(None, &src), src);
     });
+
+    crate::timed_test!(configured_daemon_image_requires_canonical_identity, {
+        let temp = TempDir::new().expect("tempdir");
+        let canonical = temp
+            .path()
+            .join(format!("soldr-daemon{}", std::env::consts::EXE_SUFFIX));
+        let compiler_shim = temp
+            .path()
+            .join(format!("rustc{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&canonical, b"soldr").expect("write canonical daemon");
+        std::fs::write(&compiler_shim, b"soldr").expect("write compiler shim");
+
+        assert_eq!(
+            configured_daemon_executable(Some(canonical.clone().into_os_string())),
+            Some(canonical)
+        );
+        assert!(
+            configured_daemon_executable(Some(compiler_shim.into_os_string())).is_none(),
+            "a compiler-named image must never be accepted as the daemon handoff"
+        );
+        assert!(configured_daemon_executable(None).is_none());
+    });
+
+    crate::timed_test!(only_the_main_soldr_image_is_safe_for_via_self_spawn, {
+        assert!(executable_has_stem(
+            Path::new(if cfg!(windows) {
+                "C:\\tools\\soldr.exe"
+            } else {
+                "/opt/tools/soldr"
+            }),
+            "soldr"
+        ));
+        for unsafe_name in ["rustc", "clippy-driver", "zccache-soldr", "cargo"] {
+            assert!(
+                !executable_has_stem(Path::new(unsafe_name), "soldr"),
+                "{unsafe_name} must not become a long-lived daemon image"
+            );
+        }
+    });
 }
 
 #[cfg(test)]
@@ -1269,6 +1739,16 @@ mod spawn_lock_tests {
         }
     }
 
+    crate::timed_test!(preflight_requires_endpoint_status_to_match_recorded_pid, {
+        // Regression for #1832 and the PID-reuse review finding: a live
+        // same-stem PID plus a current claim is insufficient when no
+        // daemon answers on the recorded endpoint.
+        assert!(!preflight_identity_matches(Some(41), None, true));
+        assert!(!preflight_identity_matches(Some(41), Some(42), true));
+        assert!(!preflight_identity_matches(Some(41), Some(41), false));
+        assert!(preflight_identity_matches(Some(41), Some(41), true));
+    });
+
     #[test]
     fn current_version_claim_matches_only_for_this_build() {
         let temp = TempDir::new().expect("tempdir");
@@ -1307,8 +1787,8 @@ mod spawn_lock_tests {
         )
         .expect("pid file");
         assert!(stale_daemon_occupies_endpoint(&paths).is_none());
-        // Displacing a non-occupied endpoint is a successful no-op that
-        // clears any stale files.
+        // Displacing a non-occupied endpoint is a successful no-op. Stale
+        // shared artifacts are reclaimed by startup, not retirement.
         assert!(displace_stale_daemon(&paths));
     }
 
@@ -1356,8 +1836,38 @@ mod spawn_lock_tests {
         .expect("pid file");
 
         assert!(stale_daemon_occupies_endpoint(&paths).is_none());
-        assert!(displace_stale_daemon(&paths));
+        assert!(
+            !displace_stale_daemon(&paths),
+            "an unverified live PID without an IPC acknowledgement must fail closed"
+        );
         assert!(pid_is_alive(std::process::id()));
+    });
+
+    crate::timed_test!(shutdown_wait_tracks_the_acknowledged_generation, {
+        use crate::daemon::protocol::ShutdownAck;
+
+        let responder = ShutdownAck {
+            pid: 42,
+            generation: 100,
+        };
+        assert_eq!(
+            classify_shutdown_observation(responder, false, None),
+            Some(ShutdownWaitOutcome::Exited)
+        );
+        assert_eq!(
+            classify_shutdown_observation(responder, true, Some((42, 100))),
+            None,
+            "the acknowledged generation is still flushing"
+        );
+        assert_eq!(
+            classify_shutdown_observation(responder, true, Some((42, 101))),
+            Some(ShutdownWaitOutcome::Replaced),
+            "PID reuse by a new daemon must not be mistaken for the old responder"
+        );
+        assert_eq!(
+            classify_shutdown_observation(responder, true, Some((43, 100))),
+            Some(ShutdownWaitOutcome::Replaced)
+        );
     });
 
     #[test]

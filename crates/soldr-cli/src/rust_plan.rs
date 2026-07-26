@@ -13,10 +13,10 @@ use crate::zccache::{
     run_zccache_command_strings_in_cache_dir_with_daemon_name, ZccacheBuildSession,
 };
 use crate::{
-    apply_implicit_toolchain_homes, non_empty_env_path, SKIP_WARM_RESTORE_ENV_VAR,
-    TARGET_CACHE_BACKEND_ENV_VAR, TARGET_CACHE_BUNDLE_DIR_ENV_VAR, TARGET_CACHE_MODE_ENV_VAR,
-    TARGET_CACHE_PROFILE_ENV_VAR, TARGET_CACHE_TAR_THREADS_ENV_VAR, THIN_MANIFEST_FILENAME,
-    WARM_RESTORE_MAX_AGE_SECONDS, WARM_RESTORE_SENTINEL_FILENAME,
+    non_empty_env_path, SKIP_WARM_RESTORE_ENV_VAR, TARGET_CACHE_BACKEND_ENV_VAR,
+    TARGET_CACHE_BUNDLE_DIR_ENV_VAR, TARGET_CACHE_MODE_ENV_VAR, TARGET_CACHE_PROFILE_ENV_VAR,
+    TARGET_CACHE_TAR_THREADS_ENV_VAR, THIN_MANIFEST_FILENAME, WARM_RESTORE_MAX_AGE_SECONDS,
+    WARM_RESTORE_SENTINEL_FILENAME,
 };
 use prost::Message;
 use serde::{Deserialize, Serialize};
@@ -633,7 +633,7 @@ fn cargo_metadata(cargo: &std::path::Path, args: &[String]) -> Result<CargoMetad
     let mut command = std::process::Command::new(cargo);
     command.args(["metadata", "--format-version", "1"]);
     command.args(cargo_metadata_passthrough_args(args));
-    apply_implicit_toolchain_homes(&mut command);
+    crate::binaries::apply_resolved_toolchain_homes(&mut command, cargo);
     suppress_windows_console_window(&mut command);
     command.env_remove("MAKEFLAGS");
     command.env_remove("CARGO_MAKEFLAGS");
@@ -743,7 +743,7 @@ pub(crate) fn derive_toolchain_identity(
 fn tool_output(tool: &std::path::Path, args: &[&str]) -> Result<String, SoldrError> {
     let mut command = std::process::Command::new(tool);
     command.args(args);
-    apply_implicit_toolchain_homes(&mut command);
+    crate::binaries::apply_resolved_toolchain_homes(&mut command, tool);
     suppress_windows_console_window(&mut command);
     let output = command_output_with_timeout(
         &mut command,
@@ -1081,17 +1081,10 @@ pub(crate) fn run_zccache_rust_plan(
     Ok(summary)
 }
 
-/// What `restore_rust_artifacts` did this invocation. Consumed by the
-/// pre-cargo target-GC hook (issue #1558): a restore that just
-/// materialized files into a fresh `target/` is a liveness signal for
-/// every restored hash family, so the destructive keep-latest GC pass
-/// must not run before Cargo has evaluated them.
+/// What `restore_rust_artifacts` did this invocation.
 ///
-/// The protection is deliberately scoped to this single invocation —
-/// it is never persisted, so it "expires" the moment the process exits.
-/// The post-build GC pass still runs unconditionally, at which point
-/// Cargo has re-established authoritative `invoked.timestamp` recency
-/// for every live unit and stale families rank (and prune) correctly.
+/// The save path uses this outcome to avoid rewriting a warm rust-plan
+/// bundle when restore was skipped and the build produced no compile units.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RustPlanRestoreOutcome {
     /// No rust-plan is active (target cache disabled) — nothing restored.
@@ -1102,21 +1095,6 @@ pub(crate) enum RustPlanRestoreOutcome {
     /// `rust-plan restore` ran; `restored_file_count` files were
     /// materialized into the target dir from the verified bundle.
     Restored { restored_file_count: u64 },
-}
-
-impl RustPlanRestoreOutcome {
-    /// Number of files the restore just materialized, when a verified
-    /// restore actually ran and produced at least one file. `None` for
-    /// every other state (no plan, skip, empty restore) — callers fall
-    /// back to the existing GC behavior in those cases.
-    pub(crate) fn materialized_file_count(&self) -> Option<u64> {
-        match self {
-            RustPlanRestoreOutcome::Restored {
-                restored_file_count,
-            } if *restored_file_count > 0 => Some(*restored_file_count),
-            _ => None,
-        }
-    }
 }
 
 /// Schema for `<thin-root>/manifest.v2.json`.

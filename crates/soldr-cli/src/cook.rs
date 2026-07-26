@@ -26,7 +26,6 @@ use crate::core::{
     probe_toolchain_binary, read_rust_toolchain_manifest, SoldrError, SoldrPaths, TargetTriple,
 };
 use crate::daemon::client::{self, CookLookupOutcome};
-use crate::ZccacheSourceArg;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -351,11 +350,7 @@ pub(crate) fn build_cook_context(
 }
 
 /// Top-level dispatch. Invoked from `Commands::Cook` in `main.rs`.
-pub(crate) async fn run_cook(
-    args: &[String],
-    cache_enabled: bool,
-    zccache_source: ZccacheSourceArg,
-) -> Result<i32, SoldrError> {
+pub(crate) async fn run_cook(args: &[String], cache_enabled: bool) -> Result<i32, SoldrError> {
     let parsed = parse_cook_args(args)?;
     let cwd = std::env::current_dir()
         .map_err(|e| SoldrError::Other(format!("soldr cook: failed to read cwd: {e}")))?;
@@ -364,13 +359,8 @@ pub(crate) async fn run_cook(
     // Phase 1: prepare. Cheap, deterministic, reads only the manifest tree.
     if !parsed.cook_only {
         let prepare_args = build_chef_prepare_args(&ctx);
-        let code = cargo_front_door::run_cargo_front_door(
-            &prepare_args,
-            cache_enabled,
-            zccache_source,
-            false,
-        )
-        .await?;
+        let code =
+            cargo_front_door::run_cargo_front_door(&prepare_args, cache_enabled, false).await?;
         if code != 0 {
             return Ok(code);
         }
@@ -438,8 +428,7 @@ pub(crate) async fn run_cook(
     // project. Output lands in `target/`.
     let cook_args = build_chef_cook_args(&ctx, &parsed);
     let cook_result =
-        cargo_front_door::run_cargo_front_door(&cook_args, cache_enabled, zccache_source, false)
-            .await;
+        cargo_front_door::run_cargo_front_door(&cook_args, cache_enabled, false).await;
 
     // Restore the project to its pre-cook state regardless of how cook exited,
     // so the tree is pristine for every subsequent build step (#566).

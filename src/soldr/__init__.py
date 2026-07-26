@@ -19,6 +19,7 @@ git-worktree caches share via path normalization.
 acquisition itself.
 """
 
+import codecs
 import hashlib
 import importlib
 import json
@@ -28,10 +29,11 @@ import shutil
 import subprocess
 import sys
 import sysconfig
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import BinaryIO, Iterator, Optional, TextIO
 
 _FAST_PROFILE_ENV = "SOLDR_PEP517_PROFILE"
 _STATS_ENV = "SOLDR_PEP517_STATS"
@@ -76,6 +78,14 @@ _WHEEL_CACHE_IGNORED_DIRECTORIES = {
     "venv",
 }
 _WHEEL_CACHE_IGNORED_DIRECTORY_SUFFIXES = (".dist-info", ".egg-info")
+_WHEEL_CACHE_IGNORED_RELATIVE_DIRECTORIES = {
+    ".claude/worktrees",
+    ".claude/workspaces",
+    ".codex/worktrees",
+    ".clud",
+}
+_SOLDR_ROOT_CACHE: "dict[tuple[str, ...], Path]" = {}
+_SOLDR_ROOT_CACHE_LOCK = threading.Lock()
 _FAST_DEV_PROFILE_DEFAULTS = {
     "CARGO_PROFILE_DEV_OPT_LEVEL": ("opt-level", "0"),
     "CARGO_PROFILE_DEV_CODEGEN_UNITS": ("codegen-units", "256"),
@@ -162,9 +172,7 @@ def _project_dev_profile_options() -> "dict[str, str]":
 
 
 def _project_soldr_options() -> "dict[str, str]":
-    return _toml_section_values(
-        _project_root() / "pyproject.toml", _DELEGATE_BACKEND_SECTION
-    )
+    return _toml_section_values(_project_root() / "pyproject.toml", _DELEGATE_BACKEND_SECTION)
 
 
 def _delegate_backend_name() -> Optional[str]:
@@ -198,9 +206,7 @@ def _managed_pep517_environment(
 ) -> Iterator[None]:
     """Apply soldr's child-build environment around a delegated backend."""
     prepared = _prep_env(config_settings, editable=editable)
-    previous: dict[str, object] = {
-        key: os.environ.get(key, _MISSING) for key in _PEP517_ENV_KEYS
-    }
+    previous: dict[str, object] = {key: os.environ.get(key, _MISSING) for key in _PEP517_ENV_KEYS}
     try:
         for key in _PEP517_ENV_KEYS:
             value = prepared.get(key)
@@ -350,18 +356,14 @@ def _setting_value(config_settings: Optional[dict], *keys: str) -> Optional[str]
     return None
 
 
-def _explicit_profile(
-    config_settings: Optional[dict], *, editable: bool = False
-) -> Optional[str]:
+def _explicit_profile(config_settings: Optional[dict], *, editable: bool = False) -> Optional[str]:
     keys = ("--profile", "profile")
     if editable:
         keys += ("editable-profile",)
     return _setting_value(config_settings, *keys)
 
 
-def _profile_args(
-    config_settings: Optional[dict], *, editable: bool = False
-) -> "list[str]":
+def _profile_args(config_settings: Optional[dict], *, editable: bool = False) -> "list[str]":
     """Select the fast local profile without overriding explicit settings."""
     explicit = _setting_value(
         config_settings,
@@ -380,9 +382,9 @@ def _profile_args(
         return ["--profile", selected]
 
     options = _project_maturin_options()
-    configured = options.get(
-        "editable-profile" if editable else "profile"
-    ) or options.get("profile")
+    configured = options.get("editable-profile" if editable else "profile") or options.get(
+        "profile"
+    )
     if configured:
         return []
 
@@ -469,9 +471,7 @@ def _stats_mode(env: "dict[str, str]") -> str:
     return "short"
 
 
-def _session_command(
-    subcommand: str, env: "dict[str, str]", *args: str
-) -> "dict | None":
+def _session_command(subcommand: str, env: "dict[str, str]", *args: str) -> "dict | None":
     """Run a best-effort session command without perturbing a wheel build."""
     try:
         result = subprocess.run(
@@ -504,9 +504,7 @@ def _emit_build_stats(
         return
 
     end = (
-        _session_command("session-end", env, "--id", session_id)
-        if session_id is not None
-        else None
+        _session_command("session-end", env, "--id", session_id) if session_id is not None else None
     )
     stats = end.get("stats") if end else None
     elapsed = f"{elapsed_seconds:.1f}s"
@@ -546,17 +544,303 @@ def _emit_build_stats(
         )
 
 
-def _maturin_pep517(
-    subcommand: str, *args: str, build_label: "str | None" = None
-) -> None:
+# Idle watchdog for the maturin child (soldr#1803). The old fixed 600s
+# wall-clock cap killed legitimate cold Rust release builds (observed:
+# 15m22s) and misdiagnosed them as daemon wedges. The invariant now: as
+# long as the build is producing output it is never killed; only sustained
+# SILENCE trips the watchdog, because a wedged daemon/toolchain goes quiet
+# while a big compile keeps printing "Compiling ..." lines.
+_PEP517_IDLE_TIMEOUT_ENV = "SOLDR_PEP517_IDLE_TIMEOUT_SECS"
+# 30 min, not lower: a large LTO link is the longest legitimately-SILENT
+# phase a build has. Piped (non-TTY) cargo prints nothing between the last
+# "Compiling" line and "Finished", so the watchdog must outlast the worst
+# realistic link. Normal Cargo "Compiling ..." events provide first-line
+# liveness without forcing TTY progress redraws into pip's captured log.
+_PEP517_IDLE_TIMEOUT_DEFAULT = 1800.0
+_PEP517_FAILURE_TAIL_CHARS = 64 * 1024
+_PEP517_TIMEOUT_RELAY_DRAIN_SECONDS = 5.0
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def _pep517_idle_timeout(env: "dict[str, str]") -> "float | None":
+    """Resolve the idle timeout: env override, 0 or negative disables."""
+    raw = env.get(_PEP517_IDLE_TIMEOUT_ENV)
+    if raw is None:
+        return _PEP517_IDLE_TIMEOUT_DEFAULT
+    try:
+        value = float(raw)
+    except ValueError:
+        return _PEP517_IDLE_TIMEOUT_DEFAULT
+    return None if value <= 0 else value
+
+
+def _write_pep517_text(sink: TextIO, text: str) -> None:
+    """Write decoded child text using the parent stream's encoding."""
+    if not text:
+        return
+    try:
+        sink.write(text)
+    except UnicodeEncodeError:
+        encoding = getattr(sink, "encoding", None) or "ascii"
+        safe = text.encode(encoding, errors="backslashreplace").decode(encoding)
+        sink.write(safe)
+    sink.flush()
+
+
+def _pep517_failure_excerpt(stdout_tail: str, stderr_tail: str) -> str:
+    """Return a bounded error-focused excerpt without Cargo progress redraws."""
+    raw = f"{stderr_tail}\n{stdout_tail}"
+    lines: list[str] = []
+    for line in raw.replace("\r", "\n").splitlines():
+        stripped = _ANSI_ESCAPE_RE.sub("", line).rstrip()
+        compact = stripped.lstrip()
+        if not compact:
+            continue
+        if compact.startswith("Building ["):
+            continue
+        if compact.startswith("{"):
+            try:
+                cargo_message = json.loads(compact)
+            except json.JSONDecodeError:
+                cargo_message = None
+            if isinstance(cargo_message, dict) and cargo_message.get("reason") == (
+                "compiler-message"
+            ):
+                message = cargo_message.get("message")
+                rendered = (
+                    message.get("rendered") if isinstance(message, dict) else None
+                )
+                if isinstance(rendered, str):
+                    lines.extend(
+                        _ANSI_ESCAPE_RE.sub("", item).rstrip()
+                        for item in rendered.replace("\r", "\n").splitlines()
+                        if item.strip()
+                    )
+            continue
+        lines.append(stripped)
+
+    if not lines:
+        return ""
+
+    markers = (
+        "error",
+        "fatal:",
+        "caused by:",
+        "failed",
+        "could not compile",
+        "linking with",
+    )
+    window = lines[-80:]
+    marker_indexes = [
+        index
+        for index, line in enumerate(window)
+        if line.lstrip().lower().startswith(markers)
+    ]
+    if marker_indexes:
+        window = window[marker_indexes[0] :]
+    else:
+        window = window[-20:]
+    return "\n".join(window)
+
+
+def _open_pep517_log(
+    cmd: "list[str]", env: "dict[str, str]"
+) -> "tuple[Path | None, BinaryIO | None]":
+    """Open a unique full-output log without making logging build-critical."""
+    root = env.get("SOLDR_CACHE_DIR", "").strip()
+    if not root:
+        return None, None
+    directory = Path(root).expanduser() / "logs" / "pep517"
+    filename = (
+        f"build-{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}-"
+        f"{os.getpid()}-{time.time_ns()}.log"
+    )
+    path = directory / filename
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        log = path.open("xb")
+        log.write(
+            (f"command: {json.dumps(cmd, ensure_ascii=False)}\n\n").encode("utf-8")
+        )
+    except OSError:
+        return None, None
+    return path, log
+
+
+def _close_pep517_log(log: "BinaryIO | None") -> None:
+    if log is None:
+        return
+    try:
+        log.close()
+    except OSError:
+        pass
+
+
+def _discard_pep517_log(path: "Path | None") -> None:
+    if path is None:
+        return
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+def _run_pep517_streaming(cmd: "list[str]", env: "dict[str, str]") -> None:
+    """Run the maturin child, relaying output live, killing only on silence.
+
+    Both child streams are piped unbuffered and relayed chunk-by-chunk to
+    our own stdout/stderr with an immediate flush, so pip/uv users watch
+    the build stream in real time (no collect-then-dump). Every chunk
+    resets the idle deadline. Raises ``subprocess.TimeoutExpired`` only
+    after ``_pep517_idle_timeout`` seconds with zero output, and
+    ``subprocess.CalledProcessError`` on a nonzero exit, matching the
+    contract callers relied on from ``check_call``.
+    """
+    idle_timeout = _pep517_idle_timeout(env)
+    child_env = dict(env)
+    # TTY progress redraws become hundreds of near-identical lines after pip
+    # captures them. Cargo's normal "Compiling ..." events still reset the
+    # watchdog, whose 30-minute default also covers a legitimately silent
+    # link. Respect explicit caller overrides.
+    child_env.setdefault("CARGO_TERM_PROGRESS_WHEN", "never")
+    child_env.setdefault("CARGO_TERM_COLOR", "never")
+    child_env.setdefault("NO_COLOR", "1")
+    process = subprocess.Popen(
+        cmd,
+        env=child_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        bufsize=0,
+    )
+    last_output = time.monotonic()
+    output_lock = threading.Lock()
+    tails = {"stdout": "", "stderr": ""}
+    relay_errors: list[Exception] = []
+    stdout_sink = sys.stdout
+    stderr_sink = sys.stderr
+    log_path, log = _open_pep517_log(cmd, child_env)
+
+    def relay(source: BinaryIO, sink: TextIO, tail_name: str) -> None:
+        nonlocal last_output
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+
+        def emit(text: str, raw: bytes = b"") -> None:
+            nonlocal last_output
+            with output_lock:
+                last_output = time.monotonic()
+                if log is not None and raw:
+                    try:
+                        log.write(raw)
+                    except OSError:
+                        pass
+                tails[tail_name] = (tails[tail_name] + text)[
+                    -_PEP517_FAILURE_TAIL_CHARS:
+                ]
+            _write_pep517_text(sink, text)
+
+        try:
+            while True:
+                chunk = source.read(8192)
+                if not chunk:
+                    break
+                emit(decoder.decode(chunk), chunk)
+            emit(decoder.decode(b"", final=True))
+        except Exception as error:
+            with output_lock:
+                relay_errors.append(error)
+
+    assert process.stdout is not None
+    assert process.stderr is not None
+    relays = [
+        threading.Thread(
+            target=relay,
+            args=(process.stdout, stdout_sink, "stdout"),
+            daemon=True,
+        ),
+        threading.Thread(
+            target=relay,
+            args=(process.stderr, stderr_sink, "stderr"),
+            daemon=True,
+        ),
+    ]
+    for thread in relays:
+        thread.start()
+    returncode = None
+    timed_out = False
+    relay_failed = False
+    relays_complete = False
+    try:
+        while True:
+            try:
+                returncode = process.wait(timeout=1)
+                break
+            except subprocess.TimeoutExpired:
+                with output_lock:
+                    relay_failed = bool(relay_errors)
+                if relay_failed:
+                    process.kill()
+                    process.wait(timeout=10)
+                    break
+                if idle_timeout is None:
+                    continue
+                with output_lock:
+                    idle = time.monotonic() - last_output
+                if idle > idle_timeout:
+                    process.kill()
+                    process.wait(timeout=10)
+                    timed_out = True
+                    break
+    finally:
+        bounded_drain = timed_out or relay_failed
+        for thread in relays:
+            thread.join(
+                timeout=_PEP517_TIMEOUT_RELAY_DRAIN_SECONDS if bounded_drain else None
+            )
+        if process.stdout is not None:
+            process.stdout.close()
+        if process.stderr is not None:
+            process.stderr.close()
+        if bounded_drain:
+            for thread in relays:
+                thread.join(timeout=1)
+        relays_complete = not relay_errors and all(
+            not thread.is_alive() for thread in relays
+        )
+        _close_pep517_log(log)
+    if timed_out:
+        assert idle_timeout is not None
+        qualifier = "full " if relays_complete else "possibly incomplete "
+        detail = (
+            f"\nsoldr: {qualifier}PEP 517 build log: {log_path}\n" if log_path else ""
+        )
+        _write_pep517_text(stderr_sink, detail)
+        raise subprocess.TimeoutExpired(cmd, idle_timeout)
+    if relay_errors:
+        detail = (
+            f"; possibly incomplete PEP 517 build log: {log_path}" if log_path else ""
+        )
+        raise RuntimeError(f"soldr PEP 517 output relay failed{detail}") from relay_errors[0]
+    assert returncode is not None
+    if returncode != 0:
+        excerpt = _pep517_failure_excerpt(tails["stdout"], tails["stderr"])
+        summary = f"\nsoldr: PEP 517 build failed (exit code {returncode})"
+        if excerpt:
+            summary += f"; relevant diagnostics:\n{excerpt}\n"
+        else:
+            summary += "\n"
+        if log_path is not None:
+            qualifier = "full " if relays_complete else "possibly incomplete "
+            summary += f"soldr: {qualifier}PEP 517 build log: {log_path}\n"
+        _write_pep517_text(stderr_sink, summary)
+        raise subprocess.CalledProcessError(returncode, cmd)
+    _discard_pep517_log(log_path)
+
+
+def _maturin_pep517(subcommand: str, *args: str, build_label: "str | None" = None) -> None:
     env = _prep_env()
     mode = _stats_mode(env)
     started_at = time.perf_counter()
-    start = (
-        _session_command("session-start", env)
-        if build_label and mode != "off"
-        else None
-    )
+    start = _session_command("session-start", env) if build_label and mode != "off" else None
     session_id = start.get("session_id") if start else None
     if isinstance(session_id, str):
         env["ZCCACHE_SESSION_ID"] = session_id
@@ -564,13 +848,17 @@ def _maturin_pep517(
         session_id = None
     cmd = ["soldr", "maturin", "pep517", subcommand, *args]
     try:
-        subprocess.check_call(cmd, env=env, timeout=600)
+        _run_pep517_streaming(cmd, env=env)
     except subprocess.TimeoutExpired as exc:
         if session_id is not None:
             _session_command("session-end", env, "--id", session_id)
+        idle = _pep517_idle_timeout(env)
         raise RuntimeError(
-            "soldr maturin pep517 exceeded 600s; suspect zccache daemon wedge - "
-            "try `soldr status` to inspect."
+            f"soldr maturin pep517 produced no output for {idle:.0f}s and was "
+            "killed. A build that is still printing is never killed, so this "
+            "usually means the toolchain is genuinely wedged - try "
+            "`soldr status` to inspect the zccache daemon. Set "
+            f"{_PEP517_IDLE_TIMEOUT_ENV}=<secs> to adjust (0 disables)."
         ) from exc
     except Exception:
         if session_id is not None:
@@ -608,25 +896,42 @@ def _query_soldr_root(environment: "dict[str, str]") -> "Path | None":
     # `status --json` has carried root_dir longer than `version --json`, so it
     # is a compatibility fallback for older development binaries. Neither
     # command starts a daemon.
-    for subcommand in ("version", "status"):
-        try:
-            result = subprocess.run(
-                ["soldr", subcommand, "--json"],
-                env=environment,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                check=False,
-                timeout=5,
-            )
-            payload = json.loads(result.stdout) if result.returncode == 0 else None
-            root = payload.get("root_dir") if isinstance(payload, dict) else None
-            if isinstance(root, str) and root.strip():
-                selected = Path(root).expanduser()
-                if selected.is_absolute():
-                    return selected
-        except (OSError, subprocess.SubprocessError, TypeError, ValueError):
-            continue
+    # One build hook prepares the environment several times while checking,
+    # restoring, and storing the wheel cache. On Windows each CLI probe costs
+    # hundreds of milliseconds even when Cargo has no work, so cache successful
+    # answers for the lifetime of this short-lived backend process.
+    key = (
+        environment.get("PATH", ""),
+        environment.get("PATHEXT", ""),
+        environment.get("HOME", ""),
+        environment.get("USERPROFILE", ""),
+        environment.get("SOLDR_CACHE_DIR", ""),
+        os.getcwd(),
+    )
+    with _SOLDR_ROOT_CACHE_LOCK:
+        cached = _SOLDR_ROOT_CACHE.get(key)
+        if cached is not None:
+            return cached
+        for subcommand in ("version", "status"):
+            try:
+                result = subprocess.run(
+                    ["soldr", subcommand, "--json"],
+                    env=environment,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=False,
+                    timeout=5,
+                )
+                payload = json.loads(result.stdout) if result.returncode == 0 else None
+                root = payload.get("root_dir") if isinstance(payload, dict) else None
+                if isinstance(root, str) and root.strip():
+                    selected = Path(root).expanduser()
+                    if selected.is_absolute():
+                        _SOLDR_ROOT_CACHE[key] = selected
+                        return selected
+            except (OSError, subprocess.SubprocessError, TypeError, ValueError):
+                continue
     return None
 
 
@@ -651,13 +956,19 @@ def _hash_metadata_tree(
     ignored = _WHEEL_CACHE_IGNORED_DIRECTORIES | (ignored_directories or set())
 
     for directory, directories, files in os.walk(root):
+        current = Path(directory)
+        try:
+            current_relative = current.relative_to(root)
+        except ValueError:
+            current_relative = Path()
         directories[:] = sorted(
             item
             for item in directories
             if item not in ignored
             and not item.endswith(_WHEEL_CACHE_IGNORED_DIRECTORY_SUFFIXES)
+            and (current_relative / item).as_posix()
+            not in _WHEEL_CACHE_IGNORED_RELATIVE_DIRECTORIES
         )
-        current = Path(directory)
         for filename in sorted(files):
             path = current / filename
             try:
@@ -674,9 +985,7 @@ def _hash_metadata_tree(
             )
 
 
-def _hash_metadata_directory(
-    hasher: "hashlib._Hash", metadata_directory: Optional[str]
-) -> None:
+def _hash_metadata_directory(hasher: "hashlib._Hash", metadata_directory: Optional[str]) -> None:
     """Hash PEP 517 prepared metadata by content, not its temporary path."""
     if not metadata_directory:
         _hash_identity_field(hasher, "metadata", b"none")
@@ -689,9 +998,7 @@ def _hash_metadata_directory(
         # setuptools leaves a regenerated ``*.egg-info`` tree beside the
         # PEP 517 ``*.dist-info`` result.  It is build bookkeeping rather
         # than hook metadata, and its SOURCES.txt changes after a first build.
-        directories[:] = sorted(
-            item for item in directories if not item.endswith(".egg-info")
-        )
+        directories[:] = sorted(item for item in directories if not item.endswith(".egg-info"))
         current = Path(directory)
         for filename in sorted(files):
             path = current / filename
@@ -753,9 +1060,7 @@ def _wheel_cache_context(
         f"{sys.implementation.name}:{sys.version_info[:2]}:{sysconfig.get_platform()}".encode(),
     )
     for name, value in sorted(environment.items()):
-        if name.startswith(
-            ("CARGO_", "MATURIN_", "PYO3_", "RUST", "SOLDR_")
-        ) or name in {
+        if name.startswith(("CARGO_", "MATURIN_", "PYO3_", "RUST", "SOLDR_")) or name in {
             "AR",
             "CC",
             "CXX",
@@ -768,9 +1073,7 @@ def _wheel_cache_context(
     ignored_directories: set[str] = set()
     try:
         relative_cache_root = (
-            (_wheel_cache_root(environment) / "pep517")
-            .resolve()
-            .relative_to(root.resolve())
+            (_wheel_cache_root(environment) / "pep517").resolve().relative_to(root.resolve())
         )
         if relative_cache_root.parts:
             ignored_directories.add(relative_cache_root.parts[0])
@@ -788,9 +1091,7 @@ def _wheel_cache_context(
     )
 
 
-def _wheel_cache_restore(
-    context: "tuple[Path, str] | None", wheel_directory: str
-) -> Optional[str]:
+def _wheel_cache_restore(context: "tuple[Path, str] | None", wheel_directory: str) -> Optional[str]:
     if context is None:
         return None
     directory, fingerprint = context
@@ -827,11 +1128,7 @@ def _wheel_cache_restore(
 def _wheel_cache_store(
     context: "tuple[Path, str] | None", wheel_directory: str, filename: str
 ) -> None:
-    if (
-        context is None
-        or Path(filename).name != filename
-        or not filename.endswith(".whl")
-    ):
+    if context is None or Path(filename).name != filename or not filename.endswith(".whl"):
         return
     source = Path(wheel_directory) / filename
     if not source.is_file():
@@ -903,9 +1200,7 @@ def _emit_wheel_cache_event(
     payload: dict[str, str] = {"wheel_cache": state, "kind": kind}
     if context is not None:
         payload["fingerprint"] = context[1]
-    print(
-        f"soldr PEP 517 detail: {json.dumps(payload, sort_keys=True)}", file=sys.stderr
-    )
+    print(f"soldr PEP 517 detail: {json.dumps(payload, sort_keys=True)}", file=sys.stderr)
 
 
 def _emit_wheel_cache_hit(
@@ -917,8 +1212,7 @@ def _emit_wheel_cache_hit(
         return
     label = "editable wheel" if kind == "editable" else "wheel"
     print(
-        f"soldr PEP 517: reused cached {label} in {elapsed_seconds:.1f}s | "
-        "wheel cache hit",
+        f"soldr PEP 517: reused cached {label} in {elapsed_seconds:.1f}s | wheel cache hit",
         file=sys.stderr,
     )
     if mode == "full":
@@ -963,9 +1257,7 @@ def _newest_entry(directory: str, suffix: str, *, want_dir: bool) -> str:
         entries.append((path.stat().st_mtime, name))
     if not entries:
         kind = "directory" if want_dir else "file"
-        raise RuntimeError(
-            f"soldr build backend: no {suffix} {kind} produced in {directory}"
-        )
+        raise RuntimeError(f"soldr build backend: no {suffix} {kind} produced in {directory}")
     entries.sort(reverse=True)
     return entries[0][1]
 
@@ -1060,9 +1352,7 @@ def build_wheel(
     cached = _wheel_cache_restore(context, wheel_directory)
     if cached is not None:
         _emit_wheel_cache_event("wheel", config_settings, "hit", context)
-        _emit_wheel_cache_hit(
-            "wheel", config_settings, time.perf_counter() - started_at
-        )
+        _emit_wheel_cache_hit("wheel", config_settings, time.perf_counter() - started_at)
         return cached
     _emit_wheel_cache_event("wheel", config_settings, "miss", context)
     delegated = _delegate_hook(
@@ -1108,9 +1398,7 @@ def build_editable(
     cached = _wheel_cache_restore(context, wheel_directory)
     if cached is not None:
         _emit_wheel_cache_event("editable", config_settings, "hit", context)
-        _emit_wheel_cache_hit(
-            "editable", config_settings, time.perf_counter() - started_at
-        )
+        _emit_wheel_cache_hit("editable", config_settings, time.perf_counter() - started_at)
         return cached
     _emit_wheel_cache_event("editable", config_settings, "miss", context)
     delegated = _delegate_hook(

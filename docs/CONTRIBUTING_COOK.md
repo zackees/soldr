@@ -116,6 +116,30 @@ uv run --no-project python ci/perf_local.py --status   # show volume mount point
 uv run --no-project python ci/perf_local.py --wipe     # remove all three perf volumes
 ```
 
+### Per-checkout isolation
+
+The runner and its three volumes are named after the shared git root:
+
+```
+C:\...\dev\soldr   -> soldr-perf-local-soldr-a6c74af0
+C:\...\dev\soldr2  -> soldr-perf-local-soldr2-e27990ba
+C:\...\dev\soldr3  -> soldr-perf-local-soldr3-ad100fba
+```
+
+so sibling checkouts never share or evict each other's runner, and each
+keeps its own warm `target/`. Linked worktrees *below* a root still share
+that root's runner — only the `docker exec` working directory changes.
+
+Before this, one global `soldr-perf-local` container was shared by every
+checkout while the lock was per-root, so starting a run in `soldr2` would
+`docker rm -f` a build already running in `soldr`, and all of them fought
+over a single Cargo target across different branches.
+
+`--wipe` only removes the current root's volumes. Note that
+`bench/cook_in_docker.sh` still uses the machine-wide `soldr-perf-target`
+and `soldr-perf-cargo-home` volumes described above — `perf_local.py` no
+longer shares them, so the two harnesses keep separate build state.
+
 `perf_local.py` uses its own `soldr-perf-soldr-home` volume for
 `~/.soldr/` (kept warm, never wiped) so the soldr daemon state and
 caches survive across runs. The cook-test harness uses the separate

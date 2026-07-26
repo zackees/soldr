@@ -88,18 +88,23 @@ soldr version
 
 For `soldr cargo ...`:
 
-1. Resolve real `cargo` via `rustup`
-2. Resolve matching real `rustc` via `rustup`
-3. Set `RUSTC_WRAPPER` to the current soldr binary
-4. Start managed zccache and pass its binary/session state through the environment
+1. Resolve Cargo through Soldr's front door while retaining the caller's host
+   toolchain context for host-owned binaries and the managed context for
+   Soldr-owned binaries
+2. Resolve rustc from the same selected toolchain context
+3. Set `RUSTC_WRAPPER` to a compiler-named Soldr shim
+4. Auto-start `soldr-daemon`, which owns the in-process zccache service, and
+   pass only Soldr/session correlation state through the Cargo environment
 5. Delegate to Cargo with unchanged user flags
 
 For wrapper mode:
 
-1. Detect `rustc` invocation shape
-2. Resolve the real `rustc`
-3. Delegate cache-enabled builds into the managed zccache binary
-4. Fall through to the real compiler when caching is disabled or unavailable
+1. Detect the compiler-wrapper invocation shape
+2. Resolve the real compiler from the selected toolchain context
+3. Send cache-enabled compiler work over Soldr IPC to the zccache service
+   embedded in `soldr-daemon`
+4. Run the compiler directly only when caching is disabled or the Soldr daemon
+   is unavailable and fallback policy permits it
 
 ### One daemon: embedded zccache (soldr#1467)
 
@@ -109,6 +114,22 @@ ferry each compile to the daemon over the `Request::Compile` IPC verb. No
 standalone `zccache-daemon` or `zccache-download-daemon` process is ever
 spawned, and nothing in soldr may reach the upstream lazy-spawn entry
 points (enforced by `tests/no_standalone_spawn_lint.rs`).
+
+Compiler shims are named `rustc`, `clippy-driver`, or `zccache-soldr`, but a
+long-lived daemon process must never inherit one of those executable
+identities. The Cargo front door passes a canonical `soldr-daemon` multicall
+alias to compiler children; a standalone compiler shim lazily materializes the
+same alias before recovery. Lifecycle refuses a compiler-named fallback rather
+than publishing a PID that its own recycled-PID safety check cannot trust.
+
+Daemon startup has two distinct locks: the short-lived `.spawn.lock` suppresses
+wrapper herds, while `root-owner.lock` is held by the daemon for its full
+lifetime and shared with explicit orphan-root maintenance. On Unix, the child
+binds the socket before publishing its PID/version. Retirement deliberately
+leaves the PID, version, and socket claims in place; the next root owner
+validates liveness, reclaims the stale socket, and overwrites the claims during
+startup. Successor-owned cleanup avoids a check-then-unlink race in which an
+older or idle-timed-out daemon could remove a live successor's endpoint.
 
 The in-process `soldr zccache <args>` entrypoint
 (`crates/soldr-cli/src/zccache_entry.rs`) passes through only the daemon-free
@@ -209,13 +230,19 @@ Done when:
 
 all resolve quickly from cache or pre-built binaries.
 
+Rustfmt resolution is cached, but recursive formatting itself is not skipped:
+Cargo passes crate roots while rustfmt discovers child modules dynamically.
+Only an invocation that explicitly sets `skip_children=true` may use zccache's
+content-marker shortcut.
+
 ### Phase 3: Build Cache
 
 Done when:
 
-- `soldr cargo ...` enables managed zccache by default
+- `soldr cargo ...` enables the zccache service embedded in `soldr-daemon` by default
 - `soldr --no-cache cargo ...` cleanly bypasses the cache path
-- wrapper mode routes cache-enabled builds into managed zccache instead of pure pass-through
+- wrapper mode routes cache-enabled builds over Soldr IPC into the embedded
+  service instead of spawning an external zccache process
 - cache commands report and manage real zccache state
 
 ### Phase 4: Bootstrap Validation

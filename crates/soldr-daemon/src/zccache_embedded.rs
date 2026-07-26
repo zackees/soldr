@@ -25,8 +25,9 @@
 //!
 //! `RuntimeHooks` accepts an explicit Tokio handle. Soldr starts the service
 //! from inside its daemon runtime, so the ambient handle owns zccache's index
-//! writer and five-minute/24-hour maintenance worker. `console-subscriber`
-//! sees the union of soldr and zccache tasks.
+//! writer. Soldr explicitly owns the five-minute/24-hour maintenance schedule
+//! so only one build-aware scanner runs. `console-subscriber` sees the union
+//! of soldr and zccache tasks.
 //!
 //! ## Identity defaults
 //!
@@ -58,14 +59,15 @@ use zccache::audit::AuditMode;
 use zccache::core::NormalizedPath;
 use zccache::embedded::{
     AuditConfig, AuditContext, CacheOutcome, CompileRequest as ZccacheCompileRequest,
-    DiskCacheLimits, DiskMaintenanceKind, DiskMaintenancePressure, HostIdentity, RuntimeHooks,
-    ServiceLimits, ShutdownMode, ZccacheConfig, ZccacheService,
+    DiskCacheLimits, DiskMaintenanceKind, DiskMaintenancePressure, FlushStepOutcome, HostIdentity,
+    MaintenanceOwnership, RuntimeHooks, ServiceLimits, ShutdownMode, ZccacheConfig, ZccacheService,
 };
 use zccache::hash::StreamHasher;
 
 use crate::core::SoldrPaths;
 use crate::daemon::protocol::{
-    CompileRequest, CompileResponseBody, CompileStatsInfo, StagedProfileInfo,
+    CacheFlushInfo, CacheFlushStepInfo, CompileRequest, CompileResponseBody, CompileStatsInfo,
+    StagedProfileInfo,
 };
 
 /// Soldr-side handle around a started [`ZccacheService`]. Cheap to
@@ -121,8 +123,9 @@ pub enum EmbeddedServiceError {
     #[error("zccache embedded maintenance failed: {0}")]
     Maintenance(String),
     /// Issue #977 Phase 5 / #980 L1 — surfaced by [`SoldrZccacheService::compile`].
-    /// Maps to a soldr-side `Response::Error` so the wrapper falls back
-    /// to the legacy `zccache.exe` fork path.
+    /// Maps to a soldr-side `Response::Error`; errors from a healthy
+    /// embedded service propagate to the wrapper and never trigger the
+    /// daemon-unavailable direct-rustc fallback.
     #[error("zccache embedded compile failed: {0}")]
     Compile(String),
     /// Issue #977 Phase 5 — the wrapper sent a `CompileRequest` with an
@@ -188,9 +191,13 @@ impl SoldrZccacheService {
         };
 
         let (disk_limits, disk_policy) = disk_cache_limits_from_env()?;
-        let svc = ZccacheService::start_with_disk_limits(cfg, disk_limits)
-            .await
-            .map_err(|e| EmbeddedServiceError::Start(e.to_string()))?;
+        let svc = ZccacheService::start_with_disk_limits_and_maintenance(
+            cfg,
+            disk_limits,
+            MaintenanceOwnership::Host,
+        )
+        .await
+        .map_err(|e| EmbeddedServiceError::Start(e.to_string()))?;
         Ok(Self {
             inner: Arc::new(svc),
             identity,
@@ -250,10 +257,15 @@ impl SoldrZccacheService {
         let zresp = Box::pin(self.inner.compile(zreq))
             .await
             .map_err(|e| EmbeddedServiceError::Compile(e.to_string()))?;
+        let stderr = if zresp.cached {
+            strip_internal_soldr_fallback_notices(zresp.stderr)
+        } else {
+            zresp.stderr
+        };
         Ok(CompileResponseBody {
             exit_code: zresp.exit_code,
             stdout: zresp.stdout,
-            stderr: zresp.stderr,
+            stderr,
             cached: zresp.cached,
             cache_outcome: encode_cache_outcome(zresp.cache_outcome),
         })
@@ -262,12 +274,36 @@ impl SoldrZccacheService {
     /// Drain pending writes — called from the `Request::FlushCaches`
     /// arm (`soldr save` / `soldr cache flush`) so the on-disk cache
     /// tree is complete before archiving.
-    pub async fn flush(&self) -> Result<(), EmbeddedServiceError> {
-        self.inner
-            .flush()
+    pub async fn flush(&self) -> Result<CacheFlushInfo, EmbeddedServiceError> {
+        let report = self
+            .inner
+            .flush_detailed()
             .await
-            .map(|_| ())
-            .map_err(|e| EmbeddedServiceError::Flush(e.to_string()))
+            .map_err(|e| EmbeddedServiceError::Flush(e.to_string()))?;
+        let complete = report.is_complete();
+        Ok(CacheFlushInfo {
+            complete,
+            pending_writes_drained: report.pending_writes_drained,
+            index_writer_drained: report.index_writer_drained,
+            steps: report
+                .steps
+                .into_iter()
+                .map(|step| {
+                    let (status, error) = match step.outcome {
+                        FlushStepOutcome::Completed => ("completed", None),
+                        FlushStepOutcome::Failed(error) => ("failed", Some(error)),
+                        FlushStepOutcome::TimedOut => ("timed_out", None),
+                    };
+                    CacheFlushStepInfo {
+                        step: step.step,
+                        status: status.to_owned(),
+                        error,
+                    }
+                })
+                .collect(),
+            artifact_entries: report.artifact_entries,
+            metadata_entries: report.metadata_entries,
+        })
     }
 
     /// Return the embedded service's cumulative compile counters as the
@@ -336,26 +372,19 @@ impl SoldrZccacheService {
     /// Graceful shutdown — called from the daemon's normal exit path
     /// after the accept loop has been aborted.
     pub async fn shutdown(self, mode: ShutdownMode) -> Result<(), EmbeddedServiceError> {
-        // `ZccacheService::shutdown` takes `self` by value. We hold
-        // an `Arc<ZccacheService>`; if we are the last reference we
-        // can `Arc::try_unwrap`, otherwise the best we can do is
-        // call `flush` and let `Drop` clean up. In Phase 1 + 2 the
-        // service is only stored on the daemon's `State` which is
-        // dropped after `run_async` returns, so the unwrap path is
-        // the steady-state branch.
-        match Arc::try_unwrap(self.inner) {
-            Ok(svc) => svc
-                .shutdown(mode)
-                .await
-                .map(|_| ())
-                .map_err(|e| EmbeddedServiceError::Shutdown(e.to_string())),
-            Err(arc) => {
-                // Some other clone still holds the service; do a flush
-                // and rely on Drop. Better than refusing to exit.
-                let _ = arc.flush().await;
-                Ok(())
-            }
-        }
+        // `ZccacheService` is intentionally Clone: each clone shares the
+        // shutdown flag and daemon state. Consume a clone of the service value
+        // here instead of trying to unwrap soldr's Arc. Signal-handler and
+        // connection tasks may still hold soldr State clones during teardown;
+        // requiring Arc uniqueness therefore reduced "shutdown" to a flush and
+        // left zccache's index writer alive until Tokio runtime drop.
+        self.inner
+            .as_ref()
+            .clone()
+            .shutdown_detailed(mode)
+            .await
+            .map_err(|e| EmbeddedServiceError::Shutdown(e.to_string()))
+            .and_then(|report| ensure_complete_shutdown(&report))
     }
 }
 
@@ -495,6 +524,21 @@ mod journal_migration_tests {
     });
 }
 
+fn ensure_complete_shutdown(
+    report: &zccache::embedded::DetailedShutdownReport,
+) -> Result<(), EmbeddedServiceError> {
+    if report.flushed.is_complete() {
+        return Ok(());
+    }
+
+    Err(EmbeddedServiceError::Shutdown(format!(
+        "cache checkpoint incomplete: pending_writes_drained={}, index_writer_drained={}, steps={:?}",
+        report.flushed.pending_writes_drained,
+        report.flushed.index_writer_drained,
+        report.flushed.steps
+    )))
+}
+
 /// Build the default per-call `AuditContext` for soldr-issued compiles
 /// (issue #977 Phase 5). Each call gets a fresh synthetic run_id +
 /// trace_id; the daemon already carries build-session correlation via
@@ -534,6 +578,81 @@ fn encode_cache_outcome(outcome: CacheOutcome) -> i32 {
         CacheOutcome::Miss => 2,
         CacheOutcome::Error => 3,
     }
+}
+
+/// Soldr wrapper failures are operational diagnostics, not compiler output.
+/// Older cache entries can contain the once-per-wrapper fallback notice and
+/// Cargo persists any replayed stderr under `.fingerprint/output-*`, turning
+/// one transient outage into permanent warm-build spam. Drop only that exact
+/// internal line at the embedded-cache response boundary.
+pub fn strip_internal_soldr_fallback_notices(stderr: Vec<u8>) -> Vec<u8> {
+    const PREFIX: &[u8] = b"soldr: compile daemon unavailable after ";
+    const MIDDLE: &[u8] =
+        b"ms \xe2\x80\x94 falling back to direct uncached rustc (soldr#1657); reason=";
+    fn is_internal_notice(line: &[u8]) -> bool {
+        let line = line.strip_suffix(b"\n").unwrap_or(line);
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        let Some(rest) = line.strip_prefix(PREFIX) else {
+            return false;
+        };
+        let Some(middle_at) = rest
+            .windows(MIDDLE.len())
+            .position(|window| window == MIDDLE)
+        else {
+            return false;
+        };
+        let (budget, suffix) = rest.split_at(middle_at);
+        !budget.is_empty()
+            && budget.iter().all(u8::is_ascii_digit)
+            && suffix
+                .strip_prefix(MIDDLE)
+                .is_some_and(|reason| !reason.is_empty())
+    }
+
+    if !stderr.split(|byte| *byte == b'\n').any(is_internal_notice) {
+        return stderr;
+    }
+
+    let mut filtered = Vec::with_capacity(stderr.len());
+    for line in stderr.split_inclusive(|byte| *byte == b'\n') {
+        if !is_internal_notice(line) {
+            filtered.extend_from_slice(line);
+        }
+    }
+    filtered
+}
+
+#[cfg(test)]
+mod fallback_output_tests {
+    use super::strip_internal_soldr_fallback_notices;
+
+    crate::timed_test!(
+        cached_internal_fallback_notice_is_removed_without_touching_diagnostics,
+        {
+            let input = b"warning: first\n\
+soldr: compile daemon unavailable after 30000ms \xe2\x80\x94 falling back to direct uncached rustc (soldr#1657); reason=daemon unavailable\n\
+error[E0001]: real compiler diagnostic\r\n\
+note: contains soldr: compile daemon unavailable after but is user text"
+                .to_vec();
+            let filtered = strip_internal_soldr_fallback_notices(input);
+            assert_eq!(
+                filtered,
+                b"warning: first\n\
+error[E0001]: real compiler diagnostic\r\n\
+note: contains soldr: compile daemon unavailable after but is user text"
+            );
+        }
+    );
+
+    crate::timed_test!(near_prefix_compiler_diagnostic_is_preserved, {
+        let input = b"soldr: compile daemon unavailable after lunch; this is user text\n".to_vec();
+        assert_eq!(strip_internal_soldr_fallback_notices(input.clone()), input);
+    });
+
+    crate::timed_test!(compiler_stderr_without_internal_notice_is_byte_identical, {
+        let input = b"\0non-utf8:\xff\r\nreal stderr without trailing newline".to_vec();
+        assert_eq!(strip_internal_soldr_fallback_notices(input.clone()), input);
+    });
 }
 
 /// Pull the rustc binary path out of the wrapper's argv. The wrapper
@@ -944,9 +1063,49 @@ fn private_zccache_cache_root(paths: &SoldrPaths, identity: &HostIdentity) -> st
         .join(&identity.instance_id)
 }
 
+/// Top-level cache root passed to the embedded zccache service.
+///
+/// Callers that need to locate zccache-owned state should derive it from this
+/// shared boundary rather than duplicating the stable host identity.
+pub fn embedded_cache_root(paths: &SoldrPaths) -> std::path::PathBuf {
+    private_zccache_cache_root(paths, &derive_identity())
+}
+
 #[cfg(test)]
 mod private_root_tests {
     use super::*;
+
+    fn shutdown_report(
+        pending_writes_drained: bool,
+        index_writer_drained: bool,
+        outcome: FlushStepOutcome,
+    ) -> zccache::embedded::DetailedShutdownReport {
+        zccache::embedded::DetailedShutdownReport {
+            mode: ShutdownMode::Graceful,
+            flushed: zccache::embedded::DetailedFlushReport {
+                pending_writes_drained,
+                index_writer_drained,
+                steps: vec![zccache::embedded::FlushStepReport {
+                    step: "persist indexes".to_owned(),
+                    outcome,
+                }],
+                artifact_entries: 1,
+                metadata_entries: 1,
+            },
+        }
+    }
+
+    crate::timed_test!(shutdown_requires_a_complete_cache_checkpoint, {
+        let complete = shutdown_report(true, true, FlushStepOutcome::Completed);
+        ensure_complete_shutdown(&complete).expect("complete checkpoint");
+
+        let incomplete = shutdown_report(true, false, FlushStepOutcome::TimedOut);
+        let error = ensure_complete_shutdown(&incomplete).expect_err("incomplete checkpoint");
+        let message = error.to_string();
+        assert!(message.contains("cache checkpoint incomplete"));
+        assert!(message.contains("index_writer_drained=false"));
+        assert!(message.contains("TimedOut"));
+    });
 
     #[derive(Debug)]
     struct CompilerProbeOutput {
@@ -1358,6 +1517,14 @@ mod private_root_tests {
         );
         assert!(!first.cached, "first compile must populate the cache");
         assert_eq!(first.cache_outcome, 2, "first compile must be a miss");
+        let flush = cold_service
+            .flush()
+            .await
+            .expect("flush cold service before inspecting durable state");
+        assert!(
+            flush.is_complete(),
+            "cold service durability barrier must complete before archive: {flush:?}"
+        );
         let cold_stats = cold_service
             .inner
             .stats()

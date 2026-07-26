@@ -1,0 +1,55 @@
+name: Dylint Cache Acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Acceptance scope (diagnostic mode compares cold/sibling lint-library hashes)"
+        required: false
+        default: "full"
+        type: choice
+        options:
+          - "full"
+          - "sibling-diagnostic"
+  pull_request:
+    paths:
+      - ".github/scripts/dylint_cache_acceptance.py"
+      - ".github/workflows/dylint-cache-acceptance.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "ci/perf_local.py"
+      - "ci/fixtures/dylint-cache/**"
+      - "crates/**"
+      - "docker/cook-shared-cache/Dockerfile"
+      - "tests/test_perf_local.py"
+      - "tests/test_dylint_cache_acceptance.py"
+      - "_vender/zccache"
+      - "_vender/zccache/**"
+
+permissions:
+  contents: read
+
+jobs:
+  dylint-cache:
+    name: real cargo-dylint 6.0.1 cache matrix
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          submodules: recursive
+
+      - name: Run five-scenario Docker acceptance
+        env:
+          SOLDR_PERF_LOCAL_PTRACE: "1"
+          SOLDR_DYLINT_ACCEPTANCE_MODE: ${{ inputs.mode || 'full' }}
+        run: python3 .github/scripts/dylint_cache_acceptance.py
+
+      - name: Upload watchdog stacks and Tokio console recording
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: dylint-cache-watchdog-${{ github.run_id }}
+          path: ${{ runner.temp }}/soldr-dylint-diagnostics
+          if-no-files-found: ignore
+          retention-days: 7

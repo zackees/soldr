@@ -266,11 +266,19 @@ fn collect_log_path_entries(paths: &SoldrPaths) -> Vec<LogPathEntry> {
     let cache = &paths.cache;
     let bin = &paths.bin;
     let zccache = cache.join("zccache");
-    let zccache_private = zccache.join("private");
-    let zccache_default_logs = zccache.join("logs");
+    let zccache_embedded = crate::zccache_embedded::embedded_cache_root(paths);
+    let zccache_embedded_normalized: zccache::core::NormalizedPath =
+        zccache_embedded.clone().into();
+    let zccache_embedded_versioned =
+        zccache::core::config::effective_cache_root_from_top_level(&zccache_embedded_normalized);
+    let zccache_embedded_logs = zccache_embedded_versioned.join("logs");
+    let zccache_history = zccache.join("history");
+    let soldr_daemon_state = crate::cache_lib::soldr_daemon_dir(paths);
+    let embedded_zccache_warning_logs = soldr_daemon_state.join("logs");
     let runtime = root.join("runtime");
     let runtime_daemon = runtime.join("soldr-daemon");
     let runtime_self = runtime.join("soldr-self");
+    let daemon_spawn_log = root.join("daemon-spawn.log");
     let cargo_abort_log = paths.cargo_abort_log();
     let compile_daemon_fallback_log = paths
         .root
@@ -281,33 +289,47 @@ fn collect_log_path_entries(paths: &SoldrPaths) -> Vec<LogPathEntry> {
         (
             "soldr-root",
             root.to_path_buf(),
-            "User-level soldr install root (`~/.soldr/` unless `SOLDR_CACHE_DIR` overrides). \
-             Every other log path is anchored under this.",
+            "Selected soldr state root. The concrete path is shown above and may come from \
+             the default home location or `SOLDR_CACHE_DIR`.",
         ),
         (
             "soldr-bin",
             bin.to_path_buf(),
-            "Managed binary install dir. Per-version subdirs (e.g. `zccache-<ver>/`, \
-             `crgx-<ver>/`) hold the fetched tools soldr's resolver materialized.",
+            "Managed tool install directory. Fetched tools such as crgx live in per-version \
+             subdirectories; zccache is embedded in soldr and does not live here.",
         ),
         (
             "zccache-cache-root",
             zccache.clone(),
-            "Root of soldr's managed zccache cache. Contains both the default-session \
-             `logs/` and per-private-daemon subtrees under `private/`.",
+            "Top-level owner for soldr's embedded zccache data and per-build history.",
         ),
         (
-            "zccache-default-session-logs",
-            zccache_default_logs,
-            "Default-session log directory. Used when soldr does NOT start a private \
-             daemon. `soldr cache report --json` reads from here.",
+            "zccache-embedded-cache-root",
+            zccache_embedded,
+            "Stable top-level root passed to the in-process zccache service. Persistent \
+             service state is versioned beneath this directory.",
         ),
         (
-            "zccache-private-daemon-roots",
-            zccache_private,
-            "Per-project private-daemon namespaces (`soldr-dev-<hash>/`). Each holds a \
-             `logs/` subdir with `last-session.{log,jsonl,stats.json}` overwritten on each \
-             soldr session. This is where the issue #820 repro's slow-build journal lived.",
+            "zccache-embedded-logs",
+            zccache_embedded_logs.as_path().to_path_buf(),
+            "Versioned embedded-zccache log directory. Contains the global \
+             `compile_journal.jsonl` used for build miss-reason history.",
+        ),
+        (
+            "zccache-build-history",
+            zccache_history,
+            "Per-build archived session logs, journals, stats, and compile-journal tails.",
+        ),
+        (
+            "soldr-daemon-state",
+            soldr_daemon_state,
+            "Live soldr-daemon endpoint, PID, lifecycle JSONL, database, and daemon-owned logs.",
+        ),
+        (
+            "embedded-zccache-warning-logs",
+            embedded_zccache_warning_logs,
+            "Daily rolling `embedded-zccache.warn.log.YYYY-MM-DD` files emitted by the \
+             in-process cache service.",
         ),
         (
             "soldr-cargo-abort-log",
@@ -324,8 +346,13 @@ fn collect_log_path_entries(paths: &SoldrPaths) -> Vec<LogPathEntry> {
         (
             "soldr-daemon-runtime",
             runtime_daemon,
-            "Per-version soldr-daemon runtime root. `daemon-lifecycle-*.log` + \
-             `daemon-spawn-*.log` land here when the daemon auto-starts.",
+            "Relocated per-build soldr-daemon executable images. Runtime state and logs live \
+             under the `soldr-daemon-state` entry instead.",
+        ),
+        (
+            "soldr-daemon-spawn-log",
+            daemon_spawn_log,
+            "Fallback diagnostics recorded when detached soldr-daemon spawn or readiness fails.",
         ),
         (
             "soldr-self-trampoline-dir",
@@ -716,27 +743,52 @@ mod tests {
     );
 
     timed_test!(
-        build_log_paths_output_names_the_private_daemon_root,
+        build_log_paths_output_names_embedded_zccache_paths,
         Duration::from_secs(5),
         {
-            // The issue #820 repro's hardest-to-find log lived under
-            // `~/.soldr/cache/zccache/private/soldr-dev-<hash>/logs/`.
-            // The entry MUST surface that root so the human/agent finds
-            // the right journal in 30 seconds.
             let tmp = tempfile::tempdir().expect("tmpdir");
             let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
             let output = build_log_paths_output(&paths);
-            let entry = output
+            let embedded_root = crate::zccache_embedded::embedded_cache_root(&paths);
+            let versioned_root: zccache::core::NormalizedPath = embedded_root.clone().into();
+            let versioned_root =
+                zccache::core::config::effective_cache_root_from_top_level(&versioned_root);
+
+            let root_entry = output
                 .paths
                 .iter()
-                .find(|e| e.name == "zccache-private-daemon-roots")
-                .expect("private-daemon entry must exist");
-            let expected = tmp.path().join("cache").join("zccache").join("private");
-            assert_eq!(entry.path, expected);
+                .find(|entry| entry.name == "zccache-embedded-cache-root")
+                .expect("embedded cache root entry must exist");
+            assert_eq!(root_entry.path, embedded_root);
+
+            let logs_entry = output
+                .paths
+                .iter()
+                .find(|entry| entry.name == "zccache-embedded-logs")
+                .expect("embedded logs entry must exist");
+            assert_eq!(logs_entry.path, versioned_root.join("logs").as_path());
+            assert!(logs_entry.description.contains("compile_journal.jsonl"));
+
+            let warnings_entry = output
+                .paths
+                .iter()
+                .find(|entry| entry.name == "embedded-zccache-warning-logs")
+                .expect("embedded warning log entry must exist");
+            assert_eq!(
+                warnings_entry.path,
+                paths.cache.join("soldr-daemon").join("logs")
+            );
+            assert!(warnings_entry
+                .description
+                .contains("embedded-zccache.warn.log"));
+
             assert!(
-                entry.description.contains("private-daemon"),
-                "description should mention private-daemon, got: {}",
-                entry.description
+                output
+                    .paths
+                    .iter()
+                    .all(|entry| entry.name != "zccache-private-daemon-roots"
+                        && entry.name != "zccache-default-session-logs"),
+                "removed standalone/private zccache layouts must not be advertised"
             );
         }
     );
@@ -806,11 +858,11 @@ mod tests {
             let zccache_entry = output
                 .paths
                 .iter()
-                .find(|e| e.name == "zccache-private-daemon-roots")
-                .expect("private-daemon entry must exist");
+                .find(|e| e.name == "zccache-embedded-cache-root")
+                .expect("embedded cache root entry must exist");
             assert!(
                 !zccache_entry.exists,
-                "private-daemon dir under a fresh tmpdir must NOT exist yet"
+                "embedded cache root under a fresh tmpdir must NOT exist yet"
             );
         }
     );

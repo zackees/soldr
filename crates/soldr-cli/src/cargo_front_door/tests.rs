@@ -7,11 +7,10 @@ use super::*;
 use crate::LOW_DISK_WARNING_THRESHOLD_BYTES;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 /// Serialises tests that mutate process-wide environment variables so
 /// they don't race under parallel `cargo test`.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+use crate::TEST_PROCESS_ENV_LOCK as ENV_LOCK;
 
 struct EnvVarGuard {
     key: &'static str,
@@ -181,6 +180,33 @@ crate::timed_test!(zthreads_fallback_warning_has_ci_and_local_forms, {
     assert!(zthreads_fallback::render_config_hint().contains("Cargo config"));
     assert!(resolved_toolchain_is_nightly(Some("nightly-2026-07-22")));
     assert!(!resolved_toolchain_is_nightly(Some("1.94.1")));
+});
+
+crate::timed_test!(zthreads_retry_replays_original_front_door_contract, {
+    let args = argv(&["run", "--no-gc-target", "--no-trampoline", "--", "payload"]);
+    let uncached = ZthreadsRetryContext::new(&args, false, true);
+
+    assert_eq!(
+        uncached.cli_args(),
+        vec![
+            "--no-cache",
+            "--trust-inherited-soldr-env",
+            "cargo",
+            "run",
+            "--no-gc-target",
+            "--no-trampoline",
+            "--",
+            "payload",
+        ],
+        "the retry must replay top-level state and the original pre-normalization Cargo argv",
+    );
+
+    let cached = ZthreadsRetryContext::new(&argv(&["build", "--release"]), true, false);
+    assert_eq!(
+        cached.cli_args(),
+        vec!["cargo", "build", "--release"],
+        "a managed retry should continue through the normal cached front door",
+    );
 });
 
 crate::timed_test!(target_registry_memo_canonicalizes_existing_ancestor, {
@@ -842,6 +868,104 @@ fn cargo_args_are_cacheable_for_every_registry_inner_build_subcommand() {
     }
 }
 
+crate::timed_test!(
+    dylint_link_source_fallback_is_limited_to_missing_or_unrunnable_prebuilts,
+    {
+        assert!(dylint_link_prebuilt_requires_source_fallback(
+            &SoldrError::UnsupportedPlatform(
+                "asset matching failed: no asset matches target aarch64-apple-darwin".into()
+            )
+        ));
+        assert!(dylint_link_prebuilt_requires_source_fallback(
+            &SoldrError::Other("smoke test failed: dylint-link needs a newer GLIBC".into())
+        ));
+        assert!(!dylint_link_prebuilt_requires_source_fallback(
+            &SoldrError::Network("release download failed".into())
+        ));
+        assert!(!dylint_link_prebuilt_requires_source_fallback(
+            &SoldrError::Other("checksum pin mismatch".into())
+        ));
+    }
+);
+
+crate::timed_test!(cached_dylint_link_is_revalidated_and_evicted, {
+    let temp = tempfile::tempdir().unwrap();
+    let binary = temp.path().join(if cfg!(windows) {
+        "dylint-link.exe"
+    } else {
+        "dylint-link"
+    });
+    std::fs::write(&binary, b"not an executable").unwrap();
+    let result = crate::fetch::FetchResult {
+        binary_path: binary.clone(),
+        version: "6.0.1".into(),
+        cached: true,
+    };
+
+    let error = validated_dylint_link_prebuilt(&result).unwrap_err();
+    assert!(dylint_link_prebuilt_requires_source_fallback(&error));
+    assert!(
+        !binary.exists(),
+        "incompatible cached prebuilt must be evicted before source fallback"
+    );
+});
+
+crate::timed_test!(cached_source_built_dylint_link_is_reused_before_network, {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = SoldrPaths::with_root(temp.path().join("soldr"));
+    let plan = crate::build_from_source_cmd::resolve_plan("dylint-link", None, None, &paths)
+        .expect("resolve source-built dylint-link");
+    std::fs::create_dir_all(&plan.install_dir).unwrap();
+    std::fs::write(&plan.final_binary, b"complete source-built dylint-link").unwrap();
+    let digest = crate::build_from_source_cmd::sha256_of_file(&plan.final_binary).unwrap();
+    std::fs::write(
+        plan.final_binary.with_extension("sha256"),
+        format!(
+            "{digest}  {}\n",
+            plan.final_binary.file_name().unwrap().to_string_lossy()
+        ),
+    )
+    .unwrap();
+
+    let selected = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(dylint_link_bin_dir(&paths))
+        .expect("valid source-built cache must short-circuit remote resolution");
+
+    assert_eq!(selected, plan.install_dir);
+});
+
+crate::timed_test!(managed_dylint_always_uses_pinned_source_build, {
+    assert!(requires_managed_dylint_source_build("dylint"));
+    for subcommand in ["nextest", "zigbuild", "xwin", "audit"] {
+        assert!(
+            !requires_managed_dylint_source_build(subcommand),
+            "{subcommand} must retain the generic prebuilt/PATH-first policy"
+        );
+    }
+});
+
+crate::timed_test!(dylint_dependency_cook_marker_is_private_to_front_door, {
+    let args = vec![
+        "+nightly-2026-04-16".to_string(),
+        DYLINT_DEPENDENCY_COOK_FLAG.to_string(),
+        "check".to_string(),
+        "--".to_string(),
+        DYLINT_DEPENDENCY_COOK_FLAG.to_string(),
+    ];
+    let (cleaned, found) = strip_dylint_dependency_cook_flag(&args);
+    assert!(found);
+    assert_eq!(
+        cleaned,
+        [
+            "+nightly-2026-04-16",
+            "check",
+            "--",
+            DYLINT_DEPENDENCY_COOK_FLAG
+        ]
+    );
+});
+
 #[test]
 fn cargo_args_are_not_cacheable_for_static_analysis_tools() {
     // The three static-analysis tools in the registry don't spawn
@@ -1044,49 +1168,39 @@ fn cargo_args_are_cacheable_for_watch_with_toolchain_pin() {
 }
 
 // -------------------------------------------------------------------------
-// Auto target-GC flag stripping (#485). The soldr-private flags get pulled
-// out of the arg vector before cargo ever sees them. The env var path is
-// covered separately because it touches process state.
+// Retired target-GC flags remain stripped as compatibility no-ops (#1818).
 // -------------------------------------------------------------------------
 
 #[test]
 fn strip_no_gc_target_flag_removes_combined_form() {
-    let (cleaned, opt) = strip_no_gc_target_flags(&argv(&["build", "--no-gc-target", "--release"]));
+    let cleaned = strip_no_gc_target_flags(&argv(&["build", "--no-gc-target", "--release"]));
     assert_eq!(cleaned, argv(&["build", "--release"]));
-    assert!(opt.before);
-    assert!(opt.after);
 }
 
 #[test]
 fn strip_no_gc_target_flag_removes_before_only() {
-    let (cleaned, opt) = strip_no_gc_target_flags(&argv(&["check", "--no-gc-target-before"]));
+    let cleaned = strip_no_gc_target_flags(&argv(&["check", "--no-gc-target-before"]));
     assert_eq!(cleaned, argv(&["check"]));
-    assert!(opt.before);
-    assert!(!opt.after);
 }
 
 #[test]
 fn strip_no_gc_target_flag_removes_after_only() {
-    let (cleaned, opt) =
+    let cleaned =
         strip_no_gc_target_flags(&argv(&["build", "--no-gc-target-after", "--workspace"]));
     assert_eq!(cleaned, argv(&["build", "--workspace"]));
-    assert!(!opt.before);
-    assert!(opt.after);
 }
 
 #[test]
 fn strip_no_gc_target_flag_default_no_op() {
-    let (cleaned, opt) = strip_no_gc_target_flags(&argv(&["build", "--release"]));
+    let cleaned = strip_no_gc_target_flags(&argv(&["build", "--release"]));
     assert_eq!(cleaned, argv(&["build", "--release"]));
-    assert!(!opt.before);
-    assert!(!opt.after);
 }
 
 #[test]
 fn strip_no_gc_target_flag_passes_through_after_separator() {
     // Flags after `--` belong to the program cargo runs and must not be
     // touched. This mirrors how `--no-trampoline` is handled.
-    let (cleaned, opt) = strip_no_gc_target_flags(&argv(&[
+    let cleaned = strip_no_gc_target_flags(&argv(&[
         "run",
         "--bin",
         "foo",
@@ -1105,61 +1219,16 @@ fn strip_no_gc_target_flag_passes_through_after_separator() {
             "--no-gc-target-after",
         ])
     );
-    assert!(!opt.before);
-    assert!(!opt.after);
 }
 
 #[test]
 fn strip_no_gc_target_flag_handles_repeated_flags() {
-    let (cleaned, opt) = strip_no_gc_target_flags(&argv(&[
+    let cleaned = strip_no_gc_target_flags(&argv(&[
         "build",
         "--no-gc-target-before",
         "--no-gc-target-after",
     ]));
     assert_eq!(cleaned, argv(&["build"]));
-    assert!(opt.before);
-    assert!(opt.after);
-}
-
-#[test]
-fn env_disables_target_gc_truthy_values() {
-    let _lock = ENV_LOCK.lock().unwrap();
-    for value in ["1", "true", "yes", "anything"] {
-        let _guard = EnvVarGuard::set(NO_GC_TARGET_ENV_VAR, value);
-        let merged = GcTargetOptOut::default().merged_with_env();
-        assert!(
-            merged.before && merged.after,
-            "env value {value:?} should force both opt-outs"
-        );
-    }
-}
-
-#[test]
-fn env_disables_target_gc_falsey_values_dont_opt_out() {
-    let _lock = ENV_LOCK.lock().unwrap();
-    for value in ["", "0", "false", "False"] {
-        let _guard = EnvVarGuard::set(NO_GC_TARGET_ENV_VAR, value);
-        let merged = GcTargetOptOut::default().merged_with_env();
-        assert!(
-            !merged.before && !merged.after,
-            "env value {value:?} must not opt out"
-        );
-    }
-}
-
-#[test]
-fn env_disables_target_gc_preserves_explicit_flag_opt_outs() {
-    // If --no-gc-target-before is on the cli, the env var being unset
-    // must not silently re-enable the after pass.
-    let _lock = ENV_LOCK.lock().unwrap();
-    let _guard = EnvVarGuard::remove(NO_GC_TARGET_ENV_VAR);
-    let merged = GcTargetOptOut {
-        before: true,
-        after: false,
-    }
-    .merged_with_env();
-    assert!(merged.before);
-    assert!(!merged.after);
 }
 
 // Issue #755: cargo built-in verbs must not trigger the fuzzy "did you
@@ -1579,12 +1648,18 @@ crate::timed_test!(nextest_archive_darwin_bootstrap_reuses_blessed_env, {
     let tmp = tempfile::tempdir().unwrap();
     let sdk = tmp.path().join("MacOSX.fake.sdk");
     let llvm_bin = tmp.path().join("llvm-bin");
+    let fake_dsymutil = llvm_bin.join(if cfg!(windows) {
+        "dsymutil.exe"
+    } else {
+        "dsymutil"
+    });
     std::fs::create_dir_all(&sdk).unwrap();
     std::fs::create_dir_all(&llvm_bin).unwrap();
-    std::fs::write(llvm_bin.join("dsymutil"), b"fake dsymutil").unwrap();
+    std::fs::write(&fake_dsymutil, b"fake dsymutil").unwrap();
 
     let _sdkroot = EnvVarGuard::set("SDKROOT", &sdk);
     let _llvm = EnvVarGuard::set("SOLDR_LLVM_DIR", &llvm_bin);
+    let _dsymutil = EnvVarGuard::set("SOLDR_DSYMUTIL", &fake_dsymutil);
     let _legacy_zig = EnvVarGuard::remove(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR);
     let _legacy_sys = EnvVarGuard::set(crate::blessed_build::USE_LEGACY_VENDORED_SYS_ENV_VAR, "1");
     let _system_cmake = EnvVarGuard::set(crate::blessed_build::USE_SYSTEM_CMAKE_ENV_VAR, "1");
@@ -1926,7 +2001,7 @@ crate::timed_test!(zlib_ng_arm_wrapper_written_only_for_aarch64_msvc, {
     assert_eq!((key, value), (key2, value2));
 });
 
-crate::timed_test!(journal_miss_reasons_parse_jsonl_before_log_fallback, {
+crate::timed_test!(journal_miss_reasons_parse_build_scoped_jsonl, {
     let body = [
         r#"{"outcome":"hit","miss_reason":"ignored"}"#,
         r#"{"outcome":"miss","miss_reason":"context_not_found"}"#,
@@ -1948,6 +2023,23 @@ crate::timed_test!(journal_miss_reasons_parse_jsonl_before_log_fallback, {
     assert_eq!(reasons[2].count, 1);
 });
 
+crate::timed_test!(embedded_compile_journal_path_matches_service_layout, {
+    let root = tempfile::tempdir().expect("temp root");
+    let paths = SoldrPaths::with_root(root.path().join("soldr"));
+
+    assert_eq!(
+        embedded_compile_journal_path(&paths),
+        paths
+            .cache
+            .join("zccache")
+            .join("daemon-state")
+            .join("embedded-v1")
+            .join(zccache::core::config::versioned_subdir())
+            .join("logs")
+            .join("compile_journal.jsonl")
+    );
+});
+
 crate::timed_test!(miss_reasons_do_not_fall_back_to_full_global_journal, {
     let root = tempfile::tempdir().expect("temp root");
     let global_journal = root.path().join("compile_journal.jsonl");
@@ -1956,36 +2048,13 @@ crate::timed_test!(miss_reasons_do_not_fall_back_to_full_global_journal, {
         r#"{"outcome":"miss","miss_reason":"old_build"}"#,
     )
     .expect("write old global journal");
-    let session_journal = root.path().join("last-session.jsonl");
-    let session_log = root.path().join("last-session.log");
-
-    let reasons = read_build_miss_reasons(None, &session_journal, &session_log);
+    let reasons = read_build_miss_reasons(None);
 
     assert!(
         reasons.is_empty(),
         "missing archived tail must not parse unrelated global journal entries"
     );
 });
-
-crate::timed_test!(
-    miss_reasons_fall_back_to_session_journal_when_tail_missing,
-    {
-        let root = tempfile::tempdir().expect("temp root");
-        let session_journal = root.path().join("last-session.jsonl");
-        let session_log = root.path().join("last-session.log");
-        std::fs::write(
-            &session_journal,
-            r#"{"outcome":"miss","miss_reason":"session_build"}"#,
-        )
-        .expect("write session journal");
-
-        let reasons = read_build_miss_reasons(None, &session_journal, &session_log);
-
-        assert_eq!(reasons.len(), 1);
-        assert_eq!(reasons[0].reason, "session_build");
-        assert_eq!(reasons[0].count, 1);
-    }
-);
 
 crate::timed_test!(compile_journal_tail_archive_keeps_current_build_only, {
     let root = tempfile::tempdir().expect("temp root");
@@ -2237,6 +2306,94 @@ crate::timed_test!(
     }
 );
 
+crate::timed_test!(
+    persist_build_log_history_excludes_stale_legacy_session_files,
+    {
+        // Regression for #1827: fixed-name legacy files belong to no current
+        // embedded-service build and must never enter per-build history.
+        let root = tempfile::tempdir().expect("temp root");
+        let paths = SoldrPaths::with_root(root.path().join("soldr"));
+        let session_dir = root.path().join("zc");
+        std::fs::create_dir_all(&session_dir).expect("session dir");
+        let session = crate::zccache_lifecycle::ZccacheBuildSession {
+            cache_dir: session_dir.clone(),
+            cache_dir_env: false,
+            session_id: "stale-global-session".to_string(),
+            session_log_path: session_dir.join("last-session.log"),
+            journal_path: session_dir.join("last-session.jsonl"),
+            session_stats_path: session_dir.join("last-session-stats.json"),
+        };
+        let sentinel = "DO_NOT_ARCHIVE_THIS_LEGACY_SECRET";
+        std::fs::write(&session.session_log_path, sentinel).expect("legacy log");
+        std::fs::write(
+            &session.journal_path,
+            format!(r#"{{"env":[["TOKEN","{sentinel}"]]}}"#),
+        )
+        .expect("legacy journal");
+        std::fs::write(
+            &session.session_stats_path,
+            r#"{"status":"ok","hits":1,"misses":0,"compilations":1}"#,
+        )
+        .expect("stats");
+
+        let compile_journal = embedded_compile_journal_path(&paths);
+        std::fs::create_dir_all(compile_journal.parent().unwrap()).expect("journal parent");
+        let mut compile_journal_start_len = 0;
+        for (build_session_id, crate_name) in [(5150, "first"), (5151, "second")] {
+            use std::io::Write as _;
+            let mut journal = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&compile_journal)
+                .expect("open compile journal");
+            writeln!(
+                journal,
+                "{{\"outcome\":\"hit\",\"crate_name\":\"{crate_name}\"}}"
+            )
+            .expect("append compile journal");
+            drop(journal);
+
+            persist_build_log_history_inner(&BuildLogHistoryRequest {
+                paths: &paths,
+                build_session_id,
+                repo_root: Path::new("/repo"),
+                started_at_ms: 1_000,
+                session: &session,
+                compile_journal_start_len,
+                exit_code: 0,
+                ended_at_ms: 2_000,
+                daemon_finalized: true,
+            })
+            .expect("persist history");
+            compile_journal_start_len = std::fs::metadata(&compile_journal)
+                .expect("journal metadata")
+                .len();
+
+            let archive = build_log_history_dir(&paths, build_session_id);
+            assert!(!archive.join("last-session.log").exists());
+            assert!(!archive.join("last-session.jsonl").exists());
+            let archive_body = std::fs::read_to_string(archive.join("compile_journal.jsonl"))
+                .expect("build-scoped journal");
+            assert!(archive_body.contains(crate_name));
+            assert!(!archive_body.contains(sentinel));
+
+            let record = crate::daemon::db::get_build(
+                &crate::cache_lib::data_db_path(&paths),
+                build_session_id,
+            )
+            .expect("read build")
+            .expect("record");
+            let log_paths = record.log_paths.expect("log paths");
+            assert!(log_paths.session_log_path.is_none());
+            assert!(log_paths.journal_path.is_none());
+            assert!(log_paths.archived_session_log_path.is_none());
+            assert!(log_paths.archived_journal_path.is_none());
+            assert!(log_paths.archived_session_stats_path.is_some());
+            assert!(log_paths.archived_compile_journal_path.is_some());
+        }
+    }
+);
+
 crate::timed_test!(build_session_fallback_persists_start_end_without_daemon, {
     let root = tempfile::tempdir().expect("temp root");
     let paths = SoldrPaths::with_root(root.path().join("soldr"));
@@ -2438,4 +2595,274 @@ crate::timed_test!(write_build_log_reflects_seeded_compile_session_events, {
     assert!(raw.contains("wall_ms=\"600\""), "{raw}");
     assert!(raw.contains("cpu_ms=\"600\""), "{raw}");
     assert!(raw.contains("crate_count=\"2\""), "{raw}");
+});
+
+crate::timed_test!(
+    compile_fallback_summary_is_concise_and_prints_full_log_path,
+    {
+        let path = PathBuf::from(r"C:\state\logs\compile-daemon-fallbacks.jsonl");
+        let summary = compile_fallback_summary_message(137, &path);
+        assert_eq!(summary.lines().count(), 1);
+        assert!(summary.contains("137 compiler invocation(s)"));
+        assert!(summary.contains("used direct compiler"));
+        assert!(summary.contains(&path.display().to_string()));
+    }
+);
+
+crate::timed_test!(stale_fallback_scrub_is_hardlink_safe_and_marker_gated, {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let target = temp.path().join("target");
+    let fingerprint = target.join("debug/.fingerprint/demo-123");
+    std::fs::create_dir_all(&fingerprint).expect("create fingerprint directory");
+    let cache_blob = temp.path().join("cache-blob");
+    let output = fingerprint.join("output-lib-demo");
+    let notice = b"soldr: compile daemon unavailable after 30000ms \
+\xe2\x80\x94 falling back to direct uncached rustc (soldr#1657); \
+reason=daemon unavailable\n";
+    let mut persisted = notice.to_vec();
+    persisted.extend_from_slice(b"warning: real compiler diagnostic\n");
+    std::fs::write(&cache_blob, &persisted).expect("write cache fixture");
+    std::fs::hard_link(&cache_blob, &output).expect("hardlink fingerprint output");
+    let mut shared_permissions = std::fs::metadata(&cache_blob).unwrap().permissions();
+    shared_permissions.set_readonly(true);
+    std::fs::set_permissions(&cache_blob, shared_permissions).expect("protect shared hardlink");
+
+    let unrelated = target.join("debug/not-a-fingerprint/output-lib-demo");
+    std::fs::create_dir_all(unrelated.parent().unwrap()).expect("create unrelated directory");
+    std::fs::write(&unrelated, &persisted).expect("write unrelated fixture");
+
+    let cargo_lock_path = target.join("debug/.cargo-lock");
+    let cargo_lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&cargo_lock_path)
+        .expect("open Cargo lock fixture");
+    fs2::FileExt::try_lock_exclusive(&cargo_lock).expect("hold Cargo lock fixture");
+    assert!(matches!(
+        scrub_cached_fallback_diagnostics_once(&target).expect("defer active target"),
+        FallbackOutputScrub::DeferredForActiveBuild(path) if path == cargo_lock_path
+    ));
+    assert!(!target.join(FALLBACK_OUTPUT_SCRUB_MARKER).exists());
+    fs2::FileExt::unlock(&cargo_lock).expect("release Cargo lock fixture");
+
+    assert_eq!(
+        scrub_cached_fallback_diagnostics_once(&target).expect("scrub idle target"),
+        FallbackOutputScrub::Complete(1)
+    );
+    assert_eq!(
+        std::fs::read(&output).expect("read scrubbed output"),
+        b"warning: real compiler diagnostic\n"
+    );
+    assert_eq!(
+        std::fs::read(&cache_blob).expect("read source cache blob"),
+        persisted,
+        "replacement must not mutate the hardlinked source"
+    );
+    assert!(
+        std::fs::metadata(&cache_blob)
+            .expect("cache blob metadata")
+            .permissions()
+            .readonly(),
+        "cache blob must remain protected"
+    );
+    assert_eq!(
+        std::fs::read(&unrelated).expect("read unrelated output"),
+        persisted
+    );
+    assert!(target.join(FALLBACK_OUTPUT_SCRUB_MARKER).is_file());
+
+    let later = fingerprint.join("output-lib-later");
+    std::fs::write(&later, notice).expect("simulate later stale output");
+    assert_eq!(
+        scrub_cached_fallback_diagnostics_once(&target).expect("marker-gated second pass"),
+        FallbackOutputScrub::AlreadyDone
+    );
+    assert_eq!(std::fs::read(&later).unwrap(), notice);
+});
+
+// soldr#1788: cargo-dylint prebuilt fallback. Upstream's 6.0.1 Linux GNU
+// asset is linked against GLIBC_2.39, so it downloads cleanly on Debian 12
+// and then fails `smoke_test_or_evict`'s `--version` probe. These cover the
+// policy in `resolve_dylint_binary` without touching the network.
+
+crate::timed_test!(dylint_uses_prebuilt_when_fetch_succeeds, {
+    let mut source_build_ran = false;
+    let fetched = Ok(crate::fetch::FetchResult {
+        binary_path: PathBuf::from("/managed/bin/cargo-dylint"),
+        version: "6.0.1".to_string(),
+        cached: false,
+    });
+
+    let resolved = resolve_dylint_binary("cargo-dylint", fetched, || {
+        source_build_ran = true;
+        Ok(PathBuf::from("/source/bin/cargo-dylint"))
+    })
+    .expect("successful fetch must resolve");
+
+    assert_eq!(resolved, PathBuf::from("/managed/bin/cargo-dylint"));
+    assert!(
+        !source_build_ran,
+        "a usable prebuilt must not trigger the source build"
+    );
+});
+
+crate::timed_test!(dylint_falls_back_to_source_build_when_smoke_test_fails, {
+    let mut source_build_ran = false;
+    // Shaped like the real `smoke_test_or_evict` error: the download
+    // succeeded, the `--version` probe did not.
+    let fetched = Err(SoldrError::Other(
+        "smoke test failed: cargo-dylint binary at /managed/bin/cargo-dylint \
+         did not respond to --version / --help — likely a corrupted download \
+         (see soldr#936)"
+            .to_string(),
+    ));
+
+    let resolved = resolve_dylint_binary("cargo-dylint", fetched, || {
+        source_build_ran = true;
+        Ok(PathBuf::from("/source/bin/cargo-dylint"))
+    })
+    .expect("smoke-test failure must fall back, not propagate");
+
+    assert!(
+        source_build_ran,
+        "an unusable prebuilt must trigger the pinned source build"
+    );
+    assert_eq!(resolved, PathBuf::from("/source/bin/cargo-dylint"));
+});
+
+crate::timed_test!(dylint_source_build_failure_propagates, {
+    // The fallback must not swallow a genuine source-build failure —
+    // otherwise a broken pinned build degrades into a confusing
+    // "cargo-dylint not found" further downstream.
+    let fetched = Err(SoldrError::Other("prebuilt unusable".to_string()));
+
+    let error = resolve_dylint_binary("cargo-dylint", fetched, || {
+        Err(SoldrError::Other("pinned source build failed".to_string()))
+    })
+    .expect_err("source-build failure must propagate");
+
+    assert!(
+        error.to_string().contains("pinned source build failed"),
+        "unexpected error: {error}"
+    );
+});
+
+// ---------------------------------------------------------------------------
+// soldr#1813 — end-of-build log-path summary
+// ---------------------------------------------------------------------------
+
+/// Every path-bearing field of `BuildLogPaths` populated, so a test can assert
+/// the summary omits none of them.
+fn all_log_paths() -> crate::daemon::protocol::BuildLogPaths {
+    crate::daemon::protocol::BuildLogPaths {
+        zccache_session_id: Some("session-abc".to_string()),
+        cache_dir: Some(r"C:\state\zccache".to_string()),
+        session_log_path: Some(r"C:\state\zccache\logs\last-session.log".to_string()),
+        journal_path: Some(r"C:\state\zccache\logs\last-session.jsonl".to_string()),
+        session_stats_path: Some(r"C:\state\zccache\logs\last-session-stats.json".to_string()),
+        compile_journal_path: Some(r"C:\state\zccache\logs\compile_journal.jsonl".to_string()),
+        archived_session_log_path: Some(r"C:\state\hist\7\last-session.log".to_string()),
+        archived_journal_path: Some(r"C:\state\hist\7\last-session.jsonl".to_string()),
+        archived_session_stats_path: Some(r"C:\state\hist\7\last-session-stats.json".to_string()),
+        archived_compile_journal_path: Some(r"C:\state\hist\7\compile_journal.jsonl".to_string()),
+        private_daemon_name: Some("legacy-name".to_string()),
+    }
+}
+
+crate::timed_test!(log_summary_lists_exactly_the_recorded_build_log_paths, {
+    let log_paths = all_log_paths();
+    let logs = log_summary::SessionLogs {
+        build_log: Some(PathBuf::from(r"C:\state\logs\builds\build-7.xml")),
+        build_log_paths: Some(log_paths.clone()),
+        compile_fallback_log: Some(PathBuf::from(
+            r"C:\state\logs\compile-daemon-fallbacks.jsonl",
+        )),
+    };
+    let summary = log_summary::summary_message(&logs, false).expect("summary for a logged build");
+
+    // Every recorded log path appears.
+    for path in [
+        log_paths.session_log_path.as_deref(),
+        log_paths.journal_path.as_deref(),
+        log_paths.session_stats_path.as_deref(),
+        log_paths.compile_journal_path.as_deref(),
+        log_paths.archived_session_log_path.as_deref(),
+        log_paths.archived_journal_path.as_deref(),
+        log_paths.archived_session_stats_path.as_deref(),
+        log_paths.archived_compile_journal_path.as_deref(),
+    ] {
+        let path = path.expect("fixture populates every path field");
+        assert!(summary.contains(path), "summary omitted {path}:\n{summary}");
+    }
+    assert!(summary.contains(r"C:\state\logs\builds\build-7.xml"));
+    assert!(summary.contains(r"C:\state\logs\compile-daemon-fallbacks.jsonl"));
+
+    // ...and nothing that isn't a log file does. The session id and cache dir
+    // are correlation data, not paths the user should be pointed at, and
+    // private_daemon_name is a retired field kept only for old records.
+    assert!(!summary.contains("session-abc"), "summary:\n{summary}");
+    assert!(!summary.contains("legacy-name"), "summary:\n{summary}");
+
+    // One line per entry, plus the header and the closing hint.
+    assert_eq!(summary.lines().count(), 10 + 2, "summary:\n{summary}");
+    assert!(summary.contains("soldr logs paths"));
+});
+
+crate::timed_test!(log_summary_omits_paths_the_build_never_wrote, {
+    // The common case: the embedded service no longer touches zccache's fixed
+    // `last-session` files, so those fields are None and must not be printed
+    // as if they were fresh.
+    let logs = log_summary::SessionLogs {
+        build_log: Some(PathBuf::from("/state/logs/builds/build-1.xml")),
+        build_log_paths: Some(crate::daemon::protocol::BuildLogPaths {
+            session_log_path: None,
+            journal_path: None,
+            archived_session_log_path: None,
+            archived_journal_path: None,
+            ..all_log_paths()
+        }),
+        compile_fallback_log: None,
+    };
+    let summary = log_summary::summary_message(&logs, false).expect("summary");
+    assert!(!summary.contains("last-session.log"), "summary:\n{summary}");
+    assert!(
+        !summary.contains("last-session.jsonl"),
+        "summary:\n{summary}"
+    );
+    assert!(
+        !summary.contains("compile-daemon-fallbacks"),
+        "summary:\n{summary}"
+    );
+    assert!(
+        summary.contains("last-session-stats.json"),
+        "summary:\n{summary}"
+    );
+});
+
+crate::timed_test!(log_summary_is_absent_when_no_logs_were_written, {
+    // A build that wrote nothing must print nothing at all — not an empty
+    // header with a dangling hint.
+    let summary = log_summary::summary_message(&log_summary::SessionLogs::default(), false);
+    assert!(summary.is_none(), "unexpected summary: {summary:?}");
+});
+
+crate::timed_test!(log_summary_colorizes_only_when_asked, {
+    let logs = log_summary::SessionLogs {
+        build_log: Some(PathBuf::from("/state/logs/builds/build-1.xml")),
+        ..log_summary::SessionLogs::default()
+    };
+    let plain = log_summary::summary_message(&logs, false).expect("summary");
+    assert!(
+        !plain.contains('\x1b'),
+        "NO_COLOR output must be plain: {plain:?}"
+    );
+    let colored = log_summary::summary_message(&logs, true).expect("summary");
+    assert!(
+        colored.contains('\x1b'),
+        "colored output must use ANSI: {colored:?}"
+    );
+    // Color is decoration only — the path itself is unchanged.
+    assert!(colored.contains("/state/logs/builds/build-1.xml"));
 });

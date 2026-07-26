@@ -2,11 +2,10 @@
 //! soldr-daemon's EMBEDDED zccache state (artifact index, depgraph
 //! snapshot, metadata cache) to disk via `Request::FlushCaches`.
 //!
-//! Before the fix, `cache flush` / `cache shutdown` only quiesced the
-//! managed zccache daemon (the C/C++ side); the embedded rustc-side
-//! state stayed memory-only until a graceful daemon exit, so `soldr
-//! save` archives taken from a live daemon restored with zero rustc
-//! hits (the cold-tar-untar-warm 1.00x-speedup bug).
+//! Before the fix, `cache flush` / `cache shutdown` did not checkpoint
+//! the embedded rustc-side state. It stayed memory-only until a graceful
+//! daemon exit, so `soldr save` archives taken from a live daemon restored
+//! with zero rustc hits (the cold-tar-untar-warm 1.00x-speedup bug).
 
 #![allow(clippy::print_stdout)]
 
@@ -140,10 +139,43 @@ timed_test!(
             out.status.success(),
             "cache flush must exit 0; stdout: {stdout}; stderr: {stderr}"
         );
+        let report: serde_json::Value =
+            serde_json::from_slice(&out.stdout).expect("cache flush must emit valid JSON");
+        assert_eq!(report["flushed"], true, "flush report: {report}");
+        assert_eq!(report["stats"]["complete"], true, "flush report: {report}");
+        assert_eq!(
+            report["stats"]["pending_writes_drained"], true,
+            "flush report: {report}"
+        );
+        assert_eq!(
+            report["stats"]["index_writer_drained"], true,
+            "flush report: {report}"
+        );
+
+        let steps = report["stats"]["steps"]
+            .as_array()
+            .expect("flush report must contain step outcomes");
         assert!(
-            stdout.contains("embedded zccache state flushed"),
-            "cache flush notes must confirm the embedded checkpoint ran \
-             (Request::FlushCaches -> Ack); stdout: {stdout}"
+            steps
+                .iter()
+                .all(|step| { step["status"] == "completed" && step["error"].is_null() }),
+            "every checkpoint step must complete successfully: {report}"
+        );
+        let mut step_names: Vec<_> = steps
+            .iter()
+            .map(|step| step["step"].as_str().expect("flush step must have a name"))
+            .collect();
+        step_names.sort_unstable();
+        assert_eq!(
+            step_names,
+            [
+                "artifact_store",
+                "compiler_hash",
+                "depgraph",
+                "metadata",
+                "system_includes",
+            ],
+            "flush report must account for every embedded checkpoint: {report}"
         );
 
         // The checkpoint must leave the embedded depgraph snapshot
@@ -157,5 +189,70 @@ timed_test!(
         );
 
         drop(daemon);
+    }
+);
+
+timed_test!(
+    cache_shutdown_stops_soldr_daemon_and_waits_for_exit,
+    Duration::from_secs(120),
+    {
+        let cache_root = unique_temp_dir("shutdown-cache");
+        let home_root = unique_temp_dir("shutdown-home");
+        let mut daemon = DaemonProc::spawn(&cache_root, &home_root);
+
+        let out = run_soldr(
+            &[
+                "cache",
+                "shutdown",
+                "--shutdown-timeout-seconds",
+                "30",
+                "--json",
+            ],
+            &cache_root,
+            &home_root,
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success(),
+            "cache shutdown must complete successfully; stdout: {stdout}; stderr: {stderr}"
+        );
+        let json: serde_json::Value =
+            serde_json::from_slice(&out.stdout).expect("cache shutdown JSON");
+        assert_eq!(json["daemon_was_running"], true);
+        assert_eq!(json["shutdown_requested"], true);
+        assert_eq!(json["daemon_exited"], true);
+        assert_eq!(json["flush"]["complete"], true);
+
+        let child = daemon.child.as_mut().expect("daemon child");
+        assert!(
+            child.try_wait().expect("query daemon child").is_some(),
+            "cache shutdown returned before the soldr daemon exited"
+        );
+        daemon.child = None;
+    }
+);
+
+timed_test!(
+    daemon_stop_does_not_return_before_process_exit,
+    Duration::from_secs(120),
+    {
+        let cache_root = unique_temp_dir("daemon-stop-cache");
+        let home_root = unique_temp_dir("daemon-stop-home");
+        let mut daemon = DaemonProc::spawn(&cache_root, &home_root);
+
+        let out = run_soldr(&["daemon", "stop"], &cache_root, &home_root);
+        assert!(
+            out.status.success(),
+            "daemon stop failed; stdout: {}; stderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let child = daemon.child.as_mut().expect("daemon child");
+        assert!(
+            child.try_wait().expect("query daemon child").is_some(),
+            "daemon stop returned before the process exited"
+        );
+        daemon.child = None;
     }
 );

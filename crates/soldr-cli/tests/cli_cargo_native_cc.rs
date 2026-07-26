@@ -319,11 +319,13 @@ fn run_soldr_cargo_build(project: &Path, env_overrides: &[(&str, &str)]) -> std:
     let mut cmd = Command::new(soldr_bin());
     cmd.current_dir(project);
     remove_inherited_native_cache_env(&mut cmd);
-    // Hermetic caches per test run, with command-lifetime shutdown so
-    // parallel test execution cannot leave multiple zccache daemons alive.
+    // Hermetic cache root per test. The fake-zccache seam never starts an
+    // embedded daemon, so keep job lifetime: command lifetime now correctly
+    // requires a complete embedded checkpoint and would reject this
+    // intentionally daemon-free fixture.
     cmd.env("SOLDR_CACHE_DIR", unique_cache_dir());
-    cmd.env("SOLDR_CACHE_LIFECYCLE", "command");
-    cmd.env("SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS", "30");
+    cmd.env("SOLDR_CACHE_LIFECYCLE", "job");
+    cmd.env_remove("SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS");
     let fake_zccache = install_fake_zccache();
     cmd.env("SOLDR_TEST_ZCCACHE_BIN", &fake_zccache.bin);
     cmd.env(

@@ -419,6 +419,14 @@ pub(super) fn match_asset<'a>(
     assets: &'a [AssetInfo],
     target: &TargetTriple,
 ) -> Result<&'a AssetInfo, SoldrError> {
+    match_asset_for_binaries(assets, target, &[])
+}
+
+pub(super) fn match_asset_for_binaries<'a>(
+    assets: &'a [AssetInfo],
+    target: &TargetTriple,
+    binary_names: &[&str],
+) -> Result<&'a AssetInfo, SoldrError> {
     let os_keywords: &[&str] = match target.os {
         Os::Windows => &["windows", "win64", "win"],
         Os::MacOs => &["macos", "darwin", "apple", "osx"],
@@ -465,6 +473,12 @@ pub(super) fn match_asset<'a>(
         // fallback on GNU runners instead of forcing a slow cargo install.
 
         let mut score: u32 = 1;
+        if asset_name_matches_any_binary(&name, binary_names) {
+            // Releases can carry multiple programs for the same target
+            // (for example cargo-dylint and dylint-link). Prefer the archive
+            // whose name identifies the binary the caller requested.
+            score += 100;
+        }
         if target.os == Os::Windows && name.contains("msvc") {
             score += 10;
         }
@@ -501,6 +515,13 @@ pub(super) fn match_asset<'a>(
             target.triple()
         ))
     })
+}
+
+pub(super) fn asset_name_matches_any_binary(asset_name: &str, binary_names: &[&str]) -> bool {
+    let asset_name = asset_name.to_lowercase();
+    binary_names
+        .iter()
+        .any(|binary_name| asset_name.starts_with(&binary_name.to_lowercase()))
 }
 
 #[cfg(test)]
@@ -635,6 +656,31 @@ mod tests {
 
         let selected = match_asset(&assets, &target).unwrap();
         assert_eq!(selected.name, "tool-x86_64-unknown-linux-gnu.tar.gz");
+
+        let sibling_assets = vec![
+            asset("cargo-dylint-x86_64-unknown-linux-gnu-v6.0.1.tar.gz"),
+            asset("dylint-link-x86_64-unknown-linux-gnu-v6.0.1.tar.gz"),
+        ];
+        let selected =
+            match_asset_for_binaries(&sibling_assets, &target, &["dylint-link"]).unwrap();
+        assert_eq!(
+            selected.name,
+            "dylint-link-x86_64-unknown-linux-gnu-v6.0.1.tar.gz"
+        );
+        assert!(asset_name_matches_any_binary(
+            &selected.name,
+            &["dylint-link"]
+        ));
+        assert!(!asset_name_matches_any_binary(
+            "cargo-dylint-x86_64-unknown-linux-gnu-v6.0.1.tar.gz",
+            &["dylint-link"]
+        ));
+        let wrong_sibling =
+            match_asset_for_binaries(&sibling_assets[..1], &target, &["dylint-link"]).unwrap();
+        assert!(!asset_name_matches_any_binary(
+            &wrong_sibling.name,
+            &["dylint-link"]
+        ));
     }
 
     #[test]

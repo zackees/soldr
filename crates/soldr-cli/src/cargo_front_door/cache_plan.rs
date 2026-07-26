@@ -3,7 +3,6 @@ use crate::core::{SoldrError, SoldrPaths};
 use crate::native_cc;
 use crate::rust_plan::{self, RustArtifactPlanContext, RustPlanRestoreOutcome};
 use crate::zccache::{prepare_rustc_wrapper_plan, RustcWrapperPlan, ZccacheBuildSession};
-use crate::ZccacheSourceArg;
 
 pub(crate) struct CargoCachePlan {
     cache_enabled_for_cargo: bool,
@@ -39,22 +38,23 @@ impl CargoCachePlanPrefetch {
     /// know a child cargo will be spawned. The returned handle is
     /// awaited by [`CargoCachePlan::finalize`] just before the wrapper
     /// env is injected onto the cargo command.
-    pub(crate) fn start(
-        cache_enabled_for_cargo: bool,
-        paths: &SoldrPaths,
-        zccache_source: ZccacheSourceArg,
-    ) -> Self {
+    pub(crate) fn start(cache_enabled_for_cargo: bool, paths: &SoldrPaths) -> Self {
         if !cache_enabled_for_cargo {
             return Self::Disabled;
         }
         let paths = paths.clone();
-        let handle =
-            tokio::spawn(async move { prepare_rustc_wrapper_plan(&paths, zccache_source).await });
+        let handle = tokio::spawn(async move { prepare_rustc_wrapper_plan(&paths).await });
         Self::Pending(handle)
     }
 }
 
 impl CargoCachePlan {
+    pub(crate) fn uses_managed_zccache(&self) -> bool {
+        self.rustc_wrapper
+            .as_ref()
+            .is_some_and(RustcWrapperPlan::is_managed_zccache)
+    }
+
     /// Finalize the cache plan by awaiting the background prefetch
     /// kicked off by [`CargoCachePlanPrefetch::start`]. Call this
     /// immediately before [`CargoCachePlan::apply_to_command`] — i.e.
@@ -94,10 +94,9 @@ impl CargoCachePlan {
     pub(crate) async fn prepare(
         cache_enabled_for_cargo: bool,
         paths: &SoldrPaths,
-        zccache_source: ZccacheSourceArg,
     ) -> Result<Self, SoldrError> {
         let rustc_wrapper = if cache_enabled_for_cargo {
-            Some(prepare_rustc_wrapper_plan(paths, zccache_source).await?)
+            Some(prepare_rustc_wrapper_plan(paths).await?)
         } else {
             None
         };
@@ -167,7 +166,7 @@ impl CargoCachePlan {
         self.rust_artifact_plan
             .as_ref()
             .map(|plan| std::path::PathBuf::from(&plan.target_dir))
-            .or_else(|| super::resolve_target_dir_for_gc(args))
+            .or_else(|| super::resolve_target_dir_for_hooks(args))
     }
 
     pub(crate) fn restore_rust_artifacts(&self) -> Result<RustPlanRestoreOutcome, SoldrError> {
@@ -253,11 +252,19 @@ impl CargoCachePlan {
         if command_lifetime_shutdown_timeout.is_some() {
             let paths = SoldrPaths::new()?;
             let sock = crate::daemon::server::server_sock_path(&paths);
-            if let Err(err) = crate::daemon::client::flush_caches(&sock) {
-                eprintln!(
-                    "soldr: embedded zccache flush unavailable ({err:?}); on-disk state is \
-                     whatever the daemon last persisted"
-                );
+            match crate::daemon::client::flush_caches(&sock) {
+                Ok(report) if report.is_complete() => {}
+                Ok(report) => {
+                    return Err(SoldrError::Other(format!(
+                        "embedded zccache checkpoint incomplete: {}",
+                        report.incomplete_reason()
+                    )));
+                }
+                Err(err) => {
+                    return Err(SoldrError::Other(format!(
+                        "embedded zccache checkpoint unavailable: {err:?}"
+                    )));
+                }
             }
         }
         // soldr#1368 observability restore: diff the embedded zccache
@@ -347,6 +354,7 @@ mod tests {
                 worktree_root: Some(std::path::PathBuf::from("/tmp/worktree")),
             },
             wrapper_path: std::path::PathBuf::from("/tmp/soldr-shims/rustc"),
+            daemon_path: std::path::PathBuf::from("/tmp/soldr-daemon"),
         }))
     }
 
@@ -372,6 +380,10 @@ mod tests {
         assert_eq!(
             command_env_override(&command, "RUSTC_WRAPPER"),
             Some(Some(OsString::from("/tmp/soldr-shims/rustc")))
+        );
+        assert_eq!(
+            command_env_override(&command, crate::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR),
+            Some(Some(OsString::from("/tmp/soldr-daemon")))
         );
         // soldr#1368: the front door no longer plumbs an external zccache
         // binary or managed session — those env vars are cleared, not set.
@@ -472,6 +484,7 @@ mod tests {
                 }),
                 rust_artifact_plan: None,
             };
+            assert!(!plan.uses_managed_zccache());
 
             plan.apply_to_command(&mut command, None)
                 .expect("apply cache plan");
@@ -507,6 +520,7 @@ mod tests {
                 rustc_wrapper: Some(RustcWrapperPlan::Disabled),
                 rust_artifact_plan: None,
             };
+            assert!(!plan.uses_managed_zccache());
 
             plan.apply_to_command(&mut command, None)
                 .expect("apply cache plan");

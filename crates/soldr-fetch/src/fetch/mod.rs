@@ -472,16 +472,21 @@ async fn fetch_repo_binary_once(
         return Ok(r);
     }
 
-    let asset = github::match_asset(&release.assets, target).map_err(|err| match err {
-        SoldrError::UnsupportedPlatform(message) => SoldrError::UnsupportedPlatform(format!(
-            "asset matching failed for {}/{} version {} target {}: {message}",
-            repo.owner,
-            repo.repo,
-            release.version,
-            target.triple()
-        )),
-        other => other,
-    })?;
+    let asset =
+        github::match_asset_for_binaries(&release.assets, target, binary_names).map_err(|err| {
+            match err {
+                SoldrError::UnsupportedPlatform(message) => {
+                    SoldrError::UnsupportedPlatform(format!(
+                        "asset matching failed for {}/{} version {} target {}: {message}",
+                        repo.owner,
+                        repo.repo,
+                        release.version,
+                        target.triple()
+                    ))
+                }
+                other => other,
+            }
+        })?;
 
     // soldr#1790: time the actual network download (not the local-cache
     // hits above) for the always-on per-build XML log's download
@@ -497,12 +502,14 @@ async fn fetch_repo_binary_once(
         binary_names,
     )
     .await?;
-    soldr_core::build_log_meta::fetch_timing::record(soldr_core::build_log_meta::fetch_timing::FetchTiming {
-        name: cache_name.to_string(),
-        source: "github-release".to_string(),
-        started_at_ms: download_started_at_ms,
-        duration_ms: download_started.elapsed().as_millis() as u64,
-    });
+    soldr_core::build_log_meta::fetch_timing::record(
+        soldr_core::build_log_meta::fetch_timing::FetchTiming {
+            name: cache_name.to_string(),
+            source: "github-release".to_string(),
+            started_at_ms: download_started_at_ms,
+            duration_ms: download_started.elapsed().as_millis() as u64,
+        },
+    );
 
     // soldr#936: post-extract smoke test. Confirms the binary is
     // actually executable + not a corrupted-shell-script masquerade
@@ -510,7 +517,7 @@ async fn fetch_repo_binary_once(
     // motivated this issue). Failure deletes the extracted artifact
     // and bubbles up a clear error so the caller can retry or fail
     // loudly instead of silently caching a broken binary.
-    smoke_test_or_evict(&binary_path, cache_name)?;
+    smoke_test_or_evict(&binary_path, cache_name, target)?;
 
     Ok(FetchResult {
         binary_path,
@@ -523,9 +530,40 @@ async fn fetch_repo_binary_once(
 /// with `--version` (with a short timeout). On failure, evict the
 /// extracted file so the next fetch attempt does a clean re-download
 /// rather than reading the corrupt artifact from cache.
-fn smoke_test_or_evict(binary_path: &std::path::Path, cache_name: &str) -> Result<(), SoldrError> {
-    use std::process::Command;
+fn smoke_rustup_toolchain(cache_name: &str, target: &TargetTriple) -> Option<String> {
+    // `dylint-link` is a transparent linker wrapper. It requires this
+    // variable before it will forward even `--version` / `--help` to the
+    // underlying linker. The smoke probe does not compile anything, so a
+    // target-qualified synthetic nightly identity is sufficient and avoids
+    // rejecting the healthy official release binary.
+    (cache_name == "dylint-link").then(|| format!("nightly-{}", target.triple()))
+}
 
+fn smoke_command(
+    binary_path: &std::path::Path,
+    cache_name: &str,
+    target: &TargetTriple,
+    arg: &str,
+) -> std::process::Command {
+    let mut command = std::process::Command::new(binary_path);
+    command.arg(arg);
+    if let Some(toolchain) = smoke_rustup_toolchain(cache_name, target) {
+        command.env("RUSTUP_TOOLCHAIN", toolchain);
+    }
+    command
+}
+
+/// Validate an installed tool binary and evict it when it cannot execute.
+///
+/// Most callers use this immediately after extraction. It is public within
+/// the unpublished workspace so higher-level selectors can also revalidate
+/// cache and catalogue hits whose host compatibility may change independently
+/// of their archive integrity.
+pub fn smoke_test_or_evict(
+    binary_path: &std::path::Path,
+    cache_name: &str,
+    target: &TargetTriple,
+) -> Result<(), SoldrError> {
     if !binary_path.is_file() {
         return Err(SoldrError::Other(format!(
             "smoke test: {cache_name} binary at {} is not a file after extract",
@@ -533,7 +571,7 @@ fn smoke_test_or_evict(binary_path: &std::path::Path, cache_name: &str) -> Resul
         )));
     }
 
-    let output = Command::new(binary_path).arg("--version").output();
+    let output = smoke_command(binary_path, cache_name, target, "--version").output();
 
     let evict = |reason: &str| {
         eprintln!(
@@ -549,8 +587,7 @@ fn smoke_test_or_evict(binary_path: &std::path::Path, cache_name: &str) -> Resul
             // Some tools (e.g. unusual subcommand stubs) don't support
             // --version cleanly. Fall through to --help as the
             // second-chance probe before evicting.
-            let help_ok = Command::new(binary_path)
-                .arg("--help")
+            let help_ok = smoke_command(binary_path, cache_name, target, "--help")
                 .output()
                 .map(|h| h.status.success())
                 .unwrap_or(false);
@@ -692,6 +729,9 @@ async fn try_embedded_manifest_v6(
         .next()
         .filter(|s| !s.is_empty())
         .unwrap_or(hit.asset.href.as_str());
+    if !github::asset_name_matches_any_binary(asset_name, binary_names) {
+        return Ok(None);
+    }
 
     eprintln!(
         "soldr: embed-first hit for {}/{} v{} → {}",
@@ -713,12 +753,14 @@ async fn try_embedded_manifest_v6(
         Some((asset_name, hit.asset.sha256.as_str())),
     )
     .await?;
-    soldr_core::build_log_meta::fetch_timing::record(soldr_core::build_log_meta::fetch_timing::FetchTiming {
-        name: cache_name.to_string(),
-        source: "manifest-embed".to_string(),
-        started_at_ms: download_started_at_ms,
-        duration_ms: download_started.elapsed().as_millis() as u64,
-    });
+    soldr_core::build_log_meta::fetch_timing::record(
+        soldr_core::build_log_meta::fetch_timing::FetchTiming {
+            name: cache_name.to_string(),
+            source: "manifest-embed".to_string(),
+            started_at_ms: download_started_at_ms,
+            duration_ms: download_started.elapsed().as_millis() as u64,
+        },
+    );
 
     Ok(Some(FetchResult {
         binary_path,
@@ -772,7 +814,8 @@ async fn try_manifest_first(
 
     // The asset matcher reuses the existing platform-keyword scoring
     // logic. We synthesize a one-off `AssetInfo` list from the manifest
-    // entries and let `match_asset` pick the best fit for our target.
+    // entries and let the binary-aware matcher pick the best fit for our
+    // requested program and target.
     let asset_infos: Vec<github::AssetInfo> = candidates
         .iter()
         .map(|entry| github::AssetInfo {
@@ -780,10 +823,13 @@ async fn try_manifest_first(
             download_url: entry.url.clone(),
         })
         .collect();
-    let asset = match github::match_asset(&asset_infos, target) {
+    let asset = match github::match_asset_for_binaries(&asset_infos, target, binary_names) {
         Ok(asset) => asset,
         Err(_) => return Ok(None),
     };
+    if !github::asset_name_matches_any_binary(&asset.name, binary_names) {
+        return Ok(None);
+    }
     let matched_entry = candidates
         .iter()
         .find(|e| e.asset == asset.name && e.url == asset.download_url)
@@ -831,12 +877,14 @@ async fn try_manifest_first(
         Some((&matched_entry.asset, &matched_entry.sha256)),
     )
     .await?;
-    soldr_core::build_log_meta::fetch_timing::record(soldr_core::build_log_meta::fetch_timing::FetchTiming {
-        name: cache_name.to_string(),
-        source: "catalogue".to_string(),
-        started_at_ms: download_started_at_ms,
-        duration_ms: download_started.elapsed().as_millis() as u64,
-    });
+    soldr_core::build_log_meta::fetch_timing::record(
+        soldr_core::build_log_meta::fetch_timing::FetchTiming {
+            name: cache_name.to_string(),
+            source: "catalogue".to_string(),
+            started_at_ms: download_started_at_ms,
+            duration_ms: download_started.elapsed().as_millis() as u64,
+        },
+    );
 
     Ok(Some(FetchResult {
         binary_path,
@@ -1181,8 +1229,8 @@ mod tests {
     crate::timed_test!(smoke_test_missing_file_errors, {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let bogus = tmp.path().join("not-a-binary");
-        let err =
-            smoke_test_or_evict(&bogus, "fake-tool").expect_err("missing file must fail smoke");
+        let err = smoke_test_or_evict(&bogus, "fake-tool", &TargetTriple::host().unwrap())
+            .expect_err("missing file must fail smoke");
         assert!(
             err.to_string().contains("not a file after extract"),
             "expected 'not a file after extract' in error, got: {err}"
@@ -1209,7 +1257,8 @@ mod tests {
             std::fs::set_permissions(&bogus_bin, p).unwrap();
         }
 
-        let result = smoke_test_or_evict(&bogus_bin, "cargo-zigbuild");
+        let result =
+            smoke_test_or_evict(&bogus_bin, "cargo-zigbuild", &TargetTriple::host().unwrap());
         // On Windows the shebang fails to execute at all → exec error
         // path. On Unix the script runs but exits 1 → exit-status
         // path. Both paths must evict + error.
@@ -1218,5 +1267,14 @@ mod tests {
             !bogus_bin.is_file(),
             "smoke failure must evict the corrupted binary at {bogus_bin:?}"
         );
+    });
+
+    crate::timed_test!(dylint_link_smoke_sets_target_qualified_toolchain, {
+        let target = TargetTriple::from_triple("x86_64-unknown-linux-gnu").unwrap();
+        assert_eq!(
+            smoke_rustup_toolchain("dylint-link", &target).as_deref(),
+            Some("nightly-x86_64-unknown-linux-gnu")
+        );
+        assert_eq!(smoke_rustup_toolchain("cargo-dylint", &target), None);
     });
 }

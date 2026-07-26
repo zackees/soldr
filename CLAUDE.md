@@ -15,9 +15,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is soldr
 
-A single Rust binary with two jobs:
+A Rust command suite whose main multicall binary has two user-facing jobs:
 1. **Tool fetcher** — download and run pre-built Rust tool binaries (like npx/crgx)
-2. **Compilation cache** — sit in `RUSTC_WRAPPER` slot, hash rustc inputs, cache artifacts (like sccache). `RUSTC_WRAPPER` defaults to `zccache` if not explicitly set.
+2. **Compilation cache** — sit in the `RUSTC_WRAPPER` slot, hash rustc inputs,
+   and cache artifacts (like sccache). When no explicit wrapper override is
+   set, `RUSTC_WRAPPER` points at a compiler-named Soldr shim that sends work
+   to the zccache service embedded in the `soldr-daemon` sidecar.
 
 Mode is detected automatically from argv[1]: path-to-rustc → cache mode, built-in command → dispatch, anything else → tool fetch.
 
@@ -43,10 +46,10 @@ Friendly target aliases (`win-x64`, `mac-arm64`, etc.) are accepted by both verb
 ./install
 
 # Rust
-cargo build -p soldr-cli              # Build CLI binary
-cargo test --workspace                 # Run all Rust tests
-cargo clippy --workspace               # Lint Rust
-cargo fmt --all -- --check             # Check Rust formatting
+soldr cargo build -p soldr-cli              # Build CLI binary
+soldr cargo test --workspace                 # Run all Rust tests
+soldr cargo clippy --workspace               # Lint Rust
+soldr cargo fmt --all -- --check             # Check Rust formatting
 
 # Python (linting/testing the PyPI wrapper)
 ./lint                                 # ruff, black, isort, flake8, pylint, mypy
@@ -59,19 +62,20 @@ uv run maturin build --release         # Build wheel
 
 ## Architecture
 
-**Internal workspace split (#1490).** The 2026-05 monocrate collapse is being reversed into `publish = false` internal crates (the zccache pattern, no amalgamation): all five phases have landed: `soldr-core`, `soldr-fetch`, `soldr-cache`, and `soldr-daemon` are extracted, with `soldr-cli` as the facade + `[[bin]]` crate. soldr publishes no crates, so workspace membership has no external surface — the old `monocrate_guard.rs` test was deleted with the split. `tests/timed_test_lint.rs` walks every workspace crate under `crates/`.
+**Internal workspace split (#1490).** The 2026-05 monocrate collapse is being reversed into `publish = false` internal crates (the zccache pattern, no amalgamation): all five phases have landed: `soldr-core`, `soldr-fetch`, `soldr-cache`, and `soldr-daemon` are extracted, with `soldr-cli` as the facade + `[[bin]]` crate. soldr publishes no crates, so workspace membership has no external surface — the old `monocrate_guard.rs` test was deleted with the split. `crates/soldr-cli/tests/timed_test_lint.rs` walks every workspace crate under `crates/`.
 
 - **`crates/soldr-core`** — foundation crate: shared types, config (`~/.soldr/config.toml`), target triple resolution (MSVC default on Windows at runtime), error types, the daemon wire schema (`core::wire`), Windows Defender exclusion plumbing (`defender`), `self_relocate`, and the `timed_test!` watchdog. No I/O beyond config files. soldr-cli re-exports all of it at the old paths (`soldr_cli::core`, `soldr_cli::defender`, …), so consumers are unchanged.
 - **`crates/soldr-fetch`** — Binary resolution (re-exported as `soldr_cli::fetch`; `build.rs` + `embed/` live with it since `OUT_DIR` is per-crate). Ships several sub-modules:
   - `known_tools` — registry of ecosystem tools with explicit GitHub `(owner, repo)`, cargo subcommand mapping, and optional monorepo tag prefix (e.g. `cargo-audit/v0.21.0`). Keeps dispatch off the crates.io round-trip and handles per-tool release quirks.
   - `trust` — SHA-256 computation + `SOLDR_TRUST_MODE` / `SOLDR_CHECKSUMS_FILE` enforcement. Every fetch emits a `trust: verified` or `trust: unverified` line and a pin mismatch is a hard error regardless of mode.
-  - `install_zccache` / `rustup_init` — pinned zccache install flow + rustup auto-bootstrap.
+  - `rustup_init` — rustup auto-bootstrap. zccache is a vendored Rust
+    dependency hosted in-process by `soldr-daemon`, not a fetched tool.
   - Resolution chain: local cache → registry-or-crates.io repo lookup → GitHub Releases asset download → extract.
 - **`crates/soldr-cache`** — `RUSTC_WRAPPER` logic (re-exported as `soldr_cli::cache_lib`): hash inputs (blake3), check `~/.soldr/cache/`, daemon IPC (Unix socket / Windows named pipe), LRU eviction, plus the `soldr save` / `soldr load` archive transport and the auto-GC orchestrator. The `[cook]` eviction pass lives in `cache_lib::cook_gc` (issue #589) and is kicked from `gc/auto.rs` on the same throttle as the disk-pressure tiers.
 - **`crates/soldr-daemon`** — daemon runtime (re-exported as `soldr_cli::daemon` / `soldr_cli::zccache_embedded`): lifecycle (spawn/displacement/relocation), IPC server, wire codec, running-process v2 broker adoption, and the embedded zccache service the daemon hosts. Depends on soldr-core + soldr-cache.
-- **`src/soldr_main.rs` + sibling cli modules** — Mode detection in `run()` (the `src/main.rs` binary is a 3-line shim calling `soldr_cli::run()` since #1490 Phase 1), clap for built-ins, exec for tool fetch. The cargo front door (`soldr cargo ...`) inspects the first positional arg; if it matches a `known_tools` `cargo_subcommand`, the corresponding `cargo-<sub>` binary is fetched and prepended to `PATH` before cargo runs.
+- **`crates/soldr-cli/src/soldr_main.rs` + sibling CLI modules** — Mode detection in `run()` (`crates/soldr-cli/src/main.rs` is a 3-line binary shim calling `soldr_cli::run()` since #1490 Phase 1), clap for built-ins, exec for tool fetch. The cargo front door (`soldr cargo ...`) inspects the first positional arg; if it matches a `known_tools` `cargo_subcommand`, the corresponding `cargo-<sub>` binary is fetched and prepended to `PATH` before cargo runs.
 
-`src/lib.rs` declares every module exactly once (#1490 Phase 1 removed the historical lib/bin double-declaration, which compiled ~40K LOC twice per build). The CLI entry logic lives in `src/soldr_main.rs`, glob-re-exported at the crate root so `crate::<item>` paths inside the tree resolve unchanged; integration tests keep their `use soldr_cli::core::*`-style imports.
+`crates/soldr-cli/src/lib.rs` declares every module exactly once (#1490 Phase 1 removed the historical lib/bin double-declaration, which compiled ~40K LOC twice per build). The CLI entry logic lives in `crates/soldr-cli/src/soldr_main.rs`, glob-re-exported at the crate root so `crate::<item>` paths inside the tree resolve unchanged; integration tests keep their `use soldr_cli::core::*`-style imports.
 
 Dependency flow: every module reaches into `crate::core::*` for shared types (resolved through the soldr-core re-export); `fetch` and `cache_lib` each consume `core`; `daemon` consumes `core` + `cache_lib`; the cli-side modules consume all four.
 
@@ -112,17 +116,36 @@ Anything not registered falls through the generic External subcommand, which res
 
 ## Key Design Rules
 
-- **Frozen built-in commands**: `status`, `clean`, `config`, `cache`, `version`, `help`, `rustup`, `toolchain`, `doctor`, `optimize`, `cook`, `archive`, `build-from-source`, **`build` (soldr#1010 blessed surface — see "Two build paths" above)** plus the toolchain passthroughs listed above. These are clap-captured and must NOT be repurposed. Bare cargo built-in verbs — `test`, `check`, `run`, `bench`, `doc`, `fmt`, `clippy`, `tree`, `update`, `fix`, `add`, `remove`, `metadata`, `pkgid`, `search`, `vendor`, `yank`, `owner`, `login`, `logout`, `init`, `new`, `generate-lockfile`, `verify-project`, `locate-project`, `report`, `install`, `uninstall`, `publish` — route to `cargo <verb>` via the External arm (see `CARGO_BUILTIN_VERBS` in `cli_args.rs` and the phase-2 hop in `Commands::External` of `main.rs`). They are NOT soldr-native verbs and may not be reused as such; their soldr meaning is "shorthand for `cargo <verb>`." `build` is the **exception** — it has been promoted to a soldr-native surface and is no longer a pure cargo-builtin alias.
+- **Frozen built-in commands**: `status`, `clean`, `config`, `cache`, `version`, `help`, `rustup`, `toolchain`, `doctor`, `optimize`, `cook`, `archive`, `build-from-source`, **`build` (soldr#1010 blessed surface — see "Two build paths" above)** plus the toolchain passthroughs listed above. These are clap-captured and must NOT be repurposed. Bare cargo built-in verbs — `test`, `check`, `run`, `bench`, `doc`, `fmt`, `clippy`, `tree`, `update`, `fix`, `add`, `remove`, `metadata`, `pkgid`, `search`, `vendor`, `yank`, `owner`, `login`, `logout`, `init`, `new`, `generate-lockfile`, `verify-project`, `locate-project`, `report`, `install`, `uninstall`, `publish` — route to `cargo <verb>` via the External arm (see `CARGO_BUILTIN_VERBS` in `crates/soldr-cli/src/cli_args.rs` and the phase-2 hop in `Commands::External` of `crates/soldr-cli/src/soldr_main.rs`). They are NOT soldr-native verbs and may not be reused as such; their soldr meaning is "shorthand for `cargo <verb>`." `build` is the **exception** — it has been promoted to a soldr-native surface and is no longer a pure cargo-builtin alias.
 - **MSVC on Windows always**: Default to `x86_64-pc-windows-msvc` (or aarch64). Only use GNU if `rust-toolchain.toml` explicitly says so. Target resolved at runtime, not compile-time.
 - **Pre-built first**: Try every binary source before `cargo install`. Resolution order matters.
-- **RUSTC_WRAPPER defaults to zccache**: If `RUSTC_WRAPPER` is not set, soldr defaults to using `zccache` as the wrapper.
-- **Daemon auto-starts**: First `RUSTC_WRAPPER` call starts the cache daemon transparently. No manual `soldr start`.
+- **The wrapper route stays inside Soldr**: If caching is enabled and no
+  explicit `SOLDR_RUSTC_WRAPPER` override is set, `soldr cargo ...` installs a
+  compiler-named Soldr shim in `RUSTC_WRAPPER`. Each compile re-enters Soldr
+  and is sent over Soldr IPC to the zccache service embedded in
+  `soldr-daemon`; Cargo never launches a standalone zccache wrapper/daemon on
+  this path.
+- **Soldr daemon auto-starts**: The first cacheable wrapper call starts
+  `soldr-daemon`, which owns the embedded zccache service. No standalone
+  zccache process is started and no manual `soldr start` is required.
 - **Recovery from a wedged cache** (#1364): if a build hangs on the compile cache, run `soldr --no-cache cargo ...` (note: `--no-cache` goes *before* `cargo`) or set `ZCCACHE_DISABLE=1` — both bypass the wrapper + daemon and run rustc directly. `SOLDR_COMPILE_REPLY_TIMEOUT_SECS=<n>` shortens the 30-min compile-reply backstop to fail fast.
-- **Default zccache location stays boring**: Managed `soldr cargo ...` starts and ends zccache sessions without a soldr-private daemon namespace and without setting `ZCCACHE_CACHE_DIR` by default. If the caller sets `ZCCACHE_CACHE_DIR`, soldr forwards it as an explicit zccache override.
+- **Embedded cache location is Soldr-owned**: By default the service receives
+  `~/.soldr/cache/zccache/daemon-state/embedded-v1` as its top-level cache
+  root and zccache versions persistent state beneath `v<VERSION>/`. Per-build
+  history is stored under `~/.soldr/cache/zccache/history/`.
+  `SOLDR_CACHE_DIR` moves that embedded compiler-store boundary.
+  `ZCCACHE_CACHE_DIR` remains a front-door/session, rust-plan, and rustfmt
+  compatibility override; it does not relocate the service hosted by
+  `soldr-daemon`.
 - **Parent-cache sharing is default-on**: For managed-zccache builds soldr seeds `ZCCACHE_PATH_REMAP=auto` on the child cargo (issue #352, Tier L1.x). zccache then normalizes absolute source paths inside compiled artifacts so two git worktrees of the same repo serve each other's cache hits via hardlinks. Escape hatch: `SOLDR_PATH_REMAP=off` suppresses the injection; setting `ZCCACHE_PATH_REMAP` yourself wins. Works for non-git checkouts too: since zccache#353, `ZCCACHE_PATH_REMAP=auto` with no `.git/` ancestor falls back to the cwd as the remap root and still injects `--remap-path-prefix=<cwd>=.`, so tarball/zip/git-archive checkouts produce path-independent artifacts and share hits (the `.git/` walk is only how the preferred worktree root is discovered).
 - **Integrity is default**: every fetch records sha256. Pins are opt-in via `SOLDR_CHECKSUMS_FILE`; `SOLDR_TRUST_MODE=strict` refuses unpinned fetches.
 - **Version independence**: Users install once and forget. CI should pin: `pip install soldr==X.Y.Z`.
-- **Local zccache for debugging**: `SOLDR_ZCCACHE_LOCAL_DIR=<path>` skips the managed GitHub-Releases fetch and uses the user's locally-built `zccache.exe` / `zccache-daemon.exe` / `zccache-fp.exe`. Sibling `.pdb` files (Windows), `.dwp` files (Linux), or `.dSYM` directories (macOS) are copied alongside the binaries into `~/.soldr/bin/zccache-local-<sha256[..12]>/` so debuggers can resolve symbols when attaching to the daemon. `soldr doctor` prints a `managed zccache:` section with the resolved binary paths and a `symbol path` line suitable for `cdb -y` / `_NT_SYMBOL_PATH`. The companion helper `bench/build_local_zccache.sh` builds the sibling `zccache` checkout (default `~/dev/zccache`) and prints the env-var export hint. When unset, today's managed-fetch behavior is unchanged. Compatibility note: `SOLDR_ZCCACHE_BIN` (the cli-only test override) is preserved — the new env var is a separate, more comprehensive knob that also drives daemon and fingerprint binary resolution.
+- **Local zccache development**: Edit the `_vender/zccache` submodule and
+  rebuild Soldr; the resulting Soldr binaries contain that source and its
+  symbols. `SOLDR_ZCCACHE_LOCAL_DIR` and `SOLDR_ZCCACHE_BIN` are legacy
+  compatibility names and do not replace the embedded service on the normal
+  path. To deliberately test an external compiler wrapper, set
+  `SOLDR_RUSTC_WRAPPER=/path/to/zccache` (or another wrapper) explicitly.
 - **All Rust toolchain commands go through soldr**: `cargo`, `rustup`, `rustc`, `rustfmt`, `clippy-driver`, `cargo-clippy`, `cargo-fmt`, `rustdoc`, `rust-gdb`, `rust-lldb`, and `rust-analyzer` must be invoked as `soldr <tool> ...` (or `uv run soldr <tool> ...`). This includes invocations with leading env-var assignments — `RUSTUP_TOOLCHAIN=... cargo build` is the same policy violation as `cargo build`. The hook at `.claude/hooks/tool_guard.py` enforces this in Claude Code shell tools; the helper script `bench/build_local_zccache.sh` and any documented workflow must follow the same rule. Env-vars prefixed before `soldr` are fine — the policy is about routing the tool, not forbidding env overrides.
 
 ## Agent Development Environment Rule (issue #1105)
@@ -216,13 +239,13 @@ The repo builds itself through soldr so every contributor populates and hits the
 
 ## Serialization (issues #580 + #603)
 
-- **Binary transports and persisted-state metadata MUST use Protocol Buffers** (via `prost`), not `bincode` / `rmp-serde` / other schema-less formats. The wire schemas live as hand-written `#[derive(prost::Message)]` types beside a `.proto` file that documents them — see `crates/soldr-cli/src/core/wire.rs` + `wire.proto` (conversions in `src/daemon/wire.rs`) and `crates/soldr-cli/src/rust_plan_proto.rs` + `rust_plan_manifest.proto` for the existing pattern. The schema file is the source of truth; round-trip unit tests catch drift.
-- **Daemon IPC** (`crates/soldr-cli/src/daemon/{protocol,ipc,wire}.rs`) carries prost-encoded `WireRequest` / `WireResponse` in the frame body. The header is unchanged from prior versions; `PROTOCOL_VERSION` is bumped on every body-format change so peers at different versions error cleanly rather than silently mis-decoding.
+- **Binary transports and persisted-state metadata MUST use Protocol Buffers** (via `prost`), not `bincode` / `rmp-serde` / other schema-less formats. The daemon wire schema lives in `crates/soldr-core/src/core/wire.rs` beside `wire.proto`, with conversions in `crates/soldr-daemon/src/daemon/wire.rs`; the rust-plan schema lives in `crates/soldr-cli/src/rust_plan_proto.rs` beside `rust_plan_manifest.proto`. The schema file is the source of truth; round-trip unit tests catch drift.
+- **Daemon IPC** (`crates/soldr-daemon/src/daemon/{protocol,ipc,wire}.rs`) carries prost-encoded `WireRequest` / `WireResponse` in the frame body. The header is unchanged from prior versions; `PROTOCOL_VERSION` is bumped on every body-format change so peers at different versions error cleanly rather than silently mis-decoding.
 - **Persistent redb rows** are `[0x01][prost body]` (the `0x01` tag is reserved for future format extensions). Reads enforce the tag and refuse anything else. On daemon startup, `crate::daemon::db::ensure_initialized` and `crate::cache_lib::cook_index::ensure_initialized` sweep their tables and **drop any row that does not carry the tag** — this is the one-time pre-#580 cleanup. Cook artifacts on disk are unaffected; only the index rows get evicted.
 - **`bincode` is no longer a workspace dep.** As of #603 there are zero bincode call sites in the crate. Re-introduction is blocked by clippy: workspace-root `clippy.toml` lists `bincode::serialize` / `bincode::deserialize` under `disallowed-methods`, and `[workspace.lints.clippy]` sets `disallowed_methods = "deny"` (issue #602). `cargo clippy --workspace -- -D warnings` fails on any new call site.
 - **Human-edited config (`config.toml`, `rust-toolchain.toml`) stays JSON/TOML.** Protobuf mandate applies only to binary transports + archived metadata.
 
 ## Test Infrastructure
 
-- **Per-test watchdog (`timed_test!`)**: Tests must be declared with the `timed_test!` macro from `soldr_cli::test_util`. The default deadline is **2 minutes**; pass a `Duration` as the second argument to override (e.g. `timed_test!(name, Duration::from_secs(300), { ... })`). If the body does not return in time the watchdog prints `TEST HUNG (>Ns): <name>` plus a backtrace to stderr and aborts the test binary, guaranteeing a single hung test cannot block the whole suite. Implementation: `crates/soldr-cli/src/test_util.rs`. The self-test feature `test-watchdog-self-test` plus the `#[ignore]`d `deliberate_hang` cases verify the abort path end-to-end.
-- **Lint enforcement (`tests/timed_test_lint.rs`)**: A regression-guard integration test walks `src/**/*.rs` and `tests/*.rs` and fails the build if any *new* file declares a bare `#[test]` instead of using `timed_test!`. Pre-existing files are grandfathered via `LEGACY_ALLOWLIST` in the lint file; the list shrinks as files are migrated. Opt-outs: pair the test with `#[ignore]` (an ignored test cannot hang the suite) or annotate the line with `// allow-bare-test: <reason>` for the rare cases that genuinely cannot use the macro.
+- **Per-test watchdog (`timed_test!`)**: Tests must be declared with the `timed_test!` macro re-exported by `soldr_cli` and implemented in `crates/soldr-core/src/test_util.rs`. The default deadline is **2 minutes**; pass a `Duration` as the second argument to override (e.g. `timed_test!(name, Duration::from_secs(300), { ... })`). If the body does not return in time the watchdog prints `TEST HUNG (>Ns): <name>` plus a backtrace to stderr and aborts the test binary, guaranteeing a single hung test cannot block the whole suite. The self-test feature `test-watchdog-self-test` plus the `#[ignore]`d `deliberate_hang` cases verify the abort path end-to-end.
+- **Lint enforcement (`crates/soldr-cli/tests/timed_test_lint.rs`)**: A regression-guard integration test walks every workspace crate's Rust sources and integration tests and fails the build if any *new* file declares a bare `#[test]` instead of using `timed_test!`. Pre-existing files are grandfathered via `LEGACY_ALLOWLIST` in the lint file; the list shrinks as files are migrated. Opt-outs: pair the test with `#[ignore]` (an ignored test cannot hang the suite) or annotate the line with `// allow-bare-test: <reason>` for the rare cases that genuinely cannot use the macro.

@@ -494,3 +494,53 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
           compression-level: 0
+
+      # soldr#1799 — surface build XML logs + JSONL compile journals so
+      # toolchain-home leakage and warm-run recompile storms are
+      # diagnosable from the Actions UI. Printed as separate steps and
+      # uploaded as a downloadable artifact.
+      - name: Print build XML logs
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          found=0
+          for root in "$HOME/.soldr" "$HOME/.soldr-dev" "$RUNNER_TEMP"; do
+            [ -d "$root" ] || continue
+            while IFS= read -r f; do
+              found=1
+              echo "===== $f ====="
+              cat "$f"
+            done < <(find "$root" -path '*/logs/*' -name '*.xml' 2>/dev/null)
+          done
+          [ "$found" = 1 ] || echo 'No build XML logs found.'
+
+      - name: Print JSONL compile journals
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          found=0
+          for root in "$HOME/.soldr" "$HOME/.soldr-dev" "$RUNNER_TEMP"; do
+            [ -d "$root" ] || continue
+            while IFS= read -r f; do
+              found=1
+              echo "===== $f ====="
+              cat "$f"
+            done < <(find "$root" -path '*/logs/*' \( -name '*.jsonl' -o -name '*.stats.json' \) 2>/dev/null)
+          done
+          [ "$found" = 1 ] || echo 'No JSONL compile journals found.'
+
+      - name: Upload build log artifacts
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: build-logs-cross-${{ inputs.artifact_name }}
+          if-no-files-found: ignore
+          path: |
+            ~/.soldr/logs/
+            ~/.soldr-dev/logs/
+            ~/.soldr/cache/zccache/logs/
+            ~/.soldr-dev/cache/zccache/logs/
+            ${{ runner.temp }}/soldr-windows-cross-zccache-${{ inputs.target }}/logs/

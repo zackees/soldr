@@ -235,7 +235,17 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
         {
             prep.path_dirs.push(bundle.join("bin"));
         }
-        ensure_dsymutil_on_path(&mut prep)?;
+        // llvm-tools-preview does not ship llvm-dsymutil for every Rust
+        // host (notably the zero-dependency musl bootstrap image). A Darwin
+        // build can still link correctly without packed debug info, so keep
+        // the cross toolchain usable and select that safe fallback below.
+        let dsymutil_available = match ensure_dsymutil_on_path(&mut prep) {
+            Ok(()) => true,
+            Err(error) => {
+                eprintln!("soldr build: {error}; disabling packed Darwin debuginfo for this build");
+                false
+            }
+        };
 
         // Apple SDK fetch is the same code path `soldr prepare` uses,
         // so this is reuse rather than new logic.
@@ -305,6 +315,9 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
                 );
                 if use_lld_linker {
                     rustflags.push_str(" -C link-arg=-fuse-ld=lld");
+                }
+                if !dsymutil_available {
+                    rustflags.push_str(" -C split-debuginfo=off");
                 }
                 let (ar_tool, ranlib_tool) = if use_lld_linker {
                     ("llvm-ar", "llvm-ranlib")
@@ -1053,14 +1066,12 @@ fn xwin_msvc_link_args(cache_dir: &std::path::Path, target_triple: &str) -> Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use crate::TEST_PROCESS_ENV_LOCK as ENV_MUTEX;
 
-    /// Serialize tests that mutate process env vars. `std::env::set_var`
-    /// / `remove_var` mutate global state, and cargo runs tests in
-    /// parallel within a single process — without a barrier the tests
-    /// race and intermittently fail (soldr#1267).
-    static ENV_MUTEX: Mutex<()> = Mutex::new(());
-
+    // Serialize tests that mutate process env vars. `std::env::set_var`
+    // / `remove_var` mutate global state, and cargo runs tests in
+    // parallel within a single process — without a barrier the tests
+    // race and intermittently fail (soldr#1267).
     crate::timed_test!(opt_out_env_var_recognized, {
         let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let prev = std::env::var_os(USE_LEGACY_XWIN_ENV_VAR);
