@@ -99,7 +99,13 @@ fn toolchain_bin_memo_store(channel: &str, tool: &str, path: std::path::PathBuf)
 /// (`nightly-2026-01-18`, `1.94.1-x86_64-pc-windows-msvc`) but this
 /// defends against any unexpected separator/traversal characters.
 fn sanitize_toolchain_for_path(channel: &str) -> String {
+    // Collapse `..` before the per-character pass. The result is used as a
+    // directory component in `toolchain_bin_disk_cache_path_in`, so a channel
+    // of `..` would otherwise walk out of the cache root. Dots have to stay
+    // legal individually or version channels like `1.94.1` lose their
+    // readable directory name, which is why this can't just deny '.'.
     channel
+        .replace("..", "_")
         .chars()
         .map(|ch| {
             if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
