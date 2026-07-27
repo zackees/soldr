@@ -510,12 +510,10 @@ fn run_soldr_target_purge_for_sweep(
     purge_all: bool,
     json: bool,
 ) -> Result<SoldrTargetsSummary, SoldrError> {
-    use crate::cache_lib::gc::{parse_duration, parse_size, scan, GcOptions};
+    use crate::cache_lib::gc::{parse_duration, parse_size, GcOptions};
     let paths = SoldrPaths::new()?;
     let dev_roots = resolve_gc_dev_roots(&paths)?;
     let db_path = crate::cache_lib::data_db_path(&paths);
-    let registry = crate::cache_lib::target_registry::TargetRegistry::open(&db_path)
-        .map_err(|e| SoldrError::Other(format!("failed to open soldr registry: {e}")))?;
 
     let cfg = paths
         .load_config()
@@ -532,12 +530,13 @@ fn run_soldr_target_purge_for_sweep(
         dev_roots,
         dry_run: false,
     };
-    let report =
-        scan(&registry, &options).map_err(|e| SoldrError::Other(format!("gc scan failed: {e}")))?;
+    // Snapshot-then-release, same as the `soldr gc` front door (#1681).
+    let report = crate::cache_lib::gc::scan_released(&db_path, &options)
+        .map_err(|e| SoldrError::Other(format!("gc scan failed: {e}")))?;
     if report.candidates.is_empty() {
         return Ok(SoldrTargetsSummary::default());
     }
-    let purge_summary = run_gc_purge_candidates(&registry, &report.candidates, purge_all, json)?;
+    let purge_summary = run_gc_purge_candidates(&db_path, &report.candidates, purge_all, json)?;
     Ok(SoldrTargetsSummary {
         selected_count: purge_summary.selected_count,
         succeeded_count: purge_summary.succeeded_count,

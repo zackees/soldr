@@ -287,11 +287,16 @@ pub(crate) fn run_gc_purge_target_subtree_command(
 
     let paths = SoldrPaths::new()?;
     let db_path = crate::cache_lib::data_db_path(&paths);
-    let registry = crate::cache_lib::target_registry::TargetRegistry::open(&db_path)
-        .map_err(|e| SoldrError::Other(format!("failed to open soldr registry: {e}")))?;
-    let rows = registry
-        .list()
-        .map_err(|e| SoldrError::Other(format!("gc purge {} failed: {e}", kind.kind_name())))?;
+    // Scoped so the handle is gone before the sizing walk, the prompt
+    // loop, and the deletes below — this command never touches the
+    // registry again, and the prompt waits on a human (#1681).
+    let rows = {
+        let registry = crate::cache_lib::target_registry::TargetRegistry::open(&db_path)
+            .map_err(|e| SoldrError::Other(format!("failed to open soldr registry: {e}")))?;
+        registry
+            .list()
+            .map_err(|e| SoldrError::Other(format!("gc purge {} failed: {e}", kind.kind_name())))?
+    };
     let now = crate::cache_lib::target_registry::current_unix_seconds().map_err(|e| {
         SoldrError::Other(format!("gc purge {} clock error: {e}", kind.kind_name()))
     })?;
@@ -394,8 +399,16 @@ pub(crate) fn run_gc_purge_target_subtree_command(
     Ok(())
 }
 
+/// Prompt for, delete, and account for the selected candidates.
+///
+/// Takes the registry *path* rather than an open handle (#1681): the
+/// prompting loop and the parallel `remove_dir_all` pool run with no
+/// database open, and the handle is reacquired only for the bounded
+/// row-removal phase at the end. Holding it across the deletion blocked
+/// every other `state.redb` opener for the duration, and the prompt is
+/// unbounded — it waits on a human.
 pub(super) fn run_gc_purge_candidates(
-    registry: &crate::cache_lib::target_registry::TargetRegistry,
+    db_path: &std::path::Path,
     candidates: &[crate::cache_lib::gc::GcCandidate],
     purge_all: bool,
     json: bool,
@@ -474,8 +487,14 @@ pub(super) fn run_gc_purge_candidates(
         eprintln!();
     }
 
-    crate::cache_lib::gc::apply_purge_outcomes(registry, outcomes)
-        .map_err(|e| SoldrError::Other(format!("failed to update gc registry: {e}")))
+    // Bounded reopen: every directory is already gone, so this phase is
+    // one write txn per deleted row and nothing else (#1681).
+    let registry = crate::cache_lib::target_registry::TargetRegistry::open(db_path)
+        .map_err(|e| SoldrError::Other(format!("failed to reopen soldr registry: {e}")))?;
+    let summary = crate::cache_lib::gc::apply_purge_outcomes(&registry, outcomes)
+        .map_err(|e| SoldrError::Other(format!("failed to update gc registry: {e}")));
+    drop(registry);
+    summary
 }
 
 fn gc_purge_worker_count() -> usize {
