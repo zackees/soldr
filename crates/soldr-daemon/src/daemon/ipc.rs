@@ -55,7 +55,7 @@ pub fn encode_reject_record(reason: &str) -> Vec<u8> {
     while end > 0 && !reason.is_char_boundary(end) {
         end -= 1;
     }
-    let reason = reason[..end].as_bytes();
+    let reason = &reason.as_bytes()[..end];
     let mut buf = Vec::with_capacity(HEADER_BYTES + reason.len());
     buf.extend_from_slice(&(reason.len() as u32).to_le_bytes());
     buf.extend_from_slice(&REJECT_RECORD_VERSION.to_le_bytes());
