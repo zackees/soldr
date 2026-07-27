@@ -1763,8 +1763,42 @@ mod spawn_lock_tests {
             "second acquire while first is held must return None",
         );
         drop(first);
-        // After release, the next call gets the lock back.
-        let third = acquire_spawn_lock(&paths).expect("third acquire after release");
+
+        // After release the lock becomes available again — but not
+        // necessarily on the very next instruction (#1873).
+        //
+        // `acquire_spawn_lock` uses `fs2::try_lock_exclusive`, which is
+        // `flock(2)` on unix, and an `flock` belongs to the *open file
+        // description*: it is released only once the LAST descriptor
+        // referring to that description is closed. `Command::spawn` is
+        // fork+exec, and between the fork and the exec the child owns a
+        // copy of every descriptor the parent had — including this lock.
+        // Rust opens files `O_CLOEXEC`, but that closes the descriptor at
+        // *exec*, so a concurrently-forked child keeps the lock alive for
+        // the width of its fork→exec window.
+        //
+        // Several sibling tests in this binary fork while this one runs
+        // (`/bin/sh` in `exited_unreaped_child_is_not_alive` and
+        // `via_self_daemon_forces_main_cli_argv0`, `/bin/ps`, and
+        // `subprocess_probe_root_owner`, which re-execs the whole test
+        // binary and so has the widest window). Under CI load that
+        // overlapped the `drop`/re-acquire pair here often enough to fail
+        // `main` on roughly half its runs.
+        //
+        // The invariant worth asserting is that the release is not
+        // permanent, so poll for it. The exclusivity assertion above —
+        // the actual subject of this test — stays immediate.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let third = loop {
+            if let Some(lock) = acquire_spawn_lock(&paths) {
+                break lock;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "lock never became available after release",
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
         drop(third);
     }
 
