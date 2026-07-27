@@ -79,6 +79,10 @@ pub fn temp_root() -> PathBuf {
             }
             match SoldrPaths::new() {
                 Ok(paths) => paths.cache.join(TEMP_DIR_NAME),
+                // The sanctioned exception (soldr#1900): this module IS the
+                // blessed resolver, and this is its documented degradation
+                // path for an unresolvable root. Banned everywhere else.
+                #[allow(clippy::disallowed_methods)]
                 Err(_) => std::env::temp_dir(),
             }
         })
@@ -95,6 +99,10 @@ pub fn ensure_temp_root() -> PathBuf {
     let root = temp_root();
     match std::fs::create_dir_all(&root) {
         Ok(()) => root,
+        // The sanctioned exception (soldr#1900): this module IS the blessed
+        // resolver, and this is its documented degradation path for an
+        // unresolvable or unwritable preferred root. Banned everywhere else.
+        #[allow(clippy::disallowed_methods)]
         Err(_) => std::env::temp_dir(),
     }
 }
@@ -105,6 +113,10 @@ pub fn ensure_temp_root_for(paths: &SoldrPaths) -> PathBuf {
     let root = temp_root_for(paths);
     match std::fs::create_dir_all(&root) {
         Ok(()) => root,
+        // The sanctioned exception (soldr#1900): this module IS the blessed
+        // resolver, and this is its documented degradation path for an
+        // unresolvable or unwritable preferred root. Banned everywhere else.
+        #[allow(clippy::disallowed_methods)]
         Err(_) => std::env::temp_dir(),
     }
 }
@@ -129,9 +141,12 @@ mod tests {
 
     crate::timed_test!(scratch_is_not_the_os_temp_dir_by_default, {
         let paths = SoldrPaths::with_root(PathBuf::from("/synthetic/root"));
+        // Reading the banned value is the assertion's whole point.
+        #[allow(clippy::disallowed_methods)]
+        let os_temp = std::env::temp_dir();
         assert_ne!(
             temp_root_for(&paths),
-            std::env::temp_dir(),
+            os_temp,
             "the OS temp dir is tmpfs on most Linux hosts; that is what this \
              module exists to avoid"
         );
