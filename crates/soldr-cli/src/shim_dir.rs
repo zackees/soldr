@@ -215,7 +215,59 @@ pub(crate) fn shim_tool_path(dir: &Path, tool: &str) -> PathBuf {
 
 fn write_shim(dir: &Path, tool: &str, soldr_bin: &Path) -> Result<(), SoldrError> {
     let path = shim_tool_path(dir, tool);
+    // soldr#1856: a maturin/delocate-repaired macOS wheel binary loads its
+    // bundled dylibs through `@loader_path/../<pkg>.dylibs/<lib>`. A hardlink
+    // or copy into the shim dir strands that relative reference — `@loader_path`
+    // then resolves against the shim dir — and dyld kills the child before
+    // main(). A hardlink is no safer than a copy here: it has no "original
+    // path" for the loader to resolve against either.
+    //
+    // Same failure the daemon path already avoids (soldr#1300), so use the same
+    // predicate: leave the real binary where it is and trampoline to it.
+    if soldr_core::self_relocate::exe_depends_on_bundled_wheel_libs(soldr_bin) {
+        return write_trampoline_shim(&path, tool, soldr_bin);
+    }
     crate::shim_materialize::materialize_executable(soldr_bin, &path).map(|_| ())
+}
+
+/// The exact text of a trampoline shim.
+///
+/// Split out so the persistent installer can compare against it for
+/// idempotency instead of byte-comparing a script to a Mach-O, which would
+/// rewrite the shim on every invocation and defeat the memo fast path
+/// (soldr#1831).
+///
+/// Single-quoted with `'\''` escaping: a wheel path can sit under a venv with
+/// spaces, and the pre-0.8.10 double-quoted form would still expand `$` and
+/// backticks inside the path.
+pub(crate) fn trampoline_shim_body(tool: &str, soldr_bin: &Path) -> String {
+    let quoted = format!("'{}'", soldr_bin.to_string_lossy().replace('\'', r"'\''"));
+    format!("#!/bin/sh\nexec {quoted} {tool} \"$@\"\n")
+}
+
+/// Write a `#!/bin/sh` trampoline that re-enters soldr in place.
+///
+/// Used only for wheel-repaired binaries; everything else keeps the faster
+/// hardlink path so the startup-latency work (soldr#1831/#1834) is untouched.
+/// Cost here is one `sh` fork per nested tool call, on wheel installs only.
+pub(crate) fn write_trampoline_shim(
+    path: &Path,
+    tool: &str,
+    soldr_bin: &Path,
+) -> Result<(), SoldrError> {
+    std::fs::write(path, trampoline_shim_body(tool, soldr_bin)).map_err(SoldrError::Io)?;
+    // Only the exec bit is genuinely platform-specific; the rest of this
+    // function compiles and is tested everywhere (soldr CLAUDE.md:156).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(path)
+            .map_err(SoldrError::Io)?
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(path, perms).map_err(SoldrError::Io)?;
+    }
+    Ok(())
 }
 
 /// Apply the shim dir to `command`'s environment so the child sees it
@@ -243,6 +295,87 @@ pub(crate) fn apply_to_command(command: &mut std::process::Command, shim_dir: &P
 mod tests {
     use super::*;
     use std::ffi::OsStr;
+
+    /// Build the maturin/delocate "repaired wheel" layout the predicate
+    /// detects: `<root>/<pkg>.scripts/soldr` beside `<root>/<pkg>.dylibs/`.
+    /// Pure path logic, so this works on every platform.
+    fn repaired_wheel_layout(root: &Path) -> PathBuf {
+        let scripts = root.join("soldr.scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        std::fs::create_dir_all(root.join("soldr.dylibs")).unwrap();
+        let exe = scripts.join("soldr");
+        std::fs::write(&exe, b"MACH-O-PLACEHOLDER").unwrap();
+        exe
+    }
+
+    #[test]
+    fn trampoline_execs_the_real_binary_in_place() {
+        let tmp = tempfile::tempdir().unwrap();
+        let exe = repaired_wheel_layout(tmp.path());
+        let body = trampoline_shim_body("cargo", &exe);
+
+        assert!(body.starts_with("#!/bin/sh\n"), "{body}");
+        assert!(body.contains("exec "), "{body}");
+        assert!(body.trim_end().ends_with(r#" cargo "$@""#), "{body}");
+        // The real binary must stay where it is — that is the whole fix.
+        assert!(body.contains(&exe.to_string_lossy().to_string()), "{body}");
+    }
+
+    /// A venv path can contain a single quote; the pre-0.8.10 double-quoted
+    /// form would also have expanded `$` and backticks.
+    #[test]
+    fn trampoline_quoting_survives_hostile_paths() {
+        let body = trampoline_shim_body("rustc", Path::new("/o'brien/$HOME/`x`/soldr"));
+        assert!(body.contains(r"'/o'\''brien/$HOME/`x`/soldr'"), "{body}");
+        // Nothing outside the single-quoted span may be interpolated.
+        assert!(!body.contains("\"$HOME\""), "{body}");
+    }
+
+    #[test]
+    fn repaired_wheel_layout_takes_the_trampoline_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let exe = repaired_wheel_layout(tmp.path());
+        assert!(
+            soldr_core::self_relocate::exe_depends_on_bundled_wheel_libs(&exe),
+            "the repaired-wheel layout must be detected"
+        );
+
+        let dir = tmp.path().join("shims");
+        std::fs::create_dir_all(&dir).unwrap();
+        write_shim(&dir, "cargo", &exe).unwrap();
+
+        let written = std::fs::read_to_string(shim_tool_path(&dir, "cargo")).unwrap();
+        assert_eq!(written, trampoline_shim_body("cargo", &exe));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(shim_tool_path(&dir, "cargo"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o755, "trampoline must be executable");
+        }
+    }
+
+    /// The fast hardlink/copy path must survive for ordinary installs, or the
+    /// startup-latency work (#1831/#1834) regresses for everyone.
+    #[test]
+    fn ordinary_layout_still_materializes_the_binary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let exe = tmp.path().join("soldr-plain");
+        std::fs::write(&exe, b"PLAIN-SOLDR-BYTES").unwrap();
+        assert!(!soldr_core::self_relocate::exe_depends_on_bundled_wheel_libs(&exe));
+
+        let dir = tmp.path().join("shims");
+        std::fs::create_dir_all(&dir).unwrap();
+        write_shim(&dir, "cargo", &exe).unwrap();
+
+        assert_eq!(
+            std::fs::read(shim_tool_path(&dir, "cargo")).unwrap(),
+            b"PLAIN-SOLDR-BYTES",
+            "non-wheel installs must keep the materialized binary"
+        );
+    }
 
     #[cfg(windows)]
     fn system_cmd_exe() -> PathBuf {
