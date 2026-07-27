@@ -245,8 +245,7 @@ pub(crate) fn unique_temp_dir(label: &str) -> PathBuf {
         .as_nanos();
     let counter = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
     let process_id = std::process::id();
-    let dir = std::env::temp_dir()
-        .join(format!("soldr-{label}-{process_id}-{counter}-{nanos}"));
+    let dir = std::env::temp_dir().join(format!("soldr-{label}-{process_id}-{counter}-{nanos}"));
     fs::create_dir_all(&dir).expect("failed to create temp dir");
     dir
 }

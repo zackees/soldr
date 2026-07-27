@@ -38,8 +38,7 @@ fn explicit_dylint_channel_overrides_parent_toolchain_in_plan_identity() {
 
 #[test]
 fn rust_artifact_plan_selects_external_packages_and_path_exclusions() {
-    let root = std::env::temp_dir()
-        .join(format!("soldr-rust-plan-test-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("soldr-rust-plan-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("app/src")).unwrap();
     std::fs::create_dir_all(root.join("local_dep/src")).unwrap();
