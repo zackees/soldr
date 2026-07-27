@@ -674,7 +674,7 @@ fn cargo_builtin_shorthand_does_not_capture_other_verbs() {
 #[test]
 #[cfg(target_os = "linux")]
 fn pick_cross_subcommand_msvc_uses_blessed_when_cache_ready() {
-    let _g = ENV_LOCK.lock().unwrap();
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     std::env::remove_var(crate::blessed_build::USE_LEGACY_XWIN_ENV_VAR);
     assert_eq!(pick_cross_subcommand("x86_64-pc-windows-msvc", true), None);
     assert_eq!(pick_cross_subcommand("aarch64-pc-windows-msvc", true), None);
@@ -683,7 +683,7 @@ fn pick_cross_subcommand_msvc_uses_blessed_when_cache_ready() {
 #[test]
 #[cfg(target_os = "linux")]
 fn pick_cross_subcommand_msvc_falls_back_to_xwin_without_cache() {
-    let _g = ENV_LOCK.lock().unwrap();
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     std::env::remove_var(crate::blessed_build::USE_LEGACY_XWIN_ENV_VAR);
     assert_eq!(
         pick_cross_subcommand("x86_64-pc-windows-msvc", false),
@@ -704,7 +704,7 @@ fn pick_cross_subcommand_darwin_returns_none_by_default() {
     // rustc's linker, so plain `cargo build --target X` produces a
     // Mach-O binary from a Linux host. Opt-in legacy still routes
     // through zigbuild.
-    let _g = ENV_LOCK.lock().unwrap();
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     std::env::remove_var(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR);
     assert_eq!(pick_cross_subcommand("x86_64-apple-darwin", false), None);
     assert_eq!(pick_cross_subcommand("aarch64-apple-darwin", false), None);
@@ -724,7 +724,7 @@ fn pick_cross_subcommand_darwin_returns_none_by_default() {
 #[test]
 #[cfg(target_os = "linux")]
 fn pick_cross_subcommand_musl_returns_zigbuild() {
-    let _g = ENV_LOCK.lock().unwrap();
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     std::env::remove_var(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR);
     assert_eq!(
         pick_cross_subcommand("x86_64-unknown-linux-musl", false),
@@ -739,7 +739,7 @@ fn pick_cross_subcommand_musl_returns_zigbuild() {
 #[test]
 #[cfg(target_os = "linux")]
 fn pick_cross_subcommand_windows_gnu_stays_on_blessed_path() {
-    let _g = ENV_LOCK.lock().unwrap();
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     std::env::remove_var(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR);
     assert_eq!(pick_cross_subcommand("x86_64-pc-windows-gnu", false), None);
 
@@ -751,7 +751,7 @@ fn pick_cross_subcommand_windows_gnu_stays_on_blessed_path() {
 #[test]
 #[cfg(target_os = "linux")]
 fn pick_cross_subcommand_legacy_xwin_forces_xwin() {
-    let _g = ENV_LOCK.lock().unwrap();
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     std::env::set_var(crate::blessed_build::USE_LEGACY_XWIN_ENV_VAR, "1");
     assert_eq!(
         pick_cross_subcommand("x86_64-pc-windows-msvc", true),
@@ -768,7 +768,7 @@ fn pick_cross_subcommand_legacy_zigbuild_routes_darwin_to_zigbuild() {
     // env var set, darwin opts INTO the legacy zigbuild dispatch.
     // Before #1081 the env var had inverted semantics (opt-OUT); the
     // test was renamed + reassertioned in the post-#1081 cleanup.
-    let _g = ENV_LOCK.lock().unwrap();
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     std::env::set_var(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR, "1");
     assert_eq!(
         pick_cross_subcommand("aarch64-apple-darwin", false),
