@@ -258,25 +258,51 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
     // is well above `trigger_free_gb`, so the eviction pass runs every
     // throttle window when the cook knobs are non-zero.
     if cook_config.max_total_gb > 0 || cook_config.max_age_days > 0 {
-        let report = crate::cache_lib::cook_gc::cook_evict_pass(&paths, &cook_config);
-        if report.time_evicted > 0
-            || report.size_evicted > 0
-            || report.quarantine_evicted > 0
-            || report.errors > 0
-        {
-            let _ = append_auto_gc_log_line(
-                &log_path,
-                &format!(
-                    "cook-gc protected={} time_evicted={} size_evicted={} \
-                     quarantine_evicted={} bytes_freed={} errors={}",
-                    report.protected,
-                    report.time_evicted,
-                    report.size_evicted,
-                    report.quarantine_evicted,
-                    report.bytes_freed,
-                    report.errors,
-                ),
-            );
+        // soldr#1814 slice 2b (criterion 2 — single owning process per file).
+        // `cook_evict_pass` opens `state.redb` via `cook_index`, so running it
+        // here makes the CLI a second opener alongside the daemon.
+        //
+        // Skipping it when the daemon is up costs no coverage: the daemon runs
+        // this exact pass in `maintenance::run_local_components`, driven by
+        // `PRESSURE_INTERVAL` (5 min) — the same window as this sweeper's
+        // `AUTO_GC_THROTTLE_SECONDS` (5 min). Its daily `Full` tick also adds
+        // the absolute-age sweep, which this path never does. So the daemon's
+        // coverage is a superset, not a delay.
+        //
+        // A liveness probe is affordable here: this is a throttled, detached
+        // sweeper, not the wrapper hot path.
+        match crate::daemon::lifecycle::is_live(&paths) {
+            Some(pid) => {
+                let _ = append_auto_gc_log_line(
+                    &log_path,
+                    &format!(
+                        "cook-gc skipped: daemon pid={pid} owns state.redb and runs \
+                         the same pass every 5 min (soldr#1814)"
+                    ),
+                );
+            }
+            None => {
+                let report = crate::cache_lib::cook_gc::cook_evict_pass(&paths, &cook_config);
+                if report.time_evicted > 0
+                    || report.size_evicted > 0
+                    || report.quarantine_evicted > 0
+                    || report.errors > 0
+                {
+                    let _ = append_auto_gc_log_line(
+                        &log_path,
+                        &format!(
+                            "cook-gc protected={} time_evicted={} size_evicted={} \
+                             quarantine_evicted={} bytes_freed={} errors={}",
+                            report.protected,
+                            report.time_evicted,
+                            report.size_evicted,
+                            report.quarantine_evicted,
+                            report.bytes_freed,
+                            report.errors,
+                        ),
+                    );
+                }
+            }
         }
     }
 
