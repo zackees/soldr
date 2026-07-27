@@ -292,6 +292,13 @@ pub(crate) fn run_rustc_wrapper(
             Ok(code) => Ok(code),
             Err(failure) if crate::compile_dispatch::should_fall_back_to_direct_rustc(&failure) => {
                 crate::compile_dispatch::log_direct_exec_fallback_once(&failure);
+                // Issue #1817: this build started with a managed session, so
+                // the front door's whole-tree no-cache preflight was skipped.
+                // Any output already delivered by zccache is a protected
+                // read-only hardlink, and rustc refuses to overwrite it. Take
+                // ownership of the declared outputs first, or fail loudly
+                // rather than emit `<file> is not writeable`.
+                crate::fallback_detach::detach_outputs_for_direct_exec(&compile_args[1..])?;
                 direct_exec_tool(tool_arg, tool_stem, &compile_args, None)
             }
             Err(failure) => Err(failure.into_soldr_error()),
