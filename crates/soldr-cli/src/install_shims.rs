@@ -109,6 +109,31 @@ pub(crate) fn tool_file_name(tool: &str) -> String {
 /// Install (or re-install if stale) a single shim file. Atomic and
 /// idempotent via [`crate::shim_materialize::materialize_executable`].
 fn install_one(target: &Path, source: &Path, tool: &str) -> Result<ToolEntry, SoldrError> {
+    // soldr#1856: same guard as the transient shim dir. Without it,
+    // `soldr install-shims` from a pip-installed soldr writes a broken
+    // `~/.soldr/bin/cargo` whose `@loader_path/../<pkg>.dylibs` reference no
+    // longer resolves. Idempotency is preserved by comparing against the
+    // trampoline text rather than the Mach-O bytes.
+    if soldr_core::self_relocate::exe_depends_on_bundled_wheel_libs(source) {
+        let body = crate::shim_dir::trampoline_shim_body(tool, source);
+        let created = match std::fs::read_to_string(target) {
+            Ok(existing) if existing == body => false,
+            _ => {
+                crate::shim_dir::write_trampoline_shim(target, tool, source)?;
+                true
+            }
+        };
+        return Ok(ToolEntry {
+            name: tool.to_string(),
+            shim_path: target.display().to_string(),
+            created,
+            skip_reason: if created {
+                None
+            } else {
+                Some(SKIP_EXISTING_MATCHES)
+            },
+        });
+    }
     let result = crate::shim_materialize::materialize_executable(source, target)?;
 
     Ok(ToolEntry {

@@ -127,7 +127,11 @@ pub fn ensure_daemon_relocated(
 /// be exercised on every platform. `<pkg>.libs` is auditwheel's
 /// equivalent bundle dir on Linux, covered pre-emptively — today's
 /// Linux wheels ship unrepaired binaries.
-pub(crate) fn exe_depends_on_bundled_wheel_libs(exe: &Path) -> bool {
+/// `pub` rather than `pub(crate)` because soldr-cli's shim writers need the
+/// same guard (soldr#1856): a hardlink/copy of a repaired wheel binary into a
+/// shim dir strands the same `@loader_path` reference the daemon path already
+/// avoids.
+pub fn exe_depends_on_bundled_wheel_libs(exe: &Path) -> bool {
     let Some(parent) = exe.parent() else {
         return false;
     };
