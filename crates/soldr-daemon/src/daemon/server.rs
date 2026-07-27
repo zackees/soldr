@@ -1946,7 +1946,15 @@ where
             // the daemon drops the compile future immediately so rustc
             // is cleaned up by its `kill_on_drop` chain rather than
             // grinding to completion on output no one will read.
-            #[cfg(windows)]
+            // Admission applies on every transport (soldr#1853). This was
+            // `#[cfg(windows)]`-only, which left the AF_UNIX listener with no
+            // bound at all: under `cargo -j N` it admitted every wrapper at
+            // once and shed the excess by resetting sockets, which reached the
+            // client as ECONNRESET and failed the build. Windows passed
+            // precisely because it had this cap. The policy itself was already
+            // written to be portable — see
+            // `windows_burst_policy_keeps_four_pool_sizes_fifo_and_recovers`,
+            // which validates it on Linux — only its application was gated.
             let _admission = match state.compile_admission.try_admit() {
                 Some(permit) => permit,
                 None => {
@@ -1960,7 +1968,6 @@ where
                     return Ok(());
                 }
             };
-            #[cfg(windows)]
             state
                 .compile_admission
                 .record_busy_retries(req.ipc_busy_retries);
