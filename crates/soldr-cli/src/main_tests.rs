@@ -891,3 +891,76 @@ fn insert_cargo_config_args_after_xwin_build_pair() {
         ]
     );
 }
+
+// soldr#1878: the PEP 517 build log arrived empty of maturin output because
+// the relay wrote to a block-buffered stdout and the maturin lane ends in
+// `std::process::exit`, which never runs the destructor that would flush it.
+//
+// Asserting on the written bytes cannot catch that -- the bytes *were*
+// written, they were just discarded at exit. So these assert the flush.
+
+/// Writer that records whether it was flushed after its last write.
+struct FlushRecorder {
+    written: Vec<u8>,
+    flushed_after_last_write: bool,
+}
+
+impl FlushRecorder {
+    fn new() -> Self {
+        Self {
+            written: Vec::new(),
+            flushed_after_last_write: false,
+        }
+    }
+}
+
+impl std::io::Write for FlushRecorder {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.written.extend_from_slice(buf);
+        self.flushed_after_last_write = false;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.flushed_after_last_write = true;
+        Ok(())
+    }
+}
+
+#[test]
+fn relaying_child_output_flushes_both_streams() {
+    let mut out = FlushRecorder::new();
+    let mut err = FlushRecorder::new();
+
+    relay_child_output(
+        b"compiled ok\n",
+        b"error: could not compile\n",
+        &mut out,
+        &mut err,
+    )
+    .expect("relay must succeed");
+
+    assert_eq!(out.written, b"compiled ok\n");
+    assert_eq!(err.written, b"error: could not compile\n");
+    assert!(
+        out.flushed_after_last_write,
+        "stdout must be flushed: the maturin lane exits via process::exit, \
+         which skips the destructor that would otherwise flush it (soldr#1878)"
+    );
+    assert!(
+        err.flushed_after_last_write,
+        "stderr must be flushed for the same reason"
+    );
+}
+
+#[test]
+fn relaying_empty_child_output_still_flushes() {
+    // A child that failed without writing anything is exactly the soldr#1878
+    // case; the relay must not skip the flush just because there are no bytes.
+    let mut out = FlushRecorder::new();
+    let mut err = FlushRecorder::new();
+
+    relay_child_output(b"", b"", &mut out, &mut err).expect("relay must succeed");
+
+    assert!(out.flushed_after_last_write && err.flushed_after_last_write);
+}

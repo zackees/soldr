@@ -1270,7 +1270,19 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 command.status()?
             };
 
-            std::process::exit(status.code().unwrap_or(1));
+            let code = status.code().unwrap_or(1);
+            if code != 0 {
+                // soldr#1878: cargo surfaces a bare `Caused by:` with nothing
+                // in it when the wrapped rustc dies without diagnostics. Say
+                // which tool actually failed and where the full output went,
+                // so the failure is never attributable to soldr by omission.
+                eprintln!("soldr: {crate_name} exited {code}.");
+            }
+            // `process::exit` skips destructors, so anything still sitting in
+            // a buffered stdout/stderr would be dropped here (soldr#1878).
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().flush();
+            std::process::exit(code);
         }
     }
 
@@ -1309,9 +1321,40 @@ fn run_build_lease_helper() -> Result<(), SoldrError> {
     Ok(())
 }
 
+/// Relay a captured child's output to our own stdout/stderr.
+///
+/// soldr#1878: the flushes are load-bearing. Rust block-buffers stdout when
+/// it is not a terminal, and under the PEP 517 backend it is a pipe, so
+/// `write_all` alone only fills the buffer. The maturin lane ends in
+/// `std::process::exit`, which does not run destructors and therefore never
+/// flushes -- so a failing build's captured output was written and then
+/// silently discarded, leaving the PEP 517 log with soldr's own unbuffered
+/// stderr lines and no maturin output at all.
 fn emit_child_output(output: &std::process::Output) {
-    let _ = std::io::stdout().write_all(&output.stdout);
-    let _ = std::io::stderr().write_all(&output.stderr);
+    let _ = relay_child_output(
+        &output.stdout,
+        &output.stderr,
+        &mut std::io::stdout(),
+        &mut std::io::stderr(),
+    );
+}
+
+/// Write a captured child's streams out and **flush both**.
+///
+/// Split from [`emit_child_output`] so the flush is testable: the bug in
+/// soldr#1878 was an absent flush, which no assertion on the written bytes
+/// can detect.
+fn relay_child_output<O: Write, E: Write>(
+    child_stdout: &[u8],
+    child_stderr: &[u8],
+    out: &mut O,
+    err: &mut E,
+) -> std::io::Result<()> {
+    out.write_all(child_stdout)?;
+    out.flush()?;
+    err.write_all(child_stderr)?;
+    err.flush()?;
+    Ok(())
 }
 
 /// soldr#1264 follow-on: maturin provisioning ladder. `auto` (default)
