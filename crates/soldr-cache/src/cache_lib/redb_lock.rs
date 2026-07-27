@@ -24,6 +24,40 @@ use std::time::{Duration, Instant};
 const OPEN_RETRY_TIMEOUT: Duration = Duration::from_secs(5);
 const OPEN_RETRY_DELAY: Duration = Duration::from_millis(10);
 
+/// Budget for best-effort openers on a latency-critical path
+/// ([`open_state_db_best_effort`], issue #1814).
+///
+/// Deliberately ~100× shorter than [`OPEN_RETRY_TIMEOUT`]: the callers that
+/// use it are writing GC bookkeeping (a `target/` last-used timestamp), so
+/// losing one write costs nothing but stalling a rustc invocation for 5 s
+/// costs the whole build.
+const BEST_EFFORT_OPEN_TIMEOUT: Duration = Duration::from_millis(50);
+
+/// Durable forensic record of state-DB lock contention, next to the other
+/// `~/.soldr/logs/*.jsonl` records.
+const CONTENTION_LOG_FILE: &str = "redb-contention.jsonl";
+
+/// Why the state DB was opened, for the contention forensics. Contention on a
+/// best-effort open is a skipped write; on a required open it is a stall.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenIntent {
+    /// Correctness-critical: the caller cannot proceed without the DB, so it
+    /// waits out the full [`OPEN_RETRY_TIMEOUT`].
+    Required,
+    /// Best-effort bookkeeping: the caller would rather skip the write than
+    /// block. See [`BEST_EFFORT_OPEN_TIMEOUT`].
+    BestEffort,
+}
+
+impl OpenIntent {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Required => "required",
+            Self::BestEffort => "best_effort",
+        }
+    }
+}
+
 /// Shared global lock guarding every in-process `Database::open` on
 /// `state.redb`. Both `daemon::db` and `cache_lib::cook_index` go
 /// through this lock — they open the same file.
@@ -41,13 +75,42 @@ pub fn state_db_open_lock() -> &'static Mutex<()> {
 /// that transient variant; corruption, upgrade, and I/O errors remain
 /// immediate failures.
 pub fn open_state_db(path: &Path) -> Result<StateDbHandle, redb::DatabaseError> {
-    open_state_db_with_retry(path, OPEN_RETRY_TIMEOUT, OPEN_RETRY_DELAY, || {})
+    open_state_db_with_retry(
+        path,
+        OPEN_RETRY_TIMEOUT,
+        OPEN_RETRY_DELAY,
+        OpenIntent::Required,
+        || {},
+    )
+}
+
+/// Open the shared state database for a latency-critical, losable write
+/// (issue #1814).
+///
+/// Identical to [`open_state_db`] except the cross-process retry budget is
+/// [`BEST_EFFORT_OPEN_TIMEOUT`] instead of 5 s. Contention returns
+/// `DatabaseAlreadyOpen` promptly so the caller can skip its write rather
+/// than block a rustc invocation behind another process's redb handle.
+///
+/// **Never use this for a write another component will later read as
+/// authoritative.** It exists for the wrapper's per-invocation `target/`
+/// registry touch, where the row is GC bookkeeping and the next invocation
+/// re-touches it anyway.
+pub fn open_state_db_best_effort(path: &Path) -> Result<StateDbHandle, redb::DatabaseError> {
+    open_state_db_with_retry(
+        path,
+        BEST_EFFORT_OPEN_TIMEOUT,
+        OPEN_RETRY_DELAY,
+        OpenIntent::BestEffort,
+        || {},
+    )
 }
 
 fn open_state_db_with_retry(
     path: &Path,
     timeout: Duration,
     retry_delay: Duration,
+    intent: OpenIntent,
     mut on_contention: impl FnMut(),
 ) -> Result<StateDbHandle, redb::DatabaseError> {
     if let Some(parent) = path.parent() {
@@ -57,15 +120,118 @@ fn open_state_db_with_retry(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let started = Instant::now();
+    let mut attempts: u32 = 0;
     loop {
         match Database::builder().create(path) {
-            Ok(db) => return Ok(StateDbHandle::new(db, guard)),
+            Ok(db) => {
+                // Issue #1814: the retry loop (#1655) is a rare cold path, not
+                // a routine one. Staying silent when it fires is what let
+                // multi-process contention masquerade as an unexplained stall,
+                // so a *resolved* wait is still reported with its cost.
+                if attempts > 0 {
+                    report_contention(path, intent, attempts, started.elapsed(), false);
+                }
+                return Ok(StateDbHandle::new(db, guard));
+            }
             Err(redb::DatabaseError::DatabaseAlreadyOpen) if started.elapsed() < timeout => {
+                attempts += 1;
                 on_contention();
                 std::thread::sleep(retry_delay);
             }
-            Err(error) => return Err(error),
+            Err(error) => {
+                if matches!(error, redb::DatabaseError::DatabaseAlreadyOpen) {
+                    report_contention(path, intent, attempts, started.elapsed(), true);
+                }
+                return Err(error);
+            }
         }
+    }
+}
+
+/// Emit the loud + durable pair for a contention event.
+///
+/// Both halves are mandatory per the repo's loud-forensics rule: the
+/// `tracing` line reaches an attached operator, and the JSONL record survives
+/// a detached wrapper process whose stderr went nowhere.
+fn report_contention(
+    path: &Path,
+    intent: OpenIntent,
+    attempts: u32,
+    elapsed: Duration,
+    exhausted: bool,
+) {
+    let elapsed_ms = elapsed.as_millis();
+    let db = path.display();
+    if exhausted {
+        tracing::warn!(
+            event = "state_db_lock_budget_exhausted",
+            intent = intent.as_str(),
+            attempts,
+            elapsed_ms,
+            db = %db,
+            "state.redb is held by another process and the open budget ran out \
+             after {attempts} attempts / {elapsed_ms}ms (intent={}); see issue #1814",
+            intent.as_str(),
+        );
+    } else {
+        tracing::warn!(
+            event = "state_db_lock_contended",
+            intent = intent.as_str(),
+            attempts,
+            elapsed_ms,
+            db = %db,
+            "state.redb open waited {elapsed_ms}ms across {attempts} retries for \
+             another process to release it (intent={}); see issue #1814",
+            intent.as_str(),
+        );
+    }
+    append_contention_record(path, intent, attempts, elapsed_ms, exhausted);
+}
+
+/// Append one JSONL line to `<root>/logs/redb-contention.jsonl`.
+///
+/// The state DB lives at `<root>/state.redb`, so the root is the DB's parent —
+/// this layer only ever receives the DB path, never a `SoldrPaths`.
+/// Best-effort by construction: a diagnostic that fails must never turn into a
+/// build failure.
+fn append_contention_record(
+    path: &Path,
+    intent: OpenIntent,
+    attempts: u32,
+    elapsed_ms: u128,
+    exhausted: bool,
+) {
+    use std::io::Write;
+
+    let Some(root) = path.parent() else {
+        return;
+    };
+    let ts_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let record = serde_json::json!({
+        "ts_ms": ts_ms,
+        "pid": std::process::id(),
+        "event": if exhausted { "budget-exhausted" } else { "contended" },
+        "intent": intent.as_str(),
+        "attempts": attempts,
+        "elapsed_ms": elapsed_ms,
+        "db": path.display().to_string(),
+    });
+    let Ok(line) = serde_json::to_string(&record) else {
+        return;
+    };
+    let dir = root.join("logs");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join(CONTENTION_LOG_FILE))
+    {
+        let _ = writeln!(file, "{line}");
     }
 }
 
@@ -164,6 +330,7 @@ mod tests {
             &dir.path().join("state.redb"),
             Duration::from_secs(5),
             Duration::from_millis(5),
+            OpenIntent::Required,
             || {
                 if !observed_contention {
                     observed_contention = true;
@@ -197,6 +364,7 @@ mod tests {
                 &worker_path,
                 Duration::from_secs(1),
                 Duration::from_millis(5),
+                OpenIntent::Required,
                 || {
                     let _ = contended_tx.try_send(());
                 },
@@ -225,9 +393,15 @@ mod tests {
 
         let budget = Duration::from_secs(1);
         let started = Instant::now();
-        let result = open_state_db_with_retry(&path, budget, Duration::from_millis(5), || {
-            observed.fetch_add(1, Ordering::Relaxed);
-        });
+        let result = open_state_db_with_retry(
+            &path,
+            budget,
+            Duration::from_millis(5),
+            OpenIntent::Required,
+            || {
+                observed.fetch_add(1, Ordering::Relaxed);
+            },
+        );
         let error = match result {
             Ok(_) => panic!("contention should outlive the retry budget"),
             Err(error) => error,
@@ -237,5 +411,80 @@ mod tests {
         assert!(attempts.load(Ordering::Relaxed) >= 2);
         assert!(started.elapsed() >= budget);
         assert!(started.elapsed() < Duration::from_secs(3));
+    });
+
+    // Issue #1814: a contended open must leave a durable record even when
+    // nobody is watching stderr. This is the forensic half of the loud-plus-
+    // durable pair; the tracing half is not capturable here.
+    crate::timed_test!(contention_appends_a_durable_forensic_record, {
+        let _test_guard = serial_test_guard();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("state.redb");
+        let _blocker = Database::builder().create(&path).expect("blocking open");
+
+        let result = open_state_db_with_retry(
+            &path,
+            Duration::from_millis(80),
+            Duration::from_millis(5),
+            OpenIntent::BestEffort,
+            || {},
+        );
+        assert!(result.is_err(), "blocked open must not succeed");
+
+        let log = fs::read_to_string(dir.path().join("logs").join(CONTENTION_LOG_FILE))
+            .expect("contention log must exist after a contended open");
+        let line = log.lines().next().expect("at least one record");
+        assert!(line.contains(r#""event":"budget-exhausted""#), "{line}");
+        assert!(line.contains(r#""intent":"best_effort""#), "{line}");
+        assert!(line.contains(r#""attempts":"#), "{line}");
+        assert!(line.contains(r#""elapsed_ms":"#), "{line}");
+        assert!(
+            line.contains(&format!(r#""pid":{}"#, std::process::id())),
+            "{line}"
+        );
+    });
+
+    // Issue #1814 acceptance: no 5 s stalls on the wrapper hot path. The
+    // best-effort budget must give up in tens of milliseconds while the
+    // required budget keeps waiting out the full window.
+    crate::timed_test!(best_effort_open_gives_up_far_sooner_than_required, {
+        let _test_guard = serial_test_guard();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("state.redb");
+        let _blocker = Database::builder().create(&path).expect("blocking open");
+
+        let started = Instant::now();
+        let result = open_state_db_best_effort(&path);
+        let elapsed = started.elapsed();
+
+        assert!(
+            matches!(result, Err(redb::DatabaseError::DatabaseAlreadyOpen)),
+            "a held database must surface as contention, not another error"
+        );
+        assert!(
+            elapsed >= BEST_EFFORT_OPEN_TIMEOUT,
+            "best-effort open must still honor its own budget, took {elapsed:?}"
+        );
+        assert!(
+            elapsed < OPEN_RETRY_TIMEOUT / 2,
+            "best-effort open must not inherit the {OPEN_RETRY_TIMEOUT:?} 
+             required budget; took {elapsed:?} (issue #1814)"
+        );
+    });
+
+    // A clean open must not write a contention record - otherwise the log
+    // becomes noise and stops being evidence of a real problem.
+    crate::timed_test!(uncontended_open_writes_no_forensic_record, {
+        let _test_guard = serial_test_guard();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("state.redb");
+
+        let handle = open_state_db(&path).expect("uncontended open");
+        drop(handle);
+
+        assert!(
+            !dir.path().join("logs").join(CONTENTION_LOG_FILE).exists(),
+            "an uncontended open must leave no contention record"
+        );
     });
 }

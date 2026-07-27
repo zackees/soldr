@@ -7,7 +7,7 @@
 //!
 //! The store lives in `~/.soldr/state.redb` alongside other soldr state.
 
-use crate::cache_lib::redb_lock::{open_state_db, StateDbHandle};
+use crate::cache_lib::redb_lock::{open_state_db, open_state_db_best_effort, StateDbHandle};
 use redb::{
     backends::InMemoryBackend, Database, ReadableDatabase, ReadableTable, ReadableTableMetadata,
     TableDefinition,
@@ -96,6 +96,22 @@ impl TargetRegistry {
     /// `daemon::db` / `cache_lib::cook_index` (#608).
     pub fn open(path: &Path) -> Result<Self, RegistryError> {
         let handle = open_state_db(path)?;
+        Self::init_schema(&handle)?;
+        Ok(Self {
+            db: TargetRegistryDb::File(handle),
+        })
+    }
+
+    /// Open for a latency-critical, losable write (issue #1814).
+    ///
+    /// Same as [`TargetRegistry::open`] but with the short cross-process
+    /// budget of [`open_state_db_best_effort`]: under contention this returns
+    /// `Err` in tens of milliseconds instead of blocking for up to 5 s. The
+    /// wrapper's per-rustc `target/` touch uses it because the row is GC
+    /// bookkeeping that the next invocation re-touches — stalling a compile to
+    /// write it is strictly worse than skipping it.
+    pub fn open_best_effort(path: &Path) -> Result<Self, RegistryError> {
+        let handle = open_state_db_best_effort(path)?;
         Self::init_schema(&handle)?;
         Ok(Self {
             db: TargetRegistryDb::File(handle),
