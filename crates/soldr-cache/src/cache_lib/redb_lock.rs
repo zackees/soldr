@@ -128,8 +128,16 @@ fn open_state_db_with_retry(
                 // a routine one. Staying silent when it fires is what let
                 // multi-process contention masquerade as an unexplained stall,
                 // so a *resolved* wait is still reported with its cost.
+                //
+                // Tracing only — no filesystem I/O on this path. We are still
+                // inside the `state_db_open_lock` critical section, and adding
+                // a `create_dir_all` + append here serializes every contended
+                // opener behind it. That regressed `build_log`'s 10 s test
+                // budget, which spends two 5 s `Required` opens back to back.
+                // A resolved wait also has no failure to make durable: it
+                // succeeded, and the warn already carries the forensics.
                 if attempts > 0 {
-                    report_contention(path, intent, attempts, started.elapsed(), false);
+                    warn_contention(path, intent, attempts, started.elapsed(), false);
                 }
                 return Ok(StateDbHandle::new(db, guard));
             }
@@ -148,12 +156,29 @@ fn open_state_db_with_retry(
     }
 }
 
-/// Emit the loud + durable pair for a contention event.
+/// Emit the loud **and** durable pair for a contention event that ended in
+/// failure.
 ///
-/// Both halves are mandatory per the repo's loud-forensics rule: the
-/// `tracing` line reaches an attached operator, and the JSONL record survives
-/// a detached wrapper process whose stderr went nowhere.
+/// Both halves are mandatory per the repo's loud-forensics rule when a budget
+/// actually fires: the `tracing` line reaches an attached operator, and the
+/// JSONL record survives a detached wrapper process whose stderr went nowhere.
+///
+/// Only the exhausted path takes the durable half — see the `Ok` arm of
+/// [`open_state_db_with_retry`] for why a resolved wait must stay I/O-free.
 fn report_contention(
+    path: &Path,
+    intent: OpenIntent,
+    attempts: u32,
+    elapsed: Duration,
+    exhausted: bool,
+) {
+    warn_contention(path, intent, attempts, elapsed, exhausted);
+    append_contention_record(path, intent, attempts, elapsed.as_millis(), exhausted);
+}
+
+/// The loud half on its own: a `tracing` event with the full forensic detail
+/// and no syscalls, so it is safe to call inside the open critical section.
+fn warn_contention(
     path: &Path,
     intent: OpenIntent,
     attempts: u32,
@@ -185,7 +210,6 @@ fn report_contention(
             intent.as_str(),
         );
     }
-    append_contention_record(path, intent, attempts, elapsed_ms, exhausted);
 }
 
 /// Append one JSONL line to `<root>/logs/redb-contention.jsonl`.
@@ -469,6 +493,46 @@ mod tests {
             elapsed < OPEN_RETRY_TIMEOUT / 2,
             "best-effort open must not inherit the {OPEN_RETRY_TIMEOUT:?} 
              required budget; took {elapsed:?} (issue #1814)"
+        );
+    });
+
+    // A wait that RESOLVED must not touch the filesystem. `report_contention`
+    // runs inside the `state_db_open_lock` critical section, so an append here
+    // serializes every contended opener behind a `create_dir_all` + write —
+    // which blew `build_log`'s 10 s test budget (two 5 s `Required` opens back
+    // to back) on the musl lane. The loud half still fires via tracing.
+    crate::timed_test!(resolved_contention_stays_io_free, {
+        let _test_guard = serial_test_guard();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("state.redb");
+        let blocker = Database::builder().create(&path).expect("blocking open");
+
+        // Release the blocker on the first observed contention so the open
+        // resolves after at least one retry.
+        let released = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = std::sync::Arc::clone(&released);
+        let mut blocker = Some(blocker);
+        let opened = open_state_db_with_retry(
+            &path,
+            Duration::from_secs(5),
+            Duration::from_millis(5),
+            OpenIntent::Required,
+            || {
+                if !flag.swap(true, Ordering::Relaxed) {
+                    drop(blocker.take());
+                }
+            },
+        );
+        drop(opened.expect("open resolves once the blocker releases"));
+
+        assert!(
+            released.load(Ordering::Relaxed),
+            "the test must actually have gone through the retry path"
+        );
+        assert!(
+            !dir.path().join("logs").join(CONTENTION_LOG_FILE).exists(),
+            "a resolved wait must not write a durable record from inside the \
+             open critical section"
         );
     });
 
