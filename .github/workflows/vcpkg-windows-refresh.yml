@@ -55,17 +55,37 @@ env:
   VCPKG_DISABLE_METRICS: "1"
 
 jobs:
+  # soldr#1664: the `triplets` input used to be decorative — the matrix
+  # below hard-coded both values, so asking for one triplet still paid
+  # for a full Windows port build of both. This job turns the input into
+  # the actual matrix, and rejects an unknown triplet rather than
+  # silently refreshing something else.
+  resolve-matrix:
+    name: Resolve triplet matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.resolve.outputs.matrix }}
+    steps:
+      - name: Check out soldr (for the resolver script)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Resolve requested triplets
+        id: resolve
+        shell: bash
+        run: |
+          python3 .github/scripts/vcpkg_triplet_matrix.py \
+            --triplets "${{ inputs.triplets }}" \
+            --output "$GITHUB_OUTPUT"
+
   build-triplet:
     name: ${{ matrix.triplet }}
+    needs: resolve-matrix
     # MUST be windows. Linux-side clang-cl triplets exist but
     # port coverage is too spotty for the pin list we ship.
     runs-on: windows-latest
     strategy:
       fail-fast: false
-      matrix:
-        triplet:
-          - x64-windows-static-md
-          - arm64-windows-static-md
+      matrix: ${{ fromJSON(needs.resolve-matrix.outputs.matrix) }}
     steps:
       - name: Check out soldr (for the pin list)
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
