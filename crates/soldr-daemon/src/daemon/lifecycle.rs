@@ -351,17 +351,66 @@ pub fn preflight_displace_stale_daemon(paths: &SoldrPaths) {
     if direct_status_current_version(paths).is_some() {
         return;
     }
+    // Issue #1865: a `None` above is ambiguous — it means either "this daemon
+    // is a stale version" or "the status probe did not finish inside
+    // REPLY_TIMEOUT". Treating both as staleness displaced healthy daemons
+    // that were merely too busy to answer a 2 s ping, which is how a build
+    // could lose its warm daemon mid-run (and, per #1814, briefly end up with
+    // two daemons contending for state.redb).
+    //
+    // Require positive evidence instead. A process that is alive, looks like
+    // one of our daemons, and publishes *this exact* version claim cannot be
+    // the stale-version daemon this preflight exists to displace, however
+    // unresponsive it currently is. `is_live_current_version_direct` is the
+    // right predicate and costs no IPC, so this stays latency-neutral for the
+    // warm path #1832 tuned.
+    //
+    // Trade-off: a genuinely wedged current-version daemon is no longer
+    // displaced *here*. That is outside preflight's remit (its job is version
+    // skew) and is covered by the wedge/recovery ladder — and killing a
+    // busy-but-healthy daemon is strictly worse than leaving it alone.
+    let claim_proves_current = is_live_current_version_direct(paths);
     let recorded_process_is_alive = read_pid_file(paths).is_some_and(|(pid, _)| pid_is_alive(pid));
     #[cfg(unix)]
     let endpoint_artifact_exists = crate::cache_lib::daemon_sock_path(paths).exists();
     #[cfg(windows)]
     let endpoint_artifact_exists = false;
-    if stale_daemon_occupies_endpoint(paths).is_some()
-        || recorded_process_is_alive
-        || endpoint_artifact_exists
-    {
+    if preflight_should_displace(
+        claim_proves_current.is_some(),
+        stale_daemon_occupies_endpoint(paths).is_some(),
+        recorded_process_is_alive,
+        endpoint_artifact_exists,
+    ) {
         displace_stale_daemon(paths);
+    } else if let Some(pid) = claim_proves_current {
+        tracing::warn!(
+            event = "preflight_displacement_declined",
+            pid,
+            "status probe did not answer, but the daemon is alive and claims the \
+             current version — not displacing it (issue #1865)"
+        );
     }
+}
+
+/// Pure policy for [`preflight_displace_stale_daemon`], so the
+/// probe-failed-vs-actually-stale matrix is unit-testable without real
+/// daemons or real timeouts (issue #1865).
+///
+/// `claim_proves_current` is the evidence that closes the #1865 hole: the
+/// caller has already failed to get a status answer, and this says whether the
+/// PID-file process is nonetheless alive, one of ours, and publishing this
+/// exact version. When it is, no amount of endpoint occupancy justifies a
+/// displacement — the daemon is current, just unresponsive right now.
+fn preflight_should_displace(
+    claim_proves_current: bool,
+    stale_daemon_occupies: bool,
+    recorded_process_is_alive: bool,
+    endpoint_artifact_exists: bool,
+) -> bool {
+    if claim_proves_current {
+        return false;
+    }
+    stale_daemon_occupies || recorded_process_is_alive || endpoint_artifact_exists
 }
 
 fn wait_for_pid_exit(pid: u32, timeout: Duration) -> bool {
@@ -1748,6 +1797,42 @@ mod spawn_lock_tests {
         assert!(!preflight_identity_matches(Some(41), Some(41), false));
         assert!(preflight_identity_matches(Some(41), Some(41), true));
     });
+
+    crate::timed_test!(
+        preflight_never_displaces_a_daemon_that_claims_this_version,
+        {
+            // Regression for #1865. Reaching `preflight_should_displace` already
+            // means the status probe returned nothing — which is ambiguous. When
+            // the PID-file process is alive, one of ours, and publishing this
+            // exact version, that ambiguity must resolve to "busy", not "stale".
+            //
+            // Every occupancy signal is set here precisely because those are what
+            // used to authorize the kill: the fix is that a current-version claim
+            // outranks all of them.
+            assert!(
+                !preflight_should_displace(true, true, true, true),
+                "a daemon claiming the current version must survive a failed status probe"
+            );
+            assert!(!preflight_should_displace(true, false, false, false));
+        }
+    );
+
+    crate::timed_test!(
+        preflight_still_displaces_a_daemon_without_a_current_claim,
+        {
+            // The other half of #1865: the fix must not turn preflight into a
+            // no-op. Absent a current-version claim, any single occupancy signal
+            // still authorizes displacement — that is the #1495 behavior.
+            assert!(
+                preflight_should_displace(false, true, false, false),
+                "a stale daemon holding the endpoint must still be displaced"
+            );
+            assert!(preflight_should_displace(false, false, true, false));
+            assert!(preflight_should_displace(false, false, false, true));
+            // Nothing present at all → nothing to displace.
+            assert!(!preflight_should_displace(false, false, false, false));
+        }
+    );
 
     #[test]
     fn current_version_claim_matches_only_for_this_build() {
