@@ -321,15 +321,15 @@ async fn drain_loop(db_path: PathBuf, mut rx: mpsc::Receiver<BatcherCmd>) {
                 Some(BatcherCmd::Insert(event)) => {
                     buf.push(event);
                     if buf.len() >= MAX_BATCH_ROWS {
-                        let _ = flush_batch(&db_path, &mut buf);
+                        let _ = flush_batch(&db_path, &mut buf).await;
                     }
                 }
                 Some(BatcherCmd::Flush(ack)) => {
-                    let result = flush_batch(&db_path, &mut buf);
+                    let result = flush_batch(&db_path, &mut buf).await;
                     let _ = ack.send(result);
                 }
                 Some(BatcherCmd::Shutdown(ack)) => {
-                    let result = flush_batch(&db_path, &mut buf);
+                    let result = flush_batch(&db_path, &mut buf).await;
                     let done = result.is_ok();
                     let _ = ack.send(result);
                     if done { return; }
@@ -337,13 +337,13 @@ async fn drain_loop(db_path: PathBuf, mut rx: mpsc::Receiver<BatcherCmd>) {
                 None => {
                     // Last sender dropped. Drain whatever is left and
                     // exit — no one is around to receive an ack.
-                    let _ = flush_batch(&db_path, &mut buf);
+                    let _ = flush_batch(&db_path, &mut buf).await;
                     return;
                 }
             },
             _ = interval.tick() => {
                 if !buf.is_empty() {
-                    let _ = flush_batch(&db_path, &mut buf);
+                    let _ = flush_batch(&db_path, &mut buf).await;
                 }
             }
         }
@@ -355,18 +355,51 @@ async fn drain_loop(db_path: PathBuf, mut rx: mpsc::Receiver<BatcherCmd>) {
 /// logged at `debug` and swallowed: the diagnostic events are
 /// best-effort and we never want a failed flush to take down the
 /// daemon.
-fn flush_batch(db_path: &Path, buf: &mut Vec<Event>) -> Result<(), String> {
+async fn flush_batch(db_path: &Path, buf: &mut Vec<Event>) -> Result<(), String> {
     if buf.is_empty() {
         return Ok(());
     }
     let count = buf.len();
     tracing::debug!("event_batcher: flushing {count} pending event rows");
-    if let Err(err) = write_batch(db_path, buf) {
-        tracing::error!("event_batcher: flush failed; retaining {count} pending event rows: {err}");
-        return Err(err.to_string());
+
+    // The write is synchronous and genuinely slow: `open_state_db` takes a
+    // process-wide mutex and can enter redb's open-retry loop, then the txn
+    // ends in a `commit()` fsync. Running that inline on the runtime blocked
+    // a Tokio worker for its whole duration, delaying compile IPC,
+    // cancellation and shutdown on that thread (#1669).
+    //
+    // The batch is moved into the blocking task and handed back either way,
+    // so the retain-on-failure contract below is preserved exactly. `buf`
+    // cannot grow while we await: `drain_loop` holds `&mut buf` across this
+    // call, so it is not processing new commands — inbound events queue in
+    // the bounded channel, which is the same backpressure the synchronous
+    // version applied.
+    let batch = std::mem::take(buf);
+    let path = db_path.to_path_buf();
+    let joined = tokio::task::spawn_blocking(move || {
+        let result = write_batch(&path, &batch);
+        (result, batch)
+    })
+    .await;
+
+    match joined {
+        Ok((Ok(()), _consumed)) => Ok(()),
+        Ok((Err(err), batch)) => {
+            // Put the rows back so the next flush retries them.
+            *buf = batch;
+            tracing::error!(
+                "event_batcher: flush failed; retaining {count} pending event rows: {err}"
+            );
+            Err(err.to_string())
+        }
+        Err(join) => {
+            // A panic in the blocking task loses that batch — these are
+            // best-effort diagnostic rows, and a panic in `write_batch`
+            // would be a bug worth surfacing rather than silently retrying.
+            tracing::error!("event_batcher: flush task failed; dropped {count} rows: {join}");
+            Err(format!("event flush task failed: {join}"))
+        }
     }
-    buf.clear();
-    Ok(())
 }
 
 /// Open `state.redb` under the shared `state_db_open_lock`, allocate
@@ -437,6 +470,32 @@ mod tests {
             exit_code: None,
         }
     }
+
+    // #1669 moved the write into `spawn_blocking`, so the batch is now moved
+    // out of the caller's buffer and handed back. The failure half of that
+    // contract is already covered by `failed_flush_retains_rows_for_retry`
+    // above (verified: it fails if the restore is removed); this pins the
+    // success half.
+    crate::timed_test!(successful_flush_clears_the_buffer, {
+        let rt = Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let dir = TempDir::new().expect("tempdir");
+            let path = dir.path().join("state.redb");
+            crate::daemon::db::ensure_initialized(&path).expect("init");
+
+            let mut buf = vec![
+                sample_event(9, "one", None),
+                sample_event(9, "two", Some(1_000)),
+            ];
+            flush_batch(&path, &mut buf).await.expect("flush");
+
+            // Persistence itself is covered by
+            // `batcher_persists_rows_after_flush`; what matters here is that
+            // the buffer handed to `spawn_blocking` is not handed back on the
+            // success path.
+            assert!(buf.is_empty(), "a successful flush must drain the buffer");
+        });
+    });
 
     crate::timed_test!(batcher_persists_rows_after_flush, {
         let rt = Builder::new_current_thread().enable_all().build().unwrap();
