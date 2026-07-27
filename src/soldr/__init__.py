@@ -43,6 +43,7 @@ _DELEGATE_BACKEND_SECTION = "tool.soldr.pep517"
 _PEP517_ENV_KEYS = {
     "RUSTC_WRAPPER",
     "ZCCACHE_PATH_REMAP",
+    "ZCCACHE_STAGED_ARTIFACTS",
     "SOLDR_PEP517_LINKER",
     "SOLDR_PEP517_PROJECT_ID",
     "CARGO_TARGET_DIR",
@@ -411,6 +412,13 @@ def _prep_env(
         identity_environment[_FAST_PROFILE_ENV] = explicit_profile
     env.setdefault("RUSTC_WRAPPER", "soldr")
     env.setdefault("ZCCACHE_PATH_REMAP", "auto")
+    # soldr#1867: a wheel build is cold and one-shot, so staged-artifact reuse
+    # buys almost nothing here — but a building soldr that predates zccache
+    # b81b8131 can serve a stale generation for a key it has already proven
+    # non-deterministic. That surfaces as "could not compile <trivial crate>",
+    # naming a different crate each run, with nothing pointing at the cache.
+    # A caller-set value still wins.
+    env.setdefault("ZCCACHE_STAGED_ARTIFACTS", "off")
     # Ask soldr's maturin dispatch to use the automatic fast-linker policy.
     # An explicit SOLDR_LINKER value still wins in the Rust child.
     env.setdefault("SOLDR_PEP517_LINKER", "auto")
