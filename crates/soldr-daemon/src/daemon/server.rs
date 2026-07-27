@@ -1803,6 +1803,38 @@ where
             // skip its own full-table aggregate re-scan.
             let _ = write_frame_async(&mut stream, &response).await;
         }
+        Request::BuildLogInputs { session_id } => {
+            // soldr#1814 slice 2a: the daemon owns these tables, so it answers
+            // both reads in one round trip. The CLI previously opened
+            // state.redb twice per build to get them.
+            let response = match db::list_events_for_session(&state.db_path, session_id) {
+                Ok(events) => Response::BuildLogInputs {
+                    events,
+                    // A missing row is normal, not an error — the log renders
+                    // without it. Only a genuine read failure is reported.
+                    record: db::get_build(&state.db_path, session_id)
+                        .ok()
+                        .flatten()
+                        .map(Box::new),
+                },
+                Err(err) => Response::Error(format!("build log inputs: {err}")),
+            };
+            let _ = write_frame_async(&mut stream, &response).await;
+        }
+        Request::ShouldWarnCargoDebugDefault { repo_root } => {
+            // soldr#1814 slice 2c: the daemon owns state_db's tables, so it
+            // performs this read-modify-write (record the repo, prune expired
+            // rows) instead of every front-door invocation opening the file.
+            let db_path = crate::cache_lib::state_db_path(&state.paths);
+            let emit = crate::cache_lib::state_db::StateDb::open(&db_path)
+                .and_then(|db| {
+                    db.should_emit_cargo_debug_default_warning(std::path::Path::new(&repo_root))
+                })
+                // Fail open, matching the pre-#1814 caller: a state-DB problem
+                // must not silently suppress a warning the user should see.
+                .unwrap_or(true);
+            let _ = write_frame_async(&mut stream, &Response::CargoDebugWarning { emit }).await;
+        }
         Request::ListBuilds { limit, since_ms } => {
             let response = match db::list_builds(&state.db_path, limit, since_ms) {
                 Ok(rows) => Response::Builds(rows),

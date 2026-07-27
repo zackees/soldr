@@ -321,6 +321,48 @@ pub fn list_builds(
     }
 }
 
+/// Fetch the build-log inputs the daemon owns for `session_id`
+/// (soldr#1814 slice 2a).
+///
+/// Returns the session's event rows plus its build record, if any. Callers
+/// fall back to opening the state DB directly only when this errors — see
+/// `build_log::write_build_log`.
+#[allow(clippy::type_complexity)]
+pub fn build_log_inputs(
+    sock_path: &Path,
+    session_id: u64,
+) -> Result<(Vec<crate::daemon::db::Event>, Option<Box<BuildRecord>>), ClientError> {
+    match submit_request(sock_path, &Request::BuildLogInputs { session_id })? {
+        Response::BuildLogInputs { events, record } => Ok((events, record)),
+        Response::Error(msg) => Err(ClientError::Protocol(msg)),
+        other => Err(ClientError::Protocol(format!(
+            "unexpected response: {other:?}"
+        ))),
+    }
+}
+
+/// Ask the daemon whether to emit the cargo-debug-default warning for
+/// `repo_root` (soldr#1814 slice 2c).
+///
+/// The daemon owns the throttle state, so asking it also records the repo.
+/// Callers fall back to the local read-modify-write only when the daemon is
+/// unreachable.
+pub fn should_warn_cargo_debug_default(
+    sock_path: &Path,
+    repo_root: &Path,
+) -> Result<bool, ClientError> {
+    let req = Request::ShouldWarnCargoDebugDefault {
+        repo_root: repo_root.display().to_string(),
+    };
+    match submit_request(sock_path, &req)? {
+        Response::CargoDebugWarning { emit } => Ok(emit),
+        Response::Error(msg) => Err(ClientError::Protocol(msg)),
+        other => Err(ClientError::Protocol(format!(
+            "unexpected response: {other:?}"
+        ))),
+    }
+}
+
 pub fn list_slow_builds(
     sock_path: &Path,
     threshold_ms: u64,

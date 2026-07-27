@@ -398,6 +398,14 @@ fn should_emit_cargo_debug_default_warning(
     paths: &SoldrPaths,
     repo_path: &std::path::Path,
 ) -> bool {
+    // soldr#1814 slice 2c: ask the daemon, which owns state_db's tables,
+    // rather than making every front-door invocation another opener of
+    // state.redb. Falls back to the local read-modify-write only when the
+    // daemon is unreachable, so a daemon-less run still throttles correctly.
+    let sock = crate::daemon::client::default_sock_path(paths);
+    if let Ok(emit) = crate::daemon::client::should_warn_cargo_debug_default(&sock, repo_path) {
+        return emit;
+    }
     let db_path = crate::cache_lib::state_db_path(paths);
     crate::cache_lib::state_db::StateDb::open(&db_path)
         .and_then(|db| db.should_emit_cargo_debug_default_warning(repo_path))

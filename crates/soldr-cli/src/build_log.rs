@@ -138,6 +138,38 @@ pub fn build_logs_dir(paths: &SoldrPaths) -> PathBuf {
 /// every data source is read best-effort. Only directory-creation and
 /// final-write I/O errors are surfaced — callers should treat even
 /// those as warnings, not build failures.
+/// Build-log inputs, preferring the daemon that owns the tables
+/// (soldr#1814 slice 2a).
+///
+/// Falls back to a direct state-DB read when the daemon is unreachable, so a
+/// `--no-cache` or daemon-less build still produces a complete log. The
+/// fallback is reported rather than silent: a build log missing its compile
+/// timeline should say why.
+fn daemon_build_log_inputs(
+    request: &BuildLogRequest<'_>,
+) -> (
+    Vec<db::Event>,
+    Option<Box<crate::daemon::protocol::BuildRecord>>,
+) {
+    let sock = crate::daemon::client::default_sock_path(request.paths);
+    match crate::daemon::client::build_log_inputs(&sock, request.session_id) {
+        Ok((events, record)) => (events, record),
+        Err(error) => {
+            tracing::debug!(
+                event = "build_log_inputs_fallback",
+                session_id = request.session_id,
+                error = ?error,
+                "daemon did not serve build-log inputs; reading the state DB directly"
+            );
+            let db_path = crate::cache_lib::data_db_path(request.paths);
+            (
+                db::list_events_for_session(&db_path, request.session_id).unwrap_or_default(),
+                None,
+            )
+        }
+    }
+}
+
 pub fn write_build_log(request: &BuildLogRequest<'_>) -> Result<PathBuf, SoldrError> {
     let dir = build_logs_dir(request.paths);
     std::fs::create_dir_all(&dir)?;
@@ -146,7 +178,12 @@ pub fn write_build_log(request: &BuildLogRequest<'_>) -> Result<PathBuf, SoldrEr
     let download_step = build_download_step(fetch_timing::drain());
 
     let db_path = crate::cache_lib::data_db_path(request.paths);
-    let events = db::list_events_for_session(&db_path, request.session_id).unwrap_or_default();
+    // soldr#1814 slice 2a: ask the daemon, which owns these tables, instead of
+    // becoming a second opener of state.redb. Two `Required` opens here (5 s
+    // budget each) is what exceeded a 10 s test deadline under parallel test
+    // processes. Falls back to a direct read only when the daemon is
+    // unreachable, so a daemon-less build still gets a complete log.
+    let (events, daemon_record) = daemon_build_log_inputs(request);
 
     let cache_outcomes = read_compile_cache_outcomes(
         request.compile_journal_path.as_deref(),
@@ -166,11 +203,18 @@ pub fn write_build_log(request: &BuildLogRequest<'_>) -> Result<PathBuf, SoldrEr
         .filter(|item| item.cache == "miss")
         .count() as u64;
     if hits == 0 && misses == 0 {
-        if let Ok(Some(record)) = db::get_build(&db_path, request.session_id) {
-            if let Some(summary) = record.cache_summary {
-                hits = summary.hits;
-                misses = summary.misses;
-            }
+        // Prefer the record the daemon already handed us above; only reopen
+        // the DB ourselves if it was unreachable (soldr#1814 slice 2a).
+        let record = match daemon_record {
+            Some(record) => Some(record),
+            None => db::get_build(&db_path, request.session_id)
+                .ok()
+                .flatten()
+                .map(Box::new),
+        };
+        if let Some(summary) = record.and_then(|record| record.cache_summary) {
+            hits = summary.hits;
+            misses = summary.misses;
         }
     }
 
