@@ -2961,6 +2961,7 @@ dependencies = [
  "fs2",
  "hex",
  "reqwest",
+ "semver",
  "serde",
  "serde_json",
  "sha2",

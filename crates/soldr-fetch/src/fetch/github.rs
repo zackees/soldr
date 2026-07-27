@@ -153,13 +153,13 @@ async fn fetch_latest_by_prefix(
             .text()
             .await
             .unwrap_or_else(|e| format!("<failed to read body: {e}>"));
-        return Err(SoldrError::ToolNotFound(github_status_message(
+        return Err(github_status_error(
             repo,
             "release listing",
             &url,
             status,
             &body,
-        )));
+        ));
     }
 
     let text = resp
@@ -209,13 +209,13 @@ async fn fetch_release_value(
             .text()
             .await
             .unwrap_or_else(|e| format!("<failed to read body: {e}>"));
-        return Err(SoldrError::ToolNotFound(github_status_message(
+        return Err(github_status_error(
             repo,
             "release lookup",
             url,
             status,
             &body,
-        )));
+        ));
     }
 
     let text = resp
@@ -245,13 +245,13 @@ async fn fetch_release_by_listing(
             .text()
             .await
             .unwrap_or_else(|e| format!("<failed to read body: {e}>"));
-        return Err(SoldrError::ToolNotFound(github_status_message(
+        return Err(github_status_error(
             repo,
             "release listing",
             &url,
             status,
             &body,
-        )));
+        ));
     }
 
     let text = resp
@@ -304,6 +304,40 @@ fn release_tag_candidates(version: &str, tag_prefix: Option<&str>) -> Vec<String
     tags.sort();
     tags.dedup();
     tags
+}
+
+/// Turn a non-success GitHub API response into the right error variant.
+///
+/// A rate-limited or refused request is **not** a missing tool (#1879):
+/// reporting 403 as `ToolNotFound` surfaced to users as
+/// `tool not found: release lookup failed for PyO3/maturin`, which reads
+/// as "maturin does not exist" when the truth is "GitHub declined to
+/// answer". Unauthenticated CI runners share one IP's 60-requests/hour
+/// budget, so 403 is routine there.
+///
+/// 403 / 429 / 5xx are the server declining or failing → `Network`.
+/// Everything else, 404 above all, stays `ToolNotFound`: that is the
+/// release-propagation window the retry loop exists for.
+///
+/// Both variants are transient per `is_transient_fetch_error`, so the
+/// retry budget and backoff are unchanged — this only fixes the
+/// classification and the wording the user sees.
+fn github_status_error(
+    repo: &RepoInfo,
+    stage: &str,
+    url: &str,
+    status: reqwest::StatusCode,
+    body: &str,
+) -> SoldrError {
+    let message = github_status_message(repo, stage, url, status, body);
+    if status == reqwest::StatusCode::FORBIDDEN
+        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || status.is_server_error()
+    {
+        SoldrError::Network(message)
+    } else {
+        SoldrError::ToolNotFound(message)
+    }
 }
 
 fn github_status_message(
@@ -771,6 +805,43 @@ mod tests {
         assert!(msg.contains("aarch64-apple-darwin"));
         assert!(msg.contains("cargo-chef-x86_64-apple-darwin.tar.gz"));
         assert!(matches!(err, SoldrError::UnsupportedPlatform(_)));
+    }
+
+    /// #1879: a refused or failing request is not a missing tool.
+    /// Reporting 403 as `ToolNotFound` printed
+    /// `tool not found: release lookup failed for PyO3/maturin`, which
+    /// reads as "maturin does not exist" when GitHub simply declined to
+    /// answer a rate-limited request.
+    #[test]
+    fn rate_limited_and_server_errors_are_network_not_missing_tools() {
+        let r = repo("PyO3", "maturin");
+        let url = "https://api.github.com/repos/PyO3/maturin/releases/latest";
+
+        for status in [
+            reqwest::StatusCode::FORBIDDEN,
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            reqwest::StatusCode::BAD_GATEWAY,
+            reqwest::StatusCode::SERVICE_UNAVAILABLE,
+        ] {
+            let err = github_status_error(&r, "release lookup", url, status, "rate limit exceeded");
+            assert!(
+                matches!(err, SoldrError::Network(_)),
+                "HTTP {status} must classify as Network, got {err:?}",
+            );
+            // The status still has to reach the user.
+            assert!(err.to_string().contains(status.as_str()));
+        }
+
+        // 404 stays ToolNotFound: that is the release-propagation window
+        // the retry loop exists for.
+        let missing = github_status_error(
+            &r,
+            "release lookup",
+            url,
+            reqwest::StatusCode::NOT_FOUND,
+            "Not Found",
+        );
+        assert!(matches!(missing, SoldrError::ToolNotFound(_)));
     }
 
     #[test]
