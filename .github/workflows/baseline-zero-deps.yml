@@ -17,10 +17,26 @@ name: Baseline Zero-Deps Docker
 
 on:
   workflow_dispatch:
+  # soldr#1907 follow-up. This was `paths-ignore: **/*.md`, i.e. it ran on
+  # every non-markdown PR — a 42-minute bootstrap acceptance triggered by a
+  # workflow-only or test-only change. What it actually proves is that soldr
+  # can fetch its whole toolchain into a bare image, so it only needs to run
+  # when fetch/bootstrap behaviour, the pinned tool set, the dependency graph,
+  # or the images themselves move.
+  #
+  # Still runs unconditionally on push-to-main below, so a miss here is caught
+  # before release rather than never.
   pull_request:
-    paths-ignore:
-      - "*.md"
-      - "**/*.md"
+    paths:
+      - ".github/docker/**"
+      - ".github/workflows/baseline-zero-deps.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/soldr-cli/src/bootstrap.rs"
+      - "crates/soldr-core/**"
+      - "crates/soldr-fetch/**"
+      - "rust-toolchain.toml"
+      - "_vender/zccache"
   push:
     branches:
       - main
