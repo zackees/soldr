@@ -1076,9 +1076,9 @@ mod tests {
     use super::*;
     use crate::timed_test;
 
-    /// soldr#1857 — a dispatched compile that fails *and* says nothing is
-    /// the fault signature worth calling out. These three cases pin the
-    /// boundary: only failure-with-silence gets the extra diagnostic.
+    // soldr#1857 — a dispatched compile that fails *and* says nothing is
+    // the fault signature worth calling out. These three cases pin the
+    // boundary: only failure-with-silence gets the extra diagnostic.
     timed_test!(silent_failure_gets_an_explanatory_diagnostic, {
         let mut sink: Vec<u8> = Vec::new();
         let mut writer = SilenceDetectingWriter::new(&mut sink);
@@ -1107,8 +1107,10 @@ mod tests {
         let mut writer = SilenceDetectingWriter::new(&mut sink);
         // Whatever rustc already said about the failure.
         writer
-            .write_all(b"error[E0308]: mismatched types
-")
+            .write_all(
+                b"error[E0308]: mismatched types
+",
+            )
             .expect("write");
         writer.report_if_silently_failed(1);
 
@@ -1118,8 +1120,11 @@ mod tests {
             "an ordinary compile error must not be blamed on #1857; got:
 {text}"
         );
-        assert_eq!(text, "error[E0308]: mismatched types
-");
+        assert_eq!(
+            text,
+            "error[E0308]: mismatched types
+"
+        );
     });
 
     timed_test!(successful_silent_compile_is_left_alone, {
