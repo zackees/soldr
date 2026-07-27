@@ -13,16 +13,35 @@ use crate::core::SoldrPaths;
 use crate::daemon::client;
 use crate::daemon::lifecycle::{pid_exe_stem_matches, pid_is_alive, read_pid_file};
 use crate::daemon::protocol::PROTOCOL_VERSION;
-use running_process::broker::backend_handle::{BackendHandle, DaemonProcess};
+use running_process::broker::backend_handle::{BackendHandle, BackendHandleError, DaemonProcess};
 use running_process::broker::backend_lifecycle::identity::IdentityError;
+use running_process::broker::backend_lifecycle::probe::{EndpointProbeError, ProbeError};
+use running_process::broker::backend_lifecycle::verify_pid::VerifyPidError;
 use running_process::broker::backend_sdk::{BackendEndpointMux, LegacyClassification};
 use running_process::broker::host_identity;
 use running_process::broker::protocol::Endpoint;
 use sha2::{Digest, Sha256};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 pub(crate) const LEGACY_FRAME_HEADER_BYTES: usize = 8;
+
+/// How long to keep retrying a liveness probe that never reached a verdict
+/// (soldr#1893).
+///
+/// `running-process` gives the probe a hardcoded 500 ms deadline covering
+/// connect + write + read, which a machine running a large parallel test suite
+/// can exceed while the daemon is perfectly healthy. This budget allows a few
+/// more attempts before we conclude the daemon is not there.
+///
+/// Only *inconclusive* outcomes consume it — a definitive "no daemon" returns
+/// on the first attempt, so the common cold-start path is unaffected.
+pub(crate) const PROBE_INCONCLUSIVE_RETRY_BUDGET: Duration = Duration::from_secs(2);
+
+/// Pause between inconclusive probe attempts. Small relative to the 500 ms
+/// probe deadline that dominates each attempt.
+pub(crate) const PROBE_INCONCLUSIVE_RETRY_BACKOFF: Duration = Duration::from_millis(50);
 
 pub(crate) const SOLDR_DAEMON_SERVICE_NAME: &str = "soldr-daemon";
 pub(crate) const SOLDR_DAEMON_SERVICE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -82,18 +101,82 @@ pub(crate) fn running_process_disabled() -> bool {
     std::env::var(RUNNING_PROCESS_DISABLE_ENV).is_ok_and(|value| value == "1")
 }
 
-pub(crate) fn probe_soldr_daemon(paths: &SoldrPaths) -> Option<SoldrDaemonBackendHandle> {
-    let (pid, exe_path) = read_pid_file(paths)?;
-    let expected = daemon_process_from_pid_file(paths, pid, exe_path)?;
-    let handle = BackendHandle::probe_with_service(
+/// Outcome of a single `BackendHandle` probe attempt.
+///
+/// The distinction that matters is [`ProbeOutcome::NotLive`] versus
+/// [`ProbeOutcome::Inconclusive`]: the first is an answer, the second is the
+/// absence of one. Collapsing them (soldr#1893) made a slow daemon
+/// indistinguishable from a dead one.
+enum ProbeOutcome {
+    Live(Box<SoldrDaemonBackendHandle>),
+    /// The daemon is genuinely absent, or is not one this build can adopt.
+    NotLive,
+    /// The probe never reached a verdict — it timed out or hit a transient OS
+    /// fault. Says nothing about whether the daemon is alive.
+    Inconclusive(BackendHandleError),
+}
+
+/// True when `err` means "the probe did not get an answer" rather than
+/// "the answer was no".
+///
+/// `running-process` gives the connect timeout and an absent endpoint the same
+/// [`EndpointProbeError::Connect`] variant, so the inner [`io::ErrorKind`] is
+/// what separates them — `TimedOut` is transient, `NotFound` /
+/// `ConnectionRefused` are definitive.
+fn probe_error_is_transient(err: &BackendHandleError) -> bool {
+    fn io_kind_is_transient(err: &io::Error) -> bool {
+        matches!(
+            err.kind(),
+            io::ErrorKind::TimedOut
+                | io::ErrorKind::WouldBlock
+                | io::ErrorKind::Interrupted
+                | io::ErrorKind::ConnectionReset
+                | io::ErrorKind::BrokenPipe
+        )
+    }
+
+    let BackendHandleError::Probe(probe) = err else {
+        return false;
+    };
+    match probe {
+        ProbeError::EndpointResponse(endpoint) => match endpoint {
+            // The whole-probe deadline (500 ms) expired. Under a loaded
+            // machine this says nothing about the daemon.
+            EndpointProbeError::Timeout => true,
+            EndpointProbeError::Connect(e) | EndpointProbeError::Io(e) => io_kind_is_transient(e),
+            EndpointProbeError::ConfigureNonblocking(_) | EndpointProbeError::Random(_) => true,
+            _ => false,
+        },
+        // Reading another process's exe path/hash can fail transiently while
+        // that process is still perfectly alive.
+        ProbeError::VerifyPid(
+            VerifyPidError::ExeHash { .. }
+            | VerifyPidError::ExePath { .. }
+            | VerifyPidError::Handle { .. },
+        ) => true,
+        _ => false,
+    }
+}
+
+fn probe_soldr_daemon_once(paths: &SoldrPaths) -> ProbeOutcome {
+    let Some((pid, exe_path)) = read_pid_file(paths) else {
+        return ProbeOutcome::NotLive;
+    };
+    let Some(expected) = daemon_process_from_pid_file(paths, pid, exe_path) else {
+        return ProbeOutcome::NotLive;
+    };
+    let handle = match BackendHandle::probe_with_service(
         SOLDR_DAEMON_SERVICE_NAME,
         SOLDR_DAEMON_SERVICE_VERSION,
         &expected.ipc_endpoint,
         &expected,
-    )
-    .ok()?;
+    ) {
+        Ok(handle) => handle,
+        Err(err) if probe_error_is_transient(&err) => return ProbeOutcome::Inconclusive(err),
+        Err(_) => return ProbeOutcome::NotLive,
+    };
 
-    Some(SoldrDaemonBackendHandle {
+    ProbeOutcome::Live(Box::new(SoldrDaemonBackendHandle {
         service_name: SOLDR_DAEMON_SERVICE_NAME,
         service_version: SOLDR_DAEMON_SERVICE_VERSION,
         protocol_version: PROTOCOL_VERSION,
@@ -102,7 +185,60 @@ pub(crate) fn probe_soldr_daemon(paths: &SoldrPaths) -> Option<SoldrDaemonBacken
         endpoint: PathBuf::from(handle.daemon_process.ipc_endpoint.path),
         pid_file: daemon_pid_path(paths),
         adoption_status: RUNNING_PROCESS_BACKEND_HANDLE_STATUS,
-    })
+    }))
+}
+
+/// Probe the daemon named by the PID file, retrying only while the probe is
+/// inconclusive (soldr#1893).
+///
+/// A definitive "not live" returns immediately, so the common
+/// no-daemon-running path pays no extra latency. Only a timed-out or
+/// transiently-faulted probe is retried, and a genuinely dead daemon never
+/// becomes live — so the retry can remove false negatives but cannot mask a
+/// true one.
+pub(crate) fn probe_soldr_daemon(paths: &SoldrPaths) -> Option<SoldrDaemonBackendHandle> {
+    let started = Instant::now();
+    let mut attempts = 0_u32;
+    loop {
+        attempts += 1;
+        match probe_soldr_daemon_once(paths) {
+            ProbeOutcome::Live(handle) => {
+                if attempts > 1 {
+                    tracing::warn!(
+                        pid = handle.pid,
+                        endpoint = %handle.endpoint.display(),
+                        attempts,
+                        elapsed_ns = started.elapsed().as_nanos(),
+                        "soldr-daemon liveness probe succeeded only after retry; \
+                         the first attempt would have reported the daemon as not running"
+                    );
+                }
+                return Some(*handle);
+            }
+            ProbeOutcome::NotLive => return None,
+            ProbeOutcome::Inconclusive(err) => {
+                let elapsed = started.elapsed();
+                if elapsed >= PROBE_INCONCLUSIVE_RETRY_BUDGET {
+                    tracing::warn!(
+                        error = %err,
+                        attempts,
+                        elapsed_ns = elapsed.as_nanos(),
+                        budget_ns = PROBE_INCONCLUSIVE_RETRY_BUDGET.as_nanos(),
+                        "soldr-daemon liveness probe never reached a verdict within its retry \
+                         budget; reporting the daemon as not running"
+                    );
+                    return None;
+                }
+                tracing::debug!(
+                    error = %err,
+                    attempts,
+                    elapsed_ns = elapsed.as_nanos(),
+                    "soldr-daemon liveness probe was inconclusive; retrying"
+                );
+                std::thread::sleep(PROBE_INCONCLUSIVE_RETRY_BACKOFF);
+            }
+        }
+    }
 }
 
 pub(crate) fn current_daemon_process(
@@ -294,5 +430,78 @@ mod tests {
             classify_soldr_legacy_wire(&partial),
             LegacyClassification::NeedMoreBytes,
         );
+    });
+
+    // soldr#1893: the whole point of the classifier is that a probe which
+    // never got an answer must not be reported as "daemon is not running".
+
+    fn endpoint_err(inner: EndpointProbeError) -> BackendHandleError {
+        BackendHandleError::Probe(ProbeError::EndpointResponse(inner))
+    }
+
+    crate::timed_test!(probe_timeout_is_treated_as_inconclusive, {
+        assert!(probe_error_is_transient(&endpoint_err(
+            EndpointProbeError::Timeout
+        )));
+    });
+
+    crate::timed_test!(
+        connect_timeout_and_absent_endpoint_are_told_apart_by_io_kind,
+        {
+            // Both arrive as `Connect`; only the ErrorKind separates them, which
+            // is the trap this classifier exists to avoid.
+            assert!(
+                probe_error_is_transient(&endpoint_err(EndpointProbeError::Connect(
+                    io::Error::from(io::ErrorKind::TimedOut)
+                ))),
+                "a connect that timed out says nothing about the daemon"
+            );
+            for definitive in [io::ErrorKind::NotFound, io::ErrorKind::ConnectionRefused] {
+                assert!(
+                    !probe_error_is_transient(&endpoint_err(EndpointProbeError::Connect(
+                        io::Error::from(definitive)
+                    ))),
+                    "{definitive:?} means the endpoint is genuinely absent"
+                );
+            }
+        }
+    );
+
+    crate::timed_test!(identity_and_mismatch_failures_are_definitive, {
+        assert!(!probe_error_is_transient(&BackendHandleError::Probe(
+            ProbeError::EndpointMismatch
+        )));
+        assert!(!probe_error_is_transient(&endpoint_err(
+            EndpointProbeError::IdentityMismatch { field: "pid" }
+        )));
+        assert!(!probe_error_is_transient(&endpoint_err(
+            EndpointProbeError::UnsupportedFramingVersion {
+                got: 9,
+                expected: 1
+            }
+        )));
+        assert!(!probe_error_is_transient(&BackendHandleError::Probe(
+            ProbeError::VerifyPid(VerifyPidError::NotFound { pid: 4321 })
+        )));
+    });
+
+    crate::timed_test!(reading_a_live_process_image_can_fail_transiently, {
+        // The process may be alive and healthy while an exe-path read fails.
+        assert!(probe_error_is_transient(&BackendHandleError::Probe(
+            ProbeError::VerifyPid(VerifyPidError::ExePath {
+                pid: 4321,
+                source: io::Error::from(io::ErrorKind::PermissionDenied),
+            })
+        )));
+    });
+
+    crate::timed_test!(retry_budget_allows_more_than_one_probe_attempt, {
+        // A budget shorter than the 500 ms probe deadline would make the
+        // retry unreachable in practice.
+        assert!(
+            PROBE_INCONCLUSIVE_RETRY_BUDGET > Duration::from_millis(500),
+            "retry budget must exceed one probe deadline or it buys nothing"
+        );
+        assert!(PROBE_INCONCLUSIVE_RETRY_BACKOFF < PROBE_INCONCLUSIVE_RETRY_BUDGET);
     });
 }
