@@ -696,6 +696,34 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
         self.assertEqual(observed["requires"], {"profile": "dev"})
         self.assertEqual(observed["editable"], {"editable": "1"})
 
+    def test_wheel_build_disables_staged_artifacts_by_default(self) -> None:
+        """soldr#1867: staged-artifact reuse is off unless the caller asks.
+
+        A wheel build is cold and one-shot, so reuse buys little — but a
+        building soldr that predates zccache b81b8131 can serve a stale
+        generation for a key it has already proven non-deterministic. That
+        surfaces as `could not compile <trivial crate>`, naming a different
+        crate each run, with nothing pointing at the cache.
+
+        Asserted against `_prep_env`, the pure env builder, rather than by
+        driving `build_wheel`: the latter acquires a build lease and leaves
+        state that perturbs the idle-watchdog tests later in this file.
+        """
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ZCCACHE_STAGED_ARTIFACTS", None)
+            env = self.backend._prep_env({"profile": "dev"})
+
+        self.assertEqual(env.get("ZCCACHE_STAGED_ARTIFACTS"), "off")
+
+    def test_caller_can_re_enable_staged_artifacts(self) -> None:
+        """The default must not override an explicit choice (soldr#1867)."""
+        with mock.patch.dict(
+            os.environ, {"ZCCACHE_STAGED_ARTIFACTS": "on"}, clear=False
+        ):
+            env = self.backend._prep_env({"profile": "dev"})
+
+        self.assertEqual(env.get("ZCCACHE_STAGED_ARTIFACTS"), "on")
+
     def test_delegate_hook_holds_build_lease_for_full_call(self) -> None:
         events = []
         delegate = types.ModuleType("pep517_leased_delegate")
