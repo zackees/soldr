@@ -45,6 +45,8 @@ pub(crate) mod no_cache_detach;
 mod profile_debug;
 mod subcommand;
 mod target;
+/// soldr#1802 — elapsed-seconds prefixes on relayed child output.
+mod timestamp_tee;
 mod zig_shim;
 mod zthreads_fallback;
 
@@ -2441,6 +2443,25 @@ fn cargo_args_have_message_format(args: &[String]) -> bool {
         .any(|arg| arg == "--message-format" || arg.starts_with("--message-format="))
 }
 
+/// soldr#1802: the anchor for elapsed-line stamping, or `None` when
+/// stamping is off.
+///
+/// Resolved per run rather than once globally so a test or a caller can
+/// flip `SOLDR_TIMESTAMP_LINES` without a process restart. `t0` is
+/// `Instant::now()` at the point the relay starts, which is within
+/// milliseconds of the session start recorded in the build log.
+fn line_stamp_anchor(is_terminal: bool) -> Option<Instant> {
+    let raw = std::env::var(timestamp_tee::TIMESTAMP_LINES_ENV_VAR).ok();
+    if !timestamp_tee::should_timestamp(raw.as_deref(), is_terminal) {
+        return None;
+    }
+    // Emit the absolute anchor once, so a reader can convert the
+    // elapsed offsets that follow back into wall-clock time. Written
+    // before the child starts, so it always precedes the stamped lines.
+    eprint!("{}", timestamp_tee::epoch_anchor_line(current_unix_ms()));
+    Some(Instant::now())
+}
+
 fn run_command_capturing_cargo_json(
     command: &mut std::process::Command,
     target_dir: &Path,
@@ -2452,8 +2473,9 @@ fn run_command_capturing_cargo_json(
     let mut child = command
         .spawn()
         .map_err(|err| SoldrError::Other(format!("spawn cargo for JSON capture failed: {err}")))?;
-    let stdout_rx = spawn_capture_pipe_reader_to_stdout(child.stdout.take().expect("piped"));
-    let stderr_rx = spawn_capture_pipe_reader(child.stderr.take().expect("piped"));
+    let stamp = line_stamp_anchor(std::io::IsTerminal::is_terminal(&std::io::stdout()));
+    let stdout_rx = spawn_capture_pipe_reader_to_stdout(child.stdout.take().expect("piped"), stamp);
+    let stderr_rx = spawn_capture_pipe_reader(child.stderr.take().expect("piped"), stamp);
     let status = wait_for_cargo_child(&mut child, "cargo JSON capture", timeout)?;
     let stdout = drain_capture_pipe_after_child_exit(&stdout_rx, "cargo JSON stdout");
     let stderr = drain_capture_pipe_after_child_exit(&stderr_rx, "cargo JSON stderr");
@@ -2568,19 +2590,33 @@ fn collect_closure_files(paths: &mut BTreeMap<String, ()>, root: &Path, target_d
 
 fn spawn_capture_pipe_reader_to_stdout<R>(
     mut reader: R,
+    stamp_from: Option<Instant>,
 ) -> std::sync::mpsc::Receiver<CapturePipeMessage>
 where
     R: std::io::Read + Send + 'static,
 {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
+        // soldr#1802: the stamped copy goes to the terminal only. The
+        // capture channel below must stay raw — the cargo-JSON parser
+        // matches on cargo's exact bytes.
+        let mut stamped =
+            stamp_from.map(|t0| timestamp_tee::TimestampedTee::new(std::io::stdout(), t0));
         let mut chunk = [0u8; 8192];
         loop {
             match reader.read(&mut chunk) {
                 Ok(0) => break,
                 Ok(n) => {
                     let bytes = chunk[..n].to_vec();
-                    let _ = std::io::stdout().lock().write_all(&bytes);
+                    match stamped.as_mut() {
+                        Some(tee) => {
+                            let _ = tee.write_all(&bytes);
+                            let _ = tee.flush();
+                        }
+                        None => {
+                            let _ = std::io::stdout().lock().write_all(&bytes);
+                        }
+                    }
                     let _ = tx.send(CapturePipeMessage::Chunk(bytes));
                 }
                 Err(_) => break,
@@ -2625,7 +2661,10 @@ fn run_command_capturing_diagnostic_tail(
     })?;
     let child_stderr = child.stderr.take().expect("piped");
 
-    let stderr_rx = spawn_capture_pipe_reader(child_stderr);
+    let stderr_rx = spawn_capture_pipe_reader(
+        child_stderr,
+        line_stamp_anchor(std::io::IsTerminal::is_terminal(&std::io::stderr())),
+    );
 
     let status = wait_for_cargo_child(&mut child, "cargo diagnostic capture", timeout)?;
     let bytes = drain_capture_pipe_after_child_exit(&stderr_rx, "cargo diagnostic stderr");
@@ -2638,20 +2677,35 @@ enum CapturePipeMessage {
     Eof,
 }
 
-fn spawn_capture_pipe_reader<R>(mut reader: R) -> std::sync::mpsc::Receiver<CapturePipeMessage>
+fn spawn_capture_pipe_reader<R>(
+    mut reader: R,
+    stamp_from: Option<Instant>,
+) -> std::sync::mpsc::Receiver<CapturePipeMessage>
 where
     R: std::io::Read + Send + 'static,
 {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
+        // soldr#1802: stamped copy to the terminal, raw copy on the
+        // channel — the diagnostic scanner matches cargo's exact bytes.
+        let mut stamped =
+            stamp_from.map(|t0| timestamp_tee::TimestampedTee::new(std::io::stderr(), t0));
         let mut chunk = [0u8; 8192];
         loop {
             match reader.read(&mut chunk) {
                 Ok(0) => break,
                 Ok(n) => {
                     let bytes = chunk[..n].to_vec();
-                    let stderr = std::io::stderr();
-                    let _ = stderr.lock().write_all(&bytes);
+                    match stamped.as_mut() {
+                        Some(tee) => {
+                            let _ = tee.write_all(&bytes);
+                            let _ = tee.flush();
+                        }
+                        None => {
+                            let stderr = std::io::stderr();
+                            let _ = stderr.lock().write_all(&bytes);
+                        }
+                    }
                     let _ = tx.send(CapturePipeMessage::Chunk(bytes));
                 }
                 Err(_) => break,
