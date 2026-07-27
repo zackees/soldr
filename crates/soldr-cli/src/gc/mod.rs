@@ -514,6 +514,25 @@ pub(crate) fn run_gc_list_command(
 
 pub(crate) fn emit_startup_target_warning_if_due() {
     let Ok(paths) = SoldrPaths::new() else { return };
+    let marker = crate::cache_lib::gc_warning_marker_path(&paths);
+    // Check the 24 h throttle BEFORE touching redb (#1843).
+    //
+    // `maybe_build_startup_warning` evaluates this same condition, but only
+    // after we have already opened the registry — and `TargetRegistry::open`
+    // is not a read-only open: `init_schema` runs a durable write transaction
+    // (with an fsync) on every open just to ensure the table exists. So on the
+    // ~24-hours-out-of-24 where no warning is due, the front door paid a redb
+    // create + commit, plus a `config.toml` read in `resolve_gc_dev_roots`,
+    // purely to discover it had nothing to say. Measured at 37-42 ms per
+    // `soldr cargo` invocation.
+    //
+    // `startup_warning_due` is a single `fs::metadata`, and treats a missing
+    // or unreadable marker as due, so hoisting it preserves the cold-path
+    // semantics exactly — `maybe_build_startup_warning` still re-checks and
+    // still owns touching the marker.
+    if !crate::cache_lib::gc::startup_warning_due(&marker).unwrap_or(true) {
+        return;
+    }
     let db_path = crate::cache_lib::data_db_path(&paths);
     if !db_path.exists() {
         return;
@@ -527,7 +546,6 @@ pub(crate) fn emit_startup_target_warning_if_due() {
         dev_roots: resolve_gc_dev_roots(&paths).unwrap_or_default(),
         dry_run: true,
     };
-    let marker = crate::cache_lib::gc_warning_marker_path(&paths);
     match crate::cache_lib::gc::maybe_build_startup_warning(&registry, &options, &marker) {
         Ok(Some(message)) => eprintln!("{message}"),
         Ok(None) => {}
