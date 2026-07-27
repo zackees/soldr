@@ -675,14 +675,79 @@ where
     })?;
     let sock = client::default_sock_path(&paths);
     let marker = daemon_unavailable_marker_path(&paths);
-    dispatch_compile_with_sock_and_marker_detailed(
+    let mut counted = SilenceDetectingWriter::new(stderr);
+    let result = dispatch_compile_with_sock_and_marker_detailed(
         &sock,
         Some(&marker),
         rustc_argv,
         stdout,
-        stderr,
+        &mut counted,
         true,
-    )
+    );
+    if let Ok(exit_code) = result.as_ref() {
+        counted.report_if_silently_failed(*exit_code);
+    }
+    result
+}
+
+/// Wraps the caller's stderr sink and records whether the dispatched
+/// compile wrote anything to it.
+///
+/// A rustc failure never surfaces as a [`DispatchError`] — it arrives as
+/// `CompileDone { exit_code != 0 }` and is propagated as a bare exit code
+/// (see [`client_error_indicates_daemon_unavailable`]). When the daemon
+/// also relays no stderr, Cargo prints `error: could not compile <crate>`
+/// with an empty cause and the user has nothing to act on.
+///
+/// That is the shape of soldr#1857, where ~2.8% of dispatched compiles on
+/// Windows fail this way while the same workload through
+/// `soldr --no-cache` is clean. Detecting "failed **and** said nothing" is
+/// what separates that fault from an ordinary compile error, so it is
+/// worth the one counter.
+struct SilenceDetectingWriter<W> {
+    inner: W,
+    bytes_written: u64,
+}
+
+impl<W: Write> SilenceDetectingWriter<W> {
+    fn new(inner: W) -> Self {
+        Self {
+            inner,
+            bytes_written: 0,
+        }
+    }
+
+    /// Emit a diagnostic when the compile failed without explaining why.
+    ///
+    /// Deliberately hedged: a non-zero exit with no output is *usually*
+    /// the #1857 fault, but claiming it always is would be wrong, so the
+    /// message states the observation first and the likely cause second.
+    fn report_if_silently_failed(&mut self, exit_code: i32) {
+        if exit_code == 0 || self.bytes_written > 0 {
+            return;
+        }
+        let _ = writeln!(
+            self.inner,
+            "soldr: rustc exited {exit_code} without emitting any diagnostics.\n\
+             soldr: the compile was dispatched to soldr-daemon and failed before it \
+             could report a reason — see soldr#1857.\n\
+             soldr: retrying usually succeeds; `soldr --no-cache cargo ...` bypasses \
+             the daemon entirely."
+        );
+        let _ = self.inner.flush();
+    }
+}
+
+impl<W: Write> Write for SilenceDetectingWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let written = self.inner.write(buf)?;
+        self.bytes_written += written as u64;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 fn dispatch_compile_with_sock_and_marker_detailed<O, E>(
@@ -1010,6 +1075,70 @@ pub use client::CompileDoneInfo as DispatchInfo;
 mod tests {
     use super::*;
     use crate::timed_test;
+
+    /// soldr#1857 — a dispatched compile that fails *and* says nothing is
+    /// the fault signature worth calling out. These three cases pin the
+    /// boundary: only failure-with-silence gets the extra diagnostic.
+    timed_test!(silent_failure_gets_an_explanatory_diagnostic, {
+        let mut sink: Vec<u8> = Vec::new();
+        let mut writer = SilenceDetectingWriter::new(&mut sink);
+        writer.report_if_silently_failed(1);
+
+        let text = String::from_utf8(sink).expect("utf8");
+        assert!(
+            text.contains("without emitting any diagnostics"),
+            "expected the silence to be named; got:
+{text}"
+        );
+        assert!(
+            text.contains("soldr#1857"),
+            "expected a pointer to the tracking issue; got:
+{text}"
+        );
+        assert!(
+            text.contains("--no-cache"),
+            "expected the documented bypass; got:
+{text}"
+        );
+    });
+
+    timed_test!(failure_that_produced_output_is_left_alone, {
+        let mut sink: Vec<u8> = Vec::new();
+        let mut writer = SilenceDetectingWriter::new(&mut sink);
+        // Whatever rustc already said about the failure.
+        writer
+            .write_all(b"error[E0308]: mismatched types
+")
+            .expect("write");
+        writer.report_if_silently_failed(1);
+
+        let text = String::from_utf8(sink).expect("utf8");
+        assert!(
+            !text.contains("soldr#1857"),
+            "an ordinary compile error must not be blamed on #1857; got:
+{text}"
+        );
+        assert_eq!(text, "error[E0308]: mismatched types
+");
+    });
+
+    timed_test!(successful_silent_compile_is_left_alone, {
+        let mut sink: Vec<u8> = Vec::new();
+        let mut writer = SilenceDetectingWriter::new(&mut sink);
+        // The overwhelmingly common case: a cache hit says nothing and succeeds.
+        writer.report_if_silently_failed(0);
+
+        assert!(sink.is_empty(), "exit 0 must stay silent");
+    });
+
+    timed_test!(byte_count_tracks_partial_writes, {
+        let mut sink: Vec<u8> = Vec::new();
+        let mut writer = SilenceDetectingWriter::new(&mut sink);
+        writer.write_all(b"abc").expect("write");
+        writer.write_all(b"de").expect("write");
+
+        assert_eq!(writer.bytes_written, 5);
+    });
     use std::path::PathBuf;
     use std::sync::Mutex;
 
