@@ -1865,10 +1865,16 @@ struct ExtractJob {
 /// runtime, no new direct deps. Bounded so the driver pauses if workers
 /// can't keep up (caps in-memory body buffer at ~`bound × entry_size`).
 struct ExtractDispatch {
-    tx: std::sync::mpsc::SyncSender<ExtractJob>,
+    /// `Option` so shutdown can close the channel exactly once, whether it
+    /// is reached through [`ExtractDispatch::finish`] or through `Drop`.
+    tx: Option<std::sync::mpsc::SyncSender<ExtractJob>>,
     /// Barrier joined when every worker exits; size = num_workers + 1
     /// (workers + the driver caller).
     barrier: Arc<std::sync::Barrier>,
+    /// Guards against waiting on `barrier` twice. A `Barrier` is reusable:
+    /// a second wait opens a new generation that only `n_workers + 1`
+    /// further arrivals could release, so double-waiting would hang.
+    shutdown_done: bool,
 }
 
 impl ExtractDispatch {
@@ -1906,7 +1912,17 @@ impl ExtractDispatch {
                         let guard = rx.lock().expect("extract rx mutex");
                         match guard.recv_timeout(EXTRACT_WORKER_RECV_TIMEOUT) {
                             Ok(j) => j,
-                            Err(_) => break,
+                            // Only a closed channel means "no more work".
+                            // A timeout means the driver is merely slow --
+                            // a big zstd frame, a stalled disk. Treating it
+                            // as disconnect (the previous behaviour) retired
+                            // every worker permanently, after which the
+                            // SyncSender still accepted up to `bound` jobs
+                            // that nobody would ever extract; `finish()`
+                            // then returned Ok and `load()` reported success
+                            // with files silently absent from the tree.
+                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                         }
                     };
                     // If a sibling already recorded an error, drain remaining
@@ -1937,22 +1953,45 @@ impl ExtractDispatch {
             });
         }
 
-        ExtractDispatch { tx, barrier }
+        ExtractDispatch {
+            tx: Some(tx),
+            barrier,
+            shutdown_done: false,
+        }
     }
 
     fn send(
         &self,
         job: ExtractJob,
     ) -> std::result::Result<(), std::sync::mpsc::SendError<ExtractJob>> {
-        self.tx.send(job)
+        match self.tx.as_ref() {
+            Some(tx) => tx.send(job),
+            // Only reachable after shutdown, which the driver never does
+            // before its last send. Report it as a send failure rather
+            // than panicking so a future refactor degrades loudly but
+            // safely.
+            None => Err(std::sync::mpsc::SendError(job)),
+        }
+    }
+
+    /// Close the channel and block until every worker has exited.
+    /// Idempotent, and shared with `Drop` so the wait cannot be skipped.
+    fn shutdown(&mut self) {
+        if self.shutdown_done {
+            return;
+        }
+        self.shutdown_done = true;
+        // Dropping the sender is what lets workers observe `Disconnected`
+        // and leave their receive loop.
+        self.tx = None;
+        self.barrier.wait();
     }
 
     /// Close the channel and block until every worker has exited.
     /// Returns Ok(()) regardless of worker errors — those land in the
     /// shared err_slot the caller passed to `start`.
-    fn finish(self) -> Result<()> {
-        drop(self.tx);
-        self.barrier.wait();
+    fn finish(mut self) -> Result<()> {
+        self.shutdown();
         Ok(())
     }
 }
@@ -1975,6 +2014,23 @@ fn staging_path_for(dest: &Path) -> PathBuf {
         ".{name}.soldr-tmp-{pid}-{seq}",
         pid = std::process::id()
     ))
+}
+
+/// #1909: the driver loop reaches `load()`'s error paths through `?`, which
+/// drops the dispatch without calling [`ExtractDispatch::finish`]. Without a
+/// `Drop` impl those rayon workers kept running after `load()` returned,
+/// still writing into the cache tree the caller was about to use -- and
+/// cargo exec'ing a build script while a worker held it open for write is
+/// `ETXTBSY` ("Text file busy"), the failure this fixes.
+///
+/// They also leaked: workers park on a barrier sized `n_workers + 1` whose
+/// final party (the driver) had already returned, so nothing ever released
+/// them. `rayon::ThreadPool::drop` does not join outstanding `spawn`ed
+/// closures, so dropping the pool did not rescue this either.
+impl Drop for ExtractDispatch {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
 }
 
 /// Worker-side per-entry extraction. Splits Regular vs Directory handling
@@ -2804,6 +2860,59 @@ mod tests {
             msg.contains("not-a-dir"),
             "error must mention the offending path: {msg}"
         );
+    });
+
+    // #1909: dropping the dispatch without `finish()` -- which is what
+    // every `?` in the driver loop does -- must still wait for workers.
+    //
+    // Before the Drop impl those workers kept writing into the cache tree
+    // after `load()` had returned. Cargo exec'ing a build script while a
+    // worker still held it open for write is exactly `ETXTBSY`. The
+    // workers also leaked permanently, parked on a barrier whose final
+    // party had already gone home.
+    //
+    // The assertion is that drop *returns at all*: if the barrier is not
+    // satisfied it blocks forever, so a regression hangs this test rather
+    // than failing it. That is deliberate -- there is no non-racy way to
+    // observe "a worker is still running" from outside, and a hang is an
+    // unambiguous signal. `timed_test!` bounds it.
+    timed_test!(dropping_dispatch_without_finish_still_waits_for_workers, {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = build_pool(Some(2)).expect("pool");
+        let err_slot: Arc<Mutex<Option<SaveLoadError>>> = Arc::new(Mutex::new(None));
+        let counter = Arc::new(AtomicU64::new(0));
+
+        let dest = tmp.path().join("nested").join("payload.bin");
+        {
+            let dispatch = ExtractDispatch::start(
+                &pool,
+                Some(2),
+                Arc::clone(&err_slot),
+                Arc::clone(&counter),
+                None,
+            );
+            dispatch
+                .send(ExtractJob {
+                    dest: dest.clone(),
+                    entry_type: tar::EntryType::Regular,
+                    body: b"payload".to_vec(),
+                    mtime_secs: None,
+                    mtime_ns: None,
+                    mode_bits: None,
+                })
+                .expect("send");
+            // Deliberately no `finish()` -- emulate a `?` bailing out of
+            // the driver loop with work still in flight.
+        }
+
+        // Reaching here at all means Drop waited. And because it waited,
+        // the in-flight job is guaranteed complete -- no sleep, no poll.
+        assert!(
+            dest.exists(),
+            "drop must not return until workers have finished writing"
+        );
+        assert_eq!(counter.load(Ordering::Relaxed), 1, "job should be counted");
+        assert!(err_slot.lock().unwrap().is_none(), "no worker error");
     });
 
     // #1548 — purely-lexical symlink-target containment. Runs on every
