@@ -1418,7 +1418,7 @@ mod tests {
             let dead = if cfg!(windows) {
                 PathBuf::from(r"\\.\pipe\soldr-test-no-such-pipe-12345")
             } else {
-                std::env::temp_dir().join("soldr-test-no-such-sock-12345")
+                crate::core::ensure_temp_root().join("soldr-test-no-such-sock-12345")
             };
             // Make sure no leftover artifact from a prior test is on disk.
             let _ = std::fs::remove_file(&dead);

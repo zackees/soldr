@@ -41,7 +41,7 @@ fn unique_temp_dir(label: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("time went backwards")
         .as_nanos();
-    let dir = std::env::temp_dir().join(format!("soldr-{label}-{nanos}"));
+    let dir = soldr_cli::core::ensure_temp_root().join(format!("soldr-{label}-{nanos}"));
     fs::create_dir_all(&dir).expect("failed to create temp dir");
     dir
 }
@@ -56,7 +56,7 @@ fn unique_cache_dir() -> PathBuf {
     let base = if cfg!(unix) {
         PathBuf::from("/tmp")
     } else {
-        std::env::temp_dir()
+        soldr_cli::core::ensure_temp_root()
     };
     let dir = base.join(format!("sdrc-{}-{nanos}", std::process::id()));
     fs::create_dir_all(&dir).expect("failed to create cache dir");

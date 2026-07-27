@@ -38,7 +38,8 @@ fn explicit_dylint_channel_overrides_parent_toolchain_in_plan_identity() {
 
 #[test]
 fn rust_artifact_plan_selects_external_packages_and_path_exclusions() {
-    let root = std::env::temp_dir().join(format!("soldr-rust-plan-test-{}", std::process::id()));
+    let root = crate::core::ensure_temp_root()
+        .join(format!("soldr-rust-plan-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("app/src")).unwrap();
     std::fs::create_dir_all(root.join("local_dep/src")).unwrap();
@@ -247,7 +248,7 @@ fn allowed_artifact_classes_thin_v2_keeps_hydratable_outputs() {
 /// uses to decide whether the new fingerprint split is in effect.
 #[test]
 fn rust_artifact_plan_bumps_cache_schema_version_for_thin_v2() {
-    let root = std::env::temp_dir().join(format!(
+    let root = crate::core::ensure_temp_root().join(format!(
         "soldr-rust-plan-thinv2-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
@@ -318,7 +319,7 @@ fn rust_artifact_plan_bumps_cache_schema_version_for_thin_v2() {
 /// durable compiler output rather than risk a partial cook partition.
 #[test]
 fn rust_artifact_plan_marks_thin_v3_zccache_all_fallback() {
-    let root = std::env::temp_dir().join(format!(
+    let root = crate::core::ensure_temp_root().join(format!(
         "soldr-rust-plan-thinv3-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()

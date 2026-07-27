@@ -379,7 +379,11 @@ fn spill_stdin_to_content_addressed_file() -> Result<StdinSourceFile, SoldrError
 
 fn materialize_stdin_source(bytes: &[u8]) -> Result<StdinSourceFile, SoldrError> {
     let hex = zccache::hash::hash_bytes(bytes).to_hex();
-    let temp_dir = std::env::temp_dir();
+    // soldr#1900: relocated off the OS temp dir (tmpfs on Linux). Note this
+    // file is deliberately *reused* across invocations -- it is keyed by
+    // content hash and `ensure_stdin_source_path` reports whether it already
+    // existed -- so it is not a TempDir and must not auto-delete.
+    let temp_dir = crate::core::ensure_temp_root();
     let short_path = temp_dir.join(format!("soldr-stdin-{}.rs", &hex[..16]));
     if ensure_stdin_source_path(&short_path, bytes)? {
         return Ok(StdinSourceFile { path: short_path });

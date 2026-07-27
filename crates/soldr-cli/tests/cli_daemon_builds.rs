@@ -21,7 +21,7 @@ fn unique_temp_dir(label: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("time went backwards")
         .as_nanos();
-    let dir = std::env::temp_dir().join(format!("soldr-{label}-{nanos}"));
+    let dir = soldr_cli::core::ensure_temp_root().join(format!("soldr-{label}-{nanos}"));
     std::fs::create_dir_all(&dir).expect("failed to create temp dir");
     dir
 }
