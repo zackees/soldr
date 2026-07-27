@@ -78,15 +78,34 @@ const FALLIBLE_PRE_SPAWN_STEPS: &[(&str, &str)] = &[
     ),
 ];
 
-fn front_door_source() -> (PathBuf, String) {
-    // CARGO_MANIFEST_DIR is `crates/soldr-cli`.
+/// Read the front-door source, or `None` when it is not on disk.
+///
+/// `CARGO_MANIFEST_DIR` is baked in at compile time, and the
+/// `target-run` / `Linux x64` lanes execute a **pre-built test archive**
+/// on a machine that does not have the source tree at that path. A
+/// source-reading lint cannot run there, so it skips instead of
+/// failing — the same tolerance `timed_test_lint`'s `collect_rs_files`
+/// has for directories it cannot read.
+///
+/// The lint still enforces everywhere it can: the `Lint` lane and any
+/// local `cargo test`, both of which build and run in the checkout.
+fn front_door_source() -> Option<(PathBuf, String)> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("src")
         .join("cargo_front_door")
         .join("mod.rs");
-    let text = fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
-    (path, text)
+    match fs::read_to_string(&path) {
+        Ok(text) => Some((path, text)),
+        Err(_) => {
+            eprintln!(
+                "build_session_order_lint: skipping — {} is not present, so this \
+                 run is executing a pre-built test archive away from the source \
+                 tree. The lint enforces on the Lint lane and locally.",
+                path.display(),
+            );
+            None
+        }
+    }
 }
 
 /// Line number (1-based) of the first line containing `needle`.
@@ -97,7 +116,9 @@ fn line_of(text: &str, needle: &str) -> Option<usize> {
 }
 
 timed_test!(build_session_starts_after_every_fallible_setup_step, {
-    let (path, text) = front_door_source();
+    let Some((path, text)) = front_door_source() else {
+        return;
+    };
 
     let start_line = line_of(&text, SESSION_START).unwrap_or_else(|| {
         panic!(
@@ -152,7 +173,9 @@ timed_test!(both_post_session_exit_paths_clear_the_active_flag, {
     // only releases its file lock on drop — it does not touch the flag or
     // notify the daemon — so these calls cannot be dropped in favour of RAII
     // without moving that work into the guard first.
-    let (path, text) = front_door_source();
+    let Some((path, text)) = front_door_source() else {
+        return;
+    };
 
     let start_line = line_of(&text, SESSION_START).expect("session start present");
 
