@@ -185,9 +185,28 @@ pub(crate) fn materialize_executable(
             });
         }
 
-        if let Err(err) = std::fs::remove_file(target) {
-            if err.kind() != std::io::ErrorKind::NotFound {
-                last_error = Some(err);
+        match swap_stale_target(&tmp, target) {
+            Ok(()) => {
+                let verified_snapshot = materialization_memo(source, target);
+                if executable_matches(target, source).unwrap_or(false) {
+                    if let Some(verified) = verified_snapshot.as_ref() {
+                        write_materialization_memo_if_unchanged(
+                            source,
+                            target,
+                            &verified.source,
+                            Some(&verified.target),
+                        );
+                    }
+                }
+                return Ok(MaterializeResult {
+                    created: true,
+                    link_mode,
+                });
+            }
+            Err(err) => {
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    last_error = Some(err);
+                }
             }
         }
         if attempt + 1 < PUBLISH_ATTEMPTS {
@@ -218,6 +237,92 @@ pub(crate) fn materialize_executable(
             target.display()
         ))
     })))
+}
+
+/// Swap `tmp` into `target`, displacing a stale shim that cannot simply be
+/// overwritten.
+///
+/// The previous behaviour deleted the target and let the next loop iteration
+/// retry the rename, which left the shim path absent in between. A concurrent
+/// build spawning `<shims>/rustc.exe` inside that window fails with a bare
+/// "cannot find the path specified" and no compiler diagnostics, so
+/// reinstalling `soldr` could break every build running at the time.
+///
+/// Renaming the stale file aside and immediately publishing narrows the gap to
+/// two back-to-back renames, and works in the case that made `remove_file`
+/// fail outright: Windows refuses to delete or overwrite a running executable
+/// image but does allow renaming it. If publication still fails the stale file
+/// is put back, so a failed attempt never leaves the shim missing.
+///
+/// The displaced file is deleted best-effort — it stays on disk while some
+/// process still maps it, and is swept by a later materialization.
+fn swap_stale_target(tmp: &Path, target: &Path) -> std::io::Result<()> {
+    let aside = stale_path_for(target);
+    let _ = std::fs::remove_file(&aside);
+    match std::fs::rename(target, &aside) {
+        Ok(()) => match std::fs::rename(tmp, target) {
+            Ok(()) => {
+                let _ = std::fs::remove_file(&aside);
+                sweep_stale_siblings(target);
+                Ok(())
+            }
+            Err(err) => {
+                // Put the stale shim back rather than leaving a hole.
+                let _ = std::fs::rename(&aside, target);
+                Err(err)
+            }
+        },
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => std::fs::rename(tmp, target),
+        // The target could not be renamed aside. Fall back to the historical
+        // delete so a same-volume stale file still gets replaced rather than
+        // failing publication outright.
+        Err(_) => {
+            std::fs::remove_file(target)?;
+            std::fs::rename(tmp, target)
+        }
+    }
+}
+
+/// Best-effort cleanup of displaced shims left behind by earlier publishes in
+/// *this* process whose images were still mapped at the time.
+///
+/// Scoped to our own PID on purpose: another process may be mid-swap and still
+/// need to rename its own displaced file back over the target, so deleting it
+/// here would turn its recoverable failure into a missing shim.
+fn sweep_stale_siblings(target: &Path) {
+    let (Some(parent), Some(name)) = (target.parent(), target.file_name()) else {
+        return;
+    };
+    let prefix = {
+        let mut p = name.to_os_string();
+        p.push(STALE_INFIX);
+        p.push(format!("{}-", std::process::id()));
+        p.to_string_lossy().into_owned()
+    };
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy().starts_with(&prefix) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+const STALE_INFIX: &str = ".stale.";
+
+fn stale_path_for(target: &Path) -> PathBuf {
+    static STALE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let pid = std::process::id();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    let sequence = STALE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut path = target.as_os_str().to_os_string();
+    path.push(STALE_INFIX);
+    path.push(format!("{pid}-{nanos}-{sequence}"));
+    PathBuf::from(path)
 }
 
 fn tmp_path_for(target: &Path) -> PathBuf {
@@ -494,6 +599,121 @@ mod tests {
         let replaced = materialize_executable(&source, &target).unwrap();
         assert!(replaced.created);
         assert_eq!(std::fs::read(&target).unwrap(), b"fake-soldr-v2");
+    });
+
+    // Regression guard for the concurrent-install failure: reinstalling soldr
+    // while a build was running could not replace a shim whose image was
+    // mapped by a live `rustc` wrapper. Windows refuses to delete or overwrite
+    // a running executable, so the old publish path (`remove_file` + retry)
+    // burned all 20 attempts and returned an error, while a cargo process that
+    // spawned `<shims>/rustc` in the meantime saw a bare "cannot find the path
+    // specified" with no compiler diagnostics. Renaming the running image
+    // aside succeeds where deleting it cannot.
+    //
+    // This test fails against the pre-fix implementation.
+    #[cfg(windows)]
+    crate::timed_test!(replaces_a_shim_whose_image_is_currently_running, {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("running-shim.exe");
+        // A real executable is required: the point is a mapped image, which no
+        // amount of fake bytes reproduces.
+        let system_exe = std::path::Path::new(r"C:\Windows\System32\ping.exe");
+        std::fs::copy(system_exe, &target).unwrap();
+
+        let mut child = std::process::Command::new(&target)
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn shim under test");
+
+        // Sanity: the image really is locked against deletion right now.
+        assert!(
+            std::fs::remove_file(&target).is_err(),
+            "precondition failed: a running image should not be deletable"
+        );
+
+        let source = fake_source(&tmp, b"fake-soldr-next-version");
+        let result = materialize_executable(&source, &target);
+
+        let _ = child.kill();
+        let _ = child.wait();
+
+        let replaced = result.expect("replacing a running shim must succeed");
+        assert!(replaced.created);
+        assert_eq!(std::fs::read(&target).unwrap(), b"fake-soldr-next-version");
+    });
+
+    crate::timed_test!(replacing_a_shim_keeps_the_path_readable_for_spawners, {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = fake_source(&tmp, b"fake-soldr-v1");
+        let target = tmp.path().join("rustc");
+        materialize_executable(&source, &target).unwrap();
+
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let missing = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let observer = {
+            let target = target.clone();
+            let stop = std::sync::Arc::clone(&stop);
+            let missing = std::sync::Arc::clone(&missing);
+            std::thread::spawn(move || {
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    // A spawner only ever needs *some* shim at this path.
+                    if std::fs::metadata(&target).is_err() {
+                        missing.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+            })
+        };
+
+        for generation in 2..40u8 {
+            let bytes = format!("fake-soldr-v{generation}");
+            std::fs::remove_file(&source).unwrap();
+            std::fs::write(&source, bytes.as_bytes()).unwrap();
+            materialize_executable(&source, &target).unwrap();
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        observer.join().unwrap();
+
+        assert_eq!(
+            missing.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "shim path disappeared while it was being replaced"
+        );
+    });
+
+    crate::timed_test!(swap_stale_target_restores_the_shim_when_publish_fails, {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("rustc");
+        std::fs::write(&target, b"stale-shim").unwrap();
+        // A tmp path that does not exist makes the publishing rename fail.
+        let missing_tmp = tmp.path().join("never-created");
+
+        let err = swap_stale_target(&missing_tmp, &target).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+        assert_eq!(
+            std::fs::read(&target).unwrap(),
+            b"stale-shim",
+            "a failed publish must leave the previous shim in place"
+        );
+    });
+
+    crate::timed_test!(stale_paths_are_unique_and_swept, {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("rustc");
+        let mut paths = std::collections::HashSet::new();
+        for _ in 0..256 {
+            assert!(paths.insert(stale_path_for(&target)));
+        }
+        for path in &paths {
+            std::fs::write(path, b"leftover").unwrap();
+        }
+        std::fs::write(&target, b"current").unwrap();
+        sweep_stale_siblings(&target);
+        for path in &paths {
+            assert!(!path.exists(), "stale sibling was not swept: {path:?}");
+        }
+        assert!(target.exists(), "sweep must not remove the live shim");
     });
 
     crate::timed_test!(temporary_paths_are_unique_within_one_process, {
