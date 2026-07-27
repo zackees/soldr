@@ -370,9 +370,89 @@ pub(super) async fn fetch_repo_binary_with_paths(
                 backoff = backoff.saturating_mul(2);
                 attempt += 1;
             }
-            Err(err) => return Err(err),
+            Err(err) => {
+                // #1879: reaching the release API is an optimization, not
+                // a prerequisite. `VersionSpec::Latest` means "the newest
+                // you can get"; when the listing is unreachable — GitHub
+                // rate-limits unauthenticated CI runners at 60/hr per IP,
+                // shared across every job on that runner, so 403 is
+                // routine — the newest we can get is what is already on
+                // disk. Failing the build instead turns a transient API
+                // condition into a red build for a consumer whose change
+                // had nothing to do with the tool.
+                //
+                // Only for `Latest`. An `Exact` request was already
+                // checked against the cache before the network hop, so a
+                // miss there means that specific version is genuinely
+                // absent, and substituting a different one would silently
+                // violate the request.
+                if matches!(version, VersionSpec::Latest) {
+                    if let Some(cached) =
+                        newest_cached_tool(paths, cache_name, binary_names, &target)
+                    {
+                        eprintln!(
+                            "soldr: {cache_name}: release lookup failed ({err}); \
+                             falling back to cached v{} (set SOLDR_GITHUB_TOKEN to raise \
+                             the GitHub API rate limit)",
+                            cached.version,
+                        );
+                        return Ok(cached);
+                    }
+                }
+                return Err(err);
+            }
         }
     }
+}
+
+/// Newest already-extracted version of `cache_name` in `paths.bin`.
+///
+/// The cache lays tools out as `<bin>/<cache_name>-<version>/`, so this
+/// enumerates that directory rather than consulting the network. Used
+/// only as the #1879 fallback when the release listing is unreachable.
+///
+/// Versions are ordered with semver when both sides parse, so `0.10.0`
+/// sorts above `0.9.0`. Non-semver tags (some tools ship `2024-01-05`
+/// or bare `v3`) fall back to string ordering, which is not always
+/// correct but is deterministic and only ever picks among versions the
+/// user already downloaded.
+fn newest_cached_tool(
+    paths: &SoldrPaths,
+    cache_name: &str,
+    binary_names: &[&str],
+    target: &TargetTriple,
+) -> Option<FetchResult> {
+    let prefix = format!("{cache_name}-");
+    let mut versions: Vec<String> = std::fs::read_dir(&paths.bin)
+        .ok()?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            if !entry.file_type().ok()?.is_dir() {
+                return None;
+            }
+            entry
+                .file_name()
+                .to_str()?
+                .strip_prefix(&prefix)
+                .map(str::to_string)
+        })
+        .collect();
+
+    versions.sort_by(
+        |a, b| match (semver::Version::parse(a), semver::Version::parse(b)) {
+            (Ok(a), Ok(b)) => a.cmp(&b),
+            _ => a.cmp(b),
+        },
+    );
+
+    // Newest first, and take the newest that actually has its binaries —
+    // an interrupted extraction can leave a version directory behind
+    // with nothing usable in it.
+    versions.into_iter().rev().find_map(|version| {
+        check_cache(paths, cache_name, &version, binary_names, target)
+            .ok()
+            .flatten()
+    })
 }
 
 /// Classify whether an error from the repo-fetch chain is worth retrying.
@@ -975,6 +1055,55 @@ pub(super) fn check_cache(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1879: build a fake tool cache and confirm the fallback picks the
+    /// newest *usable* version without touching the network.
+    #[test]
+    fn newest_cached_tool_picks_the_highest_complete_version() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = SoldrPaths::with_root(dir.path().to_path_buf());
+        paths.ensure_dirs().expect("ensure dirs");
+        let target = TargetTriple::host().expect("host triple");
+        let ext = target.binary_ext();
+
+        for version in ["1.9.0", "1.10.0"] {
+            let tool_dir = paths.bin.join(format!("maturin-{version}"));
+            std::fs::create_dir_all(&tool_dir).expect("tool dir");
+            std::fs::write(tool_dir.join(format!("maturin{ext}")), b"bin").expect("bin");
+        }
+        // Newest by version, but an interrupted extraction left it with
+        // no binary — it must be skipped rather than returned.
+        std::fs::create_dir_all(paths.bin.join("maturin-2.0.0")).expect("empty dir");
+        // A different tool must not be considered.
+        let other = paths.bin.join("crgx-9.9.9");
+        std::fs::create_dir_all(&other).expect("other dir");
+        std::fs::write(other.join(format!("crgx{ext}")), b"bin").expect("other bin");
+
+        let found = newest_cached_tool(&paths, "maturin", &["maturin"], &target)
+            .expect("a cached maturin must be found");
+        // 1.10.0 > 1.9.0 under semver; plain string ordering would have
+        // picked 1.9.0.
+        assert_eq!(found.version, "1.10.0");
+        assert!(found.cached);
+    }
+
+    #[test]
+    fn newest_cached_tool_returns_none_when_nothing_is_cached() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let paths = SoldrPaths::with_root(dir.path().to_path_buf());
+        paths.ensure_dirs().expect("ensure dirs");
+        assert!(
+            newest_cached_tool(
+                &paths,
+                "maturin",
+                &["maturin"],
+                &TargetTriple::host().expect("host triple")
+            )
+            .is_none(),
+            "with no cache there is nothing to fall back to, so the \
+             lookup failure must stay fatal",
+        );
+    }
 
     #[test]
     fn transient_fetch_predicate_only_retries_network_and_not_found() {

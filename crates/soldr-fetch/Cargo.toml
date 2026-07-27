@@ -16,6 +16,7 @@ flate2 = { workspace = true }
 fs2 = { workspace = true }
 hex = { workspace = true }
 reqwest = { workspace = true }
+semver = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
