@@ -1821,6 +1821,20 @@ where
             };
             let _ = write_frame_async(&mut stream, &response).await;
         }
+        Request::ShouldWarnCargoDebugDefault { repo_root } => {
+            // soldr#1814 slice 2c: the daemon owns state_db's tables, so it
+            // performs this read-modify-write (record the repo, prune expired
+            // rows) instead of every front-door invocation opening the file.
+            let db_path = crate::cache_lib::state_db_path(&state.paths);
+            let emit = crate::cache_lib::state_db::StateDb::open(&db_path)
+                .and_then(|db| {
+                    db.should_emit_cargo_debug_default_warning(std::path::Path::new(&repo_root))
+                })
+                // Fail open, matching the pre-#1814 caller: a state-DB problem
+                // must not silently suppress a warning the user should see.
+                .unwrap_or(true);
+            let _ = write_frame_async(&mut stream, &Response::CargoDebugWarning { emit }).await;
+        }
         Request::ListBuilds { limit, since_ms } => {
             let response = match db::list_builds(&state.db_path, limit, since_ms) {
                 Ok(rows) => Response::Builds(rows),

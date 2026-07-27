@@ -426,6 +426,13 @@ impl From<&Request> for proto::WireRequest {
                     session_id: *session_id,
                 })
             }
+            Request::ShouldWarnCargoDebugDefault { repo_root } => {
+                proto::WireRequestKind::ShouldWarnCargoDebugDefault(
+                    proto::WireShouldWarnCargoDebugDefault {
+                        repo_root: repo_root.clone(),
+                    },
+                )
+            }
             Request::BuildSessionStart {
                 session_id,
                 repo_root,
@@ -567,6 +574,11 @@ impl TryFrom<proto::WireRequest> for Request {
             proto::WireRequestKind::BuildLogInputs(m) => Request::BuildLogInputs {
                 session_id: m.session_id,
             },
+            proto::WireRequestKind::ShouldWarnCargoDebugDefault(m) => {
+                Request::ShouldWarnCargoDebugDefault {
+                    repo_root: m.repo_root,
+                }
+            }
             proto::WireRequestKind::BuildSessionStart(m) => Request::BuildSessionStart {
                 session_id: m.session_id,
                 repo_root: m.repo_root,
@@ -708,6 +720,11 @@ impl From<&Response> for proto::WireResponse {
                     record: record.as_deref().map(build_record_to_wire).map(Box::new),
                 })
             }
+            Response::CargoDebugWarning { emit } => {
+                proto::WireResponseKind::CargoDebugWarning(proto::WireCargoDebugWarning {
+                    emit: *emit,
+                })
+            }
         };
         Self { kind: Some(kind) }
     }
@@ -779,6 +796,9 @@ impl TryFrom<proto::WireResponse> for Response {
                     .collect::<Result<Vec<_>, _>>()?,
                 record: m.record.map(|r| Box::new(build_record_from_wire(*r))),
             },
+            proto::WireResponseKind::CargoDebugWarning(m) => {
+                Response::CargoDebugWarning { emit: m.emit }
+            }
         })
     }
 }

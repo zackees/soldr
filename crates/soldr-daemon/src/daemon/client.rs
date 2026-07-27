@@ -341,6 +341,28 @@ pub fn build_log_inputs(
     }
 }
 
+/// Ask the daemon whether to emit the cargo-debug-default warning for
+/// `repo_root` (soldr#1814 slice 2c).
+///
+/// The daemon owns the throttle state, so asking it also records the repo.
+/// Callers fall back to the local read-modify-write only when the daemon is
+/// unreachable.
+pub fn should_warn_cargo_debug_default(
+    sock_path: &Path,
+    repo_root: &Path,
+) -> Result<bool, ClientError> {
+    let req = Request::ShouldWarnCargoDebugDefault {
+        repo_root: repo_root.display().to_string(),
+    };
+    match submit_request(sock_path, &req)? {
+        Response::CargoDebugWarning { emit } => Ok(emit),
+        Response::Error(msg) => Err(ClientError::Protocol(msg)),
+        other => Err(ClientError::Protocol(format!(
+            "unexpected response: {other:?}"
+        ))),
+    }
+}
+
 pub fn list_slow_builds(
     sock_path: &Path,
     threshold_ms: u64,

@@ -13,7 +13,7 @@ use prost::{Message, Oneof};
 pub struct WireRequest {
     #[prost(
         oneof = "WireRequestKind",
-        tags = "1,2,3,4,5,7,8,9,10,11,12,13,14,15,16"
+        tags = "1,2,3,4,5,7,8,9,10,11,12,13,14,15,16,17"
     )]
     pub kind: Option<WireRequestKind>,
 }
@@ -55,12 +55,28 @@ pub enum WireRequestKind {
     /// already owns, instead of the CLI opening state.redb itself.
     #[prost(message, tag = "16")]
     BuildLogInputs(WireBuildLogInputsRequest),
+    /// v19 / soldr#1814 slice 2c — cargo-debug-default warning decision, so
+    /// the front door stops performing that read-modify-write itself.
+    #[prost(message, tag = "17")]
+    ShouldWarnCargoDebugDefault(WireShouldWarnCargoDebugDefault),
 }
 
 #[derive(Clone, PartialEq, Message)]
 pub struct WireBuildLogInputsRequest {
     #[prost(uint64, tag = "1")]
     pub session_id: u64,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct WireShouldWarnCargoDebugDefault {
+    #[prost(string, tag = "1")]
+    pub repo_root: String,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct WireCargoDebugWarning {
+    #[prost(bool, tag = "1")]
+    pub emit: bool,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -204,7 +220,7 @@ pub struct WireCompileLifecycle {
 pub struct WireResponse {
     #[prost(
         oneof = "WireResponseKind",
-        tags = "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
+        tags = "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16"
     )]
     pub kind: Option<WireResponseKind>,
 }
@@ -252,6 +268,9 @@ pub enum WireResponseKind {
     /// the CLI stops opening the daemon tables in state.redb directly.
     #[prost(message, tag = "15")]
     BuildLogInputs(WireBuildLogInputs),
+    /// v19 / soldr#1814 slice 2c — reply to ShouldWarnCargoDebugDefault.
+    #[prost(message, tag = "16")]
+    CargoDebugWarning(WireCargoDebugWarning),
 }
 
 /// soldr#1814 slice 2a. `record` is absent when the daemon has no row for the

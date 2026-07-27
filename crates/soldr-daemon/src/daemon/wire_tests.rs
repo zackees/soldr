@@ -114,6 +114,28 @@ crate::timed_test!(build_log_inputs_verb_round_trips, {
     }
 });
 
+crate::timed_test!(cargo_debug_warning_verb_round_trips, {
+    // soldr#1814 slice 2c. Both boolean outcomes must survive: `false` is the
+    // throttled answer, and a decode that collapsed it to the default would
+    // re-emit a warning the daemon already suppressed.
+    match decode_request(&encode_request(&Request::ShouldWarnCargoDebugDefault {
+        repo_root: "/w/repo".into(),
+    }))
+    .expect("decode")
+    {
+        Request::ShouldWarnCargoDebugDefault { repo_root } => assert_eq!(repo_root, "/w/repo"),
+        other => panic!("expected ShouldWarnCargoDebugDefault, got {other:?}"),
+    }
+    for emit in [true, false] {
+        match decode_response(&encode_response(&Response::CargoDebugWarning { emit }))
+            .expect("decode")
+        {
+            Response::CargoDebugWarning { emit: decoded } => assert_eq!(decoded, emit),
+            other => panic!("expected CargoDebugWarning, got {other:?}"),
+        }
+    }
+});
+
 crate::timed_test!(compile_stats_verb_round_trips, {
     use crate::daemon::protocol::{CompileStatsInfo, StagedProfileInfo};
     assert!(matches!(

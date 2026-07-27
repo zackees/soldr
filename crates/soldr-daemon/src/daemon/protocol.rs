@@ -86,10 +86,12 @@ use serde::{Deserialize, Serialize};
 ///   generation that accepted the request. Callers can now wait for that
 ///   exact responder without trusting a PID sampled before the request or
 ///   signalling a successor after PID reuse.
-/// * v19: added `BuildLogInputs` so the daemon serves the event rows and
-///   build record that `build_log` previously read by opening `state.redb`
-///   itself (soldr#1814 slice 2a — the daemon becomes the single owner of
-///   its own tables).
+/// * v19 (soldr#1814 criterion 2 — the daemon becomes the single owner of
+///   its own tables): adds `BuildLogInputs`, so the daemon serves the event
+///   rows and build record `build_log` previously read by opening
+///   `state.redb` itself (slice 2a); and `ShouldWarnCargoDebugDefault`, so
+///   the cargo-debug-default read-modify-write stops making every front-door
+///   invocation another opener (slice 2c).
 pub const PROTOCOL_VERSION: u32 = 19;
 
 /// Wire-chunk granularity for the streaming Compile reply (#983 Phase
@@ -220,6 +222,15 @@ pub enum Request {
     /// each) is also what exceeded a 10 s test deadline under parallel test
     /// processes. Replies with [`Response::BuildLogInputs`].
     BuildLogInputs { session_id: u64 },
+    /// Request-response: should the front door emit the cargo-debug-default
+    /// warning for `repo_root`?
+    ///
+    /// soldr#1814 slice 2c. This is a read-modify-write against
+    /// `state_db`'s tables — it records the repo and prunes expired rows — so
+    /// having the front door perform it directly made every `soldr cargo`
+    /// invocation another opener of `state.redb`. Replies with
+    /// [`Response::CargoDebugWarning`].
+    ShouldWarnCargoDebugDefault { repo_root: String },
 }
 
 /// Body of [`Request::Compile`]. Carries the full `rustc` argv plus the
@@ -361,6 +372,14 @@ pub enum Response {
         /// [`Response::Builds`] is fine for the same reason a `Box` is —
         /// the payload lives behind a pointer.
         record: Option<Box<BuildRecord>>,
+    },
+    /// Reply to [`Request::ShouldWarnCargoDebugDefault`] (soldr#1814 slice 2c).
+    ///
+    /// `emit` is true when the caller should print the warning. The daemon
+    /// has already recorded the repo, so a second identical request inside
+    /// the throttle window answers false.
+    CargoDebugWarning {
+        emit: bool,
     },
 }
 
