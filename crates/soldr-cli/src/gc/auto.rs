@@ -907,10 +907,14 @@ mod scratch_sweep_tests {
     });
 
     crate::timed_test!(scratch_root_tracks_the_cache_volume, {
-        // The reason scratch is pinned here at all: temp -> cache renames are
-        // only atomic while both live on one filesystem.
+        // The reason scratch is pinned at all: temp -> cache renames are only
+        // atomic while both live on one filesystem. It sits *beside* the cache
+        // rather than inside it, which is precisely why this sweep has to
+        // exist -- nothing that walks `<cache>/**` will ever reclaim it.
         let temp = tempfile::tempdir().expect("tempdir");
         let paths = SoldrPaths::with_root(temp.path().to_path_buf());
-        assert!(crate::core::temp_root_for(&paths).starts_with(&paths.cache));
+        let scratch = crate::core::temp_root_for(&paths);
+        assert!(scratch.starts_with(&paths.root), "same volume as the cache");
+        assert!(!scratch.starts_with(&paths.cache), "but outside the cache");
     });
 }

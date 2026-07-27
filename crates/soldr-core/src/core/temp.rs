@@ -15,8 +15,18 @@
 //!   cache on disk and temp on `tmpfs`, `rename(2)` fails with `EXDEV` and the
 //!   caller silently degrades to a copy.
 //!
-//! So the scratch root defaults to `<cache>/tmp`, which is on the same volume
-//! as the cache by construction. [`SOLDR_TMPDIR_ENV_VAR`] overrides it.
+//! So the scratch root defaults to `<root>/tmp` — a *sibling* of `<root>/cache`,
+//! not a child of it. [`SOLDR_TMPDIR_ENV_VAR`] overrides it.
+//!
+//! Sibling rather than child is deliberate, and was learned the hard way. Being
+//! on the same volume as the cache is what keeps temp->cache renames atomic, and
+//! `<cache>/tmp` satisfies that too. But scratch *inside* the cache is scratch
+//! the cache's own maintenance can see: auto-GC, purge tiers and cache walks all
+//! traverse `<cache>/**`. Tests are the sharpest case — they build synthetic
+//! `SOLDR_CACHE_DIR` roots in scratch, so `<cache>/tmp` nested every test cache
+//! root inside the real one and let ambient maintenance reach in. A sibling
+//! keeps the same filesystem, and therefore the same atomicity, while staying
+//! outside everything that walks the cache.
 //!
 //! This module only *locates* the root. Callers create directories inside it
 //! with `tempfile::Builder::new().tempdir_in(...)` so cleanup stays RAII —
@@ -34,7 +44,7 @@ use super::paths::SoldrPaths;
 /// the speed.
 pub const SOLDR_TMPDIR_ENV_VAR: &str = "SOLDR_TMPDIR";
 
-/// Scratch subdirectory of the cache root.
+/// Scratch subdirectory of the soldr root, alongside `cache/` and `bin/`.
 const TEMP_DIR_NAME: &str = "tmp";
 
 /// Read [`SOLDR_TMPDIR_ENV_VAR`], treating an empty or whitespace-only value
@@ -54,7 +64,7 @@ fn temp_root_override() -> Option<PathBuf> {
 /// `SoldrPaths`: it keeps scratch inside *that* root, which is what makes
 /// tests with a synthetic `SOLDR_CACHE_DIR` self-contained.
 pub fn temp_root_for(paths: &SoldrPaths) -> PathBuf {
-    temp_root_override().unwrap_or_else(|| paths.cache.join(TEMP_DIR_NAME))
+    temp_root_override().unwrap_or_else(|| paths.root.join(TEMP_DIR_NAME))
 }
 
 /// The scratch root for the ambient environment.
@@ -78,7 +88,7 @@ pub fn temp_root() -> PathBuf {
                 return explicit;
             }
             match SoldrPaths::new() {
-                Ok(paths) => paths.cache.join(TEMP_DIR_NAME),
+                Ok(paths) => paths.root.join(TEMP_DIR_NAME),
                 Err(_) => std::env::temp_dir(),
             }
         })
@@ -113,15 +123,34 @@ pub fn ensure_temp_root_for(paths: &SoldrPaths) -> PathBuf {
 mod tests {
     use super::*;
 
-    // Guards the property the whole module exists for: scratch must share a
-    // filesystem with the cache so `rename` into the cache stays atomic.
-    crate::timed_test!(scratch_defaults_inside_the_cache_root, {
+    // Two properties that pull against each other, so one test each.
+    //
+    // Same volume as the cache, or temp->cache renames stop being atomic.
+    crate::timed_test!(scratch_shares_the_soldr_root_with_the_cache, {
         let paths = SoldrPaths::with_root(PathBuf::from("/synthetic/root"));
         let root = temp_root_for(&paths);
         assert!(
-            root.starts_with(&paths.cache),
-            "scratch must live under the cache root so temp->cache renames are \
-             same-filesystem; got {} for cache {}",
+            root.starts_with(&paths.root),
+            "scratch must live under the soldr root so temp->cache renames are \
+             same-filesystem; got {} for root {}",
+            root.display(),
+            paths.root.display()
+        );
+    });
+
+    // ...but NOT inside the cache, or the cache's own maintenance walks into it.
+    // Regression guard: `<cache>/tmp` nested every test's synthetic
+    // SOLDR_CACHE_DIR inside the real cache root, exposing it to ambient
+    // auto-GC and purge tiers.
+    crate::timed_test!(scratch_is_a_sibling_of_the_cache_not_a_child, {
+        let paths = SoldrPaths::with_root(PathBuf::from("/synthetic/root"));
+        let root = temp_root_for(&paths);
+        assert!(
+            !root.starts_with(&paths.cache),
+            "scratch must NOT live under the cache -- auto-GC, purge tiers and \
+             cache walks all traverse <cache>/**, and would reach into scratch \
+             and into any synthetic cache root a test built there; got {} for \
+             cache {}",
             root.display(),
             paths.cache.display()
         );

@@ -198,7 +198,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("time went backwards")
             .as_nanos();
-        let dir = crate::core::ensure_temp_root().join(format!("soldr-link-test-{label}-{nanos}"));
+        let dir = std::env::temp_dir().join(format!("soldr-link-test-{label}-{nanos}"));
         std::fs::create_dir_all(&dir).expect("create tempdir");
         dir
     }
