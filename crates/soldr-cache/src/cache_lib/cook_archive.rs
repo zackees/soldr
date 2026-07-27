@@ -820,17 +820,20 @@ mod tests {
         assert_eq!(restored_foo, b"foo\n");
     });
 
-    /// #1880: cargo's `build-script-build` binaries must come back
-    /// executable. The extractor hand-copies bytes into a fresh
-    /// `File::create` (to honor skip-existing), which lands at the
-    /// umask default and silently drops `+x` unless the tar header's
-    /// mode is applied explicitly.
-    ///
-    /// The consequence in the field is badly disguised: cargo reports
-    /// `could not execute process ... (never executed)` /
-    /// `Permission denied (os error 13)` naming whichever build script
-    /// it happened to reach first, so the failure looks like a flaky
-    /// problem with an unrelated third-party crate.
+    // #1880: cargo's `build-script-build` binaries must come back
+    // executable. The extractor hand-copies bytes into a fresh
+    // `File::create` (to honor skip-existing), which lands at the
+    // umask default and silently drops `+x` unless the tar header's
+    // mode is applied explicitly.
+    //
+    // The consequence in the field is badly disguised: cargo reports
+    // `could not execute process ... (never executed)` /
+    // `Permission denied (os error 13)` naming whichever build script
+    // it happened to reach first, so the failure looks like a flaky
+    // problem with an unrelated third-party crate.
+    //
+    // Plain `//`, not `///`: a doc comment cannot attach to a macro
+    // invocation, and `-D warnings` makes `unused_doc_comments` fatal.
     #[cfg(unix)]
     crate::timed_test!(extract_preserves_executable_bit, {
         use std::os::unix::fs::PermissionsExt;
