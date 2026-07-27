@@ -1556,8 +1556,10 @@ where
     let record = crate::daemon::ipc::encode_reject_record(&format!(
         "protocol version mismatch: peer={peer_version}, daemon={PROTOCOL_VERSION}"
     ));
-    let _ = timeout(HANDSHAKE_READ_TIMEOUT, stream.write_all(&record)).await;
-    let _ = timeout(HANDSHAKE_READ_TIMEOUT, stream.flush()).await;
+    // Bounded by the drain budget, not the handshake budget: we are already
+    // hanging up, so a peer that will not read must not hold a worker.
+    let _ = timeout(DRAIN_READ_TIMEOUT, stream.write_all(&record)).await;
+    let _ = timeout(DRAIN_READ_TIMEOUT, stream.flush()).await;
     drain_then_close(stream).await;
 }
 
@@ -1571,6 +1573,11 @@ where
 /// fallback. Draining first turns that into a clean EOF, which every existing
 /// client already classifies as "daemon unavailable" and degrades on. That is
 /// what makes this fix reach clients that were shipped long before it.
+/// Unix only, deliberately. `ECONNRESET`-on-unread-data is an AF_UNIX /
+/// SOCK_STREAM behavior; Windows named pipes have no RST concept, so there is
+/// nothing to prevent there — and paying a shutdown/drain round trip on every
+/// rejected connection measurably slows the Windows hot path.
+#[cfg(unix)]
 async fn drain_then_close<S>(stream: &mut S)
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -1579,7 +1586,13 @@ where
     use tokio::time::timeout;
     // Half-close first so a peer still streaming a large body sees EOF and
     // stops writing, instead of us draining against a live producer.
-    let _ = timeout(HANDSHAKE_READ_TIMEOUT, stream.shutdown()).await;
+    //
+    // Every step here is bounded by DRAIN_READ_TIMEOUT, not the handshake
+    // budget: this is a courtesy on a connection we have already decided to
+    // drop, so it must never become a latency source. An earlier revision
+    // used the 5s handshake timeout here and pushed
+    // `dependency_failure_cancels_sibling_lint_children` past its 5s budget.
+    let _ = timeout(DRAIN_READ_TIMEOUT, stream.shutdown()).await;
     let cap = u64::from(crate::daemon::protocol::MAX_BODY_BYTES) + LEGACY_FRAME_HEADER_BYTES as u64;
     let mut sink = [0_u8; 8192];
     let mut drained = 0_u64;
@@ -1589,6 +1602,15 @@ where
             Ok(Ok(n)) => drained += n as u64,
         }
     }
+}
+
+/// No-op on Windows: named pipes cannot raise `ECONNRESET`, so dropping the
+/// handle already yields the clean end-of-stream the Unix path has to work for.
+#[cfg(windows)]
+async fn drain_then_close<S>(_stream: &mut S)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
 }
 
 async fn handle_connection<S>(mut stream: S, state: Arc<State>) -> std::io::Result<()>
