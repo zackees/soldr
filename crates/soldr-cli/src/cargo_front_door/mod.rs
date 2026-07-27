@@ -41,7 +41,7 @@ mod darwin_embed;
 mod disk;
 mod inputs;
 mod log_summary;
-mod no_cache_detach;
+pub(crate) mod no_cache_detach;
 mod profile_debug;
 mod subcommand;
 mod target;

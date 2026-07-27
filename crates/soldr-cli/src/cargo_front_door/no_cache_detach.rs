@@ -390,6 +390,70 @@ fn prepare_file(parent: &OpenDirectory, name: &OsStr) -> Result<PreparedFile, So
     })
 }
 
+/// Detach an explicit set of declared compiler outputs (issue #1817).
+///
+/// The whole-tree [`prepare_target_for_unmediated_build`] preflight only runs
+/// when the finalized plan has no managed zccache session. A build that starts
+/// *with* a session and loses the daemon mid-run skips it, then launches a
+/// direct compiler against outputs that are still protected read-only
+/// hardlinks — which rustc reports as `<file> is not writeable`.
+///
+/// This is the output-scoped counterpart. It deliberately does **not** walk the
+/// target tree or take the Cargo build lock: the late transition happens inside
+/// a running Cargo build that already owns that lock, and scanning the whole
+/// target once per compiler process would be quadratic.
+///
+/// Paths are grouped by parent so each directory capability is opened once for
+/// a whole output family rather than once per file. Missing paths are fine —
+/// a first compile has nothing to detach.
+pub(crate) fn detach_declared_outputs(paths: &[PathBuf]) -> Result<DetachSummary, SoldrError> {
+    let mut summary = DetachSummary::default();
+    let mut by_parent: Vec<(PathBuf, Vec<OsString>)> = Vec::new();
+    for path in paths {
+        let Some(parent) = path.parent() else {
+            continue;
+        };
+        let Some(name) = path.file_name() else {
+            continue;
+        };
+        match by_parent.iter_mut().find(|(dir, _)| dir == parent) {
+            Some((_, names)) => names.push(name.to_os_string()),
+            None => by_parent.push((parent.to_path_buf(), vec![name.to_os_string()])),
+        }
+    }
+    for (parent, names) in by_parent {
+        // A not-yet-created out-dir means nothing has been materialized into
+        // it, so there is nothing protected to detach.
+        let Some(directory) = open_target_root(&parent)? else {
+            continue;
+        };
+        for name in names {
+            match prepare_file(&directory, &name)? {
+                PreparedFile::Unchanged => {}
+                PreparedFile::DetachedShared => summary.detached_shared += 1,
+                PreparedFile::MadeWritable => summary.made_writable += 1,
+            }
+        }
+    }
+    Ok(summary)
+}
+
+/// Outcome of [`detach_declared_outputs`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DetachSummary {
+    /// Outputs that shared an inode with a cache blob and were copy-detached.
+    pub(crate) detached_shared: usize,
+    /// Outputs that were already private but read-only.
+    pub(crate) made_writable: usize,
+}
+
+impl DetachSummary {
+    /// True when at least one output actually needed an ownership transition.
+    pub(crate) fn changed_anything(self) -> bool {
+        self.detached_shared > 0 || self.made_writable > 0
+    }
+}
+
 /// Make one target file safe to replace without mutating a shared cache blob.
 ///
 /// The fallback-output migration uses this before publishing filtered

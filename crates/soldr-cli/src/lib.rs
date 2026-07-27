@@ -52,6 +52,9 @@ pub mod dylint_toolchain;
 pub mod env_cmd;
 /// soldr#1059 — `soldr exec <cmd>` PATH-prepend wrapper.
 pub mod exec_cmd;
+/// soldr#1817 — COW-detach zccache-delivered outputs before a direct
+/// compiler runs after the daemon becomes unavailable mid-build.
+pub(crate) mod fallback_detach;
 /// soldr#1543 — overlap `cargo fetch` with blessed SDK preparation on
 /// the `soldr build --target` surface.
 pub mod fetch_overlap;
