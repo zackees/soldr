@@ -18,8 +18,57 @@
 ///
 /// Rust runs a crate's unit tests in one process, so module-local mutexes do
 /// not prevent two different modules from racing on values such as `SDKROOT`.
+///
+/// soldr#1663: this is now the *only* env barrier in the crate. Modules that
+/// used to declare their own `static ENV_LOCK: Mutex<()>` alias this instead
+/// (`use crate::TEST_PROCESS_ENV_LOCK as ENV_LOCK;`), because two mutexes
+/// guarding the same variable provide no mutual exclusion at all — which is
+/// exactly what happened with `SOLDR_USE_LEGACY_XWIN`, mutated from
+/// `blessed_build` under this lock and from `main_tests` under a private one.
+/// `env_lock_lint.rs` fails the build if a private barrier reappears.
 #[cfg(test)]
 pub(crate) static TEST_PROCESS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// RAII guard that sets or removes an environment variable for the duration
+/// of a test and restores the previous value on drop.
+///
+/// soldr#1663 wants restoration to be panic-safe: a test that snapshots a
+/// variable, mutates it, and restores inline leaves the process environment
+/// rewritten for every later test in the binary if it panics in between.
+/// `Drop` runs during unwinding, so this cannot leak that way.
+///
+/// Take [`TEST_PROCESS_ENV_LOCK`] for the guard's whole lifetime — this type
+/// makes restoration safe, not the mutation atomic.
+#[cfg(test)]
+pub(crate) struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<std::ffi::OsString>,
+}
+
+#[cfg(test)]
+impl EnvVarGuard {
+    pub(crate) fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+        let previous = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, previous }
+    }
+
+    pub(crate) fn remove(key: &'static str) -> Self {
+        let previous = std::env::var_os(key);
+        std::env::remove_var(key);
+        Self { key, previous }
+    }
+}
+
+#[cfg(test)]
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
 
 pub mod archive_cmd;
 pub mod binaries;
