@@ -114,6 +114,58 @@ crate::timed_test!(build_log_inputs_verb_round_trips, {
     }
 });
 
+crate::timed_test!(attach_build_log_history_round_trips, {
+    // soldr#1814 slice 2d. Every field must survive: the daemon reconstructs
+    // the build record from this payload alone, so anything dropped on the
+    // wire silently degrades `soldr logs` rather than erroring.
+    use crate::daemon::protocol::{
+        BuildCacheSummary, BuildLogHistoryUpdate, BuildLogPaths, BuildMissReason,
+    };
+
+    let update = BuildLogHistoryUpdate {
+        session_id: 7,
+        repo_root: "/w/repo".into(),
+        started_at_ms: 1_700_000_000_000,
+        ended_at_ms: 1_700_000_060_000,
+        exit_code: 0,
+        daemon_finalized: false,
+        cache_summary: Some(BuildCacheSummary {
+            hits: 23,
+            misses: 5,
+            non_cacheable: 1,
+            errors: 0,
+            compilations: 29,
+            time_saved_ms: 12_345,
+        }),
+        miss_reasons: vec![BuildMissReason {
+            reason: "key_mismatch".into(),
+            count: 5,
+        }],
+        log_paths: Some(BuildLogPaths {
+            zccache_session_id: Some("abc".into()),
+            cache_dir: Some("/w/cache".into()),
+            session_log_path: None,
+            journal_path: None,
+            session_stats_path: Some("/w/stats.json".into()),
+            compile_journal_path: Some("/w/cj.jsonl".into()),
+            archived_session_log_path: None,
+            archived_journal_path: None,
+            archived_session_stats_path: Some("/w/hist/stats.json".into()),
+            archived_compile_journal_path: Some("/w/hist/cj.jsonl".into()),
+            private_daemon_name: None,
+        }),
+    };
+
+    match decode_request(&encode_request(&Request::AttachBuildLogHistory(Box::new(
+        update.clone(),
+    ))))
+    .expect("decode")
+    {
+        Request::AttachBuildLogHistory(decoded) => assert_eq!(*decoded, update),
+        other => panic!("expected AttachBuildLogHistory, got {other:?}"),
+    }
+});
+
 crate::timed_test!(cargo_debug_warning_verb_round_trips, {
     // soldr#1814 slice 2c. Both boolean outcomes must survive: `false` is the
     // throttled answer, and a decode that collapsed it to the default would
