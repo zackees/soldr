@@ -167,7 +167,7 @@ crate::timed_test!(target_registry_memo_is_exported_for_missing_target_dir, {
 });
 
 crate::timed_test!(zthreads_fallback_removes_plain_rustflags_token, {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _guards = remove_env_vars(&[
         "RUSTFLAGS",
         "CARGO_ENCODED_RUSTFLAGS",
@@ -186,7 +186,7 @@ crate::timed_test!(zthreads_fallback_removes_plain_rustflags_token, {
 });
 
 crate::timed_test!(zthreads_fallback_removes_encoded_and_target_tokens, {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _guards = remove_env_vars(&[
         "RUSTFLAGS",
         "CARGO_ENCODED_RUSTFLAGS",
@@ -217,7 +217,7 @@ crate::timed_test!(zthreads_fallback_removes_encoded_and_target_tokens, {
 });
 
 crate::timed_test!(zthreads_fallback_rejects_other_z_flags_and_bootstrap, {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _guards = remove_env_vars(&[
         "RUSTFLAGS",
         "CARGO_ENCODED_RUSTFLAGS",
@@ -317,7 +317,7 @@ crate::timed_test!(target_registry_memo_canonicalizes_existing_ancestor, {
 });
 
 crate::timed_test!(cargo_wait_timeout_is_disabled_when_unset_or_zero, {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
     let _guard = EnvVarGuard::remove(CARGO_WAIT_TIMEOUT_ENV_VAR);
     assert_eq!(cargo_wait_timeout().expect("unset timeout"), None);
@@ -328,7 +328,7 @@ crate::timed_test!(cargo_wait_timeout_is_disabled_when_unset_or_zero, {
 });
 
 crate::timed_test!(cargo_wait_timeout_accepts_positive_seconds, {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _guard = EnvVarGuard::set(CARGO_WAIT_TIMEOUT_ENV_VAR, "7");
 
     assert_eq!(
@@ -338,7 +338,7 @@ crate::timed_test!(cargo_wait_timeout_accepts_positive_seconds, {
 });
 
 crate::timed_test!(cargo_wait_timeout_rejects_invalid_values, {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
     for value in ["", "-1", "not-a-number", "18446744073709551616"] {
         let _guard = EnvVarGuard::set(CARGO_WAIT_TIMEOUT_ENV_VAR, value);
@@ -519,7 +519,7 @@ crate::timed_test!(cargo_abort_log_records_timeout_cleanup_and_recovery, {
 crate::timed_test!(
     cargo_timeout_retry_policy_is_compile_like_and_cache_enabled,
     {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _guard = EnvVarGuard::remove(CARGO_TIMEOUT_RETRY_DISABLE_ENV_VAR);
 
         for verb in [
@@ -544,7 +544,7 @@ crate::timed_test!(
 );
 
 crate::timed_test!(cargo_timeout_retry_policy_honors_disable_env, {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _guard = EnvVarGuard::set(CARGO_TIMEOUT_RETRY_DISABLE_ENV_VAR, "1");
 
     assert!(
@@ -700,7 +700,7 @@ fn child_cargo_scrubs_soldr_cache_lifecycle_controls() {
 
 #[test]
 fn fresh_workspace_env_guard_removes_and_restores_soldr_workspace_state() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _zccache = EnvVarGuard::set(crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR, "/old/zccache");
     let _target_bundle = EnvVarGuard::set(crate::TARGET_CACHE_BUNDLE_DIR_ENV_VAR, "/old/bundle");
     let _setup = EnvVarGuard::set("SETUP_SOLDR_WORKSPACE", "/old/workspace");
@@ -734,7 +734,7 @@ fn fresh_workspace_env_guard_removes_and_restores_soldr_workspace_state() {
 
 #[test]
 fn trusted_workspace_env_guard_leaves_inherited_soldr_state_available() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _zccache = EnvVarGuard::set(crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR, "/old/zccache");
 
     let _guard = FreshSoldrWorkspaceEnvGuard::apply_unless_trusted(true);
@@ -747,7 +747,7 @@ fn trusted_workspace_env_guard_leaves_inherited_soldr_state_available() {
 
 #[test]
 fn child_cargo_scrubs_inherited_soldr_workspace_state() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _setup = EnvVarGuard::set("SETUP_SOLDR_WORKSPACE", "/old/workspace");
     let mut command = std::process::Command::new("cargo");
     command.env(crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR, "/old/zccache");
@@ -1172,7 +1172,7 @@ fn cargo_args_do_not_apply_rustfmt_shim_for_non_fmt_watch() {
 
 #[test]
 fn rustfmt_shim_env_is_applied_to_watch_fmt_when_cache_enabled() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _guards = remove_env_vars(&["RUSTFMT"]);
 
     for args in [
@@ -1210,7 +1210,7 @@ fn rustfmt_shim_env_is_applied_to_watch_fmt_when_cache_enabled() {
 
 #[test]
 fn rustfmt_shim_env_is_not_applied_when_cache_is_disabled() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _guards = remove_env_vars(&["RUSTFMT"]);
     let args = argv(&["watch", "-x", "fmt"]);
     let mut command = std::process::Command::new("cargo");
@@ -1373,7 +1373,7 @@ fn suggest_cargo_subcommand_typo_returns_none_for_unrelated_input() {
 fn force_managed_cargo_subcommands_defaults_to_false_when_unset() {
     // Serialize on the env mutex used elsewhere in this file so we don't
     // race against other env-touching tests in the same binary.
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let prev = std::env::var_os(FORCE_MANAGED_CARGO_SUBCOMMANDS_ENV_VAR);
     // SAFETY: the test acquires ENV_LOCK to serialize against any other
     // test that mutates process env.
@@ -1390,7 +1390,7 @@ fn force_managed_cargo_subcommands_defaults_to_false_when_unset() {
 
 #[test]
 fn force_managed_cargo_subcommands_parses_falsey_strings_as_false() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let prev = std::env::var_os(FORCE_MANAGED_CARGO_SUBCOMMANDS_ENV_VAR);
     for falsey in ["", " ", "0", "false", "no", "off", "  off  "] {
         unsafe {
@@ -1413,7 +1413,7 @@ fn force_managed_cargo_subcommands_parses_falsey_strings_as_false() {
 
 #[test]
 fn force_managed_cargo_subcommands_parses_truthy_strings_as_true() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let prev = std::env::var_os(FORCE_MANAGED_CARGO_SUBCOMMANDS_ENV_VAR);
     for truthy in ["1", "true", "yes", "on", "anything-else"] {
         unsafe {
@@ -1473,7 +1473,7 @@ fn cargo_json_closure_rejects_unknown_messages_for_walker_fallback() {
 
 #[test]
 fn find_on_path_locates_executable_in_a_path_dir() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let exe_name = if cfg!(windows) {
         "soldr-test-find-on-path-fixture.exe"
@@ -1525,7 +1525,7 @@ fn find_on_path_locates_executable_in_a_path_dir() {
 
 #[test]
 fn find_on_path_returns_none_when_missing() {
-    let _guard = ENV_LOCK.lock().unwrap();
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let prev_path = std::env::var_os("PATH").unwrap_or_default();
     let new_path: std::ffi::OsString = dir.path().into();
@@ -1623,7 +1623,7 @@ crate::timed_test!(
 crate::timed_test!(
     nextest_archive_linux_bootstrap_reconstructs_zig_linker_env,
     {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let zig = tmp
             .path()
@@ -1693,7 +1693,7 @@ crate::timed_test!(
 );
 
 crate::timed_test!(build_env_cache_inputs_include_cross_toolchain_identity, {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _linker = EnvVarGuard::set(
         "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER",
         "/tmp/arm-linker",
@@ -1743,7 +1743,7 @@ crate::timed_test!(cargo_global_args_insert_before_nextest_subcommand, {
 });
 
 crate::timed_test!(nextest_archive_darwin_bootstrap_reuses_blessed_env, {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().unwrap();
     let sdk = tmp.path().join("MacOSX.fake.sdk");
     let llvm_bin = tmp.path().join("llvm-bin");
@@ -1814,7 +1814,7 @@ crate::timed_test!(nextest_archive_darwin_bootstrap_reuses_blessed_env, {
 });
 
 crate::timed_test!(explicit_cross_linker_and_rustflags_override_soldr_fast, {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _soldr_linker = EnvVarGuard::set("SOLDR_LINKER", "fast");
     let root = tempfile::tempdir().unwrap();
     let paths = SoldrPaths::with_root(root.path().join("soldr"));
@@ -1856,7 +1856,7 @@ crate::timed_test!(explicit_cross_linker_and_rustflags_override_soldr_fast, {
 });
 
 crate::timed_test!(command_target_linker_overrides_parent_environment, {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _parent = EnvVarGuard::set(
         "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER",
         "/tmp/parent-linker",
@@ -1886,7 +1886,7 @@ crate::timed_test!(command_target_linker_overrides_parent_environment, {
 
 #[test]
 fn known_cargo_build_target_uses_explicit_target_arg() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _guard = EnvVarGuard::remove("CARGO_BUILD_TARGET");
 
     assert_eq!(
@@ -1907,7 +1907,7 @@ fn known_cargo_build_target_uses_explicit_target_arg() {
 
 #[test]
 fn known_cargo_build_target_prefers_defaulted_target_then_env() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _guard = EnvVarGuard::set("CARGO_BUILD_TARGET", "x86_64-unknown-linux-musl");
 
     assert_eq!(
@@ -1992,7 +1992,7 @@ fn zigbuild_does_not_inject_cc_overrides_even_for_msvc_target() {
 
 #[test]
 fn zigbuild_env_overrides_include_cc_and_linker_for_supported_target() {
-    let _lock = ENV_LOCK.lock().unwrap();
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let expected_keys = [
         "CC_aarch64_unknown_linux_musl",
         "CXX_aarch64_unknown_linux_musl",

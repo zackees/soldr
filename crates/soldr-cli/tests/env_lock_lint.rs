@@ -217,3 +217,74 @@ timed_test!(no_env_var_is_guarded_by_two_different_barriers, {
         violations.join("\n\n"),
     );
 });
+
+// Plain `//`, not `///`: a doc comment cannot attach to a macro
+// invocation and `-D warnings` makes `unused_doc_comments` fatal.
+// Separate from the identity lint above, deliberately.
+//
+// #1899 raised poison policy while reviewing #1896 and chose not to
+// fold it into that lint, on the grounds that it enforces barrier
+// *identity* and mixing in a second property would blur reasoning that
+// is currently very clear. That judgement stands — so this is its own
+// check with its own argument.
+//
+// The argument: a `Mutex` poisons when a thread panics while holding
+// it, and every later `lock()` returns `Err`. While a barrier is
+// module-private that is contained — only a panic in that module can
+// poison it, so one failure stays one failure. Once modules *share* a
+// barrier, a panic anywhere under it poisons the lock for everyone,
+// and each bare `.unwrap()` converts an unrelated failure into another
+// one. #1899 fixed seven such sites in `main_tests`; this catches the
+// next batch before it lands.
+//
+// The convention is `.lock().unwrap_or_else(|e| e.into_inner())`:
+// these barriers serialise access, they do not protect an invariant
+// inside the guarded data (it is `()`), so a poisoned lock carries no
+// information worth propagating.
+//
+// Scoped to files that actually alias the shared barrier. A private
+// barrier keeps its blast radius, so a bare unwrap there is a style
+// question rather than a correctness one, and flagging ~60 of them
+// would bury the signal.
+timed_test!(shared_barrier_acquisitions_recover_from_poisoning, {
+    let src = crate_src_root();
+    if !src.is_dir() {
+        eprintln!("env_lock_lint: skipping — {} absent", src.display());
+        return;
+    }
+
+    let mut files = Vec::new();
+    collect_rs(&src, &mut files);
+    files.sort();
+
+    let mut offenders = Vec::new();
+    for file in &files {
+        let Ok(text) = fs::read_to_string(file) else {
+            continue;
+        };
+        // Only files on the shared barrier; `lib.rs` declares it.
+        let rel = repo_relative(file);
+        if rel.ends_with("soldr-cli/src/lib.rs") || !text.contains("TEST_PROCESS_ENV_LOCK") {
+            continue;
+        }
+        for (idx, line) in text.lines().enumerate() {
+            if line.contains(".lock().unwrap()") {
+                offenders.push(format!("  {rel}:{}", idx + 1));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "soldr#1663 / #1899: these acquire the *shared* environment barrier \
+         with a bare `.unwrap()`:\n{}\n\n\
+         A panic anywhere under a shared barrier poisons it for every other \
+         module, so each of these turns one unrelated failure into an extra \
+         one — noisy red CI that trains people to re-run rather than read.\n\n\
+         Use the convention the other sites use:\n\
+         \x20   let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());\n\n\
+         The guarded data is `()`, so a poisoned lock carries no invariant \
+         worth propagating.",
+        offenders.join("\n"),
+    );
+});
