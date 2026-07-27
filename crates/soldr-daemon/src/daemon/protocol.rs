@@ -91,7 +91,9 @@ use serde::{Deserialize, Serialize};
 ///   rows and build record `build_log` previously read by opening
 ///   `state.redb` itself (slice 2a); and `ShouldWarnCargoDebugDefault`, so
 ///   the cargo-debug-default read-modify-write stops making every front-door
-///   invocation another opener (slice 2c).
+///   invocation another opener (slice 2c); and `AttachBuildLogHistory`, so the
+///   front-door tail stops doing its own get/mutate/upsert of the build
+///   record (slice 2d).
 pub const PROTOCOL_VERSION: u32 = 19;
 
 /// Wire-chunk granularity for the streaming Compile reply (#983 Phase
@@ -231,6 +233,43 @@ pub enum Request {
     /// invocation another opener of `state.redb`. Replies with
     /// [`Response::CargoDebugWarning`].
     ShouldWarnCargoDebugDefault { repo_root: String },
+    /// Request-response: attach this build's log-history results to the
+    /// daemon's record for `session_id`, creating the row if absent.
+    ///
+    /// soldr#1814 slice 2d — the last non-fallback CLI opener of the daemon
+    /// tables. `persist_build_log_history_inner` used to do
+    /// `get_build` → mutate → `upsert_build` (plus `aggregate_session`) itself,
+    /// three opens at the cargo front-door tail on every build.
+    ///
+    /// Deliberately expressed as *intent* rather than as separate get/upsert
+    /// verbs: splitting a read-modify-write across two IPC calls would let two
+    /// processes interleave and lose one another's fields, reintroducing the
+    /// race that single-ownership exists to remove. The daemon applies the
+    /// whole merge under its own lock, preserving the same
+    /// "first writer wins for ended_at_ms / exit_code" semantics the local
+    /// path had. Replies with [`Response::Ack`].
+    AttachBuildLogHistory(Box<BuildLogHistoryUpdate>),
+}
+
+/// Payload of [`Request::AttachBuildLogHistory`] (soldr#1814 slice 2d).
+///
+/// Boxed at the call site so this wide struct does not inflate every
+/// `Request`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BuildLogHistoryUpdate {
+    pub session_id: u64,
+    /// Used only when the daemon holds no row yet and must create one.
+    pub repo_root: String,
+    pub started_at_ms: i64,
+    pub ended_at_ms: i64,
+    pub exit_code: i32,
+    /// When false, the daemon recomputes the crate-count / slowest-crate
+    /// aggregate from its event table — mirroring the soldr#1536 rule that a
+    /// daemon-acknowledged `BuildSessionEnd` already finalized those.
+    pub daemon_finalized: bool,
+    pub cache_summary: Option<BuildCacheSummary>,
+    pub miss_reasons: Vec<BuildMissReason>,
+    pub log_paths: Option<BuildLogPaths>,
 }
 
 /// Body of [`Request::Compile`]. Carries the full `rustc` argv plus the

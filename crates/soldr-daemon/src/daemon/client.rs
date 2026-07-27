@@ -363,6 +363,24 @@ pub fn should_warn_cargo_debug_default(
     }
 }
 
+/// Ask the daemon to merge this build's log-history results into its record
+/// (soldr#1814 slice 2d).
+///
+/// The daemon performs the whole read-modify-write under its own ownership of
+/// the table, so callers must not also open the DB on success.
+pub fn attach_build_log_history(
+    sock_path: &Path,
+    update: crate::daemon::protocol::BuildLogHistoryUpdate,
+) -> Result<(), ClientError> {
+    match submit_request(sock_path, &Request::AttachBuildLogHistory(Box::new(update)))? {
+        Response::Ack => Ok(()),
+        Response::Error(msg) => Err(ClientError::Protocol(msg)),
+        other => Err(ClientError::Protocol(format!(
+            "unexpected response: {other:?}"
+        ))),
+    }
+}
+
 pub fn list_slow_builds(
     sock_path: &Path,
     threshold_ms: u64,

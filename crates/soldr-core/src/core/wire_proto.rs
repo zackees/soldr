@@ -13,7 +13,7 @@ use prost::{Message, Oneof};
 pub struct WireRequest {
     #[prost(
         oneof = "WireRequestKind",
-        tags = "1,2,3,4,5,7,8,9,10,11,12,13,14,15,16,17"
+        tags = "1,2,3,4,5,7,8,9,10,11,12,13,14,15,16,17,18"
     )]
     pub kind: Option<WireRequestKind>,
 }
@@ -59,6 +59,32 @@ pub enum WireRequestKind {
     /// the front door stops performing that read-modify-write itself.
     #[prost(message, tag = "17")]
     ShouldWarnCargoDebugDefault(WireShouldWarnCargoDebugDefault),
+    /// v19 / soldr#1814 slice 2d — atomic build-record merge at the front-door
+    /// tail, replacing the CLI's own get/mutate/upsert.
+    #[prost(message, tag = "18")]
+    AttachBuildLogHistory(WireBuildLogHistoryUpdate),
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct WireBuildLogHistoryUpdate {
+    #[prost(uint64, tag = "1")]
+    pub session_id: u64,
+    #[prost(string, tag = "2")]
+    pub repo_root: String,
+    #[prost(int64, tag = "3")]
+    pub started_at_ms: i64,
+    #[prost(int64, tag = "4")]
+    pub ended_at_ms: i64,
+    #[prost(int32, tag = "5")]
+    pub exit_code: i32,
+    #[prost(bool, tag = "6")]
+    pub daemon_finalized: bool,
+    #[prost(message, optional, tag = "7")]
+    pub cache_summary: Option<WireBuildCacheSummary>,
+    #[prost(message, repeated, tag = "8")]
+    pub miss_reasons: Vec<WireBuildMissReason>,
+    #[prost(message, optional, boxed, tag = "9")]
+    pub log_paths: Option<Box<WireBuildLogPaths>>,
 }
 
 #[derive(Clone, PartialEq, Message)]

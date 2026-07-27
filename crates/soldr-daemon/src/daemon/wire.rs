@@ -426,6 +426,30 @@ impl From<&Request> for proto::WireRequest {
                     session_id: *session_id,
                 })
             }
+            Request::AttachBuildLogHistory(update) => {
+                proto::WireRequestKind::AttachBuildLogHistory(proto::WireBuildLogHistoryUpdate {
+                    session_id: update.session_id,
+                    repo_root: update.repo_root.clone(),
+                    started_at_ms: update.started_at_ms,
+                    ended_at_ms: update.ended_at_ms,
+                    exit_code: update.exit_code,
+                    daemon_finalized: update.daemon_finalized,
+                    cache_summary: update
+                        .cache_summary
+                        .as_ref()
+                        .map(build_cache_summary_to_wire),
+                    miss_reasons: update
+                        .miss_reasons
+                        .iter()
+                        .map(build_miss_reason_to_wire)
+                        .collect(),
+                    log_paths: update
+                        .log_paths
+                        .as_ref()
+                        .map(build_log_paths_to_wire)
+                        .map(Box::new),
+                })
+            }
             Request::ShouldWarnCargoDebugDefault { repo_root } => {
                 proto::WireRequestKind::ShouldWarnCargoDebugDefault(
                     proto::WireShouldWarnCargoDebugDefault {
@@ -574,6 +598,23 @@ impl TryFrom<proto::WireRequest> for Request {
             proto::WireRequestKind::BuildLogInputs(m) => Request::BuildLogInputs {
                 session_id: m.session_id,
             },
+            proto::WireRequestKind::AttachBuildLogHistory(m) => Request::AttachBuildLogHistory(
+                Box::new(crate::daemon::protocol::BuildLogHistoryUpdate {
+                    session_id: m.session_id,
+                    repo_root: m.repo_root,
+                    started_at_ms: m.started_at_ms,
+                    ended_at_ms: m.ended_at_ms,
+                    exit_code: m.exit_code,
+                    daemon_finalized: m.daemon_finalized,
+                    cache_summary: m.cache_summary.map(build_cache_summary_from_wire),
+                    miss_reasons: m
+                        .miss_reasons
+                        .into_iter()
+                        .map(build_miss_reason_from_wire)
+                        .collect(),
+                    log_paths: m.log_paths.map(|p| build_log_paths_from_wire(*p)),
+                }),
+            ),
             proto::WireRequestKind::ShouldWarnCargoDebugDefault(m) => {
                 Request::ShouldWarnCargoDebugDefault {
                     repo_root: m.repo_root,
