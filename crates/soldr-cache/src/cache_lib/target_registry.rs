@@ -357,15 +357,50 @@ pub fn directory_size_and_files(path: &Path) -> (u64, u64) {
 /// component named `target`. Returns `None` if no such ancestor is
 /// found cheaply — we never walk the whole filesystem.
 pub fn resolve_target_dir_from_descendant(start: &Path) -> Option<PathBuf> {
+    // Return the FIRST match, i.e. the nearest enclosing `target/`.
+    //
+    // This walk runs inner -> outer, and previously kept overwriting the
+    // result on every match, so the value it returned was the OUTERMOST
+    // `target/` ancestor. For a nested layout like
+    // `.../target/repo/target/debug/deps/foo` that resolved to the outer
+    // `.../target`, and GC would then register — and be willing to delete —
+    // an enclosing repository tree instead of the workspace target
+    // directory it was asked about (#1671).
     let mut current = start;
-    let mut last_target: Option<PathBuf> = None;
     while let Some(parent) = current.parent() {
         if parent.file_name().map(|n| n == "target").unwrap_or(false) {
-            last_target = Some(parent.to_path_buf());
+            return Some(parent.to_path_buf());
         }
         current = parent;
     }
-    last_target
+    None
+}
+
+/// Top-level markers cargo lays down inside a `target/` directory. Any one
+/// is enough — which ones exist depends on what has been run.
+///
+/// Mirrors `soldr-cli`'s `gc::target_walker::CARGO_TARGET_MARKERS`. Maven
+/// and other JVM tooling also use a `target/` directory, but ship
+/// `target/classes/` or `target/maven-archiver/` rather than these, so the
+/// check stays Rust-specific.
+const CARGO_TARGET_MARKERS: &[&str] = &[
+    "debug",
+    "release",
+    "doc",
+    ".rustc_info.json",
+    "CACHEDIR.TAG",
+];
+
+/// Whether `dir` looks like a cargo-produced `target/` tree.
+///
+/// Name-based resolution alone is not enough to hand a path to destructive
+/// registry work: any directory called `target` on the way up matches, and
+/// #1671 showed the walk could select an enclosing repository. Requiring a
+/// cargo marker means a directory merely *named* `target` is not treated as
+/// one. Returns `false` when the directory does not exist or cannot be
+/// inspected — callers skip rather than guess.
+pub fn looks_like_cargo_target(dir: &Path) -> bool {
+    CARGO_TARGET_MARKERS.iter().any(|m| dir.join(m).exists())
 }
 
 /// Resolve the canonical workspace `target/` directory from a
@@ -740,6 +775,40 @@ mod tests {
         std::fs::create_dir_all(&nested).unwrap();
         std::fs::write(nested.join("c.bin"), vec![0u8; 256]).unwrap();
         assert_eq!(directory_size(dir.path()), 5 + 1024 + 256);
+    }
+
+    #[test]
+    fn resolve_target_dir_picks_the_nearest_of_nested_targets() {
+        // #1671: the walk runs inner -> outer and used to keep overwriting,
+        // so it returned the OUTERMOST match. GC would then treat the
+        // enclosing repository as the target directory.
+        let path = PathBuf::from("/home/user/target/repo/target/debug/deps/foo-abcdef");
+        let target = resolve_target_dir_from_descendant(&path).unwrap();
+        assert_eq!(target, PathBuf::from("/home/user/target/repo/target"));
+    }
+
+    #[test]
+    fn resolve_target_dir_handles_three_levels_of_nesting() {
+        let path = PathBuf::from("/t/target/a/target/b/target/debug/deps/x");
+        let target = resolve_target_dir_from_descendant(&path).unwrap();
+        assert_eq!(target, PathBuf::from("/t/target/a/target/b/target"));
+    }
+
+    #[test]
+    fn looks_like_cargo_target_requires_a_marker() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let impostor = dir.path().join("target");
+        std::fs::create_dir_all(&impostor).expect("mkdir");
+        assert!(
+            !looks_like_cargo_target(&impostor),
+            "a bare directory named `target` is not a cargo target"
+        );
+
+        std::fs::create_dir_all(impostor.join("debug")).expect("mkdir");
+        assert!(
+            looks_like_cargo_target(&impostor),
+            "a profile directory is a cargo marker"
+        );
     }
 
     #[test]

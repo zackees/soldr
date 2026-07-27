@@ -181,6 +181,17 @@ pub fn purge_one(
         let _ = registry.remove(path);
         return Ok(false);
     }
+    // Refuse anything that is merely *named* `target` (#1671). Resolution is
+    // name-based, so a wrong answer here is a recursive delete of whatever
+    // that directory happens to be — an enclosing repository, in the nested
+    // case this issue describes. Requiring a cargo marker makes the
+    // destructive step prove its subject rather than trust the name.
+    if !super::target_registry::looks_like_cargo_target(path) {
+        return Err(RegistryError::Io(std::io::Error::other(format!(
+            "{} has no cargo target markers; refusing to delete",
+            path.display()
+        ))));
+    }
     let _cargo_locks = match super::cargo_lock::probe(path).map_err(RegistryError::Io)? {
         super::cargo_lock::CargoLockProbe::Idle(guard) => guard,
         super::cargo_lock::CargoLockProbe::Active(lock) => {
@@ -240,6 +251,17 @@ pub fn delete_candidate_dir(candidate: GcCandidate) -> GcDeleteOutcome {
             };
         }
     };
+    if !super::target_registry::looks_like_cargo_target(&candidate.path) {
+        // Same guard as `purge_one` (#1671).
+        return GcDeleteOutcome {
+            error: Some(format!(
+                "{} has no cargo target markers; refusing to delete",
+                candidate.path.display()
+            )),
+            candidate,
+            removed: false,
+        };
+    }
     match std::fs::remove_dir_all(&candidate.path) {
         Ok(()) => GcDeleteOutcome {
             candidate,
@@ -473,6 +495,9 @@ mod tests {
         let workspace = root.join(name);
         let target = workspace.join("target");
         std::fs::create_dir_all(&target).unwrap();
+        // Cargo always writes this; the fixture omitted it, which made these
+        // targets indistinguishable from any directory called `target`.
+        std::fs::write(target.join("CACHEDIR.TAG"), b"Signature: 8a477f597d28d172").unwrap();
         std::fs::write(target.join("blob"), vec![0u8; size_bytes as usize]).unwrap();
         (workspace, target)
     }
@@ -542,6 +567,27 @@ mod tests {
         assert!(target.exists(), "dry-run must not delete");
         // Registry row preserved on dry-run.
         assert!(registry.get(&target).unwrap().is_some());
+    }
+
+    #[test]
+    fn purge_refuses_a_directory_that_only_looks_like_a_target() {
+        // #1671: resolution is name-based, so GC must not delete a directory
+        // just because it is called `target`.
+        let dir = tempdir().unwrap();
+        let registry = TargetRegistry::open_in_memory().unwrap();
+        let impostor = dir.path().join("some-repo").join("target");
+        std::fs::create_dir_all(&impostor).unwrap();
+        std::fs::write(impostor.join("important.txt"), b"not cargo output").unwrap();
+        registry.upsert_with_time(&impostor, 100).unwrap();
+
+        let result = purge_one(&registry, &impostor, false);
+
+        assert!(result.is_err(), "must refuse a non-cargo directory");
+        assert!(impostor.exists(), "the directory must survive");
+        assert!(
+            impostor.join("important.txt").exists(),
+            "its contents must survive"
+        );
     }
 
     #[test]
