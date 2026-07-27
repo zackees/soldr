@@ -8,7 +8,7 @@
 
 use super::target_registry::{
     current_unix_seconds, directory_size, evaluate_safety_guards, human_age, human_size,
-    workspace_root_for_target, GuardOutcome, RegistryError, TargetRegistry,
+    workspace_root_for_target, GuardOutcome, RegistryError, TargetRegistry, TargetRow,
     DEFAULT_STALE_AGE_SECONDS, DEFAULT_STALE_SIZE_BYTES,
 };
 use std::{
@@ -85,20 +85,93 @@ pub struct GcPurgeSummary {
     pub failures: Vec<GcPurgeFailure>,
 }
 
-/// Pure scan: walk the registry, drop missing rows, apply thresholds
-/// and safety guards. Does not delete anything.
-pub fn scan(registry: &TargetRegistry, options: &GcOptions) -> Result<GcReport, RegistryError> {
-    let now = current_unix_seconds()?;
-    let mut report = GcReport::default();
+/// Snapshot of the registry taken before any long-running work, so the
+/// database handle can be released while that work happens (#1681).
+pub struct RegistrySnapshot {
+    /// Rows whose directory still exists on disk.
+    pub rows: Vec<TargetRow>,
+    /// Rows dropped because their path was gone.
+    pub dropped_missing: usize,
+}
 
+/// Read the registry into an owned snapshot and **release the database
+/// handle before returning** (#1681).
+///
+/// [`TargetRegistry`] holds the process-wide `state_db_open_lock` guard
+/// and the redb file lock for its whole lifetime (#608). A GC pass that
+/// keeps one alive across directory sizing, per-candidate prompting, and
+/// recursive deletion therefore blocks every other `state.redb` opener —
+/// `daemon::db`, `cache_lib::cook_index`, and the `RecordTargetTouch`
+/// handler that runs on every rustc-wrapper call — for the whole
+/// duration. Prompting in particular is unbounded: it waits on a human.
+///
+/// Pruning missing rows stays inside this short phase because it is the
+/// one registry write the scan needs, and it is bounded by the row
+/// count rather than by disk size.
+pub fn snapshot_registry(db_path: &Path) -> Result<RegistrySnapshot, RegistryError> {
+    let registry = TargetRegistry::open(db_path)?;
+    let snapshot = snapshot_from_registry(&registry)?;
+    drop(registry);
+    Ok(snapshot)
+}
+
+/// [`snapshot_registry`] against an already-open registry, for callers
+/// that own the handle and manage its lifetime themselves.
+pub fn snapshot_from_registry(
+    registry: &TargetRegistry,
+) -> Result<RegistrySnapshot, RegistryError> {
+    let mut rows = Vec::new();
+    let mut dropped_missing = 0usize;
     for row in registry.list()? {
-        if !row.path.exists() {
+        if row.path.exists() {
+            rows.push(row);
+        } else {
             // Drop missing-on-disk row silently per the proposal.
             let _ = registry.remove(&row.path);
-            report.dropped_missing += 1;
-            continue;
+            dropped_missing += 1;
         }
+    }
+    Ok(RegistrySnapshot {
+        rows,
+        dropped_missing,
+    })
+}
 
+/// Scan without holding a database handle: open, snapshot, release, then
+/// do the sizing and guard evaluation against the owned rows (#1681).
+///
+/// This is what the `soldr gc` entry points should call. [`scan`] is the
+/// handle-holding equivalent, kept for callers that already have a
+/// registry open.
+pub fn scan_released(db_path: &Path, options: &GcOptions) -> Result<GcReport, RegistryError> {
+    let snapshot = snapshot_registry(db_path)?;
+    scan_snapshot(snapshot, options)
+}
+
+/// Pure scan: walk the registry, drop missing rows, apply thresholds
+/// and safety guards. Does not delete anything.
+///
+/// Holds `registry` for the whole sizing walk. Prefer [`scan_released`]
+/// on any path that goes on to prompt or delete (#1681).
+pub fn scan(registry: &TargetRegistry, options: &GcOptions) -> Result<GcReport, RegistryError> {
+    let snapshot = snapshot_from_registry(registry)?;
+    scan_snapshot(snapshot, options)
+}
+
+/// Threshold + safety-guard evaluation over an owned snapshot. Touches
+/// the filesystem (sizing) but never the database, so it is safe to run
+/// with no handle open.
+pub fn scan_snapshot(
+    snapshot: RegistrySnapshot,
+    options: &GcOptions,
+) -> Result<GcReport, RegistryError> {
+    let now = current_unix_seconds()?;
+    let mut report = GcReport {
+        dropped_missing: snapshot.dropped_missing,
+        ..GcReport::default()
+    };
+
+    for row in snapshot.rows {
         let age = now.saturating_sub(row.last_used);
         let size = directory_size(&row.path);
 
@@ -500,6 +573,73 @@ mod tests {
         std::fs::write(target.join("CACHEDIR.TAG"), b"Signature: 8a477f597d28d172").unwrap();
         std::fs::write(target.join("blob"), vec![0u8; size_bytes as usize]).unwrap();
         (workspace, target)
+    }
+
+    /// #1681: a GC pass must not hold the state-database handle across
+    /// its long filesystem/prompting phases.
+    ///
+    /// `TargetRegistry::open` takes the process-wide `state_db_open_lock`
+    /// for the handle's whole lifetime (#608), so anything else that
+    /// opens `state.redb` — `daemon::db`, `cook_index`, and the
+    /// `RecordTargetTouch` handler on every rustc-wrapper call — is
+    /// blocked for as long as GC holds it.
+    #[test]
+    fn snapshot_releases_the_handle_before_long_work() {
+        let dir = tempdir().unwrap();
+        let db = dir.path().join("state.redb");
+        let (_, target) = make_workspace(dir.path(), "repo-a", 512);
+        {
+            let registry = TargetRegistry::open(&db).unwrap();
+            registry.upsert_with_time(&target, 100).unwrap();
+        }
+
+        let snapshot = snapshot_registry(&db).unwrap();
+        assert_eq!(snapshot.rows.len(), 1, "the live row must be snapshotted");
+
+        // Stand-in for the long phase: GC owns the rows now and is off
+        // sizing, prompting, and deleting. A state write must still get
+        // through.
+        //
+        // Done on another thread with a bounded wait, because `open`
+        // blocks rather than failing when the handle is still held:
+        // `state_db_open_lock` is a plain in-process mutex, and
+        // `open_best_effort`'s short budget covers only the
+        // cross-process redb file lock, so it would block here too.
+        // Without the thread a regression would hang the whole suite
+        // instead of failing; with it, it fails in ten seconds.
+        //
+        // That same mutex is why there is no negative control: taking a
+        // handle and asserting a second open is refused would deadlock
+        // the test itself.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let probe_db = db.clone();
+        let probe_target = target.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(
+                TargetRegistry::open(&probe_db)
+                    .and_then(|reg| reg.upsert_with_time(&probe_target, 200)),
+            );
+        });
+        match rx.recv_timeout(Duration::from_secs(10)) {
+            Ok(result) => result.expect("concurrent state write must succeed"),
+            Err(_) => panic!(
+                "state.redb was still locked while GC did its filesystem work — \
+                 the scan is holding its handle across the long phase (#1681)",
+            ),
+        }
+
+        let opts = GcOptions {
+            older_than_seconds: 0,
+            larger_than_bytes: 0,
+            dev_roots: vec![dir.path().to_path_buf()],
+            dry_run: true,
+        };
+        let report = scan_snapshot(snapshot, &opts).unwrap();
+        assert_eq!(
+            report.candidates.len() + report.skipped.len(),
+            1,
+            "the snapshotted row must still be evaluated after the handle was released",
+        );
     }
 
     #[test]

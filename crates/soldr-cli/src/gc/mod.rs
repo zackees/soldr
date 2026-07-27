@@ -213,7 +213,7 @@ struct GcOutput {
 
 pub(crate) fn run_gc_command(invocation: GcInvocation) -> Result<(), SoldrError> {
     use crate::cache_lib::gc::{
-        cleanup_old_gc_logs, parse_duration, parse_size, scan, write_gc_error_log, GcOptions,
+        cleanup_old_gc_logs, parse_duration, parse_size, write_gc_error_log, GcOptions,
         GcPurgeSummary,
     };
 
@@ -228,8 +228,6 @@ pub(crate) fn run_gc_command(invocation: GcInvocation) -> Result<(), SoldrError>
     let paths = SoldrPaths::new()?;
     let dev_roots = resolve_gc_dev_roots(&paths)?;
     let db_path = crate::cache_lib::data_db_path(&paths);
-    let registry = crate::cache_lib::target_registry::TargetRegistry::open(&db_path)
-        .map_err(|e| SoldrError::Other(format!("failed to open soldr registry: {e}")))?;
     let gc_log_dir = crate::cache_lib::gc_log_dir(&paths);
     cleanup_old_gc_logs(&gc_log_dir)
         .map_err(|e| SoldrError::Other(format!("failed to clean old gc logs: {e}")))?;
@@ -241,8 +239,10 @@ pub(crate) fn run_gc_command(invocation: GcInvocation) -> Result<(), SoldrError>
         dry_run: is_summary,
     };
 
-    let report =
-        scan(&registry, &options).map_err(|e| SoldrError::Other(format!("gc scan failed: {e}")))?;
+    // Snapshot-then-release: the sizing walk below, the per-candidate
+    // prompt, and the deletion pool all run with no handle open (#1681).
+    let report = crate::cache_lib::gc::scan_released(&db_path, &options)
+        .map_err(|e| SoldrError::Other(format!("gc scan failed: {e}")))?;
     let total_reclaimable_bytes = gc_total_reclaimable_bytes(&report.candidates);
 
     let mut deleted_paths: Vec<String> = Vec::new();
@@ -259,7 +259,7 @@ pub(crate) fn run_gc_command(invocation: GcInvocation) -> Result<(), SoldrError>
 
     if !is_summary {
         purge_summary =
-            run_gc_purge_candidates(&registry, &report.candidates, purge_all, invocation.json)?;
+            run_gc_purge_candidates(&db_path, &report.candidates, purge_all, invocation.json)?;
         deleted_paths = purge_summary
             .deleted_paths
             .iter()
@@ -383,11 +383,16 @@ pub(crate) fn run_gc_list_command(
 
     let paths = SoldrPaths::new()?;
     let db_path = crate::cache_lib::data_db_path(&paths);
-    let registry = crate::cache_lib::target_registry::TargetRegistry::open(&db_path)
-        .map_err(|e| SoldrError::Other(format!("failed to open soldr registry: {e}")))?;
-    let rows = registry
-        .list()
-        .map_err(|e| SoldrError::Other(format!("gc list failed: {e}")))?;
+    // Scoped: the rayon sizing walk below visits every tracked target
+    // tree, so the handle must not be held across it. The batched
+    // `remove_many` reopens briefly once the walk is done (#1681).
+    let rows = {
+        let registry = crate::cache_lib::target_registry::TargetRegistry::open(&db_path)
+            .map_err(|e| SoldrError::Other(format!("failed to open soldr registry: {e}")))?;
+        registry
+            .list()
+            .map_err(|e| SoldrError::Other(format!("gc list failed: {e}")))?
+    };
     let now = crate::cache_lib::target_registry::current_unix_seconds()
         .map_err(|e| SoldrError::Other(format!("gc list clock error: {e}")))?;
 
@@ -474,9 +479,14 @@ pub(crate) fn run_gc_list_command(
         ));
     }
 
-    let pruned_missing = registry
-        .remove_many(&missing_paths)
-        .map_err(|e| SoldrError::Other(format!("failed to prune missing registry rows: {e}")))?;
+    // Bounded reopen for the batched removal (#1681).
+    let pruned_missing = {
+        let registry = crate::cache_lib::target_registry::TargetRegistry::open(&db_path)
+            .map_err(|e| SoldrError::Other(format!("failed to reopen soldr registry: {e}")))?;
+        registry
+            .remove_many(&missing_paths)
+            .map_err(|e| SoldrError::Other(format!("failed to prune missing registry rows: {e}")))?
+    };
 
     if json {
         let output = GcListOutput {
