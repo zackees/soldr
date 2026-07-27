@@ -1272,6 +1272,63 @@ fn arm_shutdown_watchdog() {
         .ok();
 }
 
+/// Apply a [`Request::AttachBuildLogHistory`] merge (soldr#1814 slice 2d).
+///
+/// Split out of the dispatch arm so the merge semantics are testable without
+/// a live socket. Mirrors what `persist_build_log_history_inner` used to do
+/// CLI-side, but under the daemon's sole ownership of the table.
+fn attach_build_log_history(
+    db_path: &Path,
+    update: &crate::daemon::protocol::BuildLogHistoryUpdate,
+) -> Response {
+    let mut record = match db::get_build(db_path, update.session_id) {
+        Ok(Some(record)) => record,
+        Ok(None) => crate::daemon::protocol::BuildRecord {
+            session_id: update.session_id,
+            repo_root: update.repo_root.clone(),
+            started_at_ms: update.started_at_ms,
+            ended_at_ms: None,
+            exit_code: None,
+            total_wall_ms: None,
+            crate_count: 0,
+            slowest_crate_us: None,
+            slowest_crate_name: None,
+            cache_summary: None,
+            log_paths: None,
+            miss_reasons: Vec::new(),
+        },
+        Err(err) => return Response::Error(format!("read build history: {err}")),
+    };
+
+    record.cache_summary = update.cache_summary.clone();
+    record.miss_reasons = update.miss_reasons.clone();
+    // soldr#1536: a daemon-acknowledged BuildSessionEnd already finalized the
+    // aggregate, so only recompute when the client says it did not.
+    if !update.daemon_finalized {
+        let (crate_count, slowest_crate_us, slowest_crate_name) =
+            db::aggregate_session(db_path, update.session_id).unwrap_or((0, None, None));
+        record.crate_count = crate_count;
+        record.slowest_crate_us = slowest_crate_us;
+        record.slowest_crate_name = slowest_crate_name;
+    }
+    // First writer wins, matching the previous local behavior: an
+    // already-recorded end time or exit code is authoritative.
+    record.ended_at_ms = Some(record.ended_at_ms.unwrap_or(update.ended_at_ms));
+    record.exit_code = Some(record.exit_code.unwrap_or(update.exit_code));
+    record.total_wall_ms = Some(
+        record
+            .ended_at_ms
+            .map(|ended| (ended - record.started_at_ms).max(0) as u64)
+            .unwrap_or(0),
+    );
+    record.log_paths = update.log_paths.clone();
+
+    match db::upsert_build(db_path, &record) {
+        Ok(()) => Response::Ack,
+        Err(err) => Response::Error(format!("write build history: {err}")),
+    }
+}
+
 fn existing_daemon_pid(paths: &SoldrPaths) -> Option<u32> {
     select_existing_daemon_pid(
         crate::daemon::lifecycle::stale_daemon_occupies_endpoint(paths),
@@ -1819,6 +1876,19 @@ where
                 },
                 Err(err) => Response::Error(format!("build log inputs: {err}")),
             };
+            let _ = write_frame_async(&mut stream, &response).await;
+        }
+        Request::AttachBuildLogHistory(update) => {
+            // soldr#1814 slice 2d. The whole get/mutate/upsert runs here, under
+            // the daemon's own ownership of the table, so two processes cannot
+            // interleave a read and a write and lose each other's fields.
+            //
+            // The merge deliberately reproduces the semantics the CLI-side code
+            // had: `ended_at_ms` / `exit_code` keep an already-recorded value
+            // rather than being overwritten (first writer wins), and the
+            // crate-count aggregate is only recomputed when the client says
+            // `BuildSessionEnd` did not already finalize it (soldr#1536).
+            let response = attach_build_log_history(&state.db_path, &update);
             let _ = write_frame_async(&mut stream, &response).await;
         }
         Request::ShouldWarnCargoDebugDefault { repo_root } => {

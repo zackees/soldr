@@ -412,15 +412,6 @@ fn persist_build_log_history_inner(
     crate::daemon::history_gc::mark_history_publishing(&archive_dir)
         .map_err(|e| SoldrError::Other(format!("mark build history publishing: {e}")))?;
     let db_path = crate::cache_lib::data_db_path(paths);
-    let mut record = crate::daemon::db::get_build(&db_path, build_session_id)
-        .map_err(|e| SoldrError::Other(format!("read build history: {e}")))?
-        .unwrap_or_else(|| {
-            new_build_record(
-                build_session_id,
-                repo_root.display().to_string(),
-                started_at_ms,
-            )
-        });
 
     let archived_session_stats_path = copy_session_artifact(
         &session.session_stats_path,
@@ -442,31 +433,10 @@ fn persist_build_log_history_inner(
         compile_journal_start_len,
     );
 
-    record.cache_summary = cache_summary;
-    record.miss_reasons = read_build_miss_reasons(
+    let miss_reasons = read_build_miss_reasons(
         archived_compile_journal_path
             .as_ref()
             .map(|path| Path::new(path.as_str())),
-    );
-    // soldr#1536: when the daemon acknowledged BuildSessionEnd, the
-    // record read above already carries the finalized crate-count /
-    // slowest-crate aggregate — keep it. Only the daemon-unreachable
-    // fallback still derives the aggregate from the event table.
-    if !daemon_finalized {
-        let (crate_count, slowest_crate_us, slowest_crate_name) =
-            crate::daemon::db::aggregate_session(&db_path, build_session_id)
-                .unwrap_or((0, None, None));
-        record.crate_count = crate_count;
-        record.slowest_crate_us = slowest_crate_us;
-        record.slowest_crate_name = slowest_crate_name;
-    }
-    record.ended_at_ms = Some(record.ended_at_ms.unwrap_or(ended_at_ms));
-    record.exit_code = Some(record.exit_code.unwrap_or(exit_code));
-    record.total_wall_ms = Some(
-        record
-            .ended_at_ms
-            .map(|ended| (ended - record.started_at_ms).max(0) as u64)
-            .unwrap_or(0),
     );
     let log_paths = crate::daemon::protocol::BuildLogPaths {
         zccache_session_id: Some(session.session_id.clone()),
@@ -488,10 +458,64 @@ fn persist_build_log_history_inner(
         // field stays on the wire for older records.
         private_daemon_name: None,
     };
-    record.log_paths = Some(log_paths.clone());
-
-    crate::daemon::db::upsert_build(&db_path, &record)
-        .map_err(|e| SoldrError::Other(format!("write build history: {e}")))?;
+    // soldr#1814 slice 2d: hand the whole read-modify-write to the daemon,
+    // which owns this table. Sending intent rather than a get/upsert pair is
+    // what makes it atomic — two front doors finishing at once cannot lose
+    // each other's fields.
+    let update = crate::daemon::protocol::BuildLogHistoryUpdate {
+        session_id: build_session_id,
+        repo_root: repo_root.display().to_string(),
+        started_at_ms,
+        ended_at_ms,
+        exit_code,
+        daemon_finalized,
+        cache_summary: cache_summary.clone(),
+        miss_reasons: miss_reasons.clone(),
+        log_paths: Some(log_paths.clone()),
+    };
+    let sock = crate::daemon::client::default_sock_path(paths);
+    if let Err(error) = crate::daemon::client::attach_build_log_history(&sock, update) {
+        // Daemon unreachable — do the merge locally. Safe precisely because
+        // the daemon is down: with no second opener there is nobody to race.
+        tracing::debug!(
+            event = "build_log_history_local_merge",
+            session_id = build_session_id,
+            error = ?error,
+            "daemon did not accept the build-history update; writing it directly"
+        );
+        let mut record = crate::daemon::db::get_build(&db_path, build_session_id)
+            .map_err(|e| SoldrError::Other(format!("read build history: {e}")))?
+            .unwrap_or_else(|| {
+                new_build_record(
+                    build_session_id,
+                    repo_root.display().to_string(),
+                    started_at_ms,
+                )
+            });
+        record.cache_summary = cache_summary;
+        record.miss_reasons = miss_reasons;
+        // soldr#1536: only recompute the aggregate when BuildSessionEnd did
+        // not already finalize it.
+        if !daemon_finalized {
+            let (crate_count, slowest_crate_us, slowest_crate_name) =
+                crate::daemon::db::aggregate_session(&db_path, build_session_id)
+                    .unwrap_or((0, None, None));
+            record.crate_count = crate_count;
+            record.slowest_crate_us = slowest_crate_us;
+            record.slowest_crate_name = slowest_crate_name;
+        }
+        record.ended_at_ms = Some(record.ended_at_ms.unwrap_or(ended_at_ms));
+        record.exit_code = Some(record.exit_code.unwrap_or(exit_code));
+        record.total_wall_ms = Some(
+            record
+                .ended_at_ms
+                .map(|ended| (ended - record.started_at_ms).max(0) as u64)
+                .unwrap_or(0),
+        );
+        record.log_paths = Some(log_paths.clone());
+        crate::daemon::db::upsert_build(&db_path, &record)
+            .map_err(|e| SoldrError::Other(format!("write build history: {e}")))?;
+    }
     // Publish completion only after the database row points at every copied
     // payload.  The daemon retention pass treats marker-less unknown sessions
     // as active, so a concurrent pass can never remove a half-published
