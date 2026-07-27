@@ -113,8 +113,8 @@ pub fn ensure_temp_root_for(paths: &SoldrPaths) -> PathBuf {
 mod tests {
     use super::*;
 
-    /// Guards the property the whole module exists for: scratch must share a
-    /// filesystem with the cache so `rename` into the cache stays atomic.
+    // Guards the property the whole module exists for: scratch must share a
+    // filesystem with the cache so `rename` into the cache stays atomic.
     crate::timed_test!(scratch_defaults_inside_the_cache_root, {
         let paths = SoldrPaths::with_root(PathBuf::from("/synthetic/root"));
         let root = temp_root_for(&paths);
