@@ -1957,6 +1957,26 @@ impl ExtractDispatch {
     }
 }
 
+/// Sibling path used to stage a restored file before it is renamed into
+/// place (#1909).
+///
+/// Must live in the same directory as `dest`: `rename` is only atomic within
+/// a filesystem, and a temp dir can easily be on a different one. The name
+/// carries pid + a process-local counter so concurrent extract workers — and
+/// concurrent `soldr load` processes sharing a target dir — never collide.
+fn staging_path_for(dest: &Path) -> PathBuf {
+    static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
+    let seq = STAGING_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let name = dest
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "entry".to_string());
+    dest.with_file_name(format!(
+        ".{name}.soldr-tmp-{pid}-{seq}",
+        pid = std::process::id()
+    ))
+}
+
 /// Worker-side per-entry extraction. Splits Regular vs Directory handling
 /// (Directories are created by the driver thread, so we only see Regular
 /// + the long tail of tar entry types here).
@@ -1969,7 +1989,30 @@ fn extract_one(job: &ExtractJob) -> Result<()> {
     }
     match job.entry_type {
         tar::EntryType::Regular => {
-            std::fs::write(&job.dest, &job.body).map_err(|e| io(&job.dest, e))?;
+            // #1909: write to a sibling temp path and rename into place,
+            // rather than writing `dest` directly.
+            //
+            // `execve` fails with ETXTBSY if *any* process holds the target
+            // open for writing. Our own handle is closed before this function
+            // returns, but soldr spawns detached children (the auto-gc
+            // sweeper, the daemon) throughout a build: a child forked while a
+            // write descriptor is open inherits it, and keeps that inode busy
+            // until it execs. Rust opens files O_CLOEXEC, so the descriptor
+            // does not survive the exec — but between fork and exec it exists,
+            // and that window is enough for cargo to try running a restored
+            // build script and get "Text file busy".
+            //
+            // Renaming makes the race structurally impossible instead of
+            // merely unlikely: the inode that lands at `dest` never had a
+            // writable descriptor pointing at it, so no inherited fd can
+            // refer to it. It also means `dest` never exists in a
+            // partially-written state.
+            let staged = staging_path_for(&job.dest);
+            std::fs::write(&staged, &job.body).map_err(|e| io(&staged, e))?;
+
+            // Apply metadata to the staged file, so the entry becomes visible
+            // at `dest` already complete. `rename` preserves both.
+            //
             // #587: restore +x (and other Unix permission bits) from
             // the tar header. Without this, cargo build-script-build
             // binaries restored from cache fail execve with EACCES.
@@ -1979,18 +2022,34 @@ fn extract_one(job: &ExtractJob) -> Result<()> {
             if let Some(mode) = job.mode_bits {
                 use std::os::unix::fs::PermissionsExt;
                 let perms = std::fs::Permissions::from_mode(mode);
-                std::fs::set_permissions(&job.dest, perms).map_err(|e| io(&job.dest, e))?;
+                if let Err(e) = std::fs::set_permissions(&staged, perms) {
+                    let _ = std::fs::remove_file(&staged);
+                    return Err(io(&staged, e));
+                }
             }
-            if let Some(ns) = job.mtime_ns {
+            let stamp = if let Some(ns) = job.mtime_ns {
                 // Manifest-driven metadata application (#1541): restore
                 // the exact nanosecond mtime here (atime = mtime, matching
                 // what the manifest replay pass used to do serially after
                 // extraction).
-                let t = filetime::FileTime::from_system_time(ns_to_systime(ns));
-                filetime::set_file_times(&job.dest, t, t).map_err(|e| io(&job.dest, e))?;
-            } else if let Some(secs) = job.mtime_secs {
-                let ft = filetime::FileTime::from_unix_time(secs as i64, 0);
-                filetime::set_file_mtime(&job.dest, ft).map_err(|e| io(&job.dest, e))?;
+                Some(filetime::FileTime::from_system_time(ns_to_systime(ns)))
+            } else {
+                job.mtime_secs
+                    .map(|secs| filetime::FileTime::from_unix_time(secs as i64, 0))
+            };
+            if let Some(stamp) = stamp {
+                if let Err(e) = filetime::set_file_times(&staged, stamp, stamp) {
+                    let _ = std::fs::remove_file(&staged);
+                    return Err(io(&staged, e));
+                }
+            }
+
+            if let Err(e) = std::fs::rename(&staged, &job.dest) {
+                // Never leave the staging file behind on failure; a stray
+                // `.soldr-tmp` in `target/` would confuse cargo and survive
+                // into the next build.
+                let _ = std::fs::remove_file(&staged);
+                return Err(io(&job.dest, e));
             }
         }
         tar::EntryType::Directory => {
@@ -2929,4 +2988,126 @@ mod tests {
             );
         }
     );
+}
+
+#[cfg(test)]
+mod etxtbsy_tests {
+    use super::*;
+
+    // #1909: a restored build script failed `execve` with ETXTBSY, which
+    // happens only when some process holds the target open for writing. The
+    // extractor now stages into a sibling and renames, so the inode that
+    // lands at `dest` never had a writable descriptor pointing at it and no
+    // fork-inherited fd can refer to it.
+
+    fn regular_job(dest: PathBuf, body: &[u8], mode: Option<u32>) -> ExtractJob {
+        ExtractJob {
+            dest,
+            entry_type: tar::EntryType::Regular,
+            body: body.to_vec(),
+            mtime_secs: Some(1_700_000_000),
+            mtime_ns: None,
+            mode_bits: mode,
+        }
+    }
+
+    crate::timed_test!(staging_path_is_a_sibling_of_the_destination, {
+        // Same directory or `rename` stops being atomic -- a temp dir can sit
+        // on a different filesystem, where rename degrades to copy+delete and
+        // reintroduces the very window this fix closes.
+        let dest = Path::new("/some/deep/dir/build-script-build");
+        let staged = staging_path_for(dest);
+        assert_eq!(
+            staged.parent(),
+            dest.parent(),
+            "staging file must be a sibling so the rename stays atomic"
+        );
+        assert_ne!(staged.file_name(), dest.file_name());
+    });
+
+    crate::timed_test!(staging_paths_are_unique_across_calls, {
+        // Concurrent workers restore different entries simultaneously; two
+        // collisions would corrupt each other's content.
+        let dest = Path::new("/tmp/target/debug/build/x/build-script-build");
+        let a = staging_path_for(dest);
+        let b = staging_path_for(dest);
+        assert_ne!(
+            a, b,
+            "concurrent extract workers must not share a staging path"
+        );
+    });
+
+    crate::timed_test!(extract_leaves_no_staging_file_behind, {
+        // A stray `.soldr-tmp` inside target/ would survive into the next
+        // build and confuse cargo.
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("build-script-build");
+        extract_one(&regular_job(dest.clone(), b"#!/bin/sh\n", None)).expect("extract");
+
+        assert_eq!(std::fs::read(&dest).unwrap(), b"#!/bin/sh\n");
+        let strays: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains("soldr-tmp"))
+            .collect();
+        assert!(strays.is_empty(), "staging files left behind: {strays:?}");
+    });
+
+    crate::timed_test!(extract_replaces_an_existing_destination_atomically, {
+        // Restores land on top of a previous build's artifacts. The rename
+        // must replace the old inode rather than fail on it.
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("artifact.bin");
+        std::fs::write(&dest, b"stale contents").unwrap();
+
+        extract_one(&regular_job(dest.clone(), b"fresh", None)).expect("extract over existing");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"fresh");
+    });
+
+    #[cfg(unix)]
+    crate::timed_test!(restored_executable_keeps_its_mode_through_the_rename, {
+        // The mode is applied to the staging file; `rename` must carry it
+        // over, or #587/#1889 would regress silently.
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("build-script-build");
+        extract_one(&regular_job(
+            dest.clone(),
+            b"#!/bin/sh\nexit 0\n",
+            Some(0o755),
+        ))
+        .expect("extract");
+
+        let mode = std::fs::metadata(&dest).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o755,
+            "executable bit must survive the rename"
+        );
+    });
+
+    #[cfg(unix)]
+    crate::timed_test!(restored_executable_can_actually_be_executed, {
+        // The end-to-end property the issue is about: after extract_one
+        // returns, the file is immediately runnable -- no ETXTBSY, no EACCES.
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("build-script-build");
+        extract_one(&regular_job(
+            dest.clone(),
+            b"#!/bin/sh\nexit 7\n",
+            Some(0o755),
+        ))
+        .expect("extract");
+        assert_eq!(
+            std::fs::metadata(&dest).unwrap().permissions().mode() & 0o111,
+            0o111
+        );
+
+        let status = std::process::Command::new(&dest)
+            .status()
+            .expect("restored build script must be executable immediately after restore");
+        assert_eq!(status.code(), Some(7));
+    });
 }
