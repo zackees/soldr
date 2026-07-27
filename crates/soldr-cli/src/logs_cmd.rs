@@ -234,9 +234,23 @@ pub(crate) fn collect_logs_show_output_for_paths(
             "build history database is missing; run `soldr logs list` after a build".to_string(),
         ));
     }
-    let record = resolve_launch_record(&db_path, launch_id)?;
-    let events = db::list_events_for_session(&db_path, record.session_id)
-        .map_err(|e| SoldrError::Other(format!("read daemon events: {e}")))?;
+    // soldr#1814 slice 2e: ask the daemon, which owns these tables, before
+    // opening state.redb ourselves. `BuildLogInputs` (slice 2a) already
+    // returns exactly the pair this needs, so no new verb is required.
+    //
+    // Only the exact-session-id form is served this way. The prefix-match
+    // branch of `resolve_launch_record` needs a full table scan, which is not
+    // worth a verb for an interactive command — it keeps the direct read, as
+    // does every path when the daemon is unreachable.
+    let (record, events) = match daemon_logs_show_inputs(paths, launch_id) {
+        Some(pair) => pair,
+        None => {
+            let record = resolve_launch_record(&db_path, launch_id)?;
+            let events = db::list_events_for_session(&db_path, record.session_id)
+                .map_err(|e| SoldrError::Other(format!("read daemon events: {e}")))?;
+            (record, events)
+        }
+    };
     let mut notes = launch_notes(&record);
     let slow_compiles = slow_compile_events(&events, 10);
     if slow_compiles.is_empty() && record.slowest_crate_us.is_none() {
@@ -375,6 +389,25 @@ fn collect_log_path_entries(paths: &SoldrPaths) -> Vec<LogPathEntry> {
             }
         })
         .collect()
+}
+
+/// Fetch `soldr logs show` inputs from the daemon (soldr#1814 slice 2e).
+///
+/// Returns `None` — meaning "fall back to reading state.redb directly" — when
+/// `launch_id` is not an exact session id, when the daemon is unreachable, or
+/// when it holds no record for that session. The caller then takes the
+/// original path, so behaviour is unchanged in every case the daemon cannot
+/// serve.
+fn daemon_logs_show_inputs(
+    paths: &SoldrPaths,
+    launch_id: &str,
+) -> Option<(BuildRecord, Vec<db::Event>)> {
+    let session_id = launch_id.trim().parse::<u64>().ok()?;
+    let sock = crate::daemon::client::default_sock_path(paths);
+    let (events, record) = crate::daemon::client::build_log_inputs(&sock, session_id).ok()?;
+    // A served-but-absent record is not an answer: fall back so the
+    // prefix-match branch still gets its chance.
+    Some((*record?, events))
 }
 
 fn resolve_launch_record(db_path: &Path, launch_id: &str) -> Result<BuildRecord, SoldrError> {
