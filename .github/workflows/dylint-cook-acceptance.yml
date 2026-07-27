@@ -1,18 +1,35 @@
 name: Dylint Cook Acceptance
 
+
+# Not a per-PR job (soldr#1900 follow-up, requested by the owner).
+#
+# This acceptance runs its scenarios inside a Docker container via
+# `ci/perf_local.py`. That container earns its keep *locally*: it is a
+# named, reusable runner with persistent target/Cargo/soldr volumes, so
+# a developer's second run is warm.
+#
+# On GitHub Actions there is nothing to reuse. The runner is already an
+# ephemeral, isolated VM, so the container adds no isolation the job did
+# not already have — it only adds a full image build to every run. The
+# last successful cache-acceptance run took 45 minutes; the cook one
+# runs 13-26. The cache workflow also triggered on `crates/**`, so every
+# Rust PR paid for it.
+#
+# So it moves to manual dispatch plus a weekly schedule: the coverage
+# stays, and it stops sitting between a one-line change and a merge.
+# Run it on demand before touching dylint caching:
+#
+#     gh workflow run "Dylint Cook Acceptance"
+#
+# Note the deliberate distinction: Docker stays where it provides an
+# environment the runner genuinely is not — `baseline-zero-deps.yml`
+# builds an old-glibc image to prove the binary runs there. That is
+# testing a different platform, not re-isolating an isolated one.
+
 on:
+  schedule:
+    - cron: "0 5 * * 1"
   workflow_dispatch:
-  pull_request:
-    paths:
-      - ".github/scripts/dylint_cook_acceptance.py"
-      - ".github/workflows/dylint-cook-acceptance.yml"
-      - "ci/fixtures/dylint-cache/**"
-      - "crates/soldr-cli/src/dylint_cook.rs"
-      - "crates/soldr-cli/src/dylint_toolchain.rs"
-      - "crates/soldr-cli/src/cargo_front_door/**"
-      - "crates/soldr-cli/src/cli_args.rs"
-      - "crates/soldr-cli/src/soldr_main.rs"
-      - "_vender/zccache"
 
 permissions:
   contents: read
