@@ -24,6 +24,44 @@ use std::io::{self, Read, Write};
 use std::time::Duration;
 
 const HEADER_BYTES: usize = 8;
+
+/// Sentinel in the header's version slot marking a **pre-handshake reject
+/// record** (#1853).
+///
+/// The daemon cannot answer a peer whose protocol it does not speak — any
+/// versioned frame it writes would be rejected by that peer's own header
+/// check. But the 8-byte header layout is frozen across every version (see
+/// the module docs), so a record carrying an impossible version is parseable
+/// by all of them, in both directions, forever.
+///
+/// Already-shipped clients hit the version-mismatch branch below and surface
+/// `protocol version mismatch: peer=4294967295, …` — imperfect, but a
+/// *diagnosable, classifiable* error delivered immediately instead of an
+/// opaque `ECONNRESET` after a 30 s retry budget. Patched clients report the
+/// daemon's actual reason string.
+///
+/// Deliberately not prost: it must stay decodable by versions that share no
+/// schema with us.
+pub const REJECT_RECORD_VERSION: u32 = u32::MAX;
+
+/// Cap on a reject reason so a malicious or confused peer cannot make us
+/// allocate on its behalf.
+const MAX_REJECT_REASON_BYTES: usize = 512;
+
+/// Encode a pre-handshake reject record: `[u32 LE len][u32 LE sentinel][utf-8]`.
+pub fn encode_reject_record(reason: &str) -> Vec<u8> {
+    // Truncate on a char boundary so the peer still receives valid UTF-8.
+    let mut end = reason.len().min(MAX_REJECT_REASON_BYTES);
+    while end > 0 && !reason.is_char_boundary(end) {
+        end -= 1;
+    }
+    let reason = &reason.as_bytes()[..end];
+    let mut buf = Vec::with_capacity(HEADER_BYTES + reason.len());
+    buf.extend_from_slice(&(reason.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&REJECT_RECORD_VERSION.to_le_bytes());
+    buf.extend_from_slice(reason);
+    buf
+}
 /// Reads on the daemon side (a `RecordTargetTouch` or similar) used to
 /// finish in milliseconds, so a 30 s cap was generous. With the
 /// `Request::Compile` verb added in #977 Phase 5 / #980 L1 the wrapper
@@ -121,6 +159,9 @@ pub(crate) fn read_frame_sync_for_version<R: Read, T: WireBody>(
     r.read_exact(&mut header)?;
     let body_len = u32::from_le_bytes(header[..4].try_into().expect("4 bytes"));
     let version = u32::from_le_bytes(header[4..].try_into().expect("4 bytes"));
+    if version == REJECT_RECORD_VERSION {
+        return Err(read_reject_record_sync(r, body_len));
+    }
     if version != expected_version {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -136,6 +177,24 @@ pub(crate) fn read_frame_sync_for_version<R: Read, T: WireBody>(
     let mut body = vec![0u8; body_len as usize];
     r.read_exact(&mut body)?;
     T::decode_wire(&body).map_err(decode_error)
+}
+
+/// Turn a reject record's payload into the error the caller sees (#1853).
+///
+/// Failure to read the reason is not itself interesting — the peer already
+/// told us it is hanging up, so fall back to a generic message rather than
+/// masking the rejection with an I/O error.
+fn read_reject_record_sync<R: Read>(r: &mut R, body_len: u32) -> io::Error {
+    let want = (body_len as usize).min(MAX_REJECT_REASON_BYTES);
+    let mut reason = vec![0u8; want];
+    let reason = match r.read_exact(&mut reason) {
+        Ok(()) => String::from_utf8_lossy(&reason).into_owned(),
+        Err(_) => "daemon rejected the connection".to_string(),
+    };
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("daemon rejected connection: {reason}"),
+    )
 }
 
 pub async fn write_frame_async<W, T>(w: &mut W, msg: &T) -> io::Result<()>
@@ -273,6 +332,55 @@ mod tests {
         let mut cursor = Cursor::new(bytes);
         let err = read_frame_sync::<_, Request>(&mut cursor).expect_err("must error");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    /// #1853: the reject record must be decodable by a reader expecting ANY
+    /// protocol version — that is the whole point of putting a sentinel in
+    /// the frozen header rather than sending a versioned frame.
+    #[test]
+    fn reject_record_is_readable_at_every_protocol_version() {
+        let record = encode_reject_record("protocol version mismatch: peer=9, daemon=18");
+
+        for reader_version in [9, 17, PROTOCOL_VERSION] {
+            let mut cursor = Cursor::new(record.clone());
+            let err = read_frame_sync_for_version::<_, Request>(&mut cursor, reader_version)
+                .expect_err("a reject record is never a valid frame");
+            assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+            let message = err.to_string();
+            assert!(
+                message.contains("daemon rejected connection"),
+                "reader at v{reader_version} lost the reason: {message}"
+            );
+            assert!(
+                message.contains("peer=9, daemon=18"),
+                "reader at v{reader_version} lost the detail: {message}"
+            );
+        }
+    }
+
+    /// A truncated record must still name the rejection rather than
+    /// masquerading as an I/O failure — the peer already told us it is
+    /// hanging up.
+    #[test]
+    fn truncated_reject_record_still_reports_a_rejection() {
+        let mut record = encode_reject_record("some long reason that gets cut off");
+        record.truncate(HEADER_BYTES + 4);
+        let mut cursor = Cursor::new(record);
+        let err = read_frame_sync::<_, Request>(&mut cursor).expect_err("must error");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string().contains("daemon rejected the connection"),
+            "{err}"
+        );
+    }
+
+    /// The reason is capped, and the cap must not split a UTF-8 sequence.
+    #[test]
+    fn oversized_reject_reason_is_truncated_on_a_char_boundary() {
+        let record = encode_reject_record(&"é".repeat(MAX_REJECT_REASON_BYTES));
+        let len = u32::from_le_bytes(record[..4].try_into().unwrap()) as usize;
+        assert!(len <= MAX_REJECT_REASON_BYTES);
+        std::str::from_utf8(&record[HEADER_BYTES..]).expect("payload stays valid UTF-8");
     }
 
     #[test]

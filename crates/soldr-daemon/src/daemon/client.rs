@@ -128,6 +128,14 @@ pub enum ClientError {
     Io(std::io::Error),
     /// Daemon answered something we didn't ask for (or an Error variant).
     Protocol(String),
+    /// The daemon answered, but speaks a protocol this binary cannot parse
+    /// (#1853).
+    ///
+    /// Distinct from [`Self::Protocol`] because retrying cannot help: a
+    /// version-skewed daemon can never serve this client, no matter how many
+    /// attempts remain. The caller must displace the daemon or fall back to a
+    /// direct compile rather than burning its retry budget.
+    VersionMismatch(String),
 }
 
 impl From<std::io::Error> for ClientError {
@@ -140,6 +148,18 @@ impl From<std::io::Error> for ClientError {
             return ClientError::Protocol(
                 "Windows named pipe remained busy after retry budget".into(),
             );
+        }
+        // #1853: both the version-mismatch branch and the pre-handshake
+        // reject record surface as InvalidData from the frame reader. Classify
+        // them here, in the shared conversion, so Unix and Windows transports
+        // both get it from one place.
+        if e.kind() == std::io::ErrorKind::InvalidData {
+            let message = e.to_string();
+            if message.contains("protocol version mismatch")
+                || message.contains("daemon rejected connection")
+            {
+                return ClientError::VersionMismatch(message);
+            }
         }
         match e.kind() {
             std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused => {

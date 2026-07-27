@@ -328,6 +328,12 @@ pub fn client_error_indicates_daemon_unavailable(e: &client::ClientError) -> boo
         client::ClientError::NotRunning => true,
         client::ClientError::Io(_) => true,
         client::ClientError::Protocol(_) => false,
+        // #1853: a daemon speaking a protocol we cannot parse is, from the
+        // wrapper's perspective, indistinguishable from no daemon at all — it
+        // can never serve a compile, however many retries remain. That is
+        // deployment skew, exactly what the recovery ladder exists for, not a
+        // daemon-side bug being masked (the rationale above for `Protocol`).
+        client::ClientError::VersionMismatch(_) => true,
     }
 }
 
@@ -1029,6 +1035,16 @@ fn describe_compile_dispatch_error(err: &client::ClientError) -> String {
         }
         client::ClientError::Protocol(message) => {
             format!("daemon protocol error: {message}")
+        }
+        // #1853: name the skew explicitly. Before the daemon learned to send a
+        // reject record this surfaced as an opaque ECONNRESET, which read as a
+        // crashed daemon and sent people looking in the wrong place.
+        client::ClientError::VersionMismatch(message) => {
+            format!(
+                "{message}; the running daemon was built from a different soldr \
+                 version — stop it (`soldr daemon stop`) or align the soldr on \
+                 PATH with the one that started it"
+            )
         }
         client::ClientError::Io(err) => {
             use std::io::ErrorKind;
