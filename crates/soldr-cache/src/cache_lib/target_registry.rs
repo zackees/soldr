@@ -280,17 +280,27 @@ pub fn directory_size(path: &Path) -> u64 {
     };
     for entry in entries.flatten() {
         let entry_path = entry.path();
-        let entry_meta = match entry.metadata() {
-            Ok(m) => m,
+        // `DirEntry::file_type` does NOT follow the link, unlike
+        // `DirEntry::metadata` (which is `fs::metadata` and resolves it).
+        // Using the latter here meant the symlink check below could never
+        // fire — the metadata always described the *target* — so a symlink
+        // to a directory was recursed into and a symlink cycle recursed
+        // until the stack blew (#1662).
+        let entry_type = match entry.file_type() {
+            Ok(t) => t,
             Err(_) => continue,
         };
-        if entry_meta.file_type().is_symlink() {
+        if entry_type.is_symlink() {
             continue;
         }
-        if entry_meta.is_dir() {
+        if entry_type.is_dir() {
             total = total.saturating_add(directory_size(&entry_path));
-        } else if entry_meta.is_file() {
-            total = total.saturating_add(entry_meta.len());
+        } else if entry_type.is_file() {
+            // Safe to resolve now: the entry is a real file, so
+            // `metadata()` and `symlink_metadata()` agree.
+            if let Ok(meta) = entry.metadata() {
+                total = total.saturating_add(meta.len());
+            }
         }
     }
     total
@@ -319,19 +329,23 @@ pub fn directory_size_and_files(path: &Path) -> (u64, u64) {
     };
     for entry in entries.flatten() {
         let entry_path = entry.path();
-        let entry_meta = match entry.metadata() {
-            Ok(m) => m,
+        // See `directory_size`: `file_type()` does not follow the link,
+        // `metadata()` does. The old code used the latter, so the symlink
+        // guard was dead and cycles recursed forever (#1662).
+        let entry_type = match entry.file_type() {
+            Ok(t) => t,
             Err(_) => continue,
         };
-        if entry_meta.file_type().is_symlink() {
+        if entry_type.is_symlink() {
             continue;
         }
-        if entry_meta.is_dir() {
+        if entry_type.is_dir() {
             let (sub_bytes, sub_files) = directory_size_and_files(&entry_path);
             total_bytes = total_bytes.saturating_add(sub_bytes);
             total_files = total_files.saturating_add(sub_files);
-        } else if entry_meta.is_file() {
-            total_bytes = total_bytes.saturating_add(entry_meta.len());
+        } else if entry_type.is_file() {
+            total_bytes =
+                total_bytes.saturating_add(entry.metadata().map(|m| m.len()).unwrap_or(0));
             total_files = total_files.saturating_add(1);
         }
     }
@@ -524,6 +538,78 @@ mod tests {
     fn fixed_now() -> i64 {
         1_700_000_000
     }
+
+    /// Create a directory symlink, or return false when the platform/session
+    /// cannot make one. Windows needs Developer Mode or elevation, so the
+    /// symlink tests self-skip rather than failing on an unprivileged box.
+    fn try_symlink_dir(src: &std::path::Path, dst: &std::path::Path) -> bool {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(src, dst).is_ok()
+        }
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_dir(src, dst).is_ok()
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (src, dst);
+            false
+        }
+    }
+
+    crate::timed_test!(directory_size_does_not_follow_a_symlink_cycle, {
+        // Before #1662 the per-entry check used `DirEntry::metadata`, which
+        // follows the link, so `is_symlink()` never fired and this recursed
+        // until the stack blew.
+        let root = tempdir().expect("tempdir");
+        let inner = root.path().join("inner");
+        std::fs::create_dir_all(&inner).expect("mkdir");
+        std::fs::write(inner.join("real.bin"), b"0123456789").expect("write");
+
+        if !try_symlink_dir(root.path(), &inner.join("loop")) {
+            eprintln!("skipping: cannot create directory symlinks here");
+            return;
+        }
+
+        // The assertion is that this terminates at all; the size must also
+        // count only the one real file, not the cycle's repeats.
+        assert_eq!(directory_size(root.path()), 10);
+    });
+
+    crate::timed_test!(
+        directory_size_ignores_a_symlink_pointing_outside_the_tree,
+        {
+            let root = tempdir().expect("tempdir");
+            let outside = tempdir().expect("tempdir");
+            std::fs::write(outside.path().join("huge.bin"), vec![0u8; 4096]).expect("write");
+            std::fs::write(root.path().join("small.bin"), b"abc").expect("write");
+
+            if !try_symlink_dir(outside.path(), &root.path().join("escape")) {
+                eprintln!("skipping: cannot create directory symlinks here");
+                return;
+            }
+
+            // Only `small.bin`. Counting the linked-in tree would make an
+            // unrelated directory look like it belonged to this target.
+            assert_eq!(directory_size(root.path()), 3);
+        }
+    );
+
+    crate::timed_test!(directory_size_and_files_is_symlink_safe, {
+        let root = tempdir().expect("tempdir");
+        let inner = root.path().join("inner");
+        std::fs::create_dir_all(&inner).expect("mkdir");
+        std::fs::write(inner.join("a.bin"), b"12345").expect("write");
+
+        if !try_symlink_dir(root.path(), &inner.join("loop")) {
+            eprintln!("skipping: cannot create directory symlinks here");
+            return;
+        }
+
+        let (bytes, files) = directory_size_and_files(root.path());
+        assert_eq!((bytes, files), (5, 1));
+    });
 
     #[test]
     fn upsert_is_idempotent_and_updates_timestamp() {
