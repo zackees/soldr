@@ -269,9 +269,15 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
         // the absolute-age sweep, which this path never does. So the daemon's
         // coverage is a superset, not a delay.
         //
-        // A liveness probe is affordable here: this is a throttled, detached
-        // sweeper, not the wrapper hot path.
-        match crate::daemon::lifecycle::is_live(&paths) {
+        // Use the version-blind PID-file occupancy check, NOT `is_live`.
+        // `is_live` probes the optional broker and hashes the executable
+        // identity — the #1832 note on `preflight_displace_stale_daemon`
+        // records that costing tens of seconds — and CI caught exactly that
+        // as a `PEP 517 daemon smoke (windows-x64)` failure here.
+        //
+        // Version-blind is also the semantically correct question: *any* live
+        // soldr daemon owns state.redb, whatever protocol it speaks.
+        match crate::daemon::lifecycle::stale_daemon_occupies_endpoint(&paths) {
             Some(pid) => {
                 let _ = append_auto_gc_log_line(
                     &log_path,
