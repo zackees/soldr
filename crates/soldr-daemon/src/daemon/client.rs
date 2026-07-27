@@ -56,7 +56,10 @@ const ERROR_PIPE_BUSY: i32 = 231;
 #[cfg(windows)]
 const PIPE_BUSY_RETRY_LIMIT: u32 = 8;
 
-#[cfg(windows)]
+/// How many times a client re-dials after the daemon replies
+/// `Response::Backpressure`. Shared by both transports since soldr#1853 —
+/// compile admission is no longer Windows-only, so the AF_UNIX path needs
+/// the same bounded back-off.
 const BACKPRESSURE_RETRY_LIMIT: u32 = 8;
 
 #[cfg(windows)]
@@ -596,10 +599,69 @@ where
     }
     #[cfg(unix)]
     {
-        let mut stream = connect(sock_path, compile_reply_timeout())?;
-        write_frame_sync(&mut stream, &Request::Compile(req))?;
+        // Honour `Response::Backpressure` (soldr#1853). Compile admission
+        // used to be `#[cfg(windows)]`-only, so this transport accepted every
+        // connection unconditionally and shed load by resetting sockets —
+        // surfacing as ECONNRESET, a burned 30 s budget, and a red build.
+        // Applying admission on Unix needs a client that backs off instead of
+        // treating the reply as a protocol violation, which is exactly what
+        // `open_compile_pipe_with_backpressure` already does for named pipes.
+        //
+        // Synchronous by necessity: this path is sync end to end, so the wait
+        // is a `thread::sleep` and each retry re-dials. The first frame is
+        // carried into the loop below rather than re-read, since reading it
+        // here to test for backpressure consumes it.
+        let (mut stream, first_frame) = {
+            let mut admitted = None;
+            let mut last_retry_after_ms = 0u32;
+            for attempt in 0..BACKPRESSURE_RETRY_LIMIT {
+                let mut stream = connect(sock_path, compile_reply_timeout())?;
+                write_frame_sync(&mut stream, &Request::Compile(req.clone()))?;
+                let frame: Response = read_frame_sync(&mut stream)?;
+                match frame {
+                    Response::Backpressure { retry_after_ms } => {
+                        last_retry_after_ms = retry_after_ms;
+                        if attempt + 1 == BACKPRESSURE_RETRY_LIMIT {
+                            break;
+                        }
+                        // Per-process jitter so wrappers released together do
+                        // not re-dial in lockstep; mirrors the Windows spread.
+                        let jitter_ms =
+                            (u64::from(attempt) * 11 + u64::from(std::process::id())) % 4;
+                        std::thread::sleep(Duration::from_millis(
+                            u64::from(retry_after_ms) + jitter_ms,
+                        ));
+                    }
+                    other => {
+                        admitted = Some((stream, other));
+                        break;
+                    }
+                }
+            }
+            match admitted {
+                Some(pair) => pair,
+                // Deliberately `Io`, not `Protocol`: a daemon too busy to
+                // admit us is *unavailable*, and `Protocol` is classified as
+                // "the daemon answered, so do not degrade"
+                // (`compile_dispatch::client_error_indicates_daemon_unavailable`).
+                // Reporting this as Io lets the caller fall back to a direct
+                // uncached rustc instead of failing the build.
+                None => {
+                    return Err(ClientError::Io(std::io::Error::new(
+                        std::io::ErrorKind::WouldBlock,
+                        format!(
+                            "daemon IPC admission stayed backpressured across                              {BACKPRESSURE_RETRY_LIMIT} attempts                              ({last_retry_after_ms}ms apart)"
+                        ),
+                    )))
+                }
+            }
+        };
+        let mut pending = Some(first_frame);
         loop {
-            let frame: Response = read_frame_sync(&mut stream)?;
+            let frame: Response = match pending.take() {
+                Some(frame) => frame,
+                None => read_frame_sync(&mut stream)?,
+            };
             match frame {
                 Response::CompileStdoutChunk(bytes) => {
                     tracing::debug!(
