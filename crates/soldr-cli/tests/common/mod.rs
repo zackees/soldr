@@ -262,6 +262,13 @@ pub(crate) fn seed_gc_candidate(cache_root: &Path, label: &str) -> PathBuf {
     let workspace = dev_root.join(label);
     let target = workspace.join("target");
     fs::create_dir_all(&target).expect("failed to create target dir");
+    // Cargo always writes this, and since #1671 the deletion path refuses to
+    // recursively remove a directory that is merely *named* `target` without a
+    // cargo marker. Without it this fixture is indistinguishable from an
+    // arbitrary directory, so GC correctly declines to reclaim it and every
+    // test asserting reclamation fails.
+    fs::write(target.join("CACHEDIR.TAG"), b"Signature: 8a477f597d28d172")
+        .expect("failed to seed cargo target marker");
     fs::write(target.join("artifact.bin"), b"reclaim me").expect("failed to seed target file");
     fs::write(
         cache_root.join("config.toml"),
