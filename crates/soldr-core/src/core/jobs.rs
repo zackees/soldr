@@ -159,67 +159,62 @@ fn parse_positive(raw: &str) -> Option<usize> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn soldr_jobs_env_wins_over_everything() {
+    crate::timed_test!(soldr_jobs_env_wins_over_everything, {
         let resolved = resolve_compile_jobs_from(Some("3"), Some(9), Some("11"), 16);
         assert_eq!(resolved.jobs, 3);
         assert_eq!(resolved.source, JobsSource::SoldrJobsEnv);
-    }
+    });
 
-    #[test]
-    fn config_wins_over_the_zccache_compat_var() {
+    crate::timed_test!(config_wins_over_the_zccache_compat_var, {
         let resolved = resolve_compile_jobs_from(None, Some(9), Some("11"), 16);
         assert_eq!(resolved.jobs, 9);
         assert_eq!(resolved.source, JobsSource::Config);
-    }
+    });
 
-    #[test]
-    fn zccache_var_still_works_for_existing_setups() {
+    crate::timed_test!(zccache_var_still_works_for_existing_setups, {
         // The pre-#1761 knob must keep working, or upgrading soldr
         // silently changes the concurrency on machines already tuned.
         let resolved = resolve_compile_jobs_from(None, None, Some("11"), 16);
         assert_eq!(resolved.jobs, 11);
         assert_eq!(resolved.source, JobsSource::ZccacheCompatEnv);
-    }
+    });
 
-    #[test]
-    fn falls_back_to_the_default_when_nothing_is_set() {
+    crate::timed_test!(falls_back_to_the_default_when_nothing_is_set, {
         let resolved = resolve_compile_jobs_from(None, None, None, 16);
         assert_eq!(resolved.jobs, 16);
         assert_eq!(resolved.source, JobsSource::Default);
-    }
+    });
 
-    #[test]
-    fn unparseable_and_zero_values_fall_through_rather_than_wedging() {
-        // A limit of 0 admits nothing, so every compile would block
-        // forever. Falling through beats deadlocking the build.
-        for bad in ["", "   ", "0", "-1", "many", "3.5"] {
-            let resolved = resolve_compile_jobs_from(Some(bad), None, None, 16);
-            assert_eq!(
-                resolved.source,
-                JobsSource::Default,
-                "SOLDR_JOBS={bad:?} must fall through",
-            );
-            assert_eq!(resolved.jobs, 16);
+    crate::timed_test!(
+        unparseable_and_zero_values_fall_through_rather_than_wedging,
+        {
+            // A limit of 0 admits nothing, so every compile would block
+            // forever. Falling through beats deadlocking the build.
+            for bad in ["", "   ", "0", "-1", "many", "3.5"] {
+                let resolved = resolve_compile_jobs_from(Some(bad), None, None, 16);
+                assert_eq!(
+                    resolved.source,
+                    JobsSource::Default,
+                    "SOLDR_JOBS={bad:?} must fall through",
+                );
+                assert_eq!(resolved.jobs, 16);
+            }
+            let zero_config = resolve_compile_jobs_from(None, Some(0), None, 16);
+            assert_eq!(zero_config.source, JobsSource::Default);
         }
-        let zero_config = resolve_compile_jobs_from(None, Some(0), None, 16);
-        assert_eq!(zero_config.source, JobsSource::Default);
-    }
+    );
 
-    #[test]
-    fn whitespace_is_tolerated() {
+    crate::timed_test!(whitespace_is_tolerated, {
         let resolved = resolve_compile_jobs_from(Some(" 6 "), None, None, 16);
         assert_eq!(resolved.jobs, 6);
-    }
+    });
 
-    #[test]
-    fn resolved_limit_is_never_zero() {
+    crate::timed_test!(resolved_limit_is_never_zero, {
         let resolved = resolve_compile_jobs_from(None, None, None, 0);
         assert_eq!(resolved.jobs, 1);
-    }
+    });
 
-    #[test]
-    fn default_is_at_least_one_and_below_logical_parallelism() {
+    crate::timed_test!(default_is_at_least_one_and_below_logical_parallelism, {
         let jobs = default_compile_jobs();
         assert!(jobs >= 1);
         if let Ok(logical) = std::thread::available_parallelism() {
@@ -228,5 +223,5 @@ mod tests {
                 "default {jobs} must not exceed logical parallelism {logical:?}",
             );
         }
-    }
+    });
 }
