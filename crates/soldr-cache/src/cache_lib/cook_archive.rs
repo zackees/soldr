@@ -511,6 +511,10 @@ pub fn extract_skip_existing(
         }
         // Capture the mode before consuming the entry body: after the
         // copy, `entry` is drained and the header borrow is awkward.
+        // Only the Unix arm below consumes it, so binding it on Windows
+        // is an unused variable — and `-D warnings` makes that a hard
+        // error, which blocked `cargo clippy` for Windows developers.
+        #[cfg(unix)]
         let mode_bits = entry.header().mode().ok();
         // tar's `unpack_in` would overwrite; we manually copy bytes
         // so the skip-existing invariant cannot be violated.
