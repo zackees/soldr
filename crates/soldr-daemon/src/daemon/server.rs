@@ -169,15 +169,27 @@ fn ipc_queue_capacity(listener_pool_size: usize) -> usize {
     .clamp(1, IPC_QUEUE_CAPACITY_MAX)
 }
 
+/// Slots the outer `CompileAdmission` queue sizes itself for.
+///
+/// soldr#1761: this used to read `ZCCACHE_MAX_PARALLEL_COMPILES` and,
+/// when unset, default to `available_parallelism()` — while the
+/// semaphore it admits into defaulted to `available_parallelism() - 1`.
+/// Two layers sized from two expressions, so the queue always believed
+/// in one more slot than existed. Both now resolve through
+/// [`crate::core::jobs`], which also adds `SOLDR_JOBS` and a config
+/// field ahead of the zccache-namespaced variable.
 fn expected_compile_slots() -> usize {
-    positive_env_value("ZCCACHE_MAX_PARALLEL_COMPILES", |name| {
-        std::env::var(name).ok()
-    })
-    .unwrap_or_else(|| {
-        std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4)
-    })
+    crate::core::jobs::resolve_compile_jobs(config_compile_jobs()).jobs
+}
+
+/// `[jobs].max_parallel_compiles` from `config.toml`, or `None` when
+/// the config is absent or unreadable.
+///
+/// A malformed config must not stop the daemon from starting — it
+/// falls through to the next precedence tier, same as an unset value.
+pub(crate) fn config_compile_jobs() -> Option<usize> {
+    let paths = crate::core::SoldrPaths::new().ok()?;
+    paths.load_config().ok()?.jobs.max_parallel_compiles
 }
 
 #[cfg(test)]

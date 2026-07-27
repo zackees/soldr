@@ -22,6 +22,9 @@ use wait_timeout::ChildExt;
 /// `Cargo.toml`; a parity test enforces byte-equality.
 pub mod canonical_targets;
 pub mod git;
+/// soldr#1761 — soldr-owned compile concurrency limit, resolved once
+/// and shared by the admission queue and the compile semaphore.
+pub mod jobs;
 mod paths;
 mod target_triple;
 mod toolchain_manifest;
