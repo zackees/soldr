@@ -65,6 +65,55 @@ crate::timed_test!(cache_flush_response_preserves_incomplete_step_details, {
     }
 });
 
+crate::timed_test!(build_log_inputs_verb_round_trips, {
+    // soldr#1814 slice 2a. Every `Event` field must survive, because the
+    // build log's compile timeline is derived entirely from them — a field
+    // lost on the wire silently produces an incomplete log rather than an
+    // error.
+    use crate::daemon::db::{Event, EventKind};
+
+    assert!(matches!(
+        decode_request(&encode_request(&Request::BuildLogInputs { session_id: 42 }))
+            .expect("decode"),
+        Request::BuildLogInputs { session_id: 42 }
+    ));
+
+    let events = vec![
+        Event {
+            ts_ms: 1_700_000_000_000,
+            session_id: Some(42),
+            kind: EventKind::CompileStart,
+            crate_name: Some("indexmap".into()),
+            duration_us: None,
+            target_dir: Some("/w/target".into()),
+            exit_code: None,
+        },
+        Event {
+            ts_ms: 1_700_000_001_000,
+            session_id: Some(42),
+            kind: EventKind::CompileEnd,
+            crate_name: Some("indexmap".into()),
+            duration_us: Some(987_654),
+            target_dir: None,
+            exit_code: Some(0),
+        },
+    ];
+    let resp = Response::BuildLogInputs {
+        events: events.clone(),
+        record: None,
+    };
+    match decode_response(&encode_response(&resp)).expect("decode") {
+        Response::BuildLogInputs {
+            events: decoded,
+            record,
+        } => {
+            assert_eq!(decoded, events);
+            assert!(record.is_none(), "absent record must stay absent");
+        }
+        other => panic!("expected BuildLogInputs, got {other:?}"),
+    }
+});
+
 crate::timed_test!(compile_stats_verb_round_trips, {
     use crate::daemon::protocol::{CompileStatsInfo, StagedProfileInfo};
     assert!(matches!(

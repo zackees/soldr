@@ -86,7 +86,11 @@ use serde::{Deserialize, Serialize};
 ///   generation that accepted the request. Callers can now wait for that
 ///   exact responder without trusting a PID sampled before the request or
 ///   signalling a successor after PID reuse.
-pub const PROTOCOL_VERSION: u32 = 18;
+/// * v19: added `BuildLogInputs` so the daemon serves the event rows and
+///   build record that `build_log` previously read by opening `state.redb`
+///   itself (soldr#1814 slice 2a — the daemon becomes the single owner of
+///   its own tables).
+pub const PROTOCOL_VERSION: u32 = 19;
 
 /// Wire-chunk granularity for the streaming Compile reply (#983 Phase
 /// 5b). 64 KiB is the same buffer size cargo's own pipe readers use
@@ -207,6 +211,15 @@ pub enum Request {
     /// diff against it (soldr#1368). Replies with
     /// [`Response::CompileStats`].
     CompileStats,
+    /// Request-response: return the build-log inputs the daemon already owns
+    /// for `session_id` — its event rows plus the build record.
+    ///
+    /// soldr#1814 slice 2a. `build_log` used to read these by opening
+    /// `state.redb` itself, making the CLI a second opener of daemon-owned
+    /// tables on every build. Two back-to-back `Required` opens (5 s budget
+    /// each) is also what exceeded a 10 s test deadline under parallel test
+    /// processes. Replies with [`Response::BuildLogInputs`].
+    BuildLogInputs { session_id: u64 },
 }
 
 /// Body of [`Request::Compile`]. Carries the full `rustc` argv plus the
@@ -334,6 +347,21 @@ pub enum Response {
     /// pending write, index update, or named persistence step failed to
     /// finish successfully before its bound.
     CacheFlushed(CacheFlushInfo),
+    /// Reply to [`Request::BuildLogInputs`] (soldr#1814 slice 2a).
+    ///
+    /// `record` is `None` when the daemon holds no row for the session, which
+    /// is a normal outcome rather than an error — the CLI renders the log
+    /// without it, exactly as the direct-redb path did.
+    BuildLogInputs {
+        events: Vec<crate::daemon::db::Event>,
+        /// Boxed so this variant does not dominate the size of every
+        /// `Response`: `BuildRecord` is wide (several `String`s plus a
+        /// `Vec<BuildMissReason>`), and inlining it here tripped
+        /// `clippy::large_enum_variant`. `Vec<BuildRecord>` in
+        /// [`Response::Builds`] is fine for the same reason a `Box` is —
+        /// the payload lives behind a pointer.
+        record: Option<Box<BuildRecord>>,
+    },
 }
 
 /// Identity of the daemon generation that accepted a shutdown request.
@@ -532,9 +560,12 @@ pub struct BuildRecord {
 mod tests {
     use super::*;
 
-    crate::timed_test!(protocol_version_is_v18_after_generation_aware_shutdown, {
-        assert_eq!(PROTOCOL_VERSION, 18);
-    });
+    crate::timed_test!(
+        protocol_version_is_v19_after_daemon_owned_build_log_inputs,
+        {
+            assert_eq!(PROTOCOL_VERSION, 19);
+        }
+    );
 
     crate::timed_test!(chunk_bytes_is_64_kib, {
         // #983 Phase 5b — declared in the protocol so the daemon and

@@ -421,6 +421,11 @@ impl From<&Request> for proto::WireRequest {
             Request::Shutdown => proto::WireRequestKind::Shutdown(proto::WireUnit {}),
             Request::FlushCaches => proto::WireRequestKind::FlushCaches(proto::WireUnit {}),
             Request::CompileStats => proto::WireRequestKind::CompileStats(proto::WireUnit {}),
+            Request::BuildLogInputs { session_id } => {
+                proto::WireRequestKind::BuildLogInputs(proto::WireBuildLogInputsRequest {
+                    session_id: *session_id,
+                })
+            }
             Request::BuildSessionStart {
                 session_id,
                 repo_root,
@@ -559,6 +564,9 @@ impl TryFrom<proto::WireRequest> for Request {
             proto::WireRequestKind::Shutdown(_) => Request::Shutdown,
             proto::WireRequestKind::FlushCaches(_) => Request::FlushCaches,
             proto::WireRequestKind::CompileStats(_) => Request::CompileStats,
+            proto::WireRequestKind::BuildLogInputs(m) => Request::BuildLogInputs {
+                session_id: m.session_id,
+            },
             proto::WireRequestKind::BuildSessionStart(m) => Request::BuildSessionStart {
                 session_id: m.session_id,
                 repo_root: m.repo_root,
@@ -694,6 +702,12 @@ impl From<&Response> for proto::WireResponse {
             Response::CacheFlushed(info) => {
                 proto::WireResponseKind::CacheFlushed(cache_flush_to_wire(info))
             }
+            Response::BuildLogInputs { events, record } => {
+                proto::WireResponseKind::BuildLogInputs(proto::WireBuildLogInputs {
+                    events: events.iter().map(event_to_wire).collect(),
+                    record: record.as_deref().map(build_record_to_wire).map(Box::new),
+                })
+            }
         };
         Self { kind: Some(kind) }
     }
@@ -757,6 +771,14 @@ impl TryFrom<proto::WireResponse> for Response {
             proto::WireResponseKind::CacheFlushed(m) => {
                 Response::CacheFlushed(cache_flush_from_wire(m))
             }
+            proto::WireResponseKind::BuildLogInputs(m) => Response::BuildLogInputs {
+                events: m
+                    .events
+                    .into_iter()
+                    .map(event_from_wire)
+                    .collect::<Result<Vec<_>, _>>()?,
+                record: m.record.map(|r| Box::new(build_record_from_wire(*r))),
+            },
         })
     }
 }

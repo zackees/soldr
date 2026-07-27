@@ -50,7 +50,14 @@ message WireRequest {
     // soldr#1368 — read the embedded zccache service's cumulative
     // compile counters (for `soldr session start/end` stats).
     WireUnit compile_stats = 15;
+    // v19 / soldr#1814 slice 2a — ask the daemon for the build-log inputs it
+    // already owns, instead of the CLI opening state.redb itself.
+    WireBuildLogInputsRequest build_log_inputs = 16;
   }
+}
+
+message WireBuildLogInputsRequest {
+  uint64 session_id = 1;
 }
 
 message WireUnit {}
@@ -166,8 +173,19 @@ message WireResponse {
     WireBackpressure backpressure = 13;
     // v17 — structured result for flush_caches.
     WireCacheFlush cache_flushed = 14;
+    // v19 / soldr#1814 slice 2a — build-log inputs served by the daemon so
+    // the CLI stops opening the daemon tables in state.redb directly.
+    WireBuildLogInputs build_log_inputs = 15;
   }
 }
+
+// soldr#1814 slice 2a. `record` is absent when the daemon has no row for the
+// session, which is not an error — the CLI renders the log without it.
+message WireBuildLogInputs {
+  repeated WireEvent events = 1;
+  optional WireBuildRecord record = 2;
+}
+
 
 message WireShuttingDown {
   uint32 pid = 1;
