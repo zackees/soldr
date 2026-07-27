@@ -1,0 +1,219 @@
+//! Regression guard for soldr#1663: no environment variable may be
+//! mutated under two different barriers.
+//!
+//! ## What went wrong
+//!
+//! Rust runs a crate's unit tests in one process, so a module-local
+//! `static ENV_LOCK: Mutex<()>` serialises only that module. Two
+//! modules mutated `SOLDR_USE_LEGACY_XWIN`: `blessed_build` under the
+//! crate-wide `TEST_PROCESS_ENV_LOCK`, `main_tests` under a private
+//! mutex of its own.
+//!
+//! Two mutexes guarding one variable provide **no mutual exclusion at
+//! all**. Both tests took *a* lock, so each reads as correct in
+//! isolation — you have to notice the locks are different objects.
+//!
+//! ## Why this shape of lint
+//!
+//! The obvious fix is "make every module use one crate-wide lock", and
+//! I tried it: all 19 private barriers aliased to
+//! `TEST_PROCESS_ENV_LOCK`. The suite then failed with
+//! `TEST HUNG (>5s): compile_daemon_fallback_count_recovers_from_log_replacement`,
+//! and passed under `--test-threads=1`.
+//!
+//! It was starvation, not deadlock. `compile_dispatch`'s `EnvVarGuard`
+//! holds its mutex for the guard's whole lifetime, so once every
+//! env-mutating test in the crate shares one mutex, a test carrying a
+//! short custom deadline queues behind all of them. Collapsing
+//! fine-grained locks over *disjoint* variables into one global barrier
+//! costs suite latency and buys no correctness.
+//!
+//! So the rule enforced here is the one that actually matters: a given
+//! variable must be mutated under a single barrier. Modules that guard
+//! variables nobody else touches keep their own lock.
+//!
+//! This is a source lint because the defect is *identity* — "these two
+//! locks are not the same object" — which no passing test can observe,
+//! and the race it enables is timing-dependent.
+
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use soldr_cli::timed_test;
+
+fn crate_src_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src")
+}
+
+fn repo_relative(path: &Path) -> String {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root = manifest
+        .parent()
+        .and_then(Path::parent)
+        .unwrap_or(&manifest);
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn collect_rs(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rs(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            out.push(path);
+        }
+    }
+}
+
+/// Which barrier a file serialises on: the shared crate lock, a private
+/// mutex, or nothing.
+#[derive(Debug, PartialEq, Eq, Clone)]
+enum Barrier {
+    Shared,
+    Private,
+    None,
+}
+
+fn barrier_of(text: &str) -> Barrier {
+    if text.contains("TEST_PROCESS_ENV_LOCK") {
+        return Barrier::Shared;
+    }
+    let declares_private = text.lines().any(|line| {
+        let t = line.trim();
+        t.contains("Mutex")
+            && (t.starts_with("static ") || t.contains(" static "))
+            && (t.contains("ENV_LOCK") || t.contains("ENV_MUTEX") || t.contains("ENV_GUARD"))
+    });
+    if declares_private {
+        Barrier::Private
+    } else {
+        Barrier::None
+    }
+}
+
+/// Environment variables mutated in `text`, by the literal or constant
+/// name at the call site. Constants are reduced to their final path
+/// segment so `USE_LEGACY_XWIN_ENV_VAR` and
+/// `crate::blessed_build::USE_LEGACY_XWIN_ENV_VAR` compare equal —
+/// missing that is precisely how the original overlap stayed hidden.
+fn mutated_vars(text: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    for marker in ["set_var(", "remove_var("] {
+        let mut rest = text;
+        while let Some(idx) = rest.find(marker) {
+            rest = &rest[idx + marker.len()..];
+            let arg: String = rest
+                .chars()
+                .take_while(|c| *c != ',' && *c != ')')
+                .collect::<String>()
+                .trim()
+                .trim_matches('"')
+                .trim_start_matches('&')
+                .to_string();
+            let name = arg.rsplit("::").next().unwrap_or(&arg).to_string();
+            let looks_like_a_name = !name.is_empty()
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+            if looks_like_a_name {
+                found.push(name);
+            }
+        }
+    }
+    found.sort();
+    found.dedup();
+    found
+}
+
+/// Files whose env mutation is production behaviour, not a test
+/// fixture, so no test barrier applies. Each needs a reason.
+const PRODUCTION_ENV_WRITERS: &[(&str, &str)] = &[
+    (
+        "crates/soldr-cli/src/cli_dispatch.rs",
+        "prepend_path_dirs_to_env rewrites PATH for the child process",
+    ),
+    (
+        "crates/soldr-cli/src/msvc_host.rs",
+        "exports the discovered MSVC environment (PATH/INCLUDE/LIB) for the build",
+    ),
+];
+
+timed_test!(no_env_var_is_guarded_by_two_different_barriers, {
+    let src = crate_src_root();
+    if !src.is_dir() {
+        // The pre-built test-archive lanes run away from the checkout.
+        eprintln!("env_lock_lint: skipping — {} absent", src.display());
+        return;
+    }
+
+    let mut files = Vec::new();
+    collect_rs(&src, &mut files);
+    files.sort();
+
+    let production: Vec<&str> = PRODUCTION_ENV_WRITERS.iter().map(|(p, _)| *p).collect();
+
+    // var -> (barrier -> files)
+    let mut by_var: BTreeMap<String, BTreeMap<String, Vec<String>>> = BTreeMap::new();
+    for file in &files {
+        let rel = repo_relative(file);
+        if rel.ends_with("soldr-cli/src/lib.rs") || production.contains(&rel.as_str()) {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(file) else {
+            continue;
+        };
+        let barrier = barrier_of(&text);
+        // A file with no barrier at all and no tests is production code
+        // we have not catalogued; only flag it if it also shares a var.
+        let label = match barrier {
+            Barrier::Shared => "TEST_PROCESS_ENV_LOCK".to_string(),
+            Barrier::Private => format!("private mutex in {rel}"),
+            Barrier::None => format!("NO barrier ({rel})"),
+        };
+        for var in mutated_vars(&text) {
+            by_var
+                .entry(var)
+                .or_default()
+                .entry(label.clone())
+                .or_default()
+                .push(rel.clone());
+        }
+    }
+
+    let mut violations = Vec::new();
+    for (var, barriers) in &by_var {
+        if barriers.len() < 2 {
+            continue;
+        }
+        let mut lines = vec![format!(
+            "  {var} is mutated under {} barriers:",
+            barriers.len()
+        )];
+        for (barrier, files) in barriers {
+            lines.push(format!("      [{barrier}] {}", files.join(", ")));
+        }
+        violations.push(lines.join("\n"));
+    }
+
+    assert!(
+        violations.is_empty(),
+        "soldr#1663: an environment variable guarded by two different barriers \
+         is not guarded at all — a crate's unit tests share one process, so each \
+         module's mutex only excludes its own tests.\n\n{}\n\n\
+         Point every mutator of that variable at the same barrier; \
+         `use crate::TEST_PROCESS_ENV_LOCK as ENV_LOCK;` is the shared one. \
+         Do NOT move every module onto it wholesale — barriers over disjoint \
+         variables are deliberately separate, and collapsing them starved a \
+         test with a short deadline (see this file's header). If the mutation \
+         is production behaviour, add the file to PRODUCTION_ENV_WRITERS with \
+         a reason.",
+        violations.join("\n\n"),
+    );
+});

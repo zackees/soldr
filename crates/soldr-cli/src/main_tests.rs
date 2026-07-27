@@ -13,7 +13,7 @@ use std::sync::Mutex;
 /// guard objects below restore the previous value on drop, but two
 /// tests touching the same key concurrently would still observe each
 /// other's mid-test state without this lock.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+use crate::TEST_PROCESS_ENV_LOCK as ENV_LOCK;
 
 #[test]
 #[ignore = "subprocess helper"]
@@ -71,36 +71,9 @@ crate::timed_test!(maturin_build_lease_defers_gc_and_survives_abrupt_exit, {
     );
 });
 
-/// RAII guard that sets or removes an environment variable for the
-/// duration of a test and restores the previous value on drop.
-struct EnvVarGuard {
-    key: &'static str,
-    previous: Option<OsString>,
-}
-
-impl EnvVarGuard {
-    fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
-        let previous = std::env::var_os(key);
-        std::env::set_var(key, value);
-        Self { key, previous }
-    }
-
-    fn remove(key: &'static str) -> Self {
-        let previous = std::env::var_os(key);
-        std::env::remove_var(key);
-        Self { key, previous }
-    }
-}
-
-impl Drop for EnvVarGuard {
-    fn drop(&mut self) {
-        if let Some(value) = &self.previous {
-            std::env::set_var(self.key, value);
-        } else {
-            std::env::remove_var(self.key);
-        }
-    }
-}
+// soldr#1663: `EnvVarGuard` moved to the crate root so every module
+// shares one panic-safe guard instead of re-implementing it.
+use crate::EnvVarGuard;
 
 crate::timed_test!(prepend_path_dirs_preserves_declared_priority, {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
