@@ -120,9 +120,22 @@ pub(crate) fn target_registry_memo_matches(resolved: &Path) -> bool {
     )
 }
 
+/// Issue #1814: the fast path must never inherit the 5 s cross-process open
+/// budget. This write is GC bookkeeping — a `target/` last-used timestamp that
+/// the next rustc invocation re-touches — so under contention from another
+/// wrapper, the daemon, or a GC pass we skip it rather than park a compile
+/// behind someone else's redb handle. `open_best_effort` already emits the
+/// loud + durable contention record, so the skip is never silent.
+///
+/// Deliberately *not* routed through the daemon IPC: this path is chosen
+/// precisely when `SOLDR_BUILD_SESSION_ID` is unset (a bare `cargo` run with
+/// `RUSTC_WRAPPER=soldr`), where there may be no daemon at all and #474 exists
+/// to avoid paying a connect attempt per invocation.
 fn write_target_direct(paths: &SoldrPaths, target: &Path) {
     let db_path = crate::cache_lib::data_db_path(paths);
-    if let Ok(registry) = crate::cache_lib::target_registry::TargetRegistry::open(&db_path) {
+    if let Ok(registry) =
+        crate::cache_lib::target_registry::TargetRegistry::open_best_effort(&db_path)
+    {
         let _ = registry.upsert(target);
     }
 }
