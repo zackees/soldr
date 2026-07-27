@@ -352,6 +352,44 @@ fn normalize_exit_code(code: i32) -> i32 {
 mod tests {
     use super::*;
 
+    /// RAII snapshot/restore of `PATH`, held for the duration of a test that
+    /// calls into code which mutates it (#1663).
+    ///
+    /// Restoring in a `Drop` rather than inline is the whole point: the
+    /// previous hand-rolled restore in
+    /// `cargo_rustc_multicall_preserves_every_argument` ran only if
+    /// `maybe_dispatch` returned normally, so a panic there permanently
+    /// rewrote `PATH` for every subsequent test in the binary. Holding
+    /// `TEST_PROCESS_ENV_LOCK` additionally stops a parallel test in this
+    /// binary from observing the mutated value.
+    struct PathEnvGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        original: Option<std::ffi::OsString>,
+    }
+
+    impl PathEnvGuard {
+        fn capture() -> Self {
+            // A poisoned lock means some other test panicked while holding it;
+            // the env is still ours to restore, so recover rather than cascade.
+            let lock = crate::TEST_PROCESS_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            Self {
+                _lock: lock,
+                original: env::var_os("PATH"),
+            }
+        }
+    }
+
+    impl Drop for PathEnvGuard {
+        fn drop(&mut self) {
+            match self.original.take() {
+                Some(path) => env::set_var("PATH", path),
+                None => env::remove_var("PATH"),
+            }
+        }
+    }
+
     fn os_args(parts: &[&str]) -> Vec<OsString> {
         parts.iter().map(OsString::from).collect()
     }
@@ -467,15 +505,16 @@ mod tests {
             "json-render-diagnostics",
         ]
         .map(str::to_string);
-        let original_path = env::var_os("PATH");
+        // RAII, not a manual restore (#1663). `maybe_dispatch` mutates PATH,
+        // and the previous hand-rolled snapshot/restore only ran on the success
+        // path — a panic inside `maybe_dispatch` left this process's PATH
+        // rewritten for every later test in the binary. The guard also holds
+        // `TEST_PROCESS_ENV_LOCK`, so a concurrently-running test cannot
+        // observe the mutated PATH mid-flight.
+        let _path_guard = PathEnvGuard::capture();
 
         let dispatch = maybe_dispatch(&raw_args);
 
-        if let Some(path) = original_path {
-            env::set_var("PATH", path);
-        } else {
-            env::remove_var("PATH");
-        }
         assert_eq!(
             dispatch,
             Some(MulticallDispatch::SoldrArgs(

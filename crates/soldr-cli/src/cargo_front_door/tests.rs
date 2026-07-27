@@ -281,38 +281,66 @@ crate::timed_test!(cargo_wait_timeout_rejects_invalid_values, {
     }
 });
 
-#[cfg(windows)]
-#[test]
-fn diagnostic_capture_does_not_wait_for_leaked_stderr_handle_after_cargo_exits() {
-    let mut command = std::process::Command::new("cmd");
-    command.args([
-        "/C",
-        "echo leaked diagnostic before exit 1>&2 & start /B ping -n 6 127.0.0.1 >nul",
-    ]);
+crate::timed_test!(
+    diagnostic_capture_returns_when_a_leaked_handle_holds_the_pipe_open,
+    {
+        // The regression this guards (#422 / the bounded drain): when a cargo
+        // grandchild inherits the stderr write handle, the pipe never reaches
+        // EOF, and the drain must give up after CAPTURE_PIPE_EOF_GRACE rather
+        // than block forever.
+        //
+        // Driven through the channel rather than a real `cmd /C ... start /B
+        // ping` fixture. The old version asserted `elapsed >= 1750ms`, which
+        // asserted that the *fixture* had worked — that `ping` really did leak
+        // the handle — not anything about the code. On a fast host the leak did
+        // not materialise, the drain returned in 466ms, and the test failed
+        // while the actual contract was being honoured. Holding the sender open
+        // reproduces "nobody will ever close this pipe" exactly and
+        // deterministically, on every platform.
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(CapturePipeMessage::Chunk(b"leaked diagnostic".to_vec()))
+            .expect("send chunk");
 
-    let start = std::time::Instant::now();
-    let (status, captured) =
-        run_command_capturing_diagnostic_tail(&mut command, None).expect("run diagnostic capture");
-    let elapsed = start.elapsed();
+        let start = Instant::now();
+        let drained = drain_capture_pipe_after_child_exit(&rx, "test capture");
+        let elapsed = start.elapsed();
 
-    assert!(
-        status.success(),
-        "fake cargo command should exit successfully"
-    );
-    assert!(
-        captured.contains("leaked diagnostic before exit"),
-        "diagnostic capture lost stderr: {captured:?}"
-    );
-    assert!(
-        elapsed >= CAPTURE_PIPE_EOF_GRACE.saturating_sub(Duration::from_millis(250)),
-        "test setup should keep stderr open long enough to exercise the bounded drain; elapsed={elapsed:?}",
-    );
-    assert!(
-        elapsed < Duration::from_secs(4),
-        "diagnostic capture waited for a leaked inherited stderr handle instead of returning after cargo exited; elapsed={elapsed:?}",
-    );
-}
+        // Sender still alive => no Eof, no Disconnected: the grace bounds it.
+        drop(tx);
 
+        assert_eq!(
+            String::from_utf8_lossy(&drained),
+            "leaked diagnostic",
+            "bytes already in the pipe must survive the bounded drain"
+        );
+        assert!(
+            elapsed < CAPTURE_PIPE_EOF_GRACE + Duration::from_secs(2),
+            "drain must be bounded by the grace window; elapsed={elapsed:?}"
+        );
+    }
+);
+
+crate::timed_test!(
+    diagnostic_capture_returns_immediately_once_the_pipe_closes,
+    {
+        // The common case: the writer goes away, so the drain must return at once
+        // rather than sitting out the full grace window.
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(CapturePipeMessage::Chunk(b"all output".to_vec()))
+            .expect("send chunk");
+        drop(tx);
+
+        let start = Instant::now();
+        let drained = drain_capture_pipe_after_child_exit(&rx, "test capture");
+        let elapsed = start.elapsed();
+
+        assert_eq!(String::from_utf8_lossy(&drained), "all output");
+        assert!(
+            elapsed < CAPTURE_PIPE_EOF_GRACE,
+            "a closed pipe must not wait out the grace window; elapsed={elapsed:?}"
+        );
+    }
+);
 crate::timed_test!(timeout_error_mentions_cleanup_and_recovery, {
     let err = SoldrError::Other(format!(
         "cargo diagnostic capture timed out after 1 seconds (set {CARGO_WAIT_TIMEOUT_ENV_VAR} to override); killed child process tree"
