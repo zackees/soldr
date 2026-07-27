@@ -4,6 +4,77 @@
 //! stays comfortably under the 1000-LOC ceiling.
 
 use super::*;
+
+/// Create a directory symlink, or return false when the platform/session
+/// cannot make one (Windows needs Developer Mode or elevation).
+fn try_symlink_dir(src: &Path, dst: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(src, dst).is_ok()
+    }
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::symlink_dir(src, dst).is_ok()
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (src, dst);
+        false
+    }
+}
+
+crate::timed_test!(closure_walk_terminates_on_a_symlink_cycle, {
+    // #1662. `collect_closure_files` and `add_cargo_closure_path` are
+    // mutually recursive and used `Path::is_dir()`, which FOLLOWS symlinks
+    // (unlike `DirEntry::metadata()`, which does not). A directory symlink
+    // pointing back at an ancestor therefore recursed until the stack blew.
+    let target = tempfile::tempdir().expect("tempdir");
+    let nested = target.path().join("debug").join("deps");
+    std::fs::create_dir_all(&nested).expect("mkdir");
+    std::fs::write(nested.join("libthing.rlib"), b"x").expect("write");
+
+    if !try_symlink_dir(target.path(), &nested.join("cycle")) {
+        eprintln!("skipping: cannot create directory symlinks here");
+        return;
+    }
+
+    let mut paths = BTreeMap::new();
+    // The assertion is that this returns at all.
+    collect_closure_files(&mut paths, target.path(), target.path());
+
+    assert!(
+        paths.keys().any(|k| k.ends_with("libthing.rlib")),
+        "the real artifact should still be collected: {paths:?}"
+    );
+    assert!(
+        !paths.keys().any(|k| k.contains("cycle")),
+        "a symlink must not contribute paths: {paths:?}"
+    );
+});
+
+crate::timed_test!(closure_walk_does_not_escape_the_target_dir, {
+    // The walk must not wander outside `target_dir` via a symlink: files
+    // found out there were already refused by `add_cargo_closure_path`'s
+    // `strip_prefix` guard, but nothing stopped the *directory* recursion.
+    let target = tempfile::tempdir().expect("tempdir");
+    let outside = tempfile::tempdir().expect("tempdir");
+    std::fs::write(outside.path().join("secret.rlib"), b"x").expect("write");
+    std::fs::write(target.path().join("own.rlib"), b"x").expect("write");
+
+    if !try_symlink_dir(outside.path(), &target.path().join("escape")) {
+        eprintln!("skipping: cannot create directory symlinks here");
+        return;
+    }
+
+    let mut paths = BTreeMap::new();
+    collect_closure_files(&mut paths, target.path(), target.path());
+
+    assert!(paths.keys().any(|k| k.ends_with("own.rlib")));
+    assert!(
+        !paths.keys().any(|k| k.contains("secret")),
+        "walk escaped the target dir: {paths:?}"
+    );
+});
 use crate::LOW_DISK_WARNING_THRESHOLD_BYTES;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};

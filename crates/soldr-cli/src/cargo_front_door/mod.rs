@@ -2501,7 +2501,10 @@ fn add_cargo_closure_path(paths: &mut BTreeMap<String, ()>, path: &Path, target_
             }
         }
     }
-    if path.is_dir() {
+    // `symlink_metadata` rather than `is_dir()`: the latter follows the
+    // link, so a symlinked directory would be descended into here even
+    // though the walk deliberately skips symlinks (#1662).
+    if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir()) {
         collect_closure_files(paths, path, target_dir);
     }
 }
@@ -2512,9 +2515,28 @@ fn collect_closure_files(paths: &mut BTreeMap<String, ()>, root: &Path, target_d
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
+        // `file_type()` does not follow the link; `Path::is_dir`/`is_file`
+        // (used here before) both do. Following them let a symlinked
+        // directory pull an unrelated tree into the artifact closure, and a
+        // symlink cycle recurse forever through this function and
+        // `add_cargo_closure_path`, which are mutually recursive (#1662).
+        let Ok(entry_type) = entry.file_type() else {
+            continue;
+        };
+        if entry_type.is_symlink() {
+            continue;
+        }
+        if entry_type.is_dir() {
+            // Boundary check before descending. `add_cargo_closure_path`
+            // already refuses to *record* a path outside `target_dir`, but
+            // nothing stopped this function from *walking* one, so a
+            // directory reachable from the target tree could send the walk
+            // anywhere on disk.
+            if path.strip_prefix(target_dir).is_err() {
+                continue;
+            }
             collect_closure_files(paths, &path, target_dir);
-        } else if path.is_file() {
+        } else if entry_type.is_file() {
             add_cargo_closure_path(paths, &path, target_dir);
         }
     }
