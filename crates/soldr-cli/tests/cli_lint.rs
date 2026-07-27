@@ -25,14 +25,36 @@ fn strings(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| (*value).into()).collect()
 }
 
+/// How long an *uncancelled* sibling lint child would run for
+/// (soldr#1876).
+///
+/// This is the negative signal: if cancellation regresses, the run takes at
+/// least this long. It is deliberately far above
+/// [`SIBLING_CANCEL_BUDGET_SECS`] so the two outcomes cannot be confused on a
+/// loaded runner. Raising it costs nothing on the passing path — the siblings
+/// are killed almost immediately — and only lengthens an already-failing run.
+const SIBLING_SLEEP_SECS: u32 = 30;
+
+/// Wall-clock budget for the whole `lint deps` invocation once the dependency
+/// failure has cancelled its siblings.
+///
+/// Must stay well under [`SIBLING_SLEEP_SECS`] to remain a real assertion,
+/// while leaving room for soldr startup, the metadata probe, three fake-script
+/// spawns, and teardown. The previous 5 s against a 10 s sleep was only a 2x
+/// margin and flaked on `target-run x86_64-pc-windows-msvc` at 5.247 s.
+const SIBLING_CANCEL_BUDGET_SECS: u64 = 15;
+
 fn dependency_failure_script() -> &'static str {
+    // `ping -n <N>` waits N-1 intervals, so N = SIBLING_SLEEP_SECS + 1.
     #[cfg(windows)]
     {
-        "@echo off\nif \"%~1\"==\"metadata\" exit /b 0\nif \"%~1\"==\"audit\" exit /b 9\nping -n 11 127.0.0.1 > nul\nexit /b 0\n"
+        const _: () = assert!(SIBLING_SLEEP_SECS == 30);
+        "@echo off\nif \"%~1\"==\"metadata\" exit /b 0\nif \"%~1\"==\"audit\" exit /b 9\nping -n 31 127.0.0.1 > nul\nexit /b 0\n"
     }
     #[cfg(not(windows))]
     {
-        "#!/bin/sh\nif [ \"$1\" = metadata ]; then exit 0; fi\nif [ \"$1\" = audit ]; then exit 9; fi\nsleep 10\n"
+        const _: () = assert!(SIBLING_SLEEP_SECS == 30);
+        "#!/bin/sh\nif [ \"$1\" = metadata ]; then exit 0; fi\nif [ \"$1\" = audit ]; then exit 9; fi\nsleep 30\n"
     }
 }
 
@@ -176,8 +198,11 @@ timed_test!(dependency_failure_cancels_sibling_lint_children, {
         .expect("run failing soldr lint deps");
 
     assert_eq!(output.status.code(), Some(9));
+    let elapsed = started.elapsed();
     assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "dependency failure must cancel sibling lint children promptly"
+        elapsed < Duration::from_secs(SIBLING_CANCEL_BUDGET_SECS),
+        "dependency failure must cancel sibling lint children promptly: took \
+         {elapsed:?}, and an uncancelled sibling would have slept \
+         {SIBLING_SLEEP_SECS}s (soldr#1876)"
     );
 });
