@@ -172,11 +172,40 @@ impl SoldrZccacheService {
             mode: AuditMode::Off,
             ..AuditConfig::default()
         };
+        // soldr#1761. Logged because the effective concurrency was
+        // previously undiscoverable: the number came from a vendored
+        // default via an env var the daemon may or may not have
+        // inherited, with nothing reporting what actually applied.
+        let resolved_jobs =
+            crate::core::jobs::resolve_compile_jobs(crate::daemon::server::config_compile_jobs());
+        // stderr, not `tracing::info!`: the daemon installs its
+        // subscriber at `Level::WARN` (see `server.rs`), so an info
+        // record is dropped and would never reach anyone — which is
+        // the same undiscoverability #1761 is about. The detached
+        // daemon redirects stderr into its log file, and
+        // `daemon start --foreground` shows it directly.
+        eprintln!(
+            "soldr-daemon: compile concurrency = {} (from {})",
+            resolved_jobs.jobs,
+            resolved_jobs.source.describe(),
+        );
         let cfg = ZccacheConfig {
             host: identity.clone(),
             cache_root: cache_root.clone().into(),
             audit,
-            limits: ServiceLimits::default(),
+            // soldr#1761: soldr owns the compile-concurrency limit now.
+            // This used to be `ServiceLimits::default()`, i.e.
+            // `max_parallel_compiles: None`, so the vendored zccache
+            // default always governed and the only way to influence it
+            // was to get `ZCCACHE_MAX_PARALLEL_COMPILES` into the
+            // long-lived daemon's inherited environment. Resolving here
+            // means `SOLDR_JOBS` and `config.toml` reach the semaphore
+            // through `ServiceLimits`, not through env propagation, and
+            // the outer admission queue sizes itself from the same call.
+            limits: ServiceLimits {
+                max_parallel_compiles: Some(resolved_jobs.jobs),
+                ..ServiceLimits::default()
+            },
             runtime: RuntimeHooks {
                 service_name: Some("soldr-daemon".into()),
                 // zccache#922: explicitly keep background maintenance and

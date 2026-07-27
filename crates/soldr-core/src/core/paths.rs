@@ -201,6 +201,10 @@ pub struct SoldrConfig {
     /// ```
     #[serde(default)]
     pub pins: PinsConfig,
+    /// Compile-concurrency limit (issue #1761). See
+    /// [`crate::core::jobs`] for the full precedence chain.
+    #[serde(default)]
+    pub jobs: crate::core::jobs::JobsConfig,
 }
 
 /// `pins` section of `config.toml` (issue #861).
