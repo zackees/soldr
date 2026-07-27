@@ -6,14 +6,19 @@
 use super::*;
 use clap::{CommandFactory, Parser};
 use std::ffi::{OsStr, OsString};
-use std::sync::Mutex;
 
 /// Serialises tests that mutate process-wide environment variables so
 /// they do not race with each other under parallel `cargo test`. The
 /// guard objects below restore the previous value on drop, but two
 /// tests touching the same key concurrently would still observe each
 /// other's mid-test state without this lock.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+///
+/// soldr#1663: this is the crate-wide lock, not a module-local one. A
+/// module-local mutex only serialises tests *within* this file, which is
+/// not enough -- `SOLDR_USE_LEGACY_XWIN` is also mutated by
+/// `blessed_build.rs`, which guards it with the crate-wide lock. Two
+/// mutexes over one environment key serialise nothing.
+use crate::TEST_PROCESS_ENV_LOCK as ENV_LOCK;
 
 #[test]
 #[ignore = "subprocess helper"]
@@ -701,7 +706,7 @@ fn cargo_builtin_shorthand_does_not_capture_other_verbs() {
 #[test]
 #[cfg(target_os = "linux")]
 fn pick_cross_subcommand_msvc_uses_blessed_when_cache_ready() {
-    let _g = ENV_LOCK.lock().unwrap();
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     std::env::remove_var(crate::blessed_build::USE_LEGACY_XWIN_ENV_VAR);
     assert_eq!(pick_cross_subcommand("x86_64-pc-windows-msvc", true), None);
     assert_eq!(pick_cross_subcommand("aarch64-pc-windows-msvc", true), None);
@@ -710,7 +715,7 @@ fn pick_cross_subcommand_msvc_uses_blessed_when_cache_ready() {
 #[test]
 #[cfg(target_os = "linux")]
 fn pick_cross_subcommand_msvc_falls_back_to_xwin_without_cache() {
-    let _g = ENV_LOCK.lock().unwrap();
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     std::env::remove_var(crate::blessed_build::USE_LEGACY_XWIN_ENV_VAR);
     assert_eq!(
         pick_cross_subcommand("x86_64-pc-windows-msvc", false),
@@ -731,7 +736,7 @@ fn pick_cross_subcommand_darwin_returns_none_by_default() {
     // rustc's linker, so plain `cargo build --target X` produces a
     // Mach-O binary from a Linux host. Opt-in legacy still routes
     // through zigbuild.
-    let _g = ENV_LOCK.lock().unwrap();
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     std::env::remove_var(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR);
     assert_eq!(pick_cross_subcommand("x86_64-apple-darwin", false), None);
     assert_eq!(pick_cross_subcommand("aarch64-apple-darwin", false), None);
@@ -751,7 +756,7 @@ fn pick_cross_subcommand_darwin_returns_none_by_default() {
 #[test]
 #[cfg(target_os = "linux")]
 fn pick_cross_subcommand_musl_returns_zigbuild() {
-    let _g = ENV_LOCK.lock().unwrap();
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     std::env::remove_var(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR);
     assert_eq!(
         pick_cross_subcommand("x86_64-unknown-linux-musl", false),
@@ -766,7 +771,7 @@ fn pick_cross_subcommand_musl_returns_zigbuild() {
 #[test]
 #[cfg(target_os = "linux")]
 fn pick_cross_subcommand_windows_gnu_stays_on_blessed_path() {
-    let _g = ENV_LOCK.lock().unwrap();
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     std::env::remove_var(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR);
     assert_eq!(pick_cross_subcommand("x86_64-pc-windows-gnu", false), None);
 
@@ -778,7 +783,7 @@ fn pick_cross_subcommand_windows_gnu_stays_on_blessed_path() {
 #[test]
 #[cfg(target_os = "linux")]
 fn pick_cross_subcommand_legacy_xwin_forces_xwin() {
-    let _g = ENV_LOCK.lock().unwrap();
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     std::env::set_var(crate::blessed_build::USE_LEGACY_XWIN_ENV_VAR, "1");
     assert_eq!(
         pick_cross_subcommand("x86_64-pc-windows-msvc", true),
@@ -795,7 +800,7 @@ fn pick_cross_subcommand_legacy_zigbuild_routes_darwin_to_zigbuild() {
     // env var set, darwin opts INTO the legacy zigbuild dispatch.
     // Before #1081 the env var had inverted semantics (opt-OUT); the
     // test was renamed + reassertioned in the post-#1081 cleanup.
-    let _g = ENV_LOCK.lock().unwrap();
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     std::env::set_var(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR, "1");
     assert_eq!(
         pick_cross_subcommand("aarch64-apple-darwin", false),
@@ -917,4 +922,51 @@ fn insert_cargo_config_args_after_xwin_build_pair() {
             "x86_64-pc-windows-msvc",
         ]
     );
+}
+
+// soldr#1663: prove the environment lock actually serialises across
+// modules, not just within this file.
+//
+// The regression this guards against is subtle: before the fix this file
+// declared its own `static ENV_LOCK`, while `blessed_build.rs` guarded the
+// *same* variable (`SOLDR_USE_LEGACY_XWIN`) with the crate-wide lock. Both
+// files looked correctly locked in isolation, and the race was invisible
+// unless you compared the two lock declarations.
+//
+// A test cannot observe another test's interleaving directly, so instead we
+// assert the property that makes interleaving impossible: this module and
+// the other mutators of the key contend for one and the same mutex.
+
+#[test]
+fn env_lock_is_the_crate_wide_lock_not_a_module_local_one() {
+    // If `ENV_LOCK` were a module-local mutex again, this second
+    // acquisition would succeed while the crate-wide lock is held, and a
+    // `blessed_build.rs` test could be inside its critical section right
+    // now mutating the same key.
+    let _held = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    assert!(
+        crate::TEST_PROCESS_ENV_LOCK.try_lock().is_err(),
+        "holding this module's ENV_LOCK must also exclude every other \
+         module that mutates process environment; if this fails, ENV_LOCK \
+         has been reverted to a module-local mutex and the cross-module \
+         race in soldr#1663 is back"
+    );
+}
+
+#[test]
+fn env_lock_survives_a_poisoned_critical_section() {
+    // The migrated sites use `unwrap_or_else(into_inner)` rather than
+    // `unwrap()`. With a single crate-wide lock, poison propagation would
+    // turn one panicking test into a cascade failure across every module
+    // that shares it -- so recovery is required, not stylistic.
+    let poisoned = std::thread::spawn(|| {
+        let _g = crate::TEST_PROCESS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        panic!("deliberate panic inside the environment critical section");
+    })
+    .join();
+    assert!(poisoned.is_err(), "the helper thread must have panicked");
+
+    let _recovered = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 }
