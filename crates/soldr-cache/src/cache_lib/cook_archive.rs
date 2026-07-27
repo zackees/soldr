@@ -509,10 +509,33 @@ pub fn extract_skip_existing(
                 std::fs::create_dir_all(parent)?;
             }
         }
+        // Capture the mode before consuming the entry body: after the
+        // copy, `entry` is drained and the header borrow is awkward.
+        let mode_bits = entry.header().mode().ok();
         // tar's `unpack_in` would overwrite; we manually copy bytes
         // so the skip-existing invariant cannot be violated.
         let mut out = File::create(&dest)?;
         std::io::copy(&mut entry, &mut out)?;
+        // #1880: hand-copying the body means nothing ever applies the
+        // tar header's Unix mode, so every restored file lands at the
+        // process umask default (0o644). Cargo's `build-script-build`
+        // binaries then fail execve with EACCES and the build dies on
+        // an arbitrary crate -- whichever build script cargo reaches
+        // first. This is the same defect #587 fixed for the save/load
+        // path (`save.rs` extract_one); the cook extractor predates
+        // that fix and never inherited it.
+        //
+        // Windows ignores the mode: NTFS uses ACLs and the tar
+        // header's Unix mode carries no meaning there.
+        #[cfg(unix)]
+        if let Some(mode) = mode_bits {
+            use std::os::unix::fs::PermissionsExt;
+            // Drop the handle first so the chmod applies to a settled
+            // file rather than racing our own open descriptor.
+            drop(out);
+            let perms = std::fs::Permissions::from_mode(mode);
+            std::fs::set_permissions(&dest, perms)?;
+        }
         report.files_written = report.files_written.saturating_add(1);
     }
     Ok(report)
@@ -795,6 +818,66 @@ mod tests {
         let restored_foo = std::fs::read(dest.join("release").join("deps").join("libfoo-abc.rlib"))
             .expect("read foo");
         assert_eq!(restored_foo, b"foo\n");
+    });
+
+    /// #1880: cargo's `build-script-build` binaries must come back
+    /// executable. The extractor hand-copies bytes into a fresh
+    /// `File::create` (to honor skip-existing), which lands at the
+    /// umask default and silently drops `+x` unless the tar header's
+    /// mode is applied explicitly.
+    ///
+    /// The consequence in the field is badly disguised: cargo reports
+    /// `could not execute process ... (never executed)` /
+    /// `Permission denied (os error 13)` naming whichever build script
+    /// it happened to reach first, so the failure looks like a flaky
+    /// problem with an unrelated third-party crate.
+    #[cfg(unix)]
+    crate::timed_test!(extract_preserves_executable_bit, {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().expect("tempdir");
+        let source = dir.path().join("debug");
+        let script = source
+            .join("build")
+            .join("foo-abc")
+            .join("build-script-build");
+        write_file(&script, b"#!/bin/sh\nexit 0\n");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod source");
+        // A non-executable sibling proves we restore the recorded mode
+        // rather than blanket-chmod'ing everything.
+        write_file(&source.join("deps").join("libfoo-abc.rlib"), b"foo\n");
+
+        let cook = dir.path().join("cook");
+        let packed = pack_cook_archive(&source, &cook).expect("pack");
+
+        let dest = dir.path().join("target");
+        std::fs::create_dir_all(&dest).unwrap();
+        extract_skip_existing(&packed.path, &dest).expect("extract");
+
+        let restored = dest
+            .join("debug")
+            .join("build")
+            .join("foo-abc")
+            .join("build-script-build");
+        let mode = std::fs::metadata(&restored)
+            .expect("stat")
+            .permissions()
+            .mode();
+        assert_ne!(
+            mode & 0o111,
+            0,
+            "build-script-build restored without +x -- cargo would fail \
+             execve with EACCES (regression of #1880)"
+        );
+
+        let rlib = dest.join("debug").join("deps").join("libfoo-abc.rlib");
+        let rlib_mode = std::fs::metadata(&rlib).expect("stat").permissions().mode();
+        assert_eq!(
+            rlib_mode & 0o111,
+            0,
+            "a non-executable input must stay non-executable"
+        );
     });
 
     crate::timed_test!(extract_skips_existing_files, {
