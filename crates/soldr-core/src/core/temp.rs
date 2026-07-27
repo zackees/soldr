@@ -115,8 +115,7 @@ mod tests {
 
     /// Guards the property the whole module exists for: scratch must share a
     /// filesystem with the cache so `rename` into the cache stays atomic.
-    #[test]
-    fn scratch_defaults_inside_the_cache_root() {
+    crate::timed_test!(scratch_defaults_inside_the_cache_root, {
         let paths = SoldrPaths::with_root(PathBuf::from("/synthetic/root"));
         let root = temp_root_for(&paths);
         assert!(
@@ -126,10 +125,9 @@ mod tests {
             root.display(),
             paths.cache.display()
         );
-    }
+    });
 
-    #[test]
-    fn scratch_is_not_the_os_temp_dir_by_default() {
+    crate::timed_test!(scratch_is_not_the_os_temp_dir_by_default, {
         let paths = SoldrPaths::with_root(PathBuf::from("/synthetic/root"));
         assert_ne!(
             temp_root_for(&paths),
@@ -137,5 +135,5 @@ mod tests {
             "the OS temp dir is tmpfs on most Linux hosts; that is what this \
              module exists to avoid"
         );
-    }
+    });
 }
