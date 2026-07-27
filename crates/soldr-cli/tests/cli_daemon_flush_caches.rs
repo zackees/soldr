@@ -17,6 +17,35 @@ use soldr_cli::timed_test;
 
 mod common;
 
+/// How long to allow between a synchronous stop returning and the child
+/// becoming reapable via `try_wait` (soldr#1891).
+///
+/// The property under test is that `daemon stop` / `cache shutdown` are
+/// **synchronous** — they must not return while the daemon is still running.
+/// Asserting `try_wait().is_some()` with zero tolerance also asserts that the
+/// OS has already made the exit visible to the parent handle, which is not
+/// part of the contract and which fails under a loaded parallel test run.
+///
+/// This margin cannot mask an actually-asynchronous stop: these fixtures spawn
+/// the daemon with `--idle-timeout-secs 60`, so a stop that returned without
+/// the daemon exiting would leave it alive ~30x beyond this window and still
+/// fail the assertion.
+const EXIT_VISIBLE_TOLERANCE: Duration = Duration::from_secs(2);
+
+/// Wait up to [`EXIT_VISIBLE_TOLERANCE`] for `child` to become reapable.
+///
+/// Returns true if it exited within the window.
+fn exited_within_tolerance(child: &mut Child) -> bool {
+    let deadline = Instant::now() + EXIT_VISIBLE_TOLERANCE;
+    loop {
+        match child.try_wait().expect("query daemon child") {
+            Some(_) => return true,
+            None if Instant::now() >= deadline => return false,
+            None => std::thread::sleep(Duration::from_millis(25)),
+        }
+    }
+}
+
 fn unique_temp_dir(label: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -226,7 +255,7 @@ timed_test!(
 
         let child = daemon.child.as_mut().expect("daemon child");
         assert!(
-            child.try_wait().expect("query daemon child").is_some(),
+            exited_within_tolerance(child),
             "cache shutdown returned before the soldr daemon exited"
         );
         daemon.child = None;
@@ -250,7 +279,7 @@ timed_test!(
         );
         let child = daemon.child.as_mut().expect("daemon child");
         assert!(
-            child.try_wait().expect("query daemon child").is_some(),
+            exited_within_tolerance(child),
             "daemon stop returned before the process exited"
         );
         daemon.child = None;
