@@ -271,9 +271,12 @@ timed_test!(every_test_uses_timed_test_macro_or_is_allowlisted, {
     if !offenders.is_empty() {
         let mut msg = String::from(
             "The following files contain bare `#[test]` declarations \
-             that must be wrapped with the `timed_test!` macro \
-             (see crates/soldr-cli/src/test_util.rs). Either convert \
-             them, add `#[ignore]`, mark the line with \
+             that must be wrapped with the `timed_test!` macro, defined in \
+             crates/soldr-core/src/test_util.rs and invoked as \
+             `crate::timed_test!(name, { .. });` — note that a `///` doc \
+             comment cannot precede a macro invocation, so use `//` above it \
+             or clippy will reject the result under -D warnings. Either \
+             convert them, add `#[ignore]`, mark the line with \
              `// allow-bare-test: <reason>`, or — as a last resort — \
              add the file to LEGACY_ALLOWLIST in \
              tests/timed_test_lint.rs.\n\n",
