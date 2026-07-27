@@ -1531,6 +1531,66 @@ async fn accept_windows_pipe_instance(
     Ok(())
 }
 
+/// Read budget for draining a doomed connection (#1853). Short on purpose:
+/// we only need to clear what the peer already queued, not wait for more.
+const DRAIN_READ_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// Tell a peer whose protocol we cannot speak *why* we are hanging up, then
+/// close cleanly (#1853).
+///
+/// The reject record is version-independent by construction (see
+/// [`crate::daemon::ipc::REJECT_RECORD_VERSION`]), so even a client several
+/// versions old gets a diagnosable `InvalidData` with a message instead of an
+/// opaque `ECONNRESET` after burning its whole retry budget.
+async fn reject_version_mismatch<S>(stream: &mut S, peer_version: u32)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::AsyncWriteExt;
+    use tokio::time::timeout;
+    tracing::warn!(
+        peer_version,
+        daemon_version = PROTOCOL_VERSION,
+        "soldr-daemon: rejecting IPC peer speaking a different protocol version",
+    );
+    let record = crate::daemon::ipc::encode_reject_record(&format!(
+        "protocol version mismatch: peer={peer_version}, daemon={PROTOCOL_VERSION}"
+    ));
+    let _ = timeout(HANDSHAKE_READ_TIMEOUT, stream.write_all(&record)).await;
+    let _ = timeout(HANDSHAKE_READ_TIMEOUT, stream.flush()).await;
+    drain_then_close(stream).await;
+}
+
+/// Half-close, then discard whatever the peer already queued, before dropping
+/// the connection (#1853).
+///
+/// On an AF_UNIX SOCK_STREAM socket, closing while bytes remain in our receive
+/// queue makes the kernel raise `ECONNRESET` on the peer (Linux
+/// `unix_release_sock`), which a client cannot distinguish from a daemon
+/// crash — so it retries for its entire budget and then hard-fails with no
+/// fallback. Draining first turns that into a clean EOF, which every existing
+/// client already classifies as "daemon unavailable" and degrades on. That is
+/// what makes this fix reach clients that were shipped long before it.
+async fn drain_then_close<S>(stream: &mut S)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::time::timeout;
+    // Half-close first so a peer still streaming a large body sees EOF and
+    // stops writing, instead of us draining against a live producer.
+    let _ = timeout(HANDSHAKE_READ_TIMEOUT, stream.shutdown()).await;
+    let cap = u64::from(crate::daemon::protocol::MAX_BODY_BYTES) + LEGACY_FRAME_HEADER_BYTES as u64;
+    let mut sink = [0_u8; 8192];
+    let mut drained = 0_u64;
+    while drained < cap {
+        match timeout(DRAIN_READ_TIMEOUT, stream.read(&mut sink)).await {
+            Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
+            Ok(Ok(n)) => drained += n as u64,
+        }
+    }
+}
+
 async fn handle_connection<S>(mut stream: S, state: Arc<State>) -> std::io::Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -1565,13 +1625,38 @@ where
                 let _ = timeout(HANDSHAKE_READ_TIMEOUT, stream.flush()).await;
                 return Ok(());
             }
-            Ok(MuxPoll::Payload { .. }) | Err(_) => return Ok(()),
+            Ok(MuxPoll::Payload { .. }) | Err(_) => {
+                // #1853: never drop a socket with the peer's bytes still
+                // queued — see `drain_then_close`.
+                drain_then_close(&mut stream).await;
+                return Ok(());
+            }
+        }
+    }
+
+    // #1853: check the peer's version explicitly rather than letting the
+    // decode fail. A version mismatch is a known, diagnosable condition, and
+    // reporting it as an opaque transport reset is what made this cost a day
+    // to attribute downstream.
+    if buffered.len() >= LEGACY_FRAME_HEADER_BYTES {
+        let peer_version = u32::from_le_bytes(
+            buffered[4..LEGACY_FRAME_HEADER_BYTES]
+                .try_into()
+                .expect("slice of LEGACY_FRAME_HEADER_BYTES-4 bytes is always 4 bytes wide"),
+        );
+        if peer_version != PROTOCOL_VERSION {
+            reject_version_mismatch(&mut stream, peer_version).await;
+            return Ok(());
         }
     }
 
     let req: Request = match read_frame_async_with_prefix(&mut stream, &buffered).await {
         Ok(r) => r,
-        Err(_) => return Ok(()),
+        Err(error) => {
+            tracing::debug!(%error, "soldr-daemon: dropping undecodable IPC frame");
+            drain_then_close(&mut stream).await;
+            return Ok(());
+        }
     };
     state.request_count.fetch_add(1, Ordering::Relaxed);
     state.touch_activity();
