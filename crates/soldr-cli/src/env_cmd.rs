@@ -232,6 +232,29 @@ mod tests {
         // with the workspace root.
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let abi3 = tempfile::tempdir().expect("tmp");
+        // `pyo3` is a *path* dependency, not `version = "0.22"`. The detection
+        // runs `cargo metadata`, so a registry dependency makes this test need
+        // the network and the crates.io index to resolve. It did: on the
+        // Windows target-run lane it spent 60s and then failed its first
+        // assertion, because unresolvable metadata yields no ABI3 proof and
+        // therefore no key -- a network failure wearing the costume of a
+        // behaviour change. A local stub resolves offline and instantly, and
+        // the detection only ever reads the dependency's name and features.
+        std::fs::create_dir_all(abi3.path().join("pyo3").join("src")).expect("stub src");
+        std::fs::write(
+            abi3.path().join("pyo3").join("Cargo.toml"),
+            "[package]
+name = \"pyo3\"
+version = \"0.22.0\"
+edition = \"2021\"
+
+[features]
+abi3-py38 = []
+extension-module = []
+",
+        )
+        .expect("write stub manifest");
+        std::fs::write(abi3.path().join("pyo3").join("src").join("lib.rs"), "").expect("stub lib");
         std::fs::write(
             abi3.path().join("Cargo.toml"),
             "[package]
@@ -243,7 +266,7 @@ edition = \"2021\"
 crate-type = [\"cdylib\"]
 
 [dependencies]
-pyo3 = { version = \"0.22\", features = [\"abi3-py38\", \"extension-module\"] }
+pyo3 = { path = \"pyo3\", features = [\"abi3-py38\", \"extension-module\"] }
 ",
         )
         .expect("write manifest");
