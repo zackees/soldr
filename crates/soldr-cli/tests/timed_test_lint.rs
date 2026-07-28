@@ -66,7 +66,11 @@ const LEGACY_ALLOWLIST: &[&str] = &[
     "crates/soldr-core/src/core/toolchain_resolve.rs",
     "crates/soldr-daemon/src/daemon/db.rs",
     "crates/soldr-daemon/src/daemon/ipc.rs",
-    "crates/soldr-daemon/src/daemon/lifecycle.rs",
+    // soldr#1931 follow-up: `lifecycle.rs` became `lifecycle/`. The bare tests
+    // were all in one extracted file, so this narrows from the whole
+    // 2,157-line module to just that file; `pid_liveness.rs` and
+    // `spawn_image.rs` are already fully converted and need no exemption.
+    "crates/soldr-daemon/src/daemon/lifecycle/tests/spawn_lock.rs",
     "crates/soldr-core/src/defender_probe.rs",
     "crates/soldr-cli/src/doctor.rs",
     "crates/soldr-fetch/src/fetch/github.rs",
