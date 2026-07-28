@@ -1252,7 +1252,13 @@ pub fn default_sock_path(paths: &SoldrPaths) -> PathBuf {
     #[cfg(windows)]
     {
         use crate::cache_lib::daemon_pipe_name;
-        PathBuf::from(format!(r"\\.\pipe\{}", daemon_pipe_name(paths)))
+        // soldr#1808: same infallible signature as `server_sock_path`, and
+        // client and daemon must derive the identical name or they never
+        // meet. Failing loudly beats dialing a name nothing is serving.
+        PathBuf::from(format!(
+            r"\\.\pipe\{}",
+            daemon_pipe_name(paths).unwrap_or_else(|err| panic!("{err}"))
+        ))
     }
 }
 

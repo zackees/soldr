@@ -1519,7 +1519,12 @@ mod unix_endpoint_ownership_tests {
 
 #[cfg(windows)]
 async fn run_accept_loop(paths: SoldrPaths, state: Arc<State>) -> std::io::Result<()> {
-    let pipe_name = format!(r"\\.\pipe\{}", crate::cache_lib::daemon_pipe_name(&paths));
+    // soldr#1808: identity failure is fatal here — this loop *is* the
+    // endpoint. Propagating beats a fallback name no client would dial.
+    let pipe_name = format!(
+        r"\\.\pipe\{}",
+        crate::cache_lib::daemon_pipe_name(&paths).map_err(std::io::Error::other)?
+    );
     let pool_size = windows_listener_pool_size();
     tracing::info!(
         pool_size,
@@ -2469,9 +2474,14 @@ pub fn server_sock_path(paths: &SoldrPaths) -> PathBuf {
     }
     #[cfg(windows)]
     {
+        // soldr#1808: infallible by signature and called from ~34 sites, so
+        // threading `Result` through it is its own change. Failing loudly is
+        // still correct: the process cannot serve or dial an endpoint whose
+        // identity it cannot establish, and the alternative this replaced --
+        // a shared `"soldr"` literal -- silently put every user on one pipe.
         PathBuf::from(format!(
             r"\\.\pipe\{}",
-            crate::cache_lib::daemon_pipe_name(paths)
+            crate::cache_lib::daemon_pipe_name(paths).unwrap_or_else(|err| panic!("{err}"))
         ))
     }
 }

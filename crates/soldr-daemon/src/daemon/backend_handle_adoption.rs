@@ -298,7 +298,12 @@ fn soldr_daemon_endpoint(paths: &SoldrPaths) -> Endpoint {
     // — `expect` is correct.
     #[cfg(windows)]
     {
-        Endpoint::windows_pipe(namespace_id, crate::cache_lib::daemon_pipe_name(paths))
+        // soldr#1808: the identity lookup is a genuine runtime failure (unlike
+        // the smart-constructor errors this `expect` was written for), so it
+        // gets its own message rather than being folded into that claim.
+        let pipe_name =
+            crate::cache_lib::daemon_pipe_name(paths).unwrap_or_else(|err| panic!("{err}"));
+        Endpoint::windows_pipe(namespace_id, pipe_name)
             .expect("daemon_pipe_name returns a bare, non-empty pipe name")
     }
     #[cfg(unix)]
