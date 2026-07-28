@@ -821,11 +821,13 @@ mod tests {
     use super::*;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
-    #[cfg(unix)]
-    use std::sync::Mutex;
 
+    // soldr#1663: the crate-wide barrier, not a private one. These tests
+    // mutate PYO3_* variables that `env_cmd`'s tests read through
+    // `caller_pyo3_env()`, and a module-local mutex cannot serialise against
+    // another module.
     #[cfg(unix)]
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    use crate::TEST_PROCESS_ENV_LOCK as ENV_LOCK;
 
     #[cfg(unix)]
     struct EnvVarGuard {
