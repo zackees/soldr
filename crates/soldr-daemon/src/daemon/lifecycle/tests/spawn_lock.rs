@@ -187,7 +187,7 @@ mod spawn_lock_tests {
         assert!(stale_daemon_occupies_endpoint(&paths).is_none());
         // Displacing a non-occupied endpoint is a successful no-op. Stale
         // shared artifacts are reclaimed by startup, not retirement.
-        assert!(displace_stale_daemon(&paths));
+        assert!(displace_stale_daemon(&paths, None));
     }
 
     #[test]
@@ -235,7 +235,7 @@ mod spawn_lock_tests {
 
         assert!(stale_daemon_occupies_endpoint(&paths).is_none());
         assert!(
-            !displace_stale_daemon(&paths),
+            !displace_stale_daemon(&paths, None),
             "an unverified live PID without an IPC acknowledgement must fail closed"
         );
         assert!(pid_is_alive(std::process::id()));

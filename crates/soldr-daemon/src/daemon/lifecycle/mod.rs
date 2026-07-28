@@ -325,7 +325,9 @@ pub fn wait_for_shutdown_responder(
 /// accidentally named `rustc`. A verified-PID signal is permitted only when
 /// no shutdown acknowledgement was received. Once acknowledged, the daemon
 /// owns its graceful flush to completion and is never force-killed.
-pub fn displace_stale_daemon(paths: &SoldrPaths) -> bool {
+/// `source` attributes the request, so two `displace-kill-fallback`
+/// records from different entry points stay distinguishable (soldr#1808).
+pub fn displace_stale_daemon(paths: &SoldrPaths, source: Option<LifecycleSource>) -> bool {
     let verified_pid = stale_daemon_occupies_endpoint(paths);
     let recorded_live_pid = read_pid_file(paths)
         .map(|(pid, _)| pid)
@@ -333,7 +335,7 @@ pub fn displace_stale_daemon(paths: &SoldrPaths) -> bool {
     append_lifecycle_event_with(
         paths,
         "displace-stale-requested",
-        LifecycleDetails::requested(LifecycleReason::StaleVersion),
+        LifecycleDetails::requested(LifecycleReason::StaleVersion).from_source(source),
     );
 
     let sock = crate::daemon::client::default_sock_path(paths);
@@ -359,7 +361,7 @@ pub fn displace_stale_daemon(paths: &SoldrPaths) -> bool {
         append_lifecycle_event_with(
             paths,
             "displace-kill-fallback",
-            LifecycleDetails::forced(pid, LifecycleReason::ProtocolMismatch),
+            LifecycleDetails::forced(pid, LifecycleReason::ProtocolMismatch).from_source(source),
         );
         terminate_pid(pid, None);
         wait_for_pid_exit(pid, Duration::from_secs(5));
@@ -418,7 +420,7 @@ pub fn preflight_displace_stale_daemon(paths: &SoldrPaths) {
         recorded_process_is_alive,
         endpoint_artifact_exists,
     ) {
-        displace_stale_daemon(paths);
+        displace_stale_daemon(paths, Some(LifecycleSource::Preflight));
     } else if let Some(pid) = claim_proves_current {
         tracing::warn!(
             event = "preflight_displacement_declined",
@@ -556,6 +558,26 @@ pub enum LifecycleReason {
     StartupDeadline,
 }
 
+/// Which entry point asked for a lifecycle transition.
+///
+/// soldr#1808 wants displacement attributable. Two records that both say
+/// `displace-kill-fallback` are indistinguishable without this: one may be a
+/// build's own preflight clearing a stale-version daemon, the other an
+/// operator running `soldr daemon stop`. They have different causes and
+/// different remedies.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum LifecycleSource {
+    /// A user-invoked command.
+    Cli,
+    /// The per-build preflight that clears a stale-version daemon.
+    Preflight,
+    /// The peer on an accepted IPC connection. Not yet populated -- the
+    /// `GetNamedPipeClientProcessId` plumbing is the remaining half of
+    /// soldr#1808 Workstream 3.
+    IpcPeer,
+}
+
 /// How the transition ended.
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -583,6 +605,9 @@ pub struct LifecycleDetails {
     /// The process acted upon, when it differs from the recording process.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_pid: Option<u32>,
+    /// Which entry point asked for this transition.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requester_source: Option<LifecycleSource>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<LifecycleReason>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -594,15 +619,23 @@ impl LifecycleDetails {
     pub fn forced(target_pid: u32, reason: LifecycleReason) -> Self {
         Self {
             target_pid: Some(target_pid),
+            requester_source: None,
             reason: Some(reason),
             outcome: Some(LifecycleOutcome::Forced),
         }
+    }
+
+    /// Attribute this record to the entry point that asked for it.
+    pub fn from_source(mut self, source: Option<LifecycleSource>) -> Self {
+        self.requester_source = source;
+        self
     }
 
     /// A transition that has been asked for but not yet resolved.
     pub fn requested(reason: LifecycleReason) -> Self {
         Self {
             target_pid: None,
+            requester_source: None,
             reason: Some(reason),
             outcome: Some(LifecycleOutcome::Requested),
         }
@@ -758,7 +791,7 @@ fn try_spawn_detached_until_with_idle_timeout(
             if let Some(deadline) = deadline {
                 displace_stale_daemon_before(p, deadline);
             } else {
-                displace_stale_daemon(p);
+                displace_stale_daemon(p, Some(LifecycleSource::Preflight));
             }
         }
     }

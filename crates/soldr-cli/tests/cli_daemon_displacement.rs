@@ -215,7 +215,7 @@ timed_test!(
             // graceful wire Shutdown evicts it; the verified-PID kill
             // fallback is unit-tested separately.
             assert!(
-                displace_stale_daemon(&paths),
+                displace_stale_daemon(&paths, None),
                 "displacement should free the endpoint",
             );
 
