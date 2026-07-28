@@ -4,6 +4,29 @@ mod daemon_spawn_image_tests {
     use crate::daemon::lifecycle::*;
     use tempfile::TempDir;
 
+    // soldr#1959: the marker is a positive declaration -- "I am a daemon, do
+    // not reap me" -- and absence means nothing, so a consumer reaping process
+    // trees kills any daemon that does not opt in. clud#585 replaced an
+    // inference from *absence* of an originator tag (which spared soldr by
+    // accident) with this declaration, and soldr silently fell out of the
+    // protected set.
+    //
+    // Asserted on the overlay rather than at the three spawn sites: the
+    // overlay is what all three share, and a path that stopped using it would
+    // still pass a per-site assertion while shipping a reapable daemon.
+    crate::timed_test!(the_spawn_overlay_declares_the_child_a_daemon, {
+        let overlay = daemon_spawn_env_overlay();
+        let marker = overlay
+            .iter()
+            .find(|(name, _)| name == running_process::DAEMON_MARKER_ENV_VAR);
+        assert_eq!(
+            marker.map(|(_, value)| value.as_os_str()),
+            Some(std::ffi::OsStr::new("1")),
+            "a daemon that does not declare itself is reapable by any consumer \
+             that walks process trees (soldr#1959)"
+        );
+    });
+
     // soldr#1931 was not "someone forgot a name" -- it was that nothing tied
     // the resolver's inputs to the spawn allowlist, so #1902 could add a tier
     // the daemon could never see and still land with a green suite and a
