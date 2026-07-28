@@ -145,6 +145,20 @@ pub enum ClientError {
     /// this into `Protocol` is what failed builds during a normal graceful
     /// drain (#1837).
     Retiring,
+    /// A compile reply deadline expired (soldr#1838 Phase 2, bullet 4).
+    ///
+    /// `saw_output` is the whole point: it separates *slow* from *wedged*,
+    /// which need opposite advice. A compile that streamed diagnostics and
+    /// then ran out of clock is a long build hitting the backstop -- raising
+    /// `SOLDR_COMPILE_REPLY_TIMEOUT_SECS` is the fix, and bypassing the cache
+    /// would only make it slower. A compile that produced nothing at all is
+    /// the wedge described in #1364, where bypassing is the fix and raising
+    /// the timeout just prolongs the hang.
+    ///
+    /// Carried as its own variant rather than an enriched `Io` because the
+    /// distinction has to survive to the message-formatting site, and
+    /// `io::Error` can only carry it as prose.
+    CompileStalled { saw_output: bool, elapsed: Duration },
 }
 
 impl From<std::io::Error> for ClientError {
@@ -681,6 +695,16 @@ pub struct CompileDoneInfo {
 ///
 /// On any timeout / IO error the wrapper hard-errors (the legacy
 /// `zccache.exe` fork path was removed in #980 L1's second pass).
+/// Whether an IO error is a reply-deadline expiry rather than a real
+/// transport fault. `WouldBlock` is included because a socket read timeout
+/// surfaces as either kind depending on platform.
+fn is_deadline_error(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+    )
+}
+
 pub fn compile_streaming<O, E>(
     sock_path: &Path,
     req: CompileRequest,
@@ -764,13 +788,33 @@ where
             }
         };
         let mut pending = Some(first_frame);
+        // soldr#1838 bullet 4: whether the compile ever spoke separates a slow
+        // build from a wedged daemon, and they need opposite advice. Tracked
+        // here because this is the only place that sees both the chunks and
+        // the deadline.
+        let started = std::time::Instant::now();
+        let mut saw_output = false;
         loop {
             let frame: Response = match pending.take() {
                 Some(frame) => frame,
-                None => read_frame_sync(&mut stream)?,
+                // `read_frame_sync` yields `io::Result`, which the original
+                // `?` converted through `From<io::Error>`. Match the io error
+                // directly and keep that conversion for everything that is not
+                // a deadline.
+                None => match read_frame_sync(&mut stream) {
+                    Ok(frame) => frame,
+                    Err(err) if is_deadline_error(&err) => {
+                        return Err(ClientError::CompileStalled {
+                            saw_output,
+                            elapsed: started.elapsed(),
+                        });
+                    }
+                    Err(err) => return Err(ClientError::from(err)),
+                },
             };
             match frame {
                 Response::CompileStdoutChunk(bytes) => {
+                    saw_output = true;
                     tracing::debug!(
                         target: "soldr::client::compile_stream",
                         bytes = bytes.len(),
@@ -779,6 +823,7 @@ where
                     stdout.write_all(&bytes).map_err(ClientError::Io)?;
                 }
                 Response::CompileStderrChunk(bytes) => {
+                    saw_output = true;
                     tracing::debug!(
                         target: "soldr::client::compile_stream",
                         bytes = bytes.len(),
@@ -1219,15 +1264,29 @@ where
         })
         .map_err(ClientError::Io)?;
 
+    // soldr#1838 bullet 4 — mirrors the unix arm. This consumer is the one
+    // place on the Windows transport that sees both the chunks and the
+    // worker's terminal error, so the slow-vs-wedged distinction is made
+    // here rather than inside the worker thread.
+    let started = std::time::Instant::now();
+    let mut saw_output = false;
     let result = loop {
         match rx.recv() {
             Ok(StreamMsg::Stdout(bytes)) => {
+                saw_output = true;
                 stdout.write_all(&bytes).map_err(ClientError::Io)?;
             }
             Ok(StreamMsg::Stderr(bytes)) => {
+                saw_output = true;
                 stderr.write_all(&bytes).map_err(ClientError::Io)?;
             }
             Ok(StreamMsg::Done(info)) => break Ok(info),
+            Ok(StreamMsg::Err(ClientError::Io(err))) if is_deadline_error(&err) => {
+                break Err(ClientError::CompileStalled {
+                    saw_output,
+                    elapsed: started.elapsed(),
+                })
+            }
             Ok(StreamMsg::Err(e)) => break Err(e),
             Err(_) => {
                 break Err(ClientError::Io(std::io::Error::other(
