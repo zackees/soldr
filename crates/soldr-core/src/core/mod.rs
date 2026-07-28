@@ -27,6 +27,7 @@ pub mod git;
 pub mod jobs;
 mod paths;
 mod target_triple;
+mod temp;
 mod toolchain_manifest;
 mod toolchain_resolve;
 pub mod wire;
@@ -37,6 +38,9 @@ pub use paths::{
     SoldrConfig, SoldrConfigLoadError, SoldrPaths, MANAGED_SHIM_VERSION, SOLDR_CACHE_DIR_ENV_VAR,
 };
 pub use target_triple::{Arch, Env, Os, TargetTriple};
+pub use temp::{
+    ensure_temp_root, ensure_temp_root_for, temp_root, temp_root_for, SOLDR_TMPDIR_ENV_VAR,
+};
 pub use toolchain_manifest::{
     read_rust_toolchain_manifest, PluginSpec, RustToolchainManifest, SoldrCookManifest,
     SoldrManifestSection,

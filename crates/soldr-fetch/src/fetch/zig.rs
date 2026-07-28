@@ -191,7 +191,10 @@ fn download_zig_asset_with_curl(url: &str) -> Result<Vec<u8>, SoldrError> {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or(0);
-    let out = std::env::temp_dir().join(format!(
+    // soldr#1900: the zig tarball is tens of megabytes. `std::env::temp_dir()`
+    // is tmpfs on most Linux hosts, so this used to be downloaded straight
+    // into RAM and then read into a Vec on top of that.
+    let out = soldr_core::core::ensure_temp_root().join(format!(
         "soldr-zig-download-{}-{nonce}.tmp",
         std::process::id()
     ));

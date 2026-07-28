@@ -28,6 +28,18 @@ const AUTO_GC_DISABLE_ENV_VAR: &str = "SOLDR_AUTO_GC_DISABLED";
 /// dropped by the Tier-0 step of `run_auto_gc_background`.
 const DAEMON_EVENT_TTL_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 
+/// soldr#1900: age at which an entry under `<cache>/tmp` is reclaimed.
+///
+/// Scratch is pinned to the cache volume so it can be swept from one place
+/// instead of leaking into the OS temp dir forever. A day is comfortably
+/// longer than any single build, so this never races an in-flight download
+/// or an active test; anything older belongs to a process that is gone.
+///
+/// Reclaiming a still-wanted entry is cheap by construction -- everything
+/// under scratch is either genuinely temporary or content-addressed and
+/// re-derivable (e.g. the wrapper's stdin source file).
+const SCRATCH_TTL_MS: i64 = 24 * 60 * 60 * 1000;
+
 /// Issue #1286 (F5): spawn the auto-GC sweep as a DETACHED PROCESS at
 /// build end instead of an in-process thread at build start.
 ///
@@ -172,6 +184,43 @@ fn defer_for_active_build(paths: &SoldrPaths, log_path: &std::path::Path, stage:
     rearm_auto_gc_marker(paths);
 }
 
+/// Reclaim stale entries under `<cache>/tmp` (soldr#1900).
+///
+/// Returns the number of entries removed. Best-effort throughout: a single
+/// unremovable entry (still held open on Windows, or owned by another user)
+/// must not abort the sweep or fail the GC pass.
+fn sweep_stale_scratch(paths: &SoldrPaths, now_ms: i64) -> u64 {
+    let root = crate::core::temp_root_for(paths);
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return 0;
+    };
+    let mut removed = 0_u64;
+    for entry in entries.flatten() {
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        let age_ok = metadata
+            .modified()
+            .ok()
+            .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| now_ms.saturating_sub(d.as_millis() as i64) > SCRATCH_TTL_MS)
+            .unwrap_or(false);
+        if !age_ok {
+            continue;
+        }
+        let path = entry.path();
+        let outcome = if metadata.is_dir() {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        if outcome.is_ok() {
+            removed = removed.saturating_add(1);
+        }
+    }
+    removed
+}
+
 fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::PathBuf) {
     use crate::cache_lib::auto_gc::DiskFreeProbe as _;
     let start = std::time::Instant::now();
@@ -218,6 +267,23 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
     // before any disk-pressure tiers run. Bounded, cheap, runs even when
     // the volume isn't below trigger so the event log can't grow
     // unbounded between auto-GC firings.
+    // Scratch reclamation must NOT be gated on the state DB existing -- a
+    // machine whose DB was never created (or was deleted) is exactly where
+    // scratch accumulates unnoticed.
+    let scratch_removed = sweep_stale_scratch(
+        &paths,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0),
+    );
+    if scratch_removed > 0 {
+        let _ = append_auto_gc_log_line(
+            &log_path,
+            &format!("auto-gc tier=0 scratch_entries_reclaimed={scratch_removed}"),
+        );
+    }
+
     let db_path = crate::cache_lib::data_db_path(&paths);
     if db_path.exists() {
         let now_ms = std::time::SystemTime::now()
@@ -785,4 +851,70 @@ fn rotate_auto_gc_log_if_needed(log_path: &std::path::Path, max_bytes: u64) -> s
     let _ = std::fs::remove_file(&archive);
     std::fs::rename(log_path, &archive)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod scratch_sweep_tests {
+    use super::*;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    fn now_ms() -> i64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
+    }
+
+    /// Backdate `path` so the sweep sees it as stale without sleeping.
+    fn age(path: &std::path::Path, older_than_ttl_by: Duration) {
+        let when =
+            SystemTime::now() - Duration::from_millis(SCRATCH_TTL_MS as u64) - older_than_ttl_by;
+        filetime::set_file_mtime(path, filetime::FileTime::from_system_time(when))
+            .expect("backdate scratch entry");
+    }
+
+    crate::timed_test!(sweep_reclaims_stale_entries_and_keeps_fresh_ones, {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().to_path_buf());
+        let scratch = crate::core::ensure_temp_root_for(&paths);
+
+        let stale_dir = scratch.join("stale-dir");
+        std::fs::create_dir_all(&stale_dir).expect("stale dir");
+        let stale_file = scratch.join("stale-file");
+        std::fs::write(&stale_file, b"x").expect("stale file");
+        let fresh = scratch.join("fresh-file");
+        std::fs::write(&fresh, b"x").expect("fresh file");
+
+        age(&stale_dir, Duration::from_secs(60));
+        age(&stale_file, Duration::from_secs(60));
+
+        let removed = sweep_stale_scratch(&paths, now_ms());
+
+        assert_eq!(removed, 2, "both backdated entries must be reclaimed");
+        assert!(!stale_dir.exists(), "stale directory must be removed");
+        assert!(!stale_file.exists(), "stale file must be removed");
+        assert!(
+            fresh.exists(),
+            "an entry inside the TTL must survive -- the sweep must never race \
+             an in-flight download or a running test"
+        );
+    });
+
+    crate::timed_test!(sweep_is_a_no_op_when_scratch_does_not_exist, {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("never-created"));
+        assert_eq!(sweep_stale_scratch(&paths, now_ms()), 0);
+    });
+
+    crate::timed_test!(scratch_root_tracks_the_cache_volume, {
+        // The reason scratch is pinned at all: temp -> cache renames are only
+        // atomic while both live on one filesystem. It sits *beside* the cache
+        // rather than inside it, which is precisely why this sweep has to
+        // exist -- nothing that walks `<cache>/**` will ever reclaim it.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().to_path_buf());
+        let scratch = crate::core::temp_root_for(&paths);
+        assert!(scratch.starts_with(&paths.root), "same volume as the cache");
+        assert!(!scratch.starts_with(&paths.cache), "but outside the cache");
+    });
 }
