@@ -3,13 +3,22 @@
 
 use super::*;
 use std::fs;
-use std::sync::Mutex;
 
 /// Env vars (`CARGO_HOME`, `HOME`, `USERPROFILE`) are process-global, so
-/// tests that mutate them must serialize. cargo test runs unit tests in
-/// parallel by default and we want to keep that for everything else, so
-/// every env-touching test in this module grabs this lock first.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+/// tests that mutate them must serialize.
+///
+/// soldr#1938: this was a module-local `static ENV_LOCK: Mutex<()>`. Two
+/// mutexes over one process environment exclude nothing -- each test took
+/// *a* lock, so every one read as correct in isolation, and you had to
+/// notice the locks were different objects.
+///
+/// These three are worse than a private-lock variable that nobody else
+/// writes, because they are **ambient**: `trampoline_config.rs`,
+/// `binaries.rs`, `exec_cmd.rs`, and `rust_plan_memo.rs` all read them to
+/// resolve paths. Any concurrent test that resolves a path at all is a
+/// reader, whether or not it knows this module exists -- so the barrier
+/// has to be the one the rest of the crate uses.
+use crate::TEST_PROCESS_ENV_LOCK as ENV_LOCK;
 
 /// Build a tempdir-anchored test bed and return `(tempdir, manifest_dir,
 /// cargo_home)`. We override `CARGO_HOME` and `HOME` per test so the
