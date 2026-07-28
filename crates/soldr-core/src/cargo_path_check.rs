@@ -303,6 +303,13 @@ mod tests {
                 perms.set_mode(0o755);
                 std::fs::set_permissions(&exe, perms).unwrap();
             }
+            // soldr#1994: PATH is mutated here and in soldr-cli. Two barriers
+            // over one variable are no barrier, and this test previously had
+            // none at all -- so take the one process-wide lock, which lives in
+            // this crate precisely so upstream and downstream can share it.
+            let _env = crate::test_util::TEST_PROCESS_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             let prior = std::env::var_os("PATH");
             std::env::set_var("PATH", &bin);
             let found = detect_cargo_on_path();

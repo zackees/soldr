@@ -316,7 +316,24 @@ fn extract_tar_zst_tree(data: &[u8], dest: &Path) -> Result<(), SoldrError> {
 mod tests {
     use super::*;
 
+    /// Serializes the two tests below, which are the *only* places that
+    /// mutate `LLVM_DIR_ENV_VAR`.
+    ///
+    /// soldr#1994: they raced each other. `cargo test` runs them as threads in
+    /// one process, so when `env_var_ignored_when_path_is_missing` set its
+    /// deliberately-missing path between the other test's `set_var` and its
+    /// read, `llvm_dir_from_env_var()` rejected the path and returned `None`.
+    /// That surfaced as a `Linux x64` failure on soldr#1993, a daemon PR that
+    /// touches nothing here.
+    ///
+    /// File-local rather than crate-wide by the rule in soldr#1896: a module
+    /// guarding a variable nobody else touches keeps its own lock, because
+    /// collapsing fine-grained locks over disjoint variables into one global
+    /// barrier costs suite latency and buys no correctness.
+    static LLVM_DIR_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     crate::timed_test!(env_var_overrides_when_pointing_at_real_dir, {
+        let _guard = LLVM_DIR_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().expect("tmpdir");
         let fake_bin = tmp.path().join("hardlinked").join("bin");
         std::fs::create_dir_all(&fake_bin).expect("mk");
@@ -331,6 +348,7 @@ mod tests {
     });
 
     crate::timed_test!(env_var_ignored_when_path_is_missing, {
+        let _guard = LLVM_DIR_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let prev = std::env::var_os(LLVM_DIR_ENV_VAR);
         std::env::set_var(LLVM_DIR_ENV_VAR, "/definitely/not/a/real/path/29384720");
         let resolved = llvm_dir_from_env_var();
