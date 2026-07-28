@@ -223,6 +223,7 @@ pub mod release_sidecar;
 pub mod rust_plan;
 pub mod save_load;
 pub mod shim_dir;
+pub(crate) mod shim_hygiene;
 pub mod shim_materialize;
 /// soldr#997 — friendly target aliases + Rust-triple passthrough.
 /// See module doc for the `soldr build --target <alias>` UX contract.
