@@ -478,6 +478,17 @@ pub(crate) fn home_origin_for_binary(binary: &std::path::Path, paths: &SoldrPath
     }
 }
 
+/// [`home_origin_for_binary`] for callers that have no `SoldrPaths` in hand.
+///
+/// `None` when the soldr root cannot be resolved -- telemetry then records
+/// the origin as absent rather than guessing. A wrong `home_origin` is worse
+/// than a missing one, because soldr#1799's CI check keys on it and a
+/// fabricated `caller` would mask exactly the leak it exists to catch.
+pub(crate) fn home_origin_for_binary_opt(binary: &std::path::Path) -> Option<HomeOrigin> {
+    let paths = SoldrPaths::new().ok()?;
+    Some(home_origin_for_binary(binary, &paths))
+}
+
 pub(crate) fn apply_resolved_toolchain_homes(
     command: &mut std::process::Command,
     binary: &std::path::Path,
