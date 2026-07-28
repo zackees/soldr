@@ -152,6 +152,131 @@ pub fn exe_depends_on_bundled_wheel_libs(exe: &Path) -> bool {
         .any(|kind| grandparent.join(format!("{pkg}.{kind}")).is_dir())
 }
 
+/// True when `exe` is position-dependent: it names a shared library
+/// relative to its own location, so copying or hardlinking it elsewhere
+/// strands that reference and dyld aborts it at exec.
+///
+/// This asks the binary directly instead of inferring from directory
+/// layout. [`exe_depends_on_bundled_wheel_libs`] is a *proxy* — it
+/// recognises the one producer (maturin/delocate) whose output happens to
+/// look that way. The proxy is both too narrow (any other repair tool, or
+/// a hand-rolled `install_name_tool` run, is invisible to it) and too
+/// fragile (it is opt-in per writer, so every new shim writer is a fresh
+/// chance to forget the guard — which is exactly how soldr#1908 happened
+/// after soldr#1856 was fixed).
+///
+/// Scans only the load-command region, never the whole file: `@loader_path`
+/// can legitimately appear in a data section as an ordinary string, and
+/// matching that would misclassify unrelated binaries.
+///
+/// Returns `false` for anything it cannot parse — a non-Mach-O, a
+/// truncated file, an unreadable path. The caller's fallback is the
+/// hardlink fast path, so a false negative preserves today's behaviour
+/// while a false positive would needlessly slow every shim.
+pub fn exe_has_loader_path_reference(exe: &Path) -> bool {
+    let Ok(bytes) = fs::read(exe) else {
+        return false;
+    };
+    macho_load_commands_mention_loader_path(&bytes)
+}
+
+/// `@loader_path` is the only Mach-O prefix that is relative to the
+/// *image being loaded*. `@executable_path` resolves against the main
+/// executable and `@rpath` against `LC_RPATH` entries, which is why
+/// neither is checked here: moving the file does not by itself break them.
+const LOADER_PATH_TOKEN: &[u8] = b"@loader_path";
+
+fn macho_load_commands_mention_loader_path(bytes: &[u8]) -> bool {
+    // Universal ("fat") binary: a big-endian table of slices, each a
+    // complete Mach-O. Any slice needing the trampoline condemns the file,
+    // since we cannot know which slice will be executed.
+    const FAT_MAGIC: u32 = 0xcafe_babe;
+    const FAT_MAGIC_64: u32 = 0xcafe_babf;
+    if let Some(magic) = read_u32(bytes, 0, false) {
+        if magic == FAT_MAGIC || magic == FAT_MAGIC_64 {
+            let Some(nfat) = read_u32(bytes, 4, false) else {
+                return false;
+            };
+            // fat_arch is cputype, cpusubtype, offset, size, align (5 x u32);
+            // fat_arch_64 widens offset/size to u64 and adds a reserved
+            // word. In both layouts `offset` starts at byte 8.
+            let entry_size = if magic == FAT_MAGIC { 20 } else { 32 };
+            const OFFSET_FIELD: usize = 8;
+            // Cap the arch count so a corrupt header cannot spin.
+            for i in 0..nfat.min(64) {
+                let base = 8 + (i as usize) * entry_size;
+                let off = if magic == FAT_MAGIC {
+                    read_u32(bytes, base + OFFSET_FIELD, false).map(|v| v as usize)
+                } else {
+                    read_u64(bytes, base + OFFSET_FIELD, false).map(|v| v as usize)
+                };
+                let Some(off) = off else { continue };
+                if let Some(slice) = bytes.get(off..) {
+                    if thin_macho_mentions_loader_path(slice) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+    }
+    thin_macho_mentions_loader_path(bytes)
+}
+
+fn thin_macho_mentions_loader_path(bytes: &[u8]) -> bool {
+    const MH_MAGIC: u32 = 0xfeed_face; // 32-bit, host-endian
+    const MH_CIGAM: u32 = 0xcefa_edfe; // 32-bit, byte-swapped
+    const MH_MAGIC_64: u32 = 0xfeed_facf;
+    const MH_CIGAM_64: u32 = 0xcffa_edfe;
+
+    let Some(raw) = read_u32(bytes, 0, true) else {
+        return false;
+    };
+    // `swapped` means the file's fields are big-endian relative to us.
+    let (is_64, swapped) = match raw {
+        MH_MAGIC_64 => (true, false),
+        MH_CIGAM_64 => (true, true),
+        MH_MAGIC => (false, false),
+        MH_CIGAM => (false, true),
+        _ => return false,
+    };
+
+    // mach_header: magic, cputype, cpusubtype, filetype, ncmds,
+    // sizeofcmds, flags [, reserved on 64-bit].
+    let Some(sizeofcmds) = read_u32(bytes, 20, !swapped) else {
+        return false;
+    };
+    let header_len: usize = if is_64 { 32 } else { 28 };
+    let end = header_len.saturating_add(sizeofcmds as usize);
+    let Some(region) = bytes.get(header_len..end.min(bytes.len())) else {
+        return false;
+    };
+    region
+        .windows(LOADER_PATH_TOKEN.len())
+        .any(|w| w == LOADER_PATH_TOKEN)
+}
+
+/// Read a `u32`, `little` selecting the interpretation. Returns `None`
+/// rather than panicking on a short buffer so a truncated file is simply
+/// "not position-dependent" instead of a crash in a shim writer.
+fn read_u32(bytes: &[u8], at: usize, little: bool) -> Option<u32> {
+    let raw: [u8; 4] = bytes.get(at..at + 4)?.try_into().ok()?;
+    Some(if little {
+        u32::from_le_bytes(raw)
+    } else {
+        u32::from_be_bytes(raw)
+    })
+}
+
+fn read_u64(bytes: &[u8], at: usize, little: bool) -> Option<u64> {
+    let raw: [u8; 8] = bytes.get(at..at + 8)?.try_into().ok()?;
+    Some(if little {
+        u64::from_le_bytes(raw)
+    } else {
+        u64::from_be_bytes(raw)
+    })
+}
+
 /// Periodic GC sweep for the daemon-runtime sub-tree. Same cadence and
 /// stale threshold as the soldr-self GC so a long-lived workspace
 /// can't grow unbounded copies.
@@ -615,6 +740,108 @@ mod tests {
         fs::write(&daemon, b"daemon-bin").expect("write daemon");
 
         assert!(exe_depends_on_bundled_wheel_libs(&daemon));
+    });
+
+    /// Build a minimal 64-bit little-endian Mach-O whose load-command
+    /// region contains `payload`. Enough to exercise the parser on every
+    /// platform — the real question is header arithmetic, not linking.
+    fn synthetic_macho_le64(payload: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&0xfeed_facfu32.to_le_bytes()); // magic
+        out.extend_from_slice(&0u32.to_le_bytes()); // cputype
+        out.extend_from_slice(&0u32.to_le_bytes()); // cpusubtype
+        out.extend_from_slice(&2u32.to_le_bytes()); // filetype
+        out.extend_from_slice(&1u32.to_le_bytes()); // ncmds
+        out.extend_from_slice(&(payload.len() as u32).to_le_bytes()); // sizeofcmds
+        out.extend_from_slice(&0u32.to_le_bytes()); // flags
+        out.extend_from_slice(&0u32.to_le_bytes()); // reserved
+        out.extend_from_slice(payload);
+        out
+    }
+
+    // #1908: ask the binary, not the directory it happens to sit in.
+    crate::timed_test!(loader_path_reference_is_detected_in_load_commands, {
+        let temp = TempDir::new().expect("tempdir");
+        let exe = temp.path().join("repaired");
+        fs::write(
+            &exe,
+            synthetic_macho_le64(b"\x0c\x00\x00\x00@loader_path/../soldr.dylibs/liblzma.dylib\x00"),
+        )
+        .expect("write");
+        assert!(
+            exe_has_loader_path_reference(&exe),
+            "a load command naming @loader_path must be detected"
+        );
+    });
+
+    // The scan must stay inside the load commands. `@loader_path` is a
+    // perfectly ordinary string for a binary to carry in its data --
+    // soldr's own source mentions it -- and matching that would condemn
+    // unrelated binaries to the slow trampoline path.
+    crate::timed_test!(loader_path_in_the_body_is_not_a_reference, {
+        let temp = TempDir::new().expect("tempdir");
+        let exe = temp.path().join("innocent");
+        let mut bytes = synthetic_macho_le64(b"\x0c\x00\x00\x00/usr/lib/libSystem.dylib\x00");
+        bytes.extend_from_slice(b"... @loader_path mentioned in a data section ...");
+        fs::write(&exe, bytes).expect("write");
+        assert!(
+            !exe_has_loader_path_reference(&exe),
+            "a data-section mention must not count"
+        );
+    });
+
+    // Unparseable input must fall back to today's behaviour (hardlink),
+    // never panic: these run inside shim writers on every platform.
+    crate::timed_test!(non_macho_inputs_are_not_position_dependent, {
+        let temp = TempDir::new().expect("tempdir");
+
+        let script = temp.path().join("script");
+        fs::write(&script, b"#!/bin/sh\nexec soldr cargo \"$@\"\n").expect("write");
+        assert!(!exe_has_loader_path_reference(&script));
+
+        let elf = temp.path().join("elf");
+        fs::write(&elf, b"\x7fELF\x02\x01\x01\x00 @loader_path").expect("write");
+        assert!(!exe_has_loader_path_reference(&elf));
+
+        let empty = temp.path().join("empty");
+        fs::write(&empty, b"").expect("write");
+        assert!(!exe_has_loader_path_reference(&empty));
+
+        // Truncated: header claims more load commands than exist.
+        let truncated = temp.path().join("truncated");
+        let mut bytes = synthetic_macho_le64(b"@loader_path/x");
+        bytes.truncate(20);
+        fs::write(&truncated, bytes).expect("write");
+        assert!(!exe_has_loader_path_reference(&truncated));
+
+        assert!(!exe_has_loader_path_reference(&temp.path().join("nope")));
+    });
+
+    // A universal binary hides its slices behind an offset table, so the
+    // parser has to follow them; a naive whole-file scan would pass this
+    // test for the wrong reason, hence the offset padding.
+    crate::timed_test!(fat_binary_slices_are_followed, {
+        let temp = TempDir::new().expect("tempdir");
+        let exe = temp.path().join("universal");
+
+        let slice = synthetic_macho_le64(b"\x0c\x00\x00\x00@loader_path/../soldr.dylibs/x\x00");
+        let slice_offset: u32 = 4096;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&0xcafe_babeu32.to_be_bytes()); // FAT_MAGIC
+        bytes.extend_from_slice(&1u32.to_be_bytes()); // nfat_arch
+        bytes.extend_from_slice(&0u32.to_be_bytes()); // cputype
+        bytes.extend_from_slice(&0u32.to_be_bytes()); // cpusubtype
+        bytes.extend_from_slice(&slice_offset.to_be_bytes()); // offset
+        bytes.extend_from_slice(&(slice.len() as u32).to_be_bytes()); // size
+        bytes.extend_from_slice(&0u32.to_be_bytes()); // align
+        bytes.resize(slice_offset as usize, 0);
+        bytes.extend_from_slice(&slice);
+        fs::write(&exe, bytes).expect("write");
+
+        assert!(
+            exe_has_loader_path_reference(&exe),
+            "fat slices must be followed through the offset table"
+        );
     });
 
     crate::timed_test!(plain_layouts_are_still_relocated, {

@@ -14,6 +14,11 @@ use std::time::UNIX_EPOCH;
 pub(crate) const LINK_MODE_HARDLINK: &str = "hardlink";
 pub(crate) const LINK_MODE_COPY: &str = "copy";
 pub(crate) const LINK_MODE_HARDLINK_OR_COPY: &str = "hardlink-or-copy";
+/// Reported for position-dependent sources (#1908), which get a
+/// `#!/bin/sh` trampoline rather than a hardlink. Distinct from the others
+/// so the slower path is visible in diagnostics instead of silently
+/// masquerading as a hardlink.
+pub(crate) const LINK_MODE_TRAMPOLINE: &str = "trampoline";
 const MATERIALIZATION_MEMO_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,6 +69,58 @@ pub(crate) fn soldr_binary_source() -> Result<PathBuf, SoldrError> {
     std::env::current_exe().map_err(SoldrError::from)
 }
 
+/// Point `target` at `source` with a `#!/bin/sh` trampoline instead of a
+/// hardlink, for sources that only run from their own directory (#1908).
+///
+/// The tool name comes from the target's file stem, which is exactly the
+/// identity the multicall dispatch derives from `argv[0]`
+/// (`multicall.rs::classify_argv0`), so `exec <soldr> <stem> "$@"`
+/// reproduces the same argument vector the hardlinked alias would have
+/// produced. The one behavioural difference is that the multicall path
+/// also runs `strip_self_from_path`; recursion stays bounded by the
+/// `SOLDR_CHILD_SHIMS_ACTIVE` guard that `shim_dir` already sets.
+///
+/// Compares against [`crate::shim_dir::trampoline_shim_body`] rather than
+/// byte-comparing to `source`: comparing a small script to a Mach-O always
+/// differs, which would republish the shim on every invocation and defeat
+/// the #1831 memo fast path.
+fn materialize_trampoline(source: &Path, target: &Path) -> Result<MaterializeResult, SoldrError> {
+    let tool = target
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| {
+            SoldrError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("shim target has no usable stem: {}", target.display()),
+            ))
+        })?
+        .to_string();
+
+    let want = crate::shim_dir::trampoline_shim_body(&tool, source);
+    if let Ok(existing) = std::fs::read_to_string(target) {
+        if existing == want {
+            return Ok(MaterializeResult {
+                created: false,
+                link_mode: LINK_MODE_TRAMPOLINE,
+            });
+        }
+    }
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent).map_err(SoldrError::Io)?;
+    }
+    // Replacing a running shim in place can hit ETXTBSY, and a partially
+    // written trampoline is worse than none: write beside it and rename,
+    // which is atomic and leaves no window where the shim is truncated.
+    let tmp = tmp_path_for(target);
+    let _ = std::fs::remove_file(&tmp);
+    crate::shim_dir::write_trampoline_shim(&tmp, &tool, source)?;
+    std::fs::rename(&tmp, target).map_err(SoldrError::Io)?;
+    Ok(MaterializeResult {
+        created: true,
+        link_mode: LINK_MODE_TRAMPOLINE,
+    })
+}
+
 /// Install `target` as a hardlink to `source`, falling back to a copy.
 /// Returns `created=false` when the existing target already has identical
 /// bytes.
@@ -71,6 +128,21 @@ pub(crate) fn materialize_executable(
     source: &Path,
     target: &Path,
 ) -> Result<MaterializeResult, SoldrError> {
+    // #1908: a position-dependent binary cannot be hardlinked or copied
+    // anywhere -- it names its libraries relative to its own location, so
+    // dyld aborts the copy at exec, before main and before any logging.
+    //
+    // The guard lives *here*, in the one function every shim writer calls,
+    // rather than at each call site. #1856 fixed the two writers known at
+    // the time and #1908 was the writers it missed -- including one that
+    // overwrote a correct trampoline with a hardlink, so the same path
+    // could look right and then break. An opt-in guard makes every new
+    // writer a fresh chance to reintroduce the bug; this makes the safe
+    // behaviour the default and costs one header read on the memo-miss
+    // path only.
+    if soldr_core::self_relocate::exe_has_loader_path_reference(source) {
+        return materialize_trampoline(source, target);
+    }
     // Regression for #1831: these shims are large copies on installations
     // where the Soldr binary and cache live on different volumes. Rehashing
     // both files for every cargo invocation made a no-op build reread
@@ -485,6 +557,102 @@ mod tests {
         std::fs::write(&source, bytes).unwrap();
         source
     }
+
+    // A minimal 64-bit LE Mach-O whose load-command region names
+    // @loader_path -- i.e. a binary that only runs from its own directory.
+    fn position_dependent_source(tmp: &tempfile::TempDir) -> PathBuf {
+        let payload = b"\x0c\x00\x00\x00@loader_path/../soldr.dylibs/liblzma.dylib\x00";
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&0xfeed_facfu32.to_le_bytes()); // magic
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // cputype
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // cpusubtype
+        bytes.extend_from_slice(&2u32.to_le_bytes()); // filetype
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // ncmds
+        bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes()); // sizeofcmds
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // flags
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // reserved
+        bytes.extend_from_slice(payload);
+        let source = tmp.path().join("soldr");
+        std::fs::write(&source, bytes).unwrap();
+        source
+    }
+
+    // #1908: the guard belongs to materialize_executable, so every writer
+    // inherits it. Before this, rustc_wrapper_shim_binary and friends
+    // hardlinked the Mach-O straight into the shim dir and dyld aborted it
+    // -- and one of them overwrote a correct trampoline written moments
+    // earlier by `soldr shims`, so the same path could look right and then
+    // break.
+    crate::timed_test!(position_dependent_source_gets_a_trampoline, {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = position_dependent_source(&tmp);
+        let target = tmp.path().join("shims").join("rustc");
+
+        let result = materialize_executable(&source, &target).unwrap();
+        assert!(result.created);
+        assert_eq!(result.link_mode, LINK_MODE_TRAMPOLINE);
+
+        let body = std::fs::read_to_string(&target).unwrap();
+        assert!(
+            body.starts_with("#!/bin/sh"),
+            "expected a trampoline: {body}"
+        );
+        // The tool name must be the target's stem: that is the identity
+        // multicall derives from argv[0], so the front door sees the same
+        // argument vector a hardlinked alias would have produced.
+        assert!(
+            body.contains(" rustc \"$@\""),
+            "wrong tool identity: {body}"
+        );
+        assert!(
+            body.contains(&source.to_string_lossy().to_string()),
+            "trampoline must exec the source in place: {body}"
+        );
+    });
+
+    // Idempotency matters here specifically: comparing a small script to a
+    // Mach-O always differs, so a naive byte comparison would republish the
+    // shim on every cargo invocation and undo the #1831 memo fast path.
+    crate::timed_test!(trampoline_materialization_is_idempotent, {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = position_dependent_source(&tmp);
+        let target = tmp.path().join("shims").join("rustc");
+
+        assert!(materialize_executable(&source, &target).unwrap().created);
+        let second = materialize_executable(&source, &target).unwrap();
+        assert!(
+            !second.created,
+            "an unchanged trampoline must not be rewritten"
+        );
+        assert_eq!(second.link_mode, LINK_MODE_TRAMPOLINE);
+    });
+
+    // The reverse direction of the same bug: a stale hardlinked Mach-O
+    // sitting where a trampoline belongs must be replaced, not kept.
+    crate::timed_test!(trampoline_replaces_a_stale_hardlinked_shim, {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = position_dependent_source(&tmp);
+        let target = tmp.path().join("shims").join("rustc");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, std::fs::read(&source).unwrap()).unwrap();
+
+        let result = materialize_executable(&source, &target).unwrap();
+        assert!(result.created, "stale Mach-O shim must be replaced");
+        assert!(std::fs::read_to_string(&target)
+            .unwrap()
+            .starts_with("#!/bin/sh"));
+    });
+
+    // Ordinary binaries must keep the fast path untouched -- the startup
+    // latency work in #1831/#1834 depends on it.
+    crate::timed_test!(ordinary_source_still_takes_the_hardlink_path, {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = fake_source(&tmp, b"an ordinary binary mentioning nothing special");
+        let target = tmp.path().join("shims").join("cargo");
+        let result = materialize_executable(&source, &target).unwrap();
+        assert!(result.created);
+        assert_ne!(result.link_mode, LINK_MODE_TRAMPOLINE);
+    });
 
     crate::timed_test!(materialize_executable_creates_matching_target, {
         let tmp = tempfile::tempdir().unwrap();
