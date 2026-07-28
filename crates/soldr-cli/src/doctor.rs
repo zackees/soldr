@@ -171,6 +171,7 @@ pub(crate) fn run_doctor(json: bool, refresh_defender_probe: bool) -> Result<i32
             if let Some(c) = cook.as_ref() {
                 print_cook_section(c);
             }
+            crate::shim_hygiene::print_shim_hygiene_section();
             println!("result: no manifest fields to compare; nothing to do");
         } else {
             println!(
@@ -183,6 +184,7 @@ pub(crate) fn run_doctor(json: bool, refresh_defender_probe: bool) -> Result<i32
             if let Some(c) = cook.as_ref() {
                 print_cook_section(c);
             }
+            crate::shim_hygiene::print_shim_hygiene_section();
             println!("result: no manifest found; nothing to compare");
         }
         return Ok(0);
@@ -815,6 +817,7 @@ fn print_doctor_human(
     if let Some(c) = cook {
         print_cook_section(c);
     }
+    crate::shim_hygiene::print_shim_hygiene_section();
 
     println!();
     if drift {
