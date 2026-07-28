@@ -2,37 +2,34 @@ name: Nextest Cacheability
 
 on:
   workflow_dispatch:
-  # Not a per-PR job (soldr#1907 follow-up). This acceptance runs inside the
-  # `ci/perf_local.py` Docker runner, whose value is a *reusable* local
-  # container with warm volumes. A GitHub Actions runner is already an
-  # ephemeral isolated VM with nothing to reuse, so the container adds an image
-  # build and no isolation. Median run: 47 minutes, and it triggered on
-  # `crates/**`.
+  # Deliberately NOT triggered by pushes or PRs (soldr#1985).
   #
-  # push-to-main below still runs it unconditionally, so main stays verified;
-  # the weekly schedule and manual dispatch cover the rest.
+  # The acceptance runs inside the `ci/perf_local.py` Docker runner, whose
+  # value is a *reusable* local container with warm volumes. A GitHub Actions
+  # runner is an ephemeral VM with nothing to reuse, so the container costs a
+  # full `docker build` every run and collects none of the benefit. The job is
+  # ~39-47 minutes, of which >99% is one opaque step.
+  #
+  # soldr#1907's follow-up removed the PR trigger and kept push-to-main, on the
+  # grounds that main would stay verified. That stopped being true when
+  # soldr#1985's concurrency group landed: consecutive merges now cancel each
+  # other, so only the last merge of a burst is ever checked. On 2026-07-28,
+  # 7 of 12 push-triggered runs were cancelled -- each having occupied a runner
+  # first, while a release sat queued for over an hour (soldr#1978).
+  #
+  # This is a cacheability acceptance, not a correctness gate: a regression
+  # here is a performance regression, and weekly plus on-demand detection is
+  # proportionate. Per-merge signal would first require making the job cheap --
+  # dropping the container on Actions, where the VM already supplies the
+  # isolation it stands in for, and splitting the single step into observable
+  # phases (soldr#1978 item 4).
   schedule:
     - cron: "0 6 * * 1"
-  push:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/nextest-cacheability.yml"
-      - "Cargo.lock"
-      - "Cargo.toml"
-      - "ci/assert_nextest_archive_cacheability.py"
-      - "crates/**"
-      - "docker/cook-shared-cache/Dockerfile"
-      - "rust-toolchain.toml"
-      - "tests/conftest.py"
-      - "tests/test_nextest_archive_cacheability.py"
-      - "_vender/zccache"
-      - "_vender/zccache/**"
 
 permissions:
   contents: read
 
-# soldr#1985 - stop superseded runs from holding runner slots.
+# soldr#1977 - stop superseded runs from holding runner slots.
 concurrency:
   group: nextest-cacheability-${{ github.ref }}
   cancel-in-progress: true
