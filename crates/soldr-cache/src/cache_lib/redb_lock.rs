@@ -383,10 +383,27 @@ mod tests {
         let blocker = Database::builder().create(&path).expect("blocking open");
         let (contended_tx, contended_rx) = mpsc::sync_channel(1);
         let worker_path = path.clone();
+        // The worker's retry budget must comfortably exceed
+        // OBSERVE_CONTENTION_WAIT below. The blocker is released only
+        // *after* the parent observes contention, so a budget equal to
+        // that wait lets the worker give up before the release it is
+        // waiting for ever happens. Both were 1s, which raced on the
+        // emulated aarch64-Windows lane: the parent spent most of its
+        // second in `recv_timeout`, and by the time it dropped the
+        // blocker the worker had already returned `Err`.
+        //
+        // A large budget is free on the happy path — the worker returns
+        // as soon as the open succeeds, not when the budget expires.
+        const WORKER_RETRY_BUDGET: Duration = Duration::from_secs(30);
+        // Generous for the same reason: the emulated Windows lanes are
+        // an order of magnitude slower than the host ones, and this
+        // asserts *that* contention is observed, not how fast.
+        const OBSERVE_CONTENTION_WAIT: Duration = Duration::from_secs(10);
+
         let worker = std::thread::spawn(move || {
             open_state_db_with_retry(
                 &worker_path,
-                Duration::from_secs(1),
+                WORKER_RETRY_BUDGET,
                 Duration::from_millis(5),
                 OpenIntent::Required,
                 || {
@@ -397,7 +414,7 @@ mod tests {
         });
 
         contended_rx
-            .recv_timeout(Duration::from_secs(1))
+            .recv_timeout(OBSERVE_CONTENTION_WAIT)
             .expect("worker observed contention");
         drop(blocker);
 
