@@ -572,7 +572,11 @@ pub fn direct_exec_rustc(rustc_argv: &[String]) -> Result<i32, SoldrError> {
     command.args(args);
     crate::core::suppress_windows_console_window(&mut command);
     let status = command.status()?;
-    Ok(status.code().unwrap_or(1))
+    let exit_code = status.code().unwrap_or(1);
+    // soldr#1974 -- same rationale as the `direct_exec_tool` twin: stdio is
+    // inherited, so nothing else on this path can explain a DLL-init death.
+    crate::host_pressure::report_process_init_failure_to_stderr(tool, exit_code);
+    Ok(exit_code)
 }
 
 fn daemon_unavailable_marker_path(paths: &SoldrPaths) -> PathBuf {
