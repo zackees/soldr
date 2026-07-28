@@ -70,6 +70,91 @@ impl Drop for EnvVarGuard {
     }
 }
 
+/// RAII guard that changes the process working directory for the duration of
+/// a test and restores it on drop.
+///
+/// The working directory is process-global state exactly like an environment
+/// variable, and unit tests share one process — but [`TEST_PROCESS_ENV_LOCK`]
+/// and `env_lock_lint.rs` only cover env vars, so cwd had neither a barrier
+/// nor a panic-safe guard.
+///
+/// That gap blocked the 0.8.26 release. `env_cmd::build_env_block` passes
+/// `std::env::current_dir()` as the workspace root, so
+/// `env_block_does_not_guess_pyo3_no_python` failed on macOS the moment a
+/// parallel test happened to be chdir'd into a manifest declaring a PyO3
+/// abi3 extension — the resolver read *that* workspace and emitted
+/// `PYO3_NO_PYTHON`.
+///
+/// Same contract as [`EnvVarGuard`]: hold [`TEST_PROCESS_ENV_LOCK`] for the
+/// guard's whole lifetime. This type makes restoration safe, not the mutation
+/// atomic. It deliberately does **not** take the lock itself — callers such as
+/// `prepare_cmd`'s `rustup_add_target_scopes_to_pinned_toolchain_channel`
+/// already hold it, and `std::sync::Mutex` is not reentrant, so acquiring it
+/// here would deadlock rather than protect anything.
+#[cfg(test)]
+pub(crate) struct CwdGuard {
+    previous: std::path::PathBuf,
+}
+
+#[cfg(test)]
+impl CwdGuard {
+    pub(crate) fn enter(path: &std::path::Path) -> Self {
+        let previous = std::env::current_dir().expect("cwd");
+        std::env::set_current_dir(path).expect("chdir");
+        Self { previous }
+    }
+}
+
+#[cfg(test)]
+impl Drop for CwdGuard {
+    fn drop(&mut self) {
+        // Best-effort: a failure here cannot be reported from Drop, and
+        // panicking during unwind would abort the whole test process.
+        let _ = std::env::set_current_dir(&self.previous);
+    }
+}
+
+#[cfg(test)]
+mod cwd_guard_tests {
+    use super::CwdGuard;
+
+    crate::timed_test!(cwd_guard_restores_on_normal_exit, {
+        let _env = crate::TEST_PROCESS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let before = std::env::current_dir().expect("cwd");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        {
+            let _cwd = CwdGuard::enter(tmp.path());
+            assert_ne!(std::env::current_dir().expect("cwd"), before);
+        }
+        assert_eq!(std::env::current_dir().expect("cwd"), before);
+    });
+
+    // The property the old inline `set_current_dir(prev)` in `archive_cmd`
+    // did not have: a panic between chdir and restore left the process cwd
+    // pointing at a temp dir for every later test in the binary.
+    crate::timed_test!(cwd_guard_restores_while_unwinding, {
+        let _env = crate::TEST_PROCESS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let before = std::env::current_dir().expect("cwd");
+        let tmp = tempfile::tempdir().expect("tempdir");
+
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _cwd = CwdGuard::enter(tmp.path());
+            panic!("deliberate panic inside the guarded scope");
+        }));
+
+        assert!(panicked.is_err(), "the guarded scope must have panicked");
+        assert_eq!(
+            std::env::current_dir().expect("cwd"),
+            before,
+            "Drop runs during unwinding, so the cwd must be restored even              when the guarded body panics"
+        );
+    });
+}
+
 pub mod archive_cmd;
 pub mod binaries;
 /// soldr#1012 PR 5 — blessed cross-compile sysroot prep called from
