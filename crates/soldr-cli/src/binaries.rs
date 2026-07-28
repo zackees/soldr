@@ -432,6 +432,52 @@ pub(crate) fn apply_implicit_toolchain_homes(command: &mut std::process::Command
 /// but a concrete host binary must keep the caller's host Rustup context.
 /// Mixing a host Cargo/rustfmt proxy with Soldr's default-less managed
 /// `RUSTUP_HOME` makes Rustup report that no default toolchain is configured.
+/// Which toolchain homes an execution runs under (soldr#1799).
+///
+/// The invariant this names: **one canonical pair of homes per execution,
+/// chosen by where the resolved binary lives — never by ambient env leakage.**
+/// Mixing a host cargo/rustfmt proxy with soldr's default-less managed
+/// `RUSTUP_HOME` makes rustup report no default toolchain (#1768), and the
+/// quieter failure is worse — flipping homes between runs changes which rustc
+/// is used, invalidating cargo fingerprints and zccache keys, so warm builds
+/// silently recompile the world.
+///
+/// Exposed as a discriminant rather than left implicit in a branch because it
+/// is the value telemetry records and CI asserts on: a host-resolved tool must
+/// never report [`HomeOrigin::Managed`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HomeOrigin {
+    /// The caller's own homes are used unchanged.
+    Caller,
+    /// soldr's managed homes, because the binary physically lives in them.
+    Managed,
+}
+
+impl HomeOrigin {
+    /// The stable string used in logs and CI assertions.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            HomeOrigin::Caller => "caller",
+            HomeOrigin::Managed => "managed",
+        }
+    }
+}
+
+/// Classify which homes `binary` must execute under.
+///
+/// Managed **only** when the binary physically lives inside a managed home.
+/// Anything else — a host rustup proxy, a repo-local `.cargo` tool, a PATH
+/// binary — keeps the caller's context.
+pub(crate) fn home_origin_for_binary(binary: &std::path::Path, paths: &SoldrPaths) -> HomeOrigin {
+    let managed_cargo_home = crate::fetch::managed_cargo_home(paths);
+    let managed_rustup_home = crate::fetch::managed_rustup_home(paths);
+    if path_is_within(binary, &managed_cargo_home) || path_is_within(binary, &managed_rustup_home) {
+        HomeOrigin::Managed
+    } else {
+        HomeOrigin::Caller
+    }
+}
+
 pub(crate) fn apply_resolved_toolchain_homes(
     command: &mut std::process::Command,
     binary: &std::path::Path,
@@ -442,9 +488,7 @@ pub(crate) fn apply_resolved_toolchain_homes(
     let Ok(paths) = SoldrPaths::new() else {
         return;
     };
-    let managed_cargo_home = crate::fetch::managed_cargo_home(&paths);
-    let managed_rustup_home = crate::fetch::managed_rustup_home(&paths);
-    if path_is_within(binary, &managed_cargo_home) || path_is_within(binary, &managed_rustup_home) {
+    if home_origin_for_binary(binary, &paths) == HomeOrigin::Managed {
         apply_managed_toolchain_homes_if_available(command, start_dir.as_deref());
     }
 }
@@ -1055,4 +1099,59 @@ mod tests {
             None => std::env::remove_var(TOOLCHAIN_BIN_CACHE_ENV_VAR),
         }
     }
+
+    // soldr#1799: `home_origin` is the discriminant telemetry records and CI
+    // asserts on, so its classification is pinned here rather than left to be
+    // re-derived from the branch it replaced.
+
+    crate::timed_test!(a_binary_inside_the_managed_cargo_home_is_managed, {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().to_path_buf());
+        let managed = crate::fetch::managed_cargo_home(&paths);
+        let binary = managed.join("bin").join("cargo");
+        std::fs::create_dir_all(binary.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&binary, b"").expect("write");
+
+        assert_eq!(home_origin_for_binary(&binary, &paths), HomeOrigin::Managed);
+    });
+
+    crate::timed_test!(a_binary_inside_the_managed_rustup_home_is_managed, {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().to_path_buf());
+        let managed = crate::fetch::managed_rustup_home(&paths);
+        let binary = managed
+            .join("toolchains")
+            .join("nightly")
+            .join("bin")
+            .join("rustc");
+        std::fs::create_dir_all(binary.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&binary, b"").expect("write");
+
+        assert_eq!(home_origin_for_binary(&binary, &paths), HomeOrigin::Managed);
+    });
+
+    crate::timed_test!(a_host_binary_never_reports_managed, {
+        // The regression that made this a named concept: a host-resolved
+        // cargo/rustfmt executing under soldr's default-less managed
+        // RUSTUP_HOME. rustup then reports no default toolchain (#1768), and
+        // more insidiously the home flip changes which rustc is used, so warm
+        // builds recompile the world with nothing appearing to fail.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().to_path_buf());
+        let host = temp.path().join("host-toolchain").join("bin").join("cargo");
+        std::fs::create_dir_all(host.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&host, b"").expect("write");
+
+        assert_eq!(
+            home_origin_for_binary(&host, &paths),
+            HomeOrigin::Caller,
+            "a binary outside the managed homes must keep the caller's context"
+        );
+    });
+
+    crate::timed_test!(home_origin_strings_are_stable, {
+        // CI assertions and log consumers key on these exact spellings.
+        assert_eq!(HomeOrigin::Caller.as_str(), "caller");
+        assert_eq!(HomeOrigin::Managed.as_str(), "managed");
+    });
 }
