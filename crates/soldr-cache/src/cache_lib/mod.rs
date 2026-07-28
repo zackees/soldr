@@ -55,6 +55,22 @@ pub fn gc_warning_marker_path(paths: &SoldrPaths) -> PathBuf {
     paths.root.join(".gc_warning_marker")
 }
 
+/// Throttle marker for the target-registry `last_used` refresh (#1843).
+///
+/// Keyed on the recorded `target/` path, because the throttle is per-row:
+/// two workspaces built in the same hour must each still get recorded. The
+/// marker cannot live inside `target/` itself — `cargo clean` would delete
+/// it, and the registry deliberately accepts paths that do not exist yet.
+pub fn target_registry_touch_marker_path(paths: &SoldrPaths, target_dir: &Path) -> PathBuf {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    target_dir.hash(&mut hasher);
+    paths
+        .root
+        .join("target-memo")
+        .join(format!("{:016x}", hasher.finish()))
+}
+
 /// Directory for root-scoped GC error logs.
 pub fn gc_log_dir(paths: &SoldrPaths) -> PathBuf {
     paths.root.join("logs").join("gc")

@@ -30,6 +30,30 @@ pub const DEFAULT_STALE_AGE_SECONDS: u64 = 10 * 24 * 60 * 60;
 /// startup warning.
 pub const DEFAULT_STALE_SIZE_BYTES: u64 = 256 * 1024 * 1024;
 
+/// How long a recorded `last_used` stamp is treated as fresh enough to
+/// skip re-writing (#1843).
+///
+/// The row exists only to answer "is this `target/` older than
+/// [`DEFAULT_STALE_AGE_SECONDS`]", which is 10 days. Refreshing it on every
+/// invocation is therefore ~240x more precise than any consumer needs, and
+/// it is not free: `TargetRegistry::open` runs a durable write transaction
+/// in `init_schema` and `upsert` runs a second one, so a warm no-op
+/// `soldr cargo` paid two fsyncs plus the cross-process state-db lock to
+/// re-record a timestamp that had not meaningfully changed.
+///
+/// One hour keeps the worst-case staleness error at 1 h against a 10-day
+/// threshold (0.4%), which cannot flip a GC decision.
+pub const TARGET_REGISTRY_TOUCH_INTERVAL_SECONDS: u64 = 60 * 60;
+
+// The row only ever answers "older than `DEFAULT_STALE_AGE_SECONDS`?", so the
+// refresh interval has to stay far below it or the throttle could suppress a
+// write long enough to flip a GC verdict. Enforced at compile time rather than
+// in a test: widening the throttle past this point should not build at all.
+const _: () = assert!(
+    TARGET_REGISTRY_TOUCH_INTERVAL_SECONDS * 24 < DEFAULT_STALE_AGE_SECONDS,
+    "the touch throttle must stay at least 24x finer than the staleness threshold"
+);
+
 const TARGETS: TableDefinition<&str, i64> = TableDefinition::new("target_registry_targets");
 
 #[derive(Debug, Error)]
@@ -156,7 +180,49 @@ impl TargetRegistry {
     pub fn upsert(&self, path: &Path) -> Result<(), RegistryError> {
         self.upsert_with_time(path, current_unix_seconds()?)
     }
+}
 
+/// Is this `target/` due for a `last_used` refresh (#1843)?
+///
+/// Deliberately a single `fs::metadata` on a marker, so a caller can decide
+/// *without* opening redb — the open is the expensive half, not the write.
+/// A missing or unreadable marker reads as due, so the first invocation and
+/// any marker loss both fall back to recording, never to silently skipping.
+pub fn touch_due(marker_path: &Path) -> bool {
+    touch_due_at(marker_path, SystemTime::now())
+}
+
+fn touch_due_at(marker_path: &Path, now: SystemTime) -> bool {
+    let Ok(metadata) = std::fs::metadata(marker_path) else {
+        return true;
+    };
+    let Ok(modified) = metadata.modified() else {
+        return true;
+    };
+    // A marker stamped in the future (clock skew, restored backup) would
+    // make `duration_since` fail; treat that as due rather than trusting it
+    // and suppressing the write until the clock catches up.
+    let Ok(elapsed) = now.duration_since(modified) else {
+        return true;
+    };
+    elapsed.as_secs() >= TARGET_REGISTRY_TOUCH_INTERVAL_SECONDS
+}
+
+/// Record that the row for this `target/` was just refreshed.
+///
+/// Best-effort by contract: a failure here costs one redundant redb write on
+/// the next invocation, which is exactly the pre-#1843 behaviour, so it must
+/// never propagate and fail the build.
+pub fn mark_touched(marker_path: &Path) {
+    if let Some(parent) = marker_path.parent() {
+        if std::fs::create_dir_all(parent).is_err() {
+            return;
+        }
+    }
+    let _ = std::fs::write(marker_path, b"");
+}
+
+impl TargetRegistry {
     /// Return all tracked rows, ordered by `last_used` ascending.
     pub fn list(&self) -> Result<Vec<TargetRow>, RegistryError> {
         let read_txn = self.db.begin_read()?;
@@ -951,5 +1017,60 @@ mod tests {
             workspace_root_for_target(&target),
             PathBuf::from("/home/me/repo")
         );
+    }
+
+    // #1843: the throttle guarding the per-invocation `last_used` refresh.
+
+    #[test]
+    fn touch_is_due_when_no_marker_exists_yet() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let marker = tmp.path().join("never-written");
+        assert!(
+            touch_due(&marker),
+            "a first invocation must record, not skip -- absence cannot mean fresh"
+        );
+    }
+
+    #[test]
+    fn touch_is_not_due_immediately_after_marking() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let marker = tmp.path().join("nested").join("marker");
+        mark_touched(&marker);
+        assert!(
+            marker.exists(),
+            "mark_touched must create missing parent dirs"
+        );
+        assert!(
+            !touch_due(&marker),
+            "this is the whole point: the redb open is skipped while fresh"
+        );
+    }
+
+    #[test]
+    fn touch_becomes_due_once_the_interval_has_elapsed() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let marker = tmp.path().join("marker");
+        mark_touched(&marker);
+
+        // Advance the observer rather than the file: back-dating an mtime
+        // portably is fiddly, and the boundary is what matters.
+        let just_inside = SystemTime::now()
+            + std::time::Duration::from_secs(TARGET_REGISTRY_TOUCH_INTERVAL_SECONDS - 60);
+        let just_outside = SystemTime::now()
+            + std::time::Duration::from_secs(TARGET_REGISTRY_TOUCH_INTERVAL_SECONDS + 60);
+
+        assert!(!touch_due_at(&marker, just_inside));
+        assert!(touch_due_at(&marker, just_outside));
+    }
+
+    #[test]
+    fn a_future_dated_marker_reads_as_due() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let marker = tmp.path().join("marker");
+        mark_touched(&marker);
+        // Clock skew or a restored backup can stamp the marker ahead of now.
+        // Trusting it would suppress the refresh until the clock caught up.
+        let earlier = SystemTime::now() - std::time::Duration::from_secs(60 * 60 * 24);
+        assert!(touch_due_at(&marker, earlier));
     }
 }
