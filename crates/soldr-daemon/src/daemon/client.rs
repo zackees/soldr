@@ -697,6 +697,15 @@ where
             for attempt in 0..BACKPRESSURE_RETRY_LIMIT {
                 let mut stream = connect(sock_path, compile_reply_timeout())?;
                 write_frame_sync(&mut stream, &Request::Compile(req.clone()))?;
+                // soldr#1838: `read_frame_sync` blocks for the whole compile
+                // budget (30 min by default). Report progress while it does,
+                // rather than going silent until the backstop expires. The
+                // guard stops on drop, so a fast compile prints nothing.
+                let _heartbeat = super::wait_heartbeat::WaitHeartbeat::start(
+                    "daemon compile reply",
+                    compile_reply_timeout(),
+                    REPLY_TIMEOUT_ENV,
+                );
                 let frame: Response = read_frame_sync(&mut stream)?;
                 match frame {
                     Response::Backpressure { retry_after_ms } => {
