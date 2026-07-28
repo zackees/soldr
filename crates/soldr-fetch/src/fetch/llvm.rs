@@ -316,7 +316,23 @@ fn extract_tar_zst_tree(data: &[u8], dest: &Path) -> Result<(), SoldrError> {
 mod tests {
     use super::*;
 
+    /// Both tests below set and restore `LLVM_DIR_ENV_VAR`, and `cargo test`
+    /// runs them as threads in one process. Unguarded they raced each other:
+    /// one expects the variable to resolve, the other expects it not to, so an
+    /// interleave makes each read the other's value and **both** fail at once.
+    /// That is exactly what CI showed.
+    ///
+    /// Module-local, matching `apple_sdk.rs` and `rustup_init.rs` in this
+    /// crate. `LLVM_DIR_ENV_VAR` is read nowhere else, so one barrier owns it
+    /// outright -- which is also what keeps `env_lock_lint` satisfied, since
+    /// that lint fires when a single variable ends up behind two of them.
+    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     crate::timed_test!(env_var_overrides_when_pointing_at_real_dir, {
+        let _guard = env_guard();
         let tmp = tempfile::tempdir().expect("tmpdir");
         let fake_bin = tmp.path().join("hardlinked").join("bin");
         std::fs::create_dir_all(&fake_bin).expect("mk");
@@ -331,6 +347,7 @@ mod tests {
     });
 
     crate::timed_test!(env_var_ignored_when_path_is_missing, {
+        let _guard = env_guard();
         let prev = std::env::var_os(LLVM_DIR_ENV_VAR);
         std::env::set_var(LLVM_DIR_ENV_VAR, "/definitely/not/a/real/path/29384720");
         let resolved = llvm_dir_from_env_var();
