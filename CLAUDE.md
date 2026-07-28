@@ -229,6 +229,27 @@ vendored crate's own version) is what `soldr status` / `soldr doctor` /
 
 - **Non-trivial logic in workflows belongs in `.github/scripts/*.py`, NOT inline YAML.** The `cross-compile-all-targets.yml` workflow used to inline curl + jq chains for every release-asset lookup, which (a) couples the workflow tightly to GitHub Actions' shell wrapper, (b) is hard to unit-test, (c) duplicates parsing logic between lanes, and (d) makes the YAML unreadable. The current pattern is: write a small Python script under `.github/scripts/` that takes CLI args, expose it with `python3 .github/scripts/<name>.py ...` from the YAML, and keep the YAML to orchestration only (matrix, env, artifact upload/download). Examples: `build_manifest.py`, `tool_query.py`, `print_build_banner.sh`, `ts_step.py`, `run_with_ts.sh`. The scripts have docstrings + smoke-runnable from a developer's shell, so debugging doesn't require pushing a branch.
 
+## Per-file line ceiling (soldr#1966)
+
+`.github/scripts/loc_ratchet.py` runs in the `Lint` job on every PR and enforces
+the 1,500-line ceiling as a **ratchet**, not a threshold:
+
+- a file at or under the ceiling must stay at or under it;
+- a file already over it may not get **bigger**;
+- shrinking, and deleting (i.e. splitting), are always allowed.
+
+There is no grandfather list to maintain — the baseline is the file's size at
+the merge base. Thirteen files are already over the ceiling, and blocking every
+PR that touches them would have been worse than the drift, so the rule is
+"don't make it worse" rather than "fix it before you may proceed".
+
+If a PR fails this check, the addition belongs in a new module. The split the
+check is asking for is a change that was already overdue — but note that
+splitting a popular file is a **rename**, and renames conflict destructively
+with in-flight branches (soldr#1962 became a modify/delete conflict where
+taking the delete compiled, passed CI, and silently dropped the fix). Check
+`git branch -a --contains` for live work before splitting a hot file.
+
 ## Dogfooding
 
 The repo builds itself through soldr so every contributor populates and hits the same cache.
