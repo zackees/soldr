@@ -107,6 +107,13 @@ jobs:
           git fetch --no-tags origin "$GITHUB_BASE_REF"
           python3 .github/scripts/loc_ratchet.py --base-ref "origin/$GITHUB_BASE_REF"
 
+      # soldr#1981 — `--release` costs thin-LTO + single-CU codegen, and paying
+      # that on a job whose output never ships is pure waste. soldr#1982 removed
+      # the offenders; this keeps them gone. Runs before the toolchain setup so
+      # a regression fails in seconds rather than after a full build.
+      - name: Release-profile policy
+        run: python3 .github/scripts/verify_release_profile_policy.py
+
       - name: Cache rustup 1.94.1 in ~/.rustup
         id: rustup_cache
         uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
