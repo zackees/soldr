@@ -206,3 +206,58 @@ mod root_ownership_diagnostic_tests {
         assert!(msg.contains("no daemon PID file"), "{msg}");
     });
 }
+
+#[cfg(test)]
+mod missing_image_detector_tests {
+    use crate::daemon::lifecycle::*;
+
+    // The safety property, and the reason for hysteresis at all: a daemon that
+    // exits on one bad reading is worse than the orphan it prevents, because
+    // it takes down healthy daemons for transient reasons.
+    crate::timed_test!(a_single_missing_reading_never_triggers, {
+        let mut d = MissingImageDetector::default();
+        assert!(!d.observe(Some(false)));
+        assert_eq!(d.strikes(), 1);
+    });
+
+    crate::timed_test!(it_triggers_exactly_once_on_the_confirming_strike, {
+        let mut d = MissingImageDetector::default();
+        let fired: Vec<bool> = (0..5).map(|_| d.observe(Some(false))).collect();
+        assert_eq!(
+            fired,
+            vec![false, false, true, false, false],
+            "must fire on strike {DAEMON_IMAGE_MISSING_STRIKES} and not again -- \
+             a repeating trigger would re-request shutdown every tick"
+        );
+    });
+
+    // One sighting proves the condition was not the permanent one.
+    crate::timed_test!(any_sighting_resets_the_count, {
+        let mut d = MissingImageDetector::default();
+        d.observe(Some(false));
+        d.observe(Some(false));
+        assert_eq!(d.strikes(), 2, "primed one strike from firing");
+        assert!(!d.observe(Some(true)));
+        assert_eq!(d.strikes(), 0);
+        assert!(!d.observe(Some(false)), "count must restart, not resume");
+    });
+
+    // Not knowing where our image is says nothing about whether it exists, so
+    // it must not accumulate toward self-termination.
+    crate::timed_test!(an_unknown_path_resets_rather_than_accumulating, {
+        let mut d = MissingImageDetector::default();
+        d.observe(Some(false));
+        d.observe(Some(false));
+        assert!(
+            !d.observe(None),
+            "unknown must not be the confirming strike"
+        );
+        assert_eq!(d.strikes(), 0);
+    });
+
+    // The live probe must agree with reality for the running test binary,
+    // which exists by construction.
+    crate::timed_test!(the_live_probe_sees_this_running_executable, {
+        assert_eq!(daemon_image_present(), Some(true));
+    });
+}

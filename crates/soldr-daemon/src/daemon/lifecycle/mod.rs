@@ -76,6 +76,69 @@ impl From<std::io::Error> for LifecycleError {
     }
 }
 
+/// Consecutive observations of a missing image before the daemon gives up.
+///
+/// Hysteresis is the whole safety argument. A daemon that exits the first time
+/// `current_exe()` fails to resolve -- a momentarily unavailable network path,
+/// a slow removable volume, an antivirus lock -- is strictly worse than the
+/// orphan it prevents: it would take down healthy daemons for transient
+/// reasons. Three consecutive maintenance ticks is minutes of sustained
+/// absence, which no transient survives and a deleted image never recovers
+/// from.
+pub const DAEMON_IMAGE_MISSING_STRIKES: u32 = 3;
+
+/// Does this process's own executable still exist on disk?
+///
+/// `None` when the path cannot be determined at all, which is not evidence of
+/// deletion and must not be counted as a strike.
+pub fn daemon_image_present() -> Option<bool> {
+    std::env::current_exe().ok().map(|exe| exe.exists())
+}
+
+/// Tracks sustained absence of the daemon's own image (soldr#1987).
+///
+/// A daemon spawned from a temp directory that is later deleted -- a `uv` or
+/// `pip` build does exactly this -- keeps running and keeps the root-ownership
+/// lock, so every later spawn fails `AddrInUse` and every compile on the
+/// machine degrades to direct rustc. On the reporting host that lasted 28
+/// hours. The orphan cannot be reached by `soldr daemon stop`, which probes
+/// the pipe while the orphan holds the filesystem lock, so nothing external
+/// can clear it.
+///
+/// A daemon whose own executable is gone can never again be a legitimate
+/// owner: it cannot be upgraded, restarted in place, or verified by the
+/// PID-recycling identity gate. Standing down is the only correct response.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct MissingImageDetector {
+    consecutive: u32,
+}
+
+impl MissingImageDetector {
+    /// Feed one observation. Returns true exactly once, on the strike that
+    /// confirms sustained absence.
+    ///
+    /// `None` (path unknown) resets rather than accumulates: not knowing where
+    /// our image is says nothing about whether it exists.
+    pub fn observe(&mut self, present: Option<bool>) -> bool {
+        match present {
+            Some(false) => {
+                self.consecutive = self.consecutive.saturating_add(1);
+                self.consecutive == DAEMON_IMAGE_MISSING_STRIKES
+            }
+            // A single successful sighting clears the count: the condition
+            // this detects is permanent, so any recovery proves it was not it.
+            Some(true) | None => {
+                self.consecutive = 0;
+                false
+            }
+        }
+    }
+
+    pub fn strikes(&self) -> u32 {
+        self.consecutive
+    }
+}
+
 /// Explain who owns the soldr root when acquisition fails.
 ///
 /// soldr#1987: a daemon spawned from a temp directory that is later deleted --
