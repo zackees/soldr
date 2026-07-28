@@ -924,7 +924,7 @@ fn spawn_detached_inner(daemon: &Path, args: &[String]) -> Result<(), std::io::E
 
     let mut cmd = Command::new(daemon);
     let baseline = running_process::environment::user_baseline_environment()?;
-    cmd.env_clear().envs(baseline).envs(forwarded_soldr_env());
+    cmd.env_clear().envs(baseline).envs(daemon_spawn_env());
     cmd.args(args).stdin(Stdio::null());
     // Diagnostic redirect: spawn the daemon's stderr/stdout to a
     // log file under the soldr cache root so a startup crash leaves
@@ -986,7 +986,7 @@ fn spawn_detached_self_inner(soldr_self: &Path, args: &[String]) -> Result<(), s
 
     let mut cmd = Command::new(soldr_self);
     let baseline = running_process::environment::user_baseline_environment()?;
-    cmd.env_clear().envs(baseline).envs(forwarded_soldr_env());
+    cmd.env_clear().envs(baseline).envs(daemon_spawn_env());
     // The process that discovers a missing daemon may itself be the
     // `zccache-soldr` hardlink. Force argv[0] back to the main CLI identity;
     // otherwise multicall dispatch treats `daemon` as a compiler path and

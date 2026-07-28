@@ -4,6 +4,44 @@ mod daemon_spawn_image_tests {
     use crate::daemon::lifecycle::*;
     use tempfile::TempDir;
 
+    // soldr#1959. Every detached spawn path clears the environment, which
+    // drops the originator tag for free -- that absence is what used to make
+    // reapers spare us. clud#522 replaced the inference with a positive
+    // declaration, so the daemon has to say so out loud or get reaped.
+    crate::timed_test!(daemon_spawn_env_positively_declares_the_daemon, {
+        let env = daemon_spawn_env();
+        let marker = std::ffi::OsString::from(running_process::DAEMON_MARKER_ENV_VAR);
+        let declared = env
+            .iter()
+            .find(|(name, _)| *name == marker)
+            .map(|(_, value)| value.clone());
+        assert_eq!(
+            declared,
+            Some(std::ffi::OsString::from("1")),
+            "soldr-daemon must declare itself so consumer tree-reapers spare it"
+        );
+    });
+
+    // The declaration is an overlay on top of the scrub, not a replacement
+    // for it: a spawn that declared itself but lost SOLDR_CACHE_DIR would
+    // start a daemon pointed at the wrong cache root.
+    crate::timed_test!(daemon_spawn_env_keeps_the_forwarded_scrub_survivors, {
+        let forwarded = forwarded_soldr_env();
+        let spawn_env = daemon_spawn_env();
+        for pair in &forwarded {
+            assert!(
+                spawn_env.contains(pair),
+                "{:?} was forwarded but dropped from the daemon spawn env",
+                pair.0
+            );
+        }
+        assert_eq!(
+            spawn_env.len(),
+            forwarded.len() + 1,
+            "the marker must be the only thing the declaration adds"
+        );
+    });
+
     // soldr#1931 was not "someone forgot a name" -- it was that nothing tied
     // the resolver's inputs to the spawn allowlist, so #1902 could add a tier
     // the daemon could never see and still land with a green suite and a
