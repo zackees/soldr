@@ -146,6 +146,11 @@ pub(crate) const SOLDR_DAEMON_DISPLACE_ENV: &str = "SOLDR_DAEMON_DISPLACE";
 /// generation and never convert this deadline into permission to signal it.
 pub const GRACEFUL_SHUTDOWN_WAIT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
+/// How often [`wait_for_shutdown_responder`] reports that it is still
+/// waiting (soldr#1838). Matches the compile-reply and cargo front-door
+/// cadence so every long wait in soldr ticks at the same rate.
+const SHUTDOWN_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
+
 pub(crate) fn displacement_enabled() -> bool {
     match std::env::var(SOLDR_DAEMON_DISPLACE_ENV) {
         Ok(v) => {
@@ -270,7 +275,24 @@ pub fn wait_for_shutdown_responder(
     timeout: Duration,
 ) -> ShutdownWaitOutcome {
     let started = Instant::now();
+    // soldr#1838: this is the wait that #1828's macOS zombie-pid bug sat in
+    // for the full 5 minutes with a single line printed *after* it expired.
+    // It already polls, so the heartbeat is an in-loop check rather than the
+    // watchdog thread the blocking IPC waits need.
+    let mut next_heartbeat = SHUTDOWN_HEARTBEAT_INTERVAL;
     loop {
+        if started.elapsed() >= next_heartbeat {
+            eprintln!(
+                "{}",
+                crate::daemon::wait_heartbeat::heartbeat_message(
+                    "daemon graceful shutdown",
+                    started.elapsed(),
+                    timeout,
+                    None,
+                )
+            );
+            next_heartbeat += SHUTDOWN_HEARTBEAT_INTERVAL;
+        }
         let responder_pid_alive = pid_is_alive(responder.pid);
         if timeout.is_zero() || started.elapsed() >= timeout {
             return classify_shutdown_observation(responder, responder_pid_alive, None)

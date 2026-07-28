@@ -40,5 +40,5 @@ pub mod server;
 pub mod service_definition;
 /// soldr#1838 Phase 1 -- progressive heartbeats so a long daemon wait
 /// says what it is waiting on instead of going silent to the backstop.
-mod wait_heartbeat;
+pub(crate) mod wait_heartbeat;
 pub mod wire;
