@@ -121,6 +121,13 @@ jobs:
         working-directory: ${{ runner.temp }}/verify-noop
         env:
           SOLDR_TRUST_INHERITED_ENV: "1"
+          # soldr#1951: assert_thin_noop.py anchors on `^\s*Compiling`, and
+          # soldr#1915 prefixes every relayed line with elapsed seconds
+          # (default-on for non-TTY, which is every CI step). A digit is not
+          # `\s`, so the stamp makes the verifier read a normal cold build as
+          # having compiled nothing. Stamping is display; this consumer needs
+          # cargo's exact bytes.
+          SOLDR_TIMESTAMP_LINES: "0"
           SOLDR_TARGET_CACHE_MODE: thin
           SOLDR_TARGET_CACHE_PROFILE: thin-v2
           SOLDR_TARGET_CACHE_BACKEND: local
@@ -136,6 +143,13 @@ jobs:
         working-directory: ${{ runner.temp }}/verify-noop
         env:
           SOLDR_TRUST_INHERITED_ENV: "1"
+          # soldr#1951: assert_thin_noop.py anchors on `^\s*Compiling`, and
+          # soldr#1915 prefixes every relayed line with elapsed seconds
+          # (default-on for non-TTY, which is every CI step). A digit is not
+          # `\s`, so the stamp makes the verifier read a normal cold build as
+          # having compiled nothing. Stamping is display; this consumer needs
+          # cargo's exact bytes.
+          SOLDR_TIMESTAMP_LINES: "0"
           # Force the restore path even though the cold build wrote a matching
           # in-job warm sentinel. This is the behavior the verifier exists to test.
           SOLDR_RUST_PLAN_SKIP_WARM_RESTORE: "0"

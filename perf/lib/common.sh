@@ -117,7 +117,19 @@ measure::cache_bytes() {
     local cache_root="$1"
     local zccache_dir="${cache_root}/cache/zccache"
     if [[ -d "${zccache_dir}" ]]; then
-        du -sb "${zccache_dir}" | awk '{print $1}'
+        # soldr#1942: the daemon writes metadata atomically -- create
+        # `.metadata.bin.tmp-<pid>`, then rename it into place. When that
+        # rename lands between du's readdir and its stat, du reports the
+        # vanished path and exits non-zero, and under `pipefail` that fails
+        # the whole scenario *after* a successful build.
+        #
+        # The file is supposed to disappear and its size is noise against a
+        # cache-size metric, so tolerate it: du's total over what it did see
+        # is the answer we want. `2>/dev/null` alone would not fix this --
+        # the failure is the exit status crossing the pipe, not the message.
+        local bytes
+        bytes="$(du -sb "${zccache_dir}" 2>/dev/null | awk '{print $1}')" || true
+        echo "${bytes:-0}"
     else
         echo 0
     fi
