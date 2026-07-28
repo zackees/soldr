@@ -64,8 +64,14 @@ jobs:
         env:
           RUSTC_WRAPPER: ""
         run: |
-          cargo build --package soldr-cli --release --locked
-          "${{ github.workspace }}\target\release" |
+          # soldr#1981 — ci-release, not --release. This binary never ships and
+          # nothing here measures size or speed; the workflow validates that the
+          # MinGW / x86_64-pc-windows-gnu toolchain path works, which ci-release
+          # exercises identically (same linker, target, and codegen backend).
+          # --release costs lto="thin" + codegen-units=1 — effectively
+          # single-threaded LLVM — on the slowest OS in the matrix.
+          cargo build --package soldr-cli --profile ci-release --locked
+          "${{ github.workspace }}\target\ci-release" |
             Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Checkout running-process
@@ -108,8 +114,10 @@ jobs:
       - name: Build and run soldr GNU target binary
         shell: pwsh
         run: |
-          soldr build --release --target $env:TARGET --package soldr-cli --bin soldr --locked
-          $binary = Join-Path $env:GITHUB_WORKSPACE "target\$env:TARGET\release\soldr.exe"
+          # soldr#1981 — ci-release; the objdump format assertion below cares
+          # about the PE/COFF target, not the optimizer level.
+          soldr build --profile ci-release --target $env:TARGET --package soldr-cli --bin soldr --locked
+          $binary = Join-Path $env:GITHUB_WORKSPACE "target\$env:TARGET\ci-release\soldr.exe"
           if (-not (Test-Path $binary)) {
             throw "expected GNU target binary was not produced: $binary"
           }
