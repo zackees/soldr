@@ -136,6 +136,15 @@ pub enum ClientError {
     /// attempts remain. The caller must displace the daemon or fall back to a
     /// direct compile rather than burning its retry budget.
     VersionMismatch(String),
+    /// The daemon answered that it is retiring and will not serve the
+    /// request (soldr#1838 Phase 2).
+    ///
+    /// Distinct from [`Self::Protocol`] for the same reason as
+    /// [`Self::VersionMismatch`]: the daemon is not misbehaving, it simply
+    /// cannot help, so degrading to a direct compile masks nothing. Folding
+    /// this into `Protocol` is what failed builds during a normal graceful
+    /// drain (#1837).
+    Retiring,
 }
 
 impl From<std::io::Error> for ClientError {
@@ -798,6 +807,10 @@ where
                     });
                 }
                 Response::Error(msg) => return Err(ClientError::Protocol(msg)),
+                // soldr#1838 Phase 2: keep this above the catch-all -- falling
+                // through would turn a well-behaved "I am retiring" into a
+                // protocol violation and deny the direct-rustc fallback.
+                Response::Retiring => return Err(ClientError::Retiring),
                 other => {
                     return Err(ClientError::Protocol(format!(
                         "unexpected compile stream frame: {other:?}"
@@ -1176,6 +1189,16 @@ where
                         }
                         Response::Error(msg) => {
                             let _ = tx.send(StreamMsg::Err(ClientError::Protocol(msg)));
+                            return;
+                        }
+                        // soldr#1838 Phase 2. This is the transport #1837 was
+                        // about: a wrapper connecting during the Windows
+                        // graceful drain reached a latched-shut compile
+                        // service. #1837 narrowed that window by releasing the
+                        // pipe instance early; this handles a request that
+                        // still lands inside it.
+                        Response::Retiring => {
+                            let _ = tx.send(StreamMsg::Err(ClientError::Retiring));
                             return;
                         }
                         Response::Backpressure { retry_after_ms } => {

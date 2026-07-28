@@ -2187,7 +2187,24 @@ where
                     inner_started.elapsed().as_micros() as u64,
                     &compile_id,
                 );
-                let reply = Response::Error(format!("embedded zccache compile failed: {err}"));
+                // soldr#1838 Phase 2: while retiring, the compile service has
+                // latched shut, so every error it returns means "not serving
+                // work" rather than "something is broken inside me". Saying
+                // which one it is decides whether the wrapper degrades to
+                // direct rustc or hard-fails the build: `Error` becomes
+                // `ClientError::Protocol`, which is deliberately classified as
+                // NOT daemon-unavailable so a real daemon bug is never masked.
+                // Reporting a normal drain that way failed builds (#1837).
+                let reply = if state.shutdown.is_requested() {
+                    tracing::info!(
+                        target: "soldr::daemon::compile_stream",
+                        compile_id = compile_id.as_str(),
+                        "compile arrived during shutdown; answering Retiring so the                          wrapper degrades to direct rustc",
+                    );
+                    Response::Retiring
+                } else {
+                    Response::Error(format!("embedded zccache compile failed: {err}"))
+                };
                 return write_frame_async(stream, &reply).await;
             }
         },

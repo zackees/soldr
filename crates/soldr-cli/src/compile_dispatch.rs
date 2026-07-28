@@ -334,6 +334,12 @@ pub fn client_error_indicates_daemon_unavailable(e: &client::ClientError) -> boo
         // deployment skew, exactly what the recovery ladder exists for, not a
         // daemon-side bug being masked (the rationale above for `Protocol`).
         client::ClientError::VersionMismatch(_) => true,
+        // soldr#1838 Phase 2: the daemon said it is retiring. Same reasoning
+        // as `VersionMismatch` — it answered, it is not buggy, and it will
+        // never serve this compile, so degrading masks nothing. This is the
+        // case that used to arrive as `Protocol` and hard-fail the build
+        // during a normal graceful drain (#1837).
+        client::ClientError::Retiring => true,
     }
 }
 
@@ -1036,6 +1042,11 @@ fn describe_compile_dispatch_error(err: &client::ClientError) -> String {
         client::ClientError::Protocol(message) => {
             format!("daemon protocol error: {message}")
         }
+        client::ClientError::Retiring => concat!(
+            "the daemon is shutting down and declined the compile; soldr is ",
+            "falling back to a direct rustc invocation for this unit"
+        )
+        .to_string(),
         // #1853: name the skew explicitly. Before the daemon learned to send a
         // reject record this surfaced as an opaque ECONNRESET, which read as a
         // crashed daemon and sent people looking in the wrong place.
@@ -1091,6 +1102,42 @@ pub use client::CompileDoneInfo as DispatchInfo;
 mod tests {
     use super::*;
     use crate::timed_test;
+
+    // soldr#1838 Phase 2 / #1837. A wrapper that reaches a daemon in graceful
+    // drain must degrade to direct rustc, not fail the build. Before
+    // `Retiring` existed this arrived as `Protocol`, which is deliberately
+    // classified as NOT unavailable so a genuine daemon bug is never masked --
+    // correct for its own case, and exactly wrong for an orderly shutdown.
+    timed_test!(a_retiring_daemon_lets_the_wrapper_fall_back, {
+        assert!(
+            client_error_indicates_daemon_unavailable(&client::ClientError::Retiring),
+            "a retiring daemon must permit the direct-rustc fallback"
+        );
+    });
+
+    // The other half of the boundary: a real protocol violation must still
+    // hard-fail. If this ever flips, degrading would hide daemon bugs behind
+    // silently uncached builds.
+    timed_test!(a_protocol_violation_still_hard_fails, {
+        assert!(
+            !client_error_indicates_daemon_unavailable(&client::ClientError::Protocol(
+                "unexpected frame".into()
+            )),
+            "a protocol violation must not be treated as daemon-unavailable"
+        );
+    });
+
+    timed_test!(retiring_is_explained_as_a_shutdown_not_an_error, {
+        let text = describe_compile_dispatch_error(&client::ClientError::Retiring);
+        assert!(
+            text.contains("shutting down"),
+            "the message must name the shutdown, got: {text}"
+        );
+        assert!(
+            text.contains("direct rustc"),
+            "the message must say what soldr does next, got: {text}"
+        );
+    });
 
     // soldr#1857 — a dispatched compile that fails *and* says nothing is
     // the fault signature worth calling out. These three cases pin the

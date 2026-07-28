@@ -690,6 +690,7 @@ impl From<&Response> for proto::WireResponse {
                     retry_after_ms: *retry_after_ms,
                 })
             }
+            Response::Retiring => proto::WireResponseKind::Retiring(proto::WireRetiring {}),
             Response::CookHit {
                 sha256,
                 path,
@@ -789,6 +790,7 @@ impl TryFrom<proto::WireResponse> for Response {
             proto::WireResponseKind::Backpressure(m) => Response::Backpressure {
                 retry_after_ms: m.retry_after_ms,
             },
+            proto::WireResponseKind::Retiring(_) => Response::Retiring,
             proto::WireResponseKind::CookHit(m) => Response::CookHit {
                 sha256: vec_to_sha(&m.sha256)?,
                 path: m.path,
