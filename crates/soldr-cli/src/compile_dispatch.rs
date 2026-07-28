@@ -340,6 +340,10 @@ pub fn client_error_indicates_daemon_unavailable(e: &client::ClientError) -> boo
         // case that used to arrive as `Protocol` and hard-fail the build
         // during a normal graceful drain (#1837).
         client::ClientError::Retiring => true,
+        // soldr#1838 bullet 4: a stalled compile degrades either way -- the
+        // wrapper cannot finish it, and the retry ladder exists for exactly
+        // this. `saw_output` changes the *advice*, not the decision.
+        client::ClientError::CompileStalled { .. } => true,
     }
 }
 
@@ -1042,6 +1046,38 @@ fn describe_compile_dispatch_error(err: &client::ClientError) -> String {
         client::ClientError::Protocol(message) => {
             format!("daemon protocol error: {message}")
         }
+        // soldr#1838 bullet 4. Slow and wedged look identical at the deadline
+        // and want opposite fixes, so guessing wrong actively wastes the
+        // user's time: telling someone with a 40-minute LTO link to bypass the
+        // cache makes their build slower, and telling someone with a wedged
+        // daemon to raise the timeout just prolongs the hang.
+        client::ClientError::CompileStalled {
+            saw_output,
+            elapsed,
+        } => {
+            let secs = elapsed.as_secs();
+            if *saw_output {
+                format!(
+                    concat!(
+                        "the compile was still streaming output when the {}s reply ",
+                        "deadline expired, so this looks like a long compile rather ",
+                        "than a wedged daemon; raise it with ",
+                        "SOLDR_COMPILE_REPLY_TIMEOUT_SECS=<seconds>"
+                    ),
+                    secs
+                )
+            } else {
+                format!(
+                    concat!(
+                        "the daemon accepted the compile but produced no output in {}s, ",
+                        "which is the wedged-cache signature (#1364) rather than a slow ",
+                        "build; bypass it with `soldr --no-cache cargo ...` or ",
+                        "ZCCACHE_DISABLE=1"
+                    ),
+                    secs
+                )
+            }
+        }
         client::ClientError::Retiring => concat!(
             "the daemon is shutting down and declined the compile; soldr is ",
             "falling back to a direct rustc invocation for this unit"
@@ -1125,6 +1161,61 @@ mod tests {
             )),
             "a protocol violation must not be treated as daemon-unavailable"
         );
+    });
+
+    // soldr#1838 bullet 4. The two stall cases want opposite fixes, so the
+    // advice must not be interchangeable: telling someone with a 40-minute LTO
+    // link to bypass the cache makes their build slower, and telling someone
+    // with a wedged daemon to raise the timeout just prolongs the hang.
+    timed_test!(
+        a_stall_that_produced_output_is_reported_as_a_slow_compile,
+        {
+            let text = describe_compile_dispatch_error(&client::ClientError::CompileStalled {
+                saw_output: true,
+                elapsed: std::time::Duration::from_secs(1800),
+            });
+            assert!(
+                text.contains("1800s"),
+                "must name the deadline, got: {text}"
+            );
+            assert!(
+                text.contains("SOLDR_COMPILE_REPLY_TIMEOUT_SECS"),
+                "a slow compile should be told how to raise the deadline, got: {text}"
+            );
+            assert!(
+                !text.contains("--no-cache"),
+                "bypassing the cache makes a slow compile slower, got: {text}"
+            );
+        }
+    );
+
+    timed_test!(a_silent_stall_is_reported_as_a_wedged_cache, {
+        let text = describe_compile_dispatch_error(&client::ClientError::CompileStalled {
+            saw_output: false,
+            elapsed: std::time::Duration::from_secs(1800),
+        });
+        assert!(
+            text.contains("--no-cache") || text.contains("ZCCACHE_DISABLE"),
+            "a wedge should be told how to bypass, got: {text}"
+        );
+        assert!(
+            !text.contains("SOLDR_COMPILE_REPLY_TIMEOUT_SECS"),
+            "raising the deadline only prolongs a wedge, got: {text}"
+        );
+    });
+
+    // Both stall shapes must still permit the fallback -- `saw_output` changes
+    // the advice, never whether the wrapper can recover.
+    timed_test!(both_stall_shapes_allow_the_direct_rustc_fallback, {
+        for saw_output in [true, false] {
+            assert!(
+                client_error_indicates_daemon_unavailable(&client::ClientError::CompileStalled {
+                    saw_output,
+                    elapsed: std::time::Duration::from_secs(1),
+                }),
+                "a stalled compile must degrade (saw_output={saw_output})"
+            );
+        }
     });
 
     timed_test!(retiring_is_explained_as_a_shutdown_not_an_error, {
