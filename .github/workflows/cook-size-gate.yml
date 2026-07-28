@@ -77,9 +77,13 @@ jobs:
           cache: false
           zccache-seed-strict: true
 
-      - name: Build soldr CLI (release)
+      # soldr#1981 — ci-release. This builds only the *tool* that runs `cook`
+      # below; the thing the gate measures is cook's output over the zccache
+      # fixture, not this binary. The `--release` on `soldr cook --release` is
+      # a separate, load-bearing flag and stays.
+      - name: Build soldr CLI (ci-release)
         working-directory: soldr
-        run: soldr cargo build -p soldr-cli --release
+        run: soldr cargo build -p soldr-cli --profile ci-release
 
       - name: Checkout zccache fixture
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -105,7 +109,7 @@ jobs:
           # cargo-chef happens in-process via soldr's bundled chef; using
           # --release matches the historical default that the size baseline
           # was measured against.
-          "${GITHUB_WORKSPACE}/soldr/target/release/soldr" cook --release
+          "${GITHUB_WORKSPACE}/soldr/target/ci-release/soldr" cook --release
 
       - name: Measure cook output + assert thresholds
         working-directory: zccache-fixture

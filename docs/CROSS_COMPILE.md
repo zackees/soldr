@@ -196,9 +196,16 @@ when LLVM is not already on `PATH`.
 The Linux cross-build workflow `.github/workflows/_ci-cross-build-linux.yml`
 proves the MSVC targets from a Linux host, and the matching
 `e2e-windows-x64` / `e2e-windows-arm64` jobs in `ci.yml` execute the produced
-archives on native Windows runners. The separate
-`.github/workflows/windows-gnu-mingw-validation.yml` workflow covers the
-explicit Windows GNU target on Windows x64.
+archives on native Windows runners.
+
+The Windows GNU target has **no CI coverage**. A dedicated
+`windows-gnu-mingw-validation.yml` workflow used to validate it on a native
+`windows-2025` runner, but it path-triggered on nearly every code PR and did
+two full release builds to exercise a target that is not in
+`ci/canonical-targets.json` and is never shipped — removed in soldr#1982. The managed
+MinGW path below is still supported and still works; it is simply verified by
+hand rather than on every PR. Re-add a scheduled-only workflow if Windows GNU
+regressions start reaching users.
 
 Windows GNU is intentionally handled by the managed MinGW path in
 [Section 1](#1-windows-x64--windows-gnu-via-managed-mingw-w64-gcc), not by
