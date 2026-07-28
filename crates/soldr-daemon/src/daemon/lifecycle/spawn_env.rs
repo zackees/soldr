@@ -51,6 +51,34 @@ pub(crate) fn forwarded_soldr_env() -> Vec<(std::ffi::OsString, std::ffi::OsStri
     filter_forwarded_env(std::env::vars_os())
 }
 
+/// The full overlay applied to a detached daemon spawn: the forwarded
+/// allowlist above, plus the positive daemon self-declaration.
+///
+/// The declaration is what keeps a consumer's process-tree reaper from
+/// killing us (soldr#1959). The reaper never targets the daemon directly --
+/// `env_clear()` below means we carry no originator tag, so we are never
+/// *found*. We die as collateral: the wrapper that spawned us is tagged, the
+/// reaper walks that wrapper's whole tree, and the only thing that prunes the
+/// walk is this marker.
+///
+/// This used to work by accident. Reapers inferred "daemon" from the
+/// *absence* of an originator tag, which the scrub produces for free.
+/// zackees/clud#522 replaced that inference with a positive declaration
+/// because absence is ambiguous -- it equally describes an env-stripped
+/// orphan. Daemons that never opted in silently fell out of the protected
+/// set.
+///
+/// Set in the shared overlay rather than at each spawn site because the
+/// Windows path builds a raw `CreateProcessW` block instead of a `Command`,
+/// so `running_process::spawn::mark_as_daemon` (`pub(crate)` upstream anyway)
+/// cannot be shared between them. This overlay is the one thing all the spawn
+/// paths have in common.
+pub(crate) fn daemon_spawn_env() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    let mut env = forwarded_soldr_env();
+    env.push((running_process::DAEMON_MARKER_ENV_VAR.into(), "1".into()));
+    env
+}
+
 /// Pure filter behind [`forwarded_soldr_env`], split out so tests can
 /// exercise it without mutating the process environment (parallel test
 /// cases in this binary read the real env).
@@ -68,7 +96,7 @@ pub(crate) fn filter_forwarded_env(
         .collect()
 }
 
-/// Windows counterpart of the Unix `envs(forwarded_soldr_env())` overlay:
+/// Windows counterpart of the Unix `envs(daemon_spawn_env())` overlay:
 /// take running-process's user-baseline pairs, overlay the current
 /// process's `SOLDR_*` variables (env names compare case-insensitively on
 /// Windows), and serialize to the sorted, double-NUL-terminated UTF-16
@@ -78,7 +106,7 @@ pub(crate) fn merged_windows_environment_block() -> Result<Vec<u16>, std::io::Er
     let pairs = running_process::environment::user_baseline_environment()?;
     Ok(build_windows_environment_block(merge_env_overlay(
         pairs,
-        forwarded_soldr_env(),
+        daemon_spawn_env(),
     )))
 }
 
