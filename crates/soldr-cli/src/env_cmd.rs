@@ -250,9 +250,26 @@ pyo3 = { version = \"0.22\", features = [\"abi3-py38\", \"extension-module\"] }
         std::fs::create_dir_all(abi3.path().join("src")).expect("src");
         std::fs::write(abi3.path().join("src").join("lib.rs"), "").expect("lib");
 
-        let from_abi3 = build_env_block_in(abi3.path(), "aarch64-apple-darwin").expect("ok");
+        // The target has to be *cross* on every runner, not just on most of
+        // them. `resolve_for_target` returns `PlanMode::Native` with an empty
+        // env as soon as `host == target` (pyo3_detect.rs:161), before it can
+        // reach the ABI3 branch that emits the key -- so hardcoding one triple
+        // asserts a cross-only rule on whichever runner happens to be that
+        // host. `aarch64-apple-darwin` is exactly that runner in this repo.
+        let cross = if crate::pyo3_detect::host_triple() == "aarch64-apple-darwin" {
+            "x86_64-unknown-linux-gnu"
+        } else {
+            "aarch64-apple-darwin"
+        };
+        assert_ne!(
+            cross,
+            crate::pyo3_detect::host_triple(),
+            "the target must be cross for the ABI3 branch to be reachable at all"
+        );
+
+        let from_abi3 = build_env_block_in(abi3.path(), cross).expect("ok");
         let empty = tempfile::tempdir().expect("tmp");
-        let from_empty = build_env_block_in(empty.path(), "aarch64-apple-darwin").expect("ok");
+        let from_empty = build_env_block_in(empty.path(), cross).expect("ok");
 
         assert!(
             from_abi3.contains_key("PYO3_NO_PYTHON"),
