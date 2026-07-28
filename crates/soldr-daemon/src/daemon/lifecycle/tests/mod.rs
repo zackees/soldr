@@ -5,6 +5,7 @@
 //! pure relocation: the only edit was repointing `use super::*` at the parent
 //! module, which is now two levels up rather than one.
 
+mod events;
 mod pid_liveness;
 mod spawn_image;
 mod spawn_lock;
