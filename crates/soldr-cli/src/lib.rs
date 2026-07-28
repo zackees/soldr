@@ -176,6 +176,7 @@ pub mod cli_dispatch;
 /// soldr#1081 — Shared `Request::Compile` dispatch logic used by both
 /// the soldr-as-RUSTC_WRAPPER hot path (`wrapper.rs`) and multicall
 /// `zccache-soldr` dispatch. Owns the hang-safe retry budget contract.
+pub mod compile_diagnostics;
 pub mod compile_dispatch;
 pub mod cook;
 pub mod daemon_entry;
