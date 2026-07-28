@@ -1,0 +1,12 @@
+# soldr#1917 made a repo pin mandatory: without this the fixture fails the
+# toolchain-pin check before the benchmark measures anything (soldr#1939).
+#
+# Channel matches the toolchain the bench workflow installs
+# (.github/workflows/parent-cache-bench.yml), so pinning resolves to exactly
+# the toolchain the unpinned PATH lookup used to find. Keeping them equal is
+# what makes results before and after this change comparable.
+#
+# Deliberately channel-only: no profile/components, so entering the fixture
+# cannot trigger a component install and add download time to a measured run.
+[toolchain]
+channel = "1.94.1"
