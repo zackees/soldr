@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod spawn_lock_tests {
-    use crate::daemon::lifecycle::*;
     use crate::core::SoldrPaths;
+    use crate::daemon::lifecycle::*;
     use std::sync::{Arc, Barrier};
     use tempfile::TempDir;
 

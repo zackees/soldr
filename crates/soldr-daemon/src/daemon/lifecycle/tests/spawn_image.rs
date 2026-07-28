@@ -1,11 +1,40 @@
 #[cfg(test)]
 mod daemon_spawn_image_tests {
-    use crate::daemon::lifecycle::*;
     use crate::core::SoldrPaths;
+    use crate::daemon::lifecycle::*;
     use tempfile::TempDir;
 
+    // soldr#1931: the daemon's own jobs resolver reads
+    // ZCCACHE_MAX_PARALLEL_COMPILES as its compat tier, so a value scrubbed at
+    // the spawn boundary leaves that tier unreachable and a machine tuned
+    // before soldr#1902 silently reverts to the default. ZCCACHE_DISABLE is
+    // the contrast that keeps the scrub honest: nothing downstream of the
+    // spawn reads it, and letting ambient zccache state steer the daemon is
+    // precisely what the scrub exists to prevent.
     crate::timed_test!(
-        forwarded_env_keeps_soldr_namespace_and_embedded_trace_only,
+        forwarded_env_carries_the_jobs_compat_var_but_not_the_kill_switch,
+        {
+            use std::ffi::OsString;
+            let forwarded = filter_forwarded_env(vec![
+                (
+                    OsString::from("ZCCACHE_MAX_PARALLEL_COMPILES"),
+                    OsString::from("6"),
+                ),
+                (OsString::from("ZCCACHE_DISABLE"), OsString::from("1")),
+            ]);
+            assert_eq!(
+                forwarded,
+                vec![(
+                    OsString::from("ZCCACHE_MAX_PARALLEL_COMPILES"),
+                    OsString::from("6"),
+                )],
+                "the resolver tier must be reachable; the kill switch must not cross"
+            );
+        }
+    );
+
+    crate::timed_test!(
+        forwarded_env_keeps_soldr_namespace_and_allowlisted_zccache_names_only,
         {
             use std::ffi::OsString;
             let vars = vec![

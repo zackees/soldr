@@ -925,13 +925,34 @@ pub(crate) fn acquire_spawn_lock(paths: &SoldrPaths) -> Option<std::fs::File> {
 /// full spawn-retry budget, and every compile fell back to direct
 /// uncached rustc (the soldr#1657 degradation path firing on all of CI).
 /// All soldr-owned configuration must survive the spawn boundary, so the
-/// whole `SOLDR_*` namespace is overlaid onto the baseline. The embedded
-/// zccache trace below is the sole non-Soldr diagnostic exception.
+/// whole `SOLDR_*` namespace is overlaid onto the baseline. The individually
+/// justified zccache exceptions are listed below.
 const FORWARDED_ENV_PREFIX: &str = "SOLDR_";
-/// zccache's opt-in, write-only diagnostic trace. The embedded backend runs
-/// inside soldr-daemon, so this one zccache variable must cross the scrubbed
-/// daemon-spawn boundary for a caller to collect the trace it requested.
-const ZCCACHE_INNER_TRACE_ENV: &str = "ZCCACHE_INNER_TRACE";
+
+/// The `ZCCACHE_*` names that cross the scrubbed spawn boundary.
+///
+/// Scrubbing is the default and the point: the embedded backend runs inside
+/// soldr-daemon, so an ambient `ZCCACHE_*` value would otherwise steer a
+/// long-lived daemon from whichever shell happened to spawn it.
+/// `ZCCACHE_DISABLE` is the case that keeps that rule honest -- it is dropped,
+/// and `tests/spawn_image.rs` asserts so.
+///
+/// A name earns a place here only when something *inside* the daemon reads it,
+/// which makes scrubbing it a silent misconfiguration rather than protection:
+///
+/// * `ZCCACHE_INNER_TRACE` — zccache's opt-in, write-only diagnostic trace.
+///   Scrubbed, a caller who requested a trace gets an empty file and no reason
+///   why.
+/// * `ZCCACHE_MAX_PARALLEL_COMPILES` — the compat tier of
+///   [`crate::core::jobs::resolve_compile_jobs`] (soldr#1761, soldr#1902).
+///   Scrubbed, that tier can never fire, so a machine tuned before soldr#1902
+///   silently reverts to `available_parallelism() - 1` on upgrade — the exact
+///   regression the compat tier was added to prevent (soldr#1931). It is
+///   forwarded under its own name rather than promoted to `SOLDR_JOBS` so
+///   precedence stays resolved in one place; promoting it would rank a legacy
+///   export *above* `[jobs].max_parallel_compiles`, inverting the documented
+///   order.
+const FORWARDED_ZCCACHE_ENV: &[&str] = &["ZCCACHE_INNER_TRACE", "ZCCACHE_MAX_PARALLEL_COMPILES"];
 
 fn forwarded_soldr_env() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
     filter_forwarded_env(std::env::vars_os())
@@ -949,7 +970,7 @@ fn filter_forwarded_env(
             // FBUILD_* passthrough in FastLED/fbuild#1170 and accept any
             // casing of the prefix on every platform.
             let name = name.to_string_lossy().to_ascii_uppercase();
-            name.starts_with(FORWARDED_ENV_PREFIX) || name == ZCCACHE_INNER_TRACE_ENV
+            name.starts_with(FORWARDED_ENV_PREFIX) || FORWARDED_ZCCACHE_ENV.contains(&name.as_str())
         })
         .collect()
 }
