@@ -36,14 +36,34 @@ from pathlib import Path
 #   "   Compiling serde v1.0.219"
 #   "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.12s"
 # The leading whitespace and tag are stable across cargo versions back to 1.40.
+#
+# soldr#1951: soldr relays those lines with an elapsed-seconds stamp at column
+# zero (soldr#1802 / #1915), and that stamping defaults **on** for non-TTY,
+# i.e. exactly here:
+#
+#   "   21.07    Compiling thiserror v1.0.69"
+#
+# A digit is not ``\s``, so an anchored ``^\s*Compiling`` misses every one of
+# them and a cold build is scored as having compiled nothing. Parse the stamp
+# as optional rather than requiring callers to disable it: this script reads
+# the *relayed* stream, stamping is the default there, and an opt-out that
+# every future call site has to remember fails silently when forgotten --
+# which is how this went unnoticed until a lane that runs rarely finally ran.
+_STAMP = r"(?:\d+\.\d+\s+)?"
 _COMPILING_LINE = re.compile(
-    r"^\s*Compiling\s+(?P<name>\S+)\s+v(?P<version>\S+)(?:\s+\((?P<path>[^)]+)\))?\s*$"
+    rf"^\s*{_STAMP}Compiling\s+(?P<name>\S+)\s+v(?P<version>\S+)"
+    r"(?:\s+\((?P<path>[^)]+)\))?\s*$"
 )
 # Cargo JSON messages can be interleaved with the human status stream without
 # a newline (for example ``Finished{"reason":"build-finished"}``). Accept
 # both the normal text form and that transparent tee'd form.
+#
+# Note this one is deliberately unanchored, which is why it kept matching
+# while the two above silently stopped -- `finished=True` alongside
+# `compiling=0, fresh=0` was the tell that the failure tracked anchoring
+# rather than build behaviour.
 _FINISHED_LINE = re.compile(r"(?<!\w)Finished(?:\s+|(?=\{))")
-_FRESH_LINE = re.compile(r"^\s*Fresh\s+(?P<name>\S+)\s+v(?P<version>\S+)")
+_FRESH_LINE = re.compile(rf"^\s*{_STAMP}Fresh\s+(?P<name>\S+)\s+v(?P<version>\S+)")
 
 
 @dataclass(frozen=True)

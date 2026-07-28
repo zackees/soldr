@@ -57,6 +57,55 @@ def test_parse_build_log_extracts_workspace_path_dep(mod) -> None:
     assert tp[0].name == "serde"
 
 
+def test_parse_build_log_reads_elapsed_stamped_lines(mod) -> None:
+    """soldr#1951: soldr stamps relayed output with elapsed seconds.
+
+    Stamping defaults on for non-TTY, so this is what the verifier actually
+    receives in CI. The exact failure this reproduces: every anchored pattern
+    missed while the unanchored ``Finished`` one still matched, scoring a cold
+    build as ``compiling=0, fresh=0, finished=True``.
+    """
+    text = (
+        "# t0=1785233937.278\n"
+        "    0.31    Compiling serde v1.0.219\n"
+        "   21.07    Compiling soldr-core v0.7.11 (/repo/crates/soldr-core)\n"
+        "   21.09     Finished `dev` profile [unoptimized] target(s) in 21.1s\n"
+    )
+    summary = mod.parse_build_log(text)
+    assert summary.finished_seen is True
+    assert (
+        len(summary.compiling_units) == 2
+    ), "a stamped cold build must not read as having compiled nothing"
+    assert [u.name for u in summary.first_party_compiles] == ["soldr-core"]
+    assert [u.name for u in summary.third_party_compiles] == ["serde"]
+
+
+def test_parse_build_log_reads_stamped_fresh_lines(mod) -> None:
+    # `Fresh` is anchored the same way, so it broke identically -- and it is
+    # the line the warm half of the verifier depends on.
+    text = (
+        "    0.04       Fresh serde v1.0.219\n"
+        "    0.05       Fresh soldr-core v0.7.11\n"
+        "    0.06    Finished `dev` profile [unoptimized] target(s) in 0.06s\n"
+    )
+    summary = mod.parse_build_log(text)
+    assert summary.fresh_count == 2
+    assert summary.compiling_units == []
+
+
+def test_parse_build_log_still_reads_unstamped_lines(mod) -> None:
+    # The stamp is optional, not required: local runs and TTY sessions have
+    # stamping off, and a fix that only understood stamped output would move
+    # the breakage rather than remove it.
+    text = (
+        "   Compiling serde v1.0.219\n"
+        "    Finished `dev` profile [unoptimized] target(s) in 1.0s\n"
+    )
+    summary = mod.parse_build_log(text)
+    assert len(summary.compiling_units) == 1
+    assert summary.compiling_units[0].name == "serde"
+
+
 def test_parse_build_log_recognizes_finished_only(mod) -> None:
     text = "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.12s\n"
     summary = mod.parse_build_log(text)
