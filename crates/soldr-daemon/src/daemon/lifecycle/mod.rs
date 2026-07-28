@@ -76,6 +76,50 @@ impl From<std::io::Error> for LifecycleError {
     }
 }
 
+/// Explain who owns the soldr root when acquisition fails.
+///
+/// soldr#1987: a daemon spawned from a temp directory that is later deleted --
+/// a `uv`/`pip` build does exactly this -- keeps holding the root lock. Every
+/// later spawn fails `AddrInUse`, so every compile silently degrades to direct
+/// rustc. On the reporting host that ran for 28 hours and 246/246 compiles,
+/// visible only as `compiler cache unavailable` with nothing naming a cause.
+///
+/// The orphan is also unreachable by `soldr daemon stop`, which probes the
+/// pipe while the orphan holds only the filesystem lock. So the message has to
+/// carry enough to act on: the PID, and whether its image still exists --
+/// because a holder whose executable is gone cannot be a legitimate owner.
+///
+/// Deliberately hedged. The PID file records the daemon that last wrote it,
+/// which is *probably* the lock holder but is not proven to be, so the wording
+/// says "recorded" rather than asserting identity. Naming a plausible suspect
+/// beats today's silence; claiming certainty we do not have would be worse.
+pub fn describe_root_ownership_conflict(paths: &SoldrPaths) -> String {
+    let root = paths.root.display();
+    let Some((pid, exe)) = read_pid_file(paths) else {
+        return format!(
+            "soldr root ownership is busy: {root} (no daemon PID file to name the owner)"
+        );
+    };
+    let alive = pid_is_alive(pid);
+    let image_exists = exe.exists();
+    match (alive, image_exists) {
+        (true, false) => format!(
+            "soldr root ownership is busy: {root}
+             soldr: the recorded daemon is PID {pid}, whose image no longer exists ({}).
+             soldr: an orphan like this holds the lock indefinitely and cannot be reached by              `soldr daemon stop`, which probes the pipe rather than the lock (soldr#1987).
+             soldr: terminate PID {pid} to recover.",
+            exe.display()
+        ),
+        (true, true) => format!(
+            "soldr root ownership is busy: {root} (held by PID {pid}, image {})",
+            exe.display()
+        ),
+        (false, _) => format!(
+            "soldr root ownership is busy: {root} (recorded PID {pid} is not alive;              the lock is held by an unrecorded process)"
+        ),
+    }
+}
+
 /// Read the PID file. Returns `(pid, exe_path)` if the file is well
 /// formed; absent / malformed reads return None. **Does not** verify
 /// liveness — that's `is_live`.
