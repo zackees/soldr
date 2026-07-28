@@ -214,37 +214,56 @@ mod tests {
         assert_eq!(shell_quote("don't"), "'don'\\''t'");
     });
 
-    // Does the ambient CWD decide it? build_env_block passes current_dir()
-    // as the workspace root.
-    crate::timed_test!(probe_cwd_decides, {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let tmp = tempfile::tempdir().expect("tmp");
-        std::fs::write(
-            tmp.path().join("Cargo.toml"),
-            "[package]
-name = \"ext\"
-version = \"0.1.0\"
-edition = \"2021\"
-
-[lib]
-crate-type = [\"cdylib\"]
-
-[dependencies]
-pyo3 = { version = \"0.22\", features = [\"abi3-py38\", \"extension-module\"] }
+    // soldr#1927: this began as a `probe_cwd_decides` diagnostic that chdir'd
+    // into a fixture, printed whether PYO3_NO_PYTHON leaked, and asserted
+    // nothing. It proved the mechanism -- the workspace root decides the
+    // outcome -- but a test that cannot fail is not a guard, and worse, its
+    // `set_current_dir` was itself the process-global hazard the issue
+    // describes: `cargo test` runs these as threads in one process, so a chdir
+    // is visible to every other test that reads the CWD.
+    //
+    // Keep the proof, drop the chdir. Resolving through the explicit-root seam
+    // asserts the same causal claim without touching global state.
+    crate::timed_test!(
+        the_workspace_root_decides_whether_pyo3_no_python_is_emitted,
+        {
+            // Still needs the barrier: the root is explicit now, but the plan
+            // also consults `caller_pyo3_env()`, and a leaked ambient `PYO3_*`
+            // takes the CallerConfigured early return -- which would suppress
+            // the key and fail the first assertion below for a reason that has
+            // nothing to do with the workspace root.
+            let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let abi3 = tempfile::tempdir().expect("tmp");
+            std::fs::write(
+                abi3.path().join("Cargo.toml"),
+                "[package]
+             name = \"ext\"
+             version = \"0.1.0\"
+             edition = \"2021\"
+             
+             [lib]
+             crate-type = [\"cdylib\"]
+             
+             [dependencies]
+             pyo3 = { version = \"0.22\", features = [\"abi3-py38\", \"extension-module\"] }
 ",
-        )
-        .expect("write manifest");
-        std::fs::create_dir_all(tmp.path().join("src")).expect("src");
-        std::fs::write(tmp.path().join("src").join("lib.rs"), "").expect("lib");
+            )
+            .expect("write manifest");
+            std::fs::create_dir_all(abi3.path().join("src")).expect("src");
+            std::fs::write(abi3.path().join("src").join("lib.rs"), "").expect("lib");
 
-        // soldr#1927: the last inline chdir/restore in the crate. Restoring
-        // on the happy path only means a panic inside `build_env_block`
-        // leaves every later test in this binary running inside a tempdir
-        // that is about to be deleted. `CwdGuard` restores on unwind.
-        let _cwd = crate::CwdGuard::enter(tmp.path());
-        let leaked = build_env_block("aarch64-apple-darwin")
-            .map(|env| env.contains_key("PYO3_NO_PYTHON"))
-            .unwrap_or(false);
-        println!("PROBE cwd=pyo3-abi3-extension -> leaks={leaked}");
-    });
+            let from_abi3 = build_env_block_in(abi3.path(), "aarch64-apple-darwin").expect("ok");
+            let empty = tempfile::tempdir().expect("tmp");
+            let from_empty = build_env_block_in(empty.path(), "aarch64-apple-darwin").expect("ok");
+
+            assert!(
+            from_abi3.contains_key("PYO3_NO_PYTHON"),
+            "an ABI3 extension workspace is the proof that lets soldr set              PYO3_NO_PYTHON; if this stops holding the emission rule changed"
+        );
+            assert!(
+            !from_empty.contains_key("PYO3_NO_PYTHON"),
+            "no workspace metadata means no ABI3 proof, so the key must not be              guessed -- these two roots differing is exactly why callers must              pass the root rather than inherit the ambient CWD"
+        );
+        }
+    );
 }
