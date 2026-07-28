@@ -105,7 +105,10 @@ fn barrier_of(text: &str) -> Barrier {
 /// missing that is precisely how the original overlap stayed hidden.
 fn mutated_vars(text: &str) -> Vec<String> {
     let mut found = Vec::new();
-    for marker in ["set_var(", "remove_var("] {
+    // `.set("NAME", ..)` catches guard helpers whose own `set_var(key, ..)`
+    // takes a *variable*, which the two markers below cannot see through --
+    // that blind spot is why soldr#1938's mutations were invisible here.
+    for marker in ["set_var(", "remove_var(", ".set("] {
         let mut rest = text;
         while let Some(idx) = rest.find(marker) {
             rest = &rest[idx + marker.len()..];
@@ -292,3 +295,63 @@ timed_test!(shared_barrier_acquisitions_recover_from_poisoning, {
         offenders.join("\n"),
     );
 });
+
+/// Variables that production code reads to resolve paths, from many call
+/// sites, so *any* concurrent test is potentially a reader.
+///
+/// soldr#1938: `trampoline_config_tests` mutated all three under a private
+/// mutex. The "two barriers for one variable" rule above could not fire --
+/// no other file writes them -- yet the race was real, because the readers
+/// are not other writers. They are `trampoline_config.rs`, `binaries.rs`,
+/// `exec_cmd.rs`, and `rust_plan_memo.rs`, reached transitively by tests
+/// that have no idea the variable is being swapped underneath them.
+///
+/// For this class, "does anyone else write it" is the wrong question.
+const AMBIENT_ENV_VARS: &[&str] = &["CARGO_HOME", "HOME", "USERPROFILE", "RUSTUP_HOME", "PATH"];
+
+timed_test!(
+    ambient_path_vars_are_mutated_only_under_the_shared_barrier,
+    {
+        let src = crate_src_root();
+        if !src.is_dir() {
+            eprintln!("env_lock_lint: skipping — {} absent", src.display());
+            return;
+        }
+        let mut files = Vec::new();
+        collect_rs(&src, &mut files);
+        files.sort();
+
+        let mut offenders = Vec::new();
+        for file in &files {
+            let rel = repo_relative(file);
+            if PRODUCTION_ENV_WRITERS.iter().any(|(p, _)| *p == rel) {
+                continue;
+            }
+            let Ok(text) = fs::read_to_string(file) else {
+                continue;
+            };
+            if barrier_of(&text) != Barrier::Private {
+                continue;
+            }
+            let ambient: Vec<String> = mutated_vars(&text)
+                .into_iter()
+                .filter(|v| AMBIENT_ENV_VARS.contains(&v.as_str()))
+                .collect();
+            if !ambient.is_empty() {
+                offenders.push(format!(
+                    "{rel} mutates {} under a private mutex",
+                    ambient.join(", ")
+                ));
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "these files mutate path-resolution variables that production code reads \
+         from many call sites, so every concurrent test is a potential reader. A \
+         private mutex serialises only the module that declares it. Use \
+         `crate::TEST_PROCESS_ENV_LOCK`:\n  {}",
+            offenders.join("\n  ")
+        );
+    }
+);
