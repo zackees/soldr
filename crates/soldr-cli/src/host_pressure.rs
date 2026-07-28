@@ -1,9 +1,9 @@
 //! Explain OS-level process-creation failures that are not build errors.
 //!
-//! soldr#1974. When the host runs out of handles or paged pool, Windows
-//! refuses to initialize a new process's DLLs and the child dies before
-//! `main` with `STATUS_DLL_INIT_FAILED`. Nothing was wrong with the code,
-//! the toolchain, or the cache -- but every layer above reports it as
+//! soldr#1974. When the host cannot supply the resources to start a
+//! process, Windows refuses to initialize its DLLs and the child dies
+//! before `main` with `STATUS_DLL_INIT_FAILED`. Nothing was wrong with the
+//! code, the toolchain, or the cache -- but every layer above reports it as
 //! though something was:
 //!
 //! - cargo prints `process didn't exit successfully: ... (exit code:
@@ -44,17 +44,42 @@ pub(crate) fn is_process_init_failure(exit_code: i32) -> bool {
 ///
 /// Kept separate from the writer so tests can assert the wording without
 /// capturing stderr.
+///
+/// # Why this names no single cause
+///
+/// The first version of this message asserted handle / paged-pool
+/// exhaustion. That was wrong, and shipped: `0xC0000142` was then observed
+/// on a host with **205,910 total handles and a 8,356-handle top holder** --
+/// entirely healthy. Several distinct resources produce this same code:
+///
+/// - **desktop heap** (`SharedSection` in the `SubSystems` registry value) --
+///   a fixed shared section consumed per-process and *unrelated* to the
+///   handle table. A build spawning many short-lived compilers exhausts it
+///   while handles stay flat, which is exactly the observed case.
+/// - **handle / paged-pool exhaustion** -- typically one leaking process
+///   holding hundreds of thousands of handles.
+/// - a genuinely missing or incompatible DLL, which is *not* a resource
+///   condition at all and would not pass on retry.
+///
+/// So the note reports what is certain -- the OS refused to start the
+/// process, and the "repair your build tools" advice above it is a false
+/// lead -- and then lists what to check. Asserting a cause the tool has not
+/// measured sends people to fix the wrong thing, which is the exact failure
+/// this module exists to prevent.
 pub(crate) fn process_init_failure_note(tool: &str) -> String {
     format!(
         "soldr: {tool} exited 0x{:08X} (STATUS_DLL_INIT_FAILED) -- the OS refused to \
          initialize the process, so it died before running.\n\
-         soldr: this is a host resource condition (handle / paged-pool exhaustion), \
-         not a build, cache, or toolchain error. Any \"repair your build tools\" advice \
-         above is a false lead.\n\
-         soldr: find the offending process and restart it, then retry:\n\
-         soldr:   Get-Process | Sort-Object HandleCount -Descending | Select-Object -First 5 Name,Id,HandleCount\n\
-         soldr: a single leaking process holding hundreds of thousands of handles is the \
-         usual cause; the victim rotates between runs, so an identical retry often succeeds.",
+         soldr: this is a host process-creation failure, not a build, cache, or toolchain \
+         error. Any \"repair your build tools\" advice above is a false lead.\n\
+         soldr: it is usually a resource the host could not supply. Check, in order:\n\
+         soldr:   1. desktop heap -- often the cause when many compilers run at once, and\n\
+         soldr:      independent of handle count. Lower build parallelism to test:\n\
+         soldr:        CARGO_BUILD_JOBS=4 soldr cargo ...\n\
+         soldr:   2. handle exhaustion -- look for one process holding a very large count:\n\
+         soldr:        Get-Process | Sort-Object HandleCount -Descending | Select-Object -First 5 Name,Id,HandleCount\n\
+         soldr: the victim rotates between runs, so an identical retry often succeeds -- \
+         which means a passing retry does not mean the condition is gone.",
         STATUS_DLL_INIT_FAILED as u32
     )
 }
@@ -114,7 +139,32 @@ mod tests {
         // The rustc-emitted "repair your build tools" line is the specific
         // false lead this exists to counter, so the rebuttal must be explicit.
         assert!(note.contains("false lead"), "{note}");
-        assert!(note.contains("HandleCount"), "{note}");
+    });
+
+    // Regression guard for the correction in this module's docs: the first
+    // shipped wording asserted handle exhaustion, and 0xC0000142 was then
+    // observed on a host with entirely healthy handles. Naming one unmeasured
+    // cause sends people to fix the wrong thing -- the precise failure this
+    // module exists to prevent -- so the note must offer the alternatives.
+    crate::timed_test!(note_does_not_assert_a_single_unmeasured_cause, {
+        let note = process_init_failure_note("rustc.exe");
+        assert!(
+            note.contains("desktop heap"),
+            "desktop heap is the cause observed with healthy handles; it must be listed: {note}"
+        );
+        assert!(
+            note.contains("HandleCount"),
+            "handle exhaustion must remain one of the candidates: {note}"
+        );
+        assert!(
+            !note.contains("(handle / paged-pool exhaustion)"),
+            "must not assert a cause soldr has not measured: {note}"
+        );
+        // A passing retry is the trap: it looks like resolution and is not.
+        assert!(
+            note.contains("does not mean the condition is gone"),
+            "{note}"
+        );
     });
 
     crate::timed_test!(reports_only_on_the_matching_exit_code, {
