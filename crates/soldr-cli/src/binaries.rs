@@ -451,6 +451,17 @@ pub(crate) enum HomeOrigin {
     Caller,
     /// soldr's managed homes, because the binary physically lives in them.
     Managed,
+    /// A repo-local `.rustup` / `.cargo`, found by walking ancestors of the
+    /// working directory (soldr#1799).
+    ///
+    /// Runs under the caller's homes exactly like [`HomeOrigin::Caller`] —
+    /// only the *reporting* differs. It is a distinct value because the CI
+    /// guard #1799 describes asserts that host-resolved tools report
+    /// `caller`; folding repo-local into that would let the guard pass while
+    /// the log had lost the distinction, and repo-local `.cargo`/`.rustup` is
+    /// a first-class resolution path (`probe_direct_toolchain_binary`), so
+    /// the guard would be weakest exactly where such repos build.
+    RepoLocal,
 }
 
 impl HomeOrigin {
@@ -459,6 +470,7 @@ impl HomeOrigin {
         match self {
             HomeOrigin::Caller => "caller",
             HomeOrigin::Managed => "managed",
+            HomeOrigin::RepoLocal => "repo-local",
         }
     }
 }
@@ -469,13 +481,36 @@ impl HomeOrigin {
 /// Anything else — a host rustup proxy, a repo-local `.cargo` tool, a PATH
 /// binary — keeps the caller's context.
 pub(crate) fn home_origin_for_binary(binary: &std::path::Path, paths: &SoldrPaths) -> HomeOrigin {
+    home_origin_for_binary_from(binary, paths, std::env::current_dir().ok().as_deref())
+}
+
+/// [`home_origin_for_binary`] against an explicit ancestor-search root.
+///
+/// Split out so the repo-local classification is testable without depending
+/// on the process working directory, which is shared mutable state across a
+/// test binary (soldr#1927).
+fn home_origin_for_binary_from(
+    binary: &std::path::Path,
+    paths: &SoldrPaths,
+    start_dir: Option<&std::path::Path>,
+) -> HomeOrigin {
     let managed_cargo_home = crate::fetch::managed_cargo_home(paths);
     let managed_rustup_home = crate::fetch::managed_rustup_home(paths);
+    // Managed keeps precedence: a managed home nested under some ancestor
+    // `.cargo` is still managed, and that is the classification the
+    // homes-application branch depends on.
     if path_is_within(binary, &managed_cargo_home) || path_is_within(binary, &managed_rustup_home) {
-        HomeOrigin::Managed
-    } else {
-        HomeOrigin::Caller
+        return HomeOrigin::Managed;
     }
+    for relative in [".rustup", ".cargo"] {
+        let Some(repo_local) = find_ancestor_dir(start_dir, relative) else {
+            continue;
+        };
+        if path_is_within(binary, &repo_local) {
+            return HomeOrigin::RepoLocal;
+        }
+    }
+    HomeOrigin::Caller
 }
 
 /// [`home_origin_for_binary`] for callers that have no `SoldrPaths` in hand.
@@ -1164,5 +1199,74 @@ mod tests {
         // CI assertions and log consumers key on these exact spellings.
         assert_eq!(HomeOrigin::Caller.as_str(), "caller");
         assert_eq!(HomeOrigin::Managed.as_str(), "managed");
+        assert_eq!(HomeOrigin::RepoLocal.as_str(), "repo-local");
+    });
+
+    // soldr#1799: repo-local is a third origin, not a flavour of caller.
+
+    crate::timed_test!(a_repo_local_rustup_reports_repo_local_not_caller, {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("soldr-root"));
+        let repo = temp.path().join("repo");
+        let binary = repo
+            .join(".rustup")
+            .join("toolchains")
+            .join("1.94.1")
+            .join("bin")
+            .join("cargo");
+        std::fs::create_dir_all(binary.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&binary, b"").expect("write");
+        let nested = repo.join("crates").join("inner");
+        std::fs::create_dir_all(&nested).expect("nested");
+
+        assert_eq!(
+            home_origin_for_binary_from(&binary, &paths, Some(&nested)),
+            HomeOrigin::RepoLocal,
+            "an ancestor .rustup is neither the caller's homes nor soldr's managed ones"
+        );
+    });
+
+    crate::timed_test!(a_repo_local_cargo_home_is_also_repo_local, {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("soldr-root"));
+        let repo = temp.path().join("repo");
+        let binary = repo.join(".cargo").join("bin").join("cargo");
+        std::fs::create_dir_all(binary.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&binary, b"").expect("write");
+
+        assert_eq!(
+            home_origin_for_binary_from(&binary, &paths, Some(&repo)),
+            HomeOrigin::RepoLocal
+        );
+    });
+
+    crate::timed_test!(managed_still_wins_over_a_surrounding_repo_local_dir, {
+        // Precedence matters: the homes-application branch keys on Managed,
+        // so a managed binary that happens to sit under some ancestor
+        // `.cargo` must not be reclassified out of it.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("repo").join(".cargo").join("soldr-root");
+        let paths = SoldrPaths::with_root(root.clone());
+        let binary = crate::fetch::managed_rustup_home(&paths)
+            .join("toolchains")
+            .join("1.94.1")
+            .join("bin")
+            .join("cargo");
+        std::fs::create_dir_all(binary.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&binary, b"").expect("write");
+
+        assert_eq!(
+            home_origin_for_binary_from(&binary, &paths, Some(&root)),
+            HomeOrigin::Managed,
+            "managed must keep precedence or apply_resolved_toolchain_homes changes behaviour"
+        );
+    });
+
+    crate::timed_test!(repo_local_still_runs_under_the_callers_homes, {
+        // The whole point of keeping this a reporting-only distinction: the
+        // homes decision is `== Managed`, so RepoLocal must behave exactly
+        // like Caller there. If this ever flips, a repo-local toolchain would
+        // start executing under soldr's managed homes -- the #1768 regression.
+        assert_ne!(HomeOrigin::RepoLocal, HomeOrigin::Managed);
     });
 }
