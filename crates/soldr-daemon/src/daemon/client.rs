@@ -297,6 +297,15 @@ pub fn shutdown(sock_path: &Path) -> Result<ShutdownAck, ClientError> {
 /// without shutting down. Used by `soldr save` / `soldr cache flush`
 /// before archiving the cache tree.
 pub fn flush_caches(sock_path: &Path) -> Result<CacheFlushInfo, ClientError> {
+    // soldr#1838: the embedded flush has seven individually bounded phases
+    // and can legitimately take minutes on a large cache. Report progress
+    // rather than going silent for the whole 5-minute budget. There is no
+    // env override for this one, hence `None`.
+    let _heartbeat = super::wait_heartbeat::WaitHeartbeat::start(
+        "daemon cache flush",
+        CACHE_FLUSH_REPLY_TIMEOUT,
+        None,
+    );
     match submit_request_with_timeout(sock_path, &Request::FlushCaches, CACHE_FLUSH_REPLY_TIMEOUT)?
     {
         Response::CacheFlushed(info) => Ok(info),
@@ -704,7 +713,7 @@ where
                 let _heartbeat = super::wait_heartbeat::WaitHeartbeat::start(
                     "daemon compile reply",
                     compile_reply_timeout(),
-                    REPLY_TIMEOUT_ENV,
+                    Some(REPLY_TIMEOUT_ENV),
                 );
                 let frame: Response = read_frame_sync(&mut stream)?;
                 match frame {

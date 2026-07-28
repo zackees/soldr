@@ -58,14 +58,18 @@ pub(crate) struct WaitHeartbeat {
 impl WaitHeartbeat {
     /// Start reporting on `operation`, whose deadline is `timeout`,
     /// overridable via `env_var`.
-    pub(crate) fn start(operation: &'static str, timeout: Duration, env_var: &'static str) -> Self {
+    pub(crate) fn start(
+        operation: &'static str,
+        timeout: Duration,
+        env_var: Option<&'static str>,
+    ) -> Self {
         Self::start_with_interval(operation, timeout, env_var, HEARTBEAT_INTERVAL)
     }
 
     fn start_with_interval(
         operation: &'static str,
         timeout: Duration,
-        env_var: &'static str,
+        env_var: Option<&'static str>,
         interval: Duration,
     ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
@@ -108,18 +112,26 @@ impl Drop for WaitHeartbeat {
 
 /// The message body, split out so the wording is testable without spawning a
 /// thread or waiting a minute.
-fn heartbeat_message(
+///
+/// `env_var` is optional because not every long wait has an override to
+/// name — the cache flush and graceful shutdown budgets are fixed. Saying
+/// "deadline 300s" without inventing a knob is better than implying one
+/// exists.
+pub(crate) fn heartbeat_message(
     operation: &str,
     elapsed: Duration,
     timeout: Duration,
-    env_var: &str,
+    env_var: Option<&str>,
 ) -> String {
+    let deadline = match env_var {
+        Some(var) => format!("deadline {}s from {var}", timeout.as_secs()),
+        None => format!("fixed deadline {}s", timeout.as_secs()),
+    };
     format!(
-        "soldr: {operation} still waiting after {}s (deadline {}s from {env_var}); \
-         if this is a wedged cache rather than a slow compile, \
+        "soldr: {operation} still waiting after {}s ({deadline}); \
+         if this is a wedged cache rather than slow work, \
          `soldr --no-cache cargo ...` or ZCCACHE_DISABLE=1 bypasses the daemon",
         elapsed.as_secs(),
-        timeout.as_secs(),
     )
 }
 
@@ -132,7 +144,7 @@ mod tests {
             "daemon compile reply",
             Duration::from_secs(120),
             Duration::from_secs(1800),
-            "SOLDR_COMPILE_REPLY_TIMEOUT_SECS",
+            Some("SOLDR_COMPILE_REPLY_TIMEOUT_SECS"),
         );
         assert!(msg.contains("daemon compile reply"), "{msg}");
         assert!(msg.contains("after 120s"), "{msg}");
@@ -148,7 +160,7 @@ mod tests {
             "daemon compile reply",
             Duration::from_secs(60),
             Duration::from_secs(1800),
-            "SOLDR_COMPILE_REPLY_TIMEOUT_SECS",
+            Some("SOLDR_COMPILE_REPLY_TIMEOUT_SECS"),
         );
         assert!(msg.contains("--no-cache"), "{msg}");
         assert!(msg.contains("ZCCACHE_DISABLE=1"), "{msg}");
@@ -160,7 +172,7 @@ mod tests {
         let guard = WaitHeartbeat::start_with_interval(
             "unit test",
             Duration::from_secs(1800),
-            "SOLDR_COMPILE_REPLY_TIMEOUT_SECS",
+            Some("SOLDR_COMPILE_REPLY_TIMEOUT_SECS"),
             Duration::from_secs(3600),
         );
         std::thread::sleep(Duration::from_millis(50));
@@ -173,7 +185,7 @@ mod tests {
         let guard = WaitHeartbeat::start_with_interval(
             "unit test",
             Duration::from_secs(1800),
-            "SOLDR_COMPILE_REPLY_TIMEOUT_SECS",
+            Some("SOLDR_COMPILE_REPLY_TIMEOUT_SECS"),
             Duration::from_millis(10),
         );
         std::thread::sleep(Duration::from_millis(30));
