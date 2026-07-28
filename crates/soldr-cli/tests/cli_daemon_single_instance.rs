@@ -77,6 +77,54 @@ fn spawn_daemon(cache_root: &Path, home_root: &Path) -> std::process::Child {
     cmd.spawn().expect("spawn soldr-daemon")
 }
 
+/// How long to keep asking a daemon for status before concluding it stopped
+/// serving.
+///
+/// A single-shot `status()` can return `WouldBlock` (macOS `EAGAIN`, errno 35)
+/// against a perfectly healthy daemon when the runner is loaded -- observed on
+/// `target-run x86_64-apple-darwin`, where the assertion read that transient as
+/// "the incumbent was displaced".
+///
+/// This cannot mask a genuinely dead or displaced daemon: the properties under
+/// test are that the incumbent keeps serving and keeps its pid, and neither
+/// becomes true by waiting. A daemon that lost the endpoint stays lost.
+const STATUS_SETTLE_BUDGET: Duration = Duration::from_secs(5);
+
+/// Retry `op` over [`STATUS_SETTLE_BUDGET`] while it fails with a transient
+/// socket condition. Any other error returns immediately -- a refused
+/// connection, or a protocol mismatch, is an answer rather than an absence of
+/// one.
+///
+/// Generic over the operation so the test never has to name the daemon's
+/// private `StatusInfo`; widening a production type's visibility for a test's
+/// convenience would be the wrong trade.
+fn settled<T>(
+    mut op: impl FnMut() -> Result<T, soldr_cli::daemon::client::ClientError>,
+) -> Result<T, String> {
+    let deadline = Instant::now() + STATUS_SETTLE_BUDGET;
+    loop {
+        match op() {
+            Ok(value) => return Ok(value),
+            Err(err) => {
+                let transient = matches!(
+                    &err,
+                    soldr_cli::daemon::client::ClientError::Io(io)
+                        if matches!(
+                            io.kind(),
+                            std::io::ErrorKind::WouldBlock
+                                | std::io::ErrorKind::Interrupted
+                                | std::io::ErrorKind::TimedOut
+                        )
+                );
+                if !transient || Instant::now() >= deadline {
+                    return Err(format!("{err:?}"));
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+}
+
 fn pid_file(cache_root: &Path) -> PathBuf {
     cache_root
         .join("cache")
@@ -132,7 +180,7 @@ soldr_cli::timed_test!(
         // incumbent was not displaced.
         let paths = soldr_cli::core::SoldrPaths::with_root(cache_root.clone());
         let sock = soldr_cli::daemon::client::default_sock_path(&paths);
-        let incumbent_pid = soldr_cli::daemon::client::status(&sock)
+        let incumbent_pid = settled(|| soldr_cli::daemon::client::status(&sock))
             .expect("incumbent must be serving")
             .pid;
 
@@ -175,7 +223,7 @@ soldr_cli::timed_test!(
 
         // The winner is still the one serving — the loser must not have
         // displaced it, stolen the endpoint, or corrupted the PID file.
-        let status = soldr_cli::daemon::client::status(&sock)
+        let status = settled(|| soldr_cli::daemon::client::status(&sock))
             .expect("the original daemon must still be serving after the loser exits");
         assert_eq!(
             status.pid, incumbent_pid,
@@ -219,7 +267,7 @@ soldr_cli::timed_test!(
         let paths = soldr_cli::core::SoldrPaths::with_root(cache_root.clone());
         let sock = soldr_cli::daemon::client::default_sock_path(&paths);
         assert!(
-            soldr_cli::daemon::client::status(&sock).is_ok(),
+            settled(|| soldr_cli::daemon::client::status(&sock)).is_ok(),
             "incumbent daemon stopped serving after a second daemon was rejected"
         );
 
