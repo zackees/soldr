@@ -690,10 +690,56 @@ fn cache_symlink_entry(abs: &Path, rel: &Path) -> std::result::Result<SymlinkEnt
 /// different root can prevent the embedded compile daemon from starting.
 /// They are never cache payload, regardless of the requested save profile.
 fn archive_always_excludes_cache_path(rel: &Path) -> bool {
-    rel.components().next().is_some_and(|component| {
+    if rel.components().next().is_some_and(|component| {
         matches!(component, std::path::Component::Normal(part)
             if part.to_string_lossy().eq_ignore_ascii_case("soldr-daemon"))
-    })
+    }) {
+        return true;
+    }
+    path_is_transient_runtime_file(rel)
+}
+
+/// Locks, sockets, PID files, and in-flight staging scratch, at any depth.
+///
+/// The doc above says these are "never cache payload, regardless of the
+/// requested save profile", but only the top-level `soldr-daemon/` tree was
+/// actually excluded that way -- the lock/socket/pid rules lived solely in
+/// the `ci` profile. So a full-profile `soldr save` archived the embedded
+/// cache's live coordination files, and hit the obvious consequence:
+///
+/// ```text
+/// soldr save: io error at .../embedded-v1/v1.12.17/staging/2492-0-.../.active.lock:
+///   No such file or directory (os error 2)
+/// ```
+///
+/// The daemon deleted its own lock between the directory walk and the stat.
+/// Archiving it was never wanted -- restoring a stale lock or socket into a
+/// different root is exactly what the doc warns prevents the compile daemon
+/// from starting -- so the fix is to stop collecting it, not to widen the
+/// error handling around it.
+///
+/// `staging/` is included by directory name because its contents are
+/// partially-written files by construction: a publish in flight is not cache
+/// payload, and its name is not predictable enough to match by suffix.
+fn path_is_transient_runtime_file(rel: &Path) -> bool {
+    let parts: Vec<String> = rel
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(part) => Some(part.to_string_lossy().to_ascii_lowercase()),
+            _ => None,
+        })
+        .collect();
+    if parts.iter().any(|part| part == "staging") {
+        return true;
+    }
+    let Some(file_name) = parts.last().map(String::as_str) else {
+        return false;
+    };
+    matches!(file_name, "lock" | ".lock" | "pid" | ".pid")
+        || file_name.ends_with(".lock")
+        || file_name.ends_with(".sock")
+        || file_name.ends_with(".socket")
+        || file_name.ends_with(".pid")
 }
 
 fn manifest_path_is_daemon_runtime(path: &str) -> bool {
@@ -849,11 +895,28 @@ fn archive_rel_to_path(path: &Path) -> Result<PathBuf> {
 /// the hash pre-pass and again at append time (#1541). This also keeps
 /// the tar header and the manifest byte-for-byte consistent even if
 /// the file mutates between the two phases.
-fn cache_file_entry(cache_dir: &Path, abs: &Path) -> Result<(CacheFile, std::fs::Metadata)> {
+/// `Ok(None)` when the file vanished between the directory walk and this
+/// stat.
+///
+/// Defence in depth behind the exclusion above. The walk and the archive are
+/// necessarily two separate passes over a tree a live daemon is still
+/// writing, so *some* window exists no matter how good the filter is, and a
+/// file that no longer exists cannot be cache payload worth failing a whole
+/// save over. Scoped to `NotFound` specifically -- a permissions error or a
+/// bad disk still fails loudly, because those mean the archive would be
+/// silently incomplete.
+fn cache_file_entry(
+    cache_dir: &Path,
+    abs: &Path,
+) -> Result<Option<(CacheFile, std::fs::Metadata)>> {
     let rel = abs
         .strip_prefix(cache_dir)
         .map_err(|_| SaveLoadError::BadArchivePath(abs.display().to_string()))?;
-    let meta = std::fs::metadata(abs).map_err(|e| io(abs, e))?;
+    let meta = match std::fs::metadata(abs) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(io(abs, e)),
+    };
     let hash = hash_file(abs)?;
     let entry = CacheFile {
         path: rel_to_posix(rel),
@@ -861,7 +924,7 @@ fn cache_file_entry(cache_dir: &Path, abs: &Path) -> Result<(CacheFile, std::fs:
         size: meta.len(),
         blake3: hash.to_vec(),
     };
-    Ok((entry, meta))
+    Ok(Some((entry, meta)))
 }
 
 // ---------- save ----------
@@ -1295,7 +1358,7 @@ fn build_cache_manifest_entries(
     pool.install(|| {
         cache_files_paths
             .par_iter()
-            .map(|abs| cache_file_entry(cache_dir, abs))
+            .filter_map(|abs| cache_file_entry(cache_dir, abs).transpose())
             .collect()
     })
 }
@@ -2642,6 +2705,71 @@ mod tests {
         )));
     });
 
+    // The exact path from the failing bench lane. A full-profile save used to
+    // collect this file, then die on it when the daemon removed its own lock
+    // between the walk and the stat.
+    timed_test!(
+        full_profile_never_archives_live_runtime_coordination_files,
+        {
+            let vanished = Path::new(
+            "zccache/daemon-state/embedded-v1/v1.12.17/staging/2492-0-1785226007178685948/.active.lock",
+        );
+            assert!(
+                archive_always_excludes_cache_path(vanished),
+                "the lock that broke `soldr save` must be excluded from every profile"
+            );
+
+            for rel in [
+                "zccache/daemon-state/embedded-v1/v1/staging/7-0-1/partial.bin",
+                "zccache/x/daemon.sock",
+                "zccache/x/daemon.pid",
+                "zccache/x/.lock",
+            ] {
+                assert!(
+                    archive_always_excludes_cache_path(Path::new(rel)),
+                    "{rel} is runtime coordination state, not cache payload"
+                );
+            }
+
+            // The exclusion must stay narrow: real payload that merely sits deep
+            // in the same tree still gets archived, or the cache restores empty.
+            for rel in [
+                "zccache/daemon-state/embedded-v1/v1/objects/ab/cdef.o",
+                "zccache/index.redb",
+                "registry/cache/foo-1.0.crate",
+            ] {
+                assert!(
+                    !archive_always_excludes_cache_path(Path::new(rel)),
+                    "{rel} is cache payload and must still be archived"
+                );
+            }
+        }
+    );
+
+    // Defence in depth: even with the exclusion, walk-then-stat is two passes
+    // over a tree a live daemon writes, so the window cannot be closed
+    // entirely.
+    timed_test!(a_file_that_vanishes_after_the_walk_is_skipped_not_fatal, {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cache = tmp.path();
+        let missing = cache.join("gone.bin");
+        assert!(
+            cache_file_entry(cache, &missing)
+                .expect("a vanished file must not fail the save")
+                .is_none(),
+            "a vanished file must be skipped"
+        );
+
+        // ...but a file that is present is still archived, so the tolerance
+        // cannot silently empty an archive.
+        let present = cache.join("present.bin");
+        std::fs::write(&present, b"payload").expect("write");
+        assert!(
+            cache_file_entry(cache, &present).expect("stat").is_some(),
+            "an existing file must still produce an entry"
+        );
+    });
+
     timed_test!(legacy_archive_cannot_mutate_live_daemon_runtime, {
         let root = tempfile::tempdir().unwrap();
         let archived_cache = root.path().join("archived-cache");
@@ -2653,8 +2781,9 @@ mod tests {
         let archived_file = archived_runtime.join("archived.pid");
         std::fs::write(&archived_file, b"old runtime").unwrap();
         std::fs::write(live_runtime.join("live.pid"), b"live runtime").unwrap();
-        let (archived_entry, archived_meta) =
-            cache_file_entry(&archived_cache, &archived_file).unwrap();
+        let (archived_entry, archived_meta) = cache_file_entry(&archived_cache, &archived_file)
+            .unwrap()
+            .expect("the fixture file exists");
         let manifest = Manifest {
             version: MANIFEST_VERSION,
             cache_dir_name: CACHE_DIR_NAME.into(),
