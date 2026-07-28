@@ -43,6 +43,11 @@ on:
 permissions:
   contents: read
 
+# soldr#1985 - stop superseded runs from holding runner slots.
+concurrency:
+  group: dylint-cache-acceptance-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   dylint-cache:
     name: real cargo-dylint 6.0.1 cache matrix

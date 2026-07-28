@@ -28,6 +28,11 @@ on:
 permissions:
   contents: read
 
+# soldr#1985 - stop superseded runs from holding runner slots.
+concurrency:
+  group: vendor-state-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   verify:
     name: verify_vendor_state.py

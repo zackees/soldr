@@ -47,6 +47,11 @@ on:
 permissions:
   contents: read
 
+# soldr#1985 - stop superseded runs from holding runner slots.
+concurrency:
+  group: parent-cache-bench-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   bench:
     name: Parent cache speedup

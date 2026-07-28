@@ -46,6 +46,11 @@ env:
   # #1326 / #1328.
   SOLDR_GITHUB_TOKEN: ${{ github.token }}
 
+# soldr#1985 - stop superseded runs from holding runner slots.
+concurrency:
+  group: build-all-from-linux-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build-all:
     name: ${{ matrix.alias }} (${{ matrix.target }})

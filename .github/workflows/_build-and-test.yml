@@ -43,6 +43,8 @@ jobs:
   build-and-test:
     name: ${{ inputs.target }}
     runs-on: ${{ inputs.runner }}
+    # soldr#1985 - was inheriting GitHub's 360-minute default.
+    timeout-minutes: 45
     env:
       GH_TOKEN: ${{ github.token }}
       # soldr still fetches managed support tools from GitHub Releases.

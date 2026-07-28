@@ -49,11 +49,18 @@ permissions:
 
 # `fast-build` PR label suppression (from #863). The label is a no-op on
 # push events because the pull_request payload is null there.
+# soldr#1985 - stop superseded runs from holding runner slots.
+concurrency:
+  group: baseline-zero-deps-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build-soldr:
     name: Build soldr for ${{ matrix.target }}
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'fast-build') }}
     runs-on: ubuntu-latest
+    # soldr#1985 - was inheriting GitHub's 360-minute default.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -248,6 +255,8 @@ jobs:
     needs: build-soldr
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'fast-build') }}
     runs-on: ubuntu-latest
+    # soldr#1985 - was inheriting GitHub's 360-minute default.
+    timeout-minutes: 60
     env:
       BASELINE_NATIVE_TIMEOUT: 10m
       BASELINE_DARWIN_TIMEOUT: 15m

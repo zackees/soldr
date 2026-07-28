@@ -25,6 +25,10 @@ name: Cache delta experiment
 on:
   workflow_dispatch: {}
   push:
+    # soldr#1985 — was missing `branches:`, so this fired on pushes to every
+    # feature branch, not just main.
+    branches:
+      - main
     paths:
       - ".github/actions/cache-delta-experiment/**"
       - ".github/actions/cache-delta-experiment-cleanup/**"
@@ -39,6 +43,11 @@ env:
   # unauthenticated (60/hr per runner IP). Follow-up to #1319 / #1323 /
   # #1326 / #1328 / #1329 / #1330 / #1332.
   SOLDR_GITHUB_TOKEN: ${{ github.token }}
+
+# soldr#1985 - stop superseded runs from holding runner slots.
+concurrency:
+  group: cache-delta-experiment-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   delta:

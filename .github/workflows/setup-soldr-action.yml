@@ -31,10 +31,17 @@ on:
 permissions:
   contents: read
 
+# soldr#1985 - stop superseded runs from holding runner slots.
+concurrency:
+  group: setup-soldr-action-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   smoke:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
+    # soldr#1985 - was inheriting GitHub's 360-minute default.
+    timeout-minutes: 45
     env:
       # soldr still fetches managed support tools from GitHub Releases.
       # Use soldr's explicit opt-in token env so release metadata requests

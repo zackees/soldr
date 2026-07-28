@@ -118,6 +118,19 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # `lto = false`, `codegen-units = 16`) leave ~50% on the table for a
 # pure-CLI binary that doesn't need user-side debuggability. Numbers:
 # pre-change shipped 16.3 MB uncompressed for soldr v0.7.59.
+# soldr#1985 — the dev profile had no override, so it used Cargo's default
+# `debug = 2` (full DWARF). The two heaviest ubuntu-24.04 CI jobs both build
+# with it — `_build-and-test.yml`'s `cargo build --workspace --tests --bins`
+# (8m09s observed) and `ci.yml`'s `cargo clippy --workspace --all-targets` —
+# and full debuginfo is a large share of that in codegen, link, and disk I/O.
+#
+# `line-tables-only` is the same trade soldr#1168 already made for the
+# `ci-nextest` profile: panics and backtraces still resolve to file:line,
+# only debugger variable inspection is lost. Applies to local `cargo build`
+# too, which is the point — dev builds get faster as well.
+[profile.dev]
+debug = "line-tables-only"
+
 [profile.release]
 # Drop symbol table + debuginfo from the shipped binary. Biggest
 # single contributor to size (~30–50%). For deep debugging via

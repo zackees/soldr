@@ -23,9 +23,16 @@ on:
 permissions:
   contents: read
 
+# soldr#1985 - stop superseded runs from holding runner slots.
+concurrency:
+  group: lint-docs-shim-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   lint:
     name: Lint
     runs-on: ubuntu-24.04
+    # soldr#1985 - was inheriting GitHub's 360-minute default.
+    timeout-minutes: 5
     steps:
       - run: echo "markdown-only change — Lint satisfied by docs shim (see .github/workflows/lint-docs-shim.yml)"
