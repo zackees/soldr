@@ -46,7 +46,8 @@ pub use toolchain_manifest::{
     SoldrManifestSection,
 };
 pub use toolchain_resolve::{
-    apply_implicit_toolchain_homes, probe_toolchain_binary, suppress_windows_console_window,
+    apply_implicit_toolchain_homes, find_rust_toolchain_manifest, probe_toolchain_binary,
+    suppress_windows_console_window,
 };
 
 pub const CARGO_HOME_ENV_VAR: &str = "CARGO_HOME";

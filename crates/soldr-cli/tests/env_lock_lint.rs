@@ -143,6 +143,10 @@ const PRODUCTION_ENV_WRITERS: &[(&str, &str)] = &[
         "crates/soldr-cli/src/msvc_host.rs",
         "exports the discovered MSVC environment (PATH/INCLUDE/LIB) for the build",
     ),
+    (
+        "crates/soldr-cli/src/soldr_main.rs",
+        "soldr#1766: --allow-unpinned is surfaced as SOLDR_ALLOW_UNPINNED at startup          so the whole process tree agrees, including the daemon, which auto-forwards          SOLDR_*. This is the CLI translating a flag into environment, not a test          mutating shared state, so no barrier applies",
+    ),
 ];
 
 timed_test!(no_env_var_is_guarded_by_two_different_barriers, {

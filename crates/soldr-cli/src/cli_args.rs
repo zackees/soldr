@@ -88,6 +88,15 @@ By default, `soldr cargo ...` resolves a fresh soldr workspace context from the 
     pub(crate) trust_inherited_soldr_env: bool,
     #[arg(
         long,
+        global = true,
+        help = "Allow a build with no rust-toolchain.toml (soldr#1766)",
+        long_help = "Proceed even when no rust-toolchain.toml exists at or above the working directory.
+
+Without a pin soldr resolves rustc from PATH, which can select a mismatched-host toolchain and makes cache keys depend on ambient PATH state. This flag makes that degraded mode an explicit choice. Equivalent to SOLDR_ALLOW_UNPINNED=1."
+    )]
+    pub(crate) allow_unpinned: bool,
+    #[arg(
+        long,
         value_enum,
         default_value_t = ZccacheSourceArg::Managed,
         value_name = "SOURCE",

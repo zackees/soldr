@@ -34,7 +34,27 @@ static MATERIALIZED_ALIAS_PAIRS: Mutex<Vec<(PathBuf, PathBuf)>> = Mutex::new(Vec
 /// that path doesn't exist. This helper centralizes the lookup so
 /// production CI can set `SOLDR_BIN` explicitly without touching any
 /// test code.
+/// soldr#1766: integration fixtures build in bare temp workspaces that
+/// deliberately carry no `rust-toolchain.toml`, and the pin search walks
+/// ancestors, which cannot reach one from under the OS temp dir.
+///
+/// Declaring the opt-out here rather than at each call site is deliberate:
+/// there are ~92 direct `Command::new(soldr_bin())` spawns across the test
+/// tree, and a per-site opt-in would silently miss every future one. Every
+/// spawn resolves the binary through this function, so setting it once in
+/// the test process covers them all by inheritance.
+///
+/// Tests that mean to exercise the pin requirement itself live in
+/// `toolchain.rs` unit tests, where this never runs.
+fn allow_unpinned_fixtures() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        std::env::set_var(soldr_cli::toolchain::ALLOW_UNPINNED_ENV_VAR, "1");
+    });
+}
+
 pub(crate) fn soldr_bin() -> PathBuf {
+    allow_unpinned_fixtures();
     let soldr = std::env::var_os("SOLDR_BIN")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_soldr")));
@@ -175,6 +195,12 @@ pub(crate) fn isolated_soldr_command() -> Command {
 
 pub(crate) fn scrub_outer_soldr_env(command: &mut Command) -> &mut Command {
     command
+        // soldr#1766: fixtures build in bare temp workspaces that deliberately
+        // have no rust-toolchain.toml, and ancestor-walking will not find one
+        // under the OS temp dir. They are exercising other behavior, so opt
+        // them out of the pin requirement rather than seeding a manifest into
+        // every fixture.
+        .env(soldr_cli::toolchain::ALLOW_UNPINNED_ENV_VAR, "1")
         .env_remove("RUSTC_WRAPPER")
         .env_remove("RUSTC_WORKSPACE_WRAPPER")
         .env_remove("SOLDR_LINKER")
