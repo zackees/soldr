@@ -138,3 +138,71 @@ mod lifecycle_event_tests {
         }
     );
 }
+
+#[cfg(test)]
+mod root_ownership_diagnostic_tests {
+    use crate::core::SoldrPaths;
+    use crate::daemon::lifecycle::*;
+    use tempfile::TempDir;
+
+    // soldr#1987. The orphan case is the one that cost 28 hours: a live PID
+    // whose image was deleted holds the lock forever, `soldr daemon stop`
+    // cannot see it, and the only symptom is `compiler cache unavailable`.
+    // The message has to name the PID and say the image is gone, or the user
+    // has nothing to act on.
+    crate::timed_test!(a_live_owner_with_a_deleted_image_is_named_as_recoverable, {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("root"));
+        // This process is alive by construction; point the record at an image
+        // that does not exist, which is exactly the orphan's shape.
+        let me = std::process::id();
+        let missing = temp.path().join("deleted-by-uv").join("soldr-daemon.exe");
+        std::fs::create_dir_all(crate::cache_lib::soldr_daemon_dir(&paths)).expect("dir");
+        std::fs::write(
+            crate::cache_lib::daemon_pid_path(&paths),
+            format!("{me}\n{}\n", missing.display()),
+        )
+        .expect("pid file");
+
+        let msg = describe_root_ownership_conflict(&paths);
+        assert!(msg.contains(&me.to_string()), "must name the PID: {msg}");
+        assert!(
+            msg.contains("no longer exists"),
+            "must say the image is gone: {msg}"
+        );
+        assert!(
+            msg.contains("soldr#1987"),
+            "must point at the issue explaining why stop cannot reach it: {msg}"
+        );
+    });
+
+    // A healthy owner is a normal single-instance conflict, not an orphan --
+    // it must not be described as recoverable-by-killing.
+    crate::timed_test!(a_live_owner_with_a_real_image_is_not_called_an_orphan, {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("root"));
+        let me = std::process::id();
+        let real = std::env::current_exe().expect("current exe");
+        std::fs::create_dir_all(crate::cache_lib::soldr_daemon_dir(&paths)).expect("dir");
+        std::fs::write(
+            crate::cache_lib::daemon_pid_path(&paths),
+            format!("{me}\n{}\n", real.display()),
+        )
+        .expect("pid file");
+
+        let msg = describe_root_ownership_conflict(&paths);
+        assert!(msg.contains(&me.to_string()), "{msg}");
+        assert!(
+            !msg.contains("no longer exists"),
+            "a present image must not be reported as missing: {msg}"
+        );
+    });
+
+    // No PID file at all must still produce something better than silence.
+    crate::timed_test!(a_missing_pid_file_says_so_rather_than_naming_nobody, {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("root"));
+        let msg = describe_root_ownership_conflict(&paths);
+        assert!(msg.contains("no daemon PID file"), "{msg}");
+    });
+}

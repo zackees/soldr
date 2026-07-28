@@ -1044,7 +1044,7 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
         .ok_or_else(|| {
             ServerError::Io(std::io::Error::new(
                 std::io::ErrorKind::AddrInUse,
-                format!("soldr root ownership is busy: {}", paths.root.display()),
+                crate::daemon::lifecycle::describe_root_ownership_conflict(&paths),
             ))
         })?;
 
