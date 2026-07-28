@@ -312,17 +312,43 @@ impl std::fmt::Display for DispatchError {
 /// Classify a per-attempt [`client::ClientError`] as daemon
 /// unavailability (soldr#1300).
 ///
-/// * `NotRunning` — no endpoint at the socket/pipe path, or connect
-///   refused. The canonical "daemon never came up" signal (the macOS
-///   pip-wheel failure mode from #1300).
-/// * `Io` — endpoint transport failure: connect timeout, read/write
-///   error, daemon died mid-stream. The daemon is not usably available.
-/// * `Protocol` — the daemon *answered* (an `Error` frame or an
-///   unexpected frame). It is alive and responding; degrading to an
-///   uncached compile would mask a real daemon-side bug, so this stays
-///   a hard failure. Note an actual rustc compile FAILURE never shows
-///   up here at all — it arrives as `CompileDone { exit_code != 0 }`,
-///   i.e. `Ok(_)` at this layer, and is propagated as the exit code.
+/// # The policy (soldr#1838 Phase 2, bullet 5)
+///
+/// `true` degrades this compile to direct rustc; `false` fails the build.
+/// One question decides it:
+///
+/// > **Does this error mean the daemon is behaving correctly and simply
+/// > cannot serve the request — or that something inside it is wrong?**
+///
+/// Degrade on the first. A daemon that is absent, unreachable, retiring,
+/// version-skewed, or stalled cannot complete this unit no matter how many
+/// retries remain, and falling back to an uncached compile loses nothing but
+/// cache hits.
+///
+/// Hard-fail on the second. Degrading there would turn a real daemon bug into
+/// a silently uncached build — the failure would stop being visible while
+/// continuing to cost every user their cache. Slow, correct builds are a
+/// worse outcome than a loud failure, because nobody investigates them.
+///
+/// Note an actual rustc compile FAILURE never reaches this function at all —
+/// it arrives as `CompileDone { exit_code != 0 }`, i.e. `Ok(_)` at this
+/// layer, and is propagated as the exit code.
+///
+/// # Applying it
+///
+/// | variant | degrade? | why |
+/// |---|---|---|
+/// | `NotRunning` | yes | no endpoint, or connect refused — the canonical "daemon never came up" signal (the macOS pip-wheel failure from #1300) |
+/// | `Io` | yes | transport failure: connect timeout, read/write error, daemon died mid-stream |
+/// | `VersionMismatch` | yes | deployment skew (#1853). A daemon speaking a protocol we cannot parse is, to the wrapper, indistinguishable from no daemon |
+/// | `Retiring` | yes | graceful drain (#1838/#1837). It answered, it is not buggy, and it will never serve this compile |
+/// | `CompileStalled` | yes | the deadline expired either way; `saw_output` changes the *advice*, never the decision |
+/// | `Protocol` | **no** | the daemon answered with an `Error` or unexpected frame. It is alive and responding, so this is the case the hard-fail rule exists for |
+///
+/// The single `false` is the load-bearing one. `Retiring` exists precisely
+/// because an orderly shutdown used to land in it and fail builds (#1837);
+/// when adding a variant, ask whether it is really a daemon *defect* before
+/// reaching for `false`.
 pub fn client_error_indicates_daemon_unavailable(e: &client::ClientError) -> bool {
     match e {
         client::ClientError::NotRunning => true,
@@ -1138,6 +1164,54 @@ pub use client::CompileDoneInfo as DispatchInfo;
 mod tests {
     use super::*;
     use crate::timed_test;
+
+    // soldr#1838 bullet 5: the policy table on
+    // `client_error_indicates_daemon_unavailable` is documentation, and
+    // documentation rots. This is its machine-checked counterpart — every
+    // variant, stated once, so a table that drifts from the code fails here.
+    //
+    // The match itself is already exhaustive, so a *new* variant cannot be
+    // forgotten; what this catches is an existing one being reclassified
+    // without the reasoning above being revisited.
+    timed_test!(the_degrade_policy_matches_its_documented_table, {
+        let cases: &[(&str, client::ClientError, bool)] = &[
+            ("NotRunning", client::ClientError::NotRunning, true),
+            (
+                "Io",
+                client::ClientError::Io(std::io::Error::other("transport")),
+                true,
+            ),
+            (
+                "VersionMismatch",
+                client::ClientError::VersionMismatch("skew".into()),
+                true,
+            ),
+            ("Retiring", client::ClientError::Retiring, true),
+            (
+                "CompileStalled",
+                client::ClientError::CompileStalled {
+                    saw_output: false,
+                    elapsed: std::time::Duration::from_secs(1),
+                },
+                true,
+            ),
+            // The load-bearing `false`: a daemon that answered wrongly is a
+            // daemon defect, and degrading would hide it behind a silently
+            // uncached build.
+            (
+                "Protocol",
+                client::ClientError::Protocol("bad frame".into()),
+                false,
+            ),
+        ];
+        for (name, err, expected) in cases {
+            assert_eq!(
+                client_error_indicates_daemon_unavailable(err),
+                *expected,
+                "{name} is classified against the documented policy"
+            );
+        }
+    });
 
     // soldr#1838 Phase 2 / #1837. A wrapper that reaches a daemon in graceful
     // drain must degrade to direct rustc, not fail the build. Before
