@@ -22,6 +22,10 @@ use wait_timeout::ChildExt;
 /// Opting out is supported; opting out *silently* is not.
 pub const ALLOW_UNPINNED_ENV_VAR: &str = "SOLDR_ALLOW_UNPINNED";
 
+/// rustup's own explicit-toolchain selector. Honoured as a pin by
+/// [`require_toolchain_pin`] (soldr#1917 follow-up).
+pub const RUSTUP_TOOLCHAIN_ENV_VAR: &str = "RUSTUP_TOOLCHAIN";
+
 const TOOLCHAIN_COMMAND_TIMEOUT_ENV_VAR: &str = "SOLDR_TOOLCHAIN_COMMAND_TIMEOUT_SECS";
 const DEFAULT_TOOLCHAIN_COMMAND_TIMEOUT_SECS: u64 = 30 * 60;
 const KILLED_TOOLCHAIN_COMMAND_REAP_TIMEOUT_SECS: u64 = 5;
@@ -643,13 +647,34 @@ pub fn unpinned_allowed() -> bool {
     }
 }
 
+/// True when `RUSTUP_TOOLCHAIN` names an explicit toolchain.
+///
+/// This is rustup's own selection mechanism and it *overrides* any
+/// `rust-toolchain.toml`, so treating it as a weaker signal than the manifest
+/// has it backwards: it is unambiguous, needs no ancestor search, and cannot
+/// be shadowed by a nearer file.
+///
+/// It is specifically not the hazard [`require_toolchain_pin`] guards against.
+/// That error is about the *PATH rustc fallback*, which can resolve to a
+/// mismatched-host toolchain; an explicitly selected rustup toolchain is the
+/// opposite of that. Note `probe_direct_toolchain_binary` already defers to
+/// rustup when this is set, so the resolution path agrees.
+fn rustup_toolchain_pinned() -> bool {
+    std::env::var_os(RUSTUP_TOOLCHAIN_ENV_VAR)
+        .map(|value| !value.to_string_lossy().trim().is_empty())
+        .unwrap_or(false)
+}
+
 /// soldr#1766: refuse to build when no `rust-toolchain.toml` exists at or
 /// above `workspace_root`.
 ///
 /// The search walks ancestors deliberately. A cwd-only check would reject
 /// every build launched from a subdirectory of a pinned repo.
 pub fn require_toolchain_pin(workspace_root: &Path) -> Result<(), SoldrError> {
-    if crate::core::find_rust_toolchain_manifest(workspace_root).is_some() || unpinned_allowed() {
+    if crate::core::find_rust_toolchain_manifest(workspace_root).is_some()
+        || rustup_toolchain_pinned()
+        || unpinned_allowed()
+    {
         return Ok(());
     }
     Err(SoldrError::Other(format!(
@@ -657,6 +682,7 @@ pub fn require_toolchain_pin(workspace_root: &Path) -> Result<(), SoldrError> {
          soldr requires a repo-pinned toolchain; the PATH rustc fallback is          disabled because it breaks the cache contract and can resolve to a          mismatched-host toolchain. Fix one of:
            - create rust-toolchain.toml:  printf '[toolchain]\nchannel = \"stable\"\n' > rust-toolchain.toml
            - or install the pin helper:   soldr toolchain
+           - or select one explicitly:    RUSTUP_TOOLCHAIN=<channel>
            - or explicitly opt out:       SOLDR_ALLOW_UNPINNED=1 (or --allow-unpinned)",
         workspace_root.display()
     )))
@@ -1186,13 +1212,26 @@ mod pin_requirement_tests {
     // at or above the working directory, instead of silently resolving rustc
     // from PATH.
 
+    /// Clear *both* ways a build can be considered pinned or excused.
+    ///
+    /// `RUSTUP_TOOLCHAIN` has to be cleared too now that it counts as a pin:
+    /// otherwise `unpinned_workspace_is_refused` and friends pass or fail
+    /// depending on the ambient environment, and they would silently stop
+    /// testing anything on a runner that exports it — which is precisely the
+    /// thin-v2 lane that motivated this change.
     fn without_opt_out<T>(body: impl FnOnce() -> T) -> T {
         let _lock = crate::TEST_PROCESS_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let previous = std::env::var_os(ALLOW_UNPINNED_ENV_VAR);
+        let previous_toolchain = std::env::var_os(RUSTUP_TOOLCHAIN_ENV_VAR);
         std::env::remove_var(ALLOW_UNPINNED_ENV_VAR);
+        std::env::remove_var(RUSTUP_TOOLCHAIN_ENV_VAR);
         let out = body();
+        match previous_toolchain {
+            Some(value) => std::env::set_var(RUSTUP_TOOLCHAIN_ENV_VAR, value),
+            None => std::env::remove_var(RUSTUP_TOOLCHAIN_ENV_VAR),
+        }
         match previous {
             Some(value) => std::env::set_var(ALLOW_UNPINNED_ENV_VAR, value),
             None => std::env::remove_var(ALLOW_UNPINNED_ENV_VAR),
@@ -1248,6 +1287,74 @@ mod pin_requirement_tests {
         result.expect("SOLDR_ALLOW_UNPINNED must permit an unpinned build");
     });
 
+    // soldr#1917 follow-up: RUSTUP_TOOLCHAIN is a pin, not an absence of one.
+
+    crate::timed_test!(
+        an_explicit_rustup_toolchain_satisfies_the_pin_requirement,
+        {
+            // The thin-v2 verifier builds a synthesized crate under $RUNNER_TEMP,
+            // outside any manifest, and selects the toolchain with
+            // RUSTUP_TOOLCHAIN=1.94.1. That is a pinned build, and refusing it
+            // sent the lane to the one workaround that is actively wrong:
+            // SOLDR_ALLOW_UNPINNED=1, which disables the check for a caller who
+            // *is* pinned.
+            let temp = tempfile::tempdir().expect("tempdir");
+            let _lock = crate::TEST_PROCESS_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let previous_opt_out = std::env::var_os(ALLOW_UNPINNED_ENV_VAR);
+            let previous_toolchain = std::env::var_os(RUSTUP_TOOLCHAIN_ENV_VAR);
+            std::env::remove_var(ALLOW_UNPINNED_ENV_VAR);
+            std::env::set_var(RUSTUP_TOOLCHAIN_ENV_VAR, "1.94.1");
+
+            let result = require_toolchain_pin(temp.path());
+
+            match previous_opt_out {
+                Some(value) => std::env::set_var(ALLOW_UNPINNED_ENV_VAR, value),
+                None => std::env::remove_var(ALLOW_UNPINNED_ENV_VAR),
+            }
+            match previous_toolchain {
+                Some(value) => std::env::set_var(RUSTUP_TOOLCHAIN_ENV_VAR, value),
+                None => std::env::remove_var(RUSTUP_TOOLCHAIN_ENV_VAR),
+            }
+            result.expect("an explicitly selected rustup toolchain is a pin");
+        }
+    );
+
+    crate::timed_test!(a_blank_rustup_toolchain_is_not_a_pin, {
+        // Exported-but-empty is how a shell leaves a variable it meant to
+        // unset. It selects nothing, so it must not read as a pin -- same
+        // reasoning as `explicit_falsey_opt_out_still_requires_a_pin`.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _lock = crate::TEST_PROCESS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let previous_opt_out = std::env::var_os(ALLOW_UNPINNED_ENV_VAR);
+        let previous_toolchain = std::env::var_os(RUSTUP_TOOLCHAIN_ENV_VAR);
+        std::env::remove_var(ALLOW_UNPINNED_ENV_VAR);
+
+        let mut outcomes = Vec::new();
+        for blank in ["", "   "] {
+            std::env::set_var(RUSTUP_TOOLCHAIN_ENV_VAR, blank);
+            outcomes.push((blank, require_toolchain_pin(temp.path()).is_err()));
+        }
+
+        match previous_opt_out {
+            Some(value) => std::env::set_var(ALLOW_UNPINNED_ENV_VAR, value),
+            None => std::env::remove_var(ALLOW_UNPINNED_ENV_VAR),
+        }
+        match previous_toolchain {
+            Some(value) => std::env::set_var(RUSTUP_TOOLCHAIN_ENV_VAR, value),
+            None => std::env::remove_var(RUSTUP_TOOLCHAIN_ENV_VAR),
+        }
+        for (blank, refused) in outcomes {
+            assert!(
+                refused,
+                "RUSTUP_TOOLCHAIN={blank:?} must not count as a pin"
+            );
+        }
+    });
+
     crate::timed_test!(explicit_falsey_opt_out_still_requires_a_pin, {
         // An exported-but-disabled switch must not read as consent.
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1255,16 +1362,29 @@ mod pin_requirement_tests {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let previous = std::env::var_os(ALLOW_UNPINNED_ENV_VAR);
+        // Also clear RUSTUP_TOOLCHAIN: it now satisfies the pin on its own, so
+        // an ambient one would make these calls succeed and this test would
+        // fail for a reason unrelated to the opt-out switch it is checking.
+        let previous_toolchain = std::env::var_os(RUSTUP_TOOLCHAIN_ENV_VAR);
+        std::env::remove_var(RUSTUP_TOOLCHAIN_ENV_VAR);
+        let mut outcomes = Vec::new();
         for disabled in ["0", "false", "no", "off", ""] {
             std::env::set_var(ALLOW_UNPINNED_ENV_VAR, disabled);
-            assert!(
-                require_toolchain_pin(temp.path()).is_err(),
-                "SOLDR_ALLOW_UNPINNED={disabled:?} must not count as opting out"
-            );
+            outcomes.push((disabled, require_toolchain_pin(temp.path()).is_err()));
         }
         match previous {
             Some(value) => std::env::set_var(ALLOW_UNPINNED_ENV_VAR, value),
             None => std::env::remove_var(ALLOW_UNPINNED_ENV_VAR),
+        }
+        match previous_toolchain {
+            Some(value) => std::env::set_var(RUSTUP_TOOLCHAIN_ENV_VAR, value),
+            None => std::env::remove_var(RUSTUP_TOOLCHAIN_ENV_VAR),
+        }
+        for (disabled, refused) in outcomes {
+            assert!(
+                refused,
+                "SOLDR_ALLOW_UNPINNED={disabled:?} must not count as opting out"
+            );
         }
     });
 }
