@@ -109,8 +109,46 @@ same embedded service. To use an external cache wrapper, set\n\
 `SOLDR_RUSTC_WRAPPER=/path/to/zccache`."
     )]
     pub(crate) zccache: ZccacheSourceArg,
+    #[arg(
+        long,
+        global = true,
+        value_name = "N",
+        help = "Cap concurrent daemon compiles (soldr#1761)",
+        long_help = "Cap the number of compiles the daemon runs concurrently.
+
+Equivalent to SOLDR_JOBS=N, and takes the same top precedence: above `[jobs].max_parallel_compiles` in config.toml, and above the legacy ZCCACHE_MAX_PARALLEL_COMPILES. Left unset, the default is one less than the machine's logical CPU count.
+
+This governs the daemon, not cargo — it is not forwarded as cargo's own `-j`.
+
+Applies to a daemon this invocation starts. A daemon already running keeps the limit it started with, so run `soldr daemon stop` first to change it."
+    )]
+    pub(crate) jobs: Option<usize>,
     #[command(subcommand)]
     pub(crate) command: Commands,
+}
+
+impl Cli {
+    /// Publish the global flags that have an environment-variable spelling.
+    ///
+    /// Both of these must reach the daemon, which resolves them in its own
+    /// process, and `SOLDR_*` is what survives the spawn scrub (soldr#1931).
+    /// Setting the variable rather than threading a boolean keeps a single
+    /// resolution point for each: `crate::toolchain` for the pin, and
+    /// `core::jobs` for the compile limit — the flag simply populates that
+    /// resolver's top precedence tier rather than becoming a second one.
+    ///
+    /// Lives here rather than in `run_cli` so the flag and its effect stay in
+    /// one file; the dispatch path just calls this once.
+    pub(crate) fn export_global_env(&self) {
+        // soldr#1766.
+        if self.allow_unpinned {
+            std::env::set_var(crate::toolchain::ALLOW_UNPINNED_ENV_VAR, "1");
+        }
+        // soldr#1761.
+        if let Some(jobs) = self.jobs {
+            std::env::set_var(soldr_core::core::jobs::SOLDR_JOBS_ENV_VAR, jobs.to_string());
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
@@ -1360,4 +1398,71 @@ pub(crate) enum LogsSubcommand {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[cfg(test)]
+mod global_flag_tests {
+    use super::*;
+    use clap::Parser;
+    // The barrier every env mutator in this crate takes (soldr#1663). These
+    // tests set process-global variables, so an unguarded run races any test
+    // that reads them.
+    use crate::TEST_PROCESS_ENV_LOCK as ENV_LOCK;
+
+    fn restore(name: &str, previous: Option<String>) {
+        match previous {
+            Some(v) => std::env::set_var(name, v),
+            None => std::env::remove_var(name),
+        }
+    }
+
+    // soldr#1761. The flag is deliberately *not* a second resolution point:
+    // it publishes SOLDR_JOBS and lets `core::jobs` decide precedence, so a
+    // daemon spawned by this invocation reads the same tier a plain
+    // `SOLDR_JOBS=N` export would have populated.
+    crate::timed_test!(jobs_flag_publishes_the_env_var_the_resolver_reads, {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let name = soldr_core::core::jobs::SOLDR_JOBS_ENV_VAR;
+        let previous = std::env::var(name).ok();
+        std::env::remove_var(name);
+
+        let cli = Cli::parse_from(["soldr", "--jobs", "3", "status"]);
+        cli.export_global_env();
+        let published = std::env::var(name).ok();
+
+        restore(name, previous);
+        assert_eq!(
+            published.as_deref(),
+            Some("3"),
+            "--jobs must populate the resolver's top tier, not a parallel one"
+        );
+    });
+
+    // Absent flag must leave the variable untouched rather than writing a
+    // default: an exported SOLDR_JOBS, or a config.toml value, has to keep
+    // winning over "the user did not pass --jobs".
+    crate::timed_test!(no_jobs_flag_leaves_the_env_var_alone, {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let name = soldr_core::core::jobs::SOLDR_JOBS_ENV_VAR;
+        let previous = std::env::var(name).ok();
+        std::env::set_var(name, "9");
+
+        let cli = Cli::parse_from(["soldr", "status"]);
+        cli.export_global_env();
+        let after = std::env::var(name).ok();
+
+        restore(name, previous);
+        assert_eq!(
+            after.as_deref(),
+            Some("9"),
+            "an absent flag must not overwrite an existing SOLDR_JOBS"
+        );
+    });
+
+    // `global = true` is what makes `soldr cargo build --jobs 4` parse; a
+    // non-global flag would only be accepted before the subcommand.
+    crate::timed_test!(jobs_flag_is_accepted_after_the_subcommand, {
+        let cli = Cli::parse_from(["soldr", "status", "--jobs", "4"]);
+        assert_eq!(cli.jobs, Some(4));
+    });
 }

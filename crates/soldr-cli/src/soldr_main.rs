@@ -265,12 +265,11 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
     // standard zccache kill-switch actually bypasses the wrapper/daemon.
     let cache_enabled = !cli.no_cache && !cargo_front_door::zccache_disable_requested();
     let trust_inherited_soldr_env = cli.trust_inherited_soldr_env;
-    // soldr#1766: `--allow-unpinned` is surfaced as the env var so the whole
-    // process tree -- including the daemon, which auto-forwards `SOLDR_*` --
-    // agrees, without threading a boolean through every prepare path.
-    if cli.allow_unpinned {
-        std::env::set_var(crate::toolchain::ALLOW_UNPINNED_ENV_VAR, "1");
-    }
+    // soldr#1766 / soldr#1761: global flags with an env-var spelling are
+    // published together by `Cli::export_global_env`, so the whole process
+    // tree -- including the daemon, which auto-forwards `SOLDR_*` -- agrees
+    // without threading booleans through every prepare path.
+    cli.export_global_env();
 
     match cli.command {
         Commands::Build { args } => {
