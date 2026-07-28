@@ -14,6 +14,7 @@
 use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
 use fs2::FileExt;
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -508,6 +509,99 @@ pub fn record_pep517_fallback(paths: &SoldrPaths, key: Option<&str>) -> Result<(
 
 /// Keep linker retry conservative: only output with an explicit linker
 /// signal and a failure marker is eligible for the one-shot fallback.
+/// Does this rustc invocation build a proc-macro crate?
+///
+/// Cargo spells the flag both ways, so both are matched.
+fn builds_a_proc_macro(args: &[String]) -> bool {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if let Some(value) = arg.strip_prefix("--crate-type=") {
+            if value.split(',').any(|v| v.trim() == "proc-macro") {
+                return true;
+            }
+        } else if arg == "--crate-type"
+            && iter
+                .next()
+                .is_some_and(|v| v.split(',').any(|v| v.trim() == "proc-macro"))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// The target this invocation compiles for: an explicit `--target`, else the
+/// host.
+fn effective_target(args: &[String], host: &str) -> String {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if let Some(value) = arg.strip_prefix("--target=") {
+            return value.to_string();
+        }
+        if arg == "--target" {
+            if let Some(value) = iter.next() {
+                return value.clone();
+            }
+        }
+    }
+    host.to_string()
+}
+
+/// Drop an injected `-C linker=rust-lld` when this invocation builds a
+/// proc-macro for an MSVC target (soldr#1992).
+///
+/// `SOLDR_LINKER=fast` injects the linker through
+/// `CARGO_TARGET_<TRIPLE>_LINKER`, which cargo applies to *every* crate for
+/// that target. Proc-macros are the one kind that cannot take it: they build
+/// as DLLs via `-C prefer-dynamic`, and rust-lld reliably fails that link on
+/// `x86_64-pc-windows-msvc`. The build dies with a bare `exit code: 1`.
+///
+/// Because the env var is per-invocation, the exclusion cannot live at the
+/// injection site -- cargo, not soldr, decides which crates receive it. The
+/// wrapper is the first place that sees a *per-crate* argv, so the flag is
+/// removed here, leaving rustc to use the platform default exactly as
+/// `SOLDR_LINKER=default` would.
+///
+/// Scoped to MSVC deliberately. rust-lld links proc-macro dylibs fine
+/// elsewhere, and stripping it there would silently forfeit the fast linker
+/// for every derive crate.
+pub fn strip_fast_linker_for_proc_macro<'a>(args: &'a [String], host: &str) -> Cow<'a, [String]> {
+    if !builds_a_proc_macro(args) || !effective_target(args, host).ends_with("-pc-windows-msvc") {
+        return Cow::Borrowed(args);
+    }
+    let mut out: Vec<String> = Vec::with_capacity(args.len());
+    let mut iter = args.iter().peekable();
+    let mut removed = false;
+    while let Some(arg) = iter.next() {
+        // `-Clinker=rust-lld`
+        if arg
+            .strip_prefix("-C")
+            .and_then(|rest| rest.strip_prefix("linker="))
+            .is_some_and(|v| v.trim() == "rust-lld")
+        {
+            removed = true;
+            continue;
+        }
+        // `-C linker=rust-lld` as two arguments.
+        if arg == "-C"
+            && iter.peek().is_some_and(|next| {
+                next.strip_prefix("linker=")
+                    .is_some_and(|v| v.trim() == "rust-lld")
+            })
+        {
+            iter.next();
+            removed = true;
+            continue;
+        }
+        out.push(arg.clone());
+    }
+    if removed {
+        Cow::Owned(out)
+    } else {
+        Cow::Borrowed(args)
+    }
+}
+
 pub fn looks_like_linker_failure(output: &Output) -> bool {
     if output.status.success() {
         return false;
@@ -780,6 +874,96 @@ mod tests {
         let i = resolve_for_target_with_probe(LinkerChoice::Fast, WIN_MSVC, &always_false).unwrap();
         assert_eq!(i.linker.as_deref(), Some("rust-lld"));
         assert!(i.rustflags.is_none());
+    }
+
+    const MSVC: &str = "x86_64-pc-windows-msvc";
+
+    fn argv(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    // soldr#1992: the failing shape, exactly as cargo emits it.
+    #[test]
+    fn proc_macro_on_msvc_loses_the_injected_rust_lld() {
+        let args = argv(&[
+            "rustc",
+            "--crate-name",
+            "serde_derive",
+            "--crate-type",
+            "proc-macro",
+            "-C",
+            "prefer-dynamic",
+            "-C",
+            "linker=rust-lld",
+        ]);
+        let out = strip_fast_linker_for_proc_macro(&args, MSVC);
+        assert!(!out.iter().any(|a| a == "linker=rust-lld"), "{out:?}");
+        assert!(
+            out.iter().any(|a| a == "prefer-dynamic"),
+            "must touch only the linker: {out:?}"
+        );
+        assert!(out.iter().any(|a| a == "serde_derive"), "{out:?}");
+    }
+
+    #[test]
+    fn the_joined_spelling_is_also_removed() {
+        let args = argv(&["rustc", "--crate-type=proc-macro", "-Clinker=rust-lld"]);
+        let out = strip_fast_linker_for_proc_macro(&args, MSVC);
+        assert!(!out.iter().any(|a| a.contains("rust-lld")), "{out:?}");
+    }
+
+    // Ordinary crates keep the fast linker -- that is the whole point of the
+    // feature, and rlib compiles were never the failing case.
+    #[test]
+    fn a_non_proc_macro_crate_keeps_rust_lld() {
+        let args = argv(&["rustc", "--crate-type", "lib", "-C", "linker=rust-lld"]);
+        let out = strip_fast_linker_for_proc_macro(&args, MSVC);
+        assert_eq!(out.as_ref(), args.as_slice());
+    }
+
+    // rust-lld links proc-macro dylibs fine off MSVC; stripping there would
+    // silently forfeit the fast linker for every derive crate.
+    #[test]
+    fn a_proc_macro_off_msvc_keeps_rust_lld() {
+        let args = argv(&[
+            "rustc",
+            "--crate-type",
+            "proc-macro",
+            "-C",
+            "linker=rust-lld",
+        ]);
+        let out = strip_fast_linker_for_proc_macro(&args, LINUX);
+        assert_eq!(out.as_ref(), args.as_slice());
+    }
+
+    // An explicit --target decides, not the host.
+    #[test]
+    fn an_explicit_msvc_target_is_honoured_from_a_non_msvc_host() {
+        let args = argv(&[
+            "rustc",
+            "--crate-type",
+            "proc-macro",
+            "--target",
+            MSVC,
+            "-C",
+            "linker=rust-lld",
+        ]);
+        let out = strip_fast_linker_for_proc_macro(&args, LINUX);
+        assert!(!out.iter().any(|a| a == "linker=rust-lld"), "{out:?}");
+    }
+
+    // A different linker is not ours to remove.
+    #[test]
+    fn another_linker_is_left_alone() {
+        let args = argv(&[
+            "rustc",
+            "--crate-type",
+            "proc-macro",
+            "-C",
+            "linker=lld-link",
+        ]);
+        let out = strip_fast_linker_for_proc_macro(&args, MSVC);
+        assert_eq!(out.as_ref(), args.as_slice());
     }
 
     #[test]
