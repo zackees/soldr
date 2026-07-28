@@ -928,10 +928,30 @@ pub(crate) fn acquire_spawn_lock(paths: &SoldrPaths) -> Option<std::fs::File> {
 /// whole `SOLDR_*` namespace is overlaid onto the baseline. The embedded
 /// zccache trace below is the sole non-Soldr diagnostic exception.
 const FORWARDED_ENV_PREFIX: &str = "SOLDR_";
-/// zccache's opt-in, write-only diagnostic trace. The embedded backend runs
-/// inside soldr-daemon, so this one zccache variable must cross the scrubbed
-/// daemon-spawn boundary for a caller to collect the trace it requested.
-const ZCCACHE_INNER_TRACE_ENV: &str = "ZCCACHE_INNER_TRACE";
+/// The `ZCCACHE_*` names that must survive the scrub, and why each one does.
+///
+/// The rule is not "zccache variables are forwarded" -- `ZCCACHE_DISABLE` is
+/// deliberately dropped, and the test below asserts that. The rule is
+/// narrower: **a variable crosses when the daemon's own process is what reads
+/// it.** Anything consumed by the caller before it ever spawns a daemon has
+/// no reason to cross, and forwarding it would only widen the surface.
+///
+/// - `ZCCACHE_INNER_TRACE` -- opt-in write-only diagnostic trace. The embedded
+///   backend runs *inside* soldr-daemon, so the trace the caller asked for is
+///   only producible on the far side of the spawn.
+/// - `ZCCACHE_MAX_PARALLEL_COMPILES` -- soldr#1931. `core::jobs` resolves the
+///   compile limit in the daemon process (`daemon/server.rs`,
+///   `zccache_embedded.rs`), reading this name with `std::env::var`. Scrubbed,
+///   that resolver tier can never fire on the auto-spawn path -- which is the
+///   only path normal use takes -- so a machine tuned before soldr#1902
+///   silently reverts to the default. Forwarded under its real name rather
+///   than promoted to `SOLDR_JOBS` at the boundary: promotion would let a
+///   legacy export outrank `[jobs].max_parallel_compiles`, inverting the
+///   documented precedence. Precedence stays resolved in exactly one place.
+const FORWARDED_ZCCACHE_ENV: &[&str] = &[
+    "ZCCACHE_INNER_TRACE",
+    crate::core::jobs::ZCCACHE_MAX_PARALLEL_COMPILES_ENV_VAR,
+];
 
 fn forwarded_soldr_env() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
     filter_forwarded_env(std::env::vars_os())
@@ -949,7 +969,7 @@ fn filter_forwarded_env(
             // FBUILD_* passthrough in FastLED/fbuild#1170 and accept any
             // casing of the prefix on every platform.
             let name = name.to_string_lossy().to_ascii_uppercase();
-            name.starts_with(FORWARDED_ENV_PREFIX) || name == ZCCACHE_INNER_TRACE_ENV
+            name.starts_with(FORWARDED_ENV_PREFIX) || FORWARDED_ZCCACHE_ENV.contains(&name.as_str())
         })
         .collect()
 }
@@ -1508,8 +1528,35 @@ mod daemon_spawn_image_tests {
     use crate::core::SoldrPaths;
     use tempfile::TempDir;
 
+    // soldr#1931 was not "someone forgot a name" -- it was that nothing tied
+    // the resolver's inputs to the spawn allowlist, so #1902 could add a tier
+    // the daemon could never see and still land with a green suite and a
+    // checked-off "compat path tested" box.
+    //
+    // This asserts the invariant directly: every env var `core::jobs` reads in
+    // the daemon process must survive the scrub. Adding a tier to that
+    // resolver without forwarding it now fails here instead of silently
+    // resolving to the default in production.
+    crate::timed_test!(every_env_var_the_jobs_resolver_reads_survives_the_scrub, {
+        use crate::core::jobs::{SOLDR_JOBS_ENV_VAR, ZCCACHE_MAX_PARALLEL_COMPILES_ENV_VAR};
+        for name in [SOLDR_JOBS_ENV_VAR, ZCCACHE_MAX_PARALLEL_COMPILES_ENV_VAR] {
+            let upper = name.to_ascii_uppercase();
+            let forwarded = upper.starts_with(FORWARDED_ENV_PREFIX)
+                || FORWARDED_ZCCACHE_ENV.contains(&upper.as_str());
+            assert!(
+                forwarded,
+                concat!(
+                    "{} is read by core::jobs inside the daemon, but is scrubbed at ",
+                    "the spawn boundary, so that resolver tier can never fire on the ",
+                    "auto-spawn path. Add it to FORWARDED_ZCCACHE_ENV."
+                ),
+                name
+            );
+        }
+    });
+
     crate::timed_test!(
-        forwarded_env_keeps_soldr_namespace_and_embedded_trace_only,
+        forwarded_env_keeps_soldr_namespace_and_only_daemon_read_zccache_vars,
         {
             use std::ffi::OsString;
             let vars = vec![
@@ -1520,7 +1567,15 @@ mod daemon_spawn_image_tests {
                 (OsString::from("SOLDR_TRUST_MODE"), OsString::from("strict")),
                 (OsString::from("PATH"), OsString::from("/usr/bin")),
                 (OsString::from("HOME"), OsString::from("/home/runner")),
+                // Dropped: the caller consumes it before any daemon exists.
                 (OsString::from("ZCCACHE_DISABLE"), OsString::from("1")),
+                // soldr#1931 -- forwarded: `core::jobs` reads this name in the
+                // daemon's own process, so scrubbing it makes that resolver
+                // tier unreachable on the auto-spawn path.
+                (
+                    OsString::from("ZCCACHE_MAX_PARALLEL_COMPILES"),
+                    OsString::from("6"),
+                ),
                 (OsString::from("soldr_lowercase"), OsString::from("kept")),
                 (
                     OsString::from("SOLDR_DAEMON_TOKIO_CONSOLE_RECORD_PATH"),
@@ -1544,6 +1599,10 @@ mod daemon_spawn_image_tests {
                         OsString::from("/tmp/ci-root"),
                     ),
                     (OsString::from("SOLDR_TRUST_MODE"), OsString::from("strict")),
+                    (
+                        OsString::from("ZCCACHE_MAX_PARALLEL_COMPILES"),
+                        OsString::from("6"),
+                    ),
                     (OsString::from("soldr_lowercase"), OsString::from("kept")),
                     (
                         OsString::from("SOLDR_DAEMON_TOKIO_CONSOLE_RECORD_PATH"),
