@@ -109,6 +109,28 @@ pub const BUILD_LOG_KEEP: usize = 100;
 /// Everything [`write_build_log`] needs to render one build's XML log.
 /// Constructed by the cargo front door once a managed build finishes
 /// (success OR failure — the log is always-on, not failure-only).
+/// Which toolchain homes a build actually executed under (soldr#1799).
+///
+/// The failure this exists to make visible is the quiet one. A host-resolved
+/// `cargo`/`rustc` running under soldr's managed, default-less `RUSTUP_HOME`
+/// either dies with "no default toolchain" (#1768) or -- far worse -- keeps
+/// working while flipping which compiler binary is used between runs, which
+/// invalidates cargo fingerprints and zccache keys and silently recompiles
+/// the world on what should be a warm build. Nothing fails; builds are just
+/// 10-50x slower, indefinitely.
+///
+/// Recording the resolved binary next to the discriminant is what makes the
+/// log self-checking: `home_origin="managed"` is only legitimate when
+/// `binary` physically lives inside a managed home, and that is exactly the
+/// pair CI asserts on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolchainHomes {
+    /// `caller` or `managed` -- see `binaries::HomeOrigin`.
+    pub home_origin: &'static str,
+    /// The resolved cargo binary this build ran.
+    pub binary: PathBuf,
+}
+
 pub struct BuildLogRequest<'a> {
     pub paths: &'a SoldrPaths,
     pub session_id: u64,
@@ -126,6 +148,11 @@ pub struct BuildLogRequest<'a> {
     /// entries begin. Lines before this offset belong to a prior
     /// session sharing the same journal file and are ignored.
     pub compile_journal_start_len: u64,
+    /// soldr#1799: the homes this build's toolchain ran under. `None` when
+    /// the caller could not resolve them, which is logged as absent rather
+    /// than guessed -- a wrong value here would be worse than no value,
+    /// since CI keys on it.
+    pub toolchain: Option<ToolchainHomes>,
 }
 
 /// `<soldr root>/logs/builds` — flat directory, one XML file per
@@ -241,6 +268,10 @@ pub fn write_build_log(request: &BuildLogRequest<'_>) -> Result<PathBuf, SoldrEr
         duration_ms: totals_wall_ms,
         exit_code: request.exit_code,
         build: build_meta,
+        toolchain: request.toolchain.as_ref().map(|t| ToolchainHomes {
+            home_origin: t.home_origin,
+            binary: t.binary.clone(),
+        }),
         steps: Steps {
             download: download_step,
             compile: CompileStep {
@@ -315,6 +346,8 @@ struct BuildLogDocument {
     build: BuildMeta,
     steps: Steps,
     totals: Totals,
+    /// soldr#1799 -- see [`ToolchainHomes`].
+    toolchain: Option<ToolchainHomes>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -444,6 +477,7 @@ fn render_xml(doc: &BuildLogDocument) -> String {
     out.push_str(">\n");
 
     render_args(&mut out, &doc.args);
+    render_toolchain(&mut out, doc.toolchain.as_ref());
     render_steps(&mut out, &doc.steps, &doc.build);
     render_totals(&mut out, &doc.totals);
 
@@ -459,6 +493,22 @@ fn render_args(out: &mut String, args: &[String]) {
         out.push_str("</arg>\n");
     }
     out.push_str("  </args>\n");
+}
+
+/// soldr#1799. Emitted as its own element rather than as attributes on
+/// `<build>` so a later phase can add per-execution rows (passthrough,
+/// dylint, wrapper) without changing the shape callers already parse.
+fn render_toolchain(out: &mut String, toolchain: Option<&ToolchainHomes>) {
+    let Some(toolchain) = toolchain else {
+        return;
+    };
+    out.push_str("  <toolchain");
+    out.push_str(&attr("home_origin", toolchain.home_origin));
+    out.push_str(&attr("binary", &toolchain.binary.display().to_string()));
+    out.push_str(
+        " />
+",
+    );
 }
 
 fn render_steps(out: &mut String, steps: &Steps, meta: &BuildMeta) {
@@ -882,8 +932,54 @@ mod tests {
             exit_code: 0,
             compile_journal_path: None,
             compile_journal_start_len: 0,
+            // soldr#1799: absent by default so the existing cases keep
+            // asserting the shape of a log without toolchain telemetry --
+            // `None` must stay renderable, since it is what a build whose
+            // soldr root failed to resolve produces.
+            toolchain: None,
         }
     }
+
+    timed_test!(
+        toolchain_homes_render_when_present_and_vanish_when_absent,
+        {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
+            let args = vec!["cargo".to_string(), "build".to_string()];
+
+            // Absent: no element at all, rather than an element claiming an
+            // origin nobody established. soldr#1799's CI check treats a missing
+            // <toolchain> as "not asserted"; a fabricated one would read as a
+            // pass.
+            let request = sample_request(&paths, tmp.path(), &args);
+            let without = write_build_log(&request).expect("write");
+            let raw = std::fs::read_to_string(&without).expect("read");
+            assert!(
+                !raw.contains("<toolchain"),
+                "absent telemetry must emit no element, got:
+{raw}"
+            );
+
+            // Present: origin and the binary that justifies it.
+            let mut request = sample_request(&paths, tmp.path(), &args);
+            request.toolchain = Some(ToolchainHomes {
+                home_origin: "caller",
+                binary: PathBuf::from("/usr/bin/cargo"),
+            });
+            let with = write_build_log(&request).expect("write");
+            let raw = std::fs::read_to_string(&with).expect("read");
+            assert!(
+                raw.contains("home_origin=\"caller\""),
+                "expected the caller origin, got:
+{raw}"
+            );
+            assert!(
+                raw.contains("cargo"),
+                "expected the resolved binary, got:
+{raw}"
+            );
+        }
+    );
 
     timed_test!(
         write_build_log_writes_file_with_expected_header,

@@ -565,7 +565,18 @@ fn write_always_on_build_log(
     ended_at_ms: i64,
     exit_code: i32,
     compile_journal_start_len: u64,
+    // soldr#1799: the already-resolved cargo binary. Passed in rather than
+    // re-resolved here -- `resolve_toolchain_binary` costs up to two
+    // `rustup which` subprocesses (~65 ms each), and #1843 is specifically
+    // about the front door's fixed per-invocation overhead.
+    cargo_bin: &Path,
 ) -> Option<PathBuf> {
+    let toolchain = crate::binaries::home_origin_for_binary_opt(cargo_bin).map(|origin| {
+        crate::build_log::ToolchainHomes {
+            home_origin: origin.as_str(),
+            binary: cargo_bin.to_path_buf(),
+        }
+    });
     let request = crate::build_log::BuildLogRequest {
         paths,
         session_id,
@@ -576,6 +587,7 @@ fn write_always_on_build_log(
         exit_code,
         compile_journal_path: Some(embedded_compile_journal_path(paths)),
         compile_journal_start_len,
+        toolchain,
     };
     // soldr#1813: the written path is returned so the end-of-build log summary
     // can name a file it knows exists, rather than a location it guessed.
@@ -2176,6 +2188,7 @@ pub(crate) async fn run_cargo_front_door(
                 ended_at_ms,
                 -1,
                 compile_journal_start_len,
+                &cargo,
             );
             crate::cache_lib::build_active::set(false);
             drop(build_activity_lease);
@@ -2329,6 +2342,7 @@ pub(crate) async fn run_cargo_front_door(
         ended_at_ms,
         status.code().unwrap_or(-1),
         compile_journal_start_len,
+        &cargo,
     );
     // soldr#1813: tell the user where the logs went. Printed here because this
     // is the last point both the success and the compiler-failure paths pass

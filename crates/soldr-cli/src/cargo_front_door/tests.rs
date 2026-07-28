@@ -2641,11 +2641,30 @@ crate::timed_test!(write_build_log_reflects_seeded_compile_session_events, {
         exit_code: 0,
         compile_journal_path: None,
         compile_journal_start_len: 0,
+        // soldr#1799: a managed-home binary, so the rendered log must say
+        // `managed`. The pairing of origin and binary path is what makes the
+        // log checkable rather than merely descriptive.
+        toolchain: Some(crate::build_log::ToolchainHomes {
+            home_origin: "managed",
+            binary: paths.root.join("cargo").join("bin").join("cargo"),
+        }),
     };
 
     let path = crate::build_log::write_build_log(&request).expect("write_build_log");
     assert_eq!(path.extension().and_then(|e| e.to_str()), Some("xml"));
     let raw = std::fs::read_to_string(&path).expect("read build log");
+    // soldr#1799: the discriminant CI keys on, plus the binary that justifies
+    // it. Without the path, home_origin="managed" is unfalsifiable.
+    assert!(
+        raw.contains("<toolchain") && raw.contains("home_origin=\"managed\""),
+        "build log must carry the toolchain home origin, got:
+{raw}"
+    );
+    assert!(
+        raw.contains("binary=\""),
+        "build log must name the resolved binary, got:
+{raw}"
+    );
     assert!(
         raw.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"),
         "must start with the XML declaration: {raw}"
