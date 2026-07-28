@@ -692,11 +692,18 @@ mod tests {
         // path resolve_sources computes is guaranteed to not exist.
         let workdir = tmp.path().join("workdir");
         std::fs::create_dir_all(&workdir).unwrap();
-        let prev_cwd = std::env::current_dir().expect("cwd");
-        std::env::set_current_dir(&workdir).expect("chdir");
+        // The cwd is process-global and unit tests share a process, so this
+        // must be serialised against every other test that reads or writes it
+        // -- `env_cmd::build_env_block` resolves its workspace from the cwd.
+        // The guard restores it even if `resolve_sources` panics; the previous
+        // inline restore did not, and would have stranded the cwd for every
+        // later test in the binary.
+        let _env = crate::TEST_PROCESS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _cwd = crate::CwdGuard::enter(&workdir);
         let target = TargetTriple::from_triple("x86_64-unknown-linux-gnu").expect("triple");
         let result = resolve_sources(&paths, &target);
-        std::env::set_current_dir(prev_cwd).expect("restore cwd");
         let err = result.expect_err("must error when binary missing");
         let msg = format!("{err}");
         assert!(

@@ -895,23 +895,10 @@ mod tests {
         }
     }
 
-    struct CwdGuard {
-        previous: PathBuf,
-    }
-
-    impl CwdGuard {
-        fn enter(path: &Path) -> Self {
-            let previous = std::env::current_dir().expect("cwd");
-            std::env::set_current_dir(path).expect("chdir");
-            Self { previous }
-        }
-    }
-
-    impl Drop for CwdGuard {
-        fn drop(&mut self) {
-            let _ = std::env::set_current_dir(&self.previous);
-        }
-    }
+    // soldr#1663 follow-up: one shared cwd guard at the crate root, for the
+    // same reason there is one shared env barrier -- a per-module copy makes
+    // each site look correct while leaving the global state unprotected.
+    use crate::CwdGuard;
 
     crate::timed_test!(append_env_creates_file_and_appends, {
         let tmp = tempfile::tempdir().expect("tmpdir");
