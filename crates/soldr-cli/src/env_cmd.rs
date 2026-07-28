@@ -30,7 +30,31 @@ pub fn build_env_block(rust_triple: &str) -> Result<BTreeMap<String, String>, So
     build_env_plan(rust_triple).map(|(env, _)| env)
 }
 
+/// [`build_env_block`] against an explicit workspace root, so a caller can
+/// decide what the PyO3 detection sees instead of inheriting the ambient cwd.
+#[cfg(test)]
+fn build_env_block_in(
+    workspace_root: &std::path::Path,
+    rust_triple: &str,
+) -> Result<BTreeMap<String, String>, SoldrError> {
+    build_env_plan_in(workspace_root, rust_triple).map(|(env, _)| env)
+}
+
 fn build_env_plan(
+    rust_triple: &str,
+) -> Result<(BTreeMap<String, String>, crate::pyo3_detect::Pyo3BuildPlan), SoldrError> {
+    let workspace_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    build_env_plan_in(&workspace_root, rust_triple)
+}
+
+/// [`build_env_plan`] against an explicit workspace root.
+///
+/// The PyO3 half of the block is decided by workspace metadata, so a caller
+/// that does not pin the root inherits whatever cwd it happens to run in.
+/// That is fine in production, where cwd *is* the workspace, and wrong in a
+/// test, which would otherwise assert against the machine it lands on.
+fn build_env_plan_in(
+    workspace_root: &std::path::Path,
     rust_triple: &str,
 ) -> Result<(BTreeMap<String, String>, crate::pyo3_detect::Pyo3BuildPlan), SoldrError> {
     let mut env = BTreeMap::new();
@@ -57,8 +81,7 @@ fn build_env_plan(
     // Python ABI policy is separate from the target SDK/linker block.
     // The shared resolver only emits PYO3_NO_PYTHON when workspace
     // metadata proves this is an ABI3 extension cross-build.
-    let workspace_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let plan = crate::pyo3_detect::resolve_for_invocation(&workspace_root, &[], Some(rust_triple));
+    let plan = crate::pyo3_detect::resolve_for_invocation(workspace_root, &[], Some(rust_triple));
     env.extend(plan.env.clone());
 
     Ok((env, plan))
@@ -138,26 +161,48 @@ fn shell_quote(value: &str) -> String {
 mod tests {
     use super::*;
 
+    // soldr#1663 / release 0.8.26: these tests READ process-global state
+    // rather than mutate it -- `build_env_block` calls
+    // `pyo3_detect::caller_pyo3_env()`, which collects every ambient `PYO3_*`
+    // variable. A reader with no barrier races every test that sets one, and
+    // `env_block_does_not_guess_pyo3_no_python` duly failed on macOS with
+    // PYO3_NO_PYTHON present. Take the same crate-wide barrier the mutators
+    // take; the env-lock lint only tracks mutation sites, so it cannot catch
+    // an unguarded reader for us.
+    use crate::TEST_PROCESS_ENV_LOCK as ENV_LOCK;
+
     crate::timed_test!(env_block_darwin_carries_sdkroot, {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let env = build_env_block("aarch64-apple-darwin").expect("ok");
         assert!(env.contains_key("SDKROOT"), "darwin must export SDKROOT");
         assert!(env.contains_key("CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER"));
     });
 
     crate::timed_test!(env_block_windows_lacks_sdkroot, {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let env = build_env_block("x86_64-pc-windows-msvc").expect("ok");
         assert!(!env.contains_key("SDKROOT"));
         assert!(env.contains_key("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER"));
     });
 
     crate::timed_test!(env_block_does_not_guess_pyo3_no_python, {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Resolve against an empty workspace rather than the ambient cwd.
+        // PYO3_NO_PYTHON is emitted when workspace metadata proves an ABI3
+        // extension cross-build, so a test that does not pin the root is
+        // asserting a negative about an input it does not control -- it
+        // passed or failed depending on which runner it landed on.
+        let empty = tempfile::tempdir().expect("tempdir");
         for triple in [
             "x86_64-pc-windows-msvc",
             "aarch64-apple-darwin",
             "x86_64-unknown-linux-musl",
         ] {
-            let env = build_env_block(triple).expect("ok");
-            assert!(!env.contains_key("PYO3_NO_PYTHON"));
+            let env = build_env_block_in(empty.path(), triple).expect("ok");
+            assert!(
+                !env.contains_key("PYO3_NO_PYTHON"),
+                "no workspace metadata means no ABI3 proof, so the key must not                  be guessed for {triple}"
+            );
         }
     });
 
@@ -167,5 +212,37 @@ mod tests {
         // Anything with a space or special character gets wrapped.
         assert_eq!(shell_quote("with space"), "'with space'");
         assert_eq!(shell_quote("don't"), "'don'\\''t'");
+    });
+
+    // Does the ambient CWD decide it? build_env_block passes current_dir()
+    // as the workspace root.
+    crate::timed_test!(probe_cwd_decides, {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().expect("tmp");
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            "[package]
+name = \"ext\"
+version = \"0.1.0\"
+edition = \"2021\"
+
+[lib]
+crate-type = [\"cdylib\"]
+
+[dependencies]
+pyo3 = { version = \"0.22\", features = [\"abi3-py38\", \"extension-module\"] }
+",
+        )
+        .expect("write manifest");
+        std::fs::create_dir_all(tmp.path().join("src")).expect("src");
+        std::fs::write(tmp.path().join("src").join("lib.rs"), "").expect("lib");
+
+        let prev = std::env::current_dir().expect("cwd");
+        std::env::set_current_dir(tmp.path()).expect("chdir");
+        let leaked = build_env_block("aarch64-apple-darwin")
+            .map(|env| env.contains_key("PYO3_NO_PYTHON"))
+            .unwrap_or(false);
+        std::env::set_current_dir(prev).expect("restore");
+        println!("PROBE cwd=pyo3-abi3-extension -> leaks={leaked}");
     });
 }
