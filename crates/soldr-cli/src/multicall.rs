@@ -619,10 +619,10 @@ mod trampoline_argv_tests {
         parts.iter().map(|s| s.to_string()).collect()
     }
 
-    /// The #1930 failure itself: cargo calls the trampoline as a
-    /// RUSTC_WRAPPER, the shell script inserts the verb, and the real rustc
-    /// path ends up in `argv[2]` where `run_rustc_wrapper` expects the first
-    /// source input.
+    // The #1930 failure itself: cargo calls the trampoline as a
+    // RUSTC_WRAPPER, the shell script inserts the verb, and the real rustc
+    // path ends up in `argv[2]` where `run_rustc_wrapper` expects the first
+    // source input.
     crate::timed_test!(trampolined_rustc_wrapper_argv_drops_the_inserted_verb, {
         let raw = argv(&[
             "/opt/soldr/bin/soldr",
@@ -669,10 +669,10 @@ mod trampoline_argv_tests {
         );
     });
 
-    /// Forward slashes deliberately: `Path` on Unix does not treat `\` as a
-    /// separator, so a `C:\...\rustc.exe` literal would stem to the whole
-    /// string -- the test would pass on Windows and fail everywhere else.
-    /// The extension is the part under test.
+    // Forward slashes deliberately: `Path` on Unix does not treat `\` as a
+    // separator, so a `C:\...\rustc.exe` literal would stem to the whole
+    // string -- the test would pass on Windows and fail everywhere else.
+    // The extension is the part under test.
     crate::timed_test!(compiler_executable_extensions_are_recognized, {
         let raw = argv(&[
             "/soldr/soldr.exe",
@@ -691,8 +691,8 @@ mod trampoline_argv_tests {
         );
     });
 
-    /// A hardlinked shim already produces the correct vector. Rewriting it
-    /// would delete the real compiler path.
+    // A hardlinked shim already produces the correct vector. Rewriting it
+    // would delete the real compiler path.
     crate::timed_test!(hardlinked_shim_argv_is_left_alone, {
         let raw = argv(&[
             "/shims/rustc",
@@ -702,15 +702,15 @@ mod trampoline_argv_tests {
         assert_eq!(normalize_trampolined_wrapper_argv(&raw), None);
     });
 
-    /// The reason `argv[2]` is extension-gated: `rustc.rs` stems to "rustc",
-    /// so a naive stem check would silently eat a source file argument.
+    // The reason `argv[2]` is extension-gated: `rustc.rs` stems to "rustc",
+    // so a naive stem check would silently eat a source file argument.
     crate::timed_test!(source_file_named_like_the_compiler_is_not_a_compiler, {
         let raw = argv(&["/opt/soldr/bin/soldr", "rustc", "rustc.rs"]);
         assert_eq!(normalize_trampolined_wrapper_argv(&raw), None);
     });
 
-    /// An ordinary `soldr rustc <flags>` invocation carries no nested
-    /// compiler and must keep every argument.
+    // An ordinary `soldr rustc <flags>` invocation carries no nested
+    // compiler and must keep every argument.
     crate::timed_test!(plain_rustc_verb_invocation_is_left_alone, {
         let raw = argv(&["/opt/soldr/bin/soldr", "rustc", "--version"]);
         assert_eq!(normalize_trampolined_wrapper_argv(&raw), None);
