@@ -246,7 +246,10 @@ pub struct WireCompileLifecycle {
 pub struct WireResponse {
     #[prost(
         oneof = "WireResponseKind",
-        tags = "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16"
+        // soldr#1838: a tag missing from this list decodes as EmptyOneof even
+        // though the variant exists on the enum below -- prost only accepts
+        // tags enumerated here. Keep it in sync when adding a variant.
+        tags = "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17"
     )]
     pub kind: Option<WireResponseKind>,
 }
@@ -297,7 +300,16 @@ pub enum WireResponseKind {
     /// v19 / soldr#1814 slice 2c — reply to ShouldWarnCargoDebugDefault.
     #[prost(message, tag = "16")]
     CargoDebugWarning(WireCargoDebugWarning),
+    /// v20 / soldr#1838 Phase 2 — the daemon is retiring and will not serve
+    /// this request.
+    #[prost(message, tag = "17")]
+    Retiring(WireRetiring),
 }
+
+/// soldr#1838. Empty today; a message rather than a bare bool so a reason or
+/// ETA can be added later without consuming another oneof slot.
+#[derive(Clone, PartialEq, Message)]
+pub struct WireRetiring {}
 
 /// soldr#1814 slice 2a. `record` is absent when the daemon has no row for the
 /// session, which is a normal outcome rather than an error.

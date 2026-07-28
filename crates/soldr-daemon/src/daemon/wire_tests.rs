@@ -401,6 +401,35 @@ crate::timed_test!(backpressure_response_round_trips_with_retry_delay, {
     ));
 });
 
+crate::timed_test!(retiring_response_round_trips, {
+    let bytes = encode_response(&Response::Retiring);
+    assert!(matches!(
+        decode_response(&bytes).expect("decode"),
+        Response::Retiring
+    ));
+});
+
+// soldr#1838: `Retiring` must not be confusable with `Error` on the wire.
+// Their whole purpose is that the client treats them oppositely -- degrade to
+// direct rustc vs. hard-fail the build -- so a decode that blurred them would
+// reintroduce #1837 silently.
+crate::timed_test!(retiring_and_error_do_not_decode_to_each_other, {
+    let retiring = encode_response(&Response::Retiring);
+    let error = encode_response(&Response::Error("boom".into()));
+    assert_ne!(
+        retiring, error,
+        "distinct variants must not encode identically"
+    );
+    assert!(!matches!(
+        decode_response(&retiring).expect("decode"),
+        Response::Error(_)
+    ));
+    assert!(!matches!(
+        decode_response(&error).expect("decode"),
+        Response::Retiring
+    ));
+});
+
 crate::timed_test!(builds_response_round_trips_with_all_optional_fields, {
     let record = BuildRecord {
         session_id: 42,

@@ -94,7 +94,12 @@ use serde::{Deserialize, Serialize};
 ///   invocation another opener (slice 2c); and `AttachBuildLogHistory`, so the
 ///   front-door tail stops doing its own get/mutate/upsert of the build
 ///   record (slice 2d).
-pub const PROTOCOL_VERSION: u32 = 19;
+/// * v20 (soldr#1838 Phase 2): adds `Retiring`, so a daemon that is shutting
+///   down can say so instead of returning an `Error` frame. The wrapper then
+///   degrades to direct rustc; previously this arrived as
+///   `ClientError::Protocol`, which is deliberately classified as NOT
+///   daemon-unavailable, so the build hard-failed (#1837).
+pub const PROTOCOL_VERSION: u32 = 20;
 
 /// Wire-chunk granularity for the streaming Compile reply (#983 Phase
 /// 5b). 64 KiB is the same buffer size cargo's own pipe readers use
@@ -338,6 +343,21 @@ pub enum Response {
     Backpressure {
         retry_after_ms: u32,
     },
+    /// The daemon is retiring and will not serve this request.
+    ///
+    /// soldr#1838 Phase 2. Distinct from [`Response::Error`], which means the
+    /// daemon answered and something went wrong *inside* it — worth failing
+    /// the build over, because degrading would mask a real daemon bug. A
+    /// retiring daemon is behaving correctly and simply cannot help, so the
+    /// client should fall back to direct rustc.
+    ///
+    /// Before this existed, a wrapper that connected during graceful drain
+    /// reached a compile service that had already latched shut and got an
+    /// `Error` frame, i.e. `ClientError::Protocol` — classified as NOT
+    /// unavailable, denying the fallback and failing the build (#1837).
+    /// #1837 narrowed that window by releasing the Windows pipe instance
+    /// early; this closes it, for any request that still lands inside it.
+    Retiring,
     /// Reply to [`Request::CookLookup`] on hit. Carries the on-disk
     /// path to the `<sha256>.tar.zst` artifact, the recorded sha256
     /// (PR 3 verifies it before extraction), the byte size for
@@ -618,12 +638,12 @@ pub struct BuildRecord {
 mod tests {
     use super::*;
 
-    crate::timed_test!(
-        protocol_version_is_v19_after_daemon_owned_build_log_inputs,
-        {
-            assert_eq!(PROTOCOL_VERSION, 19);
-        }
-    );
+    // Deliberately pinned to a literal: bumping the constant must be a
+    // conscious act, because peers at different versions reject each other.
+    // soldr#1838 renamed this from the v19 spelling when adding `Retiring`.
+    crate::timed_test!(protocol_version_is_v20_after_the_retiring_signal, {
+        assert_eq!(PROTOCOL_VERSION, 20);
+    });
 
     crate::timed_test!(chunk_bytes_is_64_kib, {
         // #983 Phase 5b — declared in the protocol so the daemon and

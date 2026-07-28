@@ -176,8 +176,22 @@ message WireResponse {
     // v19 / soldr#1814 slice 2a — build-log inputs served by the daemon so
     // the CLI stops opening the daemon tables in state.redb directly.
     WireBuildLogInputs build_log_inputs = 15;
+    // v19 / soldr#1814 slice 2c — reply to should_warn_cargo_debug_default.
+    // Tag 16 has existed in the Rust schema since v19; it was never recorded
+    // here, so this file understated the used tag space (soldr#1838).
+    WireCargoDebugWarning cargo_debug_warning = 16;
+    // v20 / soldr#1838 Phase 2 — the daemon is retiring and will not serve
+    // this request. Distinct from `error`, which means the daemon answered
+    // and something went wrong inside it: a retiring daemon is behaving
+    // correctly and the client should degrade to direct rustc rather than
+    // fail the build.
+    WireRetiring retiring = 17;
   }
 }
+
+// soldr#1838. Carries no payload today; a message rather than a bare bool so
+// a reason or ETA can be added later without consuming another oneof slot.
+message WireRetiring {}
 
 // soldr#1814 slice 2a. `record` is absent when the daemon has no row for the
 // session, which is not an error — the CLI renders the log without it.
