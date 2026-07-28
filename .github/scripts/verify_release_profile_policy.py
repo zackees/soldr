@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""Fail when a workflow uses `--release` without being allowed to (soldr#1981).
+
+`--release` means `lto = "thin"` + `codegen-units = 1` + `strip = "symbols"`.
+Those settings exist to make the *shipped* binary small and fast, and they are
+the most expensive things you can ask of the compiler: single-CU codegen is
+effectively single-threaded LLVM, and thin-LTO adds a whole-program pass on
+top. Paying that on a job whose output never ships is pure waste.
+
+soldr#1982 removed the offenders. This exists so they cannot come back — the
+issue asked for exactly that:
+
+    Add a CI policy check ... that fails when a workflow uses `--release`
+    without being on an allowlist. Same shape as the timeout gate — this class
+    of regression should be impossible, not fixed once.
+
+The allowlist is deliberately per-file and reason-bearing rather than a bare
+set of names. A reader hitting a failure needs to know what would justify an
+exemption, and "it is in the list" does not tell them.
+
+Usage:
+    verify_release_profile_policy.py [--workflows .github/workflows]
+"""
+
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+from pathlib import Path
+
+# Workflows permitted to use `--release`, each with the reason it survives.
+#
+# The test is not "does this build something" but **does the artifact ship, or
+# is `--release` itself the thing under measurement**. A cheaper profile that
+# still exercises the code path is always preferred; see `ci-release`,
+# `ci-nextest`, and `ci-bootstrap` in the workspace Cargo.toml.
+ALLOWLIST: dict[str, str] = {
+    "release-auto.yml": "builds the binaries that are actually published",
+    "cross-compile-all-targets.yml": (
+        "its entire purpose is validating that the --release cross path works"
+    ),
+    "build-all-from-linux.yml": (
+        "exists to prove `soldr build --release --target X` works for all 8 targets"
+    ),
+    "perf-matrix.yml": "measures the shipped profile; a cheaper one measures nothing",
+    "perf-cold-warm.yml": "same — --release is the profile under measurement",
+    "benchmark-stats.yml": "same — benchmark numbers are only meaningful at ship profile",
+    "parent-cache-bench.yml": "same — benchmark baseline",
+    "baseline-zero-deps.yml": (
+        "benchmarks a zero-dependency baseline; soldr#1981 flagged that a cheaper "
+        "profile may invalidate the comparison, so this needs re-baselining before "
+        "it can move"
+    ),
+    "cook-size-gate.yml": (
+        "the CLI build here is already `--profile ci-release` (soldr#1982); the "
+        "remaining `--release` is `soldr cook --release`, a cook flag rather than a "
+        "cargo profile, and it is load-bearing for the size baseline"
+    ),
+}
+
+# `--release` as a standalone argument. Avoids matching `--release-notes` or a
+# word inside prose, while still catching it at end-of-line or before a `\`
+# continuation.
+RELEASE_FLAG = re.compile(r"(?<![\w-])--release(?![\w-])")
+
+
+def is_comment(line: str) -> bool:
+    """True for a YAML comment line.
+
+    Comments explaining a past `--release` removal are exactly what a naive
+    scan would flag — `_ci-cross-build-linux.yml` carries one recording that
+    Stage B moved off it.
+    """
+    return line.lstrip().startswith("#")
+
+
+def scan(workflows_dir: Path) -> list[tuple[str, int, str]]:
+    """Every disallowed `--release`, as `(file, line number, line)`."""
+    findings: list[tuple[str, int, str]] = []
+    for path in sorted(workflows_dir.glob("*.yml")):
+        if path.name in ALLOWLIST:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for number, line in enumerate(text.splitlines(), start=1):
+            if is_comment(line):
+                continue
+            if RELEASE_FLAG.search(line):
+                findings.append((path.name, number, line.strip()))
+    return findings
+
+
+def unused_allowlist_entries(workflows_dir: Path) -> list[str]:
+    """Allowlisted names that no longer need to be.
+
+    An exemption that has outlived its reason is worse than no exemption: it
+    silently re-permits the thing the policy forbids. soldr#1982 deleted
+    `windows-gnu-mingw-validation.yml` outright, which is exactly how an entry
+    goes stale.
+    """
+    stale = []
+    for name in sorted(ALLOWLIST):
+        path = workflows_dir / name
+        if not path.exists():
+            stale.append(f"{name} (no such workflow)")
+            continue
+        text = path.read_text(encoding="utf-8")
+        if not any(
+            RELEASE_FLAG.search(line) for line in text.splitlines() if not is_comment(line)
+        ):
+            stale.append(f"{name} (no longer uses --release)")
+    return stale
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--workflows", default=".github/workflows")
+    args = parser.parse_args(argv)
+
+    workflows_dir = Path(args.workflows)
+    if not workflows_dir.is_dir():
+        print(f"release-profile policy: no such directory {workflows_dir}", file=sys.stderr)
+        return 1
+
+    findings = scan(workflows_dir)
+    stale = unused_allowlist_entries(workflows_dir)
+
+    if not findings and not stale:
+        print(
+            f"release-profile policy: clean "
+            f"({len(ALLOWLIST)} allowlisted workflow(s) checked)."
+        )
+        return 0
+
+    if findings:
+        print("release-profile policy: FAIL", file=sys.stderr)
+        for name, number, line in findings:
+            print(f"  - {name}:{number}: {line}", file=sys.stderr)
+        print(
+            "\n`--release` costs thin-LTO + single-CU codegen. Use the cheapest profile "
+            "that still exercises the path -- `ci-release`, `ci-nextest`, or "
+            "`ci-bootstrap`. If the artifact genuinely ships, or `--release` is what "
+            "the job measures, add the workflow to ALLOWLIST with the reason.",
+            file=sys.stderr,
+        )
+    if stale:
+        print("\nrelease-profile policy: stale ALLOWLIST entries", file=sys.stderr)
+        for entry in stale:
+            print(f"  - {entry}", file=sys.stderr)
+        print(
+            "\nRemove them. An exemption that outlives its reason silently re-permits "
+            "what the policy forbids.",
+            file=sys.stderr,
+        )
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
