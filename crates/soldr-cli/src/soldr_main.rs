@@ -119,6 +119,10 @@ const SOLDR_TRAMPOLINING_ENV_VAR: &str = "SOLDR_TRAMPOLINING";
 /// returns control flow decisions of its own (#1490 Phase 1).
 pub fn run() -> std::process::ExitCode {
     let raw_args: Vec<String> = std::env::args().collect();
+    // soldr#1934: a trampoline shim cannot set argv[0], so it passes its own
+    // path in the environment. Restoring it here — before anything reads argv
+    // — is what makes the trampoline and hardlink shapes the same program.
+    let raw_args = multicall::apply_shim_argv0_override(raw_args);
 
     if !multicall::toolchain_shim_should_defer_to_rustc_wrapper(&raw_args) {
         match multicall::maybe_dispatch(&raw_args) {

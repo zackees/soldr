@@ -225,7 +225,7 @@ fn write_shim(dir: &Path, tool: &str, soldr_bin: &Path) -> Result<(), SoldrError
     // Same failure the daemon path already avoids (soldr#1300), so use the same
     // predicate: leave the real binary where it is and trampoline to it.
     if soldr_core::self_relocate::exe_depends_on_bundled_wheel_libs(soldr_bin) {
-        return write_trampoline_shim(&path, tool, soldr_bin);
+        return write_trampoline_shim(&path, soldr_bin);
     }
     crate::shim_materialize::materialize_executable(soldr_bin, &path).map(|_| ())
 }
@@ -240,9 +240,37 @@ fn write_shim(dir: &Path, tool: &str, soldr_bin: &Path) -> Result<(), SoldrError
 /// Single-quoted with `'\''` escaping: a wheel path can sit under a venv with
 /// spaces, and the pre-0.8.10 double-quoted form would still expand `$` and
 /// backticks inside the path.
-pub(crate) fn trampoline_shim_body(tool: &str, soldr_bin: &Path) -> String {
+///
+/// # Why the identity travels in the environment (soldr#1934)
+///
+/// The obvious body — `exec <soldr> <tool> "$@"` — shipped in 0.8.26 and broke
+/// every wheel install. A hardlinked shim carries its identity in **argv[0]**
+/// and leaves `"$@"` alone; putting the tool name in argv[1] instead shifts
+/// every remaining argument right by one. `RUSTC_WRAPPER` dispatch is
+/// positional on argv[1] (`wrapper.rs`: `tool_arg = raw_args[1]`), so cargo's
+/// `<shim> <real-rustc> <args…>` became `<soldr> rustc <real-rustc> <args…>`
+/// and the compiler path was handed to rustc as a source file:
+/// `error: multiple input filenames provided`.
+///
+/// So the tool name goes out of band and `"$@"` stays untouched.
+/// [`crate::multicall::apply_shim_argv0_override`] puts it back into argv[0],
+/// which makes every downstream index — and the `PATH` scrub, which also reads
+/// argv[0] — identical to the hardlink shape by construction rather than by
+/// remembering to special-case each caller.
+///
+/// `$0` rather than the literal tool name: it is the shim's own path, exactly
+/// what argv[0] would have held. `exec -a` would say the same thing directly
+/// but is not POSIX — `/bin/sh` is `dash` on most Linux distributions.
+///
+/// The body no longer varies by tool — `$0` supplies that — so every
+/// trampoline in a shim dir is byte-identical.
+pub(crate) fn trampoline_shim_body(soldr_bin: &Path) -> String {
     let quoted = format!("'{}'", soldr_bin.to_string_lossy().replace('\'', r"'\''"));
-    format!("#!/bin/sh\nexec {quoted} {tool} \"$@\"\n")
+    format!(
+        "#!/bin/sh\n{}=\"$0\"\nexport {}\nexec {quoted} \"$@\"\n",
+        crate::multicall::SHIM_ARGV0_ENV,
+        crate::multicall::SHIM_ARGV0_ENV,
+    )
 }
 
 /// Write a `#!/bin/sh` trampoline that re-enters soldr in place.
@@ -250,12 +278,8 @@ pub(crate) fn trampoline_shim_body(tool: &str, soldr_bin: &Path) -> String {
 /// Used only for wheel-repaired binaries; everything else keeps the faster
 /// hardlink path so the startup-latency work (soldr#1831/#1834) is untouched.
 /// Cost here is one `sh` fork per nested tool call, on wheel installs only.
-pub(crate) fn write_trampoline_shim(
-    path: &Path,
-    tool: &str,
-    soldr_bin: &Path,
-) -> Result<(), SoldrError> {
-    std::fs::write(path, trampoline_shim_body(tool, soldr_bin)).map_err(SoldrError::Io)?;
+pub(crate) fn write_trampoline_shim(path: &Path, soldr_bin: &Path) -> Result<(), SoldrError> {
+    std::fs::write(path, trampoline_shim_body(soldr_bin)).map_err(SoldrError::Io)?;
     // Only the exec bit is genuinely platform-specific; the rest of this
     // function compiles and is tested everywhere (soldr CLAUDE.md:156).
     #[cfg(unix)]
@@ -312,11 +336,26 @@ mod tests {
     fn trampoline_execs_the_real_binary_in_place() {
         let tmp = tempfile::tempdir().unwrap();
         let exe = repaired_wheel_layout(tmp.path());
-        let body = trampoline_shim_body("cargo", &exe);
+        let body = trampoline_shim_body(&exe);
 
         assert!(body.starts_with("#!/bin/sh\n"), "{body}");
         assert!(body.contains("exec "), "{body}");
-        assert!(body.trim_end().ends_with(r#" cargo "$@""#), "{body}");
+        // soldr#1934: `"$@"` must be forwarded verbatim, with nothing inserted
+        // ahead of it. A tool name here shifts every argument right by one and
+        // breaks the positional RUSTC_WRAPPER contract.
+        assert!(body.trim_end().ends_with(r#" "$@""#), "{body}");
+        assert!(
+            !body.contains(r#" cargo "$@""#),
+            "the tool name must not be pushed into argv[1]: {body}"
+        );
+        // The identity instead rides in the environment as the shim's own $0.
+        assert!(
+            body.contains(&format!(
+                "{env}=\"$0\"\nexport {env}\n",
+                env = crate::multicall::SHIM_ARGV0_ENV
+            )),
+            "{body}"
+        );
         // The real binary must stay where it is — that is the whole fix.
         assert!(body.contains(&exe.to_string_lossy().to_string()), "{body}");
     }
@@ -325,7 +364,7 @@ mod tests {
     /// form would also have expanded `$` and backticks.
     #[test]
     fn trampoline_quoting_survives_hostile_paths() {
-        let body = trampoline_shim_body("rustc", Path::new("/o'brien/$HOME/`x`/soldr"));
+        let body = trampoline_shim_body(Path::new("/o'brien/$HOME/`x`/soldr"));
         assert!(body.contains(r"'/o'\''brien/$HOME/`x`/soldr'"), "{body}");
         // Nothing outside the single-quoted span may be interpolated.
         assert!(!body.contains("\"$HOME\""), "{body}");
@@ -345,7 +384,7 @@ mod tests {
         write_shim(&dir, "cargo", &exe).unwrap();
 
         let written = std::fs::read_to_string(shim_tool_path(&dir, "cargo")).unwrap();
-        assert_eq!(written, trampoline_shim_body("cargo", &exe));
+        assert_eq!(written, trampoline_shim_body(&exe));
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
