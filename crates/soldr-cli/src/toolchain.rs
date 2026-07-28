@@ -13,6 +13,15 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 use wait_timeout::ChildExt;
 
+/// Escape hatch for soldr#1766: allow a build to proceed with no
+/// `rust-toolchain.toml` anywhere at or above the working directory.
+///
+/// Without a pin, soldr resolves `rustc` from `PATH`, which is the exact
+/// failure the pin exists to prevent -- and it makes cache keys depend on
+/// ambient `PATH` state, so two hosts can disagree about "identical" builds.
+/// Opting out is supported; opting out *silently* is not.
+pub const ALLOW_UNPINNED_ENV_VAR: &str = "SOLDR_ALLOW_UNPINNED";
+
 const TOOLCHAIN_COMMAND_TIMEOUT_ENV_VAR: &str = "SOLDR_TOOLCHAIN_COMMAND_TIMEOUT_SECS";
 const DEFAULT_TOOLCHAIN_COMMAND_TIMEOUT_SECS: u64 = 30 * 60;
 const KILLED_TOOLCHAIN_COMMAND_REAP_TIMEOUT_SECS: u64 = 5;
@@ -615,6 +624,44 @@ fn write_cargo_prepare_memo(paths: &SoldrPaths, key: CargoPrepareMemoKey, toolch
     }
 }
 
+/// True when the user has explicitly accepted an unpinned build, via
+/// `SOLDR_ALLOW_UNPINNED` or the `--allow-unpinned` flag (which sets it).
+///
+/// Any non-empty value other than an explicit disable counts, matching how
+/// the other `SOLDR_*` switches in this crate are read.
+pub fn unpinned_allowed() -> bool {
+    match std::env::var(ALLOW_UNPINNED_ENV_VAR) {
+        Ok(value) => {
+            let value = value.trim();
+            !(value.is_empty()
+                || value == "0"
+                || value.eq_ignore_ascii_case("false")
+                || value.eq_ignore_ascii_case("no")
+                || value.eq_ignore_ascii_case("off"))
+        }
+        Err(_) => false,
+    }
+}
+
+/// soldr#1766: refuse to build when no `rust-toolchain.toml` exists at or
+/// above `workspace_root`.
+///
+/// The search walks ancestors deliberately. A cwd-only check would reject
+/// every build launched from a subdirectory of a pinned repo.
+pub fn require_toolchain_pin(workspace_root: &Path) -> Result<(), SoldrError> {
+    if crate::core::find_rust_toolchain_manifest(workspace_root).is_some() || unpinned_allowed() {
+        return Ok(());
+    }
+    Err(SoldrError::Other(format!(
+        "no rust-toolchain.toml found in {} or any parent directory
+         soldr requires a repo-pinned toolchain; the PATH rustc fallback is          disabled because it breaks the cache contract and can resolve to a          mismatched-host toolchain. Fix one of:
+           - create rust-toolchain.toml:  printf '[toolchain]\nchannel = \"stable\"\n' > rust-toolchain.toml
+           - or install the pin helper:   soldr toolchain
+           - or explicitly opt out:       SOLDR_ALLOW_UNPINNED=1 (or --allow-unpinned)",
+        workspace_root.display()
+    )))
+}
+
 /// Prepare the channel needed by the cargo front door using the long
 /// toolchain-command timeout. Plugins remain exclusive to prepare/ensure.
 pub(crate) fn ensure_cargo_toolchain(explicit_channel: Option<&str>) -> Result<(), SoldrError> {
@@ -631,6 +678,9 @@ pub(crate) fn ensure_cargo_toolchain(explicit_channel: Option<&str>) -> Result<(
                 .filter(|channel| !channel.is_empty())
         });
     let Some(channel) = channel else {
+        // soldr#1766: no channel means no pin took effect. Refuse rather than
+        // silently degrading to whatever rustc is first on PATH.
+        require_toolchain_pin(&workspace_root)?;
         return Ok(());
     };
     let paths = SoldrPaths::new()?;
@@ -1125,5 +1175,96 @@ mod tests {
             memoized_toolchain_dir(&paths, &key).is_none(),
             "an alias with multiple installed hosts must prepare conservatively"
         );
+    });
+}
+
+#[cfg(test)]
+mod pin_requirement_tests {
+    use super::*;
+
+    // soldr#1766. The gate refuses a build when no rust-toolchain.toml exists
+    // at or above the working directory, instead of silently resolving rustc
+    // from PATH.
+
+    fn without_opt_out<T>(body: impl FnOnce() -> T) -> T {
+        let _lock = crate::TEST_PROCESS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let previous = std::env::var_os(ALLOW_UNPINNED_ENV_VAR);
+        std::env::remove_var(ALLOW_UNPINNED_ENV_VAR);
+        let out = body();
+        match previous {
+            Some(value) => std::env::set_var(ALLOW_UNPINNED_ENV_VAR, value),
+            None => std::env::remove_var(ALLOW_UNPINNED_ENV_VAR),
+        }
+        out
+    }
+
+    crate::timed_test!(unpinned_workspace_is_refused, {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let err = without_opt_out(|| require_toolchain_pin(temp.path()).unwrap_err());
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("no rust-toolchain.toml found"),
+            "error must name the missing pin: {rendered}"
+        );
+        assert!(
+            rendered.contains("SOLDR_ALLOW_UNPINNED"),
+            "error must tell the user how to opt out: {rendered}"
+        );
+    });
+
+    crate::timed_test!(pin_in_an_ancestor_satisfies_a_subdirectory_build, {
+        // The trap this test exists for: reading only the cwd would reject
+        // every build launched from a subdirectory of a pinned repo --
+        // including this workspace's own tests, whose cwd is the package dir
+        // while the pin lives at the workspace root.
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            temp.path().join("rust-toolchain.toml"),
+            b"[toolchain]\nchannel = \"stable\"\n",
+        )
+        .expect("write pin");
+        let nested = temp.path().join("crates").join("inner").join("src");
+        std::fs::create_dir_all(&nested).expect("nested dirs");
+
+        without_opt_out(|| {
+            require_toolchain_pin(&nested).expect("an ancestor pin must satisfy the requirement")
+        });
+    });
+
+    crate::timed_test!(opt_out_env_var_permits_an_unpinned_build, {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _lock = crate::TEST_PROCESS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let previous = std::env::var_os(ALLOW_UNPINNED_ENV_VAR);
+        std::env::set_var(ALLOW_UNPINNED_ENV_VAR, "1");
+        let result = require_toolchain_pin(temp.path());
+        match previous {
+            Some(value) => std::env::set_var(ALLOW_UNPINNED_ENV_VAR, value),
+            None => std::env::remove_var(ALLOW_UNPINNED_ENV_VAR),
+        }
+        result.expect("SOLDR_ALLOW_UNPINNED must permit an unpinned build");
+    });
+
+    crate::timed_test!(explicit_falsey_opt_out_still_requires_a_pin, {
+        // An exported-but-disabled switch must not read as consent.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _lock = crate::TEST_PROCESS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let previous = std::env::var_os(ALLOW_UNPINNED_ENV_VAR);
+        for disabled in ["0", "false", "no", "off", ""] {
+            std::env::set_var(ALLOW_UNPINNED_ENV_VAR, disabled);
+            assert!(
+                require_toolchain_pin(temp.path()).is_err(),
+                "SOLDR_ALLOW_UNPINNED={disabled:?} must not count as opting out"
+            );
+        }
+        match previous {
+            Some(value) => std::env::set_var(ALLOW_UNPINNED_ENV_VAR, value),
+            None => std::env::remove_var(ALLOW_UNPINNED_ENV_VAR),
+        }
     });
 }

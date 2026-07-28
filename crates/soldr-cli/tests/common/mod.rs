@@ -175,6 +175,12 @@ pub(crate) fn isolated_soldr_command() -> Command {
 
 pub(crate) fn scrub_outer_soldr_env(command: &mut Command) -> &mut Command {
     command
+        // soldr#1766: fixtures build in bare temp workspaces that deliberately
+        // have no rust-toolchain.toml, and ancestor-walking will not find one
+        // under the OS temp dir. They are exercising other behavior, so opt
+        // them out of the pin requirement rather than seeding a manifest into
+        // every fixture.
+        .env(soldr_cli::toolchain::ALLOW_UNPINNED_ENV_VAR, "1")
         .env_remove("RUSTC_WRAPPER")
         .env_remove("RUSTC_WORKSPACE_WRAPPER")
         .env_remove("SOLDR_LINKER")

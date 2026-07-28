@@ -86,6 +86,19 @@ fn choose_target_override(targets: Vec<String>) -> Option<String> {
     }
 }
 
+/// Locate the nearest `rust-toolchain.toml` at or above `start_dir`.
+///
+/// soldr#1766: the front door needs to distinguish "this repo pins a
+/// toolchain" from "there is no pin anywhere", and it must do so by walking
+/// ancestors. [`read_rust_toolchain_manifest`](super::read_rust_toolchain_manifest)
+/// reads `start_dir` only, so asking it would report "unpinned" for every
+/// build launched from a subdirectory of a pinned repo -- including this
+/// workspace's own integration tests, which run with the package directory as
+/// their cwd while the pin sits at the workspace root.
+pub fn find_rust_toolchain_manifest(start_dir: &Path) -> Option<PathBuf> {
+    find_in_ancestors(Some(start_dir), "rust-toolchain.toml")
+}
+
 fn find_in_ancestors(start_dir: Option<&Path>, relative_path: &str) -> Option<PathBuf> {
     let mut current = start_dir?.to_path_buf();
     loop {
