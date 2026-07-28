@@ -321,3 +321,60 @@ def test_cli_expect_incomplete_restore_requires_workspace_rebuild(tmp_path: Path
     )
     assert result.returncode == 0, result.stderr
     assert "correctly rebuilt missing primary outputs" in result.stdout
+
+
+# --- soldr#1951: elapsed-second stamping (soldr#1915) ------------------------
+
+
+# Verbatim shape from the failing lane, including the leading spaces cargo
+# emits before "Compiling" and the stamp column soldr#1915 inserts.
+_STAMPED_COLD_LOG = """\
+    0.01    Updating crates.io index
+   21.07    Compiling thiserror v1.0.69
+   21.42    Compiling serde v1.0.229
+   22.90     Finished `dev` profile [unoptimized] target(s) in 22.90s
+"""
+
+_UNSTAMPED_COLD_LOG = """\
+    Updating crates.io index
+    Compiling thiserror v1.0.69
+    Compiling serde v1.0.229
+     Finished `dev` profile [unoptimized] target(s) in 22.90s
+"""
+
+
+def test_detect_timestamp_prefix_spots_a_stamped_log(mod) -> None:
+    assert mod.detect_timestamp_prefix(_STAMPED_COLD_LOG) is True
+
+
+def test_detect_timestamp_prefix_ignores_a_normal_log(mod) -> None:
+    assert mod.detect_timestamp_prefix(_UNSTAMPED_COLD_LOG) is False
+
+
+def test_stamped_log_still_defeats_the_anchored_patterns(mod) -> None:
+    """The bug itself. Kept as a test so the detector's premise stays true."""
+    summary = mod.parse_build_log(_STAMPED_COLD_LOG)
+    assert summary.compiling_units == []
+    # `Finished` is the only unanchored pattern, which is exactly why it was
+    # the one field that still came back true in the CI failure.
+    assert summary.finished_seen is True
+
+
+def test_a_stamped_log_reports_the_stamp_not_an_empty_build(mod) -> None:
+    _first, _second, errors = mod.assert_incomplete_restore_rebuilds(
+        _STAMPED_COLD_LOG, _STAMPED_COLD_LOG
+    )
+    joined = " ".join(errors)
+    assert "SOLDR_TIMESTAMP_LINES=0" in joined, joined
+    assert "soldr#1951" in joined, joined
+    # The misleading claim must be gone: a stamped log is not evidence that
+    # nothing compiled.
+    assert "did not show any Compiling lines" not in joined, joined
+
+
+def test_an_unstamped_empty_build_still_reports_the_plain_message(mod) -> None:
+    empty = "     Finished `dev` profile [unoptimized] target(s) in 0.01s\n"
+    _first, _second, errors = mod.assert_incomplete_restore_rebuilds(empty, empty)
+    joined = " ".join(errors)
+    assert "did not show any Compiling lines" in joined, joined
+    assert "SOLDR_TIMESTAMP_LINES" not in joined, joined

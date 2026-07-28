@@ -80,6 +80,34 @@ class BuildLogSummary:
         return [u for u in self.compiling_units if not u.is_path_dep]
 
 
+# soldr#1951: soldr#1915 prefixes every relayed line with elapsed seconds
+# (default-on for non-TTY, i.e. every CI step). The patterns above anchor with
+# `^\s*`, and a digit is not `\s`, so a stamped log makes every one of them
+# miss -- and the script then reports a perfectly normal cold build as having
+# compiled nothing.
+#
+# The fix is `SOLDR_TIMESTAMP_LINES=0` on the steps whose output is parsed
+# here: stamping is a display concern and this consumer needs cargo's exact
+# bytes. This detector exists because the failure mode is *silent and
+# plausible* -- "the build compiled nothing" reads like a real regression, and
+# it cost a full investigation on soldr#1946 before the cause was spotted. If
+# the stamp ever comes back, say so instead of lying about the build.
+_TIMESTAMPED_LINE = re.compile(r"^\s*\d+\.\d\d\s+\S")
+
+
+def detect_timestamp_prefix(text: str) -> bool:
+    """True when the log looks elapsed-second stamped (soldr#1915)."""
+    stamped = 0
+    for line in text.splitlines():
+        if _TIMESTAMPED_LINE.match(line):
+            stamped += 1
+            if stamped >= 3:
+                # Three is well past coincidence; a single numeric line could
+                # legitimately be crate output.
+                return True
+    return False
+
+
 def parse_build_log(text: str) -> BuildLogSummary:
     """Parse a captured ``cargo build`` log (stdout+stderr) into a summary."""
     finished = False
@@ -130,7 +158,12 @@ def assert_second_build_is_noop(
 
     if require_first_built_something and not first.compiling_units:
         errors.append(
-            "first build did not show any Compiling lines; the verifier "
+            "first build log is prefixed with elapsed seconds (soldr#1915), which "
+            "defeats this script's line-anchored patterns -- the build almost "
+            "certainly did compile. Set SOLDR_TIMESTAMP_LINES=0 on the steps "
+            "whose output is parsed here. See soldr#1951."
+            if detect_timestamp_prefix(first_log)
+            else "first build did not show any Compiling lines; the verifier "
             "expected a cold build as the baseline. "
             "If this is intentional, pass --allow-empty-first."
         )
@@ -179,7 +212,12 @@ def assert_incomplete_restore_rebuilds(
 
     if not first.compiling_units:
         errors.append(
-            "first build did not show any Compiling lines; the verifier "
+            "first build log is prefixed with elapsed seconds (soldr#1915), which "
+            "defeats this script's line-anchored patterns -- the build almost "
+            "certainly did compile. Set SOLDR_TIMESTAMP_LINES=0 on the steps "
+            "whose output is parsed here. See soldr#1951."
+            if detect_timestamp_prefix(first_log)
+            else "first build did not show any Compiling lines; the verifier "
             "expected a cold build as the baseline."
         )
     if not second.finished_seen:
