@@ -330,7 +330,11 @@ pub fn displace_stale_daemon(paths: &SoldrPaths) -> bool {
     let recorded_live_pid = read_pid_file(paths)
         .map(|(pid, _)| pid)
         .filter(|pid| pid_is_alive(*pid));
-    append_lifecycle_event(paths, "displace-stale-requested");
+    append_lifecycle_event_with(
+        paths,
+        "displace-stale-requested",
+        LifecycleDetails::requested(LifecycleReason::StaleVersion),
+    );
 
     let sock = crate::daemon::client::default_sock_path(paths);
     match crate::daemon::client::shutdown(&sock) {
@@ -350,7 +354,13 @@ pub fn displace_stale_daemon(paths: &SoldrPaths) -> bool {
         return false;
     };
     if pid_is_soldr_daemon(pid) {
-        append_lifecycle_event(paths, "displace-kill-fallback");
+        // Reached only after the shutdown request produced no acknowledgement,
+        // which is the protocol-mismatch case the block above describes.
+        append_lifecycle_event_with(
+            paths,
+            "displace-kill-fallback",
+            LifecycleDetails::forced(pid, LifecycleReason::ProtocolMismatch),
+        );
         terminate_pid(pid, None);
         wait_for_pid_exit(pid, Duration::from_secs(5));
     }
@@ -527,20 +537,105 @@ pub fn write_pid_file(paths: &SoldrPaths) -> Result<(), LifecycleError> {
     Ok(())
 }
 
+/// Why a lifecycle transition happened.
+///
+/// soldr#1808 asks for typed details rather than event names assembled by
+/// concatenating free-form values: `event` stays a stable identifier readers
+/// can match on, and the circumstances travel in their own fields.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum LifecycleReason {
+    /// An operator or wrapper asked the daemon to stop.
+    ExplicitStop,
+    /// The running daemon does not claim the current package version.
+    StaleVersion,
+    /// The daemon could not be reached over IPC at a compatible version, so
+    /// no graceful shutdown was possible.
+    ProtocolMismatch,
+    /// A spawn deadline expired while a stale daemon still held the endpoint.
+    StartupDeadline,
+}
+
+/// How the transition ended.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum LifecycleOutcome {
+    /// Asked for; the result was not yet known when the record was written.
+    Requested,
+    /// The daemon acknowledged and owns its graceful flush to completion.
+    Acknowledged,
+    /// Terminated by signal after no acknowledgement arrived.
+    Forced,
+    /// The process was already gone before the transition completed.
+    VanishedWithoutAck,
+    /// Attempted, and did not succeed.
+    Failed,
+}
+
+/// Optional attribution attached to a lifecycle record.
+///
+/// Every field is skipped when absent, so a record carrying no details
+/// serializes byte-identically to the pre-soldr#1808 three-field shape --
+/// including for the substring-matching reader in
+/// `tests/cli_daemon_lifecycle.rs`, which looks for `"event":"spawn"`.
+#[derive(Serialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LifecycleDetails {
+    /// The process acted upon, when it differs from the recording process.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_pid: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<LifecycleReason>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<LifecycleOutcome>,
+}
+
+impl LifecycleDetails {
+    /// A forced termination of `target_pid`, for `reason`.
+    pub fn forced(target_pid: u32, reason: LifecycleReason) -> Self {
+        Self {
+            target_pid: Some(target_pid),
+            reason: Some(reason),
+            outcome: Some(LifecycleOutcome::Forced),
+        }
+    }
+
+    /// A transition that has been asked for but not yet resolved.
+    pub fn requested(reason: LifecycleReason) -> Self {
+        Self {
+            target_pid: None,
+            reason: Some(reason),
+            outcome: Some(LifecycleOutcome::Requested),
+        }
+    }
+}
+
 #[derive(Serialize)]
 struct LifecycleEvent<'a> {
     ts_ms: i64,
     pid: u32,
     event: &'a str,
+    #[serde(flatten)]
+    details: LifecycleDetails,
 }
 
+/// Record a lifecycle event carrying no attribution.
 pub fn append_lifecycle_event(paths: &SoldrPaths, event: &str) {
+    append_lifecycle_event_with(paths, event, LifecycleDetails::default());
+}
+
+/// Record a lifecycle event with typed attribution (soldr#1808).
+pub fn append_lifecycle_event_with(paths: &SoldrPaths, event: &str, details: LifecycleDetails) {
     let pid = std::process::id();
     let ts_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
-    let line = match serde_json::to_string(&LifecycleEvent { ts_ms, pid, event }) {
+    let line = match serde_json::to_string(&LifecycleEvent {
+        ts_ms,
+        pid,
+        event,
+        details,
+    }) {
         Ok(s) => s,
         Err(_) => return,
     };
@@ -815,7 +910,14 @@ fn displace_stale_daemon_before(paths: &SoldrPaths, deadline: Instant) -> bool {
     // shutdown probe. The PID identity gate is the same one used by the normal
     // graceful-then-kill path, so an unrelated recycled PID is never signaled.
     if pid_is_soldr_daemon(pid) {
-        append_lifecycle_event(paths, "displace-kill-fallback");
+        // The deadline-sensitive path: this skips the IPC probe entirely, so
+        // the kill is attributable to the expiring spawn deadline rather than
+        // to anything learned about the daemon.
+        append_lifecycle_event_with(
+            paths,
+            "displace-kill-fallback",
+            LifecycleDetails::forced(pid, LifecycleReason::StartupDeadline),
+        );
         terminate_pid(pid, Some(deadline));
         let remaining = deadline
             .saturating_duration_since(Instant::now())
