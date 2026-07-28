@@ -237,12 +237,14 @@ pyo3 = { version = \"0.22\", features = [\"abi3-py38\", \"extension-module\"] }
         std::fs::create_dir_all(tmp.path().join("src")).expect("src");
         std::fs::write(tmp.path().join("src").join("lib.rs"), "").expect("lib");
 
-        let prev = std::env::current_dir().expect("cwd");
-        std::env::set_current_dir(tmp.path()).expect("chdir");
+        // soldr#1927: the last inline chdir/restore in the crate. Restoring
+        // on the happy path only means a panic inside `build_env_block`
+        // leaves every later test in this binary running inside a tempdir
+        // that is about to be deleted. `CwdGuard` restores on unwind.
+        let _cwd = crate::CwdGuard::enter(tmp.path());
         let leaked = build_env_block("aarch64-apple-darwin")
             .map(|env| env.contains_key("PYO3_NO_PYTHON"))
             .unwrap_or(false);
-        std::env::set_current_dir(prev).expect("restore");
         println!("PROBE cwd=pyo3-abi3-extension -> leaks={leaked}");
     });
 }
