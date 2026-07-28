@@ -1310,10 +1310,28 @@ fn apply_target_registry_memo(
     // future path is still authoritative and the registry accepts paths that
     // do not exist yet, so absence must not disable wrapper memoization.
     let recorded = canonicalize_future_path(target_dir);
-    let db_path = crate::cache_lib::data_db_path(paths);
-    if let Ok(registry) = crate::cache_lib::target_registry::TargetRegistry::open(&db_path) {
-        let _ = registry.upsert(&recorded);
+
+    // Check the refresh throttle BEFORE touching redb (#1843).
+    //
+    // Same shape as the GC startup warning: the expensive part is opening
+    // the registry at all, not the row write. `TargetRegistry::open` runs a
+    // durable write transaction in `init_schema` and `upsert` runs a second,
+    // both behind the cross-process state-db lock — ~18 ms per invocation to
+    // restamp a `last_used` that only ever feeds a 10-day staleness test.
+    //
+    // The env var below is unconditional: it is what the wrapper reads, it
+    // costs nothing, and gating it on the throttle would break memoization
+    // on every invocation that skips the write.
+    let marker = crate::cache_lib::target_registry_touch_marker_path(paths, &recorded);
+    if crate::cache_lib::target_registry::touch_due(&marker) {
+        let db_path = crate::cache_lib::data_db_path(paths);
+        if let Ok(registry) = crate::cache_lib::target_registry::TargetRegistry::open(&db_path) {
+            if registry.upsert(&recorded).is_ok() {
+                crate::cache_lib::target_registry::mark_touched(&marker);
+            }
+        }
     }
+
     command.env(
         crate::wrapper_target::TARGET_REGISTRY_RECORDED_ENV_VAR,
         recorded.as_os_str(),
