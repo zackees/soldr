@@ -1023,14 +1023,31 @@ fn displace_stale_daemon_before(paths: &SoldrPaths, deadline: Instant) -> bool {
 /// lives under the daemon runtime root.
 ///
 /// Relocation failures fall back to running the source in place — a
-/// pinned daemon beats no daemon.
+/// pinned daemon beats no daemon — but say so. soldr#1987: that fallback
+/// is how a daemon ends up running from a `uv`/`pip` temp directory, which
+/// is then deleted, leaving an orphan holding the root-ownership lock
+/// indefinitely. Silently pinning the one image we were trying not to pin
+/// is the step that turns a recoverable I/O error into a 28-hour outage,
+/// so the trade is made loudly and names both the path and the reason.
 fn resolve_daemon_spawn_image(paths: Option<&SoldrPaths>, daemon_src: &Path) -> PathBuf {
     match paths {
         Some(paths) => crate::self_relocate::ensure_daemon_relocated(paths, daemon_src)
             .inspect(|r| {
                 crate::self_relocate::run_periodic_daemon_runtime_gc(paths, Some(r));
             })
-            .unwrap_or_else(|_| daemon_src.to_path_buf()),
+            .unwrap_or_else(|error| {
+                tracing::warn!(
+                    event = "daemon_relocation_failed",
+                    source = %daemon_src.display(),
+                    %error,
+                    "could not relocate the daemon into the runtime root; spawning                      from its original location, which will stay pinned for the                      daemon's lifetime (soldr#1987)"
+                );
+                eprintln!(
+                    "soldr: could not relocate soldr-daemon into the runtime root ({error});                      spawning from {} instead. That path stays locked while the daemon runs                      -- if it is a temporary directory, deleting it will strand the daemon                      (soldr#1987).",
+                    daemon_src.display()
+                );
+                daemon_src.to_path_buf()
+            }),
         // No cache root resolved → run in place. The daemon itself
         // tries SoldrPaths::new() at startup and will surface the
         // same error there.
