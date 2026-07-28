@@ -1605,10 +1605,10 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
                     // failed. Let the lifecycle layer retry compatibility IPC
                     // before considering a signal-safe, verified-PID fallback.
                     use crate::daemon::lifecycle::{
-                        displace_stale_daemon, stale_daemon_occupies_endpoint,
+                        displace_stale_daemon, stale_daemon_occupies_endpoint, LifecycleSource,
                     };
                     if stale_daemon_occupies_endpoint(&paths).is_some()
-                        && displace_stale_daemon(&paths)
+                        && displace_stale_daemon(&paths, Some(LifecycleSource::Cli))
                     {
                         println!("soldr-daemon: stopped through compatibility displacement");
                         Ok(())

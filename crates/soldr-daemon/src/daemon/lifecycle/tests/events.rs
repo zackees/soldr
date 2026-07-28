@@ -70,6 +70,49 @@ mod lifecycle_event_tests {
         assert_eq!(details.outcome, Some(LifecycleOutcome::Forced));
     });
 
+    // soldr#1808 WS3. Two `displace-kill-fallback` records are otherwise
+    // identical whether a build's own preflight cleared a stale daemon or an
+    // operator ran `soldr daemon stop` -- different causes, different
+    // remedies. The source is what separates them.
+    crate::timed_test!(the_source_distinguishes_otherwise_identical_records, {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("root"));
+
+        let base = LifecycleDetails::forced(7, LifecycleReason::StaleVersion);
+        append_lifecycle_event_with(
+            &paths,
+            "displace-kill-fallback",
+            base.from_source(Some(LifecycleSource::Preflight)),
+        );
+        append_lifecycle_event_with(
+            &paths,
+            "displace-kill-fallback",
+            base.from_source(Some(LifecycleSource::Cli)),
+        );
+
+        let events = read_events(&paths);
+        assert_eq!(events[0]["requester_source"], "preflight");
+        assert_eq!(events[1]["requester_source"], "cli");
+        assert_eq!(events[0]["event"], events[1]["event"]);
+    });
+
+    // An unattributed record must still omit the key, not emit null -- the
+    // byte-identical guarantee for detail-free records covers this field too.
+    crate::timed_test!(an_unattributed_record_omits_the_source, {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("root"));
+        append_lifecycle_event_with(
+            &paths,
+            "displace-kill-fallback",
+            LifecycleDetails::forced(7, LifecycleReason::StaleVersion),
+        );
+        let obj = read_events(&paths)[0].as_object().expect("object").clone();
+        assert!(
+            !obj.contains_key("requester_source"),
+            "absent source must be omitted, not null; got {obj:?}"
+        );
+    });
+
     // A requested transition has no victim yet -- the field must be absent
     // rather than serialized as null, or readers cannot tell "not applicable"
     // from "we failed to record it".

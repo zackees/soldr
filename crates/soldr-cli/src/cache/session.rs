@@ -612,7 +612,12 @@ pub(crate) async fn run_cache_shutdown_command(
             notes.push(format!(
                 "wire shutdown failed ({err:?}); attempting verified-PID displacement"
             ));
-            if daemon_pid.is_some() && crate::daemon::lifecycle::displace_stale_daemon(&paths) {
+            if daemon_pid.is_some()
+                && crate::daemon::lifecycle::displace_stale_daemon(
+                    &paths,
+                    Some(crate::daemon::lifecycle::LifecycleSource::Cli),
+                )
+            {
                 output.daemon_stopped = true;
                 output.daemon_exited = true;
                 notes.push("soldr-daemon stopped through verified-PID fallback".into());
