@@ -224,46 +224,46 @@ mod tests {
     //
     // Keep the proof, drop the chdir. Resolving through the explicit-root seam
     // asserts the same causal claim without touching global state.
-    crate::timed_test!(
-        the_workspace_root_decides_whether_pyo3_no_python_is_emitted,
-        {
-            // Still needs the barrier: the root is explicit now, but the plan
-            // also consults `caller_pyo3_env()`, and a leaked ambient `PYO3_*`
-            // takes the CallerConfigured early return -- which would suppress
-            // the key and fail the first assertion below for a reason that has
-            // nothing to do with the workspace root.
-            let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-            let abi3 = tempfile::tempdir().expect("tmp");
-            std::fs::write(
-                abi3.path().join("Cargo.toml"),
-                "[package]
-             name = \"ext\"
-             version = \"0.1.0\"
-             edition = \"2021\"
-             
-             [lib]
-             crate-type = [\"cdylib\"]
-             
-             [dependencies]
-             pyo3 = { version = \"0.22\", features = [\"abi3-py38\", \"extension-module\"] }
+    crate::timed_test!(workspace_root_decides_pyo3_no_python, {
+        // Still needs the barrier: the root is explicit now, but the plan also
+        // consults `caller_pyo3_env()`, and a leaked ambient `PYO3_*` takes the
+        // CallerConfigured early return -- which would suppress the key and
+        // fail the first assertion below for a reason that has nothing to do
+        // with the workspace root.
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let abi3 = tempfile::tempdir().expect("tmp");
+        std::fs::write(
+            abi3.path().join("Cargo.toml"),
+            "[package]
+name = \"ext\"
+version = \"0.1.0\"
+edition = \"2021\"
+
+[lib]
+crate-type = [\"cdylib\"]
+
+[dependencies]
+pyo3 = { version = \"0.22\", features = [\"abi3-py38\", \"extension-module\"] }
 ",
-            )
-            .expect("write manifest");
-            std::fs::create_dir_all(abi3.path().join("src")).expect("src");
-            std::fs::write(abi3.path().join("src").join("lib.rs"), "").expect("lib");
+        )
+        .expect("write manifest");
+        std::fs::create_dir_all(abi3.path().join("src")).expect("src");
+        std::fs::write(abi3.path().join("src").join("lib.rs"), "").expect("lib");
 
-            let from_abi3 = build_env_block_in(abi3.path(), "aarch64-apple-darwin").expect("ok");
-            let empty = tempfile::tempdir().expect("tmp");
-            let from_empty = build_env_block_in(empty.path(), "aarch64-apple-darwin").expect("ok");
+        let from_abi3 = build_env_block_in(abi3.path(), "aarch64-apple-darwin").expect("ok");
+        let empty = tempfile::tempdir().expect("tmp");
+        let from_empty = build_env_block_in(empty.path(), "aarch64-apple-darwin").expect("ok");
 
-            assert!(
+        assert!(
             from_abi3.contains_key("PYO3_NO_PYTHON"),
-            "an ABI3 extension workspace is the proof that lets soldr set              PYO3_NO_PYTHON; if this stops holding the emission rule changed"
+            "an ABI3 extension workspace is the proof that lets soldr set \
+             PYO3_NO_PYTHON; if this stops holding, the emission rule changed"
         );
-            assert!(
+        assert!(
             !from_empty.contains_key("PYO3_NO_PYTHON"),
-            "no workspace metadata means no ABI3 proof, so the key must not be              guessed -- these two roots differing is exactly why callers must              pass the root rather than inherit the ambient CWD"
+            "no workspace metadata means no ABI3 proof, so the key must not be \
+             guessed -- these two roots differing is exactly why callers must \
+             pass the root rather than inherit the ambient CWD"
         );
-        }
-    );
+    });
 }
