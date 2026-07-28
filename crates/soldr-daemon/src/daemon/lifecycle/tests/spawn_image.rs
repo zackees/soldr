@@ -131,6 +131,30 @@ mod daemon_spawn_image_tests {
         }
     );
 
+    // soldr#1959. The two tests above assert the declaration is in the
+    // *vector*; the unix spawn paths hand that vector straight to
+    // `Command::envs`, so for them the vector is the contract. Windows does
+    // not: it serializes into a raw `CreateProcessW` block via
+    // `merged_windows_environment_block`, a genuinely separate code path that
+    // could drop or mangle the pair without either test above noticing. That
+    // matters here specifically, because Windows is where the reaped-daemon
+    // early-eof failures were observed in the first place.
+    #[cfg(windows)]
+    crate::timed_test!(windows_env_block_carries_the_daemon_declaration, {
+        let merged = merge_env_overlay(
+            vec![(
+                std::ffi::OsString::from("Path"),
+                std::ffi::OsString::from("C:\\Windows"),
+            )],
+            daemon_spawn_env(),
+        );
+        let rendered = String::from_utf16_lossy(&build_windows_environment_block(merged));
+        assert!(
+            rendered.contains(&format!("{}=1\0", running_process::DAEMON_MARKER_ENV_VAR)),
+            "declaration missing from the CreateProcessW block: {rendered:?}"
+        );
+    });
+
     #[cfg(windows)]
     crate::timed_test!(windows_env_overlay_replaces_case_insensitively_and_sorts, {
         use std::ffi::OsString;
