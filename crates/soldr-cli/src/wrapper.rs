@@ -331,7 +331,13 @@ fn direct_exec_tool(
     }
     let status = command.status()?;
 
-    Ok(status.code().unwrap_or(1))
+    let exit_code = status.code().unwrap_or(1);
+    // soldr#1974. The child inherits stdio here, so a process that dies at
+    // DLL-init produces no diagnostics of its own and cargo reports only the
+    // raw NTSTATUS. Name the condition before it gets mistaken for a broken
+    // toolchain.
+    crate::host_pressure::report_process_init_failure_to_stderr(tool_stem, exit_code);
+    Ok(exit_code)
 }
 
 /// Resolve a wrapper compiler identity before deriving its toolchain homes.

@@ -1,0 +1,134 @@
+//! Explain OS-level process-creation failures that are not build errors.
+//!
+//! soldr#1974. When the host runs out of handles or paged pool, Windows
+//! refuses to initialize a new process's DLLs and the child dies before
+//! `main` with `STATUS_DLL_INIT_FAILED`. Nothing was wrong with the code,
+//! the toolchain, or the cache -- but every layer above reports it as
+//! though something was:
+//!
+//! - cargo prints `process didn't exit successfully: ... (exit code:
+//!   0xc0000142, STATUS_DLL_INIT_FAILED)`, which reads as a crash
+//! - when the victim is `link.exe`, rustc appends *"the Visual Studio build
+//!   tools may need to be repaired"* -- actively misleading advice that
+//!   sends people to reinstall a toolchain that is fine
+//!
+//! The condition is transient and host-wide: it strikes whichever process
+//! happens to start next, so the victim rotates between runs and an
+//! identical retry usually succeeds. That combination -- rotating victim,
+//! passes on retry, plausible-looking toolchain error -- is what makes it
+//! expensive to diagnose.
+//!
+//! This module recognizes the one exit code that is unambiguously this
+//! condition and says so.
+
+use std::io::Write;
+
+/// `STATUS_DLL_INIT_FAILED` (`0xC0000142`) as it appears through
+/// [`std::process::ExitStatus::code`].
+///
+/// Windows surfaces the NTSTATUS as the process exit code, and Rust widens
+/// it to `i32`, so the comparison is against the sign-reinterpreted value
+/// (`-1073741502`) rather than the literal.
+///
+/// Not gated to `cfg(windows)`: a Unix `ExitStatus::code` is a 0-255 wait
+/// status and can never collide with this value, so the check is harmless
+/// there and the tests run on every platform.
+pub(crate) const STATUS_DLL_INIT_FAILED: i32 = 0xC000_0142_u32 as i32;
+
+/// True when `exit_code` is the process-initialization failure above.
+pub(crate) fn is_process_init_failure(exit_code: i32) -> bool {
+    exit_code == STATUS_DLL_INIT_FAILED
+}
+
+/// The advisory printed when a compiler dies at process init.
+///
+/// Kept separate from the writer so tests can assert the wording without
+/// capturing stderr.
+pub(crate) fn process_init_failure_note(tool: &str) -> String {
+    format!(
+        "soldr: {tool} exited 0x{:08X} (STATUS_DLL_INIT_FAILED) -- the OS refused to \
+         initialize the process, so it died before running.\n\
+         soldr: this is a host resource condition (handle / paged-pool exhaustion), \
+         not a build, cache, or toolchain error. Any \"repair your build tools\" advice \
+         above is a false lead.\n\
+         soldr: find the offending process and restart it, then retry:\n\
+         soldr:   Get-Process | Sort-Object HandleCount -Descending | Select-Object -First 5 Name,Id,HandleCount\n\
+         soldr: a single leaking process holding hundreds of thousands of handles is the \
+         usual cause; the victim rotates between runs, so an identical retry often succeeds.",
+        STATUS_DLL_INIT_FAILED as u32
+    )
+}
+
+/// Print [`process_init_failure_note`] to `sink` when `exit_code` warrants it.
+///
+/// Returns whether the note fired, so callers can record it. Write failures
+/// are ignored: this is advisory output on an already-failing path and must
+/// never mask the original exit code.
+pub(crate) fn report_process_init_failure(
+    sink: &mut impl Write,
+    tool: &str,
+    exit_code: i32,
+) -> bool {
+    if !is_process_init_failure(exit_code) {
+        return false;
+    }
+    let _ = writeln!(sink, "{}", process_init_failure_note(tool));
+    true
+}
+
+/// Convenience wrapper over [`report_process_init_failure`] targeting stderr.
+pub(crate) fn report_process_init_failure_to_stderr(tool: &str, exit_code: i32) -> bool {
+    report_process_init_failure(&mut std::io::stderr(), tool, exit_code)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The whole check hinges on this constant matching what
+    // `ExitStatus::code()` actually returns, which is the sign-reinterpreted
+    // NTSTATUS rather than the literal 0xC0000142.
+    crate::timed_test!(status_constant_is_the_sign_reinterpreted_ntstatus, {
+        assert_eq!(STATUS_DLL_INIT_FAILED, -1_073_741_502);
+        assert_eq!(STATUS_DLL_INIT_FAILED as u32, 0xC000_0142);
+    });
+
+    crate::timed_test!(recognizes_only_the_process_init_failure_code, {
+        assert!(is_process_init_failure(STATUS_DLL_INIT_FAILED));
+        // Ordinary compiler failures must not be explained away as a host
+        // condition -- that would turn a real build error into a "just retry"
+        // message and hide the bug.
+        for code in [0, 1, 2, 101, 255, -1] {
+            assert!(
+                !is_process_init_failure(code),
+                "exit code {code} must not be treated as process-init failure"
+            );
+        }
+    });
+
+    crate::timed_test!(note_names_the_tool_and_contradicts_the_toolchain_advice, {
+        let note = process_init_failure_note("link.exe");
+        assert!(note.contains("link.exe"), "{note}");
+        assert!(note.contains("STATUS_DLL_INIT_FAILED"), "{note}");
+        assert!(note.contains("0xC0000142"), "{note}");
+        // The rustc-emitted "repair your build tools" line is the specific
+        // false lead this exists to counter, so the rebuttal must be explicit.
+        assert!(note.contains("false lead"), "{note}");
+        assert!(note.contains("HandleCount"), "{note}");
+    });
+
+    crate::timed_test!(reports_only_on_the_matching_exit_code, {
+        let mut sink = Vec::new();
+        assert!(!report_process_init_failure(&mut sink, "rustc.exe", 1));
+        assert!(sink.is_empty(), "a plain exit 1 must stay silent");
+
+        let mut sink = Vec::new();
+        assert!(report_process_init_failure(
+            &mut sink,
+            "rustc.exe",
+            STATUS_DLL_INIT_FAILED
+        ));
+        let out = String::from_utf8(sink).expect("utf8");
+        assert!(out.contains("rustc.exe"), "{out}");
+    });
+}
