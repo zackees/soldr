@@ -32,6 +32,11 @@ on:
 permissions:
   contents: read
 
+# soldr#1985 - stop superseded runs from holding runner slots.
+concurrency:
+  group: nextest-cacheability-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   nextest-cacheability:
     name: full nextest archive warm cacheability

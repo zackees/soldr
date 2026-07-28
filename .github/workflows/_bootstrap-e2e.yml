@@ -39,6 +39,8 @@ jobs:
   bootstrap-e2e:
     name: Build soldr and bootstrap third-party app (${{ inputs.target }})
     runs-on: ${{ inputs.runner }}
+    # soldr#1985 - was inheriting GitHub's 360-minute default.
+    timeout-minutes: 30
     env:
       # setup-soldr currently builds this PR with a released soldr binary.
       # Keep native cc-rs compiles on musl-gcc until the soldr-side default

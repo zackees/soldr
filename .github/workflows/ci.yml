@@ -2,13 +2,15 @@ name: CI
 
 on:
   push:
-    # Skip perf-iteration branches — they only need perf-matrix.yml,
-    # not the full Lint/build/e2e sweep. (`branches` and
-    # `branches-ignore` are mutually exclusive, so this replaces the
-    # previous `branches: ['**']` catch-all.)
-    branches-ignore:
-      - 'perf/**'
-      - 'evaluate/**'
+    # soldr#1985 — only main. Previously `branches-ignore: [perf/**,
+    # evaluate/**]`, which matches every PR branch, so each push to an
+    # open PR fired this workflow TWICE: once for `push` and once for
+    # `pull_request`, with byte-identical content. Five branches were
+    # observed running two concurrent 21-job sweeps each. Feature
+    # branches keep full coverage through the `pull_request` trigger
+    # below; perf/** and evaluate/** remain excluded by construction.
+    branches:
+      - main
     tags-ignore:
       - '*'
     paths-ignore:
@@ -33,6 +35,18 @@ on:
 
 permissions:
   contents: read
+
+# soldr#1985 — superseded PR runs used to keep holding runner slots while a
+# fresh 21-job sweep queued behind them; five concurrent CI runs were observed
+# stacked on main alone. That self-inflicted load is what pushed ubuntu-24.04
+# queues to 20-30 min, which in turn delayed the cross-builds that gate the
+# macOS target-runs (one waited 83m40s to do 117s of work).
+#
+# Pushes to main are never cancelled: release-auto.yml triggers on push-to-main
+# (Cargo.toml / package.json), so every commit that lands must stay fully tested.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   RUST_BACKTRACE: "1"

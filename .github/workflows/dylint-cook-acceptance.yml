@@ -34,6 +34,11 @@ on:
 permissions:
   contents: read
 
+# soldr#1985 - stop superseded runs from holding runner slots.
+concurrency:
+  group: dylint-cook-acceptance-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   dylint-cook:
     name: check-shaped dependency cook matrix

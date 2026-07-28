@@ -58,6 +58,8 @@ jobs:
   cook-size-gate:
     name: Measure soldr cook size against zccache fixture
     runs-on: ubuntu-latest
+    # soldr#1985 - was inheriting GitHub's 360-minute default.
+    timeout-minutes: 30
     steps:
       - name: Checkout soldr
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6

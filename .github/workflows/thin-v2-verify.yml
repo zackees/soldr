@@ -58,10 +58,17 @@ on:
 permissions:
   contents: read
 
+# soldr#1985 - stop superseded runs from holding runner slots.
+concurrency:
+  group: thin-v2-verify-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   verify:
     name: thin-v2 fresh-target restore (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
+    # soldr#1985 - was inheriting GitHub's 360-minute default.
+    timeout-minutes: 30
     continue-on-error: true # informational while we iterate; see header.
     strategy:
       fail-fast: false

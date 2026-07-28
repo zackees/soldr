@@ -16,15 +16,22 @@ on:
 permissions:
   contents: read
 
+# soldr#1985 — this job takes a scarce windows-2025 slot and path-triggers on
+# nearly every code PR, so `cancel-in-progress: false` meant a 5-push PR could
+# queue five of them. Cancel superseded PR runs; leave the weekly cron and
+# push-to-main alone.
 concurrency:
   group: windows-gnu-mingw-validation-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   running-process:
     name: running-process on x86_64-pc-windows-gnu
     runs-on: windows-2025
-    timeout-minutes: 240
+    # soldr#1985 — was 240. Observed wall clock is ~20 min (run 30392810361);
+    # a 4-hour ceiling on a scarce pool is a slot-occupancy hazard, not a
+    # safety net. 60 leaves 3x headroom over the worst observed run.
+    timeout-minutes: 60
     env:
       SOLDR_GITHUB_TOKEN: ${{ github.token }}
       # Use explicit soldr cache-layer opt-outs instead of the global

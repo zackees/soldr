@@ -58,6 +58,11 @@ env:
   # source compile). See soldr#1319 for the CI-lane fix.
   SOLDR_GITHUB_TOKEN: ${{ github.token }}
 
+# soldr#1985 - stop superseded runs from holding runner slots.
+concurrency:
+  group: cross-compile-all-targets-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   bootstrap-and-linux-x86:
     name: bootstrap + linux-x86
