@@ -72,12 +72,22 @@ pub(crate) fn soldr_binary_source() -> Result<PathBuf, SoldrError> {
 /// Point `target` at `source` with a `#!/bin/sh` trampoline instead of a
 /// hardlink, for sources that only run from their own directory (#1908).
 ///
-/// The tool name comes from the target's file stem, which is exactly the
-/// identity the multicall dispatch derives from `argv[0]`
-/// (`multicall.rs::classify_argv0`), so `exec <soldr> <stem> "$@"`
-/// reproduces the same argument vector the hardlinked alias would have
-/// produced. The one behavioural difference is that the multicall path
-/// also runs `strip_self_from_path`; recursion stays bounded by the
+/// The tool name comes from the target's file stem, which is the identity
+/// the multicall dispatch would otherwise derive from `argv[0]`
+/// (`multicall.rs::classify_argv0`).
+///
+/// It does **not** reproduce the hardlinked alias's argument vector, and
+/// earlier revisions of this comment claimed that it did. Multicall
+/// *replaces* `argv[0]` with the tool name; the trampoline *prepends* it and
+/// keeps soldr's own path in front, so the vector is one element longer.
+/// Harmless for a direct `rustfmt`/`cargo` shim, where the inserted name is
+/// the verb soldr needs — fatal in `RUSTC_WRAPPER` position, where it shifts
+/// the real compiler path into the source-input slot (#1930).
+/// `multicall::normalize_trampolined_wrapper_argv` collapses that case back
+/// to the hardlink shape on entry.
+///
+/// The other behavioural difference is that the multicall path also runs
+/// `strip_self_from_path`; recursion stays bounded by the
 /// `SOLDR_CHILD_SHIMS_ACTIVE` guard that `shim_dir` already sets.
 ///
 /// Compares against [`crate::shim_dir::trampoline_shim_body`] rather than

@@ -118,7 +118,14 @@ const SOLDR_TRAMPOLINING_ENV_VAR: &str = "SOLDR_TRAMPOLINING";
 /// Full soldr CLI entry — the `src/main.rs` shim calls this and never
 /// returns control flow decisions of its own (#1490 Phase 1).
 pub fn run() -> std::process::ExitCode {
-    let raw_args: Vec<String> = std::env::args().collect();
+    let mut raw_args: Vec<String> = std::env::args().collect();
+
+    // #1930: a trampoline shim hands us `<soldr> rustc <real rustc> <args>`,
+    // one element longer than the hardlinked alias's vector. Collapse it back
+    // before anything downstream indexes into it.
+    if let Some(normalized) = multicall::normalize_trampolined_wrapper_argv(&raw_args) {
+        raw_args = normalized;
+    }
 
     if !multicall::toolchain_shim_should_defer_to_rustc_wrapper(&raw_args) {
         match multicall::maybe_dispatch(&raw_args) {
