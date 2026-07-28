@@ -115,11 +115,11 @@ fn install_one(target: &Path, source: &Path, tool: &str) -> Result<ToolEntry, So
     // longer resolves. Idempotency is preserved by comparing against the
     // trampoline text rather than the Mach-O bytes.
     if soldr_core::self_relocate::exe_depends_on_bundled_wheel_libs(source) {
-        let body = crate::shim_dir::trampoline_shim_body(tool, source);
+        let body = crate::shim_dir::trampoline_shim_body(source);
         let created = match std::fs::read_to_string(target) {
             Ok(existing) if existing == body => false,
             _ => {
-                crate::shim_dir::write_trampoline_shim(target, tool, source)?;
+                crate::shim_dir::write_trampoline_shim(target, source)?;
                 true
             }
         };

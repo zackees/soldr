@@ -58,6 +58,42 @@ impl ClangTool {
     }
 }
 
+/// Out-of-band carrier for a shim's argv[0] identity (soldr#1934).
+///
+/// Set by the `sh` trampoline that wheel-repaired installs use in place of a
+/// hardlinked shim (see [`crate::shim_dir::trampoline_shim_body`]). A
+/// trampoline cannot set argv[0] portably — `exec -a` is a bashism and
+/// `/bin/sh` is `dash` on most Linux distributions — so it hands the shim path
+/// over in the environment instead.
+pub(crate) const SHIM_ARGV0_ENV: &str = "SOLDR_ARGV0_SHIM";
+
+/// Rewrite argv[0] from [`SHIM_ARGV0_ENV`] so a trampoline invocation is
+/// indistinguishable from a hardlinked one.
+///
+/// This must run before *any* argv inspection. The whole point is that
+/// `toolchain_shim_should_defer_to_rustc_wrapper`, `classify_argv0`, the
+/// `RUSTC_WRAPPER` positional contract, and `strip_self_from_path` all keep
+/// reading the same argv they were written against — a shape-specific branch
+/// in each of them is what 0.8.26 got wrong, one caller at a time.
+///
+/// The variable is removed on the way through: it describes *this* process's
+/// invocation, and a child that inherited it would misidentify itself.
+pub(crate) fn apply_shim_argv0_override(raw_args: Vec<String>) -> Vec<String> {
+    let Some(shim_path) = env::var_os(SHIM_ARGV0_ENV) else {
+        return raw_args;
+    };
+    env::remove_var(SHIM_ARGV0_ENV);
+    let Some(shim_path) = shim_path.to_str().filter(|value| !value.is_empty()) else {
+        return raw_args;
+    };
+    // Only argv[0] moves. `"$@"` reached us untouched, so every remaining
+    // index already matches the hardlink shape.
+    let mut rebuilt = Vec::with_capacity(raw_args.len().max(1));
+    rebuilt.push(shim_path.to_string());
+    rebuilt.extend(raw_args.into_iter().skip(1));
+    rebuilt
+}
+
 pub(crate) fn maybe_dispatch(raw_args: &[String]) -> Option<MulticallDispatch> {
     let argv0 = raw_args.first().map(String::as_str).unwrap_or("");
     match classify_argv0(argv0)? {
@@ -157,16 +193,23 @@ fn strip_self_from_path(argv0: &str) {
     env::set_var("PATH", new_path);
 }
 
+/// Which directory to drop from `PATH` — the one the *shim* lives in.
+///
+/// argv[0] leads (soldr#1934). For a hardlinked shim both sources agree, since
+/// the shim is a copy of the soldr binary and `current_exe()` is the shim
+/// itself. For a trampoline they do not: `current_exe()` is the real soldr
+/// binary, off in the install tree, and scrubbing *that* directory would leave
+/// the shim dir on `PATH` while removing something that belonged there.
 fn current_shim_dir(argv0: &str) -> Option<PathBuf> {
-    env::current_exe()
-        .ok()
-        .as_deref()
-        .and_then(Path::parent)
+    Path::new(argv0)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
         .map(canonicalize_or_self)
         .or_else(|| {
-            Path::new(argv0)
-                .parent()
-                .filter(|p| !p.as_os_str().is_empty())
+            env::current_exe()
+                .ok()
+                .as_deref()
+                .and_then(Path::parent)
                 .map(canonicalize_or_self)
         })
 }
@@ -404,6 +447,124 @@ mod tests {
     fn os_args(parts: &[&str]) -> Vec<OsString> {
         parts.iter().map(OsString::from).collect()
     }
+
+    /// RAII guard for [`SHIM_ARGV0_ENV`], sharing the process-wide env lock so
+    /// a parallel test in this binary cannot observe the mutation.
+    struct ShimEnvGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl ShimEnvGuard {
+        fn set(value: &str) -> Self {
+            let lock = crate::TEST_PROCESS_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            env::set_var(SHIM_ARGV0_ENV, value);
+            Self { _lock: lock }
+        }
+    }
+
+    impl Drop for ShimEnvGuard {
+        fn drop(&mut self) {
+            env::remove_var(SHIM_ARGV0_ENV);
+        }
+    }
+
+    fn args(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    // soldr#1934. This is the regression the 0.8.26 trampoline caused, and it
+    // is asserted on the argv the wrapper *receives* -- not on "the shim ran",
+    // which was true throughout the outage.
+    crate::timed_test!(
+        a_trampoline_rustc_wrapper_invocation_matches_the_hardlink_shape,
+        {
+            // What cargo hands a hardlinked shim: the tool identity is argv[0] and
+            // argv[1] is the real compiler.
+            let hardlink = args(&[
+                "/wheel/shims/rustc",
+                "/toolchains/1.94.1/bin/rustc",
+                "-",
+                "--crate-name",
+                "___",
+            ]);
+            // What the trampoline forwards: identical, minus argv[0], which the
+            // script could not set and passed in the environment instead.
+            let trampoline = args(&[
+                "/wheel/lib/soldr",
+                "/toolchains/1.94.1/bin/rustc",
+                "-",
+                "--crate-name",
+                "___",
+            ]);
+
+            let _guard = ShimEnvGuard::set("/wheel/shims/rustc");
+            let restored = apply_shim_argv0_override(trampoline);
+
+            assert_eq!(
+                restored, hardlink,
+                "the trampoline shape must be byte-identical to the hardlink shape"
+            );
+            // The consequence that actually broke builds: without the override the
+            // deferral gate never fires, `wrapper.rs` reads a tool name out of
+            // argv[1] instead of the compiler path, and the real rustc path stays
+            // in the compile args as a second source file.
+            assert!(toolchain_shim_should_defer_to_rustc_wrapper(&restored));
+            assert_eq!(restored[1], "/toolchains/1.94.1/bin/rustc");
+
+            // And the variable does not survive into any child process.
+            assert!(env::var_os(SHIM_ARGV0_ENV).is_none());
+        }
+    );
+
+    crate::timed_test!(shim_argv0_override_is_inert_without_the_env_var, {
+        let _lock = crate::TEST_PROCESS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        env::remove_var(SHIM_ARGV0_ENV);
+        // A hardlinked shim -- the overwhelmingly common case -- must be
+        // untouched, including argv[0].
+        let hardlink = args(&["/wheel/shims/cargo", "build", "--release"]);
+        assert_eq!(apply_shim_argv0_override(hardlink.clone()), hardlink);
+    });
+
+    crate::timed_test!(an_empty_shim_override_is_ignored_rather_than_trusted, {
+        // A truncated or hand-edited trampoline must not be able to blank
+        // argv[0] and send dispatch somewhere unintended.
+        let original = args(&["/wheel/lib/soldr", "--version"]);
+        let _guard = ShimEnvGuard::set("");
+        assert_eq!(apply_shim_argv0_override(original.clone()), original);
+    });
+
+    crate::timed_test!(the_scrubbed_path_entry_is_the_shim_dir_not_the_soldr_dir, {
+        // A trampoline's `current_exe()` is the real soldr binary, which lives
+        // somewhere else entirely; argv[0] is the only source that names the
+        // directory actually on PATH (soldr#1934).
+        let guard = PathEnvGuard::capture();
+        let shim_dir = if cfg!(windows) {
+            "C:\\wheel\\shims"
+        } else {
+            "/wheel/shims"
+        };
+        let other = if cfg!(windows) {
+            "C:\\usr\\bin"
+        } else {
+            "/usr/bin"
+        };
+        let separator = if cfg!(windows) { ';' } else { ':' };
+        env::set_var("PATH", format!("{shim_dir}{separator}{other}"));
+
+        strip_self_from_path(&format!("{shim_dir}{}rustc", std::path::MAIN_SEPARATOR));
+
+        let path = env::var("PATH").unwrap();
+        assert!(
+            !path.split(separator).any(|entry| entry == shim_dir),
+            "{path}"
+        );
+        assert!(path.split(separator).any(|entry| entry == other), "{path}");
+        drop(guard);
+    });
 
     crate::timed_test!(classify_argv0_recognizes_toolchain_shims, {
         assert_eq!(

@@ -72,31 +72,19 @@ pub(crate) fn soldr_binary_source() -> Result<PathBuf, SoldrError> {
 /// Point `target` at `source` with a `#!/bin/sh` trampoline instead of a
 /// hardlink, for sources that only run from their own directory (#1908).
 ///
-/// The tool name comes from the target's file stem, which is exactly the
-/// identity the multicall dispatch derives from `argv[0]`
-/// (`multicall.rs::classify_argv0`), so `exec <soldr> <stem> "$@"`
-/// reproduces the same argument vector the hardlinked alias would have
-/// produced. The one behavioural difference is that the multicall path
-/// also runs `strip_self_from_path`; recursion stays bounded by the
-/// `SOLDR_CHILD_SHIMS_ACTIVE` guard that `shim_dir` already sets.
+/// The trampoline forwards `"$@"` untouched and passes its own `$0` in the
+/// environment, which [`crate::multicall::apply_shim_argv0_override`] restores
+/// to argv[0]. That is what makes it equivalent to the hardlinked alias — the
+/// earlier `exec <soldr> <stem> "$@"` form was not, and shifted every argument
+/// right by one (soldr#1934). Because the identity no longer appears in the
+/// script, the body does not depend on the target at all.
 ///
 /// Compares against [`crate::shim_dir::trampoline_shim_body`] rather than
 /// byte-comparing to `source`: comparing a small script to a Mach-O always
 /// differs, which would republish the shim on every invocation and defeat
 /// the #1831 memo fast path.
 fn materialize_trampoline(source: &Path, target: &Path) -> Result<MaterializeResult, SoldrError> {
-    let tool = target
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .ok_or_else(|| {
-            SoldrError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("shim target has no usable stem: {}", target.display()),
-            ))
-        })?
-        .to_string();
-
-    let want = crate::shim_dir::trampoline_shim_body(&tool, source);
+    let want = crate::shim_dir::trampoline_shim_body(source);
     if let Ok(existing) = std::fs::read_to_string(target) {
         if existing == want {
             return Ok(MaterializeResult {
@@ -113,7 +101,7 @@ fn materialize_trampoline(source: &Path, target: &Path) -> Result<MaterializeRes
     // which is atomic and leaves no window where the shim is truncated.
     let tmp = tmp_path_for(target);
     let _ = std::fs::remove_file(&tmp);
-    crate::shim_dir::write_trampoline_shim(&tmp, &tool, source)?;
+    crate::shim_dir::write_trampoline_shim(&tmp, source)?;
     std::fs::rename(&tmp, target).map_err(SoldrError::Io)?;
     Ok(MaterializeResult {
         created: true,
@@ -597,12 +585,22 @@ mod tests {
             body.starts_with("#!/bin/sh"),
             "expected a trampoline: {body}"
         );
-        // The tool name must be the target's stem: that is the identity
-        // multicall derives from argv[0], so the front door sees the same
-        // argument vector a hardlinked alias would have produced.
+        // soldr#1934: this assertion used to demand the opposite -- the tool
+        // name inserted ahead of `"$@"` -- and that is precisely what broke
+        // every wheel install in 0.8.26. The wrapper contract is positional on
+        // argv[1], so nothing may come between the shim and its arguments.
         assert!(
-            body.contains(" rustc \"$@\""),
-            "wrong tool identity: {body}"
+            !body.contains(" rustc \"$@\""),
+            "the tool name must not be pushed into argv[1]: {body}"
+        );
+        assert!(
+            body.trim_end().ends_with(" \"$@\""),
+            "arguments must be forwarded verbatim: {body}"
+        );
+        // The identity travels in the environment instead, as the shim's $0.
+        assert!(
+            body.contains(crate::multicall::SHIM_ARGV0_ENV),
+            "trampoline must carry its argv[0] identity: {body}"
         );
         assert!(
             body.contains(&source.to_string_lossy().to_string()),
