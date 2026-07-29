@@ -99,7 +99,13 @@ use serde::{Deserialize, Serialize};
 ///   degrades to direct rustc; previously this arrived as
 ///   `ClientError::Protocol`, which is deliberately classified as NOT
 ///   daemon-unavailable, so the build hard-failed (#1837).
-pub const PROTOCOL_VERSION: u32 = 20;
+/// * v21 (soldr#2023): `StatusInfo` publishes the compile limit the daemon
+///   actually applied at startup, and `BuildSessionStart` is acknowledged
+///   with `BuildSessionStarted` (carrying the same pair) instead of a bare
+///   `Ack`. A running daemon keeps its startup limit, so changing
+///   `SOLDR_JOBS` used to be a silent no-op; publishing the applied value is
+///   what lets a client notice and say so.
+pub const PROTOCOL_VERSION: u32 = 21;
 
 /// Wire-chunk granularity for the streaming Compile reply (#983 Phase
 /// 5b). 64 KiB is the same buffer size cargo's own pipe readers use
@@ -383,6 +389,20 @@ pub enum Response {
     /// Generic ack for fire-and-forget-style request/response calls
     /// that don't carry a payload (used by [`Request::CookRecord`]).
     Ack,
+    /// Acknowledges [`Request::BuildSessionStart`] and reports the compile
+    /// limit the answering daemon is running with (soldr#2023).
+    ///
+    /// A dedicated variant rather than more fields on [`Response::Ack`]:
+    /// `Ack` is the shared no-payload reply for several requests, and this
+    /// payload is meaningful for exactly one of them. It rides on this
+    /// request because the front door already issues it once per build, so
+    /// the client learns the daemon's limit for free — a fresh
+    /// [`Request::Status`] round-trip on the build path would add IPC to a
+    /// path already carrying a documented fixed overhead (#1843).
+    BuildSessionStarted {
+        compile_jobs: u32,
+        compile_jobs_source: String,
+    },
     /// Reply to [`Request::Compile`] (issue #977 Phase 5 / #980 L1)
     /// when the daemon's embedded backend handled the rustc dispatch.
     ///
@@ -547,6 +567,18 @@ pub struct StatusInfo {
     pub compile_backend: String,
     #[serde(default)]
     pub ipc_burst_stats: IpcBurstStats,
+    /// soldr#2023: the compile-concurrency limit this daemon applied when it
+    /// started, and the precedence tier it came from.
+    ///
+    /// Deliberately the *applied* value, not a fresh resolution. A daemon
+    /// outlives the environment that spawned it, so re-resolving here would
+    /// report the limit a new daemon would pick — which is exactly the value
+    /// a caller wants to compare *against*, and useless as both halves of
+    /// the comparison.
+    #[serde(default)]
+    pub compile_jobs: u32,
+    #[serde(default)]
+    pub compile_jobs_source: String,
 }
 
 /// Process-local named-pipe burst diagnostics. Unix daemons report zeros,
@@ -640,10 +672,14 @@ mod tests {
 
     // Deliberately pinned to a literal: bumping the constant must be a
     // conscious act, because peers at different versions reject each other.
-    // soldr#1838 renamed this from the v19 spelling when adding `Retiring`.
-    crate::timed_test!(protocol_version_is_v20_after_the_retiring_signal, {
-        assert_eq!(PROTOCOL_VERSION, 20);
-    });
+    // soldr#2023 renamed this from the v20 spelling when the daemon began
+    // publishing its applied compile limit.
+    crate::timed_test!(
+        protocol_version_is_v21_after_publishing_the_compile_limit,
+        {
+            assert_eq!(PROTOCOL_VERSION, 21);
+        }
+    );
 
     crate::timed_test!(chunk_bytes_is_64_kib, {
         // #983 Phase 5b — declared in the protocol so the daemon and
@@ -679,6 +715,8 @@ mod tests {
             cook_stats: None,
             compile_backend: COMPILE_BACKEND_EMBEDDED.to_string(),
             ipc_burst_stats: IpcBurstStats::default(),
+            compile_jobs: 8,
+            compile_jobs_source: "default".to_string(),
         };
         assert_eq!(info.cook_stats_or_zero(), CookStats::default());
     });

@@ -440,7 +440,7 @@ pub fn build_session_start(
     session_id: u64,
     repo_root: &Path,
     started_at_ms: i64,
-) -> Result<(), ClientError> {
+) -> Result<DaemonCompileLimit, ClientError> {
     let sock = default_sock_path(paths);
     match submit_request(
         &sock,
@@ -450,12 +450,26 @@ pub fn build_session_start(
             started_at_ms,
         },
     )? {
-        Response::Ack => Ok(()),
+        Response::BuildSessionStarted {
+            compile_jobs,
+            compile_jobs_source,
+        } => Ok(DaemonCompileLimit {
+            jobs: compile_jobs as usize,
+            source: compile_jobs_source,
+        }),
         Response::Error(msg) => Err(ClientError::Protocol(msg)),
         other => Err(ClientError::Protocol(format!(
             "unexpected build_session_start response: {other:?}"
         ))),
     }
+}
+
+/// The compile limit a running daemon reported (soldr#2023).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DaemonCompileLimit {
+    pub jobs: usize,
+    /// Human-readable precedence tier, from `JobsSource::describe`.
+    pub source: String,
 }
 
 /// Acknowledged finalization (soldr#1536): blocks until the daemon has

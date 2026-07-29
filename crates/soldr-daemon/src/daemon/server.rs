@@ -170,19 +170,6 @@ fn ipc_queue_capacity(listener_pool_size: usize) -> usize {
     .clamp(1, IPC_QUEUE_CAPACITY_MAX)
 }
 
-/// Slots the outer `CompileAdmission` queue sizes itself for.
-///
-/// soldr#1761: this used to read `ZCCACHE_MAX_PARALLEL_COMPILES` and,
-/// when unset, default to `available_parallelism()` — while the
-/// semaphore it admits into defaulted to `available_parallelism() - 1`.
-/// Two layers sized from two expressions, so the queue always believed
-/// in one more slot than existed. Both now resolve through
-/// [`crate::core::jobs`], which also adds `SOLDR_JOBS` and a config
-/// field ahead of the zccache-namespaced variable.
-fn expected_compile_slots() -> usize {
-    crate::core::jobs::resolve_compile_jobs(config_compile_jobs()).jobs
-}
-
 /// `[jobs].max_parallel_compiles` from `config.toml`, or `None` when
 /// the config is absent or unreadable.
 ///
@@ -475,6 +462,8 @@ impl State {
         // `redb_lock::state_db_open_lock` (#608) — no extra mutex
         // needed here.
         let (entries, total_bytes) = cook_index::stats(&self.db_path).unwrap_or((0, 0));
+        let (compile_jobs, compile_jobs_source) =
+            crate::compile_limit::wire_pair(self.compile_service.applied_jobs());
         StatusInfo {
             version: PROTOCOL_VERSION,
             pid: std::process::id(),
@@ -490,6 +479,8 @@ impl State {
             // retained for telemetry stability.
             compile_backend: COMPILE_BACKEND_EMBEDDED.to_string(),
             ipc_burst_stats: self.compile_admission.stats(),
+            compile_jobs,
+            compile_jobs_source,
         }
     }
 }
@@ -1099,11 +1090,13 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
         cook_hits_this_session: AtomicU64::new(0),
         shutdown: Arc::new(crate::daemon::maintenance::ShutdownSignal::default()),
         event_batcher,
-        compile_service,
         compile_admission: CompileAdmission::new(
             ipc_queue_capacity(windows_listener_pool_size()),
-            expected_compile_slots(),
+            // soldr#2023: read the limit the service applied rather than
+            // resolving a second time — see `crate::compile_limit`.
+            compile_service.applied_jobs().jobs,
         ),
+        compile_service,
     });
 
     if let Err(error) = write_pid_file(&paths) {
@@ -1850,7 +1843,11 @@ where
             }
             .await;
             let response = match response {
-                Ok(()) => Response::Ack,
+                // soldr#2023: the ack reports the limit this daemon is
+                // running with, so the front door can warn on drift.
+                Ok(()) => crate::compile_limit::build_session_started(
+                    state.compile_service.applied_jobs(),
+                ),
                 Err(err) => Response::Error(err),
             };
             let _ = write_frame_async(&mut stream, &response).await;

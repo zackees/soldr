@@ -2499,7 +2499,7 @@ crate::timed_test!(build_session_fallback_persists_start_end_without_daemon, {
     let repo = root.path().join("repo");
     std::fs::create_dir_all(&repo).expect("repo dir");
 
-    persist_build_session_start_fallback_inner(&paths, 99, &repo, 1_000).expect("start fallback");
+    super::build_session::persist_start_fallback_inner(&paths, 99, &repo, 1_000).expect("start");
     persist_build_session_end_fallback_inner(&paths, 99, 0, 1_250).expect("end fallback");
 
     let db_path = crate::cache_lib::data_db_path(&paths);

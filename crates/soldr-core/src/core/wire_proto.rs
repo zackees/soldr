@@ -249,7 +249,7 @@ pub struct WireResponse {
         // soldr#1838: a tag missing from this list decodes as EmptyOneof even
         // though the variant exists on the enum below -- prost only accepts
         // tags enumerated here. Keep it in sync when adding a variant.
-        tags = "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17"
+        tags = "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18"
     )]
     pub kind: Option<WireResponseKind>,
 }
@@ -304,12 +304,29 @@ pub enum WireResponseKind {
     /// this request.
     #[prost(message, tag = "17")]
     Retiring(WireRetiring),
+    /// v21 / soldr#2023 — the acknowledgement for `BuildSessionStart`,
+    /// carrying the daemon's applied compile limit. Replaces the bare
+    /// `Ack` on that one request so the front door learns the running
+    /// daemon's limit without paying for a second round-trip on a path
+    /// that already has a documented fixed-overhead problem (#1843).
+    #[prost(message, tag = "18")]
+    BuildSessionStarted(WireBuildSessionStarted),
 }
 
 /// soldr#1838. Empty today; a message rather than a bare bool so a reason or
 /// ETA can be added later without consuming another oneof slot.
 #[derive(Clone, PartialEq, Message)]
 pub struct WireRetiring {}
+
+/// soldr#2023. The compile limit the answering daemon is actually running
+/// with, so a client whose own resolution differs can say so.
+#[derive(Clone, PartialEq, Message)]
+pub struct WireBuildSessionStarted {
+    #[prost(uint32, tag = "1")]
+    pub compile_jobs: u32,
+    #[prost(string, tag = "2")]
+    pub compile_jobs_source: String,
+}
 
 /// soldr#1814 slice 2a. `record` is absent when the daemon has no row for the
 /// session, which is a normal outcome rather than an error.
@@ -488,6 +505,14 @@ pub struct WireStatusInfo {
     /// v18 — process-start generation shared with `WireShuttingDown`.
     #[prost(uint64, tag = "9")]
     pub generation: u64,
+    /// v21 (soldr#2023) — the compile-concurrency limit this daemon
+    /// actually applied at startup, and the precedence tier it came
+    /// from. Reported rather than re-resolved: the point is to expose a
+    /// limit that has drifted from what the environment now resolves to.
+    #[prost(uint32, tag = "10")]
+    pub compile_jobs: u32,
+    #[prost(string, tag = "11")]
+    pub compile_jobs_source: String,
 }
 
 #[derive(Clone, PartialEq, Message)]
