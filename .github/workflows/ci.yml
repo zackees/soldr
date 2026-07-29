@@ -188,16 +188,36 @@ jobs:
       - name: Install Dylint linker
         run: soldr cargo install dylint-link --version 6.0.1 --locked
 
+      - name: Install Dylint toolchain
+        run: >-
+          soldr rustup toolchain install
+          nightly-2026-01-18
+          --profile minimal
+          --component rustc-dev
+          --component llvm-tools-preview
+
+      - name: Build daemon process-creation boundary lint
+        working-directory: dylints/ban_raw_process_creation
+        env:
+          RUSTUP_TOOLCHAIN: nightly-2026-01-18-x86_64-unknown-linux-gnu
+          SOLDR_LINKER: default
+        run: >-
+          soldr rustup run
+          nightly-2026-01-18-x86_64-unknown-linux-gnu
+          cargo build --release
+          --target-dir
+          "${GITHUB_WORKSPACE}/target/dylint/libraries/nightly-2026-01-18-x86_64-unknown-linux-gnu"
+
       - name: Enforce daemon process-creation boundary
         env:
           # setup-soldr currently provides v0.8.23, whose post-command target
-          # pruning can remove Dylint's freshly built cdylib before cargo-dylint
-          # loads it. Newer Soldr releases no longer prune automatically. Its
-          # fast-linker default would also override the Dylint library's
-          # required linker wrapper, so disable that convenience for this step.
+          # pruning can remove Dylint's cdylib before cargo-dylint loads it.
+          # Newer Soldr releases no longer prune automatically. Its fast-linker
+          # default would also override the Dylint library's required linker
+          # wrapper, so disable that convenience for this step.
           SOLDR_NO_GC_TARGET: "1"
           SOLDR_LINKER: default
-        run: soldr dylint --all -- --workspace --all-targets
+        run: soldr dylint --no-build --all -- --workspace --all-targets
 
       - name: Test daemon process-creation boundary lint
         working-directory: dylints/ban_raw_process_creation
