@@ -32,6 +32,9 @@ pub mod compile_delivery;
 /// the zccache#939 buffer-elimination plan failed to find.
 pub mod compile_trace;
 pub mod db;
+/// soldr#1857 — the compile/disconnect race and the durable record of
+/// what a lost connection cost. Split out of `server.rs`.
+pub mod disconnect;
 /// L4 (issue soldr#980) — background batcher that coalesces
 /// per-compile redb event writes into one fsync per 64 rows / 100 ms.
 pub mod event_batcher;
