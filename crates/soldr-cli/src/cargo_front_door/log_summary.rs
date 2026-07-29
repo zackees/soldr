@@ -139,6 +139,9 @@ pub(super) fn summary_message(logs: &SessionLogs, use_color: bool) -> Option<Str
 
 /// Print the summary to stderr unless suppressed.
 pub(super) fn emit_session_log_summary(logs: &SessionLogs) {
+    // soldr#2024: reaching here means Cargo ran and owned the terminal, so
+    // this exit is accounted for even when the summary itself is suppressed.
+    crate::exit_guard::mark_spoke();
     if super::env_flag_truthy(NO_LOG_SUMMARY_ENV_VAR) {
         return;
     }

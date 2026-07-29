@@ -191,6 +191,9 @@ pub mod dylint_toolchain;
 pub mod env_cmd;
 /// soldr#1059 — `soldr exec <cmd>` PATH-prepend wrapper.
 pub mod exec_cmd;
+/// soldr#2024 — guarantee one line when soldr exits non-zero having
+/// neither reported anything nor run a child that could have.
+pub(crate) mod exit_guard;
 /// soldr#1817 — COW-detach zccache-delivered outputs before a direct
 /// compiler runs after the daemon becomes unavailable mid-build.
 pub(crate) mod fallback_detach;
@@ -237,6 +240,9 @@ pub mod toolchain_doctor;
 pub mod toolchain_ensure;
 pub mod toolchain_link;
 pub mod trampoline;
+/// soldr#2024 — the `--as <version>` trampoline, split out of
+/// `soldr_main.rs` so that file could stop growing.
+pub mod version_trampoline;
 pub mod wrapper;
 /// `wrapper_target` holds the wrapper hot-path target-registry routing
 /// extracted out of `wrapper.rs` so integration tests under

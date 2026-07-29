@@ -103,6 +103,11 @@ pub(crate) fn report_process_init_failure(
 
 /// Convenience wrapper over [`report_process_init_failure`] targeting stderr.
 pub(crate) fn report_process_init_failure_to_stderr(tool: &str, exit_code: i32) -> bool {
+    // soldr#2024: both direct-exec paths call this immediately after the
+    // child ran with inherited stdio, which makes it the one place that
+    // sees "a tool spoke for this invocation" without either caller
+    // growing a line. The child owns the explanation from here.
+    crate::exit_guard::mark_spoke();
     report_process_init_failure(&mut std::io::stderr(), tool, exit_code)
 }
 

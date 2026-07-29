@@ -80,6 +80,10 @@ impl<W: Write> SilenceDetectingWriter<W> {
         if exit_code == 0 {
             return;
         }
+        // soldr#2024: either the compile relayed output through this writer
+        // or this function is about to speak for it. Both count, so the
+        // top-level exit guard must not add a third voice.
+        crate::exit_guard::mark_spoke();
         // soldr#1969: the failure *did* explain itself, but the file it names
         // belongs to soldr. A linker error citing a path nobody recognises
         // reads as a broken toolchain or broken code -- attributing it cost a

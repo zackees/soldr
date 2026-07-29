@@ -11,12 +11,12 @@ use crate::{
     archive_cmd, binaries, blessed_build, bootstrap, build_from_source_cmd, cache, cache_lib,
     cargo_diagnostics, cargo_front_door, cargo_metadata_soldr, cargo_path_check, cli_args,
     cli_dispatch, compile_dispatch, cook, core, daemon, defender, defender_probe, doctor,
-    dylint_cook, env_cmd, exec_cmd, fetch, fuzzy_match, gc, install_shims, linker, lint_cmd,
-    logs_cmd, msvc_host, multicall, native_cc, optimize, optimize_detect, optimize_windows,
-    prepare_cmd, pyo3_detect, release_sidecar, rust_plan, save_load, self_relocate, shim_dir,
-    shim_materialize, startup_profile, target_alias, test_util, toolchain, toolchain_doctor,
-    toolchain_ensure, toolchain_link, trampoline, wrapper, wrapper_target, zccache,
-    zccache_embedded, zccache_lifecycle,
+    dylint_cook, env_cmd, exec_cmd, exit_guard, fetch, fuzzy_match, gc, install_shims, linker,
+    lint_cmd, logs_cmd, msvc_host, multicall, native_cc, optimize, optimize_detect,
+    optimize_windows, prepare_cmd, pyo3_detect, release_sidecar, rust_plan, save_load,
+    self_relocate, shim_dir, shim_materialize, startup_profile, target_alias, test_util, toolchain,
+    toolchain_doctor, toolchain_ensure, toolchain_link, trampoline, version_trampoline, wrapper,
+    wrapper_target, zccache, zccache_embedded, zccache_lifecycle,
 };
 
 pub(crate) use crate::cli_args::{
@@ -27,6 +27,7 @@ pub(crate) use crate::cli_args::{
 };
 
 use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
+use crate::exit_guard::guarded_exit;
 use crate::fetch::VersionSpec;
 
 #[allow(unused_imports)]
@@ -111,9 +112,6 @@ pub(crate) const WARM_RESTORE_MAX_AGE_SECONDS: u64 = 5 * 60;
 /// Pin a specific soldr version to handle this invocation. Explicit
 /// `--as <version>` flag takes precedence over this env var.
 const SOLDR_AS_ENV_VAR: &str = "SOLDR_AS";
-/// Sentinel that the currently-running soldr was itself invoked by another
-/// soldr through `--as`. Prevents infinite hand-offs.
-const SOLDR_TRAMPOLINING_ENV_VAR: &str = "SOLDR_TRAMPOLINING";
 
 /// Full soldr CLI entry — the `src/main.rs` shim calls this and never
 /// returns control flow decisions of its own (#1490 Phase 1).
@@ -126,16 +124,16 @@ pub fn run() -> std::process::ExitCode {
 
     if !multicall::toolchain_shim_should_defer_to_rustc_wrapper(&raw_args) {
         match multicall::maybe_dispatch(&raw_args) {
-            Some(multicall::MulticallDispatch::Exit(code)) => std::process::exit(code),
+            Some(multicall::MulticallDispatch::Exit(code)) => guarded_exit(code),
             Some(multicall::MulticallDispatch::ExitCode(code)) => return code,
             Some(multicall::MulticallDispatch::SoldrArgs(args)) => {
-                std::process::exit(block_on_exit_code(run_with_args("soldr", &args)));
+                guarded_exit(block_on_exit_code(run_with_args("soldr", &args)));
             }
             None => {}
         }
     }
 
-    std::process::exit(run_main(raw_args));
+    guarded_exit(run_main(raw_args));
 }
 
 fn run_main(raw_args: Vec<String>) -> i32 {
@@ -143,9 +141,14 @@ fn run_main(raw_args: Vec<String>) -> i32 {
     // Must be checked before clap parsing.
     if should_self_relocate_for_invocation(&raw_args) {
         match self_relocate::maybe_reexec_from_runtime(&raw_args) {
-            Ok(Some(code)) => std::process::exit(code),
+            // soldr#2024: a relocated soldr ran with our stdio and said
+            // whatever there was to say; we only relay its code.
+            Ok(Some(code)) => {
+                exit_guard::mark_spoke();
+                guarded_exit(code)
+            }
             Ok(None) => {}
-            Err(error) => std::process::exit(report_and_exit(error)),
+            Err(error) => guarded_exit(report_and_exit(error)),
         }
     }
 
@@ -178,7 +181,7 @@ fn run_main(raw_args: Vec<String>) -> i32 {
         // for the wrapper too, or the build would mix versions.
         if let Some(version) = soldr_as_env_pin() {
             if should_trampoline(&version) {
-                return block_on_exit_code(run_trampoline(&version, &raw_args[1..]));
+                return block_on_exit_code(version_trampoline::run(&version, &raw_args[1..]));
             }
         }
         profile.mark("pin_check_done");
@@ -191,14 +194,14 @@ fn run_main(raw_args: Vec<String>) -> i32 {
         Ok(result) => result,
         Err(e) => {
             eprintln!("soldr: {e}");
-            std::process::exit(1);
+            guarded_exit(1);
         }
     };
     let pinned_version = pinned_version.or_else(soldr_as_env_pin);
 
     if let Some(version) = pinned_version {
         if should_trampoline(&version) {
-            return block_on_exit_code(run_trampoline(&version, &trampoline_args));
+            return block_on_exit_code(version_trampoline::run(&version, &trampoline_args));
         }
         // Short-circuit: requested version == current. Continue with args
         // that have `--as <ver>` stripped.
@@ -371,7 +374,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             // when the resolved target is non-MSVC.
             ensure_msvc_host_env_for_native(&full_args);
 
-            std::process::exit(
+            guarded_exit(
                 cargo_front_door::run_cargo_front_door(
                     &full_args,
                     cache_enabled,
@@ -386,7 +389,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             // `soldr cargo test` on a native Windows MSVC target also
             // succeed from a plain PowerShell without `$env:LIB`.
             ensure_msvc_host_env_for_native(&args);
-            std::process::exit(
+            guarded_exit(
                 cargo_front_door::run_cargo_front_door(
                     &args,
                     cache_enabled,
@@ -396,7 +399,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             );
         }
         Commands::Dylint { args } => {
-            std::process::exit(
+            guarded_exit(
                 Box::pin(run_dylint_command(
                     args,
                     cache_enabled,
@@ -406,60 +409,60 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             );
         }
         Commands::Lint { args } => {
-            std::process::exit(
+            guarded_exit(
                 lint_cmd::run_lint(&args, cache_enabled, trust_inherited_soldr_env).await?,
             );
         }
         Commands::Cook { args } => {
-            std::process::exit(cook::run_cook(&args, cache_enabled).await?);
+            guarded_exit(cook::run_cook(&args, cache_enabled).await?);
         }
         Commands::Exec { args } => {
-            std::process::exit(exec_cmd::run_exec(&args)?);
+            guarded_exit(exec_cmd::run_exec(&args)?);
         }
         Commands::Rustc { args } => {
-            std::process::exit(toolchain::run_rustc_like("rustc", &args, cache_enabled)?);
+            guarded_exit(toolchain::run_rustc_like("rustc", &args, cache_enabled)?);
         }
         Commands::Rustfmt { args } => {
-            std::process::exit(toolchain::run_rustfmt(&args, cache_enabled)?);
+            guarded_exit(toolchain::run_rustfmt(&args, cache_enabled)?);
         }
         Commands::ClippyDriver { args } => {
-            std::process::exit(toolchain::run_rustc_like(
+            guarded_exit(toolchain::run_rustc_like(
                 "clippy-driver",
                 &args,
                 cache_enabled,
             )?);
         }
         Commands::Rustdoc { args } => {
-            std::process::exit(toolchain::run_rustdoc(&args)?);
+            guarded_exit(toolchain::run_rustdoc(&args)?);
         }
         Commands::RustGdb { args } => {
-            std::process::exit(toolchain::run_toolchain_passthrough("rust-gdb", &args)?);
+            guarded_exit(toolchain::run_toolchain_passthrough("rust-gdb", &args)?);
         }
         Commands::RustLldb { args } => {
-            std::process::exit(toolchain::run_toolchain_passthrough("rust-lldb", &args)?);
+            guarded_exit(toolchain::run_toolchain_passthrough("rust-lldb", &args)?);
         }
         Commands::RustAnalyzer { args } => {
-            std::process::exit(toolchain::run_rust_analyzer(&args, cache_enabled)?);
+            guarded_exit(toolchain::run_rust_analyzer(&args, cache_enabled)?);
         }
         Commands::Rustup { args } => {
-            std::process::exit(toolchain::run_rustup_passthrough(&args)?);
+            guarded_exit(toolchain::run_rustup_passthrough(&args)?);
         }
         Commands::Toolchain { subcommand } => match subcommand {
             ToolchainSubcommand::Install => {
-                std::process::exit(toolchain::run_toolchain_install()?);
+                guarded_exit(toolchain::run_toolchain_install()?);
             }
             ToolchainSubcommand::Prepare => {
-                std::process::exit(toolchain::run_toolchain_prepare()?);
+                guarded_exit(toolchain::run_toolchain_prepare()?);
             }
             ToolchainSubcommand::Ensure { json } => {
-                std::process::exit(toolchain_ensure::run_toolchain_ensure(json).await?);
+                guarded_exit(toolchain_ensure::run_toolchain_ensure(json).await?);
             }
             ToolchainSubcommand::Link {
                 shim_dir,
                 json,
                 force,
             } => {
-                std::process::exit(toolchain_link::run_toolchain_link(
+                guarded_exit(toolchain_link::run_toolchain_link(
                     toolchain_link::LinkArgs {
                         shim_dir,
                         json,
@@ -468,37 +471,35 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 )?);
             }
             ToolchainSubcommand::Doctor { json } => {
-                std::process::exit(toolchain_doctor::run_toolchain_doctor(json)?);
+                guarded_exit(toolchain_doctor::run_toolchain_doctor(json)?);
             }
             ToolchainSubcommand::Catalogue { json } => {
-                std::process::exit(
-                    crate::fetch::manifest_lookup::run_toolchain_catalogue(json).await?,
-                );
+                guarded_exit(crate::fetch::manifest_lookup::run_toolchain_catalogue(json).await?);
             }
         },
         Commands::Bootstrap { json } => {
-            std::process::exit(bootstrap::run_bootstrap(json).await?);
+            guarded_exit(bootstrap::run_bootstrap(json).await?);
         }
         Commands::Doctor {
             json,
             refresh_defender_probe,
             remove_shadowing_shim: fix,
-        } => std::process::exit(doctor::run_doctor(json, refresh_defender_probe, fix)?),
+        } => guarded_exit(doctor::run_doctor(json, refresh_defender_probe, fix)?),
         Commands::Optimize(args) => {
-            std::process::exit(optimize::run_optimize(args)?);
+            guarded_exit(optimize::run_optimize(args)?);
         }
         Commands::Shims { json } => {
             let paths = SoldrPaths::new()?;
-            std::process::exit(install_shims::run_shims(&paths, json)?);
+            guarded_exit(install_shims::run_shims(&paths, json)?);
         }
         Commands::DefenderExclusions { subcommand } => {
-            std::process::exit(optimize::run_defender_exclusions(subcommand)?);
+            guarded_exit(optimize::run_defender_exclusions(subcommand)?);
         }
         Commands::Save(args) => {
-            std::process::exit(save_load::run_save(args));
+            guarded_exit(save_load::run_save(args));
         }
         Commands::Load(args) => {
-            std::process::exit(save_load::run_load(args));
+            guarded_exit(save_load::run_load(args));
         }
         Commands::Archive {
             target,
@@ -607,7 +608,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             shell_export,
             json,
         } => {
-            std::process::exit(env_cmd::run_env_command(&target, shell_export, json).await?);
+            guarded_exit(env_cmd::run_env_command(&target, shell_export, json).await?);
         }
         Commands::Status { json } => {
             let output = cache::collect_status_output(cache_enabled)?;
@@ -631,13 +632,13 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 // soldr#820: `list` / `show` / `paths` are implemented;
                 // `view` / `prune` remain follow-up verbs.
                 Some(LogsSubcommand::List { limit, json }) => {
-                    std::process::exit(logs_cmd::run_logs_list(limit, json)?);
+                    guarded_exit(logs_cmd::run_logs_list(limit, json)?);
                 }
                 Some(LogsSubcommand::Show { launch_id, json }) => {
-                    std::process::exit(logs_cmd::run_logs_show(&launch_id, json)?);
+                    guarded_exit(logs_cmd::run_logs_show(&launch_id, json)?);
                 }
                 Some(LogsSubcommand::Paths { json }) => {
-                    std::process::exit(logs_cmd::run_logs_paths(json)?);
+                    guarded_exit(logs_cmd::run_logs_paths(json)?);
                 }
                 None => {
                     // Bare `soldr logs` with no subcommand: print the help-shaped
@@ -654,7 +655,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                     eprintln!("  soldr logs prune --keep N      Bounded retention sweep");
                     eprintln!();
                     eprintln!("Run `soldr logs list --json` for a machine-readable form.");
-                    std::process::exit(0);
+                    guarded_exit(0);
                 }
             }
         }
@@ -923,7 +924,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
         Commands::External(args) => {
             if args.is_empty() {
                 eprintln!("usage: soldr <tool>[@version] [args...]");
-                std::process::exit(1);
+                guarded_exit(1);
             }
 
             let (crate_name, version) = parse_tool_spec(&args[0]);
@@ -946,7 +947,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 let mut cargo_args = Vec::with_capacity(args.len());
                 cargo_args.push(crate_name.clone());
                 cargo_args.extend(tool_args.iter().cloned());
-                std::process::exit(
+                guarded_exit(
                     cargo_front_door::run_cargo_front_door(
                         &cargo_args,
                         cache_enabled,
@@ -977,7 +978,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 // explicit `soldr cargo ...` forms with respect to
                 // rust-lld's `LIB` requirement.
                 ensure_msvc_host_env_for_native(&cargo_args);
-                std::process::exit(
+                guarded_exit(
                     cargo_front_door::run_cargo_front_door(
                         &cargo_args,
                         cache_enabled,
@@ -993,7 +994,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             // into `zccache::cli::commands::run()`.
             if crate_name == "zccache" && matches!(version, VersionSpec::Latest) {
                 let status = crate::zccache_entry::run_with_args(tool_args);
-                std::process::exit(if status == std::process::ExitCode::SUCCESS {
+                guarded_exit(if status == std::process::ExitCode::SUCCESS {
                     0
                 } else if status == std::process::ExitCode::from(2) {
                     2
@@ -1235,6 +1236,9 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             };
 
             suppress_windows_console_window(&mut command);
+            // soldr#2024: the child's output explains this exit, inherited
+            // or teed back via `emit_child_output`.
+            exit_guard::mark_spoke();
             let status = if let Some(state) = pep517_linker_state.as_ref() {
                 if state.should_retry() || state.explicit_fast {
                     let first = command.output()?;
@@ -1281,7 +1285,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             // a buffered stdout/stderr would be dropped here (soldr#1878).
             let _ = std::io::stdout().flush();
             let _ = std::io::stderr().flush();
-            std::process::exit(code);
+            guarded_exit(code);
         }
     }
 
@@ -1402,64 +1406,8 @@ async fn provisioned_maturin_fetch_result(
 
 fn report_and_exit(error: SoldrError) -> i32 {
     eprintln!("soldr: {error}");
+    exit_guard::mark_spoke(); // soldr#2024: this IS the explanation.
     1
-}
-
-async fn run_trampoline(version: &str, args: &[String]) -> Result<i32, SoldrError> {
-    if let Ok(prior) = std::env::var(SOLDR_TRAMPOLINING_ENV_VAR) {
-        return Err(SoldrError::Other(format!(
-            "refusing to trampoline again: this process was already reached via `--as` from soldr {prior}. Drop the inner --as flag."
-        )));
-    }
-
-    eprintln!("soldr: trampolining to soldr@{version}...");
-    let result =
-        crate::fetch::fetch_tool("soldr", &VersionSpec::Exact(normalize_version(version))).await?;
-
-    if result.cached {
-        eprintln!(
-            "soldr: using cached soldr v{} at {}",
-            result.version,
-            result.binary_path.display()
-        );
-    } else {
-        eprintln!(
-            "soldr: downloaded soldr v{} to {}",
-            result.version,
-            result.binary_path.display()
-        );
-    }
-
-    let mut command = std::process::Command::new(&result.binary_path);
-    command
-        .args(args)
-        .env(SOLDR_TRAMPOLINING_ENV_VAR, env!("CARGO_PKG_VERSION"));
-    suppress_windows_console_window(&mut command);
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-
-        let err = command.exec();
-        Err(SoldrError::Other(format!(
-            "failed to exec soldr v{} at {}: {err}",
-            result.version,
-            result.binary_path.display()
-        )))
-    }
-
-    #[cfg(not(unix))]
-    {
-        let status = command.status().map_err(|e| {
-            SoldrError::Other(format!(
-                "failed to exec soldr v{} at {}: {e}",
-                result.version,
-                result.binary_path.display()
-            ))
-        })?;
-
-        Ok(status.code().unwrap_or(1))
-    }
 }
 
 fn render_builds(
