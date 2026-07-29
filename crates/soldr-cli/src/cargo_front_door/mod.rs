@@ -47,7 +47,7 @@ mod profile_debug;
 mod subcommand;
 mod target;
 /// soldr#1802 — elapsed-seconds prefixes on relayed child output.
-mod timestamp_tee;
+pub(crate) mod timestamp_tee;
 mod zig_shim;
 mod zthreads_fallback;
 
