@@ -204,12 +204,34 @@ async fn run_loop_inner<F, Fut>(
     // immediate catch-up; otherwise startup still receives a pressure pass.
     let mut interval = tokio::time::interval(interval_duration);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // soldr#1987: a daemon whose own executable was deleted keeps the
+    // root-ownership lock forever, and nothing external can clear it --
+    // `soldr daemon stop` probes the pipe while the orphan holds the
+    // filesystem lock. Such a daemon can never legitimately own the root
+    // again, so it stands down itself.
+    let mut missing_image = crate::daemon::lifecycle::MissingImageDetector::default();
     loop {
         tokio::select! {
             _ = shutdown.wait() => break,
             _ = interval.tick() => {}
         }
         if shutdown.is_requested() {
+            break;
+        }
+        if missing_image.observe(crate::daemon::lifecycle::daemon_image_present()) {
+            // Loud on purpose: this is the only notice that a daemon
+            // disappeared on its own, and a silent exit would look like the
+            // crash it is not.
+            tracing::warn!(
+                event = "daemon_image_deleted",
+                strikes = missing_image.strikes(),
+                "this daemon's executable no longer exists; releasing the soldr                  root and shutting down so a new daemon can start (soldr#1987)"
+            );
+            eprintln!(
+                "soldr-daemon: own executable no longer exists after {} checks;                  shutting down to release the soldr root (soldr#1987)",
+                missing_image.strikes()
+            );
+            shutdown.request();
             break;
         }
         let now = SystemTime::now();
