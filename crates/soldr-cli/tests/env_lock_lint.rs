@@ -42,8 +42,36 @@ use std::path::{Path, PathBuf};
 
 use soldr_cli::timed_test;
 
-fn crate_src_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src")
+/// Every workspace crate's `src/`, not just this one's.
+///
+/// soldr#1994: this returned only `soldr-cli/src`, so the lint guarded one of
+/// five crates. `soldr-fetch`'s `llvm.rs` raced itself on `SOLDR_LLVM_DIR`
+/// with no barrier at all, and the failure surfaced on an unrelated daemon PR
+/// -- exactly the class this lint exists to prevent, in a crate it could not
+/// see. `timed_test_lint.rs` next door already walked the whole workspace.
+fn crate_src_roots() -> Vec<PathBuf> {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let Some(crates_dir) = manifest.parent() else {
+        return vec![manifest.join("src")];
+    };
+    let Ok(entries) = fs::read_dir(crates_dir) else {
+        return vec![manifest.join("src")];
+    };
+    let mut roots: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path().join("src"))
+        .filter(|src| src.is_dir())
+        .collect();
+    roots.sort();
+    roots
+}
+
+/// True when at least one workspace crate source tree is present.
+///
+/// The pre-built test-archive lanes run away from the checkout, where every
+/// root is absent and the lint has nothing to say.
+fn any_src_root_exists(roots: &[PathBuf]) -> bool {
+    roots.iter().any(|root| root.is_dir())
 }
 
 fn repo_relative(path: &Path) -> String {
@@ -153,15 +181,17 @@ const PRODUCTION_ENV_WRITERS: &[(&str, &str)] = &[
 ];
 
 timed_test!(no_env_var_is_guarded_by_two_different_barriers, {
-    let src = crate_src_root();
-    if !src.is_dir() {
+    let roots = crate_src_roots();
+    if !any_src_root_exists(&roots) {
         // The pre-built test-archive lanes run away from the checkout.
-        eprintln!("env_lock_lint: skipping — {} absent", src.display());
+        eprintln!("env_lock_lint: skipping — no workspace crate sources present");
         return;
     }
 
     let mut files = Vec::new();
-    collect_rs(&src, &mut files);
+    for root in &roots {
+        collect_rs(root, &mut files);
+    }
     files.sort();
 
     let production: Vec<&str> = PRODUCTION_ENV_WRITERS.iter().map(|(p, _)| *p).collect();
@@ -254,14 +284,16 @@ timed_test!(no_env_var_is_guarded_by_two_different_barriers, {
 // question rather than a correctness one, and flagging ~60 of them
 // would bury the signal.
 timed_test!(shared_barrier_acquisitions_recover_from_poisoning, {
-    let src = crate_src_root();
-    if !src.is_dir() {
-        eprintln!("env_lock_lint: skipping — {} absent", src.display());
+    let roots = crate_src_roots();
+    if !any_src_root_exists(&roots) {
+        eprintln!("env_lock_lint: skipping — no workspace crate sources present");
         return;
     }
 
     let mut files = Vec::new();
-    collect_rs(&src, &mut files);
+    for root in &roots {
+        collect_rs(root, &mut files);
+    }
     files.sort();
 
     let mut offenders = Vec::new();
@@ -312,7 +344,16 @@ const AMBIENT_ENV_VARS: &[&str] = &["CARGO_HOME", "HOME", "USERPROFILE", "RUSTUP
 timed_test!(
     ambient_path_vars_are_mutated_only_under_the_shared_barrier,
     {
-        let src = crate_src_root();
+        // Deliberately soldr-cli only, unlike the two rules above.
+        //
+        // This one requires the *shared* barrier, and `TEST_PROCESS_ENV_LOCK`
+        // lives in soldr-cli. The dependency runs soldr-core -> soldr-cli, so
+        // an upstream crate cannot reach it: `soldr-core`'s
+        // `cargo_path_check.rs` mutates PATH in a test and could not satisfy a
+        // widened rule however true the rule is. Widening this without first
+        // moving a barrier into soldr-core (soldr#1896 identified that as the
+        // only common dependency) would manufacture an unfixable failure.
+        let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
         if !src.is_dir() {
             eprintln!("env_lock_lint: skipping — {} absent", src.display());
             return;

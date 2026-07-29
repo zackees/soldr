@@ -26,8 +26,12 @@
 /// exactly what happened with `SOLDR_USE_LEGACY_XWIN`, mutated from
 /// `blessed_build` under this lock and from `main_tests` under a private one.
 /// `env_lock_lint.rs` fails the build if a private barrier reappears.
+/// soldr#1994: the barrier itself now lives in `soldr-core` so upstream
+/// crates can share it. Re-exported here under the original name, so every
+/// existing `crate::TEST_PROCESS_ENV_LOCK` and
+/// `use crate::TEST_PROCESS_ENV_LOCK as ENV_LOCK;` is unchanged.
 #[cfg(test)]
-pub(crate) static TEST_PROCESS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) use soldr_core::test_util::TEST_PROCESS_ENV_LOCK;
 
 /// RAII guard that sets or removes an environment variable for the duration
 /// of a test and restores the previous value on drop.

@@ -313,6 +313,24 @@ pub fn format_leaked_daemons(daemons: &[LeakedDaemonInfo]) -> Option<String> {
 //
 // to verify the abort path end-to-end.
 // ---------------------------------------------------------------------------
+/// The one process-wide barrier for environment mutation in tests.
+///
+/// soldr#1663 established that two mutexes guarding one variable provide no
+/// mutual exclusion at all: a crate's unit tests share a process, so each
+/// module's private mutex only excludes its own tests.
+///
+/// soldr#1994 showed the same failure across a *crate* boundary. `soldr-cli`
+/// serialized `PATH` under its own `TEST_PROCESS_ENV_LOCK` while
+/// `soldr-core`'s `cargo_path_check` mutated `PATH` under nothing — and
+/// soldr-core cannot reach a barrier that lives downstream of it. This is the
+/// only crate every other one depends on, so this is where the barrier has to
+/// live for it to be genuinely shared.
+///
+/// Deliberately not `#[cfg(test)]`: that attribute applies when *this* crate
+/// is under test, so a gated static would vanish for every downstream crate
+/// that needs it. The rest of this module is un-gated for the same reason.
+pub static TEST_PROCESS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
