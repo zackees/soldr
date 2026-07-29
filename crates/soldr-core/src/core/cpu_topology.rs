@@ -35,19 +35,26 @@ pub fn physical_cores() -> Option<usize> {
 
 #[cfg(target_os = "linux")]
 fn detect() -> Option<usize> {
-    detect_from_sysfs().or_else(detect_from_proc_cpuinfo)
+    cores_from_sysfs(std::path::Path::new("/sys/devices/system/cpu"))
+        .or_else(|| cores_from_cpuinfo(&std::fs::read_to_string("/proc/cpuinfo").ok()?))
 }
 
+// The two Linux parsers below are compiled everywhere, not gated on
+// `target_os = "linux"`, so their tests run on every developer machine
+// and every CI lane. Gating them would mean the first execution of this
+// logic happened on a lane where a failure is expensive to diagnose;
+// taking a `&Path` / `&str` instead of reading fixed paths costs
+// nothing and makes them directly testable from a fixture.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 /// Every hardware thread publishes the sibling set it belongs to, and
 /// siblings of one physical core publish the *same* list. So the number
 /// of distinct lists is the number of physical cores — no parsing of
 /// the list contents required.
-#[cfg(target_os = "linux")]
-fn detect_from_sysfs() -> Option<usize> {
+fn cores_from_sysfs(cpu_root: &std::path::Path) -> Option<usize> {
     use std::collections::HashSet;
 
     let mut sibling_sets: HashSet<String> = HashSet::new();
-    for entry in std::fs::read_dir("/sys/devices/system/cpu").ok()? {
+    for entry in std::fs::read_dir(cpu_root).ok()? {
         let path = entry.ok()?.path();
         let is_cpu_dir = path
             .file_name()
@@ -73,15 +80,14 @@ fn detect_from_sysfs() -> Option<usize> {
     (!sibling_sets.is_empty()).then_some(sibling_sets.len())
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 /// Fallback for kernels or containers without the topology sysfs tree.
 /// A physical core is identified by the `(physical id, core id)` pair;
 /// `physical id` alone would collapse a multi-socket host to its socket
 /// count.
-#[cfg(target_os = "linux")]
-fn detect_from_proc_cpuinfo() -> Option<usize> {
+fn cores_from_cpuinfo(text: &str) -> Option<usize> {
     use std::collections::HashSet;
 
-    let text = std::fs::read_to_string("/proc/cpuinfo").ok()?;
     let mut cores: HashSet<(String, String)> = HashSet::new();
     let mut package: Option<String> = None;
     let mut core: Option<String> = None;
@@ -213,5 +219,90 @@ mod tests {
     crate::timed_test!(physical_cores_is_stable_across_calls, {
         assert_eq!(physical_cores(), physical_cores());
     });
-}
 
+    /// Build a fake `/sys/devices/system/cpu` for `cpu_count` hardware
+    /// threads laid out `threads_per_core` to a core.
+    fn fake_sysfs(cpu_count: usize, threads_per_core: usize, leaf: &str) -> tempfile::TempDir {
+        let root = tempfile::tempdir().expect("tempdir");
+        for cpu in 0..cpu_count {
+            let topology = root.path().join(format!("cpu{cpu}")).join("topology");
+            std::fs::create_dir_all(&topology).expect("create topology dir");
+            let first = (cpu / threads_per_core) * threads_per_core;
+            let siblings = (first..first + threads_per_core)
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            std::fs::write(topology.join(leaf), format!("{siblings}\n")).expect("write siblings");
+        }
+        root
+    }
+
+    crate::timed_test!(sysfs_counts_distinct_sibling_sets, {
+        // 16 threads, 2 per core -> 8 physical cores.
+        let root = fake_sysfs(16, 2, "thread_siblings_list");
+        assert_eq!(cores_from_sysfs(root.path()), Some(8));
+    });
+
+    crate::timed_test!(sysfs_reads_the_modern_leaf_name_too, {
+        // Newer kernels expose `core_cpus_list` instead; both must work
+        // or the detection silently degrades on one kernel generation.
+        let root = fake_sysfs(8, 2, "core_cpus_list");
+        assert_eq!(cores_from_sysfs(root.path()), Some(4));
+    });
+
+    crate::timed_test!(sysfs_handles_a_host_without_smt, {
+        let root = fake_sysfs(8, 1, "thread_siblings_list");
+        assert_eq!(cores_from_sysfs(root.path()), Some(8));
+    });
+
+    crate::timed_test!(sysfs_ignores_non_cpu_entries, {
+        let root = fake_sysfs(4, 2, "thread_siblings_list");
+        // Real sysfs has siblings like `cpufreq`, `cpuidle` and
+        // `possible` next to the `cpuN` directories; counting those
+        // would inflate the result.
+        for noise in ["cpufreq", "cpuidle", "cpu_capacity", "power"] {
+            std::fs::create_dir_all(root.path().join(noise).join("topology")).expect("noise dir");
+            std::fs::write(
+                root.path()
+                    .join(noise)
+                    .join("topology/thread_siblings_list"),
+                "99\n",
+            )
+            .expect("noise file");
+        }
+        assert_eq!(cores_from_sysfs(root.path()), Some(2));
+    });
+
+    crate::timed_test!(sysfs_without_topology_reports_nothing, {
+        // A container can expose `cpuN` directories with no `topology`
+        // subtree. Reporting 0 would be read as "no cores"; `None` sends
+        // the caller to the fallback instead.
+        let root = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(root.path().join("cpu0")).expect("cpu0");
+        assert_eq!(cores_from_sysfs(root.path()), None);
+    });
+
+    crate::timed_test!(cpuinfo_pairs_package_with_core_id, {
+        // Two sockets x 2 cores x 2 threads. `core id` alone would
+        // report 2 by collapsing the sockets together.
+        let mut text = String::new();
+        for cpu in 0..8 {
+            text.push_str(&format!(
+                "processor\t: {cpu}\nphysical id\t: {}\ncore id\t\t: {}\n\n",
+                cpu / 4,
+                (cpu % 4) / 2
+            ));
+        }
+        assert_eq!(cores_from_cpuinfo(&text), Some(4));
+    });
+
+    crate::timed_test!(cpuinfo_without_topology_fields_reports_nothing, {
+        // Many ARM kernels omit `physical id` / `core id` entirely.
+        let text = "processor\t: 0\nBogoMIPS\t: 50.00\n\nprocessor\t: 1\n";
+        assert_eq!(cores_from_cpuinfo(text), None);
+    });
+
+    crate::timed_test!(cpuinfo_ignores_an_empty_input, {
+        assert_eq!(cores_from_cpuinfo(""), None);
+    });
+}
