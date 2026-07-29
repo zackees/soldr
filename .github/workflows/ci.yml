@@ -192,17 +192,22 @@ jobs:
         env:
           # setup-soldr currently provides v0.8.23, whose post-command target
           # pruning can remove Dylint's freshly built cdylib before cargo-dylint
-          # loads it. Newer Soldr releases no longer prune automatically.
+          # loads it. Newer Soldr releases no longer prune automatically. Its
+          # fast-linker default would also override the Dylint library's
+          # required linker wrapper, so disable that convenience for this step.
           SOLDR_NO_GC_TARGET: "1"
+          SOLDR_LINKER: default
         run: soldr dylint --all -- --workspace --all-targets
 
       - name: Test daemon process-creation boundary lint
+        working-directory: dylints/ban_raw_process_creation
         env:
           RUSTUP_TOOLCHAIN: nightly-2026-01-18
           SOLDR_NO_GC_TARGET: "1"
+          SOLDR_LINKER: default
         run: >-
           soldr cargo test
-          --manifest-path dylints/ban_raw_process_creation/Cargo.toml
+          --manifest-path Cargo.toml
 
   # Per-platform `build workspace + run unit/smoke tests` jobs.
   # Each is a thin caller of the `_build-and-test.yml` template so
