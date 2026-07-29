@@ -84,6 +84,14 @@ impl<W: Write> SilenceDetectingWriter<W> {
         // belongs to soldr. A linker error citing a path nobody recognises
         // reads as a broken toolchain or broken code -- attributing it cost a
         // full diagnostic pass in the report. Say whose file it is.
+        // soldr#1999 rule 1: a warning emitted earlier in this build belongs
+        // *at* the failure, not hundreds of Cargo progress lines above it.
+        // Printed a second time rather than only here, because someone
+        // watching live must not have to wait for a failure to learn
+        // something went wrong.
+        if let Some(block) = soldr_core::warning_log::replay_block() {
+            let _ = write!(self.inner, "{block}");
+        }
         if self.bytes_written > 0 {
             if self.saw_cache_path {
                 let _ = writeln!(
@@ -156,6 +164,46 @@ mod tests {
             text.contains("--no-cache"),
             "expected the documented bypass; got:
 {text}"
+        );
+    });
+
+    // soldr#1999 rule 1: a warning emitted earlier in the build must appear
+    // *at* the failure. Left upstream it sits hundreds of Cargo progress lines
+    // above the error and nobody connects the two -- #1992's rust-lld retry
+    // notice is the worked example.
+    timed_test!(an_earlier_warning_is_repeated_at_the_failure, {
+        soldr_core::warning_log::clear();
+        soldr_core::warning_log::record("soldr warning: fast linker was unavailable");
+        let mut sink: Vec<u8> = Vec::new();
+        {
+            let mut writer = SilenceDetectingWriter::new(&mut sink);
+            let _ = writer.write_all(b"error[E0308]: mismatched types");
+            writer.report_if_silently_failed(1);
+        }
+        soldr_core::warning_log::clear();
+        let text = String::from_utf8(sink).expect("utf8");
+        assert!(
+            text.contains("fast linker was unavailable"),
+            "the earlier warning must be repeated at the failure, got: {text}"
+        );
+    });
+
+    // A successful build must not be decorated with a warning replay -- the
+    // warning was already printed once, when it happened.
+    timed_test!(a_successful_build_does_not_replay_warnings, {
+        soldr_core::warning_log::clear();
+        soldr_core::warning_log::record("soldr warning: something minor");
+        let mut sink: Vec<u8> = Vec::new();
+        {
+            let mut writer = SilenceDetectingWriter::new(&mut sink);
+            let _ = writer.write_all(b"   Compiling foo v0.1.0");
+            writer.report_if_silently_failed(0);
+        }
+        soldr_core::warning_log::clear();
+        let text = String::from_utf8(sink).expect("utf8");
+        assert!(
+            !text.contains("something minor"),
+            "exit 0 must stay quiet, got: {text}"
         );
     });
 

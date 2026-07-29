@@ -623,7 +623,9 @@ pub fn report_fallback_outcome(
     if fallback.status.success() {
         if let Some(paths) = paths {
             if let Err(err) = record_pep517_fallback(paths, cache_key) {
-                eprintln!("soldr warning: could not persist the working linker fallback: {err}");
+                soldr_core::warning_log::warn(format!(
+                    "soldr warning: could not persist the working linker fallback: {err}"
+                ));
             }
         }
         eprintln!(
