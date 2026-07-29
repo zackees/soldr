@@ -22,12 +22,19 @@
 pub mod backend_handle_adoption;
 pub mod broker_discovery;
 pub mod client;
+/// soldr#1857 — always-on JSONL record of compiles the daemon ran but
+/// could not hand back to the wrapper. The artifact that distinguishes
+/// "rustc rejected your code" from "soldr lost a finished compile".
+pub mod compile_delivery;
 /// Per-compile JSONL phase trace, gated by `SOLDR_DAEMON_TRACE`.
 /// Diagnostic-only — see `compile_trace.rs` for format. Wired in by
 /// soldr#981 to identify the per-compile dispatch bottleneck that
 /// the zccache#939 buffer-elimination plan failed to find.
 pub mod compile_trace;
 pub mod db;
+/// soldr#1857 — the compile/disconnect race and the durable record of
+/// what a lost connection cost. Split out of `server.rs`.
+pub mod disconnect;
 /// L4 (issue soldr#980) — background batcher that coalesces
 /// per-compile redb event writes into one fsync per 64 rows / 100 ms.
 pub mod event_batcher;
