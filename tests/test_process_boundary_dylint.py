@@ -21,6 +21,7 @@ def test_required_ci_runs_root_dylint_policy() -> None:
     assert "--component llvm-tools-preview" in workflow
     assert "Build daemon process-creation boundary lint" in workflow
     assert "nightly-2026-01-18-x86_64-unknown-linux-gnu" in workflow
+    assert "cargo build --profile release" in workflow
     assert '"${GITHUB_WORKSPACE}/target/dylint/libraries/' in workflow
     assert "soldr dylint --no-build --all -- --workspace --all-targets" in workflow
     assert "Test daemon process-creation boundary lint" in workflow
@@ -33,6 +34,12 @@ def test_required_ci_runs_root_dylint_policy() -> None:
         ROOT / "dylints" / "ban_raw_process_creation" / ".cargo" / "config.toml"
     ).read_text(encoding="utf-8")
     assert 'rustflags = ["-C", "linker=dylint-link"]' in dylint_config
+    dylint_manifest = (
+        ROOT / "dylints" / "ban_raw_process_creation" / "Cargo.toml"
+    ).read_text(encoding="utf-8")
+    assert "[profile.release]" in dylint_manifest
+    assert "opt-level = 0" in dylint_manifest
+    assert "lto = false" in dylint_manifest
 
 
 def test_process_boundary_has_required_ui_fixtures() -> None:

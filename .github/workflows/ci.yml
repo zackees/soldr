@@ -204,7 +204,7 @@ jobs:
         run: >-
           soldr rustup run
           nightly-2026-01-18-x86_64-unknown-linux-gnu
-          cargo build --release
+          cargo build --profile release
           --target-dir
           "${GITHUB_WORKSPACE}/target/dylint/libraries/nightly-2026-01-18-x86_64-unknown-linux-gnu"
 
