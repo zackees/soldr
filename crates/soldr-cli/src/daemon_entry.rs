@@ -24,9 +24,16 @@ struct Cli {
 /// Relocating first means the long-lived process never pins the directory it
 /// was launched from.
 ///
+/// soldr#2016: called from both daemon entrypoints. `soldr daemon start
+/// --foreground` reaches `run_async` directly and never passes through
+/// `daemon_entry::run`, so covering only this file left the via-self spawn
+/// shape -- the one slimmed-down installs and `uv`/`pip` builds produce --
+/// still pinning its launch directory. The `SOLDR_INTERNAL_DAEMON_REEXECED`
+/// marker is process-wide, so two entrypoints calling this cannot compound.
+///
 /// Every failure path here returns rather than aborting: a daemon running from
 /// the wrong directory is the status quo, and strictly better than no daemon.
-fn reexec_from_runtime_root() {
+pub(crate) fn reexec_from_runtime_root() {
     let Ok(paths) = crate::core::SoldrPaths::new() else {
         return;
     };

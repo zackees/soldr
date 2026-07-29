@@ -1533,21 +1533,20 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
             idle_timeout,
         } => {
             if foreground {
-                let opts = ServerOptions {
-                    idle_timeout: if idle_timeout == 0 {
-                        ServerOptions::default().idle_timeout
-                    } else {
-                        Duration::from_secs(idle_timeout)
-                    },
+                // soldr#2016: this path bypasses `daemon_entry::run`, so the
+                // #1987 re-exec has to happen here too or a foreground daemon
+                // pins whatever directory it was launched from.
+                crate::daemon_entry::reexec_from_runtime_root();
+                let idle = if idle_timeout == 0 {
+                    ServerOptions::default().idle_timeout
+                } else {
+                    Duration::from_secs(idle_timeout)
                 };
-                // We're already inside main()'s Tokio runtime
-                // (run_with_args is async and called through block_on).
-                // Calling the sync `server::run` here would have it build
-                // ANOTHER multi-thread runtime + block_on, which panics
-                // with "Cannot start a runtime from within a runtime"
-                // (the symptom on the CI perf-matrix run in soldr#985
-                // diagnosis). Reach run_async directly instead — it
-                // does the same work without building a runtime.
+                let opts = ServerOptions { idle_timeout: idle };
+                // Already inside main()'s Tokio runtime, so the sync
+                // `server::run` would build a second one and panic with
+                // "Cannot start a runtime from within a runtime" (soldr#985).
+                // `run_async` does the same work without a runtime.
                 run_async(opts)
                     .await
                     .map_err(|e| SoldrError::Other(format!("soldr-daemon failed: {e:?}")))?;
