@@ -1,0 +1,10 @@
+error: `std::process::Command::status` bypasses running-process; configure the command, then execute it with `running_process::spawn` or `running_process::spawn_daemon*`
+  --> $DIR/disallowed_status.rs:5:13
+   |
+LL |     let _ = command.status();
+   |             ^^^^^^^^^^^^^^^^
+   |
+   = note: `#[deny(ban_raw_process_creation)]` on by default
+
+error: aborting due to 1 previous error
+

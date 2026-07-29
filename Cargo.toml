@@ -49,6 +49,9 @@ targets = [
     "aarch64-unknown-linux-musl",
 ]
 
+[workspace.metadata.dylint]
+libraries = [{ path = "dylints/*" }]
+
 [workspace.dependencies]
 cap-fs-ext = "3.4.4"
 cap-std = "3.4.4"
@@ -110,6 +113,12 @@ url = "2"
 # (issue #349). `bundled` compiles SQLite ourselves so neither the
 # managed wheel nor the cargo-install path needs a system libsqlite3.
 rusqlite = { version = "0.32", features = ["bundled"] }
+
+[patch.crates-io]
+# soldr#2031: one process-creation implementation across Soldr and its
+# embedded zccache graph. Remove this git patch after the file-backed daemon
+# stdio API ships in a running-process release and every consumer is bumped.
+running-process = { git = "https://github.com/zackees/running-process.git", rev = "59556ebbb779a66a95811c75bb1533cf3db1c525" }
 
 # Release profile size optimization (#920). soldr ships as a template
 # binary that every CI consumer downloads via setup-soldr / actions/

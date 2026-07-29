@@ -185,6 +185,16 @@ jobs:
       - name: Run clippy
         run: soldr cargo clippy --workspace --all-targets --locked -- -D warnings
 
+      - name: Enforce daemon process-creation boundary
+        run: soldr dylint --all -- --workspace --all-targets
+
+      - name: Test daemon process-creation boundary lint
+        env:
+          RUSTUP_TOOLCHAIN: nightly-2026-01-18
+        run: >-
+          soldr cargo test
+          --manifest-path dylints/ban_raw_process_creation/Cargo.toml
+
   # Per-platform `build workspace + run unit/smoke tests` jobs.
   # Each is a thin caller of the `_build-and-test.yml` template so
   # the duplicated cargo invocations live in one place and every

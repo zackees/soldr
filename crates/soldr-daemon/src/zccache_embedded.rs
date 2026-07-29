@@ -1098,7 +1098,14 @@ pub fn embedded_cache_root(paths: &SoldrPaths) -> std::path::PathBuf {
 }
 
 #[cfg(test)]
+#[path = "zccache_embedded_process_tests.rs"]
+mod zccache_embedded_process_tests;
+
+#[cfg(test)]
 mod private_root_tests {
+    #[cfg(windows)]
+    use super::zccache_embedded_process_tests::contained_status;
+    use super::zccache_embedded_process_tests::{bounded_output, CompilerProbeOutput};
     use super::*;
 
     fn shutdown_report(
@@ -1132,25 +1139,6 @@ mod private_root_tests {
         assert!(message.contains("index_writer_drained=false"));
         assert!(message.contains("TimedOut"));
     });
-
-    #[derive(Debug)]
-    struct CompilerProbeOutput {
-        success: bool,
-        exit_code: Option<i32>,
-        stdout: Vec<u8>,
-        stderr: Vec<u8>,
-    }
-
-    impl From<std::process::Output> for CompilerProbeOutput {
-        fn from(output: std::process::Output) -> Self {
-            Self {
-                success: output.status.success(),
-                exit_code: output.status.code(),
-                stdout: output.stdout,
-                stderr: output.stderr,
-            }
-        }
-    }
 
     fn validate_compiler_probe(
         path: &std::path::Path,
@@ -1190,10 +1178,9 @@ mod private_root_tests {
     }
 
     fn probe_working_compiler(path: &std::path::Path) -> Result<String, String> {
-        let output = std::process::Command::new(path)
-            .arg("-vV")
-            .output()
-            .map(CompilerProbeOutput::from);
+        let mut command = std::process::Command::new(path);
+        command.arg("-vV");
+        let output = bounded_output(command).map(CompilerProbeOutput::from);
         validate_compiler_probe(path, output)
     }
 
@@ -1245,13 +1232,12 @@ mod private_root_tests {
         std::os::unix::fs::symlink(&external, &stable).unwrap();
         #[cfg(windows)]
         {
-            let status = std::process::Command::new("cmd")
+            let mut command = std::process::Command::new("cmd");
+            command
                 .args(["/c", "mklink", "/J"])
                 .arg(&stable)
-                .arg(&external)
-                .status()
-                .unwrap();
-            assert!(status.success());
+                .arg(&external);
+            assert_eq!(contained_status(command).unwrap(), 0);
         }
         assert!(prepare_embedded_cache_root(&paths, &daemon, &stable).is_err());
         assert_eq!(std::fs::read(&sentinel).unwrap(), b"keep");
@@ -1271,13 +1257,12 @@ mod private_root_tests {
         std::os::unix::fs::symlink(&external, &version_root).unwrap();
         #[cfg(windows)]
         {
-            let status = std::process::Command::new("cmd")
+            let mut command = std::process::Command::new("cmd");
+            command
                 .args(["/c", "mklink", "/J"])
                 .arg(&version_root)
-                .arg(&external)
-                .status()
-                .unwrap();
-            assert!(status.success());
+                .arg(&external);
+            assert_eq!(contained_status(command).unwrap(), 0);
         }
         assert!(prepare_embedded_cache_root(&paths, &daemon, &stable).is_err());
         assert!(!external.join("logs").exists());

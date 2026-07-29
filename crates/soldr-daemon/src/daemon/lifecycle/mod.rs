@@ -7,8 +7,10 @@
 //! authoritative if the PID is alive AND its exe stem is
 //! `soldr-daemon`. Defends against recycled PIDs the way zccache does.
 
+mod relocate;
 mod spawn;
 mod spawn_env;
+pub use relocate::reexec_from_runtime_root;
 pub(crate) use spawn::*;
 pub(crate) use spawn_env::*;
 
@@ -1408,14 +1410,24 @@ fn pid_process_image_path(pid: u32) -> Option<PathBuf> {
 
 #[cfg(all(unix, not(target_os = "linux")))]
 fn pid_process_image_path(pid: u32) -> Option<PathBuf> {
-    let output = std::process::Command::new("/bin/ps")
-        .args(["-p", &pid.to_string(), "-o", "comm="])
-        .output()
-        .ok()?;
-    if !output.status.success() {
+    use std::io::Read;
+
+    let mut command = std::process::Command::new("/bin/ps");
+    command.args(["-p", &pid.to_string(), "-o", "comm="]);
+    let stdio = running_process::SpawnStdio {
+        stdin: running_process::StdioSource::Null,
+        stdout: running_process::StdioSource::Pipe,
+        stderr: running_process::StdioSource::Null,
+        drain_timeout: Some(Duration::from_secs(2)),
+        show_console: false,
+    };
+    let mut child = running_process::spawn(&mut command, stdio).ok()?;
+    let mut stdout = Vec::new();
+    child.stdout.take()?.read_to_end(&mut stdout).ok()?;
+    if child.wait().ok()? != 0 {
         return None;
     }
-    let image = String::from_utf8(output.stdout).ok()?;
+    let image = String::from_utf8(stdout).ok()?;
     let image = image.trim();
     (!image.is_empty()).then(|| PathBuf::from(image))
 }

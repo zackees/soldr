@@ -1484,7 +1484,7 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
                 // soldr#2016: this path bypasses `daemon_entry::run`, so the
                 // #1987 re-exec has to happen here too or a foreground daemon
                 // pins whatever directory it was launched from.
-                crate::daemon_entry::reexec_from_runtime_root();
+                crate::daemon::lifecycle::reexec_from_runtime_root(false);
                 let idle = if idle_timeout == 0 {
                     ServerOptions::default().idle_timeout
                 } else {

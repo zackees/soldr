@@ -1,0 +1,20 @@
+[package]
+name = "ban_raw_process_creation"
+version = "0.1.0"
+description = "Require running-process for Soldr daemon process creation"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+dylint_linting = "6.0.1"
+
+[dev-dependencies]
+dylint_testing = "6.0.1"
+
+[package.metadata.rust-analyzer]
+rustc_private = true
+
+[workspace]

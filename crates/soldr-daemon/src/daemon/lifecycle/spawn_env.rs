@@ -6,8 +6,6 @@
 //! environment, so a variable reaches the daemon only if the allowlist admits
 //! it. See the constants below for why each non-`SOLDR_` exception exists.
 
-use std::path::Path;
-
 /// Env-var name prefix forwarded from the spawning process into the
 /// detached daemon on top of running-process's user-baseline environment.
 ///
@@ -47,32 +45,10 @@ pub(crate) const FORWARDED_ZCCACHE_ENV: &[&str] = &[
     crate::core::jobs::ZCCACHE_MAX_PARALLEL_COMPILES_ENV_VAR,
 ];
 
-/// The full environment overlay applied to a detached daemon spawn: the
-/// forwarded `SOLDR_*` / `ZCCACHE_*` scrub survivors, plus the positive
-/// daemon self-declaration.
-///
-/// The declaration is what keeps a consumer's process-tree reaper from
-/// killing us (soldr#1959). A reaper that walks the tree of an exiting
-/// session sees soldr-daemon as just another descendant; the daemon
-/// outlives the wrapper that spawned it *by design*, so without a way to
-/// say so it is indistinguishable from a leaked orphan.
-///
-/// This used to work by accident. Reapers inferred "daemon" from the
-/// *absence* of a `RUNNING_PROCESS_ORIGINATOR` tag, and the `env_clear()`
-/// in every spawn path drops that tag for free. zackees/clud#522 replaced
-/// that inference with a positive declaration because absence is ambiguous
-/// -- it also describes an env-stripped orphan. Daemons that never opted in
-/// silently fell out of the protected set.
-///
-/// Set here rather than at each spawn site because the Windows path builds
-/// a raw `CreateProcessW` environment block instead of a `Command`, so
-/// `running_process::spawn::mark_as_daemon` (which is `pub(crate)` there
-/// anyway) cannot be shared. This overlay is the one thing all four spawn
-/// paths -- unix/windows x sibling/via-self -- have in common.
+/// The environment overlay applied on top of `running-process`'s user
+/// baseline. `running-process` adds its positive daemon declaration itself.
 pub(crate) fn daemon_spawn_env() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
-    let mut env = forwarded_soldr_env();
-    env.push((running_process::DAEMON_MARKER_ENV_VAR.into(), "1".into()));
-    env
+    forwarded_soldr_env()
 }
 
 pub(crate) fn forwarded_soldr_env() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
@@ -94,61 +70,4 @@ pub(crate) fn filter_forwarded_env(
             name.starts_with(FORWARDED_ENV_PREFIX) || FORWARDED_ZCCACHE_ENV.contains(&name.as_str())
         })
         .collect()
-}
-
-/// Windows counterpart of the Unix `envs(daemon_spawn_env())` overlay:
-/// take running-process's user-baseline pairs, overlay the current
-/// process's `SOLDR_*` variables (env names compare case-insensitively on
-/// Windows), and serialize to the sorted, double-NUL-terminated UTF-16
-/// block `CreateProcessW` expects with `CREATE_UNICODE_ENVIRONMENT`.
-#[cfg(windows)]
-pub(crate) fn merged_windows_environment_block() -> Result<Vec<u16>, std::io::Error> {
-    let pairs = running_process::environment::user_baseline_environment()?;
-    Ok(build_windows_environment_block(merge_env_overlay(
-        pairs,
-        daemon_spawn_env(),
-    )))
-}
-
-#[cfg(windows)]
-pub(crate) fn merge_env_overlay(
-    mut base: Vec<(std::ffi::OsString, std::ffi::OsString)>,
-    overlay: Vec<(std::ffi::OsString, std::ffi::OsString)>,
-) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
-    fn key_upper(name: &std::ffi::OsStr) -> String {
-        name.to_string_lossy().to_uppercase()
-    }
-    for (name, value) in overlay {
-        match base
-            .iter_mut()
-            .find(|(existing, _)| key_upper(existing) == key_upper(&name))
-        {
-            Some(slot) => slot.1 = value,
-            None => base.push((name, value)),
-        }
-    }
-    base.sort_by_key(|(name, _)| key_upper(name));
-    base
-}
-
-#[cfg(windows)]
-pub(crate) fn build_windows_environment_block(
-    pairs: Vec<(std::ffi::OsString, std::ffi::OsString)>,
-) -> Vec<u16> {
-    use std::os::windows::ffi::OsStrExt;
-
-    let mut block = Vec::new();
-    for (name, value) in pairs {
-        block.extend(name.encode_wide());
-        block.push('=' as u16);
-        block.extend(value.encode_wide());
-        block.push(0);
-    }
-    // An empty environment block is still two NULs: one for the (absent)
-    // final entry, one terminating the block.
-    if block.is_empty() {
-        block.push(0);
-    }
-    block.push(0);
-    block
 }
