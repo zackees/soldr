@@ -37,8 +37,8 @@ use crate::fetch::ensure_zig;
 use crate::fetch::xwin_cache::ensure_xwin_case_aliases;
 use wait_timeout::ChildExt;
 
-const RUSTUP_TARGET_ADD_TIMEOUT_ENV_VAR: &str = "SOLDR_RUSTUP_TARGET_ADD_TIMEOUT_SECS";
-const DEFAULT_RUSTUP_TARGET_ADD_TIMEOUT_SECS: u64 = 15 * 60;
+pub const RUSTUP_TARGET_ADD_TIMEOUT_ENV_VAR: &str = "SOLDR_RUSTUP_TARGET_ADD_TIMEOUT_SECS";
+pub const DEFAULT_RUSTUP_TARGET_ADD_TIMEOUT_SECS: u64 = 15 * 60;
 const KILLED_RUSTUP_TARGET_ADD_REAP_TIMEOUT_SECS: u64 = 5;
 
 /// Append `KEY=VALUE` to the file at `path` (creating it if needed).
@@ -801,7 +801,7 @@ fn rustup_add_target(triple: &str) -> Result<(), SoldrError> {
     Ok(())
 }
 
-fn rustup_target_add_timeout() -> Duration {
+pub fn rustup_target_add_timeout() -> Duration {
     std::env::var(RUSTUP_TARGET_ADD_TIMEOUT_ENV_VAR)
         .ok()
         .and_then(|value| value.parse::<u64>().ok())

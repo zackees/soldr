@@ -54,8 +54,8 @@ pub use toolchain_resolve::{
 pub const CARGO_HOME_ENV_VAR: &str = "CARGO_HOME";
 pub const RUSTUP_HOME_ENV_VAR: &str = "RUSTUP_HOME";
 pub(crate) const RUSTUP_TOOLCHAIN_ENV_VAR: &str = "RUSTUP_TOOLCHAIN";
-const COMMAND_OUTPUT_TIMEOUT_ENV_VAR: &str = "SOLDR_COMMAND_OUTPUT_TIMEOUT_SECS";
-const DEFAULT_COMMAND_OUTPUT_TIMEOUT_SECS: u64 = 60;
+pub const COMMAND_OUTPUT_TIMEOUT_ENV_VAR: &str = "SOLDR_COMMAND_OUTPUT_TIMEOUT_SECS";
+pub const DEFAULT_COMMAND_OUTPUT_TIMEOUT_SECS: u64 = 60;
 const KILLED_COMMAND_OUTPUT_REAP_TIMEOUT_SECS: u64 = 5;
 
 // ---------------------------------------------------------------------------
@@ -221,7 +221,7 @@ fn join_pipe_reader(
     }
 }
 
-fn command_output_timeout() -> Duration {
+pub fn command_output_timeout() -> Duration {
     std::env::var(COMMAND_OUTPUT_TIMEOUT_ENV_VAR)
         .ok()
         .and_then(|value| command_output_timeout_from_str(&value))
