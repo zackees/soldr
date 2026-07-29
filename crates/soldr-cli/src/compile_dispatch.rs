@@ -572,8 +572,6 @@ pub fn direct_exec_rustc(rustc_argv: &[String]) -> Result<i32, SoldrError> {
     let mut command = std::process::Command::new(tool);
     command.args(args);
     crate::core::suppress_windows_console_window(&mut command);
-    // soldr#2024 -- stdio is inherited, so the child speaks for this exit.
-    crate::exit_guard::mark_spoke();
     let status = command.status()?;
     let exit_code = status.code().unwrap_or(1);
     // soldr#1974 -- same rationale as the `direct_exec_tool` twin: stdio is

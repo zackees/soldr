@@ -240,6 +240,9 @@ pub mod toolchain_doctor;
 pub mod toolchain_ensure;
 pub mod toolchain_link;
 pub mod trampoline;
+/// soldr#2024 — the `--as <version>` trampoline, split out of
+/// `soldr_main.rs` so that file could stop growing.
+pub mod version_trampoline;
 pub mod wrapper;
 /// `wrapper_target` holds the wrapper hot-path target-registry routing
 /// extracted out of `wrapper.rs` so integration tests under

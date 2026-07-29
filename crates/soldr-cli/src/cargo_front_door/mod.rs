@@ -2137,10 +2137,6 @@ pub(crate) async fn run_cargo_front_door(
     // Everything above is pure soldr overhead the user pays before Cargo
     // starts. Emit the breakdown here so the total excludes Cargo itself.
     profile.finish_labeled("cargo front door", "pre_spawn_tail");
-    // soldr#2024: past this point Cargo owns the terminal. soldr cannot
-    // count bytes a child writes to inherited stdio, so marking here is
-    // what keeps the exit guard off every ordinary failing build.
-    crate::exit_guard::mark_spoke();
     let cargo_run_result: CargoRunResult = if capture_cargo_artifacts {
         let target_dir = cache_plan
             .target_dir_for_hooks(args)

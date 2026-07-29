@@ -17,7 +17,7 @@
 //! 2. soldr handed its stdio to a child process, which may have spoken.
 //!
 //! If neither happened and the exit code is non-zero, nothing anywhere has
-//! explained the failure, and [`exit`] says so. If either happened, it stays
+//! explained the failure, and [`guarded_exit`] says so. If either happened, it stays
 //! quiet — so an ordinary failing build gains no noise, which is the whole
 //! reason this is not simply an unconditional print at the exit funnel.
 //!
@@ -73,7 +73,7 @@ pub(crate) fn annotation(code: i32) -> String {
 ///
 /// Replaces bare `std::process::exit` at soldr's CLI exit sites. Returns
 /// `!` for the same reason `std::process::exit` does — it never comes back.
-pub(crate) fn exit(code: i32) -> ! {
+pub(crate) fn guarded_exit(code: i32) -> ! {
     if needs_annotation(code, spoke()) {
         eprintln!("{}", annotation(code));
     }
