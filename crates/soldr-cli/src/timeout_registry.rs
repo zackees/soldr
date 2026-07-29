@@ -82,7 +82,7 @@ pub(crate) fn classify(raw: Option<&str>, default: Duration, effective: Duration
         Ok(seconds) if seconds > 0 && Duration::from_secs(seconds) == effective => {
             TimeoutSource::Override
         }
-        Ok(seconds) if seconds == 0 => TimeoutSource::Default,
+        Ok(0) => TimeoutSource::Default,
         // Parsed but not in force, or did not parse at all: either way the
         // user asked for something they did not get.
         Ok(_) => TimeoutSource::InvalidOverride,
