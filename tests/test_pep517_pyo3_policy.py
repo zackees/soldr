@@ -76,15 +76,15 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
         ):
             env = self.backend._prep_env()
         project_fields = self.backend._project_dev_profile_options()
-        for key, (cargo_key, default) in (
-            self.backend._FAST_DEV_PROFILE_DEFAULTS.items()
-        ):
+        for key, (
+            cargo_key,
+            default,
+        ) in self.backend._FAST_DEV_PROFILE_DEFAULTS.items():
             if cargo_key in project_fields:
                 self.assertNotIn(
                     key,
                     env,
-                    f"{key} must be left to the project, which sets "
-                    f"[profile.dev] {cargo_key}",
+                    f"{key} must be left to the project, which sets [profile.dev] {cargo_key}",
                 )
             else:
                 self.assertEqual(env[key], default, f"{key} should carry its default")
@@ -99,9 +99,7 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
         behaviour needs a project that specifies nothing, so this stubs the
         reader rather than contriving a temp checkout.
         """
-        with mock.patch.object(
-            self.backend, "_project_dev_profile_options", return_value={}
-        ):
+        with mock.patch.object(self.backend, "_project_dev_profile_options", return_value={}):
             with mock.patch.dict(
                 os.environ,
                 {"SOLDR_PEP517_STABLE_TARGET_DIR": "0"},
@@ -152,6 +150,22 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
         self.assertEqual(env["CARGO_PROFILE_DEV_CODEGEN_UNITS"], "32")
         self.assertEqual(env["CARGO_PROFILE_DEV_DEBUG"], "2")
         self.assertEqual(self.backend._profile_args({"profile": "ci"}), ["--profile", "ci"])
+
+    def test_maturin_child_reuses_configured_target_environment(self) -> None:
+        settings = {"profile": "release", "target": "linux-arm64"}
+        environment = {
+            "CARGO_TARGET_DIR": "/managed/target/linux-arm64/release",
+            "SOLDR_PEP517_PROFILE": "release",
+        }
+        with mock.patch.object(self.backend, "_prep_env", return_value=environment) as prep:
+            with mock.patch.object(self.backend, "_run_pep517_streaming") as run_child:
+                self.backend._maturin_pep517(
+                    "build-wheel",
+                    config_settings=settings,
+                    editable=True,
+                )
+        prep.assert_called_once_with(settings, editable=True)
+        self.assertIs(run_child.call_args.kwargs["env"], environment)
 
     def test_wheel_build_prints_default_cache_summary(self) -> None:
         calls = []
@@ -465,9 +479,29 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
         subcommand, args, kwargs = calls[0]
         self.assertEqual(subcommand, "build-wheel")
         self.assertEqual(kwargs["build_label"], "wheel")
+        self.assertEqual(kwargs["config_settings"], {"target": "x86_64-pc-windows-msvc"})
+        self.assertFalse(kwargs.get("editable", False))
         self.assertIn(sys.executable, args)
         target_index = args.index("--target")
         self.assertEqual(args[target_index + 1], "x86_64-pc-windows-msvc")
+
+    def test_build_editable_threads_settings_into_target_preparation(self) -> None:
+        calls = []
+        settings = {"target": "linux-arm64", "editable-profile": "dev"}
+        with tempfile.TemporaryDirectory() as raw:
+            wheel_dir = Path(raw)
+
+            def fake_pep517(subcommand, *args, **kwargs):
+                calls.append((subcommand, args, kwargs))
+                (wheel_dir / "demo-0.1.0-py3-none-any.whl").write_bytes(b"wheel")
+
+            with mock.patch.dict(os.environ, {"SOLDR_PEP517_WHEEL_CACHE": "off"}, clear=False):
+                with mock.patch.object(self.backend, "_maturin_pep517", fake_pep517):
+                    self.backend.build_editable(raw, settings)
+
+        _, _, kwargs = calls[0]
+        self.assertIs(kwargs["config_settings"], settings)
+        self.assertTrue(kwargs["editable"])
 
     def test_wheel_cache_reuses_last_artifact_and_invalidates_on_source_change(
         self,
@@ -540,8 +574,7 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
             root.mkdir()
             (root / "pyproject.toml").write_text("[build-system]\nrequires=[]\n")
             (root / "Cargo.toml").write_text(
-                "[package]\nname='demo'\n"
-                "[dependencies]\nexternal={path='.extern-repos/member'}\n"
+                "[package]\nname='demo'\n[dependencies]\nexternal={path='.extern-repos/member'}\n"
             )
             runtime_source = root / ".claude" / "worktrees" / "stale" / "src.rs"
             runtime_source.parent.mkdir(parents=True)
@@ -781,9 +814,7 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
 
     def test_caller_can_re_enable_staged_artifacts(self) -> None:
         """The default must not override an explicit choice (soldr#1867)."""
-        with mock.patch.dict(
-            os.environ, {"ZCCACHE_STAGED_ARTIFACTS": "on"}, clear=False
-        ):
+        with mock.patch.dict(os.environ, {"ZCCACHE_STAGED_ARTIFACTS": "on"}, clear=False):
             env = self.backend._prep_env({"profile": "dev"})
 
         self.assertEqual(env.get("ZCCACHE_STAGED_ARTIFACTS"), "on")
@@ -957,9 +988,7 @@ class Pep517IdleWatchdogTest(unittest.TestCase):
             env["SOLDR_CACHE_DIR"] = root
             with contextlib.redirect_stderr(stderr):
                 with self.assertRaises(subprocess.CalledProcessError):
-                    self.backend._run_pep517_streaming(
-                        [sys.executable, "-u", "-c", code], env=env
-                    )
+                    self.backend._run_pep517_streaming([sys.executable, "-u", "-c", code], env=env)
 
             summary = stderr.getvalue().split("soldr: PEP 517 build failed", 1)[1]
             self.assertIn("exit code 101", summary)
@@ -968,9 +997,7 @@ class Pep517IdleWatchdogTest(unittest.TestCase):
             self.assertNotIn("99/100", summary)
 
             log_prefix = "soldr: full PEP 517 build log: "
-            log_line = next(
-                line for line in summary.splitlines() if line.startswith(log_prefix)
-            )
+            log_line = next(line for line in summary.splitlines() if line.startswith(log_prefix))
             log_path = Path(log_line.removeprefix(log_prefix))
             self.assertTrue(log_path.is_file())
             full_log = log_path.read_text(encoding="utf-8")
@@ -996,19 +1023,13 @@ class Pep517IdleWatchdogTest(unittest.TestCase):
             env["SOLDR_CACHE_DIR"] = root
             with contextlib.redirect_stderr(stderr):
                 with self.assertRaises(subprocess.CalledProcessError):
-                    self.backend._run_pep517_streaming(
-                        [sys.executable, "-u", "-c", code], env=env
-                    )
+                    self.backend._run_pep517_streaming([sys.executable, "-u", "-c", code], env=env)
 
             summary = stderr.getvalue().split("soldr: PEP 517 build failed", 1)[1]
             self.assertIn("full PEP 517 build log:", summary)
             log_prefix = "soldr: full PEP 517 build log: "
-            log_line = next(
-                line for line in summary.splitlines() if line.startswith(log_prefix)
-            )
-            full_log = Path(log_line.removeprefix(log_prefix)).read_text(
-                encoding="utf-8"
-            )
+            log_line = next(line for line in summary.splitlines() if line.startswith(log_prefix))
+            full_log = Path(log_line.removeprefix(log_prefix)).read_text(encoding="utf-8")
             self.assertIn("first diagnostic", full_log)
             self.assertIn("error: final diagnostic", full_log)
 
@@ -1028,9 +1049,7 @@ class Pep517IdleWatchdogTest(unittest.TestCase):
             started = time.monotonic()
             with contextlib.redirect_stderr(BrokenSink()):
                 with self.assertRaisesRegex(RuntimeError, "output relay failed") as raised:
-                    self.backend._run_pep517_streaming(
-                        [sys.executable, "-u", "-c", code], env=env
-                    )
+                    self.backend._run_pep517_streaming([sys.executable, "-u", "-c", code], env=env)
             self.assertLess(time.monotonic() - started, 3)
 
             log_prefix = "possibly incomplete PEP 517 build log: "
@@ -1057,9 +1076,7 @@ class Pep517IdleWatchdogTest(unittest.TestCase):
             env = self._child_env("5")
             env["SOLDR_CACHE_DIR"] = root
             with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-                self.backend._run_pep517_streaming(
-                    [sys.executable, "-u", "-c", code], env=env
-                )
+                self.backend._run_pep517_streaming([sys.executable, "-u", "-c", code], env=env)
             self.assertEqual(list(Path(root).rglob("*.log")), [])
 
         self.assertEqual(stdout.getvalue(), "Building crate\u2026\n")

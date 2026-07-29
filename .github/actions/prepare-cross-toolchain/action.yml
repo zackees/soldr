@@ -1,20 +1,10 @@
 name: Preparing Cross Compile Toolchain
 description: |
-  Uniform cross-compile toolchain bootstrap. One step per matrix cell;
-  internally dispatches based on `target` triple via `soldr prepare`:
-    *-pc-windows-msvc → ensure cargo-xwin + LLVM + extract vendored
-      MSVC CRT cache to ~/.cache/cargo-xwin/ (no live MS download).
-    x86_64-pc-windows-gnu → on Windows x64, ensure managed MinGW-w64
-      GCC and export target-scoped Cargo/cc-rs/syslib env; other hosts
-      fail visibly instead of falling back to cargo-zigbuild.
-    *-apple-darwin    → ensure the target-shaped Apple SDK and export
-      SDKROOT into $GITHUB_ENV for external/legacy commands. `soldr build`
-      is the blessed Darwin cross-build path and injects clang/SDK env
-      internally.
-    *-unknown-linux-* → ensure cargo-zigbuild + zig.
-  Collapses what used to be 3-4 separate workflow steps into one named
-  "Preparing Cross Compile Toolchain". Designed for
-  cross-compile-all-targets.yml + sibling workflows.
+  Uniform target lifecycle preparation. One step per matrix cell;
+  the caller selects only a target triple and `soldr prepare` owns the
+  compiler, linker, SDK/sysroot, Rust standard library, and environment.
+  The same preparation contract is consumed by soldr build, clippy, test
+  compilation, nextest archives, and PEP 517 operations.
 
 inputs:
   target:
@@ -30,16 +20,15 @@ inputs:
   save:
     description: |
       Optional path. If set, `soldr prepare` writes a tar.zst archive
-      of the prepared state (zig + LLVM + Apple SDK + xwin cache) to
-      this file AFTER preparation completes. Plumb the same path into
-      `actions/cache@v4`'s save step so a sibling run with `restore:`
-      can skip the downloads.
+      of the prepared compiler and platform state after preparation.
+      Plumb the same path into `actions/cache@v4`'s save step so a
+      sibling run with `restore:` can skip downloads.
     required: false
     default: ""
   restore:
     description: |
       Optional path. If set and the file exists, `soldr prepare`
-      extracts it BEFORE running the normal prepare flow. Anything
+      extracts it before running the normal preparation flow. Anything
       still missing afterwards is downloaded normally.
     required: false
     default: ""

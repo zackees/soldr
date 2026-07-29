@@ -19,8 +19,8 @@
 //!   clang/SDK env injection through
 //!   [`crate::fetch::apple_sdk::ensure_apple_sdk`].
 //!
-//! Other targets (linux musl, linux gnu) get no sysroot prep — they
-//! work out-of-the-box with the host cargo + zigbuild flow.
+//! Linux GNU/musl preparation is layered on by `target_lifecycle`; this
+//! low-level platform module remains responsible for SDK/catalogue families.
 //!
 //! ## Opt-out
 //!

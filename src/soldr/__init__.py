@@ -615,9 +615,7 @@ def _pep517_failure_excerpt(stdout_tail: str, stderr_tail: str) -> str:
                 "compiler-message"
             ):
                 message = cargo_message.get("message")
-                rendered = (
-                    message.get("rendered") if isinstance(message, dict) else None
-                )
+                rendered = message.get("rendered") if isinstance(message, dict) else None
                 if isinstance(rendered, str):
                     lines.extend(
                         _ANSI_ESCAPE_RE.sub("", item).rstrip()
@@ -640,9 +638,7 @@ def _pep517_failure_excerpt(stdout_tail: str, stderr_tail: str) -> str:
     )
     window = lines[-80:]
     marker_indexes = [
-        index
-        for index, line in enumerate(window)
-        if line.lstrip().lower().startswith(markers)
+        index for index, line in enumerate(window) if line.lstrip().lower().startswith(markers)
     ]
     if marker_indexes:
         window = window[marker_indexes[0] :]
@@ -651,9 +647,7 @@ def _pep517_failure_excerpt(stdout_tail: str, stderr_tail: str) -> str:
     return "\n".join(window)
 
 
-def _pep517_failure_payload(
-    excerpt: str, log_path: "Path | None", relays_complete: bool
-) -> str:
+def _pep517_failure_payload(excerpt: str, log_path: "Path | None", relays_complete: bool) -> str:
     """What travels *with* the exception, not just to our stderr.
 
     soldr#1999 rule 2. The diagnostics were being written to stderr and then
@@ -666,8 +660,7 @@ def _pep517_failure_payload(
         parts.append(excerpt)
     else:
         parts.append(
-            "soldr: the PEP 517 build produced no diagnostics before failing"
-            " (soldr#1878)."
+            "soldr: the PEP 517 build produced no diagnostics before failing (soldr#1878)."
         )
     if log_path is not None:
         qualifier = "full" if relays_complete else "possibly incomplete"
@@ -684,16 +677,13 @@ def _open_pep517_log(
         return None, None
     directory = Path(root).expanduser() / "logs" / "pep517"
     filename = (
-        f"build-{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}-"
-        f"{os.getpid()}-{time.time_ns()}.log"
+        f"build-{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}-{os.getpid()}-{time.time_ns()}.log"
     )
     path = directory / filename
     try:
         directory.mkdir(parents=True, exist_ok=True)
         log = path.open("xb")
-        log.write(
-            (f"command: {json.dumps(cmd, ensure_ascii=False)}\n\n").encode("utf-8")
-        )
+        log.write((f"command: {json.dumps(cmd, ensure_ascii=False)}\n\n").encode("utf-8"))
     except OSError:
         return None, None
     return path, log
@@ -765,9 +755,7 @@ def _run_pep517_streaming(cmd: "list[str]", env: "dict[str, str]") -> None:
                         log.write(raw)
                     except OSError:
                         pass
-                tails[tail_name] = (tails[tail_name] + text)[
-                    -_PEP517_FAILURE_TAIL_CHARS:
-                ]
+                tails[tail_name] = (tails[tail_name] + text)[-_PEP517_FAILURE_TAIL_CHARS:]
             _write_pep517_text(sink, text)
 
         try:
@@ -825,9 +813,7 @@ def _run_pep517_streaming(cmd: "list[str]", env: "dict[str, str]") -> None:
     finally:
         bounded_drain = timed_out or relay_failed
         for thread in relays:
-            thread.join(
-                timeout=_PEP517_TIMEOUT_RELAY_DRAIN_SECONDS if bounded_drain else None
-            )
+            thread.join(timeout=_PEP517_TIMEOUT_RELAY_DRAIN_SECONDS if bounded_drain else None)
         if process.stdout is not None:
             process.stdout.close()
         if process.stderr is not None:
@@ -835,22 +821,16 @@ def _run_pep517_streaming(cmd: "list[str]", env: "dict[str, str]") -> None:
         if bounded_drain:
             for thread in relays:
                 thread.join(timeout=1)
-        relays_complete = not relay_errors and all(
-            not thread.is_alive() for thread in relays
-        )
+        relays_complete = not relay_errors and all(not thread.is_alive() for thread in relays)
         _close_pep517_log(log)
     if timed_out:
         assert idle_timeout is not None
         qualifier = "full " if relays_complete else "possibly incomplete "
-        detail = (
-            f"\nsoldr: {qualifier}PEP 517 build log: {log_path}\n" if log_path else ""
-        )
+        detail = f"\nsoldr: {qualifier}PEP 517 build log: {log_path}\n" if log_path else ""
         _write_pep517_text(stderr_sink, detail)
         raise subprocess.TimeoutExpired(cmd, idle_timeout)
     if relay_errors:
-        detail = (
-            f"; possibly incomplete PEP 517 build log: {log_path}" if log_path else ""
-        )
+        detail = f"; possibly incomplete PEP 517 build log: {log_path}" if log_path else ""
         raise RuntimeError(f"soldr PEP 517 output relay failed{detail}") from relay_errors[0]
     assert returncode is not None
     if returncode != 0:
@@ -886,8 +866,14 @@ def _run_pep517_streaming(cmd: "list[str]", env: "dict[str, str]") -> None:
     _discard_pep517_log(log_path)
 
 
-def _maturin_pep517(subcommand: str, *args: str, build_label: "str | None" = None) -> None:
-    env = _prep_env()
+def _maturin_pep517(
+    subcommand: str,
+    *args: str,
+    build_label: "str | None" = None,
+    config_settings: Optional[dict] = None,
+    editable: bool = False,
+) -> None:
+    env = _prep_env(config_settings, editable=editable)
     mode = _stats_mode(env)
     started_at = time.perf_counter()
     start = _session_command("session-start", env) if build_label and mode != "off" else None
@@ -1277,12 +1263,7 @@ def _emit_wheel_cache_hit(
 
 
 def _target_args(config_settings: Optional[dict]) -> "list[str]":
-    """Translate the PEP 517 target setting into maturin's explicit flag.
-
-    Explicit config settings are the highest-precedence target source. When
-    absent, the Rust-side shared plan resolves CARGO_BUILD_TARGET, then
-    ``[tool.maturin].target``, then the host triple.
-    """
+    """Translate the highest-precedence PEP 517 target into maturin's flag."""
     if not config_settings:
         return []
     for key in ("--target", "target", "build-target"):
@@ -1312,11 +1293,7 @@ def _newest_entry(directory: str, suffix: str, *, want_dir: bool) -> str:
     return entries[0][1]
 
 
-# PEP 517 dictates the exact parameter names below; renaming them with
-# `_` prefixes to silence linters would break frontends that call by
-# keyword. `del` after entry preserves the contract while marking each
-# unused arg as intentionally ignored for pylint W0613 / pyright
-# reportUnusedParameter / ruff ARG001.
+# PEP 517 parameter names are API; frontends may call them by keyword.
 
 
 def get_requires_for_build_wheel(config_settings: Optional[dict] = None):
@@ -1372,6 +1349,7 @@ def prepare_metadata_for_build_wheel(
         "--interpreter",
         sys.executable,
         *target_args,
+        config_settings=config_settings,
     )
     return _newest_entry(metadata_directory, ".dist-info", want_dir=True)
 
@@ -1428,6 +1406,7 @@ def build_wheel(
         *_profile_args(config_settings),
         *target_args,
         build_label="wheel",
+        config_settings=config_settings,
     )
     return _wheel_cache_finish(
         "wheel",
@@ -1473,6 +1452,8 @@ def build_editable(
         *_profile_args(config_settings, editable=True),
         *target_args,
         build_label="editable wheel",
+        config_settings=config_settings,
+        editable=True,
     )
     return _wheel_cache_finish(
         "editable",
@@ -1499,5 +1480,6 @@ def build_sdist(
         "write-sdist",
         "--sdist-directory",
         sdist_directory,
+        config_settings=config_settings,
     )
     return _newest_entry(sdist_directory, ".tar.gz", want_dir=False)

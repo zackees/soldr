@@ -154,27 +154,51 @@ fn soldr_build_help_documents_blessed_surface() {
 soldr_cli::timed_test!(canonical_aliases_resolve_through_the_cli, {
     let cwd = unique_temp_dir("canonical-alias-cli-parity");
     for (alias, triple) in soldr_cli::target_alias::CANONICAL_ALIASES {
-        let output = Command::new(common::soldr_bin())
-            .args(["env", "--target", alias, "--json"])
-            .current_dir(&cwd)
-            .output()
-            .unwrap_or_else(|err| panic!("failed to resolve canonical alias {alias}: {err}"));
-        assert!(
-            output.status.success(),
-            "canonical alias {alias} failed through the CLI parser/resolver: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let payload: serde_json::Value = serde_json::from_slice(&output.stdout)
-            .unwrap_or_else(|err| panic!("invalid JSON for canonical alias {alias}: {err}"));
-        assert_eq!(
-            payload["rust_triple"].as_str(),
-            Some(*triple),
-            "canonical alias {alias} resolved to the wrong target"
-        );
-        assert_eq!(
-            payload["via_alias"], true,
-            "{alias} bypassed alias resolution"
-        );
+        for (input, via_alias) in [(*alias, true), (*triple, false)] {
+            let output = Command::new(common::soldr_bin())
+                .args(["env", "--target", input, "--json"])
+                .current_dir(&cwd)
+                .output()
+                .unwrap_or_else(|err| panic!("failed to resolve canonical target {input}: {err}"));
+            assert!(
+                output.status.success(),
+                "canonical target {input} failed through the CLI parser/resolver: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let payload: serde_json::Value = serde_json::from_slice(&output.stdout)
+                .unwrap_or_else(|err| panic!("invalid JSON for canonical target {input}: {err}"));
+            assert_eq!(payload["rust_triple"].as_str(), Some(*triple));
+            assert_eq!(payload["via_alias"], via_alias);
+            assert_eq!(payload["command"], "env");
+            assert_eq!(payload["target_plan"]["schema_version"], 1);
+            assert_eq!(payload["target_plan"]["canonical"], true);
+            assert_eq!(
+                payload["target_plan"]["canonical_target"].as_str(),
+                Some(*triple)
+            );
+            assert_eq!(
+                payload["target_plan"]["canonical_alias"].as_str(),
+                Some(*alias)
+            );
+            assert!(
+                payload["target_plan"]["supported_operations"]
+                    .as_array()
+                    .is_some_and(|operations| {
+                        [
+                            "prepare",
+                            "build",
+                            "clippy",
+                            "test-no-run",
+                            "nextest-archive",
+                            "pep517-wheel",
+                            "pep517-sdist",
+                        ]
+                        .iter()
+                        .all(|expected| operations.iter().any(|actual| actual == expected))
+                    }),
+                "{input} did not advertise the complete blessed lifecycle: {payload}"
+            );
+        }
     }
     let _ = std::fs::remove_dir_all(cwd);
 });

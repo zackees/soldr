@@ -15,10 +15,9 @@
 //!   cargo-zigbuild for this target.
 //! - `*-apple-darwin` → ensure the target-shaped Apple SDK and print
 //!   `SDKROOT=<path>` so the caller can plumb it into `$GITHUB_ENV`.
-//!   `soldr build --target` is the blessed Darwin cross-build path;
-//!   prepare still materializes zig for legacy/external tooling.
-//! - `*-unknown-linux-{gnu,musl}` (when triple ≠ host) → ensure
-//!   cargo-zigbuild + zig.
+//!   `soldr build --target` is the blessed Darwin cross-build path.
+//! - `*-unknown-linux-{gnu,musl}` (when triple differs from host) → ensure
+//!   managed Zig plus target-scoped compiler/linker wrappers.
 //! - All targets: `rustup target add <triple>`.
 //!
 //! Designed to collapse the per-step ad-hoc downloads in
@@ -33,7 +32,6 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::core::{SoldrError, SoldrPaths};
-use crate::fetch::ensure_zig;
 use crate::fetch::xwin_cache::ensure_xwin_case_aliases;
 use wait_timeout::ChildExt;
 
@@ -62,9 +60,14 @@ fn apply_blessed_prep_env(
     github_env_path: Option<&Path>,
     prep: &crate::blessed_build::BlessedPrep,
 ) -> Result<(), SoldrError> {
-    for (key, value) in &prep.env {
-        std::env::set_var(key, value);
-        append_env(github_env_path, key, value)?;
+    for (key, value) in crate::target_lifecycle::resolved_env(prep) {
+        append_env(github_env_path, &key, &value)?;
+    }
+    if let Some(encoded) = crate::target_lifecycle::encoded_rustflags_for_prep(prep) {
+        // This highest-precedence value contains required SDK flags plus
+        // ambient project flags, so later external tools cannot shadow the
+        // target lifecycle with global RUSTFLAGS.
+        append_env(github_env_path, "CARGO_ENCODED_RUSTFLAGS", &encoded)?;
     }
 
     let mut path_dirs = prep.path_prefix();
@@ -75,7 +78,6 @@ fn apply_blessed_prep_env(
         let path_value = std::env::join_paths(path_dirs)
             .map(|p| p.to_string_lossy().into_owned())
             .map_err(|e| SoldrError::Other(format!("failed to build prepared PATH: {e}")))?;
-        std::env::set_var("PATH", &path_value);
         append_env(github_env_path, "PATH", &path_value)?;
     }
 
@@ -172,11 +174,6 @@ pub async fn run(
         emit_restore_report(&report);
     }
 
-    // Always add the rustup target (idempotent).
-    if let Err(e) = rustup_add_target(&target) {
-        eprintln!("soldr prepare: warning: rustup target add failed: {e}");
-    }
-
     // soldr#940 — assets within a target's dispatch are fetched
     // concurrently, either here via `tokio::try_join!` or inside the
     // shared blessed-build prep object. Each ensure_* call already
@@ -192,7 +189,7 @@ pub async fn run(
                     // XWIN_CACHE_DIR + clang shim/LLVM PATH + cc-rs env
                     // instead of a second cargo-xwin-default cache.
                     eprintln!("soldr prepare: dispatch=blessed-msvc");
-                    let prep = crate::blessed_build::prepare(&paths, &target).await?;
+                    let prep = crate::target_lifecycle::prepare_target(&paths, &target).await?;
                     if let Some((_, cache_dir)) = prep
                         .env
                         .iter()
@@ -204,7 +201,7 @@ pub async fn run(
                 }
                 Some(TargetAbi::Gnu) => {
                     eprintln!("soldr prepare: dispatch=mingw-w64-gcc+syslibs");
-                    let prep = crate::blessed_build::prepare(&paths, &target).await?;
+                    let prep = crate::target_lifecycle::prepare_target(&paths, &target).await?;
                     if let Some((_, root)) =
                         prep.env.iter().find(|(key, _)| key == "MINGW_W64_GCC_ROOT")
                     {
@@ -220,15 +217,10 @@ pub async fn run(
             // SDK, linker, LLVM, and cmake/ninja env as `soldr build`.
             // Deferred cook runs before the final build step in CI, so
             // `SDKROOT` alone still lets cc-rs/ring probe `/usr/bin/cc`
-            // and fall back to the host Linux linker. Keep fetching zig
-            // for explicit legacy/external cargo-zigbuild callers, but
-            // make the GitHub env block the blessed-build env.
-            eprintln!("soldr prepare: dispatch=blessed-darwin+legacy-zig (parallel)");
-            let (zig_dir, prep) = tokio::try_join!(
-                ensure_zig(&paths),
-                crate::blessed_build::prepare(&paths, &target)
-            )?;
-            eprintln!("soldr prepare: zig at {}", zig_dir.display());
+            // and fall back to the host Linux linker. Export exactly
+            // the environment used by the blessed build path.
+            eprintln!("soldr prepare: dispatch=blessed-darwin");
+            let prep = crate::target_lifecycle::prepare_target(&paths, &target).await?;
             if let Some(sdk) = prep.sdkroot.as_ref() {
                 eprintln!("soldr prepare: Apple SDK at {}", sdk.display());
                 println!("SDKROOT={}", sdk.display());
@@ -236,12 +228,11 @@ pub async fn run(
             apply_blessed_prep_env(github_env_path, &prep)?;
         }
         TargetOs::Linux => {
-            // Linux cross-compile via zigbuild (musl always, gnu when
-            // host != target arch). Only one asset to fetch; no parallel
-            // bench yet — leave as-is.
-            eprintln!("soldr prepare: dispatch=zigbuild");
-            let zig_dir = ensure_zig(&paths).await?;
-            eprintln!("soldr prepare: zig at {}", zig_dir.display());
+            // Linux cross targets use the same managed-Zig compiler/linker
+            // plan as build, clippy, test compilation, and PEP 517.
+            eprintln!("soldr prepare: dispatch=blessed-linux");
+            let prep = crate::target_lifecycle::prepare_target(&paths, &target).await?;
+            apply_blessed_prep_env(github_env_path, &prep)?;
         }
     }
 
@@ -774,7 +765,7 @@ fn restore_prepare_state(archive: &Path, _paths: &SoldrPaths) -> Result<(), Sold
 
 /// Run `rustup target add <triple>` for the active toolchain.
 /// Idempotent — already-installed targets are a no-op.
-fn rustup_add_target(triple: &str) -> Result<(), SoldrError> {
+pub(crate) fn rustup_add_target(triple: &str) -> Result<(), SoldrError> {
     let paths = SoldrPaths::new()?;
     let rustup = crate::binaries::rustup_binary();
     let mut command = std::process::Command::new(rustup);

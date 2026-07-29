@@ -99,13 +99,12 @@ jobs:
       # wallclock burned across the 8-lane matrix.
       # soldr#1248/#2: setup-soldr's early cook remains disabled here.
       # The deferred setup-soldr/cook subaction runs below after each
-      # lane's target-specific zig/xwin/SDK setup and passes the real
+      # lane's target-specific compiler/SDK setup and passes the real
       # target/profile shape.
       - name: Setup soldr build cache (Rust toolchain only)
         uses: zackees/setup-soldr@922fe76752c37e46d63436b338fbe8cf3709bb69
         with:
           toolchain: 1.94.1
-          cross-targets: ${{ inputs.target }}
           cache: false
           zccache-seed-strict: true
 
@@ -245,13 +244,6 @@ jobs:
       # CC_<triple>=zig-wrapper on darwin overrode the clang-with-
       # -isysroot env that blessed_build.rs sets and broke
       # libmimalloc-sys' CommonCrypto include resolution.
-      - name: Setup persistent zig-cc wrappers (musl + linux-gnu aarch64)
-        if: contains(inputs.target, 'linux-musl') || (contains(inputs.target, 'linux-gnu') && contains(inputs.target, 'aarch64'))
-        shell: bash
-        run: |
-          set -euo pipefail
-          bash .github/scripts/make_zig_cc_wrappers.sh "${{ inputs.target }}"
-
       # Darwin used to need:
       #   - Prepare Apple SDK  (soldr prepare --github-env)
       #   - Inject SDKROOT into CFLAGS_<t>
@@ -265,14 +257,6 @@ jobs:
       # rustc's self-contained crt files. Zig already supplies its own
       # crt1.o via `-target X`; without this, the linker sees BOTH and
       # fails with "duplicate symbol: _start". soldr#1068.
-      - name: Disable rustc self-contained crt (musl + aarch64-gnu)
-        if: contains(inputs.target, 'linux-musl') || (contains(inputs.target, 'linux-gnu') && contains(inputs.target, 'aarch64'))
-        shell: bash
-        run: |
-          set -euo pipefail
-          target_u_upper=$(echo "${{ inputs.target }}" | tr '-' '_' | tr '[:lower:]' '[:upper:]')
-          echo "CARGO_TARGET_${target_u_upper}_RUSTFLAGS=-C link-self-contained=no" >> "$GITHUB_ENV"
-
       - name: Prepare blessed target env for cook
         if: contains(inputs.target, 'pc-windows-msvc') && inputs.target != 'x86_64-pc-windows-msvc'
         shell: bash
@@ -324,14 +308,16 @@ jobs:
       # ~90 s of clippy per lane for no additional safety. See soldr#1180
       # (fmt) + soldr#1164 (clippy).
       # `-p soldr-cli` scope filter documented in soldr#1066.
+      # In the historical note above, "lint" means host-wide lint only;
+      # the target-scoped lifecycle check remains intentionally enabled.
 
-      # Host clippy is intentionally NOT run here. It's already covered by
+      # Host clippy is not duplicated here. It is covered by
       # the top-level `Lint` job in ci.yml (`soldr cargo clippy --workspace
       # --all-targets --locked -- -D warnings` — a strict superset of what
       # this file used to run). Duplicating clippy on every cross-build
       # lane cost ~90 s × 6 lanes for no additional safety. soldr#1164.
-      # See soldr#1068 for the reason clippy must stay HOST-only (never
-      # `--target X`) on cross-build workflows.
+      # The target-scoped lifecycle probe below is narrower and verifies
+      # compiler/SDK preparation for this specific matrix target.
 
       # Stage B — release binary build, tool dispatched per target.
       # Windows MSVC + Apple Darwin: `soldr build` (the blessed cross-
@@ -352,18 +338,8 @@ jobs:
           ci_profile="ci-nextest"
           # soldr#1248/#1524 — every target-run lane consumes a nextest
           # archive, so Stage C reuses this same target profile.
-          if [[ "$target" == *-pc-windows-msvc ]] \
-             || [[ "$target" == *-apple-darwin ]]; then
-            soldr build --profile "$ci_profile" --target "$target" \
-              --package soldr-cli --bin soldr
-          elif [[ "$target" == *-unknown-linux-musl ]] \
-               || [[ "$target" == aarch64-unknown-linux-gnu ]]; then
-            soldr cargo zigbuild --profile "$ci_profile" --target "$target" \
-              --package soldr-cli --bin soldr
-          else
-            soldr cargo build --profile "$ci_profile" --target "$target" \
-              --package soldr-cli --bin soldr
-          fi
+          soldr build --profile "$ci_profile" --target "$target" \
+            --package soldr-cli --bin soldr
           suffix=""
           case "$target" in *-pc-windows-msvc) suffix=".exe" ;; esac
           binary="target/$target/$ci_profile/soldr$suffix"
@@ -392,6 +368,17 @@ jobs:
           if [[ "$target" == *-pc-windows-msvc ]]; then
             test "$(dd if="$binary" bs=1 count=2 2>/dev/null)" = "MZ"
           fi
+
+      - name: Target clippy uses the blessed lifecycle
+        shell: bash
+        run: |
+          soldr cargo clippy \
+            --target '${{ inputs.target }}' \
+            --package soldr-cli \
+            --lib \
+            --no-deps \
+            --locked \
+            -- -D warnings
 
       - name: Validate warm Windows cache restoration (release binary)
         if: contains(inputs.target, 'pc-windows-msvc')

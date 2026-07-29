@@ -267,7 +267,16 @@ in this precedence order: an explicit `--target` argument (including
 PEP 517 config settings named `target`, `--target`, or `build-target`),
 `CARGO_BUILD_TARGET`, `[tool.maturin].target`, then the host triple.
 Before maturin starts, soldr applies the same target OS SDK preparation
-used by `soldr build`.
+used by `soldr build`, target clippy, and target test compilation. The Python
+backend and the child build also share the same `CARGO_TARGET_DIR`.
+
+`soldr env --target <alias-or-triple> --json` includes an additive
+`target_plan` object (`schema_version: 1`) for setup-soldr and other tooling.
+It reports the canonical target and alias, stable toolchain family, concrete
+compiler/linker/archiver programs, SDK/sysroot provider and cache identity,
+sorted environment-key contract, and supported operations. Consumers should
+invoke the soldr operation rather than reconstructing those environment
+values themselves.
 
 PyO3 configuration is resolved separately from the target OS SDK. Soldr
 reads workspace dependency metadata and only injects
