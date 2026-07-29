@@ -602,6 +602,48 @@ pub fn strip_fast_linker_for_proc_macro<'a>(args: &'a [String], host: &str) -> C
     }
 }
 
+/// Report the outcome of the automatic standard-linker retry.
+///
+/// soldr#1992 / soldr#1999 rule 1. The retry warning is printed *before* the
+/// fallback build runs, so when the fallback also fails the user's last screen
+/// is the fallback's own output -- including rustc's "the Visual Studio build
+/// tools may need to be repaired" note, which is advice to reinstall a healthy
+/// toolchain. The warning that would explain it is a full build's worth of
+/// output further up, and nothing at the failure connects the two.
+///
+/// So the failure branch restates it at the point of failure. Both branches
+/// live here rather than at the call site so the wording is assertable and so
+/// linker policy stays in the linker module.
+pub fn report_fallback_outcome(
+    fallback: &Output,
+    paths: Option<&SoldrPaths>,
+    cache_key: Option<&str>,
+    candidate: &str,
+) {
+    if fallback.status.success() {
+        if let Some(paths) = paths {
+            if let Err(err) = record_pep517_fallback(paths, cache_key) {
+                eprintln!("soldr warning: could not persist the working linker fallback: {err}");
+            }
+        }
+        eprintln!(
+            "soldr: standard linker fallback succeeded; future equivalent PEP 517 builds will reuse it"
+        );
+        return;
+    }
+    eprintln!("{}", fallback_also_failed_note(candidate));
+}
+
+/// The note printed when the standard-linker retry fails too.
+///
+/// Split out so the wording is testable without running a build.
+pub fn fallback_also_failed_note(candidate: &str) -> String {
+    format!(
+        "soldr: the standard-linker retry also failed, so `{candidate}` was not the cause.
+         soldr: the errors above are from that second attempt, with soldr's linker          selection already removed -- any \"repair your build tools\" advice in them is          about the fallback build, not about soldr (soldr#1992)."
+    )
+}
+
 pub fn looks_like_linker_failure(output: &Output) -> bool {
     if output.status.success() {
         return false;
@@ -874,6 +916,44 @@ mod tests {
         let i = resolve_for_target_with_probe(LinkerChoice::Fast, WIN_MSVC, &always_false).unwrap();
         assert_eq!(i.linker.as_deref(), Some("rust-lld"));
         assert!(i.rustflags.is_none());
+    }
+
+    // soldr#1992 / soldr#1999 rule 1. When the standard-linker retry also
+    // fails, the user's last screen is that second build's output -- carrying
+    // rustc's "the Visual Studio build tools may need to be repaired" note.
+    // The retry warning that would explain it scrolled past a whole build ago.
+    // These assert the note does the one job that matters: contradicting the
+    // false lead at the point where the reader is looking.
+    #[test]
+    fn the_fallback_failure_note_clears_the_fast_linker_and_the_false_lead() {
+        let note = fallback_also_failed_note("rust-lld");
+        assert!(
+            note.contains("rust-lld"),
+            "must name what was ruled out: {note}"
+        );
+        assert!(
+            note.contains("was not the cause"),
+            "must exonerate the fast linker explicitly: {note}"
+        );
+        assert!(
+            note.contains("repair your build tools"),
+            "must quote the misleading advice it is rebutting: {note}"
+        );
+        assert!(
+            note.contains("second attempt"),
+            "must say which build the errors came from: {note}"
+        );
+    }
+
+    // A successful fallback must not print the failure note -- telling a user
+    // their build failed when it succeeded is worse than saying nothing.
+    #[test]
+    fn a_successful_fallback_reports_success_not_failure() {
+        let note = fallback_also_failed_note("rust-lld");
+        assert!(
+            !note.contains("succeeded"),
+            "the failure note must never read as success: {note}"
+        );
     }
 
     const MSVC: &str = "x86_64-pc-windows-msvc";

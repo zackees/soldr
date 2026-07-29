@@ -1247,21 +1247,12 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                         state.clear_injected_env(&mut command);
                         let fallback = command.output()?;
                         emit_child_output(&fallback);
-                        if fallback.status.success() {
-                            if let Err(err) = crate::linker::record_pep517_fallback(
-                                pep517_paths
-                                    .as_ref()
-                                    .expect("maturin linker paths prepared"),
-                                state.cache_key.as_deref(),
-                            ) {
-                                eprintln!(
-                                    "soldr warning: could not persist the working linker fallback: {err}"
-                                );
-                            }
-                            eprintln!(
-                                "soldr: standard linker fallback succeeded; future equivalent PEP 517 builds will reuse it"
-                            );
-                        }
+                        crate::linker::report_fallback_outcome(
+                            &fallback,
+                            pep517_paths.as_ref(),
+                            state.cache_key.as_deref(),
+                            state.candidate.as_deref().unwrap_or("unknown"),
+                        );
                         fallback.status
                     } else {
                         if state.explicit_fast && crate::linker::looks_like_linker_failure(&first) {
