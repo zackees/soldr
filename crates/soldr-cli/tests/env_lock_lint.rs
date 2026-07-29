@@ -179,6 +179,15 @@ const PRODUCTION_ENV_WRITERS: &[(&str, &str)] = &[
         "crates/soldr-cli/src/soldr_main.rs",
         "soldr#1766: --allow-unpinned is surfaced as SOLDR_ALLOW_UNPINNED at startup          so the whole process tree agrees, including the daemon, which auto-forwards          SOLDR_*. This is the CLI translating a flag into environment, not a test          mutating shared state, so no barrier applies",
     ),
+    (
+        "crates/soldr-cli/src/cli_args.rs",
+        "soldr#1802: `Cli::export_global_env` publishes --allow-unpinned, --jobs and \
+         --timestamp-lines as SOLDR_* so one resolver owns each knob's precedence. Same \
+         flag-into-environment translation as the soldr_main.rs entry above, not a test \
+         mutating shared state. Previously invisible to this lint only because the file \
+         also carried a test module using TEST_PROCESS_ENV_LOCK; moving those tests to \
+         cli_args_tests.rs left the production write correctly bare",
+    ),
 ];
 
 timed_test!(no_env_var_is_guarded_by_two_different_barriers, {
