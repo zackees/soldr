@@ -186,12 +186,25 @@ message WireResponse {
     // correctly and the client should degrade to direct rustc rather than
     // fail the build.
     WireRetiring retiring = 17;
+    // v21 / soldr#2023 — acknowledgement for BuildSessionStart carrying the
+    // daemon's applied compile limit. Replaces the bare `ack` on that one
+    // request so the front door learns the running daemon's limit without a
+    // second round-trip on a path with a documented fixed-overhead problem
+    // (#1843).
+    WireBuildSessionStarted build_session_started = 18;
   }
 }
 
 // soldr#1838. Carries no payload today; a message rather than a bare bool so
 // a reason or ETA can be added later without consuming another oneof slot.
 message WireRetiring {}
+
+// soldr#2023. The compile limit the answering daemon is actually running
+// with, so a client whose own resolution differs can say so.
+message WireBuildSessionStarted {
+  uint32 compile_jobs = 1;
+  string compile_jobs_source = 2;
+}
 
 // soldr#1814 slice 2a. `record` is absent when the daemon has no row for the
 // session, which is not an error — the CLI renders the log without it.
@@ -312,6 +325,12 @@ message WireStatusInfo {
   optional WireIpcBurstStats ipc_burst_stats = 8;
   // v18 — process-start generation shared with WireShuttingDown.
   uint64 generation = 9;
+  // v21 (soldr#2023) — the compile-concurrency limit this daemon actually
+  // applied at startup, and the precedence tier it came from. Reported
+  // rather than re-resolved: the point is to expose a limit that has
+  // drifted from what the environment now resolves to.
+  uint32 compile_jobs = 10;
+  string compile_jobs_source = 11;
 }
 
 message WireIpcBurstStats {

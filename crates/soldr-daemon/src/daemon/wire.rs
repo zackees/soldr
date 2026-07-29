@@ -385,6 +385,8 @@ pub fn status_info_to_wire(info: &StatusInfo) -> proto::WireStatusInfo {
         cook_stats: info.cook_stats.as_ref().map(cook_stats_to_wire),
         compile_backend: info.compile_backend.clone(),
         ipc_burst_stats: Some(ipc_burst_stats_to_wire(&info.ipc_burst_stats)),
+        compile_jobs: info.compile_jobs,
+        compile_jobs_source: info.compile_jobs_source.clone(),
     }
 }
 
@@ -401,6 +403,8 @@ pub fn status_info_from_wire(wire: proto::WireStatusInfo) -> StatusInfo {
             .ipc_burst_stats
             .map(ipc_burst_stats_from_wire)
             .unwrap_or_default(),
+        compile_jobs: wire.compile_jobs,
+        compile_jobs_source: wire.compile_jobs_source,
     }
 }
 
@@ -685,6 +689,13 @@ impl From<&Response> for proto::WireResponse {
                 items: rows.iter().map(build_record_to_wire).collect(),
             }),
             Response::Error(msg) => proto::WireResponseKind::Error(msg.clone()),
+            Response::BuildSessionStarted {
+                compile_jobs,
+                compile_jobs_source,
+            } => proto::WireResponseKind::BuildSessionStarted(proto::WireBuildSessionStarted {
+                compile_jobs: *compile_jobs,
+                compile_jobs_source: compile_jobs_source.clone(),
+            }),
             Response::Backpressure { retry_after_ms } => {
                 proto::WireResponseKind::Backpressure(proto::WireBackpressure {
                     retry_after_ms: *retry_after_ms,
@@ -787,6 +798,10 @@ impl TryFrom<proto::WireResponse> for Response {
                 Response::Builds(m.items.into_iter().map(build_record_from_wire).collect())
             }
             proto::WireResponseKind::Error(msg) => Response::Error(msg),
+            proto::WireResponseKind::BuildSessionStarted(m) => Response::BuildSessionStarted {
+                compile_jobs: m.compile_jobs,
+                compile_jobs_source: m.compile_jobs_source,
+            },
             proto::WireResponseKind::Backpressure(m) => Response::Backpressure {
                 retry_after_ms: m.retry_after_ms,
             },

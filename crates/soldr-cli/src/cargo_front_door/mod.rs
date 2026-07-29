@@ -33,6 +33,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use wait_timeout::ChildExt;
 
+mod build_session;
 mod cache_plan;
 mod clang_cl_shim;
 mod component_install;
@@ -249,51 +250,6 @@ fn new_build_record(
         log_paths: None,
         miss_reasons: Vec::new(),
     }
-}
-
-fn persist_build_session_start_fallback(
-    paths: &SoldrPaths,
-    session_id: u64,
-    repo_root: &Path,
-    started_at_ms: i64,
-) {
-    if let Err(err) =
-        persist_build_session_start_fallback_inner(paths, session_id, repo_root, started_at_ms)
-    {
-        eprintln!(
-            "soldr warning: failed to persist build-session start fallback for {session_id}: {err}"
-        );
-    }
-}
-
-fn persist_build_session_start_fallback_inner(
-    paths: &SoldrPaths,
-    session_id: u64,
-    repo_root: &Path,
-    started_at_ms: i64,
-) -> Result<(), SoldrError> {
-    let db_path = crate::cache_lib::data_db_path(paths);
-    if crate::daemon::db::get_build(&db_path, session_id)
-        .map_err(|e| SoldrError::Other(format!("read build history: {e}")))?
-        .is_none()
-    {
-        let record = new_build_record(session_id, repo_root.display().to_string(), started_at_ms);
-        crate::daemon::db::upsert_build(&db_path, &record)
-            .map_err(|e| SoldrError::Other(format!("write build history: {e}")))?;
-    }
-    let _ = crate::daemon::db::append_event(
-        &db_path,
-        &crate::daemon::db::Event {
-            ts_ms: started_at_ms,
-            session_id: Some(session_id),
-            kind: crate::daemon::db::EventKind::SessionStart,
-            crate_name: None,
-            duration_us: None,
-            target_dir: None,
-            exit_code: None,
-        },
-    );
-    Ok(())
 }
 
 fn persist_build_session_end_fallback(
@@ -2106,21 +2062,12 @@ pub(crate) async fn run_cargo_front_door(
     // cargo-run-error and normal-completion call sites below.
     let invoked_argv: Vec<String> = std::env::args().collect();
     let build_activity_lease = begin_build_session_with(&paths, session_id, || {
-        if crate::daemon::client::build_session_start(
+        build_session::start_and_warn_on_jobs_drift(
             &paths,
             session_id,
             &session_repo_root,
             session_started_at_ms,
-        )
-        .is_err()
-        {
-            persist_build_session_start_fallback(
-                &paths,
-                session_id,
-                &session_repo_root,
-                session_started_at_ms,
-            );
-        }
+        );
     })?;
     // Blocking shared flock on root-maintenance.lock (waits out any
     // daemon maintenance pass) plus a synchronous BuildSessionStart IPC.

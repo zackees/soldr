@@ -78,6 +78,7 @@ pub struct SoldrZccacheService {
     identity: HostIdentity,
     cache_root: PathBuf,
     disk_policy: EmbeddedDiskPolicy,
+    applied_jobs: crate::core::jobs::ResolvedJobs,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -172,23 +173,7 @@ impl SoldrZccacheService {
             mode: AuditMode::Off,
             ..AuditConfig::default()
         };
-        // soldr#1761. Logged because the effective concurrency was
-        // previously undiscoverable: the number came from a vendored
-        // default via an env var the daemon may or may not have
-        // inherited, with nothing reporting what actually applied.
-        let resolved_jobs =
-            crate::core::jobs::resolve_compile_jobs(crate::daemon::server::config_compile_jobs());
-        // stderr, not `tracing::info!`: the daemon installs its
-        // subscriber at `Level::WARN` (see `server.rs`), so an info
-        // record is dropped and would never reach anyone — which is
-        // the same undiscoverability #1761 is about. The detached
-        // daemon redirects stderr into its log file, and
-        // `daemon start --foreground` shows it directly.
-        eprintln!(
-            "soldr-daemon: compile concurrency = {} (from {})",
-            resolved_jobs.jobs,
-            resolved_jobs.source.describe(),
-        );
+        let resolved_jobs = crate::compile_limit::resolve_and_announce();
         let cfg = ZccacheConfig {
             host: identity.clone(),
             cache_root: cache_root.clone().into(),
@@ -232,7 +217,19 @@ impl SoldrZccacheService {
             identity,
             cache_root,
             disk_policy,
+            applied_jobs: resolved_jobs,
         })
+    }
+
+    /// The compile limit this service started with — the number now baked
+    /// into the semaphore, not a fresh resolution.
+    ///
+    /// soldr#2023: the daemon outlives the environment that spawned it, so
+    /// this is the only value that answers "what is the running daemon
+    /// actually doing?" Re-resolving would answer "what would a new daemon
+    /// do?", which is the other half of the comparison a client makes.
+    pub fn applied_jobs(&self) -> crate::core::jobs::ResolvedJobs {
+        self.applied_jobs
     }
 
     /// Resolved on-disk cache root. Useful for diagnostics surfaces.

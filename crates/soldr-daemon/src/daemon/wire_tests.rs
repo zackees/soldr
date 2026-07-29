@@ -300,6 +300,8 @@ crate::timed_test!(status_response_round_trips_with_cook_stats, {
             busy_retries: 2,
             queue_high_water: 16,
         },
+        compile_jobs: 12,
+        compile_jobs_source: "SOLDR_JOBS".to_string(),
     };
     let resp = Response::Status(info.clone());
     let bytes = encode_response(&resp);
@@ -309,6 +311,34 @@ crate::timed_test!(status_response_round_trips_with_cook_stats, {
         other => panic!("unexpected variant: {other:?}"),
     }
 });
+
+crate::timed_test!(
+    build_session_started_round_trips_the_daemons_applied_limit,
+    {
+        // soldr#2023. The limit has to survive the wire intact: the client's
+        // only job with it is an equality check against its own resolution, so
+        // a value mangled in transit becomes a warning on every build (or,
+        // worse, silence on a build that genuinely drifted).
+        let response = Response::BuildSessionStarted {
+            compile_jobs: 6,
+            compile_jobs_source: "config.toml [jobs].max_parallel_compiles".to_string(),
+        };
+        let bytes = encode_response(&response);
+        match decode_response(&bytes).expect("decode") {
+            Response::BuildSessionStarted {
+                compile_jobs,
+                compile_jobs_source,
+            } => {
+                assert_eq!(compile_jobs, 6);
+                assert_eq!(
+                    compile_jobs_source,
+                    "config.toml [jobs].max_parallel_compiles"
+                );
+            }
+            other => panic!("unexpected variant: {other:?}"),
+        }
+    }
+);
 
 crate::timed_test!(shutdown_ack_round_trips_responder_generation, {
     let response = Response::ShuttingDown(ShutdownAck {

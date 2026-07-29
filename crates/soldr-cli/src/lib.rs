@@ -184,6 +184,9 @@ pub mod compile_diagnostics;
 pub mod compile_dispatch;
 pub mod cook;
 pub mod daemon_entry;
+/// soldr#2023 — `soldr daemon status` rendering, split out of
+/// `soldr_main.rs` so that file could stop growing.
+pub(crate) mod daemon_status_render;
 pub mod doctor;
 mod dylint_cook;
 pub mod dylint_toolchain;
