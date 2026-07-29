@@ -2926,6 +2926,7 @@ dependencies = [
  "toml",
  "url",
  "wait-timeout",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

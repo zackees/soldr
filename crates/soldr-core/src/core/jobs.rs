@@ -87,18 +87,42 @@ pub struct ResolvedJobs {
 /// already used (`available_parallelism() - 1`), so this module is a
 /// no-op for anyone who sets nothing. #1761 also floats a
 /// physical-core-aware default (`min(logical - 1, physical + 2)`) to
-/// stop an 8C/16T host running 15 concurrent rustc; that is deferred
-/// deliberately — `available_parallelism` reports logical CPUs, and
-/// deriving physical cores needs either a new dependency or an SMT
-/// assumption that under-uses genuinely non-SMT hosts (a 16-core
-/// non-SMT machine would be capped at 10 for no reason). Landing the
-/// knob first means anyone hitting the oversubscription can set
-/// `SOLDR_JOBS` today, and the default can move on its own evidence.
+/// stopped an 8C/16T host running 15 concurrent rustc. That is now
+/// handled by [`default_compile_jobs_from`], which reads the real CPU
+/// topology instead of assuming SMT.
 pub fn default_compile_jobs() -> usize {
     let logical = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
-    logical.saturating_sub(1).max(1)
+    default_compile_jobs_from(logical, super::cpu_topology::physical_cores())
+}
+
+/// The default limit, as a pure function of the machine's shape.
+///
+/// Two rules, in order:
+///
+/// 1. Leave one logical CPU free (`logical - 1`), so a build cannot
+///    starve the session that started it.
+/// 2. When SMT is present, cap at `physical + 2`. rustc is
+///    compute-bound, so the second thread of a core adds far less than
+///    a second core does; letting all 16 threads of an 8-core host run
+///    rustc saturates the machine for little throughput. The `+ 2`
+///    keeps some benefit from SMT during the I/O-bound phases rather
+///    than pinning the limit to the core count.
+///
+/// SMT is detected, not assumed: rule 2 applies only when `physical` is
+/// genuinely below `logical`. A 16-core non-SMT host therefore keeps
+/// all 15 slots — the objection that deferred this change originally.
+/// When topology is unavailable (`None`) the behavior is unchanged from
+/// before, which is the safe direction: no invented core count.
+pub fn default_compile_jobs_from(logical: usize, physical: Option<usize>) -> usize {
+    let headroom = logical.saturating_sub(1).max(1);
+    match physical {
+        Some(physical) if physical > 0 && physical < logical => {
+            headroom.min(physical.saturating_add(2)).max(1)
+        }
+        _ => headroom,
+    }
 }
 
 /// Resolve the compile-concurrency limit from an explicit set of
@@ -158,6 +182,51 @@ fn parse_positive(raw: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // soldr#1761's final acceptance criterion, stated as its own
+    // numbers: "on an 8C/16T host the interactive default lands in the
+    // 9-12 range rather than 15."
+    crate::timed_test!(an_8c_16t_host_no_longer_defaults_to_15, {
+        let jobs = default_compile_jobs_from(16, Some(8));
+        assert_eq!(jobs, 10, "8C/16T must land in the 9-12 range, not 15");
+    });
+
+    crate::timed_test!(a_non_smt_host_keeps_every_slot, {
+        // The objection that deferred this change: a 16-core machine
+        // with no SMT must not be capped at 10 for an SMT discount it
+        // does not need.
+        assert_eq!(default_compile_jobs_from(16, Some(16)), 15);
+    });
+
+    crate::timed_test!(unknown_topology_behaves_exactly_as_before, {
+        for logical in [1usize, 2, 4, 16, 64] {
+            assert_eq!(
+                default_compile_jobs_from(logical, None),
+                logical.saturating_sub(1).max(1),
+                "an unreadable topology must not change the limit"
+            );
+        }
+    });
+
+    crate::timed_test!(the_default_is_always_at_least_one, {
+        for logical in [0usize, 1, 2] {
+            for physical in [None, Some(0), Some(1), Some(usize::MAX)] {
+                assert!(
+                    default_compile_jobs_from(logical, physical) >= 1,
+                    "logical={logical} physical={physical:?} produced a \
+                     limit below 1, which would admit no compiles at all"
+                );
+            }
+        }
+    });
+
+    crate::timed_test!(smaller_hosts_scale_down_too, {
+        assert_eq!(default_compile_jobs_from(8, Some(4)), 6);
+        assert_eq!(default_compile_jobs_from(4, Some(2)), 3);
+        // physical + 2 exceeds the headroom here, so the headroom wins
+        // and the two rules never fight.
+        assert_eq!(default_compile_jobs_from(2, Some(1)), 1);
+    });
 
     crate::timed_test!(soldr_jobs_env_wins_over_everything, {
         let resolved = resolve_compile_jobs_from(Some("3"), Some(9), Some("11"), 16);

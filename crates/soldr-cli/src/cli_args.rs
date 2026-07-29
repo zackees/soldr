@@ -116,7 +116,7 @@ same embedded service. To use an external cache wrapper, set\n\
         help = "Cap concurrent daemon compiles (soldr#1761)",
         long_help = "Cap the number of compiles the daemon runs concurrently.
 
-Equivalent to SOLDR_JOBS=N, and takes the same top precedence: above `[jobs].max_parallel_compiles` in config.toml, and above the legacy ZCCACHE_MAX_PARALLEL_COMPILES. Left unset, the default is one less than the machine's logical CPU count.
+Equivalent to SOLDR_JOBS=N, and takes the same top precedence: above `[jobs].max_parallel_compiles` in config.toml, and above the legacy ZCCACHE_MAX_PARALLEL_COMPILES. Left unset, the default leaves one logical CPU free, and on an SMT machine additionally caps at (physical cores + 2) so a build cannot saturate every hardware thread — 10 on an 8-core/16-thread host. A machine without SMT keeps all its slots, and if the CPU topology cannot be read the limit falls back to one less than the logical CPU count.
 
 This governs the daemon, not cargo — it is not forwarded as cargo's own `-j`.
 
