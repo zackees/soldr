@@ -651,6 +651,30 @@ def _pep517_failure_excerpt(stdout_tail: str, stderr_tail: str) -> str:
     return "\n".join(window)
 
 
+def _pep517_failure_payload(
+    excerpt: str, log_path: "Path | None", relays_complete: bool
+) -> str:
+    """What travels *with* the exception, not just to our stderr.
+
+    soldr#1999 rule 2. The diagnostics were being written to stderr and then
+    dropped at the exception boundary, so a consumer rendering from the
+    exception saw an exit code and nothing else. Everything a reader needs to
+    start in the right place goes here too.
+    """
+    parts: list[str] = []
+    if excerpt:
+        parts.append(excerpt)
+    else:
+        parts.append(
+            "soldr: the PEP 517 build produced no diagnostics before failing"
+            " (soldr#1878)."
+        )
+    if log_path is not None:
+        qualifier = "full" if relays_complete else "possibly incomplete"
+        parts.append(f"soldr: {qualifier} PEP 517 build log: {log_path}")
+    return "\n".join(parts)
+
+
 def _open_pep517_log(
     cmd: "list[str]", env: "dict[str, str]"
 ) -> "tuple[Path | None, BinaryIO | None]":
@@ -835,12 +859,30 @@ def _run_pep517_streaming(cmd: "list[str]", env: "dict[str, str]") -> None:
         if excerpt:
             summary += f"; relevant diagnostics:\n{excerpt}\n"
         else:
-            summary += "\n"
+            # soldr#1878's exact signature: a non-zero exit with nothing to
+            # show. Saying "no diagnostics" out loud is the difference between
+            # a reader concluding their code is broken and knowing the build
+            # died before it could explain itself.
+            summary += (
+                " and produced no diagnostics at all -- the build failed before"
+                " it could explain why (soldr#1878).\n"
+            )
         if log_path is not None:
             qualifier = "full " if relays_complete else "possibly incomplete "
             summary += f"soldr: {qualifier}PEP 517 build log: {log_path}\n"
         _write_pep517_text(stderr_sink, summary)
-        raise subprocess.CalledProcessError(returncode, cmd)
+        # soldr#1999 rule 2: no layer may replace a specific error with a
+        # generic one. `CalledProcessError` was raised bare, so its `.output`
+        # and `.stderr` were None -- everything above went to our stderr and
+        # nothing travelled with the exception. A caller that renders from the
+        # exception (pip and uv both do) therefore reported the build as
+        # having produced nothing, discarding a diagnosis soldr already held.
+        raise subprocess.CalledProcessError(
+            returncode,
+            cmd,
+            output=_pep517_failure_payload(excerpt, log_path, relays_complete),
+            stderr=excerpt or None,
+        )
     _discard_pep517_log(log_path)
 
 
