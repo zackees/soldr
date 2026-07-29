@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 VERIFY_SCRIPT_PATH = REPO_ROOT / ".github" / "scripts" / "verify_setup_soldr_pin.py"
 
@@ -25,8 +27,32 @@ def executable_yaml(text: str) -> str:
 
 
 def test_workflows_pin_setup_soldr_to_current_v0_sha() -> None:
+    """The workflows pin whatever `setup-soldr@v0` currently resolves to.
+
+    soldr#2013. This is the one non-hermetic test in the suite: it resolves
+    the tag over the network with `git ls-remote`. Wiring the suite into CI
+    without handling that would fail every PR whenever upstream moved `v0` --
+    a failure with no relationship to the change under review, which is how a
+    gate gets deleted rather than fixed.
+
+    The distinction that matters is *which step* failed:
+
+    * the **lookup** could not run (offline, timeout, rate limit) -> skip,
+      because nothing was verified and claiming a pass would be a lie;
+    * the lookup ran and the pin **mismatches** -> fail, which is the entire
+      point of the test.
+
+    Skipping on any exception would swallow real pin drift, so the guard is
+    scoped to the resolution call alone.
+    """
     module = load_verify_module()
 
+    try:
+        module.resolve_setup_soldr_v0_sha()
+    except Exception as exc:  # noqa: BLE001 - any lookup failure means "unknown"
+        pytest.skip(f"cannot resolve setup-soldr@v0 ({exc.__class__.__name__}): {exc}")
+
+    # Resolution worked, so a failure from here is a genuine pin mismatch.
     module.verify_setup_soldr_pins(REPO_ROOT)
 
 
