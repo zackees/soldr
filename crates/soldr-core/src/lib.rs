@@ -28,3 +28,4 @@ pub mod startup_profile;
 /// would hide the module from `tests/`. The module is tiny and never
 /// invoked outside `#[test]` paths.
 pub mod test_util;
+pub mod warning_log;
