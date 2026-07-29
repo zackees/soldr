@@ -20,10 +20,11 @@ def test_required_ci_runs_root_dylint_policy() -> None:
     assert "soldr rustup toolchain install" in workflow
     assert "--component rustc-dev" in workflow
     assert "--component llvm-tools-preview" in workflow
+    assert "--component rust-src" in workflow
     assert "Configure Dylint driver Cargo shim" in workflow
     assert ".github/scripts/configure_dylint_cargo_shim.py" in workflow
     assert "Build daemon process-creation boundary lint" in workflow
-    assert "nightly-2026-01-18-x86_64-unknown-linux-gnu" in workflow
+    assert "nightly-2026-05-26-x86_64-unknown-linux-gnu" in workflow
     assert "cargo build --profile release" in workflow
     assert '"${GITHUB_WORKSPACE}/target/dylint/libraries/' in workflow
     assert '"${CARGO_HOME}/bin/cargo-dylint"' in workflow
@@ -32,7 +33,7 @@ def test_required_ci_runs_root_dylint_policy() -> None:
     assert "Test daemon process-creation boundary lint" in workflow
     assert "working-directory: dylints/ban_raw_process_creation" in workflow
     assert "--manifest-path Cargo.toml" in workflow
-    assert "RUSTUP_TOOLCHAIN: nightly-2026-01-18" in workflow
+    assert "RUSTUP_TOOLCHAIN: nightly-2026-05-26" in workflow
     assert workflow.count('SOLDR_NO_GC_TARGET: "1"') == 2
     assert workflow.count("SOLDR_LINKER: default") == 3
     dylint_config = (

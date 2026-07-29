@@ -20,7 +20,7 @@ def load_module():
 
 def test_writes_nightly_pinned_posix_cargo_shim(tmp_path: Path) -> None:
     module = load_module()
-    toolchain = "nightly-2026-01-18-x86_64-unknown-linux-gnu"
+    toolchain = "nightly-2026-05-26-x86_64-unknown-linux-gnu"
 
     shim = module.write_cargo_shim(tmp_path, toolchain, windows=False)
 

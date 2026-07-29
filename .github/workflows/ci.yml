@@ -193,30 +193,31 @@ jobs:
       - name: Install Dylint toolchain
         run: >-
           soldr rustup toolchain install
-          nightly-2026-01-18
+          nightly-2026-05-26
           --profile minimal
           --component rustc-dev
           --component llvm-tools-preview
+          --component rust-src
 
       - name: Configure Dylint driver Cargo shim
         run: >-
           uv run --no-project python
           .github/scripts/configure_dylint_cargo_shim.py
           --output-dir "${RUNNER_TEMP}/dylint-cargo-shim"
-          --toolchain nightly-2026-01-18-x86_64-unknown-linux-gnu
+          --toolchain nightly-2026-05-26-x86_64-unknown-linux-gnu
           >> "${GITHUB_PATH}"
 
       - name: Build daemon process-creation boundary lint
         working-directory: dylints/ban_raw_process_creation
         env:
-          RUSTUP_TOOLCHAIN: nightly-2026-01-18-x86_64-unknown-linux-gnu
+          RUSTUP_TOOLCHAIN: nightly-2026-05-26-x86_64-unknown-linux-gnu
           SOLDR_LINKER: default
         run: >-
           soldr rustup run
-          nightly-2026-01-18-x86_64-unknown-linux-gnu
+          nightly-2026-05-26-x86_64-unknown-linux-gnu
           cargo build --profile release
           --target-dir
-          "${GITHUB_WORKSPACE}/target/dylint/libraries/nightly-2026-01-18-x86_64-unknown-linux-gnu"
+          "${GITHUB_WORKSPACE}/target/dylint/libraries/nightly-2026-05-26-x86_64-unknown-linux-gnu"
 
       - name: Enforce daemon process-creation boundary
         env:
@@ -235,7 +236,7 @@ jobs:
       - name: Test daemon process-creation boundary lint
         working-directory: dylints/ban_raw_process_creation
         env:
-          RUSTUP_TOOLCHAIN: nightly-2026-01-18
+          RUSTUP_TOOLCHAIN: nightly-2026-05-26
           SOLDR_NO_GC_TARGET: "1"
           SOLDR_LINKER: default
         run: >-
