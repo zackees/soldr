@@ -14,6 +14,7 @@ def test_root_workspace_loads_process_boundary_dylint() -> None:
 def test_required_ci_runs_root_dylint_policy() -> None:
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert "Enforce daemon process-creation boundary" in workflow
+    assert "soldr cargo install dylint-link --version 6.0.1 --locked" in workflow
     assert "soldr dylint --all -- --workspace --all-targets" in workflow
     assert "Test daemon process-creation boundary lint" in workflow
     assert "--manifest-path dylints/ban_raw_process_creation/Cargo.toml" in workflow
