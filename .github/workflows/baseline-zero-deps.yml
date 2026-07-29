@@ -55,8 +55,70 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # soldr#1978 item 5. Both `build-soldr` legs used to run this identical
+  # x86_64-unknown-linux-gnu build (~305s each). The existing cache could not
+  # prevent it: its key has no `matrix.libc` component, so the legs share it,
+  # and they run in parallel -- when `crates/**` changes they both miss at the
+  # same moment, both build, and both race to save. The cache therefore helped
+  # only when nothing had changed, i.e. never on a code PR.
+  #
+  # Building it once and passing it forward is the shape `ci.yml` already uses
+  # for `e2e-cross-bootstrap-soldr`.
+  bootstrap-soldr:
+    name: bootstrap soldr for the baseline images
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'fast-build') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SOLDR_GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.94.1
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Restore cargo + target caches
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: baseline-zero-deps-bootstrap
+
+      # Same key as before: one binary, one cache entry. Now only one job
+      # consults it, so a miss costs one build rather than two.
+      - name: Restore cached bootstrap soldr binary
+        id: bootstrap_cache
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ runner.temp }}/soldr-bin/soldr
+          key: bootstrap-soldr-linux-gnu-${{ hashFiles('crates/**', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml') }}
+
+      - name: Bootstrap soldr from checkout
+        if: steps.bootstrap_cache.outputs.cache-hit != 'true'
+        env:
+          RUSTC_WRAPPER: ""
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$CARGO_HOME/bin/cargo" build             --package soldr-cli             --release             --locked             --target x86_64-unknown-linux-gnu
+          mkdir -p "$RUNNER_TEMP/soldr-bin"
+          cp target/x86_64-unknown-linux-gnu/release/soldr "$RUNNER_TEMP/soldr-bin/soldr"
+          chmod +x "$RUNNER_TEMP/soldr-bin/soldr"
+
+      - name: Upload bootstrap soldr
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: baseline-bootstrap-soldr
+          path: ${{ runner.temp }}/soldr-bin/soldr
+          if-no-files-found: error
+          retention-days: 1
+
   build-soldr:
     name: Build soldr for ${{ matrix.target }}
+    needs: bootstrap-soldr
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'fast-build') }}
     runs-on: ubuntu-latest
     # soldr#1985 - was inheriting GitHub's 360-minute default.
@@ -94,39 +156,20 @@ jobs:
         with:
           shared-key: baseline-zero-deps-${{ matrix.target }}
 
-      # soldr#1160 — cache the host-side bootstrap soldr binary.
-      # Both matrix jobs (glibc + musl) rebuild the same x86_64-unknown-linux-gnu
-      # release binary here (~305s each) with RUSTC_WRAPPER="", so there is no
-      # zccache to catch it. When crates/**, Cargo.toml, Cargo.lock and
-      # rust-toolchain.toml are unchanged, restore instead of rebuild.
-      - name: Restore cached bootstrap soldr binary
-        id: bootstrap_cache
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+      # soldr#1978 item 5: the host-side bootstrap is built once by
+      # `bootstrap-soldr` and passed here, instead of both legs rebuilding the
+      # identical x86_64-unknown-linux-gnu binary (~305s each) whenever
+      # `crates/**` changed.
+      - name: Download bootstrap soldr
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          path: ${{ runner.temp }}/soldr-bin/soldr
-          key: bootstrap-soldr-linux-gnu-${{ hashFiles('crates/**', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml') }}
+          name: baseline-bootstrap-soldr
+          path: ${{ runner.temp }}/soldr-bin
 
-      # soldr#1237 — dropped the custom `--target-dir "$RUNNER_TEMP/
-      # soldr-bootstrap-target"` so cargo writes to workspace `target/`
-      # where rust-cache (added in #1236) saves + restores it. The
-      # subsequent `Build soldr-cli via soldr cargo zigbuild` writes
-      # to `target/<musl-triple>/release/` — different subtree, no
-      # conflict.
-      - name: Bootstrap soldr from checkout
-        if: steps.bootstrap_cache.outputs.cache-hit != 'true'
-        env:
-          RUSTC_WRAPPER: ""
+      # upload-artifact does not preserve the executable bit.
+      - name: Restore bootstrap soldr executable bit
         shell: bash
-        run: |
-          set -euo pipefail
-          "$CARGO_HOME/bin/cargo" build \
-            --package soldr-cli \
-            --release \
-            --locked \
-            --target x86_64-unknown-linux-gnu
-          mkdir -p "$RUNNER_TEMP/soldr-bin"
-          cp target/x86_64-unknown-linux-gnu/release/soldr "$RUNNER_TEMP/soldr-bin/soldr"
-          chmod +x "$RUNNER_TEMP/soldr-bin/soldr"
+        run: chmod +x "$RUNNER_TEMP/soldr-bin/soldr"
 
       - name: Expose bootstrap soldr on PATH
         shell: bash
