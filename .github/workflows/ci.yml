@@ -185,6 +185,64 @@ jobs:
       - name: Run clippy
         run: soldr cargo clippy --workspace --all-targets --locked -- -D warnings
 
+      - name: Install Dylint
+        run: |
+          soldr cargo install cargo-dylint --version 6.0.1 --locked
+          soldr cargo install dylint-link --version 6.0.1 --locked
+
+      - name: Install Dylint toolchain
+        run: >-
+          soldr rustup toolchain install
+          nightly-2026-05-26
+          --profile minimal
+          --component rustc-dev
+          --component llvm-tools-preview
+          --component rust-src
+
+      - name: Configure Dylint driver Cargo shim
+        run: >-
+          uv run --no-project python
+          .github/scripts/configure_dylint_cargo_shim.py
+          --output-dir "${RUNNER_TEMP}/dylint-cargo-shim"
+          --toolchain nightly-2026-05-26-x86_64-unknown-linux-gnu
+          >> "${GITHUB_PATH}"
+
+      - name: Build daemon process-creation boundary lint
+        working-directory: dylints/ban_raw_process_creation
+        env:
+          RUSTUP_TOOLCHAIN: nightly-2026-05-26-x86_64-unknown-linux-gnu
+          SOLDR_LINKER: default
+        run: >-
+          soldr rustup run
+          nightly-2026-05-26-x86_64-unknown-linux-gnu
+          cargo build --profile release
+          --target-dir
+          "${GITHUB_WORKSPACE}/target/dylint/libraries/nightly-2026-05-26-x86_64-unknown-linux-gnu"
+
+      - name: Enforce daemon process-creation boundary
+        env:
+          # setup-soldr currently provides v0.8.23, whose post-command target
+          # pruning can remove Dylint's cdylib before cargo-dylint loads it.
+          # Newer Soldr releases no longer prune automatically. Its fast-linker
+          # default would also override the Dylint library's required linker
+          # wrapper, so disable that convenience for this step.
+          SOLDR_NO_GC_TARGET: "1"
+          SOLDR_LINKER: default
+        run: >-
+          "${CARGO_HOME}/bin/cargo-dylint"
+          dylint --no-build --all
+          -- --workspace --all-targets
+
+      - name: Test daemon process-creation boundary lint
+        working-directory: dylints/ban_raw_process_creation
+        env:
+          RUSTUP_TOOLCHAIN: nightly-2026-05-26
+          SOLDR_NO_GC_TARGET: "1"
+          SOLDR_LINKER: default
+        run: >-
+          soldr cargo test
+          --manifest-path Cargo.toml
+
   # Per-platform `build workspace + run unit/smoke tests` jobs.
   # Each is a thin caller of the `_build-and-test.yml` template so
   # the duplicated cargo invocations live in one place and every

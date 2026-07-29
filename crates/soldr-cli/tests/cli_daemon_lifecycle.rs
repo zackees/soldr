@@ -18,6 +18,19 @@ use soldr_cli::core::SoldrPaths;
 use wait_timeout::ChildExt;
 mod common;
 
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE, STILL_ACTIVE};
+#[cfg(windows)]
+use windows_sys::Win32::System::Console::{AttachConsole, FreeConsole};
+#[cfg(windows)]
+use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+};
+#[cfg(windows)]
+use windows_sys::Win32::System::Threading::{
+    GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+};
+
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 struct EnvScope {
@@ -221,6 +234,243 @@ impl Drop for DaemonCleanup {
         let _ = run_soldr(&["daemon", "stop"], &self.cache_root, &self.home_root);
     }
 }
+
+#[cfg(windows)]
+#[derive(Debug)]
+struct ProcessEntry {
+    pid: u32,
+    parent_pid: u32,
+    exe: String,
+}
+
+#[cfg(windows)]
+fn process_snapshot() -> Vec<ProcessEntry> {
+    // SAFETY: the snapshot handle is checked, PROCESSENTRY32W has the
+    // required size, and the handle is closed on every successful path.
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        assert_ne!(snapshot, INVALID_HANDLE_VALUE, "snapshot Windows processes");
+        let mut raw: PROCESSENTRY32W = std::mem::zeroed();
+        raw.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut entries = Vec::new();
+        if Process32FirstW(snapshot, &mut raw) != 0 {
+            loop {
+                let length = raw
+                    .szExeFile
+                    .iter()
+                    .position(|unit| *unit == 0)
+                    .unwrap_or(raw.szExeFile.len());
+                entries.push(ProcessEntry {
+                    pid: raw.th32ProcessID,
+                    parent_pid: raw.th32ParentProcessID,
+                    exe: String::from_utf16_lossy(&raw.szExeFile[..length]),
+                });
+                if Process32NextW(snapshot, &mut raw) == 0 {
+                    break;
+                }
+            }
+        }
+        CloseHandle(snapshot);
+        entries
+    }
+}
+
+#[cfg(windows)]
+fn process_is_alive(pid: u32) -> bool {
+    // SAFETY: the process handle is opened for a read-only query and closed
+    // before returning.
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return false;
+        }
+        let mut exit_code = 0;
+        let queried = GetExitCodeProcess(handle, &mut exit_code);
+        CloseHandle(handle);
+        queried != 0 && exit_code == STILL_ACTIVE as u32
+    }
+}
+
+#[cfg(windows)]
+fn wait_for_process_exit(pid: u32, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if !process_is_alive(pid) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    !process_is_alive(pid)
+}
+
+#[cfg(windows)]
+struct DetachedDaemonCleanup {
+    cache_root: PathBuf,
+    home_root: PathBuf,
+}
+
+#[cfg(windows)]
+impl Drop for DetachedDaemonCleanup {
+    fn drop(&mut self) {
+        let pid = soldr_cli::daemon::lifecycle::read_pid_file(&SoldrPaths::with_root(
+            self.cache_root.clone(),
+        ))
+        .map(|(pid, _)| pid);
+        let _ = run_soldr(&["daemon", "stop"], &self.cache_root, &self.home_root);
+        if let Some(pid) = pid {
+            let _ = wait_for_process_exit(pid, Duration::from_secs(5));
+        }
+        let _ = fs::remove_dir_all(&self.cache_root);
+        let _ = fs::remove_dir_all(&self.home_root);
+    }
+}
+
+#[cfg(windows)]
+#[test]
+#[ignore = "invoked by managed_windows_start_has_one_consoleless_owner"]
+fn windows_daemon_console_probe_helper() {
+    let pid: u32 = std::env::var("SOLDR_CONSOLE_PROBE_PID")
+        .expect("console probe PID")
+        .parse()
+        .expect("numeric console probe PID");
+    // SAFETY: this helper is an isolated test process. Detaching its inherited
+    // console cannot affect the parent test runner; AttachConsole is a
+    // read-only probe of whether the daemon owns a console.
+    unsafe {
+        let _ = FreeConsole();
+        let attached = AttachConsole(pid);
+        if attached != 0 {
+            let _ = FreeConsole();
+            panic!("daemon PID {pid} owns a Windows console");
+        }
+    }
+}
+
+#[cfg(windows)]
+soldr_cli::timed_test!(
+    managed_windows_start_has_one_consoleless_owner,
+    Duration::from_secs(120),
+    {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let cache_root = unique_temp_dir("daemon-detached-process-tree-cache");
+        let home_root = unique_temp_dir("daemon-detached-process-tree-home");
+        let _cleanup = DetachedDaemonCleanup {
+            cache_root: cache_root.clone(),
+            home_root: home_root.clone(),
+        };
+
+        let first = run_soldr(
+            &["daemon", "start", "--idle-timeout", "60"],
+            &cache_root,
+            &home_root,
+        );
+        assert!(
+            first.status.success(),
+            "first detached start failed: stdout={}; stderr={}",
+            String::from_utf8_lossy(&first.stdout),
+            String::from_utf8_lossy(&first.stderr),
+        );
+        assert!(
+            wait_for_ready(
+                &cache_root,
+                &home_root,
+                Instant::now() + Duration::from_secs(40)
+            ),
+            "managed daemon never became ready"
+        );
+
+        let paths = SoldrPaths::with_root(cache_root.clone());
+        let (pid, exe) =
+            soldr_cli::daemon::lifecycle::read_pid_file(&paths).expect("daemon PID publication");
+        assert!(
+            exe.starts_with(soldr_cli::self_relocate::daemon_runtime_root(&paths)),
+            "the PID owner must be the canonical runtime image: {}",
+            exe.display()
+        );
+        assert!(
+            soldr_cli::daemon::lifecycle::RootOwnershipGuard::try_acquire(&paths)
+                .expect("probe root owner lock")
+                .is_none(),
+            "the live PID owner must hold the root lock"
+        );
+
+        let second = run_soldr(
+            &["daemon", "start", "--idle-timeout", "60"],
+            &cache_root,
+            &home_root,
+        );
+        assert!(
+            second.status.success(),
+            "second detached start failed: {second:?}"
+        );
+        assert_eq!(
+            soldr_cli::daemon::lifecycle::read_pid_file(&paths).map(|(pid, _)| pid),
+            Some(pid),
+            "a second managed start must preserve the one root owner"
+        );
+
+        let processes = process_snapshot();
+        let daemon = processes
+            .iter()
+            .find(|entry| entry.pid == pid)
+            .unwrap_or_else(|| panic!("daemon PID {pid} missing from process snapshot"));
+        assert_eq!(
+            daemon.exe.to_ascii_lowercase(),
+            "soldr-daemon.exe",
+            "PID file must identify the canonical daemon process"
+        );
+        assert!(
+            processes.iter().all(|entry| entry.pid != daemon.parent_pid),
+            "the relocation trampoline PID {} is still alive: {processes:#?}",
+            daemon.parent_pid
+        );
+        assert!(
+            processes.iter().all(|entry| {
+                entry.parent_pid != pid
+                    || !matches!(
+                        entry.exe.to_ascii_lowercase().as_str(),
+                        "soldr-daemon.exe" | "conhost.exe"
+                    )
+            }),
+            "daemon PID {pid} owns a duplicate daemon or conhost: {processes:#?}"
+        );
+
+        let probe = Command::new(std::env::current_exe().expect("current test executable"))
+            .args([
+                "--ignored",
+                "--exact",
+                "windows_daemon_console_probe_helper",
+                "--nocapture",
+            ])
+            .env("SOLDR_CONSOLE_PROBE_PID", pid.to_string())
+            .output()
+            .expect("spawn isolated console probe");
+        assert!(
+            probe.status.success(),
+            "daemon console probe failed: stdout={}; stderr={}",
+            String::from_utf8_lossy(&probe.stdout),
+            String::from_utf8_lossy(&probe.stderr),
+        );
+
+        let stop = run_soldr(&["daemon", "stop"], &cache_root, &home_root);
+        assert!(
+            stop.status.success(),
+            "daemon stop failed: stdout={}; stderr={}",
+            String::from_utf8_lossy(&stop.stdout),
+            String::from_utf8_lossy(&stop.stderr),
+        );
+        assert!(
+            wait_for_process_exit(pid, Duration::from_secs(5)),
+            "daemon PID {pid} survived stop"
+        );
+        assert!(
+            soldr_cli::daemon::lifecycle::RootOwnershipGuard::try_acquire(&paths)
+                .expect("probe released root owner lock")
+                .is_some(),
+            "daemon stop must release the root lock"
+        );
+    }
+);
 
 #[test]
 fn start_status_stop_round_trip() {

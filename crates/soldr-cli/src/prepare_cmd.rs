@@ -62,6 +62,7 @@ fn apply_blessed_prep_env(
 ) -> Result<(), SoldrError> {
     for (key, value) in crate::target_lifecycle::resolved_env(prep) {
         append_env(github_env_path, &key, &value)?;
+        std::env::set_var(key, value);
     }
     if let Some(encoded) = crate::target_lifecycle::encoded_rustflags_for_prep(prep) {
         // This highest-precedence value contains required SDK flags plus
@@ -79,6 +80,7 @@ fn apply_blessed_prep_env(
             .map(|p| p.to_string_lossy().into_owned())
             .map_err(|e| SoldrError::Other(format!("failed to build prepared PATH: {e}")))?;
         append_env(github_env_path, "PATH", &path_value)?;
+        std::env::set_var("PATH", path_value);
     }
 
     if !prep.cargo_args.is_empty() {
@@ -139,25 +141,13 @@ pub async fn run(
     let paths = SoldrPaths::new()?;
     let github_env_path = github_env.as_deref();
 
-    // Classify the triple up front so the dispatch below + the
-    // post-restore audit + any future per-target cache namespacing all
-    // share the same source of truth. Unknown triples ERROR here
-    // instead of silently falling through to a no-op.
+    // Classification is shared by dispatch and restore-state auditing.
     let attrs = classify_target(&target)?;
 
     eprintln!("soldr prepare: target={target}");
 
-    // `--restore`: extract a previously-saved archive of soldr-managed
-    // prepare state (zig, LLVM, Apple SDK, xwin cache) BEFORE running
-    // the normal prepare flow. Anything still missing afterwards gets
-    // downloaded by the normal dispatch below. Restore failures are
-    // logged but non-fatal — partial cache hits still help.
-    //
-    // After restore, walk the expected paths for `target` and emit a
-    // present/missing summary so consumers can see whether the cache
-    // covered everything or the dispatch will need to re-download
-    // pieces. Missing paths are NOT an error — they just trigger
-    // normal downloads via the dispatch below (#900 acceptance).
+    // Restore failures are non-fatal; normal preparation fills any gaps.
+    // Always report which cached pieces survived.
     if let Some(archive) = restore.as_deref() {
         match restore_prepare_state(archive, &paths) {
             Ok(()) => eprintln!("soldr prepare: restored state from {}", archive.display()),
@@ -166,52 +156,37 @@ pub async fn run(
                 archive.display()
             ),
         }
-        // Emit the audit even if restore raised — partial restores are
-        // useful and the dispatch fills any remaining gaps. The
-        // present/missing summary lets consumers see exactly which
-        // pieces survived.
         let report = expected_state_paths(&attrs, &paths)?;
         emit_restore_report(&report);
     }
 
-    // soldr#940 — assets within a target's dispatch are fetched
-    // concurrently, either here via `tokio::try_join!` or inside the
-    // shared blessed-build prep object. Each ensure_* call already
-    // implements its own integrity verification + caching, so racing
-    // them only affects net-bandwidth ordering — not the on-disk
-    // result.
+    // Preparation fetches each target's independent assets concurrently.
     match attrs.os {
-        TargetOs::Windows => {
-            match attrs.abi {
-                Some(TargetAbi::Msvc) => {
-                    // Windows MSVC uses the same blessed prep object as
-                    // `soldr build`, so the caller gets one coherent
-                    // XWIN_CACHE_DIR + clang shim/LLVM PATH + cc-rs env
-                    // instead of a second cargo-xwin-default cache.
-                    eprintln!("soldr prepare: dispatch=blessed-msvc");
-                    let prep = crate::target_lifecycle::prepare_target(&paths, &target).await?;
-                    if let Some((_, cache_dir)) = prep
-                        .env
-                        .iter()
-                        .find(|(key, _)| key == crate::fetch::xwin_cache::XWIN_CACHE_DIR_ENV_VAR)
-                    {
-                        eprintln!("soldr prepare: xwin cache at {cache_dir}");
-                    }
-                    apply_blessed_prep_env(github_env_path, &prep)?;
+        TargetOs::Windows => match attrs.abi {
+            Some(TargetAbi::Msvc) => {
+                eprintln!("soldr prepare: dispatch=blessed-msvc");
+                let prep = crate::target_lifecycle::prepare_target(&paths, &target).await?;
+                if let Some((_, cache_dir)) = prep
+                    .env
+                    .iter()
+                    .find(|(key, _)| key == crate::fetch::xwin_cache::XWIN_CACHE_DIR_ENV_VAR)
+                {
+                    eprintln!("soldr prepare: xwin cache at {cache_dir}");
                 }
-                Some(TargetAbi::Gnu) => {
-                    eprintln!("soldr prepare: dispatch=mingw-w64-gcc+syslibs");
-                    let prep = crate::target_lifecycle::prepare_target(&paths, &target).await?;
-                    if let Some((_, root)) =
-                        prep.env.iter().find(|(key, _)| key == "MINGW_W64_GCC_ROOT")
-                    {
-                        eprintln!("soldr prepare: MinGW-w64 GCC at {root}");
-                    }
-                    apply_blessed_prep_env(github_env_path, &prep)?;
-                }
-                _ => unreachable!("classify_target rejects Windows without a supported ABI"),
+                apply_blessed_prep_env(github_env_path, &prep)?;
             }
-        }
+            Some(TargetAbi::Gnu) => {
+                eprintln!("soldr prepare: dispatch=mingw-w64-gcc+syslibs");
+                let prep = crate::target_lifecycle::prepare_target(&paths, &target).await?;
+                if let Some((_, root)) =
+                    prep.env.iter().find(|(key, _)| key == "MINGW_W64_GCC_ROOT")
+                {
+                    eprintln!("soldr prepare: MinGW-w64 GCC at {root}");
+                }
+                apply_blessed_prep_env(github_env_path, &prep)?;
+            }
+            _ => unreachable!("classify_target rejects Windows without a supported ABI"),
+        },
         TargetOs::Darwin => {
             // Darwin prepare must export the same target-scoped clang,
             // SDK, linker, LLVM, and cmake/ninja env as `soldr build`.
@@ -228,8 +203,6 @@ pub async fn run(
             apply_blessed_prep_env(github_env_path, &prep)?;
         }
         TargetOs::Linux => {
-            // Linux cross targets use the same managed-Zig compiler/linker
-            // plan as build, clippy, test compilation, and PEP 517.
             eprintln!("soldr prepare: dispatch=blessed-linux");
             let prep = crate::target_lifecycle::prepare_target(&paths, &target).await?;
             apply_blessed_prep_env(github_env_path, &prep)?;
@@ -775,11 +748,13 @@ pub(crate) fn rustup_add_target(triple: &str) -> Result<(), SoldrError> {
     }
     command.env(
         crate::core::CARGO_HOME_ENV_VAR,
-        crate::fetch::managed_cargo_home(&paths),
+        std::env::var_os(crate::core::CARGO_HOME_ENV_VAR)
+            .unwrap_or_else(|| crate::fetch::managed_cargo_home(&paths).into_os_string()),
     );
     command.env(
         crate::core::RUSTUP_HOME_ENV_VAR,
-        crate::fetch::managed_rustup_home(&paths),
+        std::env::var_os(crate::core::RUSTUP_HOME_ENV_VAR)
+            .unwrap_or_else(|| crate::fetch::managed_rustup_home(&paths).into_os_string()),
     );
     crate::core::suppress_windows_console_window(&mut command);
     let status = run_rustup_target_add(&mut command, triple)?;
@@ -1278,6 +1253,18 @@ mod tests {
             )),
             "fake rustup should receive managed RUSTUP_HOME, got: {body}"
         );
+
+        let explicit_cargo = tmp.path().join("action-cargo");
+        let explicit_toolchain = tmp.path().join("action-toolchain");
+        {
+            let _cargo_home = EnvVarGuard::set(crate::core::CARGO_HOME_ENV_VAR, &explicit_cargo);
+            let _toolchain_home =
+                EnvVarGuard::set(crate::core::RUSTUP_HOME_ENV_VAR, &explicit_toolchain);
+            rustup_add_target("aarch64-unknown-linux-gnu").expect("explicit target add");
+        }
+        let body = std::fs::read_to_string(&log).expect("read explicit toolchain log");
+        assert!(body.contains(&format!("CARGO_HOME={}", explicit_cargo.display())));
+        assert!(body.contains(&format!("RUSTUP_HOME={}", explicit_toolchain.display())));
     });
 
     crate::timed_test!(rustup_add_target_scopes_to_pinned_toolchain_channel, {

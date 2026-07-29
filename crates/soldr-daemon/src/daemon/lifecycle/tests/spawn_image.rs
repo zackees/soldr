@@ -4,21 +4,12 @@ mod daemon_spawn_image_tests {
     use crate::daemon::lifecycle::*;
     use tempfile::TempDir;
 
-    // soldr#1959. Every detached spawn path clears the environment, which
-    // drops the originator tag for free -- that absence is what used to make
-    // reapers spare us. clud#522 replaced the inference with a positive
-    // declaration, so the daemon has to say so out loud or get reaped.
-    crate::timed_test!(daemon_spawn_env_positively_declares_the_daemon, {
+    crate::timed_test!(daemon_spawn_env_contains_only_soldr_forwarding, {
         let env = daemon_spawn_env();
         let marker = std::ffi::OsString::from(running_process::DAEMON_MARKER_ENV_VAR);
-        let declared = env
-            .iter()
-            .find(|(name, _)| *name == marker)
-            .map(|(_, value)| value.clone());
-        assert_eq!(
-            declared,
-            Some(std::ffi::OsString::from("1")),
-            "soldr-daemon must declare itself so consumer tree-reapers spare it"
+        assert!(
+            env.iter().all(|(name, _)| *name != marker),
+            "running-process, not Soldr, owns the daemon declaration"
         );
     });
 
@@ -35,11 +26,7 @@ mod daemon_spawn_image_tests {
                 pair.0
             );
         }
-        assert_eq!(
-            spawn_env.len(),
-            forwarded.len() + 1,
-            "the marker must be the only thing the declaration adds"
-        );
+        assert_eq!(spawn_env, forwarded);
     });
 
     // soldr#1931 was not "someone forgot a name" -- it was that nothing tied
@@ -131,63 +118,6 @@ mod daemon_spawn_image_tests {
         }
     );
 
-    // soldr#1959. The two tests above assert the declaration is in the
-    // *vector*; the unix spawn paths hand that vector straight to
-    // `Command::envs`, so for them the vector is the contract. Windows does
-    // not: it serializes into a raw `CreateProcessW` block via
-    // `merged_windows_environment_block`, a genuinely separate code path that
-    // could drop or mangle the pair without either test above noticing. That
-    // matters here specifically, because Windows is where the reaped-daemon
-    // early-eof failures were observed in the first place.
-    #[cfg(windows)]
-    crate::timed_test!(windows_env_block_carries_the_daemon_declaration, {
-        let merged = merge_env_overlay(
-            vec![(
-                std::ffi::OsString::from("Path"),
-                std::ffi::OsString::from("C:\\Windows"),
-            )],
-            daemon_spawn_env(),
-        );
-        let rendered = String::from_utf16_lossy(&build_windows_environment_block(merged));
-        assert!(
-            rendered.contains(&format!("{}=1\0", running_process::DAEMON_MARKER_ENV_VAR)),
-            "declaration missing from the CreateProcessW block: {rendered:?}"
-        );
-    });
-
-    #[cfg(windows)]
-    crate::timed_test!(windows_env_overlay_replaces_case_insensitively_and_sorts, {
-        use std::ffi::OsString;
-        let base = vec![
-            (OsString::from("Path"), OsString::from("C:\\Windows")),
-            (OsString::from("soldr_cache_dir"), OsString::from("stale")),
-        ];
-        let overlay = vec![(
-            OsString::from("SOLDR_CACHE_DIR"),
-            OsString::from("D:\\temp\\setup-soldr-soldr"),
-        )];
-        let merged = merge_env_overlay(base, overlay);
-        assert_eq!(
-            merged,
-            vec![
-                (OsString::from("Path"), OsString::from("C:\\Windows")),
-                (
-                    OsString::from("soldr_cache_dir"),
-                    OsString::from("D:\\temp\\setup-soldr-soldr"),
-                ),
-            ]
-        );
-
-        let block = build_windows_environment_block(merged);
-        let rendered = String::from_utf16_lossy(&block);
-        assert!(rendered.contains("Path=C:\\Windows\0"));
-        assert!(rendered.contains("soldr_cache_dir=D:\\temp\\setup-soldr-soldr\0"));
-        assert!(
-            block.ends_with(&[0, 0]),
-            "block must be double-NUL terminated"
-        );
-    });
-
     crate::timed_test!(detached_spawn_args_preserve_requested_idle_timeout, {
         assert_eq!(
             detached_spawn_args(false, Some(7)),
@@ -210,14 +140,6 @@ mod daemon_spawn_image_tests {
             .expect("run shell probe");
         assert!(output.status.success());
         assert_eq!(String::from_utf8_lossy(&output.stdout), "soldr");
-    });
-
-    #[cfg(windows)]
-    crate::timed_test!(via_self_daemon_windows_command_line_uses_main_cli_argv0, {
-        let args = detached_spawn_args(true, None);
-        let command_line = build_windows_command_line(Path::new("soldr"), &args);
-        let rendered = String::from_utf16_lossy(&command_line[..command_line.len() - 1]);
-        assert_eq!(rendered, "\"soldr\" daemon start --foreground");
     });
 
     crate::timed_test!(detached_spawn_args_preserve_explicit_idle_timeout, {

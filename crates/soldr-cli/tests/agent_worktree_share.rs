@@ -17,7 +17,108 @@ use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+#[cfg(windows)]
+use windows_sys::Win32::System::Threading::{
+    GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+};
+
+/// Panic-safe ownership of every process and file created by this fixture.
+///
+/// The test starts the daemon indirectly through `soldr cargo check`, so a
+/// plain temporary-directory guard is insufficient: on Windows the live
+/// daemon pins its relocated image and cache root. Stop that exact isolated
+/// daemon before removing the root, even when an assertion unwinds.
+struct FixtureGuard {
+    workdir: PathBuf,
+    cache_dir: PathBuf,
+}
+
+impl FixtureGuard {
+    fn new(workdir: PathBuf, cache_dir: PathBuf) -> Self {
+        Self { workdir, cache_dir }
+    }
+
+    fn daemon_pid(&self) -> Option<u32> {
+        let raw = fs::read_to_string(
+            self.cache_dir
+                .join("cache")
+                .join("soldr-daemon")
+                .join("daemon.pid"),
+        )
+        .ok()?;
+        raw.lines().next()?.trim().parse().ok()
+    }
+
+    fn stop_daemon(&self) -> std::process::Output {
+        Command::new(common::soldr_bin())
+            .args(["daemon", "stop"])
+            .env("SOLDR_CACHE_DIR", &self.cache_dir)
+            .env_remove("RUSTC_WRAPPER")
+            .output()
+            .expect("run soldr daemon stop")
+    }
+
+    fn wait_for_daemon_exit(&self, pid: u32) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if !pid_is_alive(pid) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        !pid_is_alive(pid)
+    }
+
+    fn stop_and_assert_exited(&self) {
+        let pid = self.daemon_pid().expect("daemon PID publication");
+        let output = self.stop_daemon();
+        assert!(
+            output.status.success(),
+            "soldr daemon stop failed: stdout={}; stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        assert!(
+            self.wait_for_daemon_exit(pid),
+            "soldr daemon PID {pid} survived a successful daemon stop"
+        );
+    }
+}
+
+impl Drop for FixtureGuard {
+    fn drop(&mut self) {
+        if let Some(pid) = self.daemon_pid() {
+            let _ = self.stop_daemon();
+            let _ = self.wait_for_daemon_exit(pid);
+        }
+        if let Err(error) = fs::remove_dir_all(&self.workdir) {
+            eprintln!(
+                "warning: could not remove fixture root {}: {error}",
+                self.workdir.display()
+            );
+        }
+    }
+}
+
+#[cfg(windows)]
+fn pid_is_alive(pid: u32) -> bool {
+    // SAFETY: the handle is opened only for a read-only liveness query and is
+    // closed on every successful OpenProcess path.
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return false;
+        }
+        let mut exit_code = 0;
+        let queried = GetExitCodeProcess(handle, &mut exit_code);
+        CloseHandle(handle);
+        queried != 0 && exit_code == STILL_ACTIVE as u32
+    }
+}
 
 soldr_cli::timed_test!(
     windows_long_path_publication_survives_fresh_worktree_reuse,
@@ -25,6 +126,7 @@ soldr_cli::timed_test!(
     {
         let workdir = unique_temp_dir("windows-cache-publication");
         let cache_dir = workdir.join("shared-cache");
+        let guard = FixtureGuard::new(workdir.clone(), cache_dir.clone());
         let crate_dir = workdir.join("test-crate");
 
         fs::create_dir_all(&cache_dir).expect("create cache dir");
@@ -142,6 +244,7 @@ soldr_cli::timed_test!(
             0,
             "fresh-target publication must not fail durable digest creation: {warm:#?}",
         );
+        guard.stop_and_assert_exited();
     }
 );
 
