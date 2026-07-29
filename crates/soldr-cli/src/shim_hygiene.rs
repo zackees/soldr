@@ -96,6 +96,133 @@ pub(crate) fn shadowing_report(found: &ShimShadowing) -> String {
     )
 }
 
+/// Outcome of an explicit [`remove_shadowing_at`] request.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RemovalOutcome {
+    /// Nothing was shadowing; nothing to do.
+    NothingToDo,
+    /// The shadowing file was deleted outright.
+    Removed(PathBuf),
+    /// The shadowing file could not be deleted because it is the running
+    /// image, so it was renamed out of the way instead. That is the fix:
+    /// once it no longer has the bare `soldr` name it cannot win on PATH.
+    Renamed { from: PathBuf, to: PathBuf },
+    /// Removal was attempted and failed, with the reason.
+    Failed { path: PathBuf, reason: String },
+}
+
+/// Remove the shadowing file, if there is one.
+///
+/// soldr#1979. #1983 shipped detection only, and was explicit about why it
+/// stopped there: "removing a binary from `PATH` behind the user's back is
+/// the kind of action that must not be a side effect of a diagnostic."
+///
+/// That objection is to *implicitness*, not to removal — so this is reachable
+/// only from `soldr doctor --remove-shadowing-shim`, which a user types. It
+/// never runs as part of a plain `doctor`.
+///
+/// **Deleting outright usually fails, by construction.** Windows holds an
+/// exclusive lock on a running image, and the shadowing file is precisely
+/// what is running — that is the whole mechanism: it wins the bare `soldr`
+/// lookup, so it is the binary executing this code. A plain
+/// `std::fs::remove_file` therefore returns `Access is denied. (os error 5)`.
+/// Verified end to end; the first version of this function did exactly that
+/// and repaired nothing.
+///
+/// Renaming a running image *is* permitted, and it is sufficient: the file
+/// only shadows because it is named `soldr`, so moving it aside fixes the
+/// machine immediately even though the bytes are still on disk. This is the
+/// same technique Windows self-updaters use.
+///
+/// So: try the clean delete first — it succeeds when this is invoked *via*
+/// the installed `.exe`, where the orphan is not the running image — and fall
+/// back to renaming. A failure at both is reported rather than swallowed,
+/// because a silent no-op would leave the user believing they had fixed a
+/// machine that is still broken.
+pub(crate) fn remove_shadowing_at(current: &Path) -> RemovalOutcome {
+    let Some(found) = detect_shadowing_at(current) else {
+        return RemovalOutcome::NothingToDo;
+    };
+    match std::fs::remove_file(&found.running) {
+        Ok(()) => return RemovalOutcome::Removed(found.running),
+        Err(err) if err.kind() != std::io::ErrorKind::PermissionDenied => {
+            return RemovalOutcome::Failed {
+                path: found.running,
+                reason: err.to_string(),
+            };
+        }
+        Err(_) => {}
+    }
+    let aside = disused_name_for(&found.running);
+    match std::fs::rename(&found.running, &aside) {
+        Ok(()) => RemovalOutcome::Renamed {
+            from: found.running,
+            to: aside,
+        },
+        Err(err) => RemovalOutcome::Failed {
+            path: found.running,
+            reason: format!("delete denied and rename failed: {err}"),
+        },
+    }
+}
+
+/// A sibling name that cannot shadow: it carries an extension, so no shell
+/// picks it for bare `soldr`.
+fn disused_name_for(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".shadowed-disused");
+    path.with_file_name(name)
+}
+
+/// Operator-facing text for a [`RemovalOutcome`]. Split from the printer so
+/// the wording is assertable without capturing stdout.
+pub(crate) fn removal_report(outcome: &RemovalOutcome) -> String {
+    match outcome {
+        RemovalOutcome::NothingToDo => {
+            "  status:    ok (nothing shadowing the installed soldr; nothing removed)".to_string()
+        }
+        RemovalOutcome::Renamed { from, to } => format!(
+            "  status:    RENAMED ASIDE (it is the running image, so it cannot be deleted)
+               was:       {}
+               now:       {}
+               effect:    it no longer has the bare `soldr` name, so it can no longer win
+                          on an MSYS PATH -- the machine is fixed now
+               next:      re-run any soldr command; delete the renamed file at leisure",
+            from.display(),
+            to.display()
+        ),
+        RemovalOutcome::Removed(path) => format!(
+            "  status:    REMOVED
+               removed:   {}
+               next:      re-run any soldr command; it will resolve to the installed .exe",
+            path.display()
+        ),
+        RemovalOutcome::Failed { path, reason } => format!(
+            "  status:    FAILED to remove
+               path:      {}
+               reason:    {}
+               next:      close other soldr processes (`soldr daemon stop`) and retry, or
+                          remove it by hand",
+            path.display(),
+            reason
+        ),
+    }
+}
+
+/// Print the `shim hygiene:` section for an explicit removal request.
+pub(crate) fn print_shim_removal_section() {
+    println!();
+    println!("shim hygiene:");
+    let outcome = match std::env::current_exe() {
+        Ok(exe) => remove_shadowing_at(&exe),
+        Err(err) => RemovalOutcome::Failed {
+            path: PathBuf::from("<current_exe unavailable>"),
+            reason: err.to_string(),
+        },
+    };
+    println!("{}", removal_report(&outcome));
+}
+
 /// Print the `shim hygiene:` doctor section.
 pub(crate) fn print_shim_hygiene_section() {
     println!();
@@ -109,6 +236,109 @@ pub(crate) fn print_shim_hygiene_section() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // soldr#1979 remediation. The detection half shipped in #1983; these
+    // cover the removal it deliberately left out.
+    crate::timed_test!(
+        removal_deletes_the_shadowing_file_and_spares_the_installed_one,
+        {
+            let tmp = tempfile::tempdir().expect("tmpdir");
+            let running = tmp.path().join("soldr");
+            let installed = tmp.path().join("soldr.exe");
+            // Different lengths: that is what `detect_shadowing_at` keys on.
+            std::fs::write(&running, b"stale").expect("write running");
+            std::fs::write(&installed, b"installed binary, longer").expect("write installed");
+
+            let outcome = remove_shadowing_at(&running);
+            assert_eq!(outcome, RemovalOutcome::Removed(running.clone()));
+            assert!(!running.exists(), "the shadowing file must be gone");
+            assert!(
+            installed.exists(),
+            "the installed .exe must never be touched -- removing it would              uninstall soldr instead of repairing it"
+        );
+        }
+    );
+
+    // Equal lengths are the healthy hardlinked steady state. Removing there
+    // would delete a perfectly good alias.
+    crate::timed_test!(removal_leaves_a_matching_pair_alone, {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let running = tmp.path().join("soldr");
+        let installed = tmp.path().join("soldr.exe");
+        std::fs::write(&running, b"same").expect("w1");
+        std::fs::write(&installed, b"same").expect("w2");
+
+        assert_eq!(remove_shadowing_at(&running), RemovalOutcome::NothingToDo);
+        assert!(running.exists(), "a healthy alias must survive");
+        assert!(installed.exists());
+    });
+
+    // No sibling at all: the common case on a machine that was never
+    // affected. Must not report a removal it did not perform.
+    crate::timed_test!(removal_is_a_no_op_without_a_managed_sibling, {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let running = tmp.path().join("soldr");
+        std::fs::write(&running, b"lonely").expect("write");
+
+        assert_eq!(remove_shadowing_at(&running), RemovalOutcome::NothingToDo);
+        assert!(running.exists());
+    });
+
+    // A failure must say so. A silent no-op would leave the user believing
+    // they had repaired a machine that is still broken.
+    crate::timed_test!(a_failed_removal_is_reported_with_the_reason, {
+        let outcome = RemovalOutcome::Failed {
+            path: PathBuf::from("C:/tools/Scripts/soldr"),
+            reason: "Access is denied. (os error 5)".to_string(),
+        };
+        let text = removal_report(&outcome);
+        assert!(text.contains("FAILED"), "got: {text}");
+        assert!(
+            text.contains("os error 5"),
+            "must carry the cause, got: {text}"
+        );
+        assert!(
+            text.contains("daemon stop"),
+            "must say what to try next, got: {text}"
+        );
+    });
+
+    // The rename fallback is the path that actually runs in the real world:
+    // the orphan is what wins on PATH, so it is the running image, and
+    // Windows refuses to delete a running image. The first version of this
+    // feature only tried `remove_file` and repaired nothing -- verified end to
+    // end with `Access is denied. (os error 5)`.
+    crate::timed_test!(the_disused_name_can_no_longer_shadow, {
+        let aside = disused_name_for(Path::new("C:/tools/Scripts/soldr"));
+        assert_eq!(
+            aside,
+            PathBuf::from("C:/tools/Scripts/soldr.shadowed-disused")
+        );
+        // The whole point: a name with an extension is not what a shell picks
+        // for bare `soldr`, so the renamed file cannot shadow anything.
+        assert_eq!(shadowed_sibling_path(&aside), None);
+    });
+
+    crate::timed_test!(a_rename_report_says_the_machine_is_already_fixed, {
+        let text = removal_report(&RemovalOutcome::Renamed {
+            from: PathBuf::from("C:/s/soldr"),
+            to: PathBuf::from("C:/s/soldr.shadowed-disused"),
+        });
+        assert!(text.contains("RENAMED ASIDE"), "got: {text}");
+        assert!(
+            text.contains("fixed now"),
+            "a rename is the fix, not a partial step -- the user must not be              left thinking more is required, got: {text}"
+        );
+    });
+
+    crate::timed_test!(a_successful_removal_says_what_to_do_next, {
+        let text = removal_report(&RemovalOutcome::Removed(PathBuf::from("C:/s/soldr")));
+        assert!(text.contains("REMOVED"), "got: {text}");
+        assert!(
+            text.contains("re-run any soldr command"),
+            "must tell the user the fix has taken effect, got: {text}"
+        );
+    });
 
     // The rule is "extensionless shadows .exe". Anything already carrying an
     // extension is not what a shell picks for bare `soldr`, so it can never

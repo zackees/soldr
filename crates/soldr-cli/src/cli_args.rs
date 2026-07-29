@@ -426,6 +426,16 @@ pub(crate) enum Commands {
         /// Windows. Issue #357.
         #[arg(long)]
         refresh_defender_probe: bool,
+        /// Delete an unmanaged extensionless `soldr` that is shadowing the
+        /// installed `soldr.exe` on an MSYS PATH (issue #1979).
+        ///
+        /// Opt-in on purpose: a plain `soldr doctor` only reports the
+        /// shadowing. Removing a binary from PATH is not something a
+        /// diagnostic should do as a side effect, but no installer owns
+        /// this file, so without an explicit switch an affected machine
+        /// cannot be repaired by any soldr command.
+        #[arg(long)]
+        remove_shadowing_shim: bool,
     },
     /// Install per-version PATH shims for Rust tools
     ///

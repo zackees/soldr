@@ -482,9 +482,8 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
         Commands::Doctor {
             json,
             refresh_defender_probe,
-        } => {
-            std::process::exit(doctor::run_doctor(json, refresh_defender_probe)?);
-        }
+            remove_shadowing_shim: fix,
+        } => std::process::exit(doctor::run_doctor(json, refresh_defender_probe, fix)?),
         Commands::Optimize(args) => {
             std::process::exit(optimize::run_optimize(args)?);
         }

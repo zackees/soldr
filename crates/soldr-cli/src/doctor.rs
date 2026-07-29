@@ -132,7 +132,18 @@ struct DoctorSoldrDebugInfo {
 
 /// Implementation of `soldr doctor`. Read-only — never invokes
 /// `rustup component add` / `target add` / `toolchain install`.
-pub(crate) fn run_doctor(json: bool, refresh_defender_probe: bool) -> Result<i32, SoldrError> {
+pub(crate) fn run_doctor(
+    json: bool,
+    refresh_defender_probe: bool,
+    remove_shadowing_shim: bool,
+) -> Result<i32, SoldrError> {
+    // soldr#1979: the repair is its own action, not a mode of the report.
+    // Doing both would mean a user cannot see what is wrong without also
+    // changing it -- the implicitness #1983 objected to.
+    if remove_shadowing_shim {
+        crate::shim_hygiene::print_shim_removal_section();
+        return Ok(0);
+    }
     let workspace_root = std::env::current_dir().map_err(SoldrError::from)?;
     let manifest_path = workspace_root.join("rust-toolchain.toml");
     let manifest = crate::core::read_rust_toolchain_manifest(&workspace_root)?;
