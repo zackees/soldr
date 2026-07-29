@@ -245,6 +245,99 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+class PhaseTracker:
+    """Turn the harness's ``## <name>`` markers into observable phases.
+
+    soldr#1978 item 4. The acceptance is ~39-47 minutes and >99% of it lands
+    in a single Actions step, so a failure says only "the 40-minute step
+    failed" -- you re-run 40 minutes to find out where. The harness already
+    announces every stage on stdout as ``## cold nextest archive build`` and
+    friends; nothing was reading them.
+
+    This folds each stage into a collapsible Actions group and records how
+    long it took, so the log has navigable sections and the job summary ends
+    with a timing table. Crucially it also remembers the phase that was open
+    when output stopped: on failure that name is the single most useful fact,
+    and it is exactly what the opaque step could never report.
+
+    Grouping markers are emitted only under Actions -- locally they would be
+    noise, since a terminal already shows the ``##`` lines in context.
+    """
+
+    MARKER = "## "
+
+    def __init__(self, clock=time.monotonic, emit_groups: bool = False) -> None:
+        self._clock = clock
+        self._emit_groups = emit_groups
+        self._started_at: float | None = None
+        self.current: str | None = None
+        self.phases: list[tuple[str, float]] = []
+
+    def feed(self, line: str) -> str | None:
+        """Consume one harness line; return a control line to print, if any."""
+        if not line.startswith(self.MARKER):
+            return None
+        name = line[len(self.MARKER) :].strip()
+        if not name:
+            return None
+        closing = self._close()
+        self.current = name
+        self._started_at = self._clock()
+        if not self._emit_groups:
+            return None
+        # The close has to precede the open or Actions nests the groups.
+        return f"{closing or ''}::group::{name}"
+
+    def finish(self) -> None:
+        """Close the open phase, if any. Safe to call more than once."""
+        self._close()
+        self.current = None
+
+    def _close(self) -> str | None:
+        if self.current is None or self._started_at is None:
+            return None
+        self.phases.append((self.current, self._clock() - self._started_at))
+        self.current = None
+        self._started_at = None
+        return "::endgroup::\n" if self._emit_groups else None
+
+    def record(self, name: str, seconds: float) -> None:
+        """Record a phase measured outside the harness stream."""
+        self.phases.append((name, seconds))
+
+    def summary_markdown(self, failed_phase: str | None = None) -> str:
+        """A phase-timing table for the job summary."""
+        lines = ["### Cacheability phases", "", "| phase | duration |", "|---|---:|"]
+        for name, seconds in self.phases:
+            lines.append(f"| {name} | {format_duration(seconds)} |")
+        total = sum(seconds for _, seconds in self.phases)
+        lines.append(f"| **total** | **{format_duration(total)}** |")
+        if failed_phase:
+            lines += ["", f"**Failed during:** `{failed_phase}`"]
+        return "\n".join(lines) + "\n"
+
+
+def format_duration(seconds: float) -> str:
+    minutes, secs = divmod(int(seconds), 60)
+    return f"{minutes}m {secs:02d}s" if minutes else f"{secs}s"
+
+
+def write_step_summary(markdown: str) -> None:
+    """Append to the Actions job summary; a no-op off Actions."""
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(markdown)
+    except OSError as err:  # a summary must never fail the acceptance
+        print(f"warning: could not write job summary: {err}", file=sys.stderr)
+
+
+def on_github_actions() -> bool:
+    return os.environ.get("GITHUB_ACTIONS") == "true"
+
+
 def docker_available() -> bool:
     try:
         result = subprocess.run(
@@ -266,7 +359,9 @@ def build_image(image: str) -> int:
     ).returncode
 
 
-def run_harness(image: str, volumes: list[str]) -> tuple[int, dict[str, object] | None]:
+def run_harness(
+    image: str, volumes: list[str], tracker: "PhaseTracker | None" = None
+) -> tuple[int, dict[str, object] | None]:
     cmd = [
         "docker",
         "run",
@@ -310,6 +405,10 @@ def run_harness(image: str, volumes: list[str]) -> tuple[int, dict[str, object] 
     tail: deque[str] = deque(maxlen=80)
     for raw_line in process.stdout:
         line = raw_line.decode("utf-8", errors="replace")
+        if tracker is not None:
+            control = tracker.feed(line)
+            if control:
+                print(control, flush=True)
         print(line, end="", flush=True)
         tail.append(line)
         if line.startswith("CACHEABILITY_RESULT "):
@@ -317,6 +416,9 @@ def run_harness(image: str, volumes: list[str]) -> tuple[int, dict[str, object] 
             result = json.loads(payload)
 
     code = process.wait()
+    if tracker is not None and code == 0:
+        # Leave the phase open on failure so the summary can name it.
+        tracker.finish()
     if code != 0:
         print("\nlast harness output:", file=sys.stderr)
         for line in tail:
@@ -345,11 +447,17 @@ def main(argv: list[str]) -> int:
     for volume in volumes:
         print(f"  {volume}")
 
+    tracker = PhaseTracker(emit_groups=on_github_actions())
     try:
+        # soldr#1978 item 4: the image build is a phase in its own right --
+        # `--pull` with no layer cache means it can dominate a run, and until
+        # now it was indistinguishable from the acceptance it precedes.
+        build_started = time.monotonic()
         image_code = build_image(args.image)
+        tracker.record("docker build", time.monotonic() - build_started)
         if image_code != 0:
             return image_code
-        code, result = run_harness(args.image, volumes)
+        code, result = run_harness(args.image, volumes, tracker)
         if code != 0:
             return code
         if result is None:
@@ -363,6 +471,15 @@ def main(argv: list[str]) -> int:
             return 6
         return 0
     finally:
+        # The summary matters most when something failed, so it is written
+        # here rather than on the success path: `failed_phase` names the
+        # stage that was still open, which is the fact a single opaque step
+        # could never give you.
+        failed_phase = tracker.current
+        tracker.finish()
+        write_step_summary(tracker.summary_markdown(failed_phase))
+        if failed_phase:
+            print(f"failed during phase: {failed_phase}", file=sys.stderr)
         if args.keep_volumes:
             print("Keeping Docker volumes for inspection.")
         else:
