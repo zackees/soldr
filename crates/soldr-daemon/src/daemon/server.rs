@@ -17,6 +17,7 @@ use crate::daemon::db;
 use crate::daemon::disconnect::DispatchOutcome;
 use crate::daemon::event_batcher::EventBatcher;
 use crate::daemon::ipc::{read_frame_async_with_prefix, write_frame_async};
+use crate::daemon::ipc_peer::PeerIdentity;
 use crate::daemon::lifecycle::{
     append_lifecycle_event, is_live, stale_daemon_occupies_endpoint, write_pid_file,
 };
@@ -1472,7 +1473,7 @@ async fn run_accept_loop(
         };
         let state = state.clone();
         tokio::spawn(async move {
-            let _ = handle_connection(stream, state).await;
+            let _ = handle_connection(stream, state, PeerIdentity::unknown()).await;
         });
     }
 }
@@ -1568,18 +1569,9 @@ async fn accept_windows_pipe_instance(
         .first_pipe_instance(first_pipe_instance)
         .create(&pipe_name)?;
 
-    // Stop waiting for a client the moment shutdown is requested, and drop
-    // `server` on the way out so the pipe instance is released.
-    //
-    // Without this the pool stayed live for the whole graceful drain (tens
-    // of seconds). A wrapper connecting in that window reached a daemon
-    // whose compile service had already latched shut, so it got back an
-    // `Error` frame -> `ClientError::Protocol`, which
-    // `client_error_indicates_daemon_unavailable` deliberately classifies
-    // as NOT unavailable — denying the direct-rustc fallback and failing
-    // the build. Unix never had this hole: aborting its accept task drops
-    // the `UnixListener`, so the next connect fails with `Io` and degrades
-    // cleanly. Releasing the handle here restores that behavior.
+    // Drop the instance as soon as shutdown starts. Otherwise a wrapper can
+    // connect after the compile service has latched shut. Unix drops its
+    // listener with the accept task; this gives Windows the same fallback.
     let connected = tokio::select! {
         result = server.connect() => result.is_ok(),
         _ = state.shutdown.wait() => return Ok(()),
@@ -1592,7 +1584,8 @@ async fn accept_windows_pipe_instance(
         // Replenish before parsing the connected request, keeping the pool
         // admission capacity independent from compile execution throughput.
         spawn_windows_pipe_instance(pipe_name, state.clone(), false);
-        let _ = handle_connection(server, state).await;
+        let peer = PeerIdentity::from_windows_named_pipe(&server);
+        let _ = handle_connection(server, state, peer).await;
     } else {
         spawn_windows_pipe_instance(pipe_name, state, false);
     }
@@ -1681,7 +1674,11 @@ where
 {
 }
 
-async fn handle_connection<S>(mut stream: S, state: Arc<State>) -> std::io::Result<()>
+async fn handle_connection<S>(
+    mut stream: S,
+    state: Arc<State>,
+    peer: crate::daemon::ipc_peer::PeerIdentity,
+) -> std::io::Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
@@ -1765,6 +1762,7 @@ where
             let _ = write_frame_async(&mut stream, &Response::Status(info)).await;
         }
         Request::Shutdown => {
+            peer.record_shutdown_requested(&state.paths, state.daemon_identity.started_at_unix_ms);
             let _ = write_frame_async(
                 &mut stream,
                 &Response::ShuttingDown(ShutdownAck {
