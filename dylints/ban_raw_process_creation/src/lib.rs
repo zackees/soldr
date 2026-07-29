@@ -1,8 +1,10 @@
 #![feature(rustc_private)]
 
+extern crate rustc_errors;
 extern crate rustc_hir;
 extern crate rustc_span;
 
+use rustc_errors::DiagDecorator;
 use rustc_hir::def::Res;
 use rustc_hir::{Expr, ExprKind, Item};
 use rustc_lint::{LateContext, LateLintPass, LintContext};
@@ -149,9 +151,13 @@ fn emit_raw_platform(cx: &LateContext<'_>, span: rustc_span::Span, name: &str) {
 }
 
 fn emit(cx: &LateContext<'_>, span: rustc_span::Span, message: String) {
-    cx.span_lint(BAN_RAW_PROCESS_CREATION, span, move |diag| {
-        diag.primary_message(message);
-    });
+    cx.opt_span_lint(
+        BAN_RAW_PROCESS_CREATION,
+        Some(span),
+        DiagDecorator(move |diag| {
+            diag.primary_message(message);
+        }),
+    );
 }
 
 fn span_is_in_scope(cx: &LateContext<'_>, span: rustc_span::Span) -> bool {
