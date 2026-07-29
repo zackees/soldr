@@ -393,12 +393,31 @@ fn spill_stdin_to_content_addressed_file() -> Result<StdinSourceFile, SoldrError
 }
 
 fn materialize_stdin_source(bytes: &[u8]) -> Result<StdinSourceFile, SoldrError> {
-    let hex = zccache::hash::hash_bytes(bytes).to_hex();
     // soldr#1900: relocated off the OS temp dir (tmpfs on Linux). Note this
     // file is deliberately *reused* across invocations -- it is keyed by
     // content hash and `ensure_stdin_source_path` reports whether it already
     // existed -- so it is not a TempDir and must not auto-delete.
-    let temp_dir = crate::core::ensure_temp_root();
+    materialize_stdin_source_in(&crate::core::ensure_temp_root(), bytes)
+}
+
+/// [`materialize_stdin_source`] against an explicit scratch root.
+///
+/// soldr#2006: `temp_root()` is memoized process-wide, so the first caller in
+/// a test binary fixes the root for every later one. When that first call
+/// happened while another test had `SOLDR_CACHE_DIR` pointed at its own
+/// `TempDir`, the whole process's scratch root lived inside that `TempDir` and
+/// vanished when it dropped -- failing unrelated tests that merely *read* the
+/// global. `env_lock_lint` cannot see that: it tracks mutation sites, and
+/// these tests mutate nothing.
+///
+/// Taking the root as a parameter removes the shared dependency rather than
+/// synchronising around it, which is the same fix `build_env_block_in` made
+/// for the ambient cwd in soldr#1929.
+fn materialize_stdin_source_in(
+    temp_dir: &std::path::Path,
+    bytes: &[u8],
+) -> Result<StdinSourceFile, SoldrError> {
+    let hex = zccache::hash::hash_bytes(bytes).to_hex();
     let short_path = temp_dir.join(format!("soldr-stdin-{}.rs", &hex[..16]));
     if ensure_stdin_source_path(&short_path, bytes)? {
         return Ok(StdinSourceFile { path: short_path });
@@ -552,14 +571,17 @@ mod tests {
             .unwrap()
             .as_nanos();
         let bytes = format!("fn main() {{ let _ = {nonce}; }}\n");
-        let file = materialize_stdin_source(bytes.as_bytes()).unwrap();
+        // soldr#2006: an explicit root, not the process-wide memoized one --
+        // otherwise another test's TempDir can own it and delete it under us.
+        let root = tempfile::tempdir().expect("scratch root");
+        let file = materialize_stdin_source_in(root.path(), bytes.as_bytes()).unwrap();
         let hash = zccache::hash::hash_bytes(bytes.as_bytes()).to_hex();
         let name = file.path().file_name().unwrap().to_string_lossy();
 
         assert_eq!(name.as_ref(), format!("soldr-stdin-{}.rs", &hash[..16]));
         assert_eq!(std::fs::read(file.path()).unwrap(), bytes.as_bytes());
 
-        let same = materialize_stdin_source(bytes.as_bytes()).unwrap();
+        let same = materialize_stdin_source_in(root.path(), bytes.as_bytes()).unwrap();
         assert_eq!(same.path(), file.path());
     }
 
@@ -569,9 +591,19 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let a = materialize_stdin_source(format!("const A: u128 = {nonce};\n").as_bytes()).unwrap();
-        let b = materialize_stdin_source(format!("const B: u128 = {};\n", nonce + 1).as_bytes())
-            .unwrap();
+        // soldr#2006: an explicit root, not the process-wide memoized one --
+        // otherwise another test's TempDir can own it and delete it under us.
+        let root = tempfile::tempdir().expect("scratch root");
+        let a = materialize_stdin_source_in(
+            root.path(),
+            format!("const A: u128 = {nonce};\n").as_bytes(),
+        )
+        .unwrap();
+        let b = materialize_stdin_source_in(
+            root.path(),
+            format!("const B: u128 = {};\n", nonce + 1).as_bytes(),
+        )
+        .unwrap();
 
         assert_ne!(a.path(), b.path());
     }
