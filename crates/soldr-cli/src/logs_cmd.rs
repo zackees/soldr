@@ -298,6 +298,11 @@ fn collect_log_path_entries(paths: &SoldrPaths) -> Vec<LogPathEntry> {
         .root
         .join("logs")
         .join("compile-daemon-fallbacks.jsonl");
+    // soldr#1857 — daemon-owned, so it lives beside the daemon's other
+    // state rather than under the client-written `<root>/logs/` tree.
+    let compile_delivery_log = soldr_daemon_state
+        .join("logs")
+        .join("compile-delivery.jsonl");
 
     let entries = [
         (
@@ -356,6 +361,14 @@ fn collect_log_path_entries(paths: &SoldrPaths) -> Vec<LogPathEntry> {
             compile_daemon_fallback_log,
             "Durable JSONL record of compile-daemon cache-bypass fallbacks, including \
              build-session correlation and the terminal startup failure.",
+        ),
+        (
+            "soldr-compile-delivery-log",
+            compile_delivery_log,
+            "Durable JSONL record of compiles the daemon ran but could not hand back to the \
+             wrapper — a mid-compile client disconnect, or a reply the connection refused. \
+             A row with `exit_code: 0` is soldr#1857's signature: a compile that succeeded \
+             and still surfaced as a bare `exit 1` with no diagnostics.",
         ),
         (
             "soldr-daemon-runtime",

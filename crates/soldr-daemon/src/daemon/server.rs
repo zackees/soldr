@@ -2213,7 +2213,7 @@ where
                 return write_frame_async(stream, &reply).await;
             }
         },
-        DispatchOutcome::ClientDisconnected => {
+        DispatchOutcome::ClientDisconnected(reason) => {
             // The wrapper is gone — its IPC fd closed mid-compile, so
             // the embedded zccache future was dropped at the `select!`
             // boundary above. Don't attempt to write a reply (the pipe
@@ -2225,9 +2225,24 @@ where
                 inner_started.elapsed().as_micros() as u64,
                 &compile_id,
             );
+            // soldr#1857: the trace above is inert unless
+            // SOLDR_DAEMON_TRACE is set, i.e. never in a real build.
+            // This one is always on, so "the wrapper vanished mid-
+            // compile" is countable after the fact instead of being a
+            // hypothesis nobody can test.
+            record_undelivered(
+                state,
+                &compile_id,
+                lifecycle.as_ref(),
+                inner_started,
+                crate::daemon::compile_delivery::UndeliveredKind::ClientDisconnected,
+                &reason.detail(),
+                None,
+            );
             tracing::info!(
                 target: "soldr::daemon::compile_stream",
                 compile_id = compile_id.as_str(),
+                reason = reason.detail().as_str(),
                 "client disconnected during compile — aborting in-flight work",
             );
             return Ok(());
@@ -2246,7 +2261,19 @@ where
 
     let wire_stdout_started = std::time::Instant::now();
     for chunk in body.stdout.chunks(CHUNK_BYTES) {
-        write_frame_async(stream, &Response::CompileStdoutChunk(chunk.to_vec())).await?;
+        if let Err(err) =
+            write_frame_async(stream, &Response::CompileStdoutChunk(chunk.to_vec())).await
+        {
+            return Err(report_reply_write_failure(
+                state,
+                &compile_id,
+                lifecycle.as_ref(),
+                inner_started,
+                "stdout_chunk",
+                err,
+                body.exit_code,
+            ));
+        }
         stdout_chunks += 1;
         tracing::debug!(
             target: "soldr::daemon::compile_stream",
@@ -2263,7 +2290,19 @@ where
 
     let wire_stderr_started = std::time::Instant::now();
     for chunk in body.stderr.chunks(CHUNK_BYTES) {
-        write_frame_async(stream, &Response::CompileStderrChunk(chunk.to_vec())).await?;
+        if let Err(err) =
+            write_frame_async(stream, &Response::CompileStderrChunk(chunk.to_vec())).await
+        {
+            return Err(report_reply_write_failure(
+                state,
+                &compile_id,
+                lifecycle.as_ref(),
+                inner_started,
+                "stderr_chunk",
+                err,
+                body.exit_code,
+            ));
+        }
         stderr_chunks += 1;
         tracing::debug!(
             target: "soldr::daemon::compile_stream",
@@ -2296,7 +2335,17 @@ where
         "compile done — streaming reply complete",
     );
     let wire_done_started = std::time::Instant::now();
-    let res = write_frame_async(stream, &done).await;
+    let res = write_frame_async(stream, &done).await.map_err(|err| {
+        report_reply_write_failure(
+            state,
+            &compile_id,
+            lifecycle.as_ref(),
+            inner_started,
+            "done",
+            err,
+            body.exit_code,
+        )
+    });
     crate::daemon::compile_trace::record(
         "wire_done",
         wire_done_started.elapsed().as_micros() as u64,
@@ -2311,6 +2360,69 @@ where
     crate::daemon::compile_trace::record("stdout_bytes", stdout_len as u64, &compile_id);
     crate::daemon::compile_trace::record("stderr_bytes", stderr_len as u64, &compile_id);
     res
+}
+
+/// Append one durable "the daemon ran this compile and could not hand
+/// it back" row (soldr#1857). Best-effort — see
+/// [`crate::daemon::compile_delivery`].
+fn record_undelivered(
+    state: &Arc<State>,
+    compile_id: &str,
+    lifecycle: Option<&crate::daemon::protocol::CompileLifecycle>,
+    started: std::time::Instant,
+    kind: crate::daemon::compile_delivery::UndeliveredKind,
+    detail: &str,
+    exit_code: Option<i32>,
+) {
+    crate::daemon::compile_delivery::record(
+        &state.paths,
+        &crate::daemon::compile_delivery::Undelivered {
+            kind,
+            detail,
+            compile_id,
+            crate_name: lifecycle.map(|l| l.crate_name.as_str()),
+            target_dir: lifecycle.map(|l| l.target_dir.as_str()),
+            elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            exit_code,
+        },
+    );
+}
+
+/// A finished compile whose reply could not be written to the wrapper.
+///
+/// This is the precise shape soldr#1857 reports: zccache journals
+/// `exit_code: 0`, the wrapper reports failure to cargo, and no
+/// diagnostic exists anywhere because the only record of the loss was a
+/// `tracing::warn!` on a detached daemon whose stderr goes nowhere.
+/// Record it durably, then return the original error unchanged so the
+/// connection teardown path is untouched.
+fn report_reply_write_failure(
+    state: &Arc<State>,
+    compile_id: &str,
+    lifecycle: Option<&crate::daemon::protocol::CompileLifecycle>,
+    started: std::time::Instant,
+    stage: &str,
+    err: std::io::Error,
+    exit_code: i32,
+) -> std::io::Error {
+    let detail = format!("{stage}:{}", io_error_kind_name(&err));
+    record_undelivered(
+        state,
+        compile_id,
+        lifecycle,
+        started,
+        crate::daemon::compile_delivery::UndeliveredKind::ReplyWriteFailed,
+        &detail,
+        Some(exit_code),
+    );
+    tracing::warn!(
+        target: "soldr::daemon::compile_stream",
+        compile_id,
+        stage,
+        exit_code,
+        "compile finished but its reply could not be delivered to the wrapper",
+    );
+    err
 }
 
 fn compile_lifecycle_event(
@@ -2375,7 +2487,35 @@ pub(crate) enum DispatchOutcome<T> {
     /// has been dropped at the `select!` boundary; any RAII cleanup
     /// (notably `kill_on_drop`-marked rustc child processes inside the
     /// embedded zccache service) has been invoked.
-    ClientDisconnected,
+    ClientDisconnected(DisconnectReason),
+}
+
+/// Which of the three disconnect signals fired, kept so the durable
+/// [`crate::daemon::compile_delivery`] row says *how* the wrapper went
+/// away rather than only that it did (soldr#1857). A clean `eof` is a
+/// wrapper that exited or was killed; a `read_error` is the OS tearing
+/// the pipe down underneath it; `unexpected_bytes` is a protocol
+/// violation and means something quite different from either.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DisconnectReason {
+    /// `read` returned `Ok(0)` — the client closed its end.
+    Eof,
+    /// `read` failed. Carries the `io::ErrorKind` name.
+    ReadError(&'static str),
+    /// The client sent bytes mid-compile, which the request-response
+    /// protocol forbids. Carries how many arrived.
+    UnexpectedBytes(usize),
+}
+
+impl DisconnectReason {
+    /// Stable, low-cardinality string for the JSONL `detail` field.
+    pub(crate) fn detail(&self) -> String {
+        match self {
+            Self::Eof => "eof".to_string(),
+            Self::ReadError(kind) => format!("read_error:{kind}"),
+            Self::UnexpectedBytes(n) => format!("unexpected_bytes:{n}"),
+        }
+    }
 }
 
 /// Drive `fut` to completion while concurrently watching `reader` for a
@@ -2395,6 +2535,18 @@ pub(crate) enum DispatchOutcome<T> {
 /// compile-future are ready in the same poll tick, prefer the
 /// disconnect branch so we don't accidentally write a response into a
 /// half-closed pipe.
+///
+/// **But bias must not destroy work that is already done** (soldr#1857).
+/// `biased` polls the reader first on *every* tick, so a compile future
+/// that became ready in the same tick as the disconnect signal was
+/// discarded — the compile had run to completion, zccache had journaled
+/// `exit_code: 0`, and the daemon threw the result away. The wrapper
+/// then saw an unexplained failure for a compile that had succeeded,
+/// which is exactly the shape #1857 reports. So when the reader branch
+/// wins, give `fut` one final poll: if it is already `Ready`, that
+/// result is real and gets shipped (writing into a half-closed pipe
+/// merely errors, which the caller already handles). Only a genuinely
+/// still-pending compile is cancelled.
 pub(crate) async fn race_against_disconnect<R, F>(
     reader: &mut R,
     fut: F,
@@ -2411,12 +2563,46 @@ where
         read = reader.read(&mut probe) => {
             // Ok(0) = clean EOF, Err = broken pipe / reset, Ok(n>0) =
             // unexpected protocol-violating bytes mid-compile. All
-            // three mean "the wrapper is gone or wedged" — drop the
-            // future and tell the caller to close the connection.
-            let _ = read;
-            DispatchOutcome::ClientDisconnected
+            // three mean "the wrapper is gone or wedged".
+            let reason = match read {
+                Ok(0) => DisconnectReason::Eof,
+                Ok(n) => DisconnectReason::UnexpectedBytes(n),
+                Err(err) => DisconnectReason::ReadError(io_error_kind_name(&err)),
+            };
+            // Last-poll-wins: never cancel a compile that already finished.
+            match poll_once(fut.as_mut()) {
+                std::task::Poll::Ready(out) => DispatchOutcome::Completed(out),
+                std::task::Poll::Pending => DispatchOutcome::ClientDisconnected(reason),
+            }
         }
         out = &mut fut => DispatchOutcome::Completed(out),
+    }
+}
+
+/// Poll `fut` exactly once, returning immediately either way. Used to
+/// harvest a compile that completed in the same tick the disconnect
+/// signal arrived.
+fn poll_once<F: std::future::Future>(mut fut: std::pin::Pin<&mut F>) -> std::task::Poll<F::Output> {
+    let waker = std::task::Waker::noop();
+    let mut cx = std::task::Context::from_waker(waker);
+    fut.as_mut().poll(&mut cx)
+}
+
+/// Stable `'static` name for an `io::ErrorKind`, for the JSONL `detail`
+/// field. `Debug` on `ErrorKind` is already stable enough in practice,
+/// but this keeps the set explicit and allocation-free.
+fn io_error_kind_name(err: &std::io::Error) -> &'static str {
+    use std::io::ErrorKind;
+    match err.kind() {
+        ErrorKind::BrokenPipe => "BrokenPipe",
+        ErrorKind::ConnectionReset => "ConnectionReset",
+        ErrorKind::ConnectionAborted => "ConnectionAborted",
+        ErrorKind::NotConnected => "NotConnected",
+        ErrorKind::UnexpectedEof => "UnexpectedEof",
+        ErrorKind::TimedOut => "TimedOut",
+        ErrorKind::WouldBlock => "WouldBlock",
+        ErrorKind::Interrupted => "Interrupted",
+        _ => "Other",
     }
 }
 
@@ -2632,7 +2818,7 @@ mod cancel_on_disconnect_tests {
                 &batcher,
             )
             .await;
-            assert!(matches!(outcome, DispatchOutcome::ClientDisconnected));
+            assert!(matches!(outcome, DispatchOutcome::ClientDisconnected(_)));
             let events = flushed_events(&batcher, &db_path, 103).await;
             assert_eq!(events.len(), 1);
             assert_eq!(events[0].kind, crate::daemon::db::EventKind::CompileStart);
@@ -2727,7 +2913,7 @@ mod cancel_on_disconnect_tests {
                 let elapsed = start.elapsed();
 
                 assert!(
-                    matches!(outcome, DispatchOutcome::ClientDisconnected),
+                    matches!(outcome, DispatchOutcome::ClientDisconnected(_)),
                     "expected ClientDisconnected, got a Completed variant — \
                      race_against_disconnect did not detect EOF"
                 );
@@ -2787,14 +2973,105 @@ mod cancel_on_disconnect_tests {
                 let outcome = race_against_disconnect(&mut server_reader, fast).await;
                 match outcome {
                     DispatchOutcome::Completed(value) => assert_eq!(value, 42),
-                    DispatchOutcome::ClientDisconnected => {
-                        panic!("unexpected disconnect — client end was held open");
+                    DispatchOutcome::ClientDisconnected(reason) => {
+                        panic!("unexpected disconnect ({reason:?}) — client end was held open");
                     }
                 }
                 assert!(
                     !aborted.load(Ordering::SeqCst),
                     "inner future was cancelled despite running to completion"
                 );
+            });
+        }
+    );
+
+    // soldr#1857 regression: the `biased` select polls the reader on
+    // every tick, so a compile that finished in the SAME tick as the
+    // disconnect signal used to be thrown away — zccache had journaled
+    // `exit_code: 0` and the wrapper still reported failure to cargo
+    // with nothing to show for it. Here the client end is already gone
+    // (EOF is immediately ready) and the compile is already complete;
+    // the finished result must win.
+    timed_test!(
+        completed_compile_is_not_discarded_by_a_simultaneous_disconnect,
+        Duration::from_secs(10),
+        {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("tokio rt");
+            rt.block_on(async {
+                let (server_side, client_side) = tokio::io::duplex(64);
+                let (mut server_reader, _server_writer) = tokio::io::split(server_side);
+                // Client is gone before the race even starts: the read
+                // probe resolves to EOF on its very first poll.
+                drop(client_side);
+
+                let outcome = race_against_disconnect(&mut server_reader, async { 4_2_u32 }).await;
+
+                match outcome {
+                    DispatchOutcome::Completed(value) => assert_eq!(value, 42),
+                    DispatchOutcome::ClientDisconnected(reason) => panic!(
+                        "a compile that had already completed was discarded as \
+                         {reason:?}. That is soldr#1857: the daemon runs the \
+                         compile, journals exit 0, throws the result away, and \
+                         cargo reports an unexplained failure. The disconnect \
+                         branch must poll the future once before giving up."
+                    ),
+                }
+            });
+        }
+    );
+
+    // The durable JSONL row says *how* the wrapper went away; these are
+    // the three signals that map onto it.
+    timed_test!(disconnect_reason_details_are_stable_and_distinct, {
+        use super::DisconnectReason;
+        assert_eq!(DisconnectReason::Eof.detail(), "eof");
+        assert_eq!(
+            DisconnectReason::ReadError("BrokenPipe").detail(),
+            "read_error:BrokenPipe"
+        );
+        assert_eq!(
+            DisconnectReason::UnexpectedBytes(4).detail(),
+            "unexpected_bytes:4"
+        );
+    });
+
+    // A wrapper that violates the request-response contract by sending
+    // bytes mid-compile is a different fault from one that died, and
+    // the record has to be able to tell them apart.
+    timed_test!(
+        stray_bytes_mid_compile_are_recorded_as_a_protocol_violation,
+        Duration::from_secs(10),
+        {
+            use tokio::io::AsyncWriteExt;
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("tokio rt");
+            rt.block_on(async {
+                let (server_side, mut client_side) = tokio::io::duplex(64);
+                let (mut server_reader, _server_writer) = tokio::io::split(server_side);
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    let _ = client_side.write_all(b"x").await;
+                    // Hold the connection open so this is unambiguously
+                    // "stray bytes", not "EOF".
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                });
+                let outcome = race_against_disconnect(&mut server_reader, async {
+                    tokio::time::sleep(Duration::from_secs(3600)).await;
+                })
+                .await;
+                match outcome {
+                    DispatchOutcome::ClientDisconnected(reason) => {
+                        assert_eq!(reason.detail(), "unexpected_bytes:1");
+                    }
+                    DispatchOutcome::Completed(_) => {
+                        panic!("the 1h sleep cannot have completed");
+                    }
+                }
             });
         }
     );
