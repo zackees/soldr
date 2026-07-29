@@ -186,11 +186,17 @@ jobs:
         run: soldr cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Enforce daemon process-creation boundary
+        env:
+          # setup-soldr currently provides v0.8.23, whose post-command target
+          # pruning can remove Dylint's freshly built cdylib before cargo-dylint
+          # loads it. Newer Soldr releases no longer prune automatically.
+          SOLDR_NO_GC_TARGET: "1"
         run: soldr dylint --all -- --workspace --all-targets
 
       - name: Test daemon process-creation boundary lint
         env:
           RUSTUP_TOOLCHAIN: nightly-2026-01-18
+          SOLDR_NO_GC_TARGET: "1"
         run: >-
           soldr cargo test
           --manifest-path dylints/ban_raw_process_creation/Cargo.toml

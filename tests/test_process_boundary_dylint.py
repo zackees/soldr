@@ -18,6 +18,7 @@ def test_required_ci_runs_root_dylint_policy() -> None:
     assert "Test daemon process-creation boundary lint" in workflow
     assert "--manifest-path dylints/ban_raw_process_creation/Cargo.toml" in workflow
     assert "RUSTUP_TOOLCHAIN: nightly-2026-01-18" in workflow
+    assert workflow.count('SOLDR_NO_GC_TARGET: "1"') == 2
 
 
 def test_process_boundary_has_required_ui_fixtures() -> None:
