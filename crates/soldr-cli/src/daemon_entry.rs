@@ -41,7 +41,7 @@ fn reexec_from_runtime_root() {
     command.args(std::env::args_os().skip(1));
     command.env(crate::self_relocate::DAEMON_REEXEC_MARKER_ENV_VAR, "1");
     eprintln!(
-        "soldr-daemon: re-executing from {} so this process does not pin {}          for its lifetime (soldr#1987)",
+        "soldr-daemon: re-executing from {} so this process does not pin {} for its lifetime (soldr#1987)",
         target.display(),
         current.display()
     );
