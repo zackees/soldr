@@ -185,8 +185,10 @@ jobs:
       - name: Run clippy
         run: soldr cargo clippy --workspace --all-targets --locked -- -D warnings
 
-      - name: Install Dylint linker
-        run: soldr cargo install dylint-link --version 6.0.1 --locked
+      - name: Install Dylint
+        run: |
+          soldr cargo install cargo-dylint --version 6.0.1 --locked
+          soldr cargo install dylint-link --version 6.0.1 --locked
 
       - name: Install Dylint toolchain
         run: >-
@@ -195,6 +197,14 @@ jobs:
           --profile minimal
           --component rustc-dev
           --component llvm-tools-preview
+
+      - name: Configure Dylint driver Cargo shim
+        run: >-
+          uv run --no-project python
+          .github/scripts/configure_dylint_cargo_shim.py
+          --output-dir "${RUNNER_TEMP}/dylint-cargo-shim"
+          --toolchain nightly-2026-01-18-x86_64-unknown-linux-gnu
+          >> "${GITHUB_PATH}"
 
       - name: Build daemon process-creation boundary lint
         working-directory: dylints/ban_raw_process_creation
@@ -217,7 +227,10 @@ jobs:
           # wrapper, so disable that convenience for this step.
           SOLDR_NO_GC_TARGET: "1"
           SOLDR_LINKER: default
-        run: soldr dylint --no-build --all -- --workspace --all-targets
+        run: >-
+          "${CARGO_HOME}/bin/cargo-dylint"
+          dylint --no-build --all
+          -- --workspace --all-targets
 
       - name: Test daemon process-creation boundary lint
         working-directory: dylints/ban_raw_process_creation

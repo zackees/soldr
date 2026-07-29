@@ -14,16 +14,21 @@ def test_root_workspace_loads_process_boundary_dylint() -> None:
 def test_required_ci_runs_root_dylint_policy() -> None:
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert "Enforce daemon process-creation boundary" in workflow
+    assert "soldr cargo install cargo-dylint --version 6.0.1 --locked" in workflow
     assert "soldr cargo install dylint-link --version 6.0.1 --locked" in workflow
     assert "Install Dylint toolchain" in workflow
     assert "soldr rustup toolchain install" in workflow
     assert "--component rustc-dev" in workflow
     assert "--component llvm-tools-preview" in workflow
+    assert "Configure Dylint driver Cargo shim" in workflow
+    assert ".github/scripts/configure_dylint_cargo_shim.py" in workflow
     assert "Build daemon process-creation boundary lint" in workflow
     assert "nightly-2026-01-18-x86_64-unknown-linux-gnu" in workflow
     assert "cargo build --profile release" in workflow
     assert '"${GITHUB_WORKSPACE}/target/dylint/libraries/' in workflow
-    assert "soldr dylint --no-build --all -- --workspace --all-targets" in workflow
+    assert '"${CARGO_HOME}/bin/cargo-dylint"' in workflow
+    assert "dylint --no-build --all" in workflow
+    assert "-- --workspace --all-targets" in workflow
     assert "Test daemon process-creation boundary lint" in workflow
     assert "working-directory: dylints/ban_raw_process_creation" in workflow
     assert "--manifest-path Cargo.toml" in workflow
