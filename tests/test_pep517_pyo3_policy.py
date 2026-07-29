@@ -57,19 +57,83 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
         self.assertNotIn("PYO3_NO_PYTHON", env)
 
     def test_local_profile_defaults_to_explicit_fast_dev(self) -> None:
+        """Each fast-dev default is applied *unless* the project sets that field.
+
+        soldr#2004: this used to assert `CARGO_PROFILE_DEV_DEBUG` verbatim and
+        failed on `main`. The product was right and the test was wrong --
+        `_prep_env` deliberately skips a variable whose `[profile.dev]` field
+        the project already sets, because a project-level setting is documented
+        to win. soldr's own Cargo.toml carries `debug = "line-tables-only"`, so
+        running the suite from this repo is exactly the case that must omit it.
+
+        Asserting the rule instead of a snapshot makes the test independent of
+        whatever manifest it happens to run beside.
+        """
         with mock.patch.dict(
             os.environ,
             {"SOLDR_PEP517_STABLE_TARGET_DIR": "0"},
             clear=False,
         ):
             env = self.backend._prep_env()
+        project_fields = self.backend._project_dev_profile_options()
+        for key, (cargo_key, default) in (
+            self.backend._FAST_DEV_PROFILE_DEFAULTS.items()
+        ):
+            if cargo_key in project_fields:
+                self.assertNotIn(
+                    key,
+                    env,
+                    f"{key} must be left to the project, which sets "
+                    f"[profile.dev] {cargo_key}",
+                )
+            else:
+                self.assertEqual(env[key], default, f"{key} should carry its default")
+        self.assertEqual(self.backend._profile_args(None), ["--profile", "dev"])
+        self.assertEqual(env["SOLDR_PEP517_LINKER"], "auto")
+
+    def test_every_fast_dev_default_applies_when_the_project_sets_none(self) -> None:
+        """The default path itself, which the test above cannot reach from here.
+
+        soldr#2004: with soldr's own `[profile.dev] debug` in the way, the
+        assertions above skip that field entirely. Pinning the pure-default
+        behaviour needs a project that specifies nothing, so this stubs the
+        reader rather than contriving a temp checkout.
+        """
+        with mock.patch.object(
+            self.backend, "_project_dev_profile_options", return_value={}
+        ):
+            with mock.patch.dict(
+                os.environ,
+                {"SOLDR_PEP517_STABLE_TARGET_DIR": "0"},
+                clear=False,
+            ):
+                env = self.backend._prep_env()
         self.assertEqual(env["CARGO_PROFILE_DEV_OPT_LEVEL"], "0")
         self.assertEqual(env["CARGO_PROFILE_DEV_CODEGEN_UNITS"], "256")
         self.assertEqual(env["CARGO_PROFILE_DEV_DEBUG"], "line-tables-only")
         self.assertEqual(env["CARGO_PROFILE_DEV_LTO"], "false")
         self.assertEqual(env["CARGO_PROFILE_DEV_INCREMENTAL"], "true")
-        self.assertEqual(self.backend._profile_args(None), ["--profile", "dev"])
-        self.assertEqual(env["SOLDR_PEP517_LINKER"], "auto")
+
+    def test_a_project_field_is_never_overridden_by_the_default(self) -> None:
+        """The rule that made the original test fail, asserted directly."""
+        with mock.patch.object(
+            self.backend,
+            "_project_dev_profile_options",
+            return_value={"opt-level": "3"},
+        ):
+            with mock.patch.dict(
+                os.environ,
+                {"SOLDR_PEP517_STABLE_TARGET_DIR": "0"},
+                clear=False,
+            ):
+                env = self.backend._prep_env()
+        self.assertNotIn(
+            "CARGO_PROFILE_DEV_OPT_LEVEL",
+            env,
+            "a project-set field must not be shadowed by soldr's default",
+        )
+        # Fields the project does not set still get theirs.
+        self.assertEqual(env["CARGO_PROFILE_DEV_LTO"], "false")
 
     def test_caller_profile_and_environment_values_win(self) -> None:
         with mock.patch.dict(
