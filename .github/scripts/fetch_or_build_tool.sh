@@ -5,14 +5,13 @@
 # Used by `cross-compile-all-targets.yml` to install `crgx` and
 # `cargo-chef` into the per-target soldr distribution archive. The
 # fast path is a single curl from the LFS-aware CDN; the fallback
-# preserves the old behavior (git clone + soldr cargo (xwin|zigbuild)
-# build).
+# uses the same target-only `soldr build` lifecycle.
 #
 # USAGE: fetch_or_build_tool.sh <tool> <target-triple> <build-tool> <exe-suffix> <dest-dir>
 #
 #   tool         crgx | cargo-chef
 #   target       e.g. x86_64-unknown-linux-gnu
-#   build-tool   zigbuild | xwin | "" (native)
+#   build-tool   soldr-build
 #   exe-suffix   .exe (windows) or "" (unix)
 #   dest-dir     destination directory for the binary
 #
@@ -27,7 +26,7 @@ GIT_CLONE_TIMEOUT_SECS="${FETCH_OR_BUILD_TOOL_GIT_CLONE_TIMEOUT_SECS:-300}"
 
 tool="${1:?tool required}"
 target="${2:?target required}"
-build_tool="${3:?build-tool required (zigbuild|xwin|empty for native)}"
+build_tool="${3:?build-tool required (soldr-build)}"
 exe_suffix="${4:-}"
 dest_dir="${5:?dest-dir required}"
 
@@ -156,29 +155,13 @@ fi
     "${tool} v${version}" \
     release \
     "$target" \
-    "soldr cargo ${build_tool:-build} build" \
+    "soldr build" \
     "$work_dir/Cargo.toml"
 
 case "$build_tool" in
-  xwin)
+  soldr-build)
     # shellcheck disable=SC2086
-    soldr cargo xwin build \
-      --release \
-      --manifest-path "$work_dir/Cargo.toml" \
-      --target "$target" \
-      --locked $cargo_extra_args
-    ;;
-  zigbuild)
-    # shellcheck disable=SC2086
-    soldr cargo zigbuild \
-      --release \
-      --manifest-path "$work_dir/Cargo.toml" \
-      --target "$target" \
-      --locked $cargo_extra_args
-    ;;
-  ""|"native")
-    # shellcheck disable=SC2086
-    soldr cargo build \
+    soldr build \
       --release \
       --manifest-path "$work_dir/Cargo.toml" \
       --target "$target" \

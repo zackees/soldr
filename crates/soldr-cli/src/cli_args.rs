@@ -593,12 +593,18 @@ pub(crate) enum Commands {
     },
 
     /// Prepare the cross-compile toolchain for a target triple
+    #[cfg_attr(
+        any(),
+        command(
+            name = "prepare",
+            long_about = "Uniform cross-compile toolchain bootstrap. Same invocation shape for every target — only `--target` varies. Internally dispatches based on the triple:\n\n  *-pc-windows-msvc:  ensure LLVM toolchain + extract the vendored xwin MSVC CRT cache from soldr-toolchain assets, then export target-scoped Cargo/cc-rs/linker env for the blessed `soldr build` path and explicit cargo-xwin fallback consumers.\n  x86_64-pc-windows-gnu: on Windows x64, ensure managed MinGW-w64 GCC plus GNU syslibs and export target-scoped Cargo/cc-rs env; on other hosts, fail visibly instead of falling back to cargo-zigbuild.\n  *-apple-darwin:     ensure the target-shaped Apple SDK and print `SDKROOT=<path>` (and append to $GITHUB_ENV when --github-env is set). `soldr build --target` is the blessed Darwin cross-build path; prepare is for env export and legacy/external tooling.\n  *-unknown-linux-*:  ensure cargo-zigbuild + zig (when triple != host).\n  All targets:        `rustup target add <triple>`.\n\nCollapses the per-step ad-hoc downloads in `cross-compile-all-targets.yml` into a single 'Preparing Cross Compile Toolchain' step. Designed to be wrapped by `.github/actions/prepare-cross-toolchain/action.yml`."
+        )
+    )]
     #[command(
-        name = "prepare",
-        long_about = "Uniform cross-compile toolchain bootstrap. Same invocation shape for every target — only `--target` varies. Internally dispatches based on the triple:\n\n  *-pc-windows-msvc:  ensure LLVM toolchain + extract the vendored xwin MSVC CRT cache from soldr-toolchain assets, then export target-scoped Cargo/cc-rs/linker env for the blessed `soldr build` path and explicit cargo-xwin fallback consumers.\n  x86_64-pc-windows-gnu: on Windows x64, ensure managed MinGW-w64 GCC plus GNU syslibs and export target-scoped Cargo/cc-rs env; on other hosts, fail visibly instead of falling back to cargo-zigbuild.\n  *-apple-darwin:     ensure the target-shaped Apple SDK and print `SDKROOT=<path>` (and append to $GITHUB_ENV when --github-env is set). `soldr build --target` is the blessed Darwin cross-build path; prepare is for env export and legacy/external tooling.\n  *-unknown-linux-*:  ensure cargo-zigbuild + zig (when triple != host).\n  All targets:        `rustup target add <triple>`.\n\nCollapses the per-step ad-hoc downloads in `cross-compile-all-targets.yml` into a single 'Preparing Cross Compile Toolchain' step. Designed to be wrapped by `.github/actions/prepare-cross-toolchain/action.yml`."
+        long_about = "Prepare soldr's complete target lifecycle. The invocation shape is identical for every canonical target: select an alias or Rust triple with `--target`; soldr installs the Rust standard library, selects and materializes the blessed compiler/linker plus SDK or sysroot, and exports the target-scoped environment. The same preparation is consumed by build, clippy, test compilation, nextest archives, and PEP 517 operations. Legacy backend wrappers are diagnostic-only overrides and are never selected by this command."
     )]
     Prepare {
-        /// Target triple to prepare the toolchain for. Three shapes
+        /// Target alias or triple to prepare the toolchain for. Three shapes
         /// are accepted:
         ///
         ///   * a single triple, e.g. `x86_64-pc-windows-msvc`;
@@ -612,11 +618,13 @@ pub(crate) enum Commands {
         ///     `Cargo.toml`.
         ///
         /// See zackees/soldr#914.
-        #[arg(long, value_name = "TRIPLE[,TRIPLE...]|all")]
+        #[arg(long, value_name = "TARGET[,TARGET...]|all")]
         target: String,
         /// Optional path to append `KEY=VALUE` env-var lines (e.g.
         /// `SDKROOT=<path>` for darwin lanes). When running under
-        /// GitHub Actions, point at `$GITHUB_ENV`.
+        /// GitHub Actions, point at `$GITHUB_ENV`. Export is limited
+        /// to one target because global PATH/flag keys cannot safely
+        /// represent several target lifecycles in one job.
         #[arg(long, value_name = "FILE")]
         github_env: Option<std::path::PathBuf>,
         /// Capture the prepared state (zig + LLVM + Apple SDK + xwin

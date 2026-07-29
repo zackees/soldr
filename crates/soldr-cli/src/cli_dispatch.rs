@@ -79,22 +79,20 @@ pub(crate) fn extract_target_from_args(args: &[String]) -> Option<String> {
 /// * `None` for `*-pc-windows-msvc` when blessed prep produced an
 ///   xwin-cache, so `soldr build` uses plain `cargo build` with the
 ///   prepared clang/lld/MSVC SDK env.
-/// * `Some("xwin")` for `*-pc-windows-msvc` when
-///   `SOLDR_USE_LEGACY_XWIN` is set, or when blessed prep could not
-///   produce an xwin-cache (for example, targets whose managed cache
-///   row is not ingested yet).
+/// * `Some("xwin")` for `*-pc-windows-msvc` only when
+///   `SOLDR_USE_LEGACY_XWIN` explicitly requests the diagnostic path.
 /// * `None` for `*-apple-darwin` by default; `Some("zigbuild")` only
 ///   when `SOLDR_USE_LEGACY_ZIGBUILD` is set for diagnostic comparison.
 /// * `None` for `x86_64-pc-windows-gnu`; that target stays on the
 ///   blessed managed MinGW/GNU path and no longer falls back to
 ///   cargo-zigbuild
-/// * `Some("zigbuild")` for `*-unknown-linux-musl` and aarch64
-///   `*-unknown-linux-gnu` (cross from x86_64), unless
-///   `SOLDR_USE_LEGACY_ZIGBUILD` is set.
+/// * `None` for blessed Linux GNU/musl targets; `Some("zigbuild")` only
+///   when `SOLDR_USE_LEGACY_ZIGBUILD` explicitly requests the diagnostic
+///   fallback.
 /// * `None` for everything else
 pub(crate) fn pick_cross_subcommand(
     target_triple: &str,
-    msvc_blessed_cache_ready: bool,
+    _msvc_blessed_cache_ready: bool,
 ) -> Option<&'static str> {
     if !cfg!(target_os = "linux") {
         return None;
@@ -108,11 +106,7 @@ pub(crate) fn pick_cross_subcommand(
         .unwrap_or(false);
 
     if target_triple.ends_with("-pc-windows-msvc") {
-        return if legacy_xwin || !msvc_blessed_cache_ready {
-            Some("xwin")
-        } else {
-            None
-        };
+        return if legacy_xwin { Some("xwin") } else { None };
     }
     // soldr#1081 follow-up: `*-apple-darwin` no longer routes through
     // cargo-zigbuild. The blessed-build apple-darwin arm in
@@ -131,18 +125,18 @@ pub(crate) fn pick_cross_subcommand(
     }
     if target_triple.ends_with("-unknown-linux-musl") {
         return if legacy_zigbuild {
-            None
-        } else {
             Some("zigbuild")
+        } else {
+            None
         };
     }
     // Cross from x86_64 host to aarch64 linux — needs zigbuild for
     // the bundled libc.
     if target_triple == "aarch64-unknown-linux-gnu" && cfg!(target_arch = "x86_64") {
         return if legacy_zigbuild {
-            None
-        } else {
             Some("zigbuild")
+        } else {
+            None
         };
     }
     None

@@ -311,22 +311,16 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 // real dependency errors.
                 let dep_prefetch =
                     crate::fetch_overlap::spawn_for_blessed_build(&full_args, &target_triple);
-                let prep = crate::blessed_build::prepare(&paths, &target_triple).await?;
+                let prep =
+                    crate::target_lifecycle::prepare_for_invocation(&paths, &target_triple).await?;
                 let cargo_args = prep.cargo_args.clone();
-                // Apply prep env onto the current process env so the
-                // child cargo invocation (and its sub-rustc + build
-                // scripts) inherit them.
-                for (k, v) in &prep.env {
-                    std::env::set_var(k, v);
-                }
-                prepend_path_dirs_to_env(&prep.path_prefix());
+                crate::target_lifecycle::apply_to_process(&prep);
 
                 // soldr#882/#1081/#1248: auto-dispatch cargo subcommand
                 // based on target. Windows MSVC stays on plain cargo
                 // build when blessed_build materialized the xwin-cache
-                // and injected clang/lld/MSVC SDK env; otherwise it
-                // falls back to cargo-xwin. Linux musl and cross-arch
-                // linux gnu use cargo-zigbuild. Darwin stays on plain
+                // and injected clang/lld/MSVC SDK env. Linux GNU/musl use the
+                // managed-Zig env from target_lifecycle. Darwin stays on plain
                 // cargo build after blessed_build injects the target-
                 // shaped Apple SDK/clang env, unless
                 // SOLDR_USE_LEGACY_ZIGBUILD=1 is set for diagnostic
@@ -384,6 +378,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             );
         }
         Commands::Cargo { args } => {
+            let args = crate::target_lifecycle::prepare_cargo_invocation(args).await?;
             // soldr#1079: same MSVC host env injection that
             // `Commands::Build` does, so `soldr cargo build` /
             // `soldr cargo test` on a native Windows MSVC target also
@@ -525,10 +520,8 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             //                     Useful for docker-image bake steps
             //                     where no Cargo.toml is mounted yet.
             //   - `<triple>`    → a single triple (legacy default).
-            let targets: Vec<String> = match prepare_cmd::parse_target_arg(&target)? {
-                prepare_cmd::ParsedTargetArg::All => cargo_metadata_soldr::resolve_all_targets()?,
-                prepare_cmd::ParsedTargetArg::Explicit(list) => list,
-            };
+            let targets =
+                crate::target_lifecycle::resolve_prepare_targets(&target, github_env.is_some())?;
             // soldr#940 — run per-target preparations concurrently with
             // a bounded worker pool. `--target all` previously serialized
             // 8 cold downloads on top of each other; now they overlap.
@@ -947,6 +940,8 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 let mut cargo_args = Vec::with_capacity(args.len());
                 cargo_args.push(crate_name.clone());
                 cargo_args.extend(tool_args.iter().cloned());
+                let cargo_args =
+                    crate::target_lifecycle::prepare_cargo_invocation(cargo_args).await?;
                 guarded_exit(
                     cargo_front_door::run_cargo_front_door(
                         &cargo_args,
@@ -972,6 +967,8 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 let mut cargo_args = Vec::with_capacity(args.len());
                 cargo_args.push(crate_name.clone());
                 cargo_args.extend(tool_args.iter().cloned());
+                let cargo_args =
+                    crate::target_lifecycle::prepare_cargo_invocation(cargo_args).await?;
                 // soldr#1105: bare-verb dispatch must also pre-inject
                 // the host MSVC env so `soldr check` / `soldr build` /
                 // `soldr test` on Windows behave the same as the
@@ -1041,8 +1038,8 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             } else {
                 tool_args
             };
+            let mut final_tool_args = tool_args.to_vec();
             let mut command = std::process::Command::new(&result.binary_path);
-            command.args(tool_args);
             let mut pep517_linker_state = None;
             let mut pep517_paths = None;
             // Held across the complete direct/PEP517 maturin child. This is
@@ -1150,14 +1147,16 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 // PyO3 plan decides whether any Python variables are valid.
                 if maturin_build && maturin_target != crate::pyo3_detect::host_triple() {
                     let target_prep =
-                        crate::blessed_build::prepare(&paths, &maturin_target).await?;
-                    for (key, value) in &target_prep.env {
-                        std::env::set_var(key, value);
-                        command.env(key, value);
-                    }
-                    for dir in target_prep.path_prefix() {
-                        prepend_to_path_env(&dir);
-                    }
+                        crate::target_lifecycle::prepare_for_invocation(&paths, &maturin_target)
+                            .await?;
+                    crate::target_lifecycle::apply_to_process(&target_prep);
+                    // Maturin forwards Cargo's unstable --config option.
+                    // Preserve target-scoped build-script overrides just as
+                    // the direct cargo lifecycle does.
+                    crate::target_lifecycle::insert_args_before_separator(
+                        &mut final_tool_args,
+                        target_prep.cargo_args,
+                    );
                 }
                 command.env(
                     crate::cache_lib::CACHE_ENABLED_ENV_VAR,
@@ -1210,6 +1209,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                     pyo3_plan.apply_to_command(&mut command);
                 }
             }
+            command.args(&final_tool_args);
 
             // Issue #493: when the user runs `soldr <external-tool>`,
             // install a transient PATH shim so any nested `cargo` /

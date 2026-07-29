@@ -4,11 +4,11 @@ This guide documents the currently-working recipes for cross-compiling
 between Linux and Windows targets through soldr. It addresses the
 exploration tracked in [issue #329][issue-329].
 
-soldr is the strict half of the soldr/setup-soldr pair: it will not silently
-inject `RUSTFLAGS`, mutate `CC`/`CXX`, or install system packages on your
-behalf. The recipes below stay inside soldr's managed environment — your
-project pins the cross-compile toolchain via `rust-toolchain.toml` and soldr
-materializes it on demand.
+soldr owns the complete target lifecycle. The consumer selects a target;
+soldr installs Rust std, prepares the compiler/linker and SDK/sysroot, and
+merges required target flags with project `RUSTFLAGS`, `CFLAGS`, and
+`CXXFLAGS`. The same preparation is used by build, clippy, test compilation,
+nextest archives, and PEP 517 wheels.
 
 If you want a more permissive, CI-side experience that *can* install system
 packages, see [`zackees/setup-soldr`][setup-soldr]'s `cross-targets:` input
@@ -29,9 +29,10 @@ bind-mount error → fix mapping ([soldr#885](https://github.com/zackees/soldr/i
 
 | You want | Use |
 |---|---|
+| Any canonical target | `soldr build --target <alias-or-triple>` |
 | Windows x64 → Windows GNU | managed MinGW-w64 GCC + GNU syslibs ([Section 1](#1-windows-x64--windows-gnu-via-managed-mingw-w64-gcc)) |
 | Linux → Windows MSVC | `soldr build` ([Section 2](#2-linux--windows-msvc-via-soldr-build)) |
-| **Windows -> Linux** | `cargo-zigbuild` ([Section 1a](#1a-windows--linux-via-cargo-zigbuild-and-macos-via-soldr-build-soldr988soldr1425)) |
+| **Windows/Linux -> Linux** | `soldr build --target <linux-triple>` |
 | **Windows/Linux -> Mac** | `soldr build` + target-shaped Apple SDK ([Section 1a](#1a-windows--linux-via-cargo-zigbuild-and-macos-via-soldr-build-soldr988soldr1425)) |
 | Declare cross targets up-front | `[toolchain].targets` + `[soldr.plugins]` ([Section 3](#3-pinned-host-triples-per-project-current-state)) |
 
@@ -52,6 +53,19 @@ alias, CI, release, and catalogue contract. Raw Rust triples remain accepted.
 | `linux-x64-musl` | `x86_64-unknown-linux-musl` | Cross-build + native run | Shipped |
 | `linux-arm64-musl` | `aarch64-unknown-linux-musl` | Cross-build + native run | Shipped |
 <!-- canonical-target-contract:end -->
+
+The target is the only toolchain choice in normal builds:
+
+```bash
+soldr prepare --target linux-arm64
+soldr build --target linux-arm64 --release
+soldr cargo clippy --target linux-arm64 --all-targets
+soldr cargo test --no-run --target linux-arm64
+soldr env --target linux-arm64 --json
+```
+
+Legacy wrapper commands are retained only for diagnostic comparisons and are
+never the default CI or release recipe.
 
 ---
 
@@ -99,13 +113,13 @@ target.
 
 ---
 
-## 1a. Windows -> Linux via `cargo-zigbuild` and macOS via `soldr build` (soldr#988/soldr#1425)
+## 1a. Canonical Linux and macOS targets through `soldr build`
 
 Windows contributors can produce Linux and macOS binaries locally instead of
 pushing a branch and waiting on CI, but the two target families now use
-different blessed build surfaces:
+one blessed build surface:
 
-- Linux cross targets still use explicit `soldr cargo zigbuild`.
+- Linux cross targets use managed Zig internally through `soldr build`.
 - macOS targets use `soldr build --target <apple-triple>`. That path resolves
   the target-aware Apple SDK row and injects clang/SDK env internally. Direct
   `soldr cargo zigbuild --target *-apple-darwin` is a legacy/diagnostic path,
@@ -122,9 +136,9 @@ blessed path and smoke-tested on `macos-15-intel` before publication.
 #   [toolchain]
 #   targets = ["x86_64-unknown-linux-gnu", "x86_64-apple-darwin", "aarch64-apple-darwin"]
 #
-# Linux target: materialize zig/cargo-zigbuild, then build through zigbuild.
+# Linux target: soldr selects and prepares the managed toolchain.
 soldr prepare --target x86_64-unknown-linux-gnu
-soldr cargo zigbuild --target x86_64-unknown-linux-gnu --release -p soldr-cli
+soldr build --target x86_64-unknown-linux-gnu --release -p soldr-cli
 
 # macOS targets: soldr build is the blessed path. `prepare` is optional and
 # useful only when a later external/legacy command needs SDKROOT exported.
@@ -135,8 +149,7 @@ soldr build --target aarch64-apple-darwin --release -p soldr-cli
 
 ### What soldr handles automatically
 
-- `cargo-zigbuild` and `zig` install for Linux zigbuild targets (fetched from
-  the soldr-toolchain catalogue per `SOLDR_TOOLCHAIN_ORIGIN`).
+- Managed Zig compiler/linker provisioning for Linux cross targets.
 - Apple SDK fetch for `*-apple-darwin` targets. Auto shape maps
   `x86_64-apple-darwin` to `darwin-x86_64` and `aarch64-apple-darwin` to
   `darwin-aarch64`; `soldr build` applies the SDK env internally.

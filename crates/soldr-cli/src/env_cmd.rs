@@ -108,13 +108,16 @@ pub async fn run_env_command(
     }
 
     if json {
+        let target_plan = crate::target_lifecycle::plan(&resolved.rust_triple)?;
         let payload = serde_json::json!({
             "schema_version": 1,
+            "command": "env",
             "input": resolved.input,
             "rust_triple": resolved.rust_triple,
             "via_alias": resolved.via_alias,
             "env": env,
             "pyo3_plan": pyo3_plan,
+            "target_plan": target_plan,
         });
         println!("{}", serde_json::to_string(&payload).unwrap_or_default());
     } else if shell_export {

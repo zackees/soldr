@@ -213,6 +213,7 @@ pub mod linker;
 /// soldr#820 — `soldr logs` discoverable runtime-log surface.
 /// soldr#1721 - cache-aware unified validation command.
 pub mod lint_cmd;
+pub mod linux_cross;
 pub mod logs_cmd;
 /// soldr#1079 — Windows MSVC host-toolchain auto-discovery. Probes
 /// vswhere + the Windows SDK and synthesizes LIB/INCLUDE/PATH/LIBPATH
@@ -238,6 +239,7 @@ pub mod shim_materialize;
 /// soldr#997 — friendly target aliases + Rust-triple passthrough.
 /// See module doc for the `soldr build --target <alias>` UX contract.
 pub mod target_alias;
+pub mod target_lifecycle;
 /// soldr#1838 Phase 3 -- every timeout soldr honours, resolved through
 /// the real production resolvers so the report cannot drift.
 pub(crate) mod timeout_registry;

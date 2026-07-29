@@ -682,16 +682,13 @@ fn pick_cross_subcommand_msvc_uses_blessed_when_cache_ready() {
 
 #[test]
 #[cfg(target_os = "linux")]
-fn pick_cross_subcommand_msvc_falls_back_to_xwin_without_cache() {
+fn pick_cross_subcommand_msvc_never_implicitly_falls_back_to_xwin() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     std::env::remove_var(crate::blessed_build::USE_LEGACY_XWIN_ENV_VAR);
-    assert_eq!(
-        pick_cross_subcommand("x86_64-pc-windows-msvc", false),
-        Some("xwin"),
-    );
+    assert_eq!(pick_cross_subcommand("x86_64-pc-windows-msvc", false), None);
     assert_eq!(
         pick_cross_subcommand("aarch64-pc-windows-msvc", false),
-        Some("xwin"),
+        None
     );
 }
 
@@ -723,17 +720,30 @@ fn pick_cross_subcommand_darwin_returns_none_by_default() {
 
 #[test]
 #[cfg(target_os = "linux")]
-fn pick_cross_subcommand_musl_returns_zigbuild() {
+fn pick_cross_subcommand_linux_uses_blessed_path_by_default() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     std::env::remove_var(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR);
-    assert_eq!(
-        pick_cross_subcommand("x86_64-unknown-linux-musl", false),
-        Some("zigbuild"),
-    );
-    assert_eq!(
-        pick_cross_subcommand("aarch64-unknown-linux-musl", false),
-        Some("zigbuild"),
-    );
+    for target in [
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl",
+        "aarch64-unknown-linux-gnu",
+    ] {
+        assert_eq!(pick_cross_subcommand(target, false), None, "{target}");
+    }
+
+    std::env::set_var(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR, "1");
+    for target in [
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl",
+        "aarch64-unknown-linux-gnu",
+    ] {
+        assert_eq!(
+            pick_cross_subcommand(target, false),
+            Some("zigbuild"),
+            "{target}"
+        );
+    }
+    std::env::remove_var(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR);
 }
 
 #[test]
@@ -888,6 +898,31 @@ fn insert_cargo_config_args_after_xwin_build_pair() {
             "target.x.foo.bar=1",
             "--target",
             "x86_64-pc-windows-msvc",
+        ]
+    );
+}
+
+#[test]
+fn maturin_cargo_config_stays_before_rustc_separator() {
+    let mut args = vec![
+        "build".to_string(),
+        "--".to_string(),
+        "-C".to_string(),
+        "target-cpu=native".to_string(),
+    ];
+    crate::target_lifecycle::insert_args_before_separator(
+        &mut args,
+        vec!["--config".to_string(), "target.demo=value".to_string()],
+    );
+    assert_eq!(
+        args,
+        [
+            "build",
+            "--config",
+            "target.demo=value",
+            "--",
+            "-C",
+            "target-cpu=native",
         ]
     );
 }
