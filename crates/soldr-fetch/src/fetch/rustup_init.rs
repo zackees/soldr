@@ -48,8 +48,8 @@ pub const RUSTUP_INIT_URL_ENV_VAR: &str = "SOLDR_RUSTUP_INIT_URL_OVERRIDE";
 
 const RUSTUP_INIT_TOOL_NAME: &str = "rustup-init";
 const RUSTUP_INIT_PSEUDO_VERSION: &str = "latest";
-const RUSTUP_INIT_TIMEOUT_ENV_VAR: &str = "SOLDR_RUSTUP_INIT_TIMEOUT_SECS";
-const DEFAULT_RUSTUP_INIT_TIMEOUT_SECS: u64 = 15 * 60;
+pub const RUSTUP_INIT_TIMEOUT_ENV_VAR: &str = "SOLDR_RUSTUP_INIT_TIMEOUT_SECS";
+pub const DEFAULT_RUSTUP_INIT_TIMEOUT_SECS: u64 = 15 * 60;
 const KILLED_RUSTUP_INIT_REAP_TIMEOUT_SECS: u64 = 5;
 
 /// Result of a bootstrap attempt.
@@ -419,7 +419,7 @@ fn no_bootstrap_opt_out() -> bool {
     }
 }
 
-fn rustup_init_timeout() -> Duration {
+pub fn rustup_init_timeout() -> Duration {
     std::env::var(RUSTUP_INIT_TIMEOUT_ENV_VAR)
         .ok()
         .and_then(|value| value.parse::<u64>().ok())

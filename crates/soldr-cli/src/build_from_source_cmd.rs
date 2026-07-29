@@ -66,8 +66,8 @@ pub const SUPPORTED_TOOLS: &[&str] = &["crgx", "cargo-chef", "cargo-dylint", "dy
 /// soldr. Re-declared instead of imported so the cargo-chef / crgx
 /// source-build path stays decoupled from zccache's constants.
 const RETRY_INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_secs(10);
-const CARGO_INSTALL_TIMEOUT_ENV_VAR: &str = "SOLDR_BUILD_FROM_SOURCE_INSTALL_TIMEOUT_SECS";
-const DEFAULT_CARGO_INSTALL_TIMEOUT_SECS: u64 = 45 * 60;
+pub const CARGO_INSTALL_TIMEOUT_ENV_VAR: &str = "SOLDR_BUILD_FROM_SOURCE_INSTALL_TIMEOUT_SECS";
+pub const DEFAULT_CARGO_INSTALL_TIMEOUT_SECS: u64 = 45 * 60;
 const KILLED_CARGO_INSTALL_REAP_TIMEOUT_SECS: u64 = 5;
 
 /// Directory under `SoldrPaths::bin` where source-built binaries land.
@@ -417,7 +417,7 @@ fn binary_ext_for_triple(triple: &str) -> &'static str {
     }
 }
 
-fn cargo_install_timeout() -> Duration {
+pub fn cargo_install_timeout() -> Duration {
     std::env::var(CARGO_INSTALL_TIMEOUT_ENV_VAR)
         .ok()
         .and_then(|value| value.parse::<u64>().ok())

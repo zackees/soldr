@@ -43,13 +43,13 @@ const LEGACY_SHUTDOWN_PROTOCOL_VERSION: u32 = 17;
 /// build of a large crate, so the default stays generous (30 minutes): a
 /// stuck rustc cannot wedge the wrapper forever, but any legitimate compile
 /// inside that bound runs to completion. Issue #977 Phase 5 / #980 L1.
-const DEFAULT_REPLY_TIMEOUT_SECS: u64 = 30 * 60;
+pub const DEFAULT_REPLY_TIMEOUT_SECS: u64 = 30 * 60;
 
 /// Env override for [`compile_reply_timeout`] (issue #1364). Lets an
 /// operator fail fast on a wedged cache without waiting out the 30-minute
 /// backstop, e.g. `SOLDR_COMPILE_REPLY_TIMEOUT_SECS=30`. `0`, empty, or an
 /// unparseable value falls back to [`DEFAULT_REPLY_TIMEOUT_SECS`].
-const REPLY_TIMEOUT_ENV: &str = "SOLDR_COMPILE_REPLY_TIMEOUT_SECS";
+pub const REPLY_TIMEOUT_ENV: &str = "SOLDR_COMPILE_REPLY_TIMEOUT_SECS";
 
 #[cfg(windows)]
 const ERROR_PIPE_BUSY: i32 = 231;
@@ -104,7 +104,7 @@ async fn open_windows_pipe_with_retry(path: &Path) -> std::io::Result<WindowsPip
 }
 
 /// Compile-dispatch timeout, resolved once from the environment.
-fn compile_reply_timeout() -> Duration {
+pub fn compile_reply_timeout() -> Duration {
     static CACHED: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
     *CACHED.get_or_init(|| parse_reply_timeout(std::env::var(REPLY_TIMEOUT_ENV).ok().as_deref()))
 }

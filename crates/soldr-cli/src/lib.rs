@@ -238,6 +238,9 @@ pub mod shim_materialize;
 /// soldr#997 — friendly target aliases + Rust-triple passthrough.
 /// See module doc for the `soldr build --target <alias>` UX contract.
 pub mod target_alias;
+/// soldr#1838 Phase 3 -- every timeout soldr honours, resolved through
+/// the real production resolvers so the report cannot drift.
+pub(crate) mod timeout_registry;
 pub mod toolchain;
 pub mod toolchain_doctor;
 pub mod toolchain_ensure;

@@ -26,8 +26,8 @@ pub const ALLOW_UNPINNED_ENV_VAR: &str = "SOLDR_ALLOW_UNPINNED";
 /// [`require_toolchain_pin`] (soldr#1917 follow-up).
 pub const RUSTUP_TOOLCHAIN_ENV_VAR: &str = "RUSTUP_TOOLCHAIN";
 
-const TOOLCHAIN_COMMAND_TIMEOUT_ENV_VAR: &str = "SOLDR_TOOLCHAIN_COMMAND_TIMEOUT_SECS";
-const DEFAULT_TOOLCHAIN_COMMAND_TIMEOUT_SECS: u64 = 30 * 60;
+pub const TOOLCHAIN_COMMAND_TIMEOUT_ENV_VAR: &str = "SOLDR_TOOLCHAIN_COMMAND_TIMEOUT_SECS";
+pub const DEFAULT_TOOLCHAIN_COMMAND_TIMEOUT_SECS: u64 = 30 * 60;
 const KILLED_TOOLCHAIN_COMMAND_REAP_TIMEOUT_SECS: u64 = 5;
 const CARGO_PREPARE_MEMO_SCHEMA_VERSION: u32 = 1;
 const CARGO_PREPARE_MEMO_DIR: &str = "toolchain-prepare-v1";
@@ -946,7 +946,7 @@ fn rustup_target_add(channel: &str, target: &str) -> Result<i32, SoldrError> {
     Ok(status.code().unwrap_or(1))
 }
 
-fn toolchain_command_timeout() -> Duration {
+pub fn toolchain_command_timeout() -> Duration {
     std::env::var(TOOLCHAIN_COMMAND_TIMEOUT_ENV_VAR)
         .ok()
         .and_then(|value| value.parse::<u64>().ok())

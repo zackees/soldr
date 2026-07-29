@@ -45,6 +45,9 @@ struct DoctorOutput {
     drift: bool,
     missing_components: Vec<String>,
     missing_targets: Vec<String>,
+    /// Effective value and provenance of every timeout with an env
+    /// override (soldr#1838 Phase 3).
+    timeouts: Vec<crate::timeout_registry::DoctorTimeout>,
     /// Embedded zccache backend + version (soldr#1368).
     zccache: DoctorZccache,
     /// Debug-info sidecar state for the running soldr binary. On
@@ -165,6 +168,7 @@ pub(crate) fn run_doctor(
                 drift: false,
                 missing_components: Vec::new(),
                 missing_targets: Vec::new(),
+                timeouts: crate::timeout_registry::doctor_rows(),
                 zccache: bundle.clone(),
                 soldr_debug_info: soldr_debug_info.clone(),
                 defender_probe: defender_for_json(defender.as_ref()),
@@ -260,6 +264,7 @@ pub(crate) fn run_doctor(
             drift,
             missing_components,
             missing_targets,
+            timeouts: crate::timeout_registry::doctor_rows(),
             zccache: bundle.clone(),
             soldr_debug_info: soldr_debug_info.clone(),
             defender_probe: defender_for_json(defender.as_ref()),
@@ -281,6 +286,7 @@ pub(crate) fn run_doctor(
             defender.as_ref(),
             cook.as_ref(),
         );
+        crate::timeout_registry::print_doctor_section();
     }
 
     Ok(if drift { 1 } else { 0 })
