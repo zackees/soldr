@@ -334,9 +334,48 @@ def docker_output(args: list[str]) -> str:
     return out.stdout.strip() if out.returncode == 0 else ""
 
 
+def git_common_dir(root: Path) -> Path:
+    """The `.git` directory shared by a checkout and all its worktrees.
+
+    soldr#2008. In a **linked worktree** `.git` is a *file* containing
+    `gitdir: <path>`, not a directory. Code that did
+    `(root / ".git").mkdir(parents=True, exist_ok=True)` therefore raised
+    `FileExistsError` -- `exist_ok` tolerates an existing directory, not an
+    existing file. CLAUDE.md documents running this script from worktrees as
+    the standard agent flow, so that path has to work.
+
+    Resolved by reading the file rather than shelling out to
+    `git rev-parse --git-common-dir`, because the callers that need this most
+    are exactly the ones that stub `subprocess.run`; a subprocess-based lookup
+    silently degrades to the wrong answer under test and is untestable in the
+    place it matters.
+
+    A worktree's `gitdir` points at `<common>/worktrees/<name>`, so the shared
+    parent is two levels up. That matters: the runner lock exists to serialize
+    every worktree against one container, and a per-worktree lock would
+    serialize nothing.
+    """
+    candidate = root / ".git"
+    if candidate.is_dir():
+        return candidate
+    if candidate.is_file():
+        try:
+            text = candidate.read_text(encoding="utf-8").strip()
+        except OSError:
+            return candidate
+        if text.startswith("gitdir:"):
+            target = Path(text[len("gitdir:") :].strip())
+            if not target.is_absolute():
+                target = (root / target).resolve()
+            if target.parent.name == "worktrees":
+                return target.parent.parent
+            return target
+    return candidate
+
+
 @contextmanager
 def runner_lock(source_root: Path) -> Iterator[None]:
-    lock_path = source_root / ".git" / "soldr-perf-local.lock"
+    lock_path = git_common_dir(source_root) / "soldr-perf-local.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+b") as handle:
         if os.name == "nt":

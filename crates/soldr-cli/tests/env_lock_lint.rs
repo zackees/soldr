@@ -40,6 +40,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+mod common;
+
 use soldr_cli::timed_test;
 
 /// Every workspace crate's `src/`, not just this one's.
@@ -50,12 +52,15 @@ use soldr_cli::timed_test;
 /// -- exactly the class this lint exists to prevent, in a crate it could not
 /// see. `timed_test_lint.rs` next door already walked the whole workspace.
 fn crate_src_roots() -> Vec<PathBuf> {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let Some(crates_dir) = manifest.parent() else {
-        return vec![manifest.join("src")];
-    };
-    let Ok(entries) = fs::read_dir(crates_dir) else {
-        return vec![manifest.join("src")];
+    // soldr#2008: resolved at *runtime*, not from `CARGO_MANIFEST_DIR`. That
+    // env var is baked in at compile time and points at the machine that built
+    // the archive, so the pre-built test-archive lanes -- which run away from
+    // any checkout -- would silently scan nothing and report a clean lint.
+    // `test_archived_source_tests_use_only_runtime_workspace_resolution`
+    // enforces this repo-wide; these files were violating it.
+    let crates_dir = common::workspace_root().join("crates");
+    let Ok(entries) = fs::read_dir(&crates_dir) else {
+        return Vec::new();
     };
     let mut roots: Vec<PathBuf> = entries
         .flatten()
@@ -75,12 +80,8 @@ fn any_src_root_exists(roots: &[PathBuf]) -> bool {
 }
 
 fn repo_relative(path: &Path) -> String {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let root = manifest
-        .parent()
-        .and_then(Path::parent)
-        .unwrap_or(&manifest);
-    path.strip_prefix(root)
+    let root = common::workspace_root();
+    path.strip_prefix(&root)
         .unwrap_or(path)
         .to_string_lossy()
         .replace('\\', "/")
@@ -353,7 +354,7 @@ timed_test!(
         // widened rule however true the rule is. Widening this without first
         // moving a barrier into soldr-core (soldr#1896 identified that as the
         // only common dependency) would manufacture an unfixable failure.
-        let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+        let src = common::workspace_root().join("crates/soldr-cli/src");
         if !src.is_dir() {
             eprintln!("env_lock_lint: skipping — {} absent", src.display());
             return;

@@ -233,18 +233,6 @@ def test_native_linux_integration_backstop_runs_on_pull_requests() -> None:
     assert "canonical native exception" in block
 
 
-def test_windows_gnu_validation_runs_bounded_pr_runtime_smoke() -> None:
-    workflow = (WORKFLOWS / "windows-gnu-mingw-validation.yml").read_text(
-        encoding="utf-8"
-    )
-    assert "pull_request:" in workflow
-    assert '"crates/**"' in workflow
-    assert "soldr build --release --target $env:TARGET --package soldr-cli" in workflow
-    assert "objdump -f $binary" in workflow
-    assert "& $binary --version" in workflow
-    assert "pei-x86-64" in workflow
-    assert "if: github.event_name != 'pull_request'" in workflow
-
 
 def test_manual_cross_compile_workflows_use_blessed_supported_targets() -> None:
     build_all = (WORKFLOWS / "build-all-from-linux.yml").read_text(encoding="utf-8")

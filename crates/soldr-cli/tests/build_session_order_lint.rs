@@ -39,6 +39,8 @@
 use std::fs;
 use std::path::PathBuf;
 
+mod common;
+
 use soldr_cli::timed_test;
 
 /// Marks the start of the build session: acquires the activity lease,
@@ -80,17 +82,23 @@ const FALLIBLE_PRE_SPAWN_STEPS: &[(&str, &str)] = &[
 
 /// Read the front-door source, or `None` when it is not on disk.
 ///
-/// `CARGO_MANIFEST_DIR` is baked in at compile time, and the
-/// `target-run` / `Linux x64` lanes execute a **pre-built test archive**
-/// on a machine that does not have the source tree at that path. A
-/// source-reading lint cannot run there, so it skips instead of
-/// failing — the same tolerance `timed_test_lint`'s `collect_rs_files`
-/// has for directories it cannot read.
+/// The `target-run` / `Linux x64` lanes execute a **pre-built test archive**
+/// on a machine with no source tree, so a source-reading lint cannot run
+/// there and skips instead of failing — the same tolerance
+/// `timed_test_lint`'s `collect_rs_files` has for directories it cannot read.
+///
+/// soldr#2008: the path is resolved at *runtime* via `workspace_root()`.
+/// `CARGO_MANIFEST_DIR` is baked in at compile time and points at whichever
+/// machine built the archive, which is exactly what
+/// `test_archived_source_tests_use_only_runtime_workspace_resolution`
+/// forbids — and this file was violating it.
 ///
 /// The lint still enforces everywhere it can: the `Lint` lane and any
 /// local `cargo test`, both of which build and run in the checkout.
 fn front_door_source() -> Option<(PathBuf, String)> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let path = common::workspace_root()
+        .join("crates")
+        .join("soldr-cli")
         .join("src")
         .join("cargo_front_door")
         .join("mod.rs");
