@@ -95,6 +95,38 @@ By default, `soldr cargo ...` resolves a fresh soldr workspace context from the 
 Without a pin soldr resolves rustc from PATH, which can select a mismatched-host toolchain and makes cache keys depend on ambient PATH state. This flag makes that degraded mode an explicit choice. Equivalent to SOLDR_ALLOW_UNPINNED=1."
     )]
     pub(crate) allow_unpinned: bool,
+    /// soldr#1802 — force the elapsed-seconds line prefix on.
+    ///
+    /// A pair of plain boolean flags rather than one `--timestamp-lines=BOOL`.
+    /// The default is *conditional* (on for non-TTY, off for a terminal), so
+    /// "not passed" must stay distinguishable from "passed false" — but the
+    /// `Option<bool>` spelling that expresses that (`num_args = 0..=1` +
+    /// `default_missing_value`) sends clap into unbounded recursion when the
+    /// arg is also `global = true`, overflowing the stack on *every*
+    /// invocation including `--version`. Two flags express the same tri-state
+    /// with no exotic clap features.
+    #[arg(
+        long,
+        conflicts_with = "no_timestamp_lines",
+        help = "Prefix relayed output lines with elapsed seconds (soldr#1802)",
+        long_help = "Prefix every relayed output line with seconds elapsed since soldr started.
+
+Equivalent to SOLDR_TIMESTAMP_LINES=1. Left unset, the prefix is on when stderr is not a terminal (CI, Docker, `2>file`) and off on an interactive terminal, where it would fight cargo's progress redraw.
+
+Place it BEFORE `cargo`, as in `soldr --timestamp-lines cargo build`: everything after `cargo` is passed through to cargo untouched."
+    )]
+    pub(crate) timestamp_lines: bool,
+    /// soldr#1802 — force the elapsed-seconds line prefix off.
+    #[arg(
+        long,
+        help = "Suppress the elapsed-seconds line prefix (soldr#1802)",
+        long_help = "Suppress the elapsed-seconds prefix on relayed output lines.
+
+Equivalent to SOLDR_TIMESTAMP_LINES=0. Useful in CI, where the prefix is on by default, when a downstream tool parses cargo's exact bytes. Note the capture channel soldr's own diagnostic scanner reads is always raw, so this only affects what reaches your terminal.
+
+Place it BEFORE `cargo`, as with --timestamp-lines."
+    )]
+    pub(crate) no_timestamp_lines: bool,
     #[arg(
         long,
         value_enum,
@@ -147,6 +179,18 @@ impl Cli {
         // soldr#1761.
         if let Some(jobs) = self.jobs {
             std::env::set_var(soldr_core::core::jobs::SOLDR_JOBS_ENV_VAR, jobs.to_string());
+        }
+        // soldr#1802. Publishing the variable rather than threading a bool
+        // keeps `should_timestamp` the single decision point, so the flag
+        // populates its top precedence tier instead of becoming a second
+        // one that could disagree with it.
+        // `conflicts_with` makes both-at-once a parse error, so at most one
+        // arm runs and neither needs to defer to the other.
+        if self.timestamp_lines || self.no_timestamp_lines {
+            std::env::set_var(
+                crate::cargo_front_door::timestamp_tee::TIMESTAMP_LINES_ENV_VAR,
+                if self.timestamp_lines { "1" } else { "0" },
+            );
         }
     }
 }
@@ -1411,68 +1455,5 @@ pub(crate) enum LogsSubcommand {
 }
 
 #[cfg(test)]
-mod global_flag_tests {
-    use super::*;
-    use clap::Parser;
-    // The barrier every env mutator in this crate takes (soldr#1663). These
-    // tests set process-global variables, so an unguarded run races any test
-    // that reads them.
-    use crate::TEST_PROCESS_ENV_LOCK as ENV_LOCK;
-
-    fn restore(name: &str, previous: Option<String>) {
-        match previous {
-            Some(v) => std::env::set_var(name, v),
-            None => std::env::remove_var(name),
-        }
-    }
-
-    // soldr#1761. The flag is deliberately *not* a second resolution point:
-    // it publishes SOLDR_JOBS and lets `core::jobs` decide precedence, so a
-    // daemon spawned by this invocation reads the same tier a plain
-    // `SOLDR_JOBS=N` export would have populated.
-    crate::timed_test!(jobs_flag_publishes_the_env_var_the_resolver_reads, {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let name = soldr_core::core::jobs::SOLDR_JOBS_ENV_VAR;
-        let previous = std::env::var(name).ok();
-        std::env::remove_var(name);
-
-        let cli = Cli::parse_from(["soldr", "--jobs", "3", "status"]);
-        cli.export_global_env();
-        let published = std::env::var(name).ok();
-
-        restore(name, previous);
-        assert_eq!(
-            published.as_deref(),
-            Some("3"),
-            "--jobs must populate the resolver's top tier, not a parallel one"
-        );
-    });
-
-    // Absent flag must leave the variable untouched rather than writing a
-    // default: an exported SOLDR_JOBS, or a config.toml value, has to keep
-    // winning over "the user did not pass --jobs".
-    crate::timed_test!(no_jobs_flag_leaves_the_env_var_alone, {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let name = soldr_core::core::jobs::SOLDR_JOBS_ENV_VAR;
-        let previous = std::env::var(name).ok();
-        std::env::set_var(name, "9");
-
-        let cli = Cli::parse_from(["soldr", "status"]);
-        cli.export_global_env();
-        let after = std::env::var(name).ok();
-
-        restore(name, previous);
-        assert_eq!(
-            after.as_deref(),
-            Some("9"),
-            "an absent flag must not overwrite an existing SOLDR_JOBS"
-        );
-    });
-
-    // `global = true` is what makes `soldr cargo build --jobs 4` parse; a
-    // non-global flag would only be accepted before the subcommand.
-    crate::timed_test!(jobs_flag_is_accepted_after_the_subcommand, {
-        let cli = Cli::parse_from(["soldr", "status", "--jobs", "4"]);
-        assert_eq!(cli.jobs, Some(4));
-    });
-}
+#[path = "cli_args_tests.rs"]
+mod global_flag_tests;
