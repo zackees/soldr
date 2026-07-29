@@ -338,6 +338,9 @@ fn direct_exec_tool(
     if let Some(profile) = profile {
         profile.finish("before_tool_spawn");
     }
+    // soldr#2024: the child inherits stdio, so whatever it prints is this
+    // invocation's explanation and the exit guard must stay out of the way.
+    crate::exit_guard::mark_spoke();
     let status = command.status()?;
 
     let exit_code = status.code().unwrap_or(1);
