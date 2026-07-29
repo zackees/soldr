@@ -92,3 +92,41 @@ jobs:
     assert VERIFY.find_timeout_violations(workflow) == [
         "direct: expected exactly one job-level timeout-minutes, found 2"
     ]
+
+
+def test_reusable_workflow_own_job_is_checked():
+    """soldr#1978 item 8: the regression that motivated widening the walk.
+
+    A reusable-workflow *caller* is exempt (``timeout-minutes`` is invalid on a
+    ``uses:`` job), but the reusable workflow's own job allocates a runner and
+    must be bounded. Checking only ``ci.yml`` never opened those files, which is
+    how ``_build-and-test.yml`` and ``_bootstrap-e2e.yml`` -- on every PR -- sat
+    on GitHub's 360-minute default.
+    """
+    reusable = "jobs:\n  inner:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: true\n"
+    assert VERIFY.find_timeout_violations(reusable) == [
+        "inner: missing job-level timeout-minutes"
+    ]
+
+    caller = "jobs:\n  call:\n    uses: ./.github/workflows/_x.yml\n"
+    assert VERIFY.find_timeout_violations(caller) == []
+
+
+def test_walk_covers_reusable_workflows():
+    """The walk must reach the files the old default never opened."""
+    paths = VERIFY.workflow_paths(REPO_ROOT / ".github" / "workflows")
+    names = {path.name for path in paths}
+    assert "_build-and-test.yml" in names
+    assert "_bootstrap-e2e.yml" in names
+    assert "ci.yml" in names
+
+
+def test_grandfathered_entries_still_exist():
+    """A grandfathered name that no longer exists is stale and hides nothing.
+
+    Deleting a workflow should drop its entry, not leave a line implying a debt
+    that is already gone.
+    """
+    workflows = REPO_ROOT / ".github" / "workflows"
+    missing = [name for name in VERIFY.GRANDFATHERED if not (workflows / name).exists()]
+    assert not missing, f"grandfathered workflows no longer present: {missing}"
