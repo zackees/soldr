@@ -436,13 +436,12 @@ pub fn wait_for_shutdown_responder(
 /// records from different entry points stay distinguishable (soldr#1808).
 pub fn displace_stale_daemon(paths: &SoldrPaths, source: Option<LifecycleSource>) -> bool {
     let verified_pid = stale_daemon_occupies_endpoint(paths);
-    let recorded_live_pid = read_pid_file(paths)
-        .map(|(pid, _)| pid)
-        .filter(|pid| pid_is_alive(*pid));
+    let recorded_pid = read_pid_file(paths).map(|(pid, _)| pid);
+    let recorded_live_pid = recorded_pid.filter(|pid| pid_is_alive(*pid));
     append_lifecycle_event_with(
         paths,
         "displace-stale-requested",
-        LifecycleDetails::requested(LifecycleReason::StaleVersion).from_source(source),
+        LifecycleDetails::requested(LifecycleReason::StaleVersion).from_current_process(source),
     );
 
     let sock = crate::daemon::client::default_sock_path(paths);
@@ -452,6 +451,12 @@ pub fn displace_stale_daemon(paths: &SoldrPaths, source: Option<LifecycleSource>
                 .is_complete();
         }
         Err(crate::daemon::client::ClientError::NotRunning) if recorded_live_pid.is_none() => {
+            append_lifecycle_event_with(
+                paths,
+                "previous-daemon-vanished-without-ack",
+                LifecycleDetails::vanished_without_ack(recorded_pid, LifecycleReason::StaleVersion)
+                    .from_current_process(source),
+            );
             return true;
         }
         Err(_) => {}
@@ -462,18 +467,38 @@ pub fn displace_stale_daemon(paths: &SoldrPaths, source: Option<LifecycleSource>
     let Some(pid) = verified_pid else {
         return false;
     };
-    if pid_is_soldr_daemon(pid) {
-        // Reached only after the shutdown request produced no acknowledgement,
-        // which is the protocol-mismatch case the block above describes.
-        append_lifecycle_event_with(
-            paths,
-            "displace-kill-fallback",
-            LifecycleDetails::forced(pid, LifecycleReason::ProtocolMismatch).from_source(source),
-        );
-        terminate_pid(pid, None);
-        wait_for_pid_exit(pid, Duration::from_secs(5));
+    if !pid_is_soldr_daemon(pid) {
+        if !pid_is_alive(pid) {
+            append_lifecycle_event_with(
+                paths,
+                "previous-daemon-vanished-without-ack",
+                LifecycleDetails::vanished_without_ack(
+                    Some(pid),
+                    LifecycleReason::ProtocolMismatch,
+                )
+                .from_current_process(source),
+            );
+            return true;
+        }
+        return false;
     }
-    !pid_is_alive(pid)
+
+    // Reached only after the shutdown request produced no acknowledgement,
+    // which is the protocol-mismatch case the block above describes.
+    terminate_pid(pid, None);
+    let exited = wait_for_pid_exit(pid, Duration::from_secs(5));
+    append_lifecycle_event_with(
+        paths,
+        "displace-kill-fallback",
+        LifecycleDetails::forced(pid, LifecycleReason::ProtocolMismatch)
+            .with_outcome(if exited {
+                LifecycleOutcome::Forced
+            } else {
+                LifecycleOutcome::Failed
+            })
+            .from_current_process(source),
+    );
+    exited
 }
 
 /// One-shot preflight for the managed-build front door (soldr#1495).
@@ -679,10 +704,10 @@ pub enum LifecycleSource {
     Cli,
     /// The per-build preflight that clears a stale-version daemon.
     Preflight,
-    /// The peer on an accepted IPC connection. Not yet populated -- the
-    /// `GetNamedPipeClientProcessId` plumbing is the remaining half of
-    /// soldr#1808 Workstream 3.
+    /// The OS-observed peer on an accepted IPC connection.
     IpcPeer,
+    /// The transport did not expose a trustworthy peer identity.
+    Unknown,
 }
 
 /// How the transition ended.
@@ -707,11 +732,20 @@ pub enum LifecycleOutcome {
 /// serializes byte-identically to the pre-soldr#1808 three-field shape --
 /// including for the substring-matching reader in
 /// `tests/cli_daemon_lifecycle.rs`, which looks for `"event":"spawn"`.
-#[derive(Serialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Default, Clone, Debug, PartialEq, Eq)]
 pub struct LifecycleDetails {
+    /// OS-observed process that requested the transition.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requester_pid: Option<u32>,
+    /// Best-effort executable path for `requester_pid`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requester_exe: Option<String>,
     /// The process acted upon, when it differs from the recording process.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_pid: Option<u32>,
+    /// Target daemon generation, when an IPC response made it knowable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_generation: Option<u64>,
     /// Which entry point asked for this transition.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub requester_source: Option<LifecycleSource>,
@@ -725,7 +759,10 @@ impl LifecycleDetails {
     /// A forced termination of `target_pid`, for `reason`.
     pub fn forced(target_pid: u32, reason: LifecycleReason) -> Self {
         Self {
+            requester_pid: None,
+            requester_exe: None,
             target_pid: Some(target_pid),
+            target_generation: None,
             requester_source: None,
             reason: Some(reason),
             outcome: Some(LifecycleOutcome::Forced),
@@ -738,13 +775,53 @@ impl LifecycleDetails {
         self
     }
 
+    /// Attribute this record to an OS-observed IPC peer.
+    pub(crate) fn with_peer(mut self, peer: crate::daemon::ipc_peer::PeerIdentity) -> Self {
+        self.requester_pid = peer.pid;
+        self.requester_exe = peer.exe;
+        self.requester_source = Some(peer.source);
+        self
+    }
+
+    /// Attribute a local displacement to the process performing it.
+    pub fn from_current_process(mut self, source: Option<LifecycleSource>) -> Self {
+        self.requester_pid = Some(std::process::id());
+        self.requester_exe = std::env::current_exe()
+            .ok()
+            .map(|path| path.to_string_lossy().into_owned());
+        self.requester_source = Some(source.unwrap_or(LifecycleSource::Unknown));
+        self
+    }
+
+    /// Name the daemon generation receiving a graceful IPC request.
+    pub(crate) fn for_target_generation(mut self, pid: u32, generation: u64) -> Self {
+        self.target_pid = Some(pid);
+        self.target_generation = Some(generation);
+        self
+    }
+
+    /// Override the result after observing what actually happened.
+    pub fn with_outcome(mut self, outcome: LifecycleOutcome) -> Self {
+        self.outcome = Some(outcome);
+        self
+    }
+
+    /// A previous daemon disappeared before acknowledging shutdown.
+    pub fn vanished_without_ack(target_pid: Option<u32>, reason: LifecycleReason) -> Self {
+        Self {
+            target_pid,
+            reason: Some(reason),
+            outcome: Some(LifecycleOutcome::VanishedWithoutAck),
+            ..Self::default()
+        }
+    }
+
     /// A transition that has been asked for but not yet resolved.
     pub fn requested(reason: LifecycleReason) -> Self {
         Self {
-            target_pid: None,
-            requester_source: None,
             reason: Some(reason),
             outcome: Some(LifecycleOutcome::Requested),
+            ..Self::default()
         }
     }
 }
@@ -1049,25 +1126,42 @@ fn displace_stale_daemon_before(paths: &SoldrPaths, deadline: Instant) -> bool {
     // The deadline-sensitive recovery path avoids a potentially slow IPC
     // shutdown probe. The PID identity gate is the same one used by the normal
     // graceful-then-kill path, so an unrelated recycled PID is never signaled.
-    if pid_is_soldr_daemon(pid) {
-        // The deadline-sensitive path: this skips the IPC probe entirely, so
-        // the kill is attributable to the expiring spawn deadline rather than
-        // to anything learned about the daemon.
-        append_lifecycle_event_with(
-            paths,
-            "displace-kill-fallback",
-            LifecycleDetails::forced(pid, LifecycleReason::StartupDeadline),
-        );
-        terminate_pid(pid, Some(deadline));
-        let remaining = deadline
-            .saturating_duration_since(Instant::now())
-            .min(Duration::from_secs(5));
-        if !remaining.is_zero() {
-            wait_for_pid_exit(pid, remaining);
+    if !pid_is_soldr_daemon(pid) {
+        if !pid_is_alive(pid) {
+            append_lifecycle_event_with(
+                paths,
+                "previous-daemon-vanished-without-ack",
+                LifecycleDetails::vanished_without_ack(Some(pid), LifecycleReason::StartupDeadline)
+                    .from_current_process(Some(LifecycleSource::Preflight)),
+            );
+            return true;
         }
+        return false;
     }
 
-    !pid_is_alive(pid)
+    // This path skips the IPC probe entirely, so the kill is attributable to
+    // the expiring spawn deadline rather than anything learned about daemon.
+    terminate_pid(pid, Some(deadline));
+    let remaining = deadline
+        .saturating_duration_since(Instant::now())
+        .min(Duration::from_secs(5));
+    let exited = if remaining.is_zero() {
+        !pid_is_alive(pid)
+    } else {
+        wait_for_pid_exit(pid, remaining)
+    };
+    append_lifecycle_event_with(
+        paths,
+        "displace-kill-fallback",
+        LifecycleDetails::forced(pid, LifecycleReason::StartupDeadline)
+            .with_outcome(if exited {
+                LifecycleOutcome::Forced
+            } else {
+                LifecycleOutcome::Failed
+            })
+            .from_current_process(Some(LifecycleSource::Preflight)),
+    );
+    exited
 }
 
 /// Resolve the on-disk image the daemon child will exec from.

@@ -40,6 +40,7 @@ pub mod disconnect;
 pub mod event_batcher;
 pub mod history_gc;
 pub mod ipc;
+pub(crate) mod ipc_peer;
 pub mod lifecycle;
 pub mod maintenance;
 pub mod protocol;

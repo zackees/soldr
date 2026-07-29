@@ -82,7 +82,7 @@ mod lifecycle_event_tests {
         append_lifecycle_event_with(
             &paths,
             "displace-kill-fallback",
-            base.from_source(Some(LifecycleSource::Preflight)),
+            base.clone().from_source(Some(LifecycleSource::Preflight)),
         );
         append_lifecycle_event_with(
             &paths,
@@ -111,6 +111,48 @@ mod lifecycle_event_tests {
             !obj.contains_key("requester_source"),
             "absent source must be omitted, not null; got {obj:?}"
         );
+    });
+
+    crate::timed_test!(graceful_shutdown_records_the_observed_peer_before_ack, {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("root"));
+        let peer = crate::daemon::ipc_peer::PeerIdentity {
+            pid: Some(1234),
+            exe: Some(r"C:\redacted\soldr.exe".into()),
+            source: LifecycleSource::IpcPeer,
+        };
+        append_lifecycle_event_with(
+            &paths,
+            "shutdown-requested",
+            LifecycleDetails::requested(LifecycleReason::ExplicitStop)
+                .for_target_generation(4321, 9876)
+                .with_peer(peer),
+        );
+
+        let event = &read_events(&paths)[0];
+        assert_eq!(event["requester_pid"], 1234);
+        assert_eq!(event["requester_exe"], r"C:\redacted\soldr.exe");
+        assert_eq!(event["requester_source"], "ipc-peer");
+        assert_eq!(event["target_pid"], 4321);
+        assert_eq!(event["target_generation"], 9876);
+        assert_eq!(event["reason"], "explicit-stop");
+        assert_eq!(event["outcome"], "requested");
+    });
+
+    crate::timed_test!(unknown_transport_identity_never_invents_pid_or_exe, {
+        let details = LifecycleDetails::requested(LifecycleReason::ExplicitStop)
+            .with_peer(crate::daemon::ipc_peer::PeerIdentity::unknown());
+        assert_eq!(details.requester_source, Some(LifecycleSource::Unknown));
+        assert_eq!(details.requester_pid, None);
+        assert_eq!(details.requester_exe, None);
+    });
+
+    crate::timed_test!(vanished_without_ack_is_a_distinct_observed_outcome, {
+        let details =
+            LifecycleDetails::vanished_without_ack(Some(55), LifecycleReason::ProtocolMismatch);
+        assert_eq!(details.target_pid, Some(55));
+        assert_eq!(details.outcome, Some(LifecycleOutcome::VanishedWithoutAck));
+        assert_ne!(details.outcome, Some(LifecycleOutcome::Forced));
     });
 
     // A requested transition has no victim yet -- the field must be absent
