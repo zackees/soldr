@@ -93,6 +93,11 @@ where
         })
         .expect("watchdog: failed to spawn worker thread");
 
+    // soldr#1999: measure the real elapsed time rather than reporting the
+    // budget back. `recv_timeout` wakes at roughly the deadline, but "62.7s
+    // against a 60s budget" tells a reader whether the body was marginally
+    // slow or genuinely wedged; "(>60s)" cannot.
+    let started = std::time::Instant::now();
     match rx.recv_timeout(timeout) {
         Ok(Ok(())) => {
             // Body returned successfully. Join the worker so any
@@ -111,13 +116,11 @@ where
             // *this* (watchdog) thread, then abort the whole binary.
             // Rust has no safe way to kill the worker; abort is the
             // only deterministic way to free the test runner.
-            eprintln!("{} (>{}s): {}", HANG_BANNER_PREFIX, timeout.as_secs(), name);
-            eprintln!(
-                "watchdog: cannot inspect worker thread stack from std; \
-                 printing watchdog-thread backtrace only.\n\
-                 Attach a debugger or rerun with `--nocapture` to see live \
-                 progress before the next abort."
-            );
+            let elapsed = started.elapsed();
+            eprintln!("{}", hang_banner(name, elapsed, timeout));
+            if let Some(note) = hang_exit_code_note() {
+                eprintln!("{note}");
+            }
             eprintln!("Watchdog thread backtrace:\n{}", Backtrace::force_capture());
             // Flush stderr so the banner is not swallowed by the abort.
             use std::io::Write;
@@ -131,6 +134,51 @@ where
             let _ = worker.join();
             panic!("watchdog: worker thread for `{name}` disconnected without reporting a result");
         }
+    }
+}
+
+/// The banner text emitted immediately before the watchdog aborts.
+///
+/// Split out because the abort path cannot be unit-tested -- it ends the
+/// process -- so this is the only way to assert the wording that soldr#1999
+/// is about. `elapsed` is measured, not assumed: "62.7s against a 60s budget"
+/// distinguishes a marginally slow body from a wedged one, which the old
+/// `(>60s)` could not.
+pub fn hang_banner(name: &str, elapsed: Duration, timeout: Duration) -> String {
+    format!(
+        "{} ({:.1}s elapsed against a {}s budget): {}",
+        HANG_BANNER_PREFIX,
+        elapsed.as_secs_f64(),
+        timeout.as_secs(),
+        name
+    )
+}
+
+/// Why the process is about to report a misleading exit code.
+///
+/// soldr#1999 rule 3: where the OS will report a wrong cause, say the real one
+/// first. `std::process::abort()` on Windows raises
+/// `__fastfail(FAST_FAIL_FATAL_APP_EXIT)`, and Windows reuses `0xC0000409` --
+/// `STATUS_STACK_BUFFER_OVERRUN` -- for it. So a deliberate, fully understood
+/// timeout is reported by the harness as *memory corruption*, sending the
+/// reader hunting a buffer overrun that does not exist. This has to be said
+/// here, because by the time the exit code is visible the process is gone.
+///
+/// `None` off Windows, where `abort()` reports a plain SIGABRT that nobody
+/// misreads.
+pub fn hang_exit_code_note() -> Option<&'static str> {
+    #[cfg(windows)]
+    {
+        Some(concat!(
+            "watchdog: the exit code that follows will be 0xC0000409 ",
+            "(STATUS_STACK_BUFFER_OVERRUN). That is how Windows reports ",
+            "abort() via __fastfail -- it is THIS timeout, not memory ",
+            "corruption. See soldr#1999."
+        ))
+    }
+    #[cfg(not(windows))]
+    {
+        None
     }
 }
 
@@ -479,6 +527,49 @@ mod tests {
         assert!(formatted.contains("pid=4321"), "{formatted}");
     }
 
+    // soldr#1999: the banner is the only thing standing between a reader and
+    // a wrong diagnosis, so its wording is asserted rather than assumed.
+    #[test] // allow-bare-test: asserts the watchdog's own banner; cannot nest timed_test!
+    fn the_banner_reports_measured_elapsed_not_the_budget() {
+        let text = hang_banner(
+            "some_test",
+            Duration::from_millis(62_700),
+            Duration::from_secs(60),
+        );
+        assert!(text.contains("some_test"), "must name the test: {text}");
+        assert!(
+            text.contains("62.7s elapsed"),
+            "must report what actually elapsed, so a marginal overrun is \
+             distinguishable from a wedge: {text}"
+        );
+        assert!(
+            text.contains("60s budget"),
+            "must report the budget it was measured against: {text}"
+        );
+    }
+
+    // The single most misleading message in soldr#1999's table: a deliberate
+    // timeout surfacing as memory corruption.
+    #[test] // allow-bare-test: pure string check on the watchdog's own output
+    fn windows_is_told_the_exit_code_is_this_timeout() {
+        let note = hang_exit_code_note();
+        #[cfg(windows)]
+        {
+            let note = note.expect("Windows must pre-empt the misleading code");
+            assert!(note.contains("0xC0000409"), "must name the code: {note}");
+            assert!(
+                note.contains("not memory"),
+                "must deny the wrong cause outright rather than hint at it: {note}"
+            );
+        }
+        #[cfg(not(windows))]
+        {
+            // abort() reports a plain SIGABRT here, which nobody misreads, so
+            // there is no wrong cause to pre-empt.
+            assert!(note.is_none(), "only Windows needs the note");
+        }
+    }
+
     /// Deliberate hang to exercise the abort path. Marked `#[ignore]`
     /// because a passing run *aborts the test binary* — it cannot
     /// participate in normal `cargo test`. Run it manually:
@@ -487,7 +578,10 @@ mod tests {
     /// soldr cargo test -p soldr-cli --lib -- --ignored --nocapture deliberate_hang
     /// ```
     ///
-    /// Expected: the binary prints `TEST HUNG (>2s): deliberate_hang`
+    /// Expected: the binary prints
+    /// `TEST HUNG (2.0s elapsed against a 2s budget): deliberate_hang`,
+    /// on Windows a line naming 0xC0000409 as this timeout rather than
+    /// memory corruption (soldr#1999),
     /// followed by a backtrace, then exits with a non-zero status.
     #[test]
     #[ignore = "aborts the test binary on purpose; run with --ignored to verify watchdog"]
