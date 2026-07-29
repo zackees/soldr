@@ -21,6 +21,7 @@ use wait_timeout::ChildExt;
 /// Mirror of `[workspace.metadata.soldr].targets` in the root
 /// `Cargo.toml`; a parity test enforces byte-equality.
 pub mod canonical_targets;
+pub mod cpu_topology;
 pub mod git;
 /// soldr#1761 — soldr-owned compile concurrency limit, resolved once
 /// and shared by the admission queue and the compile semaphore.
