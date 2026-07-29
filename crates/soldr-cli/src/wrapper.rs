@@ -415,29 +415,85 @@ fn materialize_stdin_source(bytes: &[u8]) -> Result<StdinSourceFile, SoldrError>
     )))
 }
 
+/// How many times to rebuild the scratch file when the directory under it is
+/// reclaimed mid-operation (soldr#2006).
+///
+/// One retry, not a loop: a single disappearance is a reclaimed scratch root
+/// and is worth surviving; a second in immediate succession means something is
+/// actively deleting the tree, and spinning would hide that rather than fix it.
+const STDIN_PUBLISH_ATTEMPTS: u32 = 2;
+
 fn ensure_stdin_source_path(path: &std::path::Path, bytes: &[u8]) -> Result<bool, SoldrError> {
+    let mut last_err = None;
+    for _ in 0..STDIN_PUBLISH_ATTEMPTS {
+        match try_publish_stdin_source(path, bytes) {
+            // soldr#2006: the scratch root can be reclaimed between creating
+            // the temp file and renaming it into place -- `new_in` succeeds,
+            // then `persist` reports the path is gone. Scratch is reclaimable
+            // by design, so a vanished directory is a condition to recover
+            // from, not a reason to fail the compile.
+            Err(PublishError::RootVanished) => {
+                let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+                let _ = std::fs::create_dir_all(parent);
+                last_err = Some(PublishError::RootVanished);
+            }
+            other => return other.map_err(PublishError::into_soldr_error),
+        }
+    }
+    Err(last_err
+        .unwrap_or(PublishError::RootVanished)
+        .into_soldr_error())
+}
+
+/// Failure modes of a single publish attempt.
+enum PublishError {
+    /// The scratch directory disappeared mid-operation -- retryable.
+    RootVanished,
+    /// Anything else -- not retryable.
+    Fatal(SoldrError),
+}
+
+impl PublishError {
+    fn into_soldr_error(self) -> SoldrError {
+        match self {
+            PublishError::Fatal(err) => err,
+            PublishError::RootVanished => SoldrError::Other(
+                "the soldr scratch directory was repeatedly removed while publishing the                  stdin source file; something is deleting it concurrently (soldr#2006)"
+                    .to_string(),
+            ),
+        }
+    }
+}
+
+fn try_publish_stdin_source(path: &std::path::Path, bytes: &[u8]) -> Result<bool, PublishError> {
     use std::io::Write as _;
 
     match std::fs::read(path) {
         Ok(existing) => return Ok(existing == bytes),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
         Err(err) => {
-            return Err(SoldrError::Other(format!(
+            return Err(PublishError::Fatal(SoldrError::Other(format!(
                 "failed to read existing stdin temp file {}: {err}",
                 path.display()
-            )));
+            ))));
         }
     }
 
     let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
     let mut tmp = tempfile::NamedTempFile::new_in(parent).map_err(|e| {
-        SoldrError::Other(format!(
+        if e.kind() == std::io::ErrorKind::NotFound {
+            return PublishError::RootVanished;
+        }
+        PublishError::Fatal(SoldrError::Other(format!(
             "failed to create stdin temp file in {}: {e}",
             parent.display()
-        ))
+        )))
     })?;
-    tmp.write_all(bytes)
-        .map_err(|e| SoldrError::Other(format!("failed to write stdin temp file: {e}")))?;
+    tmp.write_all(bytes).map_err(|e| {
+        PublishError::Fatal(SoldrError::Other(format!(
+            "failed to write stdin temp file: {e}"
+        )))
+    })?;
     let _ = tmp.as_file().sync_all();
 
     match tmp.persist_noclobber(path) {
@@ -445,18 +501,24 @@ fn ensure_stdin_source_path(path: &std::path::Path, bytes: &[u8]) -> Result<bool
         Err(err) if err.error.kind() == std::io::ErrorKind::AlreadyExists => {
             let _ = err.file.close();
             let existing = std::fs::read(path).map_err(|e| {
-                SoldrError::Other(format!(
+                PublishError::Fatal(SoldrError::Other(format!(
                     "failed to read raced stdin temp file {}: {e}",
                     path.display()
-                ))
+                )))
             })?;
             Ok(existing == bytes)
         }
-        Err(err) => Err(SoldrError::Other(format!(
+        // Windows reports the missing directory as NotFound; some layers
+        // surface it as os error 3 (path) rather than 2 (file). Both mean the
+        // scratch root went away under us.
+        Err(err) if err.error.kind() == std::io::ErrorKind::NotFound => {
+            Err(PublishError::RootVanished)
+        }
+        Err(err) => Err(PublishError::Fatal(SoldrError::Other(format!(
             "failed to publish stdin temp file {}: {}",
             path.display(),
             err.error
-        ))),
+        )))),
     }
 }
 
