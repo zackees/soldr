@@ -374,6 +374,54 @@ fn runtime_root(paths: &SoldrPaths) -> PathBuf {
     paths.root.join(RUNTIME_DIR).join(SELF_DIR)
 }
 
+/// Set on the re-executed child so the hop can never happen twice.
+///
+/// This is the safety property, not an optimisation. If
+/// [`daemon_should_reexec`]'s "am I already relocated?" answer were ever wrong
+/// in the direction of "no", an unguarded hop would re-exec forever and no
+/// daemon would ever start -- every build on the machine broken, and the
+/// failure looks like a daemon that will not come up rather than like a bad
+/// predicate. With a one-shot marker the worst case degrades to today's
+/// behaviour: running from wherever we were launched.
+pub const DAEMON_REEXEC_MARKER_ENV_VAR: &str = "SOLDR_INTERNAL_DAEMON_REEXECED";
+
+/// Where a daemon launched from `current_exe` should re-exec itself from, if
+/// anywhere.
+///
+/// soldr#1987: a daemon spawned from a directory that is later deleted -- a
+/// `uv` or `pip` build materialises soldr into a temp dir and removes it --
+/// keeps the root-ownership lock forever, and nothing outside the process can
+/// clear it. `resolve_daemon_spawn_image` already relocates on the *spawner*
+/// side, but that is advisory: it falls back to the original path on any error
+/// (soldr#1998 made that audible), and a daemon started by any other route
+/// never passes through it at all. Deciding here, inside the process that will
+/// take the lock, is the only unconditional place.
+///
+/// Returns `None` when no hop is needed or possible:
+/// * the marker is set -- we already hopped once;
+/// * the image is already under the runtime root;
+/// * the source is a maturin-repaired wheel, which must run in place
+///   (soldr#1300) because relocating strands its bundled dylibs;
+/// * relocation failed -- a daemon pinning the wrong directory still beats no
+///   daemon, which is the same trade the spawner makes.
+pub fn daemon_should_reexec(paths: &SoldrPaths, current_exe: &Path) -> Option<PathBuf> {
+    if std::env::var_os(DAEMON_REEXEC_MARKER_ENV_VAR).is_some() {
+        return None;
+    }
+    if exe_depends_on_bundled_wheel_libs(current_exe) {
+        return None;
+    }
+    let runtime_root = daemon_runtime_root(paths);
+    if path_is_under(current_exe, &runtime_root) {
+        return None;
+    }
+    let relocated = ensure_daemon_relocated(paths, current_exe).ok()?;
+    // Equal paths mean `ensure_daemon_relocated` declined to move it; hopping
+    // to where we already are would be a no-op exec, and with a marker that
+    // failed to stick it would be a loop.
+    (relocated != current_exe).then_some(relocated)
+}
+
 pub fn daemon_runtime_root(paths: &SoldrPaths) -> PathBuf {
     paths.root.join(RUNTIME_DIR).join(DAEMON_DIR)
 }
@@ -1048,4 +1096,100 @@ mod tests {
         );
         assert!(!stale.exists(), "the stale runtime copy is still collected");
     }
+}
+
+#[cfg(test)]
+mod reexec_hop_tests {
+    use super::*;
+    use std::sync::Mutex;
+    use tempfile::TempDir;
+
+    // Shares the module's env barrier: these read/write the marker variable
+    // that the tests above also disturb.
+    static HOP_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn fake_daemon(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+        std::fs::create_dir_all(dir).expect("dir");
+        let exe = dir.join(name);
+        std::fs::write(&exe, b"daemon-bin").expect("write");
+        exe
+    }
+
+    // THE safety property. If the "already relocated?" answer were ever wrong
+    // in the direction of "no", an unguarded hop would re-exec forever and no
+    // daemon would ever start. The marker makes that impossible regardless of
+    // how the predicate behaves, so the worst case is the status quo -- running
+    // from wherever we were launched.
+    crate::timed_test!(the_marker_stops_a_second_hop_whatever_the_predicate_says, {
+        let _lock = HOP_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("root"));
+        // Deliberately outside the runtime root: without the marker this is
+        // exactly the case that WOULD hop.
+        let exe = fake_daemon(&temp.path().join("elsewhere"), "soldr-daemon.exe");
+        assert!(
+            daemon_should_reexec(&paths, &exe).is_some(),
+            "precondition: this image should hop when unmarked"
+        );
+
+        std::env::set_var(DAEMON_REEXEC_MARKER_ENV_VAR, "1");
+        let decision = daemon_should_reexec(&paths, &exe);
+        std::env::remove_var(DAEMON_REEXEC_MARKER_ENV_VAR);
+
+        assert!(
+            decision.is_none(),
+            "a marked process must never hop again -- that is the loop guard"
+        );
+    });
+
+    // An image already under the runtime root is where we want it; hopping
+    // would be a pointless exec of ourselves.
+    crate::timed_test!(an_already_relocated_daemon_does_not_hop, {
+        let _lock = HOP_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var(DAEMON_REEXEC_MARKER_ENV_VAR);
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("root"));
+        let exe = fake_daemon(&daemon_runtime_root(&paths).join("abc"), "soldr-daemon.exe");
+        assert!(daemon_should_reexec(&paths, &exe).is_none());
+    });
+
+    // soldr#1300: a maturin-repaired wheel resolves bundled dylibs relative to
+    // its own location, so relocating strands them and the daemon dies before
+    // main(). It must run in place even though it is outside the runtime root.
+    crate::timed_test!(a_repaired_wheel_layout_runs_in_place, {
+        let _lock = HOP_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var(DAEMON_REEXEC_MARKER_ENV_VAR);
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("root"));
+        let platlib = temp.path().join("platlib");
+        std::fs::create_dir_all(platlib.join("soldr.dylibs")).expect("dylibs");
+        let exe = fake_daemon(&platlib.join("soldr.scripts"), "soldr-daemon");
+        assert!(
+            daemon_should_reexec(&paths, &exe).is_none(),
+            "relocating a repaired wheel strands its bundled dylibs (soldr#1300)"
+        );
+    });
+
+    // The #1987 case itself: a temp-dir image that is free to move.
+    crate::timed_test!(a_temp_dir_daemon_hops_into_the_runtime_root, {
+        let _lock = HOP_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var(DAEMON_REEXEC_MARKER_ENV_VAR);
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("root"));
+        let exe = fake_daemon(
+            &temp.path().join("uv-build-tmp").join("Scripts"),
+            "soldr-daemon.exe",
+        );
+
+        let target = daemon_should_reexec(&paths, &exe).expect("should hop");
+        assert!(
+            path_is_under(&target, &daemon_runtime_root(&paths)),
+            "must land under the runtime root, got {}",
+            target.display()
+        );
+        assert_ne!(
+            target, exe,
+            "hopping to the same path would be a no-op exec"
+        );
+    });
 }
