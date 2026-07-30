@@ -140,6 +140,18 @@ running-process = { git = "https://github.com/zackees/running-process.git", rev 
 [profile.dev]
 debug = "line-tables-only"
 
+# Workspace-only line symbols. `[profile.dev]` above gives every crate
+# line-tables-only debuginfo; this override matches all *dependencies*
+# (Cargo's `package."*"` matches every non-workspace-member) and drops
+# their debuginfo entirely. Workspace crates keep file:line for panics /
+# backtraces; external deps — the bulk of codegen + link + disk I/O in a
+# `--workspace` build — emit no DWARF at all, shrinking the biggest
+# contributor to dev build time and target/ size without touching the
+# symbols we actually debug. Backtraces through soldr's own code are
+# unchanged; only frames inside third-party crates lose file:line.
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 # Drop symbol table + debuginfo from the shipped binary. Biggest
 # single contributor to size (~30–50%). For deep debugging via
@@ -198,6 +210,13 @@ strip = "symbols"
 inherits = "ci-release"
 debug = "line-tables-only"
 strip = "none"
+
+# Same workspace-only rule as `[profile.dev.package."*"]`: target-run
+# backtraces only need file:line inside soldr's own frames, so external
+# deps emit no debuginfo here either — keeping ci-nextest archives lean
+# without losing the soldr#1168 line-table backtrace target.
+[profile.ci-nextest.package."*"]
+debug = false
 
 [workspace.lints.rust]
 unused_mut = "deny"
