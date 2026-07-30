@@ -902,6 +902,32 @@ fn insert_cargo_config_args_after_xwin_build_pair() {
     );
 }
 
+crate::timed_test!(insert_cargo_config_args_after_nextest_inner_command, {
+    let args = vec![
+        "nextest".to_string(),
+        "--color".to_string(),
+        "never".to_string(),
+        "archive".to_string(),
+        "--target".to_string(),
+        "aarch64-unknown-linux-gnu".to_string(),
+    ];
+    let config = vec!["--config".to_string(), "target.x.foo.bar=1".to_string()];
+    let out = insert_cargo_config_args(args, &config);
+    assert_eq!(
+        out,
+        vec![
+            "nextest",
+            "--color",
+            "never",
+            "archive",
+            "--config",
+            "target.x.foo.bar=1",
+            "--target",
+            "aarch64-unknown-linux-gnu",
+        ]
+    );
+});
+
 #[test]
 fn maturin_cargo_config_stays_before_rustc_separator() {
     let mut args = vec![

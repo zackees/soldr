@@ -11,10 +11,16 @@ mod pid_liveness_tests {
     // (which has `/proc/<pid>/stat`) and fatal on macOS, which is exactly how
     // it reached CI.
     crate::timed_test!(exited_unreaped_child_is_not_alive, {
-        let mut child = std::process::Command::new("/bin/sh")
-            .args(["-c", "exit 0"])
-            .spawn()
-            .expect("spawn probe child");
+        let mut command = std::process::Command::new("/bin/sh");
+        command.args(["-c", "exit 0"]);
+        let stdio = running_process::SpawnStdio {
+            stdin: running_process::StdioSource::Null,
+            stdout: running_process::StdioSource::Null,
+            stderr: running_process::StdioSource::Null,
+            drain_timeout: None,
+            show_console: false,
+        };
+        let mut child = running_process::spawn(&mut command, stdio).expect("spawn probe child");
         let pid = child.id();
 
         // Deliberately do NOT reap before probing — a reaped pid disappears

@@ -181,7 +181,11 @@ pub(crate) fn insert_cargo_config_args(
         return args;
     }
 
-    let insert_at = if args.first().is_some_and(|arg| arg == "xwin")
+    let insert_at = if args.first().is_some_and(|arg| arg == "nextest") {
+        nextest_inner_command_index(&args)
+            .map(|index| index + 1)
+            .unwrap_or(1)
+    } else if args.first().is_some_and(|arg| arg == "xwin")
         && args.get(1).is_some_and(|arg| arg == "build")
     {
         2
@@ -192,6 +196,36 @@ pub(crate) fn insert_cargo_config_args(
     };
     args.splice(insert_at..insert_at, cargo_config_args.iter().cloned());
     args
+}
+
+fn nextest_inner_command_index(args: &[String]) -> Option<usize> {
+    let mut index = 1;
+    while index < args.len() {
+        let arg = &args[index];
+        if arg == "--" {
+            return None;
+        }
+        if matches!(
+            arg.as_str(),
+            "--color" | "--config-file" | "--tool-config-file"
+        ) {
+            index += 2;
+            continue;
+        }
+        if arg.starts_with("--color=")
+            || arg.starts_with("--config-file=")
+            || arg.starts_with("--tool-config-file=")
+        {
+            index += 1;
+            continue;
+        }
+        if arg.starts_with('-') {
+            index += 1;
+            continue;
+        }
+        return Some(index);
+    }
+    None
 }
 
 /// soldr#1079 — bridge between the cargo dispatcher and the MSVC

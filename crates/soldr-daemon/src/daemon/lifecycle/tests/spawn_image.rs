@@ -134,11 +134,14 @@ mod daemon_spawn_image_tests {
     crate::timed_test!(via_self_daemon_forces_main_cli_argv0, {
         let mut command = std::process::Command::new("/bin/sh");
         force_daemon_via_self_cli_identity(&mut command);
-        let output = command
-            .args(["-c", "printf %s \"$0\""])
-            .output()
-            .expect("run shell probe");
-        assert!(output.status.success());
+        command.args(["-c", "printf %s \"$0\""]);
+        let output = running_process::run_std_command_bounded(
+            command,
+            Some(std::time::Duration::from_secs(10)),
+            64 * 1024,
+        )
+        .expect("run shell probe");
+        assert_eq!(output.exit_code, 0);
         assert_eq!(String::from_utf8_lossy(&output.stdout), "soldr");
     });
 

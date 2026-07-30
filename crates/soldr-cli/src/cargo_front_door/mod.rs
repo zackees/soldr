@@ -3143,7 +3143,19 @@ fn insert_cargo_global_args(args: &[String], cargo_args: &[String]) -> Vec<Strin
         return args.to_vec();
     }
     let mut out = args.to_vec();
-    let insert_at = first_cargo_subcommand_index(args).unwrap_or(0);
+    let cargo_subcommand = first_cargo_subcommand_index(args);
+    // cargo-nextest owns the argument parser after Cargo dispatches the
+    // `nextest` subcommand. Its build commands accept Cargo `--config`
+    // overrides, but only after the inner command (`archive` here). Injecting
+    // before `nextest` makes nextest's top-level parser reject `--config` as a
+    // misspelling of its unrelated `--config-file` option (soldr#2037).
+    let insert_at = cargo_subcommand
+        .filter(|&index| args.get(index).is_some_and(|arg| arg == "nextest"))
+        .and_then(|index| first_nextest_verb_index(args, index))
+        .filter(|&index| args.get(index).is_some_and(|arg| arg == "archive"))
+        .map(|index| index + 1)
+        .or(cargo_subcommand)
+        .unwrap_or(0);
     out.splice(insert_at..insert_at, cargo_args.iter().cloned());
     out
 }
@@ -3395,8 +3407,14 @@ fn validate_zig_cross_linker(
 }
 
 fn first_nextest_verb(args: &[String], nextest_idx: usize) -> Option<&str> {
+    first_nextest_verb_index(args, nextest_idx)
+        .and_then(|index| args.get(index))
+        .map(String::as_str)
+}
+
+fn first_nextest_verb_index(args: &[String], nextest_idx: usize) -> Option<usize> {
     let mut skip_next = false;
-    for arg in args.iter().skip(nextest_idx + 1) {
+    for (index, arg) in args.iter().enumerate().skip(nextest_idx + 1) {
         if skip_next {
             skip_next = false;
             continue;
@@ -3411,7 +3429,7 @@ fn first_nextest_verb(args: &[String], nextest_idx: usize) -> Option<&str> {
         if arg.starts_with('-') {
             continue;
         }
-        return Some(arg.as_str());
+        return Some(index);
     }
     None
 }

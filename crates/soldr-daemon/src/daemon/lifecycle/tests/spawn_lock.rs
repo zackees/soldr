@@ -327,7 +327,8 @@ mod spawn_lock_tests {
         let temp = TempDir::new().unwrap();
         let paths = SoldrPaths::with_root(temp.path().join("owned"));
         let run_probe = |expected: &str| {
-            let output = std::process::Command::new(std::env::current_exe().unwrap())
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
                 .args([
                     "--ignored",
                     "--exact",
@@ -335,11 +336,15 @@ mod spawn_lock_tests {
                     "--nocapture",
                 ])
                 .env("SOLDR_TEST_ROOT_OWNER_ROOT", &paths.root)
-                .env("SOLDR_TEST_ROOT_OWNER_EXPECT", expected)
-                .output()
-                .unwrap();
+                .env("SOLDR_TEST_ROOT_OWNER_EXPECT", expected);
+            let output = running_process::run_std_command_bounded(
+                command,
+                Some(Duration::from_secs(30)),
+                64 * 1024,
+            )
+            .unwrap();
             assert!(
-                output.status.success(),
+                output.exit_code == 0,
                 "subprocess root-owner probe failed: {}",
                 String::from_utf8_lossy(&output.stderr)
             );

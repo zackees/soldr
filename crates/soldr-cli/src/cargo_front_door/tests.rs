@@ -1727,8 +1727,10 @@ crate::timed_test!(build_env_cache_inputs_include_cross_toolchain_identity, {
     );
 });
 
-crate::timed_test!(cargo_global_args_insert_before_nextest_subcommand, {
-    let args = argvec("--manifest-path Cargo.toml nextest archive --target x86_64-apple-darwin");
+crate::timed_test!(cargo_config_args_insert_after_nextest_archive_subcommand, {
+    let args = argvec(
+        "--manifest-path Cargo.toml nextest --color never archive --target x86_64-apple-darwin",
+    );
     let cargo_args = vec![
         "--config".to_string(),
         "target.x86_64-apple-darwin.mimalloc.rustc-link-lib=[\"static=mimalloc\"]".to_string(),
@@ -1738,7 +1740,22 @@ crate::timed_test!(cargo_global_args_insert_before_nextest_subcommand, {
 
     assert_eq!(
         got,
-        argvec("--manifest-path Cargo.toml --config target.x86_64-apple-darwin.mimalloc.rustc-link-lib=[\"static=mimalloc\"] nextest archive --target x86_64-apple-darwin")
+        argvec("--manifest-path Cargo.toml nextest --color never archive --config target.x86_64-apple-darwin.mimalloc.rustc-link-lib=[\"static=mimalloc\"] --target x86_64-apple-darwin")
+    );
+});
+
+crate::timed_test!(cargo_config_args_stay_before_regular_cargo_subcommand, {
+    let args = argvec("--manifest-path Cargo.toml build --target x86_64-apple-darwin");
+    let cargo_args = vec![
+        "--config".to_string(),
+        "target.x86_64-apple-darwin.mimalloc.rustc-link-lib=[\"static=mimalloc\"]".to_string(),
+    ];
+
+    let got = insert_cargo_global_args(&args, &cargo_args);
+
+    assert_eq!(
+        got,
+        argvec("--manifest-path Cargo.toml --config target.x86_64-apple-darwin.mimalloc.rustc-link-lib=[\"static=mimalloc\"] build --target x86_64-apple-darwin")
     );
 });
 

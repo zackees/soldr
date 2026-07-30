@@ -19,11 +19,14 @@ struct Cli {
 /// Run the daemon surface selected by the `soldr-daemon` argv[0] alias.
 pub fn run() -> i32 {
     let cli = Cli::parse();
-    // This entrypoint is already the detached daemon child. Relocation must
-    // replace its trampoline immediately instead of retaining a second
-    // long-lived waiter process.
-    crate::daemon::lifecycle::reexec_from_runtime_root(true);
-    let _ = cli.foreground;
+    // Managed startup reaches this entrypoint through running-process's
+    // detached-daemon boundary, which marks the child explicitly. Relocation
+    // may detach its replacement in that case so the trampoline exits instead
+    // of becoming a second long-lived waiter. A direct foreground invocation
+    // has no marker and must preserve its terminal/stdout/stderr contract by
+    // waiting for the relocated child (soldr#2037).
+    let managed_detached_child = crate::daemon::lifecycle::current_process_is_declared_daemon();
+    crate::daemon::lifecycle::reexec_from_runtime_root(managed_detached_child);
     let opts = ServerOptions {
         idle_timeout: if cli.idle_timeout_secs == 0 {
             ServerOptions::default().idle_timeout

@@ -10,7 +10,7 @@
 mod relocate;
 mod spawn;
 mod spawn_env;
-pub use relocate::reexec_from_runtime_root;
+pub use relocate::{current_process_is_declared_daemon, reexec_from_runtime_root};
 pub(crate) use spawn::*;
 pub(crate) use spawn_env::*;
 

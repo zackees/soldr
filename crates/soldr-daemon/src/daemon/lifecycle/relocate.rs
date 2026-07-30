@@ -4,6 +4,16 @@ use crate::core::SoldrPaths;
 
 use super::spawn;
 
+/// Whether running-process launched this process through its detached-daemon
+/// boundary.
+///
+/// Keep the marker interpretation next to the process-creation boundary so
+/// callers do not need their own direct dependency on running-process.
+pub fn current_process_is_declared_daemon() -> bool {
+    std::env::var_os(running_process::DAEMON_MARKER_ENV_VAR).as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+}
+
 /// Re-exec the daemon from its stable runtime image before taking ownership.
 ///
 /// This function lives in the daemon crate so the entire production
