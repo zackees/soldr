@@ -14,6 +14,22 @@ pub fn current_process_is_declared_daemon() -> bool {
         == Some(std::ffi::OsStr::new("1"))
 }
 
+/// Re-exec from the runtime root using the one correct policy for a managed
+/// daemon entrypoint: detach the relocated replacement when this process was
+/// launched through running-process's managed daemon boundary (marker present,
+/// no console), and wait on it — preserving the caller's terminal — only for a
+/// genuine user-invoked foreground run (no marker).
+///
+/// Both daemon entrypoints (`daemon_entry::run` and the `soldr daemon start
+/// --foreground` arm in `soldr_main`) MUST route through here rather than
+/// passing a literal to [`reexec_from_runtime_root`]. Hardcoding `false` on the
+/// managed `via_self` path is exactly what popped a visible `soldr-daemon`
+/// console on Windows (soldr#2039); centralizing the decision makes that
+/// bypass impossible to reintroduce by a wrong flag at a call site.
+pub fn reexec_from_runtime_root_for_daemon_entry() {
+    reexec_from_runtime_root(current_process_is_declared_daemon());
+}
+
 /// Re-exec the daemon from its stable runtime image before taking ownership.
 ///
 /// This function lives in the daemon crate so the entire production
