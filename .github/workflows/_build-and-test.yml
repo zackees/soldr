@@ -140,6 +140,22 @@ jobs:
           ))
           exit $exitCode
 
+      # soldr#1838 Phase 4: fail the lane when the build silently ran uncached
+      # via the direct compiler. `soldr status --json` surfaces the same
+      # compile-daemon fallback rollup operators see (default home = the one the
+      # build above used); the guard reads it and exits non-zero on any
+      # fallback. Hard-fail only on the native linux-gnu lane, whose daemon is
+      # reliable; advisory elsewhere so a flaky Windows/macOS daemon race
+      # surfaces in the log without gating the build. Until now this was a
+      # stderr line nothing asserted on.
+      - name: Assert the build did not silently run uncached (soldr#1838)
+        if: success()
+        continue-on-error: ${{ !contains(inputs.target, 'linux-gnu') }}
+        shell: pwsh
+        run: |
+          soldr status --json > soldr-status.json
+          python3 .github/scripts/check_compile_fallbacks.py soldr-status.json
+
       - name: Stop setup-soldr builder cache before tests
         uses: zackees/setup-soldr/cleanup@922fe76752c37e46d63436b338fbe8cf3709bb69
 
