@@ -726,7 +726,9 @@ mtime-replay walk.
 
 ### `soldr status`
 
-Show cache and target information.
+Show cache and target information, including a compile-daemon **fallbacks**
+rollup — how many recent builds ran uncached via the direct compiler (see
+[Compiler-cache fallback output](#compiler-cache-fallback-output)).
 
 Stable machine-facing mode:
 
@@ -2073,12 +2075,38 @@ For bootstrap verification of another Rust project:
 
 ## Compiler-cache fallback output
 
-A managed front-door build reports cache unavailability once per build
-session, including the number of affected compiler invocations and the full
-`compile-daemon-fallbacks.jsonl` path. Per-compile reasons stay in that
-structured log and are not replayed as cached compiler diagnostics. On the
-first build after upgrading, Soldr also removes matching notices persisted by
-older versions from that target directory's fingerprint diagnostics.
+When a cacheable compile cannot reach the daemon, Soldr runs the compiler
+directly (uncached) and records it in `compile-daemon-fallbacks.jsonl`. A
+managed front-door build reports cache unavailability once per build session,
+including the number of affected compiler invocations and the full journal
+path. Per-compile reasons stay in that structured log and are not replayed as
+cached compiler diagnostics. On the first build after upgrading, Soldr also
+removes matching notices persisted by older versions from that target
+directory's fingerprint diagnostics.
+
+Because a fallback means the build silently ran uncached (the "quietly slower,
+indefinitely" symptom), that journal is surfaced without having to open it
+(soldr#1838):
+
+- **`soldr doctor` and `soldr status`** print a rollup — the total fallback
+  count and the most recent reasons — next to the effective timeout table.
+  Both expose it in `--json` as an additive field:
+
+  ```json
+  "fallbacks": { "total": 2, "recent": [ { "ts_ms": 1785400500000, "reason": "compile reply timed out after 1800s" } ] }
+  ```
+
+  An empty rollup (`total: 0`) reads as "the cache was never bypassed".
+
+- **CI guard.** `.github/scripts/check_compile_fallbacks.py` reads that
+  `fallbacks` rollup and exits non-zero when any fallback was recorded, so a
+  lane that silently degraded fails instead of passing green. It is wired into
+  `_build-and-test.yml` (hard-fail on the native `linux-gnu` lane, advisory
+  elsewhere).
+
+For the failure-mode → signal → remedy runbook (all daemon timeouts, the
+diagnostics above, and the degrade policy), see
+[docs/DAEMON_TIMEOUTS.md](DAEMON_TIMEOUTS.md).
 
 ## Summary
 
