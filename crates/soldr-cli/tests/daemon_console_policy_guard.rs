@@ -11,18 +11,22 @@
 //! `soldr-daemon` console on Windows.
 //!
 //! This test fails against that revision and passes with the fix, without
-//! spawning any process or mutating global environment (cf. soldr#1663).
+//! spawning any process or mutating global environment (cf. soldr#1663). Source
+//! files are resolved through the runtime workspace root (`common::crate_root`),
+//! not the compile-time crate-manifest env, so the test survives archival to a
+//! target-run host (cf. `test_archived_source_tests_use_only_runtime_workspace_
+//! resolution`).
 
-use std::path::PathBuf;
+mod common;
 
-fn read_src(rel: &str) -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel);
+fn read_crate_src(rel: &str) -> String {
+    let path = common::crate_root().join(rel);
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
 }
 
 soldr_cli::timed_test!(daemon_entrypoints_use_marker_aware_relocation, {
-    let soldr_main = read_src("src/soldr_main.rs");
-    let daemon_entry = read_src("src/daemon_entry.rs");
+    let soldr_main = read_crate_src("src/soldr_main.rs");
+    let daemon_entry = read_crate_src("src/daemon_entry.rs");
 
     // The raw-literal bypass that popped a console (soldr#2039) must not return
     // to either managed daemon entrypoint. Only the shared helper is allowed to
