@@ -1481,21 +1481,9 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
             idle_timeout,
         } => {
             if foreground {
-                // soldr#2016: this path bypasses `daemon_entry::run`, so the
-                // #1987 re-exec has to happen here too or a foreground daemon
-                // pins whatever directory it was launched from.
-                //
-                // soldr#2039: honor the running-process daemon marker exactly
-                // as `daemon_entry::run` does, instead of hardcoding `false`.
-                // The managed `via_self` start (`soldr daemon start
-                // --foreground`, spawned detached through
-                // `spawn_daemon_with_stdio_and_env_policy`) reaches here WITH
-                // the marker set; hardcoding `false` sent its relocation
-                // through the `show_console = true` foreground path, popping a
-                // visible `soldr-daemon` console on Windows. A managed child
-                // must detach its relocated replacement (no console); only a
-                // genuine user-invoked foreground run (no marker) keeps the
-                // terminal and waits for the child (#2037).
+                // soldr#2016: re-exec here too (bypasses `daemon_entry::run`).
+                // soldr#2039: the marker-aware helper detaches a managed start
+                // so it never pops a `soldr-daemon` console (see relocate.rs).
                 crate::daemon::lifecycle::reexec_from_runtime_root_for_daemon_entry();
                 let idle = if idle_timeout == 0 {
                     ServerOptions::default().idle_timeout
