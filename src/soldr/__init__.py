@@ -173,7 +173,9 @@ def _project_dev_profile_options() -> "dict[str, str]":
 
 
 def _project_soldr_options() -> "dict[str, str]":
-    return _toml_section_values(_project_root() / "pyproject.toml", _DELEGATE_BACKEND_SECTION)
+    return _toml_section_values(
+        _project_root() / "pyproject.toml", _DELEGATE_BACKEND_SECTION
+    )
 
 
 def _delegate_backend_name() -> Optional[str]:
@@ -207,7 +209,9 @@ def _managed_pep517_environment(
 ) -> Iterator[None]:
     """Apply soldr's child-build environment around a delegated backend."""
     prepared = _prep_env(config_settings, editable=editable)
-    previous: dict[str, object] = {key: os.environ.get(key, _MISSING) for key in _PEP517_ENV_KEYS}
+    previous: dict[str, object] = {
+        key: os.environ.get(key, _MISSING) for key in _PEP517_ENV_KEYS
+    }
     try:
         for key in _PEP517_ENV_KEYS:
             value = prepared.get(key)
@@ -357,14 +361,18 @@ def _setting_value(config_settings: Optional[dict], *keys: str) -> Optional[str]
     return None
 
 
-def _explicit_profile(config_settings: Optional[dict], *, editable: bool = False) -> Optional[str]:
+def _explicit_profile(
+    config_settings: Optional[dict], *, editable: bool = False
+) -> Optional[str]:
     keys = ("--profile", "profile")
     if editable:
         keys += ("editable-profile",)
     return _setting_value(config_settings, *keys)
 
 
-def _profile_args(config_settings: Optional[dict], *, editable: bool = False) -> "list[str]":
+def _profile_args(
+    config_settings: Optional[dict], *, editable: bool = False
+) -> "list[str]":
     """Select the fast local profile without overriding explicit settings."""
     explicit = _setting_value(
         config_settings,
@@ -383,9 +391,9 @@ def _profile_args(config_settings: Optional[dict], *, editable: bool = False) ->
         return ["--profile", selected]
 
     options = _project_maturin_options()
-    configured = options.get("editable-profile" if editable else "profile") or options.get(
-        "profile"
-    )
+    configured = options.get(
+        "editable-profile" if editable else "profile"
+    ) or options.get("profile")
     if configured:
         return []
 
@@ -479,7 +487,9 @@ def _stats_mode(env: "dict[str, str]") -> str:
     return "short"
 
 
-def _session_command(subcommand: str, env: "dict[str, str]", *args: str) -> "dict | None":
+def _session_command(
+    subcommand: str, env: "dict[str, str]", *args: str
+) -> "dict | None":
     """Run a best-effort session command without perturbing a wheel build."""
     try:
         result = subprocess.run(
@@ -512,7 +522,9 @@ def _emit_build_stats(
         return
 
     end = (
-        _session_command("session-end", env, "--id", session_id) if session_id is not None else None
+        _session_command("session-end", env, "--id", session_id)
+        if session_id is not None
+        else None
     )
     stats = end.get("stats") if end else None
     elapsed = f"{elapsed_seconds:.1f}s"
@@ -595,6 +607,78 @@ def _write_pep517_text(sink: TextIO, text: str) -> None:
     sink.flush()
 
 
+# soldr#1802 §4: the Python half of per-line elapsed-second stamping. The Rust
+# front door (`cargo_front_door/timestamp_tee.rs`) already stamps cargo's
+# output; this mirrors it exactly for the PEP 517 relay so pip/uv build logs
+# carry the same `  12.34 ` prefixes. The env var, the default (on for non-TTY,
+# off for a terminal), the CRLF-stamps-once rule, and the `{:>8.2}` format are
+# all kept identical to the Rust side on purpose — two formats would defeat the
+# "same format" acceptance criterion.
+_TIMESTAMP_LINES_ENV_VAR = "SOLDR_TIMESTAMP_LINES"
+
+
+def _should_timestamp_pep517(env_value: "str | None", is_terminal: bool) -> bool:
+    """Mirror of Rust ``timestamp_tee::should_timestamp``.
+
+    Default is on for a non-TTY sink (a CI/pip log read after the fact, where
+    "which line cost 40s" is the whole question) and off for an interactive
+    terminal (which already shows progress live). ``SOLDR_TIMESTAMP_LINES``
+    overrides both directions.
+    """
+    if env_value is not None:
+        v = env_value.strip().lower()
+        if v in ("1", "true", "on"):
+            return True
+        if v in ("0", "false", "off"):
+            return False
+    return not is_terminal
+
+
+def _pep517_epoch_anchor_line(now_unix_ms: int) -> str:
+    """One `# t0=<epoch-seconds>` line so absolute times are derivable.
+
+    Byte-identical to Rust ``timestamp_tee::epoch_anchor_line``.
+    """
+    return f"# t0={now_unix_ms // 1000}.{now_unix_ms % 1000:03d}\n"
+
+
+class _LineStamper:
+    """Insert an elapsed-seconds prefix at each line start, color-preserving.
+
+    Port of Rust ``TimestampedTee``: the prefix is plain text inserted only at
+    column 0, so ANSI escapes inside a line pass through untouched. Both ``\\n``
+    and ``\\r`` start a new line, so cargo's ``\\r`` progress redraws are stamped;
+    a CRLF pair stamps once, not twice. State is per-stream (one instance per
+    relay thread), matching the Rust design where stdout and stderr each own a
+    tee.
+    """
+
+    def __init__(self, t0: float) -> None:
+        self._t0 = t0
+        self._at_line_start = True
+        self._last_was_cr = False
+
+    def _prefix(self) -> str:
+        return f"{time.monotonic() - self._t0:>8.2f} "
+
+    def stamp(self, text: str) -> str:
+        if not text:
+            return text
+        out: list[str] = []
+        for ch in text:
+            is_lf = ch == "\n"
+            is_cr = ch == "\r"
+            # A CRLF pair is one terminator: the CR already set the flag, and
+            # the newline must not draw a second prefix on the way to the same
+            # new line.
+            if self._at_line_start and not (is_lf and self._last_was_cr):
+                out.append(self._prefix())
+            out.append(ch)
+            self._at_line_start = is_lf or is_cr
+            self._last_was_cr = is_cr
+        return "".join(out)
+
+
 def _pep517_failure_excerpt(stdout_tail: str, stderr_tail: str) -> str:
     """Return a bounded error-focused excerpt without Cargo progress redraws."""
     raw = f"{stderr_tail}\n{stdout_tail}"
@@ -615,7 +699,9 @@ def _pep517_failure_excerpt(stdout_tail: str, stderr_tail: str) -> str:
                 "compiler-message"
             ):
                 message = cargo_message.get("message")
-                rendered = message.get("rendered") if isinstance(message, dict) else None
+                rendered = (
+                    message.get("rendered") if isinstance(message, dict) else None
+                )
                 if isinstance(rendered, str):
                     lines.extend(
                         _ANSI_ESCAPE_RE.sub("", item).rstrip()
@@ -638,7 +724,9 @@ def _pep517_failure_excerpt(stdout_tail: str, stderr_tail: str) -> str:
     )
     window = lines[-80:]
     marker_indexes = [
-        index for index, line in enumerate(window) if line.lstrip().lower().startswith(markers)
+        index
+        for index, line in enumerate(window)
+        if line.lstrip().lower().startswith(markers)
     ]
     if marker_indexes:
         window = window[marker_indexes[0] :]
@@ -647,7 +735,9 @@ def _pep517_failure_excerpt(stdout_tail: str, stderr_tail: str) -> str:
     return "\n".join(window)
 
 
-def _pep517_failure_payload(excerpt: str, log_path: "Path | None", relays_complete: bool) -> str:
+def _pep517_failure_payload(
+    excerpt: str, log_path: "Path | None", relays_complete: bool
+) -> str:
     """What travels *with* the exception, not just to our stderr.
 
     soldr#1999 rule 2. The diagnostics were being written to stderr and then
@@ -676,14 +766,14 @@ def _open_pep517_log(
     if not root:
         return None, None
     directory = Path(root).expanduser() / "logs" / "pep517"
-    filename = (
-        f"build-{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}-{os.getpid()}-{time.time_ns()}.log"
-    )
+    filename = f"build-{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}-{os.getpid()}-{time.time_ns()}.log"
     path = directory / filename
     try:
         directory.mkdir(parents=True, exist_ok=True)
         log = path.open("xb")
-        log.write((f"command: {json.dumps(cmd, ensure_ascii=False)}\n\n").encode("utf-8"))
+        log.write(
+            (f"command: {json.dumps(cmd, ensure_ascii=False)}\n\n").encode("utf-8")
+        )
     except OSError:
         return None, None
     return path, log
@@ -727,6 +817,11 @@ def _run_pep517_streaming(cmd: "list[str]", env: "dict[str, str]") -> None:
     child_env.setdefault("CARGO_TERM_PROGRESS_WHEN", "never")
     child_env.setdefault("CARGO_TERM_COLOR", "never")
     child_env.setdefault("NO_COLOR", "1")
+    # soldr#1802: the child is soldr, whose Rust front door also stamps. We
+    # stamp the relay here, so the child must not — force its stamping off to
+    # avoid a doubled `  0.12   1.34 ` prefix. A caller who set it explicitly
+    # still wins for their own shell; this only governs the child we spawn.
+    child_env[_TIMESTAMP_LINES_ENV_VAR] = "0"
     process = subprocess.Popen(
         cmd,
         env=child_env,
@@ -742,21 +837,59 @@ def _run_pep517_streaming(cmd: "list[str]", env: "dict[str, str]") -> None:
     stderr_sink = sys.stderr
     log_path, log = _open_pep517_log(cmd, child_env)
 
+    # soldr#1802 §4: anchor once at relay start so every prefix is elapsed
+    # seconds from the same t0, and stamp each stream independently (per-stream
+    # line state, exactly like the Rust tees). Gate per sink so a redirected
+    # stderr still gets stamps even when stdout is an interactive terminal. The
+    # env override read here is the *caller's* value, captured before we forced
+    # the child's to "0" above.
+    stamp_t0 = time.monotonic()
+    ts_override = env.get(_TIMESTAMP_LINES_ENV_VAR)
+
+    def _stamper_for(sink: TextIO) -> "_LineStamper | None":
+        is_tty = bool(getattr(sink, "isatty", lambda: False)())
+        if not _should_timestamp_pep517(ts_override, is_tty):
+            return None
+        return _LineStamper(stamp_t0)
+
+    stampers = {
+        "stdout": _stamper_for(stdout_sink),
+        "stderr": _stamper_for(stderr_sink),
+    }
+    # One `# t0=` header, on the stream that carries the build's progress
+    # (stderr), mirroring the Rust front door's `eprint!` of the same line.
+    # Best-effort like the log write: if the sink is already broken, do not let
+    # the anchor turn a graceful "output relay failed" into a raw write error
+    # from the main thread -- the relay surfaces a persistent sink failure.
+    if stampers["stderr"] is not None:
+        try:
+            _write_pep517_text(
+                stderr_sink, _pep517_epoch_anchor_line(int(time.time() * 1000))
+            )
+        except OSError:
+            pass
+
     def relay(source: BinaryIO, sink: TextIO, tail_name: str) -> None:
         nonlocal last_output
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        stamper = stampers[tail_name]
 
         def emit(text: str, raw: bytes = b"") -> None:
             nonlocal last_output
             with output_lock:
                 last_output = time.monotonic()
+                # The log and failure tails must see UNSTAMPED bytes: they feed
+                # the diagnostic scanner and the archived build log, which must
+                # not gain prefixes (soldr#1802 acceptance: parsers see raw).
                 if log is not None and raw:
                     try:
                         log.write(raw)
                     except OSError:
                         pass
-                tails[tail_name] = (tails[tail_name] + text)[-_PEP517_FAILURE_TAIL_CHARS:]
-            _write_pep517_text(sink, text)
+                tails[tail_name] = (tails[tail_name] + text)[
+                    -_PEP517_FAILURE_TAIL_CHARS:
+                ]
+            _write_pep517_text(sink, stamper.stamp(text) if stamper else text)
 
         try:
             while True:
@@ -813,7 +946,9 @@ def _run_pep517_streaming(cmd: "list[str]", env: "dict[str, str]") -> None:
     finally:
         bounded_drain = timed_out or relay_failed
         for thread in relays:
-            thread.join(timeout=_PEP517_TIMEOUT_RELAY_DRAIN_SECONDS if bounded_drain else None)
+            thread.join(
+                timeout=_PEP517_TIMEOUT_RELAY_DRAIN_SECONDS if bounded_drain else None
+            )
         if process.stdout is not None:
             process.stdout.close()
         if process.stderr is not None:
@@ -821,17 +956,25 @@ def _run_pep517_streaming(cmd: "list[str]", env: "dict[str, str]") -> None:
         if bounded_drain:
             for thread in relays:
                 thread.join(timeout=1)
-        relays_complete = not relay_errors and all(not thread.is_alive() for thread in relays)
+        relays_complete = not relay_errors and all(
+            not thread.is_alive() for thread in relays
+        )
         _close_pep517_log(log)
     if timed_out:
         assert idle_timeout is not None
         qualifier = "full " if relays_complete else "possibly incomplete "
-        detail = f"\nsoldr: {qualifier}PEP 517 build log: {log_path}\n" if log_path else ""
+        detail = (
+            f"\nsoldr: {qualifier}PEP 517 build log: {log_path}\n" if log_path else ""
+        )
         _write_pep517_text(stderr_sink, detail)
         raise subprocess.TimeoutExpired(cmd, idle_timeout)
     if relay_errors:
-        detail = f"; possibly incomplete PEP 517 build log: {log_path}" if log_path else ""
-        raise RuntimeError(f"soldr PEP 517 output relay failed{detail}") from relay_errors[0]
+        detail = (
+            f"; possibly incomplete PEP 517 build log: {log_path}" if log_path else ""
+        )
+        raise RuntimeError(
+            f"soldr PEP 517 output relay failed{detail}"
+        ) from relay_errors[0]
     assert returncode is not None
     if returncode != 0:
         excerpt = _pep517_failure_excerpt(tails["stdout"], tails["stderr"])
@@ -876,7 +1019,11 @@ def _maturin_pep517(
     env = _prep_env(config_settings, editable=editable)
     mode = _stats_mode(env)
     started_at = time.perf_counter()
-    start = _session_command("session-start", env) if build_label and mode != "off" else None
+    start = (
+        _session_command("session-start", env)
+        if build_label and mode != "off"
+        else None
+    )
     session_id = start.get("session_id") if start else None
     if isinstance(session_id, str):
         env["ZCCACHE_SESSION_ID"] = session_id
@@ -1021,7 +1168,9 @@ def _hash_metadata_tree(
             )
 
 
-def _hash_metadata_directory(hasher: "hashlib._Hash", metadata_directory: Optional[str]) -> None:
+def _hash_metadata_directory(
+    hasher: "hashlib._Hash", metadata_directory: Optional[str]
+) -> None:
     """Hash PEP 517 prepared metadata by content, not its temporary path."""
     if not metadata_directory:
         _hash_identity_field(hasher, "metadata", b"none")
@@ -1034,7 +1183,9 @@ def _hash_metadata_directory(hasher: "hashlib._Hash", metadata_directory: Option
         # setuptools leaves a regenerated ``*.egg-info`` tree beside the
         # PEP 517 ``*.dist-info`` result.  It is build bookkeeping rather
         # than hook metadata, and its SOURCES.txt changes after a first build.
-        directories[:] = sorted(item for item in directories if not item.endswith(".egg-info"))
+        directories[:] = sorted(
+            item for item in directories if not item.endswith(".egg-info")
+        )
         current = Path(directory)
         for filename in sorted(files):
             path = current / filename
@@ -1096,7 +1247,9 @@ def _wheel_cache_context(
         f"{sys.implementation.name}:{sys.version_info[:2]}:{sysconfig.get_platform()}".encode(),
     )
     for name, value in sorted(environment.items()):
-        if name.startswith(("CARGO_", "MATURIN_", "PYO3_", "RUST", "SOLDR_")) or name in {
+        if name.startswith(
+            ("CARGO_", "MATURIN_", "PYO3_", "RUST", "SOLDR_")
+        ) or name in {
             "AR",
             "CC",
             "CXX",
@@ -1109,7 +1262,9 @@ def _wheel_cache_context(
     ignored_directories: set[str] = set()
     try:
         relative_cache_root = (
-            (_wheel_cache_root(environment) / "pep517").resolve().relative_to(root.resolve())
+            (_wheel_cache_root(environment) / "pep517")
+            .resolve()
+            .relative_to(root.resolve())
         )
         if relative_cache_root.parts:
             ignored_directories.add(relative_cache_root.parts[0])
@@ -1127,7 +1282,9 @@ def _wheel_cache_context(
     )
 
 
-def _wheel_cache_restore(context: "tuple[Path, str] | None", wheel_directory: str) -> Optional[str]:
+def _wheel_cache_restore(
+    context: "tuple[Path, str] | None", wheel_directory: str
+) -> Optional[str]:
     if context is None:
         return None
     directory, fingerprint = context
@@ -1164,7 +1321,11 @@ def _wheel_cache_restore(context: "tuple[Path, str] | None", wheel_directory: st
 def _wheel_cache_store(
     context: "tuple[Path, str] | None", wheel_directory: str, filename: str
 ) -> None:
-    if context is None or Path(filename).name != filename or not filename.endswith(".whl"):
+    if (
+        context is None
+        or Path(filename).name != filename
+        or not filename.endswith(".whl")
+    ):
         return
     source = Path(wheel_directory) / filename
     if not source.is_file():
@@ -1236,7 +1397,9 @@ def _emit_wheel_cache_event(
     payload: dict[str, str] = {"wheel_cache": state, "kind": kind}
     if context is not None:
         payload["fingerprint"] = context[1]
-    print(f"soldr PEP 517 detail: {json.dumps(payload, sort_keys=True)}", file=sys.stderr)
+    print(
+        f"soldr PEP 517 detail: {json.dumps(payload, sort_keys=True)}", file=sys.stderr
+    )
 
 
 def _emit_wheel_cache_hit(
@@ -1288,7 +1451,9 @@ def _newest_entry(directory: str, suffix: str, *, want_dir: bool) -> str:
         entries.append((path.stat().st_mtime, name))
     if not entries:
         kind = "directory" if want_dir else "file"
-        raise RuntimeError(f"soldr build backend: no {suffix} {kind} produced in {directory}")
+        raise RuntimeError(
+            f"soldr build backend: no {suffix} {kind} produced in {directory}"
+        )
     entries.sort(reverse=True)
     return entries[0][1]
 
@@ -1380,7 +1545,9 @@ def build_wheel(
     cached = _wheel_cache_restore(context, wheel_directory)
     if cached is not None:
         _emit_wheel_cache_event("wheel", config_settings, "hit", context)
-        _emit_wheel_cache_hit("wheel", config_settings, time.perf_counter() - started_at)
+        _emit_wheel_cache_hit(
+            "wheel", config_settings, time.perf_counter() - started_at
+        )
         return cached
     _emit_wheel_cache_event("wheel", config_settings, "miss", context)
     delegated = _delegate_hook(
@@ -1427,7 +1594,9 @@ def build_editable(
     cached = _wheel_cache_restore(context, wheel_directory)
     if cached is not None:
         _emit_wheel_cache_event("editable", config_settings, "hit", context)
-        _emit_wheel_cache_hit("editable", config_settings, time.perf_counter() - started_at)
+        _emit_wheel_cache_hit(
+            "editable", config_settings, time.perf_counter() - started_at
+        )
         return cached
     _emit_wheel_cache_event("editable", config_settings, "miss", context)
     delegated = _delegate_hook(
