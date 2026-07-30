@@ -48,6 +48,10 @@ struct DoctorOutput {
     /// Effective value and provenance of every timeout with an env
     /// override (soldr#1838 Phase 3).
     timeouts: Vec<crate::timeout_registry::DoctorTimeout>,
+    /// Rollup of compile-daemon fallback events -- builds that ran
+    /// uncached via direct rustc (soldr#1838 Phase 4). Empty means the
+    /// cache was never bypassed.
+    fallbacks: crate::compile_fallback_rollup::FallbackRollup,
     /// Embedded zccache backend + version (soldr#1368).
     zccache: DoctorZccache,
     /// Debug-info sidecar state for the running soldr binary. On
@@ -155,6 +159,7 @@ pub(crate) fn run_doctor(
     let soldr_debug_info = collect_soldr_debug_info();
     let defender = collect_defender_probe(refresh_defender_probe);
     let cook = collect_cook_stats();
+    let fallbacks = collect_fallback_rollup();
 
     let Some(channel) = manifest.channel.as_deref() else {
         if json {
@@ -169,6 +174,7 @@ pub(crate) fn run_doctor(
                 missing_components: Vec::new(),
                 missing_targets: Vec::new(),
                 timeouts: crate::timeout_registry::doctor_rows(),
+                fallbacks: fallbacks.clone(),
                 zccache: bundle.clone(),
                 soldr_debug_info: soldr_debug_info.clone(),
                 defender_probe: defender_for_json(defender.as_ref()),
@@ -265,6 +271,7 @@ pub(crate) fn run_doctor(
             missing_components,
             missing_targets,
             timeouts: crate::timeout_registry::doctor_rows(),
+            fallbacks: fallbacks.clone(),
             zccache: bundle.clone(),
             soldr_debug_info: soldr_debug_info.clone(),
             defender_probe: defender_for_json(defender.as_ref()),
@@ -287,9 +294,23 @@ pub(crate) fn run_doctor(
             cook.as_ref(),
         );
         crate::timeout_registry::print_doctor_section();
+        crate::compile_fallback_rollup::print_section(&fallbacks);
     }
 
     Ok(if drift { 1 } else { 0 })
+}
+
+/// Read the compile-daemon fallback journal for the running soldr root
+/// (soldr#1838 Phase 4). Best-effort: if the soldr paths cannot be
+/// resolved, report an empty rollup rather than failing `doctor`.
+fn collect_fallback_rollup() -> crate::compile_fallback_rollup::FallbackRollup {
+    match SoldrPaths::new() {
+        Ok(paths) => crate::compile_fallback_rollup::collect(
+            &paths,
+            crate::compile_fallback_rollup::DOCTOR_RECENT_LIMIT,
+        ),
+        Err(_) => crate::compile_fallback_rollup::FallbackRollup::default(),
+    }
 }
 
 /// In-memory record of the defender probe result the doctor command

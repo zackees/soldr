@@ -182,6 +182,7 @@ pub mod cli_dispatch;
 /// `zccache-soldr` dispatch. Owns the hang-safe retry budget contract.
 pub mod compile_diagnostics;
 pub mod compile_dispatch;
+pub mod compile_fallback_rollup;
 pub mod cook;
 pub mod daemon_entry;
 /// soldr#2023 — `soldr daemon status` rendering, split out of

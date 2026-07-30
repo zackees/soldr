@@ -202,6 +202,17 @@ fn doctor_reports_drift_when_component_missing() {
         serde_json::json!([]),
         "no targets declared so no targets missing"
     );
+    // soldr#1838 Phase 4: the compile-daemon fallback rollup is always
+    // present (empty when the cache was never bypassed), so a consumer can
+    // read it unconditionally.
+    assert!(
+        json["fallbacks"]["total"].is_number(),
+        "doctor --json must carry a fallbacks rollup: {json}"
+    );
+    assert!(
+        json["fallbacks"]["recent"].is_array(),
+        "the fallback rollup must expose a recent[] list: {json}"
+    );
 }
 
 #[test]
