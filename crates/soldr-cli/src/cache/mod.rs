@@ -102,6 +102,10 @@ pub(crate) struct StatusOutput {
     managed_zccache_version: &'static str,
     zccache: ZccacheStatusSnapshot,
     maintenance: Option<crate::daemon::maintenance::MaintenanceStatus>,
+    /// Rollup of compile-daemon fallback events -- builds that ran
+    /// uncached via direct rustc (soldr#1838 Phase 4). Empty means the
+    /// cache was never bypassed. Mirrors the `soldr doctor` field.
+    fallbacks: crate::compile_fallback_rollup::FallbackRollup,
 }
 
 #[derive(Serialize)]
@@ -161,6 +165,10 @@ pub(crate) fn collect_status_output(cache_enabled: bool) -> Result<StatusOutput,
         managed_zccache_version: EMBEDDED_ZCCACHE_VERSION,
         zccache: collect_zccache_status(&paths)?,
         maintenance: crate::daemon::maintenance::read_status(&paths),
+        fallbacks: crate::compile_fallback_rollup::collect(
+            &paths,
+            crate::compile_fallback_rollup::DOCTOR_RECENT_LIMIT,
+        ),
     })
 }
 
@@ -224,6 +232,7 @@ pub(crate) fn print_status_output(output: &StatusOutput) {
     println!("zccache version: {}", output.managed_zccache_version);
     print_zccache_status_snapshot(&output.zccache);
     print_maintenance_status(output.maintenance.as_ref());
+    crate::compile_fallback_rollup::print_section(&output.fallbacks);
 }
 
 pub(crate) fn print_cache_output(output: &CacheOutput) {

@@ -101,6 +101,17 @@ fn status_json_reports_stable_machine_fields() {
     assert_eq!(json["zccache"]["binary_path"], Value::Null);
     assert_eq!(json["zccache"]["binary_fetched"], false);
     assert_eq!(json["zccache"]["binary_source"], "in-process");
+    // soldr#1838 Phase 4: the compile-daemon fallback rollup is always
+    // present (empty on a fresh root), mirroring `soldr doctor`, so a
+    // consumer can read it unconditionally.
+    assert!(
+        json["fallbacks"]["total"].is_number(),
+        "status --json must carry a fallbacks rollup: {json}"
+    );
+    assert!(
+        json["fallbacks"]["recent"].is_array(),
+        "the fallback rollup must expose a recent[] list: {json}"
+    );
     assert_eq!(json["zccache"]["session_log_present"], false);
     assert_eq!(json["zccache"]["journal_present"], false);
     assert_eq!(json["zccache"]["session_stats_present"], false);
