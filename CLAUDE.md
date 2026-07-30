@@ -128,7 +128,7 @@ Anything not registered falls through the generic External subcommand, which res
 - **Soldr daemon auto-starts**: The first cacheable wrapper call starts
   `soldr-daemon`, which owns the embedded zccache service. No standalone
   zccache process is started and no manual `soldr start` is required.
-- **Recovery from a wedged cache** (#1364): if a build hangs on the compile cache, run `soldr --no-cache cargo ...` (note: `--no-cache` goes *before* `cargo`) or set `ZCCACHE_DISABLE=1` — both bypass the wrapper + daemon and run rustc directly. `SOLDR_COMPILE_REPLY_TIMEOUT_SECS=<n>` shortens the 30-min compile-reply backstop to fail fast.
+- **Recovery from a wedged cache** (#1364): if a build hangs on the compile cache, run `soldr --no-cache cargo ...` (note: `--no-cache` goes *before* `cargo`) or set `ZCCACHE_DISABLE=1` — both bypass the wrapper + daemon and run rustc directly. `SOLDR_COMPILE_REPLY_TIMEOUT_SECS=<n>` shortens the 30-min compile-reply backstop to fail fast. **For the full failure-mode → signal → remedy runbook (all daemon timeouts, `soldr doctor`/`soldr status` diagnostics, the degrade policy), see [docs/DAEMON_TIMEOUTS.md](docs/DAEMON_TIMEOUTS.md).**
 - **Embedded cache location is Soldr-owned**: By default the service receives
   `~/.soldr/cache/zccache/daemon-state/embedded-v1` as its top-level cache
   root and zccache versions persistent state beneath `v<VERSION>/`. Per-build
@@ -223,6 +223,7 @@ vendored crate's own version) is what `soldr status` / `soldr doctor` /
 - `docs/CROSS_COMPILE.md` — blessed cross-compile recipes, including managed Windows GNU and MSVC `cargo-xwin`
 - `docs/DEBUG_SIDECARS.md` — debug-symbol sidecar policy for release archives (`.pdb` / `.dSYM` / `.dwp`, `manifest.json` `debug_info` contract)
 - `docs/TRUST_BOUNDARIES.md` — Runtime fetch policy, what integrity is enforced, what remains follow-up
+- `docs/DAEMON_TIMEOUTS.md` — Daemon timeout & stall runbook: failure mode → signal → remedy, the timeout surface, `soldr doctor`/`soldr status` diagnostics, and the degrade policy (soldr#1838)
 - `README.md` — User-facing motivation and prior art comparison
 
 ## GitHub Actions workflow conventions
