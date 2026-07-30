@@ -397,15 +397,117 @@ suites run formatting, Clippy, and Dylint with one canonical workspace scope:
 soldr lint
 soldr lint rust --package soldr-cli
 soldr lint deps
+soldr lint ci
+soldr lint ci --format json
 soldr lint all
 ```
 
 `deps` runs `deny check`, `audit`, and `machete` concurrently as cache-disabled
-children because they do not compile Rust. `all` adds `--all-features`, `udeps`,
-and `semver-checks` after the standard Rust and dependency suites. Compiler-bearing
-steps stay on the regular Soldr cache lifecycle; `cargo-dylint` is fetched from its
-Linux GNU release asset or source-built from the pinned registry version on Windows
-and macOS.
+children because they do not compile Rust. `ci` runs the CI/build-surface policy
+suite (see [`soldr lint ci`](#soldr-lint-ci) below). `all` runs the `ci` suite
+first, then adds `--all-features`, `udeps`, and `semver-checks` after the standard
+Rust and dependency suites. Compiler-bearing steps stay on the regular Soldr cache
+lifecycle; `cargo-dylint` is fetched from its Linux GNU release asset or
+source-built from the pinned registry version on Windows and macOS.
+
+### `soldr lint ci`
+
+Statically validate the repository's executable CI/build surfaces against
+Soldr's build policies (soldr#2038). This suite is a **pure filesystem scan**:
+it requires no `Cargo.toml`, no Rust toolchain, and never starts the compiler
+cache, so it runs in any repository — including non-Rust ones.
+
+```bash
+soldr lint ci                 # human-readable diagnostics (default)
+soldr lint ci --format json   # stable machine-readable report
+```
+
+`ci` accepts only `--format json|human`; it does not take Cargo scope flags.
+It exits `0` when there are no error-severity findings (warnings alone still
+exit `0`) and non-zero when any error-severity finding remains after
+suppressions.
+
+**Scanned surfaces:** `.github/workflows/**/*.yml|yaml`,
+`.github/actions/**/action.yml|yaml`, everything under `.github/scripts/**`,
+and any `*.sh` / `*.py` / `*.ps1` helper referenced from a `run:`/`uses:` line
+that exists on disk. Full-line and inline `#` comments are ignored, so prose
+that mentions a legacy command is never flagged.
+
+The suite is an extensible **registry of independent rules**. Adding a new CI
+policy is a bounded module + one registration entry; the public command surface
+does not change.
+
+#### Rule: `cross-compile-surface`
+
+Enforces that Apple Darwin (`*-apple-darwin`) and Windows MSVC
+(`*-pc-windows-msvc`) builds go through the blessed `soldr build --target ...`
+surface (`soldr prepare --target ...` is also accepted). It flags direct use of
+a legacy cross wrapper or raw cross compiler for those targets:
+
+- `cargo xwin` / `cargo-xwin` (and `cargo install cargo-xwin`),
+- `cargo zigbuild` / `cargo-zigbuild`,
+- raw `zig cc` / `zig c++` / `zig build-exe`,
+- `*-w64-mingw32-*` (mingw), osxcross `o64-clang`, or a `clang`/`gcc`/`cc`
+  carrying an Apple/Windows `--target`.
+
+**Target-aware Zig exception:** Zig and `cargo-zigbuild` remain **allowed** for
+`*-unknown-linux-*` and manylinux targets. The rule resolves each invocation's
+`--target` (including matrix placeholders such as `${{ matrix.target }}`
+against the workflow's declared matrix targets) and evaluates **per target**, so
+a legitimate Linux-Zig matrix row never masks an invalid Apple/Windows row. Soldr's
+own managed xwin / Apple-SDK / LLVM assets are allowed implementation details;
+the rule governs the repository's public build entrypoint, not soldr internals.
+
+A target that cannot be statically resolved on a surface that is otherwise
+capable of Apple/Windows builds is reported as a lower-severity `warning`
+(non-failing) rather than silently passing.
+
+#### Inline suppression
+
+A finding can be suppressed with a comment on the offending line or the line
+immediately above it:
+
+```yaml
+soldr cargo xwin build --target x86_64-pc-windows-msvc  # soldr-lint-ci: allow cross-compile-surface -- intentional legacy-path regression test
+```
+
+`allow all` suppresses every rule on that line; `allow <rule-id>[,<id>...]`
+suppresses only the named rules. Any text after `--` is a free-form reason.
+
+#### JSON schema (`schema_version: 1`)
+
+`--format json` emits a single object:
+
+```json
+{
+  "schema_version": 1,
+  "ok": true,
+  "findings": [
+    {
+      "rule": "cross-compile-surface",
+      "severity": "error",
+      "file": ".github/workflows/release.yml",
+      "line": 42,
+      "tool": "cargo zigbuild",
+      "target": "aarch64-apple-darwin",
+      "recommendation": "use `soldr build --target aarch64-apple-darwin` (or `soldr prepare --target aarch64-apple-darwin`) instead of `cargo zigbuild`"
+    }
+  ]
+}
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `schema_version` | integer | Schema version; bumped only on a breaking shape change. |
+| `ok` | boolean | `true` when there are zero **error**-severity findings. |
+| `findings[]` | array | Every finding (error and warning) after suppressions. |
+| `findings[].rule` | string | Stable rule id, e.g. `cross-compile-surface`. |
+| `findings[].severity` | string | `"error"` or `"warning"`. |
+| `findings[].file` | string | Repo-root-relative path, `/`-separated. |
+| `findings[].line` | integer | 1-based line where the command begins. |
+| `findings[].tool` | string | Detected non-blessed tool, e.g. `cargo xwin`. |
+| `findings[].target` | string | Resolved triple, a `*`-representative, or `<unresolved>`. |
+| `findings[].recommendation` | string | The exact blessed replacement command. |
 
 For Dylint builds, Soldr installs an absolute `soldr-dylint` compiler shim.
 Ordinary dependency and lint-library compilation follows

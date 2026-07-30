@@ -429,6 +429,7 @@ jobs:
                 > rust-toolchain.toml
               printf "%s\n" "fn main() { println!(\"hi\"); }" > src/main.rs
               soldr prepare --target aarch64-apple-darwin
+              # soldr-lint-ci: allow cross-compile-surface -- intentional legacy-path regression test (Exercise 3 proves the explicit cargo-zigbuild bootstrap still works)
               soldr cargo zigbuild --target aarch64-apple-darwin
               ls -l target/aarch64-apple-darwin/debug/hellomac
             ' 2> exercise3.stderr | tee exercise3.stdout
@@ -477,6 +478,7 @@ jobs:
                 > rust-toolchain.toml
               printf "%s\n" "fn main() { println!(\"hi\"); }" > src/main.rs
               soldr prepare --target x86_64-pc-windows-msvc
+              # soldr-lint-ci: allow cross-compile-surface -- intentional legacy-path regression test (Exercise 4 proves the explicit cargo-xwin bootstrap still works)
               soldr --no-cache cargo xwin build --target x86_64-pc-windows-msvc
               ls -l target/x86_64-pc-windows-msvc/debug/hellowin.exe
             ' 2> exercise4.stderr | tee exercise4.stdout

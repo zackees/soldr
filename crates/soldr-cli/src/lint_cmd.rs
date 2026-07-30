@@ -8,6 +8,8 @@
 use crate::cargo_front_door;
 use crate::core::SoldrError;
 use crate::current_soldr_binary;
+use crate::lint_ci;
+use crate::lint_ci::model::OutputFormat;
 use std::process::{Child, Command};
 use std::time::Duration;
 
@@ -15,6 +17,8 @@ use std::time::Duration;
 enum LintMode {
     Rust,
     Deps,
+    /// soldr#2038 — CI/build-surface policy suite (`soldr lint ci`).
+    Ci,
     All,
 }
 
@@ -22,10 +26,19 @@ enum LintMode {
 struct LintPlan {
     mode: LintMode,
     scope: Vec<String>,
+    /// Output format for the `ci` suite; ignored by other suites.
+    ci_format: OutputFormat,
 }
 
 impl LintPlan {
     fn parse(args: &[String]) -> Result<Self, SoldrError> {
+        // The `ci` suite has its own tiny, non-cargo argument grammar
+        // (`--format json|human`), so it is parsed before the cargo-scope
+        // path to avoid its flags being misread as cargo scope flags.
+        if args.first().map(String::as_str) == Some("ci") {
+            return Self::parse_ci(&args[1..]);
+        }
+
         let (mode, scope) = match args.first().map(String::as_str) {
             None => (LintMode::Rust, Vec::new()),
             Some("rust") => (LintMode::Rust, args[1..].to_vec()),
@@ -34,7 +47,7 @@ impl LintPlan {
             Some(value) if value.starts_with('-') => (LintMode::Rust, args.to_vec()),
             Some(value) => {
                 return Err(SoldrError::Other(format!(
-                    "lint: unknown suite {value:?}; expected rust, deps, or all"
+                    "lint: unknown suite {value:?}; expected rust, deps, ci, or all"
                 )))
             }
         };
@@ -44,7 +57,44 @@ impl LintPlan {
                 "lint: compiler arguments after -- are not supported; pass cargo scope flags before the suite".into(),
             ));
         }
-        Ok(Self { mode, scope })
+        Ok(Self {
+            mode,
+            scope,
+            ci_format: OutputFormat::Human,
+        })
+    }
+
+    /// Parse the `ci` suite grammar: only `--format json|human` is accepted.
+    fn parse_ci(args: &[String]) -> Result<Self, SoldrError> {
+        let mut ci_format = OutputFormat::Human;
+        let mut index = 0;
+        while index < args.len() {
+            let arg = args[index].as_str();
+            let value = if arg == "--format" {
+                let value = args.get(index + 1).ok_or_else(|| {
+                    SoldrError::Other("lint ci: --format requires a value (json or human)".into())
+                })?;
+                index += 2;
+                value.clone()
+            } else if let Some(value) = arg.strip_prefix("--format=") {
+                index += 1;
+                value.to_string()
+            } else {
+                return Err(SoldrError::Other(format!(
+                    "lint ci: unexpected argument {arg:?}; only --format json|human is supported"
+                )));
+            };
+            ci_format = OutputFormat::parse(&value).ok_or_else(|| {
+                SoldrError::Other(format!(
+                    "lint ci: unknown --format {value:?}; expected json or human"
+                ))
+            })?;
+        }
+        Ok(Self {
+            mode: LintMode::Ci,
+            scope: Vec::new(),
+            ci_format,
+        })
     }
 
     fn rust_steps(&self, all_features: bool) -> Result<Vec<Vec<String>>, SoldrError> {
@@ -164,7 +214,14 @@ pub(crate) async fn run_lint(
             .await
         }
         LintMode::Deps => run_dependency_steps(plan.dependency_steps()?, trust_inherited_soldr_env),
+        LintMode::Ci => run_ci_suite(plan.ci_format),
         LintMode::All => {
+            // soldr#2038 — run the pure-filesystem CI policy scan first so a
+            // policy violation fails fast without starting any compile.
+            let code = run_ci_suite(plan.ci_format)?;
+            if code != 0 {
+                return Ok(code);
+            }
             let code = run_compile_steps(
                 plan.rust_steps(true)?,
                 cache_enabled,
@@ -186,6 +243,21 @@ pub(crate) async fn run_lint(
             .await
         }
     }
+}
+
+/// Run the `ci` policy suite (soldr#2038). Pure filesystem scan over the
+/// current directory: no cargo front door, no compiler cache, no workspace
+/// requirement.
+fn run_ci_suite(format: OutputFormat) -> Result<i32, SoldrError> {
+    let root = std::env::current_dir().map_err(|e| {
+        SoldrError::Other(format!("lint ci: cannot resolve current directory: {e}"))
+    })?;
+    let code = lint_ci::run(&root, format)?;
+    // The suite always renders a report (findings or a clean summary), so a
+    // non-zero exit is never unexplained — suppress the exit-guard's #2024
+    // "soldr emitted no diagnostic" annotation.
+    crate::exit_guard::mark_spoke();
+    Ok(code)
 }
 
 async fn run_compile_steps(
@@ -309,5 +381,35 @@ mod tests {
     crate::timed_test!(unknown_suite_is_rejected, {
         let error = LintPlan::parse(&strings(&["everything"])).unwrap_err();
         assert!(error.to_string().contains("unknown suite"));
+    });
+
+    crate::timed_test!(ci_suite_is_parsed_with_default_human_format, {
+        let plan = LintPlan::parse(&strings(&["ci"])).unwrap();
+        assert_eq!(plan.mode, LintMode::Ci);
+        assert_eq!(plan.ci_format, OutputFormat::Human);
+        assert!(plan.scope.is_empty());
+    });
+
+    crate::timed_test!(ci_suite_parses_format_flag_both_spellings, {
+        let split = LintPlan::parse(&strings(&["ci", "--format", "json"])).unwrap();
+        assert_eq!(split.mode, LintMode::Ci);
+        assert_eq!(split.ci_format, OutputFormat::Json);
+        let joined = LintPlan::parse(&strings(&["ci", "--format=json"])).unwrap();
+        assert_eq!(joined.ci_format, OutputFormat::Json);
+    });
+
+    crate::timed_test!(ci_suite_rejects_cargo_scope_flags, {
+        // `--package` is a cargo scope flag; the ci suite must not accept it.
+        let error = LintPlan::parse(&strings(&["ci", "--package", "soldr-cli"])).unwrap_err();
+        assert!(error.to_string().contains("unexpected argument"));
+        let bad_format = LintPlan::parse(&strings(&["ci", "--format", "yaml"])).unwrap_err();
+        assert!(bad_format.to_string().contains("unknown --format"));
+    });
+
+    crate::timed_test!(all_suite_mode_is_all, {
+        // `lint all` must reach LintMode::All, which now also runs the CI
+        // suite before the compile/dep steps.
+        let plan = LintPlan::parse(&strings(&["all"])).unwrap();
+        assert_eq!(plan.mode, LintMode::All);
     });
 }
