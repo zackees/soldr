@@ -92,9 +92,23 @@ pub(crate) fn extract_target_from_args(args: &[String]) -> Option<String> {
 /// * `None` for everything else
 pub(crate) fn pick_cross_subcommand(
     target_triple: &str,
-    _msvc_blessed_cache_ready: bool,
+    msvc_blessed_cache_ready: bool,
 ) -> Option<&'static str> {
-    if !cfg!(target_os = "linux") {
+    pick_cross_subcommand_for_host(
+        target_triple,
+        msvc_blessed_cache_ready,
+        cfg!(target_os = "linux"),
+        cfg!(target_arch = "x86_64"),
+    )
+}
+
+pub(crate) fn pick_cross_subcommand_for_host(
+    target_triple: &str,
+    _msvc_blessed_cache_ready: bool,
+    linux_host: bool,
+    x86_64_host: bool,
+) -> Option<&'static str> {
+    if !linux_host {
         return None;
     }
 
@@ -132,7 +146,7 @@ pub(crate) fn pick_cross_subcommand(
     }
     // Cross from x86_64 host to aarch64 linux — needs zigbuild for
     // the bundled libc.
-    if target_triple == "aarch64-unknown-linux-gnu" && cfg!(target_arch = "x86_64") {
+    if target_triple == "aarch64-unknown-linux-gnu" && x86_64_host {
         return if legacy_zigbuild {
             Some("zigbuild")
         } else {

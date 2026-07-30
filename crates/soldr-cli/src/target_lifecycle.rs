@@ -272,6 +272,10 @@ pub(crate) fn encoded_rustflags_for_prep(prep: &BlessedPrep) -> Option<String> {
 }
 
 pub(crate) fn plan(target: &str) -> Result<TargetPlan, SoldrError> {
+    plan_for_host(target, crate::pyo3_detect::host_triple())
+}
+
+fn plan_for_host(target: &str, host: &str) -> Result<TargetPlan, SoldrError> {
     let attrs = classify_target(target)?;
     let canonical = crate::core::CANONICAL_TARGETS.contains(&target);
     let canonical_alias = crate::target_alias::CANONICAL_ALIASES
@@ -339,7 +343,7 @@ pub(crate) fn plan(target: &str) -> Result<TargetPlan, SoldrError> {
                 )
             }
             (TargetOs::Linux, Some(abi @ (TargetAbi::Gnu | TargetAbi::Musl)), _)
-                if target == crate::pyo3_detect::host_triple() =>
+                if target == host =>
             {
                 let family = if abi == TargetAbi::Musl {
                     "linux-musl"
@@ -575,7 +579,7 @@ mod tests {
     });
 
     crate::timed_test!(linux_arm64_plan_uses_managed_zig_without_legacy_wrapper, {
-        let plan = plan("aarch64-unknown-linux-gnu").unwrap();
+        let plan = plan_for_host("aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu").unwrap();
         assert_eq!(plan.toolchain.family, "linux-gnu");
         assert_eq!(plan.toolchain.linker, "zig cc");
         assert_eq!(plan.platform.provider, "soldr-managed-zig");

@@ -728,7 +728,11 @@ fn pick_cross_subcommand_linux_uses_blessed_path_by_default() {
         "aarch64-unknown-linux-musl",
         "aarch64-unknown-linux-gnu",
     ] {
-        assert_eq!(pick_cross_subcommand(target, false), None, "{target}");
+        assert_eq!(
+            pick_cross_subcommand_for_host(target, false, true, true),
+            None,
+            "{target}"
+        );
     }
 
     std::env::set_var(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR, "1");
@@ -738,7 +742,7 @@ fn pick_cross_subcommand_linux_uses_blessed_path_by_default() {
         "aarch64-unknown-linux-gnu",
     ] {
         assert_eq!(
-            pick_cross_subcommand(target, false),
+            pick_cross_subcommand_for_host(target, false, true, true),
             Some("zigbuild"),
             "{target}"
         );
