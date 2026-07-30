@@ -72,6 +72,24 @@ impl WaitHeartbeat {
         env_var: Option<&'static str>,
         interval: Duration,
     ) -> Self {
+        Self::start_with_interval_and_sink(operation, timeout, env_var, interval, |msg| {
+            eprintln!("{msg}");
+        })
+    }
+
+    /// The core loop, with the emit routed through `sink` so a test can assert
+    /// the heartbeat actually fires at the interval without capturing process
+    /// stderr. Production always passes the `eprintln!` sink above.
+    fn start_with_interval_and_sink<S>(
+        operation: &'static str,
+        timeout: Duration,
+        env_var: Option<&'static str>,
+        interval: Duration,
+        sink: S,
+    ) -> Self
+    where
+        S: Fn(String) + Send + 'static,
+    {
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
         let handle = std::thread::Builder::new()
@@ -85,10 +103,12 @@ impl WaitHeartbeat {
                         return;
                     }
                     if started.elapsed() >= next {
-                        eprintln!(
-                            "{}",
-                            heartbeat_message(operation, started.elapsed(), timeout, env_var)
-                        );
+                        sink(heartbeat_message(
+                            operation,
+                            started.elapsed(),
+                            timeout,
+                            env_var,
+                        ));
                         next += interval;
                     }
                 }
@@ -177,6 +197,37 @@ mod tests {
         );
         std::thread::sleep(Duration::from_millis(50));
         drop(guard);
+    });
+
+    crate::timed_test!(a_slow_operation_fires_repeated_heartbeats, {
+        // #1838 Phase 1 box 5: assert the heartbeat actually EMITS once the
+        // interval elapses — the message tests above only cover wording. A
+        // sink captures the emissions so the assertion never touches process
+        // stderr. `STOP_POLL` (100 ms) bounds how often the loop can fire, so
+        // ~400 ms comfortably yields at least two.
+        let emitted: Arc<std::sync::Mutex<Vec<String>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink_target = Arc::clone(&emitted);
+        let guard = WaitHeartbeat::start_with_interval_and_sink(
+            "unit test",
+            Duration::from_secs(1800),
+            Some("SOLDR_COMPILE_REPLY_TIMEOUT_SECS"),
+            Duration::from_millis(10),
+            move |msg| sink_target.lock().unwrap().push(msg),
+        );
+        std::thread::sleep(Duration::from_millis(400));
+        drop(guard);
+        let hits = emitted.lock().unwrap();
+        assert!(
+            hits.len() >= 2,
+            "a slow op must emit repeated heartbeats; got {}",
+            hits.len()
+        );
+        assert!(
+            hits[0].contains("unit test") && hits[0].contains("after"),
+            "{}",
+            hits[0]
+        );
     });
 
     crate::timed_test!(the_guard_joins_its_thread_on_drop, {
