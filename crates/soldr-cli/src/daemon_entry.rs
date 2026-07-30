@@ -25,8 +25,7 @@ pub fn run() -> i32 {
     // of becoming a second long-lived waiter. A direct foreground invocation
     // has no marker and must preserve its terminal/stdout/stderr contract by
     // waiting for the relocated child (soldr#2037).
-    let managed_detached_child = crate::daemon::lifecycle::current_process_is_declared_daemon();
-    crate::daemon::lifecycle::reexec_from_runtime_root(managed_detached_child);
+    crate::daemon::lifecycle::reexec_from_runtime_root_for_daemon_entry();
     let opts = ServerOptions {
         idle_timeout: if cli.idle_timeout_secs == 0 {
             ServerOptions::default().idle_timeout
