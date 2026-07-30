@@ -679,6 +679,59 @@ class _LineStamper:
         return "".join(out)
 
 
+# Cargo prints the *entire* compiler invocation on its "process didn't exit
+# successfully" line. That is thousands of characters (soldr#1878): it buries
+# the real error and, when the byte-bounded failure tail slices through it,
+# leaves a fragment starting mid-flag (`--crate-type lib --emit=dep-inf`). We
+# keep the program + crate name and elide the flags.
+_PROCESS_FAILED_RE = re.compile(
+    r"^(?P<prefix>.*process didn't exit successfully:\s*)`(?P<cmd>.*)`(?P<suffix>.*)$"
+)
+# A single non-diagnostic line longer than this is truncated so no one line
+# (e.g. a tail fragment of a compiler command) can dominate the excerpt.
+_EXCERPT_LINE_CAP = 400
+
+
+def _collapse_process_command(line: str) -> str:
+    """Shorten Cargo's ``process didn't exit successfully: `<huge cmd>``` line.
+
+    Keeps the program and ``--crate-name`` so the invocation is still
+    identifiable, replaces the flag list with an ``(N args elided)`` note, and
+    preserves the trailing ``(exit code: N)``. Returns the line unchanged when
+    it does not match or the command is already short.
+    """
+    match = _PROCESS_FAILED_RE.match(line)
+    if match is None:
+        return line
+    cmd = match.group("cmd")
+    if len(cmd) <= 200:
+        return line
+    tokens = cmd.split()
+    program = tokens[0] if tokens else "?"
+    crate = ""
+    for index, token in enumerate(tokens):
+        if token == "--crate-name" and index + 1 < len(tokens):
+            crate = f" --crate-name {tokens[index + 1]}"
+            break
+        if token.startswith("--crate-name="):
+            crate = f" {token}"
+            break
+    elided = max(len(tokens) - 1, 0)
+    return (
+        f"{match.group('prefix')}`{program}{crate} … ({elided} args elided)`"
+        f"{match.group('suffix')}"
+    )
+
+
+def _cap_excerpt_line(line: str) -> str:
+    """Bound one non-diagnostic line so a stray long fragment cannot swamp
+    the excerpt. Compiler diagnostics are rendered separately and never
+    reach here, so this only trims Cargo's own bookkeeping lines."""
+    if len(line) <= _EXCERPT_LINE_CAP:
+        return line
+    return f"{line[:_EXCERPT_LINE_CAP].rstrip()} … (line truncated)"
+
+
 def _pep517_failure_excerpt(stdout_tail: str, stderr_tail: str) -> str:
     """Return a bounded error-focused excerpt without Cargo progress redraws."""
     raw = f"{stderr_tail}\n{stdout_tail}"
@@ -709,7 +762,11 @@ def _pep517_failure_excerpt(stdout_tail: str, stderr_tail: str) -> str:
                         if item.strip()
                     )
             continue
-        lines.append(stripped)
+        # Not a rendered compiler diagnostic -- Cargo's own bookkeeping. Elide
+        # the giant invocation on the "process didn't exit successfully" line
+        # and cap any other over-long line so the real error stays visible
+        # (soldr#1878).
+        lines.append(_cap_excerpt_line(_collapse_process_command(stripped)))
 
     if not lines:
         return ""
