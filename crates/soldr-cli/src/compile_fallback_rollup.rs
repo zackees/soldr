@@ -106,7 +106,9 @@ fn format_age(ts_ms: u64, now_ms: u64) -> String {
     }
 }
 
-/// Human section for `soldr doctor`, printed next to the timeout section.
+/// Human section shared by `soldr doctor` and `soldr status`. The wording
+/// is context-neutral so it reads correctly in both (doctor prints the
+/// timeout table too; status does not).
 pub(crate) fn print_section(rollup: &FallbackRollup) {
     if rollup.total == 0 {
         println!("compile-daemon fallbacks: none recorded (the compile cache was never bypassed)");
@@ -126,7 +128,7 @@ pub(crate) fn print_section(rollup: &FallbackRollup) {
     }
     println!(
         "  recover: `soldr --no-cache cargo ...` bypasses the wrapper cleanly; a wedged daemon \
-         is cleared by `soldr daemon stop`. The timeout table above shows the active bounds."
+         is cleared by `soldr daemon stop`. `soldr doctor` shows the active timeout bounds."
     );
 }
 
