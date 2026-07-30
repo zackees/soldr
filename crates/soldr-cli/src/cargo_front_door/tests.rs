@@ -2503,22 +2503,22 @@ crate::timed_test!(build_session_fallback_persists_start_end_without_daemon, {
     assert_eq!(events[1].kind, crate::daemon::db::EventKind::SessionEnd);
 });
 
-crate::timed_test!(build_session_waits_for_root_lease_before_publish, {
+crate::timed_test!(build_session_waits_for_root_lease, {
     let root = tempfile::tempdir().unwrap();
     let paths = SoldrPaths::with_root(root.path().join("soldr"));
     let maintenance = crate::cache_lib::build_active::MaintenanceLease::try_acquire(&paths)
         .unwrap()
         .unwrap();
-    let published = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let published_in_thread = std::sync::Arc::clone(&published);
     let (started_tx, started_rx) = std::sync::mpsc::channel();
     let (done_tx, done_rx) = std::sync::mpsc::channel();
 
     let worker = std::thread::spawn(move || {
         started_tx.send(()).unwrap();
-        let result = begin_build_session_with(&paths, 7, || {
-            published_in_thread.store(true, std::sync::atomic::Ordering::Release);
-        });
+        // Acquiring the build-activity lease must block until the maintenance
+        // pass releases the root, or a build could race a destructive GC
+        // (soldr#1667). The paired BuildSessionStart publish is now a separate
+        // caller step, so this asserts the lease-acquire wait directly.
+        let result = begin_build_activity_lease(&paths, 7);
         done_tx.send(result.is_ok()).unwrap();
     });
 
@@ -2526,7 +2526,6 @@ crate::timed_test!(build_session_waits_for_root_lease_before_publish, {
     assert!(done_rx
         .recv_timeout(std::time::Duration::from_millis(100))
         .is_err());
-    assert!(!published.load(std::sync::atomic::Ordering::Acquire));
 
     drop(maintenance);
 
@@ -2534,7 +2533,6 @@ crate::timed_test!(build_session_waits_for_root_lease_before_publish, {
         .recv_timeout(std::time::Duration::from_secs(5))
         .unwrap());
     worker.join().unwrap();
-    assert!(published.load(std::sync::atomic::Ordering::Acquire));
 });
 
 crate::timed_test!(

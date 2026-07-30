@@ -3,7 +3,7 @@
 //!
 //! ## What went wrong
 //!
-//! The cargo front door used to call `begin_build_session_with` — which
+//! The cargo front door used to call `begin_build_activity_lease` — which
 //! acquires the build-activity lease, sets the process-wide
 //! `build_active` flag, and sends `BuildSessionStart` to the daemon —
 //! *before* several preparation steps that can fail: PyO3 compatibility
@@ -28,7 +28,7 @@
 //!
 //! So this asserts the invariant where it actually lives: every known
 //! fallible pre-spawn step appears above the session start. If you add
-//! a fallible step, put it above `begin_build_session_with` and add it
+//! a fallible step, put it above `begin_build_activity_lease` and add it
 //! to [`FALLIBLE_PRE_SPAWN_STEPS`]. If a step genuinely must run after
 //! the session starts, it has to carry its own cleanup on the error
 //! path, and you should say so here.
@@ -45,7 +45,7 @@ use soldr_cli::timed_test;
 
 /// Marks the start of the build session: acquires the activity lease,
 /// sets `build_active`, and publishes `BuildSessionStart`.
-const SESSION_START: &str = "begin_build_session_with(&paths, session_id";
+const SESSION_START: &str = "begin_build_activity_lease(&paths, session_id";
 
 /// Fallible preparation the front door performs before cargo runs.
 /// Every one of these must appear *above* [`SESSION_START`].
@@ -166,7 +166,7 @@ timed_test!(build_session_starts_after_every_fallible_setup_step, {
          BuildSessionEnd and leaves the daemon holding an unfinished record \
          plus an active flag that suppresses its maintenance passes.\n\
          In {}:\n{}\n\n\
-         Move the step above `begin_build_session_with`, or — if it genuinely \
+         Move the step above `begin_build_activity_lease`, or — if it genuinely \
          must run later — give it explicit cleanup on the error path and \
          document that here.",
         path.display(),
