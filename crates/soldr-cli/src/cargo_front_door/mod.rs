@@ -1094,20 +1094,19 @@ fn current_unix_ms() -> i64 {
         .unwrap_or(0)
 }
 
-fn begin_build_session_with<F>(
+// Acquire the build-activity lease and set the process-wide `build_active`
+// flag — the session-start boundary `build_session_order_lint` guards (must run
+// only after every fallible pre-cargo step). The paired `BuildSessionStart`
+// publish is a separate caller step so the profiler attributes it (soldr#1843).
+fn begin_build_activity_lease(
     paths: &SoldrPaths,
     session_id: u64,
-    publish: F,
-) -> Result<crate::cache_lib::build_active::BuildActivityLease, SoldrError>
-where
-    F: FnOnce(),
-{
+) -> Result<crate::cache_lib::build_active::BuildActivityLease, SoldrError> {
     let lease = crate::cache_lib::build_active::BuildActivityLease::acquire(paths, session_id)
         .map_err(|error| {
             SoldrError::Other(format!("failed to acquire build activity lease: {error}"))
         })?;
     crate::cache_lib::build_active::set(true);
-    publish();
     Ok(lease)
 }
 
@@ -2063,17 +2062,18 @@ pub(crate) async fn run_cargo_front_door(
     // captured once and reused by `write_always_on_build_log` at both the
     // cargo-run-error and normal-completion call sites below.
     let invoked_argv: Vec<String> = std::env::args().collect();
-    let build_activity_lease = begin_build_session_with(&paths, session_id, || {
-        build_session::start_and_warn_on_jobs_drift(
-            &paths,
-            session_id,
-            &session_repo_root,
-            session_started_at_ms,
-        );
-    })?;
-    // Blocking shared flock on root-maintenance.lock (waits out any
-    // daemon maintenance pass) plus a synchronous BuildSessionStart IPC.
-    profile.mark("begin_build_session");
+    let build_activity_lease = begin_build_activity_lease(&paths, session_id)?;
+    profile.mark("build_activity_lease"); // sub-ms flock; separated from the IPC
+                                          // soldr#1843: the synchronous BuildSessionStart IPC dominates the warm
+                                          // front door (~740 ms on Windows). Marked on its own so the profiler names
+                                          // it. Behaviour is unchanged: still synchronous, still ordered before cargo.
+    build_session::start_and_warn_on_jobs_drift(
+        &paths,
+        session_id,
+        &session_repo_root,
+        session_started_at_ms,
+    );
+    profile.mark("build_session_ipc");
     // soldr#1368 observability restore: snapshot the embedded zccache
     // compile counters just before cargo runs so `finish_zccache_session`
     // can diff start-vs-end into the per-build hit/miss summary written to
