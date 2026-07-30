@@ -1191,6 +1191,10 @@ Example JSON output (`schema_version: 1`):
   "drift": true,
   "missing_components": ["clippy"],
   "missing_targets": [],
+  "timeouts": [
+    {"name": "compile reply", "env_var": "SOLDR_COMPILE_REPLY_TIMEOUT_SECS", "default_secs": 1800, "effective_secs": 1800, "source": "default", "override_ignored": false}
+  ],
+  "fallbacks": {"total": 0, "recent": []},
   "soldr_debug_info": {
     "binary_path": "C:\\Users\\user\\.soldr\\bin\\soldr.exe",
     "debug_info_found": 1,
@@ -1206,6 +1210,20 @@ Example JSON output (`schema_version: 1`):
   }
 }
 ```
+
+**`timeouts`** (soldr#1838 Phase 3). One row per daemon/toolchain timeout that
+has an env override, so a consumer can see the *effective* value and where it
+came from without re-deriving it: `name`, `env_var`, `default_secs`,
+`effective_secs`, `source` (`"default"`, `"override"`, or `"default (override
+ignored: unparseable)"`), and `override_ignored` — `true` when a variable was
+set but did not take effect
+(the soldr#1837 malformed-value-falls-back-to-default rule), broken out so CI
+can assert on it without string-matching `source`.
+
+**`fallbacks`** (soldr#1838 Phase 4). The compile-daemon fallback rollup —
+`{ total, recent[] }` — described under [Compiler-cache fallback
+output](#compiler-cache-fallback-output). Always present; `total: 0` means the
+cache was never bypassed.
 
 **Defender probe** (issue #357, Windows-only). `soldr doctor` runs a
 throttled empirical scan probe to detect whether the soldr cache
