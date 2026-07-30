@@ -102,13 +102,236 @@ pub(crate) fn report_process_init_failure(
 }
 
 /// Convenience wrapper over [`report_process_init_failure`] targeting stderr.
+///
+/// soldr#2021: when the note fires, this also captures and prints a **live**
+/// host-pressure snapshot (process counts, commit charge, parallelism)
+/// immediately -- soldr is the only observer present at the instant of a
+/// `STATUS_DLL_INIT_FAILED`, and every prior investigation sampled the host
+/// *after* the fact, blind to the transient peak. The snapshot is best-effort:
+/// every probe yields `None` on failure and nothing here can change the
+/// already-set exit code.
 pub(crate) fn report_process_init_failure_to_stderr(tool: &str, exit_code: i32) -> bool {
     // soldr#2024: both direct-exec paths call this immediately after the
     // child ran with inherited stdio, which makes it the one place that
     // sees "a tool spoke for this invocation" without either caller
     // growing a line. The child owns the explanation from here.
     crate::exit_guard::mark_spoke();
-    report_process_init_failure(&mut std::io::stderr(), tool, exit_code)
+    let fired = report_process_init_failure(&mut std::io::stderr(), tool, exit_code);
+    if fired {
+        // Sample DURING the failure, not after (soldr#2021 step #2).
+        let snapshot = capture_snapshot();
+        let _ = writeln!(std::io::stderr(), "{}", format_snapshot(&snapshot, tool));
+    }
+    fired
+}
+
+/// A best-effort, point-in-time capture of host process/memory pressure taken
+/// at the instant a compiler dies at process init (soldr#2021).
+///
+/// Every field is `Option` because any individual probe may fail, and on an
+/// already-failing build path a probe failure must degrade to "unknown"
+/// rather than panic or mask the original exit code. On non-Windows hosts only
+/// [`jobs`](Self::jobs) is populated -- the Win32 counters have no analogue and
+/// stay `None` so the module still compiles and unit-tests on the Linux dev
+/// harness.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct HostPressureSnapshot {
+    /// Build parallelism: `CARGO_BUILD_JOBS` if set and parseable, else
+    /// [`std::thread::available_parallelism`].
+    pub(crate) jobs: Option<usize>,
+    /// Total number of running processes on the host (Windows only).
+    pub(crate) total_processes: Option<u32>,
+    /// Of those, how many are compiler/toolchain-ish images
+    /// (see [`is_compiler_image`]) (Windows only).
+    pub(crate) compiler_processes: Option<u32>,
+    /// System commit charge currently in use, in MiB (Windows only).
+    pub(crate) commit_used_mb: Option<u64>,
+    /// System commit limit, in MiB (Windows only).
+    pub(crate) commit_limit_mb: Option<u64>,
+}
+
+/// Resolve build parallelism the same way cargo/soldr would perceive it:
+/// an explicit `CARGO_BUILD_JOBS` wins, otherwise the detected core count.
+///
+/// Pure except for the two reads (env + core count); both degrade to `None`.
+fn resolve_jobs() -> Option<usize> {
+    if let Ok(raw) = std::env::var("CARGO_BUILD_JOBS") {
+        if let Ok(n) = raw.trim().parse::<usize>() {
+            return Some(n);
+        }
+    }
+    std::thread::available_parallelism().ok().map(|n| n.get())
+}
+
+/// True when an image name is a compiler/linker/toolchain process worth
+/// counting separately in the snapshot.
+///
+/// Case-insensitive; matches the exact images the issue calls out plus the
+/// `cc1*` / `clang*` prefixes that appear on GNU/LLVM toolchains. Pure, so it
+/// is unit-tested on every platform.
+///
+/// Only the Windows probe consumes it in production, so a non-Windows,
+/// non-test build sees it as unused -- that is expected, not dead code.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn is_compiler_image(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    const EXACT: &[&str] = &["rustc.exe", "link.exe", "soldr.exe", "soldr-daemon.exe"];
+    if EXACT.contains(&lower.as_str()) {
+        return true;
+    }
+    // Prefix families: cc1, cc1plus, clang, clang-cl, clang++ ...
+    lower.starts_with("cc1") || lower.starts_with("clang")
+}
+
+/// Render the snapshot as `soldr: ...` advisory lines.
+///
+/// Pure -- takes an already-captured struct and does no probing -- so it is
+/// unit-tested on all platforms with synthetic inputs. Unknown fields render
+/// as `unknown` rather than being omitted, so the reader can tell "we looked
+/// and could not tell" from "we did not look".
+fn format_snapshot(snap: &HostPressureSnapshot, tool: &str) -> String {
+    fn opt<T: std::fmt::Display>(v: Option<T>) -> String {
+        v.map(|x| x.to_string())
+            .unwrap_or_else(|| "unknown".to_string())
+    }
+    let mut out = String::new();
+    out.push_str(&format!(
+        "soldr: host-pressure snapshot at {tool} process-init failure (soldr#2021, \
+         sampled live at the moment of failure):\n"
+    ));
+    out.push_str(&format!(
+        "soldr:   build parallelism (jobs): {}\n",
+        opt(snap.jobs)
+    ));
+    out.push_str(&format!(
+        "soldr:   running processes (total): {}\n",
+        opt(snap.total_processes)
+    ));
+    out.push_str(&format!(
+        "soldr:   compiler/linker processes (rustc/link/soldr/clang/cc1): {}\n",
+        opt(snap.compiler_processes)
+    ));
+    out.push_str(&format!(
+        "soldr:   commit charge: {} MiB used of {} MiB limit",
+        opt(snap.commit_used_mb),
+        opt(snap.commit_limit_mb)
+    ));
+    out
+}
+
+/// Capture the live host-pressure snapshot (non-Windows stub).
+///
+/// The Win32 process/commit counters have no portable analogue, so only build
+/// parallelism is populated here. This keeps the module compiling and
+/// unit-testing on the Linux dev harness (CLAUDE.md #1105).
+#[cfg(not(windows))]
+fn capture_snapshot() -> HostPressureSnapshot {
+    HostPressureSnapshot {
+        jobs: resolve_jobs(),
+        ..HostPressureSnapshot::default()
+    }
+}
+
+/// Capture the live host-pressure snapshot on Windows.
+///
+/// Best-effort: each probe is isolated so a failure yields `None` for that
+/// field only. No retries, sleeps, or network -- the ToolHelp walk is bounded
+/// and fast, which matters because this runs on an already-failing build path
+/// and must never hang or change the exit code.
+#[cfg(windows)]
+fn capture_snapshot() -> HostPressureSnapshot {
+    let (total_processes, compiler_processes) = match count_processes() {
+        Some((t, c)) => (Some(t), Some(c)),
+        None => (None, None),
+    };
+    let (commit_used_mb, commit_limit_mb) = match commit_charge_mb() {
+        Some((used, limit)) => (Some(used), Some(limit)),
+        None => (None, None),
+    };
+    HostPressureSnapshot {
+        jobs: resolve_jobs(),
+        total_processes,
+        compiler_processes,
+        commit_used_mb,
+        commit_limit_mb,
+    }
+}
+
+/// Walk the live process table once via ToolHelp, returning
+/// `(total, compiler-ish)` counts. `None` if the snapshot could not be taken.
+#[cfg(windows)]
+fn count_processes() -> Option<(u32, u32)> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+
+    // SAFETY: FFI call with documented args; returns a handle we validate
+    // against INVALID_HANDLE_VALUE before use and CloseHandle on every path.
+    let handle = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if handle == INVALID_HANDLE_VALUE || handle.is_null() {
+        return None;
+    }
+
+    let mut total: u32 = 0;
+    let mut compilerish: u32 = 0;
+    let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+    entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+
+    // SAFETY: `entry` is a fully-owned, correctly-sized PROCESSENTRY32W; the
+    // API fills `szExeFile` in-place. `handle` is valid (checked above).
+    let mut ok = unsafe { Process32FirstW(handle, &mut entry) };
+    while ok != 0 {
+        total += 1;
+        let name = image_name_from_entry(&entry.szExeFile);
+        if is_compiler_image(&name) {
+            compilerish += 1;
+        }
+        // SAFETY: same invariants as Process32FirstW; iterates the snapshot.
+        ok = unsafe { Process32NextW(handle, &mut entry) };
+    }
+
+    // SAFETY: `handle` came from CreateToolhelp32Snapshot and is closed exactly
+    // once here, including when iteration stopped early.
+    unsafe {
+        CloseHandle(handle);
+    }
+
+    Some((total, compilerish))
+}
+
+/// Decode a NUL-terminated UTF-16 `szExeFile` field into a Rust `String`.
+#[cfg(windows)]
+fn image_name_from_entry(buf: &[u16]) -> String {
+    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    String::from_utf16_lossy(&buf[..len])
+}
+
+/// Read the system commit charge via `GlobalMemoryStatusEx`, returning
+/// `(used_mb, limit_mb)`. `None` if the call failed.
+#[cfg(windows)]
+fn commit_charge_mb() -> Option<(u64, u64)> {
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+
+    let mut status: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
+    status.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+
+    // SAFETY: `status` is a correctly-sized, dwLength-initialized MEMORYSTATUSEX
+    // that the API fills in-place; no handles or allocations are involved.
+    let ok = unsafe { GlobalMemoryStatusEx(&mut status) };
+    if ok == 0 {
+        return None;
+    }
+
+    const MB: u64 = 1024 * 1024;
+    // ullTotalPageFile is the commit limit; ullAvailPageFile what remains.
+    let limit = status.ullTotalPageFile / MB;
+    let used = status
+        .ullTotalPageFile
+        .saturating_sub(status.ullAvailPageFile)
+        / MB;
+    Some((used, limit))
 }
 
 #[cfg(test)]
@@ -185,5 +408,103 @@ mod tests {
         ));
         let out = String::from_utf8(sink).expect("utf8");
         assert!(out.contains("rustc.exe"), "{out}");
+    });
+
+    // --- soldr#2021: live host-pressure snapshot -------------------------
+
+    // The image classifier drives the compiler-process count, so it must
+    // match exactly the images the issue names (case-insensitively) and the
+    // cc1*/clang* prefix families, and nothing else.
+    crate::timed_test!(compiler_image_matches_toolchain_processes_only, {
+        for yes in [
+            "rustc.exe",
+            "RUSTC.EXE",
+            "link.exe",
+            "soldr.exe",
+            "soldr-daemon.exe",
+            "cc1.exe",
+            "cc1plus.exe",
+            "clang.exe",
+            "clang-cl.exe",
+            "clang++",
+        ] {
+            assert!(is_compiler_image(yes), "should classify as compiler: {yes}");
+        }
+        for no in [
+            "cargo.exe",
+            "explorer.exe",
+            "svchost.exe",
+            "notepad.exe",
+            "",
+        ] {
+            assert!(
+                !is_compiler_image(no),
+                "should NOT classify as compiler: {no}"
+            );
+        }
+    });
+
+    // The formatter is pure: given a fully-populated struct it must surface
+    // every field, the tool name, and the issue reference.
+    crate::timed_test!(format_snapshot_renders_all_known_fields, {
+        let snap = HostPressureSnapshot {
+            jobs: Some(16),
+            total_processes: Some(412),
+            compiler_processes: Some(9),
+            commit_used_mb: Some(56_000),
+            commit_limit_mb: Some(270_000),
+        };
+        let out = format_snapshot(&snap, "link.exe");
+        assert!(out.contains("link.exe"), "{out}");
+        assert!(out.contains("2021"), "{out}");
+        assert!(out.contains("16"), "jobs: {out}");
+        assert!(out.contains("412"), "total procs: {out}");
+        assert!(out.contains("9"), "compiler procs: {out}");
+        assert!(out.contains("56000"), "commit used: {out}");
+        assert!(out.contains("270000"), "commit limit: {out}");
+    });
+
+    // Every probe may fail on the already-failing path, so an all-None struct
+    // must still render -- as "unknown", so a missed probe is distinguishable
+    // from a genuine zero.
+    crate::timed_test!(format_snapshot_renders_unknown_for_missing_probes, {
+        let snap = HostPressureSnapshot::default();
+        let out = format_snapshot(&snap, "rustc.exe");
+        assert!(out.contains("rustc.exe"), "{out}");
+        assert!(
+            out.contains("unknown"),
+            "missing probes must read 'unknown': {out}"
+        );
+        // No panic and no empty output is the real contract here.
+        assert!(!out.is_empty(), "{out}");
+    });
+
+    // The capture entry point must never panic and must always populate at
+    // least `jobs` (available on every platform). This exercises the real
+    // probes on Windows and the stub elsewhere.
+    crate::timed_test!(capture_snapshot_is_infallible_and_reports_jobs, {
+        let snap = capture_snapshot();
+        assert!(
+            snap.jobs.is_some(),
+            "jobs is derivable on every platform: {snap:?}"
+        );
+        // Formatting the real capture must also never panic.
+        let _ = format_snapshot(&snap, "rustc.exe");
+    });
+
+    // CARGO_BUILD_JOBS, when set and parseable, wins over the detected core
+    // count -- that is the knob the note tells users to turn.
+    crate::timed_test!(resolve_jobs_prefers_cargo_build_jobs, {
+        // NOTE: single-threaded env mutation within one test body.
+        let prev = std::env::var("CARGO_BUILD_JOBS").ok();
+        std::env::set_var("CARGO_BUILD_JOBS", "3");
+        assert_eq!(resolve_jobs(), Some(3));
+        std::env::set_var("CARGO_BUILD_JOBS", "not-a-number");
+        // Unparseable falls back to the detected count (some Some value).
+        assert!(resolve_jobs().is_some());
+        match prev {
+            Some(v) => std::env::set_var("CARGO_BUILD_JOBS", v),
+            None => std::env::remove_var("CARGO_BUILD_JOBS"),
+        }
     });
 }
