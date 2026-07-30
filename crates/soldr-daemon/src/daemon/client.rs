@@ -808,6 +808,17 @@ where
         // the deadline.
         let started = std::time::Instant::now();
         let mut saw_output = false;
+        // soldr#1838 Phase 1: the streaming phase is where a compile actually
+        // stalls, and it used to run silent -- the heartbeat above only covers
+        // the wait for the first frame. Publish chunk arrivals so each beat can
+        // say whether output is still coming.
+        let progress = super::wait_heartbeat::StreamProgress::new();
+        let _stream_heartbeat = super::wait_heartbeat::WaitHeartbeat::start_streaming(
+            "daemon compile stream",
+            compile_reply_timeout(),
+            Some(REPLY_TIMEOUT_ENV),
+            std::sync::Arc::clone(&progress),
+        );
         loop {
             let frame: Response = match pending.take() {
                 Some(frame) => frame,
@@ -829,6 +840,7 @@ where
             match frame {
                 Response::CompileStdoutChunk(bytes) => {
                     saw_output = true;
+                    progress.record_chunk();
                     tracing::debug!(
                         target: "soldr::client::compile_stream",
                         bytes = bytes.len(),
@@ -838,6 +850,7 @@ where
                 }
                 Response::CompileStderrChunk(bytes) => {
                     saw_output = true;
+                    progress.record_chunk();
                     tracing::debug!(
                         target: "soldr::client::compile_stream",
                         bytes = bytes.len(),
@@ -1284,14 +1297,26 @@ where
     // here rather than inside the worker thread.
     let started = std::time::Instant::now();
     let mut saw_output = false;
+    // soldr#1838 Phase 1: the streaming phase used to run silent -- the
+    // heartbeat on the request wait only covers the reply handshake. Publish
+    // chunk arrivals so each beat can say whether output is still coming.
+    let progress = super::wait_heartbeat::StreamProgress::new();
+    let _stream_heartbeat = super::wait_heartbeat::WaitHeartbeat::start_streaming(
+        "daemon compile stream",
+        compile_reply_timeout(),
+        Some(REPLY_TIMEOUT_ENV),
+        std::sync::Arc::clone(&progress),
+    );
     let result = loop {
         match rx.recv() {
             Ok(StreamMsg::Stdout(bytes)) => {
                 saw_output = true;
+                progress.record_chunk();
                 stdout.write_all(&bytes).map_err(ClientError::Io)?;
             }
             Ok(StreamMsg::Stderr(bytes)) => {
                 saw_output = true;
+                progress.record_chunk();
                 stderr.write_all(&bytes).map_err(ClientError::Io)?;
             }
             Ok(StreamMsg::Done(info)) => break Ok(info),
