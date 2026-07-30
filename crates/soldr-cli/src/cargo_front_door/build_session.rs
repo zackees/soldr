@@ -30,6 +30,29 @@ use crate::daemon::client::DaemonCompileLimit;
 
 use super::new_build_record;
 
+/// Run [`start_and_warn_on_jobs_drift`] on a background thread so its
+/// ~740 ms `BuildSessionStart` IPC (soldr#1843) overlaps cargo instead of
+/// blocking the front door before it.
+///
+/// The caller **must** `join()` the returned handle before sending
+/// `BuildSessionEnd`, so the daemon still observes START strictly before END.
+/// This is sound because nothing between here and the cargo spawn consumes the
+/// IPC result (the drift line is a side-effect print), and the daemon's
+/// session-start/-end handlers are merge-based, so the request the daemon sees
+/// is identical — only the client stops blocking on the ack.
+pub(super) fn spawn_start_and_warn_on_jobs_drift(
+    paths: &SoldrPaths,
+    session_id: u64,
+    repo_root: &Path,
+    started_at_ms: i64,
+) -> std::thread::JoinHandle<()> {
+    let paths = paths.clone();
+    let repo_root = repo_root.to_path_buf();
+    std::thread::spawn(move || {
+        start_and_warn_on_jobs_drift(&paths, session_id, &repo_root, started_at_ms);
+    })
+}
+
 /// Open the build session, then report any drift between the daemon's
 /// applied compile limit and this invocation's resolution.
 ///

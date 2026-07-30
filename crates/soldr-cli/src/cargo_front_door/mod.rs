@@ -2063,17 +2063,15 @@ pub(crate) async fn run_cargo_front_door(
     // cargo-run-error and normal-completion call sites below.
     let invoked_argv: Vec<String> = std::env::args().collect();
     let build_activity_lease = begin_build_activity_lease(&paths, session_id)?;
-    profile.mark("build_activity_lease"); // sub-ms flock; separated from the IPC
-                                          // soldr#1843: the synchronous BuildSessionStart IPC dominates the warm
-                                          // front door (~740 ms on Windows). Marked on its own so the profiler names
-                                          // it. Behaviour is unchanged: still synchronous, still ordered before cargo.
-    build_session::start_and_warn_on_jobs_drift(
+    profile.mark("build_activity_lease");
+    // soldr#1843: publish BuildSessionStart concurrently with cargo (its ~740 ms IPC off the critical path), joined before BuildSessionEnd below.
+    let session_publish = build_session::spawn_start_and_warn_on_jobs_drift(
         &paths,
         session_id,
         &session_repo_root,
         session_started_at_ms,
     );
-    profile.mark("build_session_ipc");
+    profile.mark("build_session_ipc_spawn");
     // soldr#1368 observability restore: snapshot the embedded zccache
     // compile counters just before cargo runs so `finish_zccache_session`
     // can diff start-vs-end into the per-build hit/miss summary written to
@@ -2099,6 +2097,8 @@ pub(crate) async fn run_cargo_front_door(
         run_command_inheriting_stdio(&mut command, cargo_wait_timeout)
             .map(|status| (status, None, None))
     };
+    // soldr#1843: BuildSessionStart must land before any BuildSessionEnd below.
+    let _ = session_publish.join();
     let (status, diagnostic_capture, cargo_artifact_paths) = match cargo_run_result {
         Ok(outcome) => outcome,
         Err(err) => {
