@@ -210,6 +210,8 @@ pub mod global_upgrade;
 pub(crate) mod host_pressure;
 pub mod install_shims;
 pub mod linker;
+/// soldr#2038 - extensible CI/build-surface policy engine (`soldr lint ci`).
+pub mod lint_ci;
 /// soldr#820 — `soldr logs` discoverable runtime-log surface.
 /// soldr#1721 - cache-aware unified validation command.
 pub mod lint_cmd;

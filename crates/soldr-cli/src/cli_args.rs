@@ -367,10 +367,14 @@ pub(crate) enum Commands {
     /// `soldr lint` runs formatting validation, Clippy, and configured
     /// Dylint libraries with one canonical workspace scope. `lint deps`
     /// runs dependency/policy checks concurrently without starting the
-    /// compiler cache. `lint all` extends both suites with udeps and
-    /// semver-checks.
+    /// compiler cache. `lint ci` statically validates CI/build surfaces
+    /// (workflows, composite actions, helper scripts) — it needs no Cargo
+    /// manifest and starts no compiler cache; use `--format json` for a
+    /// machine-readable report. `lint all` extends every suite (including
+    /// `ci`) with udeps and semver-checks.
     Lint {
-        /// Suite selector (`rust`, `deps`, or `all`) followed by cargo scope flags.
+        /// Suite selector (`rust`, `deps`, `ci`, or `all`). Rust/deps/all
+        /// accept cargo scope flags; `ci` accepts only `--format json|human`.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
