@@ -35,6 +35,8 @@ use std::process::{Command, Stdio};
 
 use crate::core::{SoldrError, SoldrPaths};
 
+mod lzma_override;
+
 /// Env var that opts out of the blessed xwin-cache materialization
 /// and falls through to cargo-xwin's own live download for win-msvc
 /// targets. Set to any non-empty value to trigger.
@@ -785,10 +787,7 @@ async fn inject_sys_library_overrides(
     }
 
     // lzma-sys → PKG_CONFIG_PATH_<triple>
-    match crate::fetch::lzma_sysroot::ensure_lzma_sysroot(paths, target_triple).await {
-        Ok(sysroot) => prepend_pkg_config_path_for_target(prep, target_triple, &sysroot),
-        Err(e) => log_sys_unavailable("lzma", target_triple, &e),
-    }
+    lzma_override::inject(paths, target_triple, prep).await;
 
     // bzip2-sys → PKG_CONFIG_PATH_<triple>
     match crate::fetch::bzip2_sysroot::ensure_bzip2_sysroot(paths, target_triple).await {

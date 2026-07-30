@@ -37,6 +37,7 @@ mod build_session;
 mod cache_plan;
 mod clang_cl_shim;
 mod component_install;
+mod config_args;
 pub(crate) mod cook_hydrate;
 mod darwin_embed;
 mod disk;
@@ -52,6 +53,7 @@ mod zig_shim;
 mod zthreads_fallback;
 
 pub(crate) use cache_plan::CargoCachePlan;
+use config_args::insert_cargo_global_args;
 
 const CARGO_WAIT_TIMEOUT_ENV_VAR: &str = "SOLDR_CARGO_WAIT_TIMEOUT_SECS";
 /// Internal one-hop marker for commands that must share their Soldr parent's
@@ -3138,16 +3140,6 @@ where
     }
 }
 
-fn insert_cargo_global_args(args: &[String], cargo_args: &[String]) -> Vec<String> {
-    if cargo_args.is_empty() {
-        return args.to_vec();
-    }
-    let mut out = args.to_vec();
-    let insert_at = first_cargo_subcommand_index(args).unwrap_or(0);
-    out.splice(insert_at..insert_at, cargo_args.iter().cloned());
-    out
-}
-
 /// Resolve transitive runtime dependencies for `cargo-<sub>` and append
 /// their bin directories to `extra_bin_dirs` (PATH-prepended on the
 /// child cargo) and any required env overrides to `extra_env`.
@@ -3395,8 +3387,14 @@ fn validate_zig_cross_linker(
 }
 
 fn first_nextest_verb(args: &[String], nextest_idx: usize) -> Option<&str> {
+    first_nextest_verb_index(args, nextest_idx)
+        .and_then(|index| args.get(index))
+        .map(String::as_str)
+}
+
+fn first_nextest_verb_index(args: &[String], nextest_idx: usize) -> Option<usize> {
     let mut skip_next = false;
-    for arg in args.iter().skip(nextest_idx + 1) {
+    for (index, arg) in args.iter().enumerate().skip(nextest_idx + 1) {
         if skip_next {
             skip_next = false;
             continue;
@@ -3411,7 +3409,7 @@ fn first_nextest_verb(args: &[String], nextest_idx: usize) -> Option<&str> {
         if arg.starts_with('-') {
             continue;
         }
-        return Some(arg.as_str());
+        return Some(index);
     }
     None
 }

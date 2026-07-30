@@ -1727,21 +1727,6 @@ crate::timed_test!(build_env_cache_inputs_include_cross_toolchain_identity, {
     );
 });
 
-crate::timed_test!(cargo_global_args_insert_before_nextest_subcommand, {
-    let args = argvec("--manifest-path Cargo.toml nextest archive --target x86_64-apple-darwin");
-    let cargo_args = vec![
-        "--config".to_string(),
-        "target.x86_64-apple-darwin.mimalloc.rustc-link-lib=[\"static=mimalloc\"]".to_string(),
-    ];
-
-    let got = insert_cargo_global_args(&args, &cargo_args);
-
-    assert_eq!(
-        got,
-        argvec("--manifest-path Cargo.toml --config target.x86_64-apple-darwin.mimalloc.rustc-link-lib=[\"static=mimalloc\"] nextest archive --target x86_64-apple-darwin")
-    );
-});
-
 crate::timed_test!(nextest_archive_darwin_bootstrap_reuses_blessed_env, {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().unwrap();

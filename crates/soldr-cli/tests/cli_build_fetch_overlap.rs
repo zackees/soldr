@@ -96,6 +96,7 @@ struct Harness {
     log_path: PathBuf,
     cargo: PathBuf,
     rustc: PathBuf,
+    rustup: PathBuf,
 }
 
 impl Harness {
@@ -132,6 +133,7 @@ impl Harness {
 
         let cargo = fake_script_path(&tool_dir, "cargo");
         let rustc = fake_script_path(&tool_dir, "rustc");
+        let rustup = install_logging_fake_rustup(&cache_root.join("rustup-invocations.log"));
         write_fake_script(&cargo, &fake_recording_cargo_script(&log_path));
         write_fake_script(&rustc, &fake_rustc_script(&log_path));
 
@@ -141,6 +143,7 @@ impl Harness {
             log_path,
             cargo,
             rustc,
+            rustup,
         }
     }
 
@@ -151,6 +154,9 @@ impl Harness {
             .env("SOLDR_CACHE_DIR", &self.cache_root)
             .env("SOLDR_TEST_CARGO_BIN", &self.cargo)
             .env("SOLDR_TEST_RUSTC_BIN", &self.rustc)
+            // These tests cover Cargo prefetch ordering, not rustup. Avoid
+            // depending on the target runner having a default toolchain.
+            .env("SOLDR_TEST_RUSTUP_BIN", &self.rustup)
             // Keep `blessed_build::prepare` fully offline/hermetic:
             // no *-sys catalogue probes, no managed cmake/ninja fetch.
             .env("SOLDR_USE_LEGACY_VENDORED_SYS", "1")
