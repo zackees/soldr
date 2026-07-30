@@ -28,6 +28,19 @@ indefinitely" failure. The raw journal is
 `~/.soldr/logs/compile-daemon-fallbacks.jsonl` (`~/.soldr-dev/…` for
 development builds).
 
+**A long wait is not silent.** While blocked on a slow daemon reply — a
+compile, a cache flush, or a graceful shutdown — soldr prints a progressive
+heartbeat to stderr every ~minute rather than going quiet until the backstop:
+
+```
+soldr: daemon compile reply still waiting after 120s (deadline 1800s from SOLDR_COMPILE_REPLY_TIMEOUT_SECS); if this is a wedged cache rather than slow work, `soldr --no-cache cargo ...` or ZCCACHE_DISABLE=1 bypasses the daemon
+```
+
+The line names the operation, the elapsed time, the active deadline and its
+env override, and the bypass — so seeing one *is* the signal that a wait is
+running long, with the remedy attached. (It goes to stderr, so `--json` output
+on stdout is untouched.)
+
 ## The timeout surface
 
 `soldr doctor` is authoritative for the *effective* values on your machine;
@@ -57,7 +70,7 @@ take effect.
 
 ### 1. A compile hangs for minutes with no output
 
-- **Signal:** cargo sits on one crate; nothing prints; worst case ~30 min before it moves.
+- **Signal:** cargo sits on one crate; soldr prints a `daemon compile reply still waiting after Ns` heartbeat every ~minute (see above) up to the 30-min backstop.
 - **Confirm:** the daemon is reachable (`soldr status` returns) but slow, or a maintenance pass is holding state.
 - **Remedy now:** `SOLDR_COMPILE_REPLY_TIMEOUT_SECS=30 soldr cargo <args>` fails the wrapper fast and falls back to the direct compiler instead of waiting out the 30-min backstop. Or bypass entirely: `soldr --no-cache cargo <args>`.
 - **Durable:** if it recurs, the daemon is wedged — `soldr daemon stop`, then rebuild (a fresh daemon starts automatically).
@@ -76,7 +89,7 @@ take effect.
 
 ### 4. `soldr daemon stop` itself hangs
 
-- **Signal:** stop takes minutes.
+- **Signal:** stop takes minutes; a `daemon graceful shutdown still waiting after Ns` heartbeat prints while it drains.
 - **Design:** it waits up to the 5-min graceful-shutdown window for in-flight work to drain, then escalates.
 - **Remedy:** let it finish; it is bounded. Do not kill the process mid-drain unless it exceeds the window — that is what the watchdog is for.
 
