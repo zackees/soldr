@@ -37,6 +37,7 @@ mod build_session;
 mod cache_plan;
 mod clang_cl_shim;
 mod component_install;
+mod config_args;
 pub(crate) mod cook_hydrate;
 mod darwin_embed;
 mod disk;
@@ -52,6 +53,7 @@ mod zig_shim;
 mod zthreads_fallback;
 
 pub(crate) use cache_plan::CargoCachePlan;
+use config_args::insert_cargo_global_args;
 
 const CARGO_WAIT_TIMEOUT_ENV_VAR: &str = "SOLDR_CARGO_WAIT_TIMEOUT_SECS";
 /// Internal one-hop marker for commands that must share their Soldr parent's
@@ -3136,28 +3138,6 @@ where
             source_build()
         }
     }
-}
-
-fn insert_cargo_global_args(args: &[String], cargo_args: &[String]) -> Vec<String> {
-    if cargo_args.is_empty() {
-        return args.to_vec();
-    }
-    let mut out = args.to_vec();
-    let cargo_subcommand = first_cargo_subcommand_index(args);
-    // cargo-nextest owns the argument parser after Cargo dispatches the
-    // `nextest` subcommand. Its build commands accept Cargo `--config`
-    // overrides, but only after the inner command (`archive` here). Injecting
-    // before `nextest` makes nextest's top-level parser reject `--config` as a
-    // misspelling of its unrelated `--config-file` option (soldr#2037).
-    let insert_at = cargo_subcommand
-        .filter(|&index| args.get(index).is_some_and(|arg| arg == "nextest"))
-        .and_then(|index| first_nextest_verb_index(args, index))
-        .filter(|&index| args.get(index).is_some_and(|arg| arg == "archive"))
-        .map(|index| index + 1)
-        .or(cargo_subcommand)
-        .unwrap_or(0);
-    out.splice(insert_at..insert_at, cargo_args.iter().cloned());
-    out
 }
 
 /// Resolve transitive runtime dependencies for `cargo-<sub>` and append

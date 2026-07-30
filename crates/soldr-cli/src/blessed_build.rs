@@ -35,6 +35,8 @@ use std::process::{Command, Stdio};
 
 use crate::core::{SoldrError, SoldrPaths};
 
+mod lzma_override;
+
 /// Env var that opts out of the blessed xwin-cache materialization
 /// and falls through to cargo-xwin's own live download for win-msvc
 /// targets. Set to any non-empty value to trigger.
@@ -785,22 +787,7 @@ async fn inject_sys_library_overrides(
     }
 
     // lzma-sys → PKG_CONFIG_PATH_<triple>
-    match crate::fetch::lzma_sysroot::ensure_lzma_sysroot(paths, target_triple).await {
-        Ok(sysroot) => {
-            prepend_pkg_config_path_for_target(prep, target_triple, &sysroot);
-            // The managed Linux bundles intentionally contain a static
-            // liblzma archive. pkg-config emits an unqualified `-llzma`,
-            // which rust-lld's cross `no_fallback` strategy interprets as a
-            // dynamic-library request and rejects when no liblzma.so exists.
-            // A target-scoped Cargo links override selects the archive
-            // explicitly without leaking LZMA_API_STATIC into host build
-            // scripts (soldr#2037).
-            if target_triple.contains("-unknown-linux-") {
-                add_lzma_build_script_override(prep, target_triple, &sysroot);
-            }
-        }
-        Err(e) => log_sys_unavailable("lzma", target_triple, &e),
-    }
+    lzma_override::inject(paths, target_triple, prep).await;
 
     // bzip2-sys → PKG_CONFIG_PATH_<triple>
     match crate::fetch::bzip2_sysroot::ensure_bzip2_sysroot(paths, target_triple).await {
@@ -848,35 +835,6 @@ fn add_mimalloc_build_script_override(
         "--config".to_string(),
         format!(
             "{table}.metadata_include_dir={}",
-            toml_string(&include_dir.to_string_lossy())
-        ),
-    ]);
-}
-
-fn add_lzma_build_script_override(
-    prep: &mut BlessedPrep,
-    target_triple: &str,
-    sysroot: &std::path::Path,
-) {
-    let table = format!("target.{target_triple}.lzma");
-    let lib_dir = sysroot.join("lib");
-    let include_dir = sysroot.join("include");
-    prep.cargo_args.extend([
-        "--config".to_string(),
-        format!("{table}.rustc-link-lib=[\"static=lzma\"]"),
-        "--config".to_string(),
-        format!(
-            "{table}.rustc-link-search=[{}]",
-            toml_string(&lib_dir.to_string_lossy())
-        ),
-        "--config".to_string(),
-        format!(
-            "{table}.metadata_root={}",
-            toml_string(&sysroot.to_string_lossy())
-        ),
-        "--config".to_string(),
-        format!(
-            "{table}.metadata_include={}",
             toml_string(&include_dir.to_string_lossy())
         ),
     ]);
@@ -1462,27 +1420,6 @@ mod tests {
         assert_eq!(prep.cargo_args[4], "--config");
         assert!(prep.cargo_args[5]
             .starts_with("target.x86_64-unknown-linux-gnu.mimalloc.metadata_include_dir=\""));
-    });
-
-    crate::timed_test!(lzma_build_script_override_uses_static_target_config, {
-        let tmp = tempfile::tempdir().expect("tmpdir");
-        let sysroot = tmp.path().join("lzma sysroot");
-        let mut prep = BlessedPrep::default();
-
-        add_lzma_build_script_override(&mut prep, "aarch64-unknown-linux-gnu", &sysroot);
-
-        assert_eq!(prep.cargo_args.len(), 8);
-        assert_eq!(
-            prep.cargo_args[1],
-            "target.aarch64-unknown-linux-gnu.lzma.rustc-link-lib=[\"static=lzma\"]"
-        );
-        assert!(prep.cargo_args[3]
-            .starts_with("target.aarch64-unknown-linux-gnu.lzma.rustc-link-search=[\""));
-        assert!(prep.cargo_args[3].contains("lzma sysroot"));
-        assert!(prep.cargo_args[5]
-            .starts_with("target.aarch64-unknown-linux-gnu.lzma.metadata_root=\""));
-        assert!(prep.cargo_args[7]
-            .starts_with("target.aarch64-unknown-linux-gnu.lzma.metadata_include=\""));
     });
 
     crate::timed_test!(xwin_cflags_emits_imsvc_for_present_dirs, {
