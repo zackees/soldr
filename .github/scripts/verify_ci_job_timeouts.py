@@ -111,7 +111,6 @@ def find_timeout_violations(workflow: str) -> list[str]:
 GRANDFATHERED = frozenset(
     {
         "cache-delta-experiment.yml",
-        "parent-cache-bench.yml",
         "perf-cold-warm.yml",
         "perf-matrix.yml",
         "release-auto.yml",

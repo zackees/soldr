@@ -56,6 +56,13 @@ jobs:
   bench:
     name: Parent cache speedup
     runs-on: ubuntu-24.04
+    # soldr#1978 item 8 burn-down. Deliberately generous: 15 observed runs land
+    # at 6-17 min, but the `target` input accepts `repo:URL`, so an arbitrary
+    # (large) repo could be built cold+warm here and history does not bound the
+    # worst case. 180 min is ~10x the observed max and still halves the
+    # 360-minute default it replaces, so it catches a genuine hang without any
+    # realistic risk of killing a healthy benchmark.
+    timeout-minutes: 180
     env:
       TARGET: ${{ inputs.target || 'self' }}
       THRESHOLD: ${{ inputs.threshold_ratio || '5' }}
