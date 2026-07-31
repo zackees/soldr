@@ -206,7 +206,7 @@ jobs:
       # errors). soldr#2102 tracks them. Adding a gate that fails on main would
       # block every PR for a problem it did not cause.
       - name: Python lint (flake8)
-        run: uv run --no-sync flake8 src tests .github/scripts ci
+        run: uv run --no-project --with flake8 python -m flake8 src tests .github/scripts ci
 
       # soldr#1978 item 6 names this step as duplicating build-linux-x64's
       # compile of the same workspace + test targets on a second runner.
