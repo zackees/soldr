@@ -56,14 +56,13 @@ def embedded_binaries(wheel: Path, extract_dir: Path) -> "list[Path]":
     """
     with zipfile.ZipFile(wheel) as archive:
         archive.extractall(extract_dir)
-    found = [
+    return [
         path
         for path in sorted(extract_dir.rglob("*"))
         if path.is_file()
         and path.parent.name == "scripts"
         and path.parent.parent.name.endswith(".data")
     ]
-    return found
 
 
 def main(argv: "list[str] | None" = None) -> int:

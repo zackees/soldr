@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import re
+from itertools import pairwise
 from pathlib import Path
 
 TOOLCHAIN_ROW = re.compile(
@@ -113,7 +114,7 @@ def find_flips(logs: "list[tuple[str, list[tuple[str, str]]]]") -> "list[str]":
     flips = []
     for repo in sorted(by_repo):
         entries = sorted(by_repo[repo], key=lambda item: item[0])
-        for (prev_name, prev), (name, current) in zip(entries, entries[1:]):
+        for (prev_name, prev), (name, current) in pairwise(entries):
             if prev == current:
                 continue
             what = []

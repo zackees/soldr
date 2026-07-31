@@ -83,3 +83,11 @@ line-length = 100
 # and each would need its own reviewed diff rather than riding along here.
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "B", "C4", "RET", "RUF"]
+
+# RUF001/2/3 flag characters that could be a homoglyph attack. `×` is not one
+# -- it is the multiplication sign, used in prose comments that describe unit
+# arithmetic ("perf-script periods × Hz"). Rewriting it to the letter `x` makes
+# the comment worse to read in order to satisfy a rule aimed at a threat that
+# does not apply to a maths symbol, so it is allowed by name rather than
+# suppressed per-site.
+allowed-confusables = ["×"]

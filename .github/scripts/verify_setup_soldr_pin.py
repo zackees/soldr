@@ -111,7 +111,7 @@ def verify_setup_soldr_pins(repo_root: Path = REPO_ROOT) -> None:
         if truthy_env("SETUP_SOLDR_PIN_AUTOFIX"):
             try:
                 create_or_update_pin_pr(repo_root, current_v0_sha, errors)
-            except Exception as exc:  # noqa: BLE001 - preserve original failure too.
+            except Exception as exc:  # preserve the original failure too.
                 errors.append(
                     f"failed to create setup-soldr pin update issue/PR: {exc}"
                 )

@@ -263,15 +263,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="emit selected asset metadata as JSON")
     args = parser.parse_args(argv)
 
-    kwargs = dict(
-        tool=args.tool,
-        origin=args.origin,
-        tool_manifest_url_override=args.tool_manifest_url,
-        platform=args.platform,
-        arch=args.arch,
-        extra=args.extra,
-        version=args.version,
-    )
+    kwargs = {
+        "tool": args.tool,
+        "origin": args.origin,
+        "tool_manifest_url_override": args.tool_manifest_url,
+        "platform": args.platform,
+        "arch": args.arch,
+        "extra": args.extra,
+        "version": args.version,
+    }
     if args.json:
         print(json.dumps(resolve_metadata(**kwargs), sort_keys=True))
     else:

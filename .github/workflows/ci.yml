@@ -214,17 +214,20 @@ jobs:
       # nothing enforced it. #2102 widened its rule selection (bugbear and
       # friends) and it passes on `src tests`, so it is enforced here now.
       #
-      # Scoped to `src tests` to match the selection's measured state.
-      # `.github/scripts` and `ci` report 10 findings under the new rules
-      # (RUF005 concatenation, a zip without strict=, an unused noqa, ...);
-      # those are a separate reviewed diff, not a drive-by in this one.
+      # `.github/scripts` and `ci` were left out at first because they had 10
+      # findings, and fixing them was owed a reviewed diff rather than a
+      # drive-by. That diff happened, so the scope is now all four directories
+      # and the two that were unenforced are the ones most worth enforcing:
+      # they are the scripts CI itself runs.
       - name: Python lint (ruff)
         # Bounded, like the other four. `ruff>=0.4` was open-ended, so CI
         # resolved a newer ruff than `./install` gives contributors and
         # failed on RUF043 -- a rule that did not exist in the tested
         # version. An unbounded linter is a CI break waiting on someone
         # else's release date.
-        run: uv run --no-project --with 'ruff>=0.12,<0.13' ruff check src tests
+        run: >-
+          uv run --no-project --with 'ruff>=0.12,<0.13'
+          ruff check src tests .github/scripts ci
 
       - name: Python lint (flake8)
         # Pinned, not floating. An unpinned `--with flake8` means a future

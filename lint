@@ -7,6 +7,10 @@ echo Running ruff src
 uv run --no-sync ruff check --fix src
 echo Running ruff tests
 uv run --no-sync ruff check --fix tests
+# Same four directories CI checks. Contributor/CI parity is the point: a lint
+# that passes locally and fails in CI is worse than no lint locally.
+echo Running ruff .github/scripts ci
+uv run --no-sync ruff check --fix .github/scripts ci
 echo Running black src tests
 uv run --no-sync black src tests
 echo Running isort src tests
