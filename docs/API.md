@@ -1876,7 +1876,7 @@ Commands:
 | `SOLDR_ZCCACHE_BIN` | Legacy compatibility variable; it does not replace the embedded service on the normal `soldr cargo ...` path. Use `SOLDR_RUSTC_WRAPPER=/path/to/zccache` for an intentional external-wrapper experiment. | unset |
 | `SOLDR_ZCCACHE_LOCAL_DIR` | Legacy compatibility variable from the removed downloaded-zccache flow; ignored by the normal embedded path. Develop against `_vender/zccache` and rebuild Soldr instead. | unset |
 | `SOLDR_DAEMON_REQUIRED` | Wrapper-mode escape hatch (issue #1300). When truthy (`1`/`true`/`yes`/`on`), a compile-daemon that is unreachable after the spawn-retry budget hard-fails the build (the pre-#1300 behavior) instead of degrading to a direct uncached rustc exec. Intended for CI lanes that want to catch daemon regressions. A compile failure always propagates regardless of this variable; which *daemon* failures degrade is a six-way matrix, not just unavailability — see "Which failures degrade, and which hard-fail" below. | unset (fallback enabled) |
-| `SOLDR_CACHE_DIR` | Override the exact product root owned by this soldr daemon. | official builds: `~/.soldr`; development builds: `~/.soldr-dev` |
+| `SOLDR_CACHE_DIR` | Override the exact product root owned by this soldr daemon. **On Windows, keep this path short** — see the note below. | official builds: `~/.soldr`; development builds: `~/.soldr-dev` |
 | `ZCCACHE_CACHE_SIZE_BYTES` | Exact embedded artifact budget in bytes. Mutually exclusive with `ZCCACHE_CACHE_SIZE_PERCENT`. | dynamic 5%, clamped 40–200 GiB |
 | `ZCCACHE_CACHE_SIZE_PERCENT` | Embedded artifact budget as an integer percentage from 1 through 100. Mutually exclusive with `ZCCACHE_CACHE_SIZE_BYTES`. | dynamic 5%, clamped 40–200 GiB |
 | `SOLDR_CACHE_LIFECYCLE` | Embedded-cache durability policy for `soldr cargo ...`. `job` leaves normal background persistence to the long-lived Soldr daemon. `command` requests an embedded cache flush before the command exits; it does not stop the root-owning daemon. | `job` |
@@ -1925,6 +1925,22 @@ Commands:
 | `SOLDR_TEST_DISK_FREE_BYTES` | Test seam for the watchdog: when set to a `u64` byte count (or `error`), overrides the real `fs2::available_space` probe so tests can drive every threshold edge. Internal — never set this in production. | unset |
 | `SOLDR_PROFILE_EXTRACT` | Env-var equivalent of `soldr load --profile-extract` (issue #575). Any non-empty value other than `0` enables the per-phase profile line on stderr after a load (`zstd_decode`, `tar_parse`, `extract_total`, per-worker job counts, per-file `p50`/`p95`/`p99`). Useful for tuning the parallel-extract worker count against real workloads. | unset |
 | `SOLDR_LOAD_WORKERS` | Cap on the parallel-extract worker pool used by `soldr load` (issue #575). Positive integer; wins over the explicit `--threads` flag. When unset, `--threads` (or rayon's `num_cpus` default) is used. | unset |
+
+**Windows: keep `SOLDR_CACHE_DIR` short.** Under the cache root soldr appends a
+fixed staging suffix of roughly 143 characters
+(`cache/zccache/daemon-state/embedded-v1/v<VERSION>/staging/<session>/<compile>/`)
+before the artifact's own filename. Windows' classic `MAX_PATH` is 260, so a deep
+cache root leaves too little budget and the **linker** fails part-way through a
+build with, for example:
+
+```text
+LINK : fatal error LNK1104: cannot open file '...\staging\...\<crate>-<hash>.dll.lib'
+```
+
+That error names a file inside soldr's own cache rather than anything in your
+project, which is why soldr calls that out explicitly when it detects it
+(soldr#1969). The fix is a shorter root — the default `~/.soldr` is well within
+budget; a root nested inside a temp/scratch tree may not be.
 
 `RUSTC_WRAPPER=soldr cargo build` remains a valid low-level passthrough path, but it is no longer the preferred user-facing workflow. As of #980 L1 (second pass) the rustc-wrapper invocation dispatches every per-compile call over IPC to the daemon's embedded `zccache::embedded::ZccacheService`; there is no longer a fork-zccache.exe fallback. The daemon auto-starts on first wrapper call (see `soldr daemon status`). As of #1300, if the daemon cannot be reached within the spawn-retry budget the wrapper **degrades to a direct uncached rustc exec** (one `soldr: compile daemon unavailable ... (soldr#1300)` notice on stderr) so daemon unavailability costs cache hits, not the build. That first failure records a short-lived marker under the soldr daemon state directory; sibling rustc-wrapper processes that still cannot connect skip the full spawn budget and fall back immediately, avoiding a per-rustc retry storm. Set `SOLDR_DAEMON_REQUIRED=1` to restore the hard-fail behavior. A compile failure always propagates and never triggers the degradation.
 
