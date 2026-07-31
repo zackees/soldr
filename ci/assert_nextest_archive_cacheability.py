@@ -386,6 +386,9 @@ def run_harness(
         "-s",
     ]
     print("+ " + " ".join(cmd), flush=True)
+    # Long-lived by design: the recipe is written to stdin and output is
+    # streamed back for phase tracking over a ~40-minute run.
+    # pylint: disable-next=consider-using-with
     process = subprocess.Popen(
         cmd,
         stdin=subprocess.PIPE,

@@ -242,6 +242,7 @@ def benchmark(
     project: Path,
     output_dir: Path,
     repetitions: int,
+    *,
     source_file: str | None,
     frontend: str,
     no_build_isolation: bool,
@@ -383,12 +384,12 @@ def main() -> int:
         project,
         output.parent,
         args.repetitions,
-        args.source_file,
-        args.frontend,
-        args.no_build_isolation,
-        backend_source,
-        args.touch_staged_artifacts,
-        args.force_reinstall,
+        source_file=args.source_file,
+        frontend=args.frontend,
+        no_build_isolation=args.no_build_isolation,
+        backend_source=backend_source,
+        touch_staged_artifacts=args.touch_staged_artifacts,
+        force_reinstall=args.force_reinstall,
     )
     output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     print(

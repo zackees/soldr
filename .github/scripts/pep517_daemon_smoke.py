@@ -235,8 +235,7 @@ def main() -> int:
             stop_soldr_daemon(soldr, env)
             print_soldr_logs(cache_dir)
             raise
-        else:
-            stop_soldr_daemon(soldr, env)
+        stop_soldr_daemon(soldr, env)
 
         built = sorted(wheelhouse.glob("soldr_pep517_daemon_smoke-*.whl"))
         if len(built) != 1:
