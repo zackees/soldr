@@ -383,7 +383,12 @@ def runner_lock(source_root: Path) -> Iterator[None]:
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+b") as handle:
         if sys.platform == "win32":
-            # pylint: disable-next=import-outside-toplevel
+            # Both platform imports need `import-error` suppressed, and each
+            # for the OTHER platform's benefit: msvcrt is unresolvable when
+            # linting on Linux (as CI does), fcntl when linting on Windows.
+            # Suppressing only one makes the check pass or fail depending on
+            # who ran it -- which is exactly what CI caught here.
+            # pylint: disable-next=import-outside-toplevel,import-error
             import msvcrt  # Windows-only; cannot be imported at module scope
 
             handle.seek(0, os.SEEK_END)
