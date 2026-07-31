@@ -195,6 +195,26 @@ jobs:
       - name: Verify workflow path filters still match
         run: python3 .github/scripts/verify_workflow_paths.py
 
+      # soldr#1978 item 6 names this step as duplicating build-linux-x64's
+      # compile of the same workspace + test targets on a second runner.
+      # Measured across three consecutive runs before acting on it:
+      #
+      #   Run clippy                              39s  32s  39s
+      #   Enforce daemon boundary (dylint)       134s 127s 125s
+      #   Test the daemon-boundary lint           85s  83s  81s
+      #   Install Dylint toolchain                21s  21s  21s
+      #   Build the daemon-boundary lint          10s  10s  10s
+      #
+      # The duplicate compile costs ~35s -- the shared-key cargo/target caches
+      # are doing their job, so it is a freshness check rather than a rebuild.
+      # About 72% of this job is the dylint custom-lint pipeline instead, which
+      # item 6 does not mention.
+      #
+      # The obvious saving there would be gating the lint's OWN test (~85s) on
+      # changes to the lint crate. Deliberately not done: soldr#2091 was two
+      # workflows that went silently dark because a path filter stopped
+      # matching, and trading a reliably-running check for 85s is the wrong
+      # side of that trade. Measure again before revisiting.
       - name: Run clippy
         run: soldr cargo clippy --workspace --all-targets --locked -- -D warnings
 
