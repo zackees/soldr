@@ -45,7 +45,27 @@ WORKFLOWS = sorted(
 # Introduced in bash 4.0. Replacement:
 #   arr=()
 #   while IFS= read -r line; do arr+=("$line"); done < <(...)
-BASH4_ONLY = ("mapfile", "readarray")
+BASH4_BUILTINS = ("mapfile", "readarray", "coproc")
+
+# bash 4.0 added more than builtins, and each fails differently -- a syntax
+# error rather than "command not found" -- but all fail on macOS. Covering only
+# `mapfile` would leave the next one to be found the same way this one was: by
+# a release stopping.
+#
+# `declare -A` / `local -A`  associative arrays (bash 4.0)
+# `${v^^}` `${v,,}` `${v^}` `${v,}`  case modification (bash 4.0)
+# `|&`  shorthand for `2>&1 |` (bash 4.0)
+# `&>>` append both streams (bash 4.0; plain `&>` is fine in 3.2)
+BASH4_SYNTAX = (
+    (
+        re.compile(r"\b(?:declare|local|typeset)\s+-[A-Za-z]*A"),
+        "declare -A (associative array)",
+    ),
+    # `[^{]` guards GitHub's own `${{ ... }}` expressions, which are not shell.
+    (re.compile(r"\$\{[^{}]*[\^,]{1,2}\}"), "${v^^} / ${v,,} case modification"),
+    (re.compile(r"(?<![|&>])\|&(?!&)"), "|& (use 2>&1 |)"),
+    (re.compile(r"&>>"), "&>> (use >> file 2>&1)"),
+)
 
 # A runner label naming macOS: `runs-on: macos-15`, `macos-latest`, a matrix
 # `runner: macos-14`, etc.
@@ -56,20 +76,33 @@ def _reaches_macos(text: str) -> bool:
     return bool(MACOS_RUNNER.search(text))
 
 
-def _bash4_command_lines(text: str) -> "list[tuple[int, str]]":
-    """Lines where a bash-4-only builtin is in *command* position.
+# A builtin is in command position at the start of a line OR after a separator
+# -- `foo=(); mapfile -t foo < <(...)` is one line and was previously invisible
+# to this scan.
+_SEPARATORS = r"(?:^|[;&|]\s*|&&\s*|\|\|\s*)"
+BASH4_BUILTIN_RE = re.compile(
+    _SEPARATORS + r"(" + "|".join(BASH4_BUILTINS) + r")\s", re.MULTILINE
+)
 
-    Comments are skipped: the word also appears in the comment explaining why
-    it is not used, and flagging that would make the fix look like the bug.
+
+def _bash4_command_lines(text: str) -> "list[tuple[int, str]]":
+    """Lines using a bash-4-only builtin or syntax.
+
+    Comments are skipped: the words also appear in the comments explaining why
+    they are not used, and flagging those would make the fix look like the bug.
     """
     hits = []
     for number, line in enumerate(text.splitlines(), start=1):
         stripped = line.strip()
         if stripped.startswith("#"):
             continue
-        for builtin in BASH4_ONLY:
-            if stripped.startswith(builtin + " "):
+        if BASH4_BUILTIN_RE.search(stripped):
+            hits.append((number, stripped))
+            continue
+        for pattern, _label in BASH4_SYNTAX:
+            if pattern.search(stripped):
                 hits.append((number, stripped))
+                break
     return hits
 
 
@@ -111,3 +144,46 @@ def test_the_scan_still_sees_macos_workflows_and_command_lines() -> None:
     hits = _bash4_command_lines(sample)
     assert len(hits) == 1, f"detector should find exactly the command line, got {hits}"
     assert hits[0][0] == 2
+
+
+def test_every_bash4_construct_is_detected() -> None:
+    """One case per construct, so widening the rule cannot silently half-apply.
+
+    `mapfile` was the one that stopped a release; the others fail the same way
+    on the same runner and were simply not reached yet.
+    """
+    cases = {
+        "mapfile": "mapfile -t out < <(find .)",
+        "readarray": "readarray -t out < <(find .)",
+        "coproc": "coproc reader { cat; }",
+        "declare -A": "declare -A seen=([a]=1)",
+        "local -A": "local -A seen",
+        "upper": 'x="${name^^}"',
+        "lower": 'x="${name,,}"',
+        "first-char": 'x="${name^}"',
+        "pipe-both": "make |& tee log",
+        "append-both": "make &>> log",
+    }
+    missed = [label for label, line in cases.items() if not _bash4_command_lines(line)]
+    assert not missed, f"these bash-4-only constructs are not detected: {missed}"
+
+
+def test_portable_and_unrelated_shell_is_not_flagged() -> None:
+    """False positives would push people to disable the guard."""
+    benign = [
+        # The portable replacement the failure message recommends.
+        'arr=(); while IFS= read -r line; do arr+=("$line"); done < <(find .)',
+        # GitHub's own expression syntax is not shell and must not trip `${v,,}`.
+        "name: ${{ matrix.target }}",
+        "if: ${{ github.event_name == 'push' }}",
+        # bash 3.2 redirections that merely look similar.
+        "make &> log",
+        "make 2>&1 | tee log",
+        "x=$((1 & 2))",
+        # Ordinary array use.
+        "declare -a plain",
+        # The word inside prose, which the comment skip already covers.
+        "# mapfile is deliberately not used here",
+    ]
+    flagged = [line for line in benign if _bash4_command_lines(line)]
+    assert not flagged, f"portable shell must not be flagged: {flagged}"

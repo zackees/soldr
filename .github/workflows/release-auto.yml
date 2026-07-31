@@ -66,7 +66,10 @@ jobs:
         run: |
           set -euo pipefail
           commit_sha='${{ github.sha }}'
-          force_pypi_publish="${FORCE_PYPI_PUBLISH,,}"
+          # `${VAR,,}` is bash 4.0. This job runs on ubuntu today, but the
+          # rule is per-file for a reason: a step re-gated onto a darwin
+          # lane would fail there with a parse error, not a clear message.
+          force_pypi_publish="$(printf '%s' "${FORCE_PYPI_PUBLISH}" | tr '[:upper:]' '[:lower:]')"
 
           cargo_version="$(
             sed -n '/^\[workspace.package\]/,/^\[/{s/^version = "\([^"]*\)"/\1/p}' Cargo.toml | head -n1
