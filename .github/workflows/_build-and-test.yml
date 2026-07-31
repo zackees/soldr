@@ -86,9 +86,19 @@ jobs:
         if: steps.rustup_cache.outputs.cache-hit != 'true'
         run: rustup toolchain install 1.94.1 --profile minimal --no-self-update
 
+      # soldr#1799: pin the soldr that builds us. The action's `version`
+      # input still defaults to 0.8.23, which predates #1820 ("retire
+      # automatic target pruning", first released in v0.8.25). Under 0.8.23
+      # soldr GC'd ~90 hash families out of target/ after every build, so the
+      # NEXT build recompiled the whole workspace -- 163 crates on an
+      # immediately-repeated build, forever. Nothing failed; CI was just
+      # silently rebuilding the world, which is exactly the #1799 symptom.
+      # Dogfooding should run the release we actually ship, not whatever the
+      # action defaults to.
       - name: Setup soldr build cache
         uses: zackees/setup-soldr@922fe76752c37e46d63436b338fbe8cf3709bb69
         with:
+          version: 0.8.29
           toolchain: 1.94.1
           cache: false
           zccache-seed-strict: true
@@ -139,6 +149,22 @@ jobs:
             $timer.Elapsed.TotalSeconds
           ))
           exit $exitCode
+
+      # soldr#1799: an immediately-repeated build must recompile nothing.
+      # Nothing changed in between, so any crate rebuilding means something
+      # invalidated cargo's fingerprints -- a toolchain-home flip or a
+      # compiler-path change -- which is the silent 10-50x slowdown this issue
+      # exists to catch. A warm repeat is sub-second, so this is cheap; if it
+      # is NOT warm the step is exactly what should report that.
+      - name: Assert a repeated build recompiles nothing (soldr#1799)
+        if: success()
+        continue-on-error: ${{ !contains(inputs.target, 'linux-gnu') }}
+        shell: pwsh
+        run: |
+          soldr cargo build --workspace --tests --bins --locked --target ${{ inputs.target }} `
+            *> warm-rebuild.log
+          Get-Content warm-rebuild.log | Select-Object -Last 20
+          python3 .github/scripts/check_warm_rebuild.py warm-rebuild.log
 
       # soldr#1838 Phase 4: fail the lane when the build silently ran uncached
       # via the direct compiler. `soldr status --json` surfaces the same
