@@ -86,9 +86,19 @@ jobs:
         if: steps.rustup_cache.outputs.cache-hit != 'true'
         run: rustup toolchain install 1.94.1 --profile minimal --no-self-update
 
+      # soldr#1799: pin the soldr that builds us. The action's `version`
+      # input still defaults to 0.8.23, which predates #1820 ("retire
+      # automatic target pruning", first released in v0.8.25). Under 0.8.23
+      # soldr GC'd ~90 hash families out of target/ after every build, so the
+      # NEXT build recompiled the whole workspace -- 163 crates on an
+      # immediately-repeated build, forever. Nothing failed; CI was just
+      # silently rebuilding the world, which is exactly the #1799 symptom.
+      # Dogfooding should run the release we actually ship, not whatever the
+      # action defaults to.
       - name: Setup soldr build cache
         uses: zackees/setup-soldr@922fe76752c37e46d63436b338fbe8cf3709bb69
         with:
+          version: 0.8.29
           toolchain: 1.94.1
           cache: false
           zccache-seed-strict: true
