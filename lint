@@ -11,10 +11,10 @@ uv run --no-sync ruff check --fix tests
 # that passes locally and fails in CI is worse than no lint locally.
 echo Running ruff .github/scripts ci
 uv run --no-sync ruff check --fix .github/scripts ci
-echo Running black src tests
-uv run --no-sync black src tests
-echo Running isort src tests
-uv run --no-sync isort --profile black src tests
+echo Running black src tests .github/scripts ci
+uv run --no-sync black src tests .github/scripts ci
+echo Running isort src tests .github/scripts ci
+uv run --no-sync isort --profile black src tests .github/scripts ci
 echo Running flake8 src tests
 uv run --no-sync flake8 src tests
 echo Running pylint src

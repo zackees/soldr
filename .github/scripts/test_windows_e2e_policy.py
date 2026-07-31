@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-
 SCRIPT = Path(__file__).with_name("windows_e2e_policy.py")
 SPEC = importlib.util.spec_from_file_location("windows_e2e_policy", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None

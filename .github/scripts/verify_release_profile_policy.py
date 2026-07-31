@@ -109,7 +109,9 @@ def unused_allowlist_entries(workflows_dir: Path) -> list[str]:
             continue
         text = path.read_text(encoding="utf-8")
         if not any(
-            RELEASE_FLAG.search(line) for line in text.splitlines() if not is_comment(line)
+            RELEASE_FLAG.search(line)
+            for line in text.splitlines()
+            if not is_comment(line)
         ):
             stale.append(f"{name} (no longer uses --release)")
     return stale
@@ -122,7 +124,10 @@ def main(argv: list[str] | None = None) -> int:
 
     workflows_dir = Path(args.workflows)
     if not workflows_dir.is_dir():
-        print(f"release-profile policy: no such directory {workflows_dir}", file=sys.stderr)
+        print(
+            f"release-profile policy: no such directory {workflows_dir}",
+            file=sys.stderr,
+        )
         return 1
 
     findings = scan(workflows_dir)

@@ -28,7 +28,6 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-
 # Folded-stack lines end with a whitespace-separated integer sample count.
 # Everything before the last space is the semicolon-joined stack.
 _LINE_RE = re.compile(r"^(?P<stack>.+)\s+(?P<count>\d+)\s*$")
@@ -88,7 +87,10 @@ def main() -> int:
 
     seen_any = False
     for scen in scenarios:
-        for kind, filename in (("on_cpu", "oncpu.folded"), ("off_cpu", "offcpu.folded")):
+        for kind, filename in (
+            ("on_cpu", "oncpu.folded"),
+            ("off_cpu", "offcpu.folded"),
+        ):
             path = out_dir / scen / filename
             entries = parse_folded(path)
             if entries:
@@ -140,12 +142,8 @@ def main() -> int:
     lines.append("")
     lines.append("## On-CPU (perf record -F 99)")
     lines.append("")
-    lines.append(
-        "| Rank | Function | On-CPU samples | Dominant scenario |"
-    )
-    lines.append(
-        "|------|----------|----------------|-------------------|"
-    )
+    lines.append("| Rank | Function | On-CPU samples | Dominant scenario |")
+    lines.append("|------|----------|----------------|-------------------|")
     for rank, (leaf, row) in enumerate(top_on_cpu, start=1):
         leaf_md = leaf.replace("|", "\\|")
         lines.append(
@@ -156,12 +154,8 @@ def main() -> int:
     lines.append("")
     lines.append("## Off-CPU (bpftrace sched_switch, perf-sched fallback)")
     lines.append("")
-    lines.append(
-        "| Rank | Function | Off-CPU samples | Dominant scenario |"
-    )
-    lines.append(
-        "|------|----------|-----------------|-------------------|"
-    )
+    lines.append("| Rank | Function | Off-CPU samples | Dominant scenario |")
+    lines.append("|------|----------|-----------------|-------------------|")
     for rank, (leaf, row) in enumerate(top_off_cpu, start=1):
         leaf_md = leaf.replace("|", "\\|")
         lines.append(

@@ -14,7 +14,6 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
-
 SCHEMA_VERSION = 1
 
 
@@ -63,13 +62,13 @@ def read_junit(path: Path | None) -> dict[str, int] | None:
         suites = [root]
     elif root_tag == "testsuites":
         suites = [
-            child
-            for child in root
-            if child.tag.rsplit("}", 1)[-1] == "testsuite"
+            child for child in root if child.tag.rsplit("}", 1)[-1] == "testsuite"
         ]
         if not suites:
             if "tests" not in root.attrib:
-                raise ValueError("JUnit testsuites root contains no test suites or totals")
+                raise ValueError(
+                    "JUnit testsuites root contains no test suites or totals"
+                )
             suites = [root]
     else:
         raise ValueError(f"unexpected JUnit root element: {root_tag!r}")

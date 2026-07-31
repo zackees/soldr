@@ -434,7 +434,10 @@ def remove_volumes(volumes: list[str]) -> None:
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     if not docker_available():
-        print("error: docker is not available or the daemon is not reachable", file=sys.stderr)
+        print(
+            "error: docker is not available or the daemon is not reachable",
+            file=sys.stderr,
+        )
         return 2
 
     suffix = args.suffix or f"{int(time.time())}-{os.getpid()}"

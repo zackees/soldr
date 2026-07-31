@@ -28,7 +28,6 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-
 PHASE_PATTERNS = {
     "packaging": re.compile(r"wheel|editable|dist-info|setuptools|maturin", re.I),
     "cargo": re.compile(r"cargo|compiling|fresh|finished|rustc", re.I),

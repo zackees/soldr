@@ -247,13 +247,21 @@ jobs:
       # isort 6.0.1 vs 6.1.0. Black's own stability policy is per calendar
       # year and its major IS the year, so `<26` is the guarantee, not a guess.
       #
-      # Scoped to `src tests`, matching `./lint` -- the directories that were
-      # reformatted. Widening this is a separate change with its own diff.
+      # Widened to all four directories (soldr#2120). That widening reformats
+      # 16 files under `.github/scripts` and `ci`, which is why it was held for
+      # its own diff rather than ridden along with the scope change.
+      #
+      # The same stability check was repeated for the new directories before
+      # enforcing, because the point of the bounds is that a contributor and CI
+      # cannot disagree: formatting them at the bounds' floor (black 25.1.0 /
+      # isort 6.0.1) and at whatever `>=25.1,<26` / `>=6.0,<7` resolve to today
+      # produced byte-identical output -- compared as patches, not by eyeballing
+      # a diffstat.
       - name: Python format (black, isort)
         run: |
           set -euo pipefail
-          uv run --no-project --with 'black>=25.1,<26' python -m black --check src tests
-          uv run --no-project --with 'isort>=6.0,<7' python -m isort --profile black --check-only src tests
+          uv run --no-project --with 'black>=25.1,<26' python -m black --check src tests .github/scripts ci
+          uv run --no-project --with 'isort>=6.0,<7' python -m isort --profile black --check-only src tests .github/scripts ci
 
       # mypy over both the shipped package and the tests. `src/` was cleaned
       # in #2107 (four annotation defects, none behavioural); `tests/` is

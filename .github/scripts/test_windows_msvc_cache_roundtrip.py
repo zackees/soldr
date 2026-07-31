@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-
 SCRIPT = Path(__file__).with_name("windows_msvc_cache_roundtrip.py")
 SPEC = importlib.util.spec_from_file_location("windows_msvc_cache_roundtrip", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
@@ -11,7 +10,9 @@ roundtrip = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(roundtrip)
 
 
-def test_build_roundtrip_requires_missing_pe_to_be_restored(tmp_path: Path, monkeypatch) -> None:
+def test_build_roundtrip_requires_missing_pe_to_be_restored(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.chdir(tmp_path)
     target = "x86_64-pc-windows-msvc"
     profile = "ci-nextest"

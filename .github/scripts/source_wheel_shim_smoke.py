@@ -55,9 +55,13 @@ def resolve_wheel(patterns: list[str]) -> Path:
     for pattern in patterns:
         expanded = [Path(item) for item in glob.glob(pattern)]
         matches.extend(expanded or [Path(pattern)])
-    wheels = [path.resolve() for path in matches if path.is_file() and path.suffix == ".whl"]
+    wheels = [
+        path.resolve() for path in matches if path.is_file() and path.suffix == ".whl"
+    ]
     if len(wheels) != 1:
-        raise SystemExit(f"expected exactly one wheel under test, found {len(wheels)}: {wheels}")
+        raise SystemExit(
+            f"expected exactly one wheel under test, found {len(wheels)}: {wheels}"
+        )
     return wheels[0]
 
 
@@ -97,7 +101,9 @@ def same_path(left: Path, right: Path) -> bool:
     try:
         return left.samefile(right)
     except OSError:
-        return os.path.normcase(str(left.resolve())) == os.path.normcase(str(right.resolve()))
+        return os.path.normcase(str(left.resolve())) == os.path.normcase(
+            str(right.resolve())
+        )
 
 
 def stop_soldr_daemon(soldr: Path, env: dict[str, str]) -> None:
@@ -151,7 +157,9 @@ def main() -> int:
         if not cargo_shim.is_file():
             raise SystemExit(f"soldr shims did not materialize {cargo_shim}")
 
-        env["PATH"] = os.pathsep.join([str(path_entry), str(venv_bin(venv)), env.get("PATH", "")])
+        env["PATH"] = os.pathsep.join(
+            [str(path_entry), str(venv_bin(venv)), env.get("PATH", "")]
+        )
         env.pop("CARGO", None)
         resolved_cargo = shutil.which("cargo", path=env["PATH"])
         if resolved_cargo is None or not same_path(Path(resolved_cargo), cargo_shim):

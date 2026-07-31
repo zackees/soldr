@@ -36,8 +36,9 @@ class DownloadCataloguedAssetTests(unittest.TestCase):
         }
         response = mock.MagicMock()
         response.__enter__.return_value = io.BytesIO(payload)
-        with tempfile.TemporaryDirectory() as temp, mock.patch.object(
-            script.urllib.request, "urlopen", return_value=response
+        with (
+            tempfile.TemporaryDirectory() as temp,
+            mock.patch.object(script.urllib.request, "urlopen", return_value=response),
         ):
             output = Path(temp) / metadata["filename"]
             result = script.download_verified(metadata, output)
@@ -52,8 +53,9 @@ class DownloadCataloguedAssetTests(unittest.TestCase):
         }
         response = mock.MagicMock()
         response.__enter__.return_value = io.BytesIO(b"tampered")
-        with tempfile.TemporaryDirectory() as temp, mock.patch.object(
-            script.urllib.request, "urlopen", return_value=response
+        with (
+            tempfile.TemporaryDirectory() as temp,
+            mock.patch.object(script.urllib.request, "urlopen", return_value=response),
         ):
             with self.assertRaisesRegex(SystemExit, "sha256 mismatch"):
                 script.download_verified(metadata, Path(temp) / metadata["filename"])

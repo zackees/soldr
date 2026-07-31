@@ -4,7 +4,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 SCRIPT = Path(__file__).with_name("target_run_summary.py")
 SPEC = importlib.util.spec_from_file_location("target_run_summary", SCRIPT)
 assert SPEC and SPEC.loader
