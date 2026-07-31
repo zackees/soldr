@@ -158,6 +158,41 @@ pub fn scan(registry: &TargetRegistry, options: &GcOptions) -> Result<GcReport, 
     scan_snapshot(snapshot, options)
 }
 
+/// How old a tracked `target/` is, taking the *most recent* of two
+/// signals (soldr#2134).
+///
+/// `last_used` is soldr's own bookkeeping: it is stamped when a build goes
+/// through the front door. That makes it a poor sole measure of whether a
+/// cache is cold, because it goes stale while the directory stays hot:
+///
+/// * a repo built with bare `cargo` never updates it;
+/// * the daemon can lose the touch outright -- `client.rs` reports
+///   "target-registry touch was lost: daemon unreachable".
+///
+/// A target in either state looks like the *oldest* row in the registry
+/// (rows are ordered by `last_used` ascending), so it is the first thing
+/// eviction reaches for -- which is how a 57.7 GB actively-built cache was
+/// purged while a merged worktree's 5.6 GB was kept.
+///
+/// Consulting the directory's mtime as well can only ever make a target
+/// look *younger*, so this is strictly conservative: it can spare a cache
+/// from deletion, never cause one. A missing or unreadable mtime falls back
+/// to the registry value, which is the previous behaviour.
+fn effective_age_seconds(path: &Path, last_used: i64, now: i64) -> i64 {
+    let registry_age = now.saturating_sub(last_used);
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return registry_age;
+    };
+    let Ok(modified) = metadata.modified() else {
+        return registry_age;
+    };
+    let Ok(since_epoch) = modified.duration_since(SystemTime::UNIX_EPOCH) else {
+        return registry_age;
+    };
+    let fs_age = now.saturating_sub(since_epoch.as_secs() as i64);
+    registry_age.min(fs_age)
+}
+
 /// Threshold + safety-guard evaluation over an owned snapshot. Touches
 /// the filesystem (sizing) but never the database, so it is safe to run
 /// with no handle open.
@@ -172,7 +207,7 @@ pub fn scan_snapshot(
     };
 
     for row in snapshot.rows {
-        let age = now.saturating_sub(row.last_used);
+        let age = effective_age_seconds(&row.path, row.last_used, now);
         let size = directory_size(&row.path);
 
         if (age as u64) < options.older_than_seconds {
@@ -656,6 +691,8 @@ mod tests {
         registry
             .upsert_with_time(&missing, now - 30 * 86_400)
             .unwrap();
+        // soldr#2134: cold on disk as well, not just in the registry.
+        backdate(&target, 30 * 86_400);
 
         let opts = GcOptions {
             older_than_seconds: 10 * 86_400,
@@ -693,6 +730,104 @@ mod tests {
         let report = scan(&registry, &opts).unwrap();
         assert!(report.candidates.is_empty());
         assert_eq!(report.skipped.len(), 2);
+    }
+
+    /// Backdate a directory's mtime so the filesystem agrees with a stale
+    /// registry stamp. Before soldr#2134 the scan read only the stamp, so
+    /// fixtures could leave the real mtime at "just now" without noticing;
+    /// now a test that means "this target is cold" has to say so on both
+    /// signals.
+    fn backdate(path: &Path, seconds_ago: u64) {
+        let when = SystemTime::now() - Duration::from_secs(seconds_ago);
+        filetime::set_file_mtime(path, filetime::FileTime::from_system_time(when))
+            .expect("backdate target mtime");
+    }
+
+    #[test]
+    fn effective_age_takes_the_more_recent_of_registry_and_mtime() {
+        // soldr#2134. The registry stamp is soldr's own bookkeeping and goes
+        // stale while a directory stays hot (bare `cargo`, or a lost daemon
+        // touch). Whichever signal is more recent wins, so a hot cache cannot
+        // be ranked cold by a stale stamp alone.
+        let dir = tempdir().unwrap();
+        let (_, target) = make_workspace(dir.path(), "repo", 64);
+        let now = current_unix_seconds().unwrap();
+
+        // Stamp says 30 days idle; the directory was written just now.
+        let age = effective_age_seconds(&target, now - 30 * 86_400, now);
+        assert!(
+            age < 3600,
+            "a freshly written target must not look 30 days old, got {age}s"
+        );
+
+        // Both signals old: evaluate 60 days in the future so the filesystem
+        // mtime is stale too, without needing to backdate the directory.
+        let future = now + 60 * 86_400;
+        let age = effective_age_seconds(&target, now - 30 * 86_400, future);
+        assert!(
+            age >= 59 * 86_400,
+            "a genuinely cold target must still read as old, got {age}s"
+        );
+    }
+
+    #[test]
+    fn scan_still_evicts_a_target_that_is_cold_by_both_signals() {
+        // The control for the fix: sparing hot caches must not turn into
+        // sparing everything. Stale stamp AND stale mtime => still a
+        // candidate.
+        let dir = tempdir().unwrap();
+        let registry = TargetRegistry::open_in_memory().unwrap();
+        let (_, target) = make_workspace(dir.path(), "cold", 4096);
+
+        let now = current_unix_seconds().unwrap();
+        registry
+            .upsert_with_time(&target, now - 30 * 86_400)
+            .unwrap();
+        backdate(&target, 30 * 86_400);
+
+        let opts = GcOptions {
+            older_than_seconds: 10 * 86_400,
+            larger_than_bytes: 1024,
+            dev_roots: vec![dir.path().to_path_buf()],
+            dry_run: true,
+        };
+        let report = scan(&registry, &opts).unwrap();
+
+        assert_eq!(
+            report.candidates.len(),
+            1,
+            "a target cold by both signals must remain evictable: {report:?}"
+        );
+    }
+
+    #[test]
+    fn scan_spares_a_hot_target_whose_registry_stamp_is_stale() {
+        // The reported failure: a 57.7 GB cache written minutes earlier was
+        // purged because its registry row was old, while a merged worktree's
+        // was kept. Age must not come from the stamp alone.
+        let dir = tempdir().unwrap();
+        let registry = TargetRegistry::open_in_memory().unwrap();
+        let (_, target) = make_workspace(dir.path(), "hot", 4096);
+
+        let now = current_unix_seconds().unwrap();
+        registry
+            .upsert_with_time(&target, now - 30 * 86_400)
+            .unwrap();
+
+        let opts = GcOptions {
+            older_than_seconds: 10 * 86_400,
+            larger_than_bytes: 1024,
+            dev_roots: vec![dir.path().to_path_buf()],
+            dry_run: true,
+        };
+        let report = scan(&registry, &opts).unwrap();
+
+        assert!(
+            report.candidates.is_empty(),
+            "a target written moments ago must not be an eviction candidate: {:?}",
+            report.candidates
+        );
+        assert_eq!(report.skipped.len(), 1);
     }
 
     #[test]
