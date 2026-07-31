@@ -334,9 +334,30 @@ pub async fn get_or_fetch() -> &'static ManifestIndex {
         // and makes every later syslib lookup report "not yet ingested" -- so
         // a single truncated response body must not be enough to trigger it.
         // That is what failed two lanes of the v0.8.30 release build.
-        super::retry::with_backoff("the soldr-toolchain catalogue", fetch_once)
-            .await
-            .unwrap_or_else(|_| ManifestIndex::empty())
+        match super::retry::with_backoff("the soldr-toolchain catalogue", fetch_once).await {
+            Ok(index) => index,
+            Err(err) => {
+                // soldr#2132 item 4. This used to be `.unwrap_or_else(|_|
+                // empty())` -- the error was discarded and the process carried
+                // on with no catalogue and no message. The consequence lands
+                // much later and looks unrelated: syslib lookups report "not
+                // yet ingested", and a missing sysroot surfaces as rustc's
+                // `can't find crate for std`. Naming it here is the difference
+                // between a two-minute diagnosis and an hour of one.
+                eprintln!(
+                    "soldr: warning: the soldr-toolchain catalogue is unavailable \
+                     after {} attempts: {err}",
+                    super::retry::FETCH_ATTEMPTS
+                );
+                eprintln!(
+                    "soldr: warning: continuing without it. sha256 pins are \
+                     unavailable for this run, and catalogue-provided sysroots \
+                     and tools will not resolve -- which can surface later as an \
+                     apparently unrelated compile error."
+                );
+                ManifestIndex::empty()
+            }
+        }
     };
     // OnceLock::get_or_init isn't async, so we set explicitly. The
     // first set wins; concurrent callers under a tokio runtime will
