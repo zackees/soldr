@@ -310,6 +310,14 @@ pub(crate) fn seed_gc_candidate(cache_root: &Path, label: &str) -> PathBuf {
     registry
         .upsert_with_time(&target, now - 120)
         .expect("failed to seed target registry");
+    // soldr#2134: GC now ages a target by the more recent of its registry
+    // stamp and its directory mtime, so a stale stamp on something created
+    // milliseconds ago no longer reads as cold -- which is the point of that
+    // change. A fixture meaning "this is reclaimable" has to say so on both
+    // signals; before, it could rely on the mtime being ignored.
+    let cold = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
+    filetime::set_file_mtime(&target, filetime::FileTime::from_system_time(cold))
+        .expect("failed to backdate target mtime");
     target
 }
 
@@ -333,6 +341,14 @@ pub(crate) fn seed_gc_file_candidate(cache_root: &Path, label: &str) -> PathBuf 
     registry
         .upsert_with_time(&target, now - 120)
         .expect("failed to seed target registry");
+    // soldr#2134: GC now ages a target by the more recent of its registry
+    // stamp and its directory mtime, so a stale stamp on something created
+    // milliseconds ago no longer reads as cold -- which is the point of that
+    // change. A fixture meaning "this is reclaimable" has to say so on both
+    // signals; before, it could rely on the mtime being ignored.
+    let cold = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
+    filetime::set_file_mtime(&target, filetime::FileTime::from_system_time(cold))
+        .expect("failed to backdate target mtime");
     target
 }
 
