@@ -20,6 +20,9 @@ pub use trust::{
 
 pub mod rustup_init;
 
+/// soldr#2132: shared retry-with-backoff for network fetches.
+mod retry;
+
 pub use rustup_init::{
     auto_bootstrap_if_missing, auto_bootstrap_if_missing_blocking, bootstrap_rustup,
     bootstrap_rustup_blocking, discover_rustup, managed_cargo_home, managed_rustup_home,
