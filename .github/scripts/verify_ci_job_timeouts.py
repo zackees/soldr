@@ -108,7 +108,7 @@ def find_timeout_violations(workflow: str) -> list[str]:
 # exactly what happened after the first three.
 #
 # Burned down so far: benchmark-stats (#2057), parent-cache-bench (#2058),
-# cache-delta-experiment (#2067).
+# cache-delta-experiment (#2067), release-auto + vcpkg-windows-refresh (#2077).
 #
 # The point of the extension is that a *new* workflow cannot join this list.
 # Removing an entry is a burn-down PR; picking the right bound for a perf or
@@ -116,12 +116,18 @@ def find_timeout_violations(workflow: str) -> list[str]:
 # too-low timeout that kills a healthy long build is worse than the default.
 # `test_grandfathered_entries_still_need_the_exemption` fails if every job in a
 # listed file has since been bounded, so a spent entry cannot linger.
+#
+# The two remaining entries are blocked on *evidence*, not effort. Bounds for
+# the burned-down files came from measured job history, and neither of these
+# has any: `perf-cold-warm` has no completed runs at all, and `perf-matrix`
+# gates every expensive job off before it starts, so the last 12 runs recorded
+# nothing but the 6-second `gate` job. Guessing a bound for a sweep that legit-
+# imately runs for hours is how you kill a healthy build, so they stay listed
+# until a real sweep is observed.
 GRANDFATHERED = frozenset(
     {
         "perf-cold-warm.yml",
         "perf-matrix.yml",
-        "release-auto.yml",
-        "vcpkg-windows-refresh.yml",
     }
 )
 

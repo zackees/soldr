@@ -63,6 +63,8 @@ jobs:
   resolve-matrix:
     name: Resolve triplet matrix
     runs-on: ubuntu-latest
+    # Checkout plus one resolver script; seconds in practice.
+    timeout-minutes: 15
     outputs:
       matrix: ${{ steps.resolve.outputs.matrix }}
     steps:
@@ -83,6 +85,11 @@ jobs:
     # MUST be windows. Linux-side clang-cl triplets exist but
     # port coverage is too spotty for the pin list we ship.
     runs-on: windows-latest
+    # Building the vcpkg port set from source is genuinely long:
+    # observed max 60.6 min, p50 55.4 min over 9 runs (arm64 is the
+    # slower triplet). A bound near the p50 would kill healthy runs,
+    # so this is ~3x the observed max.
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.resolve-matrix.outputs.matrix) }}
@@ -152,6 +159,8 @@ jobs:
     name: Publish to soldr vcpkg-bundles release
     needs: build-triplet
     runs-on: ubuntu-latest
+    # Artifact download + release upload; observed max 0.4 min.
+    timeout-minutes: 30
     permissions:
       contents: write
     steps:
