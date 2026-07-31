@@ -78,6 +78,13 @@ def test_no_needed_entries_yields_no_names(guard):
 def test_main_fails_when_the_binary_cannot_be_inspected(guard, tmp_path, capsys):
     # A missing path must fail, not pass by default: a verification step that
     # silently skips is worse than no step at all.
+    #
+    # Deliberately platform-independent. Originally this asserted only the
+    # missing-*tool* wording, which passed on a Windows box (no readelf on
+    # PATH) and failed on Linux, where readelf exists and exits non-zero on a
+    # missing path. Both routes mean "cannot verify", so both must say so.
     code = guard.main([str(tmp_path / "definitely-not-here")])
     assert code == 1
-    assert "cannot inspect" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "cannot inspect" in err, err
+    assert "definitely-not-here" in err, err

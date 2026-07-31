@@ -61,7 +61,16 @@ def dynamic_dependencies(readelf_output: str) -> "list[str]":
     return found
 
 
-def _readelf(binary: str) -> str:
+def _readelf(binary: str) -> "tuple[int, str]":
+    """Run `readelf -d`, returning `(exit_code, combined_output)`.
+
+    The exit code matters on its own: readelf exits non-zero when it cannot
+    read the file at all (missing path, not an ELF). Treating that as ordinary
+    output would let a *non-existent* binary fall through to the
+    "has a dynamic section" branch and report the wrong reason -- which is
+    exactly what happened on Linux while a Windows box, having no readelf at
+    all, took the missing-tool path and looked fine.
+    """
     tool = shutil.which("readelf") or shutil.which("llvm-readelf")
     if tool is None:
         raise FileNotFoundError("readelf not found on PATH")
@@ -73,7 +82,7 @@ def _readelf(binary: str) -> str:
     )
     # readelf reports "no dynamic section" on stdout but still exits 0; a
     # genuinely unreadable file lands on stderr, so keep both.
-    return completed.stdout + completed.stderr
+    return completed.returncode, completed.stdout + completed.stderr
 
 
 def main(argv: "list[str] | None" = None) -> int:
@@ -84,13 +93,24 @@ def main(argv: "list[str] | None" = None) -> int:
     failures = 0
     for binary in args.binaries:
         try:
-            output = _readelf(binary)
+            code, output = _readelf(binary)
         except (OSError, FileNotFoundError) as error:
             # A missing tool or unreadable path is a wiring problem. Fail
             # loudly rather than pass by default -- a verification step that
             # silently skips is worse than no step at all.
             print(
                 f"verify_static_link: cannot inspect {binary}: {error}", file=sys.stderr
+            )
+            failures += 1
+            continue
+
+        if code != 0:
+            # readelf could not read the file (missing path, not an ELF). We
+            # learned nothing, so this is "cannot verify", not "dynamic".
+            print(
+                f"verify_static_link: cannot inspect {binary}: "
+                f"readelf exited {code}: {output.strip().splitlines()[-1] if output.strip() else 'no output'}",
+                file=sys.stderr,
             )
             failures += 1
             continue
