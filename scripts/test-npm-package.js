@@ -100,6 +100,12 @@ assert.strictEqual(
 // Default (no libc arg) falls back to detectLibc; on most CI hosts that's
 // gnu. We don't assert the triple here — just that the call resolves.
 assert.ok(install.platformTarget("linux", "x64").triple.startsWith("x86_64-unknown-linux-"));
+// An explicitly-unknown libc must take the runs-anywhere build, matching
+// detectLibc's own unknown case rather than contradicting it.
+assert.strictEqual(
+  install.platformTarget("linux", "x64", null).triple,
+  "x86_64-unknown-linux-musl",
+);
 assert.strictEqual(install.platformTarget("darwin", "x64").triple, "x86_64-apple-darwin");
 assert.strictEqual(install.platformTarget("darwin", "arm64").triple, "aarch64-apple-darwin");
 assert.strictEqual(install.platformTarget("win32", "x64").triple, "x86_64-pc-windows-msvc");
@@ -114,6 +120,89 @@ assert.strictEqual(install.detectLibc("win32"), null);
 // `platformTarget` can build a well-formed key.
 const linuxLibc = install.detectLibc("linux");
 assert.ok(linuxLibc === "gnu" || linuxLibc === "musl", `unexpected libc: ${linuxLibc}`);
+
+// detectLibc's individual branches, driven through the probe seam so they
+// are exercised on every host rather than only on whichever libc CI runs.
+const throwingProbe = () => {
+  throw new Error("probe unavailable");
+};
+
+// 1. A non-empty glibcVersionRuntime is a positive glibc identification.
+assert.strictEqual(
+  install.detectLibc("linux", {
+    readHeader: () => ({ glibcVersionRuntime: "2.39" }),
+    listLib: throwingProbe,
+  }),
+  "gnu",
+);
+
+// 2. The field present but empty means Node was built against musl.
+assert.strictEqual(
+  install.detectLibc("linux", {
+    readHeader: () => ({ glibcVersionRuntime: "" }),
+    listLib: throwingProbe,
+  }),
+  "musl",
+);
+
+// 3. Node itself is glibc but the SYSTEM is musl (glibc node on alpine).
+//    The filesystem probe is what catches this, and it must win.
+assert.strictEqual(
+  install.detectLibc("linux", {
+    readHeader: () => ({}),
+    listLib: () => ["ld-musl-x86_64.so.1", "libz.so.1"],
+  }),
+  "musl",
+);
+
+// 3b. When /lib carries both loaders (a musl system with a glibc-compat
+//     package installed), musl must win. This is also the only assertion
+//     that can distinguish the musl branch from the unknown fallback --
+//     both return "musl", so ordering is the observable difference.
+assert.strictEqual(
+  install.detectLibc("linux", {
+    readHeader: () => ({}),
+    listLib: () => ["ld-linux-x86-64.so.2", "ld-musl-x86_64.so.1"],
+  }),
+  "musl",
+);
+
+// 4. A glibc loader in /lib is a positive identification even when the
+//    header probe is unavailable, so it resolves to gnu rather than
+//    falling through to the unknown case.
+assert.strictEqual(
+  install.detectLibc("linux", {
+    readHeader: throwingProbe,
+    listLib: () => ["ld-linux-x86-64.so.2", "libc.so.6"],
+  }),
+  "gnu",
+);
+
+// 5. /lib readable but holding neither loader -> genuinely unknown.
+assert.strictEqual(
+  install.detectLibc("linux", {
+    readHeader: throwingProbe,
+    listLib: () => ["libz.so.1"],
+  }),
+  "musl",
+);
+
+// 6. Both probes unavailable (heavily sandboxed container) -> same rule.
+//    This is the soldr#1060 behaviour change. Our musl artifact is verified
+//    statically linked before staging, so guessing musl on a glibc box
+//    still works, while guessing gnu on a musl box cannot run at all --
+//    only one of the two mistakes is recoverable.
+assert.strictEqual(
+  install.detectLibc("linux", { readHeader: throwingProbe, listLib: throwingProbe }),
+  "musl",
+);
+
+// The probe seam must not leak to other platforms: a non-Linux host still
+// short-circuits to null before any probe runs.
+assert.strictEqual(
+  install.detectLibc("darwin", { readHeader: throwingProbe, listLib: throwingProbe }),
+  null,
+);
 
 assert.strictEqual(
   install.checksumFor(
