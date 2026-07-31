@@ -833,6 +833,35 @@ jobs:
           fi
           python3 .github/scripts/verify_static_link.py "${bundled[@]}"
 
+      # The gnu counterpart of the musl check above, and for the same reason
+      # #2084 extended that one: the bundle ships FOUR binaries, and the
+      # earlier glibc ratchet reads only `soldr` out of target/, before
+      # staging. crgx and cargo-chef are never looked at.
+      #
+      # They are the ones that most need watching. Both are fetched prebuilt
+      # from soldr-toolchain rather than built here, so their floor can move
+      # without a single line of soldr changing -- exactly the external drift
+      # a ratchet exists to catch. A user whose glibc is too old for a bundled
+      # tool gets a soldr that starts and then fails the moment it shells out.
+      #
+      # Measured on published v0.8.29, all eight binaries across both gnu
+      # bundles sit at or below this ceiling (aarch64 cargo-chef is 2.18), so
+      # this reports today rather than blocking.
+      - name: Check glibc baseline of every bundled gnu binary (soldr#1060)
+        if: contains(matrix.target, 'unknown-linux-gnu')
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t bundled < <(find dist/package -maxdepth 1 -type f \
+            \( -name soldr -o -name soldr-daemon -o -name crgx -o -name cargo-chef \))
+          if [ "${#bundled[@]}" -eq 0 ]; then
+            echo "no bundled binaries found in dist/package to verify" >&2
+            ls -la dist/package >&2
+            exit 1
+          fi
+          python3 .github/scripts/verify_glibc_baseline.py \
+            --max-glibc 2.39 "${bundled[@]}"
+
       - name: Write manifest.json
         # Drop a small JSON descriptor into the archive root so downstream
         # consumers (setup-soldr, npm install wrapper, ad-hoc tooling)
