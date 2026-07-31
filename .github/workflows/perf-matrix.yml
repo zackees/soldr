@@ -114,6 +114,8 @@ jobs:
   # Net: one perf sweep per day of activity on main, plus every dispatch
   # and every feature-branch push. Zero per burst, zero per quiet day.
   gate:
+    # Coordination only; observed 0.1 min across 20 runs. soldr#1978 item 8.
+    timeout-minutes: 15
     name: Decide whether to run
     runs-on: ubuntu-24.04
     outputs:
@@ -164,6 +166,8 @@ jobs:
           esac
 
   setup:
+    # Scope resolution only; observed 0.1 min across 20 runs. soldr#1978 item 8.
+    timeout-minutes: 15
     # Resolve the effective (platforms, fixtures, scenarios) scope
     # once and pipe the result to every downstream gate via job
     # outputs. Two sources:
@@ -270,6 +274,8 @@ jobs:
           echo "source=${SOURCE}"  >> "$GITHUB_OUTPUT"
 
   build-soldr:
+    # Observed max 6.0 min across 20 runs, so ~7x headroom. soldr#1978 item 8.
+    timeout-minutes: 45
     needs: setup
     name: build-soldr (${{ matrix.platform }})
     strategy:
@@ -359,6 +365,11 @@ jobs:
           retention-days: 7
 
   bench:
+    # Observed max 4.1 min, but only the medium and sqlite-link fixtures have
+    # actually run; a heavier fixture legitimately takes longer, so this is
+    # deliberately ~29x the observed max. It is a runaway backstop, not a
+    # performance target. soldr#1978 item 8.
+    timeout-minutes: 120
     name: bench (${{ matrix.platform }} / ${{ matrix.fixture }})
     needs: [setup, build-soldr]
     strategy:
@@ -522,6 +533,8 @@ jobs:
           retention-days: 14
 
   evaluate:
+    # Downloads artifacts and compares; observed 0.1 min. soldr#1978 item 8.
+    timeout-minutes: 20
     # Per-platform gate: pull every fixture's artifact for this
     # platform via `pattern: perf-results-<platform>-*` and iterate
     # (fixture x scenario) internally. One Evaluate check per
