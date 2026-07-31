@@ -23,8 +23,8 @@ uv pip install \
   "pytest>=8.0" \
   "pytest-xdist>=3.0" \
   "ruff>=0.4" \
-  black \
-  isort \
-  flake8 \
-  pylint \
-  mypy
+  "black>=25.1,<26" \
+  "isort>=6.0,<7" \
+  "flake8>=7.3,<8" \
+  "pylint>=4.0,<5" \
+  "mypy>=1.18,<2"
