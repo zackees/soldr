@@ -117,19 +117,31 @@ def find_timeout_violations(workflow: str) -> list[str]:
 # `test_grandfathered_entries_still_need_the_exemption` fails if every job in a
 # listed file has since been bounded, so a spent entry cannot linger.
 #
-# The two remaining entries are blocked on *evidence*, not effort. Bounds for
-# the burned-down files came from measured job history, and neither of these
-# has any: `perf-cold-warm` has no completed runs at all, and `perf-matrix`
-# gates every expensive job off before it starts, so the last 12 runs recorded
-# nothing but the 6-second `gate` job. Guessing a bound for a sweep that legit-
-# imately runs for hours is how you kill a healthy build, so they stay listed
-# until a real sweep is observed.
-GRANDFATHERED = frozenset(
-    {
-        "perf-cold-warm.yml",
-        "perf-matrix.yml",
-    }
-)
+# The list is now empty. The last two entries were held for *evidence*, not
+# effort: bounds for the burned-down files came from measured job history, and
+# an earlier pass found none for these two. Widening the sample to 20 runs
+# changed that for `perf-matrix` -- real cells have since run, not just the
+# `gate` job:
+#
+#   build-soldr  max  6.0 min      bench  max  4.1 min
+#   gate / setup / evaluate  ~0.1 min
+#
+# so those are bounded from history with 7x or better headroom. Two caveats are
+# deliberately reflected in the numbers rather than papered over:
+#
+#   * Only the `medium` and `sqlite-link` fixtures have ever run. A heavier
+#     fixture is legitimately slower, so `bench` is set to 120 -- ~29x the
+#     observed max -- rather than something snug.
+#   * `perf-cold-warm` still has zero completed runs. Its jobs are bounded by
+#     analogy (same ubuntu-24.04 runner, same build work as perf-matrix) and
+#     loosely: 90 for the two build jobs.
+#
+# The original caution stands and is worth restating for whoever edits these
+# next: a too-low timeout that kills a healthy long build is worse than the
+# 360-minute default. These bounds exist to convert an unbounded hang into a
+# bounded failure, not to police perf runtimes. If a legitimate sweep ever
+# approaches one of them, raise it -- that is not a regression.
+GRANDFATHERED: frozenset[str] = frozenset()
 
 
 def workflow_paths(root: Path) -> list[Path]:

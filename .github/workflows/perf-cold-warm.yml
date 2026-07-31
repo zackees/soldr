@@ -76,6 +76,9 @@ env:
 
 jobs:
   build-soldr:
+    # Never dispatched, so there is no history; mirrors perf-matrix build-soldr,
+    # which peaks at 6.0 min on the same ubuntu-24.04 runner. soldr#1978 item 8.
+    timeout-minutes: 45
     name: build-soldr (linux)
     runs-on: ubuntu-24.04
     steps:
@@ -124,6 +127,8 @@ jobs:
           retention-days: 7
 
   purge-demo-caches:
+    # Cache deletion only. soldr#1978 item 8.
+    timeout-minutes: 15
     name: Purge demo caches
     if: ${{ inputs.run_mode == 'Purge cache and run cold build before warm build' }}
     runs-on: ubuntu-24.04
@@ -184,6 +189,10 @@ jobs:
           echo "Deleted ${deleted} cache entries across ${#cache_keys[@]} unique keys."
 
   cold-build:
+    # Cold build of the demo fixture, uncached by construction, so it is the
+    # slowest job here by design, and it has never been observed, so the bound
+    # is deliberately loose. soldr#1978 item 8.
+    timeout-minutes: 90
     name: Cold build (${{ inputs.fixture }})
     if: ${{ inputs.run_mode == 'Purge cache and run cold build before warm build' }}
     needs:
@@ -286,6 +295,9 @@ jobs:
           retention-days: 14
 
   warm-build:
+    # Warm counterpart of cold-build on the same fixture; also unobserved.
+    # soldr#1978 item 8.
+    timeout-minutes: 90
     name: Warm build (${{ inputs.fixture }})
     needs:
       - build-soldr
