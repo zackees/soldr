@@ -26,15 +26,15 @@ on:
   pull_request:
     paths:
       - 'crates/soldr-cli/src/cook.rs'
-      - 'crates/soldr-cli/src/cache_lib/strip_target.rs'
-      - 'crates/soldr-cli/src/cache_lib/**'
+      - 'crates/soldr-cache/src/cache_lib/strip_target.rs'
+      - 'crates/soldr-cache/**'
       - '.github/workflows/cook-size-gate.yml'
   push:
     branches: [main]
     paths:
       - 'crates/soldr-cli/src/cook.rs'
-      - 'crates/soldr-cli/src/cache_lib/strip_target.rs'
-      - 'crates/soldr-cli/src/cache_lib/**'
+      - 'crates/soldr-cache/src/cache_lib/strip_target.rs'
+      - 'crates/soldr-cache/**'
       - '.github/workflows/cook-size-gate.yml'
   workflow_dispatch:
     inputs:

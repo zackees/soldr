@@ -33,7 +33,7 @@ on:
     branches: [main]
     paths:
       - "crates/soldr-cli/src/main.rs"
-      - "crates/soldr-cli/src/cache_lib/**"
+      - "crates/soldr-cache/**"
       - "crates/soldr-cli/src/rust_plan.rs"
       - "_vender/zccache"
       - ".github/scripts/assert_thin_noop.py"
@@ -45,7 +45,7 @@ on:
   pull_request:
     paths:
       - "crates/soldr-cli/src/main.rs"
-      - "crates/soldr-cli/src/cache_lib/**"
+      - "crates/soldr-cache/**"
       - "crates/soldr-cli/src/rust_plan.rs"
       - "_vender/zccache"
       - ".github/scripts/assert_thin_noop.py"

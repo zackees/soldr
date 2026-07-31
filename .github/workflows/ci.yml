@@ -188,6 +188,13 @@ jobs:
       - name: Verify direct CI job timeouts
         run: python3 .github/scripts/verify_ci_job_timeouts.py
 
+      # A `paths:` filter that matches nothing leaves its workflow silently
+      # dark: it never runs, so it can never go red. `crates/soldr-cli/src/
+      # cache_lib/**` moved to crates/soldr-cache in #1490 Phase 4, and
+      # thin-v2-verify + cook-size-gate kept watching the old location.
+      - name: Verify workflow path filters still match
+        run: python3 .github/scripts/verify_workflow_paths.py
+
       - name: Run clippy
         run: soldr cargo clippy --workspace --all-targets --locked -- -D warnings
 
