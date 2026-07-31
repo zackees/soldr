@@ -36,6 +36,8 @@ jobs:
   prepare:
     name: Detect release version bump
     runs-on: ubuntu-24.04
+    # Version/tag lookups only; observed max 0.2 min over 10 runs.
+    timeout-minutes: 15
     outputs:
       should_release: ${{ steps.validate.outputs.should_release }}
       should_publish_github_release: ${{ steps.validate.outputs.should_publish_github_release }}
@@ -219,6 +221,9 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.should_release == 'true'
     runs-on: ${{ matrix.runner }}
+    # Slowest lane is Windows x64: observed max 30.3 min, p50 29.1 min
+    # over 7 releases. 90 leaves ~3x headroom for a cold runner.
+    timeout-minutes: 90
     # Every release lane is required. Registry publishes are gated on a
     # verified GitHub Release asset set, so a missing target must stop the
     # release instead of silently shipping PyPI/npm only.
@@ -1521,6 +1526,8 @@ jobs:
       - smoke_macos_x64
     if: needs.prepare.outputs.should_publish_github_release == 'true' && needs.smoke_macos_x64.result == 'success'
     runs-on: ubuntu-24.04
+    # Artifact download + attestation; observed max 0.6 min.
+    timeout-minutes: 30
 
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -1652,6 +1659,8 @@ jobs:
       - publish
     if: always() && needs.prepare.outputs.should_release == 'true' && needs.build.result == 'success'
     runs-on: ubuntu-24.04
+    # Asset-set assertion against the GitHub API; observed max 0.1 min.
+    timeout-minutes: 15
 
     steps:
       - name: Verify expected release assets
@@ -1716,6 +1725,8 @@ jobs:
     # enough; verify_github_release checks the actual asset set.
     if: always() && needs.prepare.outputs.should_publish_pypi == 'true' && needs.verify_github_release.result == 'success'
     runs-on: ubuntu-24.04
+    # Wheel download + twine upload; observed max 1.9 min.
+    timeout-minutes: 30
 
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -1788,6 +1799,8 @@ jobs:
       - publish-pypi
     if: always() && needs.prepare.outputs.should_publish_npm == 'true' && needs.verify_github_release.result == 'success' && (needs.publish-pypi.result == 'success' || needs.publish-pypi.result == 'skipped')
     runs-on: ubuntu-24.04
+    # Single `npm publish`; observed max 0.5 min.
+    timeout-minutes: 15
     environment: release
     permissions:
       contents: read
