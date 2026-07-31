@@ -156,6 +156,19 @@ jobs:
           soldr status --json > soldr-status.json
           python3 .github/scripts/check_compile_fallbacks.py soldr-status.json
 
+      # soldr#1799: fail the lane if soldr's managed toolchain homes leaked onto
+      # a host-resolved tool (the #1768 bug). It never fails loudly -- it flips
+      # which rustc runs, invalidating cargo fingerprints and zccache keys, so
+      # warm builds silently recompile the world. The build log already records
+      # `home_origin` beside the resolved `binary`; this asserts the pair.
+      - name: Assert managed toolchain homes did not leak (soldr#1799)
+        if: success()
+        continue-on-error: ${{ !contains(inputs.target, 'linux-gnu') }}
+        shell: pwsh
+        run: |
+          python3 .github/scripts/check_toolchain_homes.py "$HOME/.soldr/logs/builds" `
+            --managed-root "$HOME/.soldr" --managed-root "$HOME/.soldr-dev"
+
       - name: Stop setup-soldr builder cache before tests
         uses: zackees/setup-soldr/cleanup@922fe76752c37e46d63436b338fbe8cf3709bb69
 
