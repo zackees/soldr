@@ -161,9 +161,24 @@ jobs:
       # which rustc runs, invalidating cargo fingerprints and zccache keys, so
       # warm builds silently recompile the world. The build log already records
       # `home_origin` beside the resolved `binary`; this asserts the pair.
+      # Unconditional, unlike the #1838 guard above. That one is advisory off
+      # linux-gnu for a stated reason -- a flaky Windows/macOS daemon race
+      # should surface in the log without gating the build. This check has no
+      # such platform story: `home_origin` correctness is the invariant in
+      # CLAUDE.md ("one canonical toolchain-home pair per execution, chosen by
+      # where the binary lives"), and it holds on every platform. The advisory
+      # expression here was the neighbour's, not a decision.
+      #
+      # It is dead today either way -- ci.yml is the only caller and passes
+      # x86_64-unknown-linux-gnu, so the expression is always false. The point
+      # is that adding a Windows or macOS caller would silently downgrade this
+      # to advisory, and soldr#1799 exists precisely because a home leak never
+      # fails loudly: it flips which rustc runs, invalidating cargo
+      # fingerprints and zccache keys, so warm builds silently recompile the
+      # world. A guard that quietly stops guarding is how that got missed once
+      # already.
       - name: Assert managed toolchain homes did not leak (soldr#1799)
         if: success()
-        continue-on-error: ${{ !contains(inputs.target, 'linux-gnu') }}
         shell: pwsh
         run: |
           python3 .github/scripts/check_toolchain_homes.py "$HOME/.soldr/logs/builds" `
