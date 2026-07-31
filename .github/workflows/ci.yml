@@ -195,6 +195,19 @@ jobs:
       - name: Verify workflow path filters still match
         run: python3 .github/scripts/verify_workflow_paths.py
 
+      # soldr#2102. `./lint` runs six Python tools and CI ran none of them, so
+      # lint drift accumulated unnoticed for months. flake8 is the one that can
+      # be enforced today: with `.flake8` delegating line length to black it
+      # reports 0 violations across every Python directory, so this is a
+      # regression guard rather than a new policy.
+      #
+      # black, isort and mypy still report on main and are NOT wired here --
+      # each needs a decision (which width, whether to fix or scope mypy's 34
+      # errors). soldr#2102 tracks them. Adding a gate that fails on main would
+      # block every PR for a problem it did not cause.
+      - name: Python lint (flake8)
+        run: uv run --no-project --with flake8 python -m flake8 src tests .github/scripts ci
+
       # soldr#1978 item 6 names this step as duplicating build-linux-x64's
       # compile of the same workspace + test targets on a second runner.
       # Measured across three consecutive runs before acting on it:
