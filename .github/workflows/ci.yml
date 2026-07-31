@@ -151,6 +151,11 @@ jobs:
       - name: Setup soldr build cache
         uses: zackees/setup-soldr@922fe76752c37e46d63436b338fbe8cf3709bb69
         with:
+          # soldr#1799: pin the soldr that builds us -- the action's default
+          # (0.8.23) predates #1820 and GCs live target/ artifacts after every
+          # build, so the next build recompiles the world. See
+          # tests/test_setup_soldr_version_pins.py.
+          version: 0.8.29
           toolchain: 1.94.1
           cache: false
           zccache-seed-strict: true
@@ -438,6 +443,11 @@ jobs:
       - name: Setup soldr build cache
         uses: zackees/setup-soldr@922fe76752c37e46d63436b338fbe8cf3709bb69
         with:
+          # soldr#1799: pin the soldr that builds us -- the action's default
+          # (0.8.23) predates #1820 and GCs live target/ artifacts after every
+          # build, so the next build recompiles the world. See
+          # tests/test_setup_soldr_version_pins.py.
+          version: 0.8.29
           toolchain: 1.94.1
           cache: false
           zccache-seed-strict: true
