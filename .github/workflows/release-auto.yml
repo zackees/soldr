@@ -753,6 +753,34 @@ jobs:
       # the old "no dynamic section" test called both of them dynamic, so
       # extending the check here would have failed the release on correct
       # binaries.
+      # soldr#1060, macOS side. A Mach-O records the oldest OS it will start
+      # on, and nothing watched that value: it is whatever the toolchain and
+      # the pinned Apple SDK produce, since no lane sets
+      # MACOSX_DEPLOYMENT_TARGET. Drift upward has the same shape as the
+      # GLIBC_2.39 problem -- builds fine, tests fine, refuses to launch on
+      # older Macs, and you find out from a user.
+      #
+      # Measured on published v0.8.29: aarch64 is 11.0 throughout (correct and
+      # unavoidable for Apple Silicon), and on x86_64 soldr is also 11.0 while
+      # crgx beside it is 10.12. So the bundle is not internally consistent and
+      # x86_64 asks for more than Rust's 10.12 default for that target. This
+      # step does not change any of that -- it pins the current values so the
+      # next SDK bump cannot raise them unnoticed.
+      - name: Ratchet the macOS minimum version (soldr#1060)
+        if: contains(matrix.target, 'apple-darwin')
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t bundled < <(find dist/package -maxdepth 1 -type f \
+            \( -name soldr -o -name soldr-daemon -o -name crgx -o -name cargo-chef \))
+          if [ "${#bundled[@]}" -eq 0 ]; then
+            echo "no bundled binaries found in dist/package to verify" >&2
+            ls -la dist/package >&2
+            exit 1
+          fi
+          python3 .github/scripts/verify_macos_min_version.py \
+            --max-min-os 11.0 "${bundled[@]}"
+
       - name: Verify every bundled musl binary is static (soldr#1060)
         if: contains(matrix.target, 'musl')
         shell: bash
