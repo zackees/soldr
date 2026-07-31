@@ -9,6 +9,17 @@ use crate::core::{SoldrError, SoldrPaths, TargetTriple};
 use super::github::http_client;
 use super::trust;
 
+// soldr#2132: deliberately NOT wrapped in `super::retry::with_backoff`.
+//
+// Every call site here -- `download_and_extract` at mod.rs:579 and
+// `download_and_extract_with_pin` at :829 and :953, the latter two via
+// `try_embedded_manifest_v6` / `try_manifest_first` -- is reached from
+// `fetch_repo_binary_once`, which IS the body of the retry loop in
+// `fetch_repo_binary_with_paths`. Adding a retry here would nest inside that
+// one: 4 outer x 4 inner = up to 16 downloads and ~2.5 minutes of sleeping
+// before a genuinely dead host is reported. The outer loop already covers
+// this path; the right number of retry layers is one.
+
 pub(super) async fn download_and_extract(
     paths: &SoldrPaths,
     cache_name: &str,
