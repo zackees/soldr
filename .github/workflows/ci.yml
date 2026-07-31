@@ -283,6 +283,18 @@ jobs:
           uv run --no-project --with 'pylint>=4.0,<5' --with 'pytest>=8.0'             python -m pylint src
           uv run --no-project --with 'pylint>=4.0,<5' --with 'pytest>=8.0'             python -m pylint --rcfile=tests/.pylintrc tests
 
+      # `.github/scripts` joins `src tests` here: those are the scripts CI
+      # itself runs, so a type error in them breaks a lane rather than a
+      # developer's editor. The nine findings it had are fixed at the source
+      # (a `None` that could reach `.get`, a list indexed with a str) rather
+      # than suppressed.
+      #
+      # `ci/` is deliberately still out. Four of its findings are
+      # `fcntl.flock` / `LOCK_EX` "has no attribute", which is a Windows-only
+      # artifact: a contributor on Windows sees them and this Linux runner
+      # never does. Wiring it here without first deciding how that
+      # platform split should be expressed would enforce a check whose
+      # result depends on who ran it.
       - name: Python types (mypy)
         # pytest is in the ephemeral env because the tests import it, and
         # mypy cannot resolve an import it cannot see. This passed locally
@@ -291,7 +303,7 @@ jobs:
         # bit the flake8 step in #2103.
         run: >-
           uv run --no-project --with 'mypy>=1.18,<2' --with 'pytest>=8.0'
-          python -m mypy src tests
+          python -m mypy src tests .github/scripts
 
 
       # soldr#1978 item 6 names this step as duplicating build-linux-x64's

@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 
@@ -28,7 +29,7 @@ script = load("download_catalogued_asset")
 class DownloadCataloguedAssetTests(unittest.TestCase):
     def test_valid_download_is_written_and_reported(self) -> None:
         payload = b"catalogue payload"
-        metadata = {
+        metadata: dict[str, Any] = {
             "filename": "asset.tar.gz",
             "urls": ["https://example.test/asset.tar.gz"],
             "sha256": script.hashlib.sha256(payload).hexdigest(),
@@ -44,7 +45,7 @@ class DownloadCataloguedAssetTests(unittest.TestCase):
             self.assertEqual(result["verified_sha256"], metadata["sha256"])
 
     def test_mismatch_fails_before_publish(self) -> None:
-        metadata = {
+        metadata: dict[str, Any] = {
             "filename": "asset.tar.gz",
             "urls": ["https://example.test/asset.tar.gz"],
             "sha256": "0" * 64,
@@ -59,7 +60,10 @@ class DownloadCataloguedAssetTests(unittest.TestCase):
             self.assertFalse((Path(temp) / metadata["filename"]).exists())
 
     def test_missing_digest_fails_closed(self) -> None:
-        metadata = {"filename": "asset.tar.gz", "urls": ["https://example.test"]}
+        metadata: dict[str, Any] = {
+            "filename": "asset.tar.gz",
+            "urls": ["https://example.test"],
+        }
         with tempfile.TemporaryDirectory() as temp:
             with self.assertRaisesRegex(SystemExit, "no valid sha256"):
                 script.download_verified(metadata, Path(temp) / metadata["filename"])

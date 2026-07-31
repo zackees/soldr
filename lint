@@ -21,7 +21,10 @@ echo Running pylint src
 uv run --no-sync pylint src
 echo Running pylint tests
 uv run --no-sync pylint --rcfile=tests/.pylintrc tests
-echo Running mypy src
-uv run --no-sync mypy src tests
+# Same scope CI checks. `ci/` is excluded in both places because its
+# `fcntl.flock` findings are Windows-only and would make this pass or fail
+# depending on the contributor's OS.
+echo Running mypy src tests .github/scripts
+uv run --no-sync mypy src tests .github/scripts
 echo Linting complete!
 exit 0
