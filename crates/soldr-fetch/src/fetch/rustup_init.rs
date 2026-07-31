@@ -324,10 +324,10 @@ pub fn rustup_init_host_triple() -> Result<String, SoldrError> {
     })
 }
 
-async fn download_rustup_init(cache_dir: &Path, url: &str) -> Result<PathBuf, SoldrError> {
-    std::fs::create_dir_all(cache_dir)?;
-    let destination = cache_dir.join(rustup_init_filename());
-
+/// One download attempt for `rustup-init`. Every error is
+/// [`SoldrError::Network`], which is what [`super::retry::is_transient`]
+/// matches.
+async fn download_rustup_init_bytes(url: &str) -> Result<Vec<u8>, SoldrError> {
     let client = http_client()?;
     let resp = client
         .get(url)
@@ -340,10 +340,23 @@ async fn download_rustup_init(cache_dir: &Path, url: &str) -> Result<PathBuf, So
             resp.status()
         )));
     }
-    let bytes = resp
-        .bytes()
+    resp.bytes()
         .await
-        .map_err(|e| SoldrError::Network(format!("bootstrap: read body {url}: {e}")))?;
+        .map(|body| body.to_vec())
+        .map_err(|e| SoldrError::Network(format!("bootstrap: read body {url}: {e}")))
+}
+
+async fn download_rustup_init(cache_dir: &Path, url: &str) -> Result<PathBuf, SoldrError> {
+    std::fs::create_dir_all(cache_dir)?;
+    let destination = cache_dir.join(rustup_init_filename());
+
+    // soldr#2132: retry the download. This one runs during bootstrap, before
+    // any build starts, so a blip here fails the toolchain rather than a
+    // compile -- the same shape as the cmake failure that stopped the v0.8.30
+    // release, one step earlier. Checksum verification stays below, outside
+    // the retry.
+    let bytes =
+        super::retry::with_backoff("rustup-init", || download_rustup_init_bytes(url)).await?;
 
     let sha256 = sha256_of(&bytes);
 

@@ -105,22 +105,14 @@ pub async fn ensure_xwin_cache(
         "soldr: fetching xwin-cache v{MANAGED_XWIN_CACHE_VERSION} for {target_triple} from {url}..."
     );
 
-    let client = http_client()?;
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| SoldrError::Network(e.to_string()))?;
-    if !resp.status().is_success() {
-        return Err(SoldrError::Network(format!(
-            "xwin-cache download failed: HTTP {}",
-            resp.status()
-        )));
-    }
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| SoldrError::Network(e.to_string()))?;
+    // soldr#2132: retry the download. The sha256 comparison below stays
+    // outside it -- the catalogue blob being replaced is exactly the case that
+    // must fail on the first try.
+    let bytes = super::retry::with_backoff(
+        &format!("xwin-cache v{MANAGED_XWIN_CACHE_VERSION} for {target_triple}"),
+        || download_xwin_cache(url),
+    )
+    .await?;
 
     let digest = trust::sha256_of(&bytes);
     if digest != expected_sha256 {
@@ -173,6 +165,27 @@ pub async fn ensure_xwin_cache(
         cache_dir.display()
     );
     Ok(cache_dir)
+}
+
+/// One download attempt. Every error is [`SoldrError::Network`], which is what
+/// [`super::retry::is_transient`] matches.
+async fn download_xwin_cache(url: &str) -> Result<Vec<u8>, SoldrError> {
+    let client = http_client()?;
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| SoldrError::Network(e.to_string()))?;
+    if !resp.status().is_success() {
+        return Err(SoldrError::Network(format!(
+            "xwin-cache download failed: HTTP {}",
+            resp.status()
+        )));
+    }
+    resp.bytes()
+        .await
+        .map(|body| body.to_vec())
+        .map_err(|e| SoldrError::Network(e.to_string()))
 }
 
 fn resolve_xwin_cache_dir(install_dir: &Path) -> Option<PathBuf> {
