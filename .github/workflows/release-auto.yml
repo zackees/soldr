@@ -124,7 +124,13 @@ jobs:
           release_json="$(gh release view "$version" --repo "$GITHUB_REPOSITORY" --json assets,isDraft 2>/dev/null || true)"
           if [[ -n "$release_json" ]]; then
             is_draft="$(jq -r '.isDraft' <<< "$release_json")"
-            mapfile -t actual_assets < <(jq -r '.assets[].name' <<< "$release_json" | sort)
+            # No `mapfile`: this workflow also runs on macOS, whose bash is
+            # 3.2. Keeping one style across the file means a step cannot be
+            # re-gated onto a darwin lane and break there.
+            actual_assets=()
+            while IFS= read -r asset_name; do
+              actual_assets+=("$asset_name")
+            done < <(jq -r '.assets[].name' <<< "$release_json" | sort)
             missing=()
             for asset in "${expected_assets[@]}"; do
               if ! printf '%s\n' "${actual_assets[@]}" | grep -Fx "$asset" >/dev/null; then
@@ -781,7 +787,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t bundled < <(find dist/package -maxdepth 1 -type f \
+          # bash 3.2 -- what macOS ships, frozen there by GPLv3 -- has no
+          # `mapfile`. A read loop is the portable equivalent and behaves
+          # identically on every runner.
+          bundled=()
+          while IFS= read -r bundled_path; do
+            bundled+=("$bundled_path")
+          done < <(find dist/package -maxdepth 1 -type f \
             \( -name 'soldr.exe' -o -name 'soldr-daemon.exe' \
                -o -name 'crgx.exe' -o -name 'cargo-chef.exe' \))
           if [ "${#bundled[@]}" -eq 0 ]; then
@@ -809,7 +821,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t bundled < <(find dist/package -maxdepth 1 -type f \
+          # bash 3.2 -- what macOS ships, frozen there by GPLv3 -- has no
+          # `mapfile`. A read loop is the portable equivalent and behaves
+          # identically on every runner.
+          bundled=()
+          while IFS= read -r bundled_path; do
+            bundled+=("$bundled_path")
+          done < <(find dist/package -maxdepth 1 -type f \
             \( -name soldr -o -name soldr-daemon -o -name crgx -o -name cargo-chef \))
           if [ "${#bundled[@]}" -eq 0 ]; then
             echo "no bundled binaries found in dist/package to verify" >&2
@@ -824,7 +842,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t bundled < <(find dist/package -maxdepth 1 -type f \
+          # bash 3.2 -- what macOS ships, frozen there by GPLv3 -- has no
+          # `mapfile`. A read loop is the portable equivalent and behaves
+          # identically on every runner.
+          bundled=()
+          while IFS= read -r bundled_path; do
+            bundled+=("$bundled_path")
+          done < <(find dist/package -maxdepth 1 -type f \
             \( -name soldr -o -name soldr-daemon -o -name crgx -o -name cargo-chef \))
           if [ "${#bundled[@]}" -eq 0 ]; then
             echo "no bundled binaries found in dist/package to verify" >&2
@@ -852,7 +876,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t bundled < <(find dist/package -maxdepth 1 -type f \
+          # bash 3.2 -- what macOS ships, frozen there by GPLv3 -- has no
+          # `mapfile`. A read loop is the portable equivalent and behaves
+          # identically on every runner.
+          bundled=()
+          while IFS= read -r bundled_path; do
+            bundled+=("$bundled_path")
+          done < <(find dist/package -maxdepth 1 -type f \
             \( -name soldr -o -name soldr-daemon -o -name crgx -o -name cargo-chef \))
           if [ "${#bundled[@]}" -eq 0 ]; then
             echo "no bundled binaries found in dist/package to verify" >&2
