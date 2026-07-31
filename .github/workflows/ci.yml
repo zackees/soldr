@@ -227,7 +227,7 @@ jobs:
         # else's release date.
         run: >-
           uv run --no-project --with 'ruff>=0.12,<0.13'
-          ruff check src tests .github/scripts .github/actions ci
+          ruff check src tests .github/scripts .github/actions ci tools .claude/hooks
 
       - name: Python lint (flake8)
         # Pinned, not floating. An unpinned `--with flake8` means a future
@@ -238,7 +238,7 @@ jobs:
         # problem -- black, isort, pylint and mypy are installed unpinned by
         # `./install` and declared nowhere, which is why contributors format
         # differently from one another.
-        run: uv run --no-project --with 'flake8>=7.3,<8' python -m flake8 src tests .github/scripts .github/actions ci
+        run: uv run --no-project --with 'flake8>=7.3,<8' python -m flake8 src tests .github/scripts .github/actions ci tools .claude/hooks
 
       # black and isort, now that #2105 constrained them in `./install` so a
       # contributor and CI cannot resolve different versions. Both bounds were
@@ -260,8 +260,8 @@ jobs:
       - name: Python format (black, isort)
         run: |
           set -euo pipefail
-          uv run --no-project --with 'black>=25.1,<26' python -m black --check src tests .github/scripts .github/actions ci
-          uv run --no-project --with 'isort>=6.0,<7' python -m isort --profile black --check-only src tests .github/scripts .github/actions ci
+          uv run --no-project --with 'black>=25.1,<26' python -m black --check src tests .github/scripts .github/actions ci tools .claude/hooks
+          uv run --no-project --with 'isort>=6.0,<7' python -m isort --profile black --check-only src tests .github/scripts .github/actions ci tools .claude/hooks
 
       # mypy over both the shipped package and the tests. `src/` was cleaned
       # in #2107 (four annotation defects, none behavioural); `tests/` is
@@ -299,7 +299,7 @@ jobs:
           # Two surfaces here for the same reason src/ and tests/ are split:
           # `test_*.py` in this directory are pytest suites, so they take the
           # tests/ ruleset, and everything else takes the default one.
-          uv run --no-project --with 'pylint>=4.0,<5' --with 'pytest>=8.0'             python -m pylint .github/scripts .github/actions/setup-soldr ci --ignore-patterns='test_.*\.py'
+          uv run --no-project --with 'pylint>=4.0,<5' --with 'pytest>=8.0'             python -m pylint .github/scripts .github/actions/setup-soldr ci tools .claude/hooks --ignore-patterns='test_.*\.py'
           uv run --no-project --with 'pylint>=4.0,<5' --with 'pytest>=8.0'             python -m pylint --rcfile=tests/.pylintrc .github/scripts/test_*.py
 
       # All four directories. `.github/scripts` and `ci` are the scripts CI
@@ -324,7 +324,7 @@ jobs:
         # bit the flake8 step in #2103.
         run: >-
           uv run --no-project --with 'mypy>=1.18,<2' --with 'pytest>=8.0'
-          python -m mypy src tests .github/scripts .github/actions ci
+          python -m mypy src tests .github/scripts .github/actions ci tools .claude/hooks
 
 
       # soldr#1978 item 6 names this step as duplicating build-linux-x64's

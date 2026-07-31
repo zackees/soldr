@@ -10,23 +10,23 @@ uv run --no-sync ruff check --fix tests
 # Same four directories CI checks. Contributor/CI parity is the point: a lint
 # that passes locally and fails in CI is worse than no lint locally.
 echo Running ruff .github/scripts ci
-uv run --no-sync ruff check --fix .github/scripts .github/actions ci
-echo Running black src tests .github/scripts .github/actions ci
-uv run --no-sync black src tests .github/scripts .github/actions ci
+uv run --no-sync ruff check --fix .github/scripts .github/actions ci tools .claude/hooks
+echo Running black src tests .github/scripts .github/actions ci tools .claude/hooks
+uv run --no-sync black src tests .github/scripts .github/actions ci tools .claude/hooks
 echo Running isort src tests .github/scripts ci
-uv run --no-sync isort --profile black src tests .github/scripts .github/actions ci
-echo Running flake8 src tests .github/scripts .github/actions ci
-uv run --no-sync flake8 src tests .github/scripts .github/actions ci
+uv run --no-sync isort --profile black src tests .github/scripts .github/actions ci tools .claude/hooks
+echo Running flake8 src tests .github/scripts .github/actions ci tools .claude/hooks
+uv run --no-sync flake8 src tests .github/scripts .github/actions ci tools .claude/hooks
 echo Running pylint src
 uv run --no-sync pylint src
 echo Running pylint tests
 uv run --no-sync pylint --rcfile=tests/.pylintrc tests
 echo Running pylint .github/scripts ci
-uv run --no-sync pylint .github/scripts .github/actions/setup-soldr ci --ignore-patterns='test_.*\.py'
+uv run --no-sync pylint .github/scripts .github/actions/setup-soldr ci tools .claude/hooks --ignore-patterns='test_.*\.py'
 echo Running pylint .github/scripts test guards
 uv run --no-sync pylint --rcfile=tests/.pylintrc .github/scripts/test_*.py
 # Same four directories CI checks.
-echo Running mypy src tests .github/scripts .github/actions ci
-uv run --no-sync mypy src tests .github/scripts .github/actions ci
+echo Running mypy src tests .github/scripts .github/actions ci tools .claude/hooks
+uv run --no-sync mypy src tests .github/scripts .github/actions ci tools .claude/hooks
 echo Linting complete!
 exit 0

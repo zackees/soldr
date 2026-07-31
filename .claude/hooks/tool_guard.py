@@ -21,7 +21,6 @@ import re
 import shlex
 import sys
 
-
 # Anything in this set, invoked bare, is denied. The user is expected to
 # route through `soldr <tool> ...` (or `uv run --no-project soldr <tool> ...`).
 RUST_TOOLS = {
@@ -256,13 +255,16 @@ def check_command(command):
 
 def deny(reason):
     """Output a JSON deny response."""
-    json.dump({
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": reason,
-        }
-    }, sys.stdout)
+    json.dump(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            }
+        },
+        sys.stdout,
+    )
 
 
 def extract_command(data):
