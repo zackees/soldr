@@ -137,9 +137,14 @@ fi
 # bash 3.2 -- what macOS ships -- has no `readarray`, and this script runs on
 # macOS by design (`Darwin) os="apple-darwin"` above). A read loop is the
 # portable equivalent.
+# Trailing CR is stripped because python prints CRLF on Windows, where this
+# script is reachable (MSYS/Git Bash map to pc-windows-msvc above) and `read`
+# consumes only the LF -- exactly as `readarray -t` did. Left in place, the
+# asset name and download URL carry a CR and the download path does not exist.
+CR="$(printf '\r')"
 RELEASE_INFO=()
 while IFS= read -r release_line; do
-  RELEASE_INFO+=("$release_line")
+  RELEASE_INFO+=("${release_line%$CR}")
 done < <(
   RELEASE_JSON="$RELEASE_JSON" TARGET="$TARGET" ARCHIVE_EXT="$ARCHIVE_EXT" "$PYTHON_BIN" - <<'PY'
 import json
