@@ -53,6 +53,11 @@ jobs:
   delta:
     name: Linux x64 (delta-cache)
     runs-on: ubuntu-24.04
+    # soldr#1978 item 8 burn-down. The workload is fixed -- workflow_dispatch
+    # takes no inputs, so this always cooks + builds soldr itself. Ten observed
+    # runs land at 10-23 min, so 90 min is ~4x headroom and still a quarter of
+    # the 360-minute default it replaces.
+    timeout-minutes: 90
     outputs:
       cook-cache-hit: ${{ steps.delta-cache.outputs.cook-cache-hit }}
       delta-cache-hit: ${{ steps.delta-cache.outputs.delta-cache-hit }}
@@ -169,6 +174,8 @@ jobs:
   baseline:
     name: Linux x64 (single-cache baseline)
     runs-on: ubuntu-24.04
+    # Same fixed workload and headroom as `delta` above (soldr#1978 item 8).
+    timeout-minutes: 90
     outputs:
       cache-hit: ${{ steps.restore.outputs.cache-hit }}
       upload-bytes: ${{ steps.measure.outputs.upload-bytes }}
@@ -294,6 +301,9 @@ jobs:
     needs: [delta, baseline]
     if: always()
     runs-on: ubuntu-24.04
+    # A single step that formats the two jobs' outputs into a markdown table
+    # -- seconds of work (soldr#1978 item 8).
+    timeout-minutes: 15
     steps:
       - name: Emit comparison summary
         shell: bash
