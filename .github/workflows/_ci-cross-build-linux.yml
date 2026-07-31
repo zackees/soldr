@@ -369,6 +369,34 @@ jobs:
             test "$(dd if="$binary" bs=1 count=2 2>/dev/null)" = "MZ"
           fi
 
+      # soldr#1060: a glibc-floor ratchet for the -gnu binaries, at PR time
+      # rather than only during a release (#2080).
+      #
+      # These artifacts are the fallback for OLD distros, so the floor is the
+      # whole point, and nothing on a PR looked at it -- which is how the
+      # published binaries came to require GLIBC_2.39, excluding RHEL 9,
+      # Debian 12 and Ubuntu 22.04.
+      #
+      # The ceiling here is 2.28, NOT the 2.39 release-auto.yml uses, because
+      # this lane does better and the ratchet should hold it to that. The
+      # difference is the builder, not the profile: this lane CROSS-builds
+      # aarch64 on an x86_64 host against soldr's blessed sysroot and lands on
+      # GLIBC_2.28 (measured in CI on #2083), while release-auto.yml builds the
+      # same target NATIVELY on ubuntu-24.04-arm and inherits that runner's
+      # 2.39.
+      #
+      # That gap is worth knowing on its own: the blessed cross path already
+      # produces a far more portable binary than the native release lane, with
+      # no zig involved. See soldr#1060.
+      - name: Check glibc baseline of the gnu binary (soldr#1060 ratchet)
+        if: contains(inputs.target, 'unknown-linux-gnu')
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/verify_glibc_baseline.py \
+            --max-glibc 2.28 \
+            "target/${{ inputs.target }}/ci-nextest/soldr"
+
       - name: Target clippy uses the blessed lifecycle
         shell: bash
         run: |
