@@ -72,6 +72,17 @@ pub const MANAGED_LLVM_VERSION: &str = "21.1.5";
 /// / `llvm-lib` — i.e. the same shape this module returns from
 /// `ensure_llvm_toolchain` after a managed fetch.
 const LLVM_DIR_ENV_VAR: &str = "SOLDR_LLVM_DIR";
+/// soldr#2132 called `mod.rs`, `llvm.rs` and `zig.rs` "three near-identical
+/// copies" of the retry loop. They are near-identical in the retrying; they
+/// differ exactly where it matters, in what happens once attempts run out:
+///
+/// * `mod.rs` falls back to the newest cached tool for `VersionSpec::Latest`
+///   (#1879) so a rate-limited release API does not turn into a red build;
+/// * `zig.rs` falls back to a `curl` subprocess;
+/// * this one simply fails, which is what `retry::with_backoff` does.
+///
+/// Only this one could move to the shared helper. Folding either of the others
+/// would silently delete a fallback, so they keep their loops.
 const LLVM_DOWNLOAD_ATTEMPTS: u32 = 4;
 const LLVM_DOWNLOAD_INITIAL_BACKOFF: Duration = Duration::from_secs(5);
 const LLVM_DOWNLOAD_TIMEOUT_SECS: u64 = 600;
@@ -245,25 +256,22 @@ async fn fetch_managed_llvm(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
 }
 
 async fn download_llvm_asset(asset: &LlvmAsset) -> Result<Vec<u8>, SoldrError> {
+    // soldr#2132 step 1: this loop was one of three hand-rolled copies. It is
+    // the only one that folds onto the shared helper without losing anything --
+    // see the note on `LLVM_DOWNLOAD_ATTEMPTS` for why the other two stay.
+    //
+    // The old guard retried on *any* error rather than testing transience.
+    // That is not a behaviour change here: every error `download_llvm_asset_once`
+    // can produce is `SoldrError::Network`, which `retry::is_transient` matches,
+    // so the set of retried failures is identical.
     let client = llvm_http_client()?;
-    let mut attempt = 1;
-    let mut backoff = LLVM_DOWNLOAD_INITIAL_BACKOFF;
-    loop {
-        let result = download_llvm_asset_once(&client, asset).await;
-        match result {
-            Ok(bytes) => return Ok(bytes),
-            Err(err) if attempt < LLVM_DOWNLOAD_ATTEMPTS => {
-                eprintln!(
-                    "soldr: transient error fetching LLVM v{MANAGED_LLVM_VERSION} {} (attempt {attempt}/{LLVM_DOWNLOAD_ATTEMPTS}): {err}; retrying in {:?}",
-                    asset.plat_arch, backoff
-                );
-                tokio::time::sleep(backoff).await;
-                backoff = backoff.saturating_mul(2);
-                attempt += 1;
-            }
-            Err(err) => return Err(err),
-        }
-    }
+    super::retry::with_backoff_params(
+        &format!("LLVM v{MANAGED_LLVM_VERSION} {}", asset.plat_arch),
+        LLVM_DOWNLOAD_ATTEMPTS,
+        LLVM_DOWNLOAD_INITIAL_BACKOFF,
+        || download_llvm_asset_once(&client, asset),
+    )
+    .await
 }
 
 fn llvm_http_client() -> Result<reqwest::Client, SoldrError> {
