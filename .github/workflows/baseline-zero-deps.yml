@@ -345,6 +345,21 @@ jobs:
           chmod +x "${{ matrix.context }}/soldr"
           file "${{ matrix.context }}/soldr" || true
 
+      # soldr#1978 item 5 proposed adding a BuildKit inline / registry cache
+      # here, because this builds two images per run with `--pull` and no
+      # cache. Measured before doing it, across three consecutive green runs:
+      #
+      #   Bootstrap test (musl)    4s,  6s,  9s
+      #   Bootstrap test (glibc)  11s, 12s, 13s
+      #
+      # So the whole concern is worth ~15 seconds a run. The expensive steps
+      # in this same job are Exercise 4 (cargo xwin build, ~819s) and
+      # Exercise 3 (legacy cargo zigbuild, ~528s) -- two orders of magnitude
+      # above what caching here could recover, and `--pull` is what keeps the
+      # zero-deps claim honest by refusing a stale local base image.
+      #
+      # Recorded so the idea is not re-derived from the issue text. If this
+      # ever gets slow, measure again rather than trusting this comment.
       - name: Build baseline docker image
         shell: bash
         run: |

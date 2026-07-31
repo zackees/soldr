@@ -73,6 +73,11 @@ jobs:
       # rust-toolchain.ci.toml` input (which declares the target too),
       # so running dtolnay first duplicated ~6-8 s of install work.
 
+      # Dormant today: ci.yml is the only caller and passes
+      # x86_64-unknown-linux-gnu, so this condition is never true. Kept rather
+      # than deleted -- it is setup, not a check, so its not running hides
+      # nothing, and a musl caller would need it back verbatim. Noted because
+      # a reader can otherwise reasonably assume musl is exercised here.
       - name: Install musl tools
         if: contains(inputs.target, 'musl')
         shell: bash
