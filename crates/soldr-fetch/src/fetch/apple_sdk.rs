@@ -310,23 +310,26 @@ async fn fetch_managed_sdk(
         selection.shape.catalogue_slug()
     );
 
-    let client = apple_sdk_http_client()?;
-    let resp = client
-        .get(&url)
-        .header(reqwest::header::ACCEPT_ENCODING, "identity")
-        .send()
-        .await
-        .map_err(|e| SoldrError::Network(e.to_string()))?;
-    if !resp.status().is_success() {
-        return Err(SoldrError::Network(format!(
-            "Apple SDK download failed: HTTP {}",
-            resp.status()
-        )));
-    }
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| SoldrError::Network(e.to_string()))?;
+    // soldr#2132: retry the download. This is the last fetcher doing its own
+    // unprotected network I/O -- the eight modules that go through
+    // `syslib_common::ensure_syslib_bundle` inherited retry from that one
+    // wrapper, and this one only borrows its install lock. It is also a large
+    // body on the darwin cross-build path, which is the shape that failed two
+    // lanes of the v0.8.30 release.
+    //
+    // The sha256 comparison stays OUTSIDE the closure deliberately: a digest
+    // mismatch is `SoldrError::Other`, which `is_transient` does not match, but
+    // keeping it outside means a corrupt-but-stable blob cannot be re-fetched
+    // three more times in the hope of a different answer.
+    let bytes = super::retry::with_backoff(
+        &format!(
+            "Apple SDK {}/{}",
+            selection.version,
+            selection.shape.catalogue_slug()
+        ),
+        || download_apple_sdk_bundle(&url),
+    )
+    .await?;
 
     let digest = trust::sha256_of(&bytes);
     if digest != expected_sha256 {
@@ -398,6 +401,29 @@ async fn fetch_managed_sdk(
     let sdk_dir = result?;
     eprintln!("soldr: extracted Apple SDK to {}", sdk_dir.display());
     Ok(sdk_dir)
+}
+
+/// One download attempt. Split out so [`retry::with_backoff`] can repeat it;
+/// every error it returns is `SoldrError::Network`, which is what
+/// `retry::is_transient` matches.
+async fn download_apple_sdk_bundle(url: &str) -> Result<Vec<u8>, SoldrError> {
+    let client = apple_sdk_http_client()?;
+    let resp = client
+        .get(url)
+        .header(reqwest::header::ACCEPT_ENCODING, "identity")
+        .send()
+        .await
+        .map_err(|e| SoldrError::Network(e.to_string()))?;
+    if !resp.status().is_success() {
+        return Err(SoldrError::Network(format!(
+            "Apple SDK download failed: HTTP {}",
+            resp.status()
+        )));
+    }
+    resp.bytes()
+        .await
+        .map(|b| b.to_vec())
+        .map_err(|e| SoldrError::Network(e.to_string()))
 }
 
 fn apple_sdk_http_client() -> Result<reqwest::Client, SoldrError> {
