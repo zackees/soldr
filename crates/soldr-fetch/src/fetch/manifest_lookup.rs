@@ -141,7 +141,21 @@ pub async fn fetch_verified_catalogue_asset(
     Ok(refreshed_bytes)
 }
 
+/// Download a catalogue-pinned asset, retrying transient failures.
+///
+/// soldr#2132: the last unretried sender in this crate. Reached from
+/// `fetch_verified_catalogue_asset`, whose only caller is
+/// `dylint_toolchain.rs` -- nothing above it retries, so wrapping here cannot
+/// nest (unlike `archive.rs`, see the note at the top of that file).
+///
+/// The retry lives inside this leaf rather than at the two call sites so both
+/// the first fetch and the cache-busted refresh below inherit it. sha256
+/// verification happens in the caller and therefore stays outside the retry.
 async fn download_catalogue_asset(url: &str) -> Result<Vec<u8>, SoldrError> {
+    super::retry::with_backoff(url, || download_catalogue_asset_once(url)).await
+}
+
+async fn download_catalogue_asset_once(url: &str) -> Result<Vec<u8>, SoldrError> {
     let client = super::github::http_client()?;
     let response = tokio::time::timeout(
         MANIFEST_FETCH_TIMEOUT,
