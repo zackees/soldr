@@ -39,7 +39,24 @@ const STALL_BUDGET_SECS: &str = "3";
 /// different error entirely.
 const WEDGE_HOLD: Duration = Duration::from_secs(30);
 
+/// A short process-unique suffix for unix socket paths, which are length
+/// limited (see `spawn_wedged_daemon`). Keeps enough entropy to avoid a
+/// collision with a leftover directory from an earlier run.
+#[cfg(unix)]
+fn terse_suffix() -> String {
+    format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .subsec_nanos()
+            % 100_000
+    )
+}
+
 /// A process-unique endpoint name, so concurrent test binaries never collide.
+#[cfg(windows)]
 fn unique_suffix() -> String {
     format!(
         "{}-{}",
@@ -95,9 +112,20 @@ fn spawn_wedged_daemon() -> (std::path::PathBuf, WedgeGuard) {
 fn spawn_wedged_daemon() -> (std::path::PathBuf, WedgeGuard) {
     use std::os::unix::net::UnixListener;
 
-    let dir = std::env::temp_dir().join(format!("soldr-stall-harness-{}", unique_suffix()));
+    // A unix socket path must fit `sun_path`, which is ~104 bytes on macOS.
+    // `env::temp_dir()` there is `$TMPDIR` -- a long `/var/folders/../T/`
+    // path -- so a descriptive directory name under it overflows and `bind`
+    // fails with "path must be shorter than SUN_LEN". Bind under `/tmp` with
+    // a terse name instead; it is short and writable on every unix CI image.
+    let dir = std::path::PathBuf::from("/tmp").join(format!("sldr-st-{}", terse_suffix()));
+    let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create wedge dir");
-    let sock = dir.join("daemon.sock");
+    let sock = dir.join("d.sock");
+    assert!(
+        sock.as_os_str().len() < 100,
+        "socket path must fit sun_path on every unix, got {} bytes: {sock:?}",
+        sock.as_os_str().len()
+    );
     // Bind on this thread so the socket exists before the client dials; the
     // listener's backlog then holds the connection until the thread accepts.
     let listener = UnixListener::bind(&sock).expect("bind wedged-daemon socket");
