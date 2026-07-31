@@ -48,16 +48,37 @@ const BUNDLED_BINARIES = zccacheContract.RELEASE_BUNDLED_BINARIES;
 //      Node binary itself is glibc (e.g. someone running glibc Node on
 //      alpine via apk add nodejs-current) but the system is musl — the
 //      soldr binary we download must match the SYSTEM libc, not Node's.
-//   3. Final fallback: assume glibc. The mismatch will surface
-//      immediately at runtime as "soldr: not found" or
-//      "soldr: error while loading shared libraries", which is louder
-//      than silently downloading the wrong tarball.
-function detectLibc(platform = process.platform) {
+//   3. When BOTH probes are inconclusive, assume musl (soldr#1060).
+//
+// That last step used to assume glibc, on the reasoning that a mismatch
+// would fail loudly and that was "louder than silently downloading the
+// wrong tarball". The premise does not hold in the musl direction: our
+// musl artifact is verified statically linked before it is ever staged
+// (`release-auto.yml` → `Verify musl binary is statically linked`), so it
+// has no dynamic loader dependency and runs on glibc systems too. The two
+// outcomes are therefore not symmetric:
+//
+//   guess musl, actually glibc → works (static binary, nothing to resolve)
+//   guess gnu,  actually musl  → hard failure, "soldr: not found"
+//
+// Only one of those is recoverable, so the unknown case takes it. A
+// positively-detected glibc system still gets the gnu build, which is what
+// soldr#1060 wants: musl as the "runs anywhere" default, gnu for anyone who
+// hits a musl edge case.
+//
+// `probes` exists so the branches above can be tested on any host; the
+// defaults are the real detectors.
+function detectLibc(platform = process.platform, probes = {}) {
   if (platform !== "linux") {
     return null;
   }
+  const readHeader =
+    probes.readHeader ||
+    (() => process.report && process.report.getReport && process.report.getReport().header);
+  const listLib = probes.listLib || (() => fs.readdirSync("/lib"));
+
   try {
-    const header = process.report && process.report.getReport && process.report.getReport().header;
+    const header = readHeader();
     if (header && typeof header.glibcVersionRuntime === "string" && header.glibcVersionRuntime.length > 0) {
       return "gnu";
     }
@@ -69,20 +90,28 @@ function detectLibc(platform = process.platform) {
     // process.report can throw on locked-down environments; fall through.
   }
   try {
-    const entries = fs.readdirSync("/lib");
+    const entries = listLib();
     if (entries.some((name) => /^ld-musl-.+\.so\.1$/.test(name))) {
       return "musl";
+    }
+    // A glibc loader in /lib is just as positive an identification as the
+    // musl one, so it resolves here rather than falling through to the
+    // unknown case. Without this the probe would be outcome-redundant once
+    // the fallback became musl -- it could only ever return the value the
+    // fallback already returns, so nothing could observe whether it ran.
+    if (entries.some((name) => /^ld-linux-.+\.so\.\d+$/.test(name))) {
+      return "gnu";
     }
   } catch (err) {
     // /lib may not be readable in heavily sandboxed containers; fall through.
   }
-  return "gnu";
+  return "musl";
 }
 
 function platformTarget(platform = process.platform, arch = process.arch, libc = detectLibc(platform)) {
   const key =
     platform === "linux"
-      ? `${platform}-${arch}-${libc || "gnu"}`
+      ? `${platform}-${arch}-${libc || "musl"}`
       : `${platform}-${arch}`;
   const target = TARGETS[key];
   if (!target) {
