@@ -75,6 +75,56 @@ def violations(rows, managed_roots) -> "list[str]":
     return found
 
 
+def repo_key(log_name: str) -> str:
+    """The repository part of a build-log filename.
+
+    Build logs are named `<UTC timestamp>-<sanitized-cwd>.xml`, so stripping
+    the leading timestamp leaves a stable per-repository key. Grouping by it
+    is not cosmetic: different repositories legitimately resolve different
+    toolchains (a repo-local `.cargo/bin/cargo` versus soldr's managed rustup
+    toolchain), so comparing across them would report a "flip" on every
+    interleaved build and drown the real signal.
+    """
+    stem = log_name[:-4] if log_name.endswith(".xml") else log_name
+    head, sep, tail = stem.partition("-")
+    # Only treat the head as a timestamp when it looks like one.
+    if sep and head[:8].isdigit():
+        return tail
+    return stem
+
+
+def find_flips(logs: "list[tuple[str, list[tuple[str, str]]]]") -> "list[str]":
+    """Report where a repository's toolchain changed between consecutive builds.
+
+    soldr#1799's "flag the known causes" -- a home flip or a compiler-path
+    change between runs is what invalidates cargo's fingerprints and zccache's
+    keys, so a warm build recompiles the world. Seeing it named beside the two
+    builds is the difference between diagnosing that in a minute and spending
+    a full pass on it.
+
+    Diagnostic only: this reports, it does not decide. Sorting is by filename,
+    whose UTC timestamp prefix makes lexicographic order chronological.
+    """
+    by_repo: "dict[str, list[tuple[str, tuple[str, str]]]]" = {}
+    for name, rows in logs:
+        for row in rows:
+            by_repo.setdefault(repo_key(name), []).append((name, row))
+
+    flips = []
+    for repo in sorted(by_repo):
+        entries = sorted(by_repo[repo], key=lambda item: item[0])
+        for (prev_name, prev), (name, current) in zip(entries, entries[1:]):
+            if prev == current:
+                continue
+            what = []
+            if prev[0] != current[0]:
+                what.append(f"home_origin {prev[0]} -> {current[0]}")
+            if prev[1] != current[1]:
+                what.append(f"binary {prev[1]} -> {current[1]}")
+            flips.append(f"{repo}: {', '.join(what)} (between {prev_name} and {name})")
+    return flips
+
+
 def _logs(target: Path) -> "list[Path]":
     if target.is_dir():
         return sorted(target.rglob("*.xml"))
@@ -90,9 +140,17 @@ def main(argv: "list[str] | None" = None) -> int:
         default=[],
         help="soldr root whose homes count as managed (repeatable)",
     )
+    parser.add_argument(
+        "--report-flips",
+        action="store_true",
+        help=(
+            "also report where a repository's toolchain changed between "
+            "consecutive builds (diagnostic; never changes the exit code)"
+        ),
+    )
     args = parser.parse_args(argv)
 
-    if not args.managed_root:
+    if not args.managed_root and not args.report_flips:
         print("check_toolchain_homes: no --managed-root given; nothing to check")
         return 0
 
@@ -105,6 +163,7 @@ def main(argv: "list[str] | None" = None) -> int:
 
     failed = []
     checked = 0
+    parsed: "list[tuple[str, list[tuple[str, str]]]]" = []
     for log in logs:
         try:
             rows = parse_rows(log.read_text(encoding="utf-8", errors="replace"))
@@ -112,8 +171,23 @@ def main(argv: "list[str] | None" = None) -> int:
             print(f"check_toolchain_homes: could not read {log}: {error}")
             continue
         checked += len(rows)
+        parsed.append((log.name, rows))
         for message in violations(rows, args.managed_root):
             failed.append(f"{log}: {message}")
+
+    if args.report_flips:
+        flips = find_flips(parsed)
+        if flips:
+            print(
+                "check_toolchain_homes: the toolchain changed between consecutive "
+                "builds of the same repository (soldr#1799). A home flip or a "
+                "compiler-path change invalidates cargo fingerprints and zccache "
+                "keys, so the next warm build recompiles the world:"
+            )
+            for message in flips:
+                print(f"  - {message}")
+        else:
+            print("check_toolchain_homes: no toolchain flips between consecutive builds")
 
     if failed:
         print(
