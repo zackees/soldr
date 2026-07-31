@@ -236,7 +236,14 @@ jobs:
       # clean as of this change, so the whole tree is checked and this stays a
       # regression guard rather than a new policy.
       - name: Python types (mypy)
-        run: uv run --no-project --with 'mypy>=1.18,<2' python -m mypy src tests
+        # pytest is in the ephemeral env because the tests import it, and
+        # mypy cannot resolve an import it cannot see. This passed locally
+        # without it only because `uv run` picked up the project .venv,
+        # which CI does not have -- the same environment-parity trap that
+        # bit the flake8 step in #2103.
+        run: >-
+          uv run --no-project --with 'mypy>=1.18,<2' --with 'pytest>=8.0'
+          python -m mypy src tests
 
 
       # soldr#1978 item 6 names this step as duplicating build-linux-x64's
