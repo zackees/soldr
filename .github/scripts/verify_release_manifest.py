@@ -127,6 +127,29 @@ def sha_problems(manifest: dict, package_dir: "Path | None") -> "list[str]":
                 and SHA256_RE.match(sidecar_sha)
             ):
                 check(name, sidecar_sha, f"{tool}.sidecars[{index}]")
+
+        # Debug-symbol sidecars (docs/DEBUG_SIDECARS.md). Declared with a
+        # digest that nothing re-derived, so a corrupted or swapped .pdb
+        # passed the check whose whole job is "the manifest describes what is
+        # staged". Windows ships one on every release.
+        for index, sidecar in enumerate(entry.get("debug_info") or []):
+            if not isinstance(sidecar, dict):
+                continue
+            name = sidecar.get("name")
+            sidecar_sha = sidecar.get("sha256")
+            where = f"{tool}.debug_info[{index}]"
+            if not isinstance(name, str) or not isinstance(sidecar_sha, str):
+                continue
+            candidate = package_dir / name
+            if candidate.is_dir():
+                # A macOS dSYM is a directory, and release-auto hashes it as a
+                # `tar -cf -` stream. That is not reproducible here (member
+                # order, mtimes, uid/gid), so re-deriving it would invent
+                # failures. Presence is what can honestly be checked.
+                continue
+            if not SHA256_RE.match(sidecar_sha):
+                continue
+            check(name, sidecar_sha, where)
     return problems
 
 
