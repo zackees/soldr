@@ -128,3 +128,74 @@ def test_missing_logs_or_roots_do_not_fail_the_build(guard, tmp_path, capsys):
     # mysterious red on its own wiring.
     assert guard.main([str(tmp_path / "nope.xml"), "--managed-root", MANAGED]) == 0
     assert guard.main([str(tmp_path)]) == 0
+
+
+# --- flip detection (soldr#1799 "flag the known causes") --------------------
+
+
+def test_repo_key_strips_the_timestamp_prefix(guard):
+    assert guard.repo_key("20260731T022249Z-c-users-me-dev-soldr.xml") == (
+        "c-users-me-dev-soldr"
+    )
+    # A name that is not timestamp-prefixed must still yield a stable key
+    # rather than losing its first segment.
+    assert guard.repo_key("build.xml") == "build"
+
+
+def test_a_toolchain_change_between_consecutive_builds_is_flagged(guard):
+    logs = [
+        ("20260101T000000Z-repo-a.xml", [("caller", "/usr/bin/cargo")]),
+        ("20260101T000100Z-repo-a.xml", [("managed", "/home/me/.soldr/bin/cargo")]),
+    ]
+    flips = guard.find_flips(logs)
+    assert len(flips) == 1
+    assert "home_origin caller -> managed" in flips[0]
+    assert "binary /usr/bin/cargo -> /home/me/.soldr/bin/cargo" in flips[0]
+
+
+def test_a_stable_toolchain_reports_no_flip(guard):
+    logs = [
+        ("20260101T000000Z-repo-a.xml", [("caller", "/usr/bin/cargo")]),
+        ("20260101T000100Z-repo-a.xml", [("caller", "/usr/bin/cargo")]),
+    ]
+    assert guard.find_flips(logs) == []
+
+
+def test_different_repositories_are_never_compared(guard):
+    # The correctness property. Real logs show repo-local `.cargo/bin/cargo`
+    # in one repo and soldr's managed rustup toolchain in another; interleaved
+    # builds would otherwise report a flip on every alternation and bury the
+    # real signal.
+    logs = [
+        ("20260101T000000Z-repo-a.xml", [("repo-local", "/a/.cargo/bin/cargo")]),
+        ("20260101T000100Z-repo-b.xml", [("managed", "/home/me/.soldr/bin/cargo")]),
+        ("20260101T000200Z-repo-a.xml", [("repo-local", "/a/.cargo/bin/cargo")]),
+        ("20260101T000300Z-repo-b.xml", [("managed", "/home/me/.soldr/bin/cargo")]),
+    ]
+    assert guard.find_flips(logs) == []
+
+
+def test_flips_are_ordered_chronologically_regardless_of_input_order(guard):
+    # Filenames carry a UTC timestamp prefix, so sorting by name is
+    # chronological; the caller must not have to pre-sort.
+    logs = [
+        ("20260101T000200Z-repo-a.xml", [("managed", "/m/cargo")]),
+        ("20260101T000000Z-repo-a.xml", [("caller", "/usr/bin/cargo")]),
+    ]
+    flips = guard.find_flips(logs)
+    assert len(flips) == 1
+    assert "caller -> managed" in flips[0]
+
+
+def test_report_flips_never_changes_the_exit_code(guard, tmp_path, capsys):
+    # Diagnostic, not a gate: a flip is normal when someone deliberately
+    # switches toolchains, so it must not redden a build.
+    (tmp_path / "20260101T000000Z-repo-a.xml").write_text(
+        _log(("caller", "/usr/bin/cargo")), encoding="utf-8"
+    )
+    (tmp_path / "20260101T000100Z-repo-a.xml").write_text(
+        _log(("managed", f"{MANAGED}/bin/cargo")), encoding="utf-8"
+    )
+    code = guard.main([str(tmp_path), "--managed-root", MANAGED, "--report-flips"])
+    assert code == 0
+    assert "changed between consecutive builds" in capsys.readouterr().out
