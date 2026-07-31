@@ -88,3 +88,66 @@ def test_main_fails_when_the_binary_cannot_be_inspected(guard, tmp_path, capsys)
     err = capsys.readouterr().err
     assert "cannot inspect" in err, err
     assert "definitely-not-here" in err, err
+
+
+# --- static-PIE (soldr#1060 follow-up) ------------------------------------
+#
+# The published musl `crgx` and `cargo-chef` are static-PIE: a `.dynamic`
+# section with 20 entries, zero NEEDED, and no INTERP. `file` calls them
+# "static-pie linked" and they run on Debian 12 and Alpine alike. The
+# original "no dynamic section" test called them dynamic, which is why only
+# `soldr` was ever verified -- extending the check to the whole bundle would
+# have failed the release on correct artifacts.
+
+STATIC_PIE_DYNAMIC = """
+Dynamic section at offset 0x3b0750 contains 20 entries:
+  Tag        Type                         Name/Value
+ 0x000000000000000c (INIT)               0x22000
+ 0x000000000000000d (FINI)               0x2b108a
+ 0x0000000000000019 (INIT_ARRAY)         0x39b290
+"""
+
+STATIC_PIE_HEADERS = """
+Program Headers:
+  Type           Offset             VirtAddr           PhysAddr
+  LOAD           0x0000000000000000 0x0000000000000000 0x0000000000000000
+  DYNAMIC        0x00000000003b0750 0x00000000003b1750 0x00000000003b1750
+"""
+
+DYNAMIC_HEADERS = """
+Program Headers:
+  Type           Offset             VirtAddr           PhysAddr
+  INTERP         0x0000000000000318 0x0000000000000318 0x0000000000000318
+      [Requesting program interpreter: /lib64/ld-linux-x86-64.so.2]
+  LOAD           0x0000000000000000 0x0000000000000000 0x0000000000000000
+"""
+
+
+def test_static_pie_is_accepted(guard):
+    assert guard.is_statically_linked(STATIC_PIE_DYNAMIC, STATIC_PIE_HEADERS) is True
+
+
+def test_an_interpreter_is_rejected_even_with_no_needed_entries(guard):
+    # A binary can name an interpreter without listing NEEDED libraries. It
+    # still cannot start where that loader is absent, so INTERP alone decides.
+    assert guard.is_statically_linked(STATIC_PIE_DYNAMIC, DYNAMIC_HEADERS) is False
+
+
+def test_needed_entries_are_still_rejected(guard):
+    assert guard.is_statically_linked(DYNAMIC_OUTPUT, STATIC_PIE_HEADERS) is False
+
+
+def test_empty_program_headers_do_not_make_a_dynamic_binary_pass(guard):
+    assert guard.is_statically_linked(DYNAMIC_OUTPUT, "") is False
+
+
+def test_blank_readelf_output_is_never_static(guard):
+    # "found no NEEDED entries" and "read nothing at all" must not reach the
+    # same answer; otherwise a broken invocation reports everything as static.
+    assert guard.is_statically_linked("", STATIC_PIE_HEADERS) is False
+    assert guard.is_statically_linked("   \n  ", STATIC_PIE_HEADERS) is False
+
+
+def test_interpreter_detection_is_direct(guard):
+    assert guard.requires_interpreter(DYNAMIC_HEADERS) is True
+    assert guard.requires_interpreter(STATIC_PIE_HEADERS) is False
