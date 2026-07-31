@@ -231,6 +231,17 @@ jobs:
           uv run --no-project --with 'black>=25.1,<26' python -m black --check src tests
           uv run --no-project --with 'isort>=6.0,<7' python -m isort --profile black --check-only src tests
 
+      # mypy over the SHIPPED package only. `src/` is clean as of this change
+      # -- four annotation defects fixed, none of them behavioural -- so this
+      # is a regression guard rather than a new policy.
+      #
+      # `tests/` is deliberately out of scope: it still has 30 errors, almost
+      # all `object` fallout from `json.load` and `importlib` returning
+      # Optional. Wiring it now would fail on main. Whether to fix those or
+      # leave tests unchecked is the open half of soldr#2102.
+      - name: Python types (mypy, shipped package)
+        run: uv run --no-project --with 'mypy>=1.18,<2' python -m mypy src
+
 
       # soldr#1978 item 6 names this step as duplicating build-linux-x64's
       # compile of the same workspace + test targets on a second runner.

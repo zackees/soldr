@@ -33,7 +33,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import BinaryIO, Iterator, Optional, TextIO
+from typing import Any, BinaryIO, Iterator, Mapping, Optional, TextIO
 
 _FAST_PROFILE_ENV = "SOLDR_PEP517_PROFILE"
 _STATS_ENV = "SOLDR_PEP517_STATS"
@@ -125,7 +125,7 @@ def _toml_section_values(path: Path, section: str) -> "dict[str, str]":
 
         with path.open("rb") as stream:
             document = tomllib.load(stream)
-        value = document
+        value: Any = document
         for component in section.split("."):
             if not isinstance(value, dict):
                 return {}
@@ -221,11 +221,11 @@ def _managed_pep517_environment(
                 os.environ[key] = value
         yield
     finally:
-        for key, value in previous.items():
-            if value is _MISSING:
+        for key, previous_value in previous.items():
+            if previous_value is _MISSING:
                 os.environ.pop(key, None)
             else:
-                os.environ[key] = str(value)
+                os.environ[key] = str(previous_value)
 
 
 @contextmanager
@@ -364,7 +364,7 @@ def _setting_value(config_settings: Optional[dict], *keys: str) -> Optional[str]
 def _explicit_profile(
     config_settings: Optional[dict], *, editable: bool = False
 ) -> Optional[str]:
-    keys = ("--profile", "profile")
+    keys: tuple[str, ...] = ("--profile", "profile")
     if editable:
         keys += ("editable-profile",)
     return _setting_value(config_settings, *keys)
@@ -1112,7 +1112,7 @@ def _maturin_pep517(
         )
 
 
-def _selected_soldr_root(environment: "dict[str, str]") -> Path:
+def _selected_soldr_root(environment: "Mapping[str, str]") -> Path:
     """Ask the selected soldr binary for its provenance-aware root.
 
     Official wheels default to ``~/.soldr`` while locally-built binaries use
@@ -1131,7 +1131,7 @@ def _selected_soldr_root(environment: "dict[str, str]") -> Path:
     return Path.home() / ".soldr"
 
 
-def _query_soldr_root(environment: "dict[str, str]") -> "Path | None":
+def _query_soldr_root(environment: "Mapping[str, str]") -> "Path | None":
     # `status --json` has carried root_dir longer than `version --json`, so it
     # is a compatibility fallback for older development binaries. Neither
     # command starts a daemon.
@@ -1174,7 +1174,7 @@ def _query_soldr_root(environment: "dict[str, str]") -> "Path | None":
     return None
 
 
-def _wheel_cache_root(environment: "dict[str, str]") -> Path:
+def _wheel_cache_root(environment: "Mapping[str, str]") -> Path:
     return _selected_soldr_root(environment)
 
 
