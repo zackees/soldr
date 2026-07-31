@@ -753,6 +753,36 @@ jobs:
       # the old "no dynamic section" test called both of them dynamic, so
       # extending the check here would have failed the release on correct
       # binaries.
+      # soldr#1060, Windows side -- the last release surface with no
+      # portability guard. A PE that imports a DLL the machine lacks does not
+      # degrade gracefully; it fails to start.
+      #
+      # Measured on published v0.8.29: soldr.exe and soldr-daemon.exe import
+      # 22 DLLs, of which exactly one is not part of Windows --
+      # VCRUNTIME140.dll, from the Visual C++ Redistributable. The
+      # api-ms-win-crt-* entries beside it are UCRT forwarders that DO ship
+      # with Windows 10+, so they are not a dependency in the same sense.
+      #
+      # Nothing sets `-C target-feature=+crt-static`, so that is Rust's MSVC
+      # default rather than a decision; a static CRT would remove it outright.
+      # This step does not make that build change -- it pins the current
+      # import set so a NEW non-system dependency cannot appear unnoticed, and
+      # names the redistributable one on every pass so the cost stays visible.
+      - name: Ratchet the Windows DLL imports (soldr#1060)
+        if: contains(matrix.target, 'pc-windows-msvc')
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t bundled < <(find dist/package -maxdepth 1 -type f \
+            \( -name 'soldr.exe' -o -name 'soldr-daemon.exe' \
+               -o -name 'crgx.exe' -o -name 'cargo-chef.exe' \))
+          if [ "${#bundled[@]}" -eq 0 ]; then
+            echo "no bundled binaries found in dist/package to verify" >&2
+            ls -la dist/package >&2
+            exit 1
+          fi
+          python3 .github/scripts/verify_windows_imports.py "${bundled[@]}"
+
       # soldr#1060, macOS side. A Mach-O records the oldest OS it will start
       # on, and nothing watched that value: it is whatever the toolchain and
       # the pinned Apple SDK produce, since no lane sets
