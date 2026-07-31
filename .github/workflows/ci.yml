@@ -214,7 +214,12 @@ jobs:
       # (RUF005 concatenation, a zip without strict=, an unused noqa, ...);
       # those are a separate reviewed diff, not a drive-by in this one.
       - name: Python lint (ruff)
-        run: uv run --no-project --with 'ruff>=0.4' python -m ruff check src tests
+        # Bounded, like the other four. `ruff>=0.4` was open-ended, so CI
+        # resolved a newer ruff than `./install` gives contributors and
+        # failed on RUF043 -- a rule that did not exist in the tested
+        # version. An unbounded linter is a CI break waiting on someone
+        # else's release date.
+        run: uv run --no-project --with 'ruff>=0.12,<0.13' ruff check src tests
 
       - name: Python lint (flake8)
         # Pinned, not floating. An unpinned `--with flake8` means a future
