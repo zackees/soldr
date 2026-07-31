@@ -107,23 +107,14 @@ pub async fn ensure_syslib_bundle(
 
     eprintln!("soldr: fetching syslib {lib}/{version}/{slug} from {url}...");
 
-    let client = syslib_http_client()?;
-    let resp = client
-        .get(&url)
-        .header(reqwest::header::ACCEPT_ENCODING, "identity")
-        .send()
-        .await
-        .map_err(|e| SoldrError::Network(e.to_string()))?;
-    if !resp.status().is_success() {
-        return Err(SoldrError::Network(format!(
-            "syslib bundle download failed: HTTP {}",
-            resp.status()
-        )));
-    }
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| SoldrError::Network(e.to_string()))?;
+    // soldr#2132: retry the download itself. A truncated body here surfaced as
+    // `managed cmake unavailable ... network error: error decoding response
+    // body` and then, a hundred log lines later, as `can't find crate for
+    // std` -- an error naming the wrong thing entirely.
+    let bytes = super::retry::with_backoff(&format!("syslib {lib}/{version}/{slug}"), || {
+        download_syslib_bundle(&url)
+    })
+    .await?;
 
     let digest = trust::sha256_of(&bytes);
     if digest != expected_sha256 {
@@ -151,6 +142,33 @@ pub async fn ensure_syslib_bundle(
     std::fs::write(&stamp, format!("{lib} {version} {slug}"))?;
     eprintln!("soldr: extracted syslib to {}", sysroot.display());
     Ok(sysroot)
+}
+
+/// One attempt at downloading a syslib bundle. Every failure mode here is
+/// [`SoldrError::Network`], which is exactly what [`super::retry`] retries;
+/// sha256 verification is deliberately *outside* this function so an integrity
+/// failure stays fatal on the first try.
+async fn download_syslib_bundle(url: &str) -> Result<Vec<u8>, SoldrError> {
+    let client = syslib_http_client()?;
+    let resp = client
+        .get(url)
+        .header(reqwest::header::ACCEPT_ENCODING, "identity")
+        .send()
+        .await
+        .map_err(|e| SoldrError::Network(e.to_string()))?;
+    if !resp.status().is_success() {
+        return Err(SoldrError::Network(format!(
+            "syslib bundle download failed: HTTP {}",
+            resp.status()
+        )));
+    }
+    // `Vec<u8>` rather than `bytes::Bytes` so this does not pull a new
+    // dependency into the crate for one return type; both consumers below take
+    // `&[u8]`.
+    resp.bytes()
+        .await
+        .map(|body| body.to_vec())
+        .map_err(|e| SoldrError::Network(e.to_string()))
 }
 
 fn syslib_http_client() -> Result<reqwest::Client, SoldrError> {

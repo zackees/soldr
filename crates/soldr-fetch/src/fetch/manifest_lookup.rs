@@ -315,7 +315,12 @@ pub async fn get_or_fetch() -> &'static ManifestIndex {
     let fetched = if disabled_via_env() {
         ManifestIndex::empty()
     } else {
-        fetch_once()
+        // soldr#2132: retry before giving up. Falling back to an empty index
+        // is a *permanent, process-wide* decision -- it drops the sha256 pins
+        // and makes every later syslib lookup report "not yet ingested" -- so
+        // a single truncated response body must not be enough to trigger it.
+        // That is what failed two lanes of the v0.8.30 release build.
+        super::retry::with_backoff("the soldr-toolchain catalogue", fetch_once)
             .await
             .unwrap_or_else(|_| ManifestIndex::empty())
     };
