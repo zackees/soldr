@@ -215,24 +215,42 @@ assert.strictEqual(
 // the steps happen to sit in. Reorder them and the lockstep would demand the
 // installer drop to 2.17, routing glibc 2.17-2.38 hosts to a binary that needs
 // 2.39 -- the bug #2081 fixed, reintroduced by its own guard.
-function glibcCeilingFor(workflowText, scriptName) {
-  for (const line of workflowText.split(/\r?\n/)) {
-    if (!line.includes(scriptName)) {
+function glibcCeilingsFor(workflowText, scriptName) {
+  const found = [];
+  const lines = workflowText.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i += 1) {
+    if (!lines[i].includes(scriptName)) {
       continue;
     }
-    const onSameLine = line.match(/--max-glibc\s+([0-9][0-9.]*)/);
-    if (onSameLine) {
-      return onSameLine[1];
-    }
-    // The invocation may be split across continuation lines; take the next
-    // --max-glibc after the script name.
-    const rest = workflowText.slice(workflowText.indexOf(line) + line.length);
-    const after = rest.match(/--max-glibc\s+([0-9][0-9.]*)/);
-    if (after) {
-      return after[1];
+    // The invocation may be split across continuation lines, so look at the
+    // matching line and the few that follow it.
+    const window = lines.slice(i, i + 4).join("\n");
+    const match = window.match(/--max-glibc\s+([0-9][0-9.]*)/);
+    if (match) {
+      found.push(match[1]);
     }
   }
-  return null;
+  return found;
+}
+
+function glibcCeilingFor(workflowText, scriptName) {
+  const found = glibcCeilingsFor(workflowText, scriptName);
+  if (found.length === 0) {
+    return null;
+  }
+  // release-auto invokes verify_glibc_baseline.py twice -- once pre-staging on
+  // the built binary, once post-staging across the whole bundle. Returning the
+  // first would let the two drift apart with the installer silently following
+  // only one of them, which is the same order-dependence this function was
+  // written to remove.
+  const distinct = [...new Set(found)];
+  assert.strictEqual(
+    distinct.length,
+    1,
+    `release-auto.yml passes conflicting --max-glibc values to ${scriptName}: ` +
+      `${found.join(", ")}. They gate the same artifacts and must agree.`,
+  );
+  return distinct[0];
 }
 
 // Pin the anchoring itself: with the wheel invocation first, the binary
@@ -253,6 +271,24 @@ function glibcCeilingFor(workflowText, scriptName) {
     "the wheel ceiling must resolve independently",
   );
   assert.strictEqual(glibcCeilingFor(reordered, "not_a_script.py"), null);
+
+  // Two invocations of the same script that agree resolve to that value...
+  const agreeing = [
+    "python3 .github/scripts/verify_glibc_baseline.py --max-glibc 2.39 soldr",
+    "python3 .github/scripts/verify_glibc_baseline.py --max-glibc 2.39 bundle",
+  ].join("\n");
+  assert.strictEqual(glibcCeilingFor(agreeing, "verify_glibc_baseline.py"), "2.39");
+
+  // ...and two that disagree are a hard error rather than a silent pick.
+  const conflicting = [
+    "python3 .github/scripts/verify_glibc_baseline.py --max-glibc 2.17 soldr",
+    "python3 .github/scripts/verify_glibc_baseline.py --max-glibc 2.39 bundle",
+  ].join("\n");
+  assert.throws(
+    () => glibcCeilingFor(conflicting, "verify_glibc_baseline.py"),
+    /conflicting --max-glibc/,
+    "two ceilings for the same script must not be silently reconciled",
+  );
 }
 
 const releaseWorkflow = fs.readFileSync(
