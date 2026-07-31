@@ -137,7 +137,7 @@ def test_the_redistributable_is_allowed_but_identified(mod):
 
 
 def test_an_unknown_dll_is_reported(mod):
-    found = mod.unexpected_imports(REAL_IMPORTS + ["libssl-3-x64.dll"])
+    found = mod.unexpected_imports([*REAL_IMPORTS, "libssl-3-x64.dll"])
     assert found == ["libssl-3-x64.dll"]
 
 
@@ -224,7 +224,7 @@ def test_a_binary_with_the_current_imports_passes(mod, tmp_path):
 
 
 def test_a_new_non_system_dependency_fails(mod, tmp_path):
-    binary = _write(tmp_path, "soldr.exe", _pe(REAL_IMPORTS + ["libpq.dll"]))
+    binary = _write(tmp_path, "soldr.exe", _pe([*REAL_IMPORTS, "libpq.dll"]))
     assert mod.main([binary]) == 1
 
 
@@ -239,7 +239,7 @@ def test_an_unparseable_binary_fails(mod, tmp_path):
 
 def test_every_binary_is_checked_not_just_the_first(mod, tmp_path):
     good = _write(tmp_path, "soldr.exe", _pe(REAL_IMPORTS))
-    bad = _write(tmp_path, "soldr-daemon.exe", _pe(REAL_IMPORTS + ["evil.dll"]))
+    bad = _write(tmp_path, "soldr-daemon.exe", _pe([*REAL_IMPORTS, "evil.dll"]))
     assert mod.main([good, bad]) == 1
 
 

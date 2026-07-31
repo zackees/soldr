@@ -79,7 +79,7 @@ def _padded(version: "tuple[int, ...]") -> "tuple[int, int, int]":
     "11.0" would reject a binary whose minimum is exactly 11.0.0 -- failing
     the release for matching the ceiling it was given.
     """
-    parts = tuple(version) + (0, 0, 0)
+    parts = (*tuple(version), 0, 0, 0)
     return parts[0], parts[1], parts[2]
 
 
