@@ -369,6 +369,28 @@ jobs:
             test "$(dd if="$binary" bs=1 count=2 2>/dev/null)" = "MZ"
           fi
 
+      # soldr#1060: the same glibc-floor ratchet release-auto.yml applies to
+      # the published -gnu binaries, moved to PR time.
+      #
+      # Those artifacts are the fallback for OLD distros, and they currently
+      # require GLIBC_2.39 (measured on published v0.8.29, both arches), which
+      # already excludes RHEL 9, Debian 12 and Ubuntu 22.04. Until #2080 that
+      # went unnoticed for releases; without this step it would still go
+      # unnoticed until release, because nothing on a PR looks at the floor.
+      #
+      # `aarch64-unknown-linux-gnu` runs through this lane on every PR, so a
+      # dependency bump that raises the floor fails here rather than during a
+      # release. Ceiling matches release-auto.yml deliberately -- a ratchet,
+      # not the 2.17 target, so it cannot block work that did not cause it.
+      - name: Check glibc baseline of the gnu binary (soldr#1060 ratchet)
+        if: contains(inputs.target, 'unknown-linux-gnu')
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/verify_glibc_baseline.py \
+            --max-glibc 2.39 \
+            "target/${{ inputs.target }}/ci-nextest/soldr"
+
       - name: Target clippy uses the blessed lifecycle
         shell: bash
         run: |
