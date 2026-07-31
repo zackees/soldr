@@ -72,7 +72,9 @@ def test_caller_and_repo_local_are_never_constrained(guard):
     # Both mean the caller's own homes were used; they differ only in
     # reporting, so a host path under either is correct, not a violation.
     rows = guard.parse_rows(
-        _log(("caller", "/usr/bin/cargo"), ("repo-local", "/work/proj/.cargo/bin/cargo"))
+        _log(
+            ("caller", "/usr/bin/cargo"), ("repo-local", "/work/proj/.cargo/bin/cargo")
+        )
     )
     assert guard.violations(rows, [MANAGED]) == []
 

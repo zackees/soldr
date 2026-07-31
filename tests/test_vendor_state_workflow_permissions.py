@@ -2,12 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 WORKFLOW = (
-    Path(__file__).resolve().parents[1]
-    / ".github"
-    / "workflows"
-    / "vendor-state.yml"
+    Path(__file__).resolve().parents[1] / ".github" / "workflows" / "vendor-state.yml"
 )
 
 

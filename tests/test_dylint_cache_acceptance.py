@@ -68,26 +68,19 @@ def test_watchdog_symbol_smoke_uses_full_debug_info_and_real_gdb_attach() -> Non
     assert "grep -Fq 'exe=/target/debug/soldr'" in script
     assert "grep -Eq 'soldr_(cli|daemon|core)::'" in script
     assert (
-        "grep -Eq 'crates/soldr-(cli|daemon|core)/src/"
-        "[^ ]*\\.rs:[0-9]+'" in script
+        "grep -Eq 'crates/soldr-(cli|daemon|core)/src/" "[^ ]*\\.rs:[0-9]+'" in script
     )
 
     source = (
-        Path(__file__).parents[1]
-        / ".github"
-        / "scripts"
-        / "dylint_cache_acceptance.py"
+        Path(__file__).parents[1] / ".github" / "scripts" / "dylint_cache_acceptance.py"
     ).read_text(encoding="utf-8")
     assert '"profile.dev.debug=2"' in source
 
 
 def test_acceptance_uses_the_per_checkout_perf_runner_identity() -> None:
     source = (
-        Path(__file__).parents[1]
-        / ".github"
-        / "scripts"
-        / "dylint_cache_acceptance.py"
+        Path(__file__).parents[1] / ".github" / "scripts" / "dylint_cache_acceptance.py"
     ).read_text(encoding="utf-8")
     assert 'runpy.run_path(str(ROOT / "ci" / "perf_local.py"))' in source
-    assert 'runner_container = runner.container' in source
+    assert "runner_container = runner.container" in source
     assert '"soldr-perf-local"' not in source

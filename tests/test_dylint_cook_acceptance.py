@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / ".github" / "scripts" / "dylint_cook_acceptance.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "dylint-cook-acceptance.yml"

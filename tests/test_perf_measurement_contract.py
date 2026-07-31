@@ -91,5 +91,8 @@ def test_readme_comparison_labels_clean_target_reconstruction() -> None:
 
     assert 'clean_project "${project}" "${target}"' in comparison
     assert '"Clean-target rebuild (same workspace; warm compiler cache)"' in comparison
-    assert '"label": "Clean-target rebuild (same workspace; warm compiler cache)"' in renderer
+    assert (
+        '"label": "Clean-target rebuild (same workspace; warm compiler cache)"'
+        in renderer
+    )
     assert "clean-target reconstruction" in readme

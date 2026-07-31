@@ -5,7 +5,6 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / ".github" / "scripts" / "verify_ci_job_timeouts.py"
 SPEC = importlib.util.spec_from_file_location("verify_ci_job_timeouts", SCRIPT_PATH)
@@ -103,7 +102,9 @@ def test_reusable_workflow_own_job_is_checked():
     how ``_build-and-test.yml`` and ``_bootstrap-e2e.yml`` -- on every PR -- sat
     on GitHub's 360-minute default.
     """
-    reusable = "jobs:\n  inner:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: true\n"
+    reusable = (
+        "jobs:\n  inner:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: true\n"
+    )
     assert VERIFY.find_timeout_violations(reusable) == [
         "inner: missing job-level timeout-minutes"
     ]

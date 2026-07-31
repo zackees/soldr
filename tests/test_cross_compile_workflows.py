@@ -18,7 +18,9 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
     cache_roundtrip = (
         REPO_ROOT / ".github" / "scripts" / "windows_msvc_cache_roundtrip.py"
     ).read_text(encoding="utf-8")
-    nextest_config = (REPO_ROOT / ".config" / "nextest.toml").read_text(encoding="utf-8")
+    nextest_config = (REPO_ROOT / ".config" / "nextest.toml").read_text(
+        encoding="utf-8"
+    )
     baseline = (WORKFLOWS / "baseline-zero-deps.yml").read_text(encoding="utf-8")
     arm_build = _job_block(ci, "e2e-windows-arm64-build", "e2e-windows-arm64")
     arm_run = _job_block(ci, "e2e-windows-arm64")
@@ -34,7 +36,9 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
     assert "windows_msvc_cache_roundtrip.py" in cross
     assert "--phase build" in cross
     assert "--phase archive" in cross
-    assert "--no-cache" not in cross[cross.index("- name: Cross-build release binary") :]
+    assert (
+        "--no-cache" not in cross[cross.index("- name: Cross-build release binary") :]
+    )
     assert "cache: ${{ (contains(inputs.target, 'pc-windows-msvc')" in cross
     assert "expected binary missing: $binary; searching target tree" in cross
     assert 'find target -type f \\( -name "soldr" -o -name "soldr.exe" \\)' in cross
@@ -44,7 +48,8 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
     assert (
         "              soldr --no-cache cargo xwin build "
         "--target x86_64-pc-windows-msvc\n"
-        "              ls -l target/x86_64-pc-windows-msvc/debug/hellowin.exe" in baseline
+        "              ls -l target/x86_64-pc-windows-msvc/debug/hellowin.exe"
+        in baseline
     )
     for first_party_package in [
         "soldr-cli",
@@ -59,7 +64,10 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
     assert '"$SOLDR_BIN" --version' not in target_run
     assert '"$NEXTEST_BIN" nextest run' in target_run
     assert 'echo "SOLDR_BIN=$soldr_bin"' in target_run
-    assert "case '${{ inputs.target }}' in *-pc-windows-msvc) suffix=\".exe\"" in target_run
+    assert (
+        "case '${{ inputs.target }}' in *-pc-windows-msvc) suffix=\".exe\""
+        in target_run
+    )
     assert "artifact/package/soldr$suffix" in target_run
     assert "artifact/package/tools/cargo-nextest$suffix" in target_run
     assert 'echo "SOLDR_TEST_WORKSPACE_ROOT=$GITHUB_WORKSPACE"' in target_run
@@ -157,7 +165,10 @@ def test_cross_workflow_bootstraps_toolchain_dependencies_through_soldr() -> Non
     cross = (WORKFLOWS / "_ci-cross-build-linux.yml").read_text(encoding="utf-8")
 
     assert "cross-targets:" not in cross
-    assert 'soldr prepare --target "${{ inputs.target }}" --github-env "$GITHUB_ENV"' in cross
+    assert (
+        'soldr prepare --target "${{ inputs.target }}" --github-env "$GITHUB_ENV"'
+        in cross
+    )
     assert "soldr --no-cache cargo build --profile ci-bootstrap" in cross
     for unmanaged_installer in [
         "sudo apt-get",
@@ -178,9 +189,9 @@ def test_catalogue_download_consumers_require_sha256_metadata() -> None:
     fetch = (REPO_ROOT / ".github" / "scripts" / "fetch_or_build_tool.sh").read_text(
         encoding="utf-8"
     )
-    downloader = (REPO_ROOT / ".github" / "scripts" / "download_catalogued_asset.py").read_text(
-        encoding="utf-8"
-    )
+    downloader = (
+        REPO_ROOT / ".github" / "scripts" / "download_catalogued_asset.py"
+    ).read_text(encoding="utf-8")
 
     assert cross.count("--json") >= 2
     assert cross.count("catalogue sha256 mismatch") >= 2
@@ -204,7 +215,9 @@ def test_linux_zig_cross_lanes_use_current_checkout_soldr_bootstrap() -> None:
         assert "needs: e2e-cross-bootstrap-soldr" in block
         assert "bootstrap_artifact_name: soldr-ci-bootstrap-linux-gnu" in block
 
-    download = cross[cross.index("      - name: Download shared bootstrap soldr artifact") :]
+    download = cross[
+        cross.index("      - name: Download shared bootstrap soldr artifact") :
+    ]
     download = download[: download.index("      - name:", 10)]
     assert "inputs.bootstrap_artifact_name != ''" in download
     assert "contains(inputs.target" not in download
@@ -224,7 +237,9 @@ def test_native_linux_integration_backstop_runs_on_pull_requests() -> None:
 
 def test_manual_cross_compile_workflows_use_blessed_supported_targets() -> None:
     build_all = (WORKFLOWS / "build-all-from-linux.yml").read_text(encoding="utf-8")
-    cross_all = (WORKFLOWS / "cross-compile-all-targets.yml").read_text(encoding="utf-8")
+    cross_all = (WORKFLOWS / "cross-compile-all-targets.yml").read_text(
+        encoding="utf-8"
+    )
 
     for target in [
         "x86_64-pc-windows-msvc",
@@ -271,7 +286,9 @@ def test_production_cross_workflows_do_not_select_legacy_backends() -> None:
             line for line in body.splitlines() if not line.lstrip().startswith("#")
         )
         for token in forbidden:
-            assert token not in executable, f"{path.relative_to(REPO_ROOT)} selects {token!r}"
+            assert (
+                token not in executable
+            ), f"{path.relative_to(REPO_ROOT)} selects {token!r}"
 
     cross_all_executable = "\n".join(
         line
@@ -304,7 +321,9 @@ def test_mac_x64_distribution_is_cross_built_and_intel_smoke_tested() -> None:
     release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
     install = (REPO_ROOT / "scripts" / "install.js").read_text(encoding="utf-8")
     npm_docs = (REPO_ROOT / "docs" / "NPM_PUBLISHING.md").read_text(encoding="utf-8")
-    verification_docs = (REPO_ROOT / "docs" / "RELEASE_VERIFICATION.md").read_text(encoding="utf-8")
+    verification_docs = (REPO_ROOT / "docs" / "RELEASE_VERIFICATION.md").read_text(
+        encoding="utf-8"
+    )
 
     mac_build = _job_block(ci, "e2e-macos-x64-build", "e2e-macos-x64")
     assert "if: false" not in mac_build

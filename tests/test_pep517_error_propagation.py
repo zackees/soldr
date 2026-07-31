@@ -34,7 +34,9 @@ def backend():
 
 def test_a_named_error_travels_with_the_exception(backend):
     """The whole point: the specific cause must survive the boundary."""
-    named = "error: invalid SOLDR_LINKER value 'x' (expected one of: auto, fast, system)"
+    named = (
+        "error: invalid SOLDR_LINKER value 'x' (expected one of: auto, fast, system)"
+    )
     payload = backend._pep517_failure_payload(named, None, True)
     assert named in payload, (
         "a caller rendering from the exception must see the named cause, not a "
@@ -86,9 +88,7 @@ def test_called_process_error_carries_output_and_stderr(backend, tmp_path, monke
     # named cause, so the excerpt builder has something real to work with.
     script = tmp_path / "boom.py"
     script.write_text(
-        "import sys\n"
-        f"sys.stderr.write({named!r} + '\\n')\n"
-        "sys.exit(3)\n",
+        "import sys\n" f"sys.stderr.write({named!r} + '\\n')\n" "sys.exit(3)\n",
         encoding="utf-8",
     )
     cmd = [sys.executable, str(script)]

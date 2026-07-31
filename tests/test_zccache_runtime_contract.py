@@ -10,7 +10,9 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_PATH = REPO_ROOT / "contracts" / "zccache-runtime.v1.json"
-PY_CONTRACT_PATH = REPO_ROOT / ".github" / "actions" / "setup-soldr" / "zccache_contract.py"
+PY_CONTRACT_PATH = (
+    REPO_ROOT / ".github" / "actions" / "setup-soldr" / "zccache_contract.py"
+)
 
 
 def _load_py_contract():
@@ -87,7 +89,9 @@ def _write_manifest_fixture(root: Path, *, windows: bool = False) -> dict[str, o
         },
         "archive": {
             "format": module.ARCHIVE_EXT,
-            "compression_level": module.CONTRACT["release_archive"]["compression_level"],
+            "compression_level": module.CONTRACT["release_archive"][
+                "compression_level"
+            ],
         },
         "built_at": "2026-05-27T00:00:00Z",
     }
@@ -196,11 +200,13 @@ def test_python_action_helpers_import_contract_constants() -> None:
 
 def test_release_workflow_and_docs_reference_contract_layout() -> None:
     contract = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
-    release_workflow = (REPO_ROOT / ".github" / "workflows" / "release-auto.yml").read_text(
+    release_workflow = (
+        REPO_ROOT / ".github" / "workflows" / "release-auto.yml"
+    ).read_text(encoding="utf-8")
+    npm_docs = (REPO_ROOT / "docs" / "NPM_PUBLISHING.md").read_text(encoding="utf-8")
+    runtime_docs = (REPO_ROOT / "docs" / "ZCCACHE_RUNTIME_CONTRACT.md").read_text(
         encoding="utf-8"
     )
-    npm_docs = (REPO_ROOT / "docs" / "NPM_PUBLISHING.md").read_text(encoding="utf-8")
-    runtime_docs = (REPO_ROOT / "docs" / "ZCCACHE_RUNTIME_CONTRACT.md").read_text(encoding="utf-8")
 
     assert '"schema_version": 3' in release_workflow
     assert '"format": "tar.zst"' in release_workflow
@@ -223,12 +229,19 @@ def test_npm_package_exports_contract_files() -> None:
 
 def test_ci_cleanup_never_invokes_removed_bare_zccache_alias() -> None:
     offenders: list[str] = []
-    for root in (REPO_ROOT / ".github" / "workflows", REPO_ROOT / ".github" / "actions"):
+    for root in (
+        REPO_ROOT / ".github" / "workflows",
+        REPO_ROOT / ".github" / "actions",
+    ):
         for path in (*root.rglob("*.yml"), *root.rglob("*.yaml")):
-            for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            for line_number, line in enumerate(
+                path.read_text(encoding="utf-8").splitlines(), 1
+            ):
                 if line.lstrip().startswith("#"):
                     continue
                 match = re.search(r"\bzccache\s+stop\b", line)
                 if match and "soldr" not in line[: match.start()]:
-                    offenders.append(f"{path.relative_to(REPO_ROOT)}:{line_number}: {line.strip()}")
+                    offenders.append(
+                        f"{path.relative_to(REPO_ROOT)}:{line_number}: {line.strip()}"
+                    )
     assert not offenders, "bare zccache cleanup commands:\n" + "\n".join(offenders)

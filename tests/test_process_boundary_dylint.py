@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -39,10 +38,7 @@ def test_required_ci_runs_root_dylint_policy() -> None:
         "          --manifest-path Cargo.toml"
     ) in workflow
     assert "--manifest-path Cargo.toml" in workflow
-    assert (
-        "RUSTUP_TOOLCHAIN: nightly-2026-05-26-x86_64-unknown-linux-gnu"
-        in workflow
-    )
+    assert "RUSTUP_TOOLCHAIN: nightly-2026-05-26-x86_64-unknown-linux-gnu" in workflow
     assert workflow.count('SOLDR_NO_GC_TARGET: "1"') == 2
     assert workflow.count("SOLDR_LINKER: default") == 3
     dylint_config = (
