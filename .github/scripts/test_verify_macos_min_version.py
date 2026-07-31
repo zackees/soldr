@@ -14,12 +14,11 @@ without needing a Mac or a real binary.
 
 from __future__ import annotations
 
-import importlib.util
 import struct
-import sys
 from pathlib import Path
 
 import pytest
+from _script_loader import load_script_module
 
 SCRIPT = Path(__file__).resolve().parent / "verify_macos_min_version.py"
 
@@ -31,12 +30,7 @@ LC_BUILD_VERSION = 0x32
 
 @pytest.fixture(scope="module")
 def mod():
-    spec = importlib.util.spec_from_file_location("verify_macos_min_version", SCRIPT)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["verify_macos_min_version"] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_script_module(SCRIPT, "verify_macos_min_version")
 
 
 def _pack_version(major: int, minor: int, patch: int = 0) -> int:

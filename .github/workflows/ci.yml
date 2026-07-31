@@ -291,13 +291,11 @@ jobs:
           uv run --no-project --with 'pylint>=4.0,<5' --with 'pytest>=8.0'             python -m pylint src
           uv run --no-project --with 'pylint>=4.0,<5' --with 'pytest>=8.0'             python -m pylint --rcfile=tests/.pylintrc tests
           # soldr#2120: the CI scripts themselves, on pylint's default rules.
-          # `test_*.py` is excluded here rather than relaxed: those 13 files are
-          # pytest suites living beside the scripts they cover, so they need the
-          # tests/ ruleset -- but they also still share the importlib loader that
-          # #2117 consolidated for tests/, and that consolidation has not been
-          # done for this directory yet. Wiring them in before that would mean
-          # either a failing duplicate-code check or a blanket suppression.
+          # Two surfaces here for the same reason src/ and tests/ are split:
+          # `test_*.py` in this directory are pytest suites, so they take the
+          # tests/ ruleset, and everything else takes the default one.
           uv run --no-project --with 'pylint>=4.0,<5' --with 'pytest>=8.0'             python -m pylint .github/scripts ci --ignore-patterns='test_.*\.py'
+          uv run --no-project --with 'pylint>=4.0,<5' --with 'pytest>=8.0'             python -m pylint --rcfile=tests/.pylintrc .github/scripts/test_*.py
 
       # All four directories. `.github/scripts` and `ci` are the scripts CI
       # itself runs, so a type error in them breaks a lane rather than a

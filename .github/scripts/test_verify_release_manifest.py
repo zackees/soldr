@@ -15,12 +15,11 @@ says "unknown" is worse than absent, because it looks answered.
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import json
-import sys
 from pathlib import Path
 
 import pytest
+from _script_loader import load_script_module
 
 SCRIPT = Path(__file__).resolve().parent / "verify_release_manifest.py"
 
@@ -56,12 +55,7 @@ def _manifest(**overrides) -> dict:
 
 @pytest.fixture(scope="module")
 def mod():
-    spec = importlib.util.spec_from_file_location("verify_release_manifest", SCRIPT)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["verify_release_manifest"] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_script_module(SCRIPT, "verify_release_manifest")
 
 
 def _write(tmp_path: Path, manifest: dict) -> str:

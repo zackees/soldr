@@ -13,11 +13,10 @@ nesting, and the `on:`-parses-as-True trap that a PyYAML version would hit.
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 from pathlib import Path
 
 import pytest
+from _script_loader import load_script_module
 
 SCRIPT = Path(__file__).resolve().parent / "verify_workflow_paths.py"
 REPO_ROOT = SCRIPT.resolve().parents[2]
@@ -25,12 +24,7 @@ REPO_ROOT = SCRIPT.resolve().parents[2]
 
 @pytest.fixture(scope="module")
 def mod():
-    spec = importlib.util.spec_from_file_location("verify_workflow_paths", SCRIPT)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["verify_workflow_paths"] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_script_module(SCRIPT, "verify_workflow_paths")
 
 
 # --- parsing --------------------------------------------------------------

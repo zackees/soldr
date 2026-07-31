@@ -3,26 +3,15 @@
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 import tarfile
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
+from _script_loader import load_sibling_script
 
-def load(name: str):
-    path = Path(__file__).with_name(f"{name}.py")
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-script = load("fetch_catalogued_nextest")
+script = load_sibling_script("fetch_catalogued_nextest")
 
 
 class FetchNextestTests(unittest.TestCase):
