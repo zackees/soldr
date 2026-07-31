@@ -10,24 +10,18 @@ its budget on the diagnostic, not echo the invocation.
 
 from __future__ import annotations
 
-import importlib.util
 import json
-import sys
 from pathlib import Path
 
 import pytest
+from conftest import load_script_module
 
 BACKEND = Path(__file__).resolve().parents[1] / "src" / "soldr" / "__init__.py"
 
 
 @pytest.fixture(scope="module")
 def backend():
-    spec = importlib.util.spec_from_file_location("soldr_backend_excerpt", BACKEND)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["soldr_backend_excerpt"] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_script_module(BACKEND, "soldr_backend_excerpt")
 
 
 def _huge_command() -> str:

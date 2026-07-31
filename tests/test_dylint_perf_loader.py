@@ -13,20 +13,15 @@ updated at the time; this loader was missed, so pin it separately.
 
 from __future__ import annotations
 
-import importlib.util
 import subprocess
-import sys
 from pathlib import Path
+
+from conftest import load_script_module
 
 
 def load_dylint_perf():
     path = Path(__file__).parents[1] / "bench" / "dylint_perf.py"
-    spec = importlib.util.spec_from_file_location("dylint_perf_under_test", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_script_module(path, "dylint_perf_under_test")
 
 
 def test_load_perf_local_survives_dataclass_annotation_resolution() -> None:

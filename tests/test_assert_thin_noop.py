@@ -7,25 +7,19 @@ the script as a subprocess, the same way CI invokes it.
 
 from __future__ import annotations
 
-import importlib.util
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from conftest import load_script_module
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / ".github" / "scripts" / "assert_thin_noop.py"
 
 
 def _load_module():
-    spec = importlib.util.spec_from_file_location("assert_thin_noop", SCRIPT_PATH)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    # Register before exec so dataclasses can resolve forward refs / module dict.
-    sys.modules["assert_thin_noop"] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_script_module(SCRIPT_PATH, "assert_thin_noop")
 
 
 @pytest.fixture(scope="module")

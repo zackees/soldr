@@ -8,11 +8,10 @@ quietly become a no-op.
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 from pathlib import Path
 
 import pytest
+from conftest import load_script_module
 
 SCRIPT = (
     Path(__file__).resolve().parents[1]
@@ -34,12 +33,7 @@ Dynamic section at offset 0x2dd8 contains 27 entries:
 
 @pytest.fixture(scope="module")
 def guard():
-    spec = importlib.util.spec_from_file_location("verify_static_link", SCRIPT)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["verify_static_link"] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_script_module(SCRIPT, "verify_static_link")
 
 
 def test_a_static_binary_is_accepted(guard):

@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 from pathlib import Path
 
 import pytest
+from conftest import load_script_module
 
 SCRIPT = (
     Path(__file__).resolve().parents[1]
@@ -18,15 +17,7 @@ SCRIPT = (
 
 @pytest.fixture(scope="module")
 def mod():
-    spec = importlib.util.spec_from_file_location(
-        "verify_release_profile_policy", SCRIPT
-    )
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    # Register before exec, matching tests/test_assert_thin_noop.py.
-    sys.modules["verify_release_profile_policy"] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_script_module(SCRIPT, "verify_release_profile_policy")
 
 
 def _write(dir_: Path, name: str, body: str) -> None:

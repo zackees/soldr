@@ -29,11 +29,11 @@ at `target/x86_64-unknown-linux-gnu/{debug,release}/soldr`).
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+from conftest import docker_available
 
 ACT_IMAGE = "catthehacker/ubuntu:act-24.04"
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -104,25 +104,9 @@ def _locate_linux_soldr_binary() -> tuple[Path | None, list[str]]:
     return None, rejected
 
 
-def _docker_available() -> bool:
-    if shutil.which("docker") is None:
-        return False
-    try:
-        result = subprocess.run(
-            ["docker", "info"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return result.returncode == 0
-
-
 @pytest.mark.act_integration
 def test_soldr_bootstrap_installs_rustup_on_act_image(tmp_path: Path) -> None:
-    if not _docker_available():
+    if not docker_available():
         pytest.skip("docker daemon not reachable")
 
     soldr_bin, rejected = _locate_linux_soldr_binary()

@@ -7,12 +7,11 @@ must never fail a build on the guard's own account.
 
 from __future__ import annotations
 
-import importlib.util
 import json
-import sys
 from pathlib import Path
 
 import pytest
+from conftest import load_script_module
 
 SCRIPT = (
     Path(__file__).resolve().parents[1]
@@ -24,12 +23,7 @@ SCRIPT = (
 
 @pytest.fixture(scope="module")
 def guard():
-    spec = importlib.util.spec_from_file_location("check_compile_fallbacks", SCRIPT)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["check_compile_fallbacks"] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_script_module(SCRIPT, "check_compile_fallbacks")
 
 
 def _doctor(total: int, reasons: "list[str] | None" = None) -> dict:

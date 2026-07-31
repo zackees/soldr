@@ -16,24 +16,19 @@ all six outcomes, plus the bot classifier the signal depends on.
 
 from __future__ import annotations
 
-import importlib.util
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from conftest import load_script_module
 
 SCRIPT = Path(__file__).resolve().parents[1] / ".github" / "scripts" / "perf_gate.py"
 
 
 @pytest.fixture(scope="module")
 def gate():
-    spec = importlib.util.spec_from_file_location("perf_gate", SCRIPT)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["perf_gate"] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_script_module(SCRIPT, "perf_gate")
 
 
 # --- the bot classifier the whole signal rests on -------------------------
@@ -88,16 +83,6 @@ def _git(repo: Path, *args: str, env: "dict[str, str] | None" = None) -> str:
         text=True,
         env=full_env,
     ).stdout
-
-
-@pytest.fixture
-def repo(tmp_path: Path) -> Path:
-    r = tmp_path / "repo"
-    r.mkdir()
-    _git(r, "init", "-q", "-b", "main")
-    _git(r, "config", "user.email", "t@example.com")
-    _git(r, "config", "user.name", "t")
-    return r
 
 
 def _commit(repo: Path, email: str, hours_ago: int, message: str) -> None:

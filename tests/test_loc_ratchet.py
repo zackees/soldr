@@ -7,26 +7,18 @@ part a mock would assume rather than verify.
 
 from __future__ import annotations
 
-import importlib.util
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
+from conftest import load_script_module
 
 SCRIPT = Path(__file__).resolve().parents[1] / ".github" / "scripts" / "loc_ratchet.py"
 
 
 @pytest.fixture(scope="module")
 def mod():
-    spec = importlib.util.spec_from_file_location("loc_ratchet", SCRIPT)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    # Register before exec so dataclasses can resolve the module dict, matching
-    # tests/test_assert_thin_noop.py.
-    sys.modules["loc_ratchet"] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_script_module(SCRIPT, "loc_ratchet")
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -44,16 +36,6 @@ def _write(repo: Path, rel: str, lines: int) -> None:
 def _commit(repo: Path, message: str) -> None:
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", message)
-
-
-@pytest.fixture
-def repo(tmp_path: Path) -> Path:
-    r = tmp_path / "repo"
-    r.mkdir()
-    _git(r, "init", "-q", "-b", "main")
-    _git(r, "config", "user.email", "t@example.com")
-    _git(r, "config", "user.name", "t")
-    return r
 
 
 def _evaluate(mod, repo: Path, ceiling: int = 100):

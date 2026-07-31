@@ -1,6 +1,8 @@
 import re
 from pathlib import Path
 
+from conftest import WORKSPACE_CRATES
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 
@@ -51,13 +53,7 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
         "              ls -l target/x86_64-pc-windows-msvc/debug/hellowin.exe"
         in baseline
     )
-    for first_party_package in [
-        "soldr-cli",
-        "soldr-core",
-        "soldr-fetch",
-        "soldr-cache",
-        "soldr-daemon",
-    ]:
+    for first_party_package in WORKSPACE_CRATES:
         assert f"-p {first_party_package}" in cross
 
     assert "test archive missing" not in target_run

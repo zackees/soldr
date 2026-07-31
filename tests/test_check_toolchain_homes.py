@@ -10,11 +10,10 @@ binary physically lives inside a managed home.
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 from pathlib import Path
 
 import pytest
+from conftest import load_script_module
 
 SCRIPT = (
     Path(__file__).resolve().parents[1]
@@ -28,12 +27,7 @@ MANAGED = "/home/runner/.soldr"
 
 @pytest.fixture(scope="module")
 def guard():
-    spec = importlib.util.spec_from_file_location("check_toolchain_homes", SCRIPT)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["check_toolchain_homes"] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_script_module(SCRIPT, "check_toolchain_homes")
 
 
 def _log(*rows: "tuple[str, str]") -> str:
