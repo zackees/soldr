@@ -7,7 +7,6 @@ import stat
 import subprocess
 from pathlib import Path
 
-
 TOOL_GROUPS = {
     "cargo": ["cargo"],
     "rust": ["cargo", "rustc", "rustfmt", "clippy-driver", "rustdoc"],
@@ -72,12 +71,14 @@ def resolve_tool(tool: str) -> str:
     if path:
         return path
 
-    raise RuntimeError(f"setup-soldr could not resolve requested tool shim target: {tool}")
+    raise RuntimeError(
+        f"setup-soldr could not resolve requested tool shim target: {tool}"
+    )
 
 
 def write_unix_shim(path: Path, soldr_path: str, tool: str) -> None:
     path.write_text(
-        f"#!/bin/sh\nexec {sh_quote(soldr_path)} {sh_quote(tool)} \"$@\"\n",
+        f'#!/bin/sh\nexec {sh_quote(soldr_path)} {sh_quote(tool)} "$@"\n',
         encoding="utf-8",
     )
     path.chmod(path.stat().st_mode | stat.S_IEXEC)
@@ -85,7 +86,7 @@ def write_unix_shim(path: Path, soldr_path: str, tool: str) -> None:
 
 def write_windows_shim(path: Path, soldr_path: str, tool: str) -> None:
     path.write_text(
-        f"@echo off\r\n\"{soldr_path}\" {tool} %*\r\n",
+        f'@echo off\r\n"{soldr_path}" {tool} %*\r\n',
         encoding="utf-8",
     )
 

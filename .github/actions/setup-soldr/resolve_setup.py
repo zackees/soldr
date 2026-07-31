@@ -13,7 +13,10 @@ from typing import Any
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover
-    tomllib = None
+    # Python 3.10 has no tomllib; callers check for None. Not a constant
+    # despite living at module scope, and the binding is deliberately
+    # module-or-None.
+    tomllib = None  # type: ignore[assignment]  # pylint: disable=invalid-name
 
 
 def _normalize_list(value: Any) -> list[str]:

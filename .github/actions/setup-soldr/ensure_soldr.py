@@ -12,17 +12,22 @@ import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import Any
 
+# The sibling module lives beside this file, which is executed as a script by
+# the action rather than imported as a package -- so sys.path must be extended
+# before the import, and the import genuinely cannot move to the top.
+# pylint: disable-next=wrong-import-position
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from zccache_contract import (
-    ARCHIVE_EXT,  # noqa: E402
+    ARCHIVE_EXT,
     CARGO_CHEF_BUNDLED_BINARY,
     CARGO_CHEF_LOCAL_DIR_ENV,
     CRGX_BUNDLED_BINARY,
     CRGX_LOCAL_DIR_ENV,
     MANIFEST_NAME,
-    locate_extracted_file,
     RELEASE_BUNDLED_BINARIES,
+    locate_extracted_file,
     soldr_debug_info_entries,
     validate_release_manifest,
 )
@@ -111,7 +116,7 @@ def _installed_version(binary_path: Path) -> str | None:
     return str(payload["soldr_version"])
 
 
-def _select_asset(release: dict[str, object], target: str) -> tuple[str, str]:
+def _select_asset(release: dict[str, Any], target: str) -> tuple[str, str]:
     assets = release.get("assets") or []
     suffix = f"-{target}.{ARCHIVE_EXT}"
     for asset in assets:
@@ -120,7 +125,9 @@ def _select_asset(release: dict[str, object], target: str) -> tuple[str, str]:
         name = str(asset.get("name", ""))
         if name.endswith(suffix):
             return name, str(asset["browser_download_url"])
-    raise RuntimeError(f"no release asset found for target {target} (looking for *{suffix})")
+    raise RuntimeError(
+        f"no release asset found for target {target} (looking for *{suffix})"
+    )
 
 
 def _extract_archive(archive_path: Path, out_dir: Path) -> None:
@@ -267,7 +274,10 @@ def main() -> None:
             shutil.copy2(companion_src, companion_dst)
             if os.name != "nt":
                 companion_dst.chmod(
-                    companion_dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH,
+                    companion_dst.stat().st_mode
+                    | stat.S_IXUSR
+                    | stat.S_IXGRP
+                    | stat.S_IXOTH,
                 )
 
         # Stage the bundled crgx next to soldr so the install dir
@@ -289,7 +299,10 @@ def main() -> None:
         shutil.copy2(cargo_chef_src, cargo_chef_dst)
         if os.name != "nt":
             cargo_chef_dst.chmod(
-                cargo_chef_dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH,
+                cargo_chef_dst.stat().st_mode
+                | stat.S_IXUSR
+                | stat.S_IXGRP
+                | stat.S_IXOTH,
             )
 
         shutil.copy2(manifest_path, install_dir / MANIFEST_NAME)

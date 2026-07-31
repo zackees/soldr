@@ -4,8 +4,8 @@ from __future__ import annotations
 import json
 import os
 import platform
-import stat
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -73,7 +73,9 @@ def download_rustup_init(destination_dir: Path) -> Path:
     except (OSError, URLError) as exc:
         if temp_destination.exists():
             temp_destination.unlink()
-        raise RuntimeError(f"setup-soldr failed to download rustup-init from {url}: {exc}") from exc
+        raise RuntimeError(
+            f"setup-soldr failed to download rustup-init from {url}: {exc}"
+        ) from exc
 
     if os.name != "nt":
         destination.chmod(destination.stat().st_mode | stat.S_IEXEC)
@@ -104,7 +106,14 @@ def main() -> None:
     soldr_root = Path(os.environ["SOLDR_CACHE_DIR"])
     bin_dir = Path(cargo_home / "bin")
 
-    for path in (cargo_home, rustup_home, soldr_root, soldr_root / "cache", soldr_root / "bin", bin_dir):
+    for path in (
+        cargo_home,
+        rustup_home,
+        soldr_root,
+        soldr_root / "cache",
+        soldr_root / "bin",
+        bin_dir,
+    ):
         path.mkdir(parents=True, exist_ok=True)
 
     rustup = ensure_rustup_available(soldr_root)
