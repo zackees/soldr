@@ -7,7 +7,7 @@ The `soldr-daemon` long-lived process and its IPC surface.
 - `wire.rs` — the prost-backed encode/decode between the domain types and the
   length-prefixed IPC frames. The pure wire schema — prost message
   definitions (`wire_proto.rs`), the `wire.proto` reference schema, redb
-  row-tag helpers, and `WireDecodeError` — lives in `src/core/wire.rs`
+  row-tag helpers, and `WireDecodeError` — lives in `crates/soldr-core/src/core/wire.rs`
   (#1490 Phase 0, so `cache_lib` needs no edge into `daemon`) and is
   re-exported here at the historical paths. Round-trip tests stay in
   `wire_tests.rs` (wired in via `#[path]`).

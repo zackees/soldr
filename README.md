@@ -421,30 +421,29 @@ If you also have many separate test binaries, consider consolidating them under 
 
 ## Architecture
 
-**Monocrate.** A single Rust crate `soldr-cli` under `crates/soldr-cli/`, with four module trees inside it. The earlier four-crate workspace (`soldr-core` / `soldr-fetch` / `soldr-cache` / `soldr-cli`) was collapsed in 2026-05; the regression guard `crates/soldr-cli/tests/monocrate_guard.rs` fails the build if anyone reintroduces a second crate.
+**Internal workspace crates.** Five `publish = false` crates under `crates/`. The 2026-05 monocrate collapse was reversed by the #1490 split; soldr publishes no crates, so workspace membership has no external surface, and `soldr-cli` re-exports the others at their historical paths (`soldr_cli::core`, `soldr_cli::fetch`, …) so existing imports are unchanged.
 
 ```
 soldr/
 |-- crates/
-|   `-- soldr-cli/
-|       |-- src/
-|       |   |-- core/            # Shared types, config, cache paths (formerly soldr-core)
-|       |   |-- fetch/           # Binary resolution + download (formerly soldr-fetch)
-|       |   |-- cache_lib/       # RUSTC_WRAPPER + daemon IPC (formerly soldr-cache)
-|       |   `-- main.rs + cli/   # Mode detection, dispatch, cargo front door
-|       `-- tests/
+|   |-- soldr-core/               # Shared types, config, target resolution, wire schema
+|   |-- soldr-fetch/              # Binary resolution + download
+|   |-- soldr-cache/              # RUSTC_WRAPPER + daemon IPC + archive transport
+|   |-- soldr-daemon/             # Daemon runtime + embedded zccache service
+|   `-- soldr-cli/                # Facade + the `soldr` binary
 |-- src/soldr/                    # Python package (maturin bin bindings)
 `-- tests/
 ```
 
-| Module | Role |
+| Crate | Role |
 |---|---|
-| `src/core/` | Shared types, config (`~/.soldr/config.toml`), target-triple resolution (MSVC default on Windows), cache paths, error types. No I/O beyond config files. |
-| `src/fetch/` | Binary resolution. `known_tools` registry, `trust` (SHA-256 pins + `SOLDR_TRUST_MODE` enforcement), rustup auto-bootstrap, resolution chain (local cache → repo lookup → GitHub Releases → extract). |
-| `src/cache_lib/` | `RUSTC_WRAPPER` mode: hash inputs (blake3), check `~/.soldr/cache/`, daemon IPC (Unix socket / Windows named pipe), LRU eviction, `soldr save` / `soldr load` archive transport, auto-GC. |
-| `src/main.rs` + cli/ | Mode detection (chameleon dispatch), clap for built-ins, exec for tool fetch, cargo front door (`soldr cargo ...`). |
+| `soldr-core` | Shared types, config (`~/.soldr/config.toml`), target-triple resolution (MSVC default on Windows), the daemon wire schema, error types, the `timed_test!` watchdog. No I/O beyond config files. |
+| `soldr-fetch` | Binary resolution. `known_tools` registry, `trust` (SHA-256 pins + `SOLDR_TRUST_MODE` enforcement), rustup auto-bootstrap, resolution chain (local cache → repo lookup → GitHub Releases → extract). |
+| `soldr-cache` | `RUSTC_WRAPPER` mode: hash inputs (blake3), check `~/.soldr/cache/`, daemon IPC (Unix socket / Windows named pipe), LRU eviction, `soldr save` / `soldr load` archive transport, auto-GC. |
+| `soldr-daemon` | Daemon lifecycle (spawn/displacement/relocation), IPC server, wire codec, and the embedded zccache service. Depends on `soldr-core` + `soldr-cache`. |
+| `soldr-cli` | Mode detection (chameleon dispatch), clap for built-ins, exec for tool fetch, cargo front door (`soldr cargo ...`), and the `[[bin]]` entry point. |
 
-A thin `src/lib.rs` re-exports `pub mod core; pub mod fetch; pub mod cache_lib;` so the library integration tests can keep `use soldr_cli::core::*`-style imports. This is not a supported public Rust library API.
+Dependency flow: every crate reaches into `core` for shared types; `fetch` and `cache` each consume `core`; `daemon` consumes `core` + `cache`; `cli` consumes all four. The re-exports are for internal consumers and tests — this is not a supported public Rust library API.
 
 ## Prior art
 

@@ -6,7 +6,7 @@
 > **Never run `cargo test` or `cargo build` on the host while working on issues
 > #576, #577, or #578 (meta #579).** These PRs mutate:
 >
-> - The soldr daemon protocol (`crates/soldr-cli/src/daemon/protocol.rs`)
+> - The soldr daemon protocol (`crates/soldr-daemon/src/daemon/protocol.rs`)
 > - The shared redb schema at `~/.soldr/state.redb` (new `cook_index_v1` table)
 > - The cargo-front-door pre-flight hot path (PR 3)
 >
@@ -156,7 +156,7 @@ regressions in future workflow edits.
 
 ## The container marker
 
-Every integration test in `tests/daemon_cook_index.rs` (and the
+Every integration test in `crates/soldr-cli/tests/daemon_cook_index.rs` (and the
 equivalent tests in PRs 2 and 3) starts with:
 
 ```rust
