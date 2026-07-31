@@ -204,20 +204,72 @@ assert.strictEqual(
 );
 
 // MIN_GLIBC_FOR_GNU must track the ceiling release-auto.yml enforces on the
-// gnu artifacts. If the release build is fixed to link a 2.17 baseline and
-// that ceiling drops, the installer must follow it down -- otherwise every
-// glibc host below 2.39 keeps being sent to musl long after gnu would work.
+// gnu BINARIES. If the release build is fixed to link a 2.17 baseline and that
+// ceiling drops, the installer must follow it down -- otherwise every glibc
+// host below 2.39 keeps being sent to musl long after gnu would work.
+//
+// Anchored on the script name rather than on any `--max-glibc`. release-auto
+// now passes that flag twice: 2.39 to verify_glibc_baseline.py for the
+// binaries, and 2.17 to verify_wheel_glibc.py for the wheel contents. A bare
+// match takes whichever appears first, so this was correct only by the order
+// the steps happen to sit in. Reorder them and the lockstep would demand the
+// installer drop to 2.17, routing glibc 2.17-2.38 hosts to a binary that needs
+// 2.39 -- the bug #2081 fixed, reintroduced by its own guard.
+function glibcCeilingFor(workflowText, scriptName) {
+  for (const line of workflowText.split(/\r?\n/)) {
+    if (!line.includes(scriptName)) {
+      continue;
+    }
+    const onSameLine = line.match(/--max-glibc\s+([0-9][0-9.]*)/);
+    if (onSameLine) {
+      return onSameLine[1];
+    }
+    // The invocation may be split across continuation lines; take the next
+    // --max-glibc after the script name.
+    const rest = workflowText.slice(workflowText.indexOf(line) + line.length);
+    const after = rest.match(/--max-glibc\s+([0-9][0-9.]*)/);
+    if (after) {
+      return after[1];
+    }
+  }
+  return null;
+}
+
+// Pin the anchoring itself: with the wheel invocation first, the binary
+// ceiling must still resolve to the binary ceiling.
+{
+  const reordered = [
+    "python3 .github/scripts/verify_wheel_glibc.py --max-glibc 2.17 dist/*.whl",
+    "python3 .github/scripts/verify_glibc_baseline.py --max-glibc 2.39 soldr",
+  ].join("\n");
+  assert.strictEqual(
+    glibcCeilingFor(reordered, "verify_glibc_baseline.py"),
+    "2.39",
+    "the binary ceiling must not be confused with the wheel ceiling",
+  );
+  assert.strictEqual(
+    glibcCeilingFor(reordered, "verify_wheel_glibc.py"),
+    "2.17",
+    "the wheel ceiling must resolve independently",
+  );
+  assert.strictEqual(glibcCeilingFor(reordered, "not_a_script.py"), null);
+}
+
 const releaseWorkflow = fs.readFileSync(
   path.join(root, ".github", "workflows", "release-auto.yml"),
   "utf8",
 );
-const ceilingMatch = releaseWorkflow.match(/--max-glibc\s+([0-9][0-9.]*)/);
-assert(ceilingMatch, "release-auto.yml must pass --max-glibc to verify_glibc_baseline.py");
+const binaryCeiling = glibcCeilingFor(releaseWorkflow, "verify_glibc_baseline.py");
+assert(
+  binaryCeiling,
+  "release-auto.yml must pass --max-glibc to verify_glibc_baseline.py",
+);
 assert.strictEqual(
   install.MIN_GLIBC_FOR_GNU,
-  ceilingMatch[1],
+  binaryCeiling,
   `install.js MIN_GLIBC_FOR_GNU (${install.MIN_GLIBC_FOR_GNU}) must match the ` +
-    `--max-glibc ceiling in release-auto.yml (${ceilingMatch[1]})`,
+    `--max-glibc ceiling verify_glibc_baseline.py enforces in release-auto.yml ` +
+    `(${binaryCeiling})`,
 );
 
 assert.strictEqual(
