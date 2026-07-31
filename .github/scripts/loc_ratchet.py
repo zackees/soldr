@@ -68,9 +68,7 @@ class NoMergeBase(Exception):
 
 
 def _run(args: list[str]) -> str:
-    return subprocess.run(
-        args, check=True, capture_output=True, text=True
-    ).stdout
+    return subprocess.run(args, check=True, capture_output=True, text=True).stdout
 
 
 def resolve_base(base_ref: str, base_sha: str | None) -> str:

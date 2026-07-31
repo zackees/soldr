@@ -9,7 +9,6 @@ import re
 import stat
 from pathlib import Path
 
-
 VALID_TOOLCHAIN = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 

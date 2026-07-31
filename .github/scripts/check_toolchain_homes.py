@@ -188,7 +188,9 @@ def main(argv: "list[str] | None" = None) -> int:
             for message in flips:
                 print(f"  - {message}")
         else:
-            print("check_toolchain_homes: no toolchain flips between consecutive builds")
+            print(
+                "check_toolchain_homes: no toolchain flips between consecutive builds"
+            )
 
     if failed:
         print(

@@ -17,7 +17,6 @@ import re
 import sys
 from pathlib import Path
 
-
 JOB_HEADER = re.compile(r"^  ([A-Za-z0-9_-]+):\s*(?:#.*)?$")
 TOP_LEVEL_KEY = re.compile(r"^    ([A-Za-z0-9_-]+):(?:\s*(.*))?$")
 INTEGER = re.compile(r"^[0-9]+$")
@@ -151,9 +150,7 @@ def workflow_paths(root: Path) -> list[Path]:
     """
 
     return sorted(
-        path
-        for pattern in ("*.yml", "*.yaml")
-        for path in root.glob(pattern)
+        path for pattern in ("*.yml", "*.yaml") for path in root.glob(pattern)
     )
 
 

@@ -71,11 +71,15 @@ def normalize_os(value: str) -> str:
 def normalize_arch(value: str) -> str:
     arch_key = ARCH_ALIASES.get(value.lower())
     if arch_key is None:
-        raise SystemExit(f"unknown --arch '{value}'. Accepted: {', '.join(sorted(ARCH_ALIASES))}")
+        raise SystemExit(
+            f"unknown --arch '{value}'. Accepted: {', '.join(sorted(ARCH_ALIASES))}"
+        )
     return arch_key
 
 
-def platform_candidates(os_key: str, arch_key: str, extra: str | None) -> list[dict[str, str]]:
+def platform_candidates(
+    os_key: str, arch_key: str, extra: str | None
+) -> list[dict[str, str]]:
     base = {"os": os_key, "arch": arch_key}
     if extra:
         normalized = extra.lower()
@@ -91,7 +95,12 @@ def platform_candidates(os_key: str, arch_key: str, extra: str | None) -> list[d
     if os_key == "linux":
         return [base | {"libc": "glibc"}, base | {"libc": "musl"}, base]
     if os_key == "windows":
-        return [base | {"abi": "msvc"}, base | {"abi": "gnu"}, base | {"abi": "gnullvm"}, base]
+        return [
+            base | {"abi": "msvc"},
+            base | {"abi": "gnu"},
+            base | {"abi": "gnullvm"},
+            base,
+        ]
     if os_key == "darwin" and arch_key != "universal2":
         return [base, {"os": "darwin", "arch": "universal2"}]
     return [base]
@@ -128,8 +137,12 @@ def find_release(payload: dict[str, Any], requested: str) -> dict[str, Any]:
         if version in accepted:
             return release
 
-    known = ", ".join(str(r.get("version", "?")) for r in releases[:8] if isinstance(r, dict))
-    raise SystemExit(f"no release '{requested}' in tool manifest. Known versions: {known}")
+    known = ", ".join(
+        str(r.get("version", "?")) for r in releases[:8] if isinstance(r, dict)
+    )
+    raise SystemExit(
+        f"no release '{requested}' in tool manifest. Known versions: {known}"
+    )
 
 
 def platform_matches(actual: dict[str, Any], expected: dict[str, str]) -> bool:
@@ -183,7 +196,11 @@ def find_asset(
                 raise SystemExit("matched asset has no URL")
 
     wanted = " or ".join(
-        "-".join(candidate.get(k, "") for k in ("os", "arch", "libc", "abi") if candidate.get(k))
+        "-".join(
+            candidate.get(k, "")
+            for k in ("os", "arch", "libc", "abi")
+            if candidate.get(k)
+        )
         for candidate in candidates
     )
     available = []
@@ -191,9 +208,15 @@ def find_asset(
         platform = entry.get("platform") if isinstance(entry, dict) else None
         if isinstance(platform, dict):
             available.append(
-                "-".join(str(platform.get(k)) for k in ("os", "arch", "libc", "abi") if platform.get(k))
+                "-".join(
+                    str(platform.get(k))
+                    for k in ("os", "arch", "libc", "abi")
+                    if platform.get(k)
+                )
             )
-    raise SystemExit(f"no platform match for {wanted}; available: {', '.join(sorted(available))}")
+    raise SystemExit(
+        f"no platform match for {wanted}; available: {', '.join(sorted(available))}"
+    )
 
 
 def resolve_url(
@@ -211,7 +234,9 @@ def resolve_url(
     if not isinstance(payload, dict):
         raise SystemExit(f"tool manifest at {url} is not a JSON object")
     release = find_release(payload, version)
-    candidates = platform_candidates(normalize_os(platform), normalize_arch(arch), extra)
+    candidates = platform_candidates(
+        normalize_os(platform), normalize_arch(arch), extra
+    )
     return find_asset_url(release, candidates)
 
 
@@ -251,17 +276,33 @@ def resolve_metadata(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("tool", help="Tool name under the soldr-toolchain origin.")
-    parser.add_argument("--origin", default=DEFAULT_ORIGIN, help=f"Catalogue origin (default: {DEFAULT_ORIGIN})")
+    parser.add_argument(
+        "--origin",
+        default=DEFAULT_ORIGIN,
+        help=f"Catalogue origin (default: {DEFAULT_ORIGIN})",
+    )
     parser.add_argument(
         "--tool-manifest-url",
         default=None,
         help="Full per-tool manifest URL override, mainly for tests and mirrors.",
     )
-    parser.add_argument("--platform", required=True, help="OS: linux, mac/darwin, windows.")
-    parser.add_argument("--arch", required=True, help="Arch: x86/x64/x86_64, arm/arm64/aarch64, universal2.")
-    parser.add_argument("--extra", default=None, help="ABI/libc extra: gnu, musl, msvc, gnullvm.")
-    parser.add_argument("--version", default="latest", help="Release version or latest (default).")
-    parser.add_argument("--json", action="store_true", help="emit selected asset metadata as JSON")
+    parser.add_argument(
+        "--platform", required=True, help="OS: linux, mac/darwin, windows."
+    )
+    parser.add_argument(
+        "--arch",
+        required=True,
+        help="Arch: x86/x64/x86_64, arm/arm64/aarch64, universal2.",
+    )
+    parser.add_argument(
+        "--extra", default=None, help="ABI/libc extra: gnu, musl, msvc, gnullvm."
+    )
+    parser.add_argument(
+        "--version", default="latest", help="Release version or latest (default)."
+    )
+    parser.add_argument(
+        "--json", action="store_true", help="emit selected asset metadata as JSON"
+    )
     args = parser.parse_args(argv)
 
     kwargs = {

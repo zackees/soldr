@@ -28,8 +28,8 @@ explicit destructive operation that removes both the runner and its volumes.
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -295,7 +295,9 @@ def ptrace_enabled() -> bool:
     return os.environ.get(PTRACE_ENV, "").strip().lower() in ("1", "true", "yes")
 
 
-def exec_command(runner: Runner, argv: list[str], workdir: str, *, tty: bool) -> list[str]:
+def exec_command(
+    runner: Runner, argv: list[str], workdir: str, *, tty: bool
+) -> list[str]:
     command = ["docker", "exec"]
     if tty:
         command.append("-it")
@@ -324,7 +326,9 @@ def ensure_runner(runner: Runner, image_id: str) -> None:
             subprocess.run(["docker", "volume", "create", volume], check=True)
         subprocess.run(create_command(runner, image_id), check=True)
 
-    running = docker_output(["inspect", "--format", "{{.State.Running}}", runner.container])
+    running = docker_output(
+        ["inspect", "--format", "{{.State.Running}}", runner.container]
+    )
     if running != "true":
         subprocess.run(["docker", "start", runner.container], check=True)
 
@@ -405,7 +409,9 @@ def runner_lock(source_root: Path) -> Iterator[None]:
 def reset_runner(runner: Runner) -> int:
     if not docker_output(["inspect", "--format", "{{.Id}}", runner.container]):
         return 0
-    return subprocess.run(["docker", "rm", "-f", runner.container], check=False).returncode
+    return subprocess.run(
+        ["docker", "rm", "-f", runner.container], check=False
+    ).returncode
 
 
 def stop_runner(runner: Runner) -> int:
@@ -425,13 +431,16 @@ def wipe(runner: Runner) -> int:
 
 def status(runner: Runner) -> int:
     state = (
-        docker_output(["inspect", "--format", "{{.State.Status}}", runner.container]) or "(absent)"
+        docker_output(["inspect", "--format", "{{.State.Status}}", runner.container])
+        or "(absent)"
     )
     print(f"root: {runner.source_root}")
     print(f"{runner.container}  {state}")
     rows: list[tuple[str, str]] = []
     for name in runner.volumes:
-        mountpoint = docker_output(["volume", "inspect", "--format", "{{.Mountpoint}}", name])
+        mountpoint = docker_output(
+            ["volume", "inspect", "--format", "{{.Mountpoint}}", name]
+        )
         rows.append((name, mountpoint or "(absent)"))
     width = max(len(name) for name, _ in rows)
     for name, info in rows:

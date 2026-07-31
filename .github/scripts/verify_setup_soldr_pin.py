@@ -10,7 +10,6 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SETUP_SOLDR_REPO = "https://github.com/zackees/setup-soldr.git"
 SETUP_SOLDR_V0_REF = "refs/tags/v0"

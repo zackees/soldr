@@ -308,7 +308,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if args.expect_incomplete_restore:
-        first, second, errors = assert_incomplete_restore_rebuilds(first_text, second_text)
+        first, second, errors = assert_incomplete_restore_rebuilds(
+            first_text, second_text
+        )
     else:
         first, second, errors = assert_second_build_is_noop(
             first_text,

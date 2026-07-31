@@ -9,7 +9,6 @@ import stat
 import subprocess
 from pathlib import Path
 
-
 FIRST_PARTY_PACKAGES = (
     "soldr-cli",
     "soldr-core",
@@ -51,7 +50,9 @@ def archive_members(path: Path) -> list[str]:
     )
     members = result.stdout.splitlines()
     if not any(member.lower().endswith(".exe") for member in members):
-        raise SystemExit(f"nextest archive contains no Windows .exe test artifact: {path}")
+        raise SystemExit(
+            f"nextest archive contains no Windows .exe test artifact: {path}"
+        )
     return members
 
 
@@ -60,7 +61,9 @@ def build_roundtrip(*, target: str, profile: str) -> None:
     validate_pe(artifact, context="cold cached build")
     clean_first_party(target=target, profile=profile)
     if artifact.exists():
-        raise SystemExit(f"cargo clean left the warm-restore probe in place: {artifact}")
+        raise SystemExit(
+            f"cargo clean left the warm-restore probe in place: {artifact}"
+        )
     run(
         [
             "soldr",
@@ -134,7 +137,9 @@ def main() -> int:
     else:
         if args.archive is None:
             parser.error("--archive is required for --phase archive")
-        archive_roundtrip(target=args.target, profile=args.profile, archive=args.archive)
+        archive_roundtrip(
+            target=args.target, profile=args.profile, archive=args.archive
+        )
     return 0
 
 

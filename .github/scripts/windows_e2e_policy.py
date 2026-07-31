@@ -16,7 +16,6 @@ import subprocess
 from pathlib import Path, PurePosixPath
 from typing import NamedTuple, Sequence
 
-
 FAST_BUILD_LABEL = "fast-build"
 
 
@@ -58,7 +57,9 @@ def decide_windows_e2e(
     sensitive = [path for path in changed_paths if not is_low_risk_path(path)]
     if sensitive:
         return Decision(True, f"platform-sensitive path changed: {sensitive[0]}")
-    return Decision(False, "fast-build accepted for low-risk documentation/metadata only")
+    return Decision(
+        False, "fast-build accepted for low-risk documentation/metadata only"
+    )
 
 
 def _pull_request_paths(event: dict[str, object]) -> list[str]:
