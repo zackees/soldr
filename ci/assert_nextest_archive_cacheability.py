@@ -17,6 +17,7 @@ import sys
 import time
 from collections import deque
 from pathlib import Path
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 IMAGE = "soldr-cook-dev"
@@ -361,7 +362,7 @@ def build_image(image: str) -> int:
 
 def run_harness(
     image: str, volumes: list[str], tracker: "PhaseTracker | None" = None
-) -> tuple[int, dict[str, object] | None]:
+) -> tuple[int, dict[str, Any] | None]:
     cmd = [
         "docker",
         "run",

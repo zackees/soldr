@@ -378,7 +378,7 @@ def runner_lock(source_root: Path) -> Iterator[None]:
     lock_path = git_common_dir(source_root) / "soldr-perf-local.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+b") as handle:
-        if os.name == "nt":
+        if sys.platform == "win32":
             import msvcrt
 
             handle.seek(0, os.SEEK_END)

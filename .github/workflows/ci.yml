@@ -283,18 +283,20 @@ jobs:
           uv run --no-project --with 'pylint>=4.0,<5' --with 'pytest>=8.0'             python -m pylint src
           uv run --no-project --with 'pylint>=4.0,<5' --with 'pytest>=8.0'             python -m pylint --rcfile=tests/.pylintrc tests
 
-      # `.github/scripts` joins `src tests` here: those are the scripts CI
+      # All four directories. `.github/scripts` and `ci` are the scripts CI
       # itself runs, so a type error in them breaks a lane rather than a
-      # developer's editor. The nine findings it had are fixed at the source
-      # (a `None` that could reach `.get`, a list indexed with a str) rather
-      # than suppressed.
+      # developer's editor. Every finding was fixed at the source rather than
+      # suppressed (a `None` that could reach `.get`, a list indexed with a
+      # str, an over-tight `dict[str, object]` on a `json.loads` payload).
       #
-      # `ci/` is deliberately still out. Four of its findings are
-      # `fcntl.flock` / `LOCK_EX` "has no attribute", which is a Windows-only
-      # artifact: a contributor on Windows sees them and this Linux runner
-      # never does. Wiring it here without first deciding how that
-      # platform split should be expressed would enforce a check whose
-      # result depends on who ran it.
+      # `ci/` was held back in #2119 because four of its findings were
+      # `fcntl.flock` "has no attribute" -- which looked like a Windows-only
+      # artifact that would make the check pass or fail depending on who ran
+      # it. It was not: `perf_local.py` already branches correctly at runtime,
+      # but on `os.name == "nt"`, and mypy narrows `sys.platform`, not
+      # `os.name`. Switching to the idiom mypy understands prunes the dead
+      # branch on each platform and the findings disappear on both, so no
+      # platform-scoping is needed here after all.
       - name: Python types (mypy)
         # pytest is in the ephemeral env because the tests import it, and
         # mypy cannot resolve an import it cannot see. This passed locally
@@ -303,7 +305,7 @@ jobs:
         # bit the flake8 step in #2103.
         run: >-
           uv run --no-project --with 'mypy>=1.18,<2' --with 'pytest>=8.0'
-          python -m mypy src tests .github/scripts
+          python -m mypy src tests .github/scripts ci
 
 
       # soldr#1978 item 6 names this step as duplicating build-linux-x64's

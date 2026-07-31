@@ -24,6 +24,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -95,6 +96,7 @@ def _touch_staged_artifacts(project: Path) -> int:
     candidates.extend((project / "python").glob("**/_native.*"))
     refreshed = 0
     for candidate in candidates:
+        paths: Iterable[Path]
         if candidate.is_dir():
             paths = candidate.rglob("*")
         else:
