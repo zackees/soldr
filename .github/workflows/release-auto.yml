@@ -725,8 +725,16 @@ jobs:
                   shutil.copy2(matches[0], dest)
                   dest.chmod(dest.stat().st_mode | 0o755)
                   env_name = "CRGX_SOURCE_COMMIT" if tool == "crgx" else "CARGO_CHEF_SOURCE_COMMIT"
+                  # A real newline, not `\\n`. Inside this block scalar Python
+                  # reads `\\n` as backslash-plus-n, so both assignments landed
+                  # on ONE line of $GITHUB_ENV: crgx's value swallowed the
+                  # cargo-chef assignment and CARGO_CHEF_SOURCE_COMMIT was
+                  # never set at all. Published v0.8.29 shows the result --
+                  # crgx.source_commit is
+                  # "soldr-toolchain:v0.1.0\nCARGO_CHEF_SOURCE_COMMIT=soldr-toolchain:v0.1.73"
+                  # and cargo_chef.source_commit is "unknown".
                   with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as fh:
-                      fh.write(f"{env_name}=soldr-toolchain:{release_version}\\n")
+                      fh.write(f"{env_name}=soldr-toolchain:{release_version}\n")
                   print(f"staged {dest} from {matches[0]}")
 
           versions = {
@@ -965,6 +973,26 @@ jobs:
 
           echo "--- manifest.json ---"
           cat dist/package/manifest.json
+
+      # manifest.json is the release describing itself, and setup-soldr, the
+      # npm wrapper and ad-hoc tooling all read it. Nothing checked it, and it
+      # was wrong: published v0.8.29 has crgx.source_commit holding
+      # "soldr-toolchain:v0.1.0\nCARGO_CHEF_SOURCE_COMMIT=soldr-toolchain:v0.1.73"
+      # with cargo_chef.source_commit reading "unknown", because the step
+      # writing $GITHUB_ENV terminated lines with a literal backslash-n (fixed
+      # in this change). The digests were all correct -- this was provenance,
+      # not integrity -- but provenance that silently says "unknown" is worse
+      # than absent, because it looks answered.
+      #
+      # --package-dir re-derives every declared sha256 from the staged bytes,
+      # so the manifest cannot describe an archive it does not match.
+      - name: Verify manifest.json describes what is staged (soldr#1060)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/verify_release_manifest.py \
+            dist/package/manifest.json \
+            --package-dir dist/package
 
       - name: Package combined archive (tar.zst level 19)
         # Use soldr's in-process Rust zstd encoder rather than depending
