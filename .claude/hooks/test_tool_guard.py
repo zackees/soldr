@@ -75,7 +75,9 @@ class ToolGuardTests(unittest.TestCase):
         self.assertIsNone(check_command("soldr rustc --version"))
         self.assertIsNone(check_command("soldr rustfmt --check src/lib.rs"))
         self.assertIsNone(check_command("uv run --no-project soldr cargo test"))
-        self.assertIsNone(check_command("uv run --no-sync soldr rustfmt --check src/lib.rs"))
+        self.assertIsNone(
+            check_command("uv run --no-sync soldr rustfmt --check src/lib.rs")
+        )
 
     def test_blocks_bare_python(self):
         result = check_command("python ci/script.py")
@@ -137,17 +139,21 @@ class ToolGuardTests(unittest.TestCase):
         self.assertIsNone(check_command("uv pip list"))
 
     def test_extracts_powershell_command_field(self):
-        command = extract_command({
-            "tool_name": "PowerShell",
-            "tool_input": {"command": "cargo test"},
-        })
+        command = extract_command(
+            {
+                "tool_name": "PowerShell",
+                "tool_input": {"command": "cargo test"},
+            }
+        )
         self.assertEqual(command, "cargo test")
 
     def test_extracts_shell_script_field(self):
-        command = extract_command({
-            "tool_name": "Shell",
-            "tool_input": {"script": "cargo test"},
-        })
+        command = extract_command(
+            {
+                "tool_name": "Shell",
+                "tool_input": {"script": "cargo test"},
+            }
+        )
         self.assertEqual(command, "cargo test")
 
     def test_accepts_codex_shell_tool_names(self):
@@ -182,7 +188,9 @@ class ToolGuardTests(unittest.TestCase):
                 self.assertEqual(result[0], tool)
 
     def test_allows_soldr_rustup_rustdoc(self):
-        self.assertIsNone(check_command("soldr rustup target add x86_64-pc-windows-msvc"))
+        self.assertIsNone(
+            check_command("soldr rustup target add x86_64-pc-windows-msvc")
+        )
         self.assertIsNone(check_command("soldr rustdoc --output target/doc src/lib.rs"))
         self.assertIsNone(check_command("uv run --no-project soldr rustup show"))
 
@@ -209,8 +217,12 @@ class ToolGuardTests(unittest.TestCase):
         # Env-var assignments before soldr are fine -- the policy is about
         # routing the *tool*, not forbidding env overrides.
         self.assertIsNone(check_command("SOLDR_TRUST_MODE=strict soldr cargo build"))
-        self.assertIsNone(check_command("CARGO_BUILD_JOBS=4 soldr cargo test --release"))
-        self.assertIsNone(check_command("FOO=bar uv run --no-project soldr cargo check"))
+        self.assertIsNone(
+            check_command("CARGO_BUILD_JOBS=4 soldr cargo test --release")
+        )
+        self.assertIsNone(
+            check_command("FOO=bar uv run --no-project soldr cargo check")
+        )
 
     def test_blocks_env_prefixed_bare_python(self):
         result = check_command("PYTHONPATH=/foo python ci/script.py")
@@ -245,17 +257,19 @@ class ToolGuardTests(unittest.TestCase):
     def test_allows_docker_run_with_quoted_cargo(self):
         # Real motivating case: `docker run ... bash -c '... cargo ...'`
         # should not trip the host policy.
-        self.assertIsNone(check_command(
-            "docker run --rm -v /work:/w img bash -c 'cargo build --release'"
-        ))
+        self.assertIsNone(
+            check_command(
+                "docker run --rm -v /work:/w img bash -c 'cargo build --release'"
+            )
+        )
 
     def test_allows_docker_run_bare_cargo_after_image(self):
         # `docker run img cargo build` — cargo is an arg to docker, not
         # a host process. Whitelisting docker explicitly is not needed
         # because the first token is `docker`, which isn't in RUST_TOOLS.
-        self.assertIsNone(check_command(
-            "docker run --rm -v /work:/w img cargo build --release"
-        ))
+        self.assertIsNone(
+            check_command("docker run --rm -v /work:/w img cargo build --release")
+        )
 
     def test_allows_ssh_with_remote_cargo(self):
         # `ssh host cargo build` — the cargo runs on the remote host.
