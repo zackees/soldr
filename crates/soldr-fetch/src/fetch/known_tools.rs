@@ -270,7 +270,13 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         crate_name: "wasm-pack",
         cargo_subcommand: None,
         binary_name: "wasm-pack",
-        repo: Some(("rustwasm", "wasm-pack")),
+        // Moved from `rustwasm/wasm-pack` to the `wasm-bindgen` org. The old
+        // path still resolves today only because GitHub redirects renamed
+        // repositories -- the API reports the new `html_url`, and an asset URL
+        // built from the old name follows through to a 200. That redirect is
+        // not a guarantee: it lapses if anyone recreates `rustwasm/wasm-pack`,
+        // and then `soldr wasm-pack` fails at fetch time on a user's machine.
+        repo: Some(("wasm-bindgen", "wasm-pack")),
         tag_prefix: None,
         pinned_version: None,
         wraps_inner_cargo_build: false,
@@ -439,6 +445,44 @@ pub fn known_cargo_subcommands() -> Vec<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every `repo` override names a repository that still exists under that
+    /// exact owner. This is the runtime fetch path: a stale pair does not fail
+    /// at build time, it fails on a user's machine when they run the tool.
+    ///
+    /// Checked against the GitHub API when this was written -- 27 entries, one
+    /// stale: `wasm-pack` had moved from `rustwasm` to `wasm-bindgen`. It kept
+    /// working only through GitHub's rename redirect, which disappears the
+    /// moment anyone recreates a repo at the old path.
+    ///
+    /// Deliberately offline: asserting the corrected pair rather than querying
+    /// GitHub, so the suite stays hermetic. Re-audit with the API when adding
+    /// entries; this only pins what was verified.
+    #[test]
+    fn repo_overrides_name_canonical_repositories() {
+        assert_eq!(
+            lookup_by_crate("wasm-pack").unwrap().repo,
+            Some(("wasm-bindgen", "wasm-pack")),
+            "wasm-pack moved orgs; the old path survives only by redirect"
+        );
+
+        // Every override must at least be well formed -- an empty half would
+        // build a URL that 404s at fetch time.
+        for tool in KNOWN_TOOLS {
+            if let Some((owner, repo)) = tool.repo {
+                assert!(
+                    !owner.is_empty() && !repo.is_empty(),
+                    "{} has an empty repo override half",
+                    tool.crate_name
+                );
+                assert!(
+                    !owner.contains('/') && !repo.contains('/'),
+                    "{} splits owner/repo incorrectly: {owner:?}/{repo:?}",
+                    tool.crate_name
+                );
+            }
+        }
+    }
 
     #[test]
     fn lookup_by_crate_finds_registered_tools() {
