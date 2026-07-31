@@ -110,7 +110,6 @@ def find_timeout_violations(workflow: str) -> list[str]:
 # too-low timeout that kills a healthy long build is worse than the default.
 GRANDFATHERED = frozenset(
     {
-        "cache-delta-experiment.yml",
         "perf-cold-warm.yml",
         "perf-matrix.yml",
         "release-auto.yml",
