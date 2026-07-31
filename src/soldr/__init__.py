@@ -121,6 +121,7 @@ def _toml_section_values(path: Path, section: str) -> "dict[str, str]":
     error during the build.
     """
     try:
+        # pylint: disable=import-outside-toplevel  # 3.10 has no tomllib
         import tomllib  # type: ignore[import-not-found]
 
         with path.open("rb") as stream:
@@ -879,6 +880,9 @@ def _run_pep517_streaming(cmd: "list[str]", env: "dict[str, str]") -> None:
     # avoid a doubled `  0.12   1.34 ` prefix. A caller who set it explicitly
     # still wins for their own shell; this only governs the child we spawn.
     child_env[_TIMESTAMP_LINES_ENV_VAR] = "0"
+    # pylint: disable=consider-using-with  # the child outlives this scope;
+    # it is waited on explicitly below. A `with` block would close its pipes
+    # before the relay threads have drained them.
     process = subprocess.Popen(
         cmd,
         env=child_env,
@@ -954,7 +958,11 @@ def _run_pep517_streaming(cmd: "list[str]", env: "dict[str, str]") -> None:
                     break
                 emit(decoder.decode(chunk), chunk)
             emit(decoder.decode(b"", final=True))
-        except Exception as error:
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            # Deliberately broad: this runs on a daemon thread, where an
+            # escaping exception is discarded by the interpreter and the
+            # build hangs with no stated cause. Collected here and re-raised
+            # on the main thread instead.
             with output_lock:
                 relay_errors.append(error)
 
@@ -1261,6 +1269,7 @@ def _delegate_backend_stamp() -> str:
     module_name = name.partition(":")[0]
     package = module_name.split(".", 1)[0]
     try:
+        # pylint: disable=import-outside-toplevel  # guarded by the except
         from importlib import metadata
     except ImportError:
         return name

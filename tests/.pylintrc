@@ -1,0 +1,92 @@
+# pylint ruleset for the test suite (soldr#2102).
+#
+# `./lint` runs `pylint src tests` under `set -e`, so pylint's exit code has
+# always been able to fail the script -- and it did: 319 findings, which is why
+# the issue is titled "./lint cannot pass".
+#
+# 315 of those 319 were in `tests/`, and they are not defects. They are what a
+# pytest suite looks like. Rather than disable the checks repo-wide -- which
+# would also switch them off for `src/`, where they are worth having -- the two
+# surfaces get separate rulesets:
+#
+#   pylint src                        <- pylint's DEFAULT rules, nothing off
+#   pylint --rcfile=tests/.pylintrc tests
+#
+# `src/` scores 10.00/10 on the stock ruleset. The four findings it did have
+# were all deliberate (a 3.10 tomllib fallback, a relay subprocess that
+# outlives its scope, a broad catch on a daemon thread) and carry inline
+# disables with the reason at the site, so the exemption is visible where the
+# code is read rather than buried in a config file.
+#
+# This file is passed with an explicit --rcfile rather than relying on pylint's
+# directory discovery, so it applies exactly where it is named and nowhere else.
+
+[MESSAGES CONTROL]
+# Each entry below is disabled because the check is inapplicable to pytest, not
+# because the findings were tedious. Counts are from the 319-finding baseline.
+disable =
+    # 163x. A test taking a fixture as a parameter necessarily shadows the
+    # module-level fixture function of the same name. That IS the pytest
+    # dependency-injection API; the alternative is not using fixtures.
+    redefined-outer-name,
+    # 111x. Unit tests exercise the private functions of the module under test.
+    # `_wheel_cache_root` has no public alias to test instead, and giving it one
+    # purely to satisfy a linter would widen the package's API surface.
+    protected-access,
+    # 19x. Test doubles and monkeypatch replacements must match the signature of
+    # what they replace, so they accept arguments they have no reason to read.
+    unused-argument,
+    # 11x. `subprocess.run(..., check=True)` raises on non-zero, but these tests
+    # assert ON the exit code (`assert result.returncode == 1`). Adding `check`
+    # would break exactly the tests that verify failure is reported correctly.
+    subprocess-run-check,
+    # 9x. Tests import inside a function to probe optional dependencies and to
+    # reload modules under a patched environment. Hoisting defeats the point.
+    import-outside-toplevel,
+    # 1x. `tests/test_setup_soldr_pins.py` resolves a git tag over the network
+    # and must degrade to a skip on any failure -- offline, DNS, proxy, rate
+    # limit. Enumerating those exception types is guesswork that fails closed.
+    broad-exception-caught,
+    # Tests are named to describe the behaviour they pin, and the name plus the
+    # comment above the assertion is the documentation. A mandated docstring on
+    # every test function restates the name and nothing more. The same argument
+    # applies to the handful of classes used purely to group related cases.
+    missing-function-docstring,
+    missing-module-docstring,
+    missing-class-docstring,
+    # 9x, and this one is a real observation being deliberately deferred rather
+    # than dismissed: 28 test files repeat the same ~8-line
+    # `importlib.util.spec_from_file_location` block, because the scripts they
+    # guard live in `.github/scripts/` and are not an importable package.
+    #
+    # It stays disabled here for two reasons. Consolidating 28 files into a
+    # shared `conftest.py` loader is a refactor with its own blast radius --
+    # every one of those files is itself a regression guard -- and it does not
+    # belong inside a PR whose subject is lint configuration. And R0801 reports
+    # *pairs* above a similarity threshold, so it is not a stable target:
+    # removing the nine it currently names simply promotes the next nine.
+    #
+    # Tracked as follow-up on soldr#2102 rather than silently absorbed.
+    duplicate-code,
+
+[DESIGN]
+# A thorough test can legitimately need many locals and assertions; these
+# limits are tuned for production code with a different shape.
+max-locals = 40
+max-statements = 120
+max-branches = 24
+max-args = 12
+max-returns = 10
+# A test class is a grouping construct, not an interface. 35 related cases in
+# one class is a well-organised suite, not a god object.
+max-public-methods = 40
+
+[FORMAT]
+# black owns line length, exactly as in .flake8. A second tool enforcing its own
+# limit can only ever disagree with the formatter.
+max-line-length = 200
+# Aligned with `.github/scripts/loc_ratchet.py`, which is this repo's actual
+# per-file ceiling and already runs on every PR. pylint's stock 1000 would put a
+# second, stricter, differently-enforced limit on the same files -- which is the
+# three-conflicting-line-lengths problem soldr#2102 exists to end, one axis over.
+max-module-lines = 1500
