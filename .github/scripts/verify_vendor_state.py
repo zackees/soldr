@@ -64,23 +64,68 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+class VendorStateError(Exception):
+    """Unrecoverable problem reading the inputs — exit code 2, never 0.
+
+    Raised rather than returning a default, because every default here
+    is a wrong answer: `False` silently disables the gate and `True`
+    fails every unrelated PR."""
+
+
+_DEP_TABLE_KEYS = ("dependencies", "dev-dependencies", "build-dependencies")
+
+
+def _iter_dep_tables(doc: dict):
+    """Every dependency table a zccache dep could legally live in,
+    including the `[target.'cfg(...)'.dependencies]` forms."""
+    for key in _DEP_TABLE_KEYS:
+        table = doc.get(key)
+        if isinstance(table, dict):
+            yield table
+    targets = doc.get("target")
+    if isinstance(targets, dict):
+        for cfg_table in targets.values():
+            if not isinstance(cfg_table, dict):
+                continue
+            for key in _DEP_TABLE_KEYS:
+                table = cfg_table.get(key)
+                if isinstance(table, dict):
+                    yield table
+
+
+def _is_vendor_path(path: str) -> bool:
+    """True for any relative path that descends through `_vender/`,
+    at whatever depth the consuming crate happens to sit."""
+    parts = [p for p in path.replace("\\", "/").split("/") if p not in ("", ".")]
+    return "_vender" in parts
+
+
 def soldr_cargo_uses_vendor(cargo_toml_path: Path) -> bool:
     """True when `crates/soldr-cli/Cargo.toml` carries a vendored
-    `path = ...` zccache dep. The match is forgiving on whitespace
-    and feature lists so the canonical and any reasonable variant
-    both pass."""
+    `path = ...` zccache dep.
+
+    Parsed as TOML rather than pattern-matched. The previous regex
+    required the literal bytes `path = "_vender/`, so re-spacing the
+    dep (`path="../../_vender/...`, a tab, an extra space, or the
+    `[dependencies.zccache]` table form) made this return False --
+    which skips check 1 and makes the script report "all vendor-state
+    checks pass". A formatting change silently disabling a CI gate is
+    the worst failure mode available to it, and nothing downstream
+    would have noticed."""
     if not cargo_toml_path.is_file():
         return False
-    text = cargo_toml_path.read_text(encoding="utf-8")
-    # Anchor on `zccache` key + `path` = inside the same line block.
-    # Multi-line cargo deps are valid; we look at the contiguous
-    # `^zccache = ` block.
-    block_match = re.search(
-        r"^zccache\s*=\s*\{[^}]*\}", text, flags=re.MULTILINE | re.DOTALL
-    )
-    if not block_match:
-        return False
-    return 'path = "_vender/' in block_match.group(0) or 'path = "../../_vender/' in block_match.group(0)
+    try:
+        doc = _toml.loads(cargo_toml_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise VendorStateError(f"failed to parse {cargo_toml_path}: {exc}") from exc
+    for table in _iter_dep_tables(doc):
+        spec = table.get("zccache")
+        if not isinstance(spec, dict):
+            continue
+        path = spec.get("path")
+        if isinstance(path, str) and _is_vendor_path(path):
+            return True
+    return False
 
 
 def load_vendor_state(path: Path) -> dict:
@@ -137,7 +182,9 @@ def vendor_is_git_submodule(repo_root: Path) -> bool:
     # Look for `path = _vender/zccache` (canonical) or whitespace
     # variants. We don't validate the URL since the submodule could
     # legitimately be a fork (forked-during-iteration, etc.).
-    return bool(re.search(r"^\s*path\s*=\s*_vender/zccache\s*$", text, flags=re.MULTILINE))
+    return bool(
+        re.search(r"^\s*path\s*=\s*_vender/zccache\s*$", text, flags=re.MULTILINE)
+    )
 
 
 def check_vendor_active_means_state_exists(
@@ -189,7 +236,7 @@ def check_deadline_in_future(state: dict, state_path: Path) -> list[str]:
         errors.append(
             f"Check 2 failed: {state_path} `deadline` ({deadline.isoformat()}) "
             f"is in the past. Either retire the vendor per docs/VENDORING.md "
-            f"\"Ending the vendor\" or bump the deadline with a comment on "
+            f'"Ending the vendor" or bump the deadline with a comment on '
             f"`driving_issue` explaining why the original target slipped."
         )
     return errors
@@ -201,15 +248,11 @@ def check_delta_pr_within_grace(
     errors: list[str] = []
     deltas = state.get("deltas", [])
     if not isinstance(deltas, list):
-        errors.append(
-            f"Check 3 failed: {state_path} `deltas` is not an array."
-        )
+        errors.append(f"Check 3 failed: {state_path} `deltas` is not an array.")
         return errors
     for i, delta in enumerate(deltas):
         if not isinstance(delta, dict):
-            errors.append(
-                f"Check 3 failed: {state_path} `deltas[{i}]` is not a table."
-            )
+            errors.append(f"Check 3 failed: {state_path} `deltas[{i}]` is not a table.")
             continue
         soldr_commit = delta.get("soldr_commit")
         upstream_pr = delta.get("upstream_pr")
@@ -254,11 +297,20 @@ def main() -> int:
     vendor_state_path = repo_root / VENDOR_STATE_PATH
 
     errors: list[str] = []
-    errors.extend(check_vendor_active_means_state_exists(cargo_toml_path, vendor_state_path, repo_root))
+    try:
+        errors.extend(
+            check_vendor_active_means_state_exists(
+                cargo_toml_path, vendor_state_path, repo_root
+            )
+        )
+        uses_vendor = soldr_cargo_uses_vendor(cargo_toml_path)
+    except VendorStateError as exc:
+        sys.stderr.write(f"verify_vendor_state.py: {exc}\n")
+        return 2
 
     # In submodule mode there's no .vendor-state to validate; the
     # submodule pointer is the discipline.
-    if soldr_cargo_uses_vendor(cargo_toml_path) and vendor_is_git_submodule(repo_root):
+    if uses_vendor and vendor_is_git_submodule(repo_root):
         sys.stdout.write(
             "verify_vendor_state.py: _vender/zccache is a git submodule — "
             "skipping deadline + delta-PR checks (submodule mode)\n"
