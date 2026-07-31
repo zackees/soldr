@@ -767,7 +767,7 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
                 )
                 return "demo-0.1.0-py3-none-any.whl"
 
-            setattr(delegate, "build_wheel", build_wheel)
+            delegate.build_wheel = build_wheel
             with mock.patch.dict(sys.modules, {"pep517_cache_delegate": delegate}):
                 with mock.patch.object(
                     self.backend, "_project_root", return_value=root

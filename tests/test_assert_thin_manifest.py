@@ -201,7 +201,7 @@ def test_strict_mode_catches_orphan(mod, tmp_path: Path) -> None:
     bundle = tmp_path / "bundle"
     bundle.mkdir()
     listed = ["debug/deps/serde-abc.d"]
-    _populate_bundle(bundle, listed + ["debug/deps/orphan.d"])
+    _populate_bundle(bundle, [*listed, "debug/deps/orphan.d"])
     manifest_path = _make_manifest(bundle, [(p, 1) for p in listed])
 
     errors = mod.assert_manifest(manifest_path, bundle, strict=True)

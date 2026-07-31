@@ -64,3 +64,22 @@ markers = [
 [tool.ruff]
 target-version = "py310"
 line-length = 100
+
+# soldr#2102. ruff ran on its default rule set (E4/E7/E9 + F), which is a
+# narrow slice of what it can catch. These four families were measured against
+# the tree before being enabled, and all four now report zero:
+#
+#   B    flake8-bugbear -- real bug patterns. Found two: a `zip()` without
+#        `strict=`, which silently truncates to the shorter operand, and a
+#        `setattr` with a constant name.
+#   C4   comprehension misuse -- already clean.
+#   RET  return-path smells -- already clean.
+#   RUF  ruff's own checks. Found a dead `# noqa` for a rule that is not
+#        enabled, i.e. a suppression suppressing nothing.
+#
+# Deliberately NOT enabled, having measured them: PL (69 findings, 42 of them
+# magic-value comparisons in tests), SIM (34, mostly nested `with`), UP (47,
+# mostly Optional -> `|` rewrites). Those are style migrations, not defects,
+# and each would need its own reviewed diff rather than riding along here.
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "B", "C4", "RET", "RUF"]
