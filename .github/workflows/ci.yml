@@ -129,7 +129,13 @@ jobs:
       - name: Python tests
         run: |
           set -euo pipefail
-          uv run --no-project --with pytest python -m pytest tests/ -q
+          # `.github/scripts/` is included deliberately: six test files live
+          # beside the scripts they cover (target-run summary, the Windows
+          # e2e/MSVC-cache policies, catalogued-asset download, nextest fetch,
+          # toolchain asset query) and this step used to run `tests/` only, so
+          # those 29 tests never executed in CI. Tests that exist but never run
+          # are worse than none -- they rot silently while implying coverage.
+          uv run --no-project --with pytest python -m pytest tests/ .github/scripts/ -q
 
       - name: Cache rustup 1.94.1 in ~/.rustup
         id: rustup_cache
