@@ -202,7 +202,7 @@ Each candidate fix is a normal soldr commit that touches files
 ```bash
 # Edit the upstream code in place — these are soldr-side changes
 # for now; they become an upstream PR later.
-$EDITOR _vender/zccache/crates/zccache/src/embedded.rs
+$EDITOR _vender/zccache/crates/zccache-daemon-core/src/embedded.rs
 
 # Run the soldr perf harness against the change.
 docker build -f ci/docker/profile/Dockerfile.perf-linux -t soldr-profile-linux .
@@ -259,7 +259,7 @@ new zccache version:
 # 1. Bump the vendored zccache submodule commit (soldr#1368 removed the
 #    MANAGED_ZCCACHE_VERSION managed-binary download; the zccache CLI is
 #    now a compiled-in soldr [[bin]] built from _vender/zccache).
-$EDITOR crates/soldr-cli/src/fetch/mod.rs
+$EDITOR crates/soldr-fetch/src/fetch/mod.rs
 $EDITOR contracts/zccache-runtime.v1.json
 # Regenerate embed/manifest.json with the new release URLs + sha256s
 # (the same script approach we used for the 1.12.11 bump).
