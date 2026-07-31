@@ -134,7 +134,13 @@ if ! RELEASE_JSON="$(fetch_release_json)"; then
   exit 0
 fi
 
-readarray -t RELEASE_INFO < <(
+# bash 3.2 -- what macOS ships -- has no `readarray`, and this script runs on
+# macOS by design (`Darwin) os="apple-darwin"` above). A read loop is the
+# portable equivalent.
+RELEASE_INFO=()
+while IFS= read -r release_line; do
+  RELEASE_INFO+=("$release_line")
+done < <(
   RELEASE_JSON="$RELEASE_JSON" TARGET="$TARGET" ARCHIVE_EXT="$ARCHIVE_EXT" "$PYTHON_BIN" - <<'PY'
 import json
 import os

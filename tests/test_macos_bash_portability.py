@@ -38,8 +38,25 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-WORKFLOWS = sorted(
-    (Path(__file__).resolve().parents[1] / ".github" / "workflows").glob("*.y*ml")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+WORKFLOWS = sorted((REPO_ROOT / ".github" / "workflows").glob("*.y*ml"))
+
+# Shell that CONTRIBUTORS run, which is a wider macOS surface than CI: a Mac
+# developer's `/bin/bash` is 3.2 whether or not any workflow is involved.
+# `install.sh` is the sharp one -- it detects `Darwin` explicitly, so it is
+# meant to run there, and it used `readarray`.
+SHELL_SCRIPTS = sorted(
+    path
+    for path in list(REPO_ROOT.glob("*.sh"))
+    + list((REPO_ROOT / "bench").rglob("*.sh"))
+    + list((REPO_ROOT / "perf").rglob("*.sh"))
+    + list((REPO_ROOT / "ci").rglob("*.sh"))
+    # Relative to the repo root, not absolute: a checkout can itself live
+    # under a directory named here (a git worktree under .claude/worktrees
+    # does), and an absolute-parts filter then excludes every file. The
+    # anti-vacuity test below caught exactly that.
+    if "_vender" not in path.relative_to(REPO_ROOT).parts
 )
 
 # Introduced in bash 4.0. Replacement:
@@ -187,3 +204,34 @@ def test_portable_and_unrelated_shell_is_not_flagged() -> None:
     ]
     flagged = [line for line in benign if _bash4_command_lines(line)]
     assert not flagged, f"portable shell must not be flagged: {flagged}"
+
+
+def test_contributor_shell_scripts_avoid_bash4() -> None:
+    """The wider surface: shell a developer runs on their own Mac.
+
+    A workflow only reaches macOS through a runner label, but `./install.sh`
+    reaches it through a person. It branches on `Darwin` explicitly, so macOS
+    is a supported platform for it -- and it used `readarray`, which means a
+    stock Mac (bash 3.2, frozen there by GPLv3) could not run the installer.
+    """
+    offenders = []
+    for script in SHELL_SCRIPTS:
+        for number, line in _bash4_command_lines(script.read_text(encoding="utf-8")):
+            offenders.append(
+                f"{script.relative_to(REPO_ROOT).as_posix()}:{number}: {line}"
+            )
+    assert not offenders, (
+        "these run on contributor machines, including macOS with bash 3.2:\n  "
+        + "\n  ".join(offenders)
+    )
+
+
+def test_the_shell_scan_still_finds_scripts() -> None:
+    # Same anti-vacuity guard as the workflow scan: a glob that stopped
+    # matching would make the assertion above pass by finding nothing.
+    names = {s.name for s in SHELL_SCRIPTS}
+    assert len(SHELL_SCRIPTS) >= 10, f"expected many shell scripts, got {sorted(names)}"
+    assert "install.sh" in names, (
+        "install.sh is the script this rule most exists for -- if it is no "
+        f"longer scanned the rule is not applying: {sorted(names)}"
+    )
