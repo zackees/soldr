@@ -446,6 +446,20 @@ jobs:
           ls -la "target/$target/release/" 2>&1 | head -20 || true
           echo "==================================================="
 
+      # soldr#1060 acceptance: the musl artifacts are the "runs anywhere"
+      # build precisely because they carry no dynamic dependencies. A musl
+      # target that silently picked up a dynamic link still builds and still
+      # passes tests on this modern image -- it only fails on the old distro
+      # the artifact exists to serve. Verify before staging, so a bad binary
+      # is never published.
+      - name: Verify musl binary is statically linked (soldr#1060)
+        if: contains(matrix.target, 'musl')
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/verify_static_link.py \
+            "target/${{ matrix.target }}/release/${{ matrix.binary }}"
+
       - name: Stage soldr release binaries
         shell: bash
         run: |
