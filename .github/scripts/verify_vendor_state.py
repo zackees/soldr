@@ -39,7 +39,7 @@ try:
     import tomllib as _toml  # 3.11+
 except ImportError:  # pragma: no cover — older Pythons
     try:
-        import tomli as _toml  # type: ignore[import]
+        import tomli as _toml  # type: ignore[import,no-redef]
     except ImportError:
         sys.stderr.write(
             "verify_vendor_state.py: needs Python 3.11+ (tomllib) "

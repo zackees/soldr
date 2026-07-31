@@ -237,6 +237,8 @@ def ensure_update_pr(
             "body": body,
         },
     )
+    if not isinstance(created, dict):
+        raise SystemExit(f"unexpected response creating pull request: {created!r}")
     return created["html_url"]
 
 

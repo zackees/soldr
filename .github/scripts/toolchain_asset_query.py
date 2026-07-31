@@ -111,7 +111,8 @@ def find_release(payload: dict[str, Any], requested: str) -> dict[str, Any]:
 
     selected = requested
     if requested in {"", "latest"}:
-        channels = payload.get("channels") if isinstance(payload.get("channels"), dict) else {}
+        raw_channels = payload.get("channels")
+        channels = raw_channels if isinstance(raw_channels, dict) else {}
         selected = (
             channels.get("latest-stable")
             or channels.get("stable")

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import runpy
@@ -11,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import cast
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -506,8 +508,9 @@ def main() -> int:
             # `TextIOWrapper` translates `\n` to CRLF on a Windows caller.
             # Bash receives this recipe over stdin inside the Linux runner, so
             # write UTF-8 bytes directly and preserve Unix line endings.
-            process.stdin.buffer.write(BASH.encode())
-            process.stdin.buffer.flush()
+            stdin = cast(io.TextIOWrapper, process.stdin)
+            stdin.buffer.write(BASH.encode())
+            stdin.buffer.flush()
             process.stdin.close()
             for line in process.stdout:
                 output_lines.append(line)
