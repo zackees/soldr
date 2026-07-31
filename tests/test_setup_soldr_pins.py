@@ -49,7 +49,7 @@ def test_workflows_pin_setup_soldr_to_current_v0_sha() -> None:
 
     try:
         module.resolve_setup_soldr_v0_sha()
-    except Exception as exc:  # noqa: BLE001 - any lookup failure means "unknown"
+    except Exception as exc:  # any lookup failure means "unknown"
         pytest.skip(f"cannot resolve setup-soldr@v0 ({exc.__class__.__name__}): {exc}")
 
     # Resolution worked, so a failure from here is a genuine pin mismatch.

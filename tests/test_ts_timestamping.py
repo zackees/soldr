@@ -49,7 +49,7 @@ def test_every_line_gets_an_elapsed_prefix():
     result = _ts_step(b"alpha\nbeta\ngamma\n")
     lines = result.stdout.splitlines()
     assert len(lines) == 3
-    for line, expected in zip(lines, (b"alpha", b"beta", b"gamma")):
+    for line, expected in zip(lines, (b"alpha", b"beta", b"gamma"), strict=True):
         match = PREFIX_RE.match(line)
         assert match, f"no elapsed prefix on {line!r}"
         assert line[match.end() :] == expected

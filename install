@@ -22,7 +22,7 @@ uv pip install \
   "pillow==11.3.0" \
   "pytest>=8.0" \
   "pytest-xdist>=3.0" \
-  "ruff>=0.4" \
+  "ruff>=0.12,<0.13" \
   "black>=25.1,<26" \
   "isort>=6.0,<7" \
   "flake8>=7.3,<8" \
