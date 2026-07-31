@@ -23,6 +23,18 @@
 # does not make.
 [flake8]
 extend-ignore = E203, W503, E501
+# soldr#2120 follow-up. `ensure_soldr.py` is executed as a script by the
+# action, not imported as a package, so it must extend sys.path before
+# importing its sibling module -- the import genuinely cannot move to the top.
+#
+# This is a per-file ignore rather than a `# noqa: E402` at the site because
+# the two linters disagree about it: ruff's own E402 permits an import that
+# follows sys.path manipulation, so it never raises here and reports the noqa
+# as an unused directive (RUF100). A suppression that one tool requires and
+# another flags as dead is worse than none; the exemption lives here instead,
+# with the reason.
+per-file-ignores =
+    .github/actions/setup-soldr/ensure_soldr.py:E402
 exclude =
     .git,
     __pycache__,
