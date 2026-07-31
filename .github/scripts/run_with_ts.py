@@ -50,6 +50,10 @@ def main() -> int:
     out = sys.stdout.buffer
 
     try:
+        # Long-lived by design: stdout is streamed line by line below,
+        # and construction is inside try/except so a failure to start
+        # reports as exit 127 instead of a traceback.
+        # pylint: disable-next=consider-using-with
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,

@@ -70,9 +70,8 @@ def parse_triplets(raw: str) -> list[str]:
     unknown = [t for t in requested if t not in SUPPORTED_TRIPLETS]
     if unknown:
         raise ValueError(
-            "unknown triplet(s): {}. Supported: {}".format(
-                ", ".join(unknown), ", ".join(SUPPORTED_TRIPLETS)
-            )
+            f"unknown triplet(s): {', '.join(unknown)}. "
+            f"Supported: {', '.join(SUPPORTED_TRIPLETS)}"
         )
     return requested
 

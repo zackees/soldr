@@ -47,18 +47,18 @@ def resolve_setup_soldr_v0_sha() -> str:
     return refs.get(f"{SETUP_SOLDR_V0_REF}^{{}}", refs[SETUP_SOLDR_V0_REF])
 
 
-def executable_workflow_lines(workflow_text: str) -> list[str]:
+def executable_workflow_lines(text: str) -> list[str]:
     return [
         line.strip()
-        for line in workflow_text.splitlines()
+        for line in text.splitlines()
         if line.strip() and not line.lstrip().startswith("#")
     ]
 
 
-def setup_soldr_refs(workflow_text: str) -> list[str]:
+def setup_soldr_refs(text: str) -> list[str]:
     return [
         match.group(2)
-        for line in executable_workflow_lines(workflow_text)
+        for line in executable_workflow_lines(text)
         if (match := SETUP_SOLDR_USE_RE.search(line))
     ]
 
@@ -110,7 +110,10 @@ def verify_setup_soldr_pins(repo_root: Path = REPO_ROOT) -> None:
         if truthy_env("SETUP_SOLDR_PIN_AUTOFIX"):
             try:
                 create_or_update_pin_pr(repo_root, current_v0_sha, errors)
-            except Exception as exc:  # preserve the original failure too.
+            # Best-effort autofix: any failure here must be reported
+            # alongside the original pin error, never replace it.
+            # pylint: disable-next=broad-exception-caught
+            except Exception as exc:
                 errors.append(
                     f"failed to create setup-soldr pin update issue/PR: {exc}"
                 )
@@ -155,9 +158,23 @@ def create_or_update_pin_pr(
     )
 
     pr_url = ensure_update_pr(
-        owner, repo, token, branch, current_v0_sha, errors, run_url
+        owner,
+        repo,
+        token,
+        branch=branch,
+        current_v0_sha=current_v0_sha,
+        errors=errors,
+        run_url=run_url,
     )
-    ensure_update_issue(owner, repo, token, current_v0_sha, errors, pr_url, run_url)
+    ensure_update_issue(
+        owner,
+        repo,
+        token,
+        current_v0_sha=current_v0_sha,
+        errors=errors,
+        pr_url=pr_url,
+        run_url=run_url,
+    )
 
 
 def update_workflow_pins(repo_root: Path, current_v0_sha: str) -> None:
@@ -197,6 +214,7 @@ def ensure_update_pr(
     owner: str,
     repo: str,
     token: str,
+    *,
     branch: str,
     current_v0_sha: str,
     errors: list[str],
@@ -245,6 +263,7 @@ def ensure_update_issue(
     owner: str,
     repo: str,
     token: str,
+    *,
     current_v0_sha: str,
     errors: list[str],
     pr_url: str,

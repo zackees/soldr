@@ -320,6 +320,9 @@ def main() -> int:
     if vendor_state_path.is_file():
         try:
             state = load_vendor_state(vendor_state_path)
+        # A corrupt vendor-state file must produce a readable message,
+        # not a traceback; the parser can raise more than one type.
+        # pylint: disable-next=broad-exception-caught
         except Exception as exc:  # pragma: no cover — corrupt TOML
             sys.stderr.write(
                 f"verify_vendor_state.py: failed to parse {vendor_state_path}: "

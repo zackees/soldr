@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import pathlib
 import sys
 
 
@@ -50,7 +51,11 @@ def evaluate(doctor: dict, allow: int) -> "tuple[bool, int, list[str]]":
 
 
 def _load(path: str) -> dict:
-    text = sys.stdin.read() if path == "-" else open(path, encoding="utf-8").read()
+    text = (
+        sys.stdin.read()
+        if path == "-"
+        else pathlib.Path(path).read_text(encoding="utf-8")
+    )
     return json.loads(text)
 
 

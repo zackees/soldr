@@ -122,6 +122,9 @@ def main(argv: "list[str] | None" = None) -> int:
             for binary in binaries:
                 checked += 1
                 try:
+                    # Reuses the sibling baseline script's readelf parser
+                    # rather than duplicating it; these two ship together.
+                    # pylint: disable-next=protected-access
                     code, output = baseline._readelf_versions(str(binary))
                 except (OSError, FileNotFoundError) as error:
                     print(
