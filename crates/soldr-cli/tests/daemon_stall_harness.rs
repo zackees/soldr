@@ -20,13 +20,12 @@
 //! That is the whole reason this lives here rather than beside the other
 //! client tests.
 //!
-//! # Scope
+//! # Both transports
 //!
-//! Windows only for now, matching the existing named-pipe test precedent in
-//! `daemon::ipc_peer`. The Unix arm needs a `UnixListener` twin; it is
-//! deliberately not written blind on a host that cannot run it.
-
-#![cfg(windows)]
+//! The wedge is set up per platform — a named pipe on Windows (mirroring the
+//! precedent in `daemon::ipc_peer`), a `UnixListener` elsewhere — but the
+//! assertions are shared, because the contract they check is the transport's
+//! *observable behaviour*, which must be identical on both.
 
 use soldr_cli::timed_test;
 use std::time::Duration;
@@ -35,6 +34,108 @@ use std::time::Duration;
 /// runner does not mistake normal scheduling for the stall being tested.
 const STALL_BUDGET_SECS: &str = "3";
 
+/// How long the fake daemon stays silent. Must outlive the client's budget so
+/// the client times out rather than seeing a closed endpoint, which would be a
+/// different error entirely.
+const WEDGE_HOLD: Duration = Duration::from_secs(30);
+
+/// A process-unique endpoint name, so concurrent test binaries never collide.
+fn unique_suffix() -> String {
+    format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    )
+}
+
+/// Stand up a daemon that accepts a connection and then answers nothing.
+///
+/// Returns the endpoint the client should dial, plus a guard that keeps the
+/// server alive (and, on Unix, cleans up the socket directory).
+#[cfg(windows)]
+fn spawn_wedged_daemon() -> (std::path::PathBuf, WedgeGuard) {
+    let pipe_name = format!(r"\\.\pipe\soldr-stall-harness-{}", unique_suffix());
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
+    let server_pipe = pipe_name.clone();
+    let handle = std::thread::spawn(move || {
+        // Own the pipe inside one runtime on one thread, so the tokio
+        // resource stays on the reactor that created it.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("server runtime");
+        runtime.block_on(async move {
+            let server = tokio::net::windows::named_pipe::ServerOptions::new()
+                .first_pipe_instance(true)
+                .create(&server_pipe)
+                .expect("create wedged-daemon pipe");
+            // Signal only once the pipe exists, so the client cannot race
+            // ahead and see "no such pipe" instead of the stall.
+            ready_tx.send(()).expect("signal ready");
+            server.connect().await.expect("accept client");
+            tokio::time::sleep(WEDGE_HOLD).await;
+        });
+    });
+    ready_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("wedged daemon pipe never became ready");
+    (
+        std::path::PathBuf::from(pipe_name),
+        WedgeGuard {
+            handle: Some(handle),
+            dir: None,
+        },
+    )
+}
+
+#[cfg(unix)]
+fn spawn_wedged_daemon() -> (std::path::PathBuf, WedgeGuard) {
+    use std::os::unix::net::UnixListener;
+
+    let dir = std::env::temp_dir().join(format!("soldr-stall-harness-{}", unique_suffix()));
+    std::fs::create_dir_all(&dir).expect("create wedge dir");
+    let sock = dir.join("daemon.sock");
+    // Bind on this thread so the socket exists before the client dials; the
+    // listener's backlog then holds the connection until the thread accepts.
+    let listener = UnixListener::bind(&sock).expect("bind wedged-daemon socket");
+    let handle = std::thread::spawn(move || {
+        if let Ok((stream, _)) = listener.accept() {
+            // Deliberately answer nothing: this is the wedge. Holding the
+            // stream keeps the peer connected rather than seeing EOF.
+            std::thread::sleep(WEDGE_HOLD);
+            drop(stream);
+        }
+    });
+    (
+        sock,
+        WedgeGuard {
+            handle: Some(handle),
+            dir: Some(dir),
+        },
+    )
+}
+
+/// Keeps the fake daemon's thread owned by the test and removes any temp
+/// directory it created. The thread parks in a bounded sleep, so it is left
+/// detached rather than joined — joining would make the test wait out
+/// `WEDGE_HOLD` for no benefit.
+struct WedgeGuard {
+    handle: Option<std::thread::JoinHandle<()>>,
+    dir: Option<std::path::PathBuf>,
+}
+
+impl Drop for WedgeGuard {
+    fn drop(&mut self) {
+        self.handle.take();
+        if let Some(dir) = self.dir.take() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
 timed_test!(
     a_daemon_that_accepts_then_never_answers_reports_a_wedged_stall,
     Duration::from_secs(60),
@@ -42,44 +143,7 @@ timed_test!(
         // Must happen before anything touches `compile_reply_timeout()`.
         std::env::set_var("SOLDR_COMPILE_REPLY_TIMEOUT_SECS", STALL_BUDGET_SECS);
 
-        let pipe_name = format!(
-            r"\\.\pipe\soldr-stall-harness-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos()
-        );
-
-        // The wedged daemon: accept the connection, then go silent forever.
-        // Owning the server inside one runtime on one thread keeps the tokio
-        // resource on the reactor that created it.
-        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
-        let server_pipe = pipe_name.clone();
-        let server = std::thread::spawn(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("server runtime");
-            runtime.block_on(async move {
-                let server = tokio::net::windows::named_pipe::ServerOptions::new()
-                    .first_pipe_instance(true)
-                    .create(&server_pipe)
-                    .expect("create wedged-daemon pipe");
-                // Signal only after the pipe exists, so the client cannot
-                // race ahead and see "no such pipe" instead of the stall.
-                ready_tx.send(()).expect("signal ready");
-                server.connect().await.expect("accept client");
-                // Deliberately answer nothing: this is the wedge. Outlive the
-                // client's budget so the client times out rather than seeing
-                // a closed pipe (which would be a different error entirely).
-                tokio::time::sleep(Duration::from_secs(30)).await;
-            });
-        });
-
-        ready_rx
-            .recv_timeout(Duration::from_secs(10))
-            .expect("wedged daemon pipe never became ready");
+        let (endpoint, _wedge) = spawn_wedged_daemon();
 
         let request = soldr_cli::daemon::protocol::CompileRequest {
             args: vec!["rustc".to_string(), "--version".to_string()],
@@ -94,7 +158,7 @@ timed_test!(
         let mut stderr: Vec<u8> = Vec::new();
         let started = std::time::Instant::now();
         let result = soldr_cli::daemon::client::compile_streaming(
-            std::path::Path::new(&pipe_name),
+            &endpoint,
             request,
             &mut stdout,
             &mut stderr,
@@ -127,14 +191,12 @@ timed_test!(
         // Without the budget being honoured this would sit for the 30-minute
         // default, which is exactly what Phase 4 wants provable.
         assert!(
-            elapsed < Duration::from_secs(30),
+            elapsed < WEDGE_HOLD,
             "the stall must be bounded by SOLDR_COMPILE_REPLY_TIMEOUT_SECS, took {elapsed:?}"
         );
         assert!(
             stdout.is_empty() && stderr.is_empty(),
             "a wedged daemon produced no bytes, so nothing should have been relayed"
         );
-
-        drop(server);
     }
 );

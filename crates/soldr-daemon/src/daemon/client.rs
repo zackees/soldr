@@ -750,6 +750,9 @@ where
         let (mut stream, first_frame) = {
             let mut admitted = None;
             let mut last_retry_after_ms = 0u32;
+            // soldr#1838: how long we have been trying to get a first frame,
+            // reported when that wait is what expires.
+            let dial_started = std::time::Instant::now();
             for attempt in 0..BACKPRESSURE_RETRY_LIMIT {
                 let mut stream = connect(sock_path, compile_reply_timeout())?;
                 write_frame_sync(&mut stream, &Request::Compile(req.clone()))?;
@@ -762,7 +765,23 @@ where
                     compile_reply_timeout(),
                     Some(REPLY_TIMEOUT_ENV),
                 );
-                let frame: Response = read_frame_sync(&mut stream)?;
+                // soldr#1838: a daemon that accepts the connection and then
+                // never sends a first frame IS the wedge case -- nothing
+                // arrived at all. The bare `?` here mapped that to a generic
+                // `Io` error, so the slow-vs-wedged signal the Windows
+                // transport already reports was lost on this transport, and
+                // the wrapper could not tell the user which remedy applies.
+                // Found by the #1838 Phase 4 fault-injection harness.
+                let frame: Response = match read_frame_sync(&mut stream) {
+                    Ok(frame) => frame,
+                    Err(err) if is_deadline_error(&err) => {
+                        return Err(ClientError::CompileStalled {
+                            saw_output: false,
+                            elapsed: dial_started.elapsed(),
+                        });
+                    }
+                    Err(err) => return Err(ClientError::from(err)),
+                };
                 match frame {
                     Response::Backpressure { retry_after_ms } => {
                         last_retry_after_ms = retry_after_ms;
