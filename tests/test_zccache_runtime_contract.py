@@ -5,6 +5,7 @@ import importlib.util
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -15,11 +16,11 @@ PY_CONTRACT_PATH = (
 )
 
 
-def _load_py_contract():
+def _load_py_contract() -> Any:
     spec = importlib.util.spec_from_file_location("zccache_contract", PY_CONTRACT_PATH)
-    module = importlib.util.module_from_spec(spec)
     assert spec is not None
     assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
@@ -28,7 +29,7 @@ def _sha256(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
-def _write_manifest_fixture(root: Path, *, windows: bool = False) -> dict[str, object]:
+def _write_manifest_fixture(root: Path, *, windows: bool = False) -> dict[str, Any]:
     module = _load_py_contract()
     names = module.release_binary_names(windows=windows)
     payloads: dict[str, bytes] = {}
@@ -187,9 +188,9 @@ def test_python_action_helpers_import_contract_constants() -> None:
         "ensure_soldr",
         REPO_ROOT / ".github" / "actions" / "setup-soldr" / "ensure_soldr.py",
     )
-    ensure_soldr = importlib.util.module_from_spec(ensure_spec)
     assert ensure_spec is not None
     assert ensure_spec.loader is not None
+    ensure_soldr = importlib.util.module_from_spec(ensure_spec)
     ensure_spec.loader.exec_module(ensure_soldr)
 
     assert ensure_soldr.ARCHIVE_EXT == module.ARCHIVE_EXT
