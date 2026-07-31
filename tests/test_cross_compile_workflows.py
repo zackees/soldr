@@ -138,7 +138,9 @@ def test_archived_source_tests_use_only_runtime_workspace_resolution() -> None:
         body = path.read_text(encoding="utf-8")
         if any(pattern in body for pattern in forbidden):
             offenders.append(path.relative_to(REPO_ROOT).as_posix())
-    assert offenders == []
+    assert not offenders, "workflows must not hardcode these patterns: " + ", ".join(
+        offenders
+    )
 
 
 def test_fast_build_only_skips_windows_e2e_for_low_risk_changes() -> None:

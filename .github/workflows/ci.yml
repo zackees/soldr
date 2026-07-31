@@ -251,6 +251,30 @@ jobs:
       # in #2107 (four annotation defects, none behavioural); `tests/` is
       # clean as of this change, so the whole tree is checked and this stays a
       # regression guard rather than a new policy.
+      # The sixth and last tool from `./lint`, and the one the issue is named
+      # for: pylint reported 319 findings, so `./lint` (which runs under
+      # `set -e`) could never reach its final line.
+      #
+      # 315 of the 319 were in `tests/` and were pytest idiom, not defects --
+      # fixtures shadowing their own names, tests reaching into the private
+      # functions they exist to test. `src/` had four, all deliberate, all now
+      # carrying an inline disable that states the reason at the site.
+      #
+      # So the two surfaces are checked with two rulesets. `src/` runs pylint's
+      # DEFAULT configuration -- nothing disabled -- and scores 10.00/10. Only
+      # `tests/` gets the relaxations, and they live in `tests/.pylintrc` with
+      # a per-entry rationale. Passing that file explicitly rather than relying
+      # on pylint's directory discovery means it applies where it is named and
+      # nowhere else.
+      - name: Python lint (pylint)
+        # pytest in the ephemeral env for the same reason as the mypy step
+        # below: 22 test files import it, and pylint reports import-error for
+        # what it cannot resolve.
+        run: |
+          set -euo pipefail
+          uv run --no-project --with 'pylint>=4.0,<5' --with 'pytest>=8.0'             python -m pylint src
+          uv run --no-project --with 'pylint>=4.0,<5' --with 'pytest>=8.0'             python -m pylint --rcfile=tests/.pylintrc tests
+
       - name: Python types (mypy)
         # pytest is in the ephemeral env because the tests import it, and
         # mypy cannot resolve an import it cannot see. This passed locally

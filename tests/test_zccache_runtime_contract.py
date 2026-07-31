@@ -155,7 +155,9 @@ def test_python_contract_validates_windows_soldr_pdb_sha256(tmp_path: Path) -> N
     )
 
     manifest["soldr"]["debug_info"][0]["sha256"] = "0" * 64
-    with pytest.raises(RuntimeError, match="soldr.pdb"):
+    # `soldr\.pdb` escaped: `.` is a regex wildcard, so the unescaped form
+    # also matched "soldrXpdb". The assertion is about a literal filename.
+    with pytest.raises(RuntimeError, match=r"soldr\.pdb"):
         module.validate_release_manifest(
             manifest,
             soldr_target="x86_64-pc-windows-msvc",
