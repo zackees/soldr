@@ -12,10 +12,11 @@ import time
 import types
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 
-def _load_backend():
+def _load_backend() -> Any:
     path = Path(__file__).parents[1] / "src" / "soldr" / "__init__.py"
     spec = importlib.util.spec_from_file_location("soldr_test_backend", path)
     assert spec is not None and spec.loader is not None
@@ -739,7 +740,7 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
 
     def test_wheel_cache_reuses_delegate_artifacts(self) -> None:
         calls = []
-        delegate = types.ModuleType("pep517_cache_delegate")
+        delegate: Any = types.ModuleType("pep517_cache_delegate")
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw) / "project"
             root.mkdir()
@@ -792,7 +793,7 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
 
     def test_delegate_backend_receives_hooks_under_managed_environment(self) -> None:
         observed = {}
-        delegate = types.ModuleType("pep517_delegate_test")
+        delegate: Any = types.ModuleType("pep517_delegate_test")
 
         def get_requires(config_settings):
             observed["requires"] = config_settings
@@ -883,7 +884,7 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
 
     def test_delegate_hook_holds_build_lease_for_full_call(self) -> None:
         events = []
-        delegate = types.ModuleType("pep517_leased_delegate")
+        delegate: Any = types.ModuleType("pep517_leased_delegate")
 
         def build_wheel(*_args, **_kwargs):
             events.append("hook")
@@ -944,7 +945,7 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
 
     def test_delegate_profile_setting_overrides_environment_temporarily(self) -> None:
         observed = {}
-        delegate = types.ModuleType("pep517_profile_delegate_test")
+        delegate: Any = types.ModuleType("pep517_profile_delegate_test")
 
         def build_wheel(wheel_directory, config_settings, metadata_directory):
             observed["wheel_profile"] = os.environ.get("SOLDR_PEP517_PROFILE")

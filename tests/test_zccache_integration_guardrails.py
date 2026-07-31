@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shlex
 from pathlib import Path
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GUARDRAILS_PATH = REPO_ROOT / "contracts" / "zccache-integration-guardrails.v1.json"
@@ -42,7 +43,7 @@ REQUIRED_COMMAND_IDS = {
 }
 
 
-def _guardrails() -> dict[str, object]:
+def _guardrails() -> dict[str, Any]:
     return json.loads(GUARDRAILS_PATH.read_text(encoding="utf-8"))
 
 

@@ -4,6 +4,7 @@ import importlib.util
 import json
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -36,7 +37,7 @@ def test_main_tolerates_missing_zccache_daemon_during_status_probe(
         assert cmd == ["C:/temp/soldr.exe", "version", "--json"]
         return json.dumps({"soldr_version": "0.7.4"})
 
-    def fake_run(cmd: list[str], **kwargs: object):
+    def fake_run(cmd: list[str], **kwargs: Any):
         calls.append((cmd, kwargs))
         if cmd == ["soldr", "status", "--json"]:
             raise subprocess.CalledProcessError(
@@ -80,7 +81,7 @@ def test_main_propagates_unexpected_status_failures(
         assert cmd == ["C:/temp/soldr.exe", "version", "--json"]
         return json.dumps({"soldr_version": "0.7.4"})
 
-    def fake_run(cmd: list[str], **kwargs: object):
+    def fake_run(cmd: list[str], **kwargs: Any):
         assert kwargs["check"] is True
         assert kwargs["timeout"] == 30
         if cmd == ["soldr", "status", "--json"]:
@@ -106,7 +107,7 @@ def test_subprocess_helpers_translate_timeouts(monkeypatch: pytest.MonkeyPatch) 
     with pytest.raises(RuntimeError, match="version --json timed out after 30s"):
         module._check_output(["soldr", "version", "--json"])
 
-    def fake_run(cmd: list[str], **kwargs: object):
+    def fake_run(cmd: list[str], **kwargs: Any):
         assert kwargs["check"] is True
         assert kwargs["timeout"] == 30
         raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
