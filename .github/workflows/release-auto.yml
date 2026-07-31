@@ -465,6 +465,31 @@ jobs:
           python3 .github/scripts/verify_static_link.py \
             "target/${{ matrix.target }}/release/${{ matrix.binary }}"
 
+      # soldr#1060 names glibc 2.17 as the baseline for the -gnu artifacts,
+      # and warns "do not build on modern Ubuntu and call it portable". That
+      # is what happens today: these are built natively here, so the
+      # published v0.8.29 binaries require GLIBC_2.39 (measured, x86_64 and
+      # aarch64) and cannot start on RHEL 9, Debian 12 or Ubuntu 22.04 --
+      # the distros the fallback exists for.
+      #
+      # The ceiling below is therefore the CURRENT measured floor, not the
+      # target: a ratchet, in the same spirit as loc_ratchet. It cannot break
+      # today's release, and it cannot silently get worse. The real fix is to
+      # link against the baseline (zigbuild `<triple>.2.17` or an old-glibc
+      # container), after which this drops to 2.17 and becomes a real gate.
+      #
+      # If a runner image bump raises the floor, this step failing IS the
+      # intended signal -- raise the ceiling deliberately, with a note, rather
+      # than by reflex.
+      - name: Check glibc baseline of gnu binary (soldr#1060 ratchet)
+        if: contains(matrix.target, 'unknown-linux-gnu')
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/verify_glibc_baseline.py \
+            --max-glibc 2.39 \
+            "target/${{ matrix.target }}/release/${{ matrix.binary }}"
+
       - name: Stage soldr release binaries
         shell: bash
         run: |
