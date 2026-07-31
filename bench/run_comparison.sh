@@ -257,13 +257,20 @@ measure_worktree_share() {
 RESULTS_JSONL="${WORK_DIR}/comparison-results.jsonl"
 : >"${RESULTS_JSONL}"
 
-declare -A FIXTURES=(
-    ["rust-only"]="demo-small"
-    ["rust-c"]="rust-native"
-)
+# bash 3.2 has no associative arrays. A case statement is the portable
+# lookup and reads no worse for two entries.
+fixture_for() {
+    case "$1" in
+        rust-only) printf '%s
+' 'demo-small' ;;
+        rust-c)    printf '%s
+' 'rust-native' ;;
+        *) echo "unknown benchmark: $1" >&2; return 1 ;;
+    esac
+}
 
 for benchmark in rust-only rust-c; do
-    fixture="${FIXTURES[${benchmark}]}"
+    fixture="$(fixture_for "${benchmark}")"
     for tool in bare sccache soldr; do
         label="$(tool_label "${tool}")"
         command="$(command_text "${tool}")"

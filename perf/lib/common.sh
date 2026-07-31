@@ -224,7 +224,13 @@ measure::elapsed_ms() {
 # Prints `<median> <median-absolute-deviation>` for integer samples.
 measure::median_and_mad() {
     local -a sorted deviations
-    mapfile -t sorted < <(printf '%s\n' "$@" | sort -n)
+    # bash 3.2 has no `mapfile`; perf-matrix.yml notes the mac rows land
+    # here once this file is cross-platform, so it must not need bash 4.
+    sorted=()
+    while IFS= read -r sorted_value; do
+        sorted+=("${sorted_value}")
+    done < <(printf '%s
+' "$@" | sort -n)
     local count="${#sorted[@]}"
     if (( count == 0 )); then
         echo "0 0"
@@ -236,8 +242,14 @@ measure::median_and_mad() {
         (( delta < 0 )) && delta=$(( -delta ))
         deviations+=("${delta}")
     done
-    mapfile -t deviations < <(printf '%s\n' "${deviations[@]}" | sort -n)
-    echo "${median} ${deviations[$((count / 2))]}"
+    # Sorted into a NEW array deliberately: `deviations=()` before the loop
+    # would run before the process substitution reads it, sorting nothing.
+    local -a sorted_deviations=()
+    while IFS= read -r deviation_value; do
+        sorted_deviations+=("${deviation_value}")
+    done < <(printf '%s
+' "${deviations[@]}" | sort -n)
+    echo "${median} ${sorted_deviations[$((count / 2))]}"
 }
 
 # Acquire dependencies outside measured intervals. Timed commands are offline.
