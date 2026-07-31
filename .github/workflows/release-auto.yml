@@ -738,6 +738,35 @@ jobs:
           PY
           ls -la dist/package/
 
+      # soldr#1060: the musl bundle is the "runs anywhere" artifact, but only
+      # `soldr` was ever verified -- and the bundle ships four binaries. crgx
+      # and cargo-chef are fetched here, after the earlier check has already
+      # run, so nothing looked at them.
+      #
+      # They are fine today (checked against published v0.8.29: both are
+      # static-PIE and run on Debian 12 and Alpine alike). The point is that
+      # if one ever came back dynamically linked, the artifact would keep its
+      # "static" promise for soldr and quietly break for the tools soldr
+      # shells out to.
+      #
+      # This could not be added before the static-PIE fix in this same change:
+      # the old "no dynamic section" test called both of them dynamic, so
+      # extending the check here would have failed the release on correct
+      # binaries.
+      - name: Verify every bundled musl binary is static (soldr#1060)
+        if: contains(matrix.target, 'musl')
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t bundled < <(find dist/package -maxdepth 1 -type f \
+            \( -name soldr -o -name soldr-daemon -o -name crgx -o -name cargo-chef \))
+          if [ "${#bundled[@]}" -eq 0 ]; then
+            echo "no bundled binaries found in dist/package to verify" >&2
+            ls -la dist/package >&2
+            exit 1
+          fi
+          python3 .github/scripts/verify_static_link.py "${bundled[@]}"
+
       - name: Write manifest.json
         # Drop a small JSON descriptor into the archive root so downstream
         # consumers (setup-soldr, npm install wrapper, ad-hoc tooling)
