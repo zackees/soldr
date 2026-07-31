@@ -1,0 +1,32 @@
+# flake8 configuration (soldr#2102).
+#
+# flake8 does NOT read pyproject.toml, so without this file it silently fell
+# back to its own defaults -- notably a 79-column limit -- while `black` in the
+# same `./lint` run reformats to a wider line. Running the project's own lint
+# script therefore *created* flake8 violations: black widened the lines, then
+# flake8 rejected them. That accounted for nearly all of the 512 violations on
+# main; there were three different widths in play (ruff 100 from pyproject,
+# black 88 by default, flake8 79 by default).
+#
+# E501 is delegated to black rather than set to a number here. Black owns line
+# length; a second tool enforcing its own limit can only ever disagree with the
+# formatter, which is the situation this file exists to end. This is the
+# documented black + flake8 integration.
+#
+# E203 and W503 are the two checks black's own documentation calls out as
+# incompatible with its output (slice-colon spacing, and line breaks before
+# binary operators -- which PEP 8 now actually prefers).
+#
+# With these three, flake8 goes from 512 violations to 0 with no reformatting.
+# It does NOT make the whole `./lint` script pass: black, isort and mypy still
+# report on main. soldr#2102 tracks those, and they need decisions this file
+# does not make.
+[flake8]
+extend-ignore = E203, W503, E501
+exclude =
+    .git,
+    __pycache__,
+    .venv,
+    target,
+    _vender,
+    node_modules

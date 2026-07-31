@@ -927,7 +927,6 @@ def _run_pep517_streaming(cmd: "list[str]", env: "dict[str, str]") -> None:
             pass
 
     def relay(source: BinaryIO, sink: TextIO, tail_name: str) -> None:
-        nonlocal last_output
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         stamper = stampers[tail_name]
 
