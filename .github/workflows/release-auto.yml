@@ -1110,6 +1110,27 @@ jobs:
           for w in wheels:
               print(f"  - {w.name}")
 
+      # The step above checks the wheel's NAME. This one checks its bytes.
+      #
+      # The two mis-taggings are not equally visible. Tagged 2.39 when the
+      # binary is fine means pip skips the wheel -- loud, and the step above
+      # catches it. Tagged 2.17 when the binary actually needs 2.39 means pip
+      # INSTALLS it, because the tag promises it will work, and the program
+      # then dies at run time with "version `GLIBC_2.39' not found". A
+      # skipped wheel is an install problem; a mis-tagged one is a broken
+      # program, and nothing checked for it.
+      #
+      # This passes on the published v0.8.29 wheel today (verified: its
+      # embedded soldr needs at most GLIBC_2.17 and runs on Debian 12), so it
+      # is a gate rather than a ratchet -- unlike the tarball binaries from
+      # the same release, which require 2.39. That gap is soldr#1060 item 3.
+      - name: Assert linux-gnu wheel binary honours the 2.17 floor (soldr#1060)
+        if: contains(matrix.target, 'unknown-linux-gnu')
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/verify_wheel_glibc.py --max-glibc 2.17 dist/*.whl
+
       - name: Assert linux-musl wheels are tagged musllinux_1_2
         if: contains(matrix.target, 'unknown-linux-musl')
         shell: python
