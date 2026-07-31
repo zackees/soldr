@@ -206,7 +206,15 @@ jobs:
       # errors). soldr#2102 tracks them. Adding a gate that fails on main would
       # block every PR for a problem it did not cause.
       - name: Python lint (flake8)
-        run: uv run --no-project --with flake8 python -m flake8 src tests .github/scripts ci
+        # Pinned, not floating. An unpinned `--with flake8` means a future
+        # release that adds a check turns this red on code nobody touched,
+        # and the failure would look like the PR's fault. `>=7.3,<8` follows
+        # the `maturin>=1.7,<2` style already in pyproject: patches flow,
+        # a major cannot land unannounced. soldr#2102 covers the wider
+        # problem -- black, isort, pylint and mypy are installed unpinned by
+        # `./install` and declared nowhere, which is why contributors format
+        # differently from one another.
+        run: uv run --no-project --with 'flake8>=7.3,<8' python -m flake8 src tests .github/scripts ci
 
       # soldr#1978 item 6 names this step as duplicating build-linux-x64's
       # compile of the same workspace + test targets on a second runner.
