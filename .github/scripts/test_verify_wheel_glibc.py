@@ -15,12 +15,11 @@ Debian 12, while the tarball binary from the same release requires 2.39.
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 import zipfile
 from pathlib import Path
 
 import pytest
+from _script_loader import load_script_module
 
 SCRIPT = Path(__file__).resolve().parent / "verify_wheel_glibc.py"
 
@@ -31,12 +30,7 @@ NO_VERSIONS = "There is no version information in this file.\n"
 
 @pytest.fixture(scope="module")
 def mod():
-    spec = importlib.util.spec_from_file_location("verify_wheel_glibc", SCRIPT)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["verify_wheel_glibc"] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_script_module(SCRIPT, "verify_wheel_glibc")
 
 
 def _wheel(path: Path, entries: "dict[str, bytes]") -> Path:

@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 
+from _script_loader import load_script_module
+
 SCRIPT = Path(__file__).with_name("windows_e2e_policy.py")
-SPEC = importlib.util.spec_from_file_location("windows_e2e_policy", SCRIPT)
-assert SPEC is not None and SPEC.loader is not None
-policy = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(policy)
+policy = load_script_module(SCRIPT, "windows_e2e_policy")
 
 
 def test_pushes_always_run_windows_e2e() -> None:

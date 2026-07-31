@@ -3,17 +3,13 @@
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 import unittest
 from pathlib import Path
 
+from _script_loader import load_script_module
+
 SCRIPT = Path(__file__).with_name("toolchain_asset_query.py")
-SPEC = importlib.util.spec_from_file_location("toolchain_asset_query", SCRIPT)
-assert SPEC and SPEC.loader
-taq = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = taq
-SPEC.loader.exec_module(taq)
+taq = load_script_module(SCRIPT, "toolchain_asset_query")
 
 
 def sample_manifest() -> dict:

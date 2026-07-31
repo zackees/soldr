@@ -23,6 +23,8 @@ echo Running pylint tests
 uv run --no-sync pylint --rcfile=tests/.pylintrc tests
 echo Running pylint .github/scripts ci
 uv run --no-sync pylint .github/scripts ci --ignore-patterns='test_.*\.py'
+echo Running pylint .github/scripts test guards
+uv run --no-sync pylint --rcfile=tests/.pylintrc .github/scripts/test_*.py
 # Same four directories CI checks.
 echo Running mypy src tests .github/scripts ci
 uv run --no-sync mypy src tests .github/scripts ci

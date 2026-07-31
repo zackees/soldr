@@ -1,14 +1,12 @@
-import importlib.util
 import json
 import tempfile
 import unittest
 from pathlib import Path
 
+from _script_loader import load_script_module
+
 SCRIPT = Path(__file__).with_name("target_run_summary.py")
-SPEC = importlib.util.spec_from_file_location("target_run_summary", SCRIPT)
-assert SPEC and SPEC.loader
-target_run_summary = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(target_run_summary)
+target_run_summary = load_script_module(SCRIPT, "target_run_summary")
 
 
 class TargetRunSummaryTests(unittest.TestCase):

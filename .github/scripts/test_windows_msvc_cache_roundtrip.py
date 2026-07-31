@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 
+from _script_loader import load_script_module
+
 SCRIPT = Path(__file__).with_name("windows_msvc_cache_roundtrip.py")
-SPEC = importlib.util.spec_from_file_location("windows_msvc_cache_roundtrip", SCRIPT)
-assert SPEC is not None and SPEC.loader is not None
-roundtrip = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(roundtrip)
+roundtrip = load_script_module(SCRIPT, "windows_msvc_cache_roundtrip")
 
 
 def test_build_roundtrip_requires_missing_pe_to_be_restored(

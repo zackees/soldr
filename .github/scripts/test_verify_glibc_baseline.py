@@ -13,11 +13,10 @@ finds nothing and calls it clean.
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 from pathlib import Path
 
 import pytest
+from _script_loader import load_script_module
 
 SCRIPT = Path(__file__).resolve().parent / "verify_glibc_baseline.py"
 
@@ -42,12 +41,7 @@ STATIC_OUTPUT = "There is no version information in this file.\n"
 
 @pytest.fixture(scope="module")
 def mod():
-    spec = importlib.util.spec_from_file_location("verify_glibc_baseline", SCRIPT)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["verify_glibc_baseline"] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_script_module(SCRIPT, "verify_glibc_baseline")
 
 
 # --- version parsing ------------------------------------------------------
