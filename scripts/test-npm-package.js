@@ -228,6 +228,83 @@ assert.strictEqual(
   "abc123",
 );
 
+// The integrity check for everything this package installs
+// (docs/TRUST_BOUNDARIES.md). `checksumFor` was covered but the comparison
+// that uses it was inline in install() and untested, so deleting the
+// mismatch branch would have disabled verification with every test green.
+const crypto = require("crypto");
+const ARCHIVE_BYTES = Buffer.from("pretend this is a tar.zst");
+const ARCHIVE_NAME = "soldr-v9.9.9-x86_64-unknown-linux-musl.tar.zst";
+const ARCHIVE_SHA = crypto.createHash("sha256").update(ARCHIVE_BYTES).digest("hex");
+const SUMS = `${ARCHIVE_SHA}  ${ARCHIVE_NAME}
+`;
+
+// A matching digest returns it rather than throwing.
+assert.strictEqual(
+  install.verifyArchiveChecksum(ARCHIVE_BYTES, SUMS, ARCHIVE_NAME),
+  ARCHIVE_SHA,
+);
+
+// A tampered archive must throw. This is the case that had no coverage.
+assert.throws(
+  () =>
+    install.verifyArchiveChecksum(
+      Buffer.concat([ARCHIVE_BYTES, Buffer.from("tampered")]),
+      SUMS,
+      ARCHIVE_NAME,
+    ),
+  /checksum mismatch/,
+  "a tampered archive must be rejected",
+);
+
+// A digest for a DIFFERENT file must not be accepted for this one: the
+// lookup is by exact filename, so a sums file listing only some other
+// artifact fails closed rather than matching the first line it sees.
+assert.throws(
+  () =>
+    install.verifyArchiveChecksum(
+      ARCHIVE_BYTES,
+      `${ARCHIVE_SHA}  some-other-artifact.tar.zst
+`,
+      ARCHIVE_NAME,
+    ),
+  /checksum entry not found/,
+  "a sums file without this artifact must be rejected",
+);
+
+// An empty sums file is not a free pass.
+assert.throws(
+  () => install.verifyArchiveChecksum(ARCHIVE_BYTES, "", ARCHIVE_NAME),
+  /checksum entry not found/,
+  "an empty checksums file must be rejected",
+);
+
+// Real SHA256SUMS.txt files use two spaces and may carry CRLF; both must
+// parse. Verified against the published v0.8.29 file, which is
+// `<hash>  <name>` with 16 entries covering every release asset.
+assert.strictEqual(
+  install.verifyArchiveChecksum(
+    ARCHIVE_BYTES,
+    `deadbeef  unrelated.whl
+${ARCHIVE_SHA}  ${ARCHIVE_NAME}
+`,
+    ARCHIVE_NAME,
+  ),
+  ARCHIVE_SHA,
+);
+
+// Digests are compared case-insensitively on the manifest side: an
+// uppercase entry names the same bytes.
+assert.strictEqual(
+  install.verifyArchiveChecksum(
+    ARCHIVE_BYTES,
+    `${ARCHIVE_SHA.toUpperCase()}  ${ARCHIVE_NAME}
+`,
+    ARCHIVE_NAME,
+  ),
+  ARCHIVE_SHA,
+);
+
 assert.strictEqual(install.ARCHIVE_EXT, "tar.zst");
 assert.deepStrictEqual(
   install.BUNDLED_BINARIES,

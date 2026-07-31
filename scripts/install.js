@@ -201,6 +201,24 @@ function checksumFor(checksumsText, filename) {
   throw new Error(`checksum entry not found for ${filename}`);
 }
 
+// The integrity check for everything this package installs
+// (docs/TRUST_BOUNDARIES.md). Extracted from `install()` so it can be
+// tested: while it was inline, `checksumFor` was covered but the comparison
+// itself was not, so deleting the mismatch branch would have disabled
+// verification with every test still green.
+//
+// Throws rather than returning a boolean, because the only correct response
+// to a mismatch is to stop, and a caller that forgot to check a returned
+// false would install the archive anyway.
+function verifyArchiveChecksum(archive, checksumsText, filename) {
+  const expected = checksumFor(checksumsText, filename);
+  const actual = crypto.createHash("sha256").update(archive).digest("hex");
+  if (actual !== expected) {
+    throw new Error(`checksum mismatch for ${filename}: expected ${expected}, got ${actual}`);
+  }
+  return actual;
+}
+
 function run(command, args, options = {}) {
   const result = childProcess.spawnSync(command, args, {
     stdio: "inherit",
@@ -280,11 +298,7 @@ async function install() {
       download(checksumUrl).then((buffer) => buffer.toString("utf8")),
     ]);
 
-    const expected = checksumFor(checksums, filename);
-    const actual = crypto.createHash("sha256").update(archive).digest("hex");
-    if (actual !== expected) {
-      throw new Error(`checksum mismatch for ${filename}: expected ${expected}, got ${actual}`);
-    }
+    verifyArchiveChecksum(archive, checksums, filename);
 
     const archivePath = path.join(tmp, filename);
     const extractDir = path.join(tmp, "extract");
@@ -365,6 +379,7 @@ module.exports = {
   BUNDLED_BINARIES,
   TARGETS,
   checksumFor,
+  verifyArchiveChecksum,
   detectLibc,
   platformTarget,
   releaseBaseUrl,
