@@ -121,79 +121,78 @@ assert.strictEqual(install.detectLibc("win32"), null);
 const linuxLibc = install.detectLibc("linux");
 assert.ok(linuxLibc === "gnu" || linuxLibc === "musl", `unexpected libc: ${linuxLibc}`);
 
-// detectLibc's individual branches, driven through the probe seam so they
-// are exercised on every host rather than only on whichever libc CI runs.
+// detectLibc's branches, driven through the probe seam so they are
+// exercised on every host rather than only on whichever libc CI runs.
 const throwingProbe = () => {
   throw new Error("probe unavailable");
 };
+const NEW_ENOUGH = install.MIN_GLIBC_FOR_GNU;
 
-// 1. A non-empty glibcVersionRuntime is a positive glibc identification.
+// Numeric version comparison. A lexical compare ranks "2.9" above "2.39"
+// and would wave through a host that cannot run the binary.
+assert.strictEqual(install.compareVersions("2.9", "2.39"), -1);
+assert.strictEqual(install.compareVersions("2.39", "2.9"), 1);
+assert.strictEqual(install.compareVersions("2.39", "2.39"), 0);
+assert.strictEqual(install.compareVersions("2.40", "2.39"), 1);
+assert.strictEqual(install.compareVersions("2.2.5", "2.14"), -1);
+
+// 1. A glibc new enough for the shipped artifact takes the gnu build.
 assert.strictEqual(
   install.detectLibc("linux", {
-    readHeader: () => ({ glibcVersionRuntime: "2.39" }),
-    listLib: throwingProbe,
-  }),
-  "gnu",
-);
-
-// 2. The field present but empty means Node was built against musl.
-assert.strictEqual(
-  install.detectLibc("linux", {
-    readHeader: () => ({ glibcVersionRuntime: "" }),
-    listLib: throwingProbe,
-  }),
-  "musl",
-);
-
-// 3. Node itself is glibc but the SYSTEM is musl (glibc node on alpine).
-//    The filesystem probe is what catches this, and it must win.
-assert.strictEqual(
-  install.detectLibc("linux", {
-    readHeader: () => ({}),
-    listLib: () => ["ld-musl-x86_64.so.1", "libz.so.1"],
-  }),
-  "musl",
-);
-
-// 3b. When /lib carries both loaders (a musl system with a glibc-compat
-//     package installed), musl must win. This is also the only assertion
-//     that can distinguish the musl branch from the unknown fallback --
-//     both return "musl", so ordering is the observable difference.
-assert.strictEqual(
-  install.detectLibc("linux", {
-    readHeader: () => ({}),
-    listLib: () => ["ld-linux-x86-64.so.2", "ld-musl-x86_64.so.1"],
-  }),
-  "musl",
-);
-
-// 4. A glibc loader in /lib is a positive identification even when the
-//    header probe is unavailable, so it resolves to gnu rather than
-//    falling through to the unknown case.
-assert.strictEqual(
-  install.detectLibc("linux", {
-    readHeader: throwingProbe,
+    readHeader: () => ({ glibcVersionRuntime: NEW_ENOUGH }),
     listLib: () => ["ld-linux-x86-64.so.2", "libc.so.6"],
   }),
   "gnu",
 );
 
-// 5. /lib readable but holding neither loader -> genuinely unknown.
+// 2. A glibc that is too old must NOT take the gnu build. This is the live
+//    bug: Debian 12 reports 2.36, the published gnu binary requires
+//    GLIBC_2.39, and it dies with "version `GLIBC_2.39' not found" while the
+//    musl artifact from the same release runs fine.
 assert.strictEqual(
   install.detectLibc("linux", {
-    readHeader: throwingProbe,
-    listLib: () => ["libz.so.1"],
+    readHeader: () => ({ glibcVersionRuntime: "2.36" }),
+    listLib: () => ["ld-linux-x86-64.so.2", "libc.so.6"],
   }),
   "musl",
 );
 
-// 6. Both probes unavailable (heavily sandboxed container) -> same rule.
-//    This is the soldr#1060 behaviour change. Our musl artifact is verified
-//    statically linked before staging, so guessing musl on a glibc box
-//    still works, while guessing gnu on a musl box cannot run at all --
-//    only one of the two mistakes is recoverable.
+// 3. A musl SYSTEM wins over whatever Node was linked against. Node built
+//    against glibc on alpine (`apk add nodejs-current`) reports a perfectly
+//    good glibc version, so the filesystem probe has to be consulted FIRST --
+//    otherwise this answers "gnu" and never looks at /lib at all.
+assert.strictEqual(
+  install.detectLibc("linux", {
+    readHeader: () => ({ glibcVersionRuntime: NEW_ENOUGH }),
+    listLib: () => ["ld-musl-x86_64.so.1"],
+  }),
+  "musl",
+);
+
+// 4. Real musl Node omits the property entirely (verified on node:22-alpine:
+//    hasOwnProperty is false, not present-and-empty).
+assert.strictEqual(
+  install.detectLibc("linux", {
+    readHeader: () => ({}),
+    listLib: () => ["ld-musl-x86_64.so.1"],
+  }),
+  "musl",
+);
+
+// 5. Both probes unavailable (heavily sandboxed container) -> musl, the only
+//    artifact that runs without knowing anything about the host.
 assert.strictEqual(
   install.detectLibc("linux", { readHeader: throwingProbe, listLib: throwingProbe }),
+  "musl",
+);
+
+// 6. A glibc host whose version cannot be read is also unknown: /lib says
+//    glibc but carries no version, so the floor cannot be confirmed.
+assert.strictEqual(
+  install.detectLibc("linux", {
+    readHeader: throwingProbe,
+    listLib: () => ["ld-linux-x86-64.so.2", "libc.so.6"],
+  }),
   "musl",
 );
 
@@ -202,6 +201,23 @@ assert.strictEqual(
 assert.strictEqual(
   install.detectLibc("darwin", { readHeader: throwingProbe, listLib: throwingProbe }),
   null,
+);
+
+// MIN_GLIBC_FOR_GNU must track the ceiling release-auto.yml enforces on the
+// gnu artifacts. If the release build is fixed to link a 2.17 baseline and
+// that ceiling drops, the installer must follow it down -- otherwise every
+// glibc host below 2.39 keeps being sent to musl long after gnu would work.
+const releaseWorkflow = fs.readFileSync(
+  path.join(root, ".github", "workflows", "release-auto.yml"),
+  "utf8",
+);
+const ceilingMatch = releaseWorkflow.match(/--max-glibc\s+([0-9][0-9.]*)/);
+assert(ceilingMatch, "release-auto.yml must pass --max-glibc to verify_glibc_baseline.py");
+assert.strictEqual(
+  install.MIN_GLIBC_FOR_GNU,
+  ceilingMatch[1],
+  `install.js MIN_GLIBC_FOR_GNU (${install.MIN_GLIBC_FOR_GNU}) must match the ` +
+    `--max-glibc ceiling in release-auto.yml (${ceilingMatch[1]})`,
 );
 
 assert.strictEqual(

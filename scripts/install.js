@@ -40,34 +40,60 @@ const TARGETS = {
 // time based on `target.binary`.
 const BUNDLED_BINARIES = zccacheContract.RELEASE_BUNDLED_BINARIES;
 
-// Detect whether the running Linux uses musl or glibc. Three layered probes:
-//   1. process.report.header.glibcVersionRuntime is the documented Node
-//      surface for runtime glibc version — present on glibc, absent /
-//      empty on musl. Same approach used by @swc/core, @napi-rs/*, etc.
-//   2. Filesystem check for `/lib/ld-musl-*.so.1` covers cases where the
-//      Node binary itself is glibc (e.g. someone running glibc Node on
-//      alpine via apk add nodejs-current) but the system is musl — the
-//      soldr binary we download must match the SYSTEM libc, not Node's.
-//   3. When BOTH probes are inconclusive, assume musl (soldr#1060).
+// The lowest glibc a host must have before the `-gnu` artifact is worth
+// downloading (soldr#1060).
 //
-// That last step used to assume glibc, on the reasoning that a mismatch
-// would fail loudly and that was "louder than silently downloading the
-// wrong tarball". The premise does not hold in the musl direction: our
-// musl artifact is verified statically linked before it is ever staged
-// (`release-auto.yml` → `Verify musl binary is statically linked`), so it
-// has no dynamic loader dependency and runs on glibc systems too. The two
-// outcomes are therefore not symmetric:
+// Those artifacts are built natively on ubuntu-24.04, so they currently
+// require GLIBC_2.39 — measured on the published v0.8.29 binaries, x86_64 and
+// aarch64. On Debian 12 (glibc 2.36) the gnu binary dies with
+// "version `GLIBC_2.39' not found" while the musl artifact from the same
+// release runs fine, so "is this host glibc?" is the wrong question. The
+// question is "is this host's glibc new enough for the binary we ship?".
 //
-//   guess musl, actually glibc → works (static binary, nothing to resolve)
-//   guess gnu,  actually musl  → hard failure, "soldr: not found"
+// Kept in lockstep with the `--max-glibc` ceiling in release-auto.yml by a
+// check in test-npm-package.js. When the release build is fixed to link
+// against a 2.17 baseline that ceiling drops, and this must follow it down.
+const MIN_GLIBC_FOR_GNU = "2.39";
+
+function compareVersions(left, right) {
+  // Numeric, part by part. A lexical compare would rank "2.9" above "2.39"
+  // and wave through a host that cannot run the binary.
+  const a = String(left).split(".").map((p) => parseInt(p, 10) || 0);
+  const b = String(right).split(".").map((p) => parseInt(p, 10) || 0);
+  for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+    const diff = (a[i] || 0) - (b[i] || 0);
+    if (diff !== 0) {
+      return diff < 0 ? -1 : 1;
+    }
+  }
+  return 0;
+}
+
+// Decide which Linux artifact this host should download. Ordered probes:
 //
-// Only one of those is recoverable, so the unknown case takes it. A
-// positively-detected glibc system still gets the gnu build, which is what
-// soldr#1060 wants: musl as the "runs anywhere" default, gnu for anyone who
-// hits a musl edge case.
+//   1. A musl loader in /lib means the SYSTEM is musl, and that outranks
+//      whatever Node was linked against. This has to run first: a glibc Node
+//      on alpine (`apk add nodejs-current`) reports a perfectly good glibc
+//      version, so checking Node's header first would answer "gnu" and never
+//      consult the filesystem at all — which is precisely the case the probe
+//      was written for.
+//   2. Node's reported runtime glibc. This is the only source that gives a
+//      VERSION, and gnu is chosen only at or above MIN_GLIBC_FOR_GNU.
+//   3. Anything else → musl.
 //
-// `probes` exists so the branches above can be tested on any host; the
-// defaults are the real detectors.
+// musl is the safe end of every unknown because that artifact is verified
+// statically linked before it is ever staged (release-auto.yml → "Verify musl
+// binary is statically linked"), so it has no dynamic loader dependency and
+// runs on glibc hosts too. The mistakes are not symmetric:
+//
+//   pick musl, actually glibc      → works, nothing to resolve
+//   pick gnu,  actually musl       → hard failure, "soldr: not found"
+//   pick gnu,  glibc too old       → hard failure, "GLIBC_2.39 not found"
+//
+// Only the first is recoverable.
+//
+// `probes` exists so the branches can be tested on any host; the defaults are
+// the real detectors.
 function detectLibc(platform = process.platform, probes = {}) {
   if (platform !== "linux") {
     return null;
@@ -78,32 +104,25 @@ function detectLibc(platform = process.platform, probes = {}) {
   const listLib = probes.listLib || (() => fs.readdirSync("/lib"));
 
   try {
-    const header = readHeader();
-    if (header && typeof header.glibcVersionRuntime === "string" && header.glibcVersionRuntime.length > 0) {
-      return "gnu";
-    }
-    if (header && Object.prototype.hasOwnProperty.call(header, "glibcVersionRuntime")) {
-      // Field present but empty / null → Node was built against musl.
-      return "musl";
-    }
-  } catch (err) {
-    // process.report can throw on locked-down environments; fall through.
-  }
-  try {
     const entries = listLib();
     if (entries.some((name) => /^ld-musl-.+\.so\.1$/.test(name))) {
       return "musl";
     }
-    // A glibc loader in /lib is just as positive an identification as the
-    // musl one, so it resolves here rather than falling through to the
-    // unknown case. Without this the probe would be outcome-redundant once
-    // the fallback became musl -- it could only ever return the value the
-    // fallback already returns, so nothing could observe whether it ran.
-    if (entries.some((name) => /^ld-linux-.+\.so\.\d+$/.test(name))) {
+  } catch (err) {
+    // /lib may not be readable in heavily sandboxed containers; fall through.
+  }
+  try {
+    const header = readHeader();
+    const runtime = header && header.glibcVersionRuntime;
+    if (
+      typeof runtime === "string" &&
+      runtime.length > 0 &&
+      compareVersions(runtime, MIN_GLIBC_FOR_GNU) >= 0
+    ) {
       return "gnu";
     }
   } catch (err) {
-    // /lib may not be readable in heavily sandboxed containers; fall through.
+    // process.report can throw on locked-down environments; fall through.
   }
   return "musl";
 }
@@ -341,6 +360,8 @@ if (require.main === module) {
 
 module.exports = {
   ARCHIVE_EXT,
+  MIN_GLIBC_FOR_GNU,
+  compareVersions,
   BUNDLED_BINARIES,
   TARGETS,
   checksumFor,
