@@ -61,6 +61,31 @@ jobs:
         with:
           submodules: recursive
 
+      # soldr#2131. install.sh was executed by nothing -- it appeared in the
+      # workflows only inside `paths:` triggers -- so a bash 4.0 builtin sat in
+      # the one script users are told to run and every check stayed green
+      # (soldr#2130). This job already allocates both a Linux and a macOS
+      # runner and already triggers on install.sh, so it is the cheapest place
+      # to actually run it.
+      #
+      # The macOS leg is the one that matters: it executes under the real
+      # /bin/bash 3.2, which is what the bug needed. The Linux leg has bash 5
+      # and could not have caught it -- kept anyway, since the CRLF handling
+      # this also covers is not macOS-specific.
+      # This workflow had no uv step; the same pinned action ci.yml uses.
+      - name: Install uv
+        uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+
+      - name: Smoke-test install.sh (soldr#2131)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Printed because the bash version IS the thing under test on the
+          # macOS leg -- a green run means little if it silently used bash 5.
+          bash --version | head -1
+          uv run --no-project --with pytest python -m pytest \
+            tests/test_install_sh_smoke.py -q
+
       - name: Verify setup-soldr pin matches v0
         shell: bash
         # Non-blocking: a stale pin warns visibly in the PR checks list
