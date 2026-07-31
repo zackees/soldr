@@ -18,7 +18,9 @@ SCRIPT = (
 
 @pytest.fixture(scope="module")
 def mod():
-    spec = importlib.util.spec_from_file_location("verify_release_profile_policy", SCRIPT)
+    spec = importlib.util.spec_from_file_location(
+        "verify_release_profile_policy", SCRIPT
+    )
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     # Register before exec, matching tests/test_assert_thin_noop.py.
@@ -32,12 +34,20 @@ def _write(dir_: Path, name: str, body: str) -> None:
 
 
 def test_a_cheap_profile_passes(mod, tmp_path):
-    _write(tmp_path, "cheap.yml", "jobs:\n  a:\n    run: cargo build --profile ci-release\n")
+    _write(
+        tmp_path,
+        "cheap.yml",
+        "jobs:\n  a:\n    run: cargo build --profile ci-release\n",
+    )
     assert mod.scan(tmp_path) == []
 
 
 def test_release_in_a_non_allowlisted_workflow_fails(mod, tmp_path):
-    _write(tmp_path, "greedy.yml", "jobs:\n  a:\n    run: cargo build --release -p soldr-cli\n")
+    _write(
+        tmp_path,
+        "greedy.yml",
+        "jobs:\n  a:\n    run: cargo build --release -p soldr-cli\n",
+    )
     findings = mod.scan(tmp_path)
     assert len(findings) == 1
     name, number, line = findings[0]
@@ -67,12 +77,20 @@ def test_a_comment_about_release_is_not_a_violation(mod, tmp_path):
 
 # `--release-notes` and similar must not trip the word match.
 def test_a_longer_flag_containing_release_is_not_a_violation(mod, tmp_path):
-    _write(tmp_path, "other.yml", "jobs:\n  a:\n    run: gh release create --release-notes x\n")
+    _write(
+        tmp_path,
+        "other.yml",
+        "jobs:\n  a:\n    run: gh release create --release-notes x\n",
+    )
     assert mod.scan(tmp_path) == []
 
 
 def test_release_before_a_line_continuation_is_caught(mod, tmp_path):
-    _write(tmp_path, "wrapped.yml", "jobs:\n  a:\n    run: |\n      cargo build \\\n        --release \\\n        --locked\n")
+    _write(
+        tmp_path,
+        "wrapped.yml",
+        "jobs:\n  a:\n    run: |\n      cargo build \\\n        --release \\\n        --locked\n",
+    )
     findings = mod.scan(tmp_path)
     assert len(findings) == 1, f"a wrapped invocation must still be caught: {findings}"
 
@@ -96,7 +114,9 @@ def test_every_allowlist_entry_carries_a_reason(mod):
     """The allowlist is reason-bearing by design; a bare name teaches nothing."""
     for name, reason in mod.ALLOWLIST.items():
         assert reason.strip(), f"{name} needs a reason"
-        assert len(reason) > 20, f"{name}'s reason is too terse to be useful: {reason!r}"
+        assert (
+            len(reason) > 20
+        ), f"{name}'s reason is too terse to be useful: {reason!r}"
 
 
 def test_the_real_repository_is_clean(mod):

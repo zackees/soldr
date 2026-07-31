@@ -34,7 +34,9 @@ def test_dockerfile_digest_changes_with_content(tmp_path: Path) -> None:
     assert first != second
 
 
-def test_container_workdir_supports_shared_root_and_nested_worktree(tmp_path: Path) -> None:
+def test_container_workdir_supports_shared_root_and_nested_worktree(
+    tmp_path: Path,
+) -> None:
     root = tmp_path / "soldr"
     worktree = root / ".claude" / "issue-1553"
     worktree.mkdir(parents=True)
@@ -43,7 +45,9 @@ def test_container_workdir_supports_shared_root_and_nested_worktree(tmp_path: Pa
     assert perf_local.container_workdir(root, worktree) == "/repo/.claude/issue-1553"
 
 
-def test_create_command_uses_one_named_runner_and_persistent_volumes(tmp_path: Path) -> None:
+def test_create_command_uses_one_named_runner_and_persistent_volumes(
+    tmp_path: Path,
+) -> None:
     runner = perf_local.runner_for(tmp_path)
     command = perf_local.create_command(runner, "sha256:image")
 
@@ -130,7 +134,9 @@ def test_runner_match_requires_schema_image_and_source_root(tmp_path: Path) -> N
     info = {"Config": {"Labels": dict(labels)}}
     assert perf_local.runner_matches(info, labels)
 
-    stale = {"Config": {"Labels": {**labels, f"{perf_local.LABEL_PREFIX}.image-id": "old"}}}
+    stale = {
+        "Config": {"Labels": {**labels, f"{perf_local.LABEL_PREFIX}.image-id": "old"}}
+    }
     assert not perf_local.runner_matches(stale, labels)
     assert not perf_local.runner_matches({"Config": {"Labels": None}}, labels)
 
@@ -149,7 +155,9 @@ def test_exec_command_reuses_runner_and_changes_only_workdir(tmp_path: Path) -> 
         "test",
         "--workspace",
     ]
-    assert perf_local.exec_command(runner, ["cargo", "check"], "/repo", tty=True)[:3] == [
+    assert perf_local.exec_command(runner, ["cargo", "check"], "/repo", tty=True)[
+        :3
+    ] == [
         "docker",
         "exec",
         "-it",

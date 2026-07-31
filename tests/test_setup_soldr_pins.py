@@ -132,5 +132,7 @@ def test_ci_does_not_carry_stale_setup_soldr_fallback_resets() -> None:
         assert 'Join-Path "target" "${{ inputs.target }}"' not in workflow
         assert 'Join-Path $env:ZCCACHE_CACHE_DIR "artifacts"' not in workflow
 
-    assert "- name: Reset stale cache fallback artifacts" not in executable_yaml(bootstrap)
+    assert "- name: Reset stale cache fallback artifacts" not in executable_yaml(
+        bootstrap
+    )
     assert "- name: Restore checkout after soldr-cook" not in executable_yaml(build)

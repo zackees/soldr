@@ -301,7 +301,9 @@ def test_cli_tolerance_flag_relaxes_third_party_gate(tmp_path: Path) -> None:
     assert ok.returncode == 0, ok.stderr
 
 
-def test_cli_expect_incomplete_restore_requires_workspace_rebuild(tmp_path: Path) -> None:
+def test_cli_expect_incomplete_restore_requires_workspace_rebuild(
+    tmp_path: Path,
+) -> None:
     first = _write(tmp_path / "first.log", _cold_log())
     second = _write(
         tmp_path / "second.log",
