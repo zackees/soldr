@@ -2,7 +2,105 @@
 
 from __future__ import annotations
 
+import importlib.util
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from types import ModuleType
+
 import pytest
+
+
+def load_script_module(path: str | Path, name: str | None = None) -> ModuleType:
+    """Import a standalone script as a module (soldr#2113).
+
+    The scripts these guards cover live in `.github/scripts/` and similar
+    non-package directories, so there is no `import` statement that reaches
+    them. Every guard hand-rolled the same importlib dance; this is that
+    dance, once.
+
+    `name` defaults to the file stem. The module is registered in
+    `sys.modules` *before* `exec_module` runs, which several of the guarded
+    scripts require: a dataclass resolves its own `__module__` through
+    `sys.modules` while the class is being created, and raises `KeyError` if
+    the entry is not there yet. Registering unconditionally is the superset of
+    what the call sites did, so no caller loses behaviour by moving here.
+    """
+
+    script = Path(path)
+    module_name = name or script.stem
+    spec = importlib.util.spec_from_file_location(module_name, script)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load {script} as a module")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+# The workspace's first-party crates. Two guards assert over this same list,
+# and a crate added to the workspace must reach both of them.
+WORKSPACE_CRATES = [
+    "soldr-cli",
+    "soldr-core",
+    "soldr-fetch",
+    "soldr-cache",
+    "soldr-daemon",
+]
+
+
+def docker_available() -> bool:
+    """Whether a reachable docker daemon exists.
+
+    Both docker-backed guards are opt-in and skip without one. `docker info`
+    is the probe rather than `which docker`, because a present client with a
+    dead daemon is the common local state (see the Docker Desktop notes in
+    CLAUDE.md).
+
+    The two call sites had different timeouts (10s and 20s); this takes the
+    larger. A daemon that answers in 15s would otherwise be reported absent,
+    silently downgrading a real integration run to a skip.
+    """
+
+    if shutil.which("docker") is None:
+        return False
+    try:
+        result = subprocess.run(
+            ["docker", "info"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=20,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def git(repo: Path, *args: str) -> str:
+    """Run git in `repo` and return stdout, raising on failure."""
+
+    return subprocess.run(
+        ["git", *args], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout
+
+
+@pytest.fixture
+def repo(tmp_path: Path) -> Path:
+    """A throwaway git repo with an identity configured.
+
+    Commits fail outright without `user.email` / `user.name`, and CI runners
+    have no global git identity, so configuring it is part of the fixture
+    rather than something each test remembers.
+    """
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    git(root, "init", "-q", "-b", "main")
+    git(root, "config", "user.email", "t@example.com")
+    git(root, "config", "user.name", "t")
+    return root
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

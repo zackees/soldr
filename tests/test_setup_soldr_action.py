@@ -1,22 +1,18 @@
 from __future__ import annotations
 
 import ast
-import importlib.util
 import json
 import re
 from pathlib import Path
+
+from conftest import WORKSPACE_CRATES, load_script_module
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / ".github" / "actions" / "setup-soldr" / "resolve_setup.py"
 
 
 def _load_module():
-    spec = importlib.util.spec_from_file_location("resolve_setup", SCRIPT_PATH)
-    module = importlib.util.module_from_spec(spec)
-    assert spec is not None
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
+    return load_script_module(SCRIPT_PATH, "resolve_setup")
 
 
 def test_resolve_setup_uses_token_for_current_repo(monkeypatch) -> None:
@@ -306,13 +302,7 @@ def test_cross_build_uses_deferred_cook_after_target_setup() -> None:
     )
     assert "cache: ${{ (contains(inputs.target, 'pc-windows-msvc')" in cook_step
     assert 'profile="ci-nextest"' in clean_step
-    for package in [
-        "soldr-cli",
-        "soldr-core",
-        "soldr-fetch",
-        "soldr-cache",
-        "soldr-daemon",
-    ]:
+    for package in WORKSPACE_CRATES:
         assert f"-p {package}" in clean_step
     assert '--target "$target" --profile "$profile"' in clean_step
     assert "SOLDR_BINARY=$RUNNER_TEMP/soldr-bin/soldr" in workflow

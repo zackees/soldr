@@ -9,17 +9,13 @@ verifiable without paying 40 minutes to find out it is wrong.
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 from pathlib import Path
+
+from conftest import load_script_module
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _SCRIPT = REPO_ROOT / "ci" / "assert_nextest_archive_cacheability.py"
-_spec = importlib.util.spec_from_file_location("cacheability_acceptance", _SCRIPT)
-assert _spec and _spec.loader
-cacheability = importlib.util.module_from_spec(_spec)
-sys.modules["cacheability_acceptance"] = cacheability
-_spec.loader.exec_module(cacheability)
+cacheability = load_script_module(_SCRIPT, "cacheability_acceptance")
 
 PhaseTracker = cacheability.PhaseTracker
 format_duration = cacheability.format_duration

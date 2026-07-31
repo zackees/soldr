@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import re
 import sys
 from pathlib import Path
+
+from conftest import load_script_module
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT = ROOT / "ci" / "canonical-targets.json"
@@ -145,10 +146,7 @@ def test_catalogue_mappings_cover_every_target() -> None:
     rows = contract_targets()
     script = ROOT / ".github" / "scripts" / "fetch_catalogued_nextest.py"
     sys.path.insert(0, str(script.parent))
-    spec = importlib.util.spec_from_file_location("fetch_catalogued_nextest", script)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = load_script_module(script, "fetch_catalogued_nextest")
 
     for row in rows:
         expected = tuple(row["catalogue"]["nextest"])

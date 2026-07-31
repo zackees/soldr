@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 
 import pytest
+from conftest import load_script_module
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = REPO_ROOT / "src" / "soldr" / "setup_soldr_exporter.py"
@@ -11,12 +11,7 @@ FIXTURE_DIR = REPO_ROOT / "tests" / "fixtures" / "setup_soldr_exporter"
 
 
 def _load_module():
-    spec = importlib.util.spec_from_file_location("setup_soldr_exporter", MODULE_PATH)
-    module = importlib.util.module_from_spec(spec)
-    assert spec is not None
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
+    return load_script_module(MODULE_PATH, "setup_soldr_exporter")
 
 
 def test_export_bundle_creates_expected_public_repo_layout(tmp_path: Path) -> None:

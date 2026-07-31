@@ -24,6 +24,21 @@
 [MESSAGES CONTROL]
 # Each entry below is disabled because the check is inapplicable to pytest, not
 # because the findings were tedious. Counts are from the 319-finding baseline.
+#
+# `duplicate-code` (R0801) used to be listed here and is deliberately NOT any
+# more (soldr#2113). It was disabled over the ~8-line
+# `importlib.util.spec_from_file_location` block that 29 guards each repeated,
+# because the scripts they cover are not an importable package. That block now
+# lives once, as `conftest.load_script_module`.
+#
+# The stated worry about enabling it was that R0801 reports *pairs* above a
+# similarity threshold, so removing the nine findings it named would simply
+# promote the next nine. That was worth checking rather than assuming, and it
+# is measurably not what happened: the loader consolidation took it 9 -> 4, and
+# the remaining four were three real duplications -- a docker probe, a git-repo
+# fixture, and the workspace crate list -- which are now shared too. The suite
+# scores 10.00/10 with the check ON, so it stays on and any new copy-paste has
+# to answer for itself.
 disable =
     # 163x. A test taking a fixture as a parameter necessarily shadows the
     # module-level fixture function of the same name. That IS the pytest
@@ -54,20 +69,6 @@ disable =
     missing-function-docstring,
     missing-module-docstring,
     missing-class-docstring,
-    # 9x, and this one is a real observation being deliberately deferred rather
-    # than dismissed: 28 test files repeat the same ~8-line
-    # `importlib.util.spec_from_file_location` block, because the scripts they
-    # guard live in `.github/scripts/` and are not an importable package.
-    #
-    # It stays disabled here for two reasons. Consolidating 28 files into a
-    # shared `conftest.py` loader is a refactor with its own blast radius --
-    # every one of those files is itself a regression guard -- and it does not
-    # belong inside a PR whose subject is lint configuration. And R0801 reports
-    # *pairs* above a similarity threshold, so it is not a stable target:
-    # removing the nine it currently names simply promotes the next nine.
-    #
-    # Tracked as follow-up on soldr#2102 rather than silently absorbed.
-    duplicate-code,
 
 [DESIGN]
 # A thorough test can legitimately need many locals and assertions; these

@@ -1,19 +1,15 @@
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
+
+from conftest import load_script_module
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / ".github" / "actions" / "setup-soldr" / "ensure_soldr.py"
 
 
 def _load_module():
-    spec = importlib.util.spec_from_file_location("ensure_soldr", SCRIPT_PATH)
-    module = importlib.util.module_from_spec(spec)
-    assert spec is not None
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
+    return load_script_module(SCRIPT_PATH, "ensure_soldr")
 
 
 def test_request_headers_include_github_token_when_present(monkeypatch) -> None:

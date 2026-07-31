@@ -1,20 +1,15 @@
-import importlib.util
 import os
 from pathlib import Path
 
 import pytest
+from conftest import load_script_module
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / ".github" / "scripts" / "configure_dylint_cargo_shim.py"
 
 
 def load_module():
-    spec = importlib.util.spec_from_file_location("configure_dylint_cargo_shim", SCRIPT)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_script_module(SCRIPT, "configure_dylint_cargo_shim")
 
 
 def test_writes_nightly_pinned_posix_cargo_shim(tmp_path: Path) -> None:

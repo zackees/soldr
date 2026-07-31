@@ -12,24 +12,19 @@ do — had nothing to show and reported the build as having produced no output.
 
 from __future__ import annotations
 
-import importlib.util
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from conftest import load_script_module
 
 BACKEND = Path(__file__).resolve().parents[1] / "src" / "soldr" / "__init__.py"
 
 
 @pytest.fixture(scope="module")
 def backend():
-    spec = importlib.util.spec_from_file_location("soldr_backend_under_test", BACKEND)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["soldr_backend_under_test"] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_script_module(BACKEND, "soldr_backend_under_test")
 
 
 def test_a_named_error_travels_with_the_exception(backend):

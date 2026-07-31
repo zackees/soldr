@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import importlib.util
 import os
 from pathlib import Path
+
+from conftest import load_script_module
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = (
@@ -11,12 +12,7 @@ SCRIPT_PATH = (
 
 
 def _load_module():
-    spec = importlib.util.spec_from_file_location("install_tool_shims", SCRIPT_PATH)
-    module = importlib.util.module_from_spec(spec)
-    assert spec is not None
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
+    return load_script_module(SCRIPT_PATH, "install_tool_shims")
 
 
 def test_parse_requested_tools_expands_groups() -> None:

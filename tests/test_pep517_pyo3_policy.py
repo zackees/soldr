@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import contextlib
-import importlib.util
 import io
 import json
 import os
@@ -15,15 +14,12 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+from conftest import load_script_module
+
 
 def _load_backend() -> Any:
     path = Path(__file__).parents[1] / "src" / "soldr" / "__init__.py"
-    spec = importlib.util.spec_from_file_location("soldr_test_backend", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_script_module(path, "soldr_test_backend")
 
 
 class Pep517Pyo3PolicyTest(unittest.TestCase):

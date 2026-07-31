@@ -1,18 +1,15 @@
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
+
+from conftest import load_script_module
 
 
 def load_module():
     path = (
         Path(__file__).parents[1] / ".github" / "scripts" / "dylint_cache_acceptance.py"
     )
-    spec = importlib.util.spec_from_file_location("dylint_cache_acceptance", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_script_module(path, "dylint_cache_acceptance")
 
 
 dylint_acceptance = load_module()

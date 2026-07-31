@@ -1,20 +1,13 @@
 from __future__ import annotations
 
-import importlib.util
-import sys
 from pathlib import Path
+
+from conftest import load_script_module
 
 
 def load_module():
     path = Path(__file__).parents[1] / "ci" / "perf_local.py"
-    spec = importlib.util.spec_from_file_location("perf_local", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    # Register before exec: @dataclass resolves annotations through
-    # sys.modules[cls.__module__], which is None for an unregistered module.
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_script_module(path, "perf_local")
 
 
 perf_local = load_module()

@@ -16,7 +16,6 @@ re-checking the two that were reported.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import re
 import subprocess
@@ -24,6 +23,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from conftest import load_script_module
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
@@ -37,11 +37,7 @@ def _load_script():
     inserting it would put a mid-file import after module-level code —
     which isort rejects. Loading by spec keeps every import at the top.
     """
-    spec = importlib.util.spec_from_file_location("vcpkg_triplet_matrix", SCRIPT)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_script_module(SCRIPT, "vcpkg_triplet_matrix")
 
 
 _resolver = _load_script()

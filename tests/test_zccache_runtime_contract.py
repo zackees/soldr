@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import json
 import re
 from pathlib import Path
 from typing import Any
 
 import pytest
+from conftest import load_script_module
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_PATH = REPO_ROOT / "contracts" / "zccache-runtime.v1.json"
@@ -17,12 +17,7 @@ PY_CONTRACT_PATH = (
 
 
 def _load_py_contract() -> Any:
-    spec = importlib.util.spec_from_file_location("zccache_contract", PY_CONTRACT_PATH)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_script_module(PY_CONTRACT_PATH, "zccache_contract")
 
 
 def _sha256(value: bytes) -> str:
@@ -186,14 +181,10 @@ def test_python_contract_requires_windows_soldr_pdb(tmp_path: Path) -> None:
 
 def test_python_action_helpers_import_contract_constants() -> None:
     module = _load_py_contract()
-    ensure_spec = importlib.util.spec_from_file_location(
-        "ensure_soldr",
+    ensure_soldr = load_script_module(
         REPO_ROOT / ".github" / "actions" / "setup-soldr" / "ensure_soldr.py",
+        "ensure_soldr",
     )
-    assert ensure_spec is not None
-    assert ensure_spec.loader is not None
-    ensure_soldr = importlib.util.module_from_spec(ensure_spec)
-    ensure_spec.loader.exec_module(ensure_soldr)
 
     assert ensure_soldr.ARCHIVE_EXT == module.ARCHIVE_EXT
     assert ensure_soldr.RELEASE_BUNDLED_BINARIES == module.RELEASE_BUNDLED_BINARIES

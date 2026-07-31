@@ -15,7 +15,6 @@ pip/uv build log and a `soldr cargo` log read identically:
 from __future__ import annotations
 
 import contextlib
-import importlib.util
 import io
 import os
 import re
@@ -24,6 +23,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from conftest import load_script_module
 
 BACKEND = Path(__file__).resolve().parents[1] / "src" / "soldr" / "__init__.py"
 
@@ -33,14 +33,7 @@ _PREFIX_RE = re.compile(r"[ ]*\d+\.\d{2} ")
 
 @pytest.fixture(scope="module")
 def backend():
-    spec = importlib.util.spec_from_file_location(
-        "soldr_backend_ts_under_test", BACKEND
-    )
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["soldr_backend_ts_under_test"] = module
-    spec.loader.exec_module(module)
-    return module
+    return load_script_module(BACKEND, "soldr_backend_ts_under_test")
 
 
 def _shape(text: str) -> str:
