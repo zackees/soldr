@@ -99,15 +99,23 @@ def find_timeout_violations(workflow: str) -> list[str]:
 
 # Workflows that predate this check and still have unbounded jobs.
 #
-# soldr#1978 item 8: extending the walk to every workflow surfaced 26 jobs
-# across these 7 files sitting on GitHub's 360-minute default. They are
-# recorded rather than silently skipped, and rather than blocked -- the same
-# trade `loc_ratchet` makes for the 13 files already over the line ceiling.
+# soldr#1978 item 8: extending the walk to every workflow surfaced a set of
+# jobs sitting on GitHub's 360-minute default. They are recorded rather than
+# silently skipped, and rather than blocked -- the same trade `loc_ratchet`
+# makes for the files already over the line ceiling. The live count is printed
+# by `main()` on every run, so it is deliberately not repeated here: a number
+# in a comment goes stale the first time someone burns an entry down, which is
+# exactly what happened after the first three.
+#
+# Burned down so far: benchmark-stats (#2057), parent-cache-bench (#2058),
+# cache-delta-experiment (#2067).
 #
 # The point of the extension is that a *new* workflow cannot join this list.
 # Removing an entry is a burn-down PR; picking the right bound for a perf or
 # release job needs someone who knows how long it legitimately runs, and a
 # too-low timeout that kills a healthy long build is worse than the default.
+# `test_grandfathered_entries_still_need_the_exemption` fails if every job in a
+# listed file has since been bounded, so a spent entry cannot linger.
 GRANDFATHERED = frozenset(
     {
         "perf-cold-warm.yml",
