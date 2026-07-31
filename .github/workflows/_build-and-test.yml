@@ -140,6 +140,22 @@ jobs:
           ))
           exit $exitCode
 
+      # soldr#1799: an immediately-repeated build must recompile nothing.
+      # Nothing changed in between, so any crate rebuilding means something
+      # invalidated cargo's fingerprints -- a toolchain-home flip or a
+      # compiler-path change -- which is the silent 10-50x slowdown this issue
+      # exists to catch. A warm repeat is sub-second, so this is cheap; if it
+      # is NOT warm the step is exactly what should report that.
+      - name: Assert a repeated build recompiles nothing (soldr#1799)
+        if: success()
+        continue-on-error: ${{ !contains(inputs.target, 'linux-gnu') }}
+        shell: pwsh
+        run: |
+          soldr cargo build --workspace --tests --bins --locked --target ${{ inputs.target }} `
+            *> warm-rebuild.log
+          Get-Content warm-rebuild.log | Select-Object -Last 20
+          python3 .github/scripts/check_warm_rebuild.py warm-rebuild.log
+
       # soldr#1838 Phase 4: fail the lane when the build silently ran uncached
       # via the direct compiler. `soldr status --json` surfaces the same
       # compile-daemon fallback rollup operators see (default home = the one the
