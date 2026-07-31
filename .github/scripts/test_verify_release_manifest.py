@@ -241,3 +241,78 @@ def test_a_json_array_is_rejected(mod, tmp_path):
     path = tmp_path / "manifest.json"
     path.write_text("[]", encoding="utf-8")
     assert mod.main([str(path)]) == 1
+
+
+# --- debug-symbol sidecars (docs/DEBUG_SIDECARS.md) -----------------------
+#
+# Windows ships soldr.pdb on every release, recorded under
+# soldr.debug_info with a sha256. Nothing re-derived that digest, so
+# corrupting the .pdb produced byte-identical validator output -- verified
+# against the real published v0.8.29 Windows bundle before this was fixed.
+
+
+def _complete_package(tmp_path: Path) -> dict:
+    """Stage all four binaries and return a manifest whose digests match.
+
+    Everything staged, so the only problem any test below can produce is the
+    debug_info one it is actually about. An earlier version filtered problems
+    by substring instead, and matched every message -- pytest embeds the test
+    name in tmp_path, so a test named ..._pdb_... made `"pdb" in problem`
+    true for unrelated failures.
+    """
+    for name in ("soldr", "soldr-daemon", "crgx", "cargo-chef"):
+        (tmp_path / name).write_bytes(b"x")
+    digest = hashlib.sha256(b"x").hexdigest()
+    manifest = _manifest()
+    for tool in ("soldr", "crgx", "cargo_chef"):
+        manifest[tool]["sha256"] = digest
+    manifest["soldr"]["sidecars"][0]["sha256"] = digest
+    return manifest
+
+
+def _with_debug_info(manifest: dict, name: str, sha: str, fmt: str = "pdb") -> dict:
+    manifest["soldr"]["debug_info"] = [{"name": name, "sha256": sha, "format": fmt}]
+    return manifest
+
+
+def test_a_correct_pdb_digest_passes(mod, tmp_path):
+    manifest = _complete_package(tmp_path)
+    (tmp_path / "soldr.pdb").write_bytes(b"symbols")
+    _with_debug_info(manifest, "soldr.pdb", hashlib.sha256(b"symbols").hexdigest())
+    assert mod.sha_problems(manifest, tmp_path) == []
+
+
+def test_a_tampered_pdb_is_caught(mod, tmp_path):
+    # The gap this closes: the digest was declared and never checked, so
+    # corrupting the real published soldr.pdb produced byte-identical output.
+    manifest = _complete_package(tmp_path)
+    (tmp_path / "soldr.pdb").write_bytes(b"tampered")
+    _with_debug_info(manifest, "soldr.pdb", hashlib.sha256(b"symbols").hexdigest())
+    problems = mod.sha_problems(manifest, tmp_path)
+    assert len(problems) == 1
+    assert "debug_info[0]" in problems[0] and "mismatch" in problems[0]
+
+
+def test_a_missing_pdb_is_caught(mod, tmp_path):
+    manifest = _complete_package(tmp_path)
+    _with_debug_info(manifest, "soldr.pdb", hashlib.sha256(b"symbols").hexdigest())
+    problems = mod.sha_problems(manifest, tmp_path)
+    assert len(problems) == 1
+    assert "debug_info[0]" in problems[0] and "not in" in problems[0]
+
+
+def test_a_dsym_directory_is_not_digest_checked(mod, tmp_path):
+    # release-auto hashes a dSYM as a `tar -cf -` stream, which is not
+    # reproducible here (member order, mtimes, uid/gid). Re-deriving it would
+    # invent failures, so presence is all that is honestly checkable.
+    manifest = _complete_package(tmp_path)
+    (tmp_path / "soldr.dSYM").mkdir()
+    _with_debug_info(manifest, "soldr.dSYM", "c" * 64, fmt="dsym")
+    assert mod.sha_problems(manifest, tmp_path) == []
+
+
+def test_an_empty_debug_info_is_valid(mod, tmp_path):
+    # Documented as a valid state for Linux and macOS, not an error.
+    manifest = _complete_package(tmp_path)
+    manifest["soldr"]["debug_info"] = []
+    assert mod.sha_problems(manifest, tmp_path) == []
