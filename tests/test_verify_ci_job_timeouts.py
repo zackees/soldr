@@ -130,3 +130,26 @@ def test_grandfathered_entries_still_exist():
     workflows = REPO_ROOT / ".github" / "workflows"
     missing = [name for name in VERIFY.GRANDFATHERED if not (workflows / name).exists()]
     assert not missing, f"grandfathered workflows no longer present: {missing}"
+
+
+def test_grandfathered_entries_still_need_the_exemption():
+    """An entry whose jobs are all bounded is an exemption nobody is using.
+
+    `test_grandfathered_entries_still_exist` only catches a *deleted* workflow.
+    A file that is still present but has since had every job bounded would keep
+    its exemption forever, silently granting future unbounded jobs in that file
+    a pass -- the opposite of a ratchet. Whoever bounds the last job should also
+    delete the line, and this is what tells them to.
+    """
+    workflows = REPO_ROOT / ".github" / "workflows"
+    fully_bounded = [
+        name
+        for name in sorted(VERIFY.GRANDFATHERED)
+        if not VERIFY.find_timeout_violations(
+            (workflows / name).read_text(encoding="utf-8")
+        )
+    ]
+    assert not fully_bounded, (
+        "these workflows no longer have unbounded jobs, so their GRANDFATHERED "
+        f"entries should be removed (that is the burn-down): {fully_bounded}"
+    )
