@@ -378,16 +378,26 @@ jobs:
       # Debian 12 and Ubuntu 22.04.
       #
       # The ceiling here is 2.28, NOT the 2.39 release-auto.yml uses, because
-      # this lane does better and the ratchet should hold it to that. The
-      # difference is the builder, not the profile: this lane CROSS-builds
-      # aarch64 on an x86_64 host against soldr's blessed sysroot and lands on
-      # GLIBC_2.28 (measured in CI on #2083), while release-auto.yml builds the
-      # same target NATIVELY on ubuntu-24.04-arm and inherits that runner's
-      # 2.39.
+      # this lane does better and the ratchet should hold it to that.
       #
-      # That gap is worth knowing on its own: the blessed cross path already
-      # produces a far more portable binary than the native release lane, with
-      # no zig involved. See soldr#1060.
+      # The difference is the builder, not the profile. Per this file's own
+      # header, `*-unknown-linux-gnu (aarch64 cross)` goes through
+      # `cargo zigbuild`, and zig links against its bundled glibc headers
+      # rather than the runner's -- landing on GLIBC_2.28 (measured in CI on
+      # #2083). release-auto.yml builds the same target NATIVELY on
+      # ubuntu-24.04-arm and inherits that runner's 2.39.
+      #
+      # So the floor is low exactly when zig links it, and that is the whole
+      # mechanism -- there is no separate zig-free "blessed cross path" that
+      # achieves this, as an earlier version of this comment claimed. Two
+      # consequences for soldr#1060 item 3:
+      #
+      #   * x86_64-unknown-linux-gnu is built natively BOTH here and at
+      #     release, so it sees no benefit from this lane's arrangement. It is
+      #     also the most-downloaded Linux artifact.
+      #   * 2.28 is zig's default for this target, not a target anyone chose.
+      #     `cargo zigbuild --target <triple>.2.17` pins it explicitly and
+      #     reaches 2.16.
       - name: Check glibc baseline of the gnu binary (soldr#1060 ratchet)
         if: contains(inputs.target, 'unknown-linux-gnu')
         shell: bash
