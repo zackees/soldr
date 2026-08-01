@@ -60,7 +60,32 @@ for them; they are out of scope for `debug_info`.
 ## Local debugging without release sidecars
 
 zccache is linked into the locally built `soldr-daemon`, so build Soldr from a
-checkout whose `_vender/zccache` submodule contains the code under test. Debug
-the resulting Soldr binary and its normal `.pdb` / `.dwp` / `.dSYM` output;
-there is no external zccache daemon or `SOLDR_ZCCACHE_LOCAL_DIR` symbol-copy
-path in the embedded architecture.
+checkout whose `_vender/zccache` submodule contains the code under test. There
+is no external zccache daemon or `SOLDR_ZCCACHE_LOCAL_DIR` symbol-copy path in
+the embedded architecture.
+
+> **Windows: a cached build produces no `.pdb` today (soldr#2148).**
+>
+> This section used to say "debug the resulting Soldr binary and its normal
+> `.pdb`". On Windows that instruction silently does not work: a build through
+> the compilation cache emits the `.exe` without its `.pdb`, so a minidump
+> resolves to `module+0xNNNN` and nothing else.
+>
+> To get a symbolizable binary, disable the cache for that build:
+>
+> ```console
+> ZCCACHE_DISABLE=1 soldr cargo build --release
+> ```
+>
+> The `.exe` still carries an `RSDS` CodeView record naming the `.pdb` it
+> expects, so the file was emitted and then dropped — which is why the failure
+> reads as "debug info was never enabled" rather than "debug info was
+> discarded". Verified by isolating one variable at a time: `ZCCACHE_DISABLE=1`
+> restores the `.pdb` **with soldr's rustc wrapper still active**, and the
+> `SOLDR_LINKER` choice makes no difference, so this is the cache layer and not
+> the wrapper or the blessed-prep linker substitution.
+>
+> The cause is in the vendored zccache submodule: a `.pdb` is only classified
+> as a cacheable artifact when it lives under `deps/`
+> (`rust_plan/selection.rs`), and a binary's own `.pdb` is written one level up
+> at `target/<profile>/<name>.pdb`. Remove this note when soldr#2148 closes.
