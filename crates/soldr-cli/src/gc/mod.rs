@@ -23,6 +23,7 @@ mod auto;
 mod cargo_native;
 mod delete_diagnosis;
 pub(crate) mod disk;
+mod holding_process;
 mod purge;
 pub(crate) mod target_walker;
 mod walks;
