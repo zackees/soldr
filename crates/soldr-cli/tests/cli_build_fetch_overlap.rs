@@ -161,6 +161,10 @@ impl Harness {
             // no *-sys catalogue probes, no managed cmake/ninja fetch.
             .env("SOLDR_USE_LEGACY_VENDORED_SYS", "1")
             .env("SOLDR_USE_SYSTEM_CMAKE", "1")
+            // ...and the toolchain catalogue, which those two do not cover.
+            // Without this the child reaches the network, and a hanging host
+            // costs a 30s MANIFEST_FETCH_TIMEOUT per attempt.
+            .env("SOLDR_MANIFEST_DISABLE", "1")
             // Isolate from any outer environment that would change the
             // overlap decision.
             .env_remove("CARGO_NET_OFFLINE")

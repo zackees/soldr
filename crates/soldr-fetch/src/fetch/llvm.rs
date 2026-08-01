@@ -269,6 +269,7 @@ async fn download_llvm_asset(asset: &LlvmAsset) -> Result<Vec<u8>, SoldrError> {
         &format!("LLVM v{MANAGED_LLVM_VERSION} {}", asset.plat_arch),
         LLVM_DOWNLOAD_ATTEMPTS,
         LLVM_DOWNLOAD_INITIAL_BACKOFF,
+        super::retry::FETCH_TOTAL_BUDGET,
         || download_llvm_asset_once(&client, asset),
     )
     .await

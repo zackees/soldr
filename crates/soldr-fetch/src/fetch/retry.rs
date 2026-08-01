@@ -38,6 +38,22 @@ pub(crate) const FETCH_ATTEMPTS: u32 = 4;
 /// Delay before the second attempt; doubles thereafter (5s, 10s, 20s).
 pub(crate) const FETCH_INITIAL_BACKOFF: Duration = Duration::from_secs(5);
 
+/// Ceiling on the *total* time spent retrying, backoff included.
+///
+/// Attempts alone do not bound wall-clock, because an attempt can itself be a
+/// long timeout. `manifest_lookup`'s catalogue fetch uses a 30s
+/// `MANIFEST_FETCH_TIMEOUT`, and a timeout maps to `SoldrError::Network`,
+/// which [`is_transient`] retries -- so 4 attempts plus 5s/10s/20s backoff is
+/// up to **155 seconds** for one call that used to fail once at 30s.
+///
+/// That is not theoretical: it pushed `cli_build_fetch_overlap` tests past the
+/// 120s `timed_test!` watchdog on CI, where they abort as SIGABRT/0xC0000409
+/// and look like a hang rather than a slow fetch.
+///
+/// With this budget the worst case is one in-flight attempt plus the budget,
+/// and a fetch that is merely slow still gets its retries.
+pub(crate) const FETCH_TOTAL_BUDGET: Duration = Duration::from_secs(45);
+
 // A single attempt would make the backoff dead code and silently turn this
 // module into a no-op wrapper.
 const _: () = assert!(FETCH_ATTEMPTS >= 2);
@@ -63,15 +79,25 @@ where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, SoldrError>>,
 {
-    with_backoff_params(what, FETCH_ATTEMPTS, FETCH_INITIAL_BACKOFF, operation).await
+    with_backoff_params(
+        what,
+        FETCH_ATTEMPTS,
+        FETCH_INITIAL_BACKOFF,
+        FETCH_TOTAL_BUDGET,
+        operation,
+    )
+    .await
 }
 
-/// [`with_backoff`] with the schedule spelled out. Separate so tests can drive
-/// it with a zero backoff instead of sleeping for real seconds.
+/// [`with_backoff`] with the schedule spelled out. Separate so callers with
+/// their own tuning (and tests) can drive it without sleeping for real
+/// seconds -- including `total_budget`, so a test can prove the deadline
+/// without waiting out the production one.
 pub(crate) async fn with_backoff_params<T, F, Fut>(
     what: &str,
     attempts: u32,
     initial_backoff: Duration,
+    total_budget: Duration,
     mut operation: F,
 ) -> Result<T, SoldrError>
 where
@@ -80,10 +106,17 @@ where
 {
     let mut backoff = initial_backoff;
     let mut attempt: u32 = 1;
+    let started = std::time::Instant::now();
     loop {
         match operation().await {
             Ok(value) => return Ok(value),
-            Err(err) if attempt < attempts && is_transient(&err) => {
+            Err(err)
+                if attempt < attempts
+                    && is_transient(&err)
+                    // Checked *before* sleeping, so the backoff itself cannot
+                    // push past the budget and then start a fresh attempt.
+                    && started.elapsed().saturating_add(backoff) < total_budget =>
+            {
                 eprintln!(
                     "soldr: transient error fetching {what} (attempt {attempt}/{attempts}): \
                      {err}; retrying in {backoff:?}"
@@ -105,6 +138,10 @@ mod tests {
     use std::cell::Cell;
 
     const NO_SLEEP: Duration = Duration::ZERO;
+    /// Large enough that the deadline never fires in tests about attempts.
+    const AMPLE_BUDGET: Duration = Duration::from_secs(3600);
+    /// Small enough that the deadline test finishes in milliseconds.
+    const TINY_BUDGET: Duration = Duration::from_millis(200);
 
     fn block_on<F: Future>(future: F) -> F::Output {
         tokio::runtime::Builder::new_current_thread()
@@ -116,8 +153,12 @@ mod tests {
 
     crate::timed_test!(transient_failures_are_retried_until_one_succeeds, {
         let calls = Cell::new(0u32);
-        let result: Result<&str, SoldrError> =
-            block_on(with_backoff_params("test-asset", 4, NO_SLEEP, || {
+        let result: Result<&str, SoldrError> = block_on(with_backoff_params(
+            "test-asset",
+            4,
+            NO_SLEEP,
+            AMPLE_BUDGET,
+            || {
                 calls.set(calls.get() + 1);
                 async {
                     if calls.get() < 3 {
@@ -126,7 +167,8 @@ mod tests {
                         Ok("bundle")
                     }
                 }
-            }));
+            },
+        ));
         assert_eq!(
             result.expect("should succeed on the third attempt"),
             "bundle"
@@ -138,30 +180,40 @@ mod tests {
         // The case that must stay fatal: retrying an integrity failure would
         // turn one hard stop into several chances to accept a bad artifact.
         let calls = Cell::new(0u32);
-        let result: Result<(), SoldrError> =
-            block_on(with_backoff_params("test-asset", 4, NO_SLEEP, || {
+        let result: Result<(), SoldrError> = block_on(with_backoff_params(
+            "test-asset",
+            4,
+            NO_SLEEP,
+            AMPLE_BUDGET,
+            || {
                 calls.set(calls.get() + 1);
                 async {
                     Err(SoldrError::Other(
                         "sha256 mismatch: expected a, got b".into(),
                     ))
                 }
-            }));
+            },
+        ));
         assert!(result.is_err());
         assert_eq!(calls.get(), 1, "a non-transient error must not be retried");
     });
 
     crate::timed_test!(attempts_are_bounded_and_the_last_error_survives, {
         let calls = Cell::new(0u32);
-        let result: Result<(), SoldrError> =
-            block_on(with_backoff_params("test-asset", 4, NO_SLEEP, || {
+        let result: Result<(), SoldrError> = block_on(with_backoff_params(
+            "test-asset",
+            4,
+            NO_SLEEP,
+            AMPLE_BUDGET,
+            || {
                 calls.set(calls.get() + 1);
                 // Capture the count by value: `async move` would otherwise move
                 // the `Cell` itself into the coroutine, and the assertion below
                 // still needs it.
                 let attempt = calls.get();
                 async move { Err(SoldrError::Network(format!("attempt {attempt}"))) }
-            }));
+            },
+        ));
         assert_eq!(calls.get(), 4, "should stop at the attempt budget");
         // The caller sees the *last* failure, not a synthesized wrapper, so the
         // original cause is still in the log.
@@ -169,6 +221,44 @@ mod tests {
             Err(SoldrError::Network(message)) => assert_eq!(message, "attempt 4"),
             other => panic!("expected the final Network error, got {other:?}"),
         }
+    });
+
+    crate::timed_test!(a_slow_attempt_cannot_blow_the_total_budget, {
+        // The regression this budget exists for: an attempt that is itself a
+        // long timeout. With 4 attempts and no deadline, a 30s
+        // `MANIFEST_FETCH_TIMEOUT` becomes 4x30s + 35s of backoff = 155s for
+        // one call, which is past the 120s `timed_test!` watchdog.
+        //
+        // Simulated with a short "timeout" and a backoff scaled to match, so
+        // the test itself stays fast: each attempt burns most of the budget,
+        // so only the first retry can fit.
+        let calls = Cell::new(0u32);
+        let started = std::time::Instant::now();
+        let result: Result<(), SoldrError> = block_on(with_backoff_params(
+            "slow-asset",
+            FETCH_ATTEMPTS,
+            Duration::from_millis(1),
+            TINY_BUDGET,
+            || {
+                calls.set(calls.get() + 1);
+                async {
+                    // Each attempt consumes a large slice of FETCH_TOTAL_BUDGET.
+                    tokio::time::sleep(TINY_BUDGET / 2).await;
+                    Err(SoldrError::Network("timed out".into()))
+                }
+            },
+        ));
+        assert!(result.is_err());
+        assert!(
+            calls.get() < FETCH_ATTEMPTS,
+            "the budget must cut retries short of the attempt count; got {} attempts",
+            calls.get()
+        );
+        assert!(
+            started.elapsed() < TINY_BUDGET * 4,
+            "total time must stay near the budget, took {:?}",
+            started.elapsed()
+        );
     });
 
     crate::timed_test!(transient_predicate_covers_network_and_not_found_only, {
