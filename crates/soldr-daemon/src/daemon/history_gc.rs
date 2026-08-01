@@ -83,6 +83,57 @@ pub fn mark_history_publishing(archive_dir: &Path) -> std::io::Result<()> {
     std::fs::write(archive_dir.join(PUBLISHING_MARKER), b"publishing\n")
 }
 
+/// Every file this module writes to manage an archive's lifecycle. Anything
+/// else in the directory is payload.
+const MARKER_FILES: [&str; 4] = [
+    COMPLETE_MARKER,
+    PUBLISHING_MARKER,
+    SANITIZED_MIGRATION_MARKER,
+    LEGACY_SESSION_FILES_MIGRATION_MARKER,
+];
+
+/// Publishes a finished archive, or discards it when it carries no payload.
+/// Returns whether it was published.
+///
+/// The copy helpers that fill an archive silently no-op when their source
+/// file is missing, so a build can reach publication with nothing copied.
+/// Marking that complete publishes a session that *claims* completeness and
+/// contains no data, and every consumer that walks history — `soldr cache`
+/// reporting, workspace-history provenance, the retention pass below — then
+/// treats it as a real session.
+///
+/// Deleting is the right disposal rather than simply withholding the marker:
+/// `sweep` reads a marker-less session as still-active and will never reclaim
+/// it, so skipping the marker would leak the directory forever. (soldr#2186)
+pub fn publish_or_discard(archive_dir: &Path) -> std::io::Result<bool> {
+    if archive_has_payload(archive_dir)? {
+        mark_history_complete(archive_dir)?;
+        return Ok(true);
+    }
+    match std::fs::remove_dir_all(archive_dir) {
+        Ok(()) => Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+/// True when the archive holds at least one file that is not one of this
+/// module's own markers. A missing directory has no payload.
+fn archive_has_payload(archive_dir: &Path) -> std::io::Result<bool> {
+    let entries = match std::fs::read_dir(archive_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    for entry in entries {
+        let name = entry?.file_name();
+        if !MARKER_FILES.contains(&name.to_string_lossy().as_ref()) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 pub fn sweep(paths: &SoldrPaths, db_path: &Path, options: &HistoryGcOptions) -> HistoryGcReport {
     sweep_with_ops(
         paths,
@@ -737,6 +788,44 @@ mod tests {
         mark_history_complete(&archive).unwrap();
         assert!(!archive.join(PUBLISHING_MARKER).exists());
         assert!(archive.join(COMPLETE_MARKER).is_file());
+    });
+
+    crate::timed_test!(publish_or_discard_drops_an_archive_with_no_payload, {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("42");
+
+        // The shape soldr#2186 produced: publication started, every copy
+        // no-opped because its source was missing, nothing else written.
+        mark_history_publishing(&archive).unwrap();
+        assert!(!publish_or_discard(&archive).unwrap());
+        assert!(
+            !archive.exists(),
+            "an archive with no payload must be removed, not published: {}",
+            archive.display(),
+        );
+
+        // Withholding the marker instead would leak the directory, because
+        // `sweep` reads a marker-less session as still-active.
+        assert!(!archive.join(COMPLETE_MARKER).exists());
+    });
+
+    crate::timed_test!(publish_or_discard_publishes_an_archive_with_payload, {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("43");
+
+        mark_history_publishing(&archive).unwrap();
+        std::fs::write(archive.join("last-session-stats.json"), b"{}\n").unwrap();
+        assert!(publish_or_discard(&archive).unwrap());
+        assert!(archive.join(COMPLETE_MARKER).is_file());
+        assert!(!archive.join(PUBLISHING_MARKER).exists());
+        assert!(archive.join("last-session-stats.json").is_file());
+    });
+
+    crate::timed_test!(publish_or_discard_tolerates_a_missing_archive, {
+        let temp = tempfile::tempdir().unwrap();
+        // Never created — a discarded archive must not become a hard error if
+        // something else already removed it.
+        assert!(!publish_or_discard(&temp.path().join("absent")).unwrap());
     });
 
     crate::timed_test!(database_failures_block_success_markers, {
