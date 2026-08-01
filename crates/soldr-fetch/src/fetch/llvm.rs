@@ -276,6 +276,7 @@ async fn download_llvm_asset(asset: &LlvmAsset) -> Result<Vec<u8>, SoldrError> {
 }
 
 fn llvm_http_client() -> Result<reqwest::Client, SoldrError> {
+    super::net_guard::ensure_network_allowed("managed LLVM")?;
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(LLVM_DOWNLOAD_TIMEOUT)

@@ -26,6 +26,7 @@ pub(super) struct AssetInfo {
 }
 
 pub(crate) fn http_client() -> Result<reqwest::Client, SoldrError> {
+    super::net_guard::ensure_network_allowed("GitHub releases / crates.io")?;
     // All fetch modules inherit this shared client, so keep both timeouts.
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))

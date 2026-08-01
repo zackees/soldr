@@ -21,6 +21,7 @@ pub use trust::{
 pub mod rustup_init;
 
 /// soldr#2132: shared retry-with-backoff for network fetches.
+mod net_guard;
 mod retry;
 
 pub use rustup_init::{

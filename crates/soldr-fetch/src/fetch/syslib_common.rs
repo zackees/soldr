@@ -181,6 +181,7 @@ async fn download_syslib_bundle(url: &str) -> Result<Vec<u8>, SoldrError> {
 }
 
 fn syslib_http_client() -> Result<reqwest::Client, SoldrError> {
+    super::net_guard::ensure_network_allowed("a *-sys catalogue bundle")?;
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(syslib_download_timeout())

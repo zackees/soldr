@@ -427,6 +427,7 @@ async fn download_apple_sdk_bundle(url: &str) -> Result<Vec<u8>, SoldrError> {
 }
 
 fn apple_sdk_http_client() -> Result<reqwest::Client, SoldrError> {
+    super::net_guard::ensure_network_allowed("the Apple SDK bundle")?;
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(APPLE_SDK_DOWNLOAD_TIMEOUT_SECS))
