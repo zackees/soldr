@@ -161,6 +161,13 @@ impl Harness {
             // no *-sys catalogue probes, no managed cmake/ninja fetch.
             .env("SOLDR_USE_LEGACY_VENDORED_SYS", "1")
             .env("SOLDR_USE_SYSTEM_CMAKE", "1")
+            // soldr#2145 made host-native `-gnu` route through managed
+            // zig, and TARGET is exactly that on a Linux x86_64 runner —
+            // which would fetch zig here. That is network work inside
+            // tests whose whole premise is that this target needs none,
+            // and the syslib opt-out above does not cover it (it gates
+            // `blessed_build`, not `linux_cross`).
+            .env("SOLDR_NATIVE_GNU_LINK", "0")
             // Isolate from any outer environment that would change the
             // overlap decision.
             .env_remove("CARGO_NET_OFFLINE")
