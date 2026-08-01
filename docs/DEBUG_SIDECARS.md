@@ -85,17 +85,24 @@ the embedded architecture.
 > `SOLDR_LINKER` choice makes no difference, so this is the cache layer and not
 > the wrapper or the blessed-prep linker substitution.
 >
-> The cause is in the vendored zccache submodule, and it is structural rather
-> than a missing special case: a compile-cache entry models exactly one output
-> (`CacheableCompilation::output_file` in `zccache-compiler/src/lib.rs`). The
-> C/C++ paths respect that limit by refusing to cache invocations with
-> unmodeled extra products (`unmodeled_side_output_flag`, applied in `parse.rs`
-> and `parse_msvc.rs`), but `parse_rustc.rs` never calls it and has no `pdb`
-> concept — so a rustc invocation that links a binary *and* emits its `.pdb` is
-> cached from the primary output alone and the `.pdb` is dropped silently.
+> The cause is in the vendored zccache submodule. The rustc path already
+> handles *multiple* outputs — the daemon carries `rustc_all_outputs` and
+> stages each one — so this is a missing entry, not a missing capability.
 >
-> Fixing it means giving the compile path secondary outputs, stored and
-> replayed as a set so the pair cannot desynchronise; a stale `.pdb` beside a
-> fresh `.exe` would be worse than none.
+> The lever is `rustc_expected_output_paths` in
+> `zccache-daemon-core/src/daemon/server/rustc.rs`. It enumerates what a rustc
+> invocation is expected to produce (the link output, the `--emit` products,
+> explicit emit paths) and that list drives staging, capture and replay. It has
+> no `.pdb` entry, so the file rustc writes beside the binary is never
+> redirected into staging and never stored. The same function already appends a
+> conditional extra product for Dylint cdylibs
+> (`dylint_library_sidecar_output_path`), which is the shape a `.pdb` entry
+> would follow.
+>
+> Two things still need deciding before writing it, and they are the reason
+> this note is not already stale: what happens when a declared output is not
+> produced (a build with debuginfo off must not start failing), and keeping the
+> `.exe` and `.pdb` stored as a set — a stale `.pdb` beside a fresh `.exe`
+> would be worse than none.
 >
 > Remove this note when soldr#2148 closes.
