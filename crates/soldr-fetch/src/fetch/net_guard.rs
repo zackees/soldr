@@ -27,6 +27,32 @@
 //! no bypass — `zig.rs` and `forge_dispatch.rs` keep their own retry
 //! loops, so a guard in the retry helper would have missed exactly the
 //! hole #2169 closed.
+//!
+//! # Which suites may arm this
+//!
+//! It propagates to child `soldr` processes: `isolated_soldr_command`
+//! does not `env_clear`, and this var is not in its removal list, so
+//! setting it on the parent reaches the children that actually fetch.
+//!
+//! Two boundaries make it wrong for most suites, both found by trying:
+//!
+//! **It cannot tell localhost from the internet.** It refuses *client
+//! construction*, not a destination. `manifest_lookup.rs` and
+//! `manifest_lookup_url_override.rs` spin up one-shot local HTTP
+//! servers and point soldr at them deliberately — arming the guard
+//! there would fail tests that are behaving exactly as intended.
+//!
+//! **A pass on a warm machine is not proof.** `cli_cargo_basic` passes
+//! with the guard armed here, but that is warm-cache evidence: a suite
+//! that would fetch a tool once on a cold runner turns into a hard CI
+//! failure the moment it is armed, because this errors rather than
+//! degrading. Arming a suite therefore needs an audit of what it can
+//! fetch on a *cold* machine, not a green local run.
+//!
+//! `cli_build_fetch_overlap` qualifies because it stubs cargo, rustc,
+//! rustup and zig, and every remaining fetch path it touches has an
+//! explicit opt-out — the four that #2158/#2161/#2169 had to find one
+//! at a time. That audit is what earns the guard, not the green run.
 
 use crate::core::SoldrError;
 
