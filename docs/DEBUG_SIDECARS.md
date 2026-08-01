@@ -85,7 +85,17 @@ the embedded architecture.
 > `SOLDR_LINKER` choice makes no difference, so this is the cache layer and not
 > the wrapper or the blessed-prep linker substitution.
 >
-> The cause is in the vendored zccache submodule: a `.pdb` is only classified
-> as a cacheable artifact when it lives under `deps/`
-> (`rust_plan/selection.rs`), and a binary's own `.pdb` is written one level up
-> at `target/<profile>/<name>.pdb`. Remove this note when soldr#2148 closes.
+> The cause is in the vendored zccache submodule, and it is structural rather
+> than a missing special case: a compile-cache entry models exactly one output
+> (`CacheableCompilation::output_file` in `zccache-compiler/src/lib.rs`). The
+> C/C++ paths respect that limit by refusing to cache invocations with
+> unmodeled extra products (`unmodeled_side_output_flag`, applied in `parse.rs`
+> and `parse_msvc.rs`), but `parse_rustc.rs` never calls it and has no `pdb`
+> concept — so a rustc invocation that links a binary *and* emits its `.pdb` is
+> cached from the primary output alone and the `.pdb` is dropped silently.
+>
+> Fixing it means giving the compile path secondary outputs, stored and
+> replayed as a set so the pair cannot desynchronise; a stale `.pdb` beside a
+> fresh `.exe` would be worse than none.
+>
+> Remove this note when soldr#2148 closes.
