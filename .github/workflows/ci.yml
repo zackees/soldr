@@ -65,7 +65,27 @@ jobs:
     # cheap fix; required-status branch protection is the structural
     # fix and lives in repo settings.
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # soldr#1978: bounded, but it had no headroom and was cancelling healthy
+    # runs. Measured over the last 20 ci.yml runs:
+    #
+    #   succeeded  5m00s .. 9m51s
+    #   cancelled  6 of the last 7, all at ~10m -- the timeout itself
+    #
+    # A 10-minute bound against a 9m51s observed max is 1.02x. Every slow run
+    # died on whichever step held the clock (always the last Dylint one), so
+    # the gate read as a Dylint flake rather than as its own timeout, and it
+    # got merged past repeatedly -- which is the real cost: an always-red gate
+    # teaches people to ignore it.
+    #
+    # The job grew into this: the Dylint boundary steps, and the five Python
+    # lint gates added in #2103/#2105/#2108/#2109/#2119, each cost 30-60s.
+    #
+    # 30 is ~3x the observed max. `verify_ci_job_timeouts.py` states the rule
+    # this restores: "a too-low timeout that kills a healthy long build is
+    # worse than the 360-minute default". Splitting Dylint into its own job
+    # would be the structural fix and is left as follow-up; this stops the
+    # gate lying first.
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
