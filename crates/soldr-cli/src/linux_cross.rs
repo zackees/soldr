@@ -23,8 +23,11 @@ pub(crate) async fn prepare(
     triple: &str,
 ) -> Result<LinuxCrossTools, SoldrError> {
     let zig_target = rust_target_to_zig_target(triple)?;
+    let zig_target = zig_target.as_str();
     let zig_dir = crate::fetch::ensure_zig(paths).await?;
     let zig = zig_dir.join(if cfg!(windows) { "zig.exe" } else { "zig" });
+    // Keyed on the full triple including any `.<glibc>` suffix, so a 2.17
+    // request and a default-floor request do not share wrapper scripts.
     let wrapper_dir = paths.bin.join("linux-cross").join(triple);
     std::fs::create_dir_all(&wrapper_dir)?;
 
@@ -51,15 +54,41 @@ pub(crate) async fn prepare(
     })
 }
 
-fn rust_target_to_zig_target(triple: &str) -> Result<&'static str, SoldrError> {
-    match triple {
-        "x86_64-unknown-linux-gnu" => Ok("x86_64-linux-gnu"),
-        "aarch64-unknown-linux-gnu" => Ok("aarch64-linux-gnu"),
-        "x86_64-unknown-linux-musl" => Ok("x86_64-linux-musl"),
-        "aarch64-unknown-linux-musl" => Ok("aarch64-linux-musl"),
-        _ => Err(SoldrError::UnsupportedPlatform(format!(
-            "managed Linux cross preparation does not support target `{triple}`"
-        ))),
+/// Map a Rust triple to zig's spelling, carrying an optional glibc floor.
+///
+/// soldr#2139: `x86_64-unknown-linux-gnu.2.17` becomes `x86_64-linux-gnu.2.17`.
+/// Zig takes the floor natively and *enforces* it -- a call into a newer symbol
+/// fails at link naming that symbol, rather than producing a binary that only
+/// fails on the old system it was built for. That is the whole value of asking
+/// for a floor, and it is why the suffix is passed through here rather than
+/// dropped somewhere upstream.
+///
+/// The floor is a request, not a guarantee soldr can make: the achievable floor
+/// is `max(this, every symbol the consumer's vendored C dependencies reference)`.
+/// A graph pulling in libsqlite3-sys will still fail on `fcntl64` (glibc 2.28)
+/// no matter what is asked for here -- loudly, at link, naming the cause.
+fn rust_target_to_zig_target(triple: &str) -> Result<String, SoldrError> {
+    let (base, floor) = match crate::target_alias::split_glibc_floor(triple) {
+        Some((base, floor)) => (base, Some(floor)),
+        None => (triple, None),
+    };
+    let zig_base = match base {
+        "x86_64-unknown-linux-gnu" => "x86_64-linux-gnu",
+        "aarch64-unknown-linux-gnu" => "aarch64-linux-gnu",
+        "x86_64-unknown-linux-musl" => "x86_64-linux-musl",
+        "aarch64-unknown-linux-musl" => "aarch64-linux-musl",
+        _ => {
+            return Err(SoldrError::UnsupportedPlatform(format!(
+                "managed Linux cross preparation does not support target `{triple}`"
+            )))
+        }
+    };
+    match floor {
+        // Only the -gnu targets have a glibc to floor. A suffix cannot reach a
+        // musl base -- `split_glibc_floor` anchors on `-linux-gnu` -- so this
+        // is unreachable rather than silently ignored.
+        Some(floor) => Ok(format!("{zig_base}.{floor}")),
+        None => Ok(zig_base.to_string()),
     }
 }
 
@@ -151,6 +180,30 @@ mod tests {
             "aarch64-linux-musl"
         );
         assert!(rust_target_to_zig_target("i686-unknown-linux-gnu").is_err());
+    });
+
+    // soldr#2139. The floor has to survive the mapping, because this is the
+    // only place that can enforce it -- if it is dropped here the build still
+    // succeeds and silently ships the wrong floor.
+    crate::timed_test!(a_glibc_floor_is_carried_into_the_zig_target, {
+        assert_eq!(
+            rust_target_to_zig_target("x86_64-unknown-linux-gnu.2.17").unwrap(),
+            "x86_64-linux-gnu.2.17"
+        );
+        assert_eq!(
+            rust_target_to_zig_target("aarch64-unknown-linux-gnu.2.28").unwrap(),
+            "aarch64-linux-gnu.2.28"
+        );
+    });
+
+    crate::timed_test!(an_unsupported_base_is_still_rejected_with_its_suffix, {
+        // The error must name what the user typed, suffix included, rather
+        // than a base triple they never asked for.
+        let err = rust_target_to_zig_target("i686-unknown-linux-gnu.2.17").unwrap_err();
+        assert!(
+            err.to_string().contains("i686-unknown-linux-gnu.2.17"),
+            "{err}"
+        );
     });
 
     crate::timed_test!(unix_wrapper_uses_managed_zig_directly, {

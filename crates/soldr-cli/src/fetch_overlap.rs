@@ -198,6 +198,11 @@ pub(crate) fn plan_prefetch(
     // ancestors the same way cargo does.
     find_lockfile_upward(&manifest_dir)?;
 
+    // soldr#2139: this is the second cargo child on the blessed path, and it
+    // builds its own `--target` rather than inheriting the caller's argv, so
+    // it needs the bare triple in its own right. rustc does not know the
+    // `.<glibc>` spelling.
+    let target = crate::target_alias::split_glibc_floor(target).map_or(target, |(base, _)| base);
     let mut args = vec![
         "fetch".to_string(),
         "--locked".to_string(),

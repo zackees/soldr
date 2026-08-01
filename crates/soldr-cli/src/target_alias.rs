@@ -71,6 +71,54 @@ pub fn normalize_target_aliases_in_args(args: &mut [String]) {
     }
 }
 
+/// `args` with any `--target <triple>.<glibc>` reduced to the bare triple.
+///
+/// soldr#2139: the `.<glibc>` suffix is a soldr-level spelling meaning "ask
+/// zig for this floor". rustc has never heard of it, so it must not reach a
+/// cargo child. This is applied at each place a cargo process is actually
+/// spawned rather than once in the caller, because the blessed path spawns
+/// two -- the build itself and `cargo fetch` -- and a rule enforced at the
+/// boundary cannot be forgotten by a future third.
+///
+/// Borrows when there is nothing to strip, which is the overwhelmingly common
+/// case, so the ordinary build path allocates nothing.
+pub fn args_without_glibc_floor(args: &[String]) -> std::borrow::Cow<'_, [String]> {
+    let needs_strip = args.iter().enumerate().any(|(index, arg)| {
+        arg.strip_prefix("--target=")
+            .map(|value| split_glibc_floor(value).is_some())
+            .unwrap_or_else(|| {
+                arg == "--target"
+                    && args
+                        .get(index + 1)
+                        .is_some_and(|next| split_glibc_floor(next).is_some())
+            })
+    });
+    if !needs_strip {
+        return std::borrow::Cow::Borrowed(args);
+    }
+    let mut stripped = args.to_vec();
+    strip_glibc_floor_in_args(&mut stripped);
+    std::borrow::Cow::Owned(stripped)
+}
+
+/// In-place form of [`args_without_glibc_floor`].
+pub fn strip_glibc_floor_in_args(args: &mut [String]) {
+    let mut index = 0;
+    while index < args.len() {
+        if let Some(input) = args[index].strip_prefix("--target=") {
+            if let Some((base, _)) = split_glibc_floor(input) {
+                args[index] = format!("--target={base}");
+            }
+        } else if args[index] == "--target" && index + 1 < args.len() {
+            if let Some((base, _)) = split_glibc_floor(&args[index + 1]) {
+                args[index + 1] = base.to_string();
+            }
+            index += 1;
+        }
+        index += 1;
+    }
+}
+
 fn target_for_known_alias(input: &str) -> Option<&'static str> {
     let lower = input.trim().to_ascii_lowercase();
     canonical_lookup(&lower).or_else(|| synonym_lookup(&lower).and_then(canonical_lookup))
@@ -130,6 +178,10 @@ pub struct ResolvedTarget {
     /// True iff `input` was a soldr alias (canonical or synonym).
     /// False iff `input` was already a Rust triple.
     pub via_alias: bool,
+    /// Requested glibc floor from a `<triple>.<major>.<minor>` input
+    /// (soldr#2139). `rust_triple` is always the bare, rustc-legal triple, so
+    /// this is the only place the floor survives resolution.
+    pub glibc_floor: Option<String>,
 }
 
 /// Errors raised when resolution fails.
@@ -154,13 +206,12 @@ pub enum AliasError {
     )]
     Thirty2Bit { input: String, suggestion: String },
     #[error(
-        "soldr build --target `{input}`: glibc-versioned targets are not supported. \
-         soldr's catalogue sysroots are keyed per-triple, not per-(triple, glibc), \
-         so accepting this would silently ignore the {version} you asked for. \
-         `{base}` builds against glibc 2.28 -- soldr links -gnu targets through \
-         managed zig, so that floor is deterministic rather than whatever the build \
-         machine happens to run. If you need a floor below 2.28, use cargo-zigbuild. \
-         Tracked in soldr#1060 / soldr#2139."
+        "soldr build --target `{input}`: a glibc floor cannot be honoured for \
+         `{base}`. soldr enforces a floor by linking through managed zig, which it \
+         does only for x86_64-unknown-linux-gnu and aarch64-unknown-linux-gnu; for \
+         any other target soldr would have to drop the `.{version}` and ship a \
+         binary whose floor is not the one you asked for. Use one of those two \
+         triples, or cargo-zigbuild directly. Tracked in soldr#1060 / soldr#2139."
     )]
     GlibcVersioned {
         input: String,
@@ -215,12 +266,24 @@ pub fn resolve_soldr_target(input: &str) -> Result<ResolvedTarget, AliasError> {
     // for. Say what soldr cannot do, and name the tool that can.
     reject_glibc_versioned(raw)?;
 
+    // soldr#2139: a supported floor survived the gate above. Resolve the base
+    // triple through the ordinary path and carry the floor beside it --
+    // `rust_triple` stays rustc-legal, so no caller can pass the suffixed
+    // spelling to a tool that has never heard of it.
+    if let Some((base, floor)) = split_glibc_floor(raw) {
+        let mut resolved = resolve_soldr_target(base)?;
+        resolved.input = raw.to_string();
+        resolved.glibc_floor = Some(floor.to_string());
+        return Ok(resolved);
+    }
+
     // Special aliases
     if lower == "native" || lower == "host" {
         return Ok(ResolvedTarget {
             input: raw.to_string(),
             rust_triple: host_triple().to_string(),
             via_alias: true,
+            glibc_floor: None,
         });
     }
     if lower == "all" {
@@ -233,6 +296,7 @@ pub fn resolve_soldr_target(input: &str) -> Result<ResolvedTarget, AliasError> {
             input: raw.to_string(),
             rust_triple: triple.to_string(),
             via_alias: true,
+            glibc_floor: None,
         });
     }
 
@@ -244,6 +308,7 @@ pub fn resolve_soldr_target(input: &str) -> Result<ResolvedTarget, AliasError> {
             input: raw.to_string(),
             rust_triple: triple.to_string(),
             via_alias: true,
+            glibc_floor: None,
         });
     }
 
@@ -253,6 +318,7 @@ pub fn resolve_soldr_target(input: &str) -> Result<ResolvedTarget, AliasError> {
             input: raw.to_string(),
             rust_triple: raw.to_string(),
             via_alias: false,
+            glibc_floor: None,
         });
     }
 
@@ -309,16 +375,47 @@ fn check_ambiguous(input: &str) -> Option<&'static str> {
     }
 }
 
-/// Detect 32-bit-named inputs and suggest the 64-bit replacement.
-/// Soldr deliberately doesn't ship 32-bit triples.
+/// Base triples whose glibc floor soldr can actually honour.
+///
+/// soldr#2139: these are exactly the triples [`crate::linux_cross`] links
+/// through managed zig, which is the only mechanism that can enforce a floor.
+/// Accepting a suffix anywhere else would mean stripping it and shipping a
+/// binary whose floor is not the one that was asked for -- silently wrong, and
+/// worse than refusing.
+pub const GLIBC_FLOOR_SUPPORTED_BASES: [&str; 2] =
+    ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"];
+
 /// Split `x86_64-unknown-linux-gnu.2.17` into its base triple and the
-/// requested glibc version.
+/// requested glibc floor.
 ///
 /// Anchored on `-linux-gnu` rather than matching any trailing dotted number:
 /// musl has no glibc notion, and the other platforms version their SDK
 /// differently, so a dot after those is a typo and belongs in the
 /// "did you mean" path instead.
-/// Reject `<triple>.<major>.<minor>` before it can reach the sysroot table.
+///
+/// Returns slices of `raw`, so the caller keeps the original casing.
+pub fn split_glibc_floor(raw: &str) -> Option<(&str, &str)> {
+    let trimmed = raw.trim();
+    let (base, version) = trimmed.split_once('.')?;
+    if !base.to_ascii_lowercase().ends_with("-linux-gnu") {
+        return None;
+    }
+    // Digits and dots only, starting with a digit -- a version, not any suffix.
+    let looks_like_version = version.starts_with(|c: char| c.is_ascii_digit())
+        && version.chars().all(|c| c.is_ascii_digit() || c == '.');
+    looks_like_version.then_some((base, version))
+}
+
+/// Whether a floor request against `base` can be honoured rather than ignored.
+pub fn glibc_floor_is_supported(base: &str) -> bool {
+    let lower = base.trim().to_ascii_lowercase();
+    GLIBC_FLOOR_SUPPORTED_BASES.contains(&lower.as_str())
+}
+
+/// Detect 32-bit-named inputs and suggest the 64-bit replacement.
+/// Soldr deliberately doesn't ship 32-bit triples.
+///
+/// Reject `<triple>.<major>.<minor>` when the floor cannot be honoured.
 ///
 /// Callable independently of full alias resolution, because the two surfaces
 /// resolve targets differently: `soldr prepare` goes through
@@ -334,8 +431,11 @@ fn check_ambiguous(input: &str) -> Option<&'static str> {
 /// and then *continued*, which reads as a hole in the sysroot table rather
 /// than an unsupported request.
 pub fn reject_glibc_versioned(raw: &str) -> Result<(), AliasError> {
-    let lower = raw.trim().to_ascii_lowercase();
-    match check_glibc_versioned(&lower) {
+    match split_glibc_floor(raw) {
+        // soldr#2139: honoured on the managed-zig -gnu targets, so the
+        // request is real rather than silently dropped. Everywhere else the
+        // original refusal stands.
+        Some((base, _)) if glibc_floor_is_supported(base) => Ok(()),
         Some((base, version)) => Err(AliasError::GlibcVersioned {
             input: raw.to_string(),
             base: base.to_string(),
@@ -343,17 +443,6 @@ pub fn reject_glibc_versioned(raw: &str) -> Result<(), AliasError> {
         }),
         None => Ok(()),
     }
-}
-
-fn check_glibc_versioned(input: &str) -> Option<(&str, &str)> {
-    let (base, version) = input.split_once('.')?;
-    if !base.ends_with("-linux-gnu") {
-        return None;
-    }
-    // Digits and dots only, starting with a digit -- a version, not any suffix.
-    let looks_like_version = version.starts_with(|c: char| c.is_ascii_digit())
-        && version.chars().all(|c| c.is_ascii_digit() || c == '.');
-    looks_like_version.then_some((base, version))
 }
 
 fn check_thirty2_bit(input: &str) -> Option<&'static str> {
@@ -479,39 +568,97 @@ mod tests {
         }
     });
 
-    crate::timed_test!(glibc_versioned_target_is_rejected_with_its_own_error, {
-        // soldr#2139: the zigbuild spelling for an old-glibc target. Without
-        // its own gate this reached the sysroot table and came back as
-        // "no sqlite sysroot recipe for target ...", which reads like a gap in
-        // that table rather than a request soldr cannot honour.
-        let err = resolve_soldr_target("x86_64-unknown-linux-gnu.2.17").unwrap_err();
-        match err {
+    crate::timed_test!(the_floor_suffix_is_stripped_from_both_argv_spellings, {
+        // The suffix must never reach a cargo child. Both spellings are
+        // covered because argv carries whichever the user typed.
+        let mut split = vec![
+            "build".to_string(),
+            "--target".to_string(),
+            "x86_64-unknown-linux-gnu.2.17".to_string(),
+            "--release".to_string(),
+        ];
+        strip_glibc_floor_in_args(&mut split);
+        // The borrowing form must agree, since it is what the spawn uses.
+        assert_eq!(args_without_glibc_floor(&split).as_ref(), split.as_slice());
+        assert_eq!(split[2], "x86_64-unknown-linux-gnu");
+        assert_eq!(split[3], "--release", "unrelated args must be untouched");
+
+        let mut joined = vec![
+            "build".to_string(),
+            "--target=aarch64-unknown-linux-gnu.2.28".to_string(),
+        ];
+        strip_glibc_floor_in_args(&mut joined);
+        assert_eq!(joined[1], "--target=aarch64-unknown-linux-gnu");
+    });
+
+    crate::timed_test!(stripping_leaves_ordinary_targets_alone, {
+        // Including musl, which has no glibc to floor, and a bare `--target`
+        // at the end of argv, which must not index past the end.
+        let mut args = vec![
+            "build".to_string(),
+            "--target".to_string(),
+            "x86_64-unknown-linux-musl".to_string(),
+        ];
+        strip_glibc_floor_in_args(&mut args);
+        assert_eq!(args[2], "x86_64-unknown-linux-musl");
+
+        let mut trailing = vec!["build".to_string(), "--target".to_string()];
+        strip_glibc_floor_in_args(&mut trailing);
+        assert_eq!(trailing, vec!["build".to_string(), "--target".to_string()]);
+    });
+
+    crate::timed_test!(a_supported_glibc_floor_resolves_to_the_bare_triple, {
+        // soldr#2139: the zigbuild spelling for an old-glibc target. soldr
+        // honours it on the two triples it links through managed zig, which is
+        // the only mechanism that can enforce a floor.
+        //
+        // `rust_triple` must come back *bare*: rustc has never heard of the
+        // suffixed spelling, so a caller that forwards it to cargo would fail
+        // with a confusing "unknown target" a long way from here.
+        for (input, base, floor) in [
+            (
+                "x86_64-unknown-linux-gnu.2.17",
+                "x86_64-unknown-linux-gnu",
+                "2.17",
+            ),
+            (
+                "aarch64-unknown-linux-gnu.2.28",
+                "aarch64-unknown-linux-gnu",
+                "2.28",
+            ),
+        ] {
+            let resolved = resolve_soldr_target(input).unwrap();
+            assert_eq!(resolved.rust_triple, base, "{input}");
+            assert_eq!(resolved.glibc_floor.as_deref(), Some(floor), "{input}");
+            // The input is echoed verbatim so errors can quote what was typed.
+            assert_eq!(resolved.input, input);
+        }
+    });
+
+    crate::timed_test!(a_floor_on_an_unenforceable_target_is_still_rejected, {
+        // The floor is only meaningful where soldr links through managed zig.
+        // Anywhere else soldr would have to drop the suffix and ship a binary
+        // whose floor is not the one that was asked for -- silently wrong, and
+        // strictly worse than refusing.
+        let err = resolve_soldr_target("i686-unknown-linux-gnu.2.17").unwrap_err();
+        match &err {
             AliasError::GlibcVersioned { base, version, .. } => {
-                assert_eq!(base, "x86_64-unknown-linux-gnu");
+                assert_eq!(base, "i686-unknown-linux-gnu");
                 assert_eq!(version, "2.17");
             }
             other => panic!("expected GlibcVersioned, got {other:?}"),
         }
 
-        // The message has to name the alternative, or the user is stuck.
-        let rendered = resolve_soldr_target("aarch64-unknown-linux-gnu.2.28")
-            .unwrap_err()
-            .to_string();
+        // The message has to name the way forward, or the user is stuck.
+        let rendered = err.to_string();
         assert!(
             rendered.contains("zigbuild"),
             "the error must point at a tool that can do it: {rendered}"
         );
         assert!(
-            rendered.contains("aarch64-unknown-linux-gnu"),
-            "the error must offer the unversioned triple: {rendered}"
-        );
-        // soldr#2157 made -gnu link through managed zig and soldr#2163
-        // measured the result, so the fallback has a *known* floor. Saying
-        // so is the difference between "we cannot pin that" and "here is
-        // what you get instead" -- the second is actionable.
-        assert!(
-            rendered.contains("2.28"),
-            "the error must name the floor the unversioned triple gives: {rendered}"
+            rendered.contains("x86_64-unknown-linux-gnu")
+                && rendered.contains("aarch64-unknown-linux-gnu"),
+            "the error must name the triples where a floor *is* honoured: {rendered}"
         );
     });
 
@@ -541,21 +688,30 @@ mod tests {
     // called from every blessed-prep entry. These pin that the standalone
     // form agrees with the resolver in both directions.
     crate::timed_test!(the_standalone_guard_rejects_what_the_resolver_rejects, {
-        let err = reject_glibc_versioned("x86_64-unknown-linux-gnu.2.17").unwrap_err();
+        // soldr#2139: the guard now splits on whether the floor can be
+        // *enforced*, so it must agree with the resolver in both directions.
+        let err = reject_glibc_versioned("i686-unknown-linux-gnu.2.17").unwrap_err();
         match err {
             AliasError::GlibcVersioned {
                 input,
                 base,
                 version,
             } => {
-                assert_eq!(input, "x86_64-unknown-linux-gnu.2.17");
-                assert_eq!(base, "x86_64-unknown-linux-gnu");
+                assert_eq!(input, "i686-unknown-linux-gnu.2.17");
+                assert_eq!(base, "i686-unknown-linux-gnu");
                 assert_eq!(version, "2.17");
             }
             other => panic!("expected GlibcVersioned, got {other:?}"),
         }
-        // Case and surrounding whitespace must not smuggle it past.
-        assert!(reject_glibc_versioned("  X86_64-Unknown-Linux-GNU.2.17 ").is_err());
+        // Case and surrounding whitespace must not smuggle an unenforceable
+        // floor past the guard.
+        assert!(reject_glibc_versioned("  I686-Unknown-Linux-GNU.2.17 ").is_err());
+        assert!(resolve_soldr_target("i686-unknown-linux-gnu.2.17").is_err());
+
+        // ...and the enforceable ones pass both, however they are spelled.
+        assert!(reject_glibc_versioned("  X86_64-Unknown-Linux-GNU.2.17 ").is_ok());
+        assert!(reject_glibc_versioned("aarch64-unknown-linux-gnu.2.28").is_ok());
+        assert!(resolve_soldr_target("aarch64-unknown-linux-gnu.2.28").is_ok());
     });
 
     crate::timed_test!(the_standalone_guard_does_not_over_reject, {

@@ -54,10 +54,17 @@ pub(crate) async fn prepare_target(
     paths: &SoldrPaths,
     target: &str,
 ) -> Result<BlessedPrep, SoldrError> {
-    let attrs = classify_target(target)?;
+    // soldr#2139: `x86_64-unknown-linux-gnu.2.17` is a soldr-level spelling.
+    // rustc, rustup and the catalogue sysroot tables know only the base triple,
+    // so everything below works on `base`; the full string goes to
+    // `linux_cross::prepare`, the one place that can act on the floor.
+    let glibc_floor = crate::target_alias::split_glibc_floor(target);
+    let base = glibc_floor.map_or(target, |(base, _)| base);
+
+    let attrs = classify_target(base)?;
     let host = crate::pyo3_detect::host_triple();
-    crate::prepare_cmd::rustup_add_target(target)?;
-    let mut prep = crate::blessed_build::prepare(paths, target).await?;
+    crate::prepare_cmd::rustup_add_target(base)?;
+    let mut prep = crate::blessed_build::prepare(paths, base).await?;
 
     let legacy_xwin = std::env::var_os(crate::blessed_build::USE_LEGACY_XWIN_ENV_VAR)
         .is_some_and(|value| !value.is_empty() && value != "0");
@@ -87,10 +94,20 @@ pub(crate) async fn prepare_target(
         )));
     }
 
-    if should_prepare_managed_linux(attrs.os, target, host, legacy_zigbuild) {
+    // A floor can only be enforced by linking through managed zig, so asking
+    // for one opts in regardless of the host-native escape hatch. Honouring
+    // SOLDR_NATIVE_GNU_LINK=0 here would drop the floor without saying so --
+    // the precise failure this feature exists to avoid.
+    let floor_requires_managed_link = glibc_floor.is_some();
+    if floor_requires_managed_link
+        || should_prepare_managed_linux(attrs.os, base, host, legacy_zigbuild)
+    {
         let tools = crate::linux_cross::prepare(paths, target).await?;
         prep.path_dirs.push(tools.bin_dir);
-        let suffix = target.replace('-', "_");
+        // Env keys come from the base triple: a dot is not legal in an
+        // environment variable name, so `CC_x86_64_unknown_linux_gnu.2.17`
+        // would be silently unusable.
+        let suffix = base.replace('-', "_");
         let upper = suffix.to_ascii_uppercase();
         prep.env.extend([
             (
