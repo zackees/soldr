@@ -1967,6 +1967,9 @@ pub(crate) async fn run_cargo_front_door(
                 threshold_gib,
             } => {
                 eprintln!("{}", gc::disk::render_warn_line(free_bytes, threshold_gib));
+                // soldr#2134: reclaim here too, so reaching the block
+                // threshold means nothing was left to take.
+                gc::disk::reclaim_at_warn(&watchdog_path, free_bytes);
             }
             // soldr#2134: reclaim first, block only if that was not enough.
             gc::disk::DiskCheckOutcome::Block {

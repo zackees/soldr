@@ -223,6 +223,38 @@ fn reclaim_bytes(volume_path: &Path) -> u64 {
 ///
 /// The hard block becomes the backstop it was meant to be: reached only
 /// when there is genuinely nothing left to reclaim.
+/// Reclaim proactively once free space crosses the *warn* threshold
+/// (soldr#2134).
+///
+/// The issue's first defect: auto-prune fired on the wrong side of the
+/// failure. The build aborted at the 5 GiB block threshold, prune then ran
+/// and freed 57 GB, and the developer re-ran a command that soldr was
+/// already capable of not failing. Disk pressure builds gradually, so there
+/// is a large window between "getting tight" and "cannot build" in which
+/// reclaiming is free.
+///
+/// Reclaiming here makes the hard block the backstop rather than the
+/// trigger: by the time free space reaches 5 GiB, reclaim has already been
+/// attempted, so blocking means there was genuinely nothing left to take.
+///
+/// Best-effort and never fatal -- the build continues either way. This
+/// widens *when* reclaim runs, not *what* it may delete: the candidate set
+/// is unchanged, so every staleness threshold and safety guard still
+/// applies. Once the cold targets are gone this returns 0 and the warn line
+/// is all that remains, so it converges rather than deleting on every build.
+pub(crate) fn reclaim_at_warn(volume_path: &Path, free_bytes: u64) {
+    let reclaimed = reclaim_bytes(volume_path);
+    if reclaimed == 0 {
+        return;
+    }
+    let free_now = free_bytes_for(volume_path).unwrap_or(free_bytes);
+    eprintln!(
+        "soldr: free space is low; reclaimed {} from cross-repo `target/`          directories before it became a hard block, {} now free.",
+        format_bytes(reclaimed),
+        format_bytes(free_now)
+    );
+}
+
 pub(crate) fn reclaim_then_block(
     volume_path: &Path,
     free_bytes: u64,
