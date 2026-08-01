@@ -226,3 +226,30 @@ def test_the_default_ceiling_is_the_measured_value(mod, tmp_path):
     assert mod.main([binary]) == 0
     higher = _write(tmp_path, "next", _macho([_build_version_cmd(11, 1)]))
     assert mod.main([higher]) == 1
+
+
+def test_the_ceiling_is_per_arch_not_one_value_for_both(mod):
+    assert mod.ceiling_for_target("aarch64-apple-darwin") == "11.0"
+    assert mod.ceiling_for_target("x86_64-apple-darwin") == "10.12"
+
+
+def test_target_supplies_the_ceiling(mod, tmp_path):
+    # 10.12 is correct for x86_64 and must pass there...
+    binary = _write(tmp_path, "soldr", _macho([_build_version_cmd(10, 12)]))
+    assert mod.main(["--target", "x86_64-apple-darwin", binary]) == 0
+
+
+def test_x86_64_may_not_drift_back_up_to_11(mod, tmp_path):
+    # ...and 11.0 is exactly the regression this whole issue is about, so it
+    # must fail on x86_64 even though it passes on aarch64.
+    binary = _write(tmp_path, "soldr", _macho([_build_version_cmd(11, 0)]))
+    assert mod.main(["--target", "x86_64-apple-darwin", binary]) == 1
+    assert mod.main(["--target", "aarch64-apple-darwin", binary]) == 0
+
+
+def test_an_explicit_ceiling_overrides_the_target(mod, tmp_path):
+    binary = _write(tmp_path, "soldr", _macho([_build_version_cmd(11, 0)]))
+    assert (
+        mod.main(["--target", "x86_64-apple-darwin", "--max-min-os", "11.0", binary])
+        == 0
+    )

@@ -419,14 +419,16 @@ jobs:
       # Ceilings start at the values measured on published v0.8.29 and are
       # tightened to whatever these lanes actually achieve -- the glibc step
       # above turned out to reach 2.28 where the release reaches 2.39, and a
-      # ratchet set above what a lane achieves does not bind.
+      # ratchet set above what a lane achieves does not bind. The macOS one is
+      # per-arch as of soldr#2146 for exactly that reason: a single 11.0 ceiling
+      # was above what x86_64 should achieve, so it never bound there.
       - name: Ratchet the macOS minimum version (soldr#1060)
         if: contains(inputs.target, 'apple-darwin')
         shell: bash
         run: |
           set -euo pipefail
           python3 .github/scripts/verify_macos_min_version.py \
-            --max-min-os 11.0 \
+            --target "${{ inputs.target }}" \
             "target/${{ inputs.target }}/ci-nextest/soldr"
 
       - name: Ratchet the Windows DLL imports (soldr#1060)

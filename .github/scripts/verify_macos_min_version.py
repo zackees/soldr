@@ -43,6 +43,30 @@ import struct
 import sys
 from pathlib import Path
 
+# The per-arch ceilings, mirroring
+# `crates/soldr-cli/src/blessed_build/darwin_arch.rs`. They must stay in
+# step: that module decides what the binaries ask for, this one decides what is
+# allowed to ask. A single shared ceiling is what let x86_64 sit at 11.0
+# unnoticed -- the lane passed because the ceiling was the wrong value, not
+# because the binary was right (soldr#2146).
+#
+# aarch64 is 11.0 because Apple Silicon shipped with Big Sur; there is nothing
+# below it to support. x86_64 is 10.12, Rust's own default for the target and
+# the floor the prebuilt crgx / cargo-chef in the same bundle already use.
+AARCH64_MAX_MIN_OS = "11.0"
+X86_64_MAX_MIN_OS = "10.12"
+
+# Used only when neither --max-min-os nor --target is given. Deliberately the
+# looser of the two, so a caller that forgets to say which arch it is checking
+# gets a ceiling that cannot silently tighten and fail a correct binary.
+DEFAULT_MAX_MIN_OS = AARCH64_MAX_MIN_OS
+
+
+def ceiling_for_target(target: str) -> str:
+    """Return the ratchet ceiling for a target triple."""
+    return AARCH64_MAX_MIN_OS if target.startswith("aarch64") else X86_64_MAX_MIN_OS
+
+
 MH_MAGIC_64 = 0xFEEDFACF  # little-endian 64-bit
 MH_CIGAM_64 = 0xCFFAEDFE  # byte-swapped 64-bit
 # Universal ("fat") binaries wrap several thin ones. We do not walk them, but
@@ -126,20 +150,35 @@ def main(argv: "list[str] | None" = None) -> int:
     parser.add_argument("binaries", nargs="+", help="Mach-O binaries to inspect")
     parser.add_argument(
         "--max-min-os",
-        default="11.0",
+        default=None,
         help=(
-            "Highest minimum-macOS a binary may demand. Defaults to the "
-            "currently measured 11.0; this is a ratchet, so raising it should "
-            "be a deliberate decision with a note, not a reflex."
+            "Highest minimum-macOS a binary may demand. Overrides --target. "
+            "This is a ratchet, so raising it should be a deliberate decision "
+            "with a note, not a reflex."
+        ),
+    )
+    parser.add_argument(
+        "--target",
+        default=None,
+        help=(
+            "Target triple to take the ceiling from, so a caller does not "
+            "have to hardcode the per-arch value. Ignored when --max-min-os "
+            "is given."
         ),
     )
     args = parser.parse_args(argv)
 
-    ceiling = parse_version(args.max_min_os)
+    if args.max_min_os is not None:
+        requested = args.max_min_os
+    elif args.target is not None:
+        requested = ceiling_for_target(args.target)
+    else:
+        requested = DEFAULT_MAX_MIN_OS
+
+    ceiling = parse_version(requested)
     if not ceiling:
         print(
-            f"verify_macos_min_version: --max-min-os {args.max_min_os!r} "
-            f"is not a version",
+            f"verify_macos_min_version: ceiling {requested!r} is not a version",
             file=sys.stderr,
         )
         return 1

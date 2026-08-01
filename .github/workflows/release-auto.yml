@@ -813,12 +813,18 @@ jobs:
       # GLIBC_2.39 problem -- builds fine, tests fine, refuses to launch on
       # older Macs, and you find out from a user.
       #
-      # Measured on published v0.8.29: aarch64 is 11.0 throughout (correct and
-      # unavoidable for Apple Silicon), and on x86_64 soldr is also 11.0 while
-      # crgx beside it is 10.12. So the bundle is not internally consistent and
-      # x86_64 asks for more than Rust's 10.12 default for that target. This
-      # step does not change any of that -- it pins the current values so the
-      # next SDK bump cannot raise them unnoticed.
+      # Measured on published v0.8.29: aarch64 was 11.0 throughout (correct and
+      # unavoidable for Apple Silicon), and on x86_64 soldr was *also* 11.0
+      # while crgx beside it was 10.12 -- so the bundle was not internally
+      # consistent and x86_64 asked for more than Rust's 10.12 default for that
+      # target. soldr#2146 fixed the cause (five hardcoded 11.0 literals in the
+      # Darwin arm of blessed build, applied to both arches) and this ceiling is
+      # now per-arch to match, so an x86_64 binary that drifts back up to 11.0
+      # fails here instead of passing against a ceiling set too loose to bind.
+      #
+      # The ceilings live in verify_macos_min_version.py beside the parsing,
+      # not inline here -- they must stay in step with
+      # crates/soldr-cli/src/blessed_build/darwin_arch.rs.
       - name: Ratchet the macOS minimum version (soldr#1060)
         if: contains(matrix.target, 'apple-darwin')
         shell: bash
@@ -838,7 +844,7 @@ jobs:
             exit 1
           fi
           python3 .github/scripts/verify_macos_min_version.py \
-            --max-min-os 11.0 "${bundled[@]}"
+            --target "${{ matrix.target }}" "${bundled[@]}"
 
       - name: Verify every bundled musl binary is static (soldr#1060)
         if: contains(matrix.target, 'musl')
