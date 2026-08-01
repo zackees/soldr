@@ -655,6 +655,30 @@ jobs:
   # was dropped per the #1051 acceptance — saves a scarce-runner job
   # and the same path is exercised locally via `ci/docker-*` harnesses.
 
+  # ---------- Linux x64 (gnu) — glibc floor only ----------
+  # soldr#2145 / soldr#1060 item 3. x86_64-unknown-linux-gnu is host-native
+  # both here and at release, so until now nothing on a PR exercised it
+  # through the blessed `soldr build --target` surface -- and it inherited
+  # the runner's glibc (2.39) while the cross-built aarch64 artifact got
+  # 2.28. This lane covers that gap and, because the reusable workflow
+  # already runs the glibc ratchet for `unknown-linux-gnu`, it is what
+  # proves the managed-zig detour actually lowers the floor: without it
+  # the binary links at 2.39 and the 2.28 ceiling fails.
+  #
+  # No paired `target-run`: this lane exists for the ABI floor, and the
+  # complete workspace suite already runs natively on this exact image in
+  # `build-linux-x64`. Adding a replay would be the degenerate same-image
+  # build/run split soldr#1978 item 3 is about.
+  e2e-linux-x64-gnu-build:
+    name: native-build x86_64-unknown-linux-gnu (glibc floor)
+    needs: e2e-cross-bootstrap-soldr
+    uses: ./.github/workflows/_ci-cross-build-linux.yml
+    with:
+      target: x86_64-unknown-linux-gnu
+      artifact_name: soldr-ci-e2e-linux-x64-gnu
+      source_ref: ${{ github.sha }}
+      bootstrap_artifact_name: soldr-ci-bootstrap-linux-gnu
+
   # ---------- Linux ARM64 (gnu) ----------
   e2e-linux-arm64-build:
     name: cross-build aarch64-unknown-linux-gnu (linux host)
