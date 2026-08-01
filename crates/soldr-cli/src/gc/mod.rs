@@ -21,6 +21,7 @@ use serde::Serialize;
 
 mod auto;
 mod cargo_native;
+mod delete_diagnosis;
 pub(crate) mod disk;
 mod purge;
 pub(crate) mod target_walker;
@@ -765,6 +766,16 @@ pub(crate) fn run_gc_target_command(args: crate::cli_args::GcTargetArgs) -> Resu
                 "soldr gc target:   {}: {}",
                 failure.target_dir, failure.error
             );
+            // soldr#2199: that error comes from the *parent* ("the directory
+            // is not empty") and names nothing. The refusal happened on some
+            // leaf inside it, and which leaf -- and what is unusual about it
+            // -- is the whole diagnosis. Collect it while the tree is still
+            // in the failed state.
+            if let Some(detail) =
+                crate::gc::delete_diagnosis::describe(std::path::Path::new(&failure.target_dir))
+            {
+                eprintln!("soldr gc target:     {detail}");
+            }
         }
     }
 
