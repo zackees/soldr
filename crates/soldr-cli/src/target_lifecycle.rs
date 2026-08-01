@@ -175,6 +175,15 @@ pub(crate) async fn prepare_for_invocation(
     paths: &SoldrPaths,
     target: &str,
 ) -> Result<BlessedPrep, SoldrError> {
+    // soldr#2139: `soldr build` reaches here having only run
+    // `normalize_target_aliases_in_args`, which leaves an unrecognised target
+    // untouched -- so a glibc-versioned triple used to walk straight into the
+    // sysroot table and emit "no <lib> sysroot recipe for target …" per
+    // library before continuing anyway. `soldr prepare` already rejected it,
+    // via the resolver, with an error that names `soldr build`. Reject it on
+    // every prep entry so the blessed surface says the same thing.
+    crate::target_alias::reject_glibc_versioned(target)
+        .map_err(|error| SoldrError::Other(error.to_string()))?;
     if classify_target(target).is_ok() {
         prepare_target(paths, target).await
     } else {
