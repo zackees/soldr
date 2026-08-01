@@ -481,22 +481,33 @@ jobs:
       # aarch64) and cannot start on RHEL 9, Debian 12 or Ubuntu 22.04 --
       # the distros the fallback exists for.
       #
-      # The ceiling below is therefore the CURRENT measured floor, not the
-      # target: a ratchet, in the same spirit as loc_ratchet. It cannot break
-      # today's release, and it cannot silently get worse. The real fix is to
-      # link against the baseline (zigbuild `<triple>.2.17` or an old-glibc
-      # container), after which this drops to 2.17 and becomes a real gate.
+      # UPDATE (soldr#2145): that "real fix" landed. soldr#2157 routes
+      # host-native `-gnu` builds through managed zig instead of the host
+      # toolchain, so these no longer inherit the runner's glibc. Both
+      # architectures are now measured on every PR:
       #
-      # If a runner image bump raises the floor, this step failing IS the
-      # intended signal -- raise the ceiling deliberately, with a note, rather
-      # than by reflex.
+      #   x86_64  -- soldr#2163, `bootstrap + linux-x86`
+      #   aarch64 -- soldr#2165, `linux-arm (--release ...)`
+      #
+      # Both clear 2.28, which is zig's default for the target, so the
+      # ceiling drops from 2.39 to match. That is a record of what CI
+      # observes continuously, not an aspiration.
+      #
+      # 2.17 remains out of reach and is NOT the next step down: soldr#2153
+      # showed the vendored SQLite in libsqlite3-sys references fcntl64
+      # (glibc 2.28), so `ld.lld` fails outright below it. Going lower is a
+      # C-dependency question, not a linker-flag one.
+      #
+      # If a toolchain or runner change raises the floor, this step failing
+      # IS the intended signal -- raise the ceiling deliberately, with a
+      # note, rather than by reflex.
       - name: Check glibc baseline of gnu binary (soldr#1060 ratchet)
         if: contains(matrix.target, 'unknown-linux-gnu')
         shell: bash
         run: |
           set -euo pipefail
           python3 .github/scripts/verify_glibc_baseline.py \
-            --max-glibc 2.39 \
+            --max-glibc 2.28 \
             "target/${{ matrix.target }}/release/${{ matrix.binary }}"
 
       - name: Stage soldr release binaries
@@ -880,6 +891,18 @@ jobs:
       # Measured on published v0.8.29, all eight binaries across both gnu
       # bundles sit at or below this ceiling (aarch64 cargo-chef is 2.18), so
       # this reports today rather than blocking.
+      #
+      # This ceiling deliberately stays at 2.39 while the per-target one
+      # above drops to 2.28 (soldr#2145). They are not measuring the same
+      # thing: that one checks the binary soldr *builds*, which #2157 put
+      # through managed zig and #2163/#2165 measure on every PR. This one
+      # also covers `crgx` and `cargo-chef`, which are **fetched prebuilt**
+      # from the soldr-toolchain catalogue -- their floors are set by
+      # whoever built them and can move without a line of soldr changing.
+      #
+      # Lowering this to 2.28 would gate soldr's releases on third-party
+      # build choices we have no measurement for and no control over. It
+      # drops when those binaries are measured too, not before.
       - name: Check glibc baseline of every bundled gnu binary (soldr#1060)
         if: contains(matrix.target, 'unknown-linux-gnu')
         shell: bash
