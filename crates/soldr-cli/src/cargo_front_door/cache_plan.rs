@@ -42,6 +42,13 @@ impl CargoCachePlanPrefetch {
         if !cache_enabled_for_cargo {
             return Self::Disabled;
         }
+        // soldr#2188: once per build, before any crate compiles. Recorded
+        // rather than printed so it replays at a failure too -- the moment it
+        // is most needed is when LNK1104 has already scrolled past.
+        if let Some(warning) = crate::compile_diagnostics::maxpath_headroom_warning(&paths.cache) {
+            eprintln!("{warning}");
+            soldr_core::warning_log::record(warning);
+        }
         let paths = paths.clone();
         let handle = tokio::spawn(async move { prepare_rustc_wrapper_plan(&paths).await });
         Self::Pending(handle)

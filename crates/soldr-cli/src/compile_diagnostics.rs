@@ -49,6 +49,57 @@ const CACHE_OWNED_PATH_MARKER: &[u8] = b"daemon-state";
 /// *failure* message is the soldr#2188 shape rather than the soldr#1969 one.
 const LEGACY_MAX_PATH: usize = 260;
 
+/// Fixed structure the embedded store puts between `SoldrPaths::cache` and a
+/// staged artifact's filename, measured from a real failing build
+/// (soldr#2188):
+///
+/// ```text
+/// zccache\daemon-state\embedded-v1\v1.13.0\staging\<session>\.compile-<pid>-<n>\
+/// ```
+///
+/// `<session>` is ~27 characters and `.compile-<pid>-<n>` ~18, so this is
+/// dominated by parts no user controls.
+///
+/// The number carries a few characters of slack over that measurement on
+/// purpose. Erring high warns slightly early; erring low lets the failure
+/// through, which is the outcome this exists to prevent.
+const STAGING_PREFIX_BUDGET: usize = 110;
+
+/// Room a rustc-generated artifact name needs, e.g.
+/// `build_script_build-52378a44826b4cb2.exe` (39). Rounded up rather than
+/// fitted, because the point is to warn before the tightest case, not the
+/// average one.
+const STAGED_ARTIFACT_NAME_BUDGET: usize = 60;
+
+/// Warn when `cache_root` leaves no room for a staged artifact path
+/// (soldr#2188).
+///
+/// The reactive diagnostic added in soldr#2190 explains an `LNK1104` after it
+/// happens, which is a real improvement over a bare linker error. This is the
+/// half that costs nothing: the arithmetic is knowable before the first crate
+/// compiles, and a build that is going to fail this way fails every time, so
+/// there is no reason to spend the build first.
+///
+/// Returns the message rather than printing it, so the caller decides the
+/// channel and tests do not have to capture stderr.
+pub(crate) fn maxpath_headroom_warning(cache_root: &std::path::Path) -> Option<String> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let root_len = cache_root.as_os_str().len();
+    let projected = root_len + STAGING_PREFIX_BUDGET + STAGED_ARTIFACT_NAME_BUDGET;
+    if projected <= LEGACY_MAX_PATH {
+        return None;
+    }
+    Some(format!(
+        "soldr warning: soldr's cache directory path is {root_len} characters, which \
+         leaves no room for staged compile paths under Windows' {LEGACY_MAX_PATH}-character MAX_PATH \
+         limit (projected {projected}). Linking can fail with LNK1104 naming a file \
+         inside soldr's cache -- see soldr#2188. Point SOLDR_CACHE_DIR at a shorter \
+         root, or run `soldr --no-cache cargo ...`."
+    ))
+}
+
 /// How much trailing output to carry between chunks. Large enough that a
 /// path around [`LEGACY_MAX_PATH`] can still be measured when the stream
 /// splits it, with room for the surrounding quotes and prefix.
@@ -484,5 +535,35 @@ mod tests {
         writer.write_all(b"de").expect("write");
 
         assert_eq!(writer.bytes_written, 5);
+    });
+
+    timed_test!(maxpath_headroom_warns_only_when_the_root_leaves_no_room, {
+        // soldr#2188 was found at ~160 characters and reproduced cleanly:
+        // ~40 and ~99 character roots build fine, ~160 fails at link.
+        // Forward slashes deliberately: the check measures length, not shape,
+        // and this keeps the test free of escape noise on every platform.
+        let short = std::path::PathBuf::from("C:/Users/me/.soldr");
+        assert!(
+            maxpath_headroom_warning(&short).is_none(),
+            "the default-length root must not warn"
+        );
+
+        let deep = std::path::PathBuf::from(format!("C:/{}", "d".repeat(150)));
+        let warning = maxpath_headroom_warning(&deep);
+        if cfg!(windows) {
+            let warning = warning.expect("a 150-char root must warn");
+            assert!(warning.contains("MAX_PATH"), "{warning}");
+            assert!(
+                warning.contains("2188"),
+                "must point at the issue: {warning}"
+            );
+            assert!(
+                warning.contains("SOLDR_CACHE_DIR") && warning.contains("--no-cache"),
+                "must give both remedies: {warning}"
+            );
+        } else {
+            // The limit is Windows-only; warning elsewhere would be noise.
+            assert!(warning.is_none(), "must not warn off Windows");
+        }
     });
 }
