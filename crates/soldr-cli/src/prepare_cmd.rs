@@ -1131,10 +1131,9 @@ mod tests {
             "darwin linker env missing: {body}"
         );
         assert!(
-            // x86_64 is 10.12 per soldr#2146; aarch64 stays 11.0.
             body.contains("CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS=")
                 && body.contains("-mmacosx-version-min=10.12"),
-            "darwin rustflags missing SDK/link args: {body}"
+            "x86_64 darwin rustflags: SDK/link args at the 10.12 floor: {body}"
         );
         assert!(
             body.contains("PATH=") && body.contains(&llvm_bin.to_string_lossy().to_string()),

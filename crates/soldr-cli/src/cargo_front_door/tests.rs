@@ -1792,11 +1792,9 @@ crate::timed_test!(nextest_archive_darwin_bootstrap_reuses_blessed_env, {
     );
     assert!(
         map.get("CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS")
-            // x86_64 is 10.12, not 11.0: the deployment target is per-arch
-            // as of soldr#2146 (X86_64_MIN_OS in blessed_build/darwin_arch.rs).
             .is_some_and(|value| value.contains("-fuse-ld=lld")
                 && value.contains("-mmacosx-version-min=10.12")),
-        "darwin rustflags must route through clang/lld with the SDK: {map:?}"
+        "x86_64 darwin rustflags: clang/lld + SDK at the 10.12 floor: {map:?}"
     );
 });
 
