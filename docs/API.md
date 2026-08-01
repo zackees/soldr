@@ -2136,20 +2136,47 @@ does not fully run on RHEL 8 (2.28) or Debian 10 (2.28). Measure the archive,
 not just `soldr`, when answering "does the release run here".
 
 **soldr's own binaries improve after v0.8.30.** That release was tagged
-before soldr#2157, which routes host-native `-gnu` builds through managed zig
-(see `SOLDR_NATIVE_GNU_LINK` above) — so its 2.39 reflects the old host-glibc
-link, not current behaviour. The per-PR `native-build x86_64-unknown-linux-gnu
-(glibc floor)` lane enforces **2.28** on that same runner image. The release
-ratchet at `release-auto.yml` still reads 2.39 pending confirmation from a
-real release run; `check_glibc_ceilings.py` pins that divergence so it cannot
-drift unnoticed.
+before soldr#2157, which changed how host-native `-gnu` builds are linked (see
+`SOLDR_NATIVE_GNU_LINK` above) — so its 2.39 reflects the old host-glibc link,
+not current behaviour. The per-PR `native-build x86_64-unknown-linux-gnu
+(glibc floor)` lane currently enforces **2.28** on that same runner image. The
+release ratchet at `release-auto.yml` still reads 2.39 pending confirmation
+from a real release run; `check_glibc_ceilings.py` pins that divergence so it
+cannot drift unnoticed.
 
-Note that a bare `zig cc -target <triple>.2.17` does **not** reach 2.17 for a
-Rust binary: `__cxa_thread_atexit_impl@2.18`, `getrandom@2.25` and
-`statx@2.28` arrive already versioned inside Rust's precompiled `std`, and a
-target suffix cannot rewrite them. That is why the wheel lane uses
-cargo-zigbuild rather than soldr's own zig wrappers. Background in soldr#2145
-and soldr#1060.
+### The directive: glibc 2.17, everywhere
+
+**The target floor for every Linux `-gnu` artifact is glibc 2.17.** The 2.28
+and 2.39 numbers above are the *current measured state*, not the goal, and the
+ratchets that encode them are waypoints to be lowered — not a settled policy.
+
+This is one requirement spanning three repos, because the archive's floor is
+the **highest** floor of any binary inside it:
+
+| repo | obligation |
+|---|---|
+| `zackees/forge` | recipes build against glibc 2.17 — this is where the tools are compiled |
+| `zackees/soldr-toolchain` | catalogued `-gnu` assets measure 2.17 or lower; deps above it get recompiled |
+| `zackees/soldr` (here) | own binaries reach 2.17; ratchets lowered once measured |
+
+Fixing only soldr's own binaries does **not** deliver a 2.17 archive:
+`crgx` and `cargo-chef` are fetched prebuilt at 2.39 and cap the result on
+their own. Those need an upstream rebuild.
+
+**Do not reach for zig or `cargo-zigbuild` to get there.** Both are being
+purged in favour of the blessed toolchain, so any 2.17 route built on them is
+a dead end. Reaching 2.17 is a matter of *building against an old sysroot*,
+which is toolchain-agnostic.
+
+One open question worth settling before designing around either answer:
+whether Rust's precompiled `std` blocks 2.17 for a stock build. The evidence
+cuts both ways — the wheel lane reaches 2.17 with the same `std`, while
+`__cxa_thread_atexit_impl@2.18`, `getrandom@2.25` and `statx@2.28` have been
+observed as already-versioned references. Resolve it by building in a
+glibc-2.17 container with the pinned rustc and reading `readelf -V`: a 2.17
+result means the blessed toolchain needs only an old sysroot, while a 2.28
+result means 2.17 requires `-Z build-std` and is a materially larger decision.
+Background in soldr#2145 and soldr#1060.
 
 ---
 
