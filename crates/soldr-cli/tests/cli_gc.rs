@@ -14,6 +14,44 @@ use std::{
 };
 
 #[test]
+fn gc_summary_surfaces_the_linked_worktree_total() {
+    // soldr#2134 wants merged-worktree targets reclaimed eagerly. Deleting
+    // outside disk pressure is a wider change; surfacing the total is what
+    // lets someone act before a build blocks, which is the same benefit
+    // without widening what gets deleted.
+    let cache_root = unique_temp_dir("gc-worktree-total");
+    let plain = seed_gc_candidate(&cache_root, "primary-checkout");
+    let worktree = seed_gc_worktree_candidate(&cache_root, "linked-worktree");
+
+    let output = Command::new(common::soldr_bin())
+        .args(["gc", "--older-than", "1s", "--larger-than", "1B"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .output()
+        .expect("failed to run soldr gc");
+    assert!(output.status.success());
+    assert!(
+        plain.exists() && worktree.exists(),
+        "gc summary must not delete"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("in linked worktree"),
+        "summary must surface the worktree total: {stdout}"
+    );
+    // Exactly one of the two seeded targets is a linked worktree; the plain
+    // one holds no `.git` at all, so it must not be counted.
+    assert!(
+        stdout.contains("1 in linked worktree"),
+        "only the worktree-backed target counts: {stdout}"
+    );
+    assert!(
+        stdout.contains("[linked worktree]"),
+        "and it is marked in the eviction-order list: {stdout}"
+    );
+}
+
+#[test]
 fn gc_summary_is_non_destructive_and_lists_largest_candidates() {
     let cache_root = unique_temp_dir("gc-summary");
     let target = seed_gc_candidate(&cache_root, "summary-project");

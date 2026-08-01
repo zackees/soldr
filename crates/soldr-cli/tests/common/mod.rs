@@ -277,7 +277,9 @@ pub(crate) fn unique_temp_dir(label: &str) -> PathBuf {
 }
 
 mod gc_fixtures;
-pub(crate) use gc_fixtures::{seed_gc_candidate, seed_gc_file_candidate};
+pub(crate) use gc_fixtures::{
+    seed_gc_candidate, seed_gc_file_candidate, seed_gc_worktree_candidate,
+};
 
 pub(crate) fn toml_string(path: &Path) -> String {
     path.display()

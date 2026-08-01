@@ -539,6 +539,30 @@ pub(super) fn print_gc_summary(
         report.dropped_missing
     );
 
+    // soldr#2134 asks for merged-worktree targets to be reclaimed
+    // *eagerly*, on the grounds that their build output has no future
+    // value at any level of disk pressure. Deleting outside pressure is
+    // a wider change than the ordering work in #2156/#2166 and wants its
+    // own argument, but the opportunity is worth surfacing: a worktree
+    // total sitting in the report is what lets someone decide to run
+    // `gc purge` before the volume gets tight, rather than finding out
+    // when a build blocks.
+    let (worktree_count, worktree_bytes) = report
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.in_worktree)
+        .fold((0usize, 0u64), |(count, bytes), candidate| {
+            (count + 1, bytes.saturating_add(candidate.size_bytes))
+        });
+    if worktree_count > 0 {
+        println!(
+            "soldr gc: of those, {worktree_count} in linked worktree{} ({}) — \
+             cheapest to reclaim, and taken first",
+            if worktree_count == 1 { "" } else { "s" },
+            crate::cache_lib::target_registry::human_size(worktree_bytes)
+        );
+    }
+
     if report.candidates.is_empty() {
         println!("soldr gc: nothing to reclaim.");
     } else {

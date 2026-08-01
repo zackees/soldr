@@ -48,6 +48,26 @@ pub(crate) fn seed_gc_candidate(cache_root: &Path, label: &str) -> PathBuf {
     target
 }
 
+/// [`seed_gc_candidate`] whose workspace root looks like a **linked git
+/// worktree**: `.git` as a file containing a `gitdir:` pointer, which is
+/// the signal `cache_lib::gc::in_linked_git_worktree` reads (soldr#2134).
+///
+/// A primary checkout holds `.git` as a *directory*, so the plain fixture
+/// above is correctly not a worktree and the two can be told apart.
+pub(crate) fn seed_gc_worktree_candidate(cache_root: &Path, label: &str) -> PathBuf {
+    let target = seed_gc_candidate(cache_root, label);
+    let workspace = target.parent().expect("target has a workspace parent");
+    fs::write(
+        workspace.join(".git"),
+        format!(
+            "gitdir: /somewhere/.git/worktrees/{label}
+"
+        ),
+    )
+    .expect("failed to seed linked-worktree marker");
+    target
+}
+
 pub(crate) fn seed_gc_file_candidate(cache_root: &Path, label: &str) -> PathBuf {
     let dev_root = cache_root.join("dev-root");
     let workspace = dev_root.join(label);
