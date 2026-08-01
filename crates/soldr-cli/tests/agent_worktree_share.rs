@@ -188,8 +188,9 @@ soldr_cli::timed_test!(
             &crate_dir,
         );
 
-        soldr_cargo_check(&first_worktree, &cache_dir, &workdir.join("cold-target"));
-        let cold = read_json(&latest_archived_session_stats(&cache_dir));
+        let cold_output =
+            soldr_cargo_check(&first_worktree, &cache_dir, &workdir.join("cold-target"));
+        let cold = read_json(&latest_archived_session_stats(&cache_dir, &cold_output));
         let first_session_stats = archived_session_stats(&cache_dir);
 
         let cold_hits = u64_field(&cold, "hits");
@@ -210,10 +211,12 @@ soldr_cli::timed_test!(
             "long-path durable digest publication must not fail: {cold:#?}",
         );
 
-        soldr_cargo_check(&second_worktree, &cache_dir, &workdir.join("warm-target"));
+        let warm_output =
+            soldr_cargo_check(&second_worktree, &cache_dir, &workdir.join("warm-target"));
         let warm = read_json(&new_archived_session_stats(
             &cache_dir,
             &first_session_stats,
+            &warm_output,
         ));
         let warm_hits = u64_field(&warm, "hits");
         let warm_misses = u64_field(&warm, "misses");
@@ -313,44 +316,114 @@ fn git(args: &[&str], cwd: &Path) {
     );
 }
 
-fn soldr_cargo_check(worktree: &Path, cache_dir: &Path, target_dir: &Path) {
+/// Runs the fixture build and returns soldr's combined output.
+///
+/// The output is returned rather than dropped because it names the paths
+/// soldr actually used ("archived session stats <path>"). When a later
+/// assertion finds no archived stats, that line is what distinguishes "the
+/// build archived nothing" from "the build archived somewhere else" — see
+/// `describe_missing_session_stats`.
+///
+/// `RUSTC_WRAPPER` is cleared for the same reason `stop_daemon` clears it:
+/// this repo dogfoods, so `soldr cargo test` runs with a wrapper pointing at
+/// the *outer* soldr. Inheriting it into a fixture build mixes two soldr
+/// installations in one compile.
+fn soldr_cargo_check(worktree: &Path, cache_dir: &Path, target_dir: &Path) -> String {
     let output = Command::new(common::soldr_bin())
         .args(["cargo", "check"])
         .current_dir(worktree)
         .env("SOLDR_CACHE_DIR", cache_dir)
         .env("CARGO_TARGET_DIR", target_dir)
+        .env_remove("RUSTC_WRAPPER")
         .output()
         .expect("spawn soldr cargo check");
-    assert!(
-        output.status.success(),
-        "soldr cargo check failed in {}: stdout={}; stderr={}",
-        worktree.display(),
+    let rendered = format!(
+        "stdout={}; stderr={}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
+    assert!(
+        output.status.success(),
+        "soldr cargo check failed in {}: {rendered}",
+        worktree.display(),
+    );
+    rendered
 }
 
-fn latest_archived_session_stats(cache_dir: &Path) -> PathBuf {
+/// Explains an empty history directory instead of just naming it.
+///
+/// A build that succeeds but archives nothing looks identical, from the
+/// assertion site, to one that archived under a different cache root. Report
+/// what actually exists under the redirected root, plus soldr's own account
+/// of where it wrote, so the next reader does not have to guess.
+fn describe_missing_session_stats(cache_dir: &Path, check_output: &str) -> String {
+    let history = cache_dir.join("cache").join("zccache").join("history");
+    let mut report = format!("no archived session stats under {}", history.display());
+
+    let mut probes = vec![
+        cache_dir.join("cache").join("zccache"),
+        // The archive's source file lives here; if it is missing, the archive
+        // had nothing to copy.
+        cache_dir.join("cache").join("zccache").join("logs"),
+        history.clone(),
+    ];
+    // A session directory that exists but holds no `last-session-stats.json`
+    // means the archive was started and never finished — a different bug from
+    // "nothing was archived at all", so list each session's contents too.
+    if let Ok(entries) = fs::read_dir(&history) {
+        probes.extend(entries.filter_map(|e| Some(e.ok()?.path())));
+    }
+
+    for probe in probes {
+        let listing = match fs::read_dir(&probe) {
+            Ok(entries) => {
+                let mut names: Vec<String> = entries
+                    .filter_map(|e| Some(e.ok()?.file_name().to_string_lossy().into_owned()))
+                    .collect();
+                names.sort();
+                if names.is_empty() {
+                    "<empty>".to_string()
+                } else {
+                    names.join(", ")
+                }
+            }
+            Err(err) => format!("<unreadable: {err}>"),
+        };
+        report.push_str(&format!("\n  {} -> {listing}", probe.display()));
+    }
+
+    // soldr prints the paths it used; if it archived elsewhere, this says so.
+    report.push_str(&format!("\n  soldr cargo check output: {check_output}"));
+    report
+}
+
+fn latest_archived_session_stats(cache_dir: &Path, check_output: &str) -> PathBuf {
     archived_session_stats(cache_dir)
         .into_iter()
         .next()
         .unwrap_or_else(|| {
             panic!(
-                "no archived session stats under {}",
-                cache_dir
-                    .join("cache")
-                    .join("zccache")
-                    .join("history")
-                    .display()
+                "{}",
+                describe_missing_session_stats(cache_dir, check_output)
             )
         })
 }
 
-fn new_archived_session_stats(cache_dir: &Path, previous: &[PathBuf]) -> PathBuf {
+fn new_archived_session_stats(
+    cache_dir: &Path,
+    previous: &[PathBuf],
+    check_output: &str,
+) -> PathBuf {
     archived_session_stats(cache_dir)
         .into_iter()
         .find(|path| !previous.contains(path))
-        .unwrap_or_else(|| panic!("no newly archived session stats after warm build"))
+        .unwrap_or_else(|| {
+            panic!(
+                "no newly archived session stats after warm build (cold build left {} session(s))\n{}",
+                previous.len(),
+                describe_missing_session_stats(cache_dir, check_output),
+            )
+        })
 }
 
 fn archived_session_stats(cache_dir: &Path) -> Vec<PathBuf> {
