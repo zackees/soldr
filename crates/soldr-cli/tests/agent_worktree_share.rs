@@ -373,6 +373,21 @@ fn describe_missing_session_stats(cache_dir: &Path, check_output: &str) -> Strin
     if let Ok(entries) = fs::read_dir(&history) {
         probes.extend(entries.filter_map(|e| Some(e.ok()?.path())));
     }
+    // soldr#2186: the compile journal is written under
+    // `daemon-state/embedded-v1/v<store-version>/logs/`, while the session
+    // stats it archives from are read out of the unversioned
+    // `cache/zccache/logs/`. When the latter is empty, the question is whether
+    // the stats file was never produced or produced somewhere else — and the
+    // two have different fixes, one in publication and one in the path.
+    // Listing the versioned logs dirs answers it without another round trip.
+    let daemon_state = cache_dir.join("cache").join("zccache").join("daemon-state");
+    if let Ok(stores) = fs::read_dir(&daemon_state) {
+        for store in stores.filter_map(|e| Some(e.ok()?.path())) {
+            if let Ok(versions) = fs::read_dir(&store) {
+                probes.extend(versions.filter_map(|e| Some(e.ok()?.path().join("logs"))));
+            }
+        }
+    }
 
     for probe in probes {
         let listing = match fs::read_dir(&probe) {
