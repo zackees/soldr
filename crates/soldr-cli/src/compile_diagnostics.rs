@@ -28,6 +28,9 @@ pub(crate) struct SilenceDetectingWriter<W> {
     /// soldr#1969: did the failure output name a path inside soldr's own
     /// cache?
     saw_cache_path: bool,
+    /// soldr#2188: longest cache-owned path seen in the failure output. A
+    /// path over `MAX_PATH` is a different fault with a different remedy.
+    longest_cache_path: usize,
     /// Trailing bytes of the previous chunk, so a marker split across a
     /// stream boundary is still found. Streamed stderr arrives in arbitrary
     /// slices, so scanning each chunk in isolation would miss the exact case
@@ -42,29 +45,67 @@ pub(crate) struct SilenceDetectingWriter<W> {
 /// the code being compiled.
 const CACHE_OWNED_PATH_MARKER: &[u8] = b"daemon-state";
 
+/// Windows' legacy `MAX_PATH`. A cache-owned path at least this long in a
+/// *failure* message is the soldr#2188 shape rather than the soldr#1969 one.
+const LEGACY_MAX_PATH: usize = 260;
+
+/// How much trailing output to carry between chunks. Large enough that a
+/// path around [`LEGACY_MAX_PATH`] can still be measured when the stream
+/// splits it, with room for the surrounding quotes and prefix.
+const MAX_MEASURED_PATH: usize = 1024;
+
+/// Length of the whitespace-delimited token containing the marker at
+/// `offset`.
+///
+/// Linkers quote paths inconsistently, so the token is bounded by whitespace
+/// and by the quote characters that show up around `LNK1104` operands, and
+/// the surrounding message text is not counted.
+fn cache_path_token_len(window: &[u8], offset: usize) -> usize {
+    let is_boundary = |b: u8| b.is_ascii_whitespace() || b == b'\'' || b == b'"';
+    let start = window[..offset]
+        .iter()
+        .rposition(|&b| is_boundary(b))
+        .map_or(0, |i| i + 1);
+    let end = window[offset..]
+        .iter()
+        .position(|&b| is_boundary(b))
+        .map_or(window.len(), |i| offset + i);
+    end.saturating_sub(start)
+}
+
 impl<W: Write> SilenceDetectingWriter<W> {
     pub(crate) fn new(inner: W) -> Self {
         Self {
             inner,
             bytes_written: 0,
             saw_cache_path: false,
+            longest_cache_path: 0,
             tail: Vec::new(),
         }
     }
 
     /// Record whether `chunk` (joined to the previous chunk's tail) names a
-    /// cache-owned path.
+    /// cache-owned path, and how long the longest such path is.
+    ///
+    /// The length matters because it selects the remedy: see
+    /// [`Self::longest_cache_path`].
     fn scan_for_cache_path(&mut self, chunk: &[u8]) {
-        if self.saw_cache_path {
-            return;
-        }
         let mut window = std::mem::take(&mut self.tail);
         window.extend_from_slice(chunk);
-        self.saw_cache_path = window
+        for (offset, _) in window
             .windows(CACHE_OWNED_PATH_MARKER.len())
-            .any(|w| w == CACHE_OWNED_PATH_MARKER);
-        // Keep just enough to bridge the next boundary.
-        let keep = CACHE_OWNED_PATH_MARKER.len().saturating_sub(1);
+            .enumerate()
+            .filter(|(_, w)| *w == CACHE_OWNED_PATH_MARKER)
+        {
+            self.saw_cache_path = true;
+            self.longest_cache_path = self
+                .longest_cache_path
+                .max(cache_path_token_len(&window, offset));
+        }
+        // Keep enough to bridge the next boundary *and* to measure a path
+        // that straddles it. A MAX_PATH-length token is the thing being
+        // measured, so the bridge has to be longer than one.
+        let keep = MAX_MEASURED_PATH;
         if window.len() > keep {
             window.drain(..window.len() - keep);
         }
@@ -98,19 +139,41 @@ impl<W: Write> SilenceDetectingWriter<W> {
         }
         if self.bytes_written > 0 {
             if self.saw_cache_path {
-                let _ = writeln!(
-                    self.inner,
-                    concat!(
-                        "soldr: that error names a file inside soldr's own compile cache, ",
-                        "not your project.
+                // soldr#2188: an over-MAX_PATH cache path is a *different*
+                // fault, and the #1969 advice is actively wrong for it --
+                // retrying a path that is too long fails identically every
+                // time. Separate the two so the remedy matches the cause.
+                if self.longest_cache_path >= LEGACY_MAX_PATH {
+                    let _ = writeln!(
+                        self.inner,
+                        concat!(
+                            "soldr: that error names a file inside soldr's own compile cache, ",
+                            "not your project, and the path is over Windows' {limit}-character ",
+                            "MAX_PATH limit ({len} characters).\n",
+                            "soldr: the linker cannot open it at any length of retry -- see ",
+                            "soldr#2188.\n",
+                            "soldr: point SOLDR_CACHE_DIR at a shorter root (the default ",
+                            "~/.soldr works because it is short), or run ",
+                            "`soldr --no-cache cargo ...` to bypass the cache entirely."
+                        ),
+                        limit = LEGACY_MAX_PATH,
+                        len = self.longest_cache_path,
+                    );
+                } else {
+                    let _ = writeln!(
+                        self.inner,
+                        concat!(
+                            "soldr: that error names a file inside soldr's own compile cache, ",
+                            "not your project.
 ",
-                        "soldr: an intermediate can be reclaimed while a slow link is still ",
-                        "reading it -- see soldr#1969.
+                            "soldr: an intermediate can be reclaimed while a slow link is still ",
+                            "reading it -- see soldr#1969.
 ",
-                        "soldr: retrying usually succeeds; `soldr --no-cache cargo ...` ",
-                        "bypasses the cache entirely."
-                    )
-                );
+                            "soldr: retrying usually succeeds; `soldr --no-cache cargo ...` ",
+                            "bypasses the cache entirely."
+                        )
+                    );
+                }
                 let _ = self.inner.flush();
             }
             return;
@@ -145,6 +208,19 @@ mod tests {
     use super::*;
     use crate::timed_test;
 
+    /// Serializes the tests that drive `soldr_core::warning_log`.
+    ///
+    /// That log is process-global, and both tests below `clear()` it, so run
+    /// concurrently one wipes the entry the other just recorded and asserts
+    /// on. The resulting flake predates soldr#2188 but is load-dependent, and
+    /// the tests added there made it fire -- it is a real race in the tests,
+    /// not in the code, so fix it rather than tolerate a rarer version of it.
+    fn warning_log_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        // A panicking test must not wedge every later one.
+        LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     // soldr#1857 — a dispatched compile that fails *and* says nothing is
     // the fault signature worth calling out. These three cases pin the
     // boundary: only failure-with-silence gets the extra diagnostic.
@@ -176,6 +252,7 @@ mod tests {
     // above the error and nobody connects the two -- #1992's rust-lld retry
     // notice is the worked example.
     timed_test!(an_earlier_warning_is_repeated_at_the_failure, {
+        let _guard = warning_log_lock();
         soldr_core::warning_log::clear();
         soldr_core::warning_log::record("soldr warning: fast linker was unavailable");
         let mut sink: Vec<u8> = Vec::new();
@@ -195,6 +272,7 @@ mod tests {
     // A successful build must not be decorated with a warning replay -- the
     // warning was already printed once, when it happened.
     timed_test!(a_successful_build_does_not_replay_warnings, {
+        let _guard = warning_log_lock();
         soldr_core::warning_log::clear();
         soldr_core::warning_log::record("soldr warning: something minor");
         let mut sink: Vec<u8> = Vec::new();
@@ -244,6 +322,94 @@ mod tests {
         assert!(
             text.contains("soldr's own compile cache"),
             "a marker split across writes must still be detected, got: {text}"
+        );
+    });
+
+    /// A realistic soldr#2188 line: the real failure quotes a staging path
+    /// built from a deep `SOLDR_CACHE_DIR`.
+    fn lnk1104_over_max_path() -> Vec<u8> {
+        let deep_root = format!(r"C:\{}", vec!["nested"; 24].join(r"\"));
+        format!(
+            concat!(
+                r"LINK : fatal error LNK1104: cannot open file ",
+                r"'{root}\cache\zccache\daemon-state\embedded-v1\v1.13.0\staging",
+                r"\13352-0-1785588800636122100\.compile-13352-1",
+                r"\build_script_build-52378a44826b4cb2.exe'"
+            ),
+            root = deep_root,
+        )
+        .into_bytes()
+    }
+
+    // soldr#2188: an over-MAX_PATH cache path is a different fault from the
+    // soldr#1969 reclaim race, and "retrying usually succeeds" is wrong for
+    // it -- the linker fails identically every time. These two pin that the
+    // remedy follows the cause rather than the marker alone.
+    timed_test!(
+        an_over_max_path_cache_failure_names_the_length_not_a_retry,
+        {
+            let mut sink: Vec<u8> = Vec::new();
+            {
+                let mut writer = SilenceDetectingWriter::new(&mut sink);
+                let payload = lnk1104_over_max_path();
+                let _ = writer.write_all(&payload);
+                writer.report_if_silently_failed(1);
+            }
+            let text = String::from_utf8(sink).expect("utf8");
+            assert!(
+                text.contains("MAX_PATH"),
+                "must name the length limit, got: {text}"
+            );
+            assert!(text.contains("2188"), "must cite the issue, got: {text}");
+            assert!(
+                text.contains("SOLDR_CACHE_DIR"),
+                "must name the knob that fixes it, got: {text}"
+            );
+            assert!(
+                !text.contains("retrying usually succeeds"),
+                "must not advise a retry that cannot work, got: {text}"
+            );
+        }
+    );
+
+    // The other side of the boundary: a short cache path keeps the #1969
+    // reclaim-race advice, which is correct there.
+    timed_test!(a_short_cache_path_failure_keeps_the_retry_advice, {
+        let mut sink: Vec<u8> = Vec::new();
+        {
+            let mut writer = SilenceDetectingWriter::new(&mut sink);
+            let _ = writer.write_all(
+                br"LNK1181: cannot open input file 'C:\c\zccache\daemon-state1\staging.natvis'",
+            );
+            writer.report_if_silently_failed(1);
+        }
+        let text = String::from_utf8(sink).expect("utf8");
+        assert!(
+            text.contains("retrying usually succeeds"),
+            "a short cache path is the reclaim race, got: {text}"
+        );
+        assert!(
+            !text.contains("MAX_PATH"),
+            "must not blame path length for a short path, got: {text}"
+        );
+    });
+
+    // The long path arrives split across writes, as streamed stderr does.
+    // Measuring it requires bridging more than the marker itself.
+    timed_test!(an_over_max_path_split_across_chunks_is_still_measured, {
+        let mut sink: Vec<u8> = Vec::new();
+        {
+            let mut writer = SilenceDetectingWriter::new(&mut sink);
+            let payload = lnk1104_over_max_path();
+            let split = payload.len() / 2;
+            let _ = writer.write_all(&payload[..split]);
+            let _ = writer.write_all(&payload[split..]);
+            writer.report_if_silently_failed(1);
+        }
+        let text = String::from_utf8(sink).expect("utf8");
+        assert!(
+            text.contains("MAX_PATH"),
+            "a long path split across writes must still be measured, got: {text}"
         );
     });
 
