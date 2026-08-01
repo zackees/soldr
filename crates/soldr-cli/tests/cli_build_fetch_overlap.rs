@@ -171,6 +171,14 @@ impl Harness {
             // opt-outs above do not cover it: they gate `blessed_build`,
             // and this is `linux_cross`.
             .env("SOLDR_NATIVE_GNU_LINK", "0")
+            // soldr#2159: these tests abort at the 120s `timed_test!` watchdog
+            // on CI while finishing in ~1.4s locally, and the child produces no
+            // output at all, so three rounds of hypotheses have been guesswork.
+            // Every `command_output_with_timeout` call defaults to 60s, so two
+            // of them exhaust the budget in silence. Capping it here converts
+            // any such stall into `<context> timed out after 20 seconds`, which
+            // names the caller instead of hanging.
+            .env("SOLDR_COMMAND_OUTPUT_TIMEOUT_SECS", "20")
             // Isolate from any outer environment that would change the
             // overlap decision.
             .env_remove("CARGO_NET_OFFLINE")
@@ -180,7 +188,20 @@ impl Harness {
         for (name, value) in extra_env {
             cmd.env(name, value);
         }
-        cmd.output().expect("failed to run soldr")
+        // soldr#2159: mark each invocation as it starts and finishes, flushed
+        // immediately. A watchdog abort kills the process, so anything printed
+        // only at the end of the test is lost -- these markers are what tells
+        // the next CI failure *which* of the two runs stalled, and for how
+        // long, rather than leaving a 120s silence.
+        eprintln!("[fetch-overlap] -> soldr {args:?}");
+        let started = std::time::Instant::now();
+        let output = cmd.output().expect("failed to run soldr");
+        eprintln!(
+            "[fetch-overlap] <- soldr {args:?} in {:?} (status {:?})",
+            started.elapsed(),
+            output.status.code()
+        );
+        output
     }
 
     /// Recorded cargo invocations (metadata calls are not logged),
