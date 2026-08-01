@@ -51,10 +51,27 @@ pub(crate) async fn prepare(
     })
 }
 
+/// The glibc version the `-gnu` targets are pinned to.
+///
+/// Without a suffix, `zig cc -target <arch>-linux-gnu` picks zig's own
+/// default — 2.28 as measured on the cross lane — which is not a floor
+/// anyone chose. Naming it explicitly is the whole mechanism behind
+/// soldr#1060 item 3; `cargo zigbuild --target <triple>.2.17` is sugar
+/// that lowers to exactly this spelling.
+///
+/// 2.17 is the floor rather than something lower because that is the
+/// release that introduced aarch64 support — there is no older glibc to
+/// target on one of the two architectures, so it is the lowest value
+/// that can be shared.
+const GNU_GLIBC_FLOOR: &str = "2.17";
+
 fn rust_target_to_zig_target(triple: &str) -> Result<&'static str, SoldrError> {
     match triple {
-        "x86_64-unknown-linux-gnu" => Ok("x86_64-linux-gnu"),
-        "aarch64-unknown-linux-gnu" => Ok("aarch64-linux-gnu"),
+        // The suffix stays inside this mapping and never appears in a
+        // user-facing `--target`, so it does not require soldr to accept
+        // glibc-suffixed triples (soldr#2139).
+        "x86_64-unknown-linux-gnu" => Ok("x86_64-linux-gnu.2.17"),
+        "aarch64-unknown-linux-gnu" => Ok("aarch64-linux-gnu.2.17"),
         "x86_64-unknown-linux-musl" => Ok("x86_64-linux-musl"),
         "aarch64-unknown-linux-musl" => Ok("aarch64-linux-musl"),
         _ => Err(SoldrError::UnsupportedPlatform(format!(
@@ -136,11 +153,11 @@ mod tests {
     crate::timed_test!(maps_every_managed_linux_cross_target, {
         assert_eq!(
             rust_target_to_zig_target("x86_64-unknown-linux-gnu").unwrap(),
-            "x86_64-linux-gnu"
+            "x86_64-linux-gnu.2.17"
         );
         assert_eq!(
             rust_target_to_zig_target("aarch64-unknown-linux-gnu").unwrap(),
-            "aarch64-linux-gnu"
+            "aarch64-linux-gnu.2.17"
         );
         assert_eq!(
             rust_target_to_zig_target("x86_64-unknown-linux-musl").unwrap(),
@@ -151,6 +168,39 @@ mod tests {
             "aarch64-linux-musl"
         );
         assert!(rust_target_to_zig_target("i686-unknown-linux-gnu").is_err());
+    });
+
+    crate::timed_test!(only_the_gnu_targets_carry_a_glibc_floor, {
+        // musl is statically linked, so a glibc suffix there is not
+        // merely redundant — zig rejects the spelling outright.
+        for triple in ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"] {
+            let zig_target = rust_target_to_zig_target(triple).unwrap();
+            assert!(
+                zig_target.ends_with(GNU_GLIBC_FLOOR),
+                "{triple} must pin the floor, got {zig_target}"
+            );
+        }
+        for triple in ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"] {
+            let zig_target = rust_target_to_zig_target(triple).unwrap();
+            assert!(
+                !zig_target.contains(GNU_GLIBC_FLOOR),
+                "{triple} must not carry a glibc floor, got {zig_target}"
+            );
+        }
+    });
+
+    crate::timed_test!(the_floor_reaches_the_compiler_wrapper, {
+        // The mapping is only useful if the suffix survives into the
+        // `-target` the wrapper actually passes to zig.
+        let temp = tempfile::tempdir().unwrap();
+        let wrapper = temp.path().join("cc");
+        let zig_target = rust_target_to_zig_target("aarch64-unknown-linux-gnu").unwrap();
+        write_compiler_wrapper(&wrapper, Path::new("/managed/zig"), "cc", zig_target).unwrap();
+        let body = std::fs::read_to_string(wrapper).unwrap();
+        assert!(
+            body.contains("-target aarch64-linux-gnu.2.17"),
+            "wrapper body lost the glibc floor: {body}"
+        );
     });
 
     crate::timed_test!(unix_wrapper_uses_managed_zig_directly, {
