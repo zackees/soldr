@@ -16,16 +16,8 @@
 //! version appears; this is the same idea for the compiler floor.
 
 use soldr_cli::timed_test;
-use std::path::{Path, PathBuf};
 
-fn repo_root() -> PathBuf {
-    // tests/ -> soldr-cli/ -> crates/ -> repo root
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("repo root")
-        .to_path_buf()
-}
+mod common;
 
 /// `rust-version = "X"` from `[workspace.package]`.
 fn manifest_rust_version(manifest: &str) -> String {
@@ -55,7 +47,7 @@ fn documented_msrvs(doc: &str) -> Vec<String> {
 }
 
 timed_test!(claude_md_msrv_matches_the_workspace_manifest, {
-    let root = repo_root();
+    let root = common::workspace_root();
     let manifest =
         std::fs::read_to_string(root.join("Cargo.toml")).expect("read workspace Cargo.toml");
     let doc = std::fs::read_to_string(root.join("CLAUDE.md")).expect("read CLAUDE.md");
