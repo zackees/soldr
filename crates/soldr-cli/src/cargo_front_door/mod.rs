@@ -476,12 +476,12 @@ fn persist_build_log_history_inner(
         crate::daemon::db::upsert_build(&db_path, &record)
             .map_err(|e| SoldrError::Other(format!("write build history: {e}")))?;
     }
-    // Publish completion only after the database row points at every copied
-    // payload.  The daemon retention pass treats marker-less unknown sessions
-    // as active, so a concurrent pass can never remove a half-published
-    // archive.  New compile journals are sanitized by zccache#1149.
-    crate::daemon::history_gc::mark_history_complete(&archive_dir)
-        .map_err(|e| SoldrError::Other(format!("mark build history complete: {e}")))?;
+    // Publish only after the DB row points at every copied payload: a
+    // marker-less session reads as active, so a retention pass cannot remove a
+    // half-published archive.  Journals are sanitized by zccache#1149.  Copies
+    // no-op on a missing source, so an empty archive is discarded (soldr#2186).
+    crate::daemon::history_gc::publish_or_discard(&archive_dir)
+        .map_err(|e| SoldrError::Other(format!("publish build history: {e}")))?;
     // Enforce the hard 1 GiB cap immediately after publication.  The daemon's
     // daily pass remains the owner of age retention and the one-time removal
     // of pre-redaction archives.
