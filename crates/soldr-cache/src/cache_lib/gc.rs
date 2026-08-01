@@ -701,6 +701,62 @@ mod tests {
         assert!(!in_linked_git_worktree(&target));
     }
 
+    /// soldr#2134 clause 3: "ideally never the repo the current build
+    /// belongs to."
+    ///
+    /// Nothing names the current build explicitly. What protects it is that
+    /// `effective_age_seconds` takes `registry_age.min(fs_age)`, so a target
+    /// written moments ago reads as age ~0 and is dropped by the
+    /// `older_than_seconds` gate *before* ordering ever runs.
+    ///
+    /// That gate is load-bearing and easy to break by accident, because the
+    /// worktree-first rule added for this same issue would otherwise put a
+    /// just-built worktree target at the **front** of the eviction list --
+    /// and soldr's own workflow builds in `.claude/worktrees/`. Reordering
+    /// the tier ahead of the age skip would therefore reintroduce exactly
+    /// the "most expensive possible choice" this issue was filed about, on
+    /// the hottest cache on the volume. Pin the interaction.
+    #[test]
+    fn a_freshly_built_worktree_target_is_never_a_candidate() {
+        let dir = tempdir().unwrap();
+        let registry = TargetRegistry::open_in_memory().unwrap();
+        let (worktree_root, fresh_target) = make_workspace(dir.path(), "hot-worktree", 4096);
+        std::fs::write(
+            worktree_root.join(".git"),
+            b"gitdir: /repo/.git/worktrees/hot-worktree",
+        )
+        .unwrap();
+        // It really is the tier the ordering prefers -- otherwise this test
+        // would pass for the wrong reason.
+        assert!(in_linked_git_worktree(&fresh_target));
+
+        let now = current_unix_seconds().unwrap();
+        // The registry row is ancient; only the on-disk mtime says the build
+        // just touched it. That is the reported shape: `Cargo.lock` and the
+        // registry can both be stale while the cache is the hottest around.
+        registry
+            .upsert_with_time(&fresh_target, now - 30 * 86_400)
+            .unwrap();
+        // Deliberately no `backdate` here: the directory keeps the mtime it
+        // was just created with, which is the whole point.
+
+        let opts = GcOptions {
+            older_than_seconds: 7 * 86_400,
+            larger_than_bytes: 0,
+            dev_roots: vec![dir.path().to_path_buf()],
+            dry_run: true,
+        };
+        let report = scan(&registry, &opts).unwrap();
+
+        assert!(
+            report.candidates.is_empty(),
+            "a target written moments ago must not be evictable, however cold \
+             its registry row and however evictable its tier: {:?}",
+            report.candidates,
+        );
+        assert_eq!(report.skipped.len(), 1, "{report:?}");
+    }
+
     #[test]
     fn worktree_targets_are_evicted_before_a_colder_primary_checkout() {
         // The reported failure: a 57.7 GB actively-built cache was purged
