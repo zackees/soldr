@@ -103,6 +103,16 @@ fn links_map(workspace_root: &Path, target: &str) -> Result<LinksMap, String> {
 }
 
 fn probe_links_map(workspace_root: &Path, target: &str) -> Result<LinksMap, String> {
+    // Answer without a subprocess when there is plainly nothing to
+    // resolve. `blessed_build::prepare` runs on paths that do not all
+    // start from a workspace, and spawning cargo only to have it fail
+    // is both slower and a less predictable failure than saying so.
+    if !manifest_exists(workspace_root) {
+        return Err(format!(
+            "no Cargo.toml at {}",
+            workspace_root.to_string_lossy()
+        ));
+    }
     let cargo =
         crate::binaries::resolve_toolchain_binary("cargo").map_err(|error| error.to_string())?;
     let mut command = Command::new(cargo);
@@ -142,6 +152,10 @@ fn probe_links_map(workspace_root: &Path, target: &str) -> Result<LinksMap, Stri
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
     links_map_from_metadata_json(&output.stdout)
+}
+
+fn manifest_exists(workspace_root: &Path) -> bool {
+    workspace_root.join("Cargo.toml").is_file()
 }
 
 #[derive(Deserialize)]
@@ -217,6 +231,24 @@ mod tests {
         assert!(!LinksProvider::Package("mimalloc-pprof".to_string()).is("libmimalloc-sys"));
         assert!(!LinksProvider::Absent.is("libmimalloc-sys"));
         assert!(!LinksProvider::Unknown("probe failed".to_string()).is("libmimalloc-sys"));
+    });
+
+    crate::timed_test!(a_manifestless_dir_resolves_without_spawning_cargo, {
+        // The point is that this returns promptly and does not depend
+        // on a cargo binary being resolvable at all.
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let provider = resolve(tmp.path(), "mimalloc", "x86_64-pc-windows-msvc");
+        match provider {
+            LinksProvider::Unknown(reason) => assert!(
+                reason.contains("no Cargo.toml"),
+                "expected the manifest short-circuit, got: {reason}"
+            ),
+            other => panic!("expected Unknown, got {other:?}"),
+        }
+        assert!(
+            !LinksProvider::Unknown(String::new()).is("libmimalloc-sys"),
+            "and Unknown must never authorize a substitution"
+        );
     });
 
     crate::timed_test!(malformed_metadata_is_an_error_not_a_panic, {
