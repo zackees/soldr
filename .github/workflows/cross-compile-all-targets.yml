@@ -453,6 +453,26 @@ jobs:
           echo "duration_ms=$duration_ms" | tee -a "$log"
           echo "duration_ms=$duration_ms" >> "$GITHUB_OUTPUT"
 
+      # soldr#2145 / soldr#1060 item 3. The aarch64 half of the measurement
+      # #2163 added for x86_64 in the bootstrap job. Only `-unknown-linux-gnu`
+      # has a glibc floor at all: musl is static, and darwin/msvc are a
+      # different question entirely (see the macOS ratchet in release-auto).
+      #
+      # In this matrix that is aarch64-unknown-linux-gnu alone — x86_64-gnu is
+      # built in `bootstrap-and-linux-x86` and ratcheted there.
+      #
+      # 2.28 is zig's default for the target and is what the cross lane in
+      # `_ci-cross-build-linux.yml` already achieves at debug profile; this
+      # asserts the *release-profile* artifact reaches it too, which is the
+      # binary that actually ships.
+      - name: Ratchet the glibc floor of the shipped gnu binary
+        if: contains(matrix.target, 'unknown-linux-gnu')
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/verify_glibc_baseline.py \
+            --max-glibc 2.28 \
+            "target/${{ matrix.target }}/release/soldr"
+
       - name: Capture per-target stats
         run: |
           set -euo pipefail
