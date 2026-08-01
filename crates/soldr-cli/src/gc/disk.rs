@@ -242,6 +242,15 @@ fn reclaim_bytes(volume_path: &Path) -> u64 {
 /// is unchanged, so every staleness threshold and safety guard still
 /// applies. Once the cold targets are gone this returns 0 and the warn line
 /// is all that remains, so it converges rather than deleting on every build.
+/// Emit the warn line and then reclaim. Both halves of the warn outcome in
+/// one call, so the front door does not orchestrate disk policy -- and so
+/// `cargo_front_door/mod.rs`, which is over the per-file line ceiling, swaps
+/// one line for one line rather than growing.
+pub(crate) fn warn_and_reclaim(volume_path: &Path, free_bytes: u64, threshold_gib: u64) {
+    eprintln!("{}", render_warn_line(free_bytes, threshold_gib));
+    reclaim_at_warn(volume_path, free_bytes);
+}
+
 pub(crate) fn reclaim_at_warn(volume_path: &Path, free_bytes: u64) {
     let reclaimed = reclaim_bytes(volume_path);
     if reclaimed == 0 {
