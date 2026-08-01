@@ -380,8 +380,13 @@ fn plan_for_host(target: &str, host: &str) -> Result<TargetPlan, SoldrError> {
                     ],
                 )
             }
+            // Host-native. soldr#2145: `-gnu` no longer stops here — it
+            // falls through to the managed-zig arm below so the reported
+            // plan matches what `prepare_target` actually does. A plan
+            // that says `cc`/`host-sysroot` while the build links through
+            // zig is worse than no plan at all.
             (TargetOs::Linux, Some(abi @ (TargetAbi::Gnu | TargetAbi::Musl)), _)
-                if target == host =>
+                if target == host && (abi == TargetAbi::Musl || !native_gnu_link_enabled()) =>
             {
                 let family = if abi == TargetAbi::Musl {
                     "linux-musl"
@@ -644,6 +649,30 @@ mod tests {
             "x86_64-unknown-linux-gnu",
             false,
         ));
+    });
+
+    crate::timed_test!(the_reported_plan_matches_what_prepare_actually_does, {
+        let _lock = crate::TEST_PROCESS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        std::env::remove_var(NATIVE_GNU_LINK_ENV_VAR);
+        // A plan that claims `cc`/`host-sysroot` while the build links
+        // through zig is worse than no plan at all.
+        let plan = plan_for_host("x86_64-unknown-linux-gnu", "x86_64-unknown-linux-gnu").unwrap();
+        assert_eq!(plan.toolchain.linker, "zig cc");
+        assert_eq!(plan.platform.provider, "soldr-managed-zig");
+
+        // ...and the opt-out has to move the plan back too.
+        std::env::set_var(NATIVE_GNU_LINK_ENV_VAR, "0");
+        let opted_out =
+            plan_for_host("x86_64-unknown-linux-gnu", "x86_64-unknown-linux-gnu").unwrap();
+        assert_eq!(opted_out.toolchain.linker, "cc");
+        assert_eq!(opted_out.platform.provider, "host");
+        std::env::remove_var(NATIVE_GNU_LINK_ENV_VAR);
+
+        // musl is host-native either way.
+        let musl = plan_for_host("x86_64-unknown-linux-musl", "x86_64-unknown-linux-musl").unwrap();
+        assert_eq!(musl.toolchain.linker, "cc");
     });
 
     crate::timed_test!(host_native_musl_is_left_alone, {
