@@ -42,8 +42,8 @@ fn gc_summary_is_non_destructive_and_lists_largest_candidates() {
         "summary should include total reclaimable bytes: {stdout}"
     );
     assert!(
-        stdout.contains("largest eligible target directories"),
-        "summary should list largest target directories: {stdout}"
+        stdout.contains("next to be reclaimed (eviction order)"),
+        "summary should list candidates in the order purge will take them: {stdout}"
     );
     assert!(
         stdout.contains("Run 'soldr gc purge'"),
