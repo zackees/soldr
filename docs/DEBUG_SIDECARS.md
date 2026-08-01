@@ -24,7 +24,7 @@ format in `crates/soldr-cli/src/release_sidecar.rs`.
 
 | Platform | Sidecar | Emitted today? | Why |
 |---|---|---|---|
-| Windows MSVC (x64 + ARM64) | `soldr.pdb` | **Yes — always** | MSVC always produces a PDB next to the binary; the release lane hard-fails if it is missing (`expected a soldr PDB sidecar`). |
+| Windows MSVC (x64 + ARM64) | `soldr.pdb` | **Yes — for soldr's own release** | MSVC always produces a PDB next to the binary; the release lane hard-fails if it is missing (`expected a soldr PDB sidecar`). But see the caveat below — that guarantee does not extend to builds that go through the compile cache. |
 | Linux (gnu + musl, x64 + ARM64) | `soldr.dwp` | No | Split DWARF (`-C split-debuginfo=packed`) is not enabled in the release profile; symbols stay embedded in the binary (then get stripped by size trims). Staging is in place — if the profile ever enables split DWARF, the `.dwp` is packaged and recorded automatically. |
 | macOS (x64 + ARM64) | `soldr.dSYM/` | No | Same as Linux: dSYM bundles are only produced by `dsymutil`/split-debuginfo, which the release profile does not run today. Staging handles the bundle when present. |
 
@@ -34,6 +34,46 @@ MSVC link step and are required for `cdb`/WinDbg crash triage (#780,
 release size for symbol data nobody currently consumes. Revisit by
 flipping `split-debuginfo` in the release profile — no workflow change
 is needed, the staging + manifest recording pick the artifacts up.
+
+## Caveat: the Windows guarantee is about soldr's release, not your build
+
+> [!WARNING]
+> A Windows build that goes **through soldr's compile cache** currently
+> does *not* keep its `.pdb` — the file is produced and then dropped
+> (soldr#2148). Only `--no-cache` / `ZCCACHE_DISABLE=1` builds keep it.
+
+The row above is easy to read as "Windows builds always have symbols".
+It holds for soldr's published archive, and only because that lane opts
+out of the cache for an unrelated reason — `release-auto.yml` passes
+`--no-cache` on `*-pc-windows-msvc`:
+
+```yaml
+# Native MSVC release runners are already CPU-bound and have no warm
+# cache. Keep soldr's toolchain/syslib prep, but avoid routing this one
+# release build through the embedded zccache wrapper path that can hang
+# the hosted Windows jobs.
+*-pc-windows-msvc) soldr_build_args+=(--no-cache) ;;
+```
+
+Two consequences worth knowing:
+
+- **The `expected a soldr PDB sidecar` guard gives no coverage for
+  soldr#2148.** It only ever inspects the one path that does not have
+  the bug, so a regression there would keep it green.
+- **soldr ships a symbolizable `soldr.exe` while its users do not.**
+  Anyone building their own Windows project through the default cached
+  path loses their `.pdb`, which is why this surfaced downstream rather
+  than here.
+
+Reproduce either way on any crate with `debug` enabled in the profile:
+
+```console
+$ soldr build --release --target x86_64-pc-windows-msvc   # no .pdb
+$ soldr --no-cache build --release --target x86_64-pc-windows-msvc   # .pdb
+```
+
+Remove this section when soldr#2148 is fixed and the cached path keeps
+the sidecar.
 
 ## Verifying an archive
 
