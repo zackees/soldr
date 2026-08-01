@@ -375,18 +375,19 @@ jobs:
       - name: Run clippy
         run: soldr cargo clippy --workspace --all-targets --locked -- -D warnings
 
-      # soldr#1978. `cargo install cargo-dylint` compiles from source, and it
-      # was the single most expensive step in this job: 168s of a 10m51s run,
-      # 26% of the total, repeated on every PR to rebuild two binaries that
-      # only change when DYLINT_VERSION does.
+      # soldr#1978. `cargo install cargo-dylint` compiles from source, and on a
+      # run where the Rust cache misses it is the most expensive step in this
+      # job: 168s of a 10m51s run.
       #
-      # `Swatinem/rust-cache` above does not cover this -- it caches the
-      # registry, git checkouts and target/, deliberately not `~/.cargo/bin`.
-      # So the binaries get rebuilt even on a warm cache.
+      # `Swatinem/rust-cache` above does restore `~/.cargo/bin` when it hits --
+      # measured: the same install takes 1s on a warm run. The gap this closes
+      # is that its key is invalidated by lockfile and toolchain changes, which
+      # happen constantly, while these two binaries only change when
+      # DYLINT_VERSION does. Keying them separately means the 168s rebuild is
+      # paid once per version bump instead of once per dependency change.
       #
       # Same shape as `Cache rustup ... / Install ... (if not cached)` earlier
-      # in this job. The key carries DYLINT_VERSION, so a version bump misses
-      # the cache and rebuilds exactly once -- the one time it should.
+      # in this job.
       - name: Cache Dylint binaries
         id: dylint_bins
         uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
