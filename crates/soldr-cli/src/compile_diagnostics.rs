@@ -537,8 +537,7 @@ mod tests {
         assert_eq!(writer.bytes_written, 5);
     });
 
-    #[test]
-    fn maxpath_headroom_warns_only_when_the_root_leaves_no_room() {
+    timed_test!(maxpath_headroom_warns_only_when_the_root_leaves_no_room, {
         // soldr#2188 was found at ~160 characters and reproduced cleanly:
         // ~40 and ~99 character roots build fine, ~160 fails at link.
         // Forward slashes deliberately: the check measures length, not shape,
@@ -566,5 +565,5 @@ mod tests {
             // The limit is Windows-only; warning elsewhere would be noise.
             assert!(warning.is_none(), "must not warn off Windows");
         }
-    }
+    });
 }
