@@ -203,17 +203,28 @@ pub(crate) fn root_manifest_path(paths: &SoldrPaths) -> PathBuf {
 /// startup. The claimed `service_version` is this build's version (or the
 /// [`FAKE_PKG_VERSION_ENV`] override in tests).
 pub(crate) fn write_root_version_claim(paths: &SoldrPaths) -> Result<(), BrokerDiscoveryError> {
-    let manifest = cache_manifest_builder(paths).build();
-    write_to_root_v2(&paths.root, &manifest).map_err(BrokerDiscoveryError::manifest)?;
-    // soldr#2186: the manifest cannot carry this, so it rides alongside.
-    // Best-effort — a daemon that cannot write it reads as store-unknown,
-    // i.e. stale, which is the safe direction.
+    // soldr#2186: the claim is two files, so **order is the contract**.
+    //
+    // The sidecar goes first and the manifest last, because the manifest is
+    // what readers gate on: `current_version_claim_matches` requires a
+    // matching manifest *and* a matching store version, so a reader that
+    // observes the manifest must already be able to observe the sidecar.
+    //
+    // Written the other way round there is a window where the manifest says
+    // "this is your version" and the sidecar is not there yet, which reads as
+    // store-unknown — i.e. stale — and displaces a perfectly healthy daemon
+    // that is mid-startup. The window is small and load-dependent, which is
+    // the worst size: it shows up as an unreproducible displacement flake.
     let path = store_version_claim_path(paths);
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
+    // Best-effort — a daemon that cannot write it reads as store-unknown,
+    // i.e. stale, which is the safe direction.
     let _ = std::fs::write(path, current_store_version());
-    Ok(())
+
+    let manifest = cache_manifest_builder(paths).build();
+    write_to_root_v2(&paths.root, &manifest).map_err(BrokerDiscoveryError::manifest)
 }
 
 /// Read the package version the currently-running daemon claimed in its
@@ -354,6 +365,33 @@ mod tests {
     // that is what versions the embedded store. Asserting the *shape* rather
     // than a frozen string keeps this from needing an edit on every bump,
     // while still failing if either half is dropped.
+    // soldr#2186: a completed claim must satisfy *both* halves of
+    // `current_version_claim_matches`, since a daemon that publishes only one
+    // reads as stale and gets displaced.
+    //
+    // This asserts the post-condition, NOT the write order -- it would pass
+    // whichever file went first. The ordering that closes the startup window
+    // (sidecar before manifest, so the manifest is the commit point) is
+    // enforced by construction in `write_root_version_claim` and is not
+    // observable from outside without instrumenting the writer.
+    crate::timed_test!(a_completed_claim_satisfies_both_halves_of_the_check, {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().to_path_buf());
+
+        write_root_version_claim(&paths).expect("write claim");
+
+        // Whenever the manifest is readable, the sidecar must agree -- that
+        // is exactly the conjunction current_version_claim_matches applies.
+        assert!(read_claimed_service_version(&paths).is_some());
+        assert!(
+            store_version_claim_matches(&paths),
+            "a published claim must carry the store sidecar too; without it a              healthy daemon reads as store-unknown and is displaced",
+        );
+        assert!(crate::daemon::lifecycle::current_version_claim_matches(
+            &paths
+        ));
+    });
+
     crate::timed_test!(a_missing_store_claim_reads_as_stale, {
         // Unknown is stale, matching how a missing manifest is treated: a
         // daemon that never recorded which store it serves cannot be shown
