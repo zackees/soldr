@@ -38,11 +38,42 @@ def _workflow(*ceilings: str) -> str:
     return "jobs:\n" + "".join(steps)
 
 
-def _seed(root: Path, first: str, second: str) -> None:
+def _release_workflow(own: str, bundled: str) -> str:
+    """`release-auto.yml`'s two steps, which differ only in what they check.
+
+    The operands matter: the own-binary step names one built artifact, the
+    bundled step passes an array that also holds fetched third-party
+    binaries. That is the only thing distinguishing them.
+    """
+    return (
+        "jobs:\n"
+        "      - name: Check glibc baseline of gnu binary\n"
+        "        run: |\n"
+        "          python3 .github/scripts/verify_glibc_baseline.py \\\n"
+        f"            --max-glibc {own} \\\n"
+        '            "target/${{ matrix.target }}/release/${{ matrix.binary }}"\n'
+        "      - name: Verify bundled binaries\n"
+        "        run: |\n"
+        "          python3 .github/scripts/verify_glibc_baseline.py \\\n"
+        f'            --max-glibc {bundled} "${{bundled[@]}}"\n'
+    )
+
+
+def _seed(
+    root: Path,
+    first: str,
+    second: str,
+    release: "str | None" = None,
+) -> None:
     workflows = root / ".github" / "workflows"
     workflows.mkdir(parents=True)
     (workflows / "_ci-cross-build-linux.yml").write_text(first, encoding="utf-8")
     (workflows / "cross-compile-all-targets.yml").write_text(second, encoding="utf-8")
+    # release-auto is part of the contract now, not an exclusion, so every
+    # fixture supplies it — defaulting to the values on main.
+    if release is None:
+        release = _release_workflow("2.39", "2.39")
+    (workflows / "release-auto.yml").write_text(release, encoding="utf-8")
 
 
 def test_agreeing_ceilings_pass(mod, tmp_path):
@@ -64,15 +95,39 @@ def test_a_removed_ratchet_fails_rather_than_passing_vacuously(mod, tmp_path):
     assert mod.main(["--repo-root", str(tmp_path)]) == 1
 
 
-def test_release_auto_is_not_consulted(mod, tmp_path):
-    # release-auto's ceiling also covers crgx / cargo-chef, which soldr
-    # fetches prebuilt at 2.39. It legitimately differs and must not drag
-    # the own-binary ceilings with it (soldr#2170).
+def test_release_bundled_ceiling_is_not_pooled_with_the_per_pr_ones(mod, tmp_path):
+    # release-auto's *bundled* ceiling also covers crgx / cargo-chef, which
+    # soldr fetches prebuilt at 2.39. It legitimately differs and must not
+    # drag the own-binary ceilings with it (soldr#2170).
     _seed(tmp_path, _workflow("2.28"), _workflow("2.28", "2.28"))
-    (tmp_path / ".github" / "workflows" / "release-auto.yml").write_text(
-        _workflow("2.39", "2.39"), encoding="utf-8"
-    )
     assert mod.main(["--repo-root", str(tmp_path)]) == 0
+
+
+def test_release_own_binary_ceiling_drifting_fails(mod, tmp_path):
+    # The gap this check exists for: `:499` gates soldr's *own* build, the
+    # same fact the per-PR ceilings measure. Excluding the whole file to
+    # exempt the bundled step used to hide it entirely. Moving it must be
+    # deliberate, so the declared constant has to move too.
+    _seed(
+        tmp_path,
+        _workflow("2.28"),
+        _workflow("2.28", "2.28"),
+        release=_release_workflow("2.28", "2.39"),
+    )
+    assert mod.main(["--repo-root", str(tmp_path)]) == 1
+
+
+@pytest.mark.parametrize("drop", ["own", "bundled"])
+def test_a_removed_release_ratchet_fails_rather_than_passing_vacuously(
+    mod, tmp_path, drop
+):
+    # Same reasoning as the per-PR case: a deleted step would otherwise be
+    # indistinguishable from a satisfied one.
+    release = _release_workflow("2.39", "2.39")
+    marker = "${{ matrix.binary }}" if drop == "own" else "${bundled[@]}"
+    release = "\n".join(line for line in release.splitlines() if marker not in line)
+    _seed(tmp_path, _workflow("2.28"), _workflow("2.28", "2.28"), release=release)
+    assert mod.main(["--repo-root", str(tmp_path)]) == 1
 
 
 def test_continuation_lines_are_parsed(mod):
