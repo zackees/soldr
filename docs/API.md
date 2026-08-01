@@ -2103,6 +2103,56 @@ Both wrapper-cache subdirectories live entirely under the soldr-owned cache root
 
 ---
 
+## Linux artifact glibc floors
+
+Which Linux artifact runs on an old distro is **not** one number. The two
+download routes are built by different toolchains and land on different
+floors, and the release archive's floor is set by binaries soldr does not
+compile at all.
+
+Measured with `readelf -V` on the published **v0.8.30** assets:
+
+| artifact | built by | floor |
+|---|---|---|
+| `soldr-…-x86_64-unknown-linux-gnu.tar.zst` → `soldr` | `soldr build` | GLIBC 2.39 |
+| …the same archive's `crgx` | fetched prebuilt | GLIBC 2.39 |
+| …the same archive's `cargo-chef` | fetched prebuilt | GLIBC 2.39 |
+| `soldr-…-manylinux_2_17_x86_64.whl` → `soldr` | `maturin build --zig` | **GLIBC 2.17** |
+| any `*-unknown-linux-musl` artifact | static | n/a |
+
+Three things follow, and the second is the one that surprises people.
+
+**The wheel really is manylinux_2_17.** `release-auto.yml` passes
+`--zig --compatibility manylinux_2_17` on the wheel lanes, so cargo-zigbuild
+links the embedded binary against a 2.17 baseline. The tag is enforced by
+`verify_wheel_glibc.py`, not merely asserted. On a distro too old for the
+archive, `pip install soldr` is the route that works.
+
+**The archive's floor is capped by `crgx` and `cargo-chef`.** Those are
+fetched prebuilt from the soldr-toolchain catalogue, so no change to how
+soldr builds *itself* can lower them — it needs an upstream republish. Even
+once `soldr` and `soldr-daemon` improve, an archive bundling 2.39 binaries
+does not fully run on RHEL 8 (2.28) or Debian 10 (2.28). Measure the archive,
+not just `soldr`, when answering "does the release run here".
+
+**soldr's own binaries improve after v0.8.30.** That release was tagged
+before soldr#2157, which routes host-native `-gnu` builds through managed zig
+(see `SOLDR_NATIVE_GNU_LINK` above) — so its 2.39 reflects the old host-glibc
+link, not current behaviour. The per-PR `native-build x86_64-unknown-linux-gnu
+(glibc floor)` lane enforces **2.28** on that same runner image. The release
+ratchet at `release-auto.yml` still reads 2.39 pending confirmation from a
+real release run; `check_glibc_ceilings.py` pins that divergence so it cannot
+drift unnoticed.
+
+Note that a bare `zig cc -target <triple>.2.17` does **not** reach 2.17 for a
+Rust binary: `__cxa_thread_atexit_impl@2.18`, `getrandom@2.25` and
+`statx@2.28` arrive already versioned inside Rust's precompiled `std`, and a
+target suffix cannot rewrite them. That is why the wheel lane uses
+cargo-zigbuild rather than soldr's own zig wrappers. Background in soldr#2145
+and soldr#1060.
+
+---
+
 ## GitHub Actions
 
 ```yaml
