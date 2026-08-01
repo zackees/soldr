@@ -20,7 +20,24 @@ pub(crate) const BLOCK_FREE_GB_ENV_VAR: &str = "SOLDR_TARGET_BLOCK_FREE_GB";
 pub(crate) const AUTO_PRUNE_ENABLED_ENV_VAR: &str = "SOLDR_TARGET_AUTO_PRUNE_ENABLED";
 /// Test seam — when set, overrides the real `fs2::available_space`
 /// probe so unit tests can drive every threshold edge.
+///
+/// Accepts either a single value, or a comma-separated sequence
+/// consumed one entry per probe with the last entry repeating. The
+/// sequence form exists because the pre-block reclaim probes twice —
+/// once to decide, once to see whether the reclaim helped — and a
+/// constant cannot express "space was freed in between".
 pub(crate) const TEST_DISK_FREE_BYTES_ENV_VAR: &str = "SOLDR_TEST_DISK_FREE_BYTES";
+
+/// How far into a `SOLDR_TEST_DISK_FREE_BYTES` sequence we are.
+static TEST_DISK_PROBE_INDEX: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Reset the sequence cursor. Tests call this so ordering between them
+/// cannot leak; there is no production caller.
+#[cfg(test)]
+pub(crate) fn reset_test_disk_probe_cursor() {
+    TEST_DISK_PROBE_INDEX.store(0, std::sync::atomic::Ordering::SeqCst);
+}
 
 pub(crate) const DEFAULT_WARN_FREE_GB: u64 = 10;
 pub(crate) const DEFAULT_BLOCK_FREE_GB: u64 = 5;
@@ -51,10 +68,15 @@ pub(crate) enum DiskCheckOutcome {
 pub(crate) fn free_bytes_for(path: &Path) -> io::Result<u64> {
     if let Some(raw) = std::env::var_os(TEST_DISK_FREE_BYTES_ENV_VAR) {
         let raw = raw.to_string_lossy();
-        if raw.eq_ignore_ascii_case("error") {
+        let steps: Vec<&str> = raw.split(',').map(str::trim).collect();
+        let index = TEST_DISK_PROBE_INDEX.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // The last entry repeats, so a single value behaves exactly as
+        // it always has and a sequence settles rather than running out.
+        let step = steps[index.min(steps.len() - 1)];
+        if step.eq_ignore_ascii_case("error") {
             return Err(io::Error::other("test disk-space failure"));
         }
-        return raw.parse::<u64>().map_err(|e| {
+        return step.parse::<u64>().map_err(|e| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("invalid {TEST_DISK_FREE_BYTES_ENV_VAR}: {e}"),
@@ -177,6 +199,75 @@ pub(crate) fn render_block_message(free_bytes: u64, threshold_gib: u64) -> Strin
          SOLDR_TARGET_BLOCK_FREE_GB=<lower> / SOLDR_TARGET_AUTO_PRUNE_ENABLED=0 to override.",
         free = format_bytes(free_bytes),
     )
+}
+
+/// Test seam — when set, stands in for the real reclaim so the decision
+/// logic can be unit-tested without a registry, a config, or deleting
+/// anything. The reclaim itself is exercised by the auto-GC tests.
+pub(crate) const TEST_RECLAIM_BYTES_ENV_VAR: &str = "SOLDR_TEST_RECLAIM_BYTES";
+
+fn reclaim_bytes(volume_path: &Path) -> u64 {
+    if let Some(raw) = std::env::var_os(TEST_RECLAIM_BYTES_ENV_VAR) {
+        return raw.to_string_lossy().trim().parse::<u64>().unwrap_or(0);
+    }
+    crate::gc::auto::reclaim_target_dirs_for_block(volume_path)
+}
+
+/// Try to reclaim space before aborting the build, and report whether
+/// aborting is still necessary (soldr#2134).
+///
+/// Returns `None` when the reclaim freed enough to proceed, or the
+/// message to fail with when it did not. Splitting the decision here
+/// rather than at the call site keeps the front door's arm a single
+/// branch, and keeps every disk-threshold judgement in one module.
+///
+/// The hard block becomes the backstop it was meant to be: reached only
+/// when there is genuinely nothing left to reclaim.
+pub(crate) fn reclaim_then_block(
+    volume_path: &Path,
+    free_bytes: u64,
+    threshold_gib: u64,
+) -> Result<(), crate::core::SoldrError> {
+    match reclaim_then_block_message(volume_path, free_bytes, threshold_gib) {
+        Some(message) => Err(crate::core::SoldrError::Other(message)),
+        None => Ok(()),
+    }
+}
+
+/// The decision itself, split out so tests can assert on the message
+/// without constructing an error.
+pub(crate) fn reclaim_then_block_message(
+    volume_path: &Path,
+    free_bytes: u64,
+    threshold_gib: u64,
+) -> Option<String> {
+    let reclaimed = reclaim_bytes(volume_path);
+    if reclaimed == 0 {
+        return Some(render_block_message(free_bytes, threshold_gib));
+    }
+    // Re-probe rather than adding `reclaimed` to the earlier reading:
+    // other processes write to this volume too, and the question is how
+    // much is free *now*, not how much this pass deleted.
+    let free_now = match free_bytes_for(volume_path) {
+        Ok(bytes) => bytes,
+        // The probe worked moments ago, so a failure here is a genuine
+        // unknown. Blocking on an unknown is the safe direction.
+        Err(_) => return Some(render_block_message(free_bytes, threshold_gib)),
+    };
+    if free_now >= threshold_gib.saturating_mul(BYTES_PER_GIB) {
+        eprintln!(
+            "soldr: build volume was below the {threshold_gib} GiB block threshold; \
+             reclaimed {} from cross-repo `target/` directories, {} now free. Continuing.",
+            format_bytes(reclaimed),
+            format_bytes(free_now)
+        );
+        return None;
+    }
+    Some(format!(
+        "{} (already reclaimed {} from cross-repo `target/` directories, which was not enough)",
+        render_block_message(free_now, threshold_gib),
+        format_bytes(reclaimed),
+    ))
 }
 
 fn format_bytes(bytes: u64) -> String {
@@ -372,5 +463,84 @@ mod tests {
         // Why: `report_and_exit` already prepends "soldr: " — the
         // rendered message must not double it.
         assert!(!msg.starts_with("soldr:"));
+    });
+
+    // soldr#2134. The reclaim mechanism was never broken — it ran on the
+    // wrong side of the failure. These cover the three ways the new
+    // decision can go.
+
+    /// Drive the front door's real sequence: the watchdog probes once
+    /// to decide, then the reclaim probes again to see whether it
+    /// helped. Going through both is the point -- a test that calls the
+    /// decision function directly consumes the *first* sequence entry
+    /// as its re-probe and then silently asserts the wrong thing.
+    fn block_then_reclaim(free_sequence: &str, reclaimed: u64) -> Option<String> {
+        reset_test_disk_probe_cursor();
+        let _free = EnvVarGuard::set(TEST_DISK_FREE_BYTES_ENV_VAR, free_sequence);
+        let _reclaimed = EnvVarGuard::set(TEST_RECLAIM_BYTES_ENV_VAR, &reclaimed.to_string());
+        let _block = EnvVarGuard::set(BLOCK_FREE_GB_ENV_VAR, "5");
+        let _enabled = EnvVarGuard::remove(AUTO_PRUNE_ENABLED_ENV_VAR);
+        let path = std::path::Path::new(".");
+        match check_disk_or_warn_or_block(path) {
+            DiskCheckOutcome::Block {
+                free_bytes,
+                threshold_gib,
+            } => reclaim_then_block_message(path, free_bytes, threshold_gib),
+            other => panic!("fixture must reach the block tier, got {other:?}"),
+        }
+    }
+
+    timed_test!(a_reclaim_that_frees_enough_lets_the_build_proceed, {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // 3 GiB free at the block, 40 GiB once 37 GiB is reclaimed.
+        let outcome = block_then_reclaim(
+            &format!("{},{}", 3 * BYTES_PER_GIB, 40 * BYTES_PER_GIB),
+            37 * BYTES_PER_GIB,
+        );
+        assert_eq!(
+            outcome, None,
+            "the build must not fail for a condition soldr just resolved"
+        );
+    });
+
+    timed_test!(a_reclaim_that_frees_nothing_still_blocks, {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let msg = block_then_reclaim(&(3 * BYTES_PER_GIB).to_string(), 0).expect("must block");
+        assert!(msg.contains("soldr gc target --purge"));
+        assert!(
+            !msg.contains("already reclaimed"),
+            "nothing was reclaimed, so the message must not claim otherwise: {msg}"
+        );
+    });
+
+    timed_test!(a_partial_reclaim_blocks_but_says_it_tried, {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Freed 1 GiB, leaving 4 GiB -- still under the 5 GiB bar.
+        let msg = block_then_reclaim(
+            &format!("{},{}", 3 * BYTES_PER_GIB, 4 * BYTES_PER_GIB),
+            BYTES_PER_GIB,
+        )
+        .expect("must still block");
+        assert!(
+            msg.contains("already reclaimed"),
+            "a user who just lost a GiB of caches deserves to know it happened: {msg}"
+        );
+        // The re-probed figure, not the stale pre-reclaim one.
+        assert!(msg.contains("4.00 GiB"), "{msg}");
+    });
+
+    timed_test!(a_single_probe_value_still_repeats_for_every_call, {
+        // Regression guard for the sequence seam: every pre-existing
+        // test passes one value and expects it on every probe.
+        let _lock = ENV_LOCK.lock().unwrap();
+        reset_test_disk_probe_cursor();
+        let _free = EnvVarGuard::set(
+            TEST_DISK_FREE_BYTES_ENV_VAR,
+            &(7 * BYTES_PER_GIB).to_string(),
+        );
+        let path = std::path::Path::new(".");
+        for _ in 0..4 {
+            assert_eq!(free_bytes_for(path).unwrap(), 7 * BYTES_PER_GIB);
+        }
     });
 }
