@@ -398,15 +398,39 @@ mod tests {
         // a noisier perf assertion; the test exists to catch O(N)
         // regressions in lookup, not to gate µs-level perf — that's
         // what the criterion benches in this crate do.
-        let start = std::time::Instant::now();
+        // One wall-clock sample of both costs at once made this flaky: it
+        // failed a Windows target-run lane at 0.6s of contention, which says
+        // nothing about lookup complexity. The two costs are now measured
+        // separately, and the repeatable one is sampled more than once.
+        let budget = std::time::Duration::from_millis(250);
+
+        // Cold start is paid exactly once (OnceLock), so it gets exactly one
+        // measurement -- there is no second sample to take.
+        let cold_started = std::time::Instant::now();
         let m = embedded_manifest().expect("embedded blob must parse");
-        for _ in 0..10_000 {
-            let _ = m.lookup("zackees", "zccache", "x86_64-pc-windows-msvc", None);
-        }
-        let elapsed = start.elapsed();
+        let cold = cold_started.elapsed();
         assert!(
-            elapsed < std::time::Duration::from_millis(250),
-            "10k embedded-manifest lookups took {elapsed:?}, expected < 250ms"
+            cold < budget,
+            "embedded-manifest cold start (decompress + parse) took {cold:?}, expected < {budget:?}"
+        );
+
+        // Per-lookup cost, best of three. This is the O(N) guard, and a real
+        // regression makes every round slow -- so taking the minimum drops
+        // transient scheduler noise without weakening what is being asserted.
+        // A single sample cannot tell the two apart.
+        let best = (0..3)
+            .map(|_| {
+                let started = std::time::Instant::now();
+                for _ in 0..10_000 {
+                    let _ = m.lookup("zackees", "zccache", "x86_64-pc-windows-msvc", None);
+                }
+                started.elapsed()
+            })
+            .min()
+            .expect("three rounds");
+        assert!(
+            best < budget,
+            "10k embedded-manifest lookups took {best:?} (best of 3), expected < {budget:?}"
         );
     });
 
