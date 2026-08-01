@@ -12,14 +12,30 @@ They arrived in three separate PRs (#2145's lane, then soldr#2163, then
 soldr#2165) and nothing tied them together, so one could be tightened or
 loosened alone and the others would keep reporting the old number.
 
-`release-auto.yml` is deliberately **excluded**, and the reason is the
-whole point of this script rather than an exception to it. Its ceiling
-also covers `crgx` and `cargo-chef`, which soldr does not build — it
-fetches them prebuilt from the soldr-toolchain catalogue, and measuring
-the published v0.8.30 bundle shows both at 2.39. So the release ceiling
-is pinned by third-party build choices and legitimately differs from
-what soldr's own binaries achieve. soldr#2170 tried to lower it and was
-closed for exactly this.
+`release-auto.yml` has **two** ceilings, and excluding the whole file
+(as this script used to) silently dropped one of them:
+
+  :902  the *bundled* archive — `soldr`, `soldr-daemon`, `crgx`,
+        `cargo-chef`. `crgx` and `cargo-chef` are fetched prebuilt from
+        the soldr-toolchain catalogue, and the published v0.8.30 bundle
+        measures both at 2.39, so this ceiling is pinned by third-party
+        build choices. soldr#2170 tried to lower it and was closed for
+        exactly this. Genuinely out of scope.
+
+  :499  `target/<triple>/release/<binary>` — **soldr's own build**, the
+        same fact the three per-PR ceilings measure. It is not out of
+        scope, it just disagrees: 2.39 against their 2.28.
+
+That disagreement is real and currently intended: soldr#2145 sequences
+lowering it *after* a release run confirms the number, because a wrong
+guess fails a release rather than a PR. But "intended" and "invisible"
+are different things — the old exclusion meant nothing would notice if
+it drifted further, or if it were lowered and silently reverted. So it
+is asserted here against an explicit expected value instead.
+
+When a release confirms 2.28, lower it in the workflow and update
+`RELEASE_OWN_BINARY_CEILING` to match; this check then guards it the
+same way it guards the other three.
 
 `verify_wheel_glibc.py` is a different script against different
 artifacts (manylinux wheels, 2.17) and is out of scope.
@@ -41,8 +57,10 @@ from pathlib import Path
 
 SCRIPT = "verify_glibc_baseline.py"
 
-# Workflows whose `verify_glibc_baseline.py` invocations gate a binary
-# soldr builds. `release-auto.yml` is excluded on purpose — see module docs.
+# Workflows whose `verify_glibc_baseline.py` invocations gate a binary soldr
+# builds and must all carry the same ceiling. `release-auto.yml` is handled
+# separately by `check_release_ceilings` rather than skipped — its own-binary
+# ceiling is knowingly looser, so it is pinned instead of pooled.
 OWN_BINARY_WORKFLOWS = (
     ".github/workflows/_ci-cross-build-linux.yml",
     ".github/workflows/cross-compile-all-targets.yml",
@@ -51,6 +69,19 @@ OWN_BINARY_WORKFLOWS = (
 # Losing these silently would be worse than a mismatch: the lanes would go
 # green because nothing is checked any more.
 MIN_EXPECTED_INVOCATIONS = 3
+
+RELEASE_WORKFLOW = ".github/workflows/release-auto.yml"
+
+# `release-auto.yml`'s own-binary ceiling. Higher than the per-PR ones on
+# purpose (see module docs) — pinned rather than ignored so the gap cannot
+# widen, or close and reopen, without this failing.
+RELEASE_OWN_BINARY_CEILING = "2.39"
+
+# Tells the two release invocations apart. The own-binary step names a
+# single built artifact; the bundled step passes an array that includes
+# fetched third-party binaries.
+RELEASE_OWN_BINARY_MARKER = "${{ matrix.binary }}"
+RELEASE_BUNDLED_MARKER = "${bundled[@]}"
 
 CEILING_RE = re.compile(r"--max-glibc\s+([0-9][0-9.]*)")
 
@@ -72,6 +103,68 @@ def ceilings_in(text: str) -> list[str]:
         if match:
             found.append(match.group(1))
     return found
+
+
+def ceilings_by_marker(text: str) -> "dict[str, str]":
+    """Map each marker in `RELEASE_*_MARKER` to the ceiling guarding it.
+
+    Both release invocations call the same script, so they are told apart by
+    the argument each passes — a single built artifact versus the bundled
+    array. The window is wider than `ceilings_in`'s because the operand sits
+    on the line *after* the `--max-glibc` flag.
+    """
+    found: dict[str, str] = {}
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if SCRIPT not in line:
+            continue
+        window = "\n".join(lines[index : index + 6])
+        match = CEILING_RE.search(window)
+        if not match:
+            continue
+        for marker in (RELEASE_OWN_BINARY_MARKER, RELEASE_BUNDLED_MARKER):
+            if marker in window:
+                found[marker] = match.group(1)
+    return found
+
+
+def check_release_ceilings(repo_root: Path) -> int:
+    """Assert release-auto's own-binary ceiling is the declared value."""
+    path = repo_root / RELEASE_WORKFLOW
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as error:
+        print(
+            f"check_glibc_ceilings: cannot read {RELEASE_WORKFLOW}: {error}",
+            file=sys.stderr,
+        )
+        return 1
+
+    found = ceilings_by_marker(text)
+    missing = [
+        m for m in (RELEASE_OWN_BINARY_MARKER, RELEASE_BUNDLED_MARKER) if m not in found
+    ]
+    if missing:
+        print(
+            f"check_glibc_ceilings: {RELEASE_WORKFLOW} no longer has a "
+            f"{SCRIPT} step for: {', '.join(missing)}. A release ratchet was "
+            "removed or reshaped — if deliberate, update this script and say why.",
+            file=sys.stderr,
+        )
+        return 1
+
+    actual = found[RELEASE_OWN_BINARY_MARKER]
+    if actual != RELEASE_OWN_BINARY_CEILING:
+        print(
+            f"check_glibc_ceilings: {RELEASE_WORKFLOW}'s own-binary ceiling is "
+            f"{actual}, expected {RELEASE_OWN_BINARY_CEILING}. This gates the same "
+            "fact as the per-PR ceilings and is knowingly looser (soldr#2145); if "
+            "you are tightening it because a release confirmed the number, update "
+            "RELEASE_OWN_BINARY_CEILING to match.",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
 
 
 def main(argv: "list[str] | None" = None) -> int:
@@ -119,8 +212,13 @@ def main(argv: "list[str] | None" = None) -> int:
             print(f"  {relative}: {found}", file=sys.stderr)
         return 1
 
+    if (status := check_release_ceilings(args.repo_root)) != 0:
+        return status
+
     print(
-        f"check_glibc_ceilings: {total} own-binary ceilings agree at {distinct[0]} - OK"
+        f"check_glibc_ceilings: {total} per-PR own-binary ceilings agree at "
+        f"{distinct[0]}; {RELEASE_WORKFLOW} own-binary ceiling pinned at "
+        f"{RELEASE_OWN_BINARY_CEILING} (soldr#2145) - OK"
     )
     return 0
 
