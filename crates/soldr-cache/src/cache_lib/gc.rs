@@ -47,6 +47,10 @@ pub struct GcCandidate {
     pub age_seconds: i64,
     pub eligible: bool,
     pub reason: Option<String>,
+    /// Whether this `target/` belongs to a linked git worktree rather
+    /// than a primary checkout. Eviction takes these first — see
+    /// [`in_linked_git_worktree`].
+    pub in_worktree: bool,
 }
 
 /// Aggregated scan result for the registry.
@@ -193,6 +197,34 @@ fn effective_age_seconds(path: &Path, last_used: i64, now: i64) -> i64 {
     registry_age.min(fs_age)
 }
 
+/// Whether `target_dir` belongs to a **linked git worktree** rather than
+/// a primary checkout (soldr#2134).
+///
+/// Eviction used to be age-ordered only, which let it purge a 57.7 GB
+/// actively-built cache while keeping a 5.6 GB worktree whose PR had
+/// merged a day and a half earlier — the most expensive possible choice,
+/// because the purged cache was rebuilt immediately and the retained one
+/// will never be built again.
+///
+/// The signal is the one git itself uses and no tool can get wrong: a
+/// linked worktree's root holds `.git` as a **file** containing
+/// `gitdir: …/worktrees/<name>`, whereas a primary checkout holds `.git`
+/// as a directory. That covers `.claude/worktrees/` and every other
+/// layout without hardcoding a convention, and it needs no subprocess.
+///
+/// Deliberately *not* "is the branch merged". Ancestry is wrong under a
+/// squash-merge workflow (`merge-base --is-ancestor` reports false
+/// because the squash produced a different SHA), and the patch-id
+/// alternatives cost a `git` invocation per candidate for a signal that
+/// is only ever a tiebreak. Worktrees are ephemeral by construction, so
+/// their build output is the safest thing on the volume to prefer — and
+/// coldness, which is already applied within each tier, is a good enough
+/// proxy for the rest.
+pub fn in_linked_git_worktree(target_dir: &Path) -> bool {
+    let workspace = workspace_root_for_target(target_dir);
+    workspace.join(".git").is_file()
+}
+
 /// Threshold + safety-guard evaluation over an owned snapshot. Touches
 /// the filesystem (sizing) but never the database, so it is safe to run
 /// with no handle open.
@@ -209,12 +241,14 @@ pub fn scan_snapshot(
     for row in snapshot.rows {
         let age = effective_age_seconds(&row.path, row.last_used, now);
         let size = directory_size(&row.path);
+        let in_worktree = in_linked_git_worktree(&row.path);
 
         if (age as u64) < options.older_than_seconds {
             report.skipped.push(GcCandidate {
                 path: row.path,
                 size_bytes: size,
                 age_seconds: age,
+                in_worktree,
                 eligible: false,
                 reason: Some(format!(
                     "younger than threshold ({} < {})",
@@ -230,6 +264,7 @@ pub fn scan_snapshot(
                 path: row.path,
                 size_bytes: size,
                 age_seconds: age,
+                in_worktree,
                 eligible: false,
                 reason: Some(format!(
                     "smaller than threshold ({} < {})",
@@ -254,6 +289,7 @@ pub fn scan_snapshot(
                     path: row.path,
                     size_bytes: size,
                     age_seconds: age,
+                    in_worktree,
                     eligible: true,
                     reason: None,
                 });
@@ -263,6 +299,7 @@ pub fn scan_snapshot(
                     path: row.path,
                     size_bytes: size,
                     age_seconds: age,
+                    in_worktree,
                     eligible: false,
                     reason: Some(reason),
                 });
@@ -270,7 +307,30 @@ pub fn scan_snapshot(
         }
     }
 
+    order_candidates(&mut report.candidates);
     Ok(report)
+}
+
+/// Order eviction cheapest-to-restore first (soldr#2134).
+///
+/// 1. Linked-worktree targets, which nobody will build again once the
+///    branch lands — deleting them is close to free.
+/// 2. Then coldest first, which is what the registry order approximated
+///    and `effective_age_seconds` made trustworthy.
+///
+/// This reorders **already-eligible** candidates only. Nothing new
+/// becomes deletable: every threshold and safety guard has already run
+/// by this point, so the worst case is that the same set is deleted in
+/// a better order.
+fn order_candidates(candidates: &mut [GcCandidate]) {
+    candidates.sort_by(|a, b| {
+        b.in_worktree
+            .cmp(&a.in_worktree)
+            .then(b.age_seconds.cmp(&a.age_seconds))
+            // Size last, so it only breaks ties between equally cold
+            // targets rather than driving the choice as it appeared to.
+            .then(b.size_bytes.cmp(&a.size_bytes))
+    });
 }
 
 /// Delete the `target/` dir at `path` and drop its registry row. Skips
@@ -599,6 +659,83 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::tempdir;
 
+    fn candidate(path: &str, in_worktree: bool, age_seconds: i64, size_bytes: u64) -> GcCandidate {
+        GcCandidate {
+            path: PathBuf::from(path),
+            size_bytes,
+            age_seconds,
+            in_worktree,
+            eligible: true,
+            reason: None,
+        }
+    }
+
+    #[test]
+    fn a_linked_worktree_target_is_recognised_by_its_git_file() {
+        // A linked worktree's root holds `.git` as a FILE; a primary
+        // checkout holds it as a directory. That is the whole signal.
+        let dir = tempdir().unwrap();
+        let (worktree_root, worktree_target) = make_workspace(dir.path(), "wt", 16);
+        std::fs::write(
+            worktree_root.join(".git"),
+            b"gitdir: /repo/.git/worktrees/wt",
+        )
+        .unwrap();
+
+        let (primary_root, primary_target) = make_workspace(dir.path(), "primary", 16);
+        std::fs::create_dir_all(primary_root.join(".git")).unwrap();
+
+        assert!(in_linked_git_worktree(&worktree_target));
+        assert!(!in_linked_git_worktree(&primary_target));
+    }
+
+    #[test]
+    fn a_checkout_with_no_git_at_all_is_not_a_worktree() {
+        // Tarball/zip checkouts are ordinary repos as far as this is
+        // concerned -- absence of `.git` must not read as "ephemeral".
+        let dir = tempdir().unwrap();
+        let (_, target) = make_workspace(dir.path(), "plain", 16);
+        assert!(!in_linked_git_worktree(&target));
+    }
+
+    #[test]
+    fn worktree_targets_are_evicted_before_a_colder_primary_checkout() {
+        // The reported failure: a 57.7 GB actively-built cache was purged
+        // while a merged worktree's 5.6 GB was kept. Worktree first, even
+        // though the primary checkout is both colder and far larger.
+        let mut candidates = vec![
+            candidate("/dev/soldr/target", false, 10_000, 57_700_000_000),
+            candidate(
+                "/dev/clud/.claude/worktrees/issue-621/target",
+                true,
+                100,
+                5_600_000_000,
+            ),
+        ];
+        order_candidates(&mut candidates);
+        assert!(
+            candidates[0].in_worktree,
+            "the worktree target must be taken first: {candidates:?}"
+        );
+    }
+
+    #[test]
+    fn within_a_tier_the_coldest_goes_first_and_size_only_breaks_ties() {
+        let mut candidates = vec![
+            candidate("/warm-huge", false, 100, 900),
+            candidate("/cold-small", false, 9_000, 1),
+            candidate("/tie-small", false, 9_000, 500),
+        ];
+        order_candidates(&mut candidates);
+        assert_eq!(candidates[0].path, PathBuf::from("/tie-small"));
+        assert_eq!(candidates[1].path, PathBuf::from("/cold-small"));
+        assert_eq!(
+            candidates[2].path,
+            PathBuf::from("/warm-huge"),
+            "size must not outrank coldness: {candidates:?}"
+        );
+    }
+
     fn make_workspace(root: &Path, name: &str, size_bytes: u64) -> (PathBuf, PathBuf) {
         let workspace = root.join(name);
         let target = workspace.join("target");
@@ -891,6 +1028,7 @@ mod tests {
             path: ok_target.clone(),
             size_bytes: 256,
             age_seconds: 1000,
+            in_worktree: false,
             eligible: true,
             reason: None,
         };
@@ -898,6 +1036,7 @@ mod tests {
             path: failed_target.clone(),
             size_bytes: 512,
             age_seconds: 1000,
+            in_worktree: false,
             eligible: true,
             reason: None,
         };
@@ -935,6 +1074,7 @@ mod tests {
                 path: target.clone(),
                 size_bytes: 1024,
                 age_seconds: 42,
+                in_worktree: false,
                 eligible: true,
                 reason: None,
             },
