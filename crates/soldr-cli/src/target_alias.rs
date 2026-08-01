@@ -213,13 +213,7 @@ pub fn resolve_soldr_target(input: &str) -> Result<ResolvedTarget, AliasError> {
     // rather than an unsupported request -- and invites "just strip the suffix",
     // which would ship a binary whose glibc floor is not the one that was asked
     // for. Say what soldr cannot do, and name the tool that can.
-    if let Some((base, version)) = check_glibc_versioned(&lower) {
-        return Err(AliasError::GlibcVersioned {
-            input: raw.to_string(),
-            base: base.to_string(),
-            version: version.to_string(),
-        });
-    }
+    reject_glibc_versioned(raw)?;
 
     // Special aliases
     if lower == "native" || lower == "host" {
@@ -324,6 +318,33 @@ fn check_ambiguous(input: &str) -> Option<&'static str> {
 /// musl has no glibc notion, and the other platforms version their SDK
 /// differently, so a dot after those is a typo and belongs in the
 /// "did you mean" path instead.
+/// Reject `<triple>.<major>.<minor>` before it can reach the sysroot table.
+///
+/// Callable independently of full alias resolution, because the two surfaces
+/// resolve targets differently: `soldr prepare` goes through
+/// [`resolve_soldr_target`], while `soldr build` only runs
+/// [`normalize_target_aliases_in_args`], which rewrites *known* aliases and
+/// passes anything else through untouched. Routing `build` through the full
+/// resolver instead would make it reject every target not in the alias table,
+/// including legitimate custom triples -- so the narrow guard is the one that
+/// can be shared safely.
+///
+/// soldr#2139: without this, `soldr build --target x86_64-unknown-linux-gnu.2.17`
+/// reported "no sqlite sysroot recipe for target …" for each library in turn
+/// and then *continued*, which reads as a hole in the sysroot table rather
+/// than an unsupported request.
+pub fn reject_glibc_versioned(raw: &str) -> Result<(), AliasError> {
+    let lower = raw.trim().to_ascii_lowercase();
+    match check_glibc_versioned(&lower) {
+        Some((base, version)) => Err(AliasError::GlibcVersioned {
+            input: raw.to_string(),
+            base: base.to_string(),
+            version: version.to_string(),
+        }),
+        None => Ok(()),
+    }
+}
+
 fn check_glibc_versioned(input: &str) -> Option<(&str, &str)> {
     let (base, version) = input.split_once('.')?;
     if !base.ends_with("-linux-gnu") {
@@ -512,6 +533,49 @@ mod tests {
         // And the plain triple still resolves, i.e. the gate did not widen.
         let ok = resolve_soldr_target("x86_64-unknown-linux-gnu").unwrap();
         assert_eq!(ok.rust_triple, "x86_64-unknown-linux-gnu");
+    });
+
+    // soldr#2139: `soldr build` never calls `resolve_soldr_target` -- it only
+    // runs `normalize_target_aliases_in_args`, which passes an unrecognised
+    // target straight through. So the guard is also exposed on its own and
+    // called from every blessed-prep entry. These pin that the standalone
+    // form agrees with the resolver in both directions.
+    crate::timed_test!(the_standalone_guard_rejects_what_the_resolver_rejects, {
+        let err = reject_glibc_versioned("x86_64-unknown-linux-gnu.2.17").unwrap_err();
+        match err {
+            AliasError::GlibcVersioned {
+                input,
+                base,
+                version,
+            } => {
+                assert_eq!(input, "x86_64-unknown-linux-gnu.2.17");
+                assert_eq!(base, "x86_64-unknown-linux-gnu");
+                assert_eq!(version, "2.17");
+            }
+            other => panic!("expected GlibcVersioned, got {other:?}"),
+        }
+        // Case and surrounding whitespace must not smuggle it past.
+        assert!(reject_glibc_versioned("  X86_64-Unknown-Linux-GNU.2.17 ").is_err());
+    });
+
+    crate::timed_test!(the_standalone_guard_does_not_over_reject, {
+        // This one runs on *every* prepared target, so a false positive would
+        // break builds that work today -- including custom triples that the
+        // alias table has never heard of and must not be judged on.
+        for input in [
+            "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-unknown-linux-musl.2.17",
+            "x86_64-apple-darwin.11.0",
+            "x86_64-unknown-linux-gnu.foo",
+            "thumbv7em-none-eabihf",
+            "some-vendor-custom-linux-gnueabi",
+        ] {
+            assert!(
+                reject_glibc_versioned(input).is_ok(),
+                "{input} must pass the guard untouched",
+            );
+        }
     });
 
     crate::timed_test!(all_alias_rejected_for_build, {
