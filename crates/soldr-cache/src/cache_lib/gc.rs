@@ -182,7 +182,10 @@ pub fn scan(registry: &TargetRegistry, options: &GcOptions) -> Result<GcReport, 
 /// look *younger*, so this is strictly conservative: it can spare a cache
 /// from deletion, never cause one. A missing or unreadable mtime falls back
 /// to the registry value, which is the previous behaviour.
-fn effective_age_seconds(path: &Path, last_used: i64, now: i64) -> i64 {
+/// Exported so `soldr gc target` reports the same age eviction acts on.
+/// A report that disagrees with the decision it is meant to explain is
+/// how "why did it delete *that* one?" becomes unanswerable.
+pub fn effective_age_seconds(path: &Path, last_used: i64, now: i64) -> i64 {
     let registry_age = now.saturating_sub(last_used);
     let Ok(metadata) = std::fs::metadata(path) else {
         return registry_age;
