@@ -48,8 +48,9 @@ pub struct GcCandidate {
     pub eligible: bool,
     pub reason: Option<String>,
     /// Whether this `target/` belongs to a linked git worktree rather
-    /// than a primary checkout. Eviction takes these first — see
-    /// [`in_linked_git_worktree`].
+    /// than a primary checkout. Eviction takes these first *once they have
+    /// gone cold* — see [`in_linked_git_worktree`] and
+    /// [`WORKTREE_TIER_AGE_SECONDS`].
     pub in_worktree: bool,
 }
 
@@ -314,10 +315,26 @@ pub fn scan_snapshot(
     Ok(report)
 }
 
+/// How long a linked worktree must sit untouched before its `target/` is
+/// promoted ahead of colder primary checkouts (soldr#2134).
+///
+/// The promotion is only sound for a worktree nobody will build again.
+/// soldr#2156 applied it unconditionally, which is stronger than the issue
+/// asked for: a worktree built moments ago would outrank a primary checkout
+/// idle for hours, and on a box with a dozen live worktrees under
+/// `.claude/worktrees/` that costs exactly the rebuild the issue is about.
+///
+/// Merge state would be the faithful signal, but the issue documents why it
+/// is hard to get right (squash-merge defeats `--is-ancestor`, and the
+/// reported branch was still on the remote), so it takes the fallback the
+/// issue itself proposes: coldness as the proxy. Three days is well past any
+/// edit-test cycle while still catching an abandoned branch.
+const WORKTREE_TIER_AGE_SECONDS: i64 = 3 * 24 * 60 * 60;
+
 /// Order eviction cheapest-to-restore first (soldr#2134).
 ///
-/// 1. Linked-worktree targets, which nobody will build again once the
-///    branch lands — deleting them is close to free.
+/// 1. Linked-worktree targets left cold for [`WORKTREE_TIER_AGE_SECONDS`],
+///    which nobody is likely to build again — deleting them is close to free.
 /// 2. Then coldest first, which is what the registry order approximated
 ///    and `effective_age_seconds` made trustworthy.
 ///
@@ -326,9 +343,13 @@ pub fn scan_snapshot(
 /// by this point, so the worst case is that the same set is deleted in
 /// a better order.
 fn order_candidates(candidates: &mut [GcCandidate]) {
+    // A worktree only earns the tier once it has gone cold; a live one is
+    // ranked on age alongside everything else.
+    let abandoned_worktree =
+        |c: &GcCandidate| c.in_worktree && c.age_seconds >= WORKTREE_TIER_AGE_SECONDS;
     candidates.sort_by(|a, b| {
-        b.in_worktree
-            .cmp(&a.in_worktree)
+        abandoned_worktree(b)
+            .cmp(&abandoned_worktree(a))
             .then(b.age_seconds.cmp(&a.age_seconds))
             // Size last, so it only breaks ties between equally cold
             // targets rather than driving the choice as it appeared to.
@@ -758,23 +779,66 @@ mod tests {
     }
 
     #[test]
-    fn worktree_targets_are_evicted_before_a_colder_primary_checkout() {
-        // The reported failure: a 57.7 GB actively-built cache was purged
-        // while a merged worktree's 5.6 GB was kept. Worktree first, even
-        // though the primary checkout is both colder and far larger.
+    fn the_reported_case_takes_the_cold_worktree_not_the_hot_primary() {
+        // The reported failure, with its real ages: a 57.7 GB cache written
+        // minutes earlier was purged while a worktree idle ~2 days was kept.
+        // Note the worktree is the *colder* of the two, so coldness alone
+        // orders this correctly -- the tier is not what fixes the report.
         let mut candidates = vec![
-            candidate("/dev/soldr/target", false, 10_000, 57_700_000_000),
+            candidate("/dev/soldr/target", false, 600, 57_700_000_000),
             candidate(
                 "/dev/clud/.claude/worktrees/issue-621/target",
                 true,
-                100,
+                170_000,
                 5_600_000_000,
             ),
         ];
         order_candidates(&mut candidates);
         assert!(
             candidates[0].in_worktree,
-            "the worktree target must be taken first: {candidates:?}"
+            "the cold worktree must be taken before the hot primary: {candidates:?}"
+        );
+    }
+
+    #[test]
+    fn a_live_worktree_does_not_outrank_a_colder_primary_checkout() {
+        // soldr#2156 promoted every worktree unconditionally, so this
+        // ordering came out backwards: a worktree built 100s ago was taken
+        // ahead of a primary checkout idle for hours. Both rebuild at full
+        // cost, so the colder one is the cheaper loss.
+        let mut candidates = vec![
+            candidate("/dev/repo/target", false, 10_000, 1_000),
+            candidate("/dev/repo/.claude/worktrees/live/target", true, 100, 9_000),
+        ];
+        order_candidates(&mut candidates);
+        assert_eq!(
+            candidates[0].path,
+            PathBuf::from("/dev/repo/target"),
+            "a worktree in active use must not be promoted over a colder \
+             primary checkout: {candidates:?}"
+        );
+    }
+
+    #[test]
+    fn an_abandoned_worktree_still_outranks_a_colder_primary_checkout() {
+        // The tier's actual purpose, kept intact: once a worktree has gone
+        // cold past the threshold it is very likely merged and will never be
+        // rebuilt, so it goes first even against an older primary checkout.
+        let stale = WORKTREE_TIER_AGE_SECONDS + 1;
+        let mut candidates = vec![
+            candidate("/dev/repo/target", false, stale * 2, 1_000),
+            candidate(
+                "/dev/repo/.claude/worktrees/done/target",
+                true,
+                stale,
+                9_000,
+            ),
+        ];
+        order_candidates(&mut candidates);
+        assert!(
+            candidates[0].in_worktree,
+            "an abandoned worktree is still the cheapest thing to lose: \
+             {candidates:?}"
         );
     }
 
