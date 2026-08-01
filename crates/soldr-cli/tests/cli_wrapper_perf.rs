@@ -209,11 +209,27 @@ fn fast_path_when_no_session_id() {
     // (accidental daemon IPC, socket probe, or fs walk) — 250 ms is
     // still ~10x the worst CI observation but well under any of the
     // "regression smells" the budget exists to detect.
-    let started = Instant::now();
-    for _ in 0..5 {
-        let _ = record_target_dir_in_registry(&args);
-    }
-    let avg = started.elapsed() / 5;
+    // Best of 5, not the mean of 5. The budget exists to catch an
+    // order-of-magnitude regression -- accidental daemon IPC, a socket probe,
+    // an fs walk -- and every one of those makes *each* call slow, so the
+    // fastest call still exposes them. A mean does not survive one scheduler
+    // stall on a shared runner: a single 10s hiccup drags the average past any
+    // budget while the other four calls were fine, which is what has been
+    // failing here.
+    //
+    // This is the alternative the comment below asks for. The budget has been
+    // raised three times (50ms -> 250ms -> 1s -> 2s), each after a flake, and
+    // it failed again on a Windows target-run lane. Raising it a fourth time
+    // would keep trading away the coverage the number is for.
+    let fastest = (0..5)
+        .map(|_| {
+            let started = Instant::now();
+            let _ = record_target_dir_in_registry(&args);
+            started.elapsed()
+        })
+        .min()
+        .expect("five samples");
+    let avg = fastest;
     // Budget was 250ms; raised to 1s in #1139 after GHA
     // aarch64-linux-gnu (via `target-run` on ubuntu-24.04-arm)
     // averaged ~500ms in run 28492… ; raised to 2s in #1311 after
@@ -227,7 +243,7 @@ fn fast_path_when_no_session_id() {
     // than raising a fourth time.
     assert!(
         avg < Duration::from_millis(2000),
-        "fast path avg = {avg:?} exceeds 2s budget — accidental daemon IPC, socket probe, or fs walk?",
+        "fast path best-of-5 = {avg:?} exceeds 2s budget — accidental daemon IPC, socket probe, or fs walk?",
     );
 }
 
