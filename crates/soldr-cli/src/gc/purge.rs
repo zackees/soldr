@@ -542,11 +542,27 @@ pub(super) fn print_gc_summary(
     if report.candidates.is_empty() {
         println!("soldr gc: nothing to reclaim.");
     } else {
-        println!("soldr gc: largest eligible target directories:");
-        for cand in gc_largest_candidates(&report.candidates, 5) {
+        // soldr#2134: show what `gc purge` will actually take, in the
+        // order it will take it. This used to list the five *largest*
+        // candidates, which read as "these go first" and was wrong:
+        // eviction orders worktree -> coldest -> size, and size is the
+        // last key. `report.candidates` is already in eviction order
+        // (`cache_lib::gc::order_candidates` runs inside the scan).
+        //
+        // The JSON keeps its `largest_candidates` field — that name is
+        // accurate and something may consume it — but a human reading
+        // this is about to run `gc purge`, and the question they have
+        // is which directory is next, not which is biggest.
+        println!("soldr gc: next to be reclaimed (eviction order):");
+        for cand in report.candidates.iter().take(5) {
             println!(
-                "  {}  size={}  last_used={}",
+                "  {}{}  size={}  last_used={}",
                 cand.path.display(),
+                if cand.in_worktree {
+                    "  [linked worktree]"
+                } else {
+                    ""
+                },
                 crate::cache_lib::target_registry::human_size(cand.size_bytes),
                 crate::cache_lib::target_registry::human_age(cand.age_seconds),
             );
