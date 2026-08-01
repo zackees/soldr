@@ -165,6 +165,12 @@ impl Harness {
             // Without this the child reaches the network, and a hanging host
             // costs a 30s MANIFEST_FETCH_TIMEOUT per attempt.
             .env("SOLDR_MANIFEST_DISABLE", "1")
+            // ...and managed zig. soldr#2145 made host-native `-gnu` take
+            // the managed-zig arm, and TARGET is exactly that on a Linux
+            // x86_64 runner, so this suite acquired a zig fetch. The two
+            // opt-outs above do not cover it: they gate `blessed_build`,
+            // and this is `linux_cross`.
+            .env("SOLDR_NATIVE_GNU_LINK", "0")
             // Isolate from any outer environment that would change the
             // overlap decision.
             .env_remove("CARGO_NET_OFFLINE")
