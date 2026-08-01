@@ -35,6 +35,7 @@ use std::process::{Command, Stdio};
 
 use crate::core::{SoldrError, SoldrPaths};
 
+mod darwin_arch;
 mod links_provider;
 mod lzma_override;
 mod mimalloc_override;
@@ -277,15 +278,14 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
                 // System/Library/Frameworks/.
                 let target_u = target_triple.replace('-', "_");
                 let target_u_upper = target_u.to_uppercase();
-                let clang_arch_target = if target_triple.starts_with("aarch64") {
-                    "arm64-apple-darwin"
-                } else {
-                    "x86_64-apple-darwin"
-                };
+                // Both per-arch — see `darwin_arch` for why the
+                // deployment target was not (soldr#2146).
+                let clang_arch_target = darwin_arch::clang_target(target_triple);
+                let min_os = darwin_arch::deployment_target(target_triple);
                 let clang_base =
-                    format!("clang --target={clang_arch_target} -isysroot {sdk_str} -mmacosx-version-min=11.0");
+                    format!("clang --target={clang_arch_target} -isysroot {sdk_str} -mmacosx-version-min={min_os}");
                 let clangxx_base = format!(
-                    "clang++ --target={clang_arch_target} -isysroot {sdk_str} -mmacosx-version-min=11.0 -stdlib=libc++"
+                    "clang++ --target={clang_arch_target} -isysroot {sdk_str} -mmacosx-version-min={min_os} -stdlib=libc++"
                 );
                 // `-fuse-ld=lld` is critical for the C/C++ flags too:
                 // cmake-based -sys crates (libz-ng-sys, etc.) test the
@@ -305,17 +305,17 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
                 let lld_flag = if use_lld_linker { " -fuse-ld=lld" } else { "" };
                 let cflags = format!(
                     "--target={clang_arch_target} -isysroot {sdk_str} \
-                     -mmacosx-version-min=11.0{lld_flag}"
+                     -mmacosx-version-min={min_os}{lld_flag}"
                 );
                 let cxxflags = format!(
                     "--target={clang_arch_target} -isysroot {sdk_str} \
-                     -mmacosx-version-min=11.0 -stdlib=libc++{lld_flag}"
+                     -mmacosx-version-min={min_os} -stdlib=libc++{lld_flag}"
                 );
                 let mut rustflags = format!(
                     "-C link-arg=--target={clang_arch_target} \
                      -C link-arg=-isysroot \
                      -C link-arg={sdk_str} \
-                     -C link-arg=-mmacosx-version-min=11.0"
+                     -C link-arg=-mmacosx-version-min={min_os}"
                 );
                 if use_lld_linker {
                     rustflags.push_str(" -C link-arg=-fuse-ld=lld");

@@ -1793,8 +1793,8 @@ crate::timed_test!(nextest_archive_darwin_bootstrap_reuses_blessed_env, {
     assert!(
         map.get("CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS")
             .is_some_and(|value| value.contains("-fuse-ld=lld")
-                && value.contains("-mmacosx-version-min=11.0")),
-        "darwin rustflags must route through clang/lld with the SDK: {map:?}"
+                && value.contains("-mmacosx-version-min=10.12")),
+        "x86_64 darwin rustflags: clang/lld + SDK at the 10.12 floor: {map:?}"
     );
 });
 
