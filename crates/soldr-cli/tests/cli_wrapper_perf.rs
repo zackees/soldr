@@ -229,8 +229,9 @@ fn fast_path_when_no_session_id() {
         })
         .min()
         .expect("five samples");
-    let avg = fastest;
-    // Budget was 250ms; raised to 1s in #1139 after GHA
+    // Budget history, from when this measured a *mean* — the numbers
+    // below are averages and are kept for provenance, not as current
+    // expectations: 250ms; raised to 1s in #1139 after GHA
     // aarch64-linux-gnu (via `target-run` on ubuntu-24.04-arm)
     // averaged ~500ms in run 28492… ; raised to 2s in #1311 after
     // aarch64-unknown-linux-musl target-run averaged ~1.25s (redb
@@ -242,8 +243,8 @@ fn fast_path_when_no_session_id() {
     // investigate whether the fast path itself regressed rather
     // than raising a fourth time.
     assert!(
-        avg < Duration::from_millis(2000),
-        "fast path best-of-5 = {avg:?} exceeds 2s budget — accidental daemon IPC, socket probe, or fs walk?",
+        fastest < Duration::from_millis(2000),
+        "fast path best-of-5 = {fastest:?} exceeds 2s budget — accidental daemon IPC, socket probe, or fs walk?",
     );
 }
 
