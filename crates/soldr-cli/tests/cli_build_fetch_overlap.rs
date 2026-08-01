@@ -97,6 +97,7 @@ struct Harness {
     cargo: PathBuf,
     rustc: PathBuf,
     rustup: PathBuf,
+    zig: PathBuf,
 }
 
 impl Harness {
@@ -136,6 +137,13 @@ impl Harness {
         let rustup = install_logging_fake_rustup(&cache_root.join("rustup-invocations.log"));
         write_fake_script(&cargo, &fake_recording_cargo_script(&log_path));
         write_fake_script(&rustc, &fake_rustc_script(&log_path));
+        // soldr#2159: TARGET is a Linux gnu triple, so on a non-Linux host
+        // it is a cross-compile and `should_prepare_managed_linux` returns
+        // true before any opt-out is consulted -- which fetches managed zig.
+        // A stub satisfies `ensure_zig`'s `ZIG` override and keeps the
+        // suite off the network on every host, not just Linux.
+        let zig = fake_script_path(&tool_dir, "zig");
+        write_fake_script(&zig, &fake_rustc_script(&log_path));
 
         Harness {
             project,
@@ -144,6 +152,7 @@ impl Harness {
             cargo,
             rustc,
             rustup,
+            zig,
         }
     }
 
@@ -171,6 +180,11 @@ impl Harness {
             // opt-outs above do not cover it: they gate `blessed_build`,
             // and this is `linux_cross`.
             .env("SOLDR_NATIVE_GNU_LINK", "0")
+            // ...and the cross-compile arm, which the opt-out above cannot
+            // reach: `should_prepare_managed_linux` returns true for
+            // target != host before it ever consults it. `ZIG` is read by
+            // `ensure_zig` ahead of any download.
+            .env("ZIG", &self.zig)
             // soldr#2159: these tests abort at the 120s `timed_test!` watchdog
             // on CI while finishing in ~1.4s locally, and the child produces no
             // output at all, so three rounds of hypotheses have been guesswork.
