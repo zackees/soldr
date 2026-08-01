@@ -177,7 +177,11 @@ This rule was set during the #1105 fix: the `rust-lld` LIB-injection feature was
 
 ## Toolchain
 
-- Rust 1.94.1 (rust-toolchain.toml), edition 2021, MSRV 1.75
+- Rust 1.94.1 (rust-toolchain.toml), edition 2021, MSRV 1.94.1
+  (`[workspace.package].rust-version`). The MSRV and the pinned toolchain are
+  the same version — soldr does not support building on an older compiler, so
+  "will this still build on the MSRV?" is never a reason to avoid a newer std
+  API. Guarded by `crates/soldr-cli/tests/msrv_doc_matches_manifest.rs`.
 - Python >=3.10 (for PyPI distribution via Maturin)
 - uv for Python dependency management
 - Workspace dependencies shared in root `Cargo.toml`
