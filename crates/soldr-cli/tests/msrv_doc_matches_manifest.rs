@@ -15,17 +15,9 @@
 //! `version_lockstep.rs` already guards the three places the *package*
 //! version appears; this is the same idea for the compiler floor.
 
-use soldr_cli::timed_test;
-use std::path::{Path, PathBuf};
+mod common;
 
-fn repo_root() -> PathBuf {
-    // tests/ -> soldr-cli/ -> crates/ -> repo root
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("repo root")
-        .to_path_buf()
-}
+use soldr_cli::timed_test;
 
 /// `rust-version = "X"` from `[workspace.package]`.
 fn manifest_rust_version(manifest: &str) -> String {
@@ -55,7 +47,13 @@ fn documented_msrvs(doc: &str) -> Vec<String> {
 }
 
 timed_test!(claude_md_msrv_matches_the_workspace_manifest, {
-    let root = repo_root();
+    // `common::workspace_root()` is the sanctioned resolver. These tests also
+    // run from a nextest archive with no checkout beside the binary, so
+    // compile-time manifest-dir resolution is banned in `crates/**` outside
+    // three allowlisted files -- enforced by
+    // tests/test_cross_compile_workflows.py, which substring-matches file
+    // bodies and so does not exempt comments.
+    let root = common::workspace_root();
     let manifest =
         std::fs::read_to_string(root.join("Cargo.toml")).expect("read workspace Cargo.toml");
     let doc = std::fs::read_to_string(root.join("CLAUDE.md")).expect("read CLAUDE.md");
