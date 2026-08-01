@@ -196,7 +196,13 @@ A pre-merge `cargo metadata --frozen` would also catch the trap (it refuses to r
 
 ### zccache is embedded (no managed-version pin)
 
-soldr#1368 removed the externally-downloaded managed zccache binary: the zccache CLI now ships as a compiled-in soldr `[[bin]]` built from the `_vender/zccache` submodule library dep. There is no longer a `MANAGED_ZCCACHE_VERSION` pin to keep in lockstep — the only zccache pin is the `_vender/zccache` submodule commit.
+soldr#1368 removed the externally-downloaded managed zccache binary: the zccache CLI now ships as a compiled-in soldr `[[bin]]` built from the `_vender/zccache` submodule library dep. There is no longer a `MANAGED_ZCCACHE_VERSION` pin to keep in lockstep — the only zccache pin *in soldr's source* is the `_vender/zccache` submodule commit.
+
+> [!IMPORTANT]
+> That is true of the compiled-in library and of what `soldr status` reports.
+> It is **not** true of release staging, which still downloads a prebuilt
+> zccache keyed on the vendored crate's version — see
+> "Bumping the vendored zccache pin" below before moving the submodule.
 
 ## Bumping the vendored zccache pin
 
@@ -211,10 +217,38 @@ cd _vender/zccache && git fetch && git checkout <commit>
 cd - && git add _vender/zccache
 ```
 
-There is no separate managed-version constant, contract `managed_version`, or
-download staging to keep in lockstep any more. `zccache::core::VERSION` (the
-vendored crate's own version) is what `soldr status` / `soldr doctor` /
-`soldr cache` report. The crgx / cargo-chef managed pins are unaffected.
+**Prerequisite: the target version must already be published as a zccache
+release.** `cross-compile-all-targets.yml` reads the version straight out of
+the vendored manifest and demands a matching prebuilt asset, which it stages
+into the release archive:
+
+```bash
+zccache_version=$(sed -n 's/^version = "\(.*\)"/\1/p' \
+  _vender/zccache/Cargo.toml | head -n1)
+asset_metadata=$(python3 .github/scripts/toolchain_asset_query.py \
+    --platform linux --arch x86 --extra musl \
+    --version "$zccache_version" --json zccache)
+```
+
+So the pin cannot lead the release. Check before bumping — this fails fast
+and names the versions that do exist:
+
+```bash
+uv run --no-project python .github/scripts/toolchain_asset_query.py \
+  --platform linux --arch x86 --extra musl --version <new-version> --json zccache
+```
+
+If it prints `no release '<version>' in tool manifest`, publish zccache
+first. soldr#2164 moved the pin to a version with no asset; every local
+signal was green — builds, ~1460 tests, clippy, `verify_vendor_state.py`,
+`loc_ratchet` — because **none of them exercise that fetch**, and
+`bootstrap + linux-x86` went red on main instead.
+
+There is no separate managed-version constant or contract `managed_version`
+to keep in lockstep. `zccache::core::VERSION` (the vendored crate's own
+version) is what `soldr status` / `soldr doctor` / `soldr cache` report, and
+is also the string the asset query above uses. The crgx / cargo-chef managed
+pins are unaffected.
 
 ## Reference Docs
 
