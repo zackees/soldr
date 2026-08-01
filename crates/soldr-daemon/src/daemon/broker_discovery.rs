@@ -41,9 +41,51 @@ use std::path::{Path, PathBuf};
 /// always compares against the real [`SOLDR_DAEMON_SERVICE_VERSION`].
 pub(crate) const FAKE_PKG_VERSION_ENV: &str = "SOLDR_TEST_DAEMON_FAKE_PKG_VERSION";
 
+/// Where the daemon records which embedded compile store it is serving.
+///
+/// soldr#2186: staleness was decided on soldr's package version alone, but
+/// the embedded store is versioned by
+/// `zccache::core::config::versioned_subdir()` — the *vendored* zccache
+/// version, compiled into whichever binary asks — and the two move
+/// independently. Bumping `_vender/zccache` without cutting a release is
+/// the documented workflow, and soldr#2185 did exactly that: 1.12.17 →
+/// 1.13.0, still soldr 0.8.30.
+///
+/// A daemon built before such a bump keeps claiming the same package
+/// version, is adopted as current, and serves compiles out of
+/// `…/v1.12.17/…` while the front door reads `…/v1.13.0/…`. The reported
+/// symptom was an empty session-stats directory; the real one is a cache
+/// split across two store versions until that daemon happens to restart.
+///
+/// This deliberately does **not** ride in the manifest's `service_version`.
+/// That field is a cross-crate protocol value the running-process registry
+/// validates as strict `MAJOR.MINOR.PATCH`, and it rejects
+/// `0.8.30+zccache.1.13.0` outright. So the store version is a soldr-owned
+/// sidecar in soldr's own daemon directory, written and removed with the
+/// manifest claim.
+pub(crate) fn store_version_claim_path(paths: &SoldrPaths) -> PathBuf {
+    crate::cache_lib::soldr_daemon_dir(paths).join("embedded-store-version")
+}
+
+/// The embedded store version this build would read and write.
+pub(crate) fn current_store_version() -> &'static str {
+    zccache::core::VERSION
+}
+
+/// True when the running daemon's embedded store version matches this
+/// build's. A missing sidecar is a mismatch, for the same reason a missing
+/// manifest is: unknown is stale, so a newer client converges rather than
+/// adopting something it cannot name.
+pub(crate) fn store_version_claim_matches(paths: &SoldrPaths) -> bool {
+    std::fs::read_to_string(store_version_claim_path(paths))
+        .ok()
+        .is_some_and(|claimed| claimed.trim() == current_store_version())
+}
+
 /// The package version this daemon advertises in its manifest claim —
 /// normally this build's `CARGO_PKG_VERSION`, overridable by the
-/// [`FAKE_PKG_VERSION_ENV`] test seam.
+/// [`FAKE_PKG_VERSION_ENV`] test seam. The embedded store version travels
+/// separately, in [`store_version_claim_path`].
 fn claimed_service_version() -> String {
     std::env::var(FAKE_PKG_VERSION_ENV)
         .ok()
@@ -162,7 +204,16 @@ pub(crate) fn root_manifest_path(paths: &SoldrPaths) -> PathBuf {
 /// [`FAKE_PKG_VERSION_ENV`] override in tests).
 pub(crate) fn write_root_version_claim(paths: &SoldrPaths) -> Result<(), BrokerDiscoveryError> {
     let manifest = cache_manifest_builder(paths).build();
-    write_to_root_v2(&paths.root, &manifest).map_err(BrokerDiscoveryError::manifest)
+    write_to_root_v2(&paths.root, &manifest).map_err(BrokerDiscoveryError::manifest)?;
+    // soldr#2186: the manifest cannot carry this, so it rides alongside.
+    // Best-effort — a daemon that cannot write it reads as store-unknown,
+    // i.e. stale, which is the safe direction.
+    let path = store_version_claim_path(paths);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, current_store_version());
+    Ok(())
 }
 
 /// Read the package version the currently-running daemon claimed in its
@@ -283,11 +334,59 @@ mod tests {
             read_claimed_service_version(&paths).as_deref(),
             Some(env!("CARGO_PKG_VERSION")),
         );
+        // soldr#2186: the store version rides alongside the manifest.
+        assert!(store_version_claim_matches(&paths));
 
         // Removing the claim returns to version-unknown so a stale claim
         // can't outlive its writer.
         remove_root_version_claim(&paths);
         assert!(read_claimed_service_version(&paths).is_none());
+    });
+
+    // soldr#2186: the claim must name the vendored zccache version, because
+    // that is what versions the embedded store. Asserting the *shape* rather
+    // than a frozen string keeps this from needing an edit on every bump,
+    // while still failing if either half is dropped.
+    crate::timed_test!(a_missing_store_claim_reads_as_stale, {
+        // Unknown is stale, matching how a missing manifest is treated: a
+        // daemon that never recorded which store it serves cannot be shown
+        // to be serving this one. Also covers every daemon built before
+        // soldr#2186, which wrote no sidecar at all.
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().to_path_buf());
+        assert!(!store_version_claim_matches(&paths));
+    });
+
+    // The regression itself, in the terms the adoption path sees it: two
+    // builds at the same soldr version but different vendored zccache must
+    // not be mistaken for each other.
+    crate::timed_test!(same_package_version_different_store_version_is_stale, {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().to_path_buf());
+
+        // Exactly what a pre-bump daemon at this same soldr version leaves
+        // behind: a matching manifest claim, and a store version that is
+        // now one bump behind.
+        write_root_version_claim(&paths).expect("write claim");
+        let sidecar = store_version_claim_path(&paths);
+        std::fs::write(&sidecar, "0.0.0-previous").expect("write stale store version");
+
+        assert_eq!(
+            read_claimed_service_version(&paths).as_deref(),
+            Some(env!("CARGO_PKG_VERSION")),
+            "the package version alone still matches — that is the trap",
+        );
+        assert!(
+            !crate::daemon::lifecycle::current_version_claim_matches(&paths),
+            "a daemon serving a different embedded store must be displaced, \
+             even though its package version is identical",
+        );
+
+        // And the same daemon on the store this build serves is kept.
+        std::fs::write(&sidecar, current_store_version()).expect("write current store version");
+        assert!(crate::daemon::lifecycle::current_version_claim_matches(
+            &paths
+        ));
     });
 
     crate::timed_test!(read_claim_reports_a_stale_writers_version, {
@@ -312,6 +411,8 @@ mod tests {
         let manifest = soldr_daemon_cache_manifest(&paths);
 
         assert_eq!(manifest.service_name, SOLDR_DAEMON_SERVICE_NAME);
+        // The manifest carries the full identity claim, not the bare package
+        // version handed to the broker handshake (soldr#2186).
         assert_eq!(manifest.service_version, SOLDR_DAEMON_SERVICE_VERSION);
         let kinds: Vec<i32> = manifest.roots.iter().map(|r| r.kind).collect();
         assert!(kinds.contains(&(CacheRootKind::CacheData as i32)));
