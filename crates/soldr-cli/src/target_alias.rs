@@ -155,11 +155,12 @@ pub enum AliasError {
     Thirty2Bit { input: String, suggestion: String },
     #[error(
         "soldr build --target `{input}`: glibc-versioned targets are not supported. \
-         soldr's catalogue sysroots are per-triple, not per-(triple, glibc), so it \
-         cannot honour a {version} floor -- accepting this would build against \
-         whatever glibc the sysroot carries while you believe you pinned {version}. \
-         Use `{base}` for the default floor, or cargo-zigbuild if you need {version} \
-         specifically. Tracked in soldr#1060 / soldr#2139."
+         soldr's catalogue sysroots are keyed per-triple, not per-(triple, glibc), \
+         so accepting this would silently ignore the {version} you asked for. \
+         `{base}` builds against glibc 2.28 -- soldr links -gnu targets through \
+         managed zig, so that floor is deterministic rather than whatever the build \
+         machine happens to run. If you need a floor below 2.28, use cargo-zigbuild. \
+         Tracked in soldr#1060 / soldr#2139."
     )]
     GlibcVersioned {
         input: String,
@@ -482,6 +483,14 @@ mod tests {
         assert!(
             rendered.contains("aarch64-unknown-linux-gnu"),
             "the error must offer the unversioned triple: {rendered}"
+        );
+        // soldr#2157 made -gnu link through managed zig and soldr#2163
+        // measured the result, so the fallback has a *known* floor. Saying
+        // so is the difference between "we cannot pin that" and "here is
+        // what you get instead" -- the second is actionable.
+        assert!(
+            rendered.contains("2.28"),
+            "the error must name the floor the unversioned triple gives: {rendered}"
         );
     });
 
