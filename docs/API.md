@@ -1417,6 +1417,17 @@ Report-only primary kinds:
 - `cargo_installed_binaries`
 - `rustup_toolchain`
 
+**Eviction order and `in_worktree` (issue #2134).** `cargo_target`
+entries carry `in_worktree`, and `age_seconds` is the same **effective**
+age eviction uses — the more recent of soldr's registry stamp and the
+directory's mtime, because the stamp goes stale while a directory stays
+hot (a repo built with bare `cargo` never updates it). Eviction orders
+`worktree → coldest → size`, so those two fields together explain why
+any given target was chosen. Size is the last key, not the first: it
+only breaks ties between equally cold targets.
+
+`in_worktree` is omitted for kinds that have no owning workspace.
+
 **`cargo_registry_src` last-used provenance (issue #349).** When
 `soldr gc list --kind cargo_registry_src` (or unfiltered `gc list`)
 walks `$CARGO_HOME/registry/src/...`, each entry's `last_used_unix`

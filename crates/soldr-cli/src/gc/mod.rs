@@ -156,7 +156,9 @@ impl GcListKindFilter {
 // gc list / gc summary entries follow their own schema version,
 // independent of the global JSON_SCHEMA_VERSION used by other commands.
 // Bumped from 1 to 2 in #323 slice 1 when kind + purge_safety were added.
-pub(super) const GC_JSON_SCHEMA_VERSION: u32 = 2;
+// Bumped to 3 in soldr#2134 when `in_worktree` was added, following the
+// same convention slice 1 used for `kind` + `purge_safety`.
+pub(super) const GC_JSON_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Clone, Copy)]
 pub(crate) enum GcMode {
@@ -333,6 +335,12 @@ pub(super) struct GcListEntryOutput {
     pub(super) kind: &'static str,
     /// Safety class for purge (#323 slice 1). Always `derived` for now.
     pub(super) purge_safety: &'static str,
+    /// Whether this target belongs to a linked git worktree (soldr#2134).
+    /// Eviction takes these before primary checkouts, so surfacing it is
+    /// what makes the resulting order explainable rather than arbitrary.
+    /// Omitted for entry kinds that have no workspace.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) in_worktree: Option<bool>,
     /// `<name>@<version>` parsed from the directory name. Present on
     /// `cargo_registry_src` entries and omitted (via `skip_serializing_if`)
     /// on `cargo_target` entries that lack the concept (#323 slice 2).
@@ -421,7 +429,13 @@ pub(crate) fn run_gc_list_command(
             .into_par_iter()
             .map(|row| {
                 let (size_bytes, file_count) = fast_directory_size_and_files(&row.path);
-                let age_seconds = now.saturating_sub(row.last_used);
+                // soldr#2134: the same age eviction uses, not the raw
+                // registry stamp. The stamp goes stale while a directory
+                // stays hot (a repo built with bare `cargo` never updates
+                // it), so reporting it made `soldr gc target` disagree
+                // with the decision it exists to explain.
+                let age_seconds =
+                    crate::cache_lib::gc::effective_age_seconds(&row.path, row.last_used, now);
                 GcListEntryOutput {
                     path: absolute_path_string(&row.path),
                     last_used_unix: row.last_used,
@@ -432,6 +446,7 @@ pub(crate) fn run_gc_list_command(
                     file_count,
                     kind: KIND_CARGO_TARGET,
                     purge_safety: PURGE_SAFETY_DERIVED,
+                    in_worktree: Some(crate::cache_lib::gc::in_linked_git_worktree(&row.path)),
                     owner_crate: None,
                     owner_workspace: Some(
                         crate::cache_lib::target_registry::workspace_root_for_target(&row.path)

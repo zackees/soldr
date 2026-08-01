@@ -75,7 +75,7 @@ fn gc_summary_json_reports_candidates_without_deleting() {
     );
 
     let json: Value = serde_json::from_slice(&output.stdout).expect("gc --json must be JSON");
-    assert_eq!(json["schema_version"], 2);
+    assert_eq!(json["schema_version"], 3);
     assert_eq!(json["command"], "gc");
     assert_eq!(json["mode"], "summary");
     assert_eq!(json["dry_run"], true);
@@ -299,7 +299,7 @@ timed_test!(
 
         let json: Value =
             serde_json::from_slice(&output.stdout).expect("gc list --json must be JSON");
-        assert_eq!(json["schema_version"], 2);
+        assert_eq!(json["schema_version"], 3);
         assert_eq!(json["command"], "gc");
         assert_eq!(json["mode"], "list");
         let entry_count = json["entry_count"].as_u64().expect("entry_count");
@@ -386,7 +386,7 @@ fn gc_list_json_entries_include_kind_and_purge_safety_defaults() {
     assert!(output.status.success());
 
     let json: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["schema_version"], 2);
+    assert_eq!(json["schema_version"], 3);
 
     let entries = json["entries"].as_array().expect("entries");
     let entry = entries
@@ -395,6 +395,15 @@ fn gc_list_json_entries_include_kind_and_purge_safety_defaults() {
         .expect("seeded target missing from entries");
     assert_eq!(entry["kind"].as_str(), Some("cargo_target"));
     assert_eq!(entry["purge_safety"].as_str(), Some("derived"));
+    // soldr#2134: eviction ranks worktree targets ahead of primary
+    // checkouts, so the report has to say which one an entry is or the
+    // resulting order is unexplainable. A plain seeded workspace is not
+    // a linked worktree.
+    assert_eq!(
+        entry["in_worktree"].as_bool(),
+        Some(false),
+        "cargo_target entries must carry the tier that decides their eviction order"
+    );
 }
 
 #[test]
