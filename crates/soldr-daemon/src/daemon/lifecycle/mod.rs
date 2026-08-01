@@ -281,13 +281,20 @@ pub(crate) fn displacement_enabled() -> bool {
     }
 }
 
-/// True when the running daemon's published version claim matches this
-/// build's `CARGO_PKG_VERSION`. A missing claim (a pre-#1495 daemon that
-/// never wrote a manifest) is treated as a mismatch — version-unknown is
-/// stale — so a newer client always converges to a daemon it can name.
+/// True when the running daemon's published claim matches this build's
+/// identity — package version **and** vendored zccache version, since the
+/// latter is what versions the embedded store (soldr#2186; see
+/// `broker_discovery::daemon_identity_claim`).
+///
+/// A missing claim (a pre-#1495 daemon that never wrote a manifest) is
+/// treated as a mismatch — version-unknown is stale — so a newer client
+/// always converges to a daemon it can name. A daemon claiming only a bare
+/// package version, i.e. one built before this change, is stale for the
+/// same reason, and is displaced once on first contact.
 pub(crate) fn current_version_claim_matches(paths: &SoldrPaths) -> bool {
     crate::daemon::broker_discovery::read_claimed_service_version(paths)
         .is_some_and(|claimed| claimed == env!("CARGO_PKG_VERSION"))
+        && crate::daemon::broker_discovery::store_version_claim_matches(paths)
 }
 
 /// Version-aware liveness: the daemon is live (passes the existing PID +
