@@ -122,13 +122,51 @@ pub(crate) async fn prepare_target(
     Ok(prep)
 }
 
+/// Opt out of routing a **host-native** `-gnu` build through managed
+/// zig, restoring the pre-soldr#2145 behaviour of linking against the
+/// host's own glibc. Falsy values (`0`/`false`/`no`/`off`) disable.
+pub(crate) const NATIVE_GNU_LINK_ENV_VAR: &str = "SOLDR_NATIVE_GNU_LINK";
+
 fn should_prepare_managed_linux(
     os: TargetOs,
     target: &str,
     host: &str,
     legacy_zigbuild: bool,
 ) -> bool {
-    os == TargetOs::Linux && target != host && !legacy_zigbuild
+    if os != TargetOs::Linux || legacy_zigbuild {
+        return false;
+    }
+    if target != host {
+        return true;
+    }
+    // soldr#2145 / soldr#1060 item 3. A host-native `-gnu` build skipped
+    // this arm entirely and linked against whatever glibc the machine
+    // happens to run — 2.39 on the `ubuntu-24.04` release runner, which
+    // is the floor the published x86_64 artifact inherited. That is the
+    // most-downloaded Linux artifact and it was 11 glibc versions worse
+    // than the aarch64 one, purely because aarch64 is cross-built here
+    // and x86_64 is not.
+    //
+    // Routing it through the same managed zig the cross lanes use gives
+    // it the same floor (2.28, zig's default for the target) without any
+    // change to how it is built. musl is untouched: it is statically
+    // linked, so it has no glibc floor to improve.
+    target.ends_with("-unknown-linux-gnu") && native_gnu_link_enabled()
+}
+
+fn native_gnu_link_enabled() -> bool {
+    match std::env::var_os(NATIVE_GNU_LINK_ENV_VAR) {
+        None => true,
+        Some(value) => {
+            let raw = value.to_string_lossy();
+            let trimmed = raw.trim();
+            !(trimmed.is_empty()
+                || trimmed.eq_ignore_ascii_case("0")
+                || trimmed.eq_ignore_ascii_case("false")
+                || trimmed.eq_ignore_ascii_case("no")
+                || trimmed.eq_ignore_ascii_case("off"))
+        }
+    }
 }
 
 /// Preserve Cargo's custom target-spec passthrough while using the unified
@@ -594,6 +632,64 @@ mod tests {
             "x86_64-unknown-linux-gnu",
             true,
         ));
+    });
+
+    crate::timed_test!(host_native_gnu_still_goes_through_managed_zig, {
+        // soldr#2145: this is the case that used to be skipped, which is
+        // why the published x86_64 artifact inherited the release
+        // runner's glibc 2.39 while aarch64 -- cross-built -- got 2.28.
+        assert!(should_prepare_managed_linux(
+            TargetOs::Linux,
+            "x86_64-unknown-linux-gnu",
+            "x86_64-unknown-linux-gnu",
+            false,
+        ));
+    });
+
+    crate::timed_test!(host_native_musl_is_left_alone, {
+        // musl is statically linked, so it has no glibc floor to improve
+        // and nothing to gain from the detour.
+        assert!(!should_prepare_managed_linux(
+            TargetOs::Linux,
+            "x86_64-unknown-linux-musl",
+            "x86_64-unknown-linux-musl",
+            false,
+        ));
+    });
+
+    crate::timed_test!(the_native_gnu_opt_out_restores_the_old_behaviour, {
+        let _lock = crate::TEST_PROCESS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        for falsy in ["0", "false", "no", "off", ""] {
+            std::env::set_var(NATIVE_GNU_LINK_ENV_VAR, falsy);
+            assert!(
+                !should_prepare_managed_linux(
+                    TargetOs::Linux,
+                    "x86_64-unknown-linux-gnu",
+                    "x86_64-unknown-linux-gnu",
+                    false,
+                ),
+                "{falsy:?} must disable the native-gnu detour"
+            );
+        }
+        std::env::set_var(NATIVE_GNU_LINK_ENV_VAR, "1");
+        assert!(should_prepare_managed_linux(
+            TargetOs::Linux,
+            "x86_64-unknown-linux-gnu",
+            "x86_64-unknown-linux-gnu",
+            false,
+        ));
+        std::env::remove_var(NATIVE_GNU_LINK_ENV_VAR);
+        // Cross-compiling is unaffected by the opt-out either way.
+        std::env::set_var(NATIVE_GNU_LINK_ENV_VAR, "0");
+        assert!(should_prepare_managed_linux(
+            TargetOs::Linux,
+            "aarch64-unknown-linux-gnu",
+            "x86_64-unknown-linux-gnu",
+            false,
+        ));
+        std::env::remove_var(NATIVE_GNU_LINK_ENV_VAR);
     });
 
     crate::timed_test!(noncanonical_targets_do_not_advertise_blessed_operations, {
