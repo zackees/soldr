@@ -1968,15 +1968,11 @@ pub(crate) async fn run_cargo_front_door(
             } => {
                 eprintln!("{}", gc::disk::render_warn_line(free_bytes, threshold_gib));
             }
+            // soldr#2134: reclaim first, block only if that was not enough.
             gc::disk::DiskCheckOutcome::Block {
                 free_bytes,
                 threshold_gib,
-            } => {
-                return Err(SoldrError::Other(gc::disk::render_block_message(
-                    free_bytes,
-                    threshold_gib,
-                )));
-            }
+            } => gc::disk::reclaim_then_block(&watchdog_path, free_bytes, threshold_gib)?,
         }
     }
     let restore_outcome = cache_plan.restore_rust_artifacts()?;
