@@ -154,6 +154,19 @@ pub enum AliasError {
     )]
     Thirty2Bit { input: String, suggestion: String },
     #[error(
+        "soldr build --target `{input}`: glibc-versioned targets are not supported. \
+         soldr's catalogue sysroots are per-triple, not per-(triple, glibc), so it \
+         cannot honour a {version} floor -- accepting this would build against \
+         whatever glibc the sysroot carries while you believe you pinned {version}. \
+         Use `{base}` for the default floor, or cargo-zigbuild if you need {version} \
+         specifically. Tracked in soldr#1060 / soldr#2139."
+    )]
+    GlibcVersioned {
+        input: String,
+        base: String,
+        version: String,
+    },
+    #[error(
         "soldr build --target `all` is only valid for `soldr prepare --target all`; \
          expand explicitly for `soldr build`."
     )]
@@ -190,6 +203,20 @@ pub fn resolve_soldr_target(input: &str) -> Result<ResolvedTarget, AliasError> {
         return Err(AliasError::Thirty2Bit {
             input: raw.to_string(),
             suggestion: sug.to_string(),
+        });
+    }
+    // soldr#2139. cargo-zigbuild spells an old-glibc target as
+    // `<triple>.<major>.<minor>`. Without this gate the suffixed form reaches the
+    // sysroot table and fails as "no sqlite sysroot recipe for target
+    // x86_64-unknown-linux-gnu.2.17", which reads like a hole in that table
+    // rather than an unsupported request -- and invites "just strip the suffix",
+    // which would ship a binary whose glibc floor is not the one that was asked
+    // for. Say what soldr cannot do, and name the tool that can.
+    if let Some((base, version)) = check_glibc_versioned(&lower) {
+        return Err(AliasError::GlibcVersioned {
+            input: raw.to_string(),
+            base: base.to_string(),
+            version: version.to_string(),
         });
     }
 
@@ -289,6 +316,24 @@ fn check_ambiguous(input: &str) -> Option<&'static str> {
 
 /// Detect 32-bit-named inputs and suggest the 64-bit replacement.
 /// Soldr deliberately doesn't ship 32-bit triples.
+/// Split `x86_64-unknown-linux-gnu.2.17` into its base triple and the
+/// requested glibc version.
+///
+/// Anchored on `-linux-gnu` rather than matching any trailing dotted number:
+/// musl has no glibc notion, and the other platforms version their SDK
+/// differently, so a dot after those is a typo and belongs in the
+/// "did you mean" path instead.
+fn check_glibc_versioned(input: &str) -> Option<(&str, &str)> {
+    let (base, version) = input.split_once('.')?;
+    if !base.ends_with("-linux-gnu") {
+        return None;
+    }
+    // Digits and dots only, starting with a digit -- a version, not any suffix.
+    let looks_like_version = version.starts_with(|c: char| c.is_ascii_digit())
+        && version.chars().all(|c| c.is_ascii_digit() || c == '.');
+    looks_like_version.then_some((base, version))
+}
+
 fn check_thirty2_bit(input: &str) -> Option<&'static str> {
     match input {
         "win-x86" | "windows-x86" | "win-i686" | "win-i386" => Some("win-x64"),
@@ -410,6 +455,54 @@ mod tests {
             }
             other => panic!("expected Thirty2Bit, got {other:?}"),
         }
+    });
+
+    crate::timed_test!(glibc_versioned_target_is_rejected_with_its_own_error, {
+        // soldr#2139: the zigbuild spelling for an old-glibc target. Without
+        // its own gate this reached the sysroot table and came back as
+        // "no sqlite sysroot recipe for target ...", which reads like a gap in
+        // that table rather than a request soldr cannot honour.
+        let err = resolve_soldr_target("x86_64-unknown-linux-gnu.2.17").unwrap_err();
+        match err {
+            AliasError::GlibcVersioned { base, version, .. } => {
+                assert_eq!(base, "x86_64-unknown-linux-gnu");
+                assert_eq!(version, "2.17");
+            }
+            other => panic!("expected GlibcVersioned, got {other:?}"),
+        }
+
+        // The message has to name the alternative, or the user is stuck.
+        let rendered = resolve_soldr_target("aarch64-unknown-linux-gnu.2.28")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            rendered.contains("zigbuild"),
+            "the error must point at a tool that can do it: {rendered}"
+        );
+        assert!(
+            rendered.contains("aarch64-unknown-linux-gnu"),
+            "the error must offer the unversioned triple: {rendered}"
+        );
+    });
+
+    crate::timed_test!(only_glibc_triples_take_the_versioned_path, {
+        // The gate keys on `-linux-gnu`, so nothing else is diverted into an
+        // error about a libc it does not have.
+        for input in [
+            "x86_64-unknown-linux-musl.2.17",
+            "x86_64-apple-darwin.11.0",
+            "x86_64-unknown-linux-gnu.foo",
+        ] {
+            let err = resolve_soldr_target(input).unwrap_err();
+            assert!(
+                !matches!(err, AliasError::GlibcVersioned { .. }),
+                "{input} must not be treated as glibc-versioned, got {err:?}"
+            );
+        }
+
+        // And the plain triple still resolves, i.e. the gate did not widen.
+        let ok = resolve_soldr_target("x86_64-unknown-linux-gnu").unwrap();
+        assert_eq!(ok.rust_triple, "x86_64-unknown-linux-gnu");
     });
 
     crate::timed_test!(all_alias_rejected_for_build, {
