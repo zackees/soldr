@@ -96,13 +96,22 @@ pub async fn ensure_syslib_bundle(
     // Resolve sha256 from the toolchain catalogue. The catalogue is
     // process-cached; the first call inside soldr's run fetches the
     // document, subsequent ones hit the OnceLock.
-    let entry = catalogue_entry_for_url(&url).await.ok_or_else(|| {
-        SoldrError::Other(format!(
-            "syslib bundle for {lib}/{version}/{slug} not yet ingested into the \
-             soldr-toolchain catalogue. Expected URL: {url}\n\
-             Track: https://github.com/zackees/soldr/issues/1064"
-        ))
-    })?;
+    let entry = match catalogue_entry_for_url(&url).await {
+        Some(entry) => entry,
+        None => {
+            // soldr#2132 item 4: two very different causes used to produce the
+            // same message. "Not yet ingested" is a real state, but so is "the
+            // catalogue never loaded", and blaming ingestion for a network
+            // failure sends the reader to the wrong repository.
+            return Err(SoldrError::Other(missing_catalogue_entry_message(
+                lib,
+                version,
+                slug,
+                &url,
+                manifest_lookup::get_or_fetch().await.entries.is_empty(),
+            )));
+        }
+    };
     let expected_sha256 = entry.sha256.clone();
 
     eprintln!("soldr: fetching syslib {lib}/{version}/{slug} from {url}...");
@@ -222,6 +231,36 @@ async fn catalogue_entry_for_url(url: &str) -> Option<manifest_lookup::ManifestE
     index.entries.iter().find(|e| e.url == url).cloned()
 }
 
+/// The error for a syslib bundle with no catalogue entry.
+///
+/// soldr#2132 item 4. `catalogue_empty` distinguishes the two causes that used
+/// to share one message: an index that loaded but does not list this asset
+/// (a genuine ingestion gap) versus an index that never loaded at all (a
+/// network failure several steps earlier, already warned about by
+/// `manifest_lookup::get_or_fetch`).
+fn missing_catalogue_entry_message(
+    lib: &str,
+    version: &str,
+    slug: &str,
+    url: &str,
+    catalogue_empty: bool,
+) -> String {
+    if catalogue_empty {
+        format!(
+            "syslib bundle for {lib}/{version}/{slug} cannot be resolved because the \
+             soldr-toolchain catalogue is empty -- it failed to load earlier in this \
+             run (see the warning above). This is a fetch failure, not a missing \
+             asset. Expected URL: {url}"
+        )
+    } else {
+        format!(
+            "syslib bundle for {lib}/{version}/{slug} not yet ingested into the \
+             soldr-toolchain catalogue. Expected URL: {url}\n\
+             Track: https://github.com/zackees/soldr/issues/1064"
+        )
+    }
+}
+
 fn extract_tar_zst(data: &[u8], dest: &Path) -> Result<(), SoldrError> {
     let reader = std::io::Cursor::new(data);
     let zst = zstd::stream::read::Decoder::new(reader)
@@ -298,5 +337,40 @@ mod tests {
             .parse()
             .unwrap();
         assert_eq!(final_count, 8, "install lock must serialize writers");
+    });
+
+    crate::timed_test!(missing_entry_message_names_the_real_cause, {
+        // An index that loaded but does not list the asset: a genuine
+        // ingestion gap, and the tracking issue is the right pointer.
+        let ingestion_gap =
+            missing_catalogue_entry_message("zstd", "1.5.6", "linux-x64-gnu", "https://x/y", false);
+        assert!(
+            ingestion_gap.contains("not yet ingested"),
+            "expected the ingestion wording: {ingestion_gap}"
+        );
+        assert!(ingestion_gap.contains("issues/1064"));
+
+        // An index that never loaded: a fetch failure several steps earlier.
+        // Blaming ingestion here sends the reader to the wrong repository,
+        // which is what soldr#2132 item 4 is about.
+        let never_loaded =
+            missing_catalogue_entry_message("zstd", "1.5.6", "linux-x64-gnu", "https://x/y", true);
+        assert!(
+            never_loaded.contains("catalogue is empty"),
+            "expected the fetch-failure wording: {never_loaded}"
+        );
+        assert!(
+            never_loaded.contains("not a missing asset"),
+            "must say plainly that the asset is not the problem: {never_loaded}"
+        );
+        assert!(
+            !never_loaded.contains("not yet ingested"),
+            "must NOT blame ingestion for a fetch failure: {never_loaded}"
+        );
+
+        // Both name the asset, so the message is actionable either way.
+        for message in [&ingestion_gap, &never_loaded] {
+            assert!(message.contains("zstd/1.5.6/linux-x64-gnu"), "{message}");
+        }
     });
 }
