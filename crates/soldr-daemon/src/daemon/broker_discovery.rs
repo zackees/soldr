@@ -230,6 +230,12 @@ pub fn read_claimed_service_version(paths: &SoldrPaths) -> Option<String> {
 /// displaced daemon so a stale claim can't outlive its writer.
 pub(crate) fn remove_root_version_claim(paths: &SoldrPaths) {
     let _ = std::fs::remove_file(root_manifest_path(paths));
+    // soldr#2186: the store-version sidecar is half of the same claim, so
+    // it retracts with it. Leaving it behind is not a correctness problem
+    // — a claim is only believed when the manifest is present too — but a
+    // stale file that outlives the daemon that wrote it is exactly the
+    // kind of residue this function exists to prevent.
+    let _ = std::fs::remove_file(store_version_claim_path(paths));
 }
 
 /// The concrete on-disk roots soldr records in its cache manifest.
@@ -338,9 +344,10 @@ mod tests {
         assert!(store_version_claim_matches(&paths));
 
         // Removing the claim returns to version-unknown so a stale claim
-        // can't outlive its writer.
+        // can't outlive its writer -- both halves of it (soldr#2186).
         remove_root_version_claim(&paths);
         assert!(read_claimed_service_version(&paths).is_none());
+        assert!(!store_version_claim_path(&paths).exists());
     });
 
     // soldr#2186: the claim must name the vendored zccache version, because
