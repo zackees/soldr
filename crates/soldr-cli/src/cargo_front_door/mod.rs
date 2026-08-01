@@ -1701,7 +1701,7 @@ pub(crate) async fn run_cargo_front_door(
     let subcommand_env_overrides = compute_subcommand_env_overrides(args);
 
     let mut command = std::process::Command::new(&cargo);
-    command.args(args);
+    command.args(crate::target_alias::args_without_glibc_floor(args).iter());
     crate::binaries::apply_resolved_toolchain_homes(&mut command, &cargo);
     suppress_windows_console_window(&mut command);
     // These Soldr control variables are consumed by this front-door

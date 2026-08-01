@@ -301,13 +301,6 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             // forward otherwise unchanged.
             if let Some(target_triple) = extract_target_from_args(&full_args) {
                 let paths = crate::core::SoldrPaths::new()?;
-                // soldr#2139: `target_triple` keeps any `.<glibc>` floor,
-                // because preparation is what acts on it. Every *cargo* child
-                // below gets the bare triple -- rustc does not know the
-                // suffixed spelling, and both children read it from argv.
-                target_alias::strip_glibc_floor_in_args(&mut full_args);
-                let cargo_target = target_alias::split_glibc_floor(&target_triple)
-                    .map_or(target_triple.as_str(), |(base, _)| base);
                 // soldr#1543: start a bounded `cargo fetch --locked
                 // --target <T>` NOW so dependency acquisition overlaps
                 // the catalogue/SDK materialization below. Joined
@@ -317,7 +310,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 // failures are logged + ignored — the main build owns
                 // real dependency errors.
                 let dep_prefetch =
-                    crate::fetch_overlap::spawn_for_blessed_build(&full_args, cargo_target);
+                    crate::fetch_overlap::spawn_for_blessed_build(&full_args, &target_triple);
                 let prep =
                     crate::target_lifecycle::prepare_for_invocation(&paths, &target_triple).await?;
                 let cargo_args = prep.cargo_args.clone();

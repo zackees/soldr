@@ -71,13 +71,37 @@ pub fn normalize_target_aliases_in_args(args: &mut [String]) {
     }
 }
 
-/// Rewrite `--target <triple>.<glibc>` to the bare triple, in place.
+/// `args` with any `--target <triple>.<glibc>` reduced to the bare triple.
 ///
-/// soldr#2139: the `.<glibc>` suffix is a soldr-level spelling that says
-/// "ask zig for this floor". rustc has never heard of it, so it must not reach
-/// the child cargo -- or `cargo fetch`, which is a second child on this path.
-/// Stripping happens once, here, immediately after the target has been read
-/// for preparation, so no later code has to remember to do it.
+/// soldr#2139: the `.<glibc>` suffix is a soldr-level spelling meaning "ask
+/// zig for this floor". rustc has never heard of it, so it must not reach a
+/// cargo child. This is applied at each place a cargo process is actually
+/// spawned rather than once in the caller, because the blessed path spawns
+/// two -- the build itself and `cargo fetch` -- and a rule enforced at the
+/// boundary cannot be forgotten by a future third.
+///
+/// Borrows when there is nothing to strip, which is the overwhelmingly common
+/// case, so the ordinary build path allocates nothing.
+pub fn args_without_glibc_floor(args: &[String]) -> std::borrow::Cow<'_, [String]> {
+    let needs_strip = args.iter().enumerate().any(|(index, arg)| {
+        arg.strip_prefix("--target=")
+            .map(|value| split_glibc_floor(value).is_some())
+            .unwrap_or_else(|| {
+                arg == "--target"
+                    && args
+                        .get(index + 1)
+                        .is_some_and(|next| split_glibc_floor(next).is_some())
+            })
+    });
+    if !needs_strip {
+        return std::borrow::Cow::Borrowed(args);
+    }
+    let mut stripped = args.to_vec();
+    strip_glibc_floor_in_args(&mut stripped);
+    std::borrow::Cow::Owned(stripped)
+}
+
+/// In-place form of [`args_without_glibc_floor`].
 pub fn strip_glibc_floor_in_args(args: &mut [String]) {
     let mut index = 0;
     while index < args.len() {
@@ -554,6 +578,8 @@ mod tests {
             "--release".to_string(),
         ];
         strip_glibc_floor_in_args(&mut split);
+        // The borrowing form must agree, since it is what the spawn uses.
+        assert_eq!(args_without_glibc_floor(&split).as_ref(), split.as_slice());
         assert_eq!(split[2], "x86_64-unknown-linux-gnu");
         assert_eq!(split[3], "--release", "unrelated args must be untouched");
 
