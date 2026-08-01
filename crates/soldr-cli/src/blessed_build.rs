@@ -35,7 +35,9 @@ use std::process::{Command, Stdio};
 
 use crate::core::{SoldrError, SoldrPaths};
 
+mod links_provider;
 mod lzma_override;
+mod mimalloc_override;
 
 /// Env var that opts out of the blessed xwin-cache materialization
 /// and falls through to cargo-xwin's own live download for win-msvc
@@ -771,14 +773,10 @@ async fn inject_sys_library_overrides(
         Err(e) => log_sys_unavailable("sqlite", target_triple, &e),
     }
 
-    // libmimalloc-sys has `links = "mimalloc"` but no target-scoped
-    // env hook. Use Cargo's build-script override config instead;
-    // that skips libmimalloc-sys/build.rs entirely and supplies the
-    // link metadata directly.
-    match crate::fetch::mimalloc_sysroot::ensure_mimalloc_sysroot(paths, target_triple).await {
-        Ok(sysroot) => add_mimalloc_build_script_override(prep, target_triple, &sysroot),
-        Err(e) => log_sys_unavailable("mimalloc", target_triple, &e),
-    }
+    // libmimalloc-sys → Cargo build-script override (not pkg-config;
+    // it has no target-scoped env hook). Gated on who actually
+    // provides `links = "mimalloc"` — see the module docs.
+    mimalloc_override::inject(paths, target_triple, prep).await;
 
     // libz-ng-sys → PKG_CONFIG_PATH_<triple>
     match crate::fetch::zlib_ng_sysroot::ensure_zlib_ng_sysroot(paths, target_triple).await {
@@ -814,30 +812,6 @@ fn prepend_pkg_config_path_for_target(
     } else {
         prep.env.push((var_name, new_entry));
     }
-}
-
-fn add_mimalloc_build_script_override(
-    prep: &mut BlessedPrep,
-    target_triple: &str,
-    sysroot: &std::path::Path,
-) {
-    let table = format!("target.{target_triple}.mimalloc");
-    let lib_dir = sysroot.join("lib");
-    let include_dir = sysroot.join("include");
-    prep.cargo_args.extend([
-        "--config".to_string(),
-        format!("{table}.rustc-link-lib=[\"static=mimalloc\"]"),
-        "--config".to_string(),
-        format!(
-            "{table}.rustc-link-search=[{}]",
-            toml_string(&lib_dir.to_string_lossy())
-        ),
-        "--config".to_string(),
-        format!(
-            "{table}.metadata_include_dir={}",
-            toml_string(&include_dir.to_string_lossy())
-        ),
-    ]);
 }
 
 fn toml_string(value: &str) -> String {
@@ -1398,28 +1372,6 @@ mod tests {
             );
             assert!(prep.path_dirs.is_empty());
         }
-    });
-
-    crate::timed_test!(mimalloc_build_script_override_uses_target_config, {
-        let tmp = tempfile::tempdir().expect("tmpdir");
-        let sysroot = tmp.path().join("mimalloc sysroot");
-        let mut prep = BlessedPrep::default();
-
-        add_mimalloc_build_script_override(&mut prep, "x86_64-unknown-linux-gnu", &sysroot);
-
-        assert_eq!(prep.cargo_args.len(), 6);
-        assert_eq!(prep.cargo_args[0], "--config");
-        assert_eq!(
-            prep.cargo_args[1],
-            "target.x86_64-unknown-linux-gnu.mimalloc.rustc-link-lib=[\"static=mimalloc\"]"
-        );
-        assert_eq!(prep.cargo_args[2], "--config");
-        assert!(prep.cargo_args[3]
-            .starts_with("target.x86_64-unknown-linux-gnu.mimalloc.rustc-link-search=[\""));
-        assert!(prep.cargo_args[3].contains("mimalloc sysroot"));
-        assert_eq!(prep.cargo_args[4], "--config");
-        assert!(prep.cargo_args[5]
-            .starts_with("target.x86_64-unknown-linux-gnu.mimalloc.metadata_include_dir=\""));
     });
 
     crate::timed_test!(xwin_cflags_emits_imsvc_for_present_dirs, {

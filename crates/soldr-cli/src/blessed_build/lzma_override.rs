@@ -1,7 +1,10 @@
 //! Target-scoped Cargo override for managed static liblzma bundles.
 
-use super::{toml_string, BlessedPrep};
+use super::{links_provider, toml_string, BlessedPrep};
 use crate::core::SoldrPaths;
+
+/// The crate the managed liblzma bundle was cut to match.
+const LZMA_SYS_CRATE: &str = "lzma-sys";
 
 pub(super) async fn inject(paths: &SoldrPaths, target_triple: &str, prep: &mut BlessedPrep) {
     match crate::fetch::lzma_sysroot::ensure_lzma_sysroot(paths, target_triple).await {
@@ -10,7 +13,20 @@ pub(super) async fn inject(paths: &SoldrPaths, target_triple: &str, prep: &mut B
             // Managed Linux bundles contain only a static liblzma archive.
             // pkg-config's unqualified `-llzma` is rejected by rust-lld's
             // cross-target no-fallback policy, so select it explicitly.
-            if target_triple.contains("-unknown-linux-") {
+            //
+            // Unlike the pkg-config path above — advice a build script
+            // may ignore — this override *replaces* the build script, so
+            // it may only be applied when the crate claiming
+            // `links = "lzma"` is the one the bundle matches. Same
+            // reasoning as the mimalloc gate; see soldr#2142.
+            if target_triple.contains("-unknown-linux-")
+                && links_provider::resolve(
+                    &std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+                    "lzma",
+                    target_triple,
+                )
+                .is(LZMA_SYS_CRATE)
+            {
                 add_static_links_override(prep, target_triple, &sysroot);
             }
         }
