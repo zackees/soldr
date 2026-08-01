@@ -57,6 +57,22 @@ use purge::{
 // soldr gc — garbage-collect stale Cargo target/ directories.
 // ---------------------------------------------------------------------------
 
+/// Delete one `target/` for `gc target --purge`.
+///
+/// A directory that is already gone is **success**, not a failure. GC walks a
+/// plan built earlier in the run, so another process — or the user, or an
+/// earlier entry whose parent contained this one — can legitimately have
+/// removed it in between. Counting that as a failure both inflates the
+/// failure count and makes the command exit non-zero for work that is done
+/// (soldr#2199).
+fn remove_target_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    match std::fs::remove_dir_all(dir) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
 // Slice 1 of #323: scaffold the kind/purge_safety discriminator on gc JSON
 // entries. Every entry emitted today is a workspace target/ dir, so every
 // entry is tagged `cargo_target` / `derived`. Later slices add walkers that
@@ -694,7 +710,7 @@ pub(crate) fn run_gc_target_command(args: crate::cli_args::GcTargetArgs) -> Resu
 
         if proceed {
             for entry in &entries {
-                match std::fs::remove_dir_all(&entry.target_dir) {
+                match remove_target_dir(&entry.target_dir) {
                     Ok(()) => {
                         purged_count += 1;
                         purged_bytes = purged_bytes.saturating_add(entry.size_bytes);
@@ -740,6 +756,16 @@ pub(crate) fn run_gc_target_command(args: crate::cli_args::GcTargetArgs) -> Resu
             failed_count,
             if failed_count == 1 { "" } else { "s" },
         );
+        // soldr#2199: the count alone is undiagnosable. The reporting user
+        // saw "1 failure" with no path and no reason, and the cause only
+        // surfaced after reproducing the delete by hand. The error was
+        // already captured for `--json`; say it here too.
+        for failure in &failures {
+            eprintln!(
+                "soldr gc target:   {}: {}",
+                failure.target_dir, failure.error
+            );
+        }
     }
 
     if args.purge && failed_count > 0 {

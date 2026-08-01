@@ -475,3 +475,23 @@ crate::timed_test!(
         assert_eq!(stale.last_used_source, Some("global_cache"));
     }
 );
+
+// soldr#2199: `gc target --purge` counted an already-missing directory as a
+// failure, which inflates failed_count and makes the command exit non-zero
+// for work that is already done. GC deletes from a plan built earlier in the
+// run, so the window is real.
+crate::timed_test!(remove_target_dir_treats_a_missing_directory_as_success, {
+    let temp = tempfile::tempdir().expect("tempdir");
+    super::remove_target_dir(&temp.path().join("already-gone"))
+        .expect("an absent target/ is not a purge failure");
+});
+
+crate::timed_test!(remove_target_dir_still_removes_a_real_tree, {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let target = temp.path().join("target");
+    std::fs::create_dir_all(target.join("debug")).expect("mkdir");
+    std::fs::write(target.join("debug/blob.bin"), b"x").expect("write");
+
+    super::remove_target_dir(&target).expect("a real tree must still be removed");
+    assert!(!target.exists(), "tree survived: {}", target.display());
+});
