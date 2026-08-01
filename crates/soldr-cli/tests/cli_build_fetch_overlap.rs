@@ -193,6 +193,13 @@ impl Harness {
             // any such stall into `<context> timed out after 20 seconds`, which
             // names the caller instead of hanging.
             .env("SOLDR_COMMAND_OUTPUT_TIMEOUT_SECS", "20")
+            // soldr#2159: and the invariant itself, rather than one more
+            // opt-out. Four separate fetch paths have opened up under this
+            // suite; each fix was locally right and globally incomplete
+            // because nothing made a *new* one fail. This turns a fifth
+            // into an immediate error naming the fetch, instead of a slow
+            // suite that aborts at the 120s watchdog saying nothing.
+            .env("SOLDR_TEST_NO_NETWORK", "1")
             // Isolate from any outer environment that would change the
             // overlap decision.
             .env_remove("CARGO_NET_OFFLINE")

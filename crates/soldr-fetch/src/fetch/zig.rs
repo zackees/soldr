@@ -153,6 +153,7 @@ async fn download_zig_asset(url: &str) -> Result<Vec<u8>, SoldrError> {
 }
 
 fn zig_http_client() -> Result<reqwest::Client, SoldrError> {
+    super::net_guard::ensure_network_allowed("managed zig")?;
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(120))
