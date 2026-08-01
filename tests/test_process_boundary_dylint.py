@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,8 +14,23 @@ def test_root_workspace_loads_process_boundary_dylint() -> None:
 def test_required_ci_runs_root_dylint_policy() -> None:
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert "Enforce daemon process-creation boundary" in workflow
-    assert "soldr cargo install cargo-dylint --version 6.0.1 --locked" in workflow
-    assert "soldr cargo install dylint-link --version 6.0.1 --locked" in workflow
+    # The version is pinned once in `DYLINT_VERSION` and read by both the
+    # install lines and the binary cache key, so this asserts the *pin* rather
+    # than a literal command string. The literal broke when the installs were
+    # cached (they now read `${DYLINT_VERSION}`) even though the pin was intact
+    # -- an assertion that fails on a refactor it should not care about is
+    # testing the spelling, not the policy.
+    assert re.search(
+        r"^      DYLINT_VERSION: \d+\.\d+\.\d+$", workflow, re.M
+    ), "the dylint version must stay pinned to an exact release in one place"
+    assert (
+        'soldr cargo install cargo-dylint --version "${DYLINT_VERSION}" --locked'
+        in workflow
+    )
+    assert (
+        'soldr cargo install dylint-link --version "${DYLINT_VERSION}" --locked'
+        in workflow
+    )
     assert "Install Dylint toolchain" in workflow
     assert "soldr rustup toolchain install" in workflow
     assert "--component rustc-dev" in workflow

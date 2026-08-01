@@ -86,6 +86,11 @@ jobs:
     # would be the structural fix and is left as follow-up; this stops the
     # gate lying first.
     timeout-minutes: 30
+    env:
+      # One definition: the cache key and both `cargo install` lines read
+      # this, so the key cannot describe a version other than the one
+      # actually installed.
+      DYLINT_VERSION: 6.0.1
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -378,10 +383,33 @@ jobs:
       - name: Run clippy
         run: soldr cargo clippy --workspace --all-targets --locked -- -D warnings
 
-      - name: Install Dylint
+      # soldr#1978. `cargo install cargo-dylint` compiles from source, and on a
+      # run where the Rust cache misses it is the most expensive step in this
+      # job: 168s of a 10m51s run.
+      #
+      # `Swatinem/rust-cache` above does restore `~/.cargo/bin` when it hits --
+      # measured: the same install takes 1s on a warm run. The gap this closes
+      # is that its key is invalidated by lockfile and toolchain changes, which
+      # happen constantly, while these two binaries only change when
+      # DYLINT_VERSION does. Keying them separately means the 168s rebuild is
+      # paid once per version bump instead of once per dependency change.
+      #
+      # Same shape as `Cache rustup ... / Install ... (if not cached)` earlier
+      # in this job.
+      - name: Cache Dylint binaries
+        id: dylint_bins
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            ~/.cargo/bin/cargo-dylint
+            ~/.cargo/bin/dylint-link
+          key: dylint-bins-${{ env.DYLINT_VERSION }}-linux-x64-v1
+
+      - name: Install Dylint (if not cached)
+        if: steps.dylint_bins.outputs.cache-hit != 'true'
         run: |
-          soldr cargo install cargo-dylint --version 6.0.1 --locked
-          soldr cargo install dylint-link --version 6.0.1 --locked
+          soldr cargo install cargo-dylint --version "${DYLINT_VERSION}" --locked
+          soldr cargo install dylint-link --version "${DYLINT_VERSION}" --locked
 
       - name: Install Dylint toolchain
         run: >-
