@@ -113,11 +113,26 @@ pub(super) fn survey(dir: &Path) -> Survivors {
 }
 
 /// [`survey`] rendered for a log line, skipping the walk when `dir` is gone.
+///
+/// soldr#2199: the census says what survived; a running process mapped from
+/// the tree says *why*, and is the only measured cause of the error the
+/// original report saw. Name it when there is one -- "pid 4321 (held.exe) is
+/// running from this tree" is something a user can act on, where "3 entries
+/// remain" is not.
 pub(super) fn describe(dir: &Path) -> Option<String> {
     if !dir.exists() {
         return None;
     }
-    survey(dir).summarize()
+    let census = survey(dir).summarize();
+    let holders = super::holding_process::summarize(&super::holding_process::holders_under(dir));
+    match (census, holders) {
+        (Some(census), Some(holders)) => Some(format!("{census}; {holders}")),
+        (Some(census), None) => Some(census),
+        // Worth reporting even with an empty census: a holder explains a
+        // failure whose tree has since drained.
+        (None, Some(holders)) => Some(holders),
+        (None, None) => None,
+    }
 }
 
 #[cfg(test)]
