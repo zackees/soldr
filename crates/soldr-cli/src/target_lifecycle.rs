@@ -130,13 +130,54 @@ pub(crate) async fn prepare_target(
                 format!("CARGO_TARGET_{upper}_LINKER"),
                 tools.linker.to_string_lossy().into_owned(),
             ),
-            (
+        ]);
+        // `-C link-self-contained` is not accepted on every target, and
+        // passing it where it is unsupported is a hard rustc error rather
+        // than a warning:
+        //
+        //   error: option `-C link-self-contained` is not supported on this target
+        //
+        // It exists here to stop rustc bundling its own startup objects when
+        // zig is the linker, which is an x86_64 concern; targets that reject
+        // the flag do not do that bundling in the first place, so omitting it
+        // is not a behaviour change for them.
+        //
+        // This only surfaces on a *host-native* aarch64 build, because the
+        // cross lanes drive aarch64 from an x86_64 host. The release workflow
+        // is the one place that builds aarch64 natively, so it broke there
+        // and nowhere else.
+        if supports_link_self_contained(base) {
+            prep.env.push((
                 format!("CARGO_TARGET_{upper}_RUSTFLAGS"),
                 "-C link-self-contained=no".to_string(),
-            ),
-        ]);
+            ));
+        }
     }
     Ok(prep)
+}
+
+/// Whether `rustc` accepts `-C link-self-contained` for `target`.
+///
+/// The split is **gnu vs musl**, not architecture. Every musl target links
+/// self-contained by default and accepts the flag; among glibc targets only
+/// x86_64 does. `aarch64-unknown-linux-gnu` rejects it outright, which is
+/// what broke the v0.8.31 release build.
+///
+/// Getting this wrong fails in *both* directions, so neither half is
+/// cosmetic:
+///
+/// - Passing it where unsupported is a hard rustc error
+///   (`option -C link-self-contained is not supported on this target`).
+/// - **Omitting it on musl is equally fatal**, because zig already supplies
+///   `crt1.o`, and letting rustc add its own self-contained copy gives
+///   `ld.lld: error: duplicate symbol: _start`. My first version of this
+///   allowlist was `x86_64-` only and did exactly that to
+///   `aarch64-unknown-linux-musl`.
+///
+/// So an unknown target defaults to omitting, which is safe only because
+/// every target that *needs* the flag is named here explicitly.
+fn supports_link_self_contained(base_triple: &str) -> bool {
+    base_triple.ends_with("-musl") || base_triple.starts_with("x86_64-")
 }
 
 /// Opt out of routing a **host-native** `-gnu` build through managed
@@ -872,5 +913,43 @@ mod tests {
         }
         let clean = ["clean", "--target", "linux-arm64"].map(str::to_string);
         assert!(!cargo_operation_requires_prep(&clean));
+    });
+}
+
+#[cfg(test)]
+mod link_self_contained_tests {
+    use super::supports_link_self_contained;
+    use crate::timed_test;
+
+    // A native aarch64 release build failed with
+    //   error: option `-C link-self-contained` is not supported on this target
+    // because managed-zig prep injected the flag unconditionally. Only the
+    // release workflow builds aarch64 natively -- every other lane drives it
+    // from an x86_64 host -- so nothing else exercised this path.
+    // The release failure: rustc rejects the flag outright here.
+    timed_test!(aarch64_gnu_does_not_get_link_self_contained, {
+        assert!(!supports_link_self_contained("aarch64-unknown-linux-gnu"));
+    });
+
+    // The opposite failure, and the reason this is not simply "skip aarch64":
+    // zig supplies crt1.o for musl, so omitting the flag lets rustc add its
+    // own self-contained copy and the link dies with
+    //   ld.lld: error: duplicate symbol: _start
+    // My first allowlist was `x86_64-` only and broke exactly this target.
+    timed_test!(every_musl_target_still_gets_it, {
+        assert!(supports_link_self_contained("aarch64-unknown-linux-musl"));
+        assert!(supports_link_self_contained("x86_64-unknown-linux-musl"));
+    });
+
+    timed_test!(x86_64_gnu_still_gets_it, {
+        assert!(supports_link_self_contained("x86_64-unknown-linux-gnu"));
+    });
+
+    // Unknown targets must default to *not* passing the flag: passing it
+    // where unsupported is a hard error, while omitting it merely restores
+    // the pre-managed-zig linking behaviour.
+    timed_test!(an_unknown_target_defaults_to_omitting_the_flag, {
+        assert!(!supports_link_self_contained("riscv64gc-unknown-linux-gnu"));
+        assert!(!supports_link_self_contained("powerpc64le-unknown-linux"));
     });
 }
