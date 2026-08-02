@@ -238,10 +238,23 @@ pub fn run_cache_sweep_trash_command(json: bool) -> Result<(), SoldrError> {
             report.removed, report.retained
         );
         if report.retained > 0 {
+            // soldr#2199: the count alone cannot distinguish "the daemon is
+            // busy, try later" from "a running binary lives in here and no
+            // amount of retrying will help". Print the OS errors -- they are
+            // the whole diagnosis, and they were previously discarded.
             eprintln!(
-                "  ({} entries still daemon-held; re-run `sweep-trash` after the daemon idles)",
+                "  ({} entries retained; re-run `sweep-trash` once whatever holds them exits)",
                 report.retained
             );
+            for reason in &report.reasons {
+                eprintln!("    {reason}");
+            }
+            if report.retained as usize > report.reasons.len() {
+                eprintln!(
+                    "    ... and {} more",
+                    report.retained as usize - report.reasons.len()
+                );
+            }
         }
     }
     Ok(())
