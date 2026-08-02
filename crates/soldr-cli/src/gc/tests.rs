@@ -495,3 +495,19 @@ crate::timed_test!(remove_target_dir_still_removes_a_real_tree, {
     super::remove_target_dir(&target).expect("a real tree must still be removed");
     assert!(!target.exists(), "tree survived: {}", target.display());
 });
+
+// soldr#2134: the block-tier reclaim runs synchronously in front of a build
+// that is already blocked, so it must be bounded. The budget itself is the
+// contract; a value large enough to be indistinguishable from unbounded on a
+// dirty volume would silently reintroduce the stall.
+crate::timed_test!(the_block_tier_prune_budget_is_bounded_and_plausible, {
+    let budget = super::auto::BLOCK_TIER_PRUNE_BUDGET;
+    assert!(
+        budget >= std::time::Duration::from_secs(5),
+        "too short to remove even one large target/: {budget:?}",
+    );
+    assert!(
+        budget <= std::time::Duration::from_secs(120),
+        "a budget this large is the unbounded stall soldr#2134 asked to avoid: {budget:?}",
+    );
+});
