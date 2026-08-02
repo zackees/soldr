@@ -231,6 +231,10 @@ pub mod optimize;
 pub mod optimize_detect;
 pub mod optimize_windows;
 pub mod prepare_cmd;
+/// Precedence contract for `soldr prepare --github-env`'s exported Rust flags.
+/// Separate module because `prepare_cmd` is over the LOC ratchet's ceiling.
+#[cfg(test)]
+mod prepare_env_contract_tests;
 /// soldr#939 — PyO3 auto-detection via cargo metadata.
 pub mod pyo3_detect;
 pub mod release_sidecar;

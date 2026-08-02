@@ -56,7 +56,7 @@ fn append_env(path: Option<&Path>, key: &str, value: &str) -> Result<(), SoldrEr
     Ok(())
 }
 
-fn apply_blessed_prep_env(
+pub(crate) fn apply_blessed_prep_env(
     github_env_path: Option<&Path>,
     prep: &crate::blessed_build::BlessedPrep,
 ) -> Result<(), SoldrError> {
