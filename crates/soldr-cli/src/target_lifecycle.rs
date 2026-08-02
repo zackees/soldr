@@ -241,7 +241,21 @@ fn cargo_operation_requires_prep(args: &[String]) -> bool {
 ///
 /// `apply_to_process` additionally promotes Rust flags into Cargo's encoded
 /// highest-precedence form and clears the lower-precedence global variable.
-/// Export-only preparation folds encoded flags into the target key instead.
+///
+/// This function folds any *ambient* `CARGO_ENCODED_RUSTFLAGS` into the target
+/// key, which is what lets the target key carry a complete value. Note that it
+/// does not follow that the target key is what ends up winning: both callers
+/// also export the encoded form afterwards —
+/// `apply_to_process` into the process, and
+/// `prepare_cmd::apply_blessed_prep_env` into `$GITHUB_ENV` — and
+/// `CARGO_ENCODED_RUSTFLAGS` outranks `CARGO_TARGET_<triple>_RUSTFLAGS` in
+/// Cargo's precedence order.
+///
+/// The practical consequence for consumers: a `CARGO_TARGET_*_RUSTFLAGS` set
+/// *before* preparation is folded in and survives, but one set *afterwards* is
+/// inert, because the exported encoded value already outranks it. Downstream
+/// build scripts that want to add a flag after `soldr prepare` must append to
+/// `CARGO_ENCODED_RUSTFLAGS` (see zackees/clud#732).
 pub(crate) fn resolved_env(prep: &BlessedPrep) -> Vec<(String, String)> {
     prep.env
         .iter()
