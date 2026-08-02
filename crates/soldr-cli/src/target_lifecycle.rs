@@ -130,13 +130,41 @@ pub(crate) async fn prepare_target(
                 format!("CARGO_TARGET_{upper}_LINKER"),
                 tools.linker.to_string_lossy().into_owned(),
             ),
-            (
+        ]);
+        // `-C link-self-contained` is not accepted on every target, and
+        // passing it where it is unsupported is a hard rustc error rather
+        // than a warning:
+        //
+        //   error: option `-C link-self-contained` is not supported on this target
+        //
+        // It exists here to stop rustc bundling its own startup objects when
+        // zig is the linker, which is an x86_64 concern; targets that reject
+        // the flag do not do that bundling in the first place, so omitting it
+        // is not a behaviour change for them.
+        //
+        // This only surfaces on a *host-native* aarch64 build, because the
+        // cross lanes drive aarch64 from an x86_64 host. The release workflow
+        // is the one place that builds aarch64 natively, so it broke there
+        // and nowhere else.
+        if supports_link_self_contained(base) {
+            prep.env.push((
                 format!("CARGO_TARGET_{upper}_RUSTFLAGS"),
                 "-C link-self-contained=no".to_string(),
-            ),
-        ]);
+            ));
+        }
     }
     Ok(prep)
+}
+
+/// Whether `rustc` accepts `-C link-self-contained` for `target`.
+///
+/// Deliberately an allowlist rather than a denylist: passing the flag where
+/// it is unsupported is a hard error, so an unknown target must default to
+/// *not* passing it. The cost of omitting it on a target that would have
+/// accepted it is that rustc links its own startup objects, which is the
+/// pre-managed-zig behaviour and merely suboptimal.
+fn supports_link_self_contained(base_triple: &str) -> bool {
+    base_triple.starts_with("x86_64-")
 }
 
 /// Opt out of routing a **host-native** `-gnu` build through managed
@@ -858,5 +886,34 @@ mod tests {
         }
         let clean = ["clean", "--target", "linux-arm64"].map(str::to_string);
         assert!(!cargo_operation_requires_prep(&clean));
+    });
+}
+
+#[cfg(test)]
+mod link_self_contained_tests {
+    use super::supports_link_self_contained;
+    use crate::timed_test;
+
+    // A native aarch64 release build failed with
+    //   error: option `-C link-self-contained` is not supported on this target
+    // because managed-zig prep injected the flag unconditionally. Only the
+    // release workflow builds aarch64 natively -- every other lane drives it
+    // from an x86_64 host -- so nothing else exercised this path.
+    timed_test!(aarch64_linux_does_not_get_link_self_contained, {
+        assert!(!supports_link_self_contained("aarch64-unknown-linux-gnu"));
+        assert!(!supports_link_self_contained("aarch64-unknown-linux-musl"));
+    });
+
+    timed_test!(x86_64_linux_still_gets_it, {
+        assert!(supports_link_self_contained("x86_64-unknown-linux-gnu"));
+        assert!(supports_link_self_contained("x86_64-unknown-linux-musl"));
+    });
+
+    // Unknown targets must default to *not* passing the flag: passing it
+    // where unsupported is a hard error, while omitting it merely restores
+    // the pre-managed-zig linking behaviour.
+    timed_test!(an_unknown_target_defaults_to_omitting_the_flag, {
+        assert!(!supports_link_self_contained("riscv64gc-unknown-linux-gnu"));
+        assert!(!supports_link_self_contained("powerpc64le-unknown-linux"));
     });
 }
