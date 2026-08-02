@@ -56,7 +56,7 @@ fn append_env(path: Option<&Path>, key: &str, value: &str) -> Result<(), SoldrEr
     Ok(())
 }
 
-fn apply_blessed_prep_env(
+pub(crate) fn apply_blessed_prep_env(
     github_env_path: Option<&Path>,
     prep: &crate::blessed_build::BlessedPrep,
 ) -> Result<(), SoldrError> {
@@ -826,64 +826,6 @@ mod tests {
     use super::*;
     use crate::TEST_PROCESS_ENV_LOCK as ENV_LOCK;
     use std::ffi::{OsStr, OsString};
-
-    /// The export-only path must not silently drop a consumer's pre-existing
-    /// target-scoped rustflags.
-    ///
-    /// `apply_blessed_prep_env` exports `CARGO_ENCODED_RUSTFLAGS`, which
-    /// outranks both `RUSTFLAGS` and `CARGO_TARGET_<triple>_RUSTFLAGS` in
-    /// Cargo's precedence order. So whatever it writes there is the *only*
-    /// thing that takes effect -- anything the caller had set in the
-    /// lower-precedence variables is inert from that point on, and must
-    /// therefore be folded in rather than shadowed.
-    ///
-    /// `apply_to_process` has covered this since
-    /// `applying_target_flags_consumes_higher_precedence_globals`
-    /// (target_lifecycle.rs). The `--github-env` path had no equivalent, and
-    /// it is the one CI actually runs: zackees/clud#732 spent a cycle on
-    /// exactly this precedence rule after a soldr bump moved the MSVC link
-    /// configuration into the encoded variable.
-    crate::timed_test!(exported_encoded_rustflags_keep_caller_target_flags, {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-        let target_key = "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS";
-        let _target = EnvVarGuard::set(target_key, "-C link-arg=advapi32.lib");
-        let _global = EnvVarGuard::set("RUSTFLAGS", "-Dwarnings");
-        let _encoded = EnvVarGuard::remove("CARGO_ENCODED_RUSTFLAGS");
-
-        let mut prep = crate::blessed_build::BlessedPrep::default();
-        prep.env.push((
-            target_key.to_string(),
-            "-C link-arg=/LIBPATH:/soldr/sdk".to_string(),
-        ));
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let github_env = dir.path().join("github.env");
-        apply_blessed_prep_env(Some(&github_env), &prep).expect("apply prep env");
-
-        let exported = std::fs::read_to_string(&github_env).expect("read github env");
-        let encoded_line = exported
-            .lines()
-            .find_map(|line| line.strip_prefix("CARGO_ENCODED_RUSTFLAGS="))
-            .expect("CARGO_ENCODED_RUSTFLAGS was not exported");
-        let tokens: Vec<&str> = encoded_line.split('\u{1f}').collect();
-
-        // The SDK flags soldr itself requires.
-        assert!(
-            tokens.contains(&"link-arg=/LIBPATH:/soldr/sdk"),
-            "required SDK flag missing from {tokens:?}"
-        );
-        // The caller's own target-scoped flag, which the encoded variable
-        // would otherwise shadow into oblivion.
-        assert!(
-            tokens.contains(&"link-arg=advapi32.lib"),
-            "caller's target-scoped flag was dropped from {tokens:?}"
-        );
-        // And the lower-precedence global.
-        assert!(
-            tokens.contains(&"-Dwarnings"),
-            "caller's global RUSTFLAGS was dropped from {tokens:?}"
-        );
-    });
 
     struct EnvVarGuard {
         key: &'static str,
