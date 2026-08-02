@@ -662,6 +662,15 @@ struct Tier2Outcome {
     on_volume_matched: usize,
 }
 
+/// Wall-clock ceiling for the synchronous reclaim that runs in front of a
+/// blocked build (soldr#2134).
+///
+/// 30s is chosen to be longer than any plausible single `target/` removal and
+/// far shorter than the stall it replaces. The tier only ever deletes cold,
+/// off-build-tree candidates larger than 256 MB, so the common case finishes
+/// well inside it and the budget is invisible.
+pub(super) const BLOCK_TIER_PRUNE_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
+
 fn run_soldr_target_purge_background(
     paths: &SoldrPaths,
     workspace_targets: &[std::path::PathBuf],
@@ -700,9 +709,24 @@ fn run_soldr_target_purge_background(
     let mut on_volume_matched = 0usize;
     let on_volume: std::collections::HashSet<&std::path::Path> =
         workspace_targets.iter().map(|p| p.as_path()).collect();
+    // soldr#2134: bounded, because this runs *synchronously* in front of a
+    // build that is already blocked. Without a deadline the stall is as long
+    // as the volume is dirty -- on a machine with many large stale targets
+    // that is minutes, spent deleting, with no output. Deleting is
+    // best-effort by construction, so stopping early simply leaves the
+    // remaining candidates for the next pass (or for the block message).
+    let deadline = std::time::Instant::now() + BLOCK_TIER_PRUNE_BUDGET;
+    let mut budget_exhausted = false;
     for cand in report.candidates {
         if !on_volume.contains(cand.path.as_path()) {
             continue;
+        }
+        // Checked before the delete, not after: one more multi-gigabyte
+        // removal past the deadline is exactly what the budget exists to
+        // prevent.
+        if std::time::Instant::now() >= deadline {
+            budget_exhausted = true;
+            break;
         }
         on_volume_matched += 1;
         let bytes = cand.size_bytes;
@@ -711,6 +735,13 @@ fn run_soldr_target_purge_background(
             reclaimed = reclaimed.saturating_add(bytes);
             let _ = registry.remove(&outcome.candidate.path);
         }
+    }
+    if budget_exhausted {
+        eprintln!(
+            "soldr: reclaim budget ({}s) reached with candidates remaining;              freed {} so far. Run `soldr gc target --purge` to finish.",
+            BLOCK_TIER_PRUNE_BUDGET.as_secs(),
+            crate::cache_lib::target_registry::human_size(reclaimed),
+        );
     }
     Tier2Outcome {
         reclaimed,
