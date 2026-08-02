@@ -163,6 +163,9 @@ mod sweep_reporting_tests {
     crate::timed_test!(reported_reasons_are_capped, {
         assert_eq!(MAX_REPORTED_REASONS, 5);
         let report = SweepReport::default();
-        assert!(report.reasons.is_empty(), "a clean sweep reports no reasons");
+        assert!(
+            report.reasons.is_empty(),
+            "a clean sweep reports no reasons"
+        );
     });
 }
