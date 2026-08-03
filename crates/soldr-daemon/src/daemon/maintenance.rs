@@ -823,13 +823,27 @@ mod tests {
                 registry.upsert_with_time(&target, 0).expect("seed row");
             }
 
-            let mut child =
-                std::process::Command::new(std::env::current_exe().expect("test executable"))
-                    .args(["--exact", SWEEP_CHILD_TEST, "--nocapture"])
-                    .env(FS_BARRIER_ROOT_ENV, &root)
-                    .env(FS_BARRIER_DIR_ENV, &barrier)
-                    .spawn()
-                    .expect("spawn sweep child");
+            // Configured with `std::process::Command`, executed through
+            // running-process: this crate's process-creation boundary is
+            // enforced by the `ban_raw_process_creation` dylint, tests
+            // included.
+            let mut command =
+                std::process::Command::new(std::env::current_exe().expect("test executable"));
+            command
+                .args(["--exact", SWEEP_CHILD_TEST, "--nocapture"])
+                .env(FS_BARRIER_ROOT_ENV, &root)
+                .env(FS_BARRIER_DIR_ENV, &barrier);
+            let mut child = running_process::spawn(
+                &mut command,
+                running_process::SpawnStdio {
+                    stdin: running_process::StdioSource::Null,
+                    stdout: running_process::StdioSource::Parent,
+                    stderr: running_process::StdioSource::Parent,
+                    drain_timeout: Some(Duration::from_secs(5)),
+                    show_console: false,
+                },
+            )
+            .expect("spawn sweep child");
 
             let sweeping = barrier.join("sweeping");
             let deadline = std::time::Instant::now() + Duration::from_secs(45);
@@ -887,7 +901,7 @@ mod tests {
             let elapsed = started.elapsed();
 
             std::fs::write(barrier.join("release"), b"").expect("release sweep child");
-            let status = child.wait().expect("wait for sweep child");
+            let exit_code = child.wait().expect("wait for sweep child");
 
             result.unwrap_or_else(|error| {
                 panic!(
@@ -901,7 +915,7 @@ mod tests {
                 "the fallback stalled {elapsed:?} waiting for the sweep's handle; it must \
                  not wait at all (soldr#2224)"
             );
-            assert!(status.success(), "sweep child failed");
+            assert_eq!(exit_code, 0, "sweep child failed");
             // The record really landed, not just "the open succeeded".
             let stored = db::get_build(&db_path, 4242).expect("read back");
             assert_eq!(stored.expect("record persisted").session_id, 4242);
