@@ -120,6 +120,12 @@ pushing a branch and waiting on CI, but the two target families now use
 one blessed build surface:
 
 - Linux cross targets use managed Zig internally through `soldr build`.
+  Here, **blessed** describes soldr's target-driven surface, not a Zig-free
+  implementation: soldr invokes `zig cc` / `zig c++` directly through its own
+  wrappers rather than delegating to the legacy `cargo zigbuild` subcommand.
+  Since soldr v0.8.29, `soldr prepare --github-env` also exports the managed
+  Zig directory on `PATH` for later external tools. Replacing managed Zig on
+  GNU Linux is tracked separately in #2220.
 - macOS targets use `soldr build --target <apple-triple>`. That path resolves
   the target-aware Apple SDK row and injects clang/SDK env internally. Direct
   `soldr cargo zigbuild --target *-apple-darwin` is a legacy/diagnostic path,
