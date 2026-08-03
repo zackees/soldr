@@ -2933,6 +2933,7 @@ name = "soldr-daemon"
 version = "0.8.31"
 dependencies = [
  "console-subscriber",
+ "filetime",
  "fs2",
  "hex",
  "libc",

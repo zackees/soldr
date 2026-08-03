@@ -31,6 +31,7 @@ console-subscriber = { workspace = true, optional = true }
 zccache = { version = "1.13.0", path = "../../_vender/zccache/crates/zccache", default-features = false, features = ["cli"] }
 
 [dev-dependencies]
+filetime = { workspace = true }
 zccache = { version = "1.13.0", path = "../../_vender/zccache/crates/zccache", default-features = false, features = ["test-support"] }
 
 [features]
