@@ -1,7 +1,30 @@
-//! Daemon-side redb tables for build session correlation. Opens
-//! `~/.soldr/state.redb` per call
-//! and drops the handle on return — redb refuses concurrent multi-
-//! process opens and the wrapper / GC tools open the same file directly.
+//! Daemon-side redb tables for build session correlation, stored in the
+//! shared `~/.soldr/state.redb`.
+//!
+//! ## Open once, not once per operation (soldr#2224)
+//!
+//! Every public entry point comes in two shapes:
+//!
+//! * `foo(db_path, ..)` — opens the database, runs one operation, drops
+//!   the handle. Convenient, and correct for a caller that does exactly
+//!   one thing.
+//! * [`foo_in(&db, ..)`](get_build_in) — runs against a handle the caller
+//!   already owns.
+//!
+//! A caller that performs several operations back to back **must** open
+//! one [`StateDbHandle`] via [`open_handle`] and use the `_in` variants.
+//! redb takes an exclusive whole-file lock per `Database` handle, so N
+//! path-taking calls are N independent acquire/release cycles that three
+//! separate process classes (daemon, `soldr cargo` front door, and the
+//! per-compile rustc wrapper) contend for. That is what turned a
+//! documented redb constraint into the lock storm reported in soldr#2223.
+//!
+//! ## Read paths never write (soldr#2224)
+//!
+//! Table creation happens in [`ensure_initialized`] and implicitly inside
+//! write transactions (redb's `open_table` creates on write). Read paths
+//! tolerate a missing table as "empty" instead of running a `begin_write`
+//! + `commit` — a durable fsync — just to assert three tables exist.
 //!
 //! Tables live alongside the existing `target_registry_targets`:
 //! - `daemon_builds`        : u64 session_id → tagged-byte BuildRecord
@@ -70,6 +93,36 @@ pub struct Event {
 /// `Database already open. Cannot acquire lock.` (#608).
 fn open_db(path: &Path) -> Result<StateDbHandle, RegistryError> {
     Ok(open_state_db(path)?)
+}
+
+/// Public [`open_db`]: acquire the state database **once** for a caller
+/// that is about to run several operations through the `_in` variants
+/// (soldr#2224).
+pub fn open_handle(db_path: &Path) -> Result<StateDbHandle, RegistryError> {
+    open_db(db_path)
+}
+
+/// Open a table for reading, mapping "the table was never created" to
+/// `None` rather than an error.
+///
+/// This is what lets read paths skip [`init_tables`]: a `state.redb` that
+/// no daemon has written yet has no `daemon_*` tables, and the honest
+/// answer to "list the builds" there is an empty list — not a write
+/// transaction that creates three tables so the read can find them empty
+/// (soldr#2224).
+fn read_table<K, V>(
+    txn: &redb::ReadTransaction,
+    definition: TableDefinition<'static, K, V>,
+) -> Result<Option<redb::ReadOnlyTable<K, V>>, RegistryError>
+where
+    K: redb::Key + 'static,
+    V: redb::Value + 'static,
+{
+    match txn.open_table(definition) {
+        Ok(table) => Ok(Some(table)),
+        Err(redb::TableError::TableDoesNotExist(_)) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn init_tables(db: &Database) -> Result<(), RegistryError> {
@@ -167,10 +220,9 @@ fn next_event_id(db: &Database) -> Result<u64, RegistryError> {
     Ok(next)
 }
 
-pub fn append_event(db_path: &Path, event: &Event) -> Result<(), RegistryError> {
-    let db = open_db(db_path)?;
-    init_tables(&db)?;
-    let id = next_event_id(&db)?;
+/// Append one event using a handle the caller already owns (soldr#2224).
+pub fn append_event_in(db: &Database, event: &Event) -> Result<(), RegistryError> {
+    let id = next_event_id(db)?;
     let bytes = prost_tagged_bytes(&wire::event_to_wire(event));
     let txn = db.begin_write()?;
     {
@@ -181,9 +233,13 @@ pub fn append_event(db_path: &Path, event: &Event) -> Result<(), RegistryError> 
     Ok(())
 }
 
-pub fn upsert_build(db_path: &Path, record: &BuildRecord) -> Result<(), RegistryError> {
+pub fn append_event(db_path: &Path, event: &Event) -> Result<(), RegistryError> {
     let db = open_db(db_path)?;
-    init_tables(&db)?;
+    append_event_in(&db, event)
+}
+
+/// Insert-or-replace a build record using a caller-owned handle (soldr#2224).
+pub fn upsert_build_in(db: &Database, record: &BuildRecord) -> Result<(), RegistryError> {
     let bytes = prost_tagged_bytes(&wire::build_record_to_wire(record));
     let txn = db.begin_write()?;
     {
@@ -194,15 +250,28 @@ pub fn upsert_build(db_path: &Path, record: &BuildRecord) -> Result<(), Registry
     Ok(())
 }
 
-pub fn get_build(db_path: &Path, session_id: u64) -> Result<Option<BuildRecord>, RegistryError> {
+pub fn upsert_build(db_path: &Path, record: &BuildRecord) -> Result<(), RegistryError> {
     let db = open_db(db_path)?;
-    init_tables(&db)?;
+    upsert_build_in(&db, record)
+}
+
+/// Read one build record using a caller-owned handle (soldr#2224).
+///
+/// Pure read: no table initialization, no write transaction.
+pub fn get_build_in(db: &Database, session_id: u64) -> Result<Option<BuildRecord>, RegistryError> {
     let txn = db.begin_read()?;
-    let builds = txn.open_table(BUILDS)?;
+    let Some(builds) = read_table(&txn, BUILDS)? else {
+        return Ok(None);
+    };
     let Some(row) = builds.get(session_id)? else {
         return Ok(None);
     };
     decode_build_row(row.value()).map(Some)
+}
+
+pub fn get_build(db_path: &Path, session_id: u64) -> Result<Option<BuildRecord>, RegistryError> {
+    let db = open_db(db_path)?;
+    get_build_in(&db, session_id)
 }
 
 /// Clear archive payload paths after history retention removes the matching
@@ -220,7 +289,6 @@ pub fn mark_archives_unavailable(
         .copied()
         .collect::<std::collections::HashSet<_>>();
     let db = open_db(db_path)?;
-    init_tables(&db)?;
     let txn = db.begin_write()?;
     let mut updated = 0_u64;
     {
@@ -262,7 +330,6 @@ pub fn clear_legacy_archive_paths(
         .copied()
         .collect::<std::collections::HashSet<_>>();
     let db = open_db(db_path)?;
-    init_tables(&db)?;
     let txn = db.begin_write()?;
     let mut updated = 0_u64;
     {
@@ -309,7 +376,6 @@ pub fn finalize_build(
 ) -> Result<BuildRecord, RegistryError> {
     let (crate_count, slowest_crate_us, slowest_crate_name) = aggregate;
     let db = open_db(db_path)?;
-    init_tables(&db)?;
     let txn = db.begin_write()?;
     let record = {
         let mut builds = txn.open_table(BUILDS)?;
@@ -377,9 +443,10 @@ pub fn list_builds(
     since_ms: Option<i64>,
 ) -> Result<Vec<BuildRecord>, RegistryError> {
     let db = open_db(db_path)?;
-    init_tables(&db)?;
     let txn = db.begin_read()?;
-    let builds = txn.open_table(BUILDS)?;
+    let Some(builds) = read_table(&txn, BUILDS)? else {
+        return Ok(Vec::new());
+    };
     let mut rows: Vec<BuildRecord> = Vec::new();
     for entry in builds.iter()? {
         let (_, v) = entry?;
@@ -402,9 +469,10 @@ pub fn list_slow_builds(
     limit: u32,
 ) -> Result<Vec<BuildRecord>, RegistryError> {
     let db = open_db(db_path)?;
-    init_tables(&db)?;
     let txn = db.begin_read()?;
-    let builds = txn.open_table(BUILDS)?;
+    let Some(builds) = read_table(&txn, BUILDS)? else {
+        return Ok(Vec::new());
+    };
     let mut rows: Vec<BuildRecord> = Vec::new();
     for entry in builds.iter()? {
         let (_, v) = entry?;
@@ -427,9 +495,18 @@ pub fn list_events_for_session(
     session_id: u64,
 ) -> Result<Vec<Event>, RegistryError> {
     let db = open_db(db_path)?;
-    init_tables(&db)?;
+    list_events_for_session_in(&db, session_id)
+}
+
+/// [`list_events_for_session`] against a caller-owned handle (soldr#2224).
+pub fn list_events_for_session_in(
+    db: &Database,
+    session_id: u64,
+) -> Result<Vec<Event>, RegistryError> {
     let txn = db.begin_read()?;
-    let events = txn.open_table(EVENTS)?;
+    let Some(events) = read_table(&txn, EVENTS)? else {
+        return Ok(Vec::new());
+    };
     let mut rows: Vec<Event> = Vec::new();
     for entry in events.iter()? {
         let (_, v) = entry?;
@@ -448,9 +525,18 @@ pub fn aggregate_session(
     session_id: u64,
 ) -> Result<(u32, Option<u64>, Option<String>), RegistryError> {
     let db = open_db(db_path)?;
-    init_tables(&db)?;
+    aggregate_session_in(&db, session_id)
+}
+
+/// [`aggregate_session`] against a caller-owned handle (soldr#2224).
+pub fn aggregate_session_in(
+    db: &Database,
+    session_id: u64,
+) -> Result<(u32, Option<u64>, Option<String>), RegistryError> {
     let txn = db.begin_read()?;
-    let events = txn.open_table(EVENTS)?;
+    let Some(events) = read_table(&txn, EVENTS)? else {
+        return Ok((0, None, None));
+    };
     let mut start_count: u32 = 0;
     let mut end_count: u32 = 0;
     let mut slowest_us: Option<u64> = None;
@@ -485,11 +571,12 @@ pub fn aggregate_session(
 /// number of rows removed.
 pub fn prune_events_older_than(db_path: &Path, cutoff_ms: i64) -> Result<u64, RegistryError> {
     let db = open_db(db_path)?;
-    init_tables(&db)?;
     let mut to_delete: Vec<u64> = Vec::new();
     {
         let txn = db.begin_read()?;
-        let events = txn.open_table(EVENTS)?;
+        let Some(events) = read_table(&txn, EVENTS)? else {
+            return Ok(0);
+        };
         for entry in events.iter()? {
             let (k, v) = entry?;
             let event = decode_event_row(v.value())?;
@@ -524,6 +611,7 @@ pub fn db_path(paths: &crate::core::SoldrPaths) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use redb::TableHandle;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tempfile::TempDir;
 
@@ -723,6 +811,45 @@ mod tests {
         let removed = prune_events_older_than(&path, 3_000).expect("prune");
         assert_eq!(removed, 1);
     }
+
+    // soldr#2224 acceptance: no read path performs a write commit.
+    //
+    // Every read used to call `init_tables` first — a `begin_write` +
+    // `commit`, i.e. a durable fsync — purely to assert three tables
+    // exist. On a database nobody has written yet the tables must simply
+    // stay absent, and the reads must answer "empty" rather than creating
+    // them.
+    crate::timed_test!(read_paths_never_create_tables, {
+        let temp = TempDir::new().expect("tempdir");
+        let path = temp.path().join("state.redb");
+
+        assert_eq!(get_build(&path, 1).expect("get_build"), None);
+        assert!(list_builds(&path, 10, None)
+            .expect("list_builds")
+            .is_empty());
+        assert!(list_slow_builds(&path, 0, 10)
+            .expect("list_slow_builds")
+            .is_empty());
+        assert!(list_events_for_session(&path, 1)
+            .expect("list_events")
+            .is_empty());
+        assert_eq!(
+            aggregate_session(&path, 1).expect("aggregate"),
+            (0, None, None)
+        );
+        assert_eq!(prune_events_older_than(&path, 0).expect("prune"), 0);
+
+        let db = open_db(&path).expect("open");
+        let txn = db.begin_read().expect("read txn");
+        for name in ["daemon_builds", "daemon_events", "daemon_meta"] {
+            assert!(
+                !txn.list_tables()
+                    .expect("list tables")
+                    .any(|handle| handle.name() == name),
+                "read paths must not have created `{name}` (soldr#2224)"
+            );
+        }
+    });
 
     /// `ensure_initialized` evicts pre-#580 (untagged) rows on first
     /// startup. Subsequent calls find nothing to drop.

@@ -233,81 +233,9 @@ fn retry_timed_out_cargo_without_cache(
     wait_for_cargo_child(&mut child, "soldr no-cache cargo retry", None)
 }
 
-fn new_build_record(
-    session_id: u64,
-    repo_root: String,
-    started_at_ms: i64,
-) -> crate::daemon::protocol::BuildRecord {
-    crate::daemon::protocol::BuildRecord {
-        session_id,
-        repo_root,
-        started_at_ms,
-        ended_at_ms: None,
-        exit_code: None,
-        total_wall_ms: None,
-        crate_count: 0,
-        slowest_crate_us: None,
-        slowest_crate_name: None,
-        cache_summary: None,
-        log_paths: None,
-        miss_reasons: Vec::new(),
-    }
-}
-
-fn persist_build_session_end_fallback(
-    paths: &SoldrPaths,
-    session_id: u64,
-    exit_code: i32,
-    ended_at_ms: i64,
-) {
-    if let Err(err) =
-        persist_build_session_end_fallback_inner(paths, session_id, exit_code, ended_at_ms)
-    {
-        eprintln!(
-            "soldr warning: failed to persist build-session end fallback for {session_id}: {err}"
-        );
-    }
-}
-
-fn persist_build_session_end_fallback_inner(
-    paths: &SoldrPaths,
-    session_id: u64,
-    exit_code: i32,
-    ended_at_ms: i64,
-) -> Result<(), SoldrError> {
-    let db_path = crate::cache_lib::data_db_path(paths);
-    let mut record = crate::daemon::db::get_build(&db_path, session_id)
-        .map_err(|e| SoldrError::Other(format!("read build history: {e}")))?
-        .unwrap_or_else(|| {
-            let repo_root = std::env::current_dir()
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|_| ".".to_string());
-            new_build_record(session_id, repo_root, ended_at_ms)
-        });
-    let (crate_count, slowest_crate_us, slowest_crate_name) =
-        crate::daemon::db::aggregate_session(&db_path, session_id).unwrap_or((0, None, None));
-    record.ended_at_ms = Some(ended_at_ms);
-    record.exit_code = Some(exit_code);
-    record.total_wall_ms = Some((ended_at_ms - record.started_at_ms).max(0) as u64);
-    record.crate_count = crate_count;
-    record.slowest_crate_us = slowest_crate_us;
-    record.slowest_crate_name = slowest_crate_name;
-    crate::daemon::db::upsert_build(&db_path, &record)
-        .map_err(|e| SoldrError::Other(format!("write build history: {e}")))?;
-    let _ = crate::daemon::db::append_event(
-        &db_path,
-        &crate::daemon::db::Event {
-            ts_ms: ended_at_ms,
-            session_id: Some(session_id),
-            kind: crate::daemon::db::EventKind::SessionEnd,
-            crate_name: None,
-            duration_us: None,
-            target_dir: None,
-            exit_code: Some(exit_code),
-        },
-    );
-    Ok(())
-}
+#[cfg(test)]
+use build_session::persist_build_session_end_fallback_inner;
+use build_session::{new_build_record, persist_build_session_end_fallback};
 
 #[derive(Clone, Copy)]
 struct BuildLogHistoryRequest<'a> {

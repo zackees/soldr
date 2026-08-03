@@ -21,6 +21,9 @@
 
 pub mod backend_handle_adoption;
 pub mod broker_discovery;
+/// soldr#2224 — the three IPC handlers that touch `state.redb`, split
+/// out of the oversized `server.rs`.
+pub mod build_session_ops;
 pub mod client;
 /// soldr#1857 — always-on JSONL record of compiles the daemon ran but
 /// could not hand back to the wrapper. The artifact that distinguishes
@@ -32,6 +35,9 @@ pub mod compile_delivery;
 /// the zccache#939 buffer-elimination plan failed to find.
 pub mod compile_trace;
 pub mod db;
+/// soldr#2224 — `spawn_blocking` wrappers so a contended `state.redb`
+/// open never parks a tokio worker thread.
+pub mod db_async;
 /// soldr#1857 — the compile/disconnect race and the durable record of
 /// what a lost connection cost. Split out of `server.rs`.
 pub mod disconnect;

@@ -58,6 +58,28 @@ impl OpenIntent {
     }
 }
 
+thread_local! {
+    /// Count of successful `state.redb` opens **on this thread**.
+    ///
+    /// Exists to make "this path acquires the database at most once"
+    /// (soldr#2224) an assertable property rather than a code-reading
+    /// exercise. Every acquisition is an exclusive whole-file lock with its
+    /// own contention budget, so the count is the thing that matters.
+    ///
+    /// Per-thread, not process-wide, and that is the whole point: libtest
+    /// runs cases concurrently in one process and plenty of them open the
+    /// state DB, so a global counter would make any assertion on it a
+    /// coin flip. The paths being measured are synchronous and single-
+    /// threaded, so a thread-local reading is exact.
+    static OPEN_COUNT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Snapshot of this thread's successful-open count. Take a reading before
+/// and after a call to learn how many times it acquired the state database.
+pub fn state_db_open_count() -> u64 {
+    OPEN_COUNT.with(|count| count.get())
+}
+
 /// Shared global lock guarding every in-process `Database::open` on
 /// `state.redb`. Both `daemon::db` and `cache_lib::cook_index` go
 /// through this lock — they open the same file.
@@ -124,6 +146,7 @@ fn open_state_db_with_retry(
     loop {
         match Database::builder().create(path) {
             Ok(db) => {
+                OPEN_COUNT.with(|count| count.set(count.get().saturating_add(1)));
                 // Issue #1814: the retry loop (#1655) is a rare cold path, not
                 // a routine one. Staying silent when it fires is what let
                 // multi-process contention masquerade as an unexplained stall,
@@ -551,6 +574,28 @@ mod tests {
             "a resolved wait must not write a durable record from inside the \
              open critical section"
         );
+    });
+
+    // soldr#2224: the open counter is the mechanism two other tests use to
+    // assert "this path opens state.redb exactly once", so it has to count
+    // opens rather than calls, and it has to be immune to whatever else the
+    // suite is doing in parallel.
+    crate::timed_test!(the_open_counter_counts_this_threads_opens, {
+        let _test_guard = serial_test_guard();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("state.redb");
+
+        let before = state_db_open_count();
+        drop(open_state_db(&path).expect("first open"));
+        drop(open_state_db(&path).expect("second open"));
+        assert_eq!(state_db_open_count() - before, 2);
+
+        // Another thread's opens are not ours.
+        let other = path.clone();
+        std::thread::spawn(move || drop(open_state_db(&other).expect("other-thread open")))
+            .join()
+            .expect("other thread");
+        assert_eq!(state_db_open_count() - before, 2);
     });
 
     // A clean open must not write a contention record - otherwise the log
