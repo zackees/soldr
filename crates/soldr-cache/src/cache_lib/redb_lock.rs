@@ -16,13 +16,36 @@
 //! by declaring `db` before `_guard`.
 
 use redb::Database;
+use std::collections::HashMap;
 use std::ops::Deref;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 const OPEN_RETRY_TIMEOUT: Duration = Duration::from_secs(5);
 const OPEN_RETRY_DELAY: Duration = Duration::from_millis(10);
+
+/// Ceiling for the exponential backoff (issue #2230).
+///
+/// A 5 s budget with a fixed 10 ms delay is ~500 attempts, essentially all of
+/// which are guaranteed to fail: the holder is doing unbounded filesystem work,
+/// not releasing between two consecutive polls. Doubling from 10 ms and capping
+/// at 400 ms turns the same budget into ~13 attempts.
+const OPEN_RETRY_MAX_DELAY: Duration = Duration::from_millis(400);
+
+/// Consecutive budget exhaustions on one database path before the breaker
+/// opens (issue #2230). The field evidence had a single pid log 235 consecutive
+/// full-budget failures without ever adapting.
+const BREAKER_THRESHOLD: u32 = 5;
+
+/// How long the breaker stays open before the next opener is allowed to probe.
+const BREAKER_COOLOFF: Duration = Duration::from_secs(5);
+
+/// Minimum spacing between durable forensic records for one database path
+/// (issue #2230). Exhaustions inside the window are counted and folded into the
+/// next emitted record instead of each writing their own near-identical line.
+const FORENSIC_SUMMARY_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Budget for best-effort openers on a latency-critical path
 /// ([`open_state_db_best_effort`], issue #1814).
@@ -97,13 +120,7 @@ pub fn state_db_open_lock() -> &'static Mutex<()> {
 /// that transient variant; corruption, upgrade, and I/O errors remain
 /// immediate failures.
 pub fn open_state_db(path: &Path) -> Result<StateDbHandle, redb::DatabaseError> {
-    open_state_db_with_retry(
-        path,
-        OPEN_RETRY_TIMEOUT,
-        OPEN_RETRY_DELAY,
-        OpenIntent::Required,
-        || {},
-    )
+    open_state_db_with_retry(path, RetryPolicy::required(), OpenIntent::Required, || {})
 }
 
 /// Open the shared state database for a latency-critical, losable write
@@ -121,22 +138,114 @@ pub fn open_state_db(path: &Path) -> Result<StateDbHandle, redb::DatabaseError> 
 pub fn open_state_db_best_effort(path: &Path) -> Result<StateDbHandle, redb::DatabaseError> {
     open_state_db_with_retry(
         path,
-        BEST_EFFORT_OPEN_TIMEOUT,
-        OPEN_RETRY_DELAY,
+        RetryPolicy::best_effort(),
         OpenIntent::BestEffort,
         || {},
     )
 }
 
+/// Everything the contended-open path is allowed to tune, in one injectable
+/// bundle (issue #2230).
+///
+/// Injectable so the tests can exercise backoff shape, the circuit breaker, and
+/// the forensic rate limiter in milliseconds instead of sleeping out real
+/// multi-second budgets.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RetryPolicy {
+    /// Total wall-clock budget for one open.
+    pub timeout: Duration,
+    /// First backoff sleep; doubles after every failed attempt.
+    pub initial_delay: Duration,
+    /// Ceiling for the doubling, so a long budget stays responsive.
+    pub max_delay: Duration,
+    /// Consecutive budget exhaustions on a path before the breaker opens.
+    pub breaker_threshold: u32,
+    /// How long an open breaker suppresses opens on that path.
+    pub breaker_cooloff: Duration,
+    /// Minimum spacing between durable forensic records for a path.
+    pub summary_interval: Duration,
+}
+
+impl RetryPolicy {
+    /// Budget for correctness-critical openers.
+    pub(crate) fn required() -> Self {
+        Self {
+            timeout: OPEN_RETRY_TIMEOUT,
+            initial_delay: OPEN_RETRY_DELAY,
+            max_delay: OPEN_RETRY_MAX_DELAY,
+            breaker_threshold: BREAKER_THRESHOLD,
+            breaker_cooloff: BREAKER_COOLOFF,
+            summary_interval: FORENSIC_SUMMARY_INTERVAL,
+        }
+    }
+
+    /// Budget for losable bookkeeping writes on a latency-critical path.
+    pub(crate) fn best_effort() -> Self {
+        Self {
+            timeout: BEST_EFFORT_OPEN_TIMEOUT,
+            ..Self::required()
+        }
+    }
+}
+
+/// Backoff sleep for `attempt` (1-based), exponential and jittered.
+///
+/// Full-jitter: the delay is drawn from `[base/2, base)` where `base` doubles
+/// per attempt up to `max_delay`. The halving keeps the total sequence inside
+/// the same budget while de-synchronising N contenders — a fixed delay makes
+/// every waiter poll in lockstep, so they all miss the same release window and
+/// then all collide on the next one.
+fn backoff_delay(policy: &RetryPolicy, attempt: u32) -> Duration {
+    let base_ns = policy
+        .initial_delay
+        .as_nanos()
+        .saturating_mul(1u128 << attempt.saturating_sub(1).min(32))
+        .min(policy.max_delay.as_nanos())
+        .max(1);
+    let half = (base_ns / 2).max(1);
+    let jitter = u128::from(next_jitter()) % half.max(1);
+    Duration::from_nanos((half + jitter).min(u128::from(u64::MAX)) as u64)
+}
+
+/// Cheap per-process pseudo-random source for the backoff jitter.
+///
+/// Deliberately not `rand`: this file has no such dependency and a jittered
+/// sleep does not justify adding one. An xorshift seeded from the pid and the
+/// process's own clock is enough to de-synchronise contenders both within a
+/// process (the counter advances per call) and across processes (the seed
+/// differs per pid).
+fn next_jitter() -> u64 {
+    static STATE: OnceLock<AtomicU64> = OnceLock::new();
+    let state = STATE.get_or_init(|| {
+        let pid = u64::from(std::process::id());
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0x9E37_79B9_7F4A_7C15);
+        AtomicU64::new(pid.rotate_left(32) ^ nanos | 1)
+    });
+    // xorshift64* on a shared counter: relaxed is fine, we only need distinct
+    // values, not a total order.
+    let mut x = state.fetch_add(0x9E37_79B9_7F4A_7C15, Ordering::Relaxed);
+    x ^= x >> 33;
+    x = x.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
+    x ^= x >> 33;
+    x
+}
+
 fn open_state_db_with_retry(
     path: &Path,
-    timeout: Duration,
-    retry_delay: Duration,
+    policy: RetryPolicy,
     intent: OpenIntent,
     mut on_contention: impl FnMut(),
 ) -> Result<StateDbHandle, redb::DatabaseError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
+    }
+    // Checked *before* the process-wide mutex: the whole point of the breaker
+    // is to not queue behind an opener that is about to burn its budget.
+    if breaker_should_fail_fast(path, &policy) {
+        return Err(redb::DatabaseError::DatabaseAlreadyOpen);
     }
     let guard = state_db_open_lock()
         .lock()
@@ -147,6 +256,7 @@ fn open_state_db_with_retry(
         match Database::builder().create(path) {
             Ok(db) => {
                 OPEN_COUNT.with(|count| count.set(count.get().saturating_add(1)));
+                note_open_succeeded(path);
                 // Issue #1814: the retry loop (#1655) is a rare cold path, not
                 // a routine one. Staying silent when it fires is what let
                 // multi-process contention masquerade as an unexplained stall,
@@ -164,14 +274,19 @@ fn open_state_db_with_retry(
                 }
                 return Ok(StateDbHandle::new(db, guard));
             }
-            Err(redb::DatabaseError::DatabaseAlreadyOpen) if started.elapsed() < timeout => {
+            Err(redb::DatabaseError::DatabaseAlreadyOpen) if started.elapsed() < policy.timeout => {
                 attempts += 1;
                 on_contention();
-                std::thread::sleep(retry_delay);
+                // Never overshoot the budget: clamp the sleep to what is left
+                // so the caller's contract ("gives up after `timeout`") holds
+                // even at the 400 ms ceiling.
+                let remaining = policy.timeout.saturating_sub(started.elapsed());
+                std::thread::sleep(backoff_delay(&policy, attempts).min(remaining));
             }
             Err(error) => {
                 if matches!(error, redb::DatabaseError::DatabaseAlreadyOpen) {
-                    report_contention(path, intent, attempts, started.elapsed(), true);
+                    note_open_exhausted(path, &policy);
+                    report_contention(path, intent, attempts, started.elapsed(), true, &policy);
                 }
                 return Err(error);
             }
@@ -194,9 +309,213 @@ fn report_contention(
     attempts: u32,
     elapsed: Duration,
     exhausted: bool,
+    policy: &RetryPolicy,
 ) {
     warn_contention(path, intent, attempts, elapsed, exhausted);
-    append_contention_record(path, intent, attempts, elapsed.as_millis(), exhausted);
+    // Issue #2230: the field evidence was 1,347 near-identical `budget-
+    // exhausted` lines. One line per failure is not a signal anyone reads, so
+    // the durable half is rate limited and the suppressed failures are folded
+    // into the next record instead.
+    if let Some(summary) = forensics_admit(path, attempts, elapsed, policy) {
+        append_contention_record(
+            path,
+            intent,
+            attempts,
+            elapsed.as_millis(),
+            exhausted,
+            &summary,
+        );
+    }
+}
+
+/// Rolled-up view of the exhaustions a record covers (issue #2230).
+#[derive(Debug, Clone, Copy, Default)]
+struct ContentionSummary {
+    /// Exhaustions on this path suppressed since the last emitted record.
+    suppressed: u64,
+    /// Length of the window those suppressed records fell into.
+    window_ms: u128,
+    /// Worst attempt count seen in the window (this record's included).
+    worst_attempts: u32,
+    /// Worst wall-clock burned in the window (this record's included).
+    worst_elapsed_ms: u128,
+}
+
+/// Per-database-path bookkeeping shared by the breaker and the rate limiter.
+#[derive(Debug, Default)]
+struct PathState {
+    /// Consecutive budget exhaustions with no intervening success.
+    consecutive_exhaustions: u32,
+    /// When set, the breaker is open until this instant.
+    open_until: Option<Instant>,
+    /// When the last durable forensic record was written.
+    last_emit: Option<Instant>,
+    /// Exhaustions suppressed since `last_emit`.
+    suppressed: u64,
+    worst_attempts: u32,
+    worst_elapsed_ms: u128,
+}
+
+fn path_states() -> &'static Mutex<HashMap<PathBuf, PathState>> {
+    static STATES: OnceLock<Mutex<HashMap<PathBuf, PathState>>> = OnceLock::new();
+    STATES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn with_path_state<R>(path: &Path, f: impl FnOnce(&mut PathState) -> R) -> R {
+    let mut states = path_states()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    f(states.entry(path.to_path_buf()).or_default())
+}
+
+/// Circuit-breaker gate (issue #2230).
+///
+/// Returns `true` when the breaker is open and the caller must fail fast
+/// instead of paying the full budget. Also performs the *close* transition:
+/// once the cooloff elapses the next opener probes for real, and that is where
+/// the single "closed" lifecycle event is emitted.
+fn breaker_should_fail_fast(path: &Path, policy: &RetryPolicy) -> bool {
+    if policy.breaker_threshold == 0 {
+        return false;
+    }
+    enum Transition {
+        Suppress,
+        Closed,
+        Pass,
+    }
+    let transition = with_path_state(path, |state| match state.open_until {
+        Some(until) if Instant::now() < until => Transition::Suppress,
+        Some(_) => {
+            state.open_until = None;
+            state.consecutive_exhaustions = 0;
+            Transition::Closed
+        }
+        None => Transition::Pass,
+    });
+    match transition {
+        Transition::Suppress => true,
+        Transition::Closed => {
+            breaker_lifecycle(path, "state_db_open_breaker_closed", policy, |db| {
+                tracing::warn!(
+                    event = "state_db_open_breaker_closed",
+                    db = %db,
+                    "state.redb open breaker cooloff elapsed; probing again (issue #2230)",
+                );
+            });
+            false
+        }
+        Transition::Pass => false,
+    }
+}
+
+/// A successful open is the breaker's reset: the contention cleared.
+fn note_open_succeeded(path: &Path) {
+    with_path_state(path, |state| {
+        state.consecutive_exhaustions = 0;
+    });
+}
+
+/// Count one budget exhaustion and open the breaker at the threshold.
+fn note_open_exhausted(path: &Path, policy: &RetryPolicy) {
+    if policy.breaker_threshold == 0 {
+        return;
+    }
+    let opened = with_path_state(path, |state| {
+        state.consecutive_exhaustions = state.consecutive_exhaustions.saturating_add(1);
+        if state.consecutive_exhaustions >= policy.breaker_threshold && state.open_until.is_none() {
+            state.open_until = Some(Instant::now() + policy.breaker_cooloff);
+            return Some(state.consecutive_exhaustions);
+        }
+        None
+    });
+    let Some(consecutive) = opened else {
+        return;
+    };
+    let cooloff_ms = policy.breaker_cooloff.as_millis();
+    breaker_lifecycle(path, "state_db_open_breaker_opened", policy, move |db| {
+        tracing::warn!(
+            event = "state_db_open_breaker_opened",
+            consecutive,
+            cooloff_ms,
+            db = %db,
+            "state.redb open budget was exhausted {consecutive} times in a row; \
+             failing opens fast for {cooloff_ms}ms instead of stalling every \
+             caller for the full budget (issue #2230)",
+        );
+    });
+}
+
+/// Emit the loud + durable pair for one breaker transition.
+///
+/// Exactly two of these fire per contention episode — one on open, one on
+/// close — so unlike the per-failure record they are never rate limited.
+fn breaker_lifecycle(
+    path: &Path,
+    event: &str,
+    policy: &RetryPolicy,
+    warn: impl FnOnce(std::path::Display<'_>),
+) {
+    warn(path.display());
+    append_json_record(
+        path,
+        serde_json::json!({
+            "ts_ms": unix_ms(),
+            "pid": std::process::id(),
+            "event": event,
+            "cooloff_ms": policy.breaker_cooloff.as_millis(),
+            "db": path.display().to_string(),
+        }),
+    );
+}
+
+/// Rate limiter for the durable half (issue #2230).
+///
+/// Returns `Some(summary)` when this exhaustion is allowed to write a record —
+/// the first one on a path, and then at most one per `summary_interval`. The
+/// summary carries the failures suppressed since the last emission so no
+/// contention is silently lost, only compressed.
+fn forensics_admit(
+    path: &Path,
+    attempts: u32,
+    elapsed: Duration,
+    policy: &RetryPolicy,
+) -> Option<ContentionSummary> {
+    let elapsed_ms = elapsed.as_millis();
+    with_path_state(path, |state| {
+        let now = Instant::now();
+        state.worst_attempts = state.worst_attempts.max(attempts);
+        state.worst_elapsed_ms = state.worst_elapsed_ms.max(elapsed_ms);
+        let due = match state.last_emit {
+            None => true,
+            Some(last) => now.duration_since(last) >= policy.summary_interval,
+        };
+        if !due {
+            state.suppressed = state.suppressed.saturating_add(1);
+            return None;
+        }
+        let window_ms = state
+            .last_emit
+            .map(|last| now.duration_since(last).as_millis())
+            .unwrap_or(0);
+        let summary = ContentionSummary {
+            suppressed: state.suppressed,
+            window_ms,
+            worst_attempts: state.worst_attempts,
+            worst_elapsed_ms: state.worst_elapsed_ms,
+        };
+        state.last_emit = Some(now);
+        state.suppressed = 0;
+        state.worst_attempts = 0;
+        state.worst_elapsed_ms = 0;
+        Some(summary)
+    })
+}
+
+fn unix_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
 }
 
 /// The loud half on its own: a `tracing` event with the full forensic detail
@@ -247,25 +566,36 @@ fn append_contention_record(
     attempts: u32,
     elapsed_ms: u128,
     exhausted: bool,
+    summary: &ContentionSummary,
 ) {
+    append_json_record(
+        path,
+        serde_json::json!({
+            "ts_ms": unix_ms(),
+            "pid": std::process::id(),
+            "event": if exhausted { "budget-exhausted" } else { "contended" },
+            "intent": intent.as_str(),
+            "attempts": attempts,
+            "elapsed_ms": elapsed_ms,
+            // Issue #2230 aggregation: how many identical failures this one
+            // line stands in for, and the worst case among them.
+            "suppressed": summary.suppressed,
+            "window_ms": summary.window_ms,
+            "worst_attempts": summary.worst_attempts,
+            "worst_elapsed_ms": summary.worst_elapsed_ms,
+            "db": path.display().to_string(),
+        }),
+    );
+}
+
+/// Append one JSONL line, swallowing every failure. Shared by the per-open
+/// records and the breaker lifecycle events.
+fn append_json_record(path: &Path, record: serde_json::Value) {
     use std::io::Write;
 
     let Some(root) = path.parent() else {
         return;
     };
-    let ts_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    let record = serde_json::json!({
-        "ts_ms": ts_ms,
-        "pid": std::process::id(),
-        "event": if exhausted { "budget-exhausted" } else { "contended" },
-        "intent": intent.as_str(),
-        "attempts": attempts,
-        "elapsed_ms": elapsed_ms,
-        "db": path.display().to_string(),
-    });
     let Ok(line) = serde_json::to_string(&record) else {
         return;
     };
@@ -327,6 +657,19 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    /// A policy with a caller-chosen budget and the breaker disabled, for the
+    /// tests that only care about the retry loop itself.
+    fn test_policy(timeout: Duration) -> RetryPolicy {
+        RetryPolicy {
+            timeout,
+            initial_delay: Duration::from_millis(5),
+            max_delay: Duration::from_millis(50),
+            breaker_threshold: 0,
+            breaker_cooloff: Duration::ZERO,
+            summary_interval: Duration::ZERO,
+        }
+    }
+
     crate::timed_test!(subprocess_lock_holder, {
         let Some(dir) = std::env::var_os(LOCK_HOLDER_DIR_ENV).map(PathBuf::from) else {
             return;
@@ -375,8 +718,7 @@ mod tests {
         let mut observed_contention = false;
         let opened = open_state_db_with_retry(
             &dir.path().join("state.redb"),
-            Duration::from_secs(5),
-            Duration::from_millis(5),
+            test_policy(Duration::from_secs(5)),
             OpenIntent::Required,
             || {
                 if !observed_contention {
@@ -426,8 +768,7 @@ mod tests {
         let worker = std::thread::spawn(move || {
             open_state_db_with_retry(
                 &worker_path,
-                WORKER_RETRY_BUDGET,
-                Duration::from_millis(5),
+                test_policy(WORKER_RETRY_BUDGET),
                 OpenIntent::Required,
                 || {
                     let _ = contended_tx.try_send(());
@@ -457,15 +798,10 @@ mod tests {
 
         let budget = Duration::from_secs(1);
         let started = Instant::now();
-        let result = open_state_db_with_retry(
-            &path,
-            budget,
-            Duration::from_millis(5),
-            OpenIntent::Required,
-            || {
+        let result =
+            open_state_db_with_retry(&path, test_policy(budget), OpenIntent::Required, || {
                 observed.fetch_add(1, Ordering::Relaxed);
-            },
-        );
+            });
         let error = match result {
             Ok(_) => panic!("contention should outlive the retry budget"),
             Err(error) => error,
@@ -488,8 +824,7 @@ mod tests {
 
         let result = open_state_db_with_retry(
             &path,
-            Duration::from_millis(80),
-            Duration::from_millis(5),
+            test_policy(Duration::from_millis(80)),
             OpenIntent::BestEffort,
             || {},
         );
@@ -554,8 +889,7 @@ mod tests {
         let mut blocker = Some(blocker);
         let opened = open_state_db_with_retry(
             &path,
-            Duration::from_secs(5),
-            Duration::from_millis(5),
+            test_policy(Duration::from_secs(5)),
             OpenIntent::Required,
             || {
                 if !flag.swap(true, Ordering::Relaxed) {
@@ -596,6 +930,169 @@ mod tests {
             .join()
             .expect("other thread");
         assert_eq!(state_db_open_count() - before, 2);
+    });
+
+    // Issue #2230: a fully contended open must make O(log) attempts, not
+    // O(budget / fixed_delay). With the old fixed 10 ms sleep a 1 s budget was
+    // ~100 attempts; exponential backoff from 10 ms makes it ~7.
+    crate::timed_test!(contended_open_backs_off_exponentially, {
+        let _test_guard = serial_test_guard();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("state.redb");
+        let _blocker = Database::builder().create(&path).expect("blocking open");
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&attempts);
+
+        let budget = Duration::from_secs(1);
+        let policy = RetryPolicy {
+            timeout: budget,
+            initial_delay: Duration::from_millis(10),
+            max_delay: Duration::from_millis(400),
+            breaker_threshold: 0,
+            breaker_cooloff: Duration::ZERO,
+            summary_interval: Duration::ZERO,
+        };
+        let started = Instant::now();
+        let result = open_state_db_with_retry(&path, policy, OpenIntent::Required, || {
+            observed.fetch_add(1, Ordering::Relaxed);
+        });
+
+        assert!(result.is_err(), "a held database must not open");
+        let attempts = attempts.load(Ordering::Relaxed);
+        // The budget must still be honored - backoff trades attempt count for
+        // sleep length, it does not shorten the wait.
+        assert!(
+            started.elapsed() >= budget,
+            "backoff must not cut the budget short, took {:?}",
+            started.elapsed()
+        );
+        assert!(
+            attempts >= 3,
+            "backoff must still retry a handful of times, got {attempts}"
+        );
+        assert!(
+            attempts <= 15,
+            "a {budget:?} budget must cost O(log) attempts, not O(500); got {attempts} \
+             (issue #2230)"
+        );
+    });
+
+    // Issue #2230: consecutive exhaustions on one path must trip a breaker so
+    // the next caller fails fast instead of paying the budget again, and the
+    // breaker must reopen the path once the cooloff elapses.
+    crate::timed_test!(breaker_opens_after_repeated_exhaustion_then_closes, {
+        let _test_guard = serial_test_guard();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("state.redb");
+        let _blocker = Database::builder().create(&path).expect("blocking open");
+
+        let budget = Duration::from_millis(300);
+        let cooloff = Duration::from_millis(400);
+        let policy = RetryPolicy {
+            timeout: budget,
+            initial_delay: Duration::from_millis(10),
+            max_delay: Duration::from_millis(50),
+            breaker_threshold: 2,
+            breaker_cooloff: cooloff,
+            summary_interval: Duration::from_secs(60),
+        };
+
+        for attempt in 0..2 {
+            let started = Instant::now();
+            let result = open_state_db_with_retry(&path, policy, OpenIntent::Required, || {});
+            assert!(result.is_err(), "attempt {attempt} must fail");
+            assert!(
+                started.elapsed() >= budget,
+                "attempt {attempt} must pay the full budget before the breaker trips"
+            );
+        }
+
+        // Breaker is now open: this must return without waiting.
+        let started = Instant::now();
+        let result = open_state_db_with_retry(&path, policy, OpenIntent::Required, || {
+            panic!("an open breaker must not enter the retry loop");
+        });
+        let fast_fail = started.elapsed();
+        assert!(matches!(
+            result,
+            Err(redb::DatabaseError::DatabaseAlreadyOpen)
+        ));
+        assert!(
+            fast_fail < budget / 3,
+            "an open breaker must fail fast, took {fast_fail:?} against a {budget:?} budget"
+        );
+
+        // ...and after the cooloff the breaker closes and the budget is paid
+        // again.
+        std::thread::sleep(cooloff + Duration::from_millis(50));
+        let started = Instant::now();
+        let result = open_state_db_with_retry(&path, policy, OpenIntent::Required, || {});
+        assert!(result.is_err(), "the blocker is still holding the database");
+        assert!(
+            started.elapsed() >= budget,
+            "a closed breaker must retry for real again, took {:?}",
+            started.elapsed()
+        );
+
+        let log = fs::read_to_string(dir.path().join("logs").join(CONTENTION_LOG_FILE))
+            .expect("contention log");
+        assert_eq!(
+            log.matches(r#""event":"state_db_open_breaker_opened""#)
+                .count(),
+            1,
+            "exactly one breaker-open lifecycle event, not one per suppressed open:\n{log}"
+        );
+        assert_eq!(
+            log.matches(r#""event":"state_db_open_breaker_closed""#)
+                .count(),
+            1,
+            "exactly one breaker-close lifecycle event:\n{log}"
+        );
+    });
+
+    // Issue #2230: the field evidence was 1,347 near-identical exhaustion
+    // records. Inside the summary window the failures are counted, not
+    // written, and the next emitted record carries the roll-up.
+    crate::timed_test!(repeated_exhaustions_are_aggregated_not_one_line_each, {
+        let _test_guard = serial_test_guard();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("state.redb");
+        let _blocker = Database::builder().create(&path).expect("blocking open");
+
+        let policy = RetryPolicy {
+            timeout: Duration::from_millis(60),
+            initial_delay: Duration::from_millis(10),
+            max_delay: Duration::from_millis(20),
+            breaker_threshold: 0,
+            breaker_cooloff: Duration::ZERO,
+            summary_interval: Duration::from_secs(60),
+        };
+        for _ in 0..5 {
+            assert!(open_state_db_with_retry(&path, policy, OpenIntent::Required, || {}).is_err());
+        }
+
+        let log = fs::read_to_string(dir.path().join("logs").join(CONTENTION_LOG_FILE))
+            .expect("contention log");
+        let lines: Vec<&str> = log.lines().collect();
+        assert_eq!(
+            lines.len(),
+            1,
+            "five exhaustions inside one summary window must not write five \
+             records (issue #2230):\n{log}"
+        );
+
+        // The suppressed failures surface in the *next* emitted record.
+        let short = RetryPolicy {
+            summary_interval: Duration::ZERO,
+            ..policy
+        };
+        assert!(open_state_db_with_retry(&path, short, OpenIntent::Required, || {}).is_err());
+        let log = fs::read_to_string(dir.path().join("logs").join(CONTENTION_LOG_FILE))
+            .expect("contention log");
+        let last = log.lines().last().expect("a second record");
+        assert!(last.contains(r#""suppressed":4"#), "{last}");
+        assert!(last.contains(r#""worst_attempts":"#), "{last}");
+        assert!(last.contains(r#""worst_elapsed_ms":"#), "{last}");
     });
 
     // A clean open must not write a contention record - otherwise the log
