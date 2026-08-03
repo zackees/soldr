@@ -123,7 +123,7 @@ crate::timed_test!(managed_zig_is_exported_for_later_github_steps, {
 
     let wrapper_root = paths.bin.join("linux-cross").join(target);
     for key in output_keys {
-        let process_value = std::env::var(&key).unwrap_or_else(|_| panic!("{key} not applied"));
+        let process_value = std::env::var(key).unwrap_or_else(|_| panic!("{key} not applied"));
         assert!(
             std::path::Path::new(&process_value).starts_with(&wrapper_root),
             "{key} did not point at a managed wrapper: {process_value}"
