@@ -259,6 +259,7 @@ pins are unaffected.
 - **`PERF.md` — Performance testing. Read this BEFORE running any perf work. See callout at the top of this file.**
 - `DESIGN.md` — Authoritative implementation guide, architecture decisions, phase roadmap
 - `docs/API.md` — Full CLI specification, environment variables, cache layout
+- `docs/CONTRIBUTING_TESTS.md` — portable and native platform test conventions, including target-run archive coverage
 - `docs/CROSS_COMPILE.md` — blessed cross-compile recipes, including managed Windows GNU and MSVC `cargo-xwin`
 - `docs/DEBUG_SIDECARS.md` — debug-symbol sidecar policy for release archives (`.pdb` / `.dSYM` / `.dwp`, `manifest.json` `debug_info` contract)
 - `docs/TRUST_BOUNDARIES.md` — Runtime fetch policy, what integrity is enforced, what remains follow-up
@@ -308,6 +309,9 @@ The repo builds itself through soldr so every contributor populates and hits the
 - **Human-edited config (`config.toml`, `rust-toolchain.toml`) stays JSON/TOML.** Protobuf mandate applies only to binary transports + archived metadata.
 
 ## Test Infrastructure
+
+See `docs/CONTRIBUTING_TESTS.md` for the portable/native test boundary and how
+platform behavioral tests reach the target-run lanes.
 
 - **Per-test watchdog (`timed_test!`)**: Tests must be declared with the `timed_test!` macro re-exported by `soldr_cli` and implemented in `crates/soldr-core/src/test_util.rs`. The default deadline is **2 minutes**; pass a `Duration` as the second argument to override (e.g. `timed_test!(name, Duration::from_secs(300), { ... })`). If the body does not return in time the watchdog prints `TEST HUNG (>Ns): <name>` plus a backtrace to stderr and aborts the test binary, guaranteeing a single hung test cannot block the whole suite. The self-test feature `test-watchdog-self-test` plus the `#[ignore]`d `deliberate_hang` cases verify the abort path end-to-end.
 - **Triaging a red lane that shows `0xC0000409`**: On Windows, `abort()` raises `__fastfail(FAST_FAIL_FATAL_APP_EXIT)` and Windows reports it as `0xC0000409 STATUS_STACK_BUFFER_OVERRUN`. **It is a watchdog timeout, not memory corruption** (soldr#1999). To attribute it:

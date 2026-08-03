@@ -9,8 +9,133 @@ WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 
 def _job_block(workflow: str, job: str, next_job: str | None = None) -> str:
     start = workflow.index(f"  {job}:\n")
-    end = workflow.index(f"  {next_job}:\n", start) if next_job else len(workflow)
+    if next_job:
+        end = workflow.index(f"  {next_job}:\n", start)
+    else:
+        match = re.search(r"(?m)^  [a-zA-Z0-9_-]+:\n", workflow[start + 1 :])
+        end = start + 1 + match.start() if match else len(workflow)
     return workflow[start:end]
+
+
+def _step_block(workflow: str, step_name: str) -> str:
+    """Return one workflow step and fail if its name is not unique."""
+    marker = f"      - name: {step_name}\n"
+    assert workflow.count(marker) == 1, f"expected exactly one {step_name!r} step"
+    start = workflow.index(marker)
+    end_match = re.search(
+        r"(?m)^      - (?:name: |uses: |run: )", workflow[start + len(marker) :]
+    )
+    end = start + len(marker) + end_match.start() if end_match else len(workflow)
+    return workflow[start:end]
+
+
+def _job_input(job: str, name: str) -> str:
+    matches = re.findall(rf"^      {re.escape(name)}: ([^\n]+)$", job, re.MULTILINE)
+    assert len(matches) == 1, f"expected one {name!r} input"
+    return matches[0]
+
+
+def _assert_no_narrowing(command: str) -> None:
+    assert not re.search(r"(?:^|\s)(?:-p|--package|--exclude)(?:[=\s]|$)", command)
+    assert not re.search(r"(?:^|\s)(?:-E|--filter|--filter-expr)(?:[=\s]|$)", command)
+
+
+def test_windows_behavior_contract_reaches_native_target_runners() -> None:
+    behavioral_test = (
+        REPO_ROOT / "crates" / "soldr-cli" / "tests" / "windows_delete_semantics.rs"
+    ).read_text(encoding="utf-8")
+    expected_tests = [
+        "read_only_files_do_not_block_a_recursive_delete",
+        "read_only_files_do_not_block_a_single_file_delete",
+        "a_read_only_directory_does_not_block_its_parents_delete",
+    ]
+    assert behavioral_test.startswith("#![cfg(windows)]\n")
+    assert "#[test]" not in behavioral_test
+    for test_name in expected_tests:
+        declaration = rf"(?m)^timed_test!\(\s*{re.escape(test_name)}\s*,"
+        assert re.search(declaration, behavioral_test)
+
+    cross = (WORKFLOWS / "_ci-cross-build-linux.yml").read_text(encoding="utf-8")
+    archive = _step_block(cross, "Build nextest archive")
+    for required in [
+        "soldr cargo nextest archive",
+        '--target "$target"',
+        "--workspace",
+        '--archive-file "$archive"',
+        "--archive-format tar-zst",
+        'archive="dist/${{ inputs.artifact_name }}-tests.tar.zst"',
+        'ls -la "$archive"',
+    ]:
+        assert required in archive
+    command_marker = "\n          soldr cargo nextest archive \\\n"
+    archive_command = archive[archive.index(command_marker) + 1 :]
+    archive_command = archive_command[
+        : archive_command.index('\n          ls -la "$archive"')
+    ]
+    _assert_no_narrowing(archive_command)
+
+    upload = _step_block(cross, "Upload artifact")
+    assert "name: ${{ inputs.artifact_name }}" in upload
+    assert "dist/${{ inputs.artifact_name }}-tests.tar.zst" in upload
+    assert "if-no-files-found: error" in upload
+    assert "if-no-files-found: warn" not in upload
+    assert "if-no-files-found: ignore" not in upload
+
+    target_run = (WORKFLOWS / "_ci-target-run.yml").read_text(encoding="utf-8")
+    replay = _step_block(target_run, "Run complete pre-built test archive")
+    archive_assignment = 'archive="artifact/${{ inputs.artifact_name }}-tests.tar.zst"'
+    archive_check = 'test -f "$archive"'
+    list_command = '"$NEXTEST_BIN" nextest list'
+    run_command = '"$NEXTEST_BIN" nextest run'
+    for required in [
+        archive_assignment,
+        archive_check,
+        list_command,
+        run_command,
+        '--archive-file "$archive"',
+        "--no-fail-fast",
+    ]:
+        assert required in replay
+    assert replay.index(archive_assignment) < replay.index(archive_check)
+    assert replay.index(archive_check) < replay.index(list_command)
+    assert replay.index(list_command) < replay.index(run_command)
+    assert replay.count('--archive-file "$archive"') == 2
+    list_invocation = replay[replay.index(list_command) : replay.index(run_command)]
+    run_invocation = replay[replay.index(run_command) :]
+    _assert_no_narrowing(list_invocation)
+    _assert_no_narrowing(run_invocation)
+
+
+def test_windows_target_runner_pairs_share_their_producer_artifacts() -> None:
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    pairs = [
+        (
+            "e2e-windows-x64-build",
+            "e2e-windows-x64",
+            "x86_64-pc-windows-msvc",
+            "windows-2025",
+            "soldr-ci-e2e-windows-x64",
+        ),
+        (
+            "e2e-windows-arm64-build",
+            "e2e-windows-arm64",
+            "aarch64-pc-windows-msvc",
+            "windows-11-arm",
+            "soldr-ci-e2e-windows-arm64",
+        ),
+    ]
+    for build_name, run_name, target, runner, artifact in pairs:
+        build = _job_block(ci, build_name, run_name)
+        run = _job_block(ci, run_name)
+        assert "uses: ./.github/workflows/_ci-cross-build-linux.yml" in build
+        assert "uses: ./.github/workflows/_ci-target-run.yml" in run
+        assert re.search(rf"(?m)^    needs: {re.escape(build_name)}$", run)
+        assert _job_input(build, "artifact_name") == artifact
+        assert _job_input(run, "artifact_name") == artifact
+        assert _job_input(build, "source_ref") == "${{ github.sha }}"
+        assert _job_input(build, "target") == target
+        assert _job_input(run, "target") == target
+        assert _job_input(run, "runs_on") == runner
 
 
 def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:

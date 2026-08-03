@@ -13,6 +13,8 @@ operational and integration details.
   (#1505 audit).
 - `CI_CACHE.md` / `CI_CACHE_PHASE1.md` — usage guide and historical
   rollout notes for `zackees/setup-soldr@v0` in external CI.
+- `CONTRIBUTING_TESTS.md` — portable and native platform test conventions,
+  including how archived tests reach target runners.
 - `NATIVE_SQLITE_BENCHMARK.md` — cross-platform validation of the
   default-on native C/C++ compiler cache (#310, #312).
 - `NPM_PUBLISHING.md`, `PYPI_TRUSTED_PUBLISHING.md` — release plumbing.
