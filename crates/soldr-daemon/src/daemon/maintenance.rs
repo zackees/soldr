@@ -526,20 +526,28 @@ fn run_local_components(
     out
 }
 
-fn sweep_workspace_targets(
+/// The daemon's periodic `target/` eviction pass.
+///
+/// **Never holds the `state.redb` handle across filesystem work**
+/// (soldr#2224). `TargetRegistry::open` takes redb's exclusive whole-file
+/// lock *and* the process-wide `state_db_open_lock` for the handle's whole
+/// lifetime (#608), and this sweep's middle phase — directory sizing plus
+/// recursive `remove_dir_all` of every candidate — is unbounded in
+/// wall-clock. Holding the handle across it locked out the `soldr cargo`
+/// front door, the per-compile rustc wrapper, and the reporting CLI for
+/// however long the deletion took, which is how a background build's
+/// maintenance tick produced `Database already open. Cannot acquire lock.`
+/// in a concurrent foreground build (soldr#2223).
+///
+/// The CLI-side GC learned this in #1681; the phases here mirror it:
+/// snapshot-and-release → scan/delete with no handle → bounded reopen to
+/// record the outcomes.
+pub(crate) fn sweep_workspace_targets(
     paths: &SoldrPaths,
     config: &crate::core::SoldrConfig,
     kind: MaintenanceKind,
 ) -> ComponentOutcome {
-    let registry = match TargetRegistry::open(&crate::cache_lib::data_db_path(paths)) {
-        Ok(registry) => registry,
-        Err(error) => {
-            return ComponentOutcome {
-                error: Some(error.to_string()),
-                ..ComponentOutcome::default()
-            };
-        }
-    };
+    let db_path = crate::cache_lib::data_db_path(paths);
     let options = GcOptions {
         older_than_seconds: if kind == MaintenanceKind::Full {
             FULL_STALE_AGE.as_secs()
@@ -551,7 +559,8 @@ fn sweep_workspace_targets(
         dev_roots: configured_gc_roots(config),
         dry_run: false,
     };
-    let report = match gc::scan(&registry, &options) {
+    // Phase 1 — open, snapshot the rows, drop the handle before returning.
+    let report = match gc::scan_released(&db_path, &options) {
         Ok(report) => report,
         Err(error) => {
             return ComponentOutcome {
@@ -560,12 +569,28 @@ fn sweep_workspace_targets(
             };
         }
     };
-    let outcomes = report
+    // Phase 2 — sizing and recursive deletion, with no database handle
+    // held. The long, unbounded part of the sweep lives entirely here.
+    fs_phase_barrier();
+    let outcomes: Vec<_> = report
         .candidates
         .into_iter()
         .map(gc::delete_candidate_dir)
         .collect();
-    match gc::apply_purge_outcomes(&registry, outcomes) {
+    // Phase 3 — bounded reopen: every directory is already gone, so this
+    // is one write txn per deleted row and nothing else.
+    let registry = match TargetRegistry::open(&db_path) {
+        Ok(registry) => registry,
+        Err(error) => {
+            return ComponentOutcome {
+                error: Some(error.to_string()),
+                ..ComponentOutcome::default()
+            };
+        }
+    };
+    let applied = gc::apply_purge_outcomes(&registry, outcomes);
+    drop(registry);
+    match applied {
         Ok(report) => ComponentOutcome {
             items_removed: report.succeeded_count as u64,
             bytes_reclaimed: report.reclaimed_bytes,
@@ -578,6 +603,35 @@ fn sweep_workspace_targets(
         },
     }
 }
+
+/// Test seam marking the start of the handle-free filesystem phase.
+///
+/// A real sweep's phase 2 is slow because it is deleting gigabytes; a test
+/// cannot wait for that and cannot make it deterministic. Instead the test
+/// binary parks here until the sibling process has finished proving the
+/// state DB is reachable, which asserts the property directly ("no handle
+/// is held during phase 2") instead of racing it.
+///
+/// Compiled only into the test binary — the shipping daemon calls the
+/// no-op below.
+#[cfg(test)]
+fn fs_phase_barrier() {
+    let Some(dir) = std::env::var_os(tests::FS_BARRIER_DIR_ENV).map(PathBuf::from) else {
+        return;
+    };
+    let _ = std::fs::write(dir.join("sweeping"), b"");
+    let release = dir.join("release");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !release.exists() {
+        if std::time::Instant::now() >= deadline {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+#[cfg(not(test))]
+fn fs_phase_barrier() {}
 
 fn configured_gc_roots(config: &crate::core::SoldrConfig) -> Vec<PathBuf> {
     let configured = config
@@ -711,6 +765,148 @@ fn unix_millis(now: SystemTime) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Fixture directory shared between the sweep child process and the
+    /// probing parent — see [`sweep_never_holds_state_db_across_filesystem_work`].
+    pub(super) const FS_BARRIER_DIR_ENV: &str = "SOLDR_TEST_SWEEP_FS_BARRIER_DIR";
+    const FS_BARRIER_ROOT_ENV: &str = "SOLDR_TEST_SWEEP_FIXTURE_ROOT";
+    const SWEEP_CHILD_TEST: &str =
+        "daemon::maintenance::tests::sweep_fs_phase_child_holds_the_barrier";
+
+    // The child half of the cross-process regression test.
+    //
+    // Inert unless the parent set [`FS_BARRIER_ROOT_ENV`], so a normal
+    // suite run treats it as a no-op case.
+    crate::timed_test!(sweep_fs_phase_child_holds_the_barrier, {
+        let Some(root) = std::env::var_os(FS_BARRIER_ROOT_ENV).map(PathBuf::from) else {
+            return;
+        };
+        let paths = SoldrPaths::with_root(root);
+        let config = crate::core::SoldrConfig::default();
+        // Parks in `fs_phase_barrier` for as long as the parent needs.
+        let _ = sweep_workspace_targets(&paths, &config, MaintenanceKind::Full);
+    });
+
+    // soldr#2224 acceptance: the daemon's maintenance sweep must not hold
+    // `state.redb` across its filesystem phase.
+    //
+    // Real processes, deliberately. The process-wide `state_db_open_lock`
+    // masks this bug in-thread — a second opener in the same process just
+    // *waits* on the mutex instead of failing — so an in-process test
+    // would pass against the broken code. Two processes see redb's actual
+    // file lock, which is what the front door hits in soldr#2223.
+    //
+    // It asserts the property rather than racing it: the child parks at
+    // the start of the handle-free phase and does not proceed until the
+    // parent has finished proving the database is reachable. Before this
+    // fix the child would still be holding the registry handle at that
+    // point and the parent's open would burn its whole 5 s budget and
+    // fail.
+    crate::timed_test!(
+        sweep_never_holds_state_db_across_filesystem_work,
+        Duration::from_secs(90),
+        {
+            let fixture = tempfile::tempdir().expect("tempdir");
+            let root = fixture.path().join("soldr-root");
+            let barrier = fixture.path().join("barrier");
+            std::fs::create_dir_all(&barrier).expect("barrier dir");
+            let paths = SoldrPaths::with_root(root.clone());
+            let db_path = crate::cache_lib::data_db_path(&paths);
+
+            // A registered target so the sweep has real rows to snapshot.
+            let target = fixture.path().join("repo").join("target");
+            std::fs::create_dir_all(&target).expect("target dir");
+            std::fs::write(target.join("CACHEDIR.TAG"), b"Signature: 8a477f597d28d172")
+                .expect("cachedir tag");
+            {
+                let registry = TargetRegistry::open(&db_path).expect("seed registry");
+                registry.upsert_with_time(&target, 0).expect("seed row");
+            }
+
+            let mut child =
+                std::process::Command::new(std::env::current_exe().expect("test executable"))
+                    .args(["--exact", SWEEP_CHILD_TEST, "--nocapture"])
+                    .env(FS_BARRIER_ROOT_ENV, &root)
+                    .env(FS_BARRIER_DIR_ENV, &barrier)
+                    .spawn()
+                    .expect("spawn sweep child");
+
+            let sweeping = barrier.join("sweeping");
+            let deadline = std::time::Instant::now() + Duration::from_secs(45);
+            while !sweeping.exists() {
+                assert!(
+                    child.try_wait().expect("poll sweep child").is_none(),
+                    "sweep child exited before reaching its filesystem phase"
+                );
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "sweep child never reached its filesystem phase"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+
+            // Exactly what `persist_start_fallback_inner` does on the front
+            // door when the daemon is unreachable: one handle, three ops.
+            let started = std::time::Instant::now();
+            let result = (|| -> Result<(), String> {
+                let handle = db::open_handle(&db_path).map_err(|e| e.to_string())?;
+                let existing = db::get_build_in(&handle, 4242).map_err(|e| e.to_string())?;
+                assert!(existing.is_none(), "fixture starts with no session row");
+                db::upsert_build_in(
+                    &handle,
+                    &crate::daemon::protocol::BuildRecord {
+                        session_id: 4242,
+                        repo_root: "/repo".into(),
+                        started_at_ms: 1_000,
+                        ended_at_ms: None,
+                        exit_code: None,
+                        total_wall_ms: None,
+                        crate_count: 0,
+                        slowest_crate_us: None,
+                        slowest_crate_name: None,
+                        cache_summary: None,
+                        log_paths: None,
+                        miss_reasons: Vec::new(),
+                    },
+                )
+                .map_err(|e| e.to_string())?;
+                db::append_event_in(
+                    &handle,
+                    &db::Event {
+                        ts_ms: 1_000,
+                        session_id: Some(4242),
+                        kind: db::EventKind::SessionStart,
+                        crate_name: None,
+                        duration_us: None,
+                        target_dir: None,
+                        exit_code: None,
+                    },
+                )
+                .map_err(|e| e.to_string())
+            })();
+            let elapsed = started.elapsed();
+
+            std::fs::write(barrier.join("release"), b"").expect("release sweep child");
+            let status = child.wait().expect("wait for sweep child");
+
+            result.unwrap_or_else(|error| {
+                panic!(
+                    "the build-session fallback lost its record while the daemon was \
+                     mid-maintenance-sweep: {error}. The sweep is holding state.redb \
+                     across its filesystem phase again (soldr#2224)."
+                )
+            });
+            assert!(
+                elapsed < Duration::from_secs(2),
+                "the fallback stalled {elapsed:?} waiting for the sweep's handle; it must \
+                 not wait at all (soldr#2224)"
+            );
+            assert!(status.success(), "sweep child failed");
+            // The record really landed, not just "the open succeeded".
+            let stored = db::get_build(&db_path, 4242).expect("read back");
+            assert_eq!(stored.expect("record persisted").session_id, 4242);
+        }
+    );
 
     crate::timed_test!(schedule_has_five_minute_pressure_and_daily_catchup, {
         let day = Duration::from_secs(24 * 60 * 60);

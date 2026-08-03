@@ -93,6 +93,14 @@ take effect.
 - **Design:** it waits up to the 5-min graceful-shutdown window for in-flight work to drain, then escalates.
 - **Remedy:** let it finish; it is bounded. Do not kill the process mid-drain unless it exceeds the window — that is what the watchdog is for.
 
+### 5. `Database already open. Cannot acquire lock.` from a build-session fallback
+
+- **Signal:** `soldr warning: failed to persist build-session start/end fallback for <id>: … Database already open. Cannot acquire lock.`, usually while another build is running.
+- **It is not corruption.** That is redb's wording for "another process holds this file", and `~/.soldr/state.redb` is deliberately shared by the `soldr cargo` front door, the per-compile rustc wrapper, the daemon, GC, and the reporting CLI. soldr#2223 was filed on the corruption reading; soldr#2224 is the fix.
+- **Blast radius:** the build itself is unaffected — only that session's history row is skipped, so `soldr status` / build-log history may be missing one entry.
+- **Design (soldr#2224):** the two things that made it likely are gone. The daemon's maintenance sweep no longer holds the handle across directory sizing and deletion (it snapshots, releases, deletes, then reopens for a bounded write), and each fallback now acquires the database **once** instead of three or four times.
+- **Forensics:** every contended open appends a record to `~/.soldr/logs/redb-contention.jsonl` with `attempts`, `elapsed_ms`, `intent`, and the holder-side `pid`. If you still see the warning, that file says how long the wait was and how often it happens.
+
 ## Recovery cheat-sheet
 
 | Goal | Do this |
