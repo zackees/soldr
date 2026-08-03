@@ -130,16 +130,24 @@ pub(super) fn persist_start_fallback_inner(
     started_at_ms: i64,
 ) -> Result<(), SoldrError> {
     let db_path = crate::cache_lib::data_db_path(paths);
-    if crate::daemon::db::get_build(&db_path, session_id)
+    // Issue #2224 item 2: ONE open for the whole fallback. Each
+    // `open_state_db` acquires redb's exclusive whole-file lock behind a 5 s
+    // retry budget, so the previous get/upsert/append triple paid that cost
+    // three times — and under contention could burn 15 s and still lose the
+    // record. The handle is dropped at the end of this function, releasing
+    // both the file lock and the process-wide open mutex.
+    let db = crate::cache_lib::redb_lock::open_state_db(&db_path)
+        .map_err(|e| SoldrError::Other(format!("open build history: {e}")))?;
+    if crate::daemon::db::get_build_in(&db, session_id)
         .map_err(|e| SoldrError::Other(format!("read build history: {e}")))?
         .is_none()
     {
         let record = new_build_record(session_id, repo_root.display().to_string(), started_at_ms);
-        crate::daemon::db::upsert_build(&db_path, &record)
+        crate::daemon::db::upsert_build_in(&db, &record)
             .map_err(|e| SoldrError::Other(format!("write build history: {e}")))?;
     }
-    let _ = crate::daemon::db::append_event(
-        &db_path,
+    let _ = crate::daemon::db::append_event_in(
+        &db,
         &crate::daemon::db::Event {
             ts_ms: started_at_ms,
             session_id: Some(session_id),

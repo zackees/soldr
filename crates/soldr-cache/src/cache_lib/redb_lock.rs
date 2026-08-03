@@ -18,6 +18,7 @@
 use redb::Database;
 use std::ops::Deref;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -54,6 +55,79 @@ impl OpenIntent {
         match self {
             Self::Required => "required",
             Self::BestEffort => "best_effort",
+        }
+    }
+}
+
+/// Counts successful opens of *one specific* database path.
+///
+/// The acceptance criterion for issue #2224 is a count — "each fallback
+/// acquires the state DB at most once" — which is otherwise unobservable
+/// from outside this module. A single process-wide counter would not do:
+/// the workspace runs unit tests with plain libtest, so many tests share one
+/// process and a global delta measured across a multi-step operation would
+/// also capture unrelated tests' opens.
+///
+/// Scoping by path makes the measurement exact regardless of what else the
+/// process is doing, because each test owns its own tempdir.
+///
+/// Compiled unconditionally rather than under `cfg(test)` because the
+/// assertion lives in a different crate's test binary (`soldr-cli` asserts on
+/// opens performed by `soldr-daemon` code against `soldr-cache`'s opener).
+/// The production cost is one relaxed atomic load — see [`PROBES_ACTIVE`].
+#[doc(hidden)]
+pub struct OpenProbe {
+    count: std::sync::Arc<AtomicU64>,
+}
+
+impl OpenProbe {
+    /// Successful opens of the probed path since installation.
+    pub fn count(&self) -> u64 {
+        self.count.load(Ordering::Relaxed)
+    }
+}
+
+impl Drop for OpenProbe {
+    fn drop(&mut self) {
+        let mut probes = probes().lock().unwrap_or_else(|p| p.into_inner());
+        // By identity, not by path: two probes may watch the same path, and
+        // dropping one must not silently deregister the other.
+        probes.retain(|(_, count)| !std::sync::Arc::ptr_eq(count, &self.count));
+        PROBES_ACTIVE.store(!probes.is_empty(), Ordering::Relaxed);
+    }
+}
+
+#[allow(clippy::type_complexity)]
+fn probes() -> &'static Mutex<Vec<(std::path::PathBuf, std::sync::Arc<AtomicU64>)>> {
+    static PROBES: OnceLock<Mutex<Vec<(std::path::PathBuf, std::sync::Arc<AtomicU64>)>>> =
+        OnceLock::new();
+    PROBES.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Fast path so production opens never touch [`probes`]'s mutex: a single
+/// relaxed load that is `false` in every non-test process.
+static PROBES_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Start counting successful opens of `path`. Counting stops when the
+/// returned [`OpenProbe`] is dropped. See [`OpenProbe`] for why this is
+/// path-scoped rather than a global counter.
+#[doc(hidden)]
+pub fn probe_opens(path: &Path) -> OpenProbe {
+    let count = std::sync::Arc::new(AtomicU64::new(0));
+    let mut probes = probes().lock().unwrap_or_else(|p| p.into_inner());
+    probes.push((path.to_path_buf(), std::sync::Arc::clone(&count)));
+    PROBES_ACTIVE.store(true, Ordering::Relaxed);
+    OpenProbe { count }
+}
+
+fn record_open(path: &Path) {
+    if !PROBES_ACTIVE.load(Ordering::Relaxed) {
+        return;
+    }
+    let probes = probes().lock().unwrap_or_else(|p| p.into_inner());
+    for (probed, count) in probes.iter() {
+        if probed == path {
+            count.fetch_add(1, Ordering::Relaxed);
         }
     }
 }
@@ -124,6 +198,7 @@ fn open_state_db_with_retry(
     loop {
         match Database::builder().create(path) {
             Ok(db) => {
+                record_open(path);
                 // Issue #1814: the retry loop (#1655) is a rare cold path, not
                 // a routine one. Staying silent when it fires is what let
                 // multi-process contention masquerade as an unexplained stall,

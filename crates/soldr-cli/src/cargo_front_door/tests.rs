@@ -2503,6 +2503,124 @@ crate::timed_test!(build_session_fallback_persists_start_end_without_daemon, {
     assert_eq!(events[1].kind, crate::daemon::db::EventKind::SessionEnd);
 });
 
+// Issue #2224 item 2: each fallback must acquire `state.redb` AT MOST ONCE.
+//
+// Before this fix the start fallback opened three times (get_build,
+// upsert_build, append_event) and the end fallback four (plus
+// aggregate_session). Every open takes redb's exclusive whole-file lock
+// behind a 5 s retry budget, so under cross-process contention one logical
+// session-end could burn ~20 s and still lose the record — which is exactly
+// the failure reported in #2223.
+//
+// The probe is path-scoped, so a concurrently-running test opening its own
+// tempdir's state.redb cannot perturb this count.
+crate::timed_test!(build_session_fallbacks_open_the_state_db_at_most_once, {
+    let root = tempfile::tempdir().expect("temp root");
+    let paths = SoldrPaths::with_root(root.path().join("soldr"));
+    let repo = root.path().join("repo");
+    std::fs::create_dir_all(&repo).expect("repo dir");
+    let db_path = crate::cache_lib::data_db_path(&paths);
+
+    // Start fallback against a brand-new (nonexistent) database.
+    let probe = crate::cache_lib::redb_lock::probe_opens(&db_path);
+    super::build_session::persist_start_fallback_inner(&paths, 99, &repo, 1_000).expect("start");
+    let start_opens = probe.count();
+    drop(probe);
+    assert_eq!(
+        start_opens, 1,
+        "persist_start_fallback_inner must open state.redb exactly once, got {start_opens}"
+    );
+
+    // End fallback against the now-existing database.
+    let probe = crate::cache_lib::redb_lock::probe_opens(&db_path);
+    persist_build_session_end_fallback_inner(&paths, 99, 0, 1_250).expect("end fallback");
+    let end_opens = probe.count();
+    drop(probe);
+    assert_eq!(
+        end_opens, 1,
+        "persist_build_session_end_fallback_inner must open state.redb exactly once, \
+         got {end_opens}"
+    );
+
+    // The single-open path must still persist everything the multi-open path
+    // did — a count of 1 achieved by dropping writes would be no fix at all.
+    let record = crate::daemon::db::get_build(&db_path, 99)
+        .expect("read build")
+        .expect("record");
+    assert_eq!(record.started_at_ms, 1_000);
+    assert_eq!(record.ended_at_ms, Some(1_250));
+    assert_eq!(record.exit_code, Some(0));
+    let events = crate::daemon::db::list_events_for_session(&db_path, 99).expect("events");
+    assert_eq!(events.len(), 2);
+});
+
+// Issue #2224 item 3: a read must not perform a write commit. `get_build`
+// against a database that does not exist yet used to call `init_tables` — a
+// `begin_write` + `commit`, i.e. a durable fsync — purely to assert three
+// empty tables existed. A read now reports "no such record" without writing.
+crate::timed_test!(reads_against_a_fresh_database_do_not_write, {
+    let root = tempfile::tempdir().expect("temp root");
+    let paths = SoldrPaths::with_root(root.path().join("soldr"));
+    let db_path = crate::cache_lib::data_db_path(&paths);
+
+    // Every read-only entry point must tolerate a never-written database and
+    // report emptiness rather than erroring.
+    assert!(crate::daemon::db::get_build(&db_path, 1)
+        .expect("get_build on fresh db")
+        .is_none());
+    assert!(crate::daemon::db::list_builds(&db_path, 10, None)
+        .expect("list_builds on fresh db")
+        .is_empty());
+    assert!(crate::daemon::db::list_slow_builds(&db_path, 0, 10)
+        .expect("list_slow_builds on fresh db")
+        .is_empty());
+    assert!(crate::daemon::db::list_events_for_session(&db_path, 1)
+        .expect("list_events on fresh db")
+        .is_empty());
+    assert_eq!(
+        crate::daemon::db::aggregate_session(&db_path, 1).expect("aggregate on fresh db"),
+        (0, None, None)
+    );
+    assert_eq!(
+        crate::daemon::db::prune_events_older_than(&db_path, i64::MAX).expect("prune on fresh db"),
+        0
+    );
+
+    // The direct proof that no write commit happened lives next to the table
+    // definitions, in `daemon::db`'s own
+    // `read_paths_do_not_create_tables_on_a_fresh_database`: after these
+    // reads the three tables still do not exist, which is only possible if
+    // `init_tables` never ran.
+
+    // The fresh-database contract is unchanged for writers: a write after
+    // those reads still lands and is readable.
+    crate::daemon::db::upsert_build(
+        &db_path,
+        &crate::daemon::protocol::BuildRecord {
+            session_id: 7,
+            repo_root: "/r".into(),
+            started_at_ms: 5,
+            ended_at_ms: None,
+            exit_code: None,
+            total_wall_ms: None,
+            crate_count: 0,
+            slowest_crate_us: None,
+            slowest_crate_name: None,
+            cache_summary: None,
+            log_paths: None,
+            miss_reasons: Vec::new(),
+        },
+    )
+    .expect("write after fresh-db reads");
+    assert_eq!(
+        crate::daemon::db::get_build(&db_path, 7)
+            .expect("read back")
+            .expect("record")
+            .started_at_ms,
+        5
+    );
+});
+
 crate::timed_test!(build_session_waits_for_root_lease, {
     let root = tempfile::tempdir().unwrap();
     let paths = SoldrPaths::with_root(root.path().join("soldr"));

@@ -276,7 +276,12 @@ fn persist_build_session_end_fallback_inner(
     ended_at_ms: i64,
 ) -> Result<(), SoldrError> {
     let db_path = crate::cache_lib::data_db_path(paths);
-    let mut record = crate::daemon::db::get_build(&db_path, session_id)
+    // Issue #2224 item 2: ONE open for the whole fallback (was four —
+    // get_build, aggregate_session, upsert_build, append_event — each
+    // acquiring redb's exclusive whole-file lock behind its own 5 s budget).
+    let db = crate::cache_lib::redb_lock::open_state_db(&db_path)
+        .map_err(|e| SoldrError::Other(format!("open build history: {e}")))?;
+    let mut record = crate::daemon::db::get_build_in(&db, session_id)
         .map_err(|e| SoldrError::Other(format!("read build history: {e}")))?
         .unwrap_or_else(|| {
             let repo_root = std::env::current_dir()
@@ -285,17 +290,17 @@ fn persist_build_session_end_fallback_inner(
             new_build_record(session_id, repo_root, ended_at_ms)
         });
     let (crate_count, slowest_crate_us, slowest_crate_name) =
-        crate::daemon::db::aggregate_session(&db_path, session_id).unwrap_or((0, None, None));
+        crate::daemon::db::aggregate_session_in(&db, session_id).unwrap_or((0, None, None));
     record.ended_at_ms = Some(ended_at_ms);
     record.exit_code = Some(exit_code);
     record.total_wall_ms = Some((ended_at_ms - record.started_at_ms).max(0) as u64);
     record.crate_count = crate_count;
     record.slowest_crate_us = slowest_crate_us;
     record.slowest_crate_name = slowest_crate_name;
-    crate::daemon::db::upsert_build(&db_path, &record)
+    crate::daemon::db::upsert_build_in(&db, &record)
         .map_err(|e| SoldrError::Other(format!("write build history: {e}")))?;
-    let _ = crate::daemon::db::append_event(
-        &db_path,
+    let _ = crate::daemon::db::append_event_in(
+        &db,
         &crate::daemon::db::Event {
             ts_ms: ended_at_ms,
             session_id: Some(session_id),

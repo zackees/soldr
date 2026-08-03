@@ -1,7 +1,27 @@
-//! Daemon-side redb tables for build session correlation. Opens
-//! `~/.soldr/state.redb` per call
-//! and drops the handle on return — redb refuses concurrent multi-
-//! process opens and the wrapper / GC tools open the same file directly.
+//! Daemon-side redb tables for build session correlation, stored in the
+//! shared `~/.soldr/state.redb` — redb refuses concurrent multi-process
+//! opens and the wrapper / GC tools open the same file directly.
+//!
+//! ## Two forms of every operation (issue #2224)
+//!
+//! Each operation comes in a path-taking form (`get_build`) that opens the
+//! database, runs, and drops the handle, and a handle-taking `_in` form
+//! (`get_build_in`) that runs against a database the caller already holds.
+//!
+//! Prefer the `_in` form whenever several operations make up ONE logical
+//! unit. Every open acquires redb's exclusive whole-file lock behind a 5 s
+//! retry budget, so a caller that opened per operation multiplied both the
+//! lock-hold count and the worst-case stall — the session-start/session-end
+//! fallbacks in `soldr-cli`'s cargo front door paid it 3× and 4×
+//! respectively, which is the failure reported in #2223.
+//!
+//! ## Reads do not write (issue #2224)
+//!
+//! Read paths must never call [`init_tables`]: it is a `begin_write` +
+//! `commit`, i.e. a durable fsync. They use [`open_read_table`] instead,
+//! which reports a never-created table as empty. Write paths need no
+//! explicit init either — redb's `WriteTransaction::open_table` creates the
+//! table on demand, which is all `init_tables` ever did.
 //!
 //! Tables live alongside the existing `target_registry_targets`:
 //! - `daemon_builds`        : u64 session_id → tagged-byte BuildRecord
@@ -81,6 +101,37 @@ fn init_tables(db: &Database) -> Result<(), RegistryError> {
     }
     txn.commit()?;
     Ok(())
+}
+
+/// Open a table on a **read** transaction, mapping redb's "this table was
+/// never created" error to `None` (issue #2224, item 3).
+///
+/// Read paths used to call [`init_tables`] first purely to guarantee the
+/// table existed. That is a `begin_write` + `commit` — a durable fsync — so
+/// every `get_build` / `aggregate_session` / `list_*` call performed a write
+/// commit just to assert three empty tables exist. A read transaction cannot
+/// create a table, so the correct handling of a never-written table is to
+/// treat it as what it is: empty.
+///
+/// Behavior on a fresh database is unchanged. Previously `init_tables`
+/// created the empty tables and the read returned no rows; now the read
+/// returns no rows without creating them. The only observable difference is
+/// that a pure-read call against a brand-new database no longer leaves the
+/// three empty tables behind — and no longer fsyncs.
+fn open_read_table<K, V>(
+    txn: &redb::ReadTransaction,
+    def: TableDefinition<'static, K, V>,
+) -> Result<Option<redb::ReadOnlyTable<K, V>>, RegistryError>
+where
+    K: redb::Key + 'static,
+    V: redb::Value + 'static,
+{
+    match txn.open_table(def) {
+        Ok(table) => Ok(Some(table)),
+        // The table has never been written. Not an error on a read path.
+        Err(redb::TableError::TableDoesNotExist(_)) => Ok(None),
+        Err(err) => Err(err.into()),
+    }
 }
 
 /// One-time migration sweep: walk every value-bearing table and drop
@@ -167,10 +218,14 @@ fn next_event_id(db: &Database) -> Result<u64, RegistryError> {
     Ok(next)
 }
 
-pub fn append_event(db_path: &Path, event: &Event) -> Result<(), RegistryError> {
-    let db = open_db(db_path)?;
-    init_tables(&db)?;
-    let id = next_event_id(&db)?;
+/// Append one event using a database handle the caller already holds.
+///
+/// Issue #2224 item 2: the path-taking [`append_event`] opens `state.redb`,
+/// which acquires redb's exclusive whole-file lock under a 5 s retry budget.
+/// A caller performing several operations as one logical unit must open once
+/// and thread the handle, not pay that per call.
+pub fn append_event_in(db: &Database, event: &Event) -> Result<(), RegistryError> {
+    let id = next_event_id(db)?;
     let bytes = prost_tagged_bytes(&wire::event_to_wire(event));
     let txn = db.begin_write()?;
     {
@@ -181,9 +236,14 @@ pub fn append_event(db_path: &Path, event: &Event) -> Result<(), RegistryError> 
     Ok(())
 }
 
-pub fn upsert_build(db_path: &Path, record: &BuildRecord) -> Result<(), RegistryError> {
+pub fn append_event(db_path: &Path, event: &Event) -> Result<(), RegistryError> {
     let db = open_db(db_path)?;
-    init_tables(&db)?;
+    append_event_in(&db, event)
+}
+
+/// Insert-or-replace a build record using a caller-held handle. See
+/// [`append_event_in`] for why the handle-taking form exists (#2224).
+pub fn upsert_build_in(db: &Database, record: &BuildRecord) -> Result<(), RegistryError> {
     let bytes = prost_tagged_bytes(&wire::build_record_to_wire(record));
     let txn = db.begin_write()?;
     {
@@ -194,15 +254,27 @@ pub fn upsert_build(db_path: &Path, record: &BuildRecord) -> Result<(), Registry
     Ok(())
 }
 
-pub fn get_build(db_path: &Path, session_id: u64) -> Result<Option<BuildRecord>, RegistryError> {
+pub fn upsert_build(db_path: &Path, record: &BuildRecord) -> Result<(), RegistryError> {
     let db = open_db(db_path)?;
-    init_tables(&db)?;
+    upsert_build_in(&db, record)
+}
+
+/// Read one build record using a caller-held handle. See [`append_event_in`]
+/// for why the handle-taking form exists (#2224).
+pub fn get_build_in(db: &Database, session_id: u64) -> Result<Option<BuildRecord>, RegistryError> {
     let txn = db.begin_read()?;
-    let builds = txn.open_table(BUILDS)?;
+    let Some(builds) = open_read_table(&txn, BUILDS)? else {
+        return Ok(None);
+    };
     let Some(row) = builds.get(session_id)? else {
         return Ok(None);
     };
     decode_build_row(row.value()).map(Some)
+}
+
+pub fn get_build(db_path: &Path, session_id: u64) -> Result<Option<BuildRecord>, RegistryError> {
+    let db = open_db(db_path)?;
+    get_build_in(&db, session_id)
 }
 
 /// Clear archive payload paths after history retention removes the matching
@@ -377,9 +449,10 @@ pub fn list_builds(
     since_ms: Option<i64>,
 ) -> Result<Vec<BuildRecord>, RegistryError> {
     let db = open_db(db_path)?;
-    init_tables(&db)?;
     let txn = db.begin_read()?;
-    let builds = txn.open_table(BUILDS)?;
+    let Some(builds) = open_read_table(&txn, BUILDS)? else {
+        return Ok(Vec::new());
+    };
     let mut rows: Vec<BuildRecord> = Vec::new();
     for entry in builds.iter()? {
         let (_, v) = entry?;
@@ -402,9 +475,10 @@ pub fn list_slow_builds(
     limit: u32,
 ) -> Result<Vec<BuildRecord>, RegistryError> {
     let db = open_db(db_path)?;
-    init_tables(&db)?;
     let txn = db.begin_read()?;
-    let builds = txn.open_table(BUILDS)?;
+    let Some(builds) = open_read_table(&txn, BUILDS)? else {
+        return Ok(Vec::new());
+    };
     let mut rows: Vec<BuildRecord> = Vec::new();
     for entry in builds.iter()? {
         let (_, v) = entry?;
@@ -427,9 +501,10 @@ pub fn list_events_for_session(
     session_id: u64,
 ) -> Result<Vec<Event>, RegistryError> {
     let db = open_db(db_path)?;
-    init_tables(&db)?;
     let txn = db.begin_read()?;
-    let events = txn.open_table(EVENTS)?;
+    let Some(events) = open_read_table(&txn, EVENTS)? else {
+        return Ok(Vec::new());
+    };
     let mut rows: Vec<Event> = Vec::new();
     for entry in events.iter()? {
         let (_, v) = entry?;
@@ -448,9 +523,19 @@ pub fn aggregate_session(
     session_id: u64,
 ) -> Result<(u32, Option<u64>, Option<String>), RegistryError> {
     let db = open_db(db_path)?;
-    init_tables(&db)?;
+    aggregate_session_in(&db, session_id)
+}
+
+/// Aggregate a session's events using a caller-held handle. See
+/// [`append_event_in`] for why the handle-taking form exists (#2224).
+pub fn aggregate_session_in(
+    db: &Database,
+    session_id: u64,
+) -> Result<(u32, Option<u64>, Option<String>), RegistryError> {
     let txn = db.begin_read()?;
-    let events = txn.open_table(EVENTS)?;
+    let Some(events) = open_read_table(&txn, EVENTS)? else {
+        return Ok((0, None, None));
+    };
     let mut start_count: u32 = 0;
     let mut end_count: u32 = 0;
     let mut slowest_us: Option<u64> = None;
@@ -485,11 +570,14 @@ pub fn aggregate_session(
 /// number of rows removed.
 pub fn prune_events_older_than(db_path: &Path, cutoff_ms: i64) -> Result<u64, RegistryError> {
     let db = open_db(db_path)?;
-    init_tables(&db)?;
     let mut to_delete: Vec<u64> = Vec::new();
     {
         let txn = db.begin_read()?;
-        let events = txn.open_table(EVENTS)?;
+        // Nothing was ever appended: nothing to prune, and no reason to
+        // create the table (which would cost a write commit) to learn that.
+        let Some(events) = open_read_table(&txn, EVENTS)? else {
+            return Ok(0);
+        };
         for entry in events.iter()? {
             let (k, v) = entry?;
             let event = decode_event_row(v.value())?;
@@ -722,6 +810,72 @@ mod tests {
         .expect("fresh");
         let removed = prune_events_older_than(&path, 3_000).expect("prune");
         assert_eq!(removed, 1);
+    }
+
+    /// Issue #2224 item 3: no read path performs a write commit.
+    ///
+    /// Every read used to call `init_tables` — a `begin_write` + `commit`,
+    /// i.e. a durable fsync — purely to guarantee the three tables existed.
+    /// The direct, unambiguous proof that this no longer happens is that
+    /// after a full sweep of read-only entry points against a brand-new
+    /// database the tables *still do not exist*: only a committed write
+    /// transaction can create them.
+    #[test]
+    fn read_paths_do_not_create_tables_on_a_fresh_database() {
+        let temp = TempDir::new().expect("tempdir");
+        let path = temp.path().join("state.redb");
+
+        // A never-written database reads as empty, not as an error.
+        assert!(get_build(&path, 1).expect("get_build").is_none());
+        assert!(list_builds(&path, 10, None)
+            .expect("list_builds")
+            .is_empty());
+        assert!(list_slow_builds(&path, 0, 10)
+            .expect("list_slow_builds")
+            .is_empty());
+        assert!(list_events_for_session(&path, 1)
+            .expect("list_events")
+            .is_empty());
+        assert_eq!(
+            aggregate_session(&path, 1).expect("aggregate_session"),
+            (0, None, None)
+        );
+        assert_eq!(prune_events_older_than(&path, i64::MAX).expect("prune"), 0);
+
+        let db = open_db(&path).expect("open");
+        let txn = db.begin_read().expect("read txn");
+        for missing in [txn.open_table(BUILDS).err(), txn.open_table(EVENTS).err()] {
+            assert!(
+                matches!(missing, Some(redb::TableError::TableDoesNotExist(_))),
+                "a read path must not create tables (that requires a write commit)"
+            );
+        }
+    }
+
+    /// The read paths must stay correct once the tables *do* exist — the
+    /// `TableDoesNotExist`-means-empty shortcut must not swallow real rows.
+    #[test]
+    fn read_paths_still_see_rows_once_tables_exist() {
+        let temp = TempDir::new().expect("tempdir");
+        let path = temp.path().join("state.redb");
+        append_event(
+            &path,
+            &Event {
+                ts_ms: 10,
+                session_id: Some(3),
+                kind: EventKind::CompileEnd,
+                crate_name: Some("k".into()),
+                duration_us: Some(42),
+                target_dir: None,
+                exit_code: None,
+            },
+        )
+        .expect("append");
+        assert_eq!(
+            aggregate_session(&path, 3).expect("aggregate"),
+            (1, Some(42), Some("k".into()))
+        );
+        assert_eq!(list_events_for_session(&path, 3).expect("events").len(), 1);
     }
 
     /// `ensure_initialized` evicts pre-#580 (untagged) rows on first
