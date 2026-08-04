@@ -38,6 +38,31 @@ fn write_executable(path: &std::path::Path, body: &str) {
 }
 
 #[cfg(target_os = "linux")]
+struct DynamicEnvVarGuard {
+    key: String,
+    previous: Option<std::ffi::OsString>,
+}
+
+#[cfg(target_os = "linux")]
+impl DynamicEnvVarGuard {
+    fn remove(key: String) -> Self {
+        let previous = std::env::var_os(&key);
+        std::env::remove_var(&key);
+        Self { key, previous }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for DynamicEnvVarGuard {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => std::env::set_var(&self.key, value),
+            None => std::env::remove_var(&self.key),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
 crate::timed_test!(managed_gnu_toolchain_is_exported_for_later_github_steps, {
     let _lock = TEST_PROCESS_ENV_LOCK
         .lock()
@@ -89,7 +114,8 @@ crate::timed_test!(managed_gnu_toolchain_is_exported_for_later_github_steps, {
     let _path = EnvVarGuard::set("PATH", "/usr/bin:/bin");
     let _output_guards: Vec<_> = output_keys
         .iter()
-        .map(|key| EnvVarGuard::remove(key))
+        .cloned()
+        .map(DynamicEnvVarGuard::remove)
         .collect();
 
     let paths = crate::core::SoldrPaths::with_root(dir.path().join("soldr"));
