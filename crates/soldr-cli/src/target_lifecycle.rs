@@ -56,9 +56,18 @@ pub(crate) async fn prepare_target(
 ) -> Result<BlessedPrep, SoldrError> {
     // soldr#2139: `x86_64-unknown-linux-gnu.2.17` is a soldr-level spelling.
     // rustc, rustup and the catalogue sysroot tables know only the base triple,
-    // so everything below works on `base`; the full string goes to
-    // `linux_cross::prepare`, the one place that can act on the floor.
+    // so everything below works on `base`; the sysroot's pinned 2.17 ABI is the
+    // mechanism that enforces accepted GNU floor requests.
     let glibc_floor = crate::target_alias::split_glibc_floor(target);
+    if let Some((base, floor)) = glibc_floor {
+        if !crate::target_alias::glibc_floor_is_supported(base, floor) {
+            return Err(SoldrError::Other(
+                crate::target_alias::reject_glibc_versioned(target)
+                    .expect_err("unsupported glibc floor must be rejected")
+                    .to_string(),
+            ));
+        }
+    }
     let base = glibc_floor.map_or(target, |(base, _)| base);
 
     let attrs = classify_target(base)?;
@@ -204,51 +213,17 @@ fn supports_link_self_contained(base_triple: &str) -> bool {
     base_triple.ends_with("-musl") || base_triple.starts_with("x86_64-")
 }
 
-/// Opt out of routing a **host-native** `-gnu` build through managed
-/// zig, restoring the pre-soldr#2145 behaviour of linking against the
-/// host's own glibc. Falsy values (`0`/`false`/`no`/`off`) disable.
-pub(crate) const NATIVE_GNU_LINK_ENV_VAR: &str = "SOLDR_NATIVE_GNU_LINK";
-
+/// Whether this target still needs the Zig-backed Linux preparation path.
+///
+/// GNU targets are intercepted by the catalogue branch in `prepare_target`;
+/// only a non-native Linux target (currently musl) reaches this fallback.
 fn should_prepare_managed_linux(
     os: TargetOs,
     target: &str,
     host: &str,
     legacy_zigbuild: bool,
 ) -> bool {
-    if os != TargetOs::Linux || legacy_zigbuild {
-        return false;
-    }
-    if target != host {
-        return true;
-    }
-    // soldr#2145 / soldr#1060 item 3. A host-native `-gnu` build skipped
-    // this arm entirely and linked against whatever glibc the machine
-    // happens to run — 2.39 on the `ubuntu-24.04` release runner, which
-    // is the floor the published x86_64 artifact inherited. That is the
-    // most-downloaded Linux artifact and it was 11 glibc versions worse
-    // than the aarch64 one, purely because aarch64 is cross-built here
-    // and x86_64 is not.
-    //
-    // Routing it through the same managed zig the cross lanes use gives
-    // it the same floor (2.28, zig's default for the target) without any
-    // change to how it is built. musl is untouched: it is statically
-    // linked, so it has no glibc floor to improve.
-    target.ends_with("-unknown-linux-gnu") && native_gnu_link_enabled()
-}
-
-fn native_gnu_link_enabled() -> bool {
-    match std::env::var_os(NATIVE_GNU_LINK_ENV_VAR) {
-        None => true,
-        Some(value) => {
-            let raw = value.to_string_lossy();
-            let trimmed = raw.trim();
-            !(trimmed.is_empty()
-                || trimmed.eq_ignore_ascii_case("0")
-                || trimmed.eq_ignore_ascii_case("false")
-                || trimmed.eq_ignore_ascii_case("no")
-                || trimmed.eq_ignore_ascii_case("off"))
-        }
-    }
+    os == TargetOs::Linux && !legacy_zigbuild && target != host
 }
 
 /// Preserve Cargo's custom target-spec passthrough while using the unified
@@ -486,8 +461,7 @@ fn plan_for_host(target: &str, host: &str) -> Result<TargetPlan, SoldrError> {
                 )
             }
             (TargetOs::Linux, Some(TargetAbi::Gnu), _) => {
-                let suffix = target.replace('-', "_");
-                let upper = suffix.to_ascii_uppercase();
+                let upper = target.replace('-', "_").to_ascii_uppercase();
                 (
                     ToolchainPlan {
                         family: "linux-gnu",
@@ -505,18 +479,12 @@ fn plan_for_host(target: &str, host: &str) -> Result<TargetPlan, SoldrError> {
                         ),
                         root_env: Some("SOLDR_GNU_LINUX_TOOLCHAIN_ROOT"),
                     },
-                    vec![
-                        format!("AR_{suffix}"),
-                        format!("CC_{suffix}"),
-                        format!("CFLAGS_{suffix}"),
-                        format!("CXXFLAGS_{suffix}"),
-                        format!("CXX_{suffix}"),
-                        format!("CARGO_TARGET_{upper}_LINKER"),
-                        format!("CARGO_TARGET_{upper}_RUSTFLAGS"),
-                        format!("RANLIB_{suffix}"),
-                        "SOLDR_GNU_LINUX_SYSROOT".to_string(),
-                        "SOLDR_GNU_LINUX_TOOLCHAIN_ROOT".to_string(),
-                    ],
+                    {
+                        let mut keys =
+                            crate::fetch::gnu_linux_toolchain::env_keys_for_target(target);
+                        keys.push(format!("CARGO_TARGET_{upper}_RUSTFLAGS"));
+                        keys
+                    },
                 )
             }
             // Host-native musl remains intentionally host-provided: it is
@@ -769,9 +737,9 @@ mod tests {
     });
 
     crate::timed_test!(host_native_gnu_uses_catalogue_toolchain, {
-        // GNU targets are always catalogue-backed, including host-native x64,
-        // so their glibc ABI never depends on the runner's linker.
-        assert!(should_prepare_managed_linux(
+        // GNU target dispatch occurs before the Zig fallback, including
+        // host-native x64, so the ABI cannot inherit the runner's linker.
+        assert!(!should_prepare_managed_linux(
             TargetOs::Linux,
             "x86_64-unknown-linux-gnu",
             "x86_64-unknown-linux-gnu",
@@ -780,26 +748,12 @@ mod tests {
     });
 
     crate::timed_test!(the_reported_gnu_plan_matches_the_catalogue_lifecycle, {
-        let _lock = crate::TEST_PROCESS_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        std::env::remove_var(NATIVE_GNU_LINK_ENV_VAR);
         let plan = plan_for_host("x86_64-unknown-linux-gnu", "x86_64-unknown-linux-gnu").unwrap();
         assert_eq!(plan.toolchain.linker, "managed gcc");
         assert_eq!(plan.platform.provider, "soldr-toolchain");
         assert_eq!(plan.platform.kind, "gnu-linux-sysroot");
 
-        // The historical host-link opt-out no longer changes GNU target plans:
-        // missing catalogue state must be a loud fetch error, not an ABI-changing
-        // fallback to the runner compiler.
-        std::env::set_var(NATIVE_GNU_LINK_ENV_VAR, "0");
-        let opted_out =
-            plan_for_host("x86_64-unknown-linux-gnu", "x86_64-unknown-linux-gnu").unwrap();
-        assert_eq!(opted_out.toolchain.linker, "managed gcc");
-        assert_eq!(opted_out.platform.provider, "soldr-toolchain");
-        std::env::remove_var(NATIVE_GNU_LINK_ENV_VAR);
-
-        // musl is host-native either way.
+        // musl is host-native and intentionally remains host-provided.
         let musl = plan_for_host("x86_64-unknown-linux-musl", "x86_64-unknown-linux-musl").unwrap();
         assert_eq!(musl.toolchain.linker, "cc");
     });
@@ -813,41 +767,6 @@ mod tests {
             "x86_64-unknown-linux-musl",
             false,
         ));
-    });
-
-    crate::timed_test!(the_native_gnu_opt_out_restores_the_old_behaviour, {
-        let _lock = crate::TEST_PROCESS_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        for falsy in ["0", "false", "no", "off", ""] {
-            std::env::set_var(NATIVE_GNU_LINK_ENV_VAR, falsy);
-            assert!(
-                !should_prepare_managed_linux(
-                    TargetOs::Linux,
-                    "x86_64-unknown-linux-gnu",
-                    "x86_64-unknown-linux-gnu",
-                    false,
-                ),
-                "{falsy:?} must disable the native-gnu detour"
-            );
-        }
-        std::env::set_var(NATIVE_GNU_LINK_ENV_VAR, "1");
-        assert!(should_prepare_managed_linux(
-            TargetOs::Linux,
-            "x86_64-unknown-linux-gnu",
-            "x86_64-unknown-linux-gnu",
-            false,
-        ));
-        std::env::remove_var(NATIVE_GNU_LINK_ENV_VAR);
-        // Cross-compiling is unaffected by the opt-out either way.
-        std::env::set_var(NATIVE_GNU_LINK_ENV_VAR, "0");
-        assert!(should_prepare_managed_linux(
-            TargetOs::Linux,
-            "aarch64-unknown-linux-gnu",
-            "x86_64-unknown-linux-gnu",
-            false,
-        ));
-        std::env::remove_var(NATIVE_GNU_LINK_ENV_VAR);
     });
 
     crate::timed_test!(noncanonical_targets_do_not_advertise_blessed_operations, {

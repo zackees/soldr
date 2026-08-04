@@ -38,68 +38,88 @@ fn write_executable(path: &std::path::Path, body: &str) {
 }
 
 #[cfg(target_os = "linux")]
-crate::timed_test!(managed_zig_is_exported_for_later_github_steps, {
+crate::timed_test!(managed_gnu_toolchain_is_exported_for_later_github_steps, {
     let _lock = TEST_PROCESS_ENV_LOCK
         .lock()
         .unwrap_or_else(|error| error.into_inner());
 
-    let (target, output_keys, rustflags_key) = if cfg!(target_arch = "aarch64") {
+    let (target, target_prefix, slug) = if cfg!(target_arch = "aarch64") {
         (
             "x86_64-unknown-linux-gnu",
-            [
-                "CC_x86_64_unknown_linux_gnu",
-                "CXX_x86_64_unknown_linux_gnu",
-                "AR_x86_64_unknown_linux_gnu",
-                "RANLIB_x86_64_unknown_linux_gnu",
-                "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER",
-            ],
-            Some("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS"),
+            "x86_64-conda-linux-gnu",
+            "linux-x64-gnu",
         )
     } else {
         (
             "aarch64-unknown-linux-gnu",
-            [
-                "CC_aarch64_unknown_linux_gnu",
-                "CXX_aarch64_unknown_linux_gnu",
-                "AR_aarch64_unknown_linux_gnu",
-                "RANLIB_aarch64_unknown_linux_gnu",
-                "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER",
-            ],
-            None,
+            "aarch64-conda-linux-gnu",
+            "linux-arm64-gnu",
         )
     };
+    let target_u = target.replace('-', "_");
+    let target_upper = target_u.to_ascii_uppercase();
+    let output_keys = [
+        format!("CC_{target_u}"),
+        format!("CXX_{target_u}"),
+        format!("AR_{target_u}"),
+        format!("RANLIB_{target_u}"),
+        format!("CFLAGS_{target_u}"),
+        format!("CXXFLAGS_{target_u}"),
+        format!("CARGO_TARGET_{target_upper}_LINKER"),
+        format!("CARGO_TARGET_{target_upper}_RUSTFLAGS"),
+        "CMAKE_SYSROOT".to_string(),
+        "PKG_CONFIG_SYSROOT_DIR".to_string(),
+        "PKG_CONFIG_LIBDIR".to_string(),
+        "SOLDR_GNU_LINUX_SYSROOT".to_string(),
+        "SOLDR_GNU_LINUX_TOOLCHAIN_ROOT".to_string(),
+    ];
 
     let dir = tempfile::tempdir().expect("tempdir");
     let fake_bin = dir.path().join("fake-bin");
     std::fs::create_dir_all(&fake_bin).expect("create fake bin");
-    let fake_zig = fake_bin.join("zig");
     let fake_rustup = fake_bin.join("rustup");
-    write_executable(&fake_zig, "#!/bin/sh\nexit 0\n");
     write_executable(&fake_rustup, "#!/bin/sh\nexit 0\n");
 
-    let _zig = EnvVarGuard::set("ZIG", &fake_zig);
     let _rustup = EnvVarGuard::set(crate::TEST_RUSTUP_BIN_ENV_VAR, &fake_rustup);
     let _no_network = EnvVarGuard::set("SOLDR_TEST_NO_NETWORK", "1");
     let _legacy_sys = EnvVarGuard::set(crate::blessed_build::USE_LEGACY_VENDORED_SYS_ENV_VAR, "1");
     let _system_cmake = EnvVarGuard::set(crate::blessed_build::USE_SYSTEM_CMAKE_ENV_VAR, "1");
     let _manifest = EnvVarGuard::set("SOLDR_MANIFEST_DISABLE", "1");
     let _legacy_zigbuild = EnvVarGuard::remove(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR);
-    let _native_link = EnvVarGuard::remove(crate::target_lifecycle::NATIVE_GNU_LINK_ENV_VAR);
     let _path = EnvVarGuard::set("PATH", "/usr/bin:/bin");
     let _output_guards: Vec<_> = output_keys
         .iter()
         .map(|key| EnvVarGuard::remove(key))
         .collect();
-    let _rustflags_guard = rustflags_key.map(EnvVarGuard::remove);
 
     let paths = crate::core::SoldrPaths::with_root(dir.path().join("soldr"));
+    let bundle = paths
+        .bin
+        .join("syslib")
+        .join("gnu-linux-toolchain")
+        .join(crate::fetch::gnu_linux_toolchain::GNU_LINUX_TOOLCHAIN_VERSION)
+        .join(slug);
+    let package = bundle.join("package");
+    let managed_bin = package.join("bin");
+    let sysroot = package.join(target_prefix).join("sysroot");
+    std::fs::create_dir_all(&managed_bin).expect("create managed bin");
+    std::fs::create_dir_all(sysroot.join("usr/include")).expect("create sysroot includes");
+    std::fs::create_dir_all(sysroot.join("usr/lib")).expect("create sysroot libraries");
+    for tool in ["gcc", "g++", "ar", "ranlib", "ld", "readelf"] {
+        write_executable(
+            &managed_bin.join(format!("{target_prefix}-{tool}")),
+            "#!/bin/sh\nexit 0\n",
+        );
+    }
+    std::fs::write(bundle.join(".complete"), "test bundle").expect("write bundle stamp");
+
     let prep = tokio::runtime::Runtime::new()
         .expect("runtime")
         .block_on(crate::target_lifecycle::prepare_target(&paths, target))
-        .expect("prepare managed Linux target");
+        .expect("prepare managed GNU target");
     assert!(
-        prep.path_dirs.contains(&fake_bin),
-        "managed Zig directory missing from prepared PATH entries: {:?}",
+        prep.path_dirs.contains(&managed_bin),
+        "managed GNU bin directory missing from prepared PATH entries: {:?}",
         prep.path_dirs
     );
 
@@ -109,7 +129,7 @@ crate::timed_test!(managed_zig_is_exported_for_later_github_steps, {
     let process_path = std::env::split_paths(&std::env::var_os("PATH").expect("process PATH"))
         .next()
         .expect("first process PATH entry");
-    assert_eq!(process_path, fake_bin);
+    assert_eq!(process_path, managed_bin);
 
     let exported = std::fs::read_to_string(&github_env).expect("read github env");
     let exported_path = exported
@@ -119,15 +139,10 @@ crate::timed_test!(managed_zig_is_exported_for_later_github_steps, {
     let first_exported = std::env::split_paths(std::ffi::OsStr::new(exported_path))
         .next()
         .expect("first exported PATH entry");
-    assert_eq!(first_exported, fake_bin);
+    assert_eq!(first_exported, managed_bin);
 
-    let wrapper_root = paths.bin.join("linux-cross").join(target);
     for key in output_keys {
-        let process_value = std::env::var(key).unwrap_or_else(|_| panic!("{key} not applied"));
-        assert!(
-            std::path::Path::new(&process_value).starts_with(&wrapper_root),
-            "{key} did not point at a managed wrapper: {process_value}"
-        );
+        let process_value = std::env::var(&key).unwrap_or_else(|_| panic!("{key} not applied"));
         assert!(
             exported
                 .lines()
@@ -135,6 +150,16 @@ crate::timed_test!(managed_zig_is_exported_for_later_github_steps, {
             "{key} was not exported to GITHUB_ENV"
         );
     }
+    assert_eq!(
+        std::env::var(format!("CC_{target_u}")).expect("C compiler"),
+        managed_bin
+            .join(format!("{target_prefix}-gcc"))
+            .to_string_lossy()
+    );
+    assert_eq!(
+        std::env::var("SOLDR_GNU_LINUX_SYSROOT").expect("sysroot"),
+        sysroot.to_string_lossy()
+    );
 });
 
 crate::timed_test!(exported_encoded_rustflags_keep_caller_target_flags, {

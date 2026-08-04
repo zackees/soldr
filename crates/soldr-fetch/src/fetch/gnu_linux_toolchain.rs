@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use crate::core::{SoldrError, SoldrPaths};
 
 pub const GNU_LINUX_TOOLCHAIN_VERSION: &str = "gcc-13.3.0-glibc-2.17-1";
+pub const GNU_LINUX_GLIBC_BASELINE: &str = "2.17";
 const GNU_LINUX_TOOLCHAIN: &str = "gnu-linux-toolchain";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +42,41 @@ impl GnuLinuxToolchainTarget {
             Self::Aarch64 => "aarch64-conda-linux-gnu",
         }
     }
+
+    pub const fn supports_glibc_floor(self) -> bool {
+        true
+    }
+}
+
+/// Whether a GNU Linux triple has a catalogue sysroot that enforces the
+/// requested glibc ABI baseline.
+pub fn supports_glibc_floor(triple: &str, floor: &str) -> bool {
+    GnuLinuxToolchainTarget::for_triple(&triple.trim().to_ascii_lowercase())
+        .is_some_and(|target| target.supports_glibc_floor())
+        && floor == GNU_LINUX_GLIBC_BASELINE
+}
+
+/// The environment keys a GNU bundle applies for `target_triple`.
+///
+/// The target plan consumes this list as well, so the machine-readable
+/// capability output cannot drift from the actual prepared environment.
+pub fn env_keys_for_target(target_triple: &str) -> Vec<String> {
+    let target_u = target_triple.replace('-', "_");
+    let target_u_upper = target_u.to_ascii_uppercase();
+    vec![
+        format!("CC_{target_u}"),
+        format!("CXX_{target_u}"),
+        format!("AR_{target_u}"),
+        format!("RANLIB_{target_u}"),
+        format!("CFLAGS_{target_u}"),
+        format!("CXXFLAGS_{target_u}"),
+        format!("CARGO_TARGET_{target_u_upper}_LINKER"),
+        "CMAKE_SYSROOT".to_string(),
+        "PKG_CONFIG_SYSROOT_DIR".to_string(),
+        "PKG_CONFIG_LIBDIR".to_string(),
+        "SOLDR_GNU_LINUX_SYSROOT".to_string(),
+        "SOLDR_GNU_LINUX_TOOLCHAIN_ROOT".to_string(),
+    ]
 }
 
 #[derive(Debug, Clone)]
@@ -197,5 +233,21 @@ mod tests {
         assert!(lookup("CFLAGS_aarch64_unknown_linux_gnu").contains("--sysroot="));
         assert!(lookup("PKG_CONFIG_SYSROOT_DIR").ends_with("/sysroot"));
         assert!(lookup("PKG_CONFIG_LIBDIR").contains("/usr/lib/pkgconfig"));
+        let keys = env_keys_for_target("aarch64-unknown-linux-gnu");
+        for (key, _) in &env {
+            assert!(
+                keys.contains(key),
+                "environment key {key} missing from plan helper"
+            );
+        }
+        assert!(supports_glibc_floor(
+            "aarch64-unknown-linux-gnu",
+            GNU_LINUX_GLIBC_BASELINE
+        ));
+        assert!(!supports_glibc_floor("aarch64-unknown-linux-gnu", "2.28"));
+        assert!(!supports_glibc_floor(
+            "x86_64-unknown-linux-musl",
+            GNU_LINUX_GLIBC_BASELINE
+        ));
     });
 }
