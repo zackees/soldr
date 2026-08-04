@@ -33,7 +33,7 @@ bind-mount error → fix mapping ([soldr#885](https://github.com/zackees/soldr/i
 | Windows x64 → Windows GNU | managed MinGW-w64 GCC + GNU syslibs ([Section 1](#1-windows-x64--windows-gnu-via-managed-mingw-w64-gcc)) |
 | Linux → Windows MSVC | `soldr build` ([Section 2](#2-linux--windows-msvc-via-soldr-build)) |
 | **Windows/Linux -> Linux** | `soldr build --target <linux-triple>` |
-| **Windows/Linux -> Mac** | `soldr build` + target-shaped Apple SDK ([Section 1a](#1a-windows--linux-via-cargo-zigbuild-and-macos-via-soldr-build-soldr988soldr1425)) |
+| **Windows/Linux -> Mac** | `soldr build` + target-shaped Apple SDK ([Section 1a](#1a-canonical-linux-and-macos-targets-through-soldr-build)) |
 | Declare cross targets up-front | `[toolchain].targets` + `[soldr.plugins]` ([Section 3](#3-pinned-host-triples-per-project-current-state)) |
 
 ## Canonical target aliases
@@ -119,13 +119,14 @@ Windows contributors can produce Linux and macOS binaries locally instead of
 pushing a branch and waiting on CI, but the two target families now use
 one blessed build surface:
 
-- Linux cross targets use managed Zig internally through `soldr build`.
-  Here, **blessed** describes soldr's target-driven surface, not a Zig-free
-  implementation: soldr invokes `zig cc` / `zig c++` directly through its own
-  wrappers rather than delegating to the legacy `cargo zigbuild` subcommand.
-  Since soldr v0.8.29, `soldr prepare --github-env` also exports the managed
-  Zig directory on `PATH` for later external tools. Replacing managed Zig on
-  GNU Linux is tracked separately in #2220.
+- GNU Linux targets use catalogue-backed GCC/binutils/glibc-2.17 sysroot
+  bundles internally through `soldr build`. The published baseline is glibc
+  2.17; `--target <triple>.2.17` selects it explicitly, while an unsupported
+  floor is rejected rather than silently weakened. Soldr selects the correct x86_64
+  or aarch64 bundle from the requested triple, verifies the catalogue SHA-256,
+  and exports the target compiler/linker, CMake, and pkg-config sysroot
+  environment. Neither `zig`, `cargo-zigbuild`, nor `ziglang` is on this
+  blessed GNU path.
 - macOS targets use `soldr build --target <apple-triple>`. That path resolves
   the target-aware Apple SDK row and injects clang/SDK env internally. Direct
   `soldr cargo zigbuild --target *-apple-darwin` is a legacy/diagnostic path,
@@ -155,7 +156,8 @@ soldr build --target aarch64-apple-darwin --release -p soldr-cli
 
 ### What soldr handles automatically
 
-- Managed Zig compiler/linker provisioning for Linux cross targets.
+- Catalogue-backed GCC/binutils/glibc-2.17 sysroot provisioning for GNU Linux
+  targets.
 - Apple SDK fetch for `*-apple-darwin` targets. Auto shape maps
   `x86_64-apple-darwin` to `darwin-x86_64` and `aarch64-apple-darwin` to
   `darwin-aarch64`; `soldr build` applies the SDK env internally.

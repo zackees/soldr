@@ -70,6 +70,7 @@ pub mod bzip2_sysroot;
 /// whatever cmake/make the system PATH resolves. Stub-until-ingested
 /// consumer like the *-sys sysroots below.
 pub mod cmake_tools;
+pub mod gnu_linux_toolchain;
 pub mod lzma_sysroot;
 pub mod mimalloc_sysroot;
 pub mod mingw_w64_gcc;

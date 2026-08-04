@@ -23,11 +23,9 @@ use soldr_cli::timed_test;
 use std::path::{Path, PathBuf};
 use std::{fs, process::Command};
 
-/// The target used across these tests. Deliberately a plain linux-gnu
-/// triple: `blessed_build::prepare` has no sysroot arm for it (so no
-/// catalogue/network work even without the opt-out env vars) and
-/// `pick_cross_subcommand` never rewrites it to xwin/zigbuild on any
-/// host.
+/// The target used across these tests. It is pre-seeded with a fake
+/// catalogue-backed GNU bundle so the overlap coverage stays hermetic and
+/// cannot mask a new normal-path Zig fetch.
 const TARGET: &str = "x86_64-unknown-linux-gnu";
 
 /// Fake cargo that answers `cargo metadata` with an empty JSON object
@@ -97,7 +95,6 @@ struct Harness {
     cargo: PathBuf,
     rustc: PathBuf,
     rustup: PathBuf,
-    zig: PathBuf,
 }
 
 impl Harness {
@@ -137,14 +134,6 @@ impl Harness {
         let rustup = install_logging_fake_rustup(&cache_root.join("rustup-invocations.log"));
         write_fake_script(&cargo, &fake_recording_cargo_script(&log_path));
         write_fake_script(&rustc, &fake_rustc_script(&log_path));
-        // soldr#2159: TARGET is a Linux gnu triple, so on a non-Linux host
-        // it is a cross-compile and `should_prepare_managed_linux` returns
-        // true before any opt-out is consulted -- which fetches managed zig.
-        // A stub satisfies `ensure_zig`'s `ZIG` override and keeps the
-        // suite off the network on every host, not just Linux.
-        let zig = fake_script_path(&tool_dir, "zig");
-        write_fake_script(&zig, &fake_rustc_script(&log_path));
-
         Harness {
             project,
             cache_root,
@@ -152,11 +141,32 @@ impl Harness {
             cargo,
             rustc,
             rustup,
-            zig,
         }
     }
 
     fn run(&self, args: &[&str], extra_env: &[(&str, &str)]) -> std::process::Output {
+        let bundle = self
+            .cache_root
+            .join("bin")
+            .join("syslib")
+            .join("gnu-linux-toolchain")
+            .join(soldr_cli::fetch::gnu_linux_toolchain::GNU_LINUX_TOOLCHAIN_VERSION)
+            .join("linux-x64-gnu");
+        let package = bundle.join("package");
+        let compiler_prefix = "x86_64-conda-linux-gnu";
+        let bin = package.join("bin");
+        let sysroot = package.join(compiler_prefix).join("sysroot");
+        fs::create_dir_all(&bin).expect("create GNU bundle bin");
+        fs::create_dir_all(sysroot.join("usr/include")).expect("create GNU sysroot includes");
+        fs::create_dir_all(sysroot.join("usr/lib")).expect("create GNU sysroot libraries");
+        for tool in ["gcc", "g++", "ar", "ranlib", "ld", "readelf"] {
+            write_fake_script(
+                &bin.join(format!("{compiler_prefix}-{tool}")),
+                &fake_rustc_script(&self.log_path),
+            );
+        }
+        fs::write(bundle.join(".complete"), "test bundle").expect("write GNU bundle stamp");
+
         let mut cmd = common::isolated_soldr_command();
         cmd.args(args)
             .current_dir(&self.project)
@@ -171,20 +181,9 @@ impl Harness {
             .env("SOLDR_USE_LEGACY_VENDORED_SYS", "1")
             .env("SOLDR_USE_SYSTEM_CMAKE", "1")
             // ...and the toolchain catalogue, which those two do not cover.
-            // Without this the child reaches the network, and a hanging host
-            // costs a 30s MANIFEST_FETCH_TIMEOUT per attempt.
+            // The GNU catalogue bundle is pre-seeded below so the build stays
+            // hermetic while exercising only Cargo prefetch ordering.
             .env("SOLDR_MANIFEST_DISABLE", "1")
-            // ...and managed zig. soldr#2145 made host-native `-gnu` take
-            // the managed-zig arm, and TARGET is exactly that on a Linux
-            // x86_64 runner, so this suite acquired a zig fetch. The two
-            // opt-outs above do not cover it: they gate `blessed_build`,
-            // and this is `linux_cross`.
-            .env("SOLDR_NATIVE_GNU_LINK", "0")
-            // ...and the cross-compile arm, which the opt-out above cannot
-            // reach: `should_prepare_managed_linux` returns true for
-            // target != host before it ever consults it. `ZIG` is read by
-            // `ensure_zig` ahead of any download.
-            .env("ZIG", &self.zig)
             // soldr#2159: these tests abort at the 120s `timed_test!` watchdog
             // on CI while finishing in ~1.4s locally, and the child produces no
             // output at all, so three rounds of hypotheses have been guesswork.
