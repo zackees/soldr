@@ -16,11 +16,6 @@
 //! - `*-apple-darwin` → ensure the target-shaped Apple SDK and print
 //!   `SDKROOT=<path>` so the caller can plumb it into `$GITHUB_ENV`.
 //!   `soldr build --target` is the blessed Darwin cross-build path.
-//! - `x86_64-unknown-linux-gnu` / `aarch64-unknown-linux-gnu` → ensure the
-//!   catalogue-backed GCC/binutils/glibc-2.17 sysroot bundle and export
-//!   target-scoped compiler, linker, CMake, and pkg-config environment.
-//! - `*-unknown-linux-musl` (when triple differs from host) → ensure managed
-//!   Zig plus target-scoped compiler/linker wrappers.
 //! - All targets: `rustup target add <triple>`.
 //!
 //! Designed to collapse the per-step ad-hoc downloads in

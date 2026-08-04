@@ -141,8 +141,8 @@ crate::timed_test!(managed_gnu_toolchain_is_exported_for_later_github_steps, {
         .expect("first exported PATH entry");
     assert_eq!(first_exported, managed_bin);
 
-    for key in output_keys {
-        let process_value = std::env::var(&key).unwrap_or_else(|_| panic!("{key} not applied"));
+    for key in &output_keys {
+        let process_value = std::env::var(key).unwrap_or_else(|_| panic!("{key} not applied"));
         assert!(
             exported
                 .lines()
