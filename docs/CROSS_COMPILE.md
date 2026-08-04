@@ -33,7 +33,7 @@ bind-mount error → fix mapping ([soldr#885](https://github.com/zackees/soldr/i
 | Windows x64 → Windows GNU | managed MinGW-w64 GCC + GNU syslibs ([Section 1](#1-windows-x64--windows-gnu-via-managed-mingw-w64-gcc)) |
 | Linux → Windows MSVC | `soldr build` ([Section 2](#2-linux--windows-msvc-via-soldr-build)) |
 | **Windows/Linux -> Linux** | `soldr build --target <linux-triple>` |
-| **Windows/Linux -> Mac** | `soldr build` + target-shaped Apple SDK ([Section 1a](#1a-windows--linux-via-cargo-zigbuild-and-macos-via-soldr-build-soldr988soldr1425)) |
+| **Windows/Linux -> Mac** | `soldr build` + target-shaped Apple SDK ([Section 1a](#1a-canonical-linux-and-macos-targets-through-soldr-build)) |
 | Declare cross targets up-front | `[toolchain].targets` + `[soldr.plugins]` ([Section 3](#3-pinned-host-triples-per-project-current-state)) |
 
 ## Canonical target aliases
