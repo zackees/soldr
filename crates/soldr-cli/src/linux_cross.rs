@@ -22,6 +22,27 @@ pub(crate) async fn prepare(
     paths: &SoldrPaths,
     triple: &str,
 ) -> Result<LinuxCrossTools, SoldrError> {
+    let base = crate::target_alias::split_glibc_floor(triple)
+        .map(|(base, _)| base)
+        .unwrap_or(triple);
+    if let Some(target) =
+        crate::fetch::gnu_linux_toolchain::GnuLinuxToolchainTarget::for_triple(base)
+    {
+        // GNU Linux's blessed route is a catalogue-backed GCC/binutils/sysroot
+        // bundle. Do not fall through to managed Zig when an asset is missing:
+        // the error must name the unavailable catalogue toolchain.
+        let toolchain = crate::fetch::gnu_linux_toolchain::ensure(paths, base).await?;
+        debug_assert_eq!(toolchain.target, target);
+        return Ok(LinuxCrossTools {
+            bin_dir: toolchain.bin_dir.clone(),
+            cc: toolchain.tool_path("gcc"),
+            cxx: toolchain.tool_path("g++"),
+            ar: toolchain.tool_path("ar"),
+            ranlib: toolchain.tool_path("ranlib"),
+            linker: toolchain.tool_path("gcc"),
+        });
+    }
+
     let zig_target = rust_target_to_zig_target(triple)?;
     let zig_target = zig_target.as_str();
     let zig_dir = crate::fetch::ensure_zig(paths).await?;

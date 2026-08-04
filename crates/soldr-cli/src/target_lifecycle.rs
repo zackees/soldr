@@ -94,43 +94,64 @@ pub(crate) async fn prepare_target(
         )));
     }
 
-    // A floor can only be enforced by linking through managed zig, so asking
-    // for one opts in regardless of the host-native escape hatch. Honouring
-    // SOLDR_NATIVE_GNU_LINK=0 here would drop the floor without saying so --
-    // the precise failure this feature exists to avoid.
+    // Glibc floors are a caller-visible contract. The catalogue bundle's
+    // sysroot is pinned at 2.17, so it provides the replacement enforcement
+    // mechanism when GNU targets stop using Zig wrappers.
     let floor_requires_managed_link = glibc_floor.is_some();
-    if floor_requires_managed_link
+    let gnu_uses_catalogue_toolchain =
+        attrs.os == TargetOs::Linux && attrs.abi == Some(TargetAbi::Gnu);
+    if gnu_uses_catalogue_toolchain
+        || floor_requires_managed_link
         || should_prepare_managed_linux(attrs.os, base, host, legacy_zigbuild)
     {
-        let tools = crate::linux_cross::prepare(paths, target).await?;
-        prep.path_dirs.push(tools.bin_dir);
         // Env keys come from the base triple: a dot is not legal in an
         // environment variable name, so `CC_x86_64_unknown_linux_gnu.2.17`
         // would be silently unusable.
         let suffix = base.replace('-', "_");
         let upper = suffix.to_ascii_uppercase();
-        prep.env.extend([
-            (
-                format!("CC_{suffix}"),
-                tools.cc.to_string_lossy().into_owned(),
-            ),
-            (
-                format!("CXX_{suffix}"),
-                tools.cxx.to_string_lossy().into_owned(),
-            ),
-            (
-                format!("AR_{suffix}"),
-                tools.ar.to_string_lossy().into_owned(),
-            ),
-            (
-                format!("RANLIB_{suffix}"),
-                tools.ranlib.to_string_lossy().into_owned(),
-            ),
-            (
-                format!("CARGO_TARGET_{upper}_LINKER"),
-                tools.linker.to_string_lossy().into_owned(),
-            ),
-        ]);
+        // The catalogue-backed GNU bundle supplies a pinned glibc sysroot as
+        // well as the compiler. Keep every consumer (cc-rs, rustc's linker,
+        // CMake, and pkg-config) on that root rather than allowing the runner
+        // to leak host headers or libraries into a blessed artifact.
+        if let Some(bundle) =
+            crate::fetch::gnu_linux_toolchain::GnuLinuxToolchainTarget::for_triple(base)
+        {
+            let toolchain = crate::fetch::gnu_linux_toolchain::ensure(paths, base).await?;
+            debug_assert_eq!(toolchain.target, bundle);
+            prep.path_dirs.push(toolchain.bin_dir.clone());
+            let mut env = crate::fetch::gnu_linux_toolchain::env_for_target(&toolchain, base);
+            let sysroot = toolchain.sysroot.to_string_lossy().into_owned();
+            env.push((
+                format!("CARGO_TARGET_{upper}_RUSTFLAGS"),
+                format!("-C link-arg=--sysroot={sysroot}"),
+            ));
+            prep.env.extend(env);
+        } else {
+            let tools = crate::linux_cross::prepare(paths, target).await?;
+            prep.path_dirs.push(tools.bin_dir);
+            prep.env.extend([
+                (
+                    format!("CC_{suffix}"),
+                    tools.cc.to_string_lossy().into_owned(),
+                ),
+                (
+                    format!("CXX_{suffix}"),
+                    tools.cxx.to_string_lossy().into_owned(),
+                ),
+                (
+                    format!("AR_{suffix}"),
+                    tools.ar.to_string_lossy().into_owned(),
+                ),
+                (
+                    format!("RANLIB_{suffix}"),
+                    tools.ranlib.to_string_lossy().into_owned(),
+                ),
+                (
+                    format!("CARGO_TARGET_{upper}_LINKER"),
+                    tools.linker.to_string_lossy().into_owned(),
+                ),
+            ]);
+        }
         // `-C link-self-contained` is not accepted on every target, and
         // passing it where it is unsupported is a hard rustc error rather
         // than a warning:
@@ -147,10 +168,13 @@ pub(crate) async fn prepare_target(
         // is the one place that builds aarch64 natively, so it broke there
         // and nowhere else.
         if supports_link_self_contained(base) {
-            prep.env.push((
-                format!("CARGO_TARGET_{upper}_RUSTFLAGS"),
-                "-C link-self-contained=no".to_string(),
-            ));
+            let key = format!("CARGO_TARGET_{upper}_RUSTFLAGS");
+            if let Some((_, flags)) = prep.env.iter_mut().find(|(name, _)| name == &key) {
+                flags.push_str(" -C link-self-contained=no");
+            } else {
+                prep.env
+                    .push((key, "-C link-self-contained=no".to_string()));
+            }
         }
     }
     Ok(prep)
@@ -461,44 +485,62 @@ fn plan_for_host(target: &str, host: &str) -> Result<TargetPlan, SoldrError> {
                     ],
                 )
             }
-            // Host-native. soldr#2145: `-gnu` no longer stops here — it
-            // falls through to the managed-zig arm below so the reported
-            // plan matches what `prepare_target` actually does. A plan
-            // that says `cc`/`host-sysroot` while the build links through
-            // zig is worse than no plan at all.
-            (TargetOs::Linux, Some(abi @ (TargetAbi::Gnu | TargetAbi::Musl)), _)
-                if target == host && (abi == TargetAbi::Musl || !native_gnu_link_enabled()) =>
-            {
-                let family = if abi == TargetAbi::Musl {
-                    "linux-musl"
-                } else {
-                    "linux-gnu"
-                };
-                (
-                    ToolchainPlan {
-                        family,
-                        c_compiler: "cc",
-                        cxx_compiler: "c++",
-                        linker: "cc",
-                        archiver: "ar",
-                    },
-                    PlatformPlan {
-                        kind: "host-sysroot",
-                        provider: "host",
-                        identity: format!("{family}/{target}"),
-                        root_env: None,
-                    },
-                    Vec::new(),
-                )
-            }
-            (TargetOs::Linux, Some(abi @ (TargetAbi::Gnu | TargetAbi::Musl)), _) => {
+            (TargetOs::Linux, Some(TargetAbi::Gnu), _) => {
                 let suffix = target.replace('-', "_");
                 let upper = suffix.to_ascii_uppercase();
-                let family = if abi == TargetAbi::Musl {
-                    "linux-musl"
-                } else {
-                    "linux-gnu"
-                };
+                (
+                    ToolchainPlan {
+                        family: "linux-gnu",
+                        c_compiler: "managed gcc",
+                        cxx_compiler: "managed g++",
+                        linker: "managed gcc",
+                        archiver: "managed ar",
+                    },
+                    PlatformPlan {
+                        kind: "gnu-linux-sysroot",
+                        provider: "soldr-toolchain",
+                        identity: format!(
+                            "gnu-linux-toolchain/{}/{target}",
+                            crate::fetch::gnu_linux_toolchain::GNU_LINUX_TOOLCHAIN_VERSION
+                        ),
+                        root_env: Some("SOLDR_GNU_LINUX_TOOLCHAIN_ROOT"),
+                    },
+                    vec![
+                        format!("AR_{suffix}"),
+                        format!("CC_{suffix}"),
+                        format!("CFLAGS_{suffix}"),
+                        format!("CXXFLAGS_{suffix}"),
+                        format!("CXX_{suffix}"),
+                        format!("CARGO_TARGET_{upper}_LINKER"),
+                        format!("CARGO_TARGET_{upper}_RUSTFLAGS"),
+                        format!("RANLIB_{suffix}"),
+                        "SOLDR_GNU_LINUX_SYSROOT".to_string(),
+                        "SOLDR_GNU_LINUX_TOOLCHAIN_ROOT".to_string(),
+                    ],
+                )
+            }
+            // Host-native musl remains intentionally host-provided: it is
+            // statically linked and the GNU catalogue bundle does not model it.
+            (TargetOs::Linux, Some(TargetAbi::Musl), _) if target == host => (
+                ToolchainPlan {
+                    family: "linux-musl",
+                    c_compiler: "cc",
+                    cxx_compiler: "c++",
+                    linker: "cc",
+                    archiver: "ar",
+                },
+                PlatformPlan {
+                    kind: "host-sysroot",
+                    provider: "host",
+                    identity: format!("linux-musl/{target}"),
+                    root_env: None,
+                },
+                Vec::new(),
+            ),
+            (TargetOs::Linux, Some(TargetAbi::Musl), _) => {
+                let suffix = target.replace('-', "_");
+                let upper = suffix.to_ascii_uppercase();
+                let family = "linux-musl";
                 (
                     ToolchainPlan {
                         family,
@@ -702,12 +744,18 @@ mod tests {
         }
     });
 
-    crate::timed_test!(linux_arm64_plan_uses_managed_zig_without_legacy_wrapper, {
+    crate::timed_test!(linux_arm64_plan_uses_catalogue_gnu_toolchain_without_zig, {
         let plan = plan_for_host("aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu").unwrap();
         assert_eq!(plan.toolchain.family, "linux-gnu");
-        assert_eq!(plan.toolchain.linker, "zig cc");
-        assert_eq!(plan.platform.provider, "soldr-managed-zig");
+        assert_eq!(plan.toolchain.linker, "managed gcc");
+        assert_eq!(plan.platform.kind, "gnu-linux-sysroot");
+        assert_eq!(plan.platform.provider, "soldr-toolchain");
+        assert!(plan.cache_identity.contains("gnu-linux-toolchain/"));
         let json = serde_json::to_string(&plan).unwrap();
+        assert!(
+            !json.contains("zig"),
+            "normal GNU plans must not advertise Zig: {json}"
+        );
         assert!(!json.contains("cargo-zigbuild"));
     });
 
@@ -720,10 +768,9 @@ mod tests {
         ));
     });
 
-    crate::timed_test!(host_native_gnu_still_goes_through_managed_zig, {
-        // soldr#2145: this is the case that used to be skipped, which is
-        // why the published x86_64 artifact inherited the release
-        // runner's glibc 2.39 while aarch64 -- cross-built -- got 2.28.
+    crate::timed_test!(host_native_gnu_uses_catalogue_toolchain, {
+        // GNU targets are always catalogue-backed, including host-native x64,
+        // so their glibc ABI never depends on the runner's linker.
         assert!(should_prepare_managed_linux(
             TargetOs::Linux,
             "x86_64-unknown-linux-gnu",
@@ -732,23 +779,24 @@ mod tests {
         ));
     });
 
-    crate::timed_test!(the_reported_plan_matches_what_prepare_actually_does, {
+    crate::timed_test!(the_reported_gnu_plan_matches_the_catalogue_lifecycle, {
         let _lock = crate::TEST_PROCESS_ENV_LOCK
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         std::env::remove_var(NATIVE_GNU_LINK_ENV_VAR);
-        // A plan that claims `cc`/`host-sysroot` while the build links
-        // through zig is worse than no plan at all.
         let plan = plan_for_host("x86_64-unknown-linux-gnu", "x86_64-unknown-linux-gnu").unwrap();
-        assert_eq!(plan.toolchain.linker, "zig cc");
-        assert_eq!(plan.platform.provider, "soldr-managed-zig");
+        assert_eq!(plan.toolchain.linker, "managed gcc");
+        assert_eq!(plan.platform.provider, "soldr-toolchain");
+        assert_eq!(plan.platform.kind, "gnu-linux-sysroot");
 
-        // ...and the opt-out has to move the plan back too.
+        // The historical host-link opt-out no longer changes GNU target plans:
+        // missing catalogue state must be a loud fetch error, not an ABI-changing
+        // fallback to the runner compiler.
         std::env::set_var(NATIVE_GNU_LINK_ENV_VAR, "0");
         let opted_out =
             plan_for_host("x86_64-unknown-linux-gnu", "x86_64-unknown-linux-gnu").unwrap();
-        assert_eq!(opted_out.toolchain.linker, "cc");
-        assert_eq!(opted_out.platform.provider, "host");
+        assert_eq!(opted_out.toolchain.linker, "managed gcc");
+        assert_eq!(opted_out.platform.provider, "soldr-toolchain");
         std::env::remove_var(NATIVE_GNU_LINK_ENV_VAR);
 
         // musl is host-native either way.
