@@ -269,25 +269,26 @@ def main() -> int:
     parser.add_argument("--target", required=True, choices=sorted(TARGETS))
     parser.add_argument("--repo", type=Path, required=True)
     args = parser.parse_args()
-    assert_plan(args.soldr, args.target)
+    soldr = str(Path(args.soldr).resolve())
+    assert_plan(soldr, args.target)
     with tempfile.TemporaryDirectory(
         prefix=f"soldr-gnu-e2e-{TARGETS[args.target][0]}-"
     ) as raw:
         work = Path(raw)
         archive = work / "prepared.tar.zst"
         source_env = prepare(
-            args.soldr, args.target, work / "source-github.env", save=archive
+            soldr, args.target, work / "source-github.env", save=archive
         )
         source_root, _ = assert_managed_environment(source_env, args.target)
         # Warm Cargo's fixture dependencies before proving that the restored
         # toolchain itself is enough when Soldr is forbidden from networking.
-        build_fixture(args.soldr, args.target, source_env, work / "source-build")
+        build_fixture(soldr, args.target, source_env, work / "source-build")
 
         restored_env = os.environ.copy()
         restored_env["SOLDR_CACHE_DIR"] = str(work / "restored-soldr")
         restored_env["SOLDR_TEST_NO_NETWORK"] = "1"
         env = prepare(
-            args.soldr,
+            soldr,
             args.target,
             work / "restored-github.env",
             env=restored_env,
@@ -298,7 +299,7 @@ def main() -> int:
             raise RuntimeError(
                 "prepare archive did not restore into the clean Soldr root"
             )
-        binary = build_fixture(args.soldr, args.target, env, work / "restored-build")
+        binary = build_fixture(soldr, args.target, env, work / "restored-build")
         verify_artifact(args.repo, args.target, root, binary, env)
     return 0
 
