@@ -14,8 +14,17 @@ def test_release_workflow_builds_and_publishes_musllinux_wheels() -> None:
     assert "pypi-soldr-aarch64-unknown-linux-musl" in workflow
     assert "Assert linux-musl wheels are tagged musllinux_1_2" in workflow
     assert "Smoke test musllinux wheel on Alpine" in workflow
+    assert "Smoke test native ARM musllinux wheel on Alpine" in workflow
     assert "alpine:3.20" in workflow
     assert "--only-binary=:all:" in workflow
+    native_arm_wheel = workflow.split(
+        "Smoke test native ARM musllinux wheel on Alpine", 1
+    )[1]
+    assert (
+        'pip install --no-index --only-binary=:all: --find-links /dist "soldr==${EXPECTED_VERSION}"'
+        in native_arm_wheel
+    )
+    assert "uv pip install --python .venv dist/*.whl" not in native_arm_wheel
     assert "expected=8" in workflow
 
     stale_markers = [
