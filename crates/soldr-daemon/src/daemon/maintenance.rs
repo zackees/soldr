@@ -782,9 +782,23 @@ mod tests {
             return;
         };
         let paths = SoldrPaths::with_root(root);
-        let config = crate::core::SoldrConfig::default();
-        // Parks in `fs_phase_barrier` for as long as the parent needs.
-        let _ = sweep_workspace_targets(&paths, &config, MaintenanceKind::Full);
+        // The parent's config, not `SoldrConfig::default()`: the default
+        // allowlist is `~/dev`, which no tempdir fixture can satisfy, so
+        // `evaluate_safety_guards` would reject the seeded row and phase 2
+        // would iterate an empty vector (soldr#2225).
+        let config = paths.load_config().expect("fixture config");
+        // Parks in `fs_phase_barrier` for as long as the parent needs, then
+        // runs the real delete loop.
+        let outcome = sweep_workspace_targets(&paths, &config, MaintenanceKind::Full);
+        // Handed back out-of-band so the parent can assert the sweep really
+        // entered its delete loop rather than no-opping past it.
+        if let Some(dir) = std::env::var_os(FS_BARRIER_DIR_ENV).map(PathBuf::from) {
+            std::fs::write(
+                dir.join("sweep-outcome"),
+                serde_json::to_vec(&outcome).expect("serialize sweep outcome"),
+            )
+            .expect("write sweep outcome");
+        }
     });
 
     // soldr#2224 acceptance: the daemon's maintenance sweep must not hold
@@ -813,14 +827,50 @@ mod tests {
             let paths = SoldrPaths::with_root(root.clone());
             let db_path = crate::cache_lib::data_db_path(&paths);
 
-            // A registered target so the sweep has real rows to snapshot.
-            let target = fixture.path().join("repo").join("target");
+            // A registered target the sweep will actually *delete*, not
+            // merely snapshot. Three things have to line up or the row is
+            // filtered out before phase 2 and the delete loop runs zero
+            // times (soldr#2225):
+            //
+            //  1. cargo markers, or `delete_candidate_dir` refuses (#1671);
+            //  2. both age signals past the 30-day `FULL_STALE_AGE`, because
+            //     `effective_age_seconds` takes the *younger* of the registry
+            //     row and the directory mtime (soldr#2134) — a freshly
+            //     created dir reads as age 0 no matter what the row says;
+            //  3. an allowlist root containing the workspace, since the
+            //     default `~/dev` cannot contain a tempdir.
+            let workspace = fixture.path().join("repo");
+            let target = workspace.join("target");
             std::fs::create_dir_all(&target).expect("target dir");
             std::fs::write(target.join("CACHEDIR.TAG"), b"Signature: 8a477f597d28d172")
                 .expect("cachedir tag");
+            // A populated tree, so phase 2 is a real recursive deletion
+            // rather than a single unlink.
+            for bucket in 0..6 {
+                let dir = target.join("deps").join(format!("b{bucket}"));
+                std::fs::create_dir_all(&dir).expect("deps bucket");
+                for file in 0..200 {
+                    std::fs::write(dir.join(format!("o{file}.o")), vec![0u8; 256])
+                        .expect("object file");
+                }
+            }
+
+            std::fs::create_dir_all(&paths.root).expect("soldr root");
+            let allowlist = workspace.display().to_string().replace('\\', "\\\\");
+            std::fs::write(
+                &paths.config_file,
+                format!("[auto_gc]\nenabled = true\n[gc]\nallowlist_roots = [\"{allowlist}\"]\n"),
+            )
+            .expect("fixture config");
+
+            let stale = SystemTime::now() - Duration::from_secs(90 * 24 * 60 * 60);
+            filetime::set_file_mtime(&target, filetime::FileTime::from_system_time(stale))
+                .expect("age the target dir");
             {
                 let registry = TargetRegistry::open(&db_path).expect("seed registry");
-                registry.upsert_with_time(&target, 0).expect("seed row");
+                registry
+                    .upsert_with_time(&target, unix_millis(stale) / 1_000)
+                    .expect("seed row");
             }
 
             // Configured with `std::process::Command`, executed through
@@ -919,6 +969,25 @@ mod tests {
             // The record really landed, not just "the open succeeded".
             let stored = db::get_build(&db_path, 4242).expect("read back");
             assert_eq!(stored.expect("record persisted").session_id, 4242);
+
+            // ...and the sweep really deleted a populated tree while the
+            // probe above was running. Without this the fixture could be
+            // filtered out before phase 2 and the test would still pass,
+            // proving only that no handle is held entering an empty loop.
+            let outcome: ComponentOutcome = serde_json::from_slice(
+                &std::fs::read(barrier.join("sweep-outcome")).expect("read sweep outcome"),
+            )
+            .expect("parse sweep outcome");
+            assert_eq!(outcome.error, None, "sweep reported an error");
+            assert_eq!(
+                outcome.items_removed, 1,
+                "the sweep must have entered its delete loop; the seeded target was \
+                 filtered out before phase 2 (soldr#2225)"
+            );
+            assert!(
+                !target.exists(),
+                "the stale target/ tree must be gone after the sweep"
+            );
         }
     );
 
