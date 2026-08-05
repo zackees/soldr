@@ -654,11 +654,14 @@ pub(crate) fn save_prepare_state(
     let roots = prepare_state_roots(paths)?;
     // A GNU prepare archive must be self-contained without also inheriting a
     // previous target's Zig/Apple/MSVC state from the shared Soldr root.
-    let gnu_root = paths.bin.join("syslib").join("gnu-linux-toolchain");
+    let syslib_root = paths.bin.join("syslib");
     let roots: Vec<_> = if target.ends_with("-unknown-linux-gnu") {
-        roots
+        // The compiler bundle refers to companion syslib packages such as
+        // zlib-ng and CMake through its generated env. Archive the syslib
+        // parent as one portable unit, while still excluding sibling Zig.
+        [syslib_root, paths.root.join("sdk")]
             .into_iter()
-            .filter(|root| root == &gnu_root || root == &paths.root.join("sdk"))
+            .filter(|root| root.exists())
             .collect()
     } else {
         roots

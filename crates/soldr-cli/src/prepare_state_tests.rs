@@ -71,12 +71,15 @@ crate::timed_test!(prepare_state_archive_restores_to_a_different_soldr_root, {
         .join("ready");
     let sdk_marker = source.root.join("sdk").join("ready");
     let zig_marker = source.bin.join("zig-0.14.1").join("ready");
+    let zlib_marker = source.bin.join("syslib/zlib-ng/ready");
     std::fs::create_dir_all(gnu_marker.parent().expect("GNU parent")).expect("mkdir GNU");
     std::fs::create_dir_all(sdk_marker.parent().expect("SDK parent")).expect("mkdir SDK");
     std::fs::write(&gnu_marker, b"gnu").expect("write GNU marker");
     std::fs::write(&sdk_marker, b"sdk").expect("write SDK marker");
     std::fs::create_dir_all(zig_marker.parent().expect("Zig parent")).expect("mkdir Zig");
     std::fs::write(&zig_marker, b"zig").expect("write Zig marker");
+    std::fs::create_dir_all(zlib_marker.parent().expect("zlib parent")).expect("mkdir zlib");
+    std::fs::write(&zlib_marker, b"zlib").expect("write zlib marker");
 
     let archive = tmp.path().join("prepared.tar.zst");
     save_prepare_state(&archive, &source, "x86_64-unknown-linux-gnu").expect("save prepare state");
@@ -90,6 +93,10 @@ crate::timed_test!(prepare_state_archive_restores_to_a_different_soldr_root, {
     assert_eq!(
         std::fs::read(restored.root.join("sdk/ready")).expect("SDK restored"),
         b"sdk"
+    );
+    assert_eq!(
+        std::fs::read(restored.bin.join("syslib/zlib-ng/ready")).expect("zlib restored"),
+        b"zlib"
     );
     assert!(
         !restored.bin.join("zig-0.14.1/ready").exists(),
