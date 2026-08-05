@@ -20,6 +20,8 @@ fn wait_for_daemon_ready(soldr_bin: &Path, cache_root: &Path, timeout: Duration)
         let status = Command::new(soldr_bin)
             .args(["daemon", "status", "--json"])
             .env("SOLDR_CACHE_DIR", cache_root)
+            .env("RUNNING_PROCESS_DISABLE", "1")
+            .env_remove(soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR)
             .output()
             .expect("query daemon status");
         if status.status.success()
@@ -311,6 +313,11 @@ timed_test!(
         let start = Command::new(&soldr_bin)
             .args(["daemon", "start"])
             .env("SOLDR_CACHE_DIR", &cache_root)
+            // A dogfooded outer `soldr cargo test` exports its installed
+            // daemon image. This fixture must start the daemon built beside
+            // CARGO_BIN_EXE_soldr so its IPC protocol matches the test binary.
+            .env_remove(soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR)
+            .env("RUNNING_PROCESS_DISABLE", "1")
             .output()
             .expect("start daemon for wrapper target registry");
         assert!(
@@ -325,6 +332,8 @@ timed_test!(
             .current_dir(&project_dir)
             .env("RUSTC_WRAPPER", &soldr_bin)
             .env("SOLDR_CACHE_DIR", &cache_root)
+            .env_remove(soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR)
+            .env("RUNNING_PROCESS_DISABLE", "1")
             .env("ZCCACHE_DISABLE", "1")
             .env("SOLDR_CACHE_ENABLED", "0")
             .env_remove("CARGO_TARGET_DIR")
@@ -354,6 +363,8 @@ timed_test!(
         let output = Command::new(&soldr_bin)
             .args(["gc", "list", "--json"])
             .env("SOLDR_CACHE_DIR", &cache_root)
+            .env_remove(soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR)
+            .env("RUNNING_PROCESS_DISABLE", "1")
             .env("CARGO_HOME", &sandbox_cargo_home)
             .env("RUSTUP_HOME", &sandbox_rustup_home)
             .output()
