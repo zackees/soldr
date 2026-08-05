@@ -223,10 +223,10 @@ pub async fn run(
 /// `present` is true when the expected path exists on disk; the
 /// `path` field is the location consumers can grep for in logs.
 #[derive(Debug, Clone)]
-struct RestoreEntry {
-    label: String,
-    path: PathBuf,
-    present: bool,
+pub(crate) struct RestoreEntry {
+    pub(crate) label: String,
+    pub(crate) path: PathBuf,
+    pub(crate) present: bool,
 }
 
 /// CPU architecture tag in a Rust target triple. Restricted to the
@@ -274,8 +274,8 @@ pub struct TargetAttrs {
     pub arch: TargetArch,
     pub os: TargetOs,
     pub abi: Option<TargetAbi>,
-    /// Needs zig on PATH for prepare-time legacy/external flows. True
-    /// for cross-compile to darwin or to a non-host linux flavor.
+    /// Needs Zig on PATH for a retained legacy preparation path. True for
+    /// Darwin and musl; GNU Linux uses its catalogue-backed toolchain.
     pub needs_zig: bool,
     /// Needs the blessed MSVC CRT + Windows SDK cache under
     /// `~/.soldr/sdk/<triple>/xwin/<version>/`. True for
@@ -481,7 +481,8 @@ pub fn classify_target(triple: &str) -> Result<TargetAttrs, SoldrError> {
         arch,
         os,
         abi,
-        needs_zig: matches!(os, TargetOs::Darwin | TargetOs::Linux),
+        needs_zig: matches!(os, TargetOs::Darwin)
+            || matches!((os, abi), (TargetOs::Linux, Some(TargetAbi::Musl))),
         needs_xwin_cache: matches!((os, abi), (TargetOs::Windows, Some(TargetAbi::Msvc))),
         needs_llvm_toolchain: matches!((os, abi), (TargetOs::Windows, Some(TargetAbi::Msvc))),
         needs_mingw_w64_gcc: matches!(
@@ -500,7 +501,7 @@ pub fn classify_target(triple: &str) -> Result<TargetAttrs, SoldrError> {
 /// Paths are version-pinned where possible (e.g. zig 0.13.0, LLVM
 /// 21.1.5) so a stale archive that's missing the current pin is
 /// reported as "missing" even if an older version exists on disk.
-fn expected_state_paths(
+pub(crate) fn expected_state_paths(
     attrs: &TargetAttrs,
     paths: &SoldrPaths,
 ) -> Result<Vec<RestoreEntry>, SoldrError> {
@@ -514,6 +515,39 @@ fn expected_state_paths(
             label: format!("zig {}", crate::fetch::MANAGED_ZIG_VERSION),
             path: zig_dir,
             present,
+        });
+    }
+    if matches!(
+        (attrs.os, attrs.abi),
+        (TargetOs::Linux, Some(TargetAbi::Gnu))
+    ) {
+        let Some(target) =
+            crate::fetch::gnu_linux_toolchain::GnuLinuxToolchainTarget::for_triple(&attrs.triple)
+        else {
+            return Err(SoldrError::UnsupportedPlatform(format!(
+                "no catalogue-backed GNU/Linux toolchain is available for `{}`",
+                attrs.triple
+            )));
+        };
+        let bundle = paths
+            .bin
+            .join("syslib")
+            .join("gnu-linux-toolchain")
+            .join(crate::fetch::gnu_linux_toolchain::GNU_LINUX_TOOLCHAIN_VERSION)
+            .join(target.slug());
+        let package = bundle.join("package");
+        entries.push(RestoreEntry {
+            label: format!(
+                "GNU/Linux toolchain {} ({})",
+                crate::fetch::gnu_linux_toolchain::GNU_LINUX_TOOLCHAIN_VERSION,
+                target.slug()
+            ),
+            present: bundle.join(".complete").is_file()
+                && package
+                    .join("bin")
+                    .join(format!("{}-gcc", target.compiler_prefix()))
+                    .is_file(),
+            path: package,
         });
     }
     if attrs.needs_llvm_toolchain {
@@ -577,7 +611,7 @@ fn expected_state_paths(
     Ok(entries)
 }
 
-fn blessed_xwin_cache_root(paths: &SoldrPaths, target: &str) -> PathBuf {
+pub(crate) fn blessed_xwin_cache_root(paths: &SoldrPaths, target: &str) -> PathBuf {
     paths
         .root
         .join("sdk")
@@ -629,9 +663,9 @@ fn num_cpus_for_zstd() -> u32 {
 /// We pack ENTIRE versioned subdirs (e.g. `~/.soldr/bin/zig-0.13.0/`)
 /// rather than the parent `~/.soldr/bin/` so the archive doesn't
 /// accidentally pull in zccache binaries or anything unrelated.
-fn prepare_state_roots(paths: &SoldrPaths) -> Result<Vec<PathBuf>, SoldrError> {
+pub(crate) fn prepare_state_roots(paths: &SoldrPaths) -> Result<Vec<PathBuf>, SoldrError> {
     let mut roots = Vec::new();
-    // ~/.soldr/bin/{zig-<ver>,llvm-<ver>,apple-sdk/<ver>,syslib/mingw-w64-gcc}
+    // ~/.soldr/bin/{zig-<ver>,llvm-<ver>,apple-sdk/<ver>,syslib/{mingw-w64-gcc,gnu-linux-toolchain}}
     if let Ok(entries) = std::fs::read_dir(&paths.bin) {
         for entry in entries.flatten() {
             let name = entry.file_name();
@@ -648,6 +682,10 @@ fn prepare_state_roots(paths: &SoldrPaths) -> Result<Vec<PathBuf>, SoldrError> {
     if mingw_root.is_dir() {
         roots.push(mingw_root);
     }
+    let gnu_linux_root = paths.bin.join("syslib").join("gnu-linux-toolchain");
+    if gnu_linux_root.is_dir() {
+        roots.push(gnu_linux_root);
+    }
     // Blessed target SDK caches (`~/.soldr/sdk/<triple>/xwin/<version>/...`).
     let sdk_root = paths.root.join("sdk");
     if sdk_root.is_dir() {
@@ -663,7 +701,7 @@ fn save_prepare_state(archive: &Path, paths: &SoldrPaths) -> Result<(), SoldrErr
     let home = crate::core::home_dir()?;
     let roots = prepare_state_roots(paths)?;
     if roots.is_empty() {
-        eprintln!("soldr prepare: nothing to save (no zig/llvm/apple-sdk/mingw/xwin dirs found)");
+        eprintln!("soldr prepare: nothing to save (no zig/llvm/apple-sdk/mingw/gnu-linux/xwin dirs found)");
         return Ok(());
     }
 
@@ -876,51 +914,6 @@ mod tests {
 
     crate::timed_test!(append_env_no_op_when_none, {
         append_env(None, "FOO", "bar").expect("no-op");
-    });
-
-    crate::timed_test!(expected_state_paths_uses_blessed_msvc_xwin_cache, {
-        let tmp = tempfile::tempdir().expect("tmpdir");
-        let paths = SoldrPaths::with_root(tmp.path().join("soldr"));
-        let attrs = classify_target("x86_64-pc-windows-msvc").expect("classify");
-        let xwin_root = blessed_xwin_cache_root(&paths, "x86_64-pc-windows-msvc");
-
-        let entries = expected_state_paths(&attrs, &paths).expect("expected paths");
-        let xwin_entry = entries
-            .iter()
-            .find(|entry| entry.label == "xwin MSVC CRT + Windows SDK")
-            .expect("xwin restore entry");
-        assert_eq!(xwin_entry.path, xwin_root);
-        assert!(
-            !xwin_entry.present,
-            "entry must stay missing until the blessed xwin marker and include dirs exist"
-        );
-
-        std::fs::create_dir_all(xwin_root.join("xwin").join("crt").join("include"))
-            .expect("mkdir crt include");
-        std::fs::create_dir_all(xwin_root.join("xwin").join("sdk").join("include"))
-            .expect("mkdir sdk include");
-        std::fs::write(xwin_root.join(".complete"), b"").expect("write complete");
-
-        let entries = expected_state_paths(&attrs, &paths).expect("expected paths");
-        let xwin_entry = entries
-            .iter()
-            .find(|entry| entry.label == "xwin MSVC CRT + Windows SDK")
-            .expect("xwin restore entry");
-        assert!(xwin_entry.present);
-    });
-
-    crate::timed_test!(prepare_state_roots_includes_blessed_sdk_root, {
-        let tmp = tempfile::tempdir().expect("tmpdir");
-        let paths = SoldrPaths::with_root(tmp.path().join("soldr"));
-        let sdk_root = paths.root.join("sdk");
-        std::fs::create_dir_all(&sdk_root).expect("mkdir sdk root");
-
-        let roots = prepare_state_roots(&paths).expect("prepare roots");
-        assert!(
-            roots.iter().any(|root| root == &sdk_root),
-            "prepare --save must include blessed SDK caches under {}",
-            sdk_root.display()
-        );
     });
 
     crate::timed_test!(apply_blessed_prep_env_exports_mingw_and_syslib_env, {
@@ -1436,13 +1429,14 @@ mod tests {
         let gnu = classify_target("x86_64-unknown-linux-gnu").expect("classify gnu");
         assert_eq!(gnu.os, TargetOs::Linux);
         assert_eq!(gnu.abi, Some(TargetAbi::Gnu));
-        assert!(gnu.needs_zig);
+        assert!(!gnu.needs_zig, "GNU uses the catalogue-backed toolchain");
         assert!(!gnu.needs_xwin_cache);
         assert!(!gnu.needs_apple_sdk);
 
         let musl = classify_target("aarch64-unknown-linux-musl").expect("classify musl");
         assert_eq!(musl.os, TargetOs::Linux);
         assert_eq!(musl.abi, Some(TargetAbi::Musl));
+        assert!(musl.needs_zig, "#2244 tracks the retained musl fallback");
     });
 
     crate::timed_test!(classify_target_rejects_unknown_arch, {

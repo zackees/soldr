@@ -4,8 +4,7 @@
 # pipeline for that target in a single runner spin-up. Target dispatch
 # table:
 #
-#   *-unknown-linux-gnu (x86_64 native)  -> plain cargo
-#   *-unknown-linux-gnu (aarch64 cross)  -> cargo zigbuild
+#   *-unknown-linux-gnu                 -> soldr build + catalogue-backed GCC
 #   *-unknown-linux-musl                 -> cargo zigbuild
 #   *-apple-darwin                       -> soldr build + target-shaped Apple SDK
 #   *-pc-windows-msvc                    -> soldr build + blessed MSVC SDK
@@ -183,7 +182,7 @@ jobs:
           # not include profile setting changes.
           shared-key: cross-build-${{ inputs.target }}-v6
 
-      # Bootstrap soldr from the current checkout. Linux Zig lanes need
+      # Bootstrap soldr from the current checkout. Linux cross lanes need
       # the current front door's target-linker reconstruction and preflight;
       # Darwin/MSVC need its blessed SDK preparation. The version installed
       # by setup-soldr is intentionally only the bootstrap seed and may
@@ -242,8 +241,8 @@ jobs:
           echo "SOLDR_BINARY=$RUNNER_TEMP/soldr-bin/soldr" >> "$GITHUB_ENV"
           "$RUNNER_TEMP/soldr-bin/soldr" --version
 
-      # Persistent zig-cc wrapper scripts for the zigbuild-driven
-      # targets (musl + aarch64-linux-gnu). Darwin is intentionally
+      # Persistent Zig wrapper scripts are retained only for the legacy musl
+      # targets. Darwin is intentionally
       # excluded: it goes through `soldr build` which handles SDK +
       # CC injection internally via blessed_build.rs. Setting
       # CC_<triple>=zig-wrapper on darwin overrode the clang-with-
@@ -258,7 +257,7 @@ jobs:
       # injection of the old zigbuild path would override those and
       # re-break the build.
 
-      # For musl + aarch64-gnu (every linux zigbuild target): suppress
+      # For musl: suppress
       # rustc's self-contained crt files. Zig already supplies its own
       # crt1.o via `-target X`; without this, the linker sees BOTH and
       # fails with "duplicate symbol: _start". soldr#1068.
@@ -271,7 +270,7 @@ jobs:
 
       # Every target-run lane builds with ci-nextest so the archive step
       # reuses the same target profile instead of compiling a second tree.
-      # soldr#1248: linux zigbuild lanes repeatedly spend several minutes in
+      # soldr#1248: legacy musl lanes repeatedly spend several minutes in
       # cook restore for later builds that are already ~4 min from rust-cache.
       # soldr#1248: x64 MSVC and Darwin now build quickly from
       # rust-cache + the blessed target env, while cook restore/save alone can

@@ -235,6 +235,9 @@ pub mod prepare_cmd;
 /// Separate module because `prepare_cmd` is over the LOC ratchet's ceiling.
 #[cfg(test)]
 mod prepare_env_contract_tests;
+/// Save/restore state tests split from `prepare_cmd` to keep the LOC ratchet green.
+#[cfg(test)]
+mod prepare_state_tests;
 /// soldr#939 — PyO3 auto-detection via cargo metadata.
 pub mod pyo3_detect;
 pub mod release_sidecar;
