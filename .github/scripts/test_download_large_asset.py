@@ -2,6 +2,7 @@
 """Behavior tests for the stall-aware large artifact curl policy."""
 
 from __future__ import annotations
+
 import hashlib
 import os
 import subprocess
