@@ -101,6 +101,18 @@ take effect.
 - **Design (soldr#2224):** the two things that made it likely are gone. The daemon's maintenance sweep no longer holds the handle across directory sizing and deletion (it snapshots, releases, deletes, then reopens for a bounded write), and each fallback now acquires the database **once** instead of three or four times.
 - **Forensics:** every contended open appends a record to `~/.soldr/logs/redb-contention.jsonl` with `attempts`, `elapsed_ms`, `intent`, and the holder-side `pid`. If you still see the warning, that file says how long the wait was and how often it happens.
 
+### 6. `soldr gc` when the daemon is stopped
+
+- **Design (soldr#2251):** GC first asks the daemon for its target-registry
+  snapshot and sends any row removals back over IPC. If no daemon answers, GC
+  takes the daemon's root-ownership lock before it opens `state.redb` offline.
+  That lock prevents a daemon from starting during the offline read or write;
+  if a daemon already owns the root but cannot answer, GC fails instead of
+  taking a second database handle.
+- **Remedy:** retry after `soldr daemon stop` has completed, or restart the
+  daemon with `soldr daemon start`. Do not delete `state.redb` to resolve this
+  condition.
+
 ## Recovery cheat-sheet
 
 | Goal | Do this |

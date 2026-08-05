@@ -536,6 +536,18 @@ def test_mac_x64_distribution_is_cross_built_and_intel_smoke_tested() -> None:
     assert "Mach-O x86_64" in verification_docs
 
 
+def test_linux_arm64_release_uses_the_x64_catalogue_cross_compiler_host() -> None:
+    """The catalogue ARM GNU/musl compilers execute on x86 Linux hosts."""
+    release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
+    assert "- name: Linux ARM64\n" in release
+    assert "- name: Linux ARM64 (musl)\n" in release
+    arm_blocks = re.findall(
+        r"- name: Linux ARM64(?: \(musl\))?\n(?:\s+#.*\n)*\s+runner: ([^\n]+)",
+        release,
+    )
+    assert arm_blocks == ["ubuntu-24.04", "ubuntu-24.04"]
+
+
 def test_cross_compile_docs_match_current_blessed_surfaces() -> None:
     docs = (REPO_ROOT / "docs" / "CROSS_COMPILE.md").read_text(encoding="utf-8")
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")

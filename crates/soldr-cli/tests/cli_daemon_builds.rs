@@ -12,9 +12,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
-#[cfg(unix)]
+use soldr_cli::cache_lib::target_registry::TargetRegistry;
 use soldr_cli::core::SoldrPaths;
-#[cfg(unix)]
 use soldr_cli::daemon::client;
 use soldr_cli::daemon::db::{self, Event, EventKind};
 use soldr_cli::daemon::protocol::BuildRecord;
@@ -231,6 +230,49 @@ fn builds_list_when_daemon_absent_reports_not_running() {
         .as_array()
         .map(|a| a.is_empty())
         .unwrap_or(false));
+}
+
+#[test]
+fn gc_list_uses_daemon_owned_registry_while_the_daemon_holds_the_lock() {
+    let cache_root = unique_temp_dir("gc-daemon-registry-cache");
+    let home_root = unique_temp_dir("gc-daemon-registry-home");
+    let live_target = cache_root.join("seeded-workspace").join("target");
+    std::fs::create_dir_all(&live_target).expect("create target");
+    std::fs::write(live_target.join("artifact"), b"seeded").expect("write target artifact");
+    {
+        let registry = TargetRegistry::open(&cache_root.join("state.redb")).expect("open registry");
+        registry
+            .upsert_with_time(&live_target, 1_700_000_000)
+            .expect("seed live target");
+    }
+
+    let _daemon = DaemonProc::spawn(&cache_root, &home_root);
+    let output = run_soldr(&["gc", "list", "--json"], &cache_root, &home_root);
+    assert!(
+        output.status.success(),
+        "gc list failed while daemon owns state.redb: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let body: Value = serde_json::from_slice(&output.stdout).expect("gc list json");
+    assert!(body["entries"]
+        .as_array()
+        .expect("entries")
+        .iter()
+        .any(|entry| entry["path"] == live_target.display().to_string()));
+
+    let paths = SoldrPaths::with_root(cache_root.clone());
+    let sock = client::default_sock_path(&paths);
+    let rows = client::list_target_registry(&sock).expect("daemon registry query");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].path, live_target.display().to_string());
+    assert_eq!(
+        client::remove_target_registry(&sock, vec![live_target.display().to_string()])
+            .expect("daemon registry removal"),
+        1
+    );
+    assert!(client::list_target_registry(&sock)
+        .expect("daemon registry re-query")
+        .is_empty());
 }
 
 #[test]

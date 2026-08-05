@@ -153,6 +153,25 @@ pub fn scan_released(db_path: &Path, options: &GcOptions) -> Result<GcReport, Re
     scan_snapshot(snapshot, options)
 }
 
+/// Scan an already-owned registry snapshot received from the daemon.
+///
+/// The caller has no database handle: the daemon remains the sole process
+/// that reads or mutates `state.redb`, while the CLI retains the filesystem
+/// sizing and safety-guard work that must run in the caller's environment.
+pub fn scan_daemon_snapshot(
+    rows: Vec<TargetRow>,
+    dropped_missing: usize,
+    options: &GcOptions,
+) -> Result<GcReport, RegistryError> {
+    scan_snapshot(
+        RegistrySnapshot {
+            rows,
+            dropped_missing,
+        },
+        options,
+    )
+}
+
 /// Pure scan: walk the registry, drop missing rows, apply thresholds
 /// and safety guards. Does not delete anything.
 ///
@@ -500,6 +519,37 @@ pub fn apply_purge_outcomes(
     Ok(summary)
 }
 
+/// Summarize delete results without touching the target registry.
+///
+/// Daemon-owned callers use the returned paths in one IPC removal request
+/// after filesystem deletion completes.
+pub fn summarize_purge_outcomes(outcomes: Vec<GcDeleteOutcome>) -> (GcPurgeSummary, Vec<PathBuf>) {
+    let mut summary = GcPurgeSummary {
+        selected_count: outcomes.len(),
+        ..GcPurgeSummary::default()
+    };
+    let mut removed_rows = Vec::new();
+    for outcome in outcomes {
+        if let Some(error) = outcome.error {
+            summary.failed_count += 1;
+            summary.failures.push(GcPurgeFailure {
+                candidate: outcome.candidate,
+                error,
+            });
+        } else {
+            summary.succeeded_count += 1;
+            if outcome.removed {
+                summary.reclaimed_bytes = summary
+                    .reclaimed_bytes
+                    .saturating_add(outcome.candidate.size_bytes);
+                summary.deleted_paths.push(outcome.candidate.path.clone());
+            }
+            removed_rows.push(outcome.candidate.path);
+        }
+    }
+    (summary, removed_rows)
+}
+
 pub fn cleanup_old_gc_logs(log_dir: &Path) -> Result<usize, RegistryError> {
     cleanup_old_gc_logs_with_retention(log_dir, GC_LOG_RETENTION)
 }
@@ -593,6 +643,33 @@ pub fn maybe_build_startup_warning(
     );
 
     Ok(Some(message))
+}
+
+/// Render the startup warning from a daemon-owned registry scan.
+pub fn startup_warning_from_report(
+    report: &GcReport,
+    options: &GcOptions,
+    marker_path: &Path,
+) -> Result<Option<String>, RegistryError> {
+    if !startup_warning_due(marker_path)? {
+        return Ok(None);
+    }
+    touch_startup_warning_marker(marker_path)?;
+    if report.candidates.is_empty() {
+        return Ok(None);
+    }
+    let total_bytes: u64 = report
+        .candidates
+        .iter()
+        .map(|candidate| candidate.size_bytes)
+        .sum();
+    let n = report.candidates.len();
+    let plural = if n == 1 { "" } else { "s" };
+    Ok(Some(format!(
+        "soldr: {n} stale target/ dir{plural} using {} (last used > {}). Run 'soldr gc' to review.",
+        human_size(total_bytes),
+        human_age(options.older_than_seconds as i64),
+    )))
 }
 
 /// Whether enough time has passed since the last warning to emit
@@ -1186,6 +1263,28 @@ mod tests {
         assert_eq!(summary.reclaimed_bytes, 256);
         assert!(registry.get(&ok_target).unwrap().is_none());
         assert!(registry.get(&failed_target).unwrap().is_some());
+    }
+
+    #[test]
+    fn daemon_purge_summary_removes_already_absent_rows_without_counting_bytes() {
+        let target = PathBuf::from("/tmp/already-absent-target");
+        let (summary, removed_rows) = summarize_purge_outcomes(vec![GcDeleteOutcome {
+            candidate: GcCandidate {
+                path: target.clone(),
+                size_bytes: 512,
+                age_seconds: 100,
+                in_worktree: false,
+                eligible: true,
+                reason: None,
+            },
+            removed: false,
+            error: None,
+        }]);
+
+        assert_eq!(summary.succeeded_count, 1);
+        assert_eq!(summary.reclaimed_bytes, 0);
+        assert!(summary.deleted_paths.is_empty());
+        assert_eq!(removed_rows, vec![target]);
     }
 
     #[test]

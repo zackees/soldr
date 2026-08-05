@@ -41,6 +41,7 @@ mod config_args;
 pub(crate) mod cook_hydrate;
 mod darwin_embed;
 mod disk;
+mod host_tooling;
 mod inputs;
 mod log_summary;
 pub(crate) mod no_cache_detach;
@@ -67,9 +68,7 @@ const COMPILE_JOURNAL_TAIL_WAIT: Duration = Duration::from_secs(2);
 const COMPILE_JOURNAL_TAIL_POLL: Duration = Duration::from_millis(25);
 const BUILD_HISTORY_RETRY_ATTEMPTS: usize = 20;
 const BUILD_HISTORY_RETRY_POLL: Duration = Duration::from_millis(25);
-
 // -- Re-exports for cross-module callers --
-//
 // External modules (`gc`, `rust_plan`, `main`)
 // reach into `crate::cargo_front_door::*` using the names that existed
 // on the flat file. Re-export them from the sub-modules so the public
@@ -1577,7 +1576,8 @@ pub(crate) async fn run_cargo_front_door(
     // PATH so cargo's subcommand dispatch finds it. Also collect transitive
     // bootstrap env (e.g. SDKROOT for explicit legacy
     // `cargo zigbuild --target *-apple-darwin`).
-    let subcommand_tool_bootstrap = ensure_known_subcommand_tool(args, &paths).await?;
+    let mut subcommand_tool_bootstrap = ensure_known_subcommand_tool(args, &paths).await?;
+    host_tooling::inject(args, &paths, &mut subcommand_tool_bootstrap).await;
     let owned_bootstrap_args;
     let args: &[String] = if subcommand_tool_bootstrap.cargo_args.is_empty() {
         args

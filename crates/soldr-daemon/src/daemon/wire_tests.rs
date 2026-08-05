@@ -21,6 +21,40 @@ crate::timed_test!(record_target_touch_round_trips, {
     ));
 });
 
+crate::timed_test!(target_registry_verbs_round_trip, {
+    use crate::daemon::protocol::TargetRegistryRow;
+
+    assert!(matches!(
+        decode_request(&encode_request(&Request::ListTargetRegistry)).expect("decode"),
+        Request::ListTargetRegistry
+    ));
+    assert!(matches!(
+        decode_request(&encode_request(&Request::RemoveTargetRegistry {
+            paths: vec!["/w/target".into(), "/x/target".into()],
+        }))
+        .expect("decode"),
+        Request::RemoveTargetRegistry { paths }
+            if paths == vec!["/w/target".to_string(), "/x/target".to_string()]
+    ));
+
+    let rows = vec![TargetRegistryRow {
+        path: "/w/target".into(),
+        last_used: 1_700_000_000,
+    }];
+    assert!(matches!(
+        decode_response(&encode_response(&Response::TargetRegistryRows(rows.clone())))
+            .expect("decode"),
+        Response::TargetRegistryRows(decoded) if decoded == rows
+    ));
+    assert!(matches!(
+        decode_response(&encode_response(&Response::TargetRegistryRemoved {
+            removed: 2
+        }))
+        .expect("decode"),
+        Response::TargetRegistryRemoved { removed: 2 }
+    ));
+});
+
 crate::timed_test!(status_request_round_trips, {
     let bytes = encode_request(&Request::Status);
     assert!(matches!(

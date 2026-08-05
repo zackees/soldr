@@ -53,11 +53,36 @@ message WireRequest {
     // v19 / soldr#1814 slice 2a — ask the daemon for the build-log inputs it
     // already owns, instead of the CLI opening state.redb itself.
     WireBuildLogInputsRequest build_log_inputs = 16;
+    WireShouldWarnCargoDebugDefault should_warn_cargo_debug_default = 17;
+    WireBuildLogHistoryUpdate attach_build_log_history = 18;
+    // v22 / soldr#2251: daemon-owned target-registry snapshot and cleanup.
+    WireUnit list_target_registry = 19;
+    WireRemoveTargetRegistry remove_target_registry = 20;
   }
 }
 
 message WireBuildLogInputsRequest {
   uint64 session_id = 1;
+}
+
+message WireRemoveTargetRegistry {
+  repeated string paths = 1;
+}
+
+message WireShouldWarnCargoDebugDefault {
+  string repo_root = 1;
+}
+
+message WireBuildLogHistoryUpdate {
+  uint64 session_id = 1;
+  string repo_root = 2;
+  int64 started_at_ms = 3;
+  int64 ended_at_ms = 4;
+  int32 exit_code = 5;
+  bool daemon_finalized = 6;
+  optional WireBuildCacheSummary cache_summary = 7;
+  repeated WireBuildMissReason miss_reasons = 8;
+  optional WireBuildLogPaths log_paths = 9;
 }
 
 message WireUnit {}
@@ -192,6 +217,9 @@ message WireResponse {
     // second round-trip on a path with a documented fixed-overhead problem
     // (#1843).
     WireBuildSessionStarted build_session_started = 18;
+    // v22 / soldr#2251: target-registry rows are owned by the daemon.
+    WireTargetRegistryRows target_registry_rows = 19;
+    WireTargetRegistryRemoved target_registry_removed = 20;
   }
 }
 
@@ -211,6 +239,19 @@ message WireBuildSessionStarted {
 message WireBuildLogInputs {
   repeated WireEvent events = 1;
   optional WireBuildRecord record = 2;
+}
+
+message WireTargetRegistryRow {
+  string path = 1;
+  int64 last_used = 2;
+}
+
+message WireTargetRegistryRows {
+  repeated WireTargetRegistryRow rows = 1;
+}
+
+message WireTargetRegistryRemoved {
+  uint32 removed = 1;
 }
 
 
