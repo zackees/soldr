@@ -186,6 +186,24 @@ crate::timed_test!(managed_gnu_toolchain_is_exported_for_later_github_steps, {
         std::env::var("SOLDR_GNU_LINUX_SYSROOT").expect("sysroot"),
         sysroot.to_string_lossy()
     );
+    for (alias, tool) in [
+        ("CC", "gcc"),
+        ("CXX", "g++"),
+        ("AR", "ar"),
+        ("RANLIB", "ranlib"),
+    ] {
+        let expected = managed_bin.join(format!("{target_prefix}-{tool}"));
+        assert!(
+            exported
+                .lines()
+                .any(|line| line == format!("{alias}={}", expected.display())),
+            "{alias} was not exported for an external CMake consumer: {exported}"
+        );
+        assert!(
+            std::env::var_os(alias).is_none(),
+            "{alias} must remain unset in Soldr's process"
+        );
+    }
 });
 
 crate::timed_test!(exported_encoded_rustflags_keep_caller_target_flags, {

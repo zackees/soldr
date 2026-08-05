@@ -71,6 +71,15 @@ pub fn env_keys_for_target(target_triple: &str) -> Vec<String> {
         format!("CFLAGS_{target_u}"),
         format!("CXXFLAGS_{target_u}"),
         format!("CARGO_TARGET_{target_u_upper}_LINKER"),
+        "CC".to_string(),
+        "CXX".to_string(),
+        "AR".to_string(),
+        "RANLIB".to_string(),
+        "CMAKE_C_COMPILER".to_string(),
+        "CMAKE_CXX_COMPILER".to_string(),
+        "CMAKE_AR".to_string(),
+        "CMAKE_RANLIB".to_string(),
+        "CMAKE_LINKER".to_string(),
         "CMAKE_SYSROOT".to_string(),
         "PKG_CONFIG_SYSROOT_DIR".to_string(),
         "PKG_CONFIG_LIBDIR".to_string(),
@@ -176,6 +185,11 @@ pub fn env_for_target(toolchain: &GnuLinuxToolchain, target_triple: &str) -> Vec
         (format!("AR_{target_u}"), tool("ar")),
         (format!("RANLIB_{target_u}"), tool("ranlib")),
         (format!("CARGO_TARGET_{target_u_upper}_LINKER"), tool("gcc")),
+        ("CMAKE_C_COMPILER".to_string(), tool("gcc")),
+        ("CMAKE_CXX_COMPILER".to_string(), tool("g++")),
+        ("CMAKE_AR".to_string(), tool("ar")),
+        ("CMAKE_RANLIB".to_string(), tool("ranlib")),
+        ("CMAKE_LINKER".to_string(), tool("ld")),
         (format!("CFLAGS_{target_u}"), format!("--sysroot={sysroot}")),
         (
             format!("CXXFLAGS_{target_u}"),
@@ -233,6 +247,11 @@ mod tests {
         assert!(lookup("CFLAGS_aarch64_unknown_linux_gnu").contains("--sysroot="));
         assert!(lookup("PKG_CONFIG_SYSROOT_DIR").ends_with("/sysroot"));
         assert!(lookup("PKG_CONFIG_LIBDIR").contains("/usr/lib/pkgconfig"));
+        assert!(lookup("CMAKE_C_COMPILER").ends_with("aarch64-conda-linux-gnu-gcc"));
+        assert!(lookup("CMAKE_CXX_COMPILER").ends_with("aarch64-conda-linux-gnu-g++"));
+        assert!(lookup("CMAKE_AR").ends_with("aarch64-conda-linux-gnu-ar"));
+        assert!(lookup("CMAKE_RANLIB").ends_with("aarch64-conda-linux-gnu-ranlib"));
+        assert!(lookup("CMAKE_LINKER").ends_with("aarch64-conda-linux-gnu-ld"));
         let keys = env_keys_for_target("aarch64-unknown-linux-gnu");
         for (key, _) in &env {
             assert!(

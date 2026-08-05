@@ -62,6 +62,23 @@ pub(crate) fn apply_blessed_prep_env(
         append_env(github_env_path, &key, &value)?;
         std::env::set_var(key, value);
     }
+    // `soldr prepare --github-env` exports exactly one target, so it can also
+    // provide CMake's conventional unscoped tool names for a subsequent
+    // external shell.  Keep these aliases out of this process: internal
+    // `soldr build` uses target-scoped cc-rs/Cargo keys and must not let a
+    // cross compiler poison host build-script dependencies.
+    if github_env_path.is_some() {
+        for (source, alias) in [
+            ("CMAKE_C_COMPILER", "CC"),
+            ("CMAKE_CXX_COMPILER", "CXX"),
+            ("CMAKE_AR", "AR"),
+            ("CMAKE_RANLIB", "RANLIB"),
+        ] {
+            if let Some((_, value)) = prep.env.iter().find(|(key, _)| key == source) {
+                append_env(github_env_path, alias, value)?;
+            }
+        }
+    }
     if let Some(encoded) = crate::target_lifecycle::encoded_rustflags_for_prep(prep) {
         // This highest-precedence value contains required SDK flags plus
         // ambient project flags, so later external tools cannot shadow the

@@ -114,8 +114,9 @@ jobs:
 
       # Every cross tool is resolved by soldr. The blessed MSVC/Darwin
       # paths fetch LLVM, SDKs, CMake, Ninja, and syslibs from the
-      # soldr-toolchain catalogue. Musl/aarch64 GNU dispatch through
-      # soldr's managed zig + cargo-zigbuild bootstrap. cargo-xwin remains
+      # soldr-toolchain catalogue. GNU targets use the catalogue-backed
+      # GCC/binutils/glibc bundle; only musl retains the temporary managed
+      # Zig + cargo-zigbuild fallback. cargo-xwin remains
       # an on-demand soldr-managed fallback, and `soldr cargo nextest`
       # fetches cargo-nextest when the archive step runs.
 
@@ -372,6 +373,31 @@ jobs:
           if [[ "$target" == *-pc-windows-msvc ]]; then
             test "$(dd if="$binary" bs=1 count=2 2>/dev/null)" = "MZ"
           fi
+
+      - name: Build current Soldr GNU proof driver
+        if: contains(inputs.target, 'unknown-linux-gnu')
+        shell: bash
+        env:
+          RUSTC_WRAPPER: ""
+        run: |
+          set -euo pipefail
+          soldr --no-cache cargo build --locked --profile ci-bootstrap \
+            --package soldr-cli --bin soldr --target x86_64-unknown-linux-gnu
+
+      # soldr#2236: prove the GNU lifecycle with a separate consumer, not
+      # only Soldr's own dependency graph.  The script prepares the target,
+      # checks the plan/env for a catalogue root and no Zig, then builds a
+      # temporary Rust + cc-rs C/C++ + CMake + pkg-config fixture and inspects
+      # its ELF machine and GLIBC ceiling.
+      - name: Prove catalogue GNU lifecycle without Zig
+        if: contains(inputs.target, 'unknown-linux-gnu')
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/gnu_linux_toolchain_e2e.py \
+            --soldr target/x86_64-unknown-linux-gnu/ci-bootstrap/soldr \
+            --target '${{ inputs.target }}' \
+            --repo "$GITHUB_WORKSPACE"
 
       # soldr#1060: a glibc-floor ratchet for the -gnu binaries, at PR time
       # rather than only during a release (#2080).

@@ -470,6 +470,31 @@ def test_normal_gnu_lifecycle_has_no_zig_fallback() -> None:
     assert "soldr build + catalogue-backed GCC" in cross
 
 
+def test_gnu_catalogue_fixture_is_part_of_both_gnu_ci_lanes() -> None:
+    """#2236: CI must execute the mixed-language catalogue proof, not just compile Soldr."""
+    cross = (WORKFLOWS / "_ci-cross-build-linux.yml").read_text(encoding="utf-8")
+    proof = (REPO_ROOT / ".github/scripts/gnu_linux_toolchain_e2e.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Prove catalogue GNU lifecycle without Zig" in cross
+    assert "contains(inputs.target, 'unknown-linux-gnu')" in cross
+    assert "gnu_linux_toolchain_e2e.py" in cross
+    assert "Build current Soldr GNU proof driver" in cross
+    assert "target/x86_64-unknown-linux-gnu/ci-bootstrap/soldr" in cross
+    for required in (
+        "cc::Build",
+        "pkg_config::Config",
+        "cmake-probe",
+        "verify_glibc_baseline.py",
+        "SOLDR_GNU_LINUX_TOOLCHAIN_ROOT",
+        "CMAKE_C_COMPILER",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu",
+    ):
+        assert required in proof
+
+
 def test_mac_x64_distribution_is_cross_built_and_intel_smoke_tested() -> None:
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
     release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
