@@ -317,9 +317,9 @@ def test_catalogue_download_consumers_require_sha256_metadata() -> None:
     ).read_text(encoding="utf-8")
 
     assert cross.count("--json") >= 2
-    assert cross.count("catalogue sha256 mismatch") >= 2
+    assert cross.count("download_large_asset.sh") >= 2
     assert "--json cargo-zigbuild" in baseline
-    assert "cargo-zigbuild catalogue sha256 mismatch" in baseline
+    assert "download_large_asset.sh" in baseline
     assert "download_catalogued_asset.py" in fetch
     assert "sha256 mismatch" in downloader
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import os
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -15,6 +16,9 @@ ROOT = Path(__file__).resolve().parent
 HELPER = ROOT / "download_large_asset.sh"
 
 
+@unittest.skipIf(
+    sys.platform == "win32", "shell downloader behavior is exercised in Docker Linux"
+)
 class DownloadLargeAssetTests(unittest.TestCase):
     def run_helper(self, mock_body: str, payload: bytes, *, size: int | None = None):
         with tempfile.TemporaryDirectory() as temp:
