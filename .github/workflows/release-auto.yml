@@ -1713,7 +1713,7 @@ jobs:
       - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
         with:
           enable-cache: false
-      - name: Build and smoke native ARM musllinux wheel
+      - name: Build native ARM musllinux wheel
         shell: bash
         env:
           SOLDR_RELEASE_CI: "1"
@@ -1726,12 +1726,36 @@ jobs:
           mkdir -p dist
           maturin build --release --locked --compatibility musllinux_1_2 \
             --auditwheel repair --target aarch64-unknown-linux-musl --out dist
-          uv venv .venv
-          uv pip install --python .venv dist/*.whl
-          out="$(.venv/bin/soldr --version)"
-          case "$out" in "soldr "*) ;; *) exit 1 ;; esac
-          json="$(.venv/bin/soldr version --json)"
-          printf '%s' "$json" | grep -q "\"soldr_version\":\"${EXPECTED_VERSION#v}\""
+      - name: Smoke test native ARM musllinux wheel on Alpine
+        shell: bash
+        env:
+          EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          expected_soldr_version="${EXPECTED_VERSION#v}"
+          docker run --rm \
+            -e EXPECTED_VERSION="$expected_soldr_version" \
+            -v "$PWD/dist:/dist:ro" \
+            alpine:3.20 \
+            sh -euxc '
+              apk add --no-cache python3 py3-pip
+              python3 -m venv /tmp/venv
+              . /tmp/venv/bin/activate
+              pip install --no-index --only-binary=:all: --find-links /dist "soldr==${EXPECTED_VERSION}"
+              out="$(soldr --version)"
+              printf "native ARM Alpine wheel smoke test - soldr --version output: %s\n" "$out"
+              case "$out" in
+                "soldr "*) ;;
+                *) echo "ERROR: soldr --version output did not start with soldr " >&2; exit 1 ;;
+              esac
+              json_out="$(soldr version --json)"
+              test -n "$json_out"
+              compact="$(printf "%s" "$json_out" | tr -d " \n\r\t")"
+              case "$compact" in
+                *"\"soldr_version\":\"${EXPECTED_VERSION}\""*) ;;
+                *) echo "ERROR: soldr version --json did not include soldr_version=${EXPECTED_VERSION}" >&2; exit 1 ;;
+              esac
+            '
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: pypi-soldr-aarch64-unknown-linux-musl
