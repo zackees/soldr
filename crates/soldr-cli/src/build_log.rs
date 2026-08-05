@@ -94,7 +94,10 @@
 
 use crate::build_log_meta::{fetch_timing, sanitize_cwd_slug, utc_compact_timestamp};
 use crate::core::{SoldrError, SoldrPaths, TargetTriple};
-use crate::daemon::db::{self, Event, EventKind};
+use crate::daemon::db::{Event, EventKind};
+
+#[cfg(test)]
+use crate::daemon::db;
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -168,31 +171,26 @@ pub fn build_logs_dir(paths: &SoldrPaths) -> PathBuf {
 /// Build-log inputs, preferring the daemon that owns the tables
 /// (soldr#1814 slice 2a).
 ///
-/// Falls back to a direct state-DB read when the daemon is unreachable, so a
-/// `--no-cache` or daemon-less build still produces a complete log. The
-/// fallback is reported rather than silent: a build log missing its compile
-/// timeline should say why.
+/// When the daemon is unavailable the log deliberately remains incomplete:
+/// it is a best-effort artifact and must never contend for daemon-owned state.
 fn daemon_build_log_inputs(
     request: &BuildLogRequest<'_>,
 ) -> (
-    Vec<db::Event>,
+    Vec<Event>,
     Option<Box<crate::daemon::protocol::BuildRecord>>,
+    &'static str,
 ) {
     let sock = crate::daemon::client::default_sock_path(request.paths);
     match crate::daemon::client::build_log_inputs(&sock, request.session_id) {
-        Ok((events, record)) => (events, record),
+        Ok((events, record)) => (events, record, "daemon"),
         Err(error) => {
             tracing::debug!(
-                event = "build_log_inputs_fallback",
+                event = "build_log_inputs_unavailable",
                 session_id = request.session_id,
                 error = ?error,
-                "daemon did not serve build-log inputs; reading the state DB directly"
+                "daemon did not serve build-log inputs; build log will be incomplete"
             );
-            let db_path = crate::cache_lib::data_db_path(request.paths);
-            (
-                db::list_events_for_session(&db_path, request.session_id).unwrap_or_default(),
-                None,
-            )
+            (Vec::new(), None, "daemon-unavailable")
         }
     }
 }
@@ -204,13 +202,9 @@ pub fn write_build_log(request: &BuildLogRequest<'_>) -> Result<PathBuf, SoldrEr
     let build_meta = derive_build_meta(request.args, request.cwd);
     let download_step = build_download_step(fetch_timing::drain());
 
-    let db_path = crate::cache_lib::data_db_path(request.paths);
-    // soldr#1814 slice 2a: ask the daemon, which owns these tables, instead of
-    // becoming a second opener of state.redb. Two `Required` opens here (5 s
-    // budget each) is what exceeded a 10 s test deadline under parallel test
-    // processes. Falls back to a direct read only when the daemon is
-    // unreachable, so a daemon-less build still gets a complete log.
-    let (events, daemon_record) = daemon_build_log_inputs(request);
+    // Build history is daemon-owned. An unavailable daemon produces an
+    // intentionally incomplete best-effort log rather than a second opener.
+    let (events, daemon_record, history_source) = daemon_build_log_inputs(request);
 
     let cache_outcomes = read_compile_cache_outcomes(
         request.compile_journal_path.as_deref(),
@@ -230,16 +224,7 @@ pub fn write_build_log(request: &BuildLogRequest<'_>) -> Result<PathBuf, SoldrEr
         .filter(|item| item.cache == "miss")
         .count() as u64;
     if hits == 0 && misses == 0 {
-        // Prefer the record the daemon already handed us above; only reopen
-        // the DB ourselves if it was unreachable (soldr#1814 slice 2a).
-        let record = match daemon_record {
-            Some(record) => Some(record),
-            None => db::get_build(&db_path, request.session_id)
-                .ok()
-                .flatten()
-                .map(Box::new),
-        };
-        if let Some(summary) = record.and_then(|record| record.cache_summary) {
+        if let Some(summary) = daemon_record.and_then(|record| record.cache_summary) {
             hits = summary.hits;
             misses = summary.misses;
         }
@@ -288,6 +273,7 @@ pub fn write_build_log(request: &BuildLogRequest<'_>) -> Result<PathBuf, SoldrEr
             cache_hits: hits,
             cache_misses: misses,
         },
+        history_source,
     };
 
     let filename = unique_filename(&dir, request.started_at_ms, request.cwd);
@@ -346,6 +332,8 @@ struct BuildLogDocument {
     build: BuildMeta,
     steps: Steps,
     totals: Totals,
+    /// Whether daemon-owned build history was available for this snapshot.
+    history_source: &'static str,
     /// soldr#1799 -- see [`ToolchainHomes`].
     toolchain: Option<ToolchainHomes>,
 }
@@ -474,6 +462,7 @@ fn render_xml(doc: &BuildLogDocument) -> String {
     out.push_str(&attr_disp("ended_at_ms", doc.ended_at_ms));
     out.push_str(&attr_disp("duration_ms", doc.duration_ms));
     out.push_str(&attr_disp("exit_code", doc.exit_code));
+    out.push_str(&attr("history_source", doc.history_source));
     out.push_str(">\n");
 
     render_args(&mut out, &doc.args);
@@ -1037,6 +1026,30 @@ mod tests {
             }
         }
     );
+
+    timed_test!(write_build_log_without_daemon_never_opens_state_db, {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let paths = SoldrPaths::with_root(tmp.path().join("soldr-root"));
+        let cwd_dir = tmp.path().join("project");
+        std::fs::create_dir_all(&cwd_dir).expect("mkdir cwd");
+        let args = vec![
+            "soldr".to_string(),
+            "cargo".to_string(),
+            "build".to_string(),
+        ];
+        let request = sample_request(&paths, &cwd_dir, &args);
+
+        let path = write_build_log(&request).expect("best-effort log");
+        let xml = std::fs::read_to_string(path).expect("read log");
+        assert!(
+            xml.contains("history_source=\"daemon-unavailable\""),
+            "daemon-less log must visibly identify incomplete history: {xml}"
+        );
+        assert!(
+            !crate::cache_lib::data_db_path(&paths).exists(),
+            "a daemon-less build log must stay incomplete instead of opening state.redb"
+        );
+    });
 
     timed_test!(filename_shape_starts_with_compact_timestamp_and_slug, {
         let tmp = tempfile::tempdir().expect("tmpdir");
