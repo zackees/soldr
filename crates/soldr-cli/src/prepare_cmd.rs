@@ -37,75 +37,7 @@ pub const RUSTUP_TARGET_ADD_TIMEOUT_ENV_VAR: &str = "SOLDR_RUSTUP_TARGET_ADD_TIM
 pub const DEFAULT_RUSTUP_TARGET_ADD_TIMEOUT_SECS: u64 = 15 * 60;
 const KILLED_RUSTUP_TARGET_ADD_REAP_TIMEOUT_SECS: u64 = 5;
 
-/// Append `KEY=VALUE` to the file at `path` (creating it if needed).
-/// No-op when `path` is `None`. Used so callers running under GitHub
-/// Actions can pipe env vars (SDKROOT, etc.) into `$GITHUB_ENV`.
-fn append_env(path: Option<&Path>, key: &str, value: &str) -> Result<(), SoldrError> {
-    if let Some(p) = path {
-        use std::io::Write;
-        let mut f = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(p)
-            .map_err(|e| SoldrError::Other(format!("open {}: {e}", p.display())))?;
-        writeln!(f, "{key}={value}")
-            .map_err(|e| SoldrError::Other(format!("write {}: {e}", p.display())))?;
-    }
-    Ok(())
-}
-
-pub(crate) fn apply_blessed_prep_env(
-    github_env_path: Option<&Path>,
-    prep: &crate::blessed_build::BlessedPrep,
-) -> Result<(), SoldrError> {
-    for (key, value) in crate::target_lifecycle::resolved_env(prep) {
-        append_env(github_env_path, &key, &value)?;
-        std::env::set_var(key, value);
-    }
-    // `soldr prepare --github-env` exports exactly one target, so it can also
-    // provide CMake's conventional unscoped tool names for a subsequent
-    // external shell.  Keep these aliases out of this process: internal
-    // `soldr build` uses target-scoped cc-rs/Cargo keys and must not let a
-    // cross compiler poison host build-script dependencies.
-    if github_env_path.is_some() {
-        for (source, alias) in [
-            ("CMAKE_C_COMPILER", "CC"),
-            ("CMAKE_CXX_COMPILER", "CXX"),
-            ("CMAKE_AR", "AR"),
-            ("CMAKE_RANLIB", "RANLIB"),
-        ] {
-            if let Some((_, value)) = prep.env.iter().find(|(key, _)| key == source) {
-                append_env(github_env_path, alias, value)?;
-            }
-        }
-    }
-    if let Some(encoded) = crate::target_lifecycle::encoded_rustflags_for_prep(prep) {
-        // This highest-precedence value contains required SDK flags plus
-        // ambient project flags, so later external tools cannot shadow the
-        // target lifecycle with global RUSTFLAGS.
-        append_env(github_env_path, "CARGO_ENCODED_RUSTFLAGS", &encoded)?;
-    }
-
-    let mut path_dirs = prep.path_prefix();
-    if !path_dirs.is_empty() {
-        if let Some(current) = std::env::var_os("PATH") {
-            path_dirs.extend(std::env::split_paths(&current));
-        }
-        let path_value = std::env::join_paths(path_dirs)
-            .map(|p| p.to_string_lossy().into_owned())
-            .map_err(|e| SoldrError::Other(format!("failed to build prepared PATH: {e}")))?;
-        append_env(github_env_path, "PATH", &path_value)?;
-        std::env::set_var("PATH", path_value);
-    }
-
-    if !prep.cargo_args.is_empty() {
-        eprintln!(
-            "soldr prepare: note: target uses Cargo --config syslib overrides; \
-             `soldr build` applies those automatically"
-        );
-    }
-    Ok(())
-}
+pub(crate) use crate::prepare_github_env::{append_env, apply_blessed_prep_env};
 
 /// Parse the `--target` argument into a list of triples.
 ///

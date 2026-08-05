@@ -235,6 +235,7 @@ pub mod prepare_cmd;
 /// Separate module because `prepare_cmd` is over the LOC ratchet's ceiling.
 #[cfg(test)]
 mod prepare_env_contract_tests;
+mod prepare_github_env;
 /// Save/restore state tests split from `prepare_cmd` to keep the LOC ratchet green.
 #[cfg(test)]
 mod prepare_state_tests;

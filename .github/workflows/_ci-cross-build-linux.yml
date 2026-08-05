@@ -381,7 +381,7 @@ jobs:
           RUSTC_WRAPPER: ""
         run: |
           set -euo pipefail
-          soldr --no-cache cargo build --locked --profile ci-bootstrap \
+          ZCCACHE_DISABLE=1 soldr cargo build --locked --profile ci-bootstrap \
             --package soldr-cli --bin soldr --target x86_64-unknown-linux-gnu
 
       # soldr#2236: prove the GNU lifecycle with a separate consumer, not
