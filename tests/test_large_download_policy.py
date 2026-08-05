@@ -1,4 +1,5 @@
 """Keep CI/Docker artifact transfers on the shared stall-aware policy."""
+
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,8 +15,13 @@ TARGETS = {
 def test_large_download_helper_has_progress_and_integrity_guards() -> None:
     source = HELPER.read_text(encoding="utf-8")
     for required in [
-        "--speed-limit", "--speed-time", "--max-time", "--continue-at -",
-        "sha256sum", "download failure=integrity", "2 ** (attempt - 1)",
+        "--speed-limit",
+        "--speed-time",
+        "--max-time",
+        "--continue-at -",
+        "sha256sum",
+        "download failure=integrity",
+        "2 ** (attempt - 1)",
     ]:
         assert required in source
     assert "7200" in source
@@ -24,6 +30,10 @@ def test_large_download_helper_has_progress_and_integrity_guards() -> None:
 def test_audited_large_downloads_use_shared_helper_and_not_short_deadlines() -> None:
     for path, minimum_invocations in TARGETS.items():
         source = path.read_text(encoding="utf-8")
-        assert source.count("download-large-asset") + source.count("download_large_asset.sh") >= minimum_invocations, path
+        assert (
+            source.count("download-large-asset")
+            + source.count("download_large_asset.sh")
+            >= minimum_invocations
+        ), path
         assert "--max-time 120" not in source, path
         assert "--max-time 600" not in source, path
