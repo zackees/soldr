@@ -251,7 +251,9 @@ jobs:
             target: x86_64-unknown-linux-gnu
             binary: soldr
           - name: Linux ARM64
-            runner: ubuntu-24.04-arm
+            # The catalogue ARM toolchains are x86-hosted cross compilers;
+            # build them on the same x64 Linux host as regular cross CI.
+            runner: ubuntu-24.04
             target: aarch64-unknown-linux-gnu
             binary: soldr
           - name: Linux x64 (musl)
@@ -259,7 +261,8 @@ jobs:
             target: x86_64-unknown-linux-musl
             binary: soldr
           - name: Linux ARM64 (musl)
-            runner: ubuntu-24.04-arm
+            # Same x86-hosted catalogue cross-compiler constraint as GNU.
+            runner: ubuntu-24.04
             target: aarch64-unknown-linux-musl
             binary: soldr
           # Intel macOS is cross-built on Linux through the blessed Apple
