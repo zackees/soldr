@@ -132,7 +132,31 @@ pub(crate) async fn prepare_target(
         ));
         prep.env.extend(env);
         add_link_self_contained_flag(&mut prep, base, &upper);
+    } else if attrs.os == TargetOs::Linux && attrs.abi == Some(TargetAbi::Musl) && !legacy_zigbuild
+    {
+        let suffix = base.replace('-', "_");
+        let upper = suffix.to_ascii_uppercase();
+        let bundle = crate::fetch::musl_linux_toolchain::MuslLinuxToolchainTarget::for_triple(base)
+            .ok_or_else(|| {
+                SoldrError::UnsupportedPlatform(format!(
+                    "no catalogue-backed musl/Linux toolchain is available for `{target}`"
+                ))
+            })?;
+        let toolchain = crate::fetch::musl_linux_toolchain::ensure(paths, base).await?;
+        debug_assert_eq!(toolchain.target, bundle);
+        prep.path_dirs.push(toolchain.bin_dir.clone());
+        let mut env = crate::fetch::musl_linux_toolchain::env_for_target(&toolchain, base);
+        let sysroot = toolchain.sysroot.to_string_lossy().into_owned();
+        env.push((
+            format!("CARGO_TARGET_{upper}_RUSTFLAGS"),
+            format!("-C link-arg=--sysroot={sysroot}"),
+        ));
+        prep.env.extend(env);
     } else if should_prepare_managed_linux(attrs.os, attrs.abi, base, host, legacy_zigbuild) {
+        eprintln!(
+            "soldr: {}=1 selects the legacy Zig musl diagnostic path; it is unsupported for normal builds and will be removed in soldr 0.9.0",
+            crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR
+        );
         let suffix = base.replace('-', "_");
         let upper = suffix.to_ascii_uppercase();
         let tools = crate::linux_cross::prepare(paths, target).await?;
@@ -193,32 +217,26 @@ fn add_link_self_contained_flag(prep: &mut BlessedPrep, base: &str, upper: &str)
 
 /// Whether `rustc` accepts `-C link-self-contained` for `target`.
 ///
-/// The split is **gnu vs musl**, not architecture. Every musl target links
-/// self-contained by default and accepts the flag; among glibc targets only
-/// x86_64 does. `aarch64-unknown-linux-gnu` rejects it outright, which is
-/// what broke the v0.8.31 release build.
+/// Only x86_64 GNU accepts the compatibility flag. Musl now uses its managed
+/// CRT directly, so injecting it would revive the old duplicate `_start`
+/// failure mode from the Zig wrapper path.
 ///
 /// Getting this wrong fails in *both* directions, so neither half is
 /// cosmetic:
 ///
 /// - Passing it where unsupported is a hard rustc error
 ///   (`option -C link-self-contained is not supported on this target`).
-/// - **Omitting it on musl is equally fatal**, because zig already supplies
-///   `crt1.o`, and letting rustc add its own self-contained copy gives
-///   `ld.lld: error: duplicate symbol: _start`. My first version of this
-///   allowlist was `x86_64-` only and did exactly that to
-///   `aarch64-unknown-linux-musl`.
 ///
-/// So an unknown target defaults to omitting, which is safe only because
-/// every target that *needs* the flag is named here explicitly.
+/// Unknown targets default to omitting the flag because passing it where it
+/// is unsupported is a hard error.
 fn supports_link_self_contained(base_triple: &str) -> bool {
-    base_triple.ends_with("-musl") || base_triple.starts_with("x86_64-")
+    base_triple == "x86_64-unknown-linux-gnu"
 }
 
 /// Whether this target still needs the Zig-backed Linux preparation path.
 ///
-/// GNU targets are intercepted by the catalogue branch in `prepare_target`;
-/// only a non-native Linux target (currently musl) reaches this fallback.
+/// This is deliberately only the explicit legacy diagnostic override. Normal
+/// GNU and musl targets are both catalogue-backed above.
 fn should_prepare_managed_linux(
     os: TargetOs,
     abi: Option<TargetAbi>,
@@ -226,7 +244,7 @@ fn should_prepare_managed_linux(
     host: &str,
     legacy_zigbuild: bool,
 ) -> bool {
-    os == TargetOs::Linux && abi == Some(TargetAbi::Musl) && !legacy_zigbuild && target != host
+    os == TargetOs::Linux && abi == Some(TargetAbi::Musl) && legacy_zigbuild && target != host
 }
 
 /// Preserve Cargo's custom target-spec passthrough while using the unified
@@ -396,7 +414,7 @@ pub(crate) fn plan(target: &str) -> Result<TargetPlan, SoldrError> {
     plan_for_host(target, crate::pyo3_detect::host_triple())
 }
 
-fn plan_for_host(target: &str, host: &str) -> Result<TargetPlan, SoldrError> {
+fn plan_for_host(target: &str, _host: &str) -> Result<TargetPlan, SoldrError> {
     let attrs = classify_target(target)?;
     let canonical = crate::core::CANONICAL_TARGETS.contains(&target);
     let canonical_alias = crate::target_alias::CANONICAL_ALIASES
@@ -490,52 +508,30 @@ fn plan_for_host(target: &str, host: &str) -> Result<TargetPlan, SoldrError> {
                     },
                 )
             }
-            // Host-native musl remains intentionally host-provided: it is
-            // statically linked and the GNU catalogue bundle does not model it.
-            (TargetOs::Linux, Some(TargetAbi::Musl), _) if target == host => (
+            (TargetOs::Linux, Some(TargetAbi::Musl), _) => (
                 ToolchainPlan {
                     family: "linux-musl",
-                    c_compiler: "cc",
-                    cxx_compiler: "c++",
-                    linker: "cc",
-                    archiver: "ar",
+                    c_compiler: "managed gcc",
+                    cxx_compiler: "managed g++",
+                    linker: "managed gcc",
+                    archiver: "managed ar",
                 },
                 PlatformPlan {
-                    kind: "host-sysroot",
-                    provider: "host",
-                    identity: format!("linux-musl/{target}"),
-                    root_env: None,
+                    kind: "musl-linux-sysroot",
+                    provider: "soldr-toolchain",
+                    identity: format!(
+                        "musl-linux-toolchain/{}/{target}",
+                        crate::fetch::musl_linux_toolchain::MUSL_LINUX_TOOLCHAIN_VERSION
+                    ),
+                    root_env: Some("SOLDR_MUSL_LINUX_TOOLCHAIN_ROOT"),
                 },
-                Vec::new(),
+                {
+                    let upper = target.replace('-', "_").to_ascii_uppercase();
+                    let mut keys = crate::fetch::musl_linux_toolchain::env_keys_for_target(target);
+                    keys.push(format!("CARGO_TARGET_{upper}_RUSTFLAGS"));
+                    keys
+                },
             ),
-            (TargetOs::Linux, Some(TargetAbi::Musl), _) => {
-                let suffix = target.replace('-', "_");
-                let upper = suffix.to_ascii_uppercase();
-                let family = "linux-musl";
-                (
-                    ToolchainPlan {
-                        family,
-                        c_compiler: "zig cc",
-                        cxx_compiler: "zig c++",
-                        linker: "zig cc",
-                        archiver: "zig ar",
-                    },
-                    PlatformPlan {
-                        kind: "zig-sysroot",
-                        provider: "soldr-managed-zig",
-                        identity: format!("zig-{}/{target}", crate::fetch::MANAGED_ZIG_VERSION),
-                        root_env: None,
-                    },
-                    vec![
-                        format!("AR_{suffix}"),
-                        format!("CC_{suffix}"),
-                        format!("CXX_{suffix}"),
-                        format!("CARGO_TARGET_{upper}_LINKER"),
-                        format!("CARGO_TARGET_{upper}_RUSTFLAGS"),
-                        format!("RANLIB_{suffix}"),
-                    ],
-                )
-            }
             (TargetOs::Windows, Some(TargetAbi::Gnu), _) => (
                 ToolchainPlan {
                     family: "windows-gnu",
@@ -730,6 +726,21 @@ mod tests {
         assert!(!json.contains("cargo-zigbuild"));
     });
 
+    crate::timed_test!(linux_musl_plan_uses_catalogue_toolchain_without_zig, {
+        let plan = plan_for_host("aarch64-unknown-linux-musl", "x86_64-unknown-linux-gnu").unwrap();
+        assert_eq!(plan.toolchain.family, "linux-musl");
+        assert_eq!(plan.toolchain.linker, "managed gcc");
+        assert_eq!(plan.platform.kind, "musl-linux-sysroot");
+        assert_eq!(plan.platform.provider, "soldr-toolchain");
+        assert!(plan.cache_identity.contains("musl-linux-toolchain/"));
+        let json = serde_json::to_string(&plan).unwrap();
+        assert!(
+            !json.contains("zig"),
+            "normal musl plans must not advertise Zig: {json}"
+        );
+        assert!(!json.contains("cargo-zigbuild"));
+    });
+
     crate::timed_test!(legacy_linux_override_does_not_mix_blessed_wrappers, {
         assert!(!should_prepare_managed_linux(
             TargetOs::Linux,
@@ -752,20 +763,19 @@ mod tests {
         ));
     });
 
-    crate::timed_test!(the_reported_gnu_plan_matches_the_catalogue_lifecycle, {
+    crate::timed_test!(the_reported_linux_plans_match_the_catalogue_lifecycle, {
         let plan = plan_for_host("x86_64-unknown-linux-gnu", "x86_64-unknown-linux-gnu").unwrap();
         assert_eq!(plan.toolchain.linker, "managed gcc");
         assert_eq!(plan.platform.provider, "soldr-toolchain");
         assert_eq!(plan.platform.kind, "gnu-linux-sysroot");
 
-        // musl is host-native and intentionally remains host-provided.
         let musl = plan_for_host("x86_64-unknown-linux-musl", "x86_64-unknown-linux-musl").unwrap();
-        assert_eq!(musl.toolchain.linker, "cc");
+        assert_eq!(musl.toolchain.linker, "managed gcc");
+        assert_eq!(musl.platform.provider, "soldr-toolchain");
+        assert_eq!(musl.platform.kind, "musl-linux-sysroot");
     });
 
-    crate::timed_test!(host_native_musl_is_left_alone, {
-        // musl is statically linked, so it has no glibc floor to improve
-        // and nothing to gain from the detour.
+    crate::timed_test!(normal_musl_never_reaches_legacy_zig, {
         assert!(!should_prepare_managed_linux(
             TargetOs::Linux,
             Some(TargetAbi::Musl),
@@ -775,13 +785,13 @@ mod tests {
         ));
     });
 
-    crate::timed_test!(only_cross_musl_can_reach_the_legacy_linux_fallback, {
+    crate::timed_test!(only_explicit_legacy_musl_can_reach_zig_fallback, {
         assert!(should_prepare_managed_linux(
             TargetOs::Linux,
             Some(TargetAbi::Musl),
             "aarch64-unknown-linux-musl",
             "x86_64-unknown-linux-gnu",
-            false,
+            true,
         ));
         assert!(!should_prepare_managed_linux(
             TargetOs::Linux,
@@ -921,14 +931,11 @@ mod link_self_contained_tests {
         assert!(!supports_link_self_contained("aarch64-unknown-linux-gnu"));
     });
 
-    // The opposite failure, and the reason this is not simply "skip aarch64":
-    // zig supplies crt1.o for musl, so omitting the flag lets rustc add its
-    // own self-contained copy and the link dies with
-    //   ld.lld: error: duplicate symbol: _start
-    // My first allowlist was `x86_64-` only and broke exactly this target.
-    timed_test!(every_musl_target_still_gets_it, {
-        assert!(supports_link_self_contained("aarch64-unknown-linux-musl"));
-        assert!(supports_link_self_contained("x86_64-unknown-linux-musl"));
+    // The managed musl CRT owns startup objects. Re-injecting the Zig-only
+    // self-contained override can produce a duplicate `_start` at link time.
+    timed_test!(managed_musl_never_gets_the_zig_startup_override, {
+        assert!(!supports_link_self_contained("aarch64-unknown-linux-musl"));
+        assert!(!supports_link_self_contained("x86_64-unknown-linux-musl"));
     });
 
     timed_test!(x86_64_gnu_still_gets_it, {
