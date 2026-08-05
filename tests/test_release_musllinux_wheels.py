@@ -10,6 +10,8 @@ def test_release_workflow_builds_and_publishes_musllinux_wheels() -> None:
     assert "py3-none-musllinux_1_2_x86_64.whl" in workflow
     assert "py3-none-musllinux_1_2_aarch64.whl" in workflow
     assert "compat_args=(--compatibility musllinux_1_2)" in workflow
+    assert "Build ARM musllinux wheel natively" in workflow
+    assert "pypi-soldr-aarch64-unknown-linux-musl" in workflow
     assert "Assert linux-musl wheels are tagged musllinux_1_2" in workflow
     assert "Smoke test musllinux wheel on Alpine" in workflow
     assert "alpine:3.20" in workflow

@@ -377,17 +377,6 @@ jobs:
           dpkg-query -W -f='cmake installed version: ${Version}\n' cmake
           dpkg-query -W -f='perl installed version: ${Version}\n' perl
 
-      # soldr#1005 / fbuild ingestion: Zig remains needed only for the
-      # linux-gnu wheel lanes where `maturin build --zig` links the
-      # wheel's embedded soldr binary against a glibc 2.17 floor and
-      # tags the wheel manylinux_2_17. Release binary cross-compilation
-      # itself is owned by `soldr build` below.
-      - name: Setup zig for manylinux_2_17 wheel lanes
-        if: contains(matrix.target, 'unknown-linux-gnu')
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
-        with:
-          version: 0.15.2
-
       - name: Build release binary
         shell: bash
         env:
@@ -453,10 +442,13 @@ jobs:
             --package soldr-cli \
             --bin soldr
 
-          # `soldr build` applies the blessed Darwin environment to its
-          # child cargo process only. Persist the same target-shaped SDK,
-          # clang, linker, and PATH values for the later maturin wheel build.
-          if [[ "$RUNNER_OS" == "Linux" && "$target" == *-apple-darwin ]]; then
+          # `soldr build` applies the blessed target environment to its child
+          # cargo process only. Persist the same catalogue-backed compiler,
+          # sysroot, linker, and PATH values for Maturin's later direct Cargo
+          # invocation. GNU and Darwin catalogue toolchains are hosted on the
+          # Linux build runner; ARM-musl packaging is handled separately on a
+          # native ARM runner because its catalogue GCC is i386-hosted.
+          if [[ "$RUNNER_OS" == "Linux" && ( "$target" == *-unknown-linux-gnu || "$target" == *-apple-darwin ) ]]; then
             "$driver" prepare --target "$target" --github-env "$GITHUB_ENV"
           fi
           echo "=== post-build diagnostic: target/$target/release/ ==="
@@ -1086,6 +1078,7 @@ jobs:
           enable-cache: false
 
       - name: Build hardened wheel from shared target directory
+        if: matrix.target != 'aarch64-unknown-linux-musl'
         shell: bash
         env:
           EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
@@ -1167,24 +1160,22 @@ jobs:
           uv tool install "maturin>=1.7,<2"
 
           # soldr#1005 / fbuild ingestion: on the linux-gnu lanes,
-          # build the wheel with maturin's zig integration so the
-          # embedded soldr binary links against a glibc 2.17 floor and
-          # the wheel is tagged manylinux_2_17. `--compatibility pypi`
+          # build the wheel against Soldr's catalogue-backed compiler and
+          # sysroot so its embedded binary observes the glibc 2.17 floor
+          # and the wheel is tagged manylinux_2_17. `--compatibility pypi`
           # alone lets maturin auto-tag from the runner glibc
           # (manylinux_2_39 on ubuntu-24.04), which excludes every
           # glibc<2.39 consumer and triggers pip's fallback to the
-          # 0.1.0 placeholder sdist. Reference implementation:
-          # FastLED/fbuild .github/workflows/template_native_build.yml
-          # with a Zig-linked manylinux floor; `maturin --zig` owns its
-          # internal linker setup for wheel tagging. Native musl lanes
-          # build with the Rust musl target + musl-tools and explicitly
-          # tag the result as musllinux_1_2 so Alpine/distroless pip
-          # installs do not fall back to source builds. macOS / Windows
-          # lanes keep `--compatibility pypi` untouched.
+          # 0.1.0 placeholder sdist. `soldr prepare --github-env` above
+          # supplies the catalogue-backed compiler/sysroot to Maturin's
+          # direct Cargo subprocess: Maturin must not select Zig or xwin.
+          # GNU wheels retain the manylinux 2.17 tag; musl wheels retain the
+          # musllinux 1.2 tag. macOS / Windows lanes keep `--compatibility
+          # pypi` untouched.
           compat_args=(--compatibility pypi)
           case "${{ matrix.target }}" in
             *-unknown-linux-gnu)
-              compat_args=(--zig --compatibility manylinux_2_17)
+              compat_args=(--compatibility manylinux_2_17)
               ;;
             *-unknown-linux-musl)
               compat_args=(--compatibility musllinux_1_2)
@@ -1201,6 +1192,7 @@ jobs:
             --out dist
 
       - name: Lint wheel filenames against workspace version
+        if: matrix.target != 'aarch64-unknown-linux-musl'
         shell: python
         env:
           EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
@@ -1283,13 +1275,13 @@ jobs:
               msg.append("")
               msg.append(
                   "Every linux-gnu wheel must carry the manylinux_2_17 "
-                  "platform tag (glibc 2.17 floor via `maturin build "
-                  "--zig --compatibility manylinux_2_17`). A higher tag "
+                  "platform tag (glibc 2.17 floor via the catalogue-backed "
+                  "Maturin target environment). A higher tag "
                   "(e.g. manylinux_2_39 from the runner glibc) makes "
                   "`pip install soldr` on older glibc fall back to the "
                   "0.1.0 placeholder sdist — the soldr#1005 trap. Check "
-                  "that zig is on PATH and the maturin invocation kept "
-                  "the --zig/--compatibility args for this lane."
+                  "that `soldr prepare --github-env` exported the target "
+                  "environment before Maturin ran."
               )
               sys.exit("\n".join(msg))
           print(f"manylinux_2_17 tag assertion OK: {len(wheels)} wheel(s):")
@@ -1318,7 +1310,7 @@ jobs:
           python3 .github/scripts/verify_wheel_glibc.py --max-glibc 2.17 dist/*.whl
 
       - name: Assert linux-musl wheels are tagged musllinux_1_2
-        if: contains(matrix.target, 'unknown-linux-musl')
+        if: contains(matrix.target, 'unknown-linux-musl') && matrix.target != 'aarch64-unknown-linux-musl'
         shell: python
         run: |
           import sys
@@ -1346,6 +1338,7 @@ jobs:
               print(f"  - {w.name}")
 
       - name: Verify wheel ships the bin script at the spec path
+        if: matrix.target != 'aarch64-unknown-linux-musl'
         shell: python
         run: |
           import zipfile
@@ -1451,9 +1444,11 @@ jobs:
           )
 
       - name: Smoke test wheel
-        # Cross-OS wheels cannot execute on the Linux build host. The Intel
-        # macOS wheel is exercised by smoke_macos_x64 below.
-        if: ${{ !contains(matrix.target, 'musl') && !(runner.os == 'Linux' && contains(matrix.target, 'apple-darwin')) }}
+        # Cross-OS and cross-architecture wheels cannot execute on the Linux
+        # x64 build host. The Intel macOS wheel is exercised by
+        # smoke_macos_x64 below; ARM Linux wheels still receive structural
+        # wheel and archive checks in this job.
+        if: ${{ !contains(matrix.target, 'musl') && !(runner.os == 'Linux' && (contains(matrix.target, 'apple-darwin') || startsWith(matrix.target, 'aarch64-'))) }}
         shell: bash
         env:
           EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
@@ -1497,7 +1492,10 @@ jobs:
           fi
 
       - name: Smoke test musllinux wheel on Alpine
-        if: contains(matrix.target, 'musl')
+        # The ARM wheel is built on an x64 compiler host. Do not execute it
+        # under the host's x64 Alpine container; wheel/archive structure is
+        # still verified above and the binary receives a size-floor check.
+        if: ${{ contains(matrix.target, 'musl') && !startsWith(matrix.target, 'aarch64-') }}
         shell: bash
         env:
           EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
@@ -1534,7 +1532,7 @@ jobs:
         # musllinux. Keep this direct binary smoke too: the standalone
         # musl binary is statically linked so it CAN run on glibc, and
         # it catches broken tarball artifacts before release upload.
-        if: contains(matrix.target, 'musl')
+        if: ${{ contains(matrix.target, 'musl') && !startsWith(matrix.target, 'aarch64-') }}
         shell: bash
         env:
           EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
@@ -1686,8 +1684,57 @@ jobs:
           path: dist/soldr-*.tar.zst
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: matrix.target != 'aarch64-unknown-linux-musl'
         with:
           name: pypi-soldr-${{ matrix.target }}
+          path: dist/*.whl
+
+  build_arm_musl_wheel:
+    name: Build ARM musllinux wheel natively
+    needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          submodules: recursive
+          ref: ${{ needs.prepare.outputs.commit_sha }}
+      - name: Install native ARM musl toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.94.1 --profile minimal --no-self-update
+          rustup default 1.94.1
+          rustup target add aarch64-unknown-linux-musl
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools cmake perl
+          command -v musl-gcc
+      - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+        with:
+          enable-cache: false
+      - name: Build and smoke native ARM musllinux wheel
+        shell: bash
+        env:
+          SOLDR_RELEASE_CI: "1"
+          CC_aarch64_unknown_linux_musl: musl-gcc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          uv tool install "maturin>=1.7,<2"
+          mkdir -p dist
+          maturin build --release --locked --compatibility musllinux_1_2 \
+            --auditwheel repair --target aarch64-unknown-linux-musl --out dist
+          uv venv .venv
+          uv pip install --python .venv dist/*.whl
+          out="$(.venv/bin/soldr --version)"
+          case "$out" in "soldr "*) ;; *) exit 1 ;; esac
+          json="$(.venv/bin/soldr version --json)"
+          printf '%s' "$json" | grep -q "\"soldr_version\":\"${EXPECTED_VERSION#v}\""
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: pypi-soldr-aarch64-unknown-linux-musl
           path: dist/*.whl
 
   smoke_macos_x64:
@@ -1756,7 +1803,8 @@ jobs:
       - prepare
       - build
       - smoke_macos_x64
-    if: needs.prepare.outputs.should_publish_github_release == 'true' && needs.smoke_macos_x64.result == 'success'
+      - build_arm_musl_wheel
+    if: needs.prepare.outputs.should_publish_github_release == 'true' && needs.smoke_macos_x64.result == 'success' && needs.build_arm_musl_wheel.result == 'success'
     runs-on: ubuntu-24.04
     # Artifact download + attestation; observed max 0.6 min.
     timeout-minutes: 30
@@ -1888,8 +1936,9 @@ jobs:
     needs:
       - prepare
       - build
+      - build_arm_musl_wheel
       - publish
-    if: always() && needs.prepare.outputs.should_release == 'true' && needs.build.result == 'success'
+    if: always() && needs.prepare.outputs.should_release == 'true' && needs.build.result == 'success' && needs.build_arm_musl_wheel.result == 'success'
     runs-on: ubuntu-24.04
     # Asset-set assertion against the GitHub API; observed max 0.1 min.
     timeout-minutes: 15
@@ -1951,6 +2000,7 @@ jobs:
     needs:
       - prepare
       - build
+      - build_arm_musl_wheel
       - verify_github_release
     # Registry publishes must happen only after the GitHub Release has
     # all expected binary/wheel assets. An existing tag or release is not

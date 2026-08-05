@@ -160,9 +160,7 @@ fn marker_precedes(source: &str, offset: usize) -> bool {
     source[..start]
         .trim_end()
         .rsplit_once('\n')
-        .map_or(false, |(_, line)| {
-            line.trim() == format!("// {OFFLINE_OWNER_MARKER}")
-        })
+        .is_some_and(|(_, line)| line.trim() == format!("// {OFFLINE_OWNER_MARKER}"))
 }
 
 fn validate_source(path: &str, source: &str) -> Result<(), Vec<String>> {
