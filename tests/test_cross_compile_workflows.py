@@ -489,6 +489,9 @@ def test_gnu_catalogue_fixture_is_part_of_both_gnu_ci_lanes() -> None:
         "verify_glibc_baseline.py",
         "SOLDR_GNU_LINUX_TOOLCHAIN_ROOT",
         "CMAKE_C_COMPILER",
+        "SOLDR_CACHE_DIR",
+        "SOLDR_TEST_NO_NETWORK",
+        "prepared.tar.zst",
         "aarch64-unknown-linux-gnu",
         "x86_64-unknown-linux-gnu",
     ):

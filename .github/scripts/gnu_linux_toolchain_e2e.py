@@ -73,12 +73,25 @@ def assert_plan(soldr: str, target: str) -> None:
         raise RuntimeError(f"GNU plan lost deterministic cache identity: {rendered}")
 
 
-def prepare(soldr: str, target: str, env_file: Path) -> dict[str, str]:
-    output = run([soldr, "prepare", "--target", target, "--github-env", str(env_file)])
+def prepare(
+    soldr: str,
+    target: str,
+    env_file: Path,
+    *,
+    env: dict[str, str] | None = None,
+    save: Path | None = None,
+    restore: Path | None = None,
+) -> dict[str, str]:
+    command = [soldr, "prepare", "--target", target, "--github-env", str(env_file)]
+    if save is not None:
+        command.extend(["--save", str(save)])
+    if restore is not None:
+        command.extend(["--restore", str(restore)])
+    output = run(command, env=env)
     require_no_zig(output, "GNU preparation")
-    env = os.environ.copy()
-    env.update(read_github_env(env_file))
-    return env
+    prepared_env = os.environ.copy() if env is None else env.copy()
+    prepared_env.update(read_github_env(env_file))
+    return prepared_env
 
 
 def assert_managed_environment(env: dict[str, str], target: str) -> tuple[Path, Path]:
@@ -262,9 +275,31 @@ def main() -> int:
         prefix=f"soldr-gnu-e2e-{TARGETS[args.target][0]}-"
     ) as raw:
         work = Path(raw)
-        env = prepare(args.soldr, args.target, work / "github.env")
+        archive = work / "prepared.tar.zst"
+        source_env = prepare(
+            args.soldr, args.target, work / "source-github.env", save=archive
+        )
+        source_root, _ = assert_managed_environment(source_env, args.target)
+        # Warm Cargo's fixture dependencies before proving that the restored
+        # toolchain itself is enough when Soldr is forbidden from networking.
+        build_fixture(args.soldr, args.target, source_env, work / "source-build")
+
+        restored_env = os.environ.copy()
+        restored_env["SOLDR_CACHE_DIR"] = str(work / "restored-soldr")
+        restored_env["SOLDR_TEST_NO_NETWORK"] = "1"
+        env = prepare(
+            args.soldr,
+            args.target,
+            work / "restored-github.env",
+            env=restored_env,
+            restore=archive,
+        )
         root, _ = assert_managed_environment(env, args.target)
-        binary = build_fixture(args.soldr, args.target, env, work)
+        if root == source_root:
+            raise RuntimeError(
+                "prepare archive did not restore into the clean Soldr root"
+            )
+        binary = build_fixture(args.soldr, args.target, env, work / "restored-build")
         verify_artifact(args.repo, args.target, root, binary, env)
     return 0
 

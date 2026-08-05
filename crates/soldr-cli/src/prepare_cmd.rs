@@ -160,7 +160,7 @@ pub async fn run(
     // can plug into `actions/cache@v4`'s save step. Subsequent CI runs
     // pass the same path to `--restore` and skip the live downloads.
     if let Some(archive) = save.as_deref() {
-        save_prepare_state(archive, &paths)?;
+        save_prepare_state(archive, &paths, &target)?;
         eprintln!("soldr prepare: saved state to {}", archive.display());
     }
 
@@ -644,11 +644,25 @@ pub(crate) fn prepare_state_roots(paths: &SoldrPaths) -> Result<Vec<PathBuf>, So
 }
 
 /// Pack the prepare-managed dirs into a tar.zst at `archive`. Paths
-/// inside the tar are RELATIVE to HOME so restore can extract them
-/// onto any runner that uses the same home layout.
-fn save_prepare_state(archive: &Path, paths: &SoldrPaths) -> Result<(), SoldrError> {
-    let home = crate::core::home_dir()?;
+/// inside the tar are relative to the selected Soldr root so restore
+/// can replay them under a different `SOLDR_CACHE_DIR`.
+pub(crate) fn save_prepare_state(
+    archive: &Path,
+    paths: &SoldrPaths,
+    target: &str,
+) -> Result<(), SoldrError> {
     let roots = prepare_state_roots(paths)?;
+    // A GNU prepare archive must be self-contained without also inheriting a
+    // previous target's Zig/Apple/MSVC state from the shared Soldr root.
+    let gnu_root = paths.bin.join("syslib").join("gnu-linux-toolchain");
+    let roots: Vec<_> = if target.ends_with("-unknown-linux-gnu") {
+        roots
+            .into_iter()
+            .filter(|root| root == &gnu_root || root == &paths.root.join("sdk"))
+            .collect()
+    } else {
+        roots
+    };
     if roots.is_empty() {
         eprintln!("soldr prepare: nothing to save (no zig/llvm/apple-sdk/mingw/gnu-linux/xwin dirs found)");
         return Ok(());
@@ -671,13 +685,13 @@ fn save_prepare_state(archive: &Path, paths: &SoldrPaths) -> Result<(), SoldrErr
     let mut builder = tar::Builder::new(encoder);
     builder.follow_symlinks(false);
     for root in &roots {
-        let rel = match root.strip_prefix(&home) {
+        let rel = match root.strip_prefix(&paths.root) {
             Ok(r) => r,
             Err(_) => {
                 eprintln!(
-                    "soldr prepare: warning: {} is outside HOME ({}); skipping",
+                    "soldr prepare: warning: {} is outside Soldr root ({}); skipping",
                     root.display(),
-                    home.display()
+                    paths.root.display()
                 );
                 continue;
             }
@@ -701,22 +715,51 @@ fn save_prepare_state(archive: &Path, paths: &SoldrPaths) -> Result<(), SoldrErr
     Ok(())
 }
 
-/// Extract a previously-saved tar.zst back onto disk. Entries are
-/// resolved relative to HOME so the same archive replays across any
-/// runner that shares the home layout. Existing files are overwritten
+/// Extract a previously-saved tar.zst back onto disk. New entries are
+/// resolved relative to the selected Soldr root; legacy HOME-relative
+/// entries remain compatible. Existing files are overwritten
 /// — the caller (`--restore`) treats partial / outdated archives as
 /// best-effort: anything still missing after restore is re-downloaded
 /// by the normal dispatch.
-fn restore_prepare_state(archive: &Path, _paths: &SoldrPaths) -> Result<(), SoldrError> {
-    let home = crate::core::home_dir()?;
+pub(crate) fn restore_prepare_state(archive: &Path, paths: &SoldrPaths) -> Result<(), SoldrError> {
+    // Archives written before #2236 were relative to HOME and began at
+    // `.soldr/`; retain that layout on restore. New archives are relative to
+    // the selected Soldr root so `SOLDR_CACHE_DIR` can relocate them.
+    let legacy_home_relative = {
+        let file = std::fs::File::open(archive)
+            .map_err(|e| SoldrError::Other(format!("open {}: {e}", archive.display())))?;
+        let zst = zstd::stream::read::Decoder::new(file)
+            .map_err(|e| SoldrError::Archive(format!("zstd decoder: {e}")))?;
+        let mut probe = tar::Archive::new(zst);
+        let mut legacy = false;
+        for entry in probe
+            .entries()
+            .map_err(|e| SoldrError::Archive(format!("tar entries: {e}")))?
+        {
+            let entry = entry.map_err(|e| SoldrError::Archive(format!("tar entry: {e}")))?;
+            let entry_path = entry
+                .path()
+                .map_err(|e| SoldrError::Archive(format!("tar entry path: {e}")))?;
+            if entry_path == Path::new(".soldr") || entry_path.starts_with(".soldr/") {
+                legacy = true;
+                break;
+            }
+        }
+        legacy
+    };
+    let destination = if legacy_home_relative {
+        crate::core::home_dir()?
+    } else {
+        paths.root.clone()
+    };
     let file = std::fs::File::open(archive)
         .map_err(|e| SoldrError::Other(format!("open {}: {e}", archive.display())))?;
     let zst = zstd::stream::read::Decoder::new(file)
         .map_err(|e| SoldrError::Archive(format!("zstd decoder: {e}")))?;
     let mut tarball = tar::Archive::new(zst);
-    std::fs::create_dir_all(&home)?;
+    std::fs::create_dir_all(&destination)?;
     tarball
-        .unpack(&home)
+        .unpack(&destination)
         .map_err(|e| SoldrError::Archive(format!("tar.zst unpack: {e}")))?;
     Ok(())
 }
