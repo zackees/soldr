@@ -127,6 +127,13 @@ one blessed build surface:
   and exports the target compiler/linker, CMake, and pkg-config sysroot
   environment. Neither `zig`, `cargo-zigbuild`, nor `ziglang` is on this
   blessed GNU path.
+- musl Linux targets use separate catalogue-backed GCC/binutils/musl static
+  CRT bundles for `x86_64-unknown-linux-musl` and
+  `aarch64-unknown-linux-musl`. The compiler, linker, CMake, and pkg-config
+  environment all resolve under the verified managed root; normal musl
+  builds never download or execute Zig, `cargo-zigbuild`, or `ziglang`.
+  `SOLDR_USE_LEGACY_ZIGBUILD=1` retains the old Zig route only for diagnostics
+  and will be removed in soldr 0.9.0.
 - macOS targets use `soldr build --target <apple-triple>`. That path resolves
   the target-aware Apple SDK row and injects clang/SDK env internally. Direct
   `soldr cargo zigbuild --target *-apple-darwin` is a legacy/diagnostic path,
@@ -147,6 +154,10 @@ blessed path and smoke-tested on `macos-15-intel` before publication.
 soldr prepare --target x86_64-unknown-linux-gnu
 soldr build --target x86_64-unknown-linux-gnu --release -p soldr-cli
 
+# musl target: the same managed lifecycle, with a static musl CRT.
+soldr prepare --target x86_64-unknown-linux-musl
+soldr build --target x86_64-unknown-linux-musl --release -p soldr-cli
+
 # macOS targets: soldr build is the blessed path. `prepare` is optional and
 # useful only when a later external/legacy command needs SDKROOT exported.
 soldr prepare --target x86_64-apple-darwin
@@ -158,6 +169,8 @@ soldr build --target aarch64-apple-darwin --release -p soldr-cli
 
 - Catalogue-backed GCC/binutils/glibc-2.17 sysroot provisioning for GNU Linux
   targets.
+- Catalogue-backed GCC/binutils/musl sysroot provisioning for canonical musl
+  Linux targets, including startup objects and static runtime libraries.
 - Apple SDK fetch for `*-apple-darwin` targets. Auto shape maps
   `x86_64-apple-darwin` to `darwin-x86_64` and `aarch64-apple-darwin` to
   `darwin-aarch64`; `soldr build` applies the SDK env internally.

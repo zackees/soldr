@@ -481,8 +481,7 @@ pub fn classify_target(triple: &str) -> Result<TargetAttrs, SoldrError> {
         arch,
         os,
         abi,
-        needs_zig: matches!(os, TargetOs::Darwin)
-            || matches!((os, abi), (TargetOs::Linux, Some(TargetAbi::Musl))),
+        needs_zig: matches!(os, TargetOs::Darwin),
         needs_xwin_cache: matches!((os, abi), (TargetOs::Windows, Some(TargetAbi::Msvc))),
         needs_llvm_toolchain: matches!((os, abi), (TargetOs::Windows, Some(TargetAbi::Msvc))),
         needs_mingw_w64_gcc: matches!(
@@ -498,8 +497,8 @@ pub fn classify_target(triple: &str) -> Result<TargetAttrs, SoldrError> {
 /// present/missing summary; the dispatch below downloads anything
 /// missing so the report is purely informational.
 ///
-/// Paths are version-pinned where possible (e.g. zig 0.13.0, LLVM
-/// 21.1.5) so a stale archive that's missing the current pin is
+/// Paths are version-pinned where possible (e.g. LLVM 21.1.5 and the
+/// managed GNU/musl compiler bundles) so a stale archive that's missing the current pin is
 /// reported as "missing" even if an older version exists on disk.
 pub(crate) fn expected_state_paths(
     attrs: &TargetAttrs,
@@ -546,6 +545,43 @@ pub(crate) fn expected_state_paths(
                 && package
                     .join("bin")
                     .join(format!("{}-gcc", target.compiler_prefix()))
+                    .is_file(),
+            path: package,
+        });
+    }
+    if matches!(
+        (attrs.os, attrs.abi),
+        (TargetOs::Linux, Some(TargetAbi::Musl))
+    ) {
+        let Some(target) =
+            crate::fetch::musl_linux_toolchain::MuslLinuxToolchainTarget::for_triple(&attrs.triple)
+        else {
+            return Err(SoldrError::UnsupportedPlatform(format!(
+                "no catalogue-backed musl/Linux toolchain is available for `{}`",
+                attrs.triple
+            )));
+        };
+        let bundle = paths
+            .bin
+            .join("syslib")
+            .join("musl-linux-toolchain")
+            .join(crate::fetch::musl_linux_toolchain::MUSL_LINUX_TOOLCHAIN_VERSION)
+            .join(target.slug());
+        let package = bundle.join("package");
+        entries.push(RestoreEntry {
+            label: format!(
+                "musl/Linux toolchain {} ({})",
+                crate::fetch::musl_linux_toolchain::MUSL_LINUX_TOOLCHAIN_VERSION,
+                target.slug()
+            ),
+            present: bundle.join(".complete").is_file()
+                && package
+                    .join("bin")
+                    .join(format!("{}-gcc", target.compiler_prefix()))
+                    .is_file()
+                && package
+                    .join(target.compiler_prefix())
+                    .join("lib/crt1.o")
                     .is_file(),
             path: package,
         });
@@ -665,7 +701,7 @@ fn num_cpus_for_zstd() -> u32 {
 /// accidentally pull in zccache binaries or anything unrelated.
 pub(crate) fn prepare_state_roots(paths: &SoldrPaths) -> Result<Vec<PathBuf>, SoldrError> {
     let mut roots = Vec::new();
-    // ~/.soldr/bin/{zig-<ver>,llvm-<ver>,apple-sdk/<ver>,syslib/{mingw-w64-gcc,gnu-linux-toolchain}}
+    // ~/.soldr/bin/{zig-<ver>,llvm-<ver>,apple-sdk/<ver>,syslib/{mingw-w64-gcc,gnu-linux-toolchain,musl-linux-toolchain}}
     if let Ok(entries) = std::fs::read_dir(&paths.bin) {
         for entry in entries.flatten() {
             let name = entry.file_name();
@@ -686,6 +722,10 @@ pub(crate) fn prepare_state_roots(paths: &SoldrPaths) -> Result<Vec<PathBuf>, So
     if gnu_linux_root.is_dir() {
         roots.push(gnu_linux_root);
     }
+    let musl_linux_root = paths.bin.join("syslib").join("musl-linux-toolchain");
+    if musl_linux_root.is_dir() {
+        roots.push(musl_linux_root);
+    }
     // Blessed target SDK caches (`~/.soldr/sdk/<triple>/xwin/<version>/...`).
     let sdk_root = paths.root.join("sdk");
     if sdk_root.is_dir() {
@@ -701,7 +741,7 @@ fn save_prepare_state(archive: &Path, paths: &SoldrPaths) -> Result<(), SoldrErr
     let home = crate::core::home_dir()?;
     let roots = prepare_state_roots(paths)?;
     if roots.is_empty() {
-        eprintln!("soldr prepare: nothing to save (no zig/llvm/apple-sdk/mingw/gnu-linux/xwin dirs found)");
+        eprintln!("soldr prepare: nothing to save (no zig/llvm/apple-sdk/mingw/gnu-linux/musl-linux/xwin dirs found)");
         return Ok(());
     }
 
@@ -1436,7 +1476,10 @@ mod tests {
         let musl = classify_target("aarch64-unknown-linux-musl").expect("classify musl");
         assert_eq!(musl.os, TargetOs::Linux);
         assert_eq!(musl.abi, Some(TargetAbi::Musl));
-        assert!(musl.needs_zig, "#2244 tracks the retained musl fallback");
+        assert!(
+            !musl.needs_zig,
+            "#2244 makes the catalogue-backed musl lifecycle the normal path"
+        );
     });
 
     crate::timed_test!(classify_target_rejects_unknown_arch, {
