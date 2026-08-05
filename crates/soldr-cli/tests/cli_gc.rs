@@ -279,6 +279,35 @@ timed_test!(
         let soldr_bin = common::soldr_bin();
         let cargo = rustup_which("cargo");
 
+        let start = Command::new(&soldr_bin)
+            .args(["daemon", "start"])
+            .env("SOLDR_CACHE_DIR", &cache_root)
+            .output()
+            .expect("start daemon for wrapper target registry");
+        assert!(
+            start.status.success(),
+            "daemon start failed: {}",
+            String::from_utf8_lossy(&start.stderr)
+        );
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let status = Command::new(&soldr_bin)
+                .args(["daemon", "status", "--json"])
+                .env("SOLDR_CACHE_DIR", &cache_root)
+                .output()
+                .expect("query daemon status");
+            if status.status.success()
+                && serde_json::from_slice::<Value>(&status.stdout)
+                    .ok()
+                    .and_then(|body| body["running"].as_bool())
+                    .unwrap_or(false)
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline, "daemon did not become ready");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
         let build = Command::new(&cargo)
             .args(["build", "--quiet"])
             .current_dir(&project_dir)
@@ -305,16 +334,6 @@ timed_test!(
             String::from_utf8_lossy(&build.stdout),
             String::from_utf8_lossy(&build.stderr)
         );
-        let soldr_paths = soldr_cli::core::SoldrPaths::with_root(cache_root.clone());
-        assert!(
-            !soldr_cli::cache_lib::daemon_pid_path(&soldr_paths).exists(),
-            "cache-disabled registry fixture must not start soldr-daemon"
-        );
-        assert!(
-            !cache_root.join("daemon-spawn.log").exists(),
-            "cache-disabled registry fixture must not attempt daemon startup"
-        );
-
         let target_dir = project_dir.join("target");
         assert!(target_dir.exists(), "target/ should exist after build");
 
@@ -408,6 +427,17 @@ timed_test!(
             );
             assert_eq!(entry["purge_safety"].as_str(), Some("derived"));
         }
+
+        let stop = Command::new(&soldr_bin)
+            .args(["daemon", "stop"])
+            .env("SOLDR_CACHE_DIR", &cache_root)
+            .output()
+            .expect("stop explicit daemon");
+        assert!(
+            stop.status.success(),
+            "daemon stop failed: {}",
+            String::from_utf8_lossy(&stop.stderr)
+        );
     }
 );
 

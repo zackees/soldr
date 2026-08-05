@@ -4,7 +4,8 @@
 //! (`build`/`check`/`test`/etc.) without an explicit profile pin in
 //! either CLI flags, `--config` overrides, the manifest, or a discovered
 //! `.cargo/config.toml`, soldr injects `CARGO_PROFILE_<P>_DEBUG=false`
-//! and emits a one-shot warning (deduplicated per repo by the StateDb).
+//! and emits a warning whose once-per-repository decision is owned by the
+//! daemon.
 //!
 //! All of these helpers are argv-and-filesystem only — they do not
 //! touch the running process beyond environment-variable reads and TOML
@@ -400,14 +401,11 @@ fn should_emit_cargo_debug_default_warning(
 ) -> bool {
     // soldr#1814 slice 2c: ask the daemon, which owns state_db's tables,
     // rather than making every front-door invocation another opener of
-    // state.redb. Falls back to the local read-modify-write only when the
-    // daemon is unreachable, so a daemon-less run still throttles correctly.
+    // state.redb. When it is unavailable, fail open: repeating a warning is
+    // preferable to making the front door a second state-database opener.
     let sock = crate::daemon::client::default_sock_path(paths);
     if let Ok(emit) = crate::daemon::client::should_warn_cargo_debug_default(&sock, repo_path) {
         return emit;
     }
-    let db_path = crate::cache_lib::state_db_path(paths);
-    crate::cache_lib::state_db::StateDb::open(&db_path)
-        .and_then(|db| db.should_emit_cargo_debug_default_warning(repo_path))
-        .unwrap_or(true)
+    true
 }

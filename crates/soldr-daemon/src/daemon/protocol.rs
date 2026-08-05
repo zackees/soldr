@@ -105,7 +105,8 @@ use serde::{Deserialize, Serialize};
 ///   `Ack`. A running daemon keeps its startup limit, so changing
 ///   `SOLDR_JOBS` used to be a silent no-op; publishing the applied value is
 ///   what lets a client notice and say so.
-pub const PROTOCOL_VERSION: u32 = 21;
+/// * v22 (soldr#2251): daemon-owned target registry snapshot/removal IPC.
+pub const PROTOCOL_VERSION: u32 = 22;
 
 /// Wire-chunk granularity for the streaming Compile reply (#983 Phase
 /// 5b). 64 KiB is the same buffer size cargo's own pipe readers use
@@ -138,6 +139,12 @@ pub enum Request {
     /// Fire-and-forget: stamp a workspace `target/` path with `unix_seconds`
     /// in the soldr target registry. The wrapper hot path uses this.
     RecordTargetTouch { path: String, unix_seconds: i64 },
+    /// Request-response: snapshot daemon-owned target-registry rows for a
+    /// CLI filesystem scan. The daemon remains the only state.redb opener.
+    ListTargetRegistry,
+    /// Request-response: remove registry rows after a CLI has confirmed its
+    /// target directories are absent or successfully deleted.
+    RemoveTargetRegistry { paths: Vec<String> },
     /// Request-response: return a small structured snapshot of daemon
     /// state. Used by `soldr daemon status`.
     Status,
@@ -335,9 +342,19 @@ pub struct CompileResponseBody {
     pub cache_outcome: i32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TargetRegistryRow {
+    pub path: String,
+    pub last_used: i64,
+}
+
 #[derive(Debug, Clone)]
 pub enum Response {
     Status(StatusInfo),
+    TargetRegistryRows(Vec<TargetRegistryRow>),
+    TargetRegistryRemoved {
+        removed: u32,
+    },
     /// Acknowledges graceful shutdown and identifies the daemon that accepted
     /// the request. Callers must wait on this responder, not a PID sampled
     /// before the request.
@@ -674,12 +691,9 @@ mod tests {
     // conscious act, because peers at different versions reject each other.
     // soldr#2023 renamed this from the v20 spelling when the daemon began
     // publishing its applied compile limit.
-    crate::timed_test!(
-        protocol_version_is_v21_after_publishing_the_compile_limit,
-        {
-            assert_eq!(PROTOCOL_VERSION, 21);
-        }
-    );
+    crate::timed_test!(protocol_version_is_v22_after_adding_target_registry_ipc, {
+        assert_eq!(PROTOCOL_VERSION, 22);
+    });
 
     crate::timed_test!(chunk_bytes_is_64_kib, {
         // #983 Phase 5b — declared in the protocol so the daemon and

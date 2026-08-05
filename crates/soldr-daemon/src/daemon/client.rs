@@ -353,6 +353,28 @@ pub fn list_builds(
     }
 }
 
+pub fn list_target_registry(
+    sock_path: &Path,
+) -> Result<Vec<crate::daemon::protocol::TargetRegistryRow>, ClientError> {
+    match submit_request(sock_path, &Request::ListTargetRegistry)? {
+        Response::TargetRegistryRows(rows) => Ok(rows),
+        Response::Error(msg) => Err(ClientError::Protocol(msg)),
+        other => Err(ClientError::Protocol(format!(
+            "unexpected response: {other:?}"
+        ))),
+    }
+}
+
+pub fn remove_target_registry(sock_path: &Path, paths: Vec<String>) -> Result<u32, ClientError> {
+    match submit_request(sock_path, &Request::RemoveTargetRegistry { paths })? {
+        Response::TargetRegistryRemoved { removed } => Ok(removed),
+        Response::Error(msg) => Err(ClientError::Protocol(msg)),
+        other => Err(ClientError::Protocol(format!(
+            "unexpected response: {other:?}"
+        ))),
+    }
+}
+
 /// Fetch the build-log inputs the daemon owns for `session_id`
 /// (soldr#1814 slice 2a).
 ///

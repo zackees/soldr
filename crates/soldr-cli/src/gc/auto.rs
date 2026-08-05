@@ -24,10 +24,8 @@ use super::purge::resolve_gc_dev_roots;
 const AUTO_GC_THROTTLE_SECONDS: u64 = 5 * 60;
 const AUTO_GC_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
 const AUTO_GC_DISABLE_ENV_VAR: &str = "SOLDR_AUTO_GC_DISABLED";
-/// Phase 2: retain `daemon_events` rows for 30 days. Older rows are
-/// dropped by the Tier-0 step of `run_auto_gc_background`.
+/// Retain daemon event rows for 30 days when no daemon owns this root.
 const DAEMON_EVENT_TTL_MS: i64 = 30 * 24 * 60 * 60 * 1000;
-
 /// soldr#1900: age at which an entry under `<cache>/tmp` is reclaimed.
 ///
 /// Scratch is pinned to the cache volume so it can be swept from one place
@@ -284,18 +282,29 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
         );
     }
 
+    // The daemon performs the same event-retention pass in its maintenance
+    // loop. When it is stopped, run the pass only under the same root lock
+    // the daemon would hold, never as an opportunistic second opener.
     let db_path = crate::cache_lib::data_db_path(&paths);
-    if db_path.exists() {
+    if db_path.exists()
+        && crate::daemon::lifecycle::stale_daemon_occupies_endpoint(&paths).is_none()
+    {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
+            .map(|duration| duration.as_millis() as i64)
             .unwrap_or(0);
-        let cutoff_ms = now_ms - DAEMON_EVENT_TTL_MS;
-        if let Ok(removed) = crate::daemon::db::prune_events_older_than(&db_path, cutoff_ms) {
-            if removed > 0 {
+        match run_offline_daemon_event_prune(&paths, now_ms - DAEMON_EVENT_TTL_MS) {
+            Ok(Some(removed)) if removed > 0 => {
                 let _ = append_auto_gc_log_line(
                     &log_path,
                     &format!("auto-gc tier=0 daemon_events_pruned={removed}"),
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                let _ = append_auto_gc_log_line(
+                    &log_path,
+                    &format!("auto-gc tier=0 daemon_events_deferred error={error}"),
                 );
             }
         }
@@ -353,28 +362,21 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
                     ),
                 );
             }
-            None => {
-                let report = crate::cache_lib::cook_gc::cook_evict_pass(&paths, &cook_config);
-                if report.time_evicted > 0
-                    || report.size_evicted > 0
-                    || report.quarantine_evicted > 0
-                    || report.errors > 0
-                {
+            None => match run_offline_cook_gc(&paths, &cook_config) {
+                Ok(Some(report)) => log_cook_gc_report(&log_path, &report),
+                Ok(None) => {
                     let _ = append_auto_gc_log_line(
                         &log_path,
-                        &format!(
-                            "cook-gc protected={} time_evicted={} size_evicted={} \
-                             quarantine_evicted={} bytes_freed={} errors={}",
-                            report.protected,
-                            report.time_evicted,
-                            report.size_evicted,
-                            report.quarantine_evicted,
-                            report.bytes_freed,
-                            report.errors,
-                        ),
+                        "cook-gc deferred: daemon claimed root ownership during offline handoff",
                     );
                 }
-            }
+                Err(error) => {
+                    let _ = append_auto_gc_log_line(
+                        &log_path,
+                        &format!("cook-gc deferred: offline ownership error={error}"),
+                    );
+                }
+            },
         }
     }
 
@@ -566,6 +568,62 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
     let _ = rotate_auto_gc_log_if_needed(&log_path, AUTO_GC_LOG_MAX_BYTES);
 }
 
+/// Run cook eviction only while holding the daemon's root-ownership lock.
+///
+/// This is the coordinated offline counterpart to daemon maintenance: once
+/// the lock is held, a daemon cannot start between the liveness probe and
+/// `cook_evict_pass` opening `state.redb`.
+fn run_offline_cook_gc(
+    paths: &SoldrPaths,
+    config: &crate::core::CookConfig,
+) -> Result<Option<crate::cache_lib::cook_gc::CookEvictReport>, std::io::Error> {
+    let Some(_owner) = crate::daemon::lifecycle::RootOwnershipGuard::try_acquire(paths)? else {
+        return Ok(None);
+    };
+    Ok(Some(crate::cache_lib::cook_gc::cook_evict_pass(
+        paths, config,
+    )))
+}
+
+fn run_offline_daemon_event_prune(
+    paths: &SoldrPaths,
+    cutoff_ms: i64,
+) -> Result<Option<u64>, String> {
+    let Some(_owner) = crate::daemon::lifecycle::RootOwnershipGuard::try_acquire(paths)
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    crate::daemon::db::prune_events_older_than(&crate::cache_lib::data_db_path(paths), cutoff_ms)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+fn log_cook_gc_report(
+    log_path: &std::path::Path,
+    report: &crate::cache_lib::cook_gc::CookEvictReport,
+) {
+    if report.time_evicted > 0
+        || report.size_evicted > 0
+        || report.quarantine_evicted > 0
+        || report.errors > 0
+    {
+        let _ = append_auto_gc_log_line(
+            log_path,
+            &format!(
+                "cook-gc protected={} time_evicted={} size_evicted={} \
+                 quarantine_evicted={} bytes_freed={} errors={}",
+                report.protected,
+                report.time_evicted,
+                report.size_evicted,
+                report.quarantine_evicted,
+                report.bytes_freed,
+                report.errors,
+            ),
+        );
+    }
+}
+
 struct AutoGcCargoOutcome {
     exit_code: i32,
     skipped: bool,
@@ -686,11 +744,7 @@ fn run_soldr_target_purge_background(
     workspace_targets: &[std::path::PathBuf],
     min_age_secs: u64,
 ) -> Tier2Outcome {
-    use crate::cache_lib::gc::{parse_size, scan, GcOptions};
-    let db_path = crate::cache_lib::data_db_path(paths);
-    let Ok(registry) = crate::cache_lib::target_registry::TargetRegistry::open(&db_path) else {
-        return Tier2Outcome::default();
-    };
+    use crate::cache_lib::gc::{parse_size, GcOptions};
     let larger_than_bytes = parse_size("256M").unwrap_or(256 * 1024 * 1024);
     // Auto-GC always honors at least the configured min-age floor.
     // We never go below 1h.
@@ -707,7 +761,7 @@ fn run_soldr_target_purge_background(
         },
         dry_run: false,
     };
-    let report = match scan(&registry, &options) {
+    let report = match super::daemon_gc_scan(paths, &options) {
         Ok(r) => r,
         Err(_) => return Tier2Outcome::default(),
     };
@@ -727,6 +781,7 @@ fn run_soldr_target_purge_background(
     // remaining candidates for the next pass (or for the block message).
     let deadline = std::time::Instant::now() + BLOCK_TIER_PRUNE_BUDGET;
     let mut budget_exhausted = false;
+    let mut removed_rows = Vec::new();
     for cand in report.candidates {
         if !on_volume.contains(cand.path.as_path()) {
             continue;
@@ -743,8 +798,11 @@ fn run_soldr_target_purge_background(
         let outcome = crate::cache_lib::gc::delete_candidate_dir(cand);
         if outcome.removed {
             reclaimed = reclaimed.saturating_add(bytes);
-            let _ = registry.remove(&outcome.candidate.path);
+            removed_rows.push(outcome.candidate.path);
         }
+    }
+    if !removed_rows.is_empty() {
+        let _ = super::daemon_remove_registry_rows(paths, removed_rows);
     }
     if budget_exhausted {
         eprintln!(
@@ -865,18 +923,13 @@ fn enumerate_auto_gc_paths(paths: &SoldrPaths) -> Vec<crate::cache_lib::auto_gc:
         kind: crate::cache_lib::auto_gc::AutoGcPathKind::SoldrCache,
         path: paths.cache.clone(),
     });
-    let db_path = crate::cache_lib::data_db_path(paths);
-    if db_path.exists() {
-        if let Ok(registry) = crate::cache_lib::target_registry::TargetRegistry::open(&db_path) {
-            if let Ok(rows) = registry.list() {
-                for row in rows {
-                    if row.path.exists() {
-                        out.push(crate::cache_lib::auto_gc::AutoGcPath {
-                            kind: crate::cache_lib::auto_gc::AutoGcPathKind::WorkspaceTarget,
-                            path: row.path,
-                        });
-                    }
-                }
+    if let Ok(rows) = super::daemon_registry_rows(paths) {
+        for row in rows {
+            if row.path.exists() {
+                out.push(crate::cache_lib::auto_gc::AutoGcPath {
+                    kind: crate::cache_lib::auto_gc::AutoGcPathKind::WorkspaceTarget,
+                    path: row.path,
+                });
             }
         }
     }
@@ -1033,5 +1086,48 @@ mod scratch_sweep_tests {
         let scratch = crate::core::temp_root_for(&paths);
         assert!(scratch.starts_with(&paths.root), "same volume as the cache");
         assert!(!scratch.starts_with(&paths.cache), "but outside the cache");
+    });
+
+    crate::timed_test!(offline_cook_gc_requires_and_releases_root_ownership, {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("owned"));
+        let config = crate::core::CookConfig {
+            max_total_gb: 1,
+            ..crate::core::CookConfig::default()
+        };
+
+        let owner = crate::daemon::lifecycle::RootOwnershipGuard::try_acquire(&paths)
+            .expect("acquire owner")
+            .expect("root is initially unowned");
+        assert!(
+            run_offline_cook_gc(&paths, &config)
+                .expect("offline cook probe")
+                .is_none(),
+            "the offline pass must not become a second state.redb owner"
+        );
+        drop(owner);
+        assert!(
+            run_offline_cook_gc(&paths, &config)
+                .expect("offline cook pass")
+                .is_some(),
+            "the pass must resume after daemon ownership is released"
+        );
+    });
+
+    crate::timed_test!(offline_event_prune_requires_and_releases_root_ownership, {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("owned"));
+        let owner = crate::daemon::lifecycle::RootOwnershipGuard::try_acquire(&paths)
+            .expect("acquire owner")
+            .expect("root is initially unowned");
+        assert_eq!(
+            run_offline_daemon_event_prune(&paths, 0).expect("offline event probe"),
+            None
+        );
+        drop(owner);
+        assert_eq!(
+            run_offline_daemon_event_prune(&paths, 0).expect("offline event prune"),
+            Some(0)
+        );
     });
 }
