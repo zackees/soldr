@@ -167,18 +167,16 @@ fn validate_source(path: &str, source: &str) -> Result<(), Vec<String>> {
     let functions = function_ranges(source);
     let test_modules = cfg_test_module_ranges(source);
     let mut offenders = Vec::new();
-    for (line_number, line) in source.lines().enumerate() {
+    let mut line_offset = 0usize;
+    for (line_number, raw_line) in source.split_inclusive('\n').enumerate() {
+        let line = raw_line.strip_suffix('\n').unwrap_or(raw_line);
+        let line = line.strip_suffix('\r').unwrap_or(line);
         let code = line.split_once("//").map_or(line, |(code, _)| code);
         for opener in FORBIDDEN_OPENERS {
             let Some(column) = code.find(opener) else {
                 continue;
             };
-            let offset = source
-                .lines()
-                .take(line_number)
-                .map(|previous| previous.len() + 1)
-                .sum::<usize>()
-                + column;
+            let offset = line_offset + column;
             let function = functions
                 .iter()
                 .find(|function| function.start <= offset && offset < function.end);
@@ -202,6 +200,7 @@ fn validate_source(path: &str, source: &str) -> Result<(), Vec<String>> {
                 ));
             }
         }
+        line_offset += raw_line.len();
     }
     if offenders.is_empty() {
         Ok(())
@@ -268,4 +267,13 @@ timed_test!(guard_permits_only_a_cfg_test_module, {
     let source = "#[cfg(test)]\nmod tests {\nfn seed() { \
                   crate::daemon::db::upsert_build(&db_path, &record).unwrap();\n}\n}";
     assert!(validate_source("src/feature/tests.rs", source).is_ok());
+});
+
+timed_test!(guard_preserves_offsets_with_crlf_source, {
+    let source = "fn offline_registry_rows() {\r\n\
+                  let _guard = RootOwnershipGuard::try_acquire();\r\n\
+                  // soldr-state-db: offline-root-owner\r\n\
+                  TargetRegistry::open(&db_path);\r\n\
+                  }\r\n";
+    assert!(validate_source("src/gc/mod.rs", source).is_ok());
 });
