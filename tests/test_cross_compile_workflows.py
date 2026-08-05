@@ -537,7 +537,7 @@ def test_mac_x64_distribution_is_cross_built_and_intel_smoke_tested() -> None:
 
 
 def test_linux_arm64_release_uses_the_x64_catalogue_cross_compiler_host() -> None:
-    """The catalogue ARM GNU/musl compilers execute on x86 Linux hosts."""
+    """ARM archives are built on x64; ARM-musl wheels are packaged separately."""
     release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
     assert "- name: Linux ARM64\n" in release
     assert "- name: Linux ARM64 (musl)\n" in release
@@ -546,6 +546,22 @@ def test_linux_arm64_release_uses_the_x64_catalogue_cross_compiler_host() -> Non
         release,
     )
     assert arm_blocks == ["ubuntu-24.04", "ubuntu-24.04"]
+
+
+def test_linux_arm64_release_wheels_avoid_zig_and_xwin() -> None:
+    """Maturin uses blessed GNU env or native ARM musl, never Zig/xwin."""
+    release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
+
+    assert '"$driver" prepare --target "$target" --github-env "$GITHUB_ENV"' in release
+    assert "compat_args=(--compatibility manylinux_2_17)" in release
+    assert "compat_args=(--compatibility musllinux_1_2)" in release
+    assert "maturin --zig" not in release
+    assert "Setup zig for Linux wheel lanes" not in release
+    assert "name: Build ARM musllinux wheel natively" in release
+    assert "runs-on: ubuntu-24.04-arm" in release
+    assert "CC_aarch64_unknown_linux_musl: musl-gcc" in release
+    assert "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc" in release
+    assert "startsWith(matrix.target, 'aarch64-')" in release
 
 
 def test_cross_compile_docs_match_current_blessed_surfaces() -> None:
