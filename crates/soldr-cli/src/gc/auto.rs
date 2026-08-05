@@ -605,17 +605,20 @@ fn run_conservative_cargo_gc_background(log_path: &std::path::Path) -> AutoGcCar
     }
 }
 
-fn run_aggressive_cargo_gc_background(
-    log_path: &std::path::Path,
-    ages: &crate::cache_lib::auto_gc::CargoGcAgeSeconds,
-) -> AutoGcCargoOutcome {
-    let args = GcCargoArgs {
+fn aggressive_cargo_gc_args(ages: &crate::cache_lib::auto_gc::CargoGcAgeSeconds) -> GcCargoArgs {
+    GcCargoArgs {
         dry_run: false,
         toolchain: None,
-        max_src_age: Some(format!("{}secs", ages.max_src)),
-        max_crate_age: Some(format!("{}secs", ages.max_crate)),
+        max_src_age: Some(crate::cache_lib::auto_gc::cargo_gc_duration_arg(
+            ages.max_src,
+        )),
+        max_crate_age: Some(crate::cache_lib::auto_gc::cargo_gc_duration_arg(
+            ages.max_crate,
+        )),
         max_index_age: None,
-        max_git_co_age: Some(format!("{}secs", ages.max_git_co)),
+        max_git_co_age: Some(crate::cache_lib::auto_gc::cargo_gc_duration_arg(
+            ages.max_git_co,
+        )),
         max_git_db_age: None,
         max_download_age: None,
         max_src_size: None,
@@ -623,7 +626,14 @@ fn run_aggressive_cargo_gc_background(
         max_git_size: None,
         max_download_size: None,
         json: true,
-    };
+    }
+}
+
+fn run_aggressive_cargo_gc_background(
+    log_path: &std::path::Path,
+    ages: &crate::cache_lib::auto_gc::CargoGcAgeSeconds,
+) -> AutoGcCargoOutcome {
+    let args = aggressive_cargo_gc_args(ages);
     match invoke_cargo_native_gc(&args, true) {
         Ok(outcome) => AutoGcCargoOutcome {
             exit_code: outcome.exit_code,
@@ -964,6 +974,21 @@ mod scratch_sweep_tests {
         filetime::set_file_mtime(path, filetime::FileTime::from_system_time(when))
             .expect("backdate scratch entry");
     }
+
+    crate::timed_test!(aggressive_cargo_gc_uses_cargo_accepted_duration_syntax, {
+        let ages = crate::cache_lib::auto_gc::CargoGcAgeSeconds {
+            max_src: 604_800,
+            max_crate: 1_209_600,
+            max_index: 0,
+            max_git_co: 604_800,
+            max_git_db: 0,
+            max_download: 0,
+        };
+        let args = aggressive_cargo_gc_args(&ages);
+        assert_eq!(args.max_src_age.as_deref(), Some("604800 seconds"));
+        assert_eq!(args.max_crate_age.as_deref(), Some("1209600 seconds"));
+        assert_eq!(args.max_git_co_age.as_deref(), Some("604800 seconds"));
+    });
 
     crate::timed_test!(sweep_reclaims_stale_entries_and_keeps_fresh_ones, {
         let temp = tempfile::tempdir().expect("tempdir");

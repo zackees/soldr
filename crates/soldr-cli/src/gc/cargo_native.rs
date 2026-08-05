@@ -479,14 +479,13 @@ pub(crate) fn run_gc_sweep_command(args: GcSweepArgs) -> Result<(), SoldrError> 
 
 fn aggressive_cargo_args(json: bool, dry_run: bool, min_age_secs: u64) -> GcCargoArgs {
     // Helper: clamp `aggressive_days * 86_400` to the configured min
-    // age. Express the result back in seconds (cargo accepts `s` /
-    // `secs` / `seconds`).
+    // age, then serialize it using Cargo's accepted duration grammar.
     let clamp = |days: u64| -> String {
         let secs = crate::cache_lib::auto_gc::clamp_age_to_floor(
             days.saturating_mul(86_400),
             min_age_secs,
         );
-        format!("{secs}secs")
+        crate::cache_lib::auto_gc::cargo_gc_duration_arg(secs)
     };
     GcCargoArgs {
         dry_run,
@@ -546,4 +545,16 @@ fn run_soldr_target_purge_for_sweep(
             purge_summary.reclaimed_bytes,
         ),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    crate::timed_test!(aggressive_cargo_gc_uses_cargo_accepted_duration_syntax, {
+        let args = aggressive_cargo_args(false, true, 0);
+        assert_eq!(args.max_src_age.as_deref(), Some("604800 seconds"));
+        assert_eq!(args.max_crate_age.as_deref(), Some("1209600 seconds"));
+        assert_eq!(args.max_git_co_age.as_deref(), Some("604800 seconds"));
+    });
 }
