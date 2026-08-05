@@ -439,6 +439,33 @@ def test_production_cross_workflows_do_not_select_legacy_backends() -> None:
     assert cross_all_executable.count("soldr cargo test --no-run") >= 2
 
 
+def test_normal_gnu_lifecycle_has_no_zig_fallback() -> None:
+    """#2237: GNU must stay catalogue-backed even while musl retains #2244's fallback."""
+    lifecycle = (REPO_ROOT / "crates" / "soldr-cli" / "src" / "target_lifecycle.rs").read_text(
+        encoding="utf-8"
+    )
+    legacy_musl = (REPO_ROOT / "crates" / "soldr-cli" / "src" / "linux_cross.rs").read_text(
+        encoding="utf-8"
+    )
+    prepare = (REPO_ROOT / "crates" / "soldr-cli" / "src" / "prepare_cmd.rs").read_text(
+        encoding="utf-8"
+    )
+    cross = (WORKFLOWS / "_ci-cross-build-linux.yml").read_text(encoding="utf-8")
+
+    assert "no catalogue-backed GNU/Linux toolchain is available" in lifecycle
+    assert "abi == Some(TargetAbi::Musl)" in lifecycle
+    assert not re.search(r'"(?:x86_64|aarch64)-unknown-linux-gnu"\s*=>', legacy_musl)
+    assert "GNU Linux uses the catalogue-backed compiler/sysroot lifecycle" in legacy_musl
+    assert "GNU/Linux toolchain" in prepare
+    assert "GNU uses the catalogue-backed toolchain" in prepare
+
+    executable = "\n".join(
+        line for line in cross.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert not re.search(r"(?:soldr\s+)?cargo\s+zigbuild\b.*unknown-linux-gnu", executable)
+    assert "soldr build + catalogue-backed GCC" in cross
+
+
 def test_mac_x64_distribution_is_cross_built_and_intel_smoke_tested() -> None:
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
     release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")

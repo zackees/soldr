@@ -103,16 +103,9 @@ pub(crate) async fn prepare_target(
         )));
     }
 
-    // Glibc floors are a caller-visible contract. The catalogue bundle's
-    // sysroot is pinned at 2.17, so it provides the replacement enforcement
-    // mechanism when GNU targets stop using Zig wrappers.
-    let floor_requires_managed_link = glibc_floor.is_some();
     let gnu_uses_catalogue_toolchain =
         attrs.os == TargetOs::Linux && attrs.abi == Some(TargetAbi::Gnu);
-    if gnu_uses_catalogue_toolchain
-        || floor_requires_managed_link
-        || should_prepare_managed_linux(attrs.os, base, host, legacy_zigbuild)
-    {
+    if gnu_uses_catalogue_toolchain {
         // Env keys come from the base triple: a dot is not legal in an
         // environment variable name, so `CC_x86_64_unknown_linux_gnu.2.17`
         // would be silently unusable.
@@ -122,71 +115,80 @@ pub(crate) async fn prepare_target(
         // well as the compiler. Keep every consumer (cc-rs, rustc's linker,
         // CMake, and pkg-config) on that root rather than allowing the runner
         // to leak host headers or libraries into a blessed artifact.
-        if let Some(bundle) =
-            crate::fetch::gnu_linux_toolchain::GnuLinuxToolchainTarget::for_triple(base)
-        {
-            let toolchain = crate::fetch::gnu_linux_toolchain::ensure(paths, base).await?;
-            debug_assert_eq!(toolchain.target, bundle);
-            prep.path_dirs.push(toolchain.bin_dir.clone());
-            let mut env = crate::fetch::gnu_linux_toolchain::env_for_target(&toolchain, base);
-            let sysroot = toolchain.sysroot.to_string_lossy().into_owned();
-            env.push((
-                format!("CARGO_TARGET_{upper}_RUSTFLAGS"),
-                format!("-C link-arg=--sysroot={sysroot}"),
-            ));
-            prep.env.extend(env);
-        } else {
-            let tools = crate::linux_cross::prepare(paths, target).await?;
-            prep.path_dirs.push(tools.bin_dir);
-            prep.env.extend([
-                (
-                    format!("CC_{suffix}"),
-                    tools.cc.to_string_lossy().into_owned(),
-                ),
-                (
-                    format!("CXX_{suffix}"),
-                    tools.cxx.to_string_lossy().into_owned(),
-                ),
-                (
-                    format!("AR_{suffix}"),
-                    tools.ar.to_string_lossy().into_owned(),
-                ),
-                (
-                    format!("RANLIB_{suffix}"),
-                    tools.ranlib.to_string_lossy().into_owned(),
-                ),
-                (
-                    format!("CARGO_TARGET_{upper}_LINKER"),
-                    tools.linker.to_string_lossy().into_owned(),
-                ),
-            ]);
-        }
-        // `-C link-self-contained` is not accepted on every target, and
-        // passing it where it is unsupported is a hard rustc error rather
-        // than a warning:
-        //
-        //   error: option `-C link-self-contained` is not supported on this target
-        //
-        // It exists here to stop rustc bundling its own startup objects when
-        // zig is the linker, which is an x86_64 concern; targets that reject
-        // the flag do not do that bundling in the first place, so omitting it
-        // is not a behaviour change for them.
-        //
-        // This only surfaces on a *host-native* aarch64 build, because the
-        // cross lanes drive aarch64 from an x86_64 host. The release workflow
-        // is the one place that builds aarch64 natively, so it broke there
-        // and nowhere else.
-        if supports_link_self_contained(base) {
-            let key = format!("CARGO_TARGET_{upper}_RUSTFLAGS");
-            if let Some((_, flags)) = prep.env.iter_mut().find(|(name, _)| name == &key) {
-                flags.push_str(" -C link-self-contained=no");
-            } else {
-                prep.env
-                    .push((key, "-C link-self-contained=no".to_string()));
-            }
-        }
+        let bundle = crate::fetch::gnu_linux_toolchain::GnuLinuxToolchainTarget::for_triple(base)
+            .ok_or_else(|| {
+            SoldrError::UnsupportedPlatform(format!(
+                "no catalogue-backed GNU/Linux toolchain is available for `{target}`"
+            ))
+        })?;
+        let toolchain = crate::fetch::gnu_linux_toolchain::ensure(paths, base).await?;
+        debug_assert_eq!(toolchain.target, bundle);
+        prep.path_dirs.push(toolchain.bin_dir.clone());
+        let mut env = crate::fetch::gnu_linux_toolchain::env_for_target(&toolchain, base);
+        let sysroot = toolchain.sysroot.to_string_lossy().into_owned();
+        env.push((
+            format!("CARGO_TARGET_{upper}_RUSTFLAGS"),
+            format!("-C link-arg=--sysroot={sysroot}"),
+        ));
+        prep.env.extend(env);
+        add_link_self_contained_flag(&mut prep, base, &upper);
+    } else if should_prepare_managed_linux(attrs.os, attrs.abi, base, host, legacy_zigbuild) {
+        let suffix = base.replace('-', "_");
+        let upper = suffix.to_ascii_uppercase();
+        let tools = crate::linux_cross::prepare(paths, target).await?;
+        prep.path_dirs.push(tools.bin_dir);
+        prep.env.extend([
+            (
+                format!("CC_{suffix}"),
+                tools.cc.to_string_lossy().into_owned(),
+            ),
+            (
+                format!("CXX_{suffix}"),
+                tools.cxx.to_string_lossy().into_owned(),
+            ),
+            (
+                format!("AR_{suffix}"),
+                tools.ar.to_string_lossy().into_owned(),
+            ),
+            (
+                format!("RANLIB_{suffix}"),
+                tools.ranlib.to_string_lossy().into_owned(),
+            ),
+            (
+                format!("CARGO_TARGET_{upper}_LINKER"),
+                tools.linker.to_string_lossy().into_owned(),
+            ),
+        ]);
+        add_link_self_contained_flag(&mut prep, base, &upper);
     }
     Ok(prep)
+}
+
+fn add_link_self_contained_flag(prep: &mut BlessedPrep, base: &str, upper: &str) {
+    // `-C link-self-contained` is not accepted on every target, and
+    // passing it where it is unsupported is a hard rustc error rather
+    // than a warning:
+    //
+    //   error: option `-C link-self-contained` is not supported on this target
+    //
+    // It exists here to stop rustc bundling its own startup objects when
+    // zig is the linker, which is an x86_64 concern; targets that reject
+    // the flag do not do that bundling in the first place, so omitting it
+    // is not a behaviour change for them.
+    //
+    // This only surfaces on a *host-native* aarch64 build, because the
+    // cross lanes drive aarch64 from an x86_64 host. The release workflow
+    // is the one place that builds aarch64 natively, so it broke there
+    // and nowhere else.
+    if supports_link_self_contained(base) {
+        let key = format!("CARGO_TARGET_{upper}_RUSTFLAGS");
+        if let Some((_, flags)) = prep.env.iter_mut().find(|(name, _)| name == &key) {
+            flags.push_str(" -C link-self-contained=no");
+        } else {
+            prep.env
+                .push((key, "-C link-self-contained=no".to_string()));
+        }
+    }
 }
 
 /// Whether `rustc` accepts `-C link-self-contained` for `target`.
@@ -219,11 +221,12 @@ fn supports_link_self_contained(base_triple: &str) -> bool {
 /// only a non-native Linux target (currently musl) reaches this fallback.
 fn should_prepare_managed_linux(
     os: TargetOs,
+    abi: Option<TargetAbi>,
     target: &str,
     host: &str,
     legacy_zigbuild: bool,
 ) -> bool {
-    os == TargetOs::Linux && !legacy_zigbuild && target != host
+    os == TargetOs::Linux && abi == Some(TargetAbi::Musl) && !legacy_zigbuild && target != host
 }
 
 /// Preserve Cargo's custom target-spec passthrough while using the unified
@@ -730,6 +733,7 @@ mod tests {
     crate::timed_test!(legacy_linux_override_does_not_mix_blessed_wrappers, {
         assert!(!should_prepare_managed_linux(
             TargetOs::Linux,
+            Some(TargetAbi::Gnu),
             "aarch64-unknown-linux-gnu",
             "x86_64-unknown-linux-gnu",
             true,
@@ -741,6 +745,7 @@ mod tests {
         // host-native x64, so the ABI cannot inherit the runner's linker.
         assert!(!should_prepare_managed_linux(
             TargetOs::Linux,
+            Some(TargetAbi::Gnu),
             "x86_64-unknown-linux-gnu",
             "x86_64-unknown-linux-gnu",
             false,
@@ -763,8 +768,26 @@ mod tests {
         // and nothing to gain from the detour.
         assert!(!should_prepare_managed_linux(
             TargetOs::Linux,
+            Some(TargetAbi::Musl),
             "x86_64-unknown-linux-musl",
             "x86_64-unknown-linux-musl",
+            false,
+        ));
+    });
+
+    crate::timed_test!(only_cross_musl_can_reach_the_legacy_linux_fallback, {
+        assert!(should_prepare_managed_linux(
+            TargetOs::Linux,
+            Some(TargetAbi::Musl),
+            "aarch64-unknown-linux-musl",
+            "x86_64-unknown-linux-gnu",
+            false,
+        ));
+        assert!(!should_prepare_managed_linux(
+            TargetOs::Linux,
+            Some(TargetAbi::Gnu),
+            "aarch64-unknown-linux-gnu",
+            "x86_64-unknown-linux-gnu",
             false,
         ));
     });
