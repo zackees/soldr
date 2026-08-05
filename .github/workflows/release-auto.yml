@@ -1182,15 +1182,18 @@ jobs:
               ;;
           esac
 
-          # `soldr prepare --github-env` exports both global and target-scoped
-          # compiler variables. Maturin invokes Cargo for the requested target
-          # but Cargo also compiles host build helpers (for example zstd-sys).
-          # On cross lanes the global ARM/Darwin compiler receives host flags
-          # such as `-m64`, while the target-scoped variables below still give
-          # the target crate the blessed compiler and sysroot. Keep only the
-          # latter for Maturin's direct Cargo subprocess.
+          # `soldr prepare --github-env` exports the blessed cross toolchain
+          # both globally and per target. Maturin also compiles host build
+          # helpers (for example zstd-sys); make their host tuple explicit so
+          # cc-rs selects native tools before falling back to the global
+          # cross compiler. Keep the global values intact: they provide the
+          # target's sysroot/library search environment needed by Rust's final
+          # link (notably liblzma).
           if [[ "${{ matrix.target }}" != "x86_64-unknown-linux-gnu" && ( "${{ matrix.target }}" == *-unknown-linux-gnu || "${{ matrix.target }}" == *-apple-darwin ) ]]; then
-            unset CC CXX AR RANLIB CFLAGS CXXFLAGS CPPFLAGS
+            export CC_x86_64_unknown_linux_gnu="$(command -v cc)"
+            export CXX_x86_64_unknown_linux_gnu="$(command -v c++)"
+            export AR_x86_64_unknown_linux_gnu="$(command -v ar)"
+            export RANLIB_x86_64_unknown_linux_gnu="$(command -v ranlib)"
           fi
 
           maturin build \

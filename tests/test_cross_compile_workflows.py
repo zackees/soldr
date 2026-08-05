@@ -557,7 +557,8 @@ def test_linux_arm64_release_wheels_avoid_zig_and_xwin() -> None:
     assert "compat_args=(--compatibility musllinux_1_2)" in release
     assert "maturin --zig" not in release
     assert "Setup zig for Linux wheel lanes" not in release
-    assert "unset CC CXX AR RANLIB CFLAGS CXXFLAGS CPPFLAGS" in release
+    assert 'CC_x86_64_unknown_linux_gnu="$(command -v cc)"' in release
+    assert 'CXX_x86_64_unknown_linux_gnu="$(command -v c++)"' in release
     assert "name: Build ARM musllinux wheel natively" in release
     assert "runs-on: ubuntu-24.04-arm" in release
     assert "CC_aarch64_unknown_linux_musl: musl-gcc" in release
