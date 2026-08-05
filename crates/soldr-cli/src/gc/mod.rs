@@ -96,6 +96,7 @@ fn offline_registry_rows(
         return Ok(None);
     };
     let db_path = crate::cache_lib::data_db_path(paths);
+    // soldr-state-db: offline-root-owner
     let registry = crate::cache_lib::target_registry::TargetRegistry::open(&db_path)
         .map_err(|error| SoldrError::Other(format!("open offline target registry: {error}")))?;
     let rows = registry
@@ -126,6 +127,7 @@ pub(super) fn daemon_remove_registry_rows(
                 )));
             };
             let db_path = crate::cache_lib::data_db_path(paths);
+            // soldr-state-db: offline-root-owner
             let registry = crate::cache_lib::target_registry::TargetRegistry::open(&db_path)
                 .map_err(|error| {
                     SoldrError::Other(format!("open offline target registry: {error}"))

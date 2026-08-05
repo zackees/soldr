@@ -163,8 +163,8 @@ fn select_workspace_session(
     global_journal_path: PathBuf,
     notes: &mut Vec<String>,
 ) -> SelectedSession {
-    let db_path = crate::daemon::db::db_path(paths);
-    match crate::daemon::db::list_builds(&db_path, 10_000, None) {
+    let sock = crate::daemon::client::default_sock_path(paths);
+    match crate::daemon::client::list_builds(&sock, 10_000, None) {
         Ok(records) => {
             for record in records {
                 if !same_workspace_path(Path::new(&record.repo_root), workspace_root) {
@@ -203,7 +203,7 @@ fn select_workspace_session(
             ));
         }
         Err(error) => notes.push(format!(
-            "provenance: could not read build history ({error}); using global last-writer-wins stats {} (originating workspace: unknown)",
+                "provenance: could not read build history ({error:?}); using global last-writer-wins stats {} (originating workspace: unknown)",
             global_stats_path.display(),
         )),
     }

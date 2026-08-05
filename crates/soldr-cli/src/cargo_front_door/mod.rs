@@ -359,15 +359,30 @@ fn persist_build_log_history_inner(
         log_paths: Some(log_paths.clone()),
     };
     let sock = crate::daemon::client::default_sock_path(paths);
-    if let Err(error) = crate::daemon::client::attach_build_log_history(&sock, update) {
+    let offline_owner = match crate::daemon::client::attach_build_log_history(&sock, update) {
+        Ok(()) => None,
+        Err(error) => {
+            let owner = crate::daemon::lifecycle::RootOwnershipGuard::try_acquire(paths)
+                .map_err(|acquire_error| {
+                    SoldrError::Other(format!(
+                        "acquire offline build-history ownership after daemon error {error:?}: {acquire_error}"
+                    ))
+                })?;
+            if owner.is_none() {
+                tracing::warn!(
+                    event = "build_log_history_daemon_unavailable",
+                    session_id = build_session_id,
+                    error = ?error,
+                    "skipping build-history update because the daemon still owns this root"
+                );
+            }
+            owner
+        }
+    };
+    if offline_owner.is_some() {
         // Daemon unreachable — do the merge locally. Safe precisely because
         // the daemon is down: with no second opener there is nobody to race.
-        tracing::debug!(
-            event = "build_log_history_local_merge",
-            session_id = build_session_id,
-            error = ?error,
-            "daemon did not accept the build-history update; writing it directly"
-        );
+        // soldr-state-db: offline-root-owner
         let mut record = crate::daemon::db::get_build(&db_path, build_session_id)
             .map_err(|e| SoldrError::Other(format!("read build history: {e}")))?
             .unwrap_or_else(|| {
@@ -383,6 +398,7 @@ fn persist_build_log_history_inner(
         // not already finalize it.
         if !daemon_finalized {
             let (crate_count, slowest_crate_us, slowest_crate_name) =
+                // soldr-state-db: offline-root-owner
                 crate::daemon::db::aggregate_session(&db_path, build_session_id)
                     .unwrap_or((0, None, None));
             record.crate_count = crate_count;
@@ -398,6 +414,7 @@ fn persist_build_log_history_inner(
                 .unwrap_or(0),
         );
         record.log_paths = Some(log_paths.clone());
+        // soldr-state-db: offline-root-owner
         crate::daemon::db::upsert_build(&db_path, &record)
             .map_err(|e| SoldrError::Other(format!("write build history: {e}")))?;
     }
@@ -410,13 +427,16 @@ fn persist_build_log_history_inner(
     // Enforce the hard 1 GiB cap immediately after publication.  The daemon's
     // daily pass remains the owner of age retention and the one-time removal
     // of pre-redaction archives.
-    let retention = crate::daemon::history_gc::HistoryGcOptions {
-        now: std::time::SystemTime::now(),
-        max_age: std::time::Duration::MAX,
-        max_bytes: crate::daemon::history_gc::DEFAULT_MAX_BYTES,
-        migrate_pre_redaction: false,
-    };
-    let _ = crate::daemon::history_gc::sweep(paths, &db_path, &retention);
+    if offline_owner.is_some() {
+        let retention = crate::daemon::history_gc::HistoryGcOptions {
+            now: std::time::SystemTime::now(),
+            max_age: std::time::Duration::MAX,
+            max_bytes: crate::daemon::history_gc::DEFAULT_MAX_BYTES,
+            migrate_pre_redaction: false,
+        };
+        // soldr-state-db: offline-root-owner
+        let _ = crate::daemon::history_gc::sweep(paths, &db_path, &retention);
+    }
     Ok(log_paths)
 }
 
