@@ -95,7 +95,6 @@ def prepare(
 
 
 def assert_managed_environment(env: dict[str, str], target: str) -> tuple[Path, Path]:
-    prefix, _ = TARGETS[target]
     suffix = target.replace("-", "_")
     upper = suffix.upper()
     root = Path(env["SOLDR_GNU_LINUX_TOOLCHAIN_ROOT"])
