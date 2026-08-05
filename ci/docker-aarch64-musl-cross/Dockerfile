@@ -73,6 +73,9 @@ RUN apt-get update \
         cmake perl \
  && rm -rf /var/lib/apt/lists/*
 
+COPY .github/scripts/download_large_asset.sh /usr/local/bin/download-large-asset
+RUN chmod 0755 /usr/local/bin/download-large-asset
+
 # Install zig via the soldr-toolchain catalogue (with ziglang.org
 # fallback). Provides the hermetic x86_64-host musl toolchain that
 # cargo-zigbuild orchestrates for the aarch64-unknown-linux-musl target.
@@ -106,9 +109,7 @@ RUN set -eu; \
         zig_sha="$ZIG_FALLBACK_SHA256"; \
     fi; \
     echo "fetching zig from: $zig_url"; \
-    curl -fsSL --connect-timeout 30 --max-time 600 --retry 5 \
-        "$zig_url" -o /tmp/zig.tar.xz; \
-    echo "${zig_sha}  /tmp/zig.tar.xz" | sha256sum -c -; \
+    download-large-asset --url "$zig_url" --output /tmp/zig.tar.xz --sha256 "$zig_sha"; \
     mkdir -p /opt; \
     tar -xJf /tmp/zig.tar.xz -C /opt; \
     rm /tmp/zig.tar.xz; \
@@ -160,9 +161,7 @@ RUN set -eu; \
         czb_sha="$CARGO_ZIGBUILD_FALLBACK_SHA256"; \
     fi; \
     echo "fetching cargo-zigbuild from: $czb_url"; \
-    curl -fsSL --connect-timeout 30 --max-time 600 --retry 5 \
-        "$czb_url" -o /tmp/czb.tar.xz; \
-    echo "${czb_sha}  /tmp/czb.tar.xz" | sha256sum -c -; \
+    download-large-asset --url "$czb_url" --output /tmp/czb.tar.xz --sha256 "$czb_sha"; \
     mkdir -p /tmp/czb-extract; \
     tar -xJf /tmp/czb.tar.xz -C /tmp/czb-extract; \
     czb_bin=$(find /tmp/czb-extract -type f -name cargo-zigbuild | head -n1); \

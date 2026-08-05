@@ -10,6 +10,9 @@ target/
 # VCS / IDE / Python build caches that have no business in the image
 .git/
 .github/
+!.github/
+!.github/scripts/
+!.github/scripts/download_large_asset.sh
 .venv/
 .vscode/
 .mypy_cache/
