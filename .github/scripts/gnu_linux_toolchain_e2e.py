@@ -18,7 +18,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-
 TARGETS = {
     "x86_64-unknown-linux-gnu": ("x86_64", "Advanced Micro Devices X86-64"),
     "aarch64-unknown-linux-gnu": ("aarch64", "AArch64"),
