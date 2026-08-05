@@ -236,36 +236,36 @@ timed_test!(daemon_owns_all_production_state_db_openers, {
     );
 });
 
-#[test]
-fn guard_rejects_uncoordinated_production_open_fixture() {
+timed_test!(guard_rejects_uncoordinated_production_open_fixture, {
     let source = "fn direct_open() { TargetRegistry::open(&db_path).unwrap(); }";
     let error = validate_source("src/future_fallback.rs", source)
         .expect_err("uncoordinated production direct-open fixture must fail");
     assert!(error[0].contains("must use daemon IPC"));
-}
+});
 
-#[test]
-fn guard_rejects_indirect_openers_and_does_not_leak_test_attributes() {
-    for source in [
-        "fn direct_open() { crate::daemon::db::get_build(&db_path, 1).unwrap(); }",
-        "fn direct_sweep() { crate::daemon::history_gc::sweep(paths, &db_path, options); }",
-        "#[cfg(test)]\nfn prior_test() {}\nfn production() { \
+timed_test!(
+    guard_rejects_indirect_openers_and_does_not_leak_test_attributes,
+    {
+        for source in [
+            "fn direct_open() { crate::daemon::db::get_build(&db_path, 1).unwrap(); }",
+            "fn direct_sweep() { crate::daemon::history_gc::sweep(paths, &db_path, options); }",
+            "#[cfg(test)]\nfn prior_test() {}\nfn production() { \
          crate::daemon::db::get_build(&db_path, 1).unwrap(); }",
-        "#[cfg(test)]\nconst TEST_ONLY: () = ();\nfn production() { \
+            "#[cfg(test)]\nconst TEST_ONLY: () = ();\nfn production() { \
          crate::daemon::db::get_build(&db_path, 1).unwrap(); }",
-        "// #[cfg(test)]\nfn production() { \
+            "// #[cfg(test)]\nfn production() { \
          crate::daemon::db::get_build(&db_path, 1).unwrap(); }",
-    ] {
-        assert!(
-            validate_source("src/future_fallback.rs", source).is_err(),
-            "fixture must be rejected: {source}"
-        );
+        ] {
+            assert!(
+                validate_source("src/future_fallback.rs", source).is_err(),
+                "fixture must be rejected: {source}"
+            );
+        }
     }
-}
+);
 
-#[test]
-fn guard_permits_only_a_cfg_test_module() {
+timed_test!(guard_permits_only_a_cfg_test_module, {
     let source = "#[cfg(test)]\nmod tests {\nfn seed() { \
                   crate::daemon::db::upsert_build(&db_path, &record).unwrap();\n}\n}";
     assert!(validate_source("src/feature/tests.rs", source).is_ok());
-}
+});
