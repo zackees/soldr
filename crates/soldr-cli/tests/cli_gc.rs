@@ -320,6 +320,21 @@ timed_test!(
 
         let canonical_target = fs::canonicalize(&target_dir).unwrap_or_else(|_| target_dir.clone());
 
+        // The wrapper's direct target touch is intentionally best-effort: it
+        // may skip the bookkeeping write rather than delay rustc when redb is
+        // contended (soldr#1814). Dedicated wrapper tests cover that routing.
+        // This test owns the `gc list` contract, so seed its registry input
+        // deterministically after producing a real Cargo target tree.
+        {
+            let registry = soldr_cli::cache_lib::target_registry::TargetRegistry::open(
+                &cache_root.join("state.redb"),
+            )
+            .expect("failed to open target registry");
+            registry
+                .upsert(&canonical_target)
+                .expect("failed to seed built target registry row");
+        }
+
         let output = Command::new(&soldr_bin)
             .args(["gc", "list", "--json"])
             .env("SOLDR_CACHE_DIR", &cache_root)

@@ -176,6 +176,11 @@ const PRODUCTION_ENV_WRITERS: &[(&str, &str)] = &[
         "exports the discovered MSVC environment (PATH/INCLUDE/LIB) for the build",
     ),
     (
+        "crates/soldr-cli/src/prepare_github_env.rs",
+        "soldr prepare exports resolved target/toolchain environment into its own process \
+         before later preparation stages; production behavior, not a test fixture",
+    ),
+    (
         "crates/soldr-cli/src/soldr_main.rs",
         "soldr#1766: --allow-unpinned is surfaced as SOLDR_ALLOW_UNPINNED at startup          so the whole process tree agrees, including the daemon, which auto-forwards          SOLDR_*. This is the CLI translating a flag into environment, not a test          mutating shared state, so no barrier applies",
     ),
