@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import re
 import subprocess
 import sys
@@ -123,15 +124,23 @@ def assert_managed_environment(env: dict[str, str], target: str) -> tuple[Path, 
             raise RuntimeError(f"{key} is not a managed GNU {tool}: {value}")
         require_no_zig(str(value), key)
         run([str(value), "--version"], env=env)
+    host_arch = platform.machine().lower().replace("amd64", "x86_64").replace(
+        "arm64", "aarch64"
+    )
+    is_native_target = host_arch == TARGETS[target][0]
     for alias, source in (
         ("CC", "CMAKE_C_COMPILER"),
         ("CXX", "CMAKE_CXX_COMPILER"),
         ("AR", "CMAKE_AR"),
         ("RANLIB", "CMAKE_RANLIB"),
     ):
-        if env.get(alias) != env[source]:
+        if is_native_target and env.get(alias) != env[source]:
             raise RuntimeError(
                 f"external CMake alias {alias} did not preserve {source}"
+            )
+        if not is_native_target and env.get(alias) == env[source]:
+            raise RuntimeError(
+                f"cross-target alias {alias} leaked the managed target compiler"
             )
     for key in ("CMAKE_SYSROOT", "PKG_CONFIG_SYSROOT_DIR"):
         if Path(env[key]) != sysroot:
