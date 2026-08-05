@@ -1380,6 +1380,51 @@ where
     state.request_count.fetch_add(1, Ordering::Relaxed);
     state.touch_activity();
     match req {
+        Request::ListTargetRegistry => {
+            let db_path = state.db_path.clone();
+            let response = tokio::task::spawn_blocking(move || {
+                TargetRegistry::open(&db_path)
+                    .and_then(|registry| registry.list())
+                    .map(|rows| {
+                        Response::TargetRegistryRows(
+                            rows.into_iter()
+                                .map(|row| crate::daemon::protocol::TargetRegistryRow {
+                                    path: row.path.display().to_string(),
+                                    last_used: row.last_used,
+                                })
+                                .collect(),
+                        )
+                    })
+                    .unwrap_or_else(|error| {
+                        Response::Error(format!("list target registry: {error}"))
+                    })
+            })
+            .await
+            .unwrap_or_else(|error| Response::Error(format!("list target registry task: {error}")));
+            let _ = write_frame_async(&mut stream, &response).await;
+        }
+        Request::RemoveTargetRegistry { paths } => {
+            let db_path = state.db_path.clone();
+            let response = tokio::task::spawn_blocking(move || {
+                let paths = paths
+                    .into_iter()
+                    .map(std::path::PathBuf::from)
+                    .collect::<Vec<_>>();
+                TargetRegistry::open(&db_path)
+                    .and_then(|registry| registry.remove_many(&paths))
+                    .map(|removed| Response::TargetRegistryRemoved {
+                        removed: removed as u32,
+                    })
+                    .unwrap_or_else(|error| {
+                        Response::Error(format!("remove target registry rows: {error}"))
+                    })
+            })
+            .await
+            .unwrap_or_else(|error| {
+                Response::Error(format!("remove target registry task: {error}"))
+            });
+            let _ = write_frame_async(&mut stream, &response).await;
+        }
         Request::RecordTargetTouch { path, unix_seconds } => {
             // Fire-and-forget: open redb just for this write, drop
             // the handle immediately so a concurrent CLI process

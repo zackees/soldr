@@ -13,7 +13,7 @@ use prost::{Message, Oneof};
 pub struct WireRequest {
     #[prost(
         oneof = "WireRequestKind",
-        tags = "1,2,3,4,5,7,8,9,10,11,12,13,14,15,16,17,18"
+        tags = "1,2,3,4,5,7,8,9,10,11,12,13,14,15,16,17,18,19,20"
     )]
     pub kind: Option<WireRequestKind>,
 }
@@ -63,6 +63,16 @@ pub enum WireRequestKind {
     /// tail, replacing the CLI's own get/mutate/upsert.
     #[prost(message, tag = "18")]
     AttachBuildLogHistory(WireBuildLogHistoryUpdate),
+    #[prost(message, tag = "19")]
+    ListTargetRegistry(WireUnit),
+    #[prost(message, tag = "20")]
+    RemoveTargetRegistry(WireRemoveTargetRegistry),
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct WireRemoveTargetRegistry {
+    #[prost(string, repeated, tag = "1")]
+    pub paths: Vec<String>,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -249,7 +259,7 @@ pub struct WireResponse {
         // soldr#1838: a tag missing from this list decodes as EmptyOneof even
         // though the variant exists on the enum below -- prost only accepts
         // tags enumerated here. Keep it in sync when adding a variant.
-        tags = "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18"
+        tags = "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20"
     )]
     pub kind: Option<WireResponseKind>,
 }
@@ -311,6 +321,30 @@ pub enum WireResponseKind {
     /// that already has a documented fixed-overhead problem (#1843).
     #[prost(message, tag = "18")]
     BuildSessionStarted(WireBuildSessionStarted),
+    #[prost(message, tag = "19")]
+    TargetRegistryRows(WireTargetRegistryRows),
+    #[prost(message, tag = "20")]
+    TargetRegistryRemoved(WireTargetRegistryRemoved),
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct WireTargetRegistryRow {
+    #[prost(string, tag = "1")]
+    pub path: String,
+    #[prost(int64, tag = "2")]
+    pub last_used: i64,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct WireTargetRegistryRows {
+    #[prost(message, repeated, tag = "1")]
+    pub rows: Vec<WireTargetRegistryRow>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct WireTargetRegistryRemoved {
+    #[prost(uint32, tag = "1")]
+    pub removed: u32,
 }
 
 /// soldr#1838. Empty today; a message rather than a bare bool so a reason or

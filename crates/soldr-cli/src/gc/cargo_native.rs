@@ -512,8 +512,6 @@ fn run_soldr_target_purge_for_sweep(
     use crate::cache_lib::gc::{parse_duration, parse_size, GcOptions};
     let paths = SoldrPaths::new()?;
     let dev_roots = resolve_gc_dev_roots(&paths)?;
-    let db_path = crate::cache_lib::data_db_path(&paths);
-
     let cfg = paths
         .load_config()
         .map_err(|error| SoldrError::Other(error.to_string()))?;
@@ -530,12 +528,11 @@ fn run_soldr_target_purge_for_sweep(
         dry_run: false,
     };
     // Snapshot-then-release, same as the `soldr gc` front door (#1681).
-    let report = crate::cache_lib::gc::scan_released(&db_path, &options)
-        .map_err(|e| SoldrError::Other(format!("gc scan failed: {e}")))?;
+    let report = super::daemon_gc_scan(&paths, &options)?;
     if report.candidates.is_empty() {
         return Ok(SoldrTargetsSummary::default());
     }
-    let purge_summary = run_gc_purge_candidates(&db_path, &report.candidates, purge_all, json)?;
+    let purge_summary = run_gc_purge_candidates(&paths, &report.candidates, purge_all, json)?;
     Ok(SoldrTargetsSummary {
         selected_count: purge_summary.selected_count,
         succeeded_count: purge_summary.succeeded_count,

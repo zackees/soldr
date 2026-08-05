@@ -286,17 +286,10 @@ pub(crate) fn run_gc_purge_target_subtree_command(
     }
 
     let paths = SoldrPaths::new()?;
-    let db_path = crate::cache_lib::data_db_path(&paths);
     // Scoped so the handle is gone before the sizing walk, the prompt
     // loop, and the deletes below — this command never touches the
     // registry again, and the prompt waits on a human (#1681).
-    let rows = {
-        let registry = crate::cache_lib::target_registry::TargetRegistry::open(&db_path)
-            .map_err(|e| SoldrError::Other(format!("failed to open soldr registry: {e}")))?;
-        registry
-            .list()
-            .map_err(|e| SoldrError::Other(format!("gc purge {} failed: {e}", kind.kind_name())))?
-    };
+    let rows = super::daemon_registry_rows(&paths)?;
     let now = crate::cache_lib::target_registry::current_unix_seconds().map_err(|e| {
         SoldrError::Other(format!("gc purge {} clock error: {e}", kind.kind_name()))
     })?;
@@ -408,7 +401,7 @@ pub(crate) fn run_gc_purge_target_subtree_command(
 /// every other `state.redb` opener for the duration, and the prompt is
 /// unbounded — it waits on a human.
 pub(super) fn run_gc_purge_candidates(
-    db_path: &std::path::Path,
+    paths: &SoldrPaths,
     candidates: &[crate::cache_lib::gc::GcCandidate],
     purge_all: bool,
     json: bool,
@@ -487,14 +480,9 @@ pub(super) fn run_gc_purge_candidates(
         eprintln!();
     }
 
-    // Bounded reopen: every directory is already gone, so this phase is
-    // one write txn per deleted row and nothing else (#1681).
-    let registry = crate::cache_lib::target_registry::TargetRegistry::open(db_path)
-        .map_err(|e| SoldrError::Other(format!("failed to reopen soldr registry: {e}")))?;
-    let summary = crate::cache_lib::gc::apply_purge_outcomes(&registry, outcomes)
-        .map_err(|e| SoldrError::Other(format!("failed to update gc registry: {e}")));
-    drop(registry);
-    summary
+    let (summary, removed_rows) = crate::cache_lib::gc::summarize_purge_outcomes(outcomes);
+    super::daemon_remove_registry_rows(paths, removed_rows)?;
+    Ok(summary)
 }
 
 fn gc_purge_worker_count() -> usize {

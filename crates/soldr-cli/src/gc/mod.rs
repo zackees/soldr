@@ -55,6 +55,107 @@ use purge::{
     print_gc_purge_scan, print_gc_summary, resolve_gc_dev_roots, run_gc_purge_candidates,
 };
 
+pub(super) fn daemon_registry_rows(
+    paths: &SoldrPaths,
+) -> Result<Vec<crate::cache_lib::target_registry::TargetRow>, SoldrError> {
+    let sock = crate::daemon::client::default_sock_path(paths);
+    let rows = match crate::daemon::client::list_target_registry(&sock) {
+        Ok(rows) => rows,
+        Err(daemon_error) => match offline_registry_rows(paths)? {
+            Some(rows) => return Ok(rows),
+            None => {
+                return Err(SoldrError::Other(format!(
+                    "daemon target registry unavailable while the daemon owns this root: {daemon_error:?}"
+                )));
+            }
+        },
+    };
+    Ok(rows
+        .into_iter()
+        .map(|row| crate::cache_lib::target_registry::TargetRow {
+            path: std::path::PathBuf::from(row.path),
+            last_used: row.last_used,
+        })
+        .collect())
+}
+
+/// Read the registry only when no daemon owns this Soldr root.
+///
+/// `RootOwnershipGuard` is the same OS lock the daemon holds for its full
+/// lifetime. Acquiring it makes this an explicit offline operation: no daemon
+/// can start, and a live daemon cannot be mistaken for an unavailable one
+/// between the failed IPC probe and the redb open.
+fn offline_registry_rows(
+    paths: &SoldrPaths,
+) -> Result<Option<Vec<crate::cache_lib::target_registry::TargetRow>>, SoldrError> {
+    let Some(_owner) =
+        crate::daemon::lifecycle::RootOwnershipGuard::try_acquire(paths).map_err(|error| {
+            SoldrError::Other(format!("acquire offline registry ownership: {error}"))
+        })?
+    else {
+        return Ok(None);
+    };
+    let db_path = crate::cache_lib::data_db_path(paths);
+    let registry = crate::cache_lib::target_registry::TargetRegistry::open(&db_path)
+        .map_err(|error| SoldrError::Other(format!("open offline target registry: {error}")))?;
+    let rows = registry
+        .list()
+        .map_err(|error| SoldrError::Other(format!("list offline target registry: {error}")))?;
+    Ok(Some(rows))
+}
+
+pub(super) fn daemon_remove_registry_rows(
+    paths: &SoldrPaths,
+    rows: Vec<std::path::PathBuf>,
+) -> Result<usize, SoldrError> {
+    let sock = crate::daemon::client::default_sock_path(paths);
+    let encoded_paths = rows
+        .into_iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>();
+    match crate::daemon::client::remove_target_registry(&sock, encoded_paths.clone()) {
+        Ok(removed) => Ok(removed as usize),
+        Err(daemon_error) => {
+            let Some(_owner) = crate::daemon::lifecycle::RootOwnershipGuard::try_acquire(paths)
+                .map_err(|error| {
+                    SoldrError::Other(format!("acquire offline registry ownership: {error}"))
+                })?
+            else {
+                return Err(SoldrError::Other(format!(
+                    "daemon target registry unavailable while the daemon owns this root: {daemon_error:?}"
+                )));
+            };
+            let db_path = crate::cache_lib::data_db_path(paths);
+            let registry = crate::cache_lib::target_registry::TargetRegistry::open(&db_path)
+                .map_err(|error| {
+                    SoldrError::Other(format!("open offline target registry: {error}"))
+                })?;
+            registry
+                .remove_many(
+                    &encoded_paths
+                        .into_iter()
+                        .map(std::path::PathBuf::from)
+                        .collect::<Vec<_>>(),
+                )
+                .map_err(|error| {
+                    SoldrError::Other(format!("remove offline target registry rows: {error}"))
+                })
+        }
+    }
+}
+
+pub(super) fn daemon_gc_scan(
+    paths: &SoldrPaths,
+    options: &crate::cache_lib::gc::GcOptions,
+) -> Result<crate::cache_lib::gc::GcReport, SoldrError> {
+    let rows = daemon_registry_rows(paths)?;
+    let (live, missing): (Vec<_>, Vec<_>) = rows.into_iter().partition(|row| row.path.exists());
+    let dropped_missing =
+        daemon_remove_registry_rows(paths, missing.into_iter().map(|row| row.path).collect())?;
+    crate::cache_lib::gc::scan_daemon_snapshot(live, dropped_missing, options)
+        .map_err(|error| SoldrError::Other(format!("gc scan failed: {error}")))
+}
+
 // ---------------------------------------------------------------------------
 // soldr gc — garbage-collect stale Cargo target/ directories.
 // ---------------------------------------------------------------------------
@@ -261,8 +362,7 @@ pub(crate) fn run_gc_command(invocation: GcInvocation) -> Result<(), SoldrError>
 
     // Snapshot-then-release: the sizing walk below, the per-candidate
     // prompt, and the deletion pool all run with no handle open (#1681).
-    let report = crate::cache_lib::gc::scan_released(&db_path, &options)
-        .map_err(|e| SoldrError::Other(format!("gc scan failed: {e}")))?;
+    let report = daemon_gc_scan(&paths, &options)?;
     let total_reclaimable_bytes = gc_total_reclaimable_bytes(&report.candidates);
 
     let mut deleted_paths: Vec<String> = Vec::new();
@@ -279,7 +379,7 @@ pub(crate) fn run_gc_command(invocation: GcInvocation) -> Result<(), SoldrError>
 
     if !is_summary {
         purge_summary =
-            run_gc_purge_candidates(&db_path, &report.candidates, purge_all, invocation.json)?;
+            run_gc_purge_candidates(&paths, &report.candidates, purge_all, invocation.json)?;
         deleted_paths = purge_summary
             .deleted_paths
             .iter()
@@ -412,13 +512,7 @@ pub(crate) fn run_gc_list_command(
     // Scoped: the rayon sizing walk below visits every tracked target
     // tree, so the handle must not be held across it. The batched
     // `remove_many` reopens briefly once the walk is done (#1681).
-    let rows = {
-        let registry = crate::cache_lib::target_registry::TargetRegistry::open(&db_path)
-            .map_err(|e| SoldrError::Other(format!("failed to open soldr registry: {e}")))?;
-        registry
-            .list()
-            .map_err(|e| SoldrError::Other(format!("gc list failed: {e}")))?
-    };
+    let rows = daemon_registry_rows(&paths)?;
     let now = crate::cache_lib::target_registry::current_unix_seconds()
         .map_err(|e| SoldrError::Other(format!("gc list clock error: {e}")))?;
 
@@ -513,13 +607,7 @@ pub(crate) fn run_gc_list_command(
     }
 
     // Bounded reopen for the batched removal (#1681).
-    let pruned_missing = {
-        let registry = crate::cache_lib::target_registry::TargetRegistry::open(&db_path)
-            .map_err(|e| SoldrError::Other(format!("failed to reopen soldr registry: {e}")))?;
-        registry
-            .remove_many(&missing_paths)
-            .map_err(|e| SoldrError::Other(format!("failed to prune missing registry rows: {e}")))?
-    };
+    let pruned_missing = daemon_remove_registry_rows(&paths, missing_paths)?;
 
     if json {
         let output = GcListOutput {
@@ -558,7 +646,8 @@ pub(crate) fn run_gc_list_command(
 pub(crate) fn emit_startup_target_warning_if_due() {
     let Ok(paths) = SoldrPaths::new() else { return };
     let marker = crate::cache_lib::gc_warning_marker_path(&paths);
-    // Check the 24 h throttle BEFORE touching redb (#1843).
+    // Check the 24 h throttle before asking the daemon for a registry snapshot
+    // (#1843).
     //
     // `maybe_build_startup_warning` evaluates this same condition, but only
     // after we have already opened the registry — and `TargetRegistry::open`
@@ -576,20 +665,16 @@ pub(crate) fn emit_startup_target_warning_if_due() {
     if !crate::cache_lib::gc::startup_warning_due(&marker).unwrap_or(true) {
         return;
     }
-    let db_path = crate::cache_lib::data_db_path(&paths);
-    if !db_path.exists() {
-        return;
-    }
-    let Ok(registry) = crate::cache_lib::target_registry::TargetRegistry::open(&db_path) else {
-        return;
-    };
     let options = crate::cache_lib::gc::GcOptions {
         older_than_seconds: crate::cache_lib::target_registry::DEFAULT_STALE_AGE_SECONDS,
         larger_than_bytes: crate::cache_lib::target_registry::DEFAULT_STALE_SIZE_BYTES,
         dev_roots: resolve_gc_dev_roots(&paths).unwrap_or_default(),
         dry_run: true,
     };
-    match crate::cache_lib::gc::maybe_build_startup_warning(&registry, &options, &marker) {
+    let Ok(report) = daemon_gc_scan(&paths, &options) else {
+        return;
+    };
+    match crate::cache_lib::gc::startup_warning_from_report(&report, &options, &marker) {
         Ok(Some(message)) => eprintln!("{message}"),
         Ok(None) => {}
         Err(_) => {}

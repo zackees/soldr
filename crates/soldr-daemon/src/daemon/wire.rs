@@ -42,7 +42,7 @@ use crate::daemon::protocol::{
     BuildCacheSummary, BuildLogPaths, BuildMissReason, BuildRecord, CacheFlushInfo,
     CacheFlushStepInfo, CompileLifecycle, CompileRequest, CompileResponseBody, CompileStatsInfo,
     CookStats, IpcBurstStats, Request, Response, ShutdownAck, StagedProfileInfo, StatusInfo,
-    WireDecodeError,
+    TargetRegistryRow, WireDecodeError,
 };
 
 /// Back-compat re-exports: these moved to `core::wire` (#1490 Phase 0,
@@ -425,6 +425,14 @@ impl From<&Request> for proto::WireRequest {
             Request::Shutdown => proto::WireRequestKind::Shutdown(proto::WireUnit {}),
             Request::FlushCaches => proto::WireRequestKind::FlushCaches(proto::WireUnit {}),
             Request::CompileStats => proto::WireRequestKind::CompileStats(proto::WireUnit {}),
+            Request::ListTargetRegistry => {
+                proto::WireRequestKind::ListTargetRegistry(proto::WireUnit {})
+            }
+            Request::RemoveTargetRegistry { paths } => {
+                proto::WireRequestKind::RemoveTargetRegistry(proto::WireRemoveTargetRegistry {
+                    paths: paths.clone(),
+                })
+            }
             Request::BuildLogInputs { session_id } => {
                 proto::WireRequestKind::BuildLogInputs(proto::WireBuildLogInputsRequest {
                     session_id: *session_id,
@@ -599,6 +607,10 @@ impl TryFrom<proto::WireRequest> for Request {
             proto::WireRequestKind::Shutdown(_) => Request::Shutdown,
             proto::WireRequestKind::FlushCaches(_) => Request::FlushCaches,
             proto::WireRequestKind::CompileStats(_) => Request::CompileStats,
+            proto::WireRequestKind::ListTargetRegistry(_) => Request::ListTargetRegistry,
+            proto::WireRequestKind::RemoveTargetRegistry(m) => {
+                Request::RemoveTargetRegistry { paths: m.paths }
+            }
             proto::WireRequestKind::BuildLogInputs(m) => Request::BuildLogInputs {
                 session_id: m.session_id,
             },
@@ -679,6 +691,22 @@ impl From<&Response> for proto::WireResponse {
     fn from(resp: &Response) -> Self {
         let kind = match resp {
             Response::Status(info) => proto::WireResponseKind::Status(status_info_to_wire(info)),
+            Response::TargetRegistryRows(rows) => {
+                proto::WireResponseKind::TargetRegistryRows(proto::WireTargetRegistryRows {
+                    rows: rows
+                        .iter()
+                        .map(|row| proto::WireTargetRegistryRow {
+                            path: row.path.clone(),
+                            last_used: row.last_used,
+                        })
+                        .collect(),
+                })
+            }
+            Response::TargetRegistryRemoved { removed } => {
+                proto::WireResponseKind::TargetRegistryRemoved(proto::WireTargetRegistryRemoved {
+                    removed: *removed,
+                })
+            }
             Response::ShuttingDown(ack) => {
                 proto::WireResponseKind::ShuttingDown(proto::WireShuttingDown {
                     pid: ack.pid,
@@ -790,6 +818,18 @@ impl TryFrom<proto::WireResponse> for Response {
         let kind = wire.kind.ok_or(WireDecodeError::EmptyOneof("Response"))?;
         Ok(match kind {
             proto::WireResponseKind::Status(m) => Response::Status(status_info_from_wire(m)),
+            proto::WireResponseKind::TargetRegistryRows(m) => Response::TargetRegistryRows(
+                m.rows
+                    .into_iter()
+                    .map(|row| TargetRegistryRow {
+                        path: row.path,
+                        last_used: row.last_used,
+                    })
+                    .collect(),
+            ),
+            proto::WireResponseKind::TargetRegistryRemoved(m) => {
+                Response::TargetRegistryRemoved { removed: m.removed }
+            }
             proto::WireResponseKind::ShuttingDown(reply) => Response::ShuttingDown(ShutdownAck {
                 pid: reply.pid,
                 generation: reply.generation,
