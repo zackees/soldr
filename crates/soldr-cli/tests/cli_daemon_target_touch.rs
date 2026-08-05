@@ -131,7 +131,7 @@ fn registry_row_exists(cache_root: &Path, target_path: &Path) -> Option<i64> {
 }
 
 #[test]
-fn fallback_path_writes_directly_to_redb() {
+fn unavailable_daemon_does_not_open_state_db() {
     let cache_root = unique_temp_dir("target-touch-fallback-cache");
     let home_root = unique_temp_dir("target-touch-fallback-home");
     let target = cache_root.join("dev").join("workspace").join("target");
@@ -144,13 +144,13 @@ fn fallback_path_writes_directly_to_redb() {
     ]);
     let paths = soldr_cli::core::SoldrPaths::new().expect("paths");
 
+    let db_path = cache_root.join("state.redb");
     client::record_target_touch_or_fallback(&paths, &target);
 
-    let row = registry_row_exists(&cache_root, &target);
     assert!(
-        row.is_some(),
-        "fallback path failed to register target {}",
-        target.display()
+        !db_path.exists(),
+        "unavailable daemon must not cause the client to create or open {}",
+        db_path.display()
     );
 }
 

@@ -1,10 +1,10 @@
 //! Synchronous, blocking client used by the wrapper hot path and by the
 //! `soldr daemon status|stop` CLI surface. All daemon calls are best
 //! effort: every error variant is mapped to a `ClientError` so the
-//! caller can decide whether to fall back to direct redb writes.
+//! caller can decide whether to report a daemon-control-plane failure.
 
-use crate::cache_lib::target_registry::{current_unix_seconds, TargetRegistry};
-use crate::cache_lib::{daemon_sock_path, data_db_path};
+use crate::cache_lib::daemon_sock_path;
+use crate::cache_lib::target_registry::current_unix_seconds;
 use crate::core::SoldrPaths;
 #[cfg(windows)]
 use crate::daemon::ipc::{
@@ -933,59 +933,25 @@ pub fn submit_request_with_timeout(
     }
 }
 
-/// Wrapper-side entry point. Tries the daemon first; on any failure,
-/// upserts the row directly to the redb file. **Never** propagates
-/// errors — a missing daemon must not break a build.
-///
-/// Issue #1814: the direct-redb leg is the *second* opener of `state.redb` on
-/// a hot path, so it uses the short best-effort budget rather than blocking a
-/// compile for up to 5 s behind the daemon's own handle. Both the reason for
-/// taking the fallback and a failed fallback are now reported — this used to
-/// be two silent `let _ =`s, which is precisely how state-DB contention became
-/// an unexplained stall with no reason attached (cf. zccache#1211).
+/// Wrapper-side target touch. State is daemon-owned: an unavailable daemon
+/// leaves the touch unrecorded rather than opening `state.redb` in this process.
 pub fn record_target_touch_or_fallback(paths: &SoldrPaths, target: &Path) {
     let unix_seconds = match current_unix_seconds() {
         Ok(s) => s,
         Err(_) => return,
     };
-
     let sock = default_sock_path(paths);
     let req = Request::RecordTargetTouch {
         path: target.display().to_string(),
         unix_seconds,
     };
-    let daemon_error = match submit_fire_and_forget(&sock, &req) {
-        Ok(()) => return,
-        Err(error) => error,
-    };
-
-    let db_path = data_db_path(paths);
-    match TargetRegistry::open_best_effort(&db_path) {
-        Ok(registry) => {
-            if let Err(error) = registry.upsert_with_time(target, unix_seconds) {
-                tracing::warn!(
-                    event = "target_touch_fallback_write_failed",
-                    target = %target.display(),
-                    daemon_error = ?daemon_error,
-                    error = %error,
-                    "target-registry touch was lost: daemon unreachable and the \
-                     direct redb write failed"
-                );
-            }
-        }
-        Err(error) => {
-            // `open_best_effort` already emitted the durable contention record
-            // when this was lock contention; this line attaches the *reason we
-            // were on the fallback path at all*.
-            tracing::warn!(
-                event = "target_touch_fallback_open_failed",
-                target = %target.display(),
-                daemon_error = ?daemon_error,
-                error = %error,
-                "target-registry touch was skipped: daemon unreachable and the \
-                 state DB could not be opened within the best-effort budget"
-            );
-        }
+    if let Err(error) = submit_fire_and_forget(&sock, &req) {
+        tracing::warn!(
+            event = "target_touch_daemon_unavailable",
+            target = %target.display(),
+            error = ?error,
+            "target-registry touch was skipped because soldr-daemon is unavailable"
+        );
     }
 }
 
