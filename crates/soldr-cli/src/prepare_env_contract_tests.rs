@@ -112,6 +112,10 @@ crate::timed_test!(managed_gnu_toolchain_is_exported_for_later_github_steps, {
     let _manifest = EnvVarGuard::set("SOLDR_MANIFEST_DISABLE", "1");
     let _legacy_zigbuild = EnvVarGuard::remove(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR);
     let _path = EnvVarGuard::set("PATH", "/usr/bin:/bin");
+    let _ambient_cc = EnvVarGuard::set("CC", "ambient-cc");
+    let _ambient_cxx = EnvVarGuard::set("CXX", "ambient-cxx");
+    let _ambient_ar = EnvVarGuard::set("AR", "ambient-ar");
+    let _ambient_ranlib = EnvVarGuard::set("RANLIB", "ambient-ranlib");
     let _output_guards: Vec<_> = output_keys
         .iter()
         .cloned()
@@ -186,11 +190,11 @@ crate::timed_test!(managed_gnu_toolchain_is_exported_for_later_github_steps, {
         std::env::var("SOLDR_GNU_LINUX_SYSROOT").expect("sysroot"),
         sysroot.to_string_lossy()
     );
-    for (alias, tool) in [
-        ("CC", "gcc"),
-        ("CXX", "g++"),
-        ("AR", "ar"),
-        ("RANLIB", "ranlib"),
+    for (alias, tool, ambient) in [
+        ("CC", "gcc", "ambient-cc"),
+        ("CXX", "g++", "ambient-cxx"),
+        ("AR", "ar", "ambient-ar"),
+        ("RANLIB", "ranlib", "ambient-ranlib"),
     ] {
         let expected = managed_bin.join(format!("{target_prefix}-{tool}"));
         assert!(
@@ -199,9 +203,10 @@ crate::timed_test!(managed_gnu_toolchain_is_exported_for_later_github_steps, {
                 .any(|line| line == format!("{alias}={}", expected.display())),
             "{alias} was not exported for an external CMake consumer: {exported}"
         );
-        assert!(
-            std::env::var_os(alias).is_none(),
-            "{alias} must remain unset in Soldr's process"
+        assert_eq!(
+            std::env::var_os(alias).as_deref(),
+            Some(std::ffi::OsStr::new(ambient)),
+            "{alias} must retain its ambient value in Soldr's process"
         );
     }
 });
