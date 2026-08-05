@@ -22,14 +22,18 @@ pub(crate) fn append_env(path: Option<&Path>, key: &str, value: &str) -> Result<
 pub(crate) fn apply_blessed_prep_env(
     github_env_path: Option<&Path>,
     prep: &crate::blessed_build::BlessedPrep,
+    target_triple: &str,
 ) -> Result<(), SoldrError> {
     for (key, value) in crate::target_lifecycle::resolved_env(prep) {
         append_env(github_env_path, &key, &value)?;
         std::env::set_var(key, value);
     }
-    // One target is exported at a time, so CMake can receive conventional
-    // unscoped aliases in the next shell without polluting Soldr's process.
-    if github_env_path.is_some() {
+    // Cross-target aliases must stay scoped: Cargo also builds host-only build
+    // scripts, and a global CC would make those use the target compiler. Native
+    // preparation can still expose the conventional aliases to external tools.
+    if github_env_path.is_some()
+        && target_triple.eq_ignore_ascii_case(crate::pyo3_detect::host_triple())
+    {
         for (source, alias) in [
             ("CMAKE_C_COMPILER", "CC"),
             ("CMAKE_CXX_COMPILER", "CXX"),
