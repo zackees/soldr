@@ -233,8 +233,6 @@ fn retry_timed_out_cargo_without_cache(
     wait_for_cargo_child(&mut child, "soldr no-cache cargo retry", None)
 }
 
-#[cfg(test)]
-use build_session::persist_build_session_end_fallback_inner;
 use build_session::{new_build_record, persist_build_session_end_fallback};
 
 #[derive(Clone, Copy)]
@@ -1198,6 +1196,7 @@ fn resolve_target_dir_for_hooks(args: &[String]) -> Option<std::path::PathBuf> {
     Some(manifest_dir.join("target"))
 }
 
+#[cfg(test)]
 fn apply_target_registry_memo(
     command: &mut std::process::Command,
     target_dir: &std::path::Path,
@@ -1206,39 +1205,7 @@ fn apply_target_registry_memo(
     // `cargo clean` removes target/ before the next soldr invocation. The
     // future path is still authoritative and the registry accepts paths that
     // do not exist yet, so absence must not disable wrapper memoization.
-    let recorded = canonicalize_future_path(target_dir);
-    let db_path = crate::cache_lib::data_db_path(paths);
-    if let Ok(registry) = crate::cache_lib::target_registry::TargetRegistry::open(&db_path) {
-        let _ = registry.upsert(&recorded);
-    }
-    command.env(
-        crate::wrapper_target::TARGET_REGISTRY_RECORDED_ENV_VAR,
-        recorded.as_os_str(),
-    );
-}
-
-fn canonicalize_future_path(path: &std::path::Path) -> std::path::PathBuf {
-    if let Ok(canonical) = std::fs::canonicalize(path) {
-        return canonical;
-    }
-
-    let mut missing = Vec::new();
-    let mut ancestor = path;
-    while let Some(name) = ancestor.file_name() {
-        missing.push(name.to_os_string());
-        let Some(parent) = ancestor.parent() else {
-            break;
-        };
-        if let Ok(mut canonical) = std::fs::canonicalize(parent) {
-            for component in missing.iter().rev() {
-                canonical.push(component);
-            }
-            return canonical;
-        }
-        ancestor = parent;
-    }
-
-    path.to_path_buf()
+    let _ = (command, target_dir, paths);
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -1949,8 +1916,6 @@ pub(crate) async fn run_cargo_front_door(
                     dir.display()
                 ),
             }
-            apply_target_registry_memo(&mut command, dir, &paths);
-            profile.mark("target_registry_memo");
         }
     }
 

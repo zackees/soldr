@@ -25,7 +25,9 @@
 
 use std::path::Path;
 
-use crate::core::{SoldrError, SoldrPaths};
+#[cfg(test)]
+use crate::core::SoldrError;
+use crate::core::SoldrPaths;
 use crate::daemon::client::DaemonCompileLimit;
 
 /// Run [`start_and_warn_on_jobs_drift`] on a background thread so its
@@ -114,11 +116,12 @@ fn persist_start_fallback(
     repo_root: &Path,
     started_at_ms: i64,
 ) {
-    if let Err(err) = persist_start_fallback_inner(paths, session_id, repo_root, started_at_ms) {
-        eprintln!(
-            "soldr warning: failed to persist build-session start fallback for {session_id}: {err}"
-        );
-    }
+    let _ = (paths, repo_root, started_at_ms);
+    tracing::warn!(
+        event = "build_session_start_daemon_unavailable",
+        session_id,
+        "build-session start was skipped because the daemon is unavailable"
+    );
 }
 
 /// Turn a state-DB open failure into a message that says what to do.
@@ -128,6 +131,7 @@ fn persist_start_fallback(
 /// impression. It is not corruption: it means another soldr process held
 /// the file for longer than this one's open budget. Name that, and point at
 /// the forensic log that says who and for how long.
+#[cfg(test)]
 pub(super) fn contention_aware_error(error: impl std::fmt::Display) -> SoldrError {
     let text = error.to_string();
     if !text.contains("already open") {
@@ -150,6 +154,7 @@ pub(super) fn contention_aware_error(error: impl std::fmt::Display) -> SoldrErro
 /// concurrent build that is up to three independent stalls for one logical
 /// session-start, any of which can lose the record outright. One handle,
 /// three `_in` operations.
+#[cfg(test)]
 pub(super) fn persist_start_fallback_inner(
     paths: &SoldrPaths,
     session_id: u64,
@@ -208,13 +213,12 @@ pub(super) fn persist_build_session_end_fallback(
     exit_code: i32,
     ended_at_ms: i64,
 ) {
-    if let Err(err) =
-        persist_build_session_end_fallback_inner(paths, session_id, exit_code, ended_at_ms)
-    {
-        eprintln!(
-            "soldr warning: failed to persist build-session end fallback for {session_id}: {err}"
-        );
-    }
+    let _ = (paths, exit_code, ended_at_ms);
+    tracing::warn!(
+        event = "build_session_end_daemon_unavailable",
+        session_id,
+        "build-session end was skipped because the daemon is unavailable"
+    );
 }
 
 /// Acquires the state database **exactly once** (soldr#2224).
@@ -224,6 +228,7 @@ pub(super) fn persist_build_session_end_fallback(
 /// consecutive 5 s contention budgets and still lose the row. See
 /// [`persist_start_fallback_inner`] for the same treatment
 /// on the start path.
+#[cfg(test)]
 pub(super) fn persist_build_session_end_fallback_inner(
     paths: &SoldrPaths,
     session_id: u64,

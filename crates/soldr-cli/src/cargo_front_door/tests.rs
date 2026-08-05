@@ -126,15 +126,11 @@ fn command_env_override(
         .map(|(_, value)| value.map(OsString::from))
 }
 
-crate::timed_test!(target_registry_memo_is_exported_for_missing_target_dir, {
+crate::timed_test!(target_registry_memo_is_not_exported_without_daemon_ack, {
     let root = tempfile::tempdir().expect("temp root");
     let paths = SoldrPaths::with_root(root.path().join("soldr"));
     paths.ensure_dirs().expect("soldr dirs");
     let target = root.path().join("workspace").join("target");
-    let canonical_target = std::fs::canonicalize(root.path())
-        .expect("canonical temp root")
-        .join("workspace")
-        .join("target");
     assert!(!target.exists(), "test requires a clean target directory");
 
     let mut command = std::process::Command::new("cargo");
@@ -145,24 +141,12 @@ crate::timed_test!(target_registry_memo_is_exported_for_missing_target_dir, {
             &command,
             crate::wrapper_target::TARGET_REGISTRY_RECORDED_ENV_VAR,
         ),
-        Some(Some(canonical_target.clone().into_os_string())),
-        "the cargo child needs the memo marker before cargo creates target/",
+        None,
+        "the client must not claim a daemon-owned registry touch was recorded",
     );
     assert!(
         !target.exists(),
         "memoization must not create target/ as a side effect"
-    );
-
-    let registry = crate::cache_lib::target_registry::TargetRegistry::open(
-        &crate::cache_lib::data_db_path(&paths),
-    )
-    .expect("target registry");
-    assert!(
-        registry
-            .get(&canonical_target)
-            .expect("registry read")
-            .is_some(),
-        "the front door should record the future target path once"
     );
 });
 
@@ -280,17 +264,17 @@ crate::timed_test!(zthreads_retry_replays_original_front_door_contract, {
     );
 });
 
-crate::timed_test!(target_registry_memo_canonicalizes_existing_ancestor, {
+crate::timed_test!(target_registry_memo_does_not_export_a_client_side_marker, {
     let root = tempfile::tempdir().expect("temp root");
     let paths = SoldrPaths::with_root(root.path().join("soldr"));
     paths.ensure_dirs().expect("soldr dirs");
     let workspace = root.path().join("workspace");
     std::fs::create_dir_all(workspace.join("nested")).expect("workspace dirs");
     let lexical_target = workspace.join("nested").join("..").join("target");
-    let canonical_target = std::fs::canonicalize(&workspace)
-        .expect("canonical workspace")
-        .join("target");
-    assert!(!canonical_target.exists(), "test requires a clean target");
+    assert!(
+        !workspace.join("target").exists(),
+        "test requires a clean target"
+    );
 
     let mut command = std::process::Command::new("cargo");
     apply_target_registry_memo(&mut command, &lexical_target, &paths);
@@ -300,20 +284,8 @@ crate::timed_test!(target_registry_memo_canonicalizes_existing_ancestor, {
             &command,
             crate::wrapper_target::TARGET_REGISTRY_RECORDED_ENV_VAR,
         ),
-        Some(Some(canonical_target.clone().into_os_string())),
+        None,
     );
-    let registry = crate::cache_lib::target_registry::TargetRegistry::open(
-        &crate::cache_lib::data_db_path(&paths),
-    )
-    .expect("target registry");
-    assert!(
-        registry
-            .get(&canonical_target)
-            .expect("registry read")
-            .is_some(),
-        "the future target must use the same key it gets after creation"
-    );
-    assert_eq!(registry.len().expect("registry length"), 1);
 });
 
 crate::timed_test!(cargo_wait_timeout_is_disabled_when_unset_or_zero, {
@@ -2478,30 +2450,24 @@ crate::timed_test!(
     }
 );
 
-crate::timed_test!(build_session_fallback_persists_start_end_without_daemon, {
-    let root = tempfile::tempdir().expect("temp root");
-    let paths = SoldrPaths::with_root(root.path().join("soldr"));
-    let repo = root.path().join("repo");
-    std::fs::create_dir_all(&repo).expect("repo dir");
+crate::timed_test!(
+    build_session_bookkeeping_never_falls_back_to_direct_state_db,
+    {
+        let root = tempfile::tempdir().expect("temp root");
+        let paths = SoldrPaths::with_root(root.path().join("soldr"));
+        let repo = root.path().join("repo");
+        std::fs::create_dir_all(&repo).expect("repo dir");
 
-    super::build_session::persist_start_fallback_inner(&paths, 99, &repo, 1_000).expect("start");
-    persist_build_session_end_fallback_inner(&paths, 99, 0, 1_250).expect("end fallback");
+        let db_path = crate::cache_lib::data_db_path(&paths);
+        super::build_session::start_and_warn_on_jobs_drift(&paths, 99, &repo, 1_000);
+        super::build_session::persist_build_session_end_fallback(&paths, 99, 0, 1_250);
 
-    let db_path = crate::cache_lib::data_db_path(&paths);
-    let record = crate::daemon::db::get_build(&db_path, 99)
-        .expect("read build")
-        .expect("record");
-    assert_eq!(record.repo_root, repo.display().to_string());
-    assert_eq!(record.started_at_ms, 1_000);
-    assert_eq!(record.ended_at_ms, Some(1_250));
-    assert_eq!(record.total_wall_ms, Some(250));
-    assert_eq!(record.exit_code, Some(0));
-
-    let events = crate::daemon::db::list_events_for_session(&db_path, 99).expect("events");
-    assert_eq!(events.len(), 2);
-    assert_eq!(events[0].kind, crate::daemon::db::EventKind::SessionStart);
-    assert_eq!(events[1].kind, crate::daemon::db::EventKind::SessionEnd);
-});
+        assert!(
+            !db_path.exists(),
+            "unavailable-daemon session bookkeeping must not open state.redb directly"
+        );
+    }
+);
 
 crate::timed_test!(build_session_waits_for_root_lease, {
     let root = tempfile::tempdir().unwrap();
