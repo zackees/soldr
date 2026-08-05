@@ -124,8 +124,11 @@ def assert_managed_environment(env: dict[str, str], target: str) -> tuple[Path, 
             raise RuntimeError(f"{key} is not a managed GNU {tool}: {value}")
         require_no_zig(str(value), key)
         run([str(value), "--version"], env=env)
-    host_arch = platform.machine().lower().replace("amd64", "x86_64").replace(
-        "arm64", "aarch64"
+    host_arch = (
+        platform.machine()
+        .lower()
+        .replace("amd64", "x86_64")
+        .replace("arm64", "aarch64")
     )
     is_native_target = host_arch == TARGETS[target][0]
     for alias, source in (
