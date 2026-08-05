@@ -580,6 +580,7 @@ fn run_offline_cook_gc(
     let Some(_owner) = crate::daemon::lifecycle::RootOwnershipGuard::try_acquire(paths)? else {
         return Ok(None);
     };
+    // soldr-state-db: offline-root-owner
     Ok(Some(crate::cache_lib::cook_gc::cook_evict_pass(
         paths, config,
     )))
@@ -594,6 +595,7 @@ fn run_offline_daemon_event_prune(
     else {
         return Ok(None);
     };
+    // soldr-state-db: offline-root-owner
     crate::daemon::db::prune_events_older_than(&crate::cache_lib::data_db_path(paths), cutoff_ms)
         .map(Some)
         .map_err(|error| error.to_string())
