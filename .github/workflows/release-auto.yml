@@ -1182,6 +1182,17 @@ jobs:
               ;;
           esac
 
+          # `soldr prepare --github-env` exports both global and target-scoped
+          # compiler variables. Maturin invokes Cargo for the requested target
+          # but Cargo also compiles host build helpers (for example zstd-sys).
+          # On cross lanes the global ARM/Darwin compiler receives host flags
+          # such as `-m64`, while the target-scoped variables below still give
+          # the target crate the blessed compiler and sysroot. Keep only the
+          # latter for Maturin's direct Cargo subprocess.
+          if [[ "${{ matrix.target }}" != "x86_64-unknown-linux-gnu" && ( "${{ matrix.target }}" == *-unknown-linux-gnu || "${{ matrix.target }}" == *-apple-darwin ) ]]; then
+            unset CC CXX AR RANLIB CFLAGS CXXFLAGS CPPFLAGS
+          fi
+
           maturin build \
             --release \
             --locked \

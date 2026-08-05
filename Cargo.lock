@@ -750,7 +750,7 @@ checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
 
 [[package]]
 name = "encoding_rs"
-version = "0.8.35"
+version = "0.8.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75030f3c4f45dafd7586dd6780965a8c7e8e285a5ecb86713e63a79c5b2766f3"
 dependencies = [
@@ -2878,7 +2878,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-cache"
-version = "0.8.35"
+version = "0.8.36"
 dependencies = [
  "filetime",
  "fs2",
@@ -2903,7 +2903,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-cli"
-version = "0.8.35"
+version = "0.8.36"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -2947,7 +2947,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-core"
-version = "0.8.35"
+version = "0.8.36"
 dependencies = [
  "fs2",
  "prost",
@@ -2964,7 +2964,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-daemon"
-version = "0.8.35"
+version = "0.8.36"
 dependencies = [
  "console-subscriber",
  "filetime",
