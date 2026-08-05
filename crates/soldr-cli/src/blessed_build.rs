@@ -564,7 +564,7 @@ pub async fn inject_cmake_tooling(paths: &SoldrPaths, prep: &mut BlessedPrep) {
     let cmake_bin = crate::fetch::cmake_tools::cmake_exe(&cmake_root);
     if !cmake_bin.is_file() {
         eprintln!(
-            "soldr build: managed cmake bundle at {} has no {} — \
+            "soldr: managed cmake bundle at {} has no {} — \
              falling back to system cmake",
             cmake_root.display(),
             cmake_bin.display()
@@ -595,7 +595,7 @@ pub async fn inject_cmake_tooling(paths: &SoldrPaths, prep: &mut BlessedPrep) {
                 Some(bin)
             } else {
                 eprintln!(
-                    "soldr build: managed ninja bundle at {} has no {} — \
+                    "soldr: managed ninja bundle at {} has no {} — \
                      trying the uv-provisioned ninja fallback",
                     ninja_root.display(),
                     bin.display()
@@ -690,7 +690,7 @@ fn sweep_mismatched_cmake_build_dirs(target_root: &std::path::Path, generator: &
                 .any(|l| l.starts_with("CMAKE_GENERATOR:INTERNAL=") && l.trim() != needle);
             if mismatch {
                 eprintln!(
-                    "soldr build: sweeping stale cmake build dir (generator != {generator}): {}",
+                    "soldr: sweeping stale cmake build dir (generator != {generator}): {}",
                     out_build.display()
                 );
                 let _ = std::fs::remove_dir_all(&out_build);
@@ -706,16 +706,16 @@ async fn ninja_via_uv_fallback(paths: &SoldrPaths) -> Option<PathBuf> {
     match crate::fetch::uv_env::provision_ninja_via_uv(paths).await {
         Ok(ninja) => Some(ninja),
         Err(e) => {
-            eprintln!("soldr build: uv-provisioned ninja fallback unavailable: {e}");
-            eprintln!("soldr build: keeping cmake's default generator");
+            eprintln!("soldr: uv-provisioned ninja fallback unavailable: {e}");
+            eprintln!("soldr: keeping cmake's default generator");
             None
         }
     }
 }
 
 fn log_cmake_unavailable(tool: &str, host: &str, err: &SoldrError) {
-    eprintln!("soldr build: managed {tool} unavailable for host {host}: {err}");
-    eprintln!("soldr build: continuing with system {tool} from PATH");
+    eprintln!("soldr: managed {tool} unavailable for host {host}: {err}");
+    eprintln!("soldr: continuing with system {tool} from PATH");
 }
 
 /// Env var that opts out of the entire `*-sys` catalogue-substitution
