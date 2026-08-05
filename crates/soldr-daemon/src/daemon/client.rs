@@ -122,7 +122,7 @@ fn parse_reply_timeout(value: Option<&str>) -> Duration {
 #[derive(Debug)]
 pub enum ClientError {
     /// No daemon endpoint exists at the expected path (most common case
-    /// on a fresh checkout — caller should fall back to direct redb).
+    /// on a fresh checkout — daemon-owned history is unavailable).
     NotRunning,
     /// Endpoint exists but the connect / read / write failed.
     Io(std::io::Error),
@@ -357,8 +357,8 @@ pub fn list_builds(
 /// (soldr#1814 slice 2a).
 ///
 /// Returns the session's event rows plus its build record, if any. Callers
-/// fall back to opening the state DB directly only when this errors — see
-/// `build_log::write_build_log`.
+/// treat an unavailable daemon as incomplete history; they must not open the
+/// daemon-owned state database themselves.
 #[allow(clippy::type_complexity)]
 pub fn build_log_inputs(
     sock_path: &Path,

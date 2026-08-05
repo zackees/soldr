@@ -38,8 +38,11 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 
 use crate::core::{SoldrError, SoldrPaths};
-use crate::daemon::db::{self, Event, EventKind};
+use crate::daemon::db::{Event, EventKind};
 use crate::daemon::protocol::{BuildCacheSummary, BuildLogPaths, BuildMissReason, BuildRecord};
+
+#[cfg(test)]
+use crate::daemon::db;
 
 const SCHEMA_VERSION: u32 = 1;
 
@@ -204,23 +207,15 @@ pub(crate) fn collect_logs_list_output_for_paths(
     paths: &SoldrPaths,
     limit: u32,
 ) -> Result<LogsListOutput, SoldrError> {
-    let db_path = db::db_path(paths);
-    let mut notes = Vec::new();
-    let records = if db_path.exists() {
-        db::list_builds(&db_path, limit, None)
-            .map_err(|e| SoldrError::Other(format!("read daemon build history: {e}")))?
-    } else {
-        notes
-            .push("build history database is missing; run a cache-enabled build first".to_string());
-        Vec::new()
-    };
+    let db_path = crate::cache_lib::data_db_path(paths);
+    let records = daemon_list_builds(paths, limit)?;
     Ok(LogsListOutput {
         schema_version: SCHEMA_VERSION,
         command: "logs list",
         root: paths.root.clone(),
         db_path,
         launches: records.iter().map(log_launch_summary).collect(),
-        notes,
+        notes: Vec::new(),
     })
 }
 
@@ -228,29 +223,10 @@ pub(crate) fn collect_logs_show_output_for_paths(
     paths: &SoldrPaths,
     launch_id: &str,
 ) -> Result<LogsShowOutput, SoldrError> {
-    let db_path = db::db_path(paths);
-    if !db_path.exists() {
-        return Err(SoldrError::Other(
-            "build history database is missing; run `soldr logs list` after a build".to_string(),
-        ));
-    }
-    // soldr#1814 slice 2e: ask the daemon, which owns these tables, before
-    // opening state.redb ourselves. `BuildLogInputs` (slice 2a) already
-    // returns exactly the pair this needs, so no new verb is required.
-    //
-    // Only the exact-session-id form is served this way. The prefix-match
-    // branch of `resolve_launch_record` needs a full table scan, which is not
-    // worth a verb for an interactive command — it keeps the direct read, as
-    // does every path when the daemon is unreachable.
-    let (record, events) = match daemon_logs_show_inputs(paths, launch_id) {
-        Some(pair) => pair,
-        None => {
-            let record = resolve_launch_record(&db_path, launch_id)?;
-            let events = db::list_events_for_session(&db_path, record.session_id)
-                .map_err(|e| SoldrError::Other(format!("read daemon events: {e}")))?;
-            (record, events)
-        }
-    };
+    let db_path = crate::cache_lib::data_db_path(paths);
+    // The daemon owns these tables. Prefixes resolve through its list query;
+    // the selected session's events come from its exact-session query.
+    let (record, events) = daemon_logs_show_inputs(paths, launch_id)?;
     let mut notes = launch_notes(&record);
     let slow_compiles = slow_compile_events(&events, 10);
     if slow_compiles.is_empty() && record.slowest_crate_us.is_none() {
@@ -406,39 +382,53 @@ fn collect_log_path_entries(paths: &SoldrPaths) -> Vec<LogPathEntry> {
 
 /// Fetch `soldr logs show` inputs from the daemon (soldr#1814 slice 2e).
 ///
-/// Returns `None` — meaning "fall back to reading state.redb directly" — when
-/// `launch_id` is not an exact session id, when the daemon is unreachable, or
-/// when it holds no record for that session. The caller then takes the
-/// original path, so behaviour is unchanged in every case the daemon cannot
-/// serve.
+/// Prefix matching uses the daemon's list operation, followed by its exact
+/// build-log operation for the selected session. The CLI never opens the
+/// daemon-owned state database itself.
 fn daemon_logs_show_inputs(
     paths: &SoldrPaths,
     launch_id: &str,
-) -> Option<(BuildRecord, Vec<db::Event>)> {
-    let session_id = launch_id.trim().parse::<u64>().ok()?;
+) -> Result<(BuildRecord, Vec<Event>), SoldrError> {
     let sock = crate::daemon::client::default_sock_path(paths);
-    let (events, record) = crate::daemon::client::build_log_inputs(&sock, session_id).ok()?;
-    // A served-but-absent record is not an answer: fall back so the
-    // prefix-match branch still gets its chance.
-    Some((*record?, events))
+    if let Ok(session_id) = launch_id.trim().parse::<u64>() {
+        let (events, record) = crate::daemon::client::build_log_inputs(&sock, session_id)
+            .map_err(|error| daemon_query_error("logs show", error))?;
+        if let Some(record) = record {
+            return Ok((*record, events));
+        }
+    }
+
+    let record = resolve_launch_record(daemon_list_builds(paths, 10_000)?, launch_id)?;
+    let (events, daemon_record) = crate::daemon::client::build_log_inputs(&sock, record.session_id)
+        .map_err(|error| daemon_query_error("logs show", error))?;
+    Ok((
+        daemon_record.map(|record| *record).unwrap_or(record),
+        events,
+    ))
 }
 
-fn resolve_launch_record(db_path: &Path, launch_id: &str) -> Result<BuildRecord, SoldrError> {
+fn daemon_list_builds(paths: &SoldrPaths, limit: u32) -> Result<Vec<BuildRecord>, SoldrError> {
+    let sock = crate::daemon::client::default_sock_path(paths);
+    crate::daemon::client::list_builds(&sock, limit, None)
+        .map_err(|error| daemon_query_error("logs list", error))
+}
+
+fn daemon_query_error(operation: &str, error: crate::daemon::client::ClientError) -> SoldrError {
+    SoldrError::Other(format!(
+        "{operation} requires the running soldr-daemon to read daemon-owned build history; \
+         start a cache-enabled build or run `soldr daemon start` ({error:?})"
+    ))
+}
+
+fn resolve_launch_record(
+    records: Vec<BuildRecord>,
+    launch_id: &str,
+) -> Result<BuildRecord, SoldrError> {
     let trimmed = launch_id.trim();
     if trimmed.is_empty() {
         return Err(SoldrError::Other("launch id is empty".to_string()));
     }
-    if let Ok(session_id) = trimmed.parse::<u64>() {
-        if let Some(record) = db::get_build(db_path, session_id)
-            .map_err(|e| SoldrError::Other(format!("read daemon build history: {e}")))?
-        {
-            return Ok(record);
-        }
-    }
-
     let needle = trimmed.to_ascii_lowercase();
-    let records = db::list_builds(db_path, 10_000, None)
-        .map_err(|e| SoldrError::Other(format!("read daemon build history: {e}")))?;
     let mut matches = records
         .into_iter()
         .filter(|record| {
@@ -984,38 +974,26 @@ mod tests {
         }
     }
 
-    timed_test!(logs_list_reads_persisted_cache_summary, {
+    timed_test!(logs_list_requires_the_daemon_query, {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
         let db_path = db::db_path(&paths);
         db::upsert_build(&db_path, &seeded_build(42, 1_000)).expect("upsert");
 
-        let output = collect_logs_list_output_for_paths(&paths, 10).expect("list");
-        assert_eq!(output.schema_version, 1);
-        assert_eq!(output.launches.len(), 1);
-        let launch = &output.launches[0];
-        assert_eq!(launch.id, "42");
-        assert_eq!(launch.cache.as_ref().expect("cache").hits, 8);
-        assert_eq!(launch.cache.as_ref().expect("cache").misses, 2);
-        assert_eq!(launch.miss_reasons[0].reason, "key_mismatch");
-        assert_eq!(
-            launch
-                .logs
-                .as_ref()
-                .and_then(|paths| paths.private_daemon_name.as_deref()),
-            Some("soldr-dev-demo")
+        let error = collect_logs_list_output_for_paths(&paths, 10)
+            .expect_err("logs list must not open the daemon-owned database");
+        assert!(
+            error.to_string().contains("daemon"),
+            "error should explain the daemon requirement: {error}"
         );
     });
 
     timed_test!(logs_show_accepts_hex_prefix_and_lists_slow_compiles, {
-        let tmp = tempfile::tempdir().expect("tmpdir");
-        let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
-        let db_path = db::db_path(&paths);
         let session_id = 0xabc_def0_1234_u64;
-        db::upsert_build(&db_path, &seeded_build(session_id, 1_000)).expect("upsert");
-        db::append_event(
-            &db_path,
-            &Event {
+        let record = resolve_launch_record(vec![seeded_build(session_id, 1_000)], "00000abc")
+            .expect("prefix resolves");
+        let events = vec![
+            Event {
                 ts_ms: 1_100,
                 session_id: Some(session_id),
                 kind: EventKind::CompileEnd,
@@ -1024,11 +1002,7 @@ mod tests {
                 target_dir: Some("/repo/target".into()),
                 exit_code: None,
             },
-        )
-        .expect("event");
-        db::append_event(
-            &db_path,
-            &Event {
+            Event {
                 ts_ms: 1_200,
                 session_id: Some(session_id),
                 kind: EventKind::CompileEnd,
@@ -1037,23 +1011,11 @@ mod tests {
                 target_dir: Some("/repo/target".into()),
                 exit_code: None,
             },
-        )
-        .expect("event");
+        ];
 
-        let output = collect_logs_show_output_for_paths(&paths, "00000abc").expect("show");
-        assert_eq!(output.launch.id, session_id.to_string());
-        assert_eq!(output.slow_compiles.len(), 2);
-        assert_eq!(
-            output.slow_compiles[0].crate_name.as_deref(),
-            Some("slow-crate")
-        );
-        assert!(
-            output
-                .notes
-                .iter()
-                .all(|note| !note.starts_with("cache_summary")),
-            "cache summary should be present: {:?}",
-            output.notes
-        );
+        assert_eq!(record.session_id, session_id);
+        let slow_compiles = slow_compile_events(&events, 10);
+        assert_eq!(slow_compiles.len(), 2);
+        assert_eq!(slow_compiles[0].crate_name.as_deref(), Some("slow-crate"));
     });
 }

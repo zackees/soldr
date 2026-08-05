@@ -12,8 +12,11 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
-use soldr_cli::daemon::db;
+use soldr_cli::core::SoldrPaths;
+use soldr_cli::daemon::client;
+use soldr_cli::daemon::db::{self, Event, EventKind};
 use soldr_cli::daemon::protocol::BuildRecord;
+use wait_timeout::ChildExt;
 mod common;
 
 fn unique_temp_dir(label: &str) -> PathBuf {
@@ -118,22 +121,26 @@ fn seed_build(
     let db_path = cache_root.join("state.redb");
     db::upsert_build(
         &db_path,
-        &BuildRecord {
-            session_id,
-            repo_root: "/seeded".into(),
-            started_at_ms,
-            ended_at_ms: Some(started_at_ms + wall_ms as i64),
-            exit_code: Some(exit_code),
-            total_wall_ms: Some(wall_ms),
-            crate_count: 3,
-            slowest_crate_us: Some(wall_ms * 1000 / 2),
-            slowest_crate_name: Some("seeded-crate".into()),
-            cache_summary: None,
-            log_paths: None,
-            miss_reasons: Vec::new(),
-        },
+        &seeded_record(session_id, started_at_ms, wall_ms, exit_code),
     )
     .expect("upsert");
+}
+
+fn seeded_record(session_id: u64, started_at_ms: i64, wall_ms: u64, exit_code: i32) -> BuildRecord {
+    BuildRecord {
+        session_id,
+        repo_root: "/seeded".into(),
+        started_at_ms,
+        ended_at_ms: Some(started_at_ms + wall_ms as i64),
+        exit_code: Some(exit_code),
+        total_wall_ms: Some(wall_ms),
+        crate_count: 3,
+        slowest_crate_us: Some(wall_ms * 1000 / 2),
+        slowest_crate_name: Some("seeded-crate".into()),
+        cache_summary: None,
+        log_paths: None,
+        miss_reasons: Vec::new(),
+    }
 }
 
 #[test]
@@ -222,4 +229,135 @@ fn builds_list_when_daemon_absent_reports_not_running() {
         .as_array()
         .map(|a| a.is_empty())
         .unwrap_or(false));
+}
+
+#[test]
+fn logs_queries_use_the_daemon_while_it_owns_the_build_history_lock() {
+    let cache_root = unique_temp_dir("logs-query-cache");
+    let home_root = unique_temp_dir("logs-query-home");
+    let session_id = 0xabc_def0_1234_u64;
+    seed_build(&cache_root, session_id, 1_000, 1_500, 0);
+    db::append_event(
+        &cache_root.join("state.redb"),
+        &Event {
+            ts_ms: 1_500,
+            session_id: Some(session_id),
+            kind: EventKind::CompileEnd,
+            crate_name: Some("seeded-crate".into()),
+            duration_us: Some(500_000),
+            target_dir: Some("/seeded/target".into()),
+            exit_code: Some(0),
+        },
+    )
+    .expect("seed event");
+
+    let _daemon = DaemonProc::spawn(&cache_root, &home_root);
+    let list = run_soldr(&["logs", "list", "--json"], &cache_root, &home_root);
+    assert!(
+        list.status.success(),
+        "logs list failed while the daemon owns state.redb: {}",
+        String::from_utf8_lossy(&list.stderr)
+    );
+    let list_body: Value = serde_json::from_slice(&list.stdout).expect("logs list json");
+    assert_eq!(list_body["launches"][0]["id"], session_id.to_string());
+
+    let show = run_soldr(
+        &["logs", "show", "00000abc", "--json"],
+        &cache_root,
+        &home_root,
+    );
+    assert!(
+        show.status.success(),
+        "logs show failed while the daemon owns state.redb: {}",
+        String::from_utf8_lossy(&show.stderr)
+    );
+    let show_body: Value = serde_json::from_slice(&show.stdout).expect("logs show json");
+    assert_eq!(show_body["launch"]["id"], session_id.to_string());
+    assert!(
+        show_body["events"].is_array(),
+        "logs show must source its exact-session event query from the daemon"
+    );
+}
+
+#[test]
+fn logs_show_exact_id_is_not_limited_by_prefix_history_page_size() {
+    let cache_root = unique_temp_dir("logs-exact-cache");
+    let home_root = unique_temp_dir("logs-exact-home");
+    let db_path = cache_root.join("state.redb");
+    let database = db::open_handle(&db_path).expect("open seed database");
+
+    db::upsert_build_in(&database, &seeded_record(1, 1, 100, 0)).expect("seed old record");
+    db::upsert_build_in(&database, &seeded_record(0x1234, 50_000, 100, 0))
+        .expect("seed numeric hexadecimal prefix record");
+    for session_id in 20_000..30_000 {
+        db::upsert_build_in(
+            &database,
+            &seeded_record(session_id, session_id as i64, 100, 0),
+        )
+        .expect("seed newer record");
+    }
+    drop(database);
+
+    let _daemon = DaemonProc::spawn(&cache_root, &home_root);
+    let show = run_soldr(&["logs", "show", "1", "--json"], &cache_root, &home_root);
+    assert!(
+        show.status.success(),
+        "exact old launch must bypass the 10,000-row prefix page: {}",
+        String::from_utf8_lossy(&show.stderr)
+    );
+    let body: Value = serde_json::from_slice(&show.stdout).expect("logs show json");
+    assert_eq!(body["launch"]["id"], "1");
+
+    let prefix = run_soldr(
+        &["logs", "show", "000000000000123", "--json"],
+        &cache_root,
+        &home_root,
+    );
+    assert!(
+        prefix.status.success(),
+        "numeric hexadecimal prefix must fall through after exact-id miss: {}",
+        String::from_utf8_lossy(&prefix.stderr)
+    );
+    let prefix_body: Value = serde_json::from_slice(&prefix.stdout).expect("prefix json");
+    assert_eq!(prefix_body["launch"]["id"], 0x1234.to_string());
+}
+
+#[test]
+fn logs_unavailable_daemon_never_waits_for_its_database_lock() {
+    let cache_root = unique_temp_dir("logs-unavailable-cache");
+    let home_root = unique_temp_dir("logs-unavailable-home");
+    seed_build(&cache_root, 77, 1_000, 500, 0);
+
+    let _daemon = DaemonProc::spawn(&cache_root, &home_root);
+    let paths = SoldrPaths::with_root(cache_root.clone());
+    let socket = client::default_sock_path(&paths);
+    std::fs::remove_file(&socket).expect("hide daemon socket while it retains the lock");
+
+    let mut command = Command::new(common::soldr_bin());
+    command
+        .args(["logs", "list", "--json"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("HOME", &home_root)
+        .env("USERPROFILE", &home_root)
+        .env_remove("RUSTC_WRAPPER")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().expect("spawn logs list");
+    let status = child
+        .wait_timeout(Duration::from_secs(3))
+        .expect("wait for logs list")
+        .unwrap_or_else(|| {
+            let _ = child.kill();
+            panic!("logs list waited on daemon-owned state.redb instead of failing through IPC")
+        });
+    let output = child.wait_with_output().expect("collect logs list output");
+    assert!(
+        !status.success(),
+        "unreachable daemon must return an actionable CLI error"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("requires the running soldr-daemon"),
+        "missing daemon explanation: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
