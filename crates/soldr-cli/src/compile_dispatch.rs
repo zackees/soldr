@@ -396,7 +396,8 @@ pub fn daemon_required() -> bool {
 /// the caller has not opted in to hard-fail via
 /// [`SOLDR_DAEMON_REQUIRED_ENV_VAR`].
 pub fn should_fall_back_to_direct_rustc(failure: &DispatchError) -> bool {
-    !daemon_required() && failure.is_daemon_unavailable()
+    let _ = failure;
+    false
 }
 
 /// Persist every fallback, but leave Cargo-front-door reporting to the parent
@@ -1984,13 +1985,13 @@ mod tests {
     });
 
     timed_test!(
-        should_fall_back_combines_classification_and_env_gate,
+        managed_cache_never_silently_falls_back_to_direct_rustc,
         Duration::from_secs(5),
         {
             let g = EnvVarGuard::acquire(SOLDR_DAEMON_REQUIRED_ENV_VAR);
 
             // Default: unavailability → fall back.
-            assert!(should_fall_back_to_direct_rustc(&budget_exhausted_with(
+            assert!(!should_fall_back_to_direct_rustc(&budget_exhausted_with(
                 Some(client::ClientError::NotRunning)
             )));
             // Default: responding daemon → hard fail.

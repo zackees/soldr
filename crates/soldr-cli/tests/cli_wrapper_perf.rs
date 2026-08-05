@@ -192,8 +192,8 @@ fn fast_path_when_no_session_id() {
     let path = record_target_dir_in_registry(&args);
     assert_eq!(
         path,
-        TargetTouchPath::FastDirect,
-        "without SOLDR_BUILD_SESSION_ID the wrapper must take the fast direct-redb path",
+        TargetTouchPath::DaemonFirst,
+        "without SOLDR_BUILD_SESSION_ID the wrapper must still use the daemon-owned path",
     );
 
     // Hard latency budget for the fast path. The function does:
@@ -270,9 +270,7 @@ fn slow_path_when_session_id_set() {
 }
 
 #[test]
-fn fast_path_writes_target_registry_row_directly() {
-    use soldr_cli::cache_lib::target_registry::TargetRegistry;
-
+fn wrapper_without_a_session_never_opens_state_db_directly() {
     let cache_root = unique_temp_dir("perf-fast-write-cache");
     let home_root = unique_temp_dir("perf-fast-write-home");
     let workspace = unique_temp_dir("perf-fast-write-workspace");
@@ -288,35 +286,11 @@ fn fast_path_writes_target_registry_row_directly() {
     assert!(expected_target.exists(), "test seeded target dir");
 
     let path = record_target_dir_in_registry(&args);
-    assert_eq!(path, TargetTouchPath::FastDirect);
-
-    // Verify exactly one row landed in redb directly, NOT via a
-    // daemon round trip (there is no daemon running in this test).
-    // We check the row count + that the recorded path normalizes to
-    // the same target dir we seeded; resolve_workspace_target_dir
-    // may canonicalize the path so an exact-match lookup is brittle.
-    let registry = TargetRegistry::open(&cache_root.join("state.redb")).expect("open registry");
-    let rows = registry.list().expect("list rows");
-    assert_eq!(
-        rows.len(),
-        1,
-        "fast path must populate exactly one target row; got: {rows:?}",
-    );
-    let row = &rows[0];
+    assert_eq!(path, TargetTouchPath::DaemonFirst);
     assert!(
-        row.path.ends_with("target"),
-        "registered path should end in `target`; got {:?}",
-        row.path,
-    );
-    let canonical_expected = std::fs::canonicalize(&expected_target).unwrap_or(expected_target);
-    let canonical_actual = std::fs::canonicalize(&row.path).unwrap_or_else(|_| row.path.clone());
-    assert_eq!(
-        canonical_actual, canonical_expected,
-        "registered path must point at the seeded target dir",
-    );
-    assert!(
-        row.last_used > 0,
-        "fast path must stamp `last_used` with a current unix timestamp",
+        !cache_root.join("state.redb").exists(),
+        "a wrapper with no build session must wait for the bounded daemon lifecycle instead of opening state.redb directly; target was {}",
+        expected_target.display(),
     );
 }
 
@@ -400,7 +374,7 @@ fn memo_path_falls_through_when_env_path_does_not_match() {
     let path = record_target_dir_in_registry(&args);
     assert_eq!(
         path,
-        TargetTouchPath::FastDirect,
+        TargetTouchPath::DaemonFirst,
         "memo env pointing at an unrelated dir must NOT short-circuit",
     );
 }

@@ -43,10 +43,8 @@ pub enum TargetTouchPath {
     /// `SoldrPaths::new()` failed (no `$HOME` / `$USERPROFILE` / cache
     /// dir resolvable).
     NoPaths,
-    /// Fast path (Option A of issue #474): no `SOLDR_BUILD_SESSION_ID`
+    /// Daemon routing is always used (soldr#2249).
     /// in the environment — direct redb write only.
-    FastDirect,
-    /// Slow path: session id present, daemon routing engaged.
     DaemonFirst,
     /// `SOLDR_TARGET_REGISTRY_RECORDED` matches the resolved target
     /// dir — the cargo front door already upserted for this build
@@ -68,8 +66,6 @@ pub fn record_target_dir_in_registry(rustc_args: &[String]) -> TargetTouchPath {
         return TargetTouchPath::NoPaths;
     };
 
-    let session_id_opt = read_build_session_id_env();
-
     // Memoization (issue #440): if the cargo front door already
     // upserted this target dir for this build session, the redb open
     // + write is pure repetition. Skip both the direct redb write
@@ -83,12 +79,7 @@ pub fn record_target_dir_in_registry(rustc_args: &[String]) -> TargetTouchPath {
         return TargetTouchPath::MemoSkipped;
     }
 
-    // Fast path: skip the daemon entirely outside a soldr-cargo build.
-    if session_id_opt.is_none() {
-        write_target_direct(&paths, &target);
-        return TargetTouchPath::FastDirect;
-    }
-
+    // Target touches always route through the daemon (soldr#2249).
     // Slow path: in-session, daemon for target-touch. Compile lifecycle
     // telemetry rides the subsequent Request::Compile connection.
     crate::daemon::client::record_target_touch_or_fallback(&paths, &target);
@@ -131,15 +122,6 @@ pub(crate) fn target_registry_memo_matches(resolved: &Path) -> bool {
 /// precisely when `SOLDR_BUILD_SESSION_ID` is unset (a bare `cargo` run with
 /// `RUSTC_WRAPPER=soldr`), where there may be no daemon at all and #474 exists
 /// to avoid paying a connect attempt per invocation.
-fn write_target_direct(paths: &SoldrPaths, target: &Path) {
-    let db_path = crate::cache_lib::data_db_path(paths);
-    if let Ok(registry) =
-        crate::cache_lib::target_registry::TargetRegistry::open_best_effort(&db_path)
-    {
-        let _ = registry.upsert(target);
-    }
-}
-
 pub fn read_build_session_id_env() -> Option<u64> {
     std::env::var(crate::cache_lib::SOLDR_BUILD_SESSION_ID_ENV_VAR)
         .ok()

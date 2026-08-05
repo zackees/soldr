@@ -164,7 +164,6 @@ pub(crate) fn run_rustc_wrapper(
         let mark = match path {
             TargetTouchPath::NoTarget => "target_dir_recorded_no_target",
             TargetTouchPath::NoPaths => "target_dir_recorded_no_paths",
-            TargetTouchPath::FastDirect => "target_dir_recorded_fast",
             TargetTouchPath::DaemonFirst => "target_dir_recorded_daemon",
             TargetTouchPath::MemoSkipped => "target_dir_recorded_memo",
         };
