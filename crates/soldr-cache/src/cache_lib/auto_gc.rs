@@ -114,6 +114,11 @@ pub fn clamp_age_to_floor(age_secs: u64, floor_secs: u64) -> u64 {
     age_secs.max(floor_secs)
 }
 
+/// Format a Cargo `clean gc` duration using Cargo's accepted grammar (#2241).
+pub fn cargo_gc_duration_arg(seconds: u64) -> String {
+    format!("{seconds} seconds")
+}
+
 /// Conservative tier-1 ages used when invoking cargo's `clean gc`.
 /// Mirrors cargo's own defaults (~1 month for sources, ~3 months for
 /// the compressed crate cache). The cargo CLI accepts these as
@@ -391,6 +396,11 @@ mod tests {
         let s = TIER3_AGES.clamped_seconds(30 * 86_400);
         assert_eq!(s.max_src, 30 * 86_400);
         assert_eq!(s.max_crate, 30 * 86_400);
+    }
+
+    #[test] // allow-bare-test: soldr-cache legacy test module has not yet migrated to timed_test!
+    fn cargo_gc_duration_arg_uses_cargo_accepted_syntax() {
+        assert_eq!(cargo_gc_duration_arg(604_800), "604800 seconds");
     }
 
     #[test]
