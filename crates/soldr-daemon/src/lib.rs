@@ -20,3 +20,4 @@ pub use soldr_core::{core, self_relocate, timed_test};
 pub(crate) mod compile_limit;
 pub mod daemon;
 pub mod zccache_embedded;
+pub(crate) mod zccache_staging;

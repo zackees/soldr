@@ -40,9 +40,13 @@ pub(crate) const FORWARDED_ENV_PREFIX: &str = "SOLDR_";
 ///   than promoted to `SOLDR_JOBS` at the boundary: promotion would let a
 ///   legacy export outrank `[jobs].max_parallel_compiles`, inverting the
 ///   documented precedence. Precedence stays resolved in exactly one place.
+/// - `ZCCACHE_STAGING_DIR` -- soldr#2188. The embedded service reads this
+///   override inside the detached daemon so Windows compilers receive a short
+///   private output path even when `SOLDR_CACHE_DIR` is deeply nested.
 pub(crate) const FORWARDED_ZCCACHE_ENV: &[&str] = &[
     "ZCCACHE_INNER_TRACE",
     crate::core::jobs::ZCCACHE_MAX_PARALLEL_COMPILES_ENV_VAR,
+    zccache::core::config::STAGING_DIR_ENV,
 ];
 
 /// The environment overlay applied on top of `running-process`'s user
