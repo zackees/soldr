@@ -115,6 +115,40 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
 /// promptly on a fast compile, large enough not to spin.
 const STOP_POLL: Duration = Duration::from_millis(100);
 
+/// Schedules heartbeats against a caller-supplied elapsed duration.
+///
+/// Keeping this state separate from the thread gives the timing contract a
+/// deterministic test seam: a beat can only report an elapsed duration that
+/// has actually reached the first or next threshold. When a host pauses the
+/// watchdog past a threshold, it emits one truthful beat and resumes a full
+/// interval from that real elapsed time instead of rapidly replaying stale
+/// 60/120/180-second labels.
+#[derive(Debug)]
+struct HeartbeatSchedule {
+    interval: Duration,
+    next_threshold: Duration,
+}
+
+impl HeartbeatSchedule {
+    fn new(interval: Duration) -> Self {
+        debug_assert!(!interval.is_zero(), "heartbeat interval must be nonzero");
+        Self {
+            interval,
+            next_threshold: interval,
+        }
+    }
+
+    /// Returns the real elapsed duration when a new heartbeat is due.
+    fn take_due(&mut self, elapsed: Duration) -> Option<Duration> {
+        if elapsed < self.next_threshold {
+            return None;
+        }
+
+        self.next_threshold = elapsed.saturating_add(self.interval);
+        Some(elapsed)
+    }
+}
+
 /// Emits a heartbeat every [`HEARTBEAT_INTERVAL`] until dropped.
 ///
 /// Nothing is printed if the guarded operation finishes inside the first
@@ -202,14 +236,14 @@ impl WaitHeartbeat {
             .name("soldr-wait-heartbeat".to_string())
             .spawn(move || {
                 let started = Instant::now();
-                let mut next = interval;
+                let mut schedule = HeartbeatSchedule::new(interval);
                 let mut seen_chunks = 0u64;
                 while !thread_stop.load(Ordering::Relaxed) {
                     std::thread::sleep(STOP_POLL);
                     if thread_stop.load(Ordering::Relaxed) {
                         return;
                     }
-                    if started.elapsed() >= next {
+                    if let Some(elapsed) = schedule.take_due(started.elapsed()) {
                         let activity = match progress.as_ref() {
                             Some(progress) => {
                                 let current = progress.count();
@@ -219,11 +253,9 @@ impl WaitHeartbeat {
                             }
                             None => StreamActivity::Unknown,
                         };
-                        let mut message =
-                            heartbeat_message(operation, started.elapsed(), timeout, env_var);
+                        let mut message = heartbeat_message(operation, elapsed, timeout, env_var);
                         message.push_str(activity_suffix(activity));
                         sink(message);
-                        next += interval;
                     }
                 }
             })
@@ -272,6 +304,40 @@ pub(crate) fn heartbeat_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    crate::timed_test!(heartbeats_do_not_claim_unreached_thresholds, {
+        let mut schedule = HeartbeatSchedule::new(Duration::from_secs(60));
+
+        assert_eq!(schedule.take_due(Duration::from_secs(59)), None);
+        assert_eq!(
+            schedule.take_due(Duration::from_secs(60)),
+            Some(Duration::from_secs(60))
+        );
+        assert_eq!(schedule.take_due(Duration::from_secs(119)), None);
+        assert_eq!(
+            schedule.take_due(Duration::from_secs(120)),
+            Some(Duration::from_secs(120))
+        );
+        assert_eq!(schedule.take_due(Duration::from_secs(179)), None);
+        assert_eq!(
+            schedule.take_due(Duration::from_secs(180)),
+            Some(Duration::from_secs(180))
+        );
+
+        // A delayed watchdog wake-up reports its real elapsed duration once,
+        // then waits a full cadence instead of rapidly replaying stale 60s /
+        // 120s / 180s labels.
+        let mut delayed = HeartbeatSchedule::new(Duration::from_secs(60));
+        assert_eq!(
+            delayed.take_due(Duration::from_secs(181)),
+            Some(Duration::from_secs(181))
+        );
+        assert_eq!(delayed.take_due(Duration::from_secs(240)), None);
+        assert_eq!(
+            delayed.take_due(Duration::from_secs(241)),
+            Some(Duration::from_secs(241))
+        );
+    });
 
     crate::timed_test!(message_names_operation_elapsed_deadline_and_override, {
         let msg = heartbeat_message(
