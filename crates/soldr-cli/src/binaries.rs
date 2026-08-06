@@ -536,6 +536,7 @@ pub(crate) fn apply_resolved_toolchain_homes(
     };
     if home_origin_for_binary(binary, &paths) == HomeOrigin::Managed {
         apply_managed_toolchain_homes_if_available(command, start_dir.as_deref());
+        apply_managed_toolchain_library_path_if_available(command, binary, &paths);
     }
 }
 
@@ -554,6 +555,59 @@ fn apply_managed_toolchain_homes_if_available(
     };
     apply_managed_cargo_home_if_available_for_paths(command, start_dir, &paths);
     apply_managed_rustup_home_if_available_for_paths(command, start_dir, &paths);
+}
+
+/// Give Rust companion tools (such as `rust-objcopy`) access to the shared
+/// libraries shipped with their managed toolchain.  This is deliberately
+/// separate from the homes helper: caller-owned and repo-local binaries must
+/// never inherit a Soldr-managed loader path.
+fn apply_managed_toolchain_library_path_if_available(
+    command: &mut std::process::Command,
+    binary: &std::path::Path,
+    paths: &SoldrPaths,
+) {
+    #[cfg(target_os = "linux")]
+    const LOADER_LIBRARY_PATH: &str = "LD_LIBRARY_PATH";
+    #[cfg(target_os = "macos")]
+    const LOADER_LIBRARY_PATH: &str = "DYLD_FALLBACK_LIBRARY_PATH";
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        let Some(library_dir) = managed_toolchain_library_dir(binary, paths) else {
+            return;
+        };
+        let existing = command
+            .get_envs()
+            .find(|(key, _)| *key == LOADER_LIBRARY_PATH)
+            .map(|(_, value)| value.map(std::ffi::OsStr::to_os_string))
+            .unwrap_or_else(|| std::env::var_os(LOADER_LIBRARY_PATH));
+        let mut entries = vec![library_dir];
+        if let Some(existing) = existing {
+            entries.extend(std::env::split_paths(&existing));
+        }
+        entries.dedup();
+        if let Ok(value) = std::env::join_paths(entries) {
+            command.env(LOADER_LIBRARY_PATH, value);
+        }
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let _ = (command, binary, paths);
+}
+
+/// Locate `<managed-rustup>/toolchains/<channel>/lib` for a binary inside
+/// that toolchain.  A managed cargo-home proxy has no Rust shared-library
+/// directory of its own, so it intentionally returns `None`.
+fn managed_toolchain_library_dir(binary: &Path, paths: &SoldrPaths) -> Option<PathBuf> {
+    let toolchains = crate::fetch::managed_rustup_home(paths).join("toolchains");
+    let binary = std::fs::canonicalize(binary).unwrap_or_else(|_| binary.to_path_buf());
+    let toolchains = std::fs::canonicalize(&toolchains).unwrap_or(toolchains);
+    let relative = binary.strip_prefix(&toolchains).ok()?;
+    let std::path::Component::Normal(channel) = relative.components().next()? else {
+        return None;
+    };
+    let library_dir = toolchains.join(channel).join("lib");
+    library_dir.is_dir().then_some(library_dir)
 }
 
 /// Apply only Soldr's managed Cargo home when it is implicit and available.
@@ -1268,5 +1322,57 @@ mod tests {
         // like Caller there. If this ever flips, a repo-local toolchain would
         // start executing under soldr's managed homes -- the #1768 regression.
         assert_ne!(HomeOrigin::RepoLocal, HomeOrigin::Managed);
+    });
+
+    #[cfg(target_os = "linux")]
+    crate::timed_test!(
+        managed_toolchain_keeps_its_library_path_and_the_callers_entries,
+        {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let paths = SoldrPaths::with_root(temp.path().join("soldr-root"));
+            let toolchain = crate::fetch::managed_rustup_home(&paths)
+                .join("toolchains")
+                .join("1.94.1");
+            let binary = toolchain.join("bin").join("cargo");
+            let library_dir = toolchain.join("lib");
+            std::fs::create_dir_all(binary.parent().expect("binary parent")).expect("bin dir");
+            std::fs::create_dir_all(&library_dir).expect("lib dir");
+            std::fs::write(&binary, b"").expect("binary");
+
+            let caller_library_dir = temp.path().join("caller-libs");
+            let mut command = std::process::Command::new("cargo");
+            command.env(
+                "LD_LIBRARY_PATH",
+                std::env::join_paths([caller_library_dir.as_path()]).expect("path"),
+            );
+            apply_managed_toolchain_library_path_if_available(&mut command, &binary, &paths);
+
+            let loader_path = command
+                .get_envs()
+                .find_map(|(key, value)| (key == "LD_LIBRARY_PATH").then_some(value))
+                .flatten()
+                .expect("managed command loader path");
+            assert_eq!(
+                std::env::split_paths(loader_path).collect::<Vec<_>>(),
+                vec![library_dir, caller_library_dir],
+            );
+        }
+    );
+
+    #[cfg(target_os = "linux")]
+    crate::timed_test!(caller_toolchain_does_not_receive_managed_library_path, {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("soldr-root"));
+        let binary = temp.path().join("caller").join("bin").join("cargo");
+        std::fs::create_dir_all(binary.parent().expect("binary parent")).expect("bin dir");
+        std::fs::write(&binary, b"").expect("binary");
+
+        let mut command = std::process::Command::new("cargo");
+        apply_managed_toolchain_library_path_if_available(&mut command, &binary, &paths);
+
+        assert!(
+            command.get_envs().all(|(key, _)| key != "LD_LIBRARY_PATH"),
+            "caller-owned toolchains must not inherit a managed loader path"
+        );
     });
 }
