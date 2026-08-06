@@ -167,18 +167,16 @@ fn validate_source(path: &str, source: &str) -> Result<(), Vec<String>> {
     let functions = function_ranges(source);
     let test_modules = cfg_test_module_ranges(source);
     let mut offenders = Vec::new();
-    for (line_number, line) in source.lines().enumerate() {
+    let mut line_offset = 0usize;
+    for (line_number, raw_line) in source.split_inclusive('\n').enumerate() {
+        let line = raw_line.strip_suffix('\n').unwrap_or(raw_line);
+        let line = line.strip_suffix('\r').unwrap_or(line);
         let code = line.split_once("//").map_or(line, |(code, _)| code);
         for opener in FORBIDDEN_OPENERS {
             let Some(column) = code.find(opener) else {
                 continue;
             };
-            let offset = source
-                .lines()
-                .take(line_number)
-                .map(|previous| previous.len() + 1)
-                .sum::<usize>()
-                + column;
+            let offset = line_offset + column;
             let function = functions
                 .iter()
                 .find(|function| function.start <= offset && offset < function.end);
@@ -202,6 +200,7 @@ fn validate_source(path: &str, source: &str) -> Result<(), Vec<String>> {
                 ));
             }
         }
+        line_offset += raw_line.len();
     }
     if offenders.is_empty() {
         Ok(())
@@ -236,36 +235,45 @@ timed_test!(daemon_owns_all_production_state_db_openers, {
     );
 });
 
-#[test]
-fn guard_rejects_uncoordinated_production_open_fixture() {
+timed_test!(guard_rejects_uncoordinated_production_open_fixture, {
     let source = "fn direct_open() { TargetRegistry::open(&db_path).unwrap(); }";
     let error = validate_source("src/future_fallback.rs", source)
         .expect_err("uncoordinated production direct-open fixture must fail");
     assert!(error[0].contains("must use daemon IPC"));
-}
+});
 
-#[test]
-fn guard_rejects_indirect_openers_and_does_not_leak_test_attributes() {
-    for source in [
-        "fn direct_open() { crate::daemon::db::get_build(&db_path, 1).unwrap(); }",
-        "fn direct_sweep() { crate::daemon::history_gc::sweep(paths, &db_path, options); }",
-        "#[cfg(test)]\nfn prior_test() {}\nfn production() { \
+timed_test!(
+    guard_rejects_indirect_openers_and_does_not_leak_test_attributes,
+    {
+        for source in [
+            "fn direct_open() { crate::daemon::db::get_build(&db_path, 1).unwrap(); }",
+            "fn direct_sweep() { crate::daemon::history_gc::sweep(paths, &db_path, options); }",
+            "#[cfg(test)]\nfn prior_test() {}\nfn production() { \
          crate::daemon::db::get_build(&db_path, 1).unwrap(); }",
-        "#[cfg(test)]\nconst TEST_ONLY: () = ();\nfn production() { \
+            "#[cfg(test)]\nconst TEST_ONLY: () = ();\nfn production() { \
          crate::daemon::db::get_build(&db_path, 1).unwrap(); }",
-        "// #[cfg(test)]\nfn production() { \
+            "// #[cfg(test)]\nfn production() { \
          crate::daemon::db::get_build(&db_path, 1).unwrap(); }",
-    ] {
-        assert!(
-            validate_source("src/future_fallback.rs", source).is_err(),
-            "fixture must be rejected: {source}"
-        );
+        ] {
+            assert!(
+                validate_source("src/future_fallback.rs", source).is_err(),
+                "fixture must be rejected: {source}"
+            );
+        }
     }
-}
+);
 
-#[test]
-fn guard_permits_only_a_cfg_test_module() {
+timed_test!(guard_permits_only_a_cfg_test_module, {
     let source = "#[cfg(test)]\nmod tests {\nfn seed() { \
                   crate::daemon::db::upsert_build(&db_path, &record).unwrap();\n}\n}";
     assert!(validate_source("src/feature/tests.rs", source).is_ok());
-}
+});
+
+timed_test!(guard_preserves_offsets_with_crlf_source, {
+    let source = "fn offline_registry_rows() {\r\n\
+                  let _guard = RootOwnershipGuard::try_acquire();\r\n\
+                  // soldr-state-db: offline-root-owner\r\n\
+                  TargetRegistry::open(&db_path);\r\n\
+                  }\r\n";
+    assert!(validate_source("src/gc/mod.rs", source).is_ok());
+});

@@ -2518,10 +2518,10 @@ crate::timed_test!(
     }
 );
 
-// soldr#1790: wiring-level RED->GREEN evidence for `write_always_on_build_log`
-// / `crate::build_log::write_build_log` — a daemon db seeded with one
-// session's CompileStart/CompileEnd events must show up as compile items,
-// a derived link section, and a non-zero totals rollup in the written JSON.
+// soldr#1790: rendering-level RED->GREEN evidence for the build-log writer.
+// Since soldr#1814/#2257, daemon-owned history reaches production exclusively
+// over IPC; this fixture injects the response payload rather than reopening
+// state.redb from the CLI process.
 crate::timed_test!(write_build_log_reflects_seeded_compile_session_events, {
     let root = tempfile::tempdir().expect("temp root");
     let paths = SoldrPaths::with_root(root.path().join("soldr"));
@@ -2529,15 +2529,8 @@ crate::timed_test!(write_build_log_reflects_seeded_compile_session_events, {
     std::fs::create_dir_all(&cwd_dir).expect("mkdir cwd");
 
     let session_id = 9001_u64;
-    let db_path = crate::cache_lib::data_db_path(&paths);
-
-    // Mirror the fixture pattern used by
-    // `build_compile_items_pairs_start_and_end_events` above, but going
-    // through the real daemon db so `write_build_log`'s
-    // `list_events_for_session` read path is exercised end to end.
-    crate::daemon::db::append_event(
-        &db_path,
-        &crate::daemon::db::Event {
+    let events = vec![
+        crate::daemon::db::Event {
             ts_ms: 1_000,
             session_id: Some(session_id),
             kind: crate::daemon::db::EventKind::CompileStart,
@@ -2546,11 +2539,7 @@ crate::timed_test!(write_build_log_reflects_seeded_compile_session_events, {
             target_dir: None,
             exit_code: None,
         },
-    )
-    .expect("append CompileStart crate-a");
-    crate::daemon::db::append_event(
-        &db_path,
-        &crate::daemon::db::Event {
+        crate::daemon::db::Event {
             ts_ms: 1_500,
             session_id: Some(session_id),
             kind: crate::daemon::db::EventKind::CompileEnd,
@@ -2559,11 +2548,7 @@ crate::timed_test!(write_build_log_reflects_seeded_compile_session_events, {
             target_dir: None,
             exit_code: Some(0),
         },
-    )
-    .expect("append CompileEnd crate-a");
-    crate::daemon::db::append_event(
-        &db_path,
-        &crate::daemon::db::Event {
+        crate::daemon::db::Event {
             ts_ms: 1_600,
             session_id: Some(session_id),
             kind: crate::daemon::db::EventKind::CompileEnd,
@@ -2572,8 +2557,7 @@ crate::timed_test!(write_build_log_reflects_seeded_compile_session_events, {
             target_dir: None,
             exit_code: Some(0),
         },
-    )
-    .expect("append CompileEnd crate-b");
+    ];
 
     let args = vec![
         "soldr".to_string(),
@@ -2599,7 +2583,8 @@ crate::timed_test!(write_build_log_reflects_seeded_compile_session_events, {
         }),
     };
 
-    let path = crate::build_log::write_build_log(&request).expect("write_build_log");
+    let path = crate::build_log::write_build_log_with_history_for_test(&request, &events)
+        .expect("write_build_log");
     assert_eq!(path.extension().and_then(|e| e.to_str()), Some("xml"));
     let raw = std::fs::read_to_string(&path).expect("read build log");
     // soldr#1799: the discriminant CI keys on, plus the binary that justifies

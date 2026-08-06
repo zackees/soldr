@@ -120,7 +120,7 @@ pub async fn run(
                 {
                     eprintln!("soldr prepare: xwin cache at {cache_dir}");
                 }
-                apply_blessed_prep_env(github_env_path, &prep)?;
+                apply_blessed_prep_env(github_env_path, &prep, &attrs.triple)?;
             }
             Some(TargetAbi::Gnu) => {
                 eprintln!("soldr prepare: dispatch=mingw-w64-gcc+syslibs");
@@ -130,7 +130,7 @@ pub async fn run(
                 {
                     eprintln!("soldr prepare: MinGW-w64 GCC at {root}");
                 }
-                apply_blessed_prep_env(github_env_path, &prep)?;
+                apply_blessed_prep_env(github_env_path, &prep, &attrs.triple)?;
             }
             _ => unreachable!("classify_target rejects Windows without a supported ABI"),
         },
@@ -147,12 +147,12 @@ pub async fn run(
                 eprintln!("soldr prepare: Apple SDK at {}", sdk.display());
                 println!("SDKROOT={}", sdk.display());
             }
-            apply_blessed_prep_env(github_env_path, &prep)?;
+            apply_blessed_prep_env(github_env_path, &prep, &attrs.triple)?;
         }
         TargetOs::Linux => {
             eprintln!("soldr prepare: dispatch=blessed-linux");
             let prep = crate::target_lifecycle::prepare_target(&paths, &target).await?;
-            apply_blessed_prep_env(github_env_path, &prep)?;
+            apply_blessed_prep_env(github_env_path, &prep, &attrs.triple)?;
         }
     }
 
@@ -979,9 +979,8 @@ mod tests {
             ],
             ..Default::default()
         };
-
-        apply_blessed_prep_env(Some(&github_env), &prep).expect("apply prep env");
-
+        apply_blessed_prep_env(Some(&github_env), &prep, "x86_64-pc-windows-gnu")
+            .expect("apply prep env");
         assert_eq!(
             std::env::var("MINGW_W64_GCC_ROOT").expect("mingw env"),
             tmp.path().join("mingw").to_string_lossy()
@@ -1042,9 +1041,8 @@ mod tests {
             ],
             ..Default::default()
         };
-
-        apply_blessed_prep_env(Some(&github_env), &prep).expect("apply prep env");
-
+        apply_blessed_prep_env(Some(&github_env), &prep, "x86_64-pc-windows-msvc")
+            .expect("apply prep env");
         assert_eq!(
             std::env::var("CC_x86_64_pc_windows_msvc").expect("cc env"),
             "clang"

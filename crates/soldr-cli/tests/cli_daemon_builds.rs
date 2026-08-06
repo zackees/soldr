@@ -372,10 +372,17 @@ fn logs_unavailable_daemon_never_waits_for_its_database_lock() {
     let home_root = unique_temp_dir("logs-unavailable-home");
     seed_build(&cache_root, 77, 1_000, 500, 0);
 
-    let _daemon = DaemonProc::spawn(&cache_root, &home_root);
-    let paths = SoldrPaths::with_root(cache_root.clone());
-    let socket = client::default_sock_path(&paths);
-    std::fs::remove_file(&socket).expect("hide daemon socket while it retains the lock");
+    #[cfg(unix)]
+    let _endpoint_owner = {
+        let daemon = DaemonProc::spawn(&cache_root, &home_root);
+        let paths = SoldrPaths::with_root(cache_root.clone());
+        let socket = client::default_sock_path(&paths);
+        std::fs::remove_file(&socket).expect("hide daemon socket while it retains the lock");
+        daemon
+    };
+    #[cfg(windows)]
+    let _endpoint_owner = db::open_handle(&cache_root.join("state.redb"))
+        .expect("hold the daemon-owned database lock without a named-pipe endpoint");
 
     let mut command = Command::new(common::soldr_bin());
     command

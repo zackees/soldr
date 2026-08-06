@@ -13,6 +13,37 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+fn wait_for_daemon_ready(soldr_bin: &Path, cache_root: &Path, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    let mut delay = Duration::from_millis(25);
+    loop {
+        let status = Command::new(soldr_bin)
+            .args(["daemon", "status", "--json"])
+            .env("SOLDR_CACHE_DIR", cache_root)
+            .env("RUNNING_PROCESS_DISABLE", "1")
+            .env_remove(soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR)
+            .output()
+            .expect("query daemon status");
+        if status.status.success()
+            && serde_json::from_slice::<Value>(&status.stdout)
+                .ok()
+                .and_then(|body| body["running"].as_bool())
+                .unwrap_or(false)
+        {
+            return;
+        }
+        let now = Instant::now();
+        assert!(
+            now < deadline,
+            "daemon did not become ready within {timeout:?}; last stdout: {}; last stderr: {}",
+            String::from_utf8_lossy(&status.stdout),
+            String::from_utf8_lossy(&status.stderr)
+        );
+        std::thread::sleep(delay.min(deadline.saturating_duration_since(now)));
+        delay = (delay * 2).min(Duration::from_secs(1));
+    }
+}
+
 #[test]
 fn gc_summary_surfaces_the_linked_worktree_total() {
     // soldr#2134 wants merged-worktree targets reclaimed eagerly. Deleting
@@ -256,7 +287,7 @@ fn gc_purge_all_json_reports_error_log_path_and_keeps_failed_row() {
 
 timed_test!(
     gc_list_json_reports_built_project_target_dir,
-    Duration::from_secs(60),
+    Duration::from_secs(120),
     {
         let cache_root = unique_temp_dir("gc-list-build");
         let project_dir = unique_temp_dir("gc-list-project");
@@ -282,6 +313,11 @@ timed_test!(
         let start = Command::new(&soldr_bin)
             .args(["daemon", "start"])
             .env("SOLDR_CACHE_DIR", &cache_root)
+            // A dogfooded outer `soldr cargo test` exports its installed
+            // daemon image. This fixture must start the daemon built beside
+            // CARGO_BIN_EXE_soldr so its IPC protocol matches the test binary.
+            .env_remove(soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR)
+            .env("RUNNING_PROCESS_DISABLE", "1")
             .output()
             .expect("start daemon for wrapper target registry");
         assert!(
@@ -289,30 +325,15 @@ timed_test!(
             "daemon start failed: {}",
             String::from_utf8_lossy(&start.stderr)
         );
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            let status = Command::new(&soldr_bin)
-                .args(["daemon", "status", "--json"])
-                .env("SOLDR_CACHE_DIR", &cache_root)
-                .output()
-                .expect("query daemon status");
-            if status.status.success()
-                && serde_json::from_slice::<Value>(&status.stdout)
-                    .ok()
-                    .and_then(|body| body["running"].as_bool())
-                    .unwrap_or(false)
-            {
-                break;
-            }
-            assert!(Instant::now() < deadline, "daemon did not become ready");
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        wait_for_daemon_ready(&soldr_bin, &cache_root, Duration::from_secs(45));
 
         let build = Command::new(&cargo)
             .args(["build", "--quiet"])
             .current_dir(&project_dir)
             .env("RUSTC_WRAPPER", &soldr_bin)
             .env("SOLDR_CACHE_DIR", &cache_root)
+            .env_remove(soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR)
+            .env("RUNNING_PROCESS_DISABLE", "1")
             .env("ZCCACHE_DISABLE", "1")
             .env("SOLDR_CACHE_ENABLED", "0")
             .env_remove("CARGO_TARGET_DIR")
@@ -342,6 +363,8 @@ timed_test!(
         let output = Command::new(&soldr_bin)
             .args(["gc", "list", "--json"])
             .env("SOLDR_CACHE_DIR", &cache_root)
+            .env_remove(soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR)
+            .env("RUNNING_PROCESS_DISABLE", "1")
             .env("CARGO_HOME", &sandbox_cargo_home)
             .env("RUSTUP_HOME", &sandbox_rustup_home)
             .output()

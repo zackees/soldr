@@ -196,15 +196,23 @@ fn daemon_build_log_inputs(
 }
 
 pub fn write_build_log(request: &BuildLogRequest<'_>) -> Result<PathBuf, SoldrError> {
+    // Build history is daemon-owned. An unavailable daemon produces an
+    // intentionally incomplete best-effort log rather than a second opener.
+    let (events, daemon_record, history_source) = daemon_build_log_inputs(request);
+    write_build_log_with_history(request, &events, daemon_record, history_source)
+}
+
+fn write_build_log_with_history(
+    request: &BuildLogRequest<'_>,
+    events: &[Event],
+    daemon_record: Option<Box<crate::daemon::protocol::BuildRecord>>,
+    history_source: &'static str,
+) -> Result<PathBuf, SoldrError> {
     let dir = build_logs_dir(request.paths);
     std::fs::create_dir_all(&dir)?;
 
     let build_meta = derive_build_meta(request.args, request.cwd);
     let download_step = build_download_step(fetch_timing::drain());
-
-    // Build history is daemon-owned. An unavailable daemon produces an
-    // intentionally incomplete best-effort log rather than a second opener.
-    let (events, daemon_record, history_source) = daemon_build_log_inputs(request);
 
     let cache_outcomes = read_compile_cache_outcomes(
         request.compile_journal_path.as_deref(),
@@ -212,8 +220,8 @@ pub fn write_build_log(request: &BuildLogRequest<'_>) -> Result<PathBuf, SoldrEr
     );
 
     let (compile_items, compile_wall_ms, compile_cpu_ms) =
-        build_compile_items(&events, &cache_outcomes);
-    let link_step = build_link_step(&events);
+        build_compile_items(events, &cache_outcomes);
+    let link_step = build_link_step(events);
 
     let mut hits = compile_items
         .iter()
@@ -281,6 +289,14 @@ pub fn write_build_log(request: &BuildLogRequest<'_>) -> Result<PathBuf, SoldrEr
     let xml = render_xml(&doc);
     std::fs::write(&path, xml)?;
     Ok(path)
+}
+
+#[cfg(test)]
+pub(crate) fn write_build_log_with_history_for_test(
+    request: &BuildLogRequest<'_>,
+    events: &[Event],
+) -> Result<PathBuf, SoldrError> {
+    write_build_log_with_history(request, events, None, "test-fixture")
 }
 
 /// Delete all but the newest `keep` files in `dir` (sorted by filename,

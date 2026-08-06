@@ -67,16 +67,17 @@ fn collect_cache_report_output() -> Result<CacheReportOutput, SoldrError> {
     collect_cache_report_output_for_workspace(&paths, &workspace_root)
 }
 
-fn collect_cache_report_output_for_paths(
-    paths: &SoldrPaths,
-) -> Result<CacheReportOutput, SoldrError> {
-    let workspace_root = std::env::current_dir().map_err(SoldrError::from)?;
-    collect_cache_report_output_for_workspace(paths, &workspace_root)
-}
-
 fn collect_cache_report_output_for_workspace(
     paths: &SoldrPaths,
     workspace_root: &Path,
+) -> Result<CacheReportOutput, SoldrError> {
+    collect_cache_report_output_with_history(paths, workspace_root, None)
+}
+
+fn collect_cache_report_output_with_history(
+    paths: &SoldrPaths,
+    workspace_root: &Path,
+    build_history: Option<Vec<crate::daemon::protocol::BuildRecord>>,
 ) -> Result<CacheReportOutput, SoldrError> {
     // soldr#1368: no private standalone zccache daemon any more — report on
     // the shared Soldr-owned embedded-service directory.
@@ -84,13 +85,22 @@ fn collect_cache_report_output_for_workspace(
     let global_stats_path = crate::cache_lib::session_stats_path(&zccache_dir);
     let global_journal_path = crate::cache_lib::session_journal_path(&zccache_dir);
     let mut notes: Vec<String> = Vec::new();
-    let selected = select_workspace_session(
-        paths,
-        workspace_root,
-        global_stats_path,
-        global_journal_path,
-        &mut notes,
-    );
+    let selected = match build_history {
+        Some(records) => select_workspace_session_from_records(
+            records,
+            workspace_root,
+            global_stats_path,
+            global_journal_path,
+            &mut notes,
+        ),
+        None => select_workspace_session(
+            paths,
+            workspace_root,
+            global_stats_path,
+            global_journal_path,
+            &mut notes,
+        ),
+    };
     let session_stats_path = selected.stats_path;
     let journal_path = selected.journal_path;
     let session_stats_present = session_stats_path.exists();
@@ -166,47 +176,68 @@ fn select_workspace_session(
     let sock = crate::daemon::client::default_sock_path(paths);
     match crate::daemon::client::list_builds(&sock, 10_000, None) {
         Ok(records) => {
-            for record in records {
-                if !same_workspace_path(Path::new(&record.repo_root), workspace_root) {
-                    continue;
-                }
-                let Some(log_paths) = record.log_paths else {
-                    continue;
-                };
-                let Some(stats_path) = log_paths.archived_session_stats_path.map(PathBuf::from)
-                else {
-                    continue;
-                };
-                if !stats_path.is_file() {
-                    continue;
-                }
-                let journal_path = log_paths
-                    .archived_journal_path
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| stats_path.with_file_name("last-session.jsonl"));
-                notes.push(format!(
-                    "provenance: workspace history session {} ({})",
-                    record.session_id,
-                    stats_path.display()
-                ));
-                return SelectedSession {
-                    stats_path,
-                    journal_path,
-                    session_id: Some(record.session_id.to_string()),
-                    source: "workspace-history",
-                };
-            }
-            notes.push(format!(
-                "provenance: no archived build history matches workspace {}; using global last-writer-wins stats {} (originating workspace: unknown)",
-                workspace_root.display(),
-                global_stats_path.display(),
-            ));
+            return select_workspace_session_from_records(
+                records,
+                workspace_root,
+                global_stats_path,
+                global_journal_path,
+                notes,
+            );
         }
         Err(error) => notes.push(format!(
                 "provenance: could not read build history ({error:?}); using global last-writer-wins stats {} (originating workspace: unknown)",
             global_stats_path.display(),
         )),
     }
+    SelectedSession {
+        stats_path: global_stats_path,
+        journal_path: global_journal_path,
+        session_id: None,
+        source: "global-fallback",
+    }
+}
+
+fn select_workspace_session_from_records(
+    records: Vec<crate::daemon::protocol::BuildRecord>,
+    workspace_root: &Path,
+    global_stats_path: PathBuf,
+    global_journal_path: PathBuf,
+    notes: &mut Vec<String>,
+) -> SelectedSession {
+    for record in records {
+        if !same_workspace_path(Path::new(&record.repo_root), workspace_root) {
+            continue;
+        }
+        let Some(log_paths) = record.log_paths else {
+            continue;
+        };
+        let Some(stats_path) = log_paths.archived_session_stats_path.map(PathBuf::from) else {
+            continue;
+        };
+        if !stats_path.is_file() {
+            continue;
+        }
+        let journal_path = log_paths
+            .archived_journal_path
+            .map(PathBuf::from)
+            .unwrap_or_else(|| stats_path.with_file_name("last-session.jsonl"));
+        notes.push(format!(
+            "provenance: workspace history session {} ({})",
+            record.session_id,
+            stats_path.display()
+        ));
+        return SelectedSession {
+            stats_path,
+            journal_path,
+            session_id: Some(record.session_id.to_string()),
+            source: "workspace-history",
+        };
+    }
+    notes.push(format!(
+        "provenance: no archived build history matches workspace {}; using global last-writer-wins stats {} (originating workspace: unknown)",
+        workspace_root.display(),
+        global_stats_path.display(),
+    ));
     SelectedSession {
         stats_path: global_stats_path,
         journal_path: global_journal_path,
@@ -354,7 +385,7 @@ fn print_cache_report_output(output: &CacheReportOutput) {
 
 #[cfg(test)]
 mod tests {
-    use super::{collect_cache_report_output_for_paths, collect_cache_report_output_for_workspace};
+    use super::collect_cache_report_output_with_history;
     use crate::core::SoldrPaths;
     use crate::daemon::protocol::{BuildLogPaths, BuildRecord};
 
@@ -411,17 +442,14 @@ mod tests {
             r#"{"status":"ok","session_id":"42","hits":23,"misses":5,"hit_rate":0.82}"#,
         )
         .expect("write archived stats");
-        crate::daemon::db::upsert_build(
-            &crate::daemon::db::db_path(&paths),
-            &build_record(
-                42,
-                workspace_root.display().to_string(),
-                archived_stats_path.display().to_string(),
-            ),
-        )
-        .expect("seed matching build history");
-
-        let report = collect_cache_report_output_for_paths(&paths).expect("collect report");
+        let record = build_record(
+            42,
+            workspace_root.display().to_string(),
+            archived_stats_path.display().to_string(),
+        );
+        let report =
+            collect_cache_report_output_with_history(&paths, &workspace_root, Some(vec![record]))
+                .expect("collect report");
         assert_eq!(
             report.session_stats_path,
             archived_stats_path.display().to_string(),
@@ -480,18 +508,14 @@ mod tests {
             }"#,
         )
         .expect("write archived stats");
-        crate::daemon::db::upsert_build(
-            &crate::daemon::db::db_path(&paths),
-            &build_record(
-                99,
-                workspace_root.display().to_string(),
-                archived_stats_path.display().to_string(),
-            ),
-        )
-        .expect("seed matching build history");
-
-        let report = collect_cache_report_output_for_workspace(&paths, &workspace_root)
-            .expect("collect report");
+        let record = build_record(
+            99,
+            workspace_root.display().to_string(),
+            archived_stats_path.display().to_string(),
+        );
+        let report =
+            collect_cache_report_output_with_history(&paths, &workspace_root, Some(vec![record]))
+                .expect("collect report");
         assert!(report.diagnoses.iter().any(|diagnosis| {
             diagnosis.get("kind").and_then(serde_json::Value::as_str)
                 == Some("cache_publication_failed")

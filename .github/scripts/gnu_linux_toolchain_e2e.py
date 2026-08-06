@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import re
 import subprocess
 import sys
@@ -123,15 +124,26 @@ def assert_managed_environment(env: dict[str, str], target: str) -> tuple[Path, 
             raise RuntimeError(f"{key} is not a managed GNU {tool}: {value}")
         require_no_zig(str(value), key)
         run([str(value), "--version"], env=env)
+    host_arch = (
+        platform.machine()
+        .lower()
+        .replace("amd64", "x86_64")
+        .replace("arm64", "aarch64")
+    )
+    is_native_target = host_arch == TARGETS[target][0]
     for alias, source in (
         ("CC", "CMAKE_C_COMPILER"),
         ("CXX", "CMAKE_CXX_COMPILER"),
         ("AR", "CMAKE_AR"),
         ("RANLIB", "CMAKE_RANLIB"),
     ):
-        if env.get(alias) != env[source]:
+        if is_native_target and env.get(alias) != env[source]:
             raise RuntimeError(
                 f"external CMake alias {alias} did not preserve {source}"
+            )
+        if not is_native_target and env.get(alias) == env[source]:
+            raise RuntimeError(
+                f"cross-target alias {alias} leaked the managed target compiler"
             )
     for key in ("CMAKE_SYSROOT", "PKG_CONFIG_SYSROOT_DIR"):
         if Path(env[key]) != sysroot:
@@ -191,12 +203,16 @@ install(TARGETS cmake_probe ARCHIVE DESTINATION lib)
     (root / "build.rs").write_text(
         """use std::{env, path::Path, process::Command};
 
-fn cmake(args: &[&str]) {
+fn cmake(args: &[String]) {
     let status = Command::new(env::var("CMAKE").expect("managed CMAKE"))
         .args(args)
         .status()
         .expect("run managed CMake");
     assert!(status.success(), "managed CMake failed");
+}
+
+fn cmake_definition(name: &str) -> String {
+    format!("-D{name}={}", env::var(name).unwrap_or_else(|_| panic!("managed {name}")))
 }
 
 fn main() {
@@ -206,8 +222,26 @@ fn main() {
     let out = env::var("OUT_DIR").expect("OUT_DIR");
     let install = Path::new(&out).join("cmake-install");
     let build = Path::new(&out).join("cmake-build");
-    cmake(&["-S", "cmake-probe", "-B", build.to_str().unwrap(), "-DCMAKE_BUILD_TYPE=Release", &format!("-DCMAKE_INSTALL_PREFIX={}", install.display())]);
-    cmake(&["--build", build.to_str().unwrap(), "--target", "install"]);
+    cmake(&[
+        "-S".into(),
+        "cmake-probe".into(),
+        "-B".into(),
+        build.display().to_string(),
+        "-DCMAKE_BUILD_TYPE=Release".into(),
+        format!("-DCMAKE_INSTALL_PREFIX={}", install.display()),
+        cmake_definition("CMAKE_C_COMPILER"),
+        cmake_definition("CMAKE_CXX_COMPILER"),
+        cmake_definition("CMAKE_AR"),
+        cmake_definition("CMAKE_RANLIB"),
+        cmake_definition("CMAKE_LINKER"),
+        cmake_definition("CMAKE_SYSROOT"),
+    ]);
+    cmake(&[
+        "--build".into(),
+        build.display().to_string(),
+        "--target".into(),
+        "install".into(),
+    ]);
     println!("cargo:rustc-link-search=native={}", install.join("lib").display());
     println!("cargo:rustc-link-lib=static=cmake_probe");
 }

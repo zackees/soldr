@@ -154,7 +154,7 @@ crate::timed_test!(managed_gnu_toolchain_is_exported_for_later_github_steps, {
     );
 
     let github_env = dir.path().join("github.env");
-    apply_blessed_prep_env(Some(&github_env), &prep).expect("export prepared env");
+    apply_blessed_prep_env(Some(&github_env), &prep, target).expect("export prepared env");
 
     let process_path = std::env::split_paths(&std::env::var_os("PATH").expect("process PATH"))
         .next()
@@ -190,18 +190,17 @@ crate::timed_test!(managed_gnu_toolchain_is_exported_for_later_github_steps, {
         std::env::var("SOLDR_GNU_LINUX_SYSROOT").expect("sysroot"),
         sysroot.to_string_lossy()
     );
-    for (alias, tool, ambient) in [
-        ("CC", "gcc", "ambient-cc"),
-        ("CXX", "g++", "ambient-cxx"),
-        ("AR", "ar", "ambient-ar"),
-        ("RANLIB", "ranlib", "ambient-ranlib"),
+    for (alias, ambient) in [
+        ("CC", "ambient-cc"),
+        ("CXX", "ambient-cxx"),
+        ("AR", "ambient-ar"),
+        ("RANLIB", "ambient-ranlib"),
     ] {
-        let expected = managed_bin.join(format!("{target_prefix}-{tool}"));
         assert!(
-            exported
+            !exported
                 .lines()
-                .any(|line| line == format!("{alias}={}", expected.display())),
-            "{alias} was not exported for an external CMake consumer: {exported}"
+                .any(|line| line.starts_with(&format!("{alias}="))),
+            "cross-target {alias} must not leak into later Cargo host builds: {exported}"
         );
         assert_eq!(
             std::env::var_os(alias).as_deref(),
@@ -319,7 +318,7 @@ crate::timed_test!(
             prep.path_dirs
         );
         let github_env = dir.path().join("github.env");
-        apply_blessed_prep_env(Some(&github_env), &prep).expect("export prepared env");
+        apply_blessed_prep_env(Some(&github_env), &prep, target).expect("export prepared env");
         let exported = std::fs::read_to_string(&github_env).expect("read github env");
         for key in &output_keys {
             let process_value = std::env::var(key).unwrap_or_else(|_| panic!("{key} not applied"));
@@ -357,7 +356,8 @@ crate::timed_test!(exported_encoded_rustflags_keep_caller_target_flags, {
 
     let dir = tempfile::tempdir().expect("tempdir");
     let github_env = dir.path().join("github.env");
-    apply_blessed_prep_env(Some(&github_env), &prep).expect("apply prep env");
+    apply_blessed_prep_env(Some(&github_env), &prep, "x86_64-pc-windows-msvc")
+        .expect("apply prep env");
 
     let exported = std::fs::read_to_string(&github_env).expect("read github env");
     let encoded_line = exported
