@@ -1045,11 +1045,9 @@ fn embedded_rustfmt_preserves_toolchain_timeout() {
 
     assert!(!output.status.success());
     assert!(started.elapsed() < std::time::Duration::from_secs(5));
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("timed out after 1 seconds"),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("installer watchdog category=safety-ceiling"), "stderr: {stderr}");
+    assert!(stderr.contains("safety_ceiling=1s"), "stderr: {stderr}");
 }
 
 #[test]
