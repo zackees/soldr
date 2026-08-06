@@ -31,10 +31,12 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use super::manifest_lookup;
-use super::trust;
+use super::stream_download::{
+    send_asset_request, stream_response_to_temp_file, DownloadedAsset, ASSET_HEADER_TIMEOUT,
+    ASSET_IDLE_TIMEOUT,
+};
 use crate::core::{SoldrError, SoldrPaths};
 
-const SYSLIB_DOWNLOAD_TIMEOUT_SECS: u64 = 30 * 60;
 pub const SYSLIB_ASSET_ORIGIN_ENV_VAR: &str = "SOLDR_SYSLIB_ASSET_ORIGIN";
 const DEFAULT_SYSLIB_ASSET_ORIGIN: &str =
     "https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets";
@@ -120,12 +122,13 @@ pub async fn ensure_syslib_bundle(
     // `managed cmake unavailable ... network error: error decoding response
     // body` and then, a hundred log lines later, as `can't find crate for
     // std` -- an error naming the wrong thing entirely.
-    let bytes = super::retry::with_backoff(&format!("syslib {lib}/{version}/{slug}"), || {
-        download_syslib_bundle(&url)
-    })
-    .await?;
+    let downloaded =
+        super::retry::with_asset_backoff(&format!("syslib {lib}/{version}/{slug}"), || {
+            download_syslib_bundle(&url)
+        })
+        .await?;
 
-    let digest = trust::sha256_of(&bytes);
+    let digest = downloaded.sha256();
     if digest != expected_sha256 {
         return Err(SoldrError::Other(format!(
             "syslib bundle sha256 mismatch for {lib}/{version}/{slug}: \
@@ -138,7 +141,7 @@ pub async fn ensure_syslib_bundle(
         std::fs::remove_dir_all(&install_root)?;
     }
     std::fs::create_dir_all(&install_root)?;
-    extract_tar_zst(&bytes, &install_root)?;
+    extract_tar_zst(std::fs::File::open(downloaded.path())?, &install_root)?;
 
     if !sysroot.is_dir() {
         return Err(SoldrError::Archive(format!(
@@ -157,42 +160,27 @@ pub async fn ensure_syslib_bundle(
 /// [`SoldrError::Network`], which is exactly what [`super::retry`] retries;
 /// sha256 verification is deliberately *outside* this function so an integrity
 /// failure stays fatal on the first try.
-async fn download_syslib_bundle(url: &str) -> Result<Vec<u8>, SoldrError> {
+async fn download_syslib_bundle(url: &str) -> Result<DownloadedAsset, SoldrError> {
     let client = syslib_http_client()?;
-    let resp = client
-        .get(url)
-        .header(reqwest::header::ACCEPT_ENCODING, "identity")
-        .send()
-        .await
-        .map_err(|e| SoldrError::Network(e.to_string()))?;
-    if !resp.status().is_success() {
-        return Err(SoldrError::Network(format!(
-            "syslib bundle download failed: HTTP {}",
-            resp.status()
-        )));
-    }
-    // `Vec<u8>` rather than `bytes::Bytes` so this does not pull a new
-    // dependency into the crate for one return type; both consumers below take
-    // `&[u8]`.
-    resp.bytes()
-        .await
-        .map(|body| body.to_vec())
-        .map_err(|e| SoldrError::Network(e.to_string()))
+    let resp = send_asset_request(
+        client
+            .get(url)
+            .header(reqwest::header::ACCEPT_ENCODING, "identity"),
+        url,
+        ASSET_HEADER_TIMEOUT,
+    )
+    .await?;
+    stream_response_to_temp_file(resp, url, ASSET_IDLE_TIMEOUT).await
 }
 
 fn syslib_http_client() -> Result<reqwest::Client, SoldrError> {
     super::net_guard::ensure_network_allowed("a *-sys catalogue bundle")?;
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
-        .timeout(syslib_download_timeout())
         .http1_only()
         .user_agent(format!("soldr/{}", crate::core::version()))
         .build()
         .map_err(|e| SoldrError::Network(e.to_string()))
-}
-
-fn syslib_download_timeout() -> Duration {
-    Duration::from_secs(SYSLIB_DOWNLOAD_TIMEOUT_SECS)
 }
 
 /// Acquire a **blocking** exclusive cross-process lock for an install
@@ -262,8 +250,7 @@ fn missing_catalogue_entry_message(
     }
 }
 
-fn extract_tar_zst(data: &[u8], dest: &Path) -> Result<(), SoldrError> {
-    let reader = std::io::Cursor::new(data);
+fn extract_tar_zst<R: std::io::Read>(reader: R, dest: &Path) -> Result<(), SoldrError> {
     let zst = zstd::stream::read::Decoder::new(reader)
         .map_err(|e| SoldrError::Archive(format!("zstd decoder init: {e}")))?;
     let mut archive = tar::Archive::new(zst);
@@ -294,8 +281,11 @@ mod tests {
         assert_ne!(a, b);
     });
 
-    timed_test!(large_binary_download_timeout_allows_managed_toolchains, {
-        assert_eq!(syslib_download_timeout(), Duration::from_secs(30 * 60));
+    timed_test!(large_binary_download_uses_shared_idle_timeout, {
+        assert_eq!(
+            super::super::stream_download::ASSET_IDLE_TIMEOUT,
+            Duration::from_secs(120)
+        );
     });
 
     timed_test!(install_lock_serializes_racing_threads, {

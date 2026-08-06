@@ -38,7 +38,10 @@ pub(crate) const FETCH_ATTEMPTS: u32 = 4;
 /// Delay before the second attempt; doubles thereafter (5s, 10s, 20s).
 pub(crate) const FETCH_INITIAL_BACKOFF: Duration = Duration::from_secs(5);
 
-/// Ceiling on the *total* time spent retrying, backoff included.
+/// Ceiling on the *total* time spent retrying control-plane requests, backoff
+/// included. Archive data-plane requests use [`with_asset_backoff`] instead:
+/// their per-attempt stream watchdog bounds a stall, while their transfer time
+/// must not consume eligibility for a later retry.
 ///
 /// Attempts alone do not bound wall-clock, because an attempt can itself be a
 /// long timeout. `manifest_lookup`'s catalogue fetch uses a 30s
@@ -89,6 +92,19 @@ where
     .await
 }
 
+/// Retry an archive-sized data-plane fetch without a response-wide wall-clock
+/// budget. Attempts and cumulative exponential-backoff sleep remain bounded;
+/// each individual body read is bounded by the stream downloader's idle
+/// watchdog. This means a late truncation after a healthy long transfer still
+/// receives the configured retries.
+pub(crate) async fn with_asset_backoff<T, F, Fut>(what: &str, operation: F) -> Result<T, SoldrError>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, SoldrError>>,
+{
+    with_asset_backoff_params(what, FETCH_ATTEMPTS, FETCH_INITIAL_BACKOFF, operation).await
+}
+
 /// [`with_backoff`] with the schedule spelled out. Separate so callers with
 /// their own tuning (and tests) can drive it without sleeping for real
 /// seconds -- including `total_budget`, so a test can prove the deadline
@@ -98,6 +114,43 @@ pub(crate) async fn with_backoff_params<T, F, Fut>(
     attempts: u32,
     initial_backoff: Duration,
     total_budget: Duration,
+    operation: F,
+) -> Result<T, SoldrError>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, SoldrError>>,
+{
+    retry_with_backoff(
+        what,
+        attempts,
+        initial_backoff,
+        Some(total_budget),
+        operation,
+    )
+    .await
+}
+
+/// Parameterized data-plane retry helper. Kept separate from
+/// [`with_backoff_params`] so timing tests can prove that a long, progressing
+/// transfer which fails transiently still gets another attempt.
+pub(crate) async fn with_asset_backoff_params<T, F, Fut>(
+    what: &str,
+    attempts: u32,
+    initial_backoff: Duration,
+    operation: F,
+) -> Result<T, SoldrError>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, SoldrError>>,
+{
+    retry_with_backoff(what, attempts, initial_backoff, None, operation).await
+}
+
+async fn retry_with_backoff<T, F, Fut>(
+    what: &str,
+    attempts: u32,
+    initial_backoff: Duration,
+    total_budget: Option<Duration>,
     mut operation: F,
 ) -> Result<T, SoldrError>
 where
@@ -115,7 +168,9 @@ where
                     && is_transient(&err)
                     // Checked *before* sleeping, so the backoff itself cannot
                     // push past the budget and then start a fresh attempt.
-                    && started.elapsed().saturating_add(backoff) < total_budget =>
+                    && total_budget.is_none_or(|budget| {
+                        started.elapsed().saturating_add(backoff) < budget
+                    }) =>
             {
                 eprintln!(
                     "soldr: transient error fetching {what} (attempt {attempt}/{attempts}): \
@@ -259,6 +314,31 @@ mod tests {
             "total time must stay near the budget, took {:?}",
             started.elapsed()
         );
+    });
+
+    crate::timed_test!(late_asset_failure_is_retried_after_progress, {
+        // This attempt is longer than the control-plane budget used above. An
+        // asset transfer with a late truncation must still get a fresh attempt:
+        // the per-attempt stream idle watchdog prevents an infinite hang.
+        let calls = Cell::new(0u32);
+        let result: Result<&str, SoldrError> = block_on(with_asset_backoff_params(
+            "large asset",
+            2,
+            NO_SLEEP,
+            || {
+                calls.set(calls.get() + 1);
+                async {
+                    if calls.get() == 1 {
+                        tokio::time::sleep(TINY_BUDGET + Duration::from_millis(20)).await;
+                        Err(SoldrError::Network("truncated after progress".into()))
+                    } else {
+                        Ok("recovered")
+                    }
+                }
+            },
+        ));
+        assert_eq!(result.expect("second attempt must run"), "recovered");
+        assert_eq!(calls.get(), 2);
     });
 
     crate::timed_test!(transient_predicate_covers_network_and_not_found_only, {
