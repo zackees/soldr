@@ -55,6 +55,9 @@ RUN apt-get update \
         cmake perl \
  && rm -rf /var/lib/apt/lists/*
 
+COPY .github/scripts/download_large_asset.sh /usr/local/bin/download-large-asset
+RUN chmod 0755 /usr/local/bin/download-large-asset
+
 # Stock rustup — installs the pinned toolchain from rust-toolchain.toml
 # on first cargo invocation in /src.
 RUN curl -fsSL https://sh.rustup.rs | sh -s -- \
@@ -70,12 +73,14 @@ ENV PATH=/root/.cargo/bin:$PATH \
 # installs clang shim names so ring's hardcoded `clang` invocations
 # route to clang-cl.
 ENV SOLDR_VERSION=0.7.66 \
-    SOLDR_ASSET_URL=https://github.com/zackees/soldr/releases/download/v0.7.66/soldr-v0.7.66-x86_64-unknown-linux-gnu.tar.zst
+    SOLDR_ASSET_URL=https://github.com/zackees/soldr/releases/download/v0.7.66/soldr-v0.7.66-x86_64-unknown-linux-gnu.tar.zst \
+    SOLDR_ASSET_SHA256=f27fb36d3e000465f8860fcdfd7da01b7e9cf3a1bbaea58c7c29a7ebcc221b84 \
+    SOLDR_ASSET_SIZE=18065931
 
 RUN set -eu; \
     echo "fetching soldr ${SOLDR_VERSION}"; \
-    curl -fsSL --connect-timeout 30 --max-time 600 --retry 5 \
-        "$SOLDR_ASSET_URL" -o /tmp/soldr.tar.zst; \
+    download-large-asset --url "$SOLDR_ASSET_URL" --output /tmp/soldr.tar.zst \
+        --sha256 "$SOLDR_ASSET_SHA256" --expected-size "$SOLDR_ASSET_SIZE"; \
     apt-get update && apt-get install -y --no-install-recommends zstd \
       && rm -rf /var/lib/apt/lists/*; \
     mkdir -p /opt/soldr; \
@@ -107,7 +112,9 @@ ENV XWIN_VERSION=0.6.5 \
 RUN set -eu; \
     url="https://github.com/Jake-Shadle/xwin/releases/download/${XWIN_VERSION}/xwin-${XWIN_VERSION}-x86_64-unknown-linux-musl.tar.gz"; \
     echo "fetching xwin ${XWIN_VERSION} from ${url}"; \
-    curl -fsSL --connect-timeout 30 --max-time 600 --retry 5 "$url" -o /tmp/xwin.tgz; \
+    curl -fsSL --connect-timeout 10 --max-time 30 "${url}.sha256" -o /tmp/xwin.sha256; \
+    xwin_sha=$(awk '{print $1}' /tmp/xwin.sha256); \
+    download-large-asset --url "$url" --output /tmp/xwin.tgz --sha256 "$xwin_sha" --expected-size 3557511; \
     mkdir -p /tmp/xwin-extract; \
     tar -xzf /tmp/xwin.tgz -C /tmp/xwin-extract; \
     xwin_bin=$(find /tmp/xwin-extract -type f -name xwin | head -1); \
@@ -117,7 +124,7 @@ RUN set -eu; \
         splat \
         --output "$XWIN_CACHE_DIR" \
         --preserve-ms-arch-notation; \
-    rm -rf /tmp/xwin.tgz /tmp/xwin-extract; \
+    rm -rf /tmp/xwin.tgz /tmp/xwin.sha256 /tmp/xwin-extract; \
     # Sanity check — xwin's canonical splatted layout has crt/ + sdk/
     [ -d "$XWIN_CACHE_DIR/crt" ] && [ -d "$XWIN_CACHE_DIR/sdk" ] || { \
         echo "FATAL: xwin splat produced unexpected layout under $XWIN_CACHE_DIR" >&2; \

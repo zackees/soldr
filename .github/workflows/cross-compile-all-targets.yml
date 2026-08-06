@@ -233,15 +233,8 @@ jobs:
             python3 -c 'import json,sys; print(json.load(sys.stdin)["sha256"])')
           echo "catalogue: zccache $zccache_version linux-x64-musl"
           echo "         $asset_url"
-          curl --fail --location \
-              --connect-timeout 10 --max-time 120 \
-              --retry 6 --retry-delay 5 --retry-all-errors \
-              --output "/tmp/${asset_filename}" "$asset_url"
-          actual_sha=$(sha256sum "/tmp/${asset_filename}" | awk '{print $1}')
-          test "$actual_sha" = "$expected_sha" || {
-            echo "zccache catalogue sha256 mismatch: expected $expected_sha, got $actual_sha" >&2
-            exit 1
-          }
+          bash .github/scripts/download_large_asset.sh \
+            --url "$asset_url" --output "/tmp/${asset_filename}" --sha256 "$expected_sha"
           tar -xzf "/tmp/${asset_filename}" -C dist/zccache-stage
           for b in zccache zccache-daemon zccache-fp; do
             src=$(find dist/zccache-stage -type f -name "${b}" -print -quit)
@@ -532,15 +525,8 @@ jobs:
             python3 -c 'import json,sys; print(json.load(sys.stdin)["sha256"])')
           echo "catalogue: zccache $zccache_version ${{ matrix.target }}"
           echo "         $asset_url"
-          curl --fail --location \
-              --connect-timeout 10 --max-time 120 \
-              --retry 6 --retry-delay 5 --retry-all-errors \
-              --output "/tmp/${asset_filename}" "$asset_url"
-          actual_sha=$(sha256sum "/tmp/${asset_filename}" | awk '{print $1}')
-          test "$actual_sha" = "$expected_sha" || {
-            echo "zccache catalogue sha256 mismatch: expected $expected_sha, got $actual_sha" >&2
-            exit 1
-          }
+          bash .github/scripts/download_large_asset.sh \
+            --url "$asset_url" --output "/tmp/${asset_filename}" --sha256 "$expected_sha"
           case "$asset_filename" in
             *.tar.gz)  tar -xzf "/tmp/${asset_filename}" -C dist/zccache-stage ;;
             *.zip)     sudo apt-get install -y --no-install-recommends unzip
