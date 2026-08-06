@@ -55,7 +55,10 @@ use std::time::Duration;
 
 use crate::core::{SoldrError, SoldrPaths};
 
-use super::trust;
+use super::stream_download::{
+    send_asset_request, stream_response_to_temp_file, DownloadedAsset, ASSET_HEADER_TIMEOUT,
+    ASSET_IDLE_TIMEOUT,
+};
 
 /// Pinned LLVM version that soldr's managed bootstrap ships for the
 /// xwin lane. 21.1.5 is the latest release on
@@ -78,17 +81,14 @@ const LLVM_DIR_ENV_VAR: &str = "SOLDR_LLVM_DIR";
 ///
 /// * `mod.rs` falls back to the newest cached tool for `VersionSpec::Latest`
 ///   (#1879) so a rate-limited release API does not turn into a red build;
-/// * `zig.rs` falls back to a `curl` subprocess;
+/// * `zig.rs` has target-specific archive extraction;
 /// * this one simply fails, which is what `retry::with_backoff` does.
 ///
 /// Only this one could move to the shared helper. Folding either of the others
 /// would silently delete a fallback, so they keep their loops.
 const LLVM_DOWNLOAD_ATTEMPTS: u32 = 4;
 const LLVM_DOWNLOAD_INITIAL_BACKOFF: Duration = Duration::from_secs(5);
-const LLVM_DOWNLOAD_TIMEOUT_SECS: u64 = 600;
-const LLVM_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(LLVM_DOWNLOAD_TIMEOUT_SECS);
 const _: () = assert!(LLVM_DOWNLOAD_ATTEMPTS >= 2);
-const _: () = assert!(LLVM_DOWNLOAD_TIMEOUT_SECS >= 300);
 
 /// Asset descriptor for one host triple. Hard-coded URL + sha256
 /// because the upstream `manifest.json`s are not versioned per-archive
@@ -217,13 +217,13 @@ async fn fetch_managed_llvm(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
         asset.plat_arch, asset.url,
     );
 
-    let bytes = download_llvm_asset(asset).await?;
+    let downloaded = download_llvm_asset(asset).await?;
 
     // Integrity check is mandatory — the upstream archive is large
     // (~95 MiB) and a tampered blob would silently install a hostile
     // toolchain. Match the apple_sdk policy: sha256 mismatch is a hard
     // refuse-to-extract error regardless of `SOLDR_TRUST_MODE`.
-    let digest = trust::sha256_of(&bytes);
+    let digest = downloaded.sha256();
     if digest != asset.sha256 {
         return Err(SoldrError::Other(format!(
             "LLVM sha256 mismatch: expected {expected}, got {digest} \
@@ -241,7 +241,7 @@ async fn fetch_managed_llvm(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
         std::fs::remove_dir_all(&install_dir)?;
     }
     std::fs::create_dir_all(&install_dir)?;
-    extract_tar_zst_tree(&bytes, &install_dir)?;
+    extract_tar_zst_tree(std::fs::File::open(downloaded.path())?, &install_dir)?;
 
     if !bin_dir.is_dir() {
         return Err(SoldrError::Archive(format!(
@@ -255,7 +255,7 @@ async fn fetch_managed_llvm(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
     Ok(bin_dir)
 }
 
-async fn download_llvm_asset(asset: &LlvmAsset) -> Result<Vec<u8>, SoldrError> {
+async fn download_llvm_asset(asset: &LlvmAsset) -> Result<DownloadedAsset, SoldrError> {
     // soldr#2132 step 1: this loop was one of three hand-rolled copies. It is
     // the only one that folds onto the shared helper without losing anything --
     // see the note on `LLVM_DOWNLOAD_ATTEMPTS` for why the other two stay.
@@ -265,11 +265,10 @@ async fn download_llvm_asset(asset: &LlvmAsset) -> Result<Vec<u8>, SoldrError> {
     // can produce is `SoldrError::Network`, which `retry::is_transient` matches,
     // so the set of retried failures is identical.
     let client = llvm_http_client()?;
-    super::retry::with_backoff_params(
+    super::retry::with_asset_backoff_params(
         &format!("LLVM v{MANAGED_LLVM_VERSION} {}", asset.plat_arch),
         LLVM_DOWNLOAD_ATTEMPTS,
         LLVM_DOWNLOAD_INITIAL_BACKOFF,
-        super::retry::FETCH_TOTAL_BUDGET,
         || download_llvm_asset_once(&client, asset),
     )
     .await
@@ -279,7 +278,6 @@ fn llvm_http_client() -> Result<reqwest::Client, SoldrError> {
     super::net_guard::ensure_network_allowed("managed LLVM")?;
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
-        .timeout(LLVM_DOWNLOAD_TIMEOUT)
         .http1_only()
         .user_agent(format!("soldr/{}", crate::core::version()))
         .build()
@@ -289,29 +287,19 @@ fn llvm_http_client() -> Result<reqwest::Client, SoldrError> {
 async fn download_llvm_asset_once(
     client: &reqwest::Client,
     asset: &LlvmAsset,
-) -> Result<Vec<u8>, SoldrError> {
-    let resp = client
-        .get(asset.url)
-        .header(reqwest::header::ACCEPT_ENCODING, "identity")
-        .send()
-        .await
-        .map_err(|e| SoldrError::Network(e.to_string()))?;
-    if !resp.status().is_success() {
-        return Err(SoldrError::Network(format!(
-            "LLVM download {} failed: HTTP {}",
-            asset.url,
-            resp.status()
-        )));
-    }
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| SoldrError::Network(e.to_string()))?;
-    Ok(bytes.to_vec())
+) -> Result<DownloadedAsset, SoldrError> {
+    let resp = send_asset_request(
+        client
+            .get(asset.url)
+            .header(reqwest::header::ACCEPT_ENCODING, "identity"),
+        asset.url,
+        ASSET_HEADER_TIMEOUT,
+    )
+    .await?;
+    stream_response_to_temp_file(resp, asset.url, ASSET_IDLE_TIMEOUT).await
 }
 
-fn extract_tar_zst_tree(data: &[u8], dest: &Path) -> Result<(), SoldrError> {
-    let reader = std::io::Cursor::new(data);
+fn extract_tar_zst_tree<R: std::io::Read>(reader: R, dest: &Path) -> Result<(), SoldrError> {
     let zst = zstd::stream::read::Decoder::new(reader)
         .map_err(|e| SoldrError::Archive(format!("zstd decoder init: {e}")))?;
     let mut archive = tar::Archive::new(zst);

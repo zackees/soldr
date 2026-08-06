@@ -23,6 +23,7 @@ pub mod rustup_init;
 /// soldr#2132: shared retry-with-backoff for network fetches.
 mod net_guard;
 mod retry;
+pub(crate) mod stream_download;
 
 pub use rustup_init::{
     auto_bootstrap_if_missing, auto_bootstrap_if_missing_blocking, bootstrap_rustup,
@@ -103,8 +104,6 @@ pub use manifest_v6::{
     V6Leaf,
 };
 pub use zig::{ensure_zig, MANAGED_ZIG_VERSION};
-
-pub(crate) use github::http_client;
 
 use crate::core::{SoldrError, SoldrPaths, TargetTriple};
 use std::path::{Path, PathBuf};

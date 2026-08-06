@@ -25,8 +25,12 @@
 //! other soldr-fetched binary: pin via `SOLDR_CHECKSUMS_FILE`,
 //! `SOLDR_TRUST_MODE=strict` refuses unpinned fetches.
 
-use super::http_client;
-use super::trust::{sha256_of, verify_download, PinnedChecksumStore, TrustMode, VerifyOutcome};
+use super::github::asset_http_client;
+use super::stream_download::{
+    send_asset_request, stream_response_to_temp_file, DownloadedAsset, ASSET_HEADER_TIMEOUT,
+    ASSET_IDLE_TIMEOUT,
+};
+use super::trust::{verify_download, PinnedChecksumStore, TrustMode, VerifyOutcome};
 use crate::core::{SoldrError, SoldrPaths};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -327,23 +331,12 @@ pub fn rustup_init_host_triple() -> Result<String, SoldrError> {
 /// One download attempt for `rustup-init`. Every error is
 /// [`SoldrError::Network`], which is what [`super::retry::is_transient`]
 /// matches.
-async fn download_rustup_init_bytes(url: &str) -> Result<Vec<u8>, SoldrError> {
-    let client = http_client()?;
-    let resp = client
-        .get(url)
-        .send()
+async fn download_rustup_init_asset(url: &str) -> Result<DownloadedAsset, SoldrError> {
+    let client = asset_http_client()?;
+    let resp = send_asset_request(client.get(url), url, ASSET_HEADER_TIMEOUT)
         .await
-        .map_err(|e| SoldrError::Network(format!("bootstrap: GET {url}: {e}")))?;
-    if !resp.status().is_success() {
-        return Err(SoldrError::Network(format!(
-            "bootstrap: GET {url} -> HTTP {}",
-            resp.status()
-        )));
-    }
-    resp.bytes()
-        .await
-        .map(|body| body.to_vec())
-        .map_err(|e| SoldrError::Network(format!("bootstrap: read body {url}: {e}")))
+        .map_err(|error| SoldrError::Network(format!("bootstrap: GET {url}: {error}")))?;
+    stream_response_to_temp_file(resp, url, ASSET_IDLE_TIMEOUT).await
 }
 
 async fn download_rustup_init(cache_dir: &Path, url: &str) -> Result<PathBuf, SoldrError> {
@@ -355,10 +348,10 @@ async fn download_rustup_init(cache_dir: &Path, url: &str) -> Result<PathBuf, So
     // compile -- the same shape as the cmake failure that stopped the v0.8.30
     // release, one step earlier. Checksum verification stays below, outside
     // the retry.
-    let bytes =
-        super::retry::with_backoff("rustup-init", || download_rustup_init_bytes(url)).await?;
+    let downloaded =
+        super::retry::with_asset_backoff("rustup-init", || download_rustup_init_asset(url)).await?;
 
-    let sha256 = sha256_of(&bytes);
+    let sha256 = downloaded.sha256();
 
     let store = PinnedChecksumStore::from_env()?;
     let mode = TrustMode::from_env();
@@ -366,7 +359,7 @@ async fn download_rustup_init(cache_dir: &Path, url: &str) -> Result<PathBuf, So
         RUSTUP_INIT_TOOL_NAME,
         RUSTUP_INIT_PSEUDO_VERSION,
         rustup_init_filename(),
-        &sha256,
+        sha256,
         &store,
         mode,
     )?;
@@ -380,7 +373,7 @@ async fn download_rustup_init(cache_dir: &Path, url: &str) -> Result<PathBuf, So
     }
 
     let tmp = destination.with_extension("tmp");
-    std::fs::write(&tmp, &bytes)?;
+    std::fs::copy(downloaded.path(), &tmp)?;
 
     #[cfg(unix)]
     {
