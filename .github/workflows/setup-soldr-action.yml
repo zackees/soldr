@@ -109,7 +109,7 @@ jobs:
       - id: setup
         # This is zackees/setup-soldr@v0 pinned to a full SHA
         # because this repository's ruleset requires SHA-pinned actions.
-        uses: zackees/setup-soldr@056747304f66ad465031149f207c0c7a55ed9052
+        uses: zackees/setup-soldr@f8937e7422e081a03669cdd13c6a5d86e81d0342
         with:
           cache: true
           zccache-seed-strict: true
@@ -177,7 +177,7 @@ jobs:
             setup-soldr-dogfood-zccache-v1-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Stop setup-soldr builder cache before dogfood build
-        uses: zackees/setup-soldr/cleanup@056747304f66ad465031149f207c0c7a55ed9052
+        uses: zackees/setup-soldr/cleanup@f8937e7422e081a03669cdd13c6a5d86e81d0342
 
       - name: Build through soldr
         shell: pwsh
