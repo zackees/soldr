@@ -191,10 +191,15 @@ jobs:
       # clippy --workspace --all-targets` doesn't recompile ~700 deps
       # from scratch every CI run. Same SHA-pinned action as #1228/
       # #1233/#1236/#1238.
+      # soldr#1978 item 6 — key on (profile, target), not on job. This lane
+      # and `build-linux-x64` compile the same ~700 dependencies at the same
+      # profile for the same triple, so they share one namespace instead of
+      # two. Note the rename alone would have bought nothing: see the
+      # `--target` note on the clippy step below for why.
       - name: Restore cargo + target caches
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          shared-key: lint
+          shared-key: ws-dev-x86_64-unknown-linux-gnu
 
       - name: Install Rust components
         run: rustup component add rustfmt clippy
@@ -382,8 +387,22 @@ jobs:
       # workflows that went silently dark because a path filter stopped
       # matching, and trading a reliably-running check for 85s is the wrong
       # side of that trade. Measure again before revisiting.
+      # soldr#1978 item 6. The explicit `--target` is what makes the shared
+      # cache namespace above actually pay. Without it cargo writes to
+      # `target/debug`, while `build-linux-x64` passes `--target` and writes
+      # to `target/x86_64-unknown-linux-gnu/debug` (_build-and-test.yml).
+      # Those are different directories, so the two jobs recompiled the same
+      # dependency graph twice no matter what the cache key said -- re-keying
+      # alone could never have collapsed them. Pinning the triple here puts
+      # both lanes in one directory, so the dependency units clippy needs are
+      # the ones the build lane already produced (and vice versa).
+      #
+      # The triple is the runner's own host, so this changes where artifacts
+      # land, not what is linted.
       - name: Run clippy
-        run: soldr cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: >-
+          soldr cargo clippy --workspace --all-targets --locked
+          --target x86_64-unknown-linux-gnu -- -D warnings
 
       # soldr#1978. `cargo install cargo-dylint` compiles from source, and on a
       # run where the Rust cache misses it is the most expensive step in this

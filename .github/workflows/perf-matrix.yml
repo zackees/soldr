@@ -342,6 +342,11 @@ jobs:
         if: steps.gate.outputs.selected == 'true' && steps.soldr-bin-cache.outputs.cache-hit != 'true'
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
+          # soldr#1978 item 6 deliberately leaves this off the shared
+          # `ws-<profile>-<target>` scheme -- this is the measurement lane
+          # PERF.md calls the most important workflow in the repo, and its
+          # cache namespace must stay private to it so an ordinary CI lane
+          # cannot alter the state a perf run starts from.
           shared-key: perf-build-soldr-${{ matrix.platform }}
 
       - name: Build soldr (release)

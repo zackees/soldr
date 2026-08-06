@@ -83,6 +83,12 @@ jobs:
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
+          # soldr#1978 item 6 deliberately leaves this off the shared
+          # `ws-<profile>-<target>` scheme. This job builds AND measures in
+          # the same job (`cargo build --release` then
+          # `bench/parent_cache_bench.py`), so a CI lane writing this
+          # namespace would change what is on disk when the benchmark starts
+          # -- measurement contamination, not just topology drift.
           shared-key: parent-cache-bench
 
       - name: Install uv

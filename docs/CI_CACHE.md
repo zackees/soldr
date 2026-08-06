@@ -209,17 +209,47 @@ So the right model is not "share caches between feature branches". The right mod
 
 In [`.github/workflows/ci.yml`](../.github/workflows/ci.yml):
 
-- `push` runs on `main` and all feature branches.
-- The heavy cache-producing CI workflow does not run on `pull_request`.
-- `Swatinem/rust-cache` uses a stable `shared-key: workspace`.
-- `save-if` is enabled only for `push` events.
+- `push` runs on `main` only. Feature branches are covered by the
+  `pull_request` trigger instead — soldr#1985 narrowed the push trigger
+  because `branches-ignore` matched every PR branch, so each push to an open
+  PR ran the whole sweep twice.
+- The heavy cache-producing CI workflow therefore *does* run on
+  `pull_request`; that is the only way a feature branch gets coverage.
+- `Swatinem/rust-cache` is used with `shared-key:` only — no `key:`,
+  `prefix-key:`, or `save-if:` anywhere in the tree.
 
-In [`.github/workflows/_bootstrap-e2e.yml`](../.github/workflows/_bootstrap-e2e.yml):
+### Cache key scheme (soldr#1978 item 6)
 
-- The cache-benchmark composite (formerly `./.github/actions/cache-benchmark-zccache/`) moved to `zackees/setup-soldr` with the rest of the third-party comparison surface — see soldr#674.
-- `save_cache` is passed through from the caller and is `${{ github.event_name == 'push' }}` in `ci.yml`.
-- There is no duplicate `pull_request` cache-writing path.
+Ordinary CI lanes are keyed on **(profile, target)**, not on the job:
 
-That produces the intended behavior: a push to `main` refreshes the canonical dependency cache, a push to a feature branch saves a branch-local cache in that branch scope, and any PR from that branch surfaces the latest push-run checks instead of a duplicated merge-ref cache lineage.
+```
+shared-key: ws-<profile>-<target>
+```
+
+The point is that lanes compiling the same dependency graph, at the same
+profile, for the same triple should share one namespace instead of each
+owning a private one. `lint` and `build-linux-x64` are the case that matters:
+both build ~700 dependencies at the dev profile for
+`x86_64-unknown-linux-gnu`.
+
+Two constraints make this less mechanical than it looks:
+
+- **A shared key is worthless unless the sharers write the same directory.**
+  Cargo puts a bare build in `target/debug` and a `--target`-qualified build
+  in `target/<triple>/debug`. `lint` had no `--target`, so it shared nothing
+  with `build-linux-x64` no matter what the key said. Both now pass
+  `--target`, and `tests/test_ci_cache_key_scheme.py` pins the flag and the
+  key together.
+- **Performance and cache-strategy lanes stay off the scheme.**
+  `perf-matrix.yml`, `perf-cold-warm.yml`, `parent-cache-bench.yml`, and
+  `cache-delta-experiment.yml` keep private, workflow-scoped namespaces. They
+  either measure timings that an unrelated lane's writes would contaminate,
+  or compare cache strategies. `perf-cold-warm.yml` additionally purges every
+  repo cache whose key *contains* `perf-cold-warm`, so its key must keep that
+  substring and no shared key may contain it — both pinned by the same test.
+
+Note that `rust-cache`'s key does not include Cargo profile *definitions*, so
+a change to a `[profile.*]` table does not invalidate these caches on its own;
+that is why the profile is spelled out in the key text.
 
 This repository itself is the reference implementation of that pattern.

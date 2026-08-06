@@ -106,6 +106,18 @@ jobs:
         if: steps.soldr-bin-cache.outputs.cache-hit != 'true'
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
+          # soldr#1978 item 6 deliberately does NOT re-key this onto the
+          # `ws-<profile>-<target>` scheme used by the ordinary CI lanes.
+          # Two reasons, both load-bearing:
+          #   1. `purge-demo-caches` deletes every repo cache whose key
+          #      *contains* `${DEMO_CACHE_SUFFIX}` (= `perf-cold-warm`,
+          #      :67/:151). Renaming this key off that substring silently
+          #      stops it being purged, breaking the cold guarantee; giving a
+          #      shared CI key that substring would let a perf dispatch
+          #      delete every ordinary lane's cache.
+          #   2. This is a measurement lane. Its namespace must stay private
+          #      so ordinary CI cannot change what is on disk when a run
+          #      starts.
           shared-key: perf-cold-warm-build-soldr-linux
 
       - name: Build soldr (release)

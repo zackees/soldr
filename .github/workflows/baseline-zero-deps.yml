@@ -85,7 +85,11 @@ jobs:
       - name: Restore cargo + target caches
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          shared-key: baseline-zero-deps-bootstrap
+          # soldr#1978 item 6. Same (profile, target) as the glibc leg of
+          # `build-soldr` below, which `needs:` this job -- so this pass
+          # populates the namespace and that one restores it, instead of the
+          # two compiling the same release dependency graph into two caches.
+          shared-key: ws-release-x86_64-unknown-linux-gnu
 
       # Same key as before: one binary, one cache entry. Now only one job
       # consults it, so a miss costs one build rather than two.
@@ -158,7 +162,10 @@ jobs:
       - name: Restore cargo + target caches
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          shared-key: baseline-zero-deps-${{ matrix.target }}
+          # soldr#1978 item 6. The glibc leg lands on the same key as the
+          # `bootstrap-soldr` job above (same profile, same triple); the musl
+          # leg gets its own, correctly.
+          shared-key: ws-release-${{ matrix.target }}
 
       # soldr#1978 item 5: the host-side bootstrap is built once by
       # `bootstrap-soldr` and passed here, instead of both legs rebuilding the
