@@ -10,12 +10,12 @@ error: reqwest `send` bypasses fetch::stream_download; use its control or asset 
   --> $DIR/disallowed_reqwest_send.rs:22:20
    |
 LL |     let _request = client.get("https://example.invalid").send();
-   |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 error: reqwest `get` bypasses fetch::stream_download; use its control or asset request helpers
   --> $DIR/disallowed_reqwest_send.rs:22:20
    |
 LL |     let _request = client.get("https://example.invalid").send();
-   |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 error: aborting due to 3 previous errors
