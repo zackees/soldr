@@ -50,7 +50,7 @@ alias, CI, release, and catalogue contract. Raw Rust triples remain accepted.
 | `mac-arm64` | `aarch64-apple-darwin` | Cross-build + native run | Shipped |
 | `linux-x64` | `x86_64-unknown-linux-gnu` | Native build + run | Shipped |
 | `linux-arm64` | `aarch64-unknown-linux-gnu` | Cross-build + native run | Shipped |
-| `linux-x64-musl` | `x86_64-unknown-linux-musl` | Cross-build + native run | Shipped |
+| `linux-x64-musl` | `x86_64-unknown-linux-musl` | Cross-build only (host-identical runner) | Shipped |
 | `linux-arm64-musl` | `aarch64-unknown-linux-musl` | Cross-build + native run | Shipped |
 <!-- canonical-target-contract:end -->
 

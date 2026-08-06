@@ -96,6 +96,35 @@ def test_ci_and_blessed_alias_workflow_cover_every_target() -> None:
             ), f"{ci['build_job']} lost native build/run coverage"
             assert ci["runner"] in build, f"{ci['build_job']} runner drifted"
             continue
+        if ci["kind"] == "cross-build":
+            # soldr#1978 item 3. A target whose only available runner is the
+            # cross-build host itself gets no replay job: the split exists to
+            # reach a target-native runner, and there is none to reach. Pin
+            # the absence, so the degenerate pair cannot come back unnoticed.
+            assert (
+                "_ci-cross-build-linux.yml" in build
+            ), f"{ci['build_job']} lost Linux cross-build coverage"
+            assert (
+                ci["run_job"] is None
+            ), f"{ci['build_job']} is cross-build but names a run job"
+            # The whole justification for dropping the replay is that the
+            # contract runner and the cross-build host are the same image. If
+            # either side moves, the split becomes non-degenerate again and
+            # this target needs its `target-run` back.
+            cross_build = (
+                ROOT / ".github" / "workflows" / "_ci-cross-build-linux.yml"
+            ).read_text(encoding="utf-8")
+            assert (
+                f"runs-on: {ci['runner']}" in cross_build
+            ), f"{ci['build_job']} host no longer matches its contract runner"
+            replay = ci["build_job"].removesuffix("-build")
+            assert not re.search(
+                rf"^  {re.escape(replay)}:\s*$", workflow, re.MULTILINE
+            ), (
+                f"{replay} reappeared: a target-run on {ci['runner']} replays "
+                f"{row['triple']} on the image it was built on (soldr#1978 item 3)"
+            )
+            continue
         run = workflow_job(workflow, ci["run_job"])
         assert (
             "_ci-cross-build-linux.yml" in build

@@ -782,6 +782,17 @@ jobs:
       artifact_name: soldr-ci-e2e-linux-arm64
 
   # ---------- Linux x64 (musl) ----------
+  # soldr#1978 item 3. This lane had a paired `target-run` on `ubuntu-24.04`
+  # -- the same image the cross-build runs on. The build/run split exists to
+  # move execution onto a runner that is *native to the target*, so for a
+  # host-identical target it bought a second runner allocation plus a full
+  # nextest-archive round-trip through the artifact store for zero new host
+  # coverage: a statically linked musl binary replayed on the image it was
+  # built on exercises nothing the native `build-linux-x64` suite does not.
+  #
+  # No paired `target-run`, for the same reason `e2e-linux-x64-gnu-build`
+  # above has none. Both aarch64 splits below keep theirs -- those are
+  # genuinely cross-arch (`ubuntu-24.04` -> `ubuntu-24.04-arm`).
   e2e-linux-x64-musl-build:
     name: cross-build x86_64-unknown-linux-musl (linux host)
     needs: e2e-cross-bootstrap-soldr
@@ -791,15 +802,6 @@ jobs:
       artifact_name: soldr-ci-e2e-linux-x64-musl
       source_ref: ${{ github.sha }}
       bootstrap_artifact_name: soldr-ci-bootstrap-linux-gnu
-
-  e2e-linux-x64-musl:
-    name: target-run x86_64-unknown-linux-musl
-    needs: e2e-linux-x64-musl-build
-    uses: ./.github/workflows/_ci-target-run.yml
-    with:
-      runs_on: ubuntu-24.04
-      target: x86_64-unknown-linux-musl
-      artifact_name: soldr-ci-e2e-linux-x64-musl
 
   # ---------- Linux ARM64 (musl) ----------
   e2e-linux-arm64-musl-build:
