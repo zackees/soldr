@@ -39,6 +39,21 @@ The split is **a surface contract, not an implementation contract**. `soldr buil
 
 Friendly target aliases (`win-x64`, `mac-arm64`, etc.) are accepted by both verbs and resolve identically.
 
+### Fresh source checkouts
+
+After cloning or creating a fresh worktree, initialize Soldr's required
+zccache submodule before invoking build commands through Soldr:
+
+```bash
+git submodule update --init _vender/zccache
+```
+
+Soldr detects this specific incomplete source-checkout state and prints the
+same remedy before the build tool can report a less actionable
+missing-manifest error. It deliberately does not initialize the submodule
+automatically, because that would perform an unexpected network fetch during a
+build.
+
 ## Build Commands
 
 ```bash

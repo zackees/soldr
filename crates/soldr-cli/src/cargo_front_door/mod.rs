@@ -1442,12 +1442,10 @@ pub(crate) async fn run_cargo_front_door(
     cache_enabled: bool,
     trust_inherited_soldr_env: bool,
 ) -> Result<i32, SoldrError> {
-    // Per-phase timing for the pre-Cargo front door (#1843). On a fully
-    // warm no-op, `soldr cargo check --workspace` spends ~740 ms here
-    // before Cargo is spawned at all — more than Cargo itself reports.
-    // `WrapperProfile` already instruments the per-rustc wrapper, but a
-    // warm no-op never invokes rustc, so that path prints nothing and the
-    // cost was unattributable. Zero-cost unless SOLDR_PROFILE_STARTUP is set.
+    crate::worktree_submodule::ensure_zccache_submodule_initialized()?;
+
+    // Time the front door (#1843); a warm no-op does not invoke a rustc
+    // wrapper. Zero-cost unless SOLDR_PROFILE_STARTUP is set.
     let mut profile = crate::startup_profile::WrapperProfile::new();
 
     if cargo_args_use_reserved_no_cache(args) {
