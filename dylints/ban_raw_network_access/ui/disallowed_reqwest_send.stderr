@@ -1,21 +1,21 @@
 error: reqwest `new` bypasses fetch::stream_download; use its control or asset request helpers
-  --> $DIR/disallowed_reqwest_send.rs:5:18
+  --> $DIR/disallowed_reqwest_send.rs:6:18
    |
 LL |     let client = reqwest::Client::new();
    |                  ^^^^^^^^^^^^^^^^^^^^^^
    |
    = note: `#[deny(ban_raw_network_access)]` on by default
 
-error: reqwest `get` bypasses fetch::stream_download; use its control or asset request helpers
-  --> $DIR/disallowed_reqwest_send.rs:6:20
-   |
-LL |     let _request = client.get("https://example.invalid").send();
-   |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
 error: reqwest `send` bypasses fetch::stream_download; use its control or asset request helpers
-  --> $DIR/disallowed_reqwest_send.rs:6:20
+  --> $DIR/disallowed_reqwest_send.rs:7:20
    |
 LL |     let _request = client.get("https://example.invalid").send();
    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: reqwest `get` bypasses fetch::stream_download; use its control or asset request helpers
+  --> $DIR/disallowed_reqwest_send.rs:7:20
+   |
+LL |     let _request = client.get("https://example.invalid").send();
+   |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 error: aborting due to 3 previous errors
