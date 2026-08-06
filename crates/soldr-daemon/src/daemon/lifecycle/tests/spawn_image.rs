@@ -34,13 +34,17 @@ mod daemon_spawn_image_tests {
     // the daemon could never see and still land with a green suite and a
     // checked-off "compat path tested" box.
     //
-    // This asserts the invariant directly: every env var `core::jobs` reads in
-    // the daemon process must survive the scrub. Adding a tier to that
-    // resolver without forwarding it now fails here instead of silently
-    // resolving to the default in production.
-    crate::timed_test!(every_env_var_the_jobs_resolver_reads_survives_the_scrub, {
+    // This asserts the invariant directly: every env var resolved inside the
+    // daemon process must survive the scrub. Adding a daemon-side setting
+    // without forwarding it now fails here instead of silently resolving to
+    // the default in production.
+    crate::timed_test!(every_env_var_read_inside_the_daemon_survives_the_scrub, {
         use crate::core::jobs::{SOLDR_JOBS_ENV_VAR, ZCCACHE_MAX_PARALLEL_COMPILES_ENV_VAR};
-        for name in [SOLDR_JOBS_ENV_VAR, ZCCACHE_MAX_PARALLEL_COMPILES_ENV_VAR] {
+        for name in [
+            SOLDR_JOBS_ENV_VAR,
+            ZCCACHE_MAX_PARALLEL_COMPILES_ENV_VAR,
+            zccache::core::config::STAGING_DIR_ENV,
+        ] {
             let upper = name.to_ascii_uppercase();
             let forwarded = upper.starts_with(FORWARDED_ENV_PREFIX)
                 || FORWARDED_ZCCACHE_ENV.contains(&upper.as_str());
@@ -77,6 +81,10 @@ mod daemon_spawn_image_tests {
                     OsString::from("ZCCACHE_MAX_PARALLEL_COMPILES"),
                     OsString::from("6"),
                 ),
+                (
+                    OsString::from("ZCCACHE_STAGING_DIR"),
+                    OsString::from("C:\\short-staging"),
+                ),
                 (OsString::from("soldr_lowercase"), OsString::from("kept")),
                 (
                     OsString::from("SOLDR_DAEMON_TOKIO_CONSOLE_RECORD_PATH"),
@@ -103,6 +111,10 @@ mod daemon_spawn_image_tests {
                     (
                         OsString::from("ZCCACHE_MAX_PARALLEL_COMPILES"),
                         OsString::from("6"),
+                    ),
+                    (
+                        OsString::from("ZCCACHE_STAGING_DIR"),
+                        OsString::from("C:\\short-staging"),
                     ),
                     (OsString::from("soldr_lowercase"), OsString::from("kept")),
                     (

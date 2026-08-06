@@ -60,7 +60,7 @@ use zccache::core::NormalizedPath;
 use zccache::embedded::{
     AuditConfig, AuditContext, CacheOutcome, CompileRequest as ZccacheCompileRequest,
     DiskCacheLimits, DiskMaintenanceKind, DiskMaintenancePressure, FlushStepOutcome, HostIdentity,
-    MaintenanceOwnership, RuntimeHooks, ServiceLimits, ShutdownMode, ZccacheConfig, ZccacheService,
+    RuntimeHooks, ServiceLimits, ShutdownMode, ZccacheConfig, ZccacheService,
 };
 use zccache::hash::StreamHasher;
 
@@ -161,7 +161,6 @@ impl SoldrZccacheService {
         let cache_root = private_zccache_cache_root(paths, &identity);
         prepare_embedded_cache_root(paths, daemon_identity, &cache_root)?;
         scrub_existing_compile_journals(paths)?;
-
         // zccache#926 strict-validation: `AuditConfig::default()` ships
         // `mode = AuditMode::Normal` + `output_root = None`, which the
         // new audit-sink validation rejects ("audit sink requires
@@ -205,10 +204,9 @@ impl SoldrZccacheService {
         };
 
         let (disk_limits, disk_policy) = disk_cache_limits_from_env()?;
-        let svc = ZccacheService::start_with_disk_limits_and_maintenance(
+        let svc = ZccacheService::start_with_options(
             cfg,
-            disk_limits,
-            MaintenanceOwnership::Host,
+            crate::zccache_staging::options(&cache_root, disk_limits),
         )
         .await
         .map_err(|e| EmbeddedServiceError::Start(e.to_string()))?;

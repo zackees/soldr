@@ -251,6 +251,60 @@ soldr_cli::timed_test!(
     }
 );
 
+soldr_cli::timed_test!(
+    windows_deep_cache_root_keeps_staged_linker_path_short,
+    Duration::from_secs(300),
+    {
+        let workdir = unique_temp_dir("windows-deep-cache-staging");
+        let mut cache_dir = workdir.join("cache-root");
+        while cache_dir.as_os_str().len() < 165 {
+            cache_dir = cache_dir.join("deep-cache-segment");
+        }
+        let guard = FixtureGuard::new(workdir.clone(), cache_dir.clone());
+        let crate_dir = workdir.join("test-crate");
+        fs::create_dir_all(&cache_dir).expect("create deep cache dir");
+        create_test_crate(&crate_dir);
+
+        let legacy_staging_probe = cache_dir
+            .join("cache/zccache/daemon-state/embedded-v1/v1.13.1/staging")
+            .join("12345-0-1785588800636122100")
+            .join(".compile-12345-1")
+            .join("build_script_build-52378a44826b4cb2.exe");
+        assert!(
+            legacy_staging_probe.as_os_str().len() > 260,
+            "fixture must exceed MAX_PATH on the former linker path: {}",
+            legacy_staging_probe.display()
+        );
+
+        let output = soldr_cargo_check(&crate_dir, &cache_dir, &workdir.join("target"));
+        assert!(
+            !output.contains("LNK1104"),
+            "link.exe must not receive the deep cache-root staging path: {output}"
+        );
+        assert!(
+            !cache_dir
+                .join("cache/zccache/daemon-state/embedded-v1")
+                .join(zccache::core::config::versioned_subdir())
+                .join("staging")
+                .exists(),
+            "Windows compiler staging must be outside the deep durable cache root"
+        );
+
+        let stats = read_json(&latest_archived_session_stats(&cache_dir, &output));
+        let misses = u64_field(&stats, "misses");
+        assert!(
+            misses > 0,
+            "cold fixture must exercise compiler misses: {stats:#?}"
+        );
+        assert_eq!(
+            staged_counter(&stats, "publication_success"),
+            misses,
+            "the fix must preserve staged publication instead of bypassing it: {stats:#?}"
+        );
+        guard.stop_and_assert_exited();
+    }
+);
+
 fn embedded_artifact_dir(cache_dir: &Path) -> PathBuf {
     cache_dir
         .join("cache")
