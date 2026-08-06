@@ -51,6 +51,15 @@ lanes carry them through this path:
 3. `.github/workflows/ci.yml` connects the producer and consumer. Windows uses
    the existing `windows-2025` x64 and `windows-11-arm` ARM64 runners.
 
+A target only gets step 2 when the replay lands on a runner that is **native
+to that target**. `x86_64-unknown-linux-gnu` and `x86_64-unknown-linux-musl`
+build on `ubuntu-24.04` and have no other runner to reach, so they are
+build-only lanes (`kind: cross-build` in `ci/canonical-targets.json`) — a
+replay there would re-run the suite on the image it was built on, which is the
+degenerate split soldr#1978 item 3 removed. Their artifact-level invariants are
+checked in the build lane instead (`verify_static_link.py`,
+`verify_glibc_baseline.py`). Every cross-arch target keeps its target-run.
+
 Linux-runnable contract tests in `tests/test_cross_compile_workflows.py` protect
 that route from silently dropping native tests. Add a new runner only when the
 behavior cannot be represented by an archived integration test; do not add a
