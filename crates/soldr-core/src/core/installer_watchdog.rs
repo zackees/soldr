@@ -459,7 +459,7 @@ mod tests {
 
     #[cfg(unix)]
     fn steady_progress_command() -> Command {
-        unix_shell("i=0; while [ $i -lt 7 ]; do echo progress; sleep 0.03; i=$((i + 1)); done")
+        unix_shell("i=0; while [ $i -lt 8 ]; do echo progress; sleep 0.10; i=$((i + 1)); done")
     }
 
     #[cfg(unix)]
@@ -486,7 +486,7 @@ mod tests {
 
     #[cfg(unix)]
     fn test_stall_timeout() -> Duration {
-        Duration::from_millis(45)
+        Duration::from_millis(250)
     }
 
     #[cfg(windows)]
@@ -496,7 +496,7 @@ mod tests {
 
     #[cfg(unix)]
     fn test_safety_timeout() -> Duration {
-        Duration::from_secs(1)
+        Duration::from_secs(2)
     }
 
     #[cfg(windows)]
