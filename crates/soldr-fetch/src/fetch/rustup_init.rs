@@ -31,10 +31,8 @@ use super::stream_download::{
     ASSET_IDLE_TIMEOUT,
 };
 use super::trust::{verify_download, PinnedChecksumStore, TrustMode, VerifyOutcome};
-use crate::core::{SoldrError, SoldrPaths};
+use crate::core::{run_installer_command, InstallerWatchdogConfig, SoldrError, SoldrPaths};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
-use wait_timeout::ChildExt;
 
 /// Opt-out env var. When set to a truthy value (`1`, `true`, `yes`, `on`,
 /// case-insensitive), the auto-bootstrap path becomes a no-op and the caller
@@ -53,8 +51,6 @@ pub const RUSTUP_INIT_URL_ENV_VAR: &str = "SOLDR_RUSTUP_INIT_URL_OVERRIDE";
 const RUSTUP_INIT_TOOL_NAME: &str = "rustup-init";
 const RUSTUP_INIT_PSEUDO_VERSION: &str = "latest";
 pub const RUSTUP_INIT_TIMEOUT_ENV_VAR: &str = "SOLDR_RUSTUP_INIT_TIMEOUT_SECS";
-pub const DEFAULT_RUSTUP_INIT_TIMEOUT_SECS: u64 = 15 * 60;
-const KILLED_RUSTUP_INIT_REAP_TIMEOUT_SECS: u64 = 5;
 
 /// Result of a bootstrap attempt.
 #[derive(Debug, Clone)]
@@ -425,57 +421,16 @@ fn no_bootstrap_opt_out() -> bool {
     }
 }
 
-pub fn rustup_init_timeout() -> Duration {
-    std::env::var(RUSTUP_INIT_TIMEOUT_ENV_VAR)
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|seconds| *seconds > 0)
-        .map(Duration::from_secs)
-        .unwrap_or_else(|| Duration::from_secs(DEFAULT_RUSTUP_INIT_TIMEOUT_SECS))
-}
-
 fn run_rustup_init(
     command: &mut std::process::Command,
     installer: &Path,
 ) -> Result<std::process::ExitStatus, SoldrError> {
-    let mut child = command.spawn().map_err(|err| {
-        SoldrError::Other(format!(
-            "bootstrap: failed to launch rustup-init ({}): {err}",
-            installer.display()
-        ))
-    })?;
-    let timeout = rustup_init_timeout();
-    match child.wait_timeout(timeout).map_err(|err| {
-        SoldrError::Other(format!(
-            "bootstrap: failed waiting for rustup-init ({}): {err}",
-            installer.display()
-        ))
-    })? {
-        Some(status) => Ok(status),
-        None => {
-            let kill_result = child.kill();
-            let reap_result =
-                child.wait_timeout(Duration::from_secs(KILLED_RUSTUP_INIT_REAP_TIMEOUT_SECS));
-            let timeout_secs = timeout.as_secs();
-            let mut message = format!(
-                "bootstrap: rustup-init ({}) timed out after {timeout_secs} seconds \
-                 (set {RUSTUP_INIT_TIMEOUT_ENV_VAR} to override)",
-                installer.display()
-            );
-            match kill_result {
-                Ok(()) => message.push_str("; killed child process"),
-                Err(err) => message.push_str(&format!("; kill failed: {err}")),
-            }
-            match reap_result {
-                Ok(Some(_)) => {}
-                Ok(None) => message.push_str(&format!(
-                    "; process did not exit within {KILLED_RUSTUP_INIT_REAP_TIMEOUT_SECS} seconds after kill"
-                )),
-                Err(err) => message.push_str(&format!("; reap after kill failed: {err}")),
-            }
-            Err(SoldrError::Other(message))
-        }
-    }
+    run_installer_command(
+        command,
+        &format!("bootstrap: rustup-init ({})", installer.display()),
+        "bootstrap",
+        InstallerWatchdogConfig::from_env(RUSTUP_INIT_TIMEOUT_ENV_VAR),
+    )
 }
 
 fn is_truthy(value: &str) -> bool {
@@ -511,6 +466,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn host_triple_uses_unknown_linux_gnu_on_linux_x86_64() {
@@ -582,29 +538,31 @@ mod tests {
         }
     }
 
-    #[test]
-    fn rustup_init_timeout_uses_positive_env_override_only() {
+    crate::timed_test!(rustup_init_timeout_is_an_explicit_safety_ceiling, {
         let _env_lock = test_env_lock();
 
         {
             let _guard = EnvVarGuard::set(RUSTUP_INIT_TIMEOUT_ENV_VAR, "17");
-            assert_eq!(rustup_init_timeout(), Duration::from_secs(17));
+            assert_eq!(
+                InstallerWatchdogConfig::from_env(RUSTUP_INIT_TIMEOUT_ENV_VAR).safety_timeout,
+                Duration::from_secs(17)
+            );
         }
 
         for value in ["0", "-1", "not-a-number"] {
             let _guard = EnvVarGuard::set(RUSTUP_INIT_TIMEOUT_ENV_VAR, value);
             assert_eq!(
-                rustup_init_timeout(),
-                Duration::from_secs(DEFAULT_RUSTUP_INIT_TIMEOUT_SECS)
+                InstallerWatchdogConfig::from_env(RUSTUP_INIT_TIMEOUT_ENV_VAR).safety_timeout,
+                Duration::from_secs(crate::core::DEFAULT_INSTALLER_SAFETY_TIMEOUT_SECS)
             );
         }
 
         let _guard = EnvVarGuard::remove(RUSTUP_INIT_TIMEOUT_ENV_VAR);
         assert_eq!(
-            rustup_init_timeout(),
-            Duration::from_secs(DEFAULT_RUSTUP_INIT_TIMEOUT_SECS)
+            InstallerWatchdogConfig::from_env(RUSTUP_INIT_TIMEOUT_ENV_VAR).safety_timeout,
+            Duration::from_secs(crate::core::DEFAULT_INSTALLER_SAFETY_TIMEOUT_SECS)
         );
-    }
+    });
 
     #[test]
     fn auto_bootstrap_reports_opted_out_when_env_var_set() {

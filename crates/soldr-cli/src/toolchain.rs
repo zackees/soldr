@@ -2,7 +2,10 @@
 //! `soldr rustup` front door, and `soldr toolchain install` / `prepare`.
 //! Extracted from `main.rs` as part of issue #339.
 
-use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
+use crate::core::{
+    run_installer_command, suppress_windows_console_window, InstallerWatchdogConfig, SoldrError,
+    SoldrPaths,
+};
 use crate::{
     apply_implicit_toolchain_homes, resolve_toolchain_binary, resolve_toolchain_binary_for_channel,
     rustup_binary,
@@ -11,7 +14,6 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
-use wait_timeout::ChildExt;
 
 /// Escape hatch for soldr#1766: allow a build to proceed with no
 /// `rust-toolchain.toml` anywhere at or above the working directory.
@@ -27,8 +29,6 @@ pub const ALLOW_UNPINNED_ENV_VAR: &str = "SOLDR_ALLOW_UNPINNED";
 pub const RUSTUP_TOOLCHAIN_ENV_VAR: &str = "RUSTUP_TOOLCHAIN";
 
 pub const TOOLCHAIN_COMMAND_TIMEOUT_ENV_VAR: &str = "SOLDR_TOOLCHAIN_COMMAND_TIMEOUT_SECS";
-pub const DEFAULT_TOOLCHAIN_COMMAND_TIMEOUT_SECS: u64 = 30 * 60;
-const KILLED_TOOLCHAIN_COMMAND_REAP_TIMEOUT_SECS: u64 = 5;
 const CARGO_PREPARE_MEMO_SCHEMA_VERSION: u32 = 1;
 const CARGO_PREPARE_MEMO_DIR: &str = "toolchain-prepare-v1";
 
@@ -946,52 +946,16 @@ fn rustup_target_add(channel: &str, target: &str) -> Result<i32, SoldrError> {
     Ok(status.code().unwrap_or(1))
 }
 
-pub fn toolchain_command_timeout() -> Duration {
-    std::env::var(TOOLCHAIN_COMMAND_TIMEOUT_ENV_VAR)
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|seconds| *seconds > 0)
-        .map(Duration::from_secs)
-        .unwrap_or_else(|| Duration::from_secs(DEFAULT_TOOLCHAIN_COMMAND_TIMEOUT_SECS))
-}
-
 fn run_toolchain_command(
     command: &mut std::process::Command,
     context: &str,
 ) -> Result<std::process::ExitStatus, SoldrError> {
-    let mut child = command
-        .spawn()
-        .map_err(|err| SoldrError::Other(format!("failed to invoke {context}: {err}")))?;
-    let timeout = toolchain_command_timeout();
-    match child
-        .wait_timeout(timeout)
-        .map_err(|err| SoldrError::Other(format!("wait on {context} failed: {err}")))?
-    {
-        Some(status) => Ok(status),
-        None => {
-            let kill_result = child.kill();
-            let reap_result = child.wait_timeout(Duration::from_secs(
-                KILLED_TOOLCHAIN_COMMAND_REAP_TIMEOUT_SECS,
-            ));
-            let timeout_secs = timeout.as_secs();
-            let mut message = format!(
-                "{context} timed out after {timeout_secs} seconds \
-                 (set {TOOLCHAIN_COMMAND_TIMEOUT_ENV_VAR} to override)"
-            );
-            match kill_result {
-                Ok(()) => message.push_str("; killed child process"),
-                Err(err) => message.push_str(&format!("; kill failed: {err}")),
-            }
-            match reap_result {
-                Ok(Some(_)) => {}
-                Ok(None) => message.push_str(&format!(
-                    "; process did not exit within {KILLED_TOOLCHAIN_COMMAND_REAP_TIMEOUT_SECS} seconds after kill"
-                )),
-                Err(err) => message.push_str(&format!("; reap after kill failed: {err}")),
-            }
-            Err(SoldrError::Other(message))
-        }
-    }
+    run_installer_command(
+        command,
+        context,
+        "toolchain-prepare",
+        InstallerWatchdogConfig::from_env(TOOLCHAIN_COMMAND_TIMEOUT_ENV_VAR),
+    )
 }
 
 #[cfg(test)]
@@ -1036,24 +1000,27 @@ mod tests {
         }
     }
 
-    crate::timed_test!(toolchain_command_timeout_uses_positive_env_override_only, {
+    crate::timed_test!(toolchain_command_timeout_is_an_explicit_safety_ceiling, {
         let _lock = ENV_LOCK.lock().expect("env lock");
         {
             let _guard = EnvVarGuard::set(TOOLCHAIN_COMMAND_TIMEOUT_ENV_VAR, "23");
-            assert_eq!(toolchain_command_timeout(), Duration::from_secs(23));
+            assert_eq!(
+                InstallerWatchdogConfig::from_env(TOOLCHAIN_COMMAND_TIMEOUT_ENV_VAR).safety_timeout,
+                Duration::from_secs(23)
+            );
         }
         for value in ["", "0", "-1", "abc"] {
             let _guard = EnvVarGuard::set(TOOLCHAIN_COMMAND_TIMEOUT_ENV_VAR, value);
             assert_eq!(
-                toolchain_command_timeout(),
-                Duration::from_secs(DEFAULT_TOOLCHAIN_COMMAND_TIMEOUT_SECS),
+                InstallerWatchdogConfig::from_env(TOOLCHAIN_COMMAND_TIMEOUT_ENV_VAR).safety_timeout,
+                Duration::from_secs(crate::core::DEFAULT_INSTALLER_SAFETY_TIMEOUT_SECS),
                 "invalid override {value:?} should use default"
             );
         }
         let _guard = EnvVarGuard::remove(TOOLCHAIN_COMMAND_TIMEOUT_ENV_VAR);
         assert_eq!(
-            toolchain_command_timeout(),
-            Duration::from_secs(DEFAULT_TOOLCHAIN_COMMAND_TIMEOUT_SECS)
+            InstallerWatchdogConfig::from_env(TOOLCHAIN_COMMAND_TIMEOUT_ENV_VAR).safety_timeout,
+            Duration::from_secs(crate::core::DEFAULT_INSTALLER_SAFETY_TIMEOUT_SECS)
         );
     });
 

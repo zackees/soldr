@@ -23,6 +23,7 @@ use wait_timeout::ChildExt;
 pub mod canonical_targets;
 pub mod cpu_topology;
 pub mod git;
+pub mod installer_watchdog;
 /// soldr#1761 — soldr-owned compile concurrency limit, resolved once
 /// and shared by the admission queue and the compile semaphore.
 pub mod jobs;
@@ -34,6 +35,12 @@ mod toolchain_resolve;
 pub mod wire;
 
 pub use canonical_targets::{canonical_targets, is_canonical, CANONICAL_TARGETS};
+pub use installer_watchdog::{
+    installer_safety_timeout, installer_stall_timeout, run_installer_command,
+    InstallerWatchdogConfig, DEFAULT_INSTALLER_SAFETY_TIMEOUT_SECS,
+    DEFAULT_INSTALLER_STALL_TIMEOUT_SECS, INSTALLER_SAFETY_TIMEOUT_ENV_VAR,
+    INSTALLER_STALL_TIMEOUT_ENV_VAR,
+};
 pub use paths::{
     resolve_cargo_home, resolve_rustup_home, AutoGcConfig, CookConfig, GcConfig, PinsConfig,
     SoldrConfig, SoldrConfigLoadError, SoldrPaths, MANAGED_SHIM_VERSION, SOLDR_CACHE_DIR_ENV_VAR,
