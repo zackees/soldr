@@ -138,7 +138,7 @@ jobs:
         run: rustup toolchain install 1.94.1 --profile minimal --no-self-update
 
       - name: Setup soldr build cache
-        uses: zackees/setup-soldr@438d260b692e84e742a6cb63b980775672e126f7
+        uses: zackees/setup-soldr@056747304f66ad465031149f207c0c7a55ed9052
         env:
           ACTION_WORKSPACE: ${{ github.workspace }}/soldr
         with:
