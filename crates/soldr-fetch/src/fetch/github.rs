@@ -6,8 +6,10 @@
 
 use crate::core::{Arch, Env, Os, SoldrError, TargetTriple};
 
+use super::stream_download::{
+    control_http_client, get_request, read_control_text, send_control_request,
+};
 use super::VersionSpec;
-use std::time::Duration;
 
 pub(crate) struct RepoInfo {
     pub(crate) owner: String,
@@ -25,39 +27,12 @@ pub(super) struct AssetInfo {
     pub(super) download_url: String,
 }
 
-pub(crate) fn http_client() -> Result<reqwest::Client, SoldrError> {
-    super::net_guard::ensure_network_allowed("GitHub releases / crates.io")?;
-    // All fetch modules inherit this shared client, so keep both timeouts.
-    reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(120))
-        .user_agent(format!("soldr/{}", crate::core::version()))
-        .build()
-        .map_err(|e| SoldrError::Network(e.to_string()))
-}
-
-/// Client for archive-sized payloads. Unlike [`http_client`], this has no
-/// response-wide deadline; [`super::stream_download`] applies an idle timeout
-/// to each body chunk after the connection and headers have arrived.
-pub(crate) fn asset_http_client() -> Result<reqwest::Client, SoldrError> {
-    super::net_guard::ensure_network_allowed("release asset download")?;
-    reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .user_agent(format!("soldr/{}", crate::core::version()))
-        .build()
-        .map_err(|e| SoldrError::Network(e.to_string()))
-}
-
 /// Look up the GitHub repository for a crate via crates.io.
 pub(super) async fn resolve_repo(crate_name: &str) -> Result<RepoInfo, SoldrError> {
-    let client = http_client()?;
+    let client = control_http_client("GitHub releases / crates.io")?;
     let url = format!("https://crates.io/api/v1/crates/{crate_name}");
 
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| SoldrError::Network(e.to_string()))?;
+    let resp = send_control_request(get_request(&client, &url), &url).await?;
 
     if !resp.status().is_success() {
         return Err(SoldrError::ToolNotFound(format!(
@@ -65,10 +40,8 @@ pub(super) async fn resolve_repo(crate_name: &str) -> Result<RepoInfo, SoldrErro
         )));
     }
 
-    let text = resp
-        .text()
-        .await
-        .map_err(|e| SoldrError::Network(e.to_string()))?;
+    let text =
+        read_control_text(resp, &url, super::stream_download::CONTROL_HEADER_TIMEOUT).await?;
     let body: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| SoldrError::Other(e.to_string()))?;
 
@@ -104,7 +77,7 @@ pub(super) async fn fetch_release(
     version: &VersionSpec,
     tag_prefix: Option<&str>,
 ) -> Result<ReleaseInfo, SoldrError> {
-    let client = http_client()?;
+    let client = control_http_client("GitHub releases")?;
 
     let release = match version {
         VersionSpec::Latest => match tag_prefix {
@@ -155,15 +128,11 @@ async fn fetch_latest_by_prefix(
         "https://api.github.com/repos/{}/{}/releases?per_page=60",
         repo.owner, repo.repo
     );
-    let resp = github_request(client, repo, &url)
-        .send()
-        .await
-        .map_err(|e| SoldrError::Network(e.to_string()))?;
+    let resp = send_control_request(github_request(client, repo, &url), &url).await?;
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let body = resp
-            .text()
+        let body = read_control_text(resp, &url, super::stream_download::CONTROL_HEADER_TIMEOUT)
             .await
             .unwrap_or_else(|e| format!("<failed to read body: {e}>"));
         return Err(github_status_error(
@@ -175,10 +144,8 @@ async fn fetch_latest_by_prefix(
         ));
     }
 
-    let text = resp
-        .text()
-        .await
-        .map_err(|e| SoldrError::Network(e.to_string()))?;
+    let text =
+        read_control_text(resp, &url, super::stream_download::CONTROL_HEADER_TIMEOUT).await?;
     let releases: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| SoldrError::Other(e.to_string()))?;
 
@@ -211,15 +178,11 @@ async fn fetch_release_value(
     repo: &RepoInfo,
     url: &str,
 ) -> Result<serde_json::Value, SoldrError> {
-    let resp = github_request(client, repo, url)
-        .send()
-        .await
-        .map_err(|e| SoldrError::Network(e.to_string()))?;
+    let resp = send_control_request(github_request(client, repo, url), url).await?;
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let body = resp
-            .text()
+        let body = read_control_text(resp, url, super::stream_download::CONTROL_HEADER_TIMEOUT)
             .await
             .unwrap_or_else(|e| format!("<failed to read body: {e}>"));
         return Err(github_status_error(
@@ -231,10 +194,7 @@ async fn fetch_release_value(
         ));
     }
 
-    let text = resp
-        .text()
-        .await
-        .map_err(|e| SoldrError::Network(e.to_string()))?;
+    let text = read_control_text(resp, url, super::stream_download::CONTROL_HEADER_TIMEOUT).await?;
     serde_json::from_str(&text).map_err(|e| SoldrError::Other(e.to_string()))
 }
 
@@ -247,15 +207,11 @@ async fn fetch_release_by_listing(
         "https://api.github.com/repos/{}/{}/releases?per_page=30",
         repo.owner, repo.repo
     );
-    let resp = github_request(client, repo, &url)
-        .send()
-        .await
-        .map_err(|e| SoldrError::Network(e.to_string()))?;
+    let resp = send_control_request(github_request(client, repo, &url), &url).await?;
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let body = resp
-            .text()
+        let body = read_control_text(resp, &url, super::stream_download::CONTROL_HEADER_TIMEOUT)
             .await
             .unwrap_or_else(|e| format!("<failed to read body: {e}>"));
         return Err(github_status_error(
@@ -267,10 +223,8 @@ async fn fetch_release_by_listing(
         ));
     }
 
-    let text = resp
-        .text()
-        .await
-        .map_err(|e| SoldrError::Network(e.to_string()))?;
+    let text =
+        read_control_text(resp, &url, super::stream_download::CONTROL_HEADER_TIMEOUT).await?;
     let releases: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| SoldrError::Other(e.to_string()))?;
     let matched = releases
@@ -407,9 +361,7 @@ fn github_request<'a>(
     repo: &RepoInfo,
     url: &'a str,
 ) -> reqwest::RequestBuilder {
-    let mut request = client
-        .get(url)
-        .header("Accept", "application/vnd.github+json");
+    let mut request = get_request(client, url).header("Accept", "application/vnd.github+json");
 
     if let Some(token) = github_auth_token_for_repo(repo) {
         request = request.bearer_auth(token);

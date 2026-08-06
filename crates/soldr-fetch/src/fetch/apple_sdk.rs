@@ -10,15 +10,14 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::core::{SoldrError, SoldrPaths};
 
 use super::manifest_lookup;
 use super::stream_download::{
-    send_asset_request, stream_response_to_temp_file, DownloadedAsset, ASSET_HEADER_TIMEOUT,
-    ASSET_IDLE_TIMEOUT,
+    asset_http_client_with_protocol, get_request, send_asset_request, stream_response_to_temp_file,
+    AssetProtocol, DownloadedAsset, ASSET_HEADER_TIMEOUT, ASSET_IDLE_TIMEOUT,
 };
 
 /// Pinned macOS SDK version used when the caller does not set
@@ -409,26 +408,14 @@ async fn fetch_managed_sdk(
 /// every error it returns is `SoldrError::Network`, which is what
 /// `retry::is_transient` matches.
 async fn download_apple_sdk_bundle(url: &str) -> Result<DownloadedAsset, SoldrError> {
-    let client = apple_sdk_http_client()?;
+    let client = asset_http_client_with_protocol("the Apple SDK bundle", AssetProtocol::Http1Only)?;
     let resp = send_asset_request(
-        client
-            .get(url)
-            .header(reqwest::header::ACCEPT_ENCODING, "identity"),
+        get_request(&client, url).header(reqwest::header::ACCEPT_ENCODING, "identity"),
         url,
         ASSET_HEADER_TIMEOUT,
     )
     .await?;
     stream_response_to_temp_file(resp, url, ASSET_IDLE_TIMEOUT).await
-}
-
-fn apple_sdk_http_client() -> Result<reqwest::Client, SoldrError> {
-    super::net_guard::ensure_network_allowed("the Apple SDK bundle")?;
-    reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .http1_only()
-        .user_agent(format!("soldr/{}", crate::core::version()))
-        .build()
-        .map_err(|e| SoldrError::Network(e.to_string()))
 }
 
 async fn catalogue_entry_for_url(url: &str) -> Option<manifest_lookup::ManifestEntry> {

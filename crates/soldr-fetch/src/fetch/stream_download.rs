@@ -14,6 +14,75 @@ use sha2::{Digest, Sha256};
 
 pub(crate) const ASSET_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 pub(crate) const ASSET_HEADER_TIMEOUT: Duration = Duration::from_secs(120);
+pub(crate) const CONTROL_HEADER_TIMEOUT: Duration = Duration::from_secs(120);
+/// A final circuit breaker for an otherwise-progressing asset download.
+///
+/// An idle watchdog alone would permit a server to trickle bytes forever. The
+/// caller retries this transient failure from a freshly-created temporary file;
+/// partial files are never exposed as completed artifacts.
+pub(crate) const ASSET_SAFETY_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// Transport compatibility policy for a remote asset host.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) enum AssetProtocol {
+    /// Let reqwest negotiate the best available HTTP version.
+    #[default]
+    Negotiated,
+    /// Retain the HTTP/1-only compatibility mode required by selected SDK CDNs.
+    Http1Only,
+}
+
+/// Construct the sole HTTP client for bounded control-plane requests.
+pub(crate) fn control_http_client(purpose: &str) -> Result<reqwest::Client, SoldrError> {
+    super::net_guard::ensure_network_allowed(purpose)?;
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(CONTROL_HEADER_TIMEOUT)
+        .user_agent(format!("soldr/{}", crate::core::version()))
+        .build()
+        .map_err(|error| SoldrError::Network(error.to_string()))
+}
+
+/// Construct the sole HTTP client for streamed asset requests.
+pub(crate) fn asset_http_client(purpose: &str) -> Result<reqwest::Client, SoldrError> {
+    asset_http_client_with_protocol(purpose, AssetProtocol::Negotiated)
+}
+
+/// Construct the sole asset client, optionally retaining a documented
+/// compatibility restriction for a particular host.
+pub(crate) fn asset_http_client_with_protocol(
+    purpose: &str,
+    protocol: AssetProtocol,
+) -> Result<reqwest::Client, SoldrError> {
+    super::net_guard::ensure_network_allowed(purpose)?;
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .user_agent(format!("soldr/{}", crate::core::version()));
+    if matches!(protocol, AssetProtocol::Http1Only) {
+        builder = builder.http1_only();
+    }
+    builder
+        .build()
+        .map_err(|error| SoldrError::Network(error.to_string()))
+}
+
+/// Build a GET request through the fetch boundary.
+pub(crate) fn get_request(client: &reqwest::Client, url: &str) -> reqwest::RequestBuilder {
+    client.get(url)
+}
+
+/// Build a POST request through the fetch boundary.
+pub(crate) fn post_request(client: &reqwest::Client, url: &str) -> reqwest::RequestBuilder {
+    client.post(url)
+}
+
+/// Attach a serialized JSON request body through the fetch boundary.
+pub(crate) fn with_json_body<T: serde::Serialize>(
+    request: reqwest::RequestBuilder,
+    body: &T,
+) -> reqwest::RequestBuilder {
+    request.json(body)
+}
 
 #[derive(Debug)]
 pub(crate) struct DownloadedAsset {
@@ -37,9 +106,26 @@ impl DownloadedAsset {
 }
 
 pub(crate) async fn stream_response_to_temp_file(
+    response: reqwest::Response,
+    url: &str,
+    idle_timeout: Duration,
+) -> Result<DownloadedAsset, SoldrError> {
+    stream_response_to_temp_file_with_safety_timeout(
+        response,
+        url,
+        idle_timeout,
+        ASSET_SAFETY_TIMEOUT,
+    )
+    .await
+}
+
+/// Stream an archive response to a temporary file, incrementally hashing every
+/// chunk while enforcing independent idle-progress and total-safety deadlines.
+pub(crate) async fn stream_response_to_temp_file_with_safety_timeout(
     mut response: reqwest::Response,
     url: &str,
     idle_timeout: Duration,
+    safety_timeout: Duration,
 ) -> Result<DownloadedAsset, SoldrError> {
     if !response.status().is_success() {
         return Err(SoldrError::Network(format!(
@@ -51,11 +137,27 @@ pub(crate) async fn stream_response_to_temp_file(
     let mut file = tempfile::NamedTempFile::new_in(soldr_core::core::ensure_temp_root())?;
     let mut hasher = Sha256::new();
     let mut bytes = 0_u64;
+    let started = tokio::time::Instant::now();
 
     loop {
-        let chunk = tokio::time::timeout(idle_timeout, response.chunk())
+        if started.elapsed() >= safety_timeout {
+            return Err(SoldrError::Network(format!(
+                "asset download exceeded its global safety ceiling of {safety_timeout:?} after {bytes} bytes: {url}"
+            )));
+        }
+        let remaining = safety_timeout.saturating_sub(started.elapsed());
+        let wait = idle_timeout.min(remaining);
+        let chunk = tokio::time::timeout(wait, response.chunk())
             .await
-            .map_err(|_| stalled_download_error(url, bytes, idle_timeout))?
+            .map_err(|_| {
+                if wait == remaining {
+                    SoldrError::Network(format!(
+                        "asset download exceeded its global safety ceiling of {safety_timeout:?} after {bytes} bytes: {url}"
+                    ))
+                } else {
+                    stalled_download_error(url, bytes, idle_timeout)
+                }
+            })?
             .map_err(|error| interrupted_download_error(url, bytes, error))?;
         let Some(chunk) = chunk else {
             break;
@@ -85,6 +187,42 @@ pub(crate) async fn send_asset_request(
                 "asset request timed out waiting for headers: {url}"
             ))
         })?
+        .map_err(|error| SoldrError::Network(error.to_string()))
+}
+
+/// Send a small metadata/API request with the control-plane header deadline.
+pub(crate) async fn send_control_request(
+    request: reqwest::RequestBuilder,
+    url: &str,
+) -> Result<reqwest::Response, SoldrError> {
+    send_control_request_with_timeout(request, url, CONTROL_HEADER_TIMEOUT).await
+}
+
+/// Send a control request with a caller's narrower operation-specific budget.
+pub(crate) async fn send_control_request_with_timeout(
+    request: reqwest::RequestBuilder,
+    url: &str,
+    header_timeout: Duration,
+) -> Result<reqwest::Response, SoldrError> {
+    tokio::time::timeout(header_timeout, request.send())
+        .await
+        .map_err(|_| {
+            SoldrError::Network(format!(
+                "control request timed out waiting for headers: {url}"
+            ))
+        })?
+        .map_err(|error| SoldrError::Network(error.to_string()))
+}
+
+/// Read a small control-plane response through the fetch boundary.
+pub(crate) async fn read_control_text(
+    response: reqwest::Response,
+    url: &str,
+    body_timeout: Duration,
+) -> Result<String, SoldrError> {
+    tokio::time::timeout(body_timeout, response.text())
+        .await
+        .map_err(|_| SoldrError::Network(format!("control response body timed out: {url}")))?
         .map_err(|error| SoldrError::Network(error.to_string()))
 }
 
@@ -200,6 +338,38 @@ mod tests {
             assert!(error.to_string().contains("5 bytes"), "{error}");
         });
     });
+
+    crate::timed_test!(
+        global_safety_ceiling_stops_a_slow_but_progressing_transfer,
+        Duration::from_secs(5),
+        {
+            runtime().block_on(async {
+                let url = serve_chunks(
+                    vec![
+                        (b"a".to_vec(), Duration::from_millis(30)),
+                        (b"b".to_vec(), Duration::from_millis(30)),
+                        (b"c".to_vec(), Duration::from_millis(30)),
+                    ],
+                    3,
+                )
+                .await;
+                let response = reqwest::Client::new().get(&url).send().await.expect("GET");
+                let error = stream_response_to_temp_file_with_safety_timeout(
+                    response,
+                    &url,
+                    Duration::from_millis(100),
+                    Duration::from_millis(50),
+                )
+                .await
+                .expect_err("global ceiling must stop the transfer");
+                assert!(super::super::retry::is_transient(&error));
+                assert!(
+                    error.to_string().contains("global safety ceiling"),
+                    "{error}"
+                );
+            });
+        }
+    );
 
     crate::timed_test!(
         header_timeout_is_separate_from_body_idle_timeout,

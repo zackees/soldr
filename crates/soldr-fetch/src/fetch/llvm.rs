@@ -56,8 +56,8 @@ use std::time::Duration;
 use crate::core::{SoldrError, SoldrPaths};
 
 use super::stream_download::{
-    send_asset_request, stream_response_to_temp_file, DownloadedAsset, ASSET_HEADER_TIMEOUT,
-    ASSET_IDLE_TIMEOUT,
+    asset_http_client_with_protocol, get_request, send_asset_request, stream_response_to_temp_file,
+    AssetProtocol, DownloadedAsset, ASSET_HEADER_TIMEOUT, ASSET_IDLE_TIMEOUT,
 };
 
 /// Pinned LLVM version that soldr's managed bootstrap ships for the
@@ -264,7 +264,7 @@ async fn download_llvm_asset(asset: &LlvmAsset) -> Result<DownloadedAsset, Soldr
     // That is not a behaviour change here: every error `download_llvm_asset_once`
     // can produce is `SoldrError::Network`, which `retry::is_transient` matches,
     // so the set of retried failures is identical.
-    let client = llvm_http_client()?;
+    let client = asset_http_client_with_protocol("managed LLVM", AssetProtocol::Http1Only)?;
     super::retry::with_asset_backoff_params(
         &format!("LLVM v{MANAGED_LLVM_VERSION} {}", asset.plat_arch),
         LLVM_DOWNLOAD_ATTEMPTS,
@@ -274,24 +274,12 @@ async fn download_llvm_asset(asset: &LlvmAsset) -> Result<DownloadedAsset, Soldr
     .await
 }
 
-fn llvm_http_client() -> Result<reqwest::Client, SoldrError> {
-    super::net_guard::ensure_network_allowed("managed LLVM")?;
-    reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .http1_only()
-        .user_agent(format!("soldr/{}", crate::core::version()))
-        .build()
-        .map_err(|e| SoldrError::Network(e.to_string()))
-}
-
 async fn download_llvm_asset_once(
     client: &reqwest::Client,
     asset: &LlvmAsset,
 ) -> Result<DownloadedAsset, SoldrError> {
     let resp = send_asset_request(
-        client
-            .get(asset.url)
-            .header(reqwest::header::ACCEPT_ENCODING, "identity"),
+        get_request(client, asset.url).header(reqwest::header::ACCEPT_ENCODING, "identity"),
         asset.url,
         ASSET_HEADER_TIMEOUT,
     )

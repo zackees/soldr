@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 
 use crate::core::{SoldrError, SoldrPaths};
 
-use super::github::asset_http_client;
+use super::stream_download::{asset_http_client, get_request};
 use super::stream_download::{
     send_asset_request, stream_response_to_temp_file, DownloadedAsset, ASSET_HEADER_TIMEOUT,
     ASSET_IDLE_TIMEOUT,
@@ -173,8 +173,8 @@ pub async fn ensure_xwin_cache(
 /// One download attempt. Every error is [`SoldrError::Network`], which is what
 /// [`super::retry::is_transient`] matches.
 async fn download_xwin_cache(url: &str) -> Result<DownloadedAsset, SoldrError> {
-    let client = asset_http_client()?;
-    let resp = send_asset_request(client.get(url), url, ASSET_HEADER_TIMEOUT).await?;
+    let client = asset_http_client("managed xwin-cache")?;
+    let resp = send_asset_request(get_request(&client, url), url, ASSET_HEADER_TIMEOUT).await?;
     stream_response_to_temp_file(resp, url, ASSET_IDLE_TIMEOUT).await
 }
 

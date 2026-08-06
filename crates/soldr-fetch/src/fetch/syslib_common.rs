@@ -28,12 +28,11 @@
 //! site.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use super::manifest_lookup;
 use super::stream_download::{
-    send_asset_request, stream_response_to_temp_file, DownloadedAsset, ASSET_HEADER_TIMEOUT,
-    ASSET_IDLE_TIMEOUT,
+    asset_http_client_with_protocol, get_request, send_asset_request, stream_response_to_temp_file,
+    AssetProtocol, DownloadedAsset, ASSET_HEADER_TIMEOUT, ASSET_IDLE_TIMEOUT,
 };
 use crate::core::{SoldrError, SoldrPaths};
 
@@ -161,26 +160,15 @@ pub async fn ensure_syslib_bundle(
 /// sha256 verification is deliberately *outside* this function so an integrity
 /// failure stays fatal on the first try.
 async fn download_syslib_bundle(url: &str) -> Result<DownloadedAsset, SoldrError> {
-    let client = syslib_http_client()?;
+    let client =
+        asset_http_client_with_protocol("a *-sys catalogue bundle", AssetProtocol::Http1Only)?;
     let resp = send_asset_request(
-        client
-            .get(url)
-            .header(reqwest::header::ACCEPT_ENCODING, "identity"),
+        get_request(&client, url).header(reqwest::header::ACCEPT_ENCODING, "identity"),
         url,
         ASSET_HEADER_TIMEOUT,
     )
     .await?;
     stream_response_to_temp_file(resp, url, ASSET_IDLE_TIMEOUT).await
-}
-
-fn syslib_http_client() -> Result<reqwest::Client, SoldrError> {
-    super::net_guard::ensure_network_allowed("a *-sys catalogue bundle")?;
-    reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .http1_only()
-        .user_agent(format!("soldr/{}", crate::core::version()))
-        .build()
-        .map_err(|e| SoldrError::Network(e.to_string()))
 }
 
 /// Acquire a **blocking** exclusive cross-process lock for an install

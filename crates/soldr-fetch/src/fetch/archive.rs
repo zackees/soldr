@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crate::core::{SoldrError, SoldrPaths, TargetTriple};
 
-use super::github::asset_http_client;
+use super::stream_download::{asset_http_client, get_request};
 use super::stream_download::{
     send_asset_request, stream_response_to_temp_file, ASSET_HEADER_TIMEOUT, ASSET_IDLE_TIMEOUT,
 };
@@ -51,9 +51,9 @@ pub(super) async fn download_and_extract_with_pin(
     binary_names: &[&str],
     manifest_pin: Option<(&str, &str)>,
 ) -> Result<PathBuf, SoldrError> {
-    let client = asset_http_client()?;
+    let client = asset_http_client("release asset download")?;
 
-    let resp = send_asset_request(client.get(url), url, ASSET_HEADER_TIMEOUT).await?;
+    let resp = send_asset_request(get_request(&client, url), url, ASSET_HEADER_TIMEOUT).await?;
 
     let downloaded = stream_response_to_temp_file(resp, url, ASSET_IDLE_TIMEOUT).await?;
 
