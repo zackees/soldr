@@ -120,9 +120,9 @@ pub async fn fetch_verified_catalogue_asset(
                 "catalogue has no asset row for {owner}/{repo} {tag}/{asset}"
             ))
         })?;
-    let bytes = download_catalogue_asset(&entry.url).await?;
-    if verify_catalogue_asset_bytes(&entry, &bytes).is_ok() {
-        return Ok(bytes);
+    let downloaded = download_catalogue_asset(&entry.url).await?;
+    if verify_catalogue_asset_sha256(&entry, downloaded.sha256()).is_ok() {
+        return std::fs::read(downloaded.path()).map_err(SoldrError::from);
     }
 
     // The Pages asset and catalogue are updated in one assets-branch commit,
@@ -136,9 +136,9 @@ pub async fn fetch_verified_catalogue_asset(
             "refreshed catalogue has no asset row for {owner}/{repo} {tag}/{asset}"
         ))
     })?;
-    let refreshed_bytes = download_catalogue_asset(&cache_busted_url(&refreshed_entry.url)).await?;
-    verify_catalogue_asset_bytes(refreshed_entry, &refreshed_bytes)?;
-    Ok(refreshed_bytes)
+    let refreshed = download_catalogue_asset(&cache_busted_url(&refreshed_entry.url)).await?;
+    verify_catalogue_asset_sha256(refreshed_entry, refreshed.sha256())?;
+    std::fs::read(refreshed.path()).map_err(SoldrError::from)
 }
 
 /// Download a catalogue-pinned asset, retrying transient failures.
@@ -151,35 +151,42 @@ pub async fn fetch_verified_catalogue_asset(
 /// The retry lives inside this leaf rather than at the two call sites so both
 /// the first fetch and the cache-busted refresh below inherit it. sha256
 /// verification happens in the caller and therefore stays outside the retry.
-async fn download_catalogue_asset(url: &str) -> Result<Vec<u8>, SoldrError> {
+async fn download_catalogue_asset(
+    url: &str,
+) -> Result<super::stream_download::DownloadedAsset, SoldrError> {
     super::retry::with_backoff(url, || download_catalogue_asset_once(url)).await
 }
 
-async fn download_catalogue_asset_once(url: &str) -> Result<Vec<u8>, SoldrError> {
-    let client = super::github::http_client()?;
-    let response = tokio::time::timeout(
-        MANIFEST_FETCH_TIMEOUT,
+async fn download_catalogue_asset_once(
+    url: &str,
+) -> Result<super::stream_download::DownloadedAsset, SoldrError> {
+    let client = super::github::asset_http_client()?;
+    let response = super::stream_download::send_asset_request(
         client
             .get(url)
-            .header(reqwest::header::ACCEPT_ENCODING, "identity")
-            .send(),
+            .header(reqwest::header::ACCEPT_ENCODING, "identity"),
+        url,
+        MANIFEST_FETCH_TIMEOUT,
+    )
+    .await?;
+    stream_catalogue_asset_body(response, url, MANIFEST_FETCH_TIMEOUT).await
+}
+
+async fn stream_catalogue_asset_body(
+    response: reqwest::Response,
+    url: &str,
+    body_timeout: std::time::Duration,
+) -> Result<super::stream_download::DownloadedAsset, SoldrError> {
+    tokio::time::timeout(
+        body_timeout,
+        super::stream_download::stream_response_to_temp_file(
+            response,
+            url,
+            super::stream_download::ASSET_IDLE_TIMEOUT,
+        ),
     )
     .await
-    .map_err(|_| SoldrError::Network(format!("asset fetch timed out: {url}")))?
-    .map_err(|error| SoldrError::Network(error.to_string()))?;
-    if !response.status().is_success() {
-        return Err(SoldrError::Network(format!(
-            "asset fetch {} returned HTTP {}",
-            url,
-            response.status()
-        )));
-    }
-    let bytes = tokio::time::timeout(MANIFEST_FETCH_TIMEOUT, response.bytes())
-        .await
-        .map_err(|_| SoldrError::Network(format!("asset body read timed out: {url}")))?
-        .map_err(|error| SoldrError::Network(error.to_string()))?
-        .to_vec();
-    Ok(bytes)
+    .map_err(|_| SoldrError::Network(format!("asset body read timed out: {url}")))?
 }
 
 fn cache_busted_url(url: &str) -> String {
@@ -191,8 +198,7 @@ fn cache_busted_url(url: &str) -> String {
     format!("{url}{separator}soldr_refresh={nonce}")
 }
 
-fn verify_catalogue_asset_bytes(entry: &ManifestEntry, bytes: &[u8]) -> Result<(), SoldrError> {
-    let actual = super::trust::sha256_of(bytes);
+fn verify_catalogue_asset_sha256(entry: &ManifestEntry, actual: &str) -> Result<(), SoldrError> {
     if actual != entry.sha256 {
         return Err(SoldrError::Other(format!(
             "catalogue asset sha256 mismatch for {}/{} {}/{}: expected {}, got {}",
@@ -520,6 +526,9 @@ fn print_catalogue_error(url: &str, reason: &str, json: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     fn sample_json() -> &'static str {
         r#"{
@@ -616,8 +625,41 @@ mod tests {
             url: "https://example.invalid/map.json".into(),
             sha256: super::super::trust::sha256_of(bytes),
         };
-        assert!(verify_catalogue_asset_bytes(&entry, bytes).is_ok());
-        assert!(verify_catalogue_asset_bytes(&entry, b"changed").is_err());
+        assert!(
+            verify_catalogue_asset_sha256(&entry, &super::super::trust::sha256_of(bytes)).is_ok()
+        );
+        assert!(
+            verify_catalogue_asset_sha256(&entry, &super::super::trust::sha256_of(b"changed"))
+                .is_err()
+        );
+    });
+
+    crate::timed_test!(catalogue_asset_body_keeps_a_response_wide_deadline, {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build test runtime");
+        runtime.block_on(async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind server");
+            let address = listener.local_addr().expect("server address");
+            tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.expect("accept client");
+                let mut request = [0_u8; 1024];
+                let _ = socket.read(&mut request).await;
+                socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\npartial")
+                    .await
+                    .expect("write partial body");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            });
+            let url = format!("http://{address}/catalogue-asset");
+            let response = reqwest::Client::new().get(&url).send().await.expect("GET");
+            let error = stream_catalogue_asset_body(response, &url, Duration::from_millis(20))
+                .await
+                .expect_err("trickling metadata body must hit the total deadline");
+            assert!(super::super::retry::is_transient(&error));
+            assert!(error.to_string().contains("body read timed out"), "{error}");
+        });
     });
 
     crate::timed_test!(cache_buster_preserves_existing_query_parameters, {

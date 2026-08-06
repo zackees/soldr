@@ -66,6 +66,13 @@ the default, never to "disabled"** — a fat-fingered timeout can never silently
 remove a backstop. `soldr doctor` marks an override that was set but did not
 take effect.
 
+> [!NOTE]
+> The four installer rows above are retained only as legacy override names.
+> Their former short wall-clock defaults are superseded by the shared
+> progress watchdog and its 24-hour safety ceiling. See
+> [INSTALLER_WATCHDOG.md](INSTALLER_WATCHDOG.md) for the current inventory,
+> phases, and diagnostics.
+
 ## Failure modes → signal → remedy
 
 ### 1. A compile hangs for minutes with no output

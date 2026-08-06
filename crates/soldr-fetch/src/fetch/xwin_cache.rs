@@ -35,8 +35,11 @@ use std::path::{Path, PathBuf};
 
 use crate::core::{SoldrError, SoldrPaths};
 
-use super::github::http_client;
-use super::trust;
+use super::github::asset_http_client;
+use super::stream_download::{
+    send_asset_request, stream_response_to_temp_file, DownloadedAsset, ASSET_HEADER_TIMEOUT,
+    ASSET_IDLE_TIMEOUT,
+};
 
 /// Pinned xwin-cache release date currently in the catalogue.
 /// Bump when a refreshed bundle ships from soldr-toolchain forge
@@ -108,13 +111,13 @@ pub async fn ensure_xwin_cache(
     // soldr#2132: retry the download. The sha256 comparison below stays
     // outside it -- the catalogue blob being replaced is exactly the case that
     // must fail on the first try.
-    let bytes = super::retry::with_backoff(
+    let downloaded = super::retry::with_asset_backoff(
         &format!("xwin-cache v{MANAGED_XWIN_CACHE_VERSION} for {target_triple}"),
         || download_xwin_cache(url),
     )
     .await?;
 
-    let digest = trust::sha256_of(&bytes);
+    let digest = downloaded.sha256();
     if digest != expected_sha256 {
         return Err(SoldrError::Other(format!(
             "xwin-cache sha256 mismatch for {target_triple}: \
@@ -131,7 +134,7 @@ pub async fn ensure_xwin_cache(
         std::fs::remove_dir_all(&install_dir)?;
     }
     std::fs::create_dir_all(&install_dir)?;
-    extract_tar_zst_tree(&bytes, &install_dir)?;
+    extract_tar_zst_tree(std::fs::File::open(downloaded.path())?, &install_dir)?;
 
     let cache_dir = resolve_xwin_cache_dir(&install_dir).ok_or_else(|| {
         SoldrError::Archive(format!(
@@ -169,23 +172,10 @@ pub async fn ensure_xwin_cache(
 
 /// One download attempt. Every error is [`SoldrError::Network`], which is what
 /// [`super::retry::is_transient`] matches.
-async fn download_xwin_cache(url: &str) -> Result<Vec<u8>, SoldrError> {
-    let client = http_client()?;
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| SoldrError::Network(e.to_string()))?;
-    if !resp.status().is_success() {
-        return Err(SoldrError::Network(format!(
-            "xwin-cache download failed: HTTP {}",
-            resp.status()
-        )));
-    }
-    resp.bytes()
-        .await
-        .map(|body| body.to_vec())
-        .map_err(|e| SoldrError::Network(e.to_string()))
+async fn download_xwin_cache(url: &str) -> Result<DownloadedAsset, SoldrError> {
+    let client = asset_http_client()?;
+    let resp = send_asset_request(client.get(url), url, ASSET_HEADER_TIMEOUT).await?;
+    stream_response_to_temp_file(resp, url, ASSET_IDLE_TIMEOUT).await
 }
 
 fn resolve_xwin_cache_dir(install_dir: &Path) -> Option<PathBuf> {
@@ -436,8 +426,7 @@ fn create_xwin_file_alias(src: &Path, alias: &Path) -> Result<(), SoldrError> {
     }
 }
 
-fn extract_tar_zst_tree(data: &[u8], dest: &Path) -> Result<(), SoldrError> {
-    let reader = std::io::Cursor::new(data);
+fn extract_tar_zst_tree<R: std::io::Read>(reader: R, dest: &Path) -> Result<(), SoldrError> {
     let zst = zstd::stream::read::Decoder::new(reader)
         .map_err(|e| SoldrError::Archive(format!("zstd decoder init: {e}")))?;
     let mut archive = tar::Archive::new(zst);

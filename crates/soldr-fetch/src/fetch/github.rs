@@ -36,6 +36,18 @@ pub(crate) fn http_client() -> Result<reqwest::Client, SoldrError> {
         .map_err(|e| SoldrError::Network(e.to_string()))
 }
 
+/// Client for archive-sized payloads. Unlike [`http_client`], this has no
+/// response-wide deadline; [`super::stream_download`] applies an idle timeout
+/// to each body chunk after the connection and headers have arrived.
+pub(crate) fn asset_http_client() -> Result<reqwest::Client, SoldrError> {
+    super::net_guard::ensure_network_allowed("release asset download")?;
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .user_agent(format!("soldr/{}", crate::core::version()))
+        .build()
+        .map_err(|e| SoldrError::Network(e.to_string()))
+}
+
 /// Look up the GitHub repository for a crate via crates.io.
 pub(super) async fn resolve_repo(crate_name: &str) -> Result<RepoInfo, SoldrError> {
     let client = http_client()?;

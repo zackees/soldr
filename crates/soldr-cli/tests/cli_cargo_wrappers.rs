@@ -1029,7 +1029,6 @@ fn embedded_rustfmt_preserves_toolchain_timeout() {
     let source_path = write_rustfmt_source(&cache_root);
     let (rustup, _, _, _) = install_fake_rustup_toolchain(&log_path);
     let started = std::time::Instant::now();
-
     let output = isolated_soldr_command()
         .args(["rustfmt", source_path.to_str().unwrap()])
         .current_dir(&cache_root)
@@ -1045,10 +1044,11 @@ fn embedded_rustfmt_preserves_toolchain_timeout() {
 
     assert!(!output.status.success());
     assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("timed out after 1 seconds"),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        stderr.contains("installer watchdog category=safety-ceiling")
+            && stderr.contains("safety_ceiling=1s"),
+        "stderr: {stderr}"
     );
 }
 

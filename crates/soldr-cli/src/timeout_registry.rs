@@ -196,34 +196,16 @@ fn entries() -> Vec<TimeoutEntry> {
             resolve: crate::core::command_output_timeout,
         },
         TimeoutEntry {
-            name: "toolchain command",
-            env_var: crate::toolchain::TOOLCHAIN_COMMAND_TIMEOUT_ENV_VAR,
-            default: Duration::from_secs(crate::toolchain::DEFAULT_TOOLCHAIN_COMMAND_TIMEOUT_SECS),
-            resolve: crate::toolchain::toolchain_command_timeout,
+            name: "installer no-progress watchdog",
+            env_var: crate::core::INSTALLER_STALL_TIMEOUT_ENV_VAR,
+            default: Duration::from_secs(crate::core::DEFAULT_INSTALLER_STALL_TIMEOUT_SECS),
+            resolve: crate::core::installer_stall_timeout,
         },
         TimeoutEntry {
-            name: "rustup target add",
-            env_var: crate::prepare_cmd::RUSTUP_TARGET_ADD_TIMEOUT_ENV_VAR,
-            default: Duration::from_secs(
-                crate::prepare_cmd::DEFAULT_RUSTUP_TARGET_ADD_TIMEOUT_SECS,
-            ),
-            resolve: crate::prepare_cmd::rustup_target_add_timeout,
-        },
-        TimeoutEntry {
-            name: "rustup-init bootstrap",
-            env_var: crate::fetch::rustup_init::RUSTUP_INIT_TIMEOUT_ENV_VAR,
-            default: Duration::from_secs(
-                crate::fetch::rustup_init::DEFAULT_RUSTUP_INIT_TIMEOUT_SECS,
-            ),
-            resolve: crate::fetch::rustup_init::rustup_init_timeout,
-        },
-        TimeoutEntry {
-            name: "build-from-source cargo install",
-            env_var: crate::build_from_source_cmd::CARGO_INSTALL_TIMEOUT_ENV_VAR,
-            default: Duration::from_secs(
-                crate::build_from_source_cmd::DEFAULT_CARGO_INSTALL_TIMEOUT_SECS,
-            ),
-            resolve: crate::build_from_source_cmd::cargo_install_timeout,
+            name: "installer safety ceiling",
+            env_var: crate::core::INSTALLER_SAFETY_TIMEOUT_ENV_VAR,
+            default: Duration::from_secs(crate::core::DEFAULT_INSTALLER_SAFETY_TIMEOUT_SECS),
+            resolve: crate::core::installer_safety_timeout,
         },
     ]
 }

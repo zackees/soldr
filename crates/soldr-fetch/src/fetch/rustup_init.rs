@@ -25,12 +25,14 @@
 //! other soldr-fetched binary: pin via `SOLDR_CHECKSUMS_FILE`,
 //! `SOLDR_TRUST_MODE=strict` refuses unpinned fetches.
 
-use super::http_client;
-use super::trust::{sha256_of, verify_download, PinnedChecksumStore, TrustMode, VerifyOutcome};
-use crate::core::{SoldrError, SoldrPaths};
+use super::github::asset_http_client;
+use super::stream_download::{
+    send_asset_request, stream_response_to_temp_file, DownloadedAsset, ASSET_HEADER_TIMEOUT,
+    ASSET_IDLE_TIMEOUT,
+};
+use super::trust::{verify_download, PinnedChecksumStore, TrustMode, VerifyOutcome};
+use crate::core::{run_installer_command, InstallerWatchdogConfig, SoldrError, SoldrPaths};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
-use wait_timeout::ChildExt;
 
 /// Opt-out env var. When set to a truthy value (`1`, `true`, `yes`, `on`,
 /// case-insensitive), the auto-bootstrap path becomes a no-op and the caller
@@ -49,8 +51,6 @@ pub const RUSTUP_INIT_URL_ENV_VAR: &str = "SOLDR_RUSTUP_INIT_URL_OVERRIDE";
 const RUSTUP_INIT_TOOL_NAME: &str = "rustup-init";
 const RUSTUP_INIT_PSEUDO_VERSION: &str = "latest";
 pub const RUSTUP_INIT_TIMEOUT_ENV_VAR: &str = "SOLDR_RUSTUP_INIT_TIMEOUT_SECS";
-pub const DEFAULT_RUSTUP_INIT_TIMEOUT_SECS: u64 = 15 * 60;
-const KILLED_RUSTUP_INIT_REAP_TIMEOUT_SECS: u64 = 5;
 
 /// Result of a bootstrap attempt.
 #[derive(Debug, Clone)]
@@ -327,23 +327,12 @@ pub fn rustup_init_host_triple() -> Result<String, SoldrError> {
 /// One download attempt for `rustup-init`. Every error is
 /// [`SoldrError::Network`], which is what [`super::retry::is_transient`]
 /// matches.
-async fn download_rustup_init_bytes(url: &str) -> Result<Vec<u8>, SoldrError> {
-    let client = http_client()?;
-    let resp = client
-        .get(url)
-        .send()
+async fn download_rustup_init_asset(url: &str) -> Result<DownloadedAsset, SoldrError> {
+    let client = asset_http_client()?;
+    let resp = send_asset_request(client.get(url), url, ASSET_HEADER_TIMEOUT)
         .await
-        .map_err(|e| SoldrError::Network(format!("bootstrap: GET {url}: {e}")))?;
-    if !resp.status().is_success() {
-        return Err(SoldrError::Network(format!(
-            "bootstrap: GET {url} -> HTTP {}",
-            resp.status()
-        )));
-    }
-    resp.bytes()
-        .await
-        .map(|body| body.to_vec())
-        .map_err(|e| SoldrError::Network(format!("bootstrap: read body {url}: {e}")))
+        .map_err(|error| SoldrError::Network(format!("bootstrap: GET {url}: {error}")))?;
+    stream_response_to_temp_file(resp, url, ASSET_IDLE_TIMEOUT).await
 }
 
 async fn download_rustup_init(cache_dir: &Path, url: &str) -> Result<PathBuf, SoldrError> {
@@ -355,10 +344,10 @@ async fn download_rustup_init(cache_dir: &Path, url: &str) -> Result<PathBuf, So
     // compile -- the same shape as the cmake failure that stopped the v0.8.30
     // release, one step earlier. Checksum verification stays below, outside
     // the retry.
-    let bytes =
-        super::retry::with_backoff("rustup-init", || download_rustup_init_bytes(url)).await?;
+    let downloaded =
+        super::retry::with_asset_backoff("rustup-init", || download_rustup_init_asset(url)).await?;
 
-    let sha256 = sha256_of(&bytes);
+    let sha256 = downloaded.sha256();
 
     let store = PinnedChecksumStore::from_env()?;
     let mode = TrustMode::from_env();
@@ -366,7 +355,7 @@ async fn download_rustup_init(cache_dir: &Path, url: &str) -> Result<PathBuf, So
         RUSTUP_INIT_TOOL_NAME,
         RUSTUP_INIT_PSEUDO_VERSION,
         rustup_init_filename(),
-        &sha256,
+        sha256,
         &store,
         mode,
     )?;
@@ -380,7 +369,7 @@ async fn download_rustup_init(cache_dir: &Path, url: &str) -> Result<PathBuf, So
     }
 
     let tmp = destination.with_extension("tmp");
-    std::fs::write(&tmp, &bytes)?;
+    std::fs::copy(downloaded.path(), &tmp)?;
 
     #[cfg(unix)]
     {
@@ -432,57 +421,16 @@ fn no_bootstrap_opt_out() -> bool {
     }
 }
 
-pub fn rustup_init_timeout() -> Duration {
-    std::env::var(RUSTUP_INIT_TIMEOUT_ENV_VAR)
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|seconds| *seconds > 0)
-        .map(Duration::from_secs)
-        .unwrap_or_else(|| Duration::from_secs(DEFAULT_RUSTUP_INIT_TIMEOUT_SECS))
-}
-
 fn run_rustup_init(
     command: &mut std::process::Command,
     installer: &Path,
 ) -> Result<std::process::ExitStatus, SoldrError> {
-    let mut child = command.spawn().map_err(|err| {
-        SoldrError::Other(format!(
-            "bootstrap: failed to launch rustup-init ({}): {err}",
-            installer.display()
-        ))
-    })?;
-    let timeout = rustup_init_timeout();
-    match child.wait_timeout(timeout).map_err(|err| {
-        SoldrError::Other(format!(
-            "bootstrap: failed waiting for rustup-init ({}): {err}",
-            installer.display()
-        ))
-    })? {
-        Some(status) => Ok(status),
-        None => {
-            let kill_result = child.kill();
-            let reap_result =
-                child.wait_timeout(Duration::from_secs(KILLED_RUSTUP_INIT_REAP_TIMEOUT_SECS));
-            let timeout_secs = timeout.as_secs();
-            let mut message = format!(
-                "bootstrap: rustup-init ({}) timed out after {timeout_secs} seconds \
-                 (set {RUSTUP_INIT_TIMEOUT_ENV_VAR} to override)",
-                installer.display()
-            );
-            match kill_result {
-                Ok(()) => message.push_str("; killed child process"),
-                Err(err) => message.push_str(&format!("; kill failed: {err}")),
-            }
-            match reap_result {
-                Ok(Some(_)) => {}
-                Ok(None) => message.push_str(&format!(
-                    "; process did not exit within {KILLED_RUSTUP_INIT_REAP_TIMEOUT_SECS} seconds after kill"
-                )),
-                Err(err) => message.push_str(&format!("; reap after kill failed: {err}")),
-            }
-            Err(SoldrError::Other(message))
-        }
-    }
+    run_installer_command(
+        command,
+        &format!("bootstrap: rustup-init ({})", installer.display()),
+        "bootstrap",
+        InstallerWatchdogConfig::from_env(RUSTUP_INIT_TIMEOUT_ENV_VAR),
+    )
 }
 
 fn is_truthy(value: &str) -> bool {
@@ -518,6 +466,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn host_triple_uses_unknown_linux_gnu_on_linux_x86_64() {
@@ -589,29 +538,31 @@ mod tests {
         }
     }
 
-    #[test]
-    fn rustup_init_timeout_uses_positive_env_override_only() {
+    crate::timed_test!(rustup_init_timeout_is_an_explicit_safety_ceiling, {
         let _env_lock = test_env_lock();
 
         {
             let _guard = EnvVarGuard::set(RUSTUP_INIT_TIMEOUT_ENV_VAR, "17");
-            assert_eq!(rustup_init_timeout(), Duration::from_secs(17));
+            assert_eq!(
+                InstallerWatchdogConfig::from_env(RUSTUP_INIT_TIMEOUT_ENV_VAR).safety_timeout,
+                Duration::from_secs(17)
+            );
         }
 
         for value in ["0", "-1", "not-a-number"] {
             let _guard = EnvVarGuard::set(RUSTUP_INIT_TIMEOUT_ENV_VAR, value);
             assert_eq!(
-                rustup_init_timeout(),
-                Duration::from_secs(DEFAULT_RUSTUP_INIT_TIMEOUT_SECS)
+                InstallerWatchdogConfig::from_env(RUSTUP_INIT_TIMEOUT_ENV_VAR).safety_timeout,
+                Duration::from_secs(crate::core::DEFAULT_INSTALLER_SAFETY_TIMEOUT_SECS)
             );
         }
 
         let _guard = EnvVarGuard::remove(RUSTUP_INIT_TIMEOUT_ENV_VAR);
         assert_eq!(
-            rustup_init_timeout(),
-            Duration::from_secs(DEFAULT_RUSTUP_INIT_TIMEOUT_SECS)
+            InstallerWatchdogConfig::from_env(RUSTUP_INIT_TIMEOUT_ENV_VAR).safety_timeout,
+            Duration::from_secs(crate::core::DEFAULT_INSTALLER_SAFETY_TIMEOUT_SECS)
         );
-    }
+    });
 
     #[test]
     fn auto_bootstrap_reports_opted_out_when_env_var_set() {

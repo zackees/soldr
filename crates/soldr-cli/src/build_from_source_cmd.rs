@@ -45,9 +45,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::binaries::resolve_toolchain_binary;
-use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths, TargetTriple};
+use crate::core::{
+    run_installer_command, suppress_windows_console_window, InstallerWatchdogConfig, SoldrError,
+    SoldrPaths, TargetTriple,
+};
 use crate::fetch::known_tools;
-use wait_timeout::ChildExt;
 
 /// Retry budget for the source-build install loop. Previously borrowed
 /// from the (now-deleted) managed-zccache install constants (soldr#1368);
@@ -67,8 +69,6 @@ pub const SUPPORTED_TOOLS: &[&str] = &["crgx", "cargo-chef", "cargo-dylint", "dy
 /// source-build path stays decoupled from zccache's constants.
 const RETRY_INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_secs(10);
 pub const CARGO_INSTALL_TIMEOUT_ENV_VAR: &str = "SOLDR_BUILD_FROM_SOURCE_INSTALL_TIMEOUT_SECS";
-pub const DEFAULT_CARGO_INSTALL_TIMEOUT_SECS: u64 = 45 * 60;
-const KILLED_CARGO_INSTALL_REAP_TIMEOUT_SECS: u64 = 5;
 
 /// Directory under `SoldrPaths::bin` where source-built binaries land.
 /// The full layout is
@@ -417,57 +417,19 @@ fn binary_ext_for_triple(triple: &str) -> &'static str {
     }
 }
 
-pub fn cargo_install_timeout() -> Duration {
-    std::env::var(CARGO_INSTALL_TIMEOUT_ENV_VAR)
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|seconds| *seconds > 0)
-        .map(Duration::from_secs)
-        .unwrap_or_else(|| Duration::from_secs(DEFAULT_CARGO_INSTALL_TIMEOUT_SECS))
-}
-
 fn run_cargo_install_attempt(
     command: &mut std::process::Command,
     plan: &BuildPlan,
 ) -> Result<std::process::ExitStatus, SoldrError> {
-    let mut child = command.spawn().map_err(|e| {
-        SoldrError::Other(format!(
-            "build-from-source: failed to invoke cargo install for {}@{} (target {}): {e}",
+    run_installer_command(
+        command,
+        &format!(
+            "build-from-source: cargo install {}@{} --target {}",
             plan.tool, plan.version, plan.target,
-        ))
-    })?;
-    let timeout = cargo_install_timeout();
-    match child.wait_timeout(timeout).map_err(|e| {
-        SoldrError::Other(format!(
-            "build-from-source: failed to wait for cargo install {}@{} --target {}: {e}",
-            plan.tool, plan.version, plan.target,
-        ))
-    })? {
-        Some(status) => Ok(status),
-        None => {
-            let kill_result = child.kill();
-            let reap_result =
-                child.wait_timeout(Duration::from_secs(KILLED_CARGO_INSTALL_REAP_TIMEOUT_SECS));
-            let timeout_secs = timeout.as_secs();
-            let mut message = format!(
-                "build-from-source: cargo install {}@{} --target {} timed out after {timeout_secs} seconds \
-                 (set {CARGO_INSTALL_TIMEOUT_ENV_VAR} to override)",
-                plan.tool, plan.version, plan.target,
-            );
-            match kill_result {
-                Ok(()) => message.push_str("; killed child process"),
-                Err(err) => message.push_str(&format!("; kill failed: {err}")),
-            }
-            match reap_result {
-                Ok(Some(_)) => {}
-                Ok(None) => message.push_str(&format!(
-                    "; process did not exit within {KILLED_CARGO_INSTALL_REAP_TIMEOUT_SECS} seconds after kill"
-                )),
-                Err(err) => message.push_str(&format!("; reap after kill failed: {err}")),
-            }
-            Err(SoldrError::Other(message))
-        }
-    }
+        ),
+        "source-build",
+        InstallerWatchdogConfig::from_env(CARGO_INSTALL_TIMEOUT_ENV_VAR),
+    )
 }
 
 pub(crate) fn sha256_of_file(path: &Path) -> Result<String, SoldrError> {
@@ -532,26 +494,29 @@ mod tests {
         }
     }
 
-    crate::timed_test!(cargo_install_timeout_uses_positive_env_override_only, {
+    crate::timed_test!(cargo_install_timeout_is_an_explicit_safety_ceiling, {
         let _lock = ENV_LOCK.lock().unwrap();
 
         {
             let _guard = EnvVarGuard::set(CARGO_INSTALL_TIMEOUT_ENV_VAR, "11");
-            assert_eq!(cargo_install_timeout(), Duration::from_secs(11));
+            assert_eq!(
+                InstallerWatchdogConfig::from_env(CARGO_INSTALL_TIMEOUT_ENV_VAR).safety_timeout,
+                Duration::from_secs(11)
+            );
         }
 
         for value in ["0", "-1", "not-a-number"] {
             let _guard = EnvVarGuard::set(CARGO_INSTALL_TIMEOUT_ENV_VAR, value);
             assert_eq!(
-                cargo_install_timeout(),
-                Duration::from_secs(DEFAULT_CARGO_INSTALL_TIMEOUT_SECS)
+                InstallerWatchdogConfig::from_env(CARGO_INSTALL_TIMEOUT_ENV_VAR).safety_timeout,
+                Duration::from_secs(crate::core::DEFAULT_INSTALLER_SAFETY_TIMEOUT_SECS)
             );
         }
 
         let _guard = EnvVarGuard::remove(CARGO_INSTALL_TIMEOUT_ENV_VAR);
         assert_eq!(
-            cargo_install_timeout(),
-            Duration::from_secs(DEFAULT_CARGO_INSTALL_TIMEOUT_SECS)
+            InstallerWatchdogConfig::from_env(CARGO_INSTALL_TIMEOUT_ENV_VAR).safety_timeout,
+            Duration::from_secs(crate::core::DEFAULT_INSTALLER_SAFETY_TIMEOUT_SECS)
         );
     });
 

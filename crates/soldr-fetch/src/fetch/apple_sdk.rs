@@ -16,7 +16,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::core::{SoldrError, SoldrPaths};
 
 use super::manifest_lookup;
-use super::trust;
+use super::stream_download::{
+    send_asset_request, stream_response_to_temp_file, DownloadedAsset, ASSET_HEADER_TIMEOUT,
+    ASSET_IDLE_TIMEOUT,
+};
 
 /// Pinned macOS SDK version used when the caller does not set
 /// `SOLDR_APPLE_SDK_VERSION`.
@@ -41,7 +44,6 @@ pub const MANAGED_APPLE_SDK_SHA256: &str =
 
 const SDKROOT_ENV_VAR: &str = "SDKROOT";
 const LEGACY_APPLE_SDK_VERSION: &str = "11.3";
-const APPLE_SDK_DOWNLOAD_TIMEOUT_SECS: u64 = 30 * 60;
 
 /// Env var that pins the Apple SDK version soldr fetches.
 pub const APPLE_SDK_VERSION_ENV_VAR: &str = "SOLDR_APPLE_SDK_VERSION";
@@ -321,7 +323,7 @@ async fn fetch_managed_sdk(
     // mismatch is `SoldrError::Other`, which `is_transient` does not match, but
     // keeping it outside means a corrupt-but-stable blob cannot be re-fetched
     // three more times in the hope of a different answer.
-    let bytes = super::retry::with_backoff(
+    let downloaded = super::retry::with_asset_backoff(
         &format!(
             "Apple SDK {}/{}",
             selection.version,
@@ -331,7 +333,7 @@ async fn fetch_managed_sdk(
     )
     .await?;
 
-    let digest = trust::sha256_of(&bytes);
+    let digest = downloaded.sha256();
     if digest != expected_sha256 {
         return Err(SoldrError::Other(format!(
             "Apple SDK sha256 mismatch for {}/{}: expected {expected_sha256}, got {digest} \
@@ -364,7 +366,7 @@ async fn fetch_managed_sdk(
     }
     std::fs::create_dir_all(&staging)?;
     let result = (|| -> Result<PathBuf, SoldrError> {
-        extract_tar_zst_tree(&bytes, &staging)?;
+        extract_tar_zst_tree(std::fs::File::open(downloaded.path())?, &staging)?;
         let sdk_dir = find_extracted_sdk_dir(
             &staging,
             &staging.join(expected_sdk_dir.file_name().unwrap_or_default()),
@@ -406,31 +408,23 @@ async fn fetch_managed_sdk(
 /// One download attempt. Split out so [`retry::with_backoff`] can repeat it;
 /// every error it returns is `SoldrError::Network`, which is what
 /// `retry::is_transient` matches.
-async fn download_apple_sdk_bundle(url: &str) -> Result<Vec<u8>, SoldrError> {
+async fn download_apple_sdk_bundle(url: &str) -> Result<DownloadedAsset, SoldrError> {
     let client = apple_sdk_http_client()?;
-    let resp = client
-        .get(url)
-        .header(reqwest::header::ACCEPT_ENCODING, "identity")
-        .send()
-        .await
-        .map_err(|e| SoldrError::Network(e.to_string()))?;
-    if !resp.status().is_success() {
-        return Err(SoldrError::Network(format!(
-            "Apple SDK download failed: HTTP {}",
-            resp.status()
-        )));
-    }
-    resp.bytes()
-        .await
-        .map(|b| b.to_vec())
-        .map_err(|e| SoldrError::Network(e.to_string()))
+    let resp = send_asset_request(
+        client
+            .get(url)
+            .header(reqwest::header::ACCEPT_ENCODING, "identity"),
+        url,
+        ASSET_HEADER_TIMEOUT,
+    )
+    .await?;
+    stream_response_to_temp_file(resp, url, ASSET_IDLE_TIMEOUT).await
 }
 
 fn apple_sdk_http_client() -> Result<reqwest::Client, SoldrError> {
     super::net_guard::ensure_network_allowed("the Apple SDK bundle")?;
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(APPLE_SDK_DOWNLOAD_TIMEOUT_SECS))
         .http1_only()
         .user_agent(format!("soldr/{}", crate::core::version()))
         .build()
@@ -502,8 +496,7 @@ fn is_apple_sdk_dir(path: &Path) -> bool {
         && path.join("usr").is_dir()
 }
 
-fn extract_tar_zst_tree(data: &[u8], dest: &Path) -> Result<(), SoldrError> {
-    let reader = std::io::Cursor::new(data);
+fn extract_tar_zst_tree<R: std::io::Read>(reader: R, dest: &Path) -> Result<(), SoldrError> {
     let zst = zstd::stream::read::Decoder::new(reader)
         .map_err(|e| SoldrError::Archive(format!("zstd decoder init: {e}")))?;
     let mut archive = tar::Archive::new(zst);
@@ -885,7 +878,7 @@ mod tests {
             encoder.finish().expect("finish zstd");
         }
         let dest = tempfile::tempdir().expect("dest");
-        extract_tar_zst_tree(&raw, dest.path()).expect("extract");
+        extract_tar_zst_tree(std::io::Cursor::new(raw), dest.path()).expect("extract");
         assert!(!dest
             .path()
             .join("package/sdk/usr/share/man/foo:bar")
@@ -912,7 +905,8 @@ mod tests {
             encoder.finish().expect("finish zstd");
         }
         let dest = tempfile::tempdir().expect("dest");
-        let err = extract_tar_zst_tree(&raw, dest.path()).expect_err("must reject");
+        let err =
+            extract_tar_zst_tree(std::io::Cursor::new(raw), dest.path()).expect_err("must reject");
         assert!(err.to_string().contains("unsafe path"));
     });
 }

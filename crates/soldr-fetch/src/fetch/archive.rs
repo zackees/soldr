@@ -6,7 +6,10 @@ use std::path::{Path, PathBuf};
 
 use crate::core::{SoldrError, SoldrPaths, TargetTriple};
 
-use super::github::http_client;
+use super::github::asset_http_client;
+use super::stream_download::{
+    send_asset_request, stream_response_to_temp_file, ASSET_HEADER_TIMEOUT, ASSET_IDLE_TIMEOUT,
+};
 use super::trust;
 
 // soldr#2132: deliberately NOT wrapped in `super::retry::with_backoff`.
@@ -48,25 +51,11 @@ pub(super) async fn download_and_extract_with_pin(
     binary_names: &[&str],
     manifest_pin: Option<(&str, &str)>,
 ) -> Result<PathBuf, SoldrError> {
-    let client = http_client()?;
+    let client = asset_http_client()?;
 
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| SoldrError::Network(e.to_string()))?;
+    let resp = send_asset_request(client.get(url), url, ASSET_HEADER_TIMEOUT).await?;
 
-    if !resp.status().is_success() {
-        return Err(SoldrError::Network(format!(
-            "download failed: HTTP {}",
-            resp.status()
-        )));
-    }
-
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| SoldrError::Network(e.to_string()))?;
+    let downloaded = stream_response_to_temp_file(resp, url, ASSET_IDLE_TIMEOUT).await?;
 
     // Integrity + trust enforcement (issue #42). Compute sha256 and consult
     // the pinned-checksum store before writing anything to disk.
@@ -75,7 +64,7 @@ pub(super) async fn download_and_extract_with_pin(
         .next()
         .filter(|s| !s.is_empty())
         .unwrap_or(url);
-    let digest = trust::sha256_of(&bytes);
+    let digest = downloaded.sha256();
 
     if let Some((pinned_asset, expected_sha)) = manifest_pin {
         let expected = expected_sha.trim().to_ascii_lowercase();
@@ -91,7 +80,7 @@ pub(super) async fn download_and_extract_with_pin(
     } else {
         let store = trust::PinnedChecksumStore::from_env()?;
         let mode = trust::TrustMode::from_env();
-        match trust::verify_download(cache_name, version, asset_name, &digest, &store, mode)? {
+        match trust::verify_download(cache_name, version, asset_name, digest, &store, mode)? {
             trust::VerifyOutcome::Verified { sha256 } => {
                 eprintln!(
                     "soldr: trust: verified {cache_name} v{version} {asset_name} sha256={sha256}"
@@ -118,16 +107,28 @@ pub(super) async fn download_and_extract_with_pin(
     let binary_path = tool_dir.join(&main_binary_name);
 
     if url.ends_with(".zip") {
-        extract_zip(&bytes, &tool_dir, &desired_binaries)?;
+        extract_zip(
+            std::fs::File::open(downloaded.path())?,
+            &tool_dir,
+            &desired_binaries,
+        )?;
     } else if url.ends_with(".tar.gz") || url.ends_with(".tgz") {
-        extract_tar_gz(&bytes, &tool_dir, &desired_binaries)?;
+        extract_tar_gz(
+            std::fs::File::open(downloaded.path())?,
+            &tool_dir,
+            &desired_binaries,
+        )?;
     } else if url.ends_with(".tar.xz") || url.ends_with(".txz") {
         // cargo-zigbuild and other rust-cross prebuilts ship their
         // per-triple binary tarballs in xz. Without this branch the
         // fall-through "raw binary" path below wrote the compressed
         // tarball bytes to disk as the binary, producing the shell
         // syntax error described in #809.
-        extract_tar_xz(&bytes, &tool_dir, &desired_binaries)?;
+        extract_tar_xz(
+            std::fs::File::open(downloaded.path())?,
+            &tool_dir,
+            &desired_binaries,
+        )?;
     } else {
         // Assume raw binary.
         if desired_binaries.len() != 1 {
@@ -135,7 +136,7 @@ pub(super) async fn download_and_extract_with_pin(
                 "cannot extract multiple binaries from raw asset for {cache_name}"
             )));
         }
-        std::fs::write(&binary_path, &bytes)?;
+        std::fs::copy(downloaded.path(), &binary_path)?;
     }
 
     // Make executable on Unix.
@@ -160,8 +161,11 @@ pub(crate) fn desired_binary_names(binary_names: &[&str], target: &TargetTriple)
         .collect()
 }
 
-fn extract_zip(data: &[u8], dest_dir: &Path, binary_names: &[String]) -> Result<(), SoldrError> {
-    let reader = std::io::Cursor::new(data);
+fn extract_zip<R: std::io::Read + std::io::Seek>(
+    reader: R,
+    dest_dir: &Path,
+    binary_names: &[String],
+) -> Result<(), SoldrError> {
     let mut archive =
         zip::ZipArchive::new(reader).map_err(|e| SoldrError::Archive(e.to_string()))?;
     let mut found = std::collections::BTreeSet::new();
@@ -194,14 +198,20 @@ fn extract_zip(data: &[u8], dest_dir: &Path, binary_names: &[String]) -> Result<
     ensure_all_binaries_found(binary_names, &found)
 }
 
-fn extract_tar_gz(data: &[u8], dest_dir: &Path, binary_names: &[String]) -> Result<(), SoldrError> {
-    let reader = std::io::Cursor::new(data);
+fn extract_tar_gz<R: std::io::Read>(
+    reader: R,
+    dest_dir: &Path,
+    binary_names: &[String],
+) -> Result<(), SoldrError> {
     let gz = flate2::read::GzDecoder::new(reader);
     extract_tar(gz, dest_dir, binary_names)
 }
 
-fn extract_tar_xz(data: &[u8], dest_dir: &Path, binary_names: &[String]) -> Result<(), SoldrError> {
-    let reader = std::io::Cursor::new(data);
+fn extract_tar_xz<R: std::io::Read>(
+    reader: R,
+    dest_dir: &Path,
+    binary_names: &[String],
+) -> Result<(), SoldrError> {
     let xz = xz2::read::XzDecoder::new(reader);
     extract_tar(xz, dest_dir, binary_names)
 }
@@ -303,7 +313,7 @@ mod tests {
         let xz = xz_compress(&tarball);
 
         let desired = vec!["cargo-zigbuild".to_string()];
-        extract_tar_xz(&xz, dest.path(), &desired).expect("extract tar.xz");
+        extract_tar_xz(std::io::Cursor::new(xz), dest.path(), &desired).expect("extract tar.xz");
 
         let installed = dest.path().join("cargo-zigbuild");
         assert!(
