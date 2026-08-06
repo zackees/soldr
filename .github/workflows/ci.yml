@@ -802,6 +802,10 @@ jobs:
       artifact_name: soldr-ci-e2e-linux-x64-musl
       source_ref: ${{ github.sha }}
       bootstrap_artifact_name: soldr-ci-bootstrap-linux-gnu
+      # Nothing downloads this artifact now that the replay is gone; the
+      # archive is still built (test code must still compile for musl), it
+      # just no longer round-trips through the artifact store unread.
+      upload_test_archive: false
 
   # ---------- Linux ARM64 (musl) ----------
   e2e-linux-arm64-musl-build:

@@ -330,9 +330,13 @@ def test_linux_zig_cross_lanes_use_current_checkout_soldr_bootstrap() -> None:
 
     lane_names = [
         ("e2e-linux-arm64-build", "e2e-linux-arm64"),
-        # x86_64-musl has no paired target-run (soldr#1978 item 3), so the
-        # block ends at the next lane rather than at its own replay job.
-        ("e2e-linux-x64-musl-build", "e2e-linux-arm64-musl-build"),
+        # x86_64-musl has no paired target-run (soldr#1978 item 3). Delimit
+        # with None rather than the *next lane's* header: every Linux cross
+        # lane carries identical `needs:` / `bootstrap_artifact_name:` lines,
+        # so a job inserted between the two would be swallowed into this
+        # block and satisfy the assertions below exactly when this lane lost
+        # them. None yields the same slice without that coupling.
+        ("e2e-linux-x64-musl-build", None),
         ("e2e-linux-arm64-musl-build", "e2e-linux-arm64-musl"),
     ]
     for job, next_job in lane_names:

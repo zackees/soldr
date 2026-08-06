@@ -86,6 +86,15 @@ def test_ci_and_blessed_alias_workflow_cover_every_target() -> None:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
     for row in rows:
         ci = row["ci"]
+        # Dispatch below falls through to the `cross` arm, where a null
+        # `run_job` would blow up inside `workflow_job` with a TypeError
+        # rather than a readable assertion. Pin the enum so a typo'd kind
+        # fails here, naming itself.
+        assert ci["kind"] in {
+            "native",
+            "cross",
+            "cross-build",
+        }, f"{ci['build_job']} has unknown ci.kind {ci['kind']!r}"
         build = workflow_job(workflow, ci["build_job"])
         assert (
             row["triple"] in build
@@ -114,9 +123,35 @@ def test_ci_and_blessed_alias_workflow_cover_every_target() -> None:
             cross_build = (
                 ROOT / ".github" / "workflows" / "_ci-cross-build-linux.yml"
             ).read_text(encoding="utf-8")
-            assert (
-                f"runs-on: {ci['runner']}" in cross_build
+            # Whole-line match: `runs-on: ubuntu-24.04` is a *prefix* of
+            # `runs-on: ubuntu-24.04-arm`, so a substring check would keep
+            # passing after the host moved to ARM -- precisely the drift this
+            # assertion exists to catch.
+            assert re.search(
+                rf"^\s*runs-on: {re.escape(ci['runner'])}\s*$",
+                cross_build,
+                re.MULTILINE,
             ), f"{ci['build_job']} host no longer matches its contract runner"
+            # With no replay, compiling the workspace's test binaries for this
+            # target is the only remaining target-specific test coverage. It
+            # is cheap to delete by accident while "cleaning up the lane with
+            # no consumer", so pin that the archive is still built and that
+            # only the unread *upload* was dropped.
+            assert (
+                "upload_test_archive: false" in build
+            ), f"{ci['build_job']} still uploads an artifact nothing replays"
+            cross_build_archive = re.search(
+                r"^\s*- name: Upload artifact\n\s*if: inputs\.upload_test_archive$",
+                cross_build,
+                re.MULTILINE,
+            )
+            assert cross_build_archive, (
+                "the upload gate vanished from _ci-cross-build-linux.yml; "
+                "build-only lanes would resume uploading unread archives"
+            )
+            assert (
+                "nextest archive" in cross_build or "nextest_cmd" in cross_build
+            ), f"{ci['build_job']} no longer compiles test binaries for its target"
             replay = ci["build_job"].removesuffix("-build")
             assert not re.search(
                 rf"^  {re.escape(replay)}:\s*$", workflow, re.MULTILINE

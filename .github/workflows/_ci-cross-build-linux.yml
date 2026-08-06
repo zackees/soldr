@@ -42,6 +42,20 @@ on:
           Optional artifact containing the host x86_64-linux bootstrap
           soldr binary. Darwin/MSVC lanes prefer this over rebuilding
           or restoring their own per-lane bootstrap cache.
+      upload_test_archive:
+        type: boolean
+        default: true
+        description: |
+          Whether to upload the packaged binary + nextest archive for a
+          paired `_ci-target-run.yml` job to replay.
+
+          Set false on a build-only lane (soldr#1978 item 3): with no
+          consumer, the upload is a multi-hundred-MB `compression-level: 0`
+          round-trip through the artifact store that is deleted unread.
+          The archive is still *built* either way -- compiling the whole
+          workspace's test binaries for the target is real coverage that
+          catches target-incompatible test code, and it is the only such
+          coverage on a lane with no replay.
 
 permissions:
   contents: read
@@ -464,6 +478,28 @@ jobs:
           python3 .github/scripts/verify_windows_imports.py \
             "target/${{ inputs.target }}/ci-nextest/soldr.exe"
 
+      # The musl equivalent of the three ratchets above, and the gap they
+      # left: `verify_static_link.py` ran only in release-auto.yml, so a musl
+      # binary that silently picked up an interpreter or a NEEDED entry built
+      # clean, printed a valid ELF from `file`, and was first caught at
+      # release -- or by a user on a non-Alpine host getting
+      # "No such file or directory" on exec.
+      #
+      # soldr#1978 item 3 made this the right place for it. x86_64-musl no
+      # longer has a `target-run`, whose `soldr toolchain ensure` was the only
+      # thing that implicitly proved the binary could exec at all. This check
+      # is strictly stronger than that accident -- it asserts the static-link
+      # invariant soldr#1060 actually cares about -- and being pure `readelf`
+      # inspection it is arch-independent, so the aarch64-musl lane gets the
+      # same PR-time guard rather than waiting for release.
+      - name: Verify the musl binary is statically linked (soldr#1060)
+        if: contains(inputs.target, 'linux-musl')
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/verify_static_link.py \
+            "target/${{ inputs.target }}/ci-nextest/soldr"
+
       - name: Target clippy uses the blessed lifecycle
         shell: bash
         run: |
@@ -567,6 +603,7 @@ jobs:
           ls -la dist/
 
       - name: Upload artifact
+        if: inputs.upload_test_archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ inputs.artifact_name }}
