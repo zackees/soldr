@@ -2,7 +2,7 @@ error: reqwest `new` bypasses fetch::stream_download; use its control or asset r
   --> $DIR/disallowed_reqwest_send.rs:6:18
    |
 LL |     let client = reqwest::Client::new();
-   |                  ^^^^^^^^^^^^^^^^^^^^^
+   |                  ^^^^^^^^^^^^^^^^^^^^
    |
    = note: `#[deny(ban_raw_network_access)]` on by default
 
