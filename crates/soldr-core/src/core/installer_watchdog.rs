@@ -469,18 +469,25 @@ mod tests {
 
     #[cfg(windows)]
     fn steady_progress_command() -> Command {
-        let mut command = Command::new("cmd");
+        let mut command = Command::new("powershell.exe");
         command.args([
-            "/C",
-            "for /L %i in (1,1,3) do (echo progress & >NUL timeout /T 1 /NOBREAK)",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "1..3 | ForEach-Object { Write-Output progress; Start-Sleep -Seconds 1 }",
         ]);
         command
     }
 
     #[cfg(windows)]
     fn quiet_wait_command() -> Command {
-        let mut command = Command::new("cmd");
-        command.args(["/C", ">NUL timeout /T 2 /NOBREAK"]);
+        let mut command = Command::new("powershell.exe");
+        command.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Start-Sleep -Seconds 2",
+        ]);
         command
     }
 
