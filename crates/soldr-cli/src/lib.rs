@@ -262,6 +262,9 @@ pub mod trampoline;
 /// soldr#2024 — the `--as <version>` trampoline, split out of
 /// `soldr_main.rs` so that file could stop growing.
 pub mod version_trampoline;
+/// Detects an uninitialized vendored zccache submodule before Cargo renders
+/// its opaque missing-manifest error (soldr#2232).
+pub(crate) mod worktree_submodule;
 pub mod wrapper;
 /// `wrapper_target` holds the wrapper hot-path target-registry routing
 /// extracted out of `wrapper.rs` so integration tests under
