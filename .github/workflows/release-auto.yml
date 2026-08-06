@@ -319,7 +319,7 @@ jobs:
         run: rustup toolchain install 1.94.1 --profile minimal --no-self-update
 
       - name: Setup Rust toolchain
-        uses: zackees/setup-soldr@438d260b692e84e742a6cb63b980775672e126f7
+        uses: zackees/setup-soldr@8d7bb1b597b682972afa0a4b59d142db7a1112ec
         with:
           # Release CI runs the checked-out soldr CLI as the build driver
           # below, because the previous released soldr can lack the

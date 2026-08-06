@@ -96,7 +96,7 @@ jobs:
           submodules: recursive
 
       - name: Setup soldr build cache
-        uses: zackees/setup-soldr@438d260b692e84e742a6cb63b980775672e126f7
+        uses: zackees/setup-soldr@8d7bb1b597b682972afa0a4b59d142db7a1112ec
         with:
           # soldr#1799: pin the soldr that builds us -- the action's default
           # (0.8.23) predates #1820 and GCs live target/ artifacts after every
