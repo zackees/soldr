@@ -96,7 +96,7 @@ jobs:
       # Dogfooding should run the release we actually ship, not whatever the
       # action defaults to.
       - name: Setup soldr build cache
-        uses: zackees/setup-soldr@b12d5664f3f0d18f16ae992d6546e90247300b6b
+        uses: zackees/setup-soldr@adb1d1a990fabad6c9c9c86af64f4c3536d8ffcc
         with:
           version: 0.8.29
           toolchain: 1.94.1
@@ -211,7 +211,7 @@ jobs:
             --managed-root "$HOME/.soldr" --managed-root "$HOME/.soldr-dev"
 
       - name: Stop setup-soldr builder cache before tests
-        uses: zackees/setup-soldr/cleanup@b12d5664f3f0d18f16ae992d6546e90247300b6b
+        uses: zackees/setup-soldr/cleanup@adb1d1a990fabad6c9c9c86af64f4c3536d8ffcc
 
       # soldr#1324/#1703 — run every workspace library and integration binary
       # in one invocation. This includes the internal crates extracted after
