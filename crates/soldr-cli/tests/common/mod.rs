@@ -232,7 +232,10 @@ pub(crate) fn scrub_outer_soldr_env(command: &mut Command) -> &mut Command {
         // suppresses the child's own relocation. Scrub both so the test
         // binary behaves like a fresh top-level invocation.
         .env_remove("SOLDR_ORIGINAL_EXE")
-        .env_remove("SOLDR_RELOCATED_EXE");
+        .env_remove("SOLDR_RELOCATED_EXE")
+        // A parent soldr daemon handoff points at the outer process image;
+        // fixture children must resolve and materialize their own daemon.
+        .env_remove(soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR);
     for (name, _) in std::env::vars_os() {
         let should_scrub = name.to_str().is_some_and(|name| {
             name.starts_with("CARGO_TARGET_")
