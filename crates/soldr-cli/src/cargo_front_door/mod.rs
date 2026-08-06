@@ -46,6 +46,7 @@ mod inputs;
 mod log_summary;
 pub(crate) mod no_cache_detach;
 mod profile_debug;
+mod strip_diagnostics;
 mod subcommand;
 mod target;
 /// soldr#1802 — elapsed-seconds prefixes on relayed child output.
@@ -1939,20 +1940,14 @@ pub(crate) async fn run_cargo_front_door(
         }
     }
 
-    // Capture when stderr is not a terminal (CI / Docker
-    // / `soldr cargo build 2>file`) so the cargo_diagnostics scanner can
-    // recognize the missing-host-tool failure pattern from #422 and
-    // rewrap cargo's terse `failed to execute command: (os error 2)`
-    // with platform-aware install hints. Interactive TTY users keep
-    // `.status()` inheritance (and therefore cargo's live progress bar)
-    // since changing stderr to a pipe would force cargo into its
-    // non-TTY rendering mode.
+    // Capture build diagnostics and non-TTY #422/`-Zthreads` output.
     use std::io::IsTerminal;
-    // Capture stderr for the narrow stable `-Zthreads` fallback even on a
-    // local terminal. The capture helper tees bytes unchanged, so the user
-    // still sees Cargo's live output while we retain the exact rustc error.
-    let capture_for_diagnostics =
-        !std::io::stderr().is_terminal() || zthreads_fallback::environment_mentions_zthreads();
+    // `-Zthreads` also requires a diagnostic capture under a TTY.
+    let capture_for_diagnostics = strip_diagnostics::should_capture(
+        build_like_cargo,
+        std::io::stderr().is_terminal(),
+        zthreads_fallback::environment_mentions_zthreads(),
+    );
 
     // Phase 2: start session correlation only after every fallible pre-cargo
     // preparation step (especially no-cache ownership detachment) succeeds.
@@ -2111,6 +2106,11 @@ pub(crate) async fn run_cargo_front_door(
     let captured_stderr_for_diagnosis = diagnostic_capture;
     let compile_fallback_log =
         emit_compile_fallback_summary(&paths, &compile_fallback_cursor, session_id);
+    let strip_outcome = strip_diagnostics::StripOutcome::from_cargo(
+        status.success(),
+        captured_stderr_for_diagnosis.as_deref(),
+    );
+    let effective_exit_code = strip_outcome.effective_exit_code(&status);
 
     // Phase 2: send BuildSessionEnd before the success/failure
     // branches do any further work. Best-effort — never affects the
@@ -2121,20 +2121,15 @@ pub(crate) async fn run_cargo_front_door(
     let daemon_finalized = crate::daemon::client::build_session_end(
         &paths,
         session_id,
-        status.code().unwrap_or(-1),
+        effective_exit_code,
         ended_at_ms,
     )
     .is_ok();
     if !daemon_finalized {
-        persist_build_session_end_fallback(
-            &paths,
-            session_id,
-            status.code().unwrap_or(-1),
-            ended_at_ms,
-        );
+        persist_build_session_end_fallback(&paths, session_id, effective_exit_code, ended_at_ms);
     }
     let post_cargo_result: Result<(), SoldrError> = (|| {
-        if status.success() {
+        if status.success() && strip_outcome.permits_artifact_publication() {
             if let Some(paths) = cargo_artifact_paths.as_deref() {
                 darwin_embed::embed_packed_dwarf_for_artifacts(
                     cache_plan.target_dir_for_hooks(args).as_deref(),
@@ -2146,7 +2141,7 @@ pub(crate) async fn run_cargo_front_door(
             if let Some(plan) = trampoline_plan.as_ref() {
                 refresh_sidecar_after_cargo(plan);
             }
-        } else {
+        } else if !status.success() {
             // A non-zero cargo exit can leave orphan `.rmeta` files (rmeta
             // emitted, then rustc aborted before the `.rlib` codegen pass)
             // in `target/<triple>/<profile>/deps/`. Subsequent invocations
@@ -2184,7 +2179,7 @@ pub(crate) async fn run_cargo_front_door(
             started_at_ms: session_started_at_ms,
             session,
             compile_journal_start_len,
-            exit_code: status.code().unwrap_or(-1),
+            exit_code: effective_exit_code,
             ended_at_ms,
             daemon_finalized,
         })
@@ -2198,7 +2193,7 @@ pub(crate) async fn run_cargo_front_door(
         &invoked_argv,
         session_started_at_ms,
         ended_at_ms,
-        status.code().unwrap_or(-1),
+        effective_exit_code,
         compile_journal_start_len,
         &cargo,
     );
@@ -2220,6 +2215,7 @@ pub(crate) async fn run_cargo_front_door(
     }
     finish_result?;
     post_cargo_result?;
+    strip_outcome.into_result()?;
     if status.success() && dylint_entrypoint {
         if let Some(plan) = dylint_plan.as_ref() {
             crate::dylint_toolchain::write_success_marker(plan)?;
@@ -2352,7 +2348,11 @@ fn run_command_capturing_cargo_json(
     let stdout = drain_capture_pipe_after_child_exit(&stdout_rx, "cargo JSON stdout");
     let stderr = drain_capture_pipe_after_child_exit(&stderr_rx, "cargo JSON stderr");
     let paths = parse_cargo_artifact_closure(&stdout, target_dir);
-    Ok((status, String::from_utf8_lossy(&stderr).into_owned(), paths))
+    Ok((
+        status,
+        strip_diagnostics::merge_cargo_json_diagnostics(&stderr, &stdout),
+        paths,
+    ))
 }
 
 fn parse_cargo_artifact_closure(stdout: &[u8], target_dir: &Path) -> Vec<String> {
