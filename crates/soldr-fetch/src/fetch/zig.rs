@@ -22,8 +22,8 @@ use std::time::Duration;
 use crate::core::{SoldrError, SoldrPaths};
 
 use super::stream_download::{
-    send_asset_request, stream_response_to_temp_file, DownloadedAsset, ASSET_HEADER_TIMEOUT,
-    ASSET_IDLE_TIMEOUT,
+    asset_http_client_with_protocol, get_request, send_asset_request, stream_response_to_temp_file,
+    AssetProtocol, DownloadedAsset, ASSET_HEADER_TIMEOUT, ASSET_IDLE_TIMEOUT,
 };
 use super::trust;
 
@@ -126,7 +126,7 @@ pub async fn ensure_zig(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
 }
 
 async fn download_zig_asset(url: &str) -> Result<DownloadedAsset, SoldrError> {
-    let client = zig_http_client()?;
+    let client = asset_http_client_with_protocol("managed zig", AssetProtocol::Http1Only)?;
     super::retry::with_asset_backoff_params(
         "managed zig",
         ZIG_DOWNLOAD_ATTEMPTS,
@@ -136,24 +136,12 @@ async fn download_zig_asset(url: &str) -> Result<DownloadedAsset, SoldrError> {
     .await
 }
 
-fn zig_http_client() -> Result<reqwest::Client, SoldrError> {
-    super::net_guard::ensure_network_allowed("managed zig")?;
-    reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .http1_only()
-        .user_agent(format!("soldr/{}", crate::core::version()))
-        .build()
-        .map_err(|e| SoldrError::Network(e.to_string()))
-}
-
 async fn download_zig_asset_once(
     client: &reqwest::Client,
     url: &str,
 ) -> Result<DownloadedAsset, SoldrError> {
     let resp = send_asset_request(
-        client
-            .get(url)
-            .header(reqwest::header::ACCEPT_ENCODING, "identity"),
+        get_request(client, url).header(reqwest::header::ACCEPT_ENCODING, "identity"),
         url,
         ASSET_HEADER_TIMEOUT,
     )

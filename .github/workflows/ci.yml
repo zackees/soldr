@@ -174,7 +174,7 @@ jobs:
         run: rustup toolchain install 1.94.1 --profile minimal --no-self-update
 
       - name: Setup soldr build cache
-        uses: zackees/setup-soldr@be0e83d9683d5bf4c09c8f78debe38f07600a47b
+        uses: zackees/setup-soldr@056747304f66ad465031149f207c0c7a55ed9052
         with:
           # soldr#1799: pin the soldr that builds us -- the action's default
           # (0.8.23) predates #1820 and GCs live target/ artifacts after every
@@ -440,6 +440,18 @@ jobs:
           --target-dir
           "${GITHUB_WORKSPACE}/target/dylint/libraries/nightly-2026-05-26-x86_64-unknown-linux-gnu"
 
+      - name: Build fetch network boundary lint
+        working-directory: dylints/ban_raw_network_access
+        env:
+          RUSTUP_TOOLCHAIN: nightly-2026-05-26-x86_64-unknown-linux-gnu
+          SOLDR_LINKER: default
+        run: >-
+          soldr rustup run
+          nightly-2026-05-26-x86_64-unknown-linux-gnu
+          cargo build --profile release
+          --target-dir
+          "${GITHUB_WORKSPACE}/target/dylint/libraries/nightly-2026-05-26-x86_64-unknown-linux-gnu"
+
       - name: Enforce daemon process-creation boundary
         env:
           # setup-soldr currently provides v0.8.23, whose post-command target
@@ -456,6 +468,18 @@ jobs:
 
       - name: Test daemon process-creation boundary lint
         working-directory: dylints/ban_raw_process_creation
+        env:
+          RUSTUP_TOOLCHAIN: nightly-2026-05-26-x86_64-unknown-linux-gnu
+          SOLDR_NO_GC_TARGET: "1"
+          SOLDR_LINKER: default
+        run: >-
+          soldr rustup run
+          nightly-2026-05-26-x86_64-unknown-linux-gnu
+          cargo test
+          --manifest-path Cargo.toml
+
+      - name: Test fetch network boundary lint
+        working-directory: dylints/ban_raw_network_access
         env:
           RUSTUP_TOOLCHAIN: nightly-2026-05-26-x86_64-unknown-linux-gnu
           SOLDR_NO_GC_TARGET: "1"
@@ -533,7 +557,7 @@ jobs:
         run: rustup toolchain install 1.94.1 --profile minimal --no-self-update
 
       - name: Setup soldr build cache
-        uses: zackees/setup-soldr@be0e83d9683d5bf4c09c8f78debe38f07600a47b
+        uses: zackees/setup-soldr@056747304f66ad465031149f207c0c7a55ed9052
         with:
           # soldr#1799: pin the soldr that builds us -- the action's default
           # (0.8.23) predates #1820 and GCs live target/ artifacts after every

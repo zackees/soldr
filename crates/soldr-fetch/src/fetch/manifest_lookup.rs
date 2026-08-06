@@ -160,10 +160,9 @@ async fn download_catalogue_asset(
 async fn download_catalogue_asset_once(
     url: &str,
 ) -> Result<super::stream_download::DownloadedAsset, SoldrError> {
-    let client = super::github::asset_http_client()?;
+    let client = super::stream_download::asset_http_client("catalogue asset download")?;
     let response = super::stream_download::send_asset_request(
-        client
-            .get(url)
+        super::stream_download::get_request(&client, url)
             .header(reqwest::header::ACCEPT_ENCODING, "identity"),
         url,
         MANIFEST_FETCH_TIMEOUT,
@@ -391,21 +390,20 @@ async fn fetch_once() -> Result<ManifestIndex, SoldrError> {
 /// (e.g. v1's `schema_version`, `generated_at`, `origin`), so the
 /// same struct cleanly absorbs both shapes.
 async fn fetch_index_from(url: &str) -> Result<ManifestIndex, SoldrError> {
-    let client = super::github::http_client()?;
-    let resp = tokio::time::timeout(MANIFEST_FETCH_TIMEOUT, client.get(url).send())
-        .await
-        .map_err(|_| SoldrError::Network(format!("manifest fetch timed out: {url}")))?
-        .map_err(|e| SoldrError::Network(e.to_string()))?;
+    let client = super::stream_download::control_http_client("the soldr-toolchain catalogue")?;
+    let resp = super::stream_download::send_control_request_with_timeout(
+        super::stream_download::get_request(&client, url),
+        url,
+        MANIFEST_FETCH_TIMEOUT,
+    )
+    .await?;
     if !resp.status().is_success() {
         return Err(SoldrError::Network(format!(
             "manifest fetch {url} returned HTTP {}",
             resp.status()
         )));
     }
-    let body = tokio::time::timeout(MANIFEST_FETCH_TIMEOUT, resp.text())
-        .await
-        .map_err(|_| SoldrError::Network(format!("manifest body read timed out: {url}")))?
-        .map_err(|e| SoldrError::Network(e.to_string()))?;
+    let body = super::stream_download::read_control_text(resp, url, MANIFEST_FETCH_TIMEOUT).await?;
     ManifestIndex::from_json(&body)
         .ok_or_else(|| SoldrError::Other(format!("manifest {url} did not parse as JSON")))
 }
@@ -416,19 +414,20 @@ async fn fetch_index_from(url: &str) -> Result<ManifestIndex, SoldrError> {
 /// human-readable summary or the stable JSON form.
 pub async fn run_toolchain_catalogue(json: bool) -> Result<i32, SoldrError> {
     let url = resolve_catalogue_url();
-    let client = super::github::http_client()?;
-    let resp_result = tokio::time::timeout(MANIFEST_FETCH_TIMEOUT, client.get(&url).send()).await;
+    let client = super::stream_download::control_http_client("the soldr-toolchain catalogue")?;
+    let resp_result = super::stream_download::send_control_request_with_timeout(
+        super::stream_download::get_request(&client, &url),
+        &url,
+        MANIFEST_FETCH_TIMEOUT,
+    )
+    .await;
 
     match resp_result {
-        Err(_) => {
-            print_catalogue_error(&url, "request timed out", json);
-            Ok(1)
-        }
-        Ok(Err(e)) => {
+        Err(e) => {
             print_catalogue_error(&url, &format!("network error: {e}"), json);
             Ok(1)
         }
-        Ok(Ok(resp)) => {
+        Ok(resp) => {
             let status = resp.status();
             let etag = resp
                 .headers()
@@ -456,17 +455,16 @@ pub async fn run_toolchain_catalogue(json: bool) -> Result<i32, SoldrError> {
                 );
                 return Ok(1);
             }
-            let body = match tokio::time::timeout(MANIFEST_FETCH_TIMEOUT, resp.text()).await {
-                Ok(Ok(b)) => b,
-                Ok(Err(e)) => {
-                    print_catalogue_error(&url, &format!("body read error: {e}"), json);
-                    return Ok(1);
-                }
-                Err(_) => {
-                    print_catalogue_error(&url, "body read timed out", json);
-                    return Ok(1);
-                }
-            };
+            let body =
+                match super::stream_download::read_control_text(resp, &url, MANIFEST_FETCH_TIMEOUT)
+                    .await
+                {
+                    Ok(b) => b,
+                    Err(e) => {
+                        print_catalogue_error(&url, &format!("body read error: {e}"), json);
+                        return Ok(1);
+                    }
+                };
             let parsed = ManifestIndex::from_json(&body);
             let n_entries = parsed.as_ref().map(|i| i.entries.len()).unwrap_or(0);
             if json {
@@ -653,7 +651,15 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             });
             let url = format!("http://{address}/catalogue-asset");
-            let response = reqwest::Client::new().get(&url).send().await.expect("GET");
+            let client = super::super::stream_download::asset_http_client("test catalogue asset")
+                .expect("build test client");
+            let response = super::super::stream_download::send_asset_request(
+                super::super::stream_download::get_request(&client, &url),
+                &url,
+                Duration::from_secs(1),
+            )
+            .await
+            .expect("GET");
             let error = stream_catalogue_asset_body(response, &url, Duration::from_millis(20))
                 .await
                 .expect_err("trickling metadata body must hit the total deadline");

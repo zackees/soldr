@@ -235,7 +235,8 @@ pub async fn request_forge_build(req: &ForgeRequest) -> Result<String, ForgeErro
     let dispatch_url =
         format!("https://api.github.com/repos/{repo}/actions/workflows/{workflow}/dispatches");
 
-    let client = super::github::http_client().map_err(|e| ForgeError::Network(e.to_string()))?;
+    let client = super::stream_download::control_http_client("forge workflow dispatch")
+        .map_err(|e| ForgeError::Network(e.to_string()))?;
     let body = serde_json::json!({
         "ref": git_ref,
         "inputs": {
@@ -246,15 +247,18 @@ pub async fn request_forge_build(req: &ForgeRequest) -> Result<String, ForgeErro
     });
 
     let now_iso = chrono_like_now_iso();
-    let resp = client
-        .post(&dispatch_url)
-        .bearer_auth(&token)
-        .header("Accept", "application/vnd.github+json")
-        .header("X-GitHub-Api-Version", "2022-11-28")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| ForgeError::Network(format!("dispatch POST failed: {e}")))?;
+    let resp = super::stream_download::send_control_request(
+        super::stream_download::with_json_body(
+            super::stream_download::post_request(&client, &dispatch_url)
+                .bearer_auth(&token)
+                .header("Accept", "application/vnd.github+json")
+                .header("X-GitHub-Api-Version", "2022-11-28"),
+            &body,
+        ),
+        &dispatch_url,
+    )
+    .await
+    .map_err(|e| ForgeError::Network(format!("dispatch POST failed: {e}")))?;
 
     let status = resp.status();
     if status == reqwest::StatusCode::NO_CONTENT {
@@ -266,7 +270,13 @@ pub async fn request_forge_build(req: &ForgeRequest) -> Result<String, ForgeErro
              on the {git_ref} ref of {repo}?",
         )));
     }
-    let body_text = resp.text().await.unwrap_or_default();
+    let body_text = super::stream_download::read_control_text(
+        resp,
+        &dispatch_url,
+        super::stream_download::CONTROL_HEADER_TIMEOUT,
+    )
+    .await
+    .unwrap_or_default();
     Err(ForgeError::Network(format!(
         "dispatch POST returned HTTP {status} — {body_text}"
     )))
@@ -286,7 +296,8 @@ pub async fn poll_forge_run(req: &ForgeRequest, since_iso: &str) -> Result<Actio
     let runs_url = format!(
         "https://api.github.com/repos/{repo}/actions/workflows/{workflow}/runs?created=%3E{since_iso}&per_page=10"
     );
-    let client = super::github::http_client().map_err(|e| ForgeError::Network(e.to_string()))?;
+    let client = super::stream_download::control_http_client("forge workflow polling")
+        .map_err(|e| ForgeError::Network(e.to_string()))?;
 
     let started = std::time::Instant::now();
     let mut interval = POLL_INTERVAL_INITIAL;
@@ -307,18 +318,26 @@ pub async fn poll_forge_run(req: &ForgeRequest, since_iso: &str) -> Result<Actio
         tokio::time::sleep(interval).await;
         interval = std::cmp::min(interval * 2, POLL_INTERVAL_MAX);
 
-        let resp = client
-            .get(&runs_url)
-            .bearer_auth(&token)
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28")
-            .send()
-            .await;
+        let resp = super::stream_download::send_control_request(
+            super::stream_download::get_request(&client, &runs_url)
+                .bearer_auth(&token)
+                .header("Accept", "application/vnd.github+json")
+                .header("X-GitHub-Api-Version", "2022-11-28"),
+            &runs_url,
+        )
+        .await;
         let Ok(resp) = resp else { continue };
         if !resp.status().is_success() {
             continue;
         }
-        let body: serde_json::Value = match resp.json().await {
+        let body: serde_json::Value = match super::stream_download::read_control_text(
+            resp,
+            &runs_url,
+            super::stream_download::CONTROL_HEADER_TIMEOUT,
+        )
+        .await
+        .and_then(|text| serde_json::from_str(&text).map_err(|e| SoldrError::Other(e.to_string())))
+        {
             Ok(v) => v,
             Err(_) => continue,
         };

@@ -1,0 +1,27 @@
+[package]
+name = "ban_raw_network_access"
+version = "0.1.0"
+description = "Require Soldr fetch network I/O to use stream_download"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+dylint_linting = "6.0.1"
+
+[dev-dependencies]
+dylint_testing = "6.0.1"
+reqwest = { version = "0.12", default-features = false }
+
+[package.metadata.rust-analyzer]
+rustc_private = true
+
+[workspace]
+
+[profile.release]
+opt-level = 0
+lto = false
+codegen-units = 16
+strip = "none"

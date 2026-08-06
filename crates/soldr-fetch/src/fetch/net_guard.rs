@@ -124,13 +124,13 @@ mod tests {
         // failure mode a hermeticity guard can least afford.
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var(NO_NETWORK_ENV_VAR, "1");
-        let refused = super::super::github::http_client();
+        let refused = super::super::stream_download::control_http_client("test");
         std::env::remove_var(NO_NETWORK_ENV_VAR);
         let err = refused.expect_err("http_client must refuse under the guard");
         assert!(err.to_string().contains(NO_NETWORK_ENV_VAR), "{err}");
 
         // ...and that it is off by default, or every real fetch breaks.
-        assert!(super::super::github::http_client().is_ok());
+        assert!(super::super::stream_download::control_http_client("test").is_ok());
     });
 
     crate::timed_test!(falsy_spellings_leave_the_network_alone, {

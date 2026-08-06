@@ -25,7 +25,7 @@
 //! other soldr-fetched binary: pin via `SOLDR_CHECKSUMS_FILE`,
 //! `SOLDR_TRUST_MODE=strict` refuses unpinned fetches.
 
-use super::github::asset_http_client;
+use super::stream_download::{asset_http_client, get_request};
 use super::stream_download::{
     send_asset_request, stream_response_to_temp_file, DownloadedAsset, ASSET_HEADER_TIMEOUT,
     ASSET_IDLE_TIMEOUT,
@@ -328,8 +328,8 @@ pub fn rustup_init_host_triple() -> Result<String, SoldrError> {
 /// [`SoldrError::Network`], which is what [`super::retry::is_transient`]
 /// matches.
 async fn download_rustup_init_asset(url: &str) -> Result<DownloadedAsset, SoldrError> {
-    let client = asset_http_client()?;
-    let resp = send_asset_request(client.get(url), url, ASSET_HEADER_TIMEOUT)
+    let client = asset_http_client("rustup-init bootstrap")?;
+    let resp = send_asset_request(get_request(&client, url), url, ASSET_HEADER_TIMEOUT)
         .await
         .map_err(|error| SoldrError::Network(format!("bootstrap: GET {url}: {error}")))?;
     stream_response_to_temp_file(resp, url, ASSET_IDLE_TIMEOUT).await
