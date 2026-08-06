@@ -1,21 +1,6 @@
-mod reqwest {
-    pub struct Client;
-    pub struct RequestBuilder;
+// aux-build:reqwest.rs
 
-    impl Client {
-        pub fn new() -> Self {
-            Self
-        }
-
-        pub fn get(&self, _url: &str) -> RequestBuilder {
-            RequestBuilder
-        }
-    }
-
-    impl RequestBuilder {
-        pub fn send(self) {}
-    }
-}
+extern crate reqwest;
 
 fn main() {
     let client = reqwest::Client::new();
