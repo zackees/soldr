@@ -20,6 +20,9 @@ thiserror = { workspace = true }
 toml = { workspace = true }
 wait-timeout = { workspace = true }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 # soldr#1761: `GetLogicalProcessorInformationEx` is the only way to read
 # physical-core topology on Windows without adding a heavier crate.

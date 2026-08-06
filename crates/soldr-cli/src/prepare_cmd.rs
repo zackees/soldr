@@ -29,13 +29,10 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::core::{SoldrError, SoldrPaths};
+use crate::core::{run_installer_command, InstallerWatchdogConfig, SoldrError, SoldrPaths};
 use crate::fetch::xwin_cache::ensure_xwin_case_aliases;
-use wait_timeout::ChildExt;
 
 pub const RUSTUP_TARGET_ADD_TIMEOUT_ENV_VAR: &str = "SOLDR_RUSTUP_TARGET_ADD_TIMEOUT_SECS";
-pub const DEFAULT_RUSTUP_TARGET_ADD_TIMEOUT_SECS: u64 = 15 * 60;
-const KILLED_RUSTUP_TARGET_ADD_REAP_TIMEOUT_SECS: u64 = 5;
 
 pub(crate) use crate::prepare_github_env::{append_env, apply_blessed_prep_env};
 
@@ -838,53 +835,16 @@ pub(crate) fn rustup_add_target(triple: &str) -> Result<(), SoldrError> {
     Ok(())
 }
 
-pub fn rustup_target_add_timeout() -> Duration {
-    std::env::var(RUSTUP_TARGET_ADD_TIMEOUT_ENV_VAR)
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|seconds| *seconds > 0)
-        .map(Duration::from_secs)
-        .unwrap_or_else(|| Duration::from_secs(DEFAULT_RUSTUP_TARGET_ADD_TIMEOUT_SECS))
-}
-
 fn run_rustup_target_add(
     command: &mut std::process::Command,
     triple: &str,
 ) -> Result<std::process::ExitStatus, SoldrError> {
-    let mut child = command
-        .spawn()
-        .map_err(|e| SoldrError::Other(format!("rustup target add {triple}: {e}")))?;
-    let timeout = rustup_target_add_timeout();
-    match child.wait_timeout(timeout).map_err(|e| {
-        SoldrError::Other(format!(
-            "failed to wait for rustup target add {triple}: {e}"
-        ))
-    })? {
-        Some(status) => Ok(status),
-        None => {
-            let kill_result = child.kill();
-            let reap_result = child.wait_timeout(Duration::from_secs(
-                KILLED_RUSTUP_TARGET_ADD_REAP_TIMEOUT_SECS,
-            ));
-            let timeout_secs = timeout.as_secs();
-            let mut message = format!(
-                "rustup target add {triple} timed out after {timeout_secs} seconds \
-                 (set {RUSTUP_TARGET_ADD_TIMEOUT_ENV_VAR} to override)"
-            );
-            match kill_result {
-                Ok(()) => message.push_str("; killed child process"),
-                Err(err) => message.push_str(&format!("; kill failed: {err}")),
-            }
-            match reap_result {
-                Ok(Some(_)) => {}
-                Ok(None) => message.push_str(&format!(
-                    "; process did not exit within {KILLED_RUSTUP_TARGET_ADD_REAP_TIMEOUT_SECS} seconds after kill"
-                )),
-                Err(err) => message.push_str(&format!("; reap after kill failed: {err}")),
-            }
-            Err(SoldrError::Other(message))
-        }
-    }
+    run_installer_command(
+        command,
+        &format!("rustup target add {triple}"),
+        "target-install",
+        InstallerWatchdogConfig::from_env(RUSTUP_TARGET_ADD_TIMEOUT_ENV_VAR),
+    )
 }
 
 fn pinned_toolchain_channel() -> Result<Option<String>, SoldrError> {
@@ -1347,24 +1307,27 @@ mod tests {
         );
     });
 
-    crate::timed_test!(rustup_target_add_timeout_uses_positive_env_override_only, {
+    crate::timed_test!(rustup_target_add_timeout_is_an_explicit_safety_ceiling, {
         let _lock = ENV_LOCK.lock().expect("env lock");
         {
             let _guard = EnvVarGuard::set(RUSTUP_TARGET_ADD_TIMEOUT_ENV_VAR, "19");
-            assert_eq!(rustup_target_add_timeout(), Duration::from_secs(19));
+            assert_eq!(
+                InstallerWatchdogConfig::from_env(RUSTUP_TARGET_ADD_TIMEOUT_ENV_VAR).safety_timeout,
+                Duration::from_secs(19)
+            );
         }
         for value in ["", "0", "-1", "abc"] {
             let _guard = EnvVarGuard::set(RUSTUP_TARGET_ADD_TIMEOUT_ENV_VAR, value);
             assert_eq!(
-                rustup_target_add_timeout(),
-                Duration::from_secs(DEFAULT_RUSTUP_TARGET_ADD_TIMEOUT_SECS),
+                InstallerWatchdogConfig::from_env(RUSTUP_TARGET_ADD_TIMEOUT_ENV_VAR).safety_timeout,
+                Duration::from_secs(crate::core::DEFAULT_INSTALLER_SAFETY_TIMEOUT_SECS),
                 "invalid override {value:?} should use default"
             );
         }
         let _guard = EnvVarGuard::remove(RUSTUP_TARGET_ADD_TIMEOUT_ENV_VAR);
         assert_eq!(
-            rustup_target_add_timeout(),
-            Duration::from_secs(DEFAULT_RUSTUP_TARGET_ADD_TIMEOUT_SECS)
+            InstallerWatchdogConfig::from_env(RUSTUP_TARGET_ADD_TIMEOUT_ENV_VAR).safety_timeout,
+            Duration::from_secs(crate::core::DEFAULT_INSTALLER_SAFETY_TIMEOUT_SECS)
         );
     });
 

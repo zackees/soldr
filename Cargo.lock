@@ -2950,6 +2950,7 @@ name = "soldr-core"
 version = "0.8.39"
 dependencies = [
  "fs2",
+ "libc",
  "prost",
  "serde",
  "serde_json",
