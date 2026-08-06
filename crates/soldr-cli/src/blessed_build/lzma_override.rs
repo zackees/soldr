@@ -42,6 +42,26 @@ fn add_static_links_override(
     let table = format!("target.{target_triple}.lzma");
     let lib_dir = sysroot.join("lib");
     let include_dir = sysroot.join("include");
+
+    // `soldr build` carries the links override below as Cargo CLI config.
+    // `soldr prepare --github-env`, however, is also a public way to hand the
+    // blessed toolchain to direct Cargo consumers such as Maturin. Export the
+    // matching search path through the target's Rust flags so that a normal
+    // `-llzma` emitted by lzma-sys resolves the catalogue's static archive.
+    // target_lifecycle promotes this value into CARGO_ENCODED_RUSTFLAGS, which
+    // preserves paths containing spaces and gives it Cargo's highest priority.
+    let rustflags_key = format!(
+        "CARGO_TARGET_{}_RUSTFLAGS",
+        target_triple.replace('-', "_").to_ascii_uppercase()
+    );
+    let link_search = format!("-Lnative={}", lib_dir.display());
+    if let Some((_, rustflags)) = prep.env.iter_mut().find(|(key, _)| key == &rustflags_key) {
+        rustflags.push(' ');
+        rustflags.push_str(&link_search);
+    } else {
+        prep.env.push((rustflags_key, link_search));
+    }
+
     prep.cargo_args.extend([
         "--config".to_string(),
         format!("{table}.rustc-link-lib=[\"static=lzma\"]"),
@@ -71,6 +91,10 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let sysroot = tmp.path().join("lzma sysroot");
         let mut prep = BlessedPrep::default();
+        prep.env.push((
+            "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS".to_string(),
+            "-C link-arg=--sysroot=/catalogue/sysroot".to_string(),
+        ));
 
         add_static_links_override(&mut prep, "aarch64-unknown-linux-gnu", &sysroot);
 
@@ -86,5 +110,15 @@ mod tests {
             .starts_with("target.aarch64-unknown-linux-gnu.lzma.metadata_root=\""));
         assert!(prep.cargo_args[7]
             .starts_with("target.aarch64-unknown-linux-gnu.lzma.metadata_include=\""));
+        assert_eq!(
+            prep.env,
+            vec![(
+                "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS".to_string(),
+                format!(
+                    "-C link-arg=--sysroot=/catalogue/sysroot -Lnative={}",
+                    sysroot.join("lib").display()
+                ),
+            )]
+        );
     });
 }
