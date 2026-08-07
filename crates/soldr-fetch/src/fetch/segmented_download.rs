@@ -333,6 +333,16 @@ impl SocketPool {
             };
         }
         loop {
+            // Register with `wake` BEFORE the capacity check. `wake` is
+            // signalled with `notify_waiters()` (Drop, scheduler tick),
+            // which stores no permit and only wakes waiters already
+            // enabled -- so a wakeup fired between our check and our await
+            // would be lost if we enabled afterwards. `enable()` closes
+            // that window: any `notify_waiters()` after this line marks
+            // this future ready and our `.await` returns promptly.
+            let notified = self.wake.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             {
                 let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
                 if inner.used < self.capacity.expect("bounded pool") {
@@ -356,7 +366,7 @@ impl SocketPool {
                 }
                 inner.waiting += 1;
             }
-            self.wake.notified().await;
+            notified.await;
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             inner.waiting = inner.waiting.saturating_sub(1);
         }
@@ -785,14 +795,31 @@ async fn fetch_segment_once(
         Ok(Err(reason)) => return SegmentAttemptOutcome::Failed(0, reason),
         Ok(Ok(r)) => r,
     };
-    if resp.status() != reqwest::StatusCode::PARTIAL_CONTENT && !resp.status().is_success() {
-        return SegmentAttemptOutcome::Failed(0, format!("HTTP {}", resp.status()));
+    // A range request MUST come back as 206 Partial Content. A 200 means
+    // the server (or an edge in this client's own fresh redirect chain)
+    // ignored the `Range` header and is streaming the WHOLE file; writing
+    // that at this segment's offset would clobber every other segment's
+    // region of the shared preallocated file. Reject anything but 206 --
+    // the segment retries, and if the origin genuinely can't serve ranges
+    // the whole segmented attempt exhausts and falls back to a correct
+    // single stream (which handles 200 fine).
+    if resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+        return SegmentAttemptOutcome::Failed(
+            0,
+            format!("expected 206, got HTTP {}", resp.status()),
+        );
     }
 
     // First payload byte is imminent: PENDING -> STREAMING, permanently
     // non-preemptible from here (module docs "Permit preemption").
     permit.mark_streaming();
 
+    // Never write more than this range's own byte count. Defense in depth
+    // against a 206 that still over-streams past the requested end: a
+    // misbehaving server can never spill bytes into a neighbouring
+    // segment's region. `start <= end_inclusive` always holds (resume
+    // never advances past the segment end), so `cap >= 1`.
+    let cap = end_inclusive.saturating_sub(start) + 1;
     let mut offset = start;
     let mut written = 0u64;
     loop {
@@ -809,11 +836,18 @@ async fn fetch_segment_once(
                 )
             }
         };
-        if let Err(e) = write_at_all(file, &chunk, offset) {
-            return SegmentAttemptOutcome::Failed(written, format!("write failed: {e}"));
+        let remaining = cap - written;
+        let take = (chunk.len() as u64).min(remaining) as usize;
+        if take > 0 {
+            if let Err(e) = write_at_all(file, &chunk[..take], offset) {
+                return SegmentAttemptOutcome::Failed(written, format!("write failed: {e}"));
+            }
+            offset += take as u64;
+            written += take as u64;
         }
-        offset += chunk.len() as u64;
-        written += chunk.len() as u64;
+        if written >= cap {
+            break;
+        }
     }
     SegmentAttemptOutcome::Completed(written)
     // `permit` drops here on every path (RAII) -- this is the permit-leak

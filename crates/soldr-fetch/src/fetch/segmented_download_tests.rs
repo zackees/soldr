@@ -647,6 +647,78 @@ crate::timed_test!(
     }
 );
 
+/// A server that advertises Range support but IGNORES the `Range` header,
+/// answering every request -- ranged or not -- with `200 OK` and the FULL
+/// body. A naive segmented client that accepts a 200 for a ranged GET
+/// would write the whole body at each segment's own offset, corrupting the
+/// shared file (N overlapping full-length writes, size >> total). The
+/// download must instead reject the non-206 segments and fall through to a
+/// correct single stream.
+async fn serve_range_ignored_returns_200_full_body(body: Vec<u8>) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let address = listener.local_addr().expect("addr");
+    let body = Arc::new(body);
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            let body = Arc::clone(&body);
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 4096];
+                let _ = socket.read(&mut buf).await;
+                // Deliberately ignore any Range header: always 200 + full body.
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nAccept-Ranges: bytes\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = socket.write_all(header.as_bytes()).await;
+                let _ = socket.write_all(&body).await;
+                let _ = socket.shutdown().await;
+            });
+        }
+    });
+    format!("http://{address}/asset")
+}
+
+crate::timed_test!(
+    range_ignoring_server_returning_200_never_corrupts_the_file,
+    Duration::from_secs(10),
+    {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_segmented_env();
+        std::env::set_var(SEGMENTED_DOWNLOAD_ENV_VAR, "1");
+        std::env::set_var(SEGMENTED_DOWNLOAD_N_ENV_VAR, "4");
+        std::env::set_var(SEGMENT_RETRIES_ENV_VAR, "1");
+        std::env::set_var(STALL_TIMEOUT_ENV_VAR, "2");
+
+        runtime().block_on(async {
+            let body: Vec<u8> = (0..2048u32).map(|i| (i % 193) as u8).collect();
+            let url = serve_range_ignored_returns_200_full_body(body.clone()).await;
+
+            let response = reqwest::Client::new().get(&url).send().await.expect("GET");
+            let asset = stream_response_to_temp_file(response, &url, Duration::from_secs(5))
+                .await
+                .expect("a 200-to-a-ranged-GET server must resolve via single-stream fallback");
+
+            // The whole point: exactly the source bytes, never an
+            // N-times-overwritten oversized file.
+            assert_eq!(
+                asset.bytes(),
+                body.len() as u64,
+                "assembled asset must be exactly the source length, not a corrupted overlay"
+            );
+            assert_eq!(
+                asset.sha256(),
+                super::super::trust::sha256_of(&body),
+                "assembled file must match the source exactly"
+            );
+        });
+
+        clear_segmented_env();
+    }
+);
+
 crate::timed_test!(
     global_timeout_expiry_with_no_budget_surfaces_a_clear_error,
     Duration::from_secs(10),
