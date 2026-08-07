@@ -36,13 +36,15 @@
 //! Lives in its own file so `cargo_front_door/mod.rs` does not grow further
 //! (house style, post-#339).
 
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{IsTerminal, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use super::CargoCachePlan;
+use crate::core::SoldrPaths;
 use crate::daemon::protocol::BuildCacheSummary;
 
 /// `--no-cache-states` / `SOLDR_NO_CACHE_STATES=1` opt-out, following the
@@ -103,6 +105,74 @@ pub(crate) fn cache_stats_message(summary: &BuildCacheSummary, use_color: bool) 
     Some(format!(
         "soldr: cache {hits}, {misses} ({rate:.0}% hit rate, saved {saved:.1}s)"
     ))
+}
+
+/// Read the per-build cache summary from the session stats file (the
+/// baseline-diff `last-session-stats.json`). Lives here, beside the
+/// annotations that consume it, rather than in the already-oversized front
+/// door (soldr#2302 / the per-file line ceiling).
+pub(crate) fn read_build_cache_summary(stats_path: &Path) -> Option<BuildCacheSummary> {
+    let raw = std::fs::read_to_string(stats_path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(raw.trim()).ok()?;
+    if json.get("status").and_then(serde_json::Value::as_str) != Some("ok") {
+        return None;
+    }
+    let hits = json_u64(&json, "hits").unwrap_or(0);
+    let misses = json_u64(&json, "misses").unwrap_or(0);
+    let non_cacheable = json_u64(&json, "non_cacheable").unwrap_or(0);
+    let errors = json_u64(&json, "errors").unwrap_or(0);
+    Some(BuildCacheSummary {
+        hits,
+        misses,
+        non_cacheable,
+        errors,
+        compilations: json_u64(&json, "compilations").unwrap_or(hits + misses),
+        time_saved_ms: json_u64(&json, "time_saved_ms").unwrap_or(0),
+    })
+}
+
+fn json_u64(value: &serde_json::Value, key: &str) -> Option<u64> {
+    value.get(key).and_then(serde_json::Value::as_u64)
+}
+
+/// Start the live per-unit tail for a cache-enabled build. Returns `None`
+/// (printing nothing) for a `--no-cache` run with no session or when the
+/// surface is disabled — so the front door integrates in one line.
+pub(crate) fn start_tail(
+    cache_plan: &CargoCachePlan,
+    paths: &SoldrPaths,
+    journal_start_offset: u64,
+) -> Option<CacheStateTail> {
+    cache_plan.zccache_session()?;
+    // Stamp with the same elapsed-seconds prefix as the relayed cargo output
+    // when that prefix is on, so the two read as one stream in a CI log.
+    let stamp_from = super::timestamp_tee::should_timestamp(
+        std::env::var(super::timestamp_tee::TIMESTAMP_LINES_ENV_VAR)
+            .ok()
+            .as_deref(),
+        std::io::stderr().is_terminal(),
+    )
+    .then(Instant::now);
+    CacheStateTail::start(
+        super::embedded_compile_journal_path(paths),
+        journal_start_offset,
+        stamp_from,
+    )
+}
+
+/// Stop and join a tail started by [`start_tail`], draining its final records.
+pub(crate) fn stop_tail(tail: Option<CacheStateTail>) {
+    if let Some(tail) = tail {
+        tail.stop_and_join();
+    }
+}
+
+/// Emit the automatic cache-stats summary for a finished build's session.
+pub(crate) fn emit_build_stats(cache_plan: &CargoCachePlan) {
+    let summary = cache_plan
+        .zccache_session()
+        .and_then(|session| read_build_cache_summary(&session.session_stats_path));
+    emit_cache_stats(summary.as_ref());
 }
 
 /// Print the automatic cache-stats summary to stderr, unless the surface is

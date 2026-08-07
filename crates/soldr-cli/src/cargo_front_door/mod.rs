@@ -35,8 +35,7 @@ use wait_timeout::ChildExt;
 
 mod build_session;
 mod cache_plan;
-/// soldr#2302 — per-unit cache HIT/MISS annotations + auto stats summary.
-pub(crate) mod cache_states;
+pub(crate) mod cache_states; // soldr#2302 — HIT/MISS annotations + stats
 mod clang_cl_shim;
 mod component_install;
 mod config_args;
@@ -306,7 +305,7 @@ fn persist_build_log_history_inner(
         &archive_dir,
         "last-session-stats.json",
     );
-    let cache_summary = read_build_cache_summary(&session.session_stats_path);
+    let cache_summary = cache_states::read_build_cache_summary(&session.session_stats_path);
     let expected_compile_journal_entries = cache_summary
         .as_ref()
         .and_then(|summary| (summary.compilations > 0).then_some(summary.compilations));
@@ -770,28 +769,6 @@ fn sanitize_compile_journal_jsonl(body: &str) -> String {
     output
 }
 
-fn read_build_cache_summary(
-    stats_path: &Path,
-) -> Option<crate::daemon::protocol::BuildCacheSummary> {
-    let raw = std::fs::read_to_string(stats_path).ok()?;
-    let json: serde_json::Value = serde_json::from_str(raw.trim()).ok()?;
-    if json.get("status").and_then(serde_json::Value::as_str) != Some("ok") {
-        return None;
-    }
-    let hits = json_u64(&json, "hits").unwrap_or(0);
-    let misses = json_u64(&json, "misses").unwrap_or(0);
-    let non_cacheable = json_u64(&json, "non_cacheable").unwrap_or(0);
-    let errors = json_u64(&json, "errors").unwrap_or(0);
-    Some(crate::daemon::protocol::BuildCacheSummary {
-        hits,
-        misses,
-        non_cacheable,
-        errors,
-        compilations: json_u64(&json, "compilations").unwrap_or(hits + misses),
-        time_saved_ms: json_u64(&json, "time_saved_ms").unwrap_or(0),
-    })
-}
-
 fn read_build_miss_reasons(
     compile_journal_path: Option<&Path>,
 ) -> Vec<crate::daemon::protocol::BuildMissReason> {
@@ -844,10 +821,6 @@ fn sorted_miss_reasons(
         .collect();
     reasons.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.reason.cmp(&b.reason)));
     reasons
-}
-
-fn json_u64(value: &serde_json::Value, key: &str) -> Option<u64> {
-    value.get(key).and_then(serde_json::Value::as_u64)
 }
 
 fn cargo_wait_timeout() -> Result<Option<Duration>, SoldrError> {
@@ -1985,25 +1958,8 @@ pub(crate) async fn run_cargo_front_door(
     }
     let compile_journal_start_len = file_len(&embedded_compile_journal_path(&paths));
     let compile_fallback_cursor = crate::compile_dispatch::compile_daemon_fallback_cursor(&paths);
-    // soldr#2302: live per-unit HIT/MISS annotations. Only tail a real cache
-    // session's journal — a `--no-cache` run has none, so nothing prints (which
-    // is also the acceptance criterion). Stamp with the same elapsed-seconds
-    // format as the relayed cargo output when that prefix is on, so the two
-    // read as one stream in a CI log.
-    let cache_state_tail = cache_plan.zccache_session().and_then(|_| {
-        let stamp_from = timestamp_tee::should_timestamp(
-            std::env::var(timestamp_tee::TIMESTAMP_LINES_ENV_VAR)
-                .ok()
-                .as_deref(),
-            std::io::stderr().is_terminal(),
-        )
-        .then(Instant::now);
-        cache_states::CacheStateTail::start(
-            embedded_compile_journal_path(&paths),
-            compile_journal_start_len,
-            stamp_from,
-        )
-    });
+    // soldr#2302: live per-unit HIT/MISS annotations (no-op for a --no-cache run).
+    let cache_state_tail = cache_states::start_tail(&cache_plan, &paths, compile_journal_start_len);
     // Everything above is pure soldr overhead the user pays before Cargo
     // starts. Emit the breakdown here so the total excludes Cargo itself.
     profile.finish_labeled("cargo front door", "pre_spawn_tail");
@@ -2020,12 +1976,9 @@ pub(crate) async fn run_cargo_front_door(
         run_command_inheriting_stdio(&mut command, cargo_wait_timeout)
             .map(|status| (status, None, None))
     };
-    // soldr#2302: cargo has exited, so no more compiles will land — drain the
-    // final journal records and stop the per-unit tail before the tail summary
-    // prints, on both the success and error paths.
-    if let Some(tail) = cache_state_tail {
-        tail.stop_and_join();
-    }
+    // soldr#2302: cargo exited — drain + stop the per-unit tail before the tail
+    // summary prints, on both the success and error paths.
+    cache_states::stop_tail(cache_state_tail);
     // soldr#1843: BuildSessionStart must land before any BuildSessionEnd below.
     let _ = session_publish.join();
     let (status, diagnostic_capture, cargo_artifact_paths) = match cargo_run_result {
@@ -2073,12 +2026,7 @@ pub(crate) async fn run_cargo_front_door(
             let compile_fallback_log =
                 emit_compile_fallback_summary(&paths, &compile_fallback_cursor, session_id);
             // soldr#2302: whatever the cache managed before the abort.
-            cache_states::emit_cache_stats(
-                cache_plan
-                    .zccache_session()
-                    .and_then(|session| read_build_cache_summary(&session.session_stats_path))
-                    .as_ref(),
-            );
+            cache_states::emit_build_stats(&cache_plan);
             // soldr#1813: an aborted/timed-out cargo run is exactly when the
             // user most needs the log paths, and this arm always returns early —
             // so the summary is emitted here too rather than at the shared tail.
@@ -2229,15 +2177,9 @@ pub(crate) async fn run_cargo_front_door(
         compile_journal_start_len,
         &cargo,
     );
-    // soldr#2302: automatic cache-stats summary, read from the session
-    // baseline-diff (precisely build-scoped, independent of the daemon-wide
-    // journal). Printed just above the log-paths block.
-    cache_states::emit_cache_stats(
-        cache_plan
-            .zccache_session()
-            .and_then(|session| read_build_cache_summary(&session.session_stats_path))
-            .as_ref(),
-    );
+    // soldr#2302: automatic cache-stats summary from the session baseline-diff
+    // (precisely build-scoped), printed just above the log-paths block.
+    cache_states::emit_build_stats(&cache_plan);
     // soldr#1813: tell the user where the logs went. Printed here because this
     // is the last point both the success and the compiler-failure paths pass
     // through — everything below can bail out via `?` or the zthreads retry.

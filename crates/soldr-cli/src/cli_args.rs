@@ -127,16 +127,10 @@ Equivalent to SOLDR_TIMESTAMP_LINES=0. Useful in CI, where the prefix is on by d
 Place it BEFORE `cargo`, as with --timestamp-lines."
     )]
     pub(crate) no_timestamp_lines: bool,
-    /// soldr#2302 — suppress the per-unit cache HIT/MISS annotations and the
-    /// automatic cache-stats summary.
+    /// soldr#2302 — suppress per-unit cache HIT/MISS lines + stats summary (SOLDR_NO_CACHE_STATES=1); place before `cargo`, as with --no-cache.
     #[arg(
         long,
-        help = "Suppress per-unit cache HIT/MISS lines + the cache-stats summary (soldr#2302)",
-        long_help = "Suppress the per-unit compile-cache HIT/MISS annotations and the automatic cache-stats summary line.
-
-By default a cache-enabled `soldr cargo`/`soldr build` prints a `soldr[cache] <crate> [HIT!]`/`[MISS]` line as each compile resolves, and a one-line hits/misses/hit-rate/time-saved summary at the end. This turns both off. Equivalent to SOLDR_NO_CACHE_STATES=1.
-
-Place it BEFORE `cargo`, as with --no-cache: `soldr --no-cache-states cargo build`."
+        help = "Suppress per-unit cache HIT/MISS lines + the cache-stats summary (soldr#2302)"
     )]
     pub(crate) no_cache_states: bool,
     #[arg(
@@ -204,9 +198,7 @@ impl Cli {
                 if self.timestamp_lines { "1" } else { "0" },
             );
         }
-        // soldr#2302. Publish the opt-out as the env spelling the front door's
-        // `cache_states::enabled()` already reads, so the flag and a direct
-        // `SOLDR_NO_CACHE_STATES=1` resolve at one point.
+        // soldr#2302. Publish the env spelling `cache_states::enabled()` reads.
         if self.no_cache_states {
             std::env::set_var(
                 crate::cargo_front_door::cache_states::NO_CACHE_STATES_ENV_VAR,
