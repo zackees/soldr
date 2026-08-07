@@ -1,0 +1,88 @@
+name: win-gnu cache repro (#2348)
+
+# Reproduces reld#66 / soldr#2348: a CACHED (daemon path) `soldr build
+# --target x86_64-pc-windows-gnu` on a Linux host where the win-gnu rust-std
+# lives only in the toolchain home soldr provisions — the win-gnu-smoke lane
+# masks this with `--no-cache` (which bypasses the daemon) + a dtolnay
+# pre-install of the target into the runner's ~/.rustup. Dispatch-only.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  SOLDR_GITHUB_TOKEN: ${{ github.token }}
+  SOLDR_DEBUG_COMPILE_ENV: "1"
+
+jobs:
+  repro:
+    name: linux-host cached win-gnu build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          submodules: recursive
+
+      # NOTE: no `targets:` — win-gnu is deliberately NOT added to the runner's
+      # ~/.rustup, so the only place it can come from is soldr's provisioning.
+      - name: Install Rust toolchain (host only)
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.94.1
+
+      - name: Setup soldr (managed home, like reld#66)
+        uses: zackees/setup-soldr@main
+        with:
+          version: 0.8.44
+          toolchain: 1.94.1
+          cache: false
+
+      - name: Build soldr from this checkout (with the #2348 diagnostic)
+        shell: bash
+        run: soldr cargo build -p soldr-cli --bin soldr
+
+      - name: Diagnose toolchain homes before the build
+        shell: bash
+        run: |
+          set -x
+          echo "RUSTUP_HOME=${RUSTUP_HOME:-<unset>}"
+          echo "CARGO_HOME=${CARGO_HOME:-<unset>}"
+          echo "RUSTUP_TOOLCHAIN=${RUSTUP_TOOLCHAIN:-<unset>}"
+          which rustc cargo rustup || true
+          rustup show || true
+          echo "--- targets installed in the ACTIVE home ---"
+          rustup target list --installed || true
+          echo "--- does the win-gnu std dir exist under RUSTUP_HOME? ---"
+          find "${RUSTUP_HOME:-$HOME/.rustup}" -type d -name 'x86_64-pc-windows-gnu' 2>/dev/null | head || true
+
+      - name: Cached win-gnu build (the daemon path — repro target)
+        id: build
+        shell: bash
+        run: |
+          set -x
+          work="$RUNNER_TEMP/fixture"
+          mkdir -p "$work/src"
+          cat > "$work/Cargo.toml" <<'EOF'
+          [package]
+          name = "wingnu-repro"
+          version = "0.0.0"
+          edition = "2021"
+          [[bin]]
+          name = "wingnu-repro"
+          path = "src/main.rs"
+          EOF
+          echo 'fn main() { println!("ok"); }' > "$work/src/main.rs"
+          cd "$work"
+          # CACHED build (no --no-cache) — routes compiles through the daemon.
+          "$GITHUB_WORKSPACE/target/debug/soldr" build --target x86_64-pc-windows-gnu 2>&1 | tee "$RUNNER_TEMP/build.log" || true
+          echo "---- grep the #2348 diagnostic + E0463 ----"
+          grep -nE "dbg#2348|E0463|can't find crate|RUSTUP_HOME=" "$RUNNER_TEMP/build.log" || true
+          # Surface the outcome without failing (diagnostic run).
+          if grep -q 'E0463' "$RUNNER_TEMP/build.log"; then
+            echo "REPRODUCED: E0463 on the cached win-gnu build" >&2
+          fi
+          ls -la "$work/target/x86_64-pc-windows-gnu/debug/" 2>/dev/null || true

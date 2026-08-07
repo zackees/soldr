@@ -164,6 +164,25 @@ pub fn build_compile_request(rustc_argv: &[String]) -> CompileRequest {
     let env: Vec<(String, String)> = std::env::vars()
         .filter(|(k, _)| is_compile_env_var(k))
         .collect();
+    // soldr#2348 diagnostic (gated): show whether the toolchain-home env
+    // that lets the daemon-run rustc find a cross target's std is being
+    // captured into the compile request.
+    if std::env::var_os("SOLDR_DEBUG_COMPILE_ENV").is_some() {
+        let get = |key: &str| {
+            env.iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.as_str())
+                .unwrap_or("<none>")
+        };
+        eprintln!(
+            "soldr[dbg#2348]: compile-req compiler={} RUSTUP_HOME={} RUSTUP_TOOLCHAIN={} CARGO_HOME={} PATH_set={}",
+            rustc_argv.first().map(String::as_str).unwrap_or("?"),
+            get("RUSTUP_HOME"),
+            get("RUSTUP_TOOLCHAIN"),
+            get("CARGO_HOME"),
+            env.iter().any(|(k, _)| k == "PATH"),
+        );
+    }
     CompileRequest {
         args: rustc_argv.to_vec(),
         cwd,
