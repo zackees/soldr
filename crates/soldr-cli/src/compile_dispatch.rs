@@ -75,7 +75,7 @@ const RESPAWN_INTERVAL: Duration = Duration::from_secs(5);
 /// When one wrapper proves the daemon cannot be reached, sibling rustc
 /// wrapper processes skip the full spawn retry budget for this window
 /// and fall back directly after one cheap probe.
-const DAEMON_UNAVAILABLE_MARKER_TTL: Duration = Duration::from_secs(300);
+pub(crate) const DAEMON_UNAVAILABLE_MARKER_TTL: Duration = Duration::from_secs(300);
 
 /// Predicate for the env-var filter (Phase 5c from #981, reworked for
 /// correctness after the `cargo:rustc-env` regression that broke the
@@ -647,6 +647,8 @@ fn should_skip_retry_after_recent_daemon_unavailable(
     !daemon_required()
         && client_error_indicates_daemon_unavailable(first_err)
         && daemon_unavailable_marker_is_fresh_at(marker_path, SystemTime::now())
+        // soldr#2317: ignore a marker left by a *prior* session (see marker_session).
+        && !crate::marker_session::marker_predates_current_session(marker_path)
 }
 
 fn recent_daemon_unavailable_error(
@@ -654,14 +656,12 @@ fn recent_daemon_unavailable_error(
     marker_path: &Path,
     first_err: client::ClientError,
 ) -> DispatchError {
-    let marker_reason = read_daemon_unavailable_reason(marker_path);
-    let spawn_err = match marker_reason {
-        Some(reason) => format!(
-            "recent daemon-unavailable marker present; skipped spawn retry; \
-             prior_failure={reason}"
-        ),
-        None => "recent daemon-unavailable marker present; skipped spawn retry".to_string(),
-    };
+    // soldr#2317: message names the marker path + remaining cooldown so the
+    // skip is observable and clearable, not a dead end.
+    let spawn_err = crate::marker_session::skipped_retry_message(
+        marker_path,
+        read_daemon_unavailable_reason(marker_path),
+    );
     DispatchError::BudgetExhausted {
         budget: Duration::ZERO,
         last_err: Some(first_err),
