@@ -175,9 +175,11 @@ timed_test!(soldr_wheel_forwards_extra_arguments_to_maturin, {
     );
 });
 
-/// soldr#2139 follow-up. Two properties in one run, because they share the
-/// same fixture: a bare `soldr wheel` is legal (host target, dev profile), and
-/// it must not claim a manylinux floor that no target preparation enforced.
+// soldr#2139 follow-up. Two properties in one run, because they share the
+// same fixture: a bare `soldr wheel` is legal (host target, dev profile), and
+// it must not claim a manylinux floor that no target preparation enforced.
+// (Plain comment, not `///`: a doc comment on a macro invocation attaches to
+// nothing and `-D unused-doc-comments` rejects it.)
 timed_test!(
     soldr_wheel_defaults_to_a_dev_host_wheel_with_no_floor_claim,
     {
