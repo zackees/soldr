@@ -12,6 +12,12 @@
 # Cargo only honors `linker` in [target.<triple>] tables -- cfg-style tables
 # support runner/rustflags but not linker -- so the triples are listed out.
 # soldr puts dylint-link on PATH (see dylint_link_bin_dir, soldr#1816).
+#
+# Windows (soldr#2350): the MSVC triples must be listed too, or on a Windows
+# host the lint cdylib links with the default linker and never gets the
+# `@<toolchain>` stamp cargo-dylint looks for -- the same "Could not find ...
+# despite successful build" failure, one layer earlier than the target-nesting
+# fix in the front door. dylint-link wraps link.exe just as it wraps cc.
 
 [target.x86_64-unknown-linux-gnu]
 linker = "dylint-link"
@@ -23,4 +29,10 @@ linker = "dylint-link"
 linker = "dylint-link"
 
 [target.aarch64-apple-darwin]
+linker = "dylint-link"
+
+[target.x86_64-pc-windows-msvc]
+linker = "dylint-link"
+
+[target.aarch64-pc-windows-msvc]
 linker = "dylint-link"

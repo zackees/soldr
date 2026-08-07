@@ -1,0 +1,13 @@
+# cargo-dylint builds each lint library's driver with the toolchain pinned in
+# the lint package itself (it builds with current_dir(package.root)), NOT the
+# workspace-root channel. This lint uses `#![feature(rustc_private)]`, so it
+# must resolve the Dylint nightly here; without this file cargo-dylint falls
+# back to the workspace-root stable pin (1.94.1) and `dylint_linting` fails to
+# compile against stable rustc_private (E0554 "feature may not be used on the
+# stable release channel"). Mirrors the real in-repo lints under `dylints/*`.
+# This lives in the lint subdir, so it does NOT drag `app`/`dep_user`/`macros`
+# (built from the workspace root) onto nightly.
+[toolchain]
+channel = "nightly-2026-05-26"
+components = ["rustc-dev", "llvm-tools-preview", "rust-src"]
+profile = "minimal"
