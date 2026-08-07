@@ -128,10 +128,7 @@ Place it BEFORE `cargo`, as with --timestamp-lines."
     )]
     pub(crate) no_timestamp_lines: bool,
     /// soldr#2302 — suppress per-unit cache HIT/MISS lines + stats summary (SOLDR_NO_CACHE_STATES=1); place before `cargo`, as with --no-cache.
-    #[arg(
-        long,
-        help = "Suppress cache HIT/MISS lines + the stats summary"
-    )]
+    #[arg(long, help = "Suppress cache HIT/MISS lines + the stats summary")]
     pub(crate) no_cache_states: bool,
     #[arg(
         long,
