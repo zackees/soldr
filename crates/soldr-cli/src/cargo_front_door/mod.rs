@@ -1770,7 +1770,7 @@ pub(crate) async fn run_cargo_front_door(
     );
     let _rustfmt_shim_guard =
         maybe_apply_rustfmt_zccache_shim(&mut command, args, cache_enabled_for_cargo);
-    let explicit_target = target::default_cargo_build_target(args)?;
+    let explicit_target = target::default_cargo_build_target(args, dylint_requested)?;
     if let Some(target) = explicit_target.as_deref() {
         command.env("CARGO_BUILD_TARGET", target);
     }
