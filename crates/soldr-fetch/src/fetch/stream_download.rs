@@ -13,20 +13,20 @@
 //! is the ONLY place in `soldr-fetch` allowed to touch `reqwest` directly
 //! (`dylints/ban_raw_network_access` denies raw reqwest calls everywhere
 //! else under `crates/soldr-fetch/src/`), so folding segmentation in here
-//! is what lets every existing caller â€” `syslib_common.rs`, `xwin_cache.rs`,
+//! is what lets every existing caller — `syslib_common.rs`, `xwin_cache.rs`,
 //! `archive.rs`, `llvm.rs`, `zig.rs`, `apple_sdk.rs`, `rustup_init.rs`,
-//! `manifest_lookup.rs` â€” inherit it with **zero call-site changes**. They
+//! `manifest_lookup.rs` — inherit it with **zero call-site changes**. They
 //! keep calling `get_request` + `send_asset_request` +
 //! `stream_response_to_temp_file` exactly as before.
 //!
 //! The trick: by the time a caller's already-sent `response` reaches this
 //! function, its headers (`Content-Length`, `Accept-Ranges`) are already
-//! available for free â€” no extra probe request needed. If they indicate a
+//! available for free — no extra probe request needed. If they indicate a
 //! large, range-capable resource, this module abandons that response
 //! (its body is never read) and issues its own N parallel `Range` requests
 //! through a freshly built client. If segmentation was never attempted, or
-//! it fails for any reason, the ORIGINAL `response` â€” never drained, still
-//! perfectly valid â€” is what gets streamed by the existing single-stream
+//! it fails for any reason, the ORIGINAL `response` — never drained, still
+//! perfectly valid — is what gets streamed by the existing single-stream
 //! loop below. That is the whole fallback-safety argument: segmentation can
 //! only ever add a path to success, never remove the one that already
 //! worked.
@@ -40,7 +40,7 @@
 //! consistent ~2-2.3 MB/s on every origin tested, while segmentation
 //! scaled with no plateau through N=16, landing at **8.6-10.3x** the
 //! single-stream throughput and matching `aria2c -x16` within noise on
-//! every URL. That is not a marginal, opt-in-only win â€” it is the
+//! every URL. That is not a marginal, opt-in-only win — it is the
 //! difference between the maintainer's named xwin MSVCRT pain point and a
 //! four-second download. Combined with the fallback-safety argument above
 //! (a segmentation failure can never make a download that used to succeed
@@ -55,7 +55,7 @@
 //! `git log -S http1_only` starting at PR #963); `xwin_cache.rs` never
 //! carried that pin and has shipped without it since PR #1016 with no
 //! reported incident. Because this module builds its OWN client for the
-//! segmented request fan-out (it cannot reuse the caller's client â€” only
+//! segmented request fan-out (it cannot reuse the caller's client — only
 //! the caller's already-completed `response` is available), it has no
 //! direct way to see which protocol the caller originally pinned. Instead
 //! it infers the safe choice from `response.version()`: if the caller's
@@ -63,7 +63,7 @@
 //! because that is what the server offered), the segmented fan-out also
 //! pins HTTP/1-only; if it negotiated HTTP/2+, the segmented fan-out lets
 //! reqwest negotiate freely too. This preserves every existing pin's
-//! intent without any caller needing to pass its protocol choice through â€”
+//! intent without any caller needing to pass its protocol choice through —
 //! "whatever pin stream_download applies stays owned by stream_download."
 //! `dl_bench.rs` separately confirmed empirically that Negotiated works
 //! fine against all three benchmarked origins (including the exact mingw
@@ -75,13 +75,13 @@
 //!
 //! 1. **Connect/TTFB** (`SOLDR_DOWNLOAD_CONNECT_TIMEOUT_SECS`, default 10s):
 //!    request issuance to first response byte (i.e. until headers are
-//!    available). Re-armed fresh on every redirect hop â€” reqwest's own
+//!    available). Re-armed fresh on every redirect hop — reqwest's own
 //!    auto-redirect would share one `.send()` future across every hop,
 //!    making a per-hop timeout impossible, so the segmented client
 //!    disables auto-redirect (`redirect::Policy::none()`) and follows
 //!    hops manually (`send_with_hop_timeout`), each with its own
 //!    `tokio::time::timeout`. A connect/TTFB expiry is not fatal to the
-//!    segment â€” it goes through the normal per-segment retry path.
+//!    segment — it goes through the normal per-segment retry path.
 //! 2. **Stall watchdog** (`SOLDR_DOWNLOAD_STALL_TIMEOUT_SECS`, default
 //!    30s): arms only once the body-chunk loop starts (i.e. after clock 1
 //!    already ended successfully) and resets on every chunk. A slow TLS
@@ -109,12 +109,12 @@
 //!   preemption. Used for (a) every control-plane request (catalogue
 //!   JSON, API probes, redirect-resolution HEADs) and (b) whole downloads
 //!   whose `Content-Length` is known and at or below
-//!   `SOLDR_DOWNLOAD_QUICK_THRESHOLD_BYTES` (default 4 MiB) â€” the same
+//!   `SOLDR_DOWNLOAD_QUICK_THRESHOLD_BYTES` (default 4 MiB) — the same
 //!   threshold also doubles as the segmentation minimum, so anything
 //!   small enough to route through Quick is also never segmented; there
 //!   is exactly one size boundary, not two independently-tunable ones.
 //!   A response with unknown size (no `Content-Length`) always routes to
-//!   Bulk â€” conservative, since Quick's small pool would otherwise be an
+//!   Bulk — conservative, since Quick's small pool would otherwise be an
 //!   easy target for an unbounded transfer to starve.
 //!
 //! There is no cross-pool borrowing; the hard ceiling on total concurrent
@@ -129,18 +129,18 @@
 //! A Bulk permit is PENDING from acquisition until the holder's connect
 //! phase (clock 1, across every redirect hop) finishes and the first
 //! payload byte is about to be read; from there it is STREAMING and can
-//! never be preempted. Quick permits skip this distinction entirely â€”
+//! never be preempted. Quick permits skip this distinction entirely —
 //! they are marked STREAMING immediately on acquisition, since Quick
 //! never preempts. A background scheduler tick (~1s) steals a PENDING
 //! Bulk permit for a FIFO waiter only when: a waiter exists right now,
 //! the victim has been PENDING for at least a ~2s grace period, and the
 //! victim has been preempted fewer than 2 times (the anti-livelock guard
-//! â€” past that it becomes permanently non-preemptible so a uniformly slow
+//! — past that it becomes permanently non-preemptible so a uniformly slow
 //! network still converges instead of cycling forever). Preemption is not
 //! a failure: the victim's segment re-queues FIFO for a fresh permit, its
 //! retry budget is untouched, and preemptions are counted separately from
 //! retries. Tail hedging (duplicate the slowest pending segment onto an
-//! idle permit, first byte wins) is explicitly out of scope here â€” it did
+//! idle permit, first byte wins) is explicitly out of scope here — it did
 //! not fall out cleanly from this state model without materially more
 //! machinery, so it is left as a documented follow-up rather than rushed.
 //!
@@ -183,11 +183,11 @@
 //! layer, and conflating them was the critical review finding on the
 //! first version of this module:
 //!
-//! 1. **Slicing** â€” `SOLDR_SEGMENTED_DOWNLOAD`. Whether a large,
+//! 1. **Slicing** — `SOLDR_SEGMENTED_DOWNLOAD`. Whether a large,
 //!    Range-capable response gets split into N parallel requests at all.
 //!    Off means every download (small or large) takes exactly one
 //!    connection, exactly like before this feature existed.
-//! 2. **Capping** â€” `SOLDR_DOWNLOAD_MAX_SOCKETS` (Bulk) /
+//! 2. **Capping** — `SOLDR_DOWNLOAD_MAX_SOCKETS` (Bulk) /
 //!    `SOLDR_DOWNLOAD_QUICK_POOL` (Quick). How many connections each pool
 //!    allows concurrently. **`0` means fully unconditional** for that
 //!    pool: no permit object is created, no bookkeeping, no scheduler
@@ -196,13 +196,13 @@
 //!    with slicing off, the single remaining connection still acquires a
 //!    permit from whichever pool it routes to, so `MAX_SOCKETS=0`/
 //!    `QUICK_POOL=0` are the actual "make pooling a no-op" escape hatches.
-//! 3. **QoS** â€” Bulk-vs-Quick routing (module docs "Two connection
+//! 3. **QoS** — Bulk-vs-Quick routing (module docs "Two connection
 //!    pools") and Bulk's PENDING/STREAMING preemption (module docs
 //!    "Permit preemption"). Only meaningful when capping (switch 2) is
 //!    actually in effect for the pool in question; policy for how
 //!    contested capacity gets allocated and reclaimed.
 //!
-//! ### Knobs (defaults, env vars, units â€” all in one place)
+//! ### Knobs (defaults, env vars, units — all in one place)
 //!
 //! | Knob | Env var | Default | Unit |
 //! |---|---|---|---|
@@ -218,7 +218,7 @@
 //! | Bearer auth (forward-prep) | `SOLDR_TOOLCHAIN_AUTH_TOKEN` | unset | token string |
 //!
 //! Every env var fails safe to its documented default on unset or
-//! unparseable input â€” never panics, never silently picks an unintended
+//! unparseable input — never panics, never silently picks an unintended
 //! extreme. The one exception, by design: for the two pool-size knobs,
 //! `0` is not junk -- it is the explicit unconditional sentinel (see
 //! "Three switches" above). Only unparseable/unset values fail safe to
@@ -227,12 +227,12 @@
 //! ### Retry composition with `fetch::retry::with_backoff`
 //!
 //! Per-segment retries here are a NEW, innermost layer, entirely distinct
-//! from â€” and never multiplying with â€” the existing outer
+//! from — and never multiplying with — the existing outer
 //! `with_asset_backoff`/`with_backoff` retry that callers wrap around their
 //! whole `ensure_*` operation (e.g. `syslib_common::ensure_syslib_bundle`).
 //! A stalled or failed segment retries its OWN byte range, resuming from
 //! bytes already durably written, entirely within a single call to this
-//! module â€” it never returns an error for that. Preemptions are cheaper
+//! module — it never returns an error for that. Preemptions are cheaper
 //! still: they never touch the retry counter at all (see "Permit
 //! preemption"). The outer retry loop is only ever reached if the WHOLE
 //! operation still fails after: segmentation was attempted and exhausted
@@ -362,7 +362,7 @@ pub(crate) async fn stream_response_to_temp_file(
 /// chunk while enforcing independent idle-progress and total-safety deadlines.
 ///
 /// Before doing so, tries N-way Range segmentation (see module docs) using
-/// only the headers of the already-sent `response` â€” no extra probe request.
+/// only the headers of the already-sent `response` — no extra probe request.
 /// `response`'s body is never touched unless/until segmentation is skipped
 /// or fails, so the single-stream path below is always exactly as safe as
 /// it was before this feature existed.
