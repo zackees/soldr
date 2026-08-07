@@ -262,6 +262,9 @@ pub mod trampoline;
 /// soldr#2024 — the `--as <version>` trampoline, split out of
 /// `soldr_main.rs` so that file could stop growing.
 pub mod version_trampoline;
+/// soldr#2139 gap 1 — the `soldr wheel --target <triple>` surface. Thin,
+/// abi3-only front end over the existing `soldr maturin ...` execution path.
+pub mod wheel_cmd;
 /// Detects an uninitialized vendored zccache submodule before Cargo renders
 /// its opaque missing-manifest error (soldr#2232).
 pub(crate) mod worktree_submodule;
