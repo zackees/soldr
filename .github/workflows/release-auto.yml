@@ -225,13 +225,69 @@ jobs:
             echo "commit_sha=$commit_sha"
           } >> "$GITHUB_OUTPUT"
 
-  build:
-    name: ${{ matrix.name }}
+  # soldr#2294: the ONE from-scratch soldr build in this workflow. Every
+  # build lane used to run its own cold `cargo build --release -p
+  # soldr-cli` prologue (~8 duplicate driver builds); they now download
+  # this artifact instead. Same shape as `bootstrap-and-linux-x86` in
+  # cross-compile-all-targets.yml.
+  bootstrap:
+    name: Bootstrap release build driver
     needs: prepare
     if: needs.prepare.outputs.should_release == 'true'
+    runs-on: ubuntu-24.04
+    # Cold driver build observed ~15 min on ubuntu-24.04; 45 leaves 3x.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          submodules: recursive
+          ref: ${{ needs.prepare.outputs.commit_sha }}
+
+      - name: Cache rustup 1.94.1 in ~/.rustup
+        id: rustup_cache
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ~/.rustup/toolchains/1.94.1-x86_64-unknown-linux-gnu
+          key: rustup-1.94.1-linux-x64-v1
+
+      - name: Install rustup 1.94.1 to ~/.rustup (if not cached)
+        if: steps.rustup_cache.outputs.cache-hit != 'true'
+        run: rustup toolchain install 1.94.1 --profile minimal --no-self-update
+
+      # Bare cargo here — soldr isn't built yet. Mirrors the bootstrap
+      # job in cross-compile-all-targets.yml: the binary this produces
+      # is the driver that runs `soldr build` on every lane downstream.
+      - name: Build release driver (bare cargo bootstrap)
+        shell: bash
+        env:
+          # The bootstrap build deliberately doesn't engage zccache —
+          # the binary it produces is the thing that engages zccache
+          # for everything downstream. No chicken-and-egg.
+          RUSTC_WRAPPER: ""
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --package soldr-cli --bin soldr
+          ls -la target/release/soldr
+          file target/release/soldr
+          target/release/soldr --version
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-bootstrap-soldr
+          path: target/release/soldr
+          if-no-files-found: error
+          retention-days: 7
+
+  build:
+    name: ${{ matrix.name }}
+    needs:
+      - prepare
+      - bootstrap
+    if: needs.prepare.outputs.should_release == 'true'
     runs-on: ${{ matrix.runner }}
-    # Slowest lane is Windows x64: observed max 30.3 min, p50 29.1 min
-    # over 7 releases. 90 leaves ~3x headroom for a cold runner.
+    # Slowest lane was Windows x64 native: observed max 30.3 min, p50
+    # 29.1 min over 7 releases. All lanes are Linux cross-builds now
+    # (soldr#2294); 90 leaves ample headroom for a cold runner.
     timeout-minutes: 90
     # Every release lane is required. Registry publishes are gated on a
     # verified GitHub Release asset set, so a missing target must stop the
@@ -273,16 +329,25 @@ jobs:
             runner: ubuntu-24.04
             target: x86_64-apple-darwin
             binary: soldr
+          # ARM macOS is cross-built on Linux through the same blessed
+          # Apple SDK path as Intel macOS above (soldr#2294). The
+          # smoke_macos_arm64 job executes the archive and wheel on a
+          # native macos-15 runner before publication.
           - name: macOS ARM64
-            runner: macos-15
+            runner: ubuntu-24.04
             target: aarch64-apple-darwin
             binary: soldr
+          # Windows MSVC targets are cross-built on Linux via soldr's
+          # blessed xwin/LLVM path (soldr#2294) — the same route
+          # cross-compile-all-targets.yml exercises on every push to
+          # main. The smoke_windows_* jobs execute the archives and
+          # wheels on native Windows runners before publication.
           - name: Windows x64
-            runner: windows-2025
+            runner: ubuntu-24.04
             target: x86_64-pc-windows-msvc
             binary: soldr.exe
           - name: Windows ARM64
-            runner: windows-11-arm
+            runner: ubuntu-24.04
             target: aarch64-pc-windows-msvc
             binary: soldr.exe
 
@@ -377,6 +442,27 @@ jobs:
           dpkg-query -W -f='cmake installed version: ${Version}\n' cmake
           dpkg-query -W -f='perl installed version: ${Version}\n' perl
 
+      # soldr#2294: the driver is built once in the bootstrap job and
+      # shared. Download it to the exact path the per-lane `cargo build`
+      # used to produce, so every later `driver="target/release/soldr"`
+      # reference (archive packaging, support-binary extraction, smoke
+      # steps) is unchanged.
+      - name: Download bootstrap release driver
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-bootstrap-soldr
+          path: target/release
+
+      # Artifact zips do not preserve the executable bit; restore it.
+      # Same idiom as `_ci-target-run.yml`'s "Restore executable bit"
+      # step.
+      - name: Restore executable bit on bootstrap driver
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x target/release/soldr
+          target/release/soldr --version
+
       - name: Build release binary
         shell: bash
         env:
@@ -420,20 +506,22 @@ jobs:
           cargo clean -p soldr-cli --target "${{ matrix.target }}" --release 2>/dev/null || true
 
           target='${{ matrix.target }}'
-          # Release CI runs the checked-out soldr CLI as the build
-          # driver and lets `soldr build` own all target-specific
-          # toolchain dispatch. The workflow must not install or invoke
+          # Release CI runs the checked-out soldr CLI (built once in the
+          # bootstrap job, downloaded above) as the build driver and
+          # lets `soldr build` own all target-specific toolchain
+          # dispatch. The workflow must not install or invoke
           # lower-level cross-build helpers directly.
-          cargo build --release --locked --package soldr-cli \
-            --bin soldr
           driver="target/release/soldr"
-          case "$RUNNER_OS" in Windows) driver="target/release/soldr.exe" ;; esac
           soldr_build_args=()
           case "$target" in
-            # Native MSVC release runners are already CPU-bound and have
-            # no warm cache. Keep soldr's toolchain/syslib prep, but avoid
-            # routing this one release build through the embedded zccache
-            # wrapper path that can hang the hosted Windows jobs.
+            # soldr#2294: this guard originally existed because the
+            # embedded zccache wrapper path could hang the hosted
+            # Windows runners; the lanes are Linux cross-builds now, so
+            # that reason is gone. It is KEPT because a Windows build
+            # routed through the compile cache drops its .pdb
+            # (soldr#2148, docs/DEBUG_SIDECARS.md caveat) and the PDB
+            # sidecar is a required archive member below. Remove only
+            # together with a fix for soldr#2148.
             *-pc-windows-msvc) soldr_build_args+=(--no-cache) ;;
           esac
           "$driver" \
@@ -448,7 +536,7 @@ jobs:
           # invocation. GNU and Darwin catalogue toolchains are hosted on the
           # Linux build runner; ARM-musl packaging is handled separately on a
           # native ARM runner because its catalogue GCC is i386-hosted.
-          if [[ "$RUNNER_OS" == "Linux" && ( "$target" == *-unknown-linux-gnu || "$target" == *-apple-darwin ) ]]; then
+          if [[ "$target" == *-unknown-linux-gnu || "$target" == *-apple-darwin ]]; then
             "$driver" prepare --target "$target" --github-env "$GITHUB_ENV"
           fi
           echo "=== post-build diagnostic: target/$target/release/ ==="
@@ -1067,7 +1155,6 @@ jobs:
           version="${{ needs.prepare.outputs.version }}"
           name="soldr-${version}-${{ matrix.target }}"
           driver="target/release/soldr"
-          case "$RUNNER_OS" in Windows) driver="target/release/soldr.exe" ;; esac
           "$driver" archive --stage-dir dist/package --output "dist/${name}.tar.zst"
           ls -la "dist/${name}.tar.zst"
           echo "compressed_size_bytes=$(wc -c < "dist/${name}.tar.zst")"
@@ -1157,31 +1244,6 @@ jobs:
               exit 1
           fi
 
-          uv tool install "maturin>=1.7,<2"
-
-          # soldr#1005 / fbuild ingestion: on the linux-gnu lanes,
-          # build the wheel against Soldr's catalogue-backed compiler and
-          # sysroot so its embedded binary observes the glibc 2.17 floor
-          # and the wheel is tagged manylinux_2_17. `--compatibility pypi`
-          # alone lets maturin auto-tag from the runner glibc
-          # (manylinux_2_39 on ubuntu-24.04), which excludes every
-          # glibc<2.39 consumer and triggers pip's fallback to the
-          # 0.1.0 placeholder sdist. `soldr prepare --github-env` above
-          # supplies the catalogue-backed compiler/sysroot to Maturin's
-          # direct Cargo subprocess: Maturin must not select Zig or xwin.
-          # GNU wheels retain the manylinux 2.17 tag; musl wheels retain the
-          # musllinux 1.2 tag. macOS / Windows lanes keep `--compatibility
-          # pypi` untouched.
-          compat_args=(--compatibility pypi)
-          case "${{ matrix.target }}" in
-            *-unknown-linux-gnu)
-              compat_args=(--compatibility manylinux_2_17)
-              ;;
-            *-unknown-linux-musl)
-              compat_args=(--compatibility musllinux_1_2)
-              ;;
-          esac
-
           # `soldr prepare --github-env` exports the blessed cross toolchain
           # both globally and per target. Maturin also compiles host build
           # helpers (for example zstd-sys); make their host tuple explicit so
@@ -1196,14 +1258,36 @@ jobs:
             export RANLIB_x86_64_unknown_linux_gnu="$(command -v ranlib)"
           fi
 
-          maturin build \
-            --release \
-            --locked \
-            "${compat_args[@]}" \
-            --auditwheel repair \
-            --target "${{ matrix.target }}" \
-            --target-dir target \
-            --out dist
+          # soldr#2294: `soldr wheel` replaces the raw `maturin build`
+          # here. The verb provisions its own managed maturin and owns
+          # the compatibility-tag policy (wheel_cmd.rs
+          # `compatibility_for_target`): release CROSS builds are tagged
+          # manylinux_2_17 (gnu) / musllinux_1_2 (musl), everything else
+          # `pypi` — exactly what the deleted bash `case` pinned.
+          # `--target-dir target` reuses the build step's target dir so
+          # this is incremental over `soldr build`, not a second cold
+          # compile. Auditwheel repair is maturin's default mode, so the
+          # old explicit `--auditwheel repair` flag is redundant.
+          wheel_args=()
+          case "${{ matrix.target }}" in
+            x86_64-unknown-linux-gnu)
+              # Host-native target: `soldr wheel` only claims a
+              # manylinux floor on CROSS builds (floor_claim_is_backed),
+              # so left alone it would pass `--compatibility pypi` and
+              # maturin would auto-tag from the runner glibc
+              # (manylinux_2_39 — the soldr#1005 trap). The floor IS
+              # backed on this lane by `soldr prepare --github-env`
+              # above, so pin the tag explicitly; `soldr wheel` skips
+              # its own policy when the caller supplies one. The
+              # byte-level `verify_wheel_glibc.py --max-glibc 2.17` gate
+              # below keeps this honest.
+              wheel_args+=(--compatibility manylinux_2_17)
+              ;;
+          esac
+          driver="target/release/soldr"
+          "$driver" wheel --release --target "${{ matrix.target }}" \
+            "${wheel_args[@]}" \
+            --locked --target-dir target --out dist
 
       - name: Lint wheel filenames against workspace version
         if: matrix.target != 'aarch64-unknown-linux-musl'
@@ -1459,10 +1543,13 @@ jobs:
 
       - name: Smoke test wheel
         # Cross-OS and cross-architecture wheels cannot execute on the Linux
-        # x64 build host. The Intel macOS wheel is exercised by
-        # smoke_macos_x64 below; ARM Linux wheels still receive structural
-        # wheel and archive checks in this job.
-        if: ${{ !contains(matrix.target, 'musl') && !(runner.os == 'Linux' && (contains(matrix.target, 'apple-darwin') || startsWith(matrix.target, 'aarch64-'))) }}
+        # x64 build host, so only the host-native gnu wheel is executed
+        # inline. The x64 musl wheel runs in the Alpine docker smoke
+        # below; macOS wheels are exercised by smoke_macos_x64 /
+        # smoke_macos_arm64 and Windows wheels by smoke_windows_x64 /
+        # smoke_windows_arm64 (soldr#2294). ARM Linux wheels still
+        # receive structural wheel and archive checks in this job.
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
         shell: bash
         env:
           EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
@@ -1590,7 +1677,6 @@ jobs:
 
           extract=$(mktemp -d)
           driver="target/release/soldr"
-          case "$RUNNER_OS" in Windows) driver="target/release/soldr.exe" ;; esac
           "$driver" archive --input "$archive" --extract-dir "$extract"
           echo "--- extracted layout ---"
           ls -la "$extract"
@@ -1835,14 +1921,106 @@ jobs:
           extracted/crgx --version
           extracted/cargo-chef --version
 
+  # soldr#2294: ARM macOS artifacts are cross-built on Linux; EXECUTION
+  # still needs Apple silicon. Same shape as smoke_macos_x64 above.
+  smoke_macos_arm64:
+    name: Smoke ARM macOS release artifacts
+    needs:
+      - prepare
+      - build
+    if: needs.prepare.outputs.should_release == 'true'
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      # Checkout only for ci/smoke_release_artifacts.py — the smoke
+      # logic lives in a testable Python file, not inline YAML.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ needs.prepare.outputs.commit_sha }}
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-soldr-aarch64-apple-darwin
+          path: dist
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: pypi-soldr-aarch64-apple-darwin
+          path: dist
+
+      - name: Architecture-check and smoke archive and wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 ci/smoke_release_artifacts.py \
+            --target aarch64-apple-darwin \
+            --expected-version '${{ needs.prepare.outputs.version }}'
+
+  # soldr#2294: Windows MSVC artifacts are cross-built on Linux;
+  # EXECUTION still needs native Windows. One smoke job per arch,
+  # consuming the lane's uploaded artifacts (the soldr#1978 build/run
+  # split: cross-building removes the build reason for a native runner,
+  # not the run reason).
+  smoke_windows:
+    name: Smoke Windows release artifacts (${{ matrix.arch }})
+    needs:
+      - prepare
+      - build
+    if: needs.prepare.outputs.should_release == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-2025
+            target: x86_64-pc-windows-msvc
+          - arch: arm64
+            runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+
+    steps:
+      # Checkout only for ci/smoke_release_artifacts.py — the smoke
+      # logic lives in a testable Python file, not inline YAML.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ needs.prepare.outputs.commit_sha }}
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-soldr-${{ matrix.target }}
+          path: dist
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: pypi-soldr-${{ matrix.target }}
+          path: dist
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Smoke archive and wheel (incl. required PDB sidecar)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python ci/smoke_release_artifacts.py \
+            --target '${{ matrix.target }}' \
+            --expected-version '${{ needs.prepare.outputs.version }}'
+
   publish:
     name: Attest and publish release assets
     needs:
       - prepare
       - build
       - smoke_macos_x64
+      - smoke_macos_arm64
+      - smoke_windows
       - build_arm_musl_wheel
-    if: needs.prepare.outputs.should_publish_github_release == 'true' && needs.smoke_macos_x64.result == 'success' && needs.build_arm_musl_wheel.result == 'success'
+    if: needs.prepare.outputs.should_publish_github_release == 'true' && needs.smoke_macos_x64.result == 'success' && needs.smoke_macos_arm64.result == 'success' && needs.smoke_windows.result == 'success' && needs.build_arm_musl_wheel.result == 'success'
     runs-on: ubuntu-24.04
     # Artifact download + attestation; observed max 0.6 min.
     timeout-minutes: 30

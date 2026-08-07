@@ -9,7 +9,12 @@ def test_release_workflow_builds_and_publishes_musllinux_wheels() -> None:
 
     assert "py3-none-musllinux_1_2_x86_64.whl" in workflow
     assert "py3-none-musllinux_1_2_aarch64.whl" in workflow
-    assert "compat_args=(--compatibility musllinux_1_2)" in workflow
+    # soldr#2294: the x64 musl wheel is built by `soldr wheel`, whose
+    # `compatibility_for_target` policy (wheel_cmd.rs) tags release cross
+    # builds musllinux_1_2; the native ARM musl lane still drives maturin
+    # directly and pins the tag by hand.
+    assert '"$driver" wheel --release --target "${{ matrix.target }}"' in workflow
+    assert "--compatibility musllinux_1_2" in workflow
     assert "Build ARM musllinux wheel natively" in workflow
     assert "pypi-soldr-aarch64-unknown-linux-musl" in workflow
     assert "Assert linux-musl wheels are tagged musllinux_1_2" in workflow

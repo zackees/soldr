@@ -561,8 +561,17 @@ def test_linux_arm64_release_wheels_avoid_zig_and_xwin() -> None:
     release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
 
     assert '"$driver" prepare --target "$target" --github-env "$GITHUB_ENV"' in release
-    assert "compat_args=(--compatibility manylinux_2_17)" in release
-    assert "compat_args=(--compatibility musllinux_1_2)" in release
+    # soldr#2294: wheels are produced by `soldr wheel`, whose
+    # `compatibility_for_target` policy (wheel_cmd.rs) owns the
+    # manylinux_2_17 / musllinux_1_2 tags for release cross builds. The
+    # only compat flag the workflow still passes by hand is the
+    # host-native x86_64-gnu pin, where no cross floor claim exists.
+    assert '"$driver" wheel --release --target "${{ matrix.target }}"' in release
+    assert release.count("--compatibility manylinux_2_17") == 1
+    assert (
+        "--compatibility musllinux_1_2"
+        not in release.split("Build ARM musllinux wheel natively", 1)[0]
+    )
     assert "maturin --zig" not in release
     assert "Setup zig for Linux wheel lanes" not in release
     assert 'CC_x86_64_unknown_linux_gnu="$(command -v cc)"' in release
