@@ -35,8 +35,11 @@ use std::path::{Path, PathBuf};
 
 use crate::core::{SoldrError, SoldrPaths};
 
-use super::segmented_download::{download_single_stream, download_with_segmentation_or};
-use super::stream_download::{DownloadedAsset, ASSET_IDLE_TIMEOUT};
+use super::stream_download::{asset_http_client, get_request};
+use super::stream_download::{
+    send_asset_request, stream_response_to_temp_file, DownloadedAsset, ASSET_HEADER_TIMEOUT,
+    ASSET_IDLE_TIMEOUT,
+};
 
 /// Pinned xwin-cache release date currently in the catalogue.
 /// Bump when a refreshed bundle ships from soldr-toolchain forge
@@ -169,14 +172,10 @@ pub async fn ensure_xwin_cache(
 
 /// One download attempt. Every error is [`SoldrError::Network`], which is what
 /// [`super::retry::is_transient`] matches.
-///
-/// Tries N-way Range segmentation first (opt-in via
-/// `SOLDR_SEGMENTED_DOWNLOAD`; this is the named-pain-point download —
-/// see setup-soldr's segmented-download-experiment), falling back to the
-/// existing single-stream path on any failure or when segmentation is
-/// disabled.
 async fn download_xwin_cache(url: &str) -> Result<DownloadedAsset, SoldrError> {
-    download_with_segmentation_or(url, || download_single_stream(url, ASSET_IDLE_TIMEOUT)).await
+    let client = asset_http_client("managed xwin-cache")?;
+    let resp = send_asset_request(get_request(&client, url), url, ASSET_HEADER_TIMEOUT).await?;
+    stream_response_to_temp_file(resp, url, ASSET_IDLE_TIMEOUT).await
 }
 
 fn resolve_xwin_cache_dir(install_dir: &Path) -> Option<PathBuf> {

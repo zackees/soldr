@@ -30,7 +30,6 @@
 use std::path::{Path, PathBuf};
 
 use super::manifest_lookup;
-use super::segmented_download::download_with_segmentation_or;
 use super::stream_download::{
     asset_http_client_with_protocol, get_request, send_asset_request, stream_response_to_temp_file,
     AssetProtocol, DownloadedAsset, ASSET_HEADER_TIMEOUT, ASSET_IDLE_TIMEOUT,
@@ -124,8 +123,7 @@ pub async fn ensure_syslib_bundle(
     // std` -- an error naming the wrong thing entirely.
     let downloaded =
         super::retry::with_asset_backoff(&format!("syslib {lib}/{version}/{slug}"), || {
-            let url = url.clone();
-            async move { download_with_segmentation_or(&url, || download_syslib_bundle(&url)).await }
+            download_syslib_bundle(&url)
         })
         .await?;
 
