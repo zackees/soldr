@@ -37,9 +37,9 @@ from pathlib import Path
 # `ci-nextest`, and `ci-bootstrap` in the workspace Cargo.toml.
 ALLOWLIST: dict[str, str] = {
     "release-auto.yml": "builds the binaries that are actually published",
-    "cross-compile-all-targets.yml": (
-        "its entire purpose is validating that the --release cross path works"
-    ),
+    # cross-compile-all-targets.yml no longer uses --release: it is now an
+    # opt-in (workflow_dispatch) quick/debug cross-compile validation sweep,
+    # so it needs no exemption and must not be a stale allowlist entry.
     "build-all-from-linux.yml": (
         "exists to prove `soldr build --release --target X` works for all 8 targets"
     ),
