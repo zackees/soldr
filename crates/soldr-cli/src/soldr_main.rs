@@ -276,24 +276,30 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
 
     match cli.command {
         Commands::Build { args } => {
-            // soldr#1012 PR 1 + PR 5. The `soldr build` surface
-            // routes through `blessed_build::prepare` for any
-            // canonical target triple it can identify in argv (looks
-            // for `--target X` / `--target=X`). On MSVC targets that
-            // step materializes the xwin-cache from the soldr-
-            // toolchain catalogue, installs the multicall clang shim
-            // ahead of system clang on PATH, and sets the cc-rs +
-            // cargo target-specific env vars. The cargo front door is
-            // then invoked with the same args + the prep env applied.
-            //
-            // Targets with no prep need (linux musl, linux gnu) get
-            // a no-op prep + the standard cargo front door behavior.
-            // `SOLDR_USE_LEGACY_XWIN=1` opts out of the blessed path
-            // and falls through to the explicit cargo-xwin flow.
+            // soldr#1012 PR 1 + PR 5. The `soldr build` surface routes through
+            // `blessed_build::prepare` for the canonical target triple it finds
+            // in argv (`--target X` / `--target=X`): MSVC targets materialize
+            // the xwin-cache, install the clang shim, and set cc-rs/cargo env;
+            // linux musl/gnu get a no-op prep. `SOLDR_USE_LEGACY_XWIN=1` opts
+            // out into the explicit cargo-xwin flow.
             let mut full_args = Vec::with_capacity(args.len() + 1);
             full_args.push("build".to_string());
             full_args.extend(args);
             target_alias::normalize_target_aliases_in_args(&mut full_args);
+
+            // soldr#2319 (Approach C): a Windows host cannot exec the catalogue
+            // Linux-ELF gcc for a `*-unknown-linux-gnu` target. Delegate the
+            // compile to a Linux Docker container (glibc-2.17 ELF) and return,
+            // skipping the native prep/front-door that would hit os error 193.
+            if let Some(t) = extract_target_from_args(&full_args) {
+                if crate::docker_cross::should_delegate_to_docker(
+                    crate::docker_cross::Host::current(),
+                    &t,
+                    &crate::docker_cross::EnvSnapshot::from_process(),
+                ) {
+                    guarded_exit(crate::docker_cross::run(&t, &full_args).await?);
+                }
+            }
 
             // Try to recognize a target from argv so we can prep
             // before invoking cargo. If the user didn't pass `--target`,
@@ -316,16 +322,13 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 let cargo_args = prep.cargo_args.clone();
                 crate::target_lifecycle::apply_to_process(&prep);
 
-                // soldr#882/#1081/#1248: auto-dispatch cargo subcommand
-                // based on target. Windows MSVC stays on plain cargo
-                // build when blessed_build materialized the xwin-cache
-                // and injected clang/lld/MSVC SDK env. Linux GNU/musl use the
-                // managed-Zig env from target_lifecycle. Darwin stays on plain
-                // cargo build after blessed_build injects the target-
-                // shaped Apple SDK/clang env, unless
-                // SOLDR_USE_LEGACY_ZIGBUILD=1 is set for diagnostic
-                // comparison. cfg-gated to linux hosts — native
-                // msvc/darwin host builds keep using plain cargo build.
+                // soldr#882/#1081/#1248: auto-dispatch cargo subcommand based
+                // on target. Windows MSVC stays on plain cargo build when
+                // blessed_build materialized the xwin-cache and injected
+                // clang/lld/MSVC SDK env. Linux GNU/musl use the managed-Zig
+                // env; Darwin stays on plain cargo build after the target Apple
+                // SDK/clang env is injected, unless SOLDR_USE_LEGACY_ZIGBUILD=1.
+                // cfg-gated to linux hosts.
                 let msvc_blessed_cache_ready = prep.xwin_cache_dir.is_some();
                 if let Some(subcmd) =
                     pick_cross_subcommand(&target_triple, msvc_blessed_cache_ready)
@@ -340,14 +343,11 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                     dep_prefetch.join().await;
                 }
             } else {
-                // Native host build (no --target): the cross-compile
-                // sysroot prep doesn't apply, but the managed cmake +
-                // ninja injection does — cmake-based *-sys build
-                // scripts run on the host regardless of target, and
-                // "use whatever cmake/make PATH serves" is exactly the
-                // failure mode soldr exists to remove (a pip-installed
-                // MSYS make + "MSYS Makefiles" generator broke native
-                // libz-ng-sys builds — see fetch::cmake_tools).
+                // Native host build (no --target): no cross-sysroot prep, but
+                // the managed cmake + ninja injection still runs so cmake-based
+                // *-sys build scripts don't use whatever cmake/make PATH serves
+                // (a pip-installed MSYS make broke native libz-ng-sys builds --
+                // see fetch::cmake_tools).
                 let paths = crate::core::SoldrPaths::new()?;
                 let mut prep = crate::blessed_build::BlessedPrep::default();
                 crate::blessed_build::inject_cmake_tooling(&paths, &mut prep).await;
@@ -359,13 +359,11 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 }
             }
 
-            // soldr#1079: ensure native Windows MSVC builds get LIB /
-            // INCLUDE / PATH (link.exe) injected from the host VS
-            // install, so users invoking `soldr build` from a plain
-            // PowerShell don't have to set `$env:LIB` themselves.
-            // No-op when not on Windows, when the user opted out via
-            // `SOLDR_MSVC_DISCOVERY=off`, when LIB is already set, or
-            // when the resolved target is non-MSVC.
+            // soldr#1079: inject LIB / INCLUDE / PATH (link.exe) from the host
+            // VS install so `soldr build` from a plain PowerShell needs no
+            // manual `$env:LIB`. No-op off Windows, when opted out via
+            // `SOLDR_MSVC_DISCOVERY=off`, when LIB is set, or on a non-MSVC
+            // target.
             ensure_msvc_host_env_for_native(&full_args).await;
 
             guarded_exit(
