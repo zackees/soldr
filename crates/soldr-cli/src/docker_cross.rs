@@ -125,8 +125,14 @@ pub(crate) fn docker_command(
     soldr_version: &ContainerSoldrVersion,
     passthrough_args: &[String],
 ) -> Vec<String> {
+    // The container is a fresh Linux env: pip-install soldr, then
+    // `soldr toolchain install` so rustup + the project's pinned channel
+    // (rust-toolchain.toml) exist before the build — without it the fresh
+    // rustup has no default toolchain and `rustup target add` fails. The
+    // /root/.soldr volume persists the toolchain, so this is a one-time cost.
     let mut inner = format!(
-        "pip install --quiet {} && soldr build --target {}",
+        "pip install --quiet {} && soldr toolchain install && \
+         soldr build --target {}",
         soldr_version.pip_spec(),
         target
     );
@@ -267,7 +273,10 @@ pub(crate) async fn run(target: &str, full_args: &[String]) -> Result<i32, Soldr
     let passthrough = passthrough_from_full_args(full_args);
     let argv = docker_command(&project_dir, target, &version, &passthrough);
 
-    eprintln!("soldr: delegating {target} build to Docker Linux (soldr#2319): docker {}", argv.join(" "));
+    eprintln!(
+        "soldr: delegating {target} build to Docker Linux (soldr#2319): docker {}",
+        argv.join(" ")
+    );
 
     let status = tokio::process::Command::new("docker")
         .args(&argv)
@@ -333,30 +342,38 @@ mod tests {
         ));
     });
 
-    timed_test!(env_snapshot_parses_disable_values, Duration::from_secs(30), {
-        // Only the truthy spellings disable; "0"/"false"/empty do not.
-        for (raw, want) in [
-            ("1", true),
-            ("true", true),
-            ("yes", true),
-            ("0", false),
-            ("false", false),
-            ("", false),
-        ] {
-            let disabled = {
-                let v = raw.trim();
-                !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false")
-            };
-            assert_eq!(disabled, want, "disable parse for {raw:?}");
+    timed_test!(
+        env_snapshot_parses_disable_values,
+        Duration::from_secs(30),
+        {
+            // Only the truthy spellings disable; "0"/"false"/empty do not.
+            for (raw, want) in [
+                ("1", true),
+                ("true", true),
+                ("yes", true),
+                ("0", false),
+                ("false", false),
+                ("", false),
+            ] {
+                let disabled = {
+                    let v = raw.trim();
+                    !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false")
+                };
+                assert_eq!(disabled, want, "disable parse for {raw:?}");
+            }
         }
-    });
+    );
 
     timed_test!(docker_command_argv_snapshot, Duration::from_secs(30), {
         let argv = docker_command(
             "/home/u/proj",
             "x86_64-unknown-linux-gnu",
             &ContainerSoldrVersion::Pinned("0.8.42".to_string()),
-            &["--release".to_string(), "-p".to_string(), "demo".to_string()],
+            &[
+                "--release".to_string(),
+                "-p".to_string(),
+                "demo".to_string(),
+            ],
         );
         let expected = vec![
             "run",
@@ -372,8 +389,8 @@ mod tests {
             "python:3.12-slim-bookworm",
             "bash",
             "-lc",
-            "pip install --quiet soldr==0.8.42 && soldr build \
-             --target x86_64-unknown-linux-gnu --release -p demo",
+            "pip install --quiet soldr==0.8.42 && soldr toolchain install && \
+             soldr build --target x86_64-unknown-linux-gnu --release -p demo",
         ];
         assert_eq!(argv, expected);
     });
@@ -389,51 +406,68 @@ mod tests {
         let inner = argv.last().unwrap();
         assert_eq!(
             inner,
-            "pip install --quiet soldr && soldr build --target aarch64-unknown-linux-gnu"
+            "pip install --quiet soldr && soldr toolchain install && \
+             soldr build --target aarch64-unknown-linux-gnu"
         );
         assert!(argv.contains(&"python:3.12-slim-bookworm".to_string()));
     });
 
-    timed_test!(passthrough_strips_verb_and_target, Duration::from_secs(30), {
-        let full = vec![
-            "build".to_string(),
-            "--target".to_string(),
-            "x86_64-unknown-linux-gnu".to_string(),
-            "--release".to_string(),
-            "-p".to_string(),
-            "demo".to_string(),
-        ];
-        assert_eq!(
-            passthrough_from_full_args(&full),
-            vec!["--release".to_string(), "-p".to_string(), "demo".to_string()]
-        );
+    timed_test!(
+        passthrough_strips_verb_and_target,
+        Duration::from_secs(30),
+        {
+            let full = vec![
+                "build".to_string(),
+                "--target".to_string(),
+                "x86_64-unknown-linux-gnu".to_string(),
+                "--release".to_string(),
+                "-p".to_string(),
+                "demo".to_string(),
+            ];
+            assert_eq!(
+                passthrough_from_full_args(&full),
+                vec![
+                    "--release".to_string(),
+                    "-p".to_string(),
+                    "demo".to_string()
+                ]
+            );
 
-        // `--target=` spelling is also stripped.
-        let eq = vec![
-            "build".to_string(),
-            "--target=aarch64-unknown-linux-gnu".to_string(),
-            "--verbose".to_string(),
-        ];
-        assert_eq!(
-            passthrough_from_full_args(&eq),
-            vec!["--verbose".to_string()]
-        );
-    });
+            // `--target=` spelling is also stripped.
+            let eq = vec![
+                "build".to_string(),
+                "--target=aarch64-unknown-linux-gnu".to_string(),
+                "--verbose".to_string(),
+            ];
+            assert_eq!(
+                passthrough_from_full_args(&eq),
+                vec!["--verbose".to_string()]
+            );
+        }
+    );
 
-    timed_test!(mount_path_normalizes_backslashes, Duration::from_secs(30), {
-        assert_eq!(
-            normalize_mount_path("C:\\Users\\niteris\\dev\\soldr2"),
-            "C:/Users/niteris/dev/soldr2"
-        );
-        assert_eq!(normalize_mount_path("/home/u/p"), "/home/u/p");
-    });
+    timed_test!(
+        mount_path_normalizes_backslashes,
+        Duration::from_secs(30),
+        {
+            assert_eq!(
+                normalize_mount_path("C:\\Users\\niteris\\dev\\soldr2"),
+                "C:/Users/niteris/dev/soldr2"
+            );
+            assert_eq!(normalize_mount_path("/home/u/p"), "/home/u/p");
+        }
+    );
 
-    timed_test!(docker_missing_message_is_actionable, Duration::from_secs(30), {
-        let msg = docker_missing_message();
-        assert!(msg.contains("Docker"));
-        assert!(msg.contains("soldr#2319"));
-        assert!(msg.contains("Linux host"));
-        // The old failure mode must not be what the user sees.
-        assert!(!msg.contains("os error 193"));
-    });
+    timed_test!(
+        docker_missing_message_is_actionable,
+        Duration::from_secs(30),
+        {
+            let msg = docker_missing_message();
+            assert!(msg.contains("Docker"));
+            assert!(msg.contains("soldr#2319"));
+            assert!(msg.contains("Linux host"));
+            // The old failure mode must not be what the user sees.
+            assert!(!msg.contains("os error 193"));
+        }
+    );
 }
