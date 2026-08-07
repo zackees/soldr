@@ -4085,7 +4085,6 @@ dependencies = [
  "prost",
  "rayon",
  "regex",
- "reqwest",
  "running-process",
  "ruzstd",
  "serde",
