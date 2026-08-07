@@ -77,6 +77,7 @@ def uses_release_profile(line: str) -> bool:
     """True when *line* asks cargo for the `release` profile, either spelling."""
     return bool(RELEASE_FLAG.search(line) or PROFILE_RELEASE.search(line))
 
+
 # Line-level, reason-bearing opt-out, in the same shape as the repo's
 # `// allow-bare-test: <reason>` escape from the timed_test lint.
 #
