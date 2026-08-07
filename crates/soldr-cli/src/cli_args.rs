@@ -283,6 +283,8 @@ pub(crate) const SOLDR_BUILTIN_VERBS: &[&str] = &[
     // cargo front door and stays paired with `Commands::Build` in the
     // enum.
     "build",
+    // soldr#2139 gap 1 — the blessed abi3 Python wheel surface.
+    "wheel",
     "cargo",
     "dylint",
     "cook",
@@ -352,6 +354,15 @@ pub(crate) enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Build an abi3 Python wheel through soldr's blessed toolchain (soldr#2139)
+    ///
+    /// `soldr wheel --target <triple>` resolves the target (friendly aliases
+    /// included), prepares the sysroot, provisions maturin, and tags the
+    /// wheel `manylinux_2_17` / `musllinux_1_2` / `pypi` by target family.
+    /// Arguments after `--target` are forwarded to `maturin build` verbatim.
+    /// abi3 only in this first cut: a non-abi3 extension needs a CPython
+    /// built for the target, which is refused rather than silently degraded.
+    Wheel(crate::wheel_cmd::WheelArgs),
     /// Run cargo through soldr (cached, pinned toolchain)
     Cargo {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]

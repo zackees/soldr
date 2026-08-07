@@ -377,6 +377,17 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 .await?,
             );
         }
+        Commands::Wheel(args) => {
+            // soldr#2139 gap 1. Re-enter through `soldr maturin build ...` so
+            // provisioning, toolchain pinning, the build lease, target prep,
+            // and the PyO3 plan stay in exactly one place. See `wheel_cmd`.
+            let argv = crate::wheel_cmd::maturin_invocation(
+                &args,
+                !cache_enabled,
+                trust_inherited_soldr_env,
+            )?;
+            guarded_exit(Box::pin(run_with_args("soldr", &argv)).await?);
+        }
         Commands::Cargo { args } => {
             let args = crate::target_lifecycle::prepare_cargo_invocation(args).await?;
             // soldr#1079: same MSVC host env injection that
@@ -1410,61 +1421,6 @@ fn report_and_exit(error: SoldrError) -> i32 {
     1
 }
 
-fn render_builds(
-    result: Result<Vec<crate::daemon::protocol::BuildRecord>, crate::daemon::client::ClientError>,
-    json: bool,
-) -> Result<(), SoldrError> {
-    use crate::daemon::client::ClientError;
-    match result {
-        Ok(rows) => {
-            if json {
-                let payload = serde_json::json!({
-                    "builds": rows.iter().map(|r| serde_json::json!({
-                        "session_id": r.session_id,
-                        "repo_root": r.repo_root,
-                        "started_at_ms": r.started_at_ms,
-                        "ended_at_ms": r.ended_at_ms,
-                        "exit_code": r.exit_code,
-                        "total_wall_ms": r.total_wall_ms,
-                        "crate_count": r.crate_count,
-                        "slowest_crate_us": r.slowest_crate_us,
-                        "slowest_crate_name": r.slowest_crate_name,
-                    })).collect::<Vec<_>>(),
-                });
-                println!("{}", serde_json::to_string(&payload).unwrap_or_default());
-            } else if rows.is_empty() {
-                println!("(no recorded builds)");
-            } else {
-                for r in rows {
-                    let wall = r
-                        .total_wall_ms
-                        .map(|m| format!("{m}ms"))
-                        .unwrap_or_else(|| "running".into());
-                    let exit = r
-                        .exit_code
-                        .map(|c| format!("exit={c}"))
-                        .unwrap_or_else(|| "exit=?".into());
-                    let slowest = r.slowest_crate_name.as_deref().unwrap_or("(none)");
-                    println!(
-                        "session_id={} repo={} wall={} {} crates={} slowest={}",
-                        r.session_id, r.repo_root, wall, exit, r.crate_count, slowest
-                    );
-                }
-            }
-            Ok(())
-        }
-        Err(ClientError::NotRunning) => {
-            if json {
-                println!("{}", serde_json::json!({"running": false, "builds": []}));
-            } else {
-                println!("soldr-daemon: not running");
-            }
-            Ok(())
-        }
-        Err(e) => Err(SoldrError::Other(format!("daemon builds failed: {e:?}"))),
-    }
-}
-
 async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError> {
     use crate::daemon::client;
     use crate::daemon::lifecycle::{is_live, try_spawn_detached_with_idle_timeout};
@@ -1604,12 +1560,18 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
                 limit,
                 since_ms,
                 json,
-            } => render_builds(client::list_builds(&sock, limit, since_ms), json),
+            } => crate::daemon_status_render::render_builds(
+                client::list_builds(&sock, limit, since_ms),
+                json,
+            ),
             DaemonBuildsSubcommand::Slow {
                 threshold_ms,
                 limit,
                 json,
-            } => render_builds(client::list_slow_builds(&sock, threshold_ms, limit), json),
+            } => crate::daemon_status_render::render_builds(
+                client::list_slow_builds(&sock, threshold_ms, limit),
+                json,
+            ),
         },
     }
 }

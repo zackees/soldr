@@ -105,3 +105,65 @@ pub(crate) fn render(info: &StatusInfo, paths: &SoldrPaths, json: bool) {
         info.ipc_burst_stats.queue_high_water,
     );
 }
+
+/// Print the `soldr daemon builds` / `daemon slow-builds` result.
+///
+/// Extracted from `soldr_main.rs` (soldr#2139) for the same reason `render`
+/// was: that file is over the per-file ceiling, so a new dispatch arm has to
+/// be paid for by moving a self-contained block out. This is one — a client
+/// result in, one JSON object or one line per row out.
+pub(crate) fn render_builds(
+    result: Result<Vec<crate::daemon::protocol::BuildRecord>, crate::daemon::client::ClientError>,
+    json: bool,
+) -> Result<(), crate::core::SoldrError> {
+    use crate::core::SoldrError;
+    use crate::daemon::client::ClientError;
+    match result {
+        Ok(rows) => {
+            if json {
+                let payload = serde_json::json!({
+                    "builds": rows.iter().map(|r| serde_json::json!({
+                        "session_id": r.session_id,
+                        "repo_root": r.repo_root,
+                        "started_at_ms": r.started_at_ms,
+                        "ended_at_ms": r.ended_at_ms,
+                        "exit_code": r.exit_code,
+                        "total_wall_ms": r.total_wall_ms,
+                        "crate_count": r.crate_count,
+                        "slowest_crate_us": r.slowest_crate_us,
+                        "slowest_crate_name": r.slowest_crate_name,
+                    })).collect::<Vec<_>>(),
+                });
+                println!("{}", serde_json::to_string(&payload).unwrap_or_default());
+            } else if rows.is_empty() {
+                println!("(no recorded builds)");
+            } else {
+                for r in rows {
+                    let wall = r
+                        .total_wall_ms
+                        .map(|m| format!("{m}ms"))
+                        .unwrap_or_else(|| "running".into());
+                    let exit = r
+                        .exit_code
+                        .map(|c| format!("exit={c}"))
+                        .unwrap_or_else(|| "exit=?".into());
+                    let slowest = r.slowest_crate_name.as_deref().unwrap_or("(none)");
+                    println!(
+                        "session_id={} repo={} wall={} {} crates={} slowest={}",
+                        r.session_id, r.repo_root, wall, exit, r.crate_count, slowest
+                    );
+                }
+            }
+            Ok(())
+        }
+        Err(ClientError::NotRunning) => {
+            if json {
+                println!("{}", serde_json::json!({"running": false, "builds": []}));
+            } else {
+                println!("soldr-daemon: not running");
+            }
+            Ok(())
+        }
+        Err(e) => Err(SoldrError::Other(format!("daemon builds failed: {e:?}"))),
+    }
+}

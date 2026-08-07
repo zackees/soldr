@@ -356,6 +356,36 @@ When soldr starts, it decides its mode in this order:
 
 ## Built-in Commands
 
+### `soldr wheel` (soldr#2139)
+
+Build an **abi3** Python wheel through soldr's blessed toolchain:
+
+```bash
+soldr wheel --target aarch64-unknown-linux-gnu
+soldr wheel --target linux-arm64          # friendly aliases resolve identically
+soldr wheel --target mac-arm64 --out dist # arguments after --target reach maturin
+```
+
+`soldr wheel` resolves the target (same alias table as `soldr build`), prepares
+the sysroot and toolchain environment, provisions maturin, and delegates to the
+existing `soldr maturin build` execution path. The wheel tag follows the target
+family — `manylinux_2_17` for `*-linux-gnu`, `musllinux_1_2` for
+`*-linux-musl`, and maturin's `pypi` auto-tagging elsewhere — matching the
+release lane. Wheel *naming* is unchanged; that contract is maturin's.
+
+Scope notes:
+
+- **abi3 only.** A non-abi3 extension module needs a CPython built for the
+  target, not just a sysroot. When soldr cannot place the build in an
+  interpreter-free mode it refuses and names `soldr maturin build` as the
+  escape hatch, rather than quietly building against the host's Python.
+- **No glibc-floor suffix.** `--target <triple>.<major>.<minor>` (soldr#2202)
+  is rejected here. A floor is a request to zig, never a guarantee — the
+  effective floor is also bounded by every symbol the vendored C dependencies
+  reference — so folding it into a manylinux tag would publish a promise soldr
+  cannot keep.
+- Pass `--target` once, before any forwarded maturin arguments.
+
 ### `soldr cargo`
 
 Run Cargo through soldr's front door.
