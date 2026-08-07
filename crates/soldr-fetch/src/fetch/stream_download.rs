@@ -2673,6 +2673,63 @@ mod tests {
         }
     );
 
+    crate::timed_test!(cross_origin_redirect_does_not_forward_bearer_token, {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_segmented_env();
+        std::env::set_var(AUTH_TOKEN_ENV_VAR, "secret-token");
+        runtime().block_on(async {
+            let listener_b = TcpListener::bind("127.0.0.1:0").await.expect("bind b");
+            let address_b = listener_b.local_addr().expect("addr b");
+            let request_at_b = Arc::new(std::sync::Mutex::new(String::new()));
+            let request_at_b_task = Arc::clone(&request_at_b);
+            tokio::spawn(async move {
+                let (mut socket, _) = listener_b.accept().await.expect("accept b");
+                let mut buf = vec![0u8; 4096];
+                let n = socket.read(&mut buf).await.expect("read b");
+                *request_at_b_task.lock().expect("request lock") =
+                    String::from_utf8_lossy(&buf[..n]).to_string();
+                let _ = socket
+                    .write_all(
+                        b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-3/4\r\nContent-Length: 4\r\nConnection: close\r\n\r\nsafe",
+                    )
+                    .await;
+            });
+            let listener_a = TcpListener::bind("127.0.0.1:0").await.expect("bind a");
+            let address_a = listener_a.local_addr().expect("addr a");
+            let redirect = format!("http://{address_b}/asset");
+            tokio::spawn(async move {
+                let (mut socket, _) = listener_a.accept().await.expect("accept a");
+                let mut buf = vec![0u8; 4096];
+                let _ = socket.read(&mut buf).await;
+                let response = format!("HTTP/1.1 302 Found\r\nLocation: {redirect}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                let _ = socket.write_all(response.as_bytes()).await;
+            });
+            let url = format!("http://{address_a}/asset");
+            let client = reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("build client");
+            let outcome = fetch_segment_once(
+                &client,
+                &url,
+                0,
+                3,
+                &tempfile::tempfile().expect("tempfile"),
+                Duration::from_secs(5),
+                Duration::from_secs(5),
+                &SocketPool::new(1),
+            )
+            .await;
+            assert!(matches!(outcome, SegmentAttemptOutcome::Completed(4)));
+            assert!(!request_at_b
+                .lock()
+                .expect("request lock")
+                .to_ascii_lowercase()
+                .contains("authorization:"));
+        });
+        clear_segmented_env();
+    });
+
     // ---- permit preemption ----
 
     crate::timed_test!(
