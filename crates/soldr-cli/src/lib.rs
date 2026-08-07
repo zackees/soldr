@@ -209,6 +209,8 @@ pub mod gc;
 /// globally-installed soldr binary.
 pub mod global_upgrade;
 pub(crate) mod host_pressure;
+/// soldr#2310 — `soldr install <github-url|path>` prebuilt-first tool install.
+pub mod install;
 pub mod install_shims;
 pub mod linker;
 /// soldr#2038 - extensible CI/build-surface policy engine (`soldr lint ci`).

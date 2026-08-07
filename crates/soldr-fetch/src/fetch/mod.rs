@@ -21,9 +21,13 @@ pub use trust::{
 pub mod rustup_init;
 
 /// soldr#2132: shared retry-with-backoff for network fetches.
+/// soldr#2310 — GitHub ref/release resolution for `soldr install`.
+pub mod install_api;
 mod net_guard;
 mod retry;
 pub(crate) mod segmented_download;
+/// soldr#2310 — whole-source-tree acquisition via GitHub codeload zips.
+pub mod source_zip;
 pub(crate) mod stream_download;
 
 pub use rustup_init::{
@@ -88,6 +92,11 @@ pub mod sqlite_sysroot;
 /// *-sys C library catalogue bundles. The per-lib modules each
 /// call this helper with their own `(lib, version, slug)` tuple.
 pub mod syslib_common;
+/// soldr#2300 — tar extraction that materializes symlink entries with
+/// the correct NTFS flavor on Windows (dir links must be `symlink_dir`
+/// or they are non-traversable). Byte-identical to `tar::Archive::unpack`
+/// on non-Windows.
+pub mod tar_extract;
 /// soldr#1264 follow-on — manual uv-provisioned maturin env (fallback
 /// when the prebuilt maturin binary fetch misses). Hand-rolled on
 /// purpose; see module doc for why not the `uv-iso-env` package.

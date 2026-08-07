@@ -242,10 +242,10 @@ fn extract_tar_zst<R: std::io::Read>(reader: R, dest: &Path) -> Result<(), Soldr
     let zst = zstd::stream::read::Decoder::new(reader)
         .map_err(|e| SoldrError::Archive(format!("zstd decoder init: {e}")))?;
     let mut archive = tar::Archive::new(zst);
-    archive
-        .unpack(dest)
-        .map_err(|e| SoldrError::Archive(format!("tar.zst unpack: {e}")))?;
-    Ok(())
+    // soldr#2300: symlink-aware unpack — on Windows, dir symlinks such as
+    // the GNU/Linux sysroot's `usr/lib -> lib64` must be created with the
+    // directory flavor (or copied) to be traversable.
+    super::tar_extract::unpack_tar(&mut archive, dest)
 }
 
 #[cfg(test)]

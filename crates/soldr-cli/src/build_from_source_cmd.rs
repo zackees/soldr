@@ -192,7 +192,7 @@ fn source_build_cache_disabled() -> bool {
 /// exactly like the historical behavior. The wrapper itself degrades to
 /// a direct rustc exec when the cache daemon is unavailable, so this
 /// never adds a hard dependency to the bootstrap path.
-fn apply_source_build_cache_wrapper(command: &mut std::process::Command) {
+pub(crate) fn apply_source_build_cache_wrapper(command: &mut std::process::Command) {
     if source_build_cache_disabled() {
         return;
     }

@@ -86,6 +86,8 @@ crate::timed_test!(managed_gnu_toolchain_is_exported_for_later_github_steps, {
     let output_keys = [
         format!("CC_{target_u}"),
         format!("CXX_{target_u}"),
+        format!("CXXSTDLIB_{target_u}"),
+        "CXXSTDLIB".to_string(),
         format!("AR_{target_u}"),
         format!("RANLIB_{target_u}"),
         format!("CFLAGS_{target_u}"),
@@ -116,9 +118,19 @@ crate::timed_test!(managed_gnu_toolchain_is_exported_for_later_github_steps, {
     let _ambient_cxx = EnvVarGuard::set("CXX", "ambient-cxx");
     let _ambient_ar = EnvVarGuard::set("AR", "ambient-ar");
     let _ambient_ranlib = EnvVarGuard::set("RANLIB", "ambient-ranlib");
+    // soldr#2309: the stdlib pin is setdefault — an ambient value through any
+    // spelling in cc-rs's lookup chain suppresses it, so the whole chain must
+    // be cleared for the injection half of this test. Deduplicated: guarding
+    // the same key twice would restore it twice, last writer wins, and the
+    // second guard captured the already-removed state.
     let _output_guards: Vec<_> = output_keys
         .iter()
         .cloned()
+        .chain(crate::fetch::gnu_linux_toolchain::cxx_stdlib_lookup_keys(
+            target,
+        ))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
         .map(DynamicEnvVarGuard::remove)
         .collect();
 
@@ -190,6 +202,33 @@ crate::timed_test!(managed_gnu_toolchain_is_exported_for_later_github_steps, {
         std::env::var("SOLDR_GNU_LINUX_SYSROOT").expect("sysroot"),
         sysroot.to_string_lossy()
     );
+    // soldr#2309: both spellings of the C++ stdlib pin point at libstdc++ —
+    // the only C++ runtime the catalogue GNU driver ships.
+    assert_eq!(
+        std::env::var(format!("CXXSTDLIB_{target_u}")).expect("target-scoped stdlib pin"),
+        "stdc++"
+    );
+    assert_eq!(
+        std::env::var("CXXSTDLIB").expect("bare stdlib pin on a Linux host"),
+        "stdc++"
+    );
+
+    // Setdefault: with CXXSTDLIB now present in the process env (exported by
+    // the first preparation above), a re-preparation must treat it as a
+    // caller decision and inject no stdlib pin at all.
+    let reprep = tokio::runtime::Runtime::new()
+        .expect("runtime")
+        .block_on(crate::target_lifecycle::prepare_target(&paths, target))
+        .expect("re-prepare managed GNU target");
+    assert!(
+        !reprep
+            .env
+            .iter()
+            .any(|(key, _)| key.starts_with("CXXSTDLIB")),
+        "a caller-set CXXSTDLIB must suppress the pin: {:?}",
+        reprep.env
+    );
+
     for (alias, ambient) in [
         ("CC", "ambient-cc"),
         ("CXX", "ambient-cxx"),
@@ -335,6 +374,12 @@ crate::timed_test!(
         assert_eq!(
             std::env::var("SOLDR_MUSL_LINUX_SYSROOT").expect("sysroot"),
             sysroot.to_string_lossy()
+        );
+        // soldr#2309: the C++ stdlib pin is a linux-gnu concern — the musl
+        // lifecycle must stay unchanged.
+        assert!(
+            !exported.lines().any(|line| line.starts_with("CXXSTDLIB")),
+            "musl preparation must not export a C++ stdlib pin: {exported}"
         );
     }
 );

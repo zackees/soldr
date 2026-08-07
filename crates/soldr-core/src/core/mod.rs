@@ -42,8 +42,9 @@ pub use installer_watchdog::{
     INSTALLER_STALL_TIMEOUT_ENV_VAR,
 };
 pub use paths::{
-    resolve_cargo_home, resolve_rustup_home, AutoGcConfig, CookConfig, GcConfig, PinsConfig,
-    SoldrConfig, SoldrConfigLoadError, SoldrPaths, MANAGED_SHIM_VERSION, SOLDR_CACHE_DIR_ENV_VAR,
+    resolve_cargo_home, resolve_rustup_home, AutoGcConfig, CookConfig, GcConfig, InstallConfig,
+    PinsConfig, SoldrConfig, SoldrConfigLoadError, SoldrPaths, MANAGED_SHIM_VERSION,
+    SOLDR_CACHE_DIR_ENV_VAR,
 };
 pub use target_triple::{Arch, Env, Os, TargetTriple};
 pub use temp::{

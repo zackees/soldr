@@ -127,6 +127,9 @@ Equivalent to SOLDR_TIMESTAMP_LINES=0. Useful in CI, where the prefix is on by d
 Place it BEFORE `cargo`, as with --timestamp-lines."
     )]
     pub(crate) no_timestamp_lines: bool,
+    /// soldr#2302 — suppress per-unit cache HIT/MISS lines + stats summary (SOLDR_NO_CACHE_STATES=1); place before `cargo`, as with --no-cache.
+    #[arg(long, help = "Suppress cache HIT/MISS lines + the stats summary")]
+    pub(crate) no_cache_states: bool,
     #[arg(
         long,
         value_enum,
@@ -190,6 +193,13 @@ impl Cli {
             std::env::set_var(
                 crate::cargo_front_door::timestamp_tee::TIMESTAMP_LINES_ENV_VAR,
                 if self.timestamp_lines { "1" } else { "0" },
+            );
+        }
+        // soldr#2302. Publish the env spelling `cache_states::enabled()` reads.
+        if self.no_cache_states {
+            std::env::set_var(
+                crate::cargo_front_door::cache_states::NO_CACHE_STATES_ENV_VAR,
+                "1",
             );
         }
     }
@@ -265,7 +275,7 @@ pub(crate) const CARGO_BUILTIN_VERBS: &[&str] = &[
     "verify-project",
     "locate-project",
     "report",
-    "install",
+    // `install` is NOT here: soldr#2310 promoted it to `Commands::Install`.
     "uninstall",
     "publish",
 ];
@@ -283,6 +293,7 @@ pub(crate) const SOLDR_BUILTIN_VERBS: &[&str] = &[
     // cargo front door and stays paired with `Commands::Build` in the
     // enum.
     "build",
+    "install", // soldr#2310 — soldr-native verb (Commands::Install)
     // soldr#2139 gap 1 — the blessed abi3 Python wheel surface.
     "wheel",
     "cargo",
@@ -700,6 +711,10 @@ pub(crate) enum Commands {
         #[arg(long, value_name = "VERSION")]
         version: Option<String>,
     },
+
+    /// Install a Rust tool from a GitHub URL or local path, prebuilt-first
+    /// (soldr#2310). Args flattened from [`crate::install::InstallArgs`].
+    Install(#[command(flatten)] crate::install::InstallArgs),
 
     /// Manage the long-lived soldr-daemon process
     Daemon {

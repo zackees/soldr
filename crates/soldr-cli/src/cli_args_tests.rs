@@ -108,6 +108,30 @@ crate::timed_test!(no_timestamp_lines_flag_leaves_the_env_var_alone, {
     );
 });
 
+// soldr#2302. Same contract: the flag publishes the env spelling the front
+// door's `cache_states::enabled()` reads, and its absence leaves it untouched.
+crate::timed_test!(no_cache_states_flag_publishes_the_env_var, {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let name = crate::cargo_front_door::cache_states::NO_CACHE_STATES_ENV_VAR;
+    let previous = std::env::var(name).ok();
+
+    std::env::remove_var(name);
+    Cli::parse_from(["soldr", "--no-cache-states", "cargo", "build"]).export_global_env();
+    let set = std::env::var(name).ok();
+
+    std::env::remove_var(name);
+    Cli::parse_from(["soldr", "cargo", "build"]).export_global_env();
+    let unset = std::env::var(name).ok();
+
+    restore(name, previous);
+    assert_eq!(
+        set.as_deref(),
+        Some("1"),
+        "--no-cache-states must publish the opt-out"
+    );
+    assert_eq!(unset, None, "without the flag the opt-out must stay unset");
+});
+
 // Non-global by deliberate choice, so it must PRECEDE the verb --
 // same placement rule as `--no-cache`. It is not `global = true`
 // because a global arg is cloned into every subcommand, and building

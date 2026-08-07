@@ -40,7 +40,9 @@ def test_required_ci_runs_root_dylint_policy() -> None:
     assert ".github/scripts/configure_dylint_cargo_shim.py" in workflow
     assert "Build daemon process-creation boundary lint" in workflow
     assert "nightly-2026-05-26-x86_64-unknown-linux-gnu" in workflow
-    assert "cargo build --profile release" in workflow
+    # soldr#2303: the driver cdylibs still build in the release profile (dylint
+    # loads them from that path), now carrying the policy exemption marker.
+    assert "--profile release  # allow-release:" in workflow
     assert '"${GITHUB_WORKSPACE}/target/dylint/libraries/' in workflow
     assert '"${CARGO_HOME}/bin/cargo-dylint"' in workflow
     assert "dylint --no-build --all" in workflow

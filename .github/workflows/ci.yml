@@ -461,9 +461,10 @@ jobs:
         run: >-
           soldr rustup run
           nightly-2026-05-26-x86_64-unknown-linux-gnu
-          cargo build --profile release
+          cargo build
           --target-dir
           "${GITHUB_WORKSPACE}/target/dylint/libraries/nightly-2026-05-26-x86_64-unknown-linux-gnu"
+          --profile release  # allow-release: cargo-dylint --no-build below loads these driver cdylibs from the release-profile target path
 
       - name: Build fetch network boundary lint
         working-directory: dylints/ban_raw_network_access
@@ -473,9 +474,10 @@ jobs:
         run: >-
           soldr rustup run
           nightly-2026-05-26-x86_64-unknown-linux-gnu
-          cargo build --profile release
+          cargo build
           --target-dir
           "${GITHUB_WORKSPACE}/target/dylint/libraries/nightly-2026-05-26-x86_64-unknown-linux-gnu"
+          --profile release  # allow-release: cargo-dylint --no-build below loads these driver cdylibs from the release-profile target path
 
       - name: Enforce daemon process-creation boundary
         env:

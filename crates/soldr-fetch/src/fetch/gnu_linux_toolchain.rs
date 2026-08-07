@@ -66,6 +66,8 @@ pub fn env_keys_for_target(target_triple: &str) -> Vec<String> {
     vec![
         format!("CC_{target_u}"),
         format!("CXX_{target_u}"),
+        format!("CXXSTDLIB_{target_u}"),
+        "CXXSTDLIB".to_string(),
         format!("AR_{target_u}"),
         format!("RANLIB_{target_u}"),
         format!("CFLAGS_{target_u}"),
@@ -112,24 +114,63 @@ pub async fn ensure(
             "catalogue-backed GNU/Linux toolchain does not support `{target_triple}`"
         ))
     })?;
-    let root = super::syslib_common::ensure_syslib_bundle(
-        paths,
-        GNU_LINUX_TOOLCHAIN,
-        GNU_LINUX_TOOLCHAIN_VERSION,
-        target.slug(),
-    )
-    .await?;
-    let bin_dir = root.join("bin");
-    let sysroot = root.join(target.compiler_prefix()).join("sysroot");
-    let toolchain = GnuLinuxToolchain {
-        root,
-        bin_dir,
-        sysroot,
-        target,
+    let make_toolchain = |root: PathBuf| {
+        let bin_dir = root.join("bin");
+        let sysroot = root.join(target.compiler_prefix()).join("sysroot");
+        GnuLinuxToolchain {
+            root,
+            bin_dir,
+            sysroot,
+            target,
+        }
     };
-    validate(&toolchain)?;
+    let ensure_bundle = || {
+        super::syslib_common::ensure_syslib_bundle(
+            paths,
+            GNU_LINUX_TOOLCHAIN,
+            GNU_LINUX_TOOLCHAIN_VERSION,
+            target.slug(),
+        )
+    };
+    let toolchain = make_toolchain(ensure_bundle().await?);
+    if let Err(err) = validate(&toolchain) {
+        if !sysroot_has_wrong_flavor_link(&toolchain) {
+            return Err(err);
+        }
+        // soldr#2300 self-heal: an extraction by an older soldr on Windows
+        // left file-flavor NTFS symlinks pointing at directories, which are
+        // non-traversable. Re-extracting with the fixed symlink-aware
+        // unpack (`fetch::tar_extract`) produces a working sysroot.
+        let install_root = toolchain
+            .root
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| toolchain.root.clone());
+        eprintln!(
+            "soldr: GNU/Linux sysroot under {} contains non-traversable symlinks \
+             (extracted by an earlier soldr on Windows); deleting and re-extracting...",
+            install_root.display()
+        );
+        std::fs::remove_dir_all(&install_root)?;
+        let toolchain = make_toolchain(ensure_bundle().await?);
+        validate(&toolchain)?;
+        return Ok(toolchain);
+    }
     Ok(toolchain)
 }
+
+/// True when a required sysroot child exists on disk but does not pass a
+/// link-following directory stat — the soldr#2300 signature of a
+/// wrong-flavor NTFS symlink (a *file* symlink pointing at a directory)
+/// created by tar extraction on Windows before the `tar_extract` fix.
+fn sysroot_has_wrong_flavor_link(toolchain: &GnuLinuxToolchain) -> bool {
+    SYSROOT_REQUIRED_DIRS.iter().any(|child| {
+        let path = toolchain.sysroot.join(child);
+        !path.is_dir() && path.symlink_metadata().is_ok()
+    })
+}
+
+const SYSROOT_REQUIRED_DIRS: [&str; 2] = ["usr/include", "usr/lib"];
 
 fn validate(toolchain: &GnuLinuxToolchain) -> Result<(), SoldrError> {
     let missing: Vec<_> = ["gcc", "g++", "ar", "ranlib", "ld", "readelf"]
@@ -148,15 +189,31 @@ fn validate(toolchain: &GnuLinuxToolchain) -> Result<(), SoldrError> {
                 .join(", ")
         )));
     }
-    for child in ["usr/include", "usr/lib"] {
+    for child in SYSROOT_REQUIRED_DIRS {
         let path = toolchain.sysroot.join(child);
-        if !path.is_dir() {
+        if path.is_dir() {
+            continue;
+        }
+        // soldr#2300: distinguish "missing" from "present but not
+        // traversable" (a wrong-flavor NTFS symlink from an older
+        // extraction) and name the exact remedy.
+        if path.symlink_metadata().is_ok() {
+            let install_root = toolchain.root.parent().unwrap_or(toolchain.root.as_path());
             return Err(SoldrError::Archive(format!(
-                "GNU/Linux toolchain {} is missing sysroot directory {}",
+                "GNU/Linux toolchain {} sysroot entry {} exists but is not a \
+                 traversable directory (likely a wrong-flavor symlink created \
+                 by an older soldr extraction on Windows); delete {} and re-run \
+                 so soldr re-extracts the bundle",
                 toolchain.root.display(),
-                path.display()
+                path.display(),
+                install_root.display()
             )));
         }
+        return Err(SoldrError::Archive(format!(
+            "GNU/Linux toolchain {} is missing sysroot directory {}",
+            toolchain.root.display(),
+            path.display()
+        )));
     }
     Ok(())
 }
@@ -198,6 +255,68 @@ pub fn path_prefix(toolchain: &GnuLinuxToolchain) -> &Path {
     &toolchain.bin_dir
 }
 
+/// The C++ standard library the catalogue GNU driver ships (soldr#2309).
+///
+/// `<triple>-gcc` carries libstdc++ only; there is no libc++ anywhere in the
+/// bundle, so any build phase that decides on `-lc++` (a CMake configure that
+/// detects a clang-family compiler, a caller-provided clang, zig's bundled
+/// clang on the legacy path) produces a deterministic
+/// `ld: cannot find -lc++` at the final rustc link.
+pub const GNU_CXX_STDLIB: &str = "stdc++";
+
+/// cc-rs's `CXXSTDLIB` lookup chain for a cross build to `target_triple`,
+/// highest priority first. Mirrors `cc::Build::target_envs` (verified against
+/// cc 1.4.0): `CXXSTDLIB_<triple>`, `CXXSTDLIB_<triple_underscored>`,
+/// `TARGET_CXXSTDLIB`, then bare `CXXSTDLIB`.
+///
+/// The pin below stays out of the way when the caller set *any* of these —
+/// including an empty value, which cc-rs interprets as "link no stdlib".
+pub fn cxx_stdlib_lookup_keys(target_triple: &str) -> [String; 4] {
+    let target_u = target_triple.replace('-', "_");
+    [
+        format!("CXXSTDLIB_{target_triple}"),
+        format!("CXXSTDLIB_{target_u}"),
+        "TARGET_CXXSTDLIB".to_string(),
+        "CXXSTDLIB".to_string(),
+    ]
+}
+
+/// The C++ stdlib pin entries for a `*-unknown-linux-gnu` target (soldr#2309).
+///
+/// Setdefault semantics: when `caller_set` reports any key from
+/// [`cxx_stdlib_lookup_keys`] as already present, the caller made this
+/// decision and nothing is injected. Otherwise:
+///
+/// * `CXXSTDLIB_<triple_underscored>=stdc++` — the target-scoped cc-rs knob,
+///   matching the `CC_<triple_underscored>` pattern this module already
+///   exports. Scoped to the cross target, so host-side build-dependency
+///   compiles are untouched on every host.
+/// * bare `CXXSTDLIB=stdc++` — only when `host_defaults_to_stdcxx` (a Linux
+///   host, whose cc-rs host default is already `stdc++`, so the bare form
+///   cannot mis-steer host compiles there). Non-cc-rs consumers (hand-rolled
+///   `build.rs` stdlib pickers, CMake wrappers) read only this bare form. On
+///   macOS/Windows hosts the bare form is withheld because cc-rs's HOST
+///   lookup chain falls through to it and would force `stdc++` onto host
+///   compiles whose platform stdlib is libc++ / MSVC-none.
+pub fn cxx_stdlib_pin_env(
+    target_triple: &str,
+    host_defaults_to_stdcxx: bool,
+    caller_set: impl Fn(&str) -> bool,
+) -> Vec<(String, String)> {
+    if cxx_stdlib_lookup_keys(target_triple)
+        .iter()
+        .any(|key| caller_set(key))
+    {
+        return Vec::new();
+    }
+    let target_u = target_triple.replace('-', "_");
+    let mut env = vec![(format!("CXXSTDLIB_{target_u}"), GNU_CXX_STDLIB.to_string())];
+    if host_defaults_to_stdcxx {
+        env.push(("CXXSTDLIB".to_string(), GNU_CXX_STDLIB.to_string()));
+    }
+    env
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,6 +340,72 @@ mod tests {
         let url = asset_url_for(GNU_LINUX_TOOLCHAIN_VERSION, "linux-arm64-gnu");
         assert!(url.contains("/gnu-linux-toolchain/gcc-13.3.0-glibc-2.17-1/linux-arm64-gnu/"));
         assert!(url.ends_with("/bundle.tar.zst"));
+    });
+
+    /// A minimal on-disk toolchain layout that passes the tool-binary
+    /// half of `validate()`. `usr/lib` is created per `lib_kind`:
+    /// a real directory, a regular file (stand-in for a wrong-flavor
+    /// symlink: exists, but fails a link-following dir stat), or absent.
+    fn synth_toolchain(tmp: &Path, lib_kind: &str) -> GnuLinuxToolchain {
+        let root = tmp.join("linux-x64-gnu").join("package");
+        let bin_dir = root.join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        for tool in ["gcc", "g++", "ar", "ranlib", "ld", "readelf"] {
+            std::fs::write(bin_dir.join(format!("x86_64-conda-linux-gnu-{tool}")), "").unwrap();
+        }
+        let sysroot = root.join("x86_64-conda-linux-gnu").join("sysroot");
+        std::fs::create_dir_all(sysroot.join("usr/include")).unwrap();
+        match lib_kind {
+            "dir" => std::fs::create_dir_all(sysroot.join("usr/lib")).unwrap(),
+            "wrong-flavor" => std::fs::write(sysroot.join("usr/lib"), "").unwrap(),
+            "absent" => {}
+            other => panic!("unknown lib_kind {other}"),
+        }
+        GnuLinuxToolchain {
+            root,
+            bin_dir,
+            sysroot,
+            target: GnuLinuxToolchainTarget::X86_64,
+        }
+    }
+
+    crate::timed_test!(validate_accepts_real_sysroot_dirs, {
+        let tmp = tempfile::tempdir().unwrap();
+        let toolchain = synth_toolchain(tmp.path(), "dir");
+        validate(&toolchain).expect("real dirs must validate");
+        assert!(!sysroot_has_wrong_flavor_link(&toolchain));
+    });
+
+    crate::timed_test!(validate_names_remedy_for_non_traversable_sysroot_entry, {
+        let tmp = tempfile::tempdir().unwrap();
+        let toolchain = synth_toolchain(tmp.path(), "wrong-flavor");
+        let err = validate(&toolchain).expect_err("wrong-flavor entry must fail");
+        let message = err.to_string();
+        assert!(
+            message.contains("not a traversable directory"),
+            "must not report the entry as merely missing: {message}"
+        );
+        let install_root = toolchain.root.parent().unwrap();
+        assert!(
+            message.contains(&install_root.display().to_string()),
+            "must name the exact directory to delete: {message}"
+        );
+        assert!(sysroot_has_wrong_flavor_link(&toolchain));
+    });
+
+    crate::timed_test!(validate_reports_truly_missing_sysroot_dir, {
+        let tmp = tempfile::tempdir().unwrap();
+        let toolchain = synth_toolchain(tmp.path(), "absent");
+        let err = validate(&toolchain).expect_err("absent entry must fail");
+        let message = err.to_string();
+        assert!(
+            message.contains("missing sysroot directory"),
+            "absent entry keeps the missing wording: {message}"
+        );
+        assert!(
+            !sysroot_has_wrong_flavor_link(&toolchain),
+            "absent entry must NOT trigger the self-heal re-extract"
+        );
     });
 
     crate::timed_test!(target_env_uses_prefixed_gcc_and_sysroot, {
@@ -264,5 +449,63 @@ mod tests {
             "x86_64-unknown-linux-musl",
             GNU_LINUX_GLIBC_BASELINE
         ));
+    });
+
+    // soldr#2309: the pin must sit exactly on cc-rs's lookup chain, or a
+    // caller override through one of the other spellings would be shadowed
+    // instead of respected.
+    crate::timed_test!(cxx_stdlib_lookup_matches_cc_rs_chain, {
+        assert_eq!(
+            cxx_stdlib_lookup_keys("aarch64-unknown-linux-gnu"),
+            [
+                "CXXSTDLIB_aarch64-unknown-linux-gnu".to_string(),
+                "CXXSTDLIB_aarch64_unknown_linux_gnu".to_string(),
+                "TARGET_CXXSTDLIB".to_string(),
+                "CXXSTDLIB".to_string(),
+            ]
+        );
+    });
+
+    crate::timed_test!(cxx_stdlib_pin_defaults_to_stdcxx, {
+        let env = cxx_stdlib_pin_env("aarch64-unknown-linux-gnu", true, |_| false);
+        assert_eq!(
+            env,
+            vec![
+                (
+                    "CXXSTDLIB_aarch64_unknown_linux_gnu".to_string(),
+                    "stdc++".to_string()
+                ),
+                ("CXXSTDLIB".to_string(), "stdc++".to_string()),
+            ]
+        );
+        let keys = env_keys_for_target("aarch64-unknown-linux-gnu");
+        for (key, _) in &env {
+            assert!(keys.contains(key), "pin key {key} missing from plan keys");
+        }
+    });
+
+    crate::timed_test!(cxx_stdlib_pin_withholds_bare_form_on_non_linux_hosts, {
+        let env = cxx_stdlib_pin_env("x86_64-unknown-linux-gnu", false, |_| false);
+        assert_eq!(
+            env,
+            vec![(
+                "CXXSTDLIB_x86_64_unknown_linux_gnu".to_string(),
+                "stdc++".to_string()
+            )]
+        );
+    });
+
+    crate::timed_test!(caller_set_stdlib_wins_over_the_pin, {
+        // Any spelling in cc-rs's chain -- including the caller pinning it
+        // to a *different* stdlib, or to empty ("link no stdlib") -- must
+        // suppress the injection entirely.
+        for caller_key in cxx_stdlib_lookup_keys("aarch64-unknown-linux-gnu") {
+            let env =
+                cxx_stdlib_pin_env("aarch64-unknown-linux-gnu", true, |key| key == caller_key);
+            assert!(
+                env.is_empty(),
+                "caller-set {caller_key} must suppress the pin, got {env:?}"
+            );
+        }
     });
 }
