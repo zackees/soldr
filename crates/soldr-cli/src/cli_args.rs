@@ -127,6 +127,9 @@ Equivalent to SOLDR_TIMESTAMP_LINES=0. Useful in CI, where the prefix is on by d
 Place it BEFORE `cargo`, as with --timestamp-lines."
     )]
     pub(crate) no_timestamp_lines: bool,
+    /// soldr#2302 — suppress per-unit cache HIT/MISS lines + stats summary (SOLDR_NO_CACHE_STATES=1); place before `cargo`, as with --no-cache.
+    #[arg(long, help = "Suppress cache HIT/MISS lines + the stats summary")]
+    pub(crate) no_cache_states: bool,
     #[arg(
         long,
         value_enum,
@@ -190,6 +193,13 @@ impl Cli {
             std::env::set_var(
                 crate::cargo_front_door::timestamp_tee::TIMESTAMP_LINES_ENV_VAR,
                 if self.timestamp_lines { "1" } else { "0" },
+            );
+        }
+        // soldr#2302. Publish the env spelling `cache_states::enabled()` reads.
+        if self.no_cache_states {
+            std::env::set_var(
+                crate::cargo_front_door::cache_states::NO_CACHE_STATES_ENV_VAR,
+                "1",
             );
         }
     }
