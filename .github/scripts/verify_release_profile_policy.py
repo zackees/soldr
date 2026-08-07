@@ -64,6 +64,20 @@ ALLOWLIST: dict[str, str] = {
 # continuation.
 RELEASE_FLAG = re.compile(r"(?<![\w-])--release(?![\w-])")
 
+# Line-level, reason-bearing opt-out, in the same shape as the repo's
+# `// allow-bare-test: <reason>` escape from the timed_test lint.
+#
+# The file-level ALLOWLIST is too blunt for a large multi-purpose workflow:
+# putting `ci.yml` in it would exempt ~1,000 lines and twenty jobs in order to
+# permit one. A per-line marker keeps the rest of the file governed and still
+# forces the author to write down why.
+#
+# The comment may sit at the end of the line or on the line immediately above
+# it, because a wrapped shell invocation has nowhere to put a trailing comment.
+ALLOW_MARKER = re.compile(r"#\s*allow-release:\s*(?P<reason>\S.*)$")
+# A marker with no reason (or a one-word one) is not an exemption.
+MIN_REASON_CHARS = 20
+
 
 def is_comment(line: str) -> bool:
     """True for a YAML comment line.
@@ -73,6 +87,34 @@ def is_comment(line: str) -> bool:
     Stage B moved off it.
     """
     return line.lstrip().startswith("#")
+
+
+def allow_reason(line: str) -> str | None:
+    """The `allow-release:` reason on *line*, if it carries a usable one."""
+    match = ALLOW_MARKER.search(line)
+    if not match:
+        return None
+    reason = match.group("reason").strip()
+    return reason if len(reason) >= MIN_REASON_CHARS else None
+
+
+def is_exempt(lines: list[str], index: int) -> bool:
+    """Whether the `--release` on `lines[index]` is explicitly excused.
+
+    The marker may sit at the end of the offending line, or on the comment
+    line immediately above the *shell command* it belongs to. The second form
+    exists because a wrapped invocation has nowhere to put a trailing comment
+    and its `--release` usually lands several continuation lines down, so the
+    walk skips back over `\\`-continued lines first.
+    """
+    if allow_reason(lines[index]):
+        return True
+    start = index
+    while start > 0 and lines[start - 1].rstrip().endswith("\\"):
+        start -= 1
+    if start > 0 and is_comment(lines[start - 1]):
+        return allow_reason(lines[start - 1]) is not None
+    return False
 
 
 def scan(workflows_dir: Path) -> list[tuple[str, int, str]]:
@@ -85,11 +127,12 @@ def scan(workflows_dir: Path) -> list[tuple[str, int, str]]:
             text = path.read_text(encoding="utf-8")
         except OSError:
             continue
-        for number, line in enumerate(text.splitlines(), start=1):
+        lines = text.splitlines()
+        for index, line in enumerate(lines):
             if is_comment(line):
                 continue
-            if RELEASE_FLAG.search(line):
-                findings.append((path.name, number, line.strip()))
+            if RELEASE_FLAG.search(line) and not is_exempt(lines, index):
+                findings.append((path.name, index + 1, line.strip()))
     return findings
 
 
@@ -148,7 +191,9 @@ def main(argv: list[str] | None = None) -> int:
             "\n`--release` costs thin-LTO + single-CU codegen. Use the cheapest profile "
             "that still exercises the path -- `ci-release`, `ci-nextest`, or "
             "`ci-bootstrap`. If the artifact genuinely ships, or `--release` is what "
-            "the job measures, add the workflow to ALLOWLIST with the reason.",
+            "the job measures, add the workflow to ALLOWLIST with the reason -- or, "
+            "for a single line in an otherwise-governed workflow, append "
+            "`# allow-release: <reason>` (20+ chars) to that line or the one above it.",
             file=sys.stderr,
         )
     if stale:

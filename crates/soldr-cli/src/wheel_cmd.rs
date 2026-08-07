@@ -1,5 +1,5 @@
-//! `soldr wheel --target <triple>` — the blessed Python wheel surface
-//! (soldr#2139 gap 1).
+//! `soldr wheel [--release] [--target <triple>]` — the blessed Python wheel
+//! surface (soldr#2139 gap 1).
 //!
 //! # Why a verb rather than a flag
 //!
@@ -29,7 +29,18 @@
 //! rather than silently degrading into a wheel built against the host's
 //! Python.
 //!
-//! # Note on glibc floors
+//! # Grammar
+//!
+//! ```text
+//! soldr wheel                          # quick dev wheel, host target
+//! soldr wheel --release                # release wheel, host target
+//! soldr wheel --release --target XXX   # release wheel, cross target
+//! ```
+//!
+//! `--release` is opt-in, matching `cargo` and `soldr build`: the default is a
+//! fast dev-profile wheel. `--target` defaults to the host triple.
+//!
+//! # Note on glibc floors — only claim a floor soldr enforced
 //!
 //! `--compatibility manylinux_2_17` is a *tag*, and the suffixed-triple floor
 //! (`...-linux-gnu.2.17`, soldr#2202) means "ask zig for this floor", never
@@ -37,31 +48,86 @@
 //! asked for and every symbol the vendored C dependencies reference. The
 //! suffixed spelling is therefore rejected here rather than being quietly
 //! accepted into a wheel tag that would read as a promise.
+//!
+//! The same honesty rule now governs the tag soldr emits at all. The first cut
+//! of this module tagged **every** `*-linux-gnu` target `manylinux_2_17`,
+//! including a host-target build — but the maturin execution path only runs
+//! `target_lifecycle::prepare_for_invocation` when the target differs from the
+//! host (`soldr_main.rs`, the `maturin_build && maturin_target !=
+//! host_triple()` gate). On a host build no catalogue sysroot is mounted, the
+//! binary links against whatever glibc the machine has (2.39 on ubuntu-24.04),
+//! and the 2.17 tag is a claim nothing backed. `verify_wheel_glibc.py` exists
+//! precisely because pip *trusts* that claim and installs the wheel anyway.
+//!
+//! So the floor is claimed only when soldr actually enforced it — a release
+//! build on the cross path — and otherwise soldr passes `--compatibility pypi`,
+//! maturin's "work the tag out from the bytes" pseudo-option. A dev wheel
+//! tagged from reality is correct and useful; a dev wheel tagged
+//! `manylinux_2_17` is a lie pip will act on.
+//!
+//! Note that maturin does **not** paper over the bad case: with an explicit
+//! `--compatibility manylinux_2_17` and an ELF needing `GLIBC_2.39`,
+//! `auditwheel_rs` (maturin `src/auditwheel/linux.rs`) returns
+//! `VersionedSymbolTooNewError` from the explicit-tag branch and the build
+//! fails with "Error ensuring manylinux_2_17 compliance" — it downgrades only
+//! when *no* tag was requested. `AuditWheelMode::Repair` is maturin's
+//! `#[default]`, so `release-auto.yml`'s explicit `--auditwheel repair`
+//! restates the default and its absence here changes nothing. The old
+//! behaviour therefore did not ship a mis-tagged wheel; it made
+//! `soldr wheel --target <host-linux-gnu>` fail on any modern distro, with a
+//! maturin compliance error that named neither soldr nor the missing prep.
 
 use crate::core::SoldrError;
 use crate::pyo3_detect::PlanMode;
 
 /// Arguments for `soldr wheel`.
 ///
-/// `--target` must precede any passthrough arguments, because everything
-/// after the first free argument is forwarded to maturin verbatim.
+/// `--target` and `--release` must precede any passthrough arguments, because
+/// everything after the first free argument is forwarded to maturin verbatim.
 #[derive(clap::Args, Debug, Clone, Default)]
 pub struct WheelArgs {
-    /// Target triple or friendly alias (for example `linux-arm64`)
+    /// Target triple or friendly alias (for example `linux-arm64`).
+    /// Defaults to the host triple.
     #[arg(long, value_name = "TRIPLE")]
     pub target: Option<String>,
+    /// Build with the release profile. Default is a quick dev-profile wheel,
+    /// matching `cargo` and `soldr build`.
+    #[arg(long)]
+    pub release: bool,
     /// Extra arguments forwarded verbatim to `maturin build`
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub rest: Vec<String>,
 }
 
+/// Whether soldr actually *enforced* a platform floor for this build, and may
+/// therefore stamp a `manylinux` / `musllinux` claim on the wheel.
+///
+/// Two conditions, both load-bearing:
+///
+/// * **cross** — `target_lifecycle::prepare_for_invocation` runs on the
+///   maturin path only when the target differs from the host
+///   (`soldr_main.rs`). That preparation is what mounts the catalogue sysroot
+///   whose glibc defines the floor. On a host build nothing is mounted and
+///   the floor is whatever the machine happens to have.
+/// * **release** — a dev-profile wheel is a local artifact, not a
+///   distributable one. soldr does not stamp a distribution promise on a build
+///   whose whole point is to be quick.
+pub fn floor_claim_is_backed(triple: &str, host: &str, release: bool) -> bool {
+    release && triple != host
+}
+
 /// maturin's `--compatibility` value for a resolved Rust target triple.
 ///
-/// Mirrors the release lane (`release-auto.yml`): linux-gnu wheels are tagged
-/// `manylinux_2_17`, linux-musl wheels `musllinux_1_2`, and everything else
-/// keeps maturin's `pypi` auto-tagging.
-pub fn compatibility_for_target(triple: &str) -> &'static str {
-    if triple.contains("-linux-musl") {
+/// When the floor claim is backed this mirrors the release lane
+/// (`release-auto.yml`): linux-gnu wheels are tagged `manylinux_2_17`,
+/// linux-musl wheels `musllinux_1_2`. Otherwise — and for every non-Linux
+/// target, which has no such floor to claim — soldr passes `pypi`, maturin's
+/// pseudo-option meaning "derive the platform tag from the bytes and validate
+/// the resulting filename for PyPI". That is a description, not a promise.
+pub fn compatibility_for_target(triple: &str, floor_backed: bool) -> &'static str {
+    if !floor_backed {
+        "pypi"
+    } else if triple.contains("-linux-musl") {
         "musllinux_1_2"
     } else if triple.contains("-linux-gnu") {
         "manylinux_2_17"
@@ -77,24 +143,30 @@ fn has_flag(args: &[String], flag: &str) -> bool {
         .any(|arg| arg == flag || arg.starts_with(&prefix))
 }
 
-/// Pure argv builder: `(target, passthrough) -> maturin argument vector`.
+/// Pure argv builder: `(target, release, passthrough) -> maturin argv`.
 ///
-/// No I/O, no env reads — this is the piece worth unit-testing, and it is the
-/// only place the wheel surface decides anything.
+/// No I/O, no env reads beyond the host triple — this is the piece worth
+/// unit-testing, and it is the only place the wheel surface decides anything.
 pub fn maturin_build_argv(
     target: Option<&str>,
+    release: bool,
     rest: &[String],
+) -> Result<Vec<String>, SoldrError> {
+    maturin_build_argv_for_host(target, release, rest, crate::pyo3_detect::host_triple())
+}
+
+/// [`maturin_build_argv`] with the host triple injected, so the tag policy can
+/// be tested from any machine rather than only from the host it describes.
+pub fn maturin_build_argv_for_host(
+    target: Option<&str>,
+    release: bool,
+    rest: &[String],
+    host: &str,
 ) -> Result<Vec<String>, SoldrError> {
     let requested = target
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            SoldrError::Other(
-                "soldr wheel: --target <triple> is required (friendly aliases such as \
-                 `linux-arm64` are accepted). Use `soldr maturin build` for a host wheel."
-                    .to_string(),
-            )
-        })?;
+        .unwrap_or(host);
 
     if has_flag(rest, "--target") {
         return Err(SoldrError::Other(
@@ -111,9 +183,9 @@ pub fn maturin_build_argv(
              wheel surface. A floor is a request to zig, not a guarantee — the effective \
              floor is also bounded by every symbol the vendored C dependencies reference — \
              so folding it into a manylinux tag would publish a promise soldr cannot keep. \
-             Use `soldr wheel --target {base}` (tagged \
+             Use `soldr wheel --release --target {base}` (tagged \
              `{}`), or `soldr build --target {base}.{floor}` for a bare binary.",
-            compatibility_for_target(base)
+            compatibility_for_target(base, floor_claim_is_backed(base, host, true))
         )));
     }
 
@@ -129,15 +201,28 @@ pub fn maturin_build_argv(
     })?;
     let triple = resolved.rust_triple;
 
+    // `--debug` is maturin's spelling for "not --release". A caller who wrote
+    // both is asking for two different profiles; say so rather than picking
+    // one and building something they did not ask for.
+    let release_in_rest = has_flag(rest, "--release");
+    let debug_in_rest = has_flag(rest, "--debug");
+    if release && debug_in_rest {
+        return Err(SoldrError::Other(
+            "soldr wheel: `--release` and a forwarded `--debug` ask for different profiles. \
+             Drop one — `soldr wheel` alone already builds the dev profile."
+                .to_string(),
+        ));
+    }
+    let is_release = release || release_in_rest;
+
     let mut argv = vec!["maturin".to_string(), "build".to_string()];
-    // `--debug` is maturin's spelling for "not --release"; honour it rather
-    // than emitting a contradictory pair.
-    if !has_flag(rest, "--release") && !has_flag(rest, "--debug") {
+    if is_release && !release_in_rest {
         argv.push("--release".to_string());
     }
     if !has_flag(rest, "--compatibility") && !has_flag(rest, "--manylinux") {
         argv.push("--compatibility".to_string());
-        argv.push(compatibility_for_target(&triple).to_string());
+        let backed = floor_claim_is_backed(&triple, host, is_release);
+        argv.push(compatibility_for_target(&triple, backed).to_string());
     }
     argv.push("--target".to_string());
     argv.push(triple);
@@ -196,7 +281,7 @@ pub(crate) fn maturin_invocation(
     no_cache: bool,
     trust_inherited_soldr_env: bool,
 ) -> Result<Vec<String>, SoldrError> {
-    let build = maturin_build_argv(args.target.as_deref(), &args.rest)?;
+    let build = maturin_build_argv(args.target.as_deref(), args.release, &args.rest)?;
     let triple = target_in_argv(&build)
         .expect("maturin_build_argv always writes --target")
         .to_string();
@@ -228,9 +313,22 @@ mod tests {
     use super::*;
     use crate::timed_test;
 
+    /// A host that is deliberately not a legal target spelling, so every
+    /// `build()` below is unambiguously a *cross* build regardless of which
+    /// machine runs the suite. Nothing about the tag policy may depend on the
+    /// test host — that dependency is the bug this module now guards.
+    const CROSS_HOST: &str = "never-equal-to-any-target";
+
+    /// Release + cross: the one shape in which soldr may claim a floor.
     fn build(target: &str, rest: &[&str]) -> Vec<String> {
         let rest: Vec<String> = rest.iter().map(|s| s.to_string()).collect();
-        maturin_build_argv(Some(target), &rest).expect("argv should build")
+        maturin_build_argv_for_host(Some(target), true, &rest, CROSS_HOST)
+            .expect("argv should build")
+    }
+
+    fn build_on(target: &str, release: bool, host: &str, rest: &[&str]) -> Vec<String> {
+        let rest: Vec<String> = rest.iter().map(|s| s.to_string()).collect();
+        maturin_build_argv_for_host(Some(target), release, &rest, host).expect("argv should build")
     }
 
     fn flag_value<'a>(argv: &'a [String], flag: &str) -> Option<&'a str> {
@@ -278,9 +376,89 @@ mod tests {
 
     timed_test!(gnueabihf_is_still_a_gnu_target, {
         assert_eq!(
-            compatibility_for_target("armv7-unknown-linux-gnueabihf"),
+            compatibility_for_target("armv7-unknown-linux-gnueabihf", true),
             "manylinux_2_17"
         );
+        assert_eq!(
+            compatibility_for_target("armv7-unknown-linux-gnueabihf", false),
+            "pypi"
+        );
+    });
+
+    // ---- soldr#2139 follow-up: the tag is a claim, so only make backed ones.
+
+    timed_test!(a_dev_wheel_does_not_claim_a_manylinux_floor, {
+        // Same target, same host, only the profile differs. `--release` is the
+        // difference between "soldr prepared and verified a distributable
+        // build" and "give me something quick".
+        let dev = build_on("aarch64-unknown-linux-gnu", false, CROSS_HOST, &[]);
+        assert!(!dev.contains(&"--release".to_string()), "{dev:?}");
+        assert_eq!(
+            flag_value(&dev, "--compatibility"),
+            Some("pypi"),
+            "a dev wheel must be tagged from the bytes, not from a promise: {dev:?}"
+        );
+
+        let release = build_on("aarch64-unknown-linux-gnu", true, CROSS_HOST, &[]);
+        assert!(release.contains(&"--release".to_string()), "{release:?}");
+        assert_eq!(
+            flag_value(&release, "--compatibility"),
+            Some("manylinux_2_17")
+        );
+    });
+
+    timed_test!(a_host_target_wheel_does_not_claim_a_manylinux_floor, {
+        // The regression this guards: `prepare_for_invocation` is gated on
+        // `maturin_target != host_triple()` in soldr_main.rs, so a host-target
+        // linux-gnu build mounts no catalogue sysroot and links against the
+        // machine's own glibc (2.39 on ubuntu-24.04). Claiming 2.17 there is
+        // exactly what `verify_wheel_glibc.py` was written to catch.
+        let host = "x86_64-unknown-linux-gnu";
+        let argv = build_on(host, true, host, &[]);
+        assert_eq!(
+            flag_value(&argv, "--compatibility"),
+            Some("pypi"),
+            "no target prep ran, so there is no floor to claim: {argv:?}"
+        );
+        // ...and the same triple from a different host does claim it.
+        let cross = build_on(host, true, "aarch64-apple-darwin", &[]);
+        assert_eq!(
+            flag_value(&cross, "--compatibility"),
+            Some("manylinux_2_17")
+        );
+    });
+
+    timed_test!(floor_claim_needs_both_release_and_cross, {
+        let target = "aarch64-unknown-linux-gnu";
+        assert!(floor_claim_is_backed(target, CROSS_HOST, true));
+        assert!(!floor_claim_is_backed(target, CROSS_HOST, false));
+        assert!(!floor_claim_is_backed(target, target, true));
+        assert!(!floor_claim_is_backed(target, target, false));
+    });
+
+    timed_test!(the_default_wheel_is_a_quick_dev_build, {
+        // `soldr wheel` with no flags at all: host target, dev profile.
+        let argv = maturin_build_argv_for_host(None, false, &[], "x86_64-unknown-linux-gnu")
+            .expect("bare `soldr wheel` must work");
+        assert!(!argv.contains(&"--release".to_string()), "{argv:?}");
+        assert_eq!(
+            flag_value(&argv, "--target"),
+            Some("x86_64-unknown-linux-gnu"),
+            "--target defaults to the host: {argv:?}"
+        );
+        assert_eq!(flag_value(&argv, "--compatibility"), Some("pypi"));
+
+        // A blank/whitespace --target is the same request as none at all.
+        let argv = maturin_build_argv_for_host(Some("  "), false, &[], "aarch64-apple-darwin")
+            .expect("blank --target falls back to the host");
+        assert_eq!(flag_value(&argv, "--target"), Some("aarch64-apple-darwin"));
+    });
+
+    timed_test!(release_and_a_forwarded_debug_are_refused_not_reconciled, {
+        let rest = vec!["--debug".to_string()];
+        let err = maturin_build_argv_for_host(Some("linux-arm64"), true, &rest, CROSS_HOST)
+            .expect_err("contradictory profiles must be refused");
+        assert!(err.to_string().contains("different profiles"), "{err}");
     });
 
     timed_test!(friendly_aliases_resolve_to_rust_triples, {
@@ -313,7 +491,7 @@ mod tests {
         assert_eq!(tail, ["--out", "dist", "--locked"]);
     });
 
-    timed_test!(caller_compatibility_and_debug_are_not_duplicated, {
+    timed_test!(caller_flags_are_honoured_and_never_duplicated, {
         let argv = build("x86_64-unknown-linux-gnu", &["--compatibility", "linux"]);
         assert_eq!(
             argv.iter().filter(|arg| *arg == "--compatibility").count(),
@@ -322,25 +500,33 @@ mod tests {
         );
         assert_eq!(flag_value(&argv, "--compatibility"), Some("linux"));
 
-        let argv = build("x86_64-unknown-linux-gnu", &["--debug"]);
+        // A forwarded `--debug` on an otherwise-default (dev) wheel is
+        // redundant but harmless, and must not produce a second profile flag.
+        let argv = build_on("x86_64-unknown-linux-gnu", false, CROSS_HOST, &["--debug"]);
         assert!(!argv.iter().any(|arg| arg == "--release"), "{argv:?}");
+
+        // A forwarded `--release` is equivalent to the flag: one copy, and it
+        // still backs the floor claim.
+        let argv = build_on(
+            "x86_64-unknown-linux-gnu",
+            false,
+            CROSS_HOST,
+            &["--release"],
+        );
+        assert_eq!(
+            argv.iter().filter(|arg| *arg == "--release").count(),
+            1,
+            "{argv:?}"
+        );
+        assert_eq!(flag_value(&argv, "--compatibility"), Some("manylinux_2_17"));
 
         let argv = build("x86_64-unknown-linux-gnu", &["--manylinux=2014"]);
         assert!(!argv.iter().any(|arg| arg == "--compatibility"), "{argv:?}");
     });
 
-    timed_test!(missing_target_is_a_clear_error, {
-        let err = maturin_build_argv(None, &[]).expect_err("--target is required");
-        let message = err.to_string();
-        assert!(message.contains("--target"), "{message}");
-        assert!(message.contains("soldr wheel"), "{message}");
-
-        let err = maturin_build_argv(Some("   "), &[]).expect_err("blank --target is required");
-        assert!(err.to_string().contains("--target"), "{err}");
-    });
-
     timed_test!(unknown_target_errors_with_a_suggestion, {
-        let err = maturin_build_argv(Some("linux-arm65"), &[]).expect_err("unknown target");
+        let err = maturin_build_argv_for_host(Some("linux-arm65"), true, &[], CROSS_HOST)
+            .expect_err("unknown target");
         let message = err.to_string();
         assert!(message.contains("soldr wheel"), "{message}");
         assert!(message.contains("linux-arm65"), "{message}");
@@ -350,17 +536,24 @@ mod tests {
     });
 
     timed_test!(ambiguous_and_32bit_targets_are_refused_not_degraded, {
-        let err = maturin_build_argv(Some("linux-arm"), &[]).expect_err("ambiguous target");
+        let err = maturin_build_argv_for_host(Some("linux-arm"), true, &[], CROSS_HOST)
+            .expect_err("ambiguous target");
         assert!(err.to_string().contains("linux-arm64"), "{err}");
-        let err = maturin_build_argv(Some("win-x86"), &[]).expect_err("32-bit target");
+        let err = maturin_build_argv_for_host(Some("win-x86"), true, &[], CROSS_HOST)
+            .expect_err("32-bit target");
         assert!(err.to_string().contains("32-bit"), "{err}");
     });
 
     timed_test!(
         glibc_floor_targets_are_refused_with_the_ask_not_guarantee_reason,
         {
-            let err = maturin_build_argv(Some("x86_64-unknown-linux-gnu.2.17"), &[])
-                .expect_err("glibc floor is out of scope for wheels");
+            let err = maturin_build_argv_for_host(
+                Some("x86_64-unknown-linux-gnu.2.17"),
+                true,
+                &[],
+                CROSS_HOST,
+            )
+            .expect_err("glibc floor is out of scope for wheels");
             let message = err.to_string();
             assert!(message.contains("not a guarantee"), "{message}");
             assert!(message.contains("soldr build --target"), "{message}");
@@ -369,7 +562,8 @@ mod tests {
 
     timed_test!(a_second_target_in_the_passthrough_is_refused, {
         let rest = vec!["--target".to_string(), "aarch64-apple-darwin".to_string()];
-        let err = maturin_build_argv(Some("linux-x64"), &rest).expect_err("duplicate --target");
+        let err = maturin_build_argv_for_host(Some("linux-x64"), true, &rest, CROSS_HOST)
+            .expect_err("duplicate --target");
         assert!(err.to_string().contains("pass the target once"), "{err}");
     });
 
@@ -408,6 +602,7 @@ mod tests {
         // through `cargo metadata`, and this test is about argv ordering.
         let args = WheelArgs {
             target: Some(crate::pyo3_detect::host_triple().to_string()),
+            release: true,
             rest: Vec::new(),
         };
         let argv = maturin_invocation(&args, true, true).expect("invocation should build");

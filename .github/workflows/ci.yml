@@ -933,3 +933,164 @@ jobs:
       runs_on: windows-11-arm
       target: aarch64-pc-windows-msvc
       artifact_name: soldr-ci-e2e-windows-arm64
+
+  # ---------- `soldr wheel` cross-verification (soldr#2139 acceptance) ----------
+  #
+  # soldr#2139 asked for a blessed wheel surface; #2291 shipped the verb but
+  # nothing ever produced a wheel through it, and `verify_wheel_glibc.py` --
+  # which exists because "the tag is a claim" -- had never been pointed at its
+  # output. This pair is that acceptance check: build a real release wheel via
+  # `soldr wheel --release --target aarch64-unknown-linux-gnu` (a cross wheel
+  # from an x86_64 Linux host, the issue's actual criterion), assert the
+  # filename carries the manylinux_2_17 tag, then read the embedded binary's
+  # ELF and prove the tag matches the bytes.
+  #
+  # Cost (soldr#1978): this is one extra ubuntu-24.04 runner doing a full
+  # cross compile, so it is NOT on every PR. The policy job below selects the
+  # matrix; on a PR that touches no wheel-relevant path the matrix is `[]` and
+  # the build job is never scheduled -- no runner is allocated at all, which a
+  # step-level `if:` would not achieve. Pushes to main always run it.
+  wheel-cross-policy:
+    name: wheel lane policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.policy.outputs.matrix }}
+      reason: ${{ steps.policy.outputs.reason }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+      - name: Select wheel lane matrix
+        id: policy
+        run: python3 .github/scripts/wheel_lane_policy.py
+
+  wheel-cross-verify:
+    name: soldr wheel --target ${{ matrix.target }} (tag vs bytes)
+    needs: [wheel-cross-policy, e2e-cross-bootstrap-soldr]
+    # An empty matrix schedules zero jobs. See wheel_lane_policy.py.
+    if: ${{ needs.wheel-cross-policy.outputs.matrix != '[]' }}
+    runs-on: ${{ matrix.runner }}
+    # Cross-compiling the whole workspace cold, plus catalogue sysroot download.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.wheel-cross-policy.outputs.matrix) }}
+    env:
+      CARGO_TERM_COLOR: always
+      SOLDR_GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          submodules: recursive
+          ref: ${{ github.sha }}
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Install rustup 1.94.1
+        run: rustup toolchain install 1.94.1 --profile minimal --no-self-update
+
+      - name: Add ${{ matrix.target }} rust target
+        run: rustup target add ${{ matrix.target }} --toolchain 1.94.1
+
+      # Reuse the shared bootstrap binary rather than compiling a fourth copy
+      # of soldr; this lane is about what `soldr wheel` does, not about
+      # building soldr.
+      - name: Download shared bootstrap soldr artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: soldr-ci-bootstrap-linux-gnu
+          path: ${{ runner.temp }}/soldr-bin
+
+      - name: Restore cargo + target caches for the wheel build
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: wheel-cross-${{ matrix.target }}-release-v1
+
+      # Deliberately no `pip install maturin` here: provisioning maturin is
+      # part of what `soldr wheel` claims to do (it re-enters through the
+      # `soldr maturin ...` execution path, which resolves the managed
+      # maturin). Pre-installing one would hide a regression in that ladder.
+
+      - name: Build the wheel through `soldr wheel`
+        shell: bash
+        run: |
+          set -euo pipefail
+          driver="$RUNNER_TEMP/soldr-bin/soldr"
+          chmod +x "$driver"
+          "$driver" --version
+          # The verb under test. `--release` is opt-in as of the #2139
+          # follow-up, and a release CROSS build is the only shape in which
+          # soldr claims a manylinux floor -- because it is the only shape in
+          # which `target_lifecycle::prepare_for_invocation` actually ran and
+          # mounted the catalogue sysroot that creates the floor.
+          #
+          # allow-release: the release profile is precisely what is under test here -- a manylinux tag is only claimed on a release cross build, so a cheaper profile would verify a wheel in a shape soldr never claims a floor for (soldr#1981 second criterion).
+          "$driver" wheel --release --target "${{ matrix.target }}" \
+            --locked --out dist
+
+      - name: Assert the wheel filename carries the expected tags
+        shell: python
+        env:
+          EXPECTED_TAG: ${{ matrix.expected_tag }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          import os
+          import sys
+          from pathlib import Path
+
+          expected = os.environ["EXPECTED_TAG"]
+          wheels = sorted(Path("dist").glob("*.whl"))
+          if not wheels:
+              sys.exit("`soldr wheel` produced no wheel in dist/")
+
+          # soldr's wheel has no PyO3 extension module -- soldr-cli's [lib] is
+          # a plain rlib and the wheel ships a `[[bin]]` plus a pure-Python
+          # package. maturin therefore emits `py3-none-<platform>`, NOT
+          # `cp3xx-abi3-<platform>`. `abi3` in `soldr wheel` names the *scope
+          # gate* (it refuses builds that would need a target-side CPython),
+          # not a tag this particular project's wheel carries. Asserting the
+          # tag maturin actually emits is what makes this a gate; asserting a
+          # tag that cannot appear would only ever fail.
+          bad = [w.name for w in wheels if expected not in w.name]
+          if bad:
+              sys.exit(
+                  f"wheel(s) missing the {expected} platform tag: {bad}\n"
+                  "soldr claimed this floor because the build was release +\n"
+                  "cross, so `target_lifecycle::prepare_for_invocation` ran.\n"
+                  "A different tag means maturin re-derived it from the bytes,\n"
+                  "i.e. the catalogue sysroot did not take effect."
+              )
+          untagged = [w.name for w in wheels if "-py3-none-" not in w.name]
+          if untagged:
+              sys.exit(
+                  f"unexpected Python/ABI tag: {untagged}\n"
+                  "This wheel is bin-bindings + pure Python, so maturin emits\n"
+                  "py3-none-*. A cp3xx-abi3-* name means the project grew an\n"
+                  "extension module and this assertion needs revisiting."
+              )
+          print(f"tag assertion OK ({expected}): {[w.name for w in wheels]}")
+
+      # The step above reads the NAME. This one reads the BYTES. A wheel
+      # tagged manylinux_2_17 whose binary needs GLIBC_2.39 is worse than an
+      # untagged one: pip trusts the tag, installs it on Debian 12, and the
+      # program dies at run time. See soldr#1060.
+      - name: Verify the embedded binary honours the claimed floor
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/verify_wheel_glibc.py \
+            --max-glibc "${{ matrix.max_glibc }}" dist/*.whl
+
+      - name: Upload the wheel for inspection
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: soldr-wheel-${{ matrix.name }}
+          path: dist/*.whl
+          if-no-files-found: warn
+          retention-days: 7
