@@ -164,7 +164,7 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
     assert "--phase build" in cross
     assert "--phase archive" in cross
     assert (
-        "--no-cache" not in cross[cross.index("- name: Cross-build release binary") :]
+        "--no-cache" not in cross[cross.index("- name: Cross-build soldr (ci-nextest profile)") :]
     )
     assert "cache: ${{ (contains(inputs.target, 'pc-windows-msvc')" in cross
     assert "expected binary missing: $binary; searching target tree" in cross

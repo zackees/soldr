@@ -287,7 +287,7 @@ def test_cross_build_uses_deferred_cook_after_target_setup() -> None:
     prepare_idx = workflow.index("Prepare blessed target env for cook")
     cook_idx = workflow.index("Restore cooked dependency cache")
     clean_idx = workflow.index("Clean cooked first-party stubs")
-    build_idx = workflow.index("Cross-build release binary")
+    build_idx = workflow.index("Cross-build soldr (ci-nextest profile)")
     cook_step = workflow[cook_idx:clean_idx]
     clean_step = workflow[clean_idx:build_idx]
 
