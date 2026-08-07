@@ -206,15 +206,10 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
 
     // --------------------------- Windows GNU GCC ----------------------------
     if target_triple == crate::fetch::mingw_w64_gcc::MINGW_W64_GCC_TARGET {
-        if !crate::fetch::mingw_w64_gcc::current_host_supports_mingw_w64_gcc() {
-            return Err(SoldrError::UnsupportedPlatform(format!(
-                "managed Windows GNU target {target_triple} requires a Windows x64 host; \
-                 cargo-zigbuild is no longer used as the blessed Windows GNU fallback"
-            )));
-        }
-        let mingw_root =
-            crate::fetch::mingw_w64_gcc::ensure_mingw_w64_gcc(paths, target_triple).await?;
-        add_mingw_w64_gcc_env(&mut prep, target_triple, &mingw_root);
+        let (mingw_bin, mingw_env) =
+            crate::fetch::mingw_w64_gcc::prepare_win_gnu_env(paths, target_triple).await?;
+        prep.path_dirs.insert(0, mingw_bin);
+        prep.env.extend(mingw_env);
     }
 
     // ------------------------------ Apple Darwin -----------------------------
@@ -495,6 +490,7 @@ fn find_dsymutil_in_rustup() -> Option<PathBuf> {
     None
 }
 
+#[cfg(test)]
 fn add_mingw_w64_gcc_env(
     prep: &mut BlessedPrep,
     target_triple: &str,
@@ -1258,7 +1254,10 @@ mod tests {
         }
     });
 
-    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    #[cfg(not(any(
+        all(target_os = "windows", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    )))]
     crate::timed_test!(windows_gnu_requires_supported_mingw_host, {
         let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let prev_sys = std::env::var_os(USE_LEGACY_VENDORED_SYS_ENV_VAR);

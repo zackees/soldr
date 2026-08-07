@@ -568,11 +568,8 @@ pub(crate) fn expected_state_paths(
                 "MinGW-w64 GCC {}",
                 crate::fetch::mingw_w64_gcc::MANAGED_MINGW_W64_GCC_VERSION
             ),
-            present: mingw.join(".complete").is_file()
-                && package
-                    .join("bin")
-                    .join(crate::fetch::mingw_w64_gcc::exe_name("gcc"))
-                    .is_file(),
+            // soldr#2336 gap #3: verify tools + sysroot inputs, not just gcc.
+            present: crate::fetch::mingw_w64_gcc::managed_restore_present(&mingw, &package),
             path: package,
         });
     }
