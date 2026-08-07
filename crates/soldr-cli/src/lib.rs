@@ -218,6 +218,7 @@ pub mod lint_ci;
 pub mod lint_cmd;
 pub mod linux_cross;
 pub mod logs_cmd;
+pub mod marker_session;
 /// soldr#1079 — Windows MSVC host-toolchain auto-discovery. Probes
 /// vswhere + the Windows SDK and synthesizes LIB/INCLUDE/PATH/LIBPATH
 /// onto the current process so `soldr cargo build` / `soldr cargo test`
