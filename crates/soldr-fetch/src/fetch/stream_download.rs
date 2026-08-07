@@ -1876,11 +1876,7 @@ mod tests {
         std::env::set_var(MAX_SOCKETS_ENV_VAR, "4");
         assert_eq!(parse_max_sockets(), Some(4));
         std::env::set_var(MAX_SOCKETS_ENV_VAR, "0");
-        assert_eq!(
-            parse_max_sockets(),
-            None,
-            "0 disables the Bulk pool cap"
-        );
+        assert_eq!(parse_max_sockets(), None, "0 disables the Bulk pool cap");
         std::env::set_var(MAX_SOCKETS_ENV_VAR, "banana");
         assert_eq!(parse_max_sockets(), Some(16));
         clear_segmented_env();
@@ -1894,7 +1890,11 @@ mod tests {
         std::env::set_var(QUICK_POOL_ENV_VAR, "8");
         assert_eq!(parse_quick_pool_size(), Some(8));
         std::env::set_var(QUICK_POOL_ENV_VAR, "0");
-        assert_eq!(parse_quick_pool_size(), None, "0 disables the Quick pool cap");
+        assert_eq!(
+            parse_quick_pool_size(),
+            None,
+            "0 disables the Quick pool cap"
+        );
         std::env::set_var(QUICK_POOL_ENV_VAR, "nope");
         assert_eq!(parse_quick_pool_size(), Some(4));
         clear_segmented_env();
