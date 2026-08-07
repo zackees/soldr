@@ -2917,6 +2917,7 @@ dependencies = [
  "prost",
  "rayon",
  "redb",
+ "reqwest",
  "running-process",
  "rusqlite",
  "semver",
