@@ -110,6 +110,52 @@ def test_every_allowlist_entry_carries_a_reason(mod):
         ), f"{name}'s reason is too terse to be useful: {reason!r}"
 
 
+# soldr#2139 lane: a per-line, reason-bearing opt-out, so permitting one
+# `--release` in a large multi-purpose workflow does not exempt the other
+# ~1,000 lines the way an ALLOWLIST entry would.
+def test_a_trailing_allow_marker_excuses_the_line(mod, tmp_path):
+    _write(
+        tmp_path,
+        "marked.yml",
+        "jobs:\n  a:\n    run: cargo build --release  "
+        "# allow-release: the release profile is the thing under test here\n",
+    )
+    assert mod.scan(tmp_path) == []
+
+
+def test_an_allow_marker_on_the_preceding_line_excuses_it(mod, tmp_path):
+    # A wrapped shell invocation has nowhere to put a trailing comment.
+    _write(
+        tmp_path,
+        "wrapped-marked.yml",
+        "jobs:\n  a:\n    run: |\n"
+        "      # allow-release: the release profile is the thing under test here\n"
+        "      cargo build \\\n        --release \\\n        --locked\n",
+    )
+    assert mod.scan(tmp_path) == []
+
+
+def test_a_reasonless_allow_marker_is_not_an_exemption(mod, tmp_path):
+    _write(
+        tmp_path,
+        "bare.yml",
+        "jobs:\n  a:\n    run: cargo build --release  # allow-release: why\n",
+    )
+    assert len(mod.scan(tmp_path)) == 1, "a one-word reason teaches nothing"
+
+
+def test_an_allow_marker_two_lines_up_does_not_reach(mod, tmp_path):
+    _write(
+        tmp_path,
+        "distant.yml",
+        "jobs:\n  a:\n    run: |\n"
+        "      # allow-release: the release profile is the thing under test here\n"
+        "      echo unrelated\n"
+        "      cargo build --release\n",
+    )
+    assert len(mod.scan(tmp_path)) == 1, "the marker must sit on or above the line"
+
+
 def test_the_real_repository_is_clean(mod):
     """The policy must hold on the tree that ships it."""
     workflows = Path(__file__).resolve().parents[1] / ".github" / "workflows"

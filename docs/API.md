@@ -361,17 +361,53 @@ When soldr starts, it decides its mode in this order:
 Build an **abi3** Python wheel through soldr's blessed toolchain:
 
 ```bash
-soldr wheel --target aarch64-unknown-linux-gnu
-soldr wheel --target linux-arm64          # friendly aliases resolve identically
-soldr wheel --target mac-arm64 --out dist # arguments after --target reach maturin
+soldr wheel                                        # quick DEV wheel, host target
+soldr wheel --release                              # release wheel, host target
+soldr wheel --release --target aarch64-unknown-linux-gnu   # release cross wheel
+soldr wheel --release --target linux-arm64         # friendly aliases resolve identically
+soldr wheel --release --target mac-arm64 --out dist # later arguments reach maturin
 ```
+
+`--release` is **opt-in**, matching `cargo` and `soldr build`: a bare
+`soldr wheel` builds the dev profile, which is what you want while iterating.
+`--target` is optional and defaults to the host triple.
 
 `soldr wheel` resolves the target (same alias table as `soldr build`), prepares
 the sysroot and toolchain environment, provisions maturin, and delegates to the
-existing `soldr maturin build` execution path. The wheel tag follows the target
-family — `manylinux_2_17` for `*-linux-gnu`, `musllinux_1_2` for
-`*-linux-musl`, and maturin's `pypi` auto-tagging elsewhere — matching the
-release lane. Wheel *naming* is unchanged; that contract is maturin's.
+existing `soldr maturin build` execution path. Wheel *naming* is unchanged;
+that contract is maturin's.
+
+#### Platform tags: soldr only claims a floor it enforced
+
+| invocation | `--compatibility` passed to maturin |
+| --- | --- |
+| `soldr wheel --release --target <cross *-linux-gnu>` | `manylinux_2_17` |
+| `soldr wheel --release --target <cross *-linux-musl>` | `musllinux_1_2` |
+| any host-target build (`--target` omitted or equal to the host) | `pypi` |
+| any dev-profile build (no `--release`) | `pypi` |
+| any non-Linux target | `pypi` |
+
+`pypi` is maturin's pseudo-option for "derive the platform tag from the bytes,
+then validate the filename for PyPI" — a description of the artifact rather
+than a promise about it.
+
+The distinction is not cosmetic. Target preparation
+(`target_lifecycle::prepare_for_invocation`), which is what mounts the
+catalogue sysroot that *creates* the 2.17 floor, runs on the maturin path only
+when the target differs from the host. A host-target `*-linux-gnu` build links
+against the machine's own glibc — 2.39 on ubuntu-24.04 — so a `manylinux_2_17`
+tag there would be a claim nothing backed, and pip acts on tags: it installs
+such a wheel on an old host and the program then dies with
+``version `GLIBC_2.39' not found``. `.github/scripts/verify_wheel_glibc.py`
+exists to catch exactly that, and the `wheel-cross-verify` CI lane runs the
+whole path end to end on a cross target.
+
+(maturin does not silently downgrade an explicit tag: with
+`--compatibility manylinux_2_17` and an ELF needing GLIBC_2.39 its auditwheel
+implementation fails the build with "Error ensuring manylinux_2_17
+compliance". It auto-selects the highest satisfied policy only when no tag was
+requested. So the previous unconditional claim did not ship broken wheels — it
+broke `soldr wheel` for host-target Linux builds on any modern distro.)
 
 Scope notes:
 
@@ -384,7 +420,12 @@ Scope notes:
   effective floor is also bounded by every symbol the vendored C dependencies
   reference — so folding it into a manylinux tag would publish a promise soldr
   cannot keep.
-- Pass `--target` once, before any forwarded maturin arguments.
+- Pass `--target` once, before any forwarded maturin arguments. A second
+  `--target` in the passthrough is refused rather than silently disagreeing
+  with the sysroot soldr prepared.
+- `--release` together with a forwarded `--debug` is refused: those are two
+  different profiles, and picking one would build something you did not ask
+  for.
 
 ### `soldr cargo`
 

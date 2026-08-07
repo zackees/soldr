@@ -356,10 +356,13 @@ pub(crate) enum Commands {
     },
     /// Build an abi3 Python wheel through soldr's blessed toolchain (soldr#2139)
     ///
-    /// `soldr wheel --target <triple>` resolves the target (friendly aliases
-    /// included), prepares the sysroot, provisions maturin, and tags the
-    /// wheel `manylinux_2_17` / `musllinux_1_2` / `pypi` by target family.
-    /// Arguments after `--target` are forwarded to `maturin build` verbatim.
+    /// `soldr wheel [--release] [--target <triple>]` resolves the target
+    /// (friendly aliases included, host by default), prepares the sysroot, and
+    /// provisions maturin. `--release` is opt-in; the default is a quick dev
+    /// wheel. A `manylinux_2_17` / `musllinux_1_2` tag is claimed only on a
+    /// release cross build, where soldr actually enforced that floor;
+    /// otherwise maturin derives the tag from the bytes (`pypi`).
+    /// Arguments after the flags are forwarded to `maturin build` verbatim.
     /// abi3 only in this first cut: a non-abi3 extension needs a CPython
     /// built for the target, which is refused rather than silently degraded.
     Wheel(crate::wheel_cmd::WheelArgs),
