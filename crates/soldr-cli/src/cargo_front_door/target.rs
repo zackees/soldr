@@ -10,11 +10,31 @@ use crate::{linker, LINKER_ENV_VAR};
 
 use super::subcommand::{cargo_args_specify_target, cargo_args_target_value};
 
-pub(super) fn default_cargo_build_target(args: &[String]) -> Result<Option<String>, SoldrError> {
-    if !cfg!(windows) {
-        return Ok(None);
+/// Whether soldr should inject its Windows MSVC build target for this
+/// invocation. Platform-agnostic on purpose so the policy is unit-testable off
+/// Windows; `default_cargo_build_target` gates the whole thing on
+/// `cfg!(windows)`.
+///
+/// soldr#2350: a `cargo dylint` lint library is a HOST cdylib, loaded
+/// in-process by the driver and never cross-compiled. Injecting the MSVC build
+/// target nests the `dylint-link`-stamped `@<toolchain>.dll` under
+/// `target/.../<triple>/release/`, but cargo-dylint's library lookup expects
+/// `target/.../release/` -> "Could not find ... despite successful build". A
+/// host-default build lands it where cargo-dylint looks. cc-rs is unaffected:
+/// the explicit target only matters for *cross* C caching (see
+/// `known_cargo_build_target` below), and dylint builds are host builds.
+pub(super) fn should_inject_windows_target(args: &[String], dylint_requested: bool) -> bool {
+    if dylint_requested {
+        return false;
     }
-    if cargo_args_specify_target(args) || std::env::var_os("CARGO_BUILD_TARGET").is_some() {
+    !(cargo_args_specify_target(args) || std::env::var_os("CARGO_BUILD_TARGET").is_some())
+}
+
+pub(super) fn default_cargo_build_target(
+    args: &[String],
+    dylint_requested: bool,
+) -> Result<Option<String>, SoldrError> {
+    if !cfg!(windows) || !should_inject_windows_target(args, dylint_requested) {
         return Ok(None);
     }
 
