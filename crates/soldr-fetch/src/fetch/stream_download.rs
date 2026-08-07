@@ -144,24 +144,85 @@
 //! not fall out cleanly from this state model without materially more
 //! machinery, so it is left as a documented follow-up rather than rushed.
 //!
+//! ### Deferred (soldr#2320 addendum 4) -- recorded, not implemented here
+//!
+//! - **Scheduler-task lifecycle**: [`SocketPool::new`] spawns its
+//!   preemption-tick task with no shutdown/cancellation handle; it lives
+//!   as long as the process (or, in tests, as long as the owning
+//!   single-threaded runtime). Fine for the one process-wide Bulk/Quick
+//!   singleton; would need a handle if this ever became a per-request
+//!   object.
+//! - **`spawn_blocking` for segment writes**: `write_at`/`write_at_all`
+//!   run synchronous positional file I/O directly on the async task
+//!   rather than via `tokio::task::spawn_blocking`. Fine for the small,
+//!   fast local writes this does today; revisit if segment counts or
+//!   write sizes grow enough for this to matter.
+//! - **N-knee**: phase 1 measured no plateau through N=16 (the largest
+//!   tested); whether higher N keeps helping is unprobed.
+//! - **Caller-side probe tokens**: [`AUTH_TOKEN_ENV_VAR`] is forward-prep
+//!   only -- there is no probe-then-reuse-a-resolved-URL path (each
+//!   request, including every redirect hop, resolves independently; see
+//!   "Cross-origin redirects strip Authorization" below for why that
+//!   matters for auth specifically).
+//!
+//! ### Cross-origin redirects strip `Authorization` (soldr#2320 addendum 4 item 2)
+//!
+//! [`send_with_hop_timeout`] compares scheme+host+port between the
+//! original request and each redirect hop's resolved URL. The
+//! `Authorization: Bearer` header (from [`AUTH_TOKEN_ENV_VAR`], forward-
+//! prep for a future private MSVC origin) is attached only while the hop
+//! stays same-origin; a redirect to a different origin never carries it
+//! forward. This is the same posture reqwest's own auto-redirect takes
+//! for sensitive headers on cross-origin hops, applied manually here
+//! because the segmented client disables auto-redirect (see "Three
+//! clocks").
+//!
+//! ### Three switches, not one (soldr#2320 addendum 4 item 1)
+//!
+//! There are three independent knobs here, each governing a different
+//! layer, and conflating them was the critical review finding on the
+//! first version of this module:
+//!
+//! 1. **Slicing** — `SOLDR_SEGMENTED_DOWNLOAD`. Whether a large,
+//!    Range-capable response gets split into N parallel requests at all.
+//!    Off means every download (small or large) takes exactly one
+//!    connection, exactly like before this feature existed.
+//! 2. **Capping** — `SOLDR_DOWNLOAD_MAX_SOCKETS` (Bulk) /
+//!    `SOLDR_DOWNLOAD_QUICK_POOL` (Quick). How many connections each pool
+//!    allows concurrently. **`0` means fully unconditional** for that
+//!    pool: no permit object is created, no bookkeeping, no scheduler
+//!    tick, nothing to wait on -- the literal pre-branch behavior, not
+//!    merely a very large number. This is independent of switch 1: even
+//!    with slicing off, the single remaining connection still acquires a
+//!    permit from whichever pool it routes to, so `MAX_SOCKETS=0`/
+//!    `QUICK_POOL=0` are the actual "make pooling a no-op" escape hatches.
+//! 3. **QoS** — Bulk-vs-Quick routing (module docs "Two connection
+//!    pools") and Bulk's PENDING/STREAMING preemption (module docs
+//!    "Permit preemption"). Only meaningful when capping (switch 2) is
+//!    actually in effect for the pool in question; policy for how
+//!    contested capacity gets allocated and reclaimed.
+//!
 //! ### Knobs (defaults, env vars, units — all in one place)
 //!
 //! | Knob | Env var | Default | Unit |
 //! |---|---|---|---|
-//! | Enable/disable (opt-out) | `SOLDR_SEGMENTED_DOWNLOAD` | enabled (`off`/`0`/`false`/`no` disables, case-insensitive) | bool-ish |
+//! | Enable/disable (opt-out, switch 1) | `SOLDR_SEGMENTED_DOWNLOAD` | enabled (`off`/`0`/`false`/`no` disables, case-insensitive) | bool-ish |
 //! | Segment count | `SOLDR_SEGMENTED_DOWNLOAD_N` | 16 | count, clamped to `[2, 16]` |
 //! | Connect/TTFB timeout (clock 1) | `SOLDR_DOWNLOAD_CONNECT_TIMEOUT_SECS` | 10 | seconds |
 //! | Stall watchdog (clock 2) | `SOLDR_DOWNLOAD_STALL_TIMEOUT_SECS` | 30 | seconds |
 //! | Per-segment retry limit | `SOLDR_DOWNLOAD_SEGMENT_RETRIES` | 3 | count, clamped to `[0, 10]` |
 //! | Whole-operation deadline (clock 3, opt-in) | `SOLDR_DOWNLOAD_TIMEOUT_SECS` | disabled | seconds |
-//! | Bulk pool size | `SOLDR_DOWNLOAD_MAX_SOCKETS` | 16 | count |
-//! | Quick pool size | `SOLDR_DOWNLOAD_QUICK_POOL` | 4 | count |
+//! | Bulk pool size (switch 2) | `SOLDR_DOWNLOAD_MAX_SOCKETS` | 16 | count, `0` = unconditional |
+//! | Quick pool size (switch 2) | `SOLDR_DOWNLOAD_QUICK_POOL` | 4 | count, `0` = unconditional |
 //! | Quick/segmentation threshold | `SOLDR_DOWNLOAD_QUICK_THRESHOLD_BYTES` | 4 MiB (4194304) | bytes |
 //! | Bearer auth (forward-prep) | `SOLDR_TOOLCHAIN_AUTH_TOKEN` | unset | token string |
 //!
-//! Every env var fails safe to its documented default on unset, empty, or
+//! Every env var fails safe to its documented default on unset or
 //! unparseable input — never panics, never silently picks an unintended
-//! extreme.
+//! extreme. The one exception, by design: for the two pool-size knobs,
+//! `0` is not junk -- it is the explicit unconditional sentinel (see
+//! "Three switches" above). Only unparseable/unset values fail safe to
+//! the default (capped) size.
 //!
 //! ### Retry composition with `fetch::retry::with_backoff`
 //!
@@ -671,20 +732,28 @@ fn parse_global_timeout() -> Option<Duration> {
         .map(Duration::from_secs)
 }
 
-fn parse_max_sockets() -> usize {
-    std::env::var(MAX_SOCKETS_ENV_VAR)
-        .ok()
-        .and_then(|v| v.trim().parse::<usize>().ok())
-        .filter(|&n| n > 0)
-        .unwrap_or(DEFAULT_MAX_SOCKETS)
+/// `0` is the explicit "unconditional" sentinel (module docs "Three
+/// switches"), returned as `None`; a valid positive integer caps at that
+/// value (`Some`); unset or unparseable fails safe to `default` --
+/// capped, never unconditional, so junk input can never silently remove
+/// the cap.
+fn parse_pool_size_env(var: &str, default: usize) -> Option<usize> {
+    match std::env::var(var) {
+        Ok(raw) => match raw.trim().parse::<usize>() {
+            Ok(0) => None,
+            Ok(n) => Some(n),
+            Err(_) => Some(default),
+        },
+        Err(_) => Some(default),
+    }
 }
 
-fn parse_quick_pool_size() -> usize {
-    std::env::var(QUICK_POOL_ENV_VAR)
-        .ok()
-        .and_then(|v| v.trim().parse::<usize>().ok())
-        .filter(|&n| n > 0)
-        .unwrap_or(DEFAULT_QUICK_POOL_SIZE)
+fn parse_max_sockets() -> Option<usize> {
+    parse_pool_size_env(MAX_SOCKETS_ENV_VAR, DEFAULT_MAX_SOCKETS)
+}
+
+fn parse_quick_pool_size() -> Option<usize> {
+    parse_pool_size_env(QUICK_POOL_ENV_VAR, DEFAULT_QUICK_POOL_SIZE)
 }
 
 fn parse_quick_threshold() -> u64 {
@@ -727,15 +796,23 @@ static BULK_POOL: OnceLock<Arc<SocketPool>> = OnceLock::new();
 static QUICK_POOL: OnceLock<Arc<SocketPool>> = OnceLock::new();
 
 /// The process-wide Bulk payload-transfer pool. See module docs "Two
-/// connection pools" and "Permit preemption".
+/// connection pools", "Permit preemption", and "Three switches" (`0` ==
+/// unconditional).
 pub(crate) fn bulk_pool() -> Arc<SocketPool> {
-    Arc::clone(BULK_POOL.get_or_init(|| SocketPool::new(parse_max_sockets())))
+    Arc::clone(BULK_POOL.get_or_init(|| match parse_max_sockets() {
+        Some(n) => SocketPool::new(n),
+        None => SocketPool::unbounded(),
+    }))
 }
 
 /// The process-wide Quick pool for control-plane requests and small
-/// downloads. See module docs "Two connection pools".
+/// downloads. See module docs "Two connection pools" and "Three
+/// switches" (`0` == unconditional).
 pub(crate) fn quick_pool() -> Arc<SocketPool> {
-    Arc::clone(QUICK_POOL.get_or_init(|| SocketPool::new(parse_quick_pool_size())))
+    Arc::clone(QUICK_POOL.get_or_init(|| match parse_quick_pool_size() {
+        Some(n) => SocketPool::new(n),
+        None => SocketPool::unbounded(),
+    }))
 }
 
 struct PendingEntry {
@@ -759,7 +836,10 @@ struct PoolInner {
 /// STREAMING immediately and are never preemption candidates. See module
 /// docs "Permit preemption" for the full policy.
 pub(crate) struct SocketPool {
-    capacity: usize,
+    /// `None` means unconditional (module docs "Three switches"): no
+    /// bookkeeping, no scheduler tick, [`SocketPool::acquire`] returns a
+    /// detached permit immediately every time.
+    capacity: Option<usize>,
     inner: Mutex<PoolInner>,
     wake: Notify,
     next_id: AtomicU64,
@@ -767,19 +847,36 @@ pub(crate) struct SocketPool {
 
 impl SocketPool {
     pub(crate) fn new(capacity: usize) -> Arc<Self> {
+        Self::with_capacity(Some(capacity.max(1)))
+    }
+
+    /// Fully unconditional -- the literal pre-branch, no-pool-at-all
+    /// behavior, not merely a very large capacity. See module docs
+    /// "Three switches: slicing / capping / QoS".
+    pub(crate) fn unbounded() -> Arc<Self> {
+        Self::with_capacity(None)
+    }
+
+    fn with_capacity(capacity: Option<usize>) -> Arc<Self> {
         let pool = Arc::new(Self {
-            capacity: capacity.max(1),
+            capacity,
             inner: Mutex::new(PoolInner::default()),
             wake: Notify::new(),
             next_id: AtomicU64::new(0),
         });
-        let scheduler_pool = Arc::clone(&pool);
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(SCHEDULER_TICK).await;
-                scheduler_pool.maybe_preempt();
-            }
-        });
+        // No scheduler tick for an unconditional pool: nothing is ever
+        // PENDING (acquire short-circuits before touching `inner`), so a
+        // tick would only ever find `waiting == 0` and return -- pure
+        // overhead for a pool whose entire point is "no bookkeeping".
+        if pool.capacity.is_some() {
+            let scheduler_pool = Arc::clone(&pool);
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(SCHEDULER_TICK).await;
+                    scheduler_pool.maybe_preempt();
+                }
+            });
+        }
         pool
     }
 
