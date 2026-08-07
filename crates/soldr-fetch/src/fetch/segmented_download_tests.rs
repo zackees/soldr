@@ -60,21 +60,6 @@ pub(super) fn clear_segmented_env() {
     }
 }
 
-/// Set segmented-download env knobs from inside an `ENV_LOCK` critical
-/// section. The symmetric counterpart to [`clear_segmented_env`]: this
-/// file owns `ENV_LOCK`, so it also owns the single mutation primitive for
-/// these vars. Sibling test modules that acquired the *same* `ENV_LOCK`
-/// (imported from here) route their writes through this instead of their
-/// own `set_var`, keeping every mutator of these vars behind the one
-/// barrier (soldr#1663) — the write still happens under the caller's held
-/// lock. Takes the key as a variable so it registers no var name itself,
-/// exactly like `clear_segmented_env`'s `remove_var(var)`.
-pub(super) fn set_segmented_env(pairs: &[(&str, &str)]) {
-    for (key, value) in pairs {
-        std::env::set_var(key, value);
-    }
-}
-
 crate::timed_test!(
     healthy_chunks_reset_the_idle_watchdog,
     Duration::from_secs(5),
