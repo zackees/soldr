@@ -23,6 +23,7 @@ pub mod rustup_init;
 /// soldr#2132: shared retry-with-backoff for network fetches.
 mod net_guard;
 mod retry;
+pub(crate) mod segmented_download;
 pub(crate) mod stream_download;
 
 pub use rustup_init::{
