@@ -1031,10 +1031,13 @@ impl SegmentedFailure {
 /// rather than a shared parameterized builder, so that function's
 /// existing (auto-redirecting) behavior for every other caller stays
 /// untouched.
-fn segmented_http_client(protocol: AssetProtocol) -> Result<reqwest::Client, SoldrError> {
+fn segmented_http_client(
+    protocol: AssetProtocol,
+    connect_timeout: Duration,
+) -> Result<reqwest::Client, SoldrError> {
     super::net_guard::ensure_network_allowed("segmented asset download")?;
     let mut builder = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
+        .connect_timeout(connect_timeout)
         .redirect(reqwest::redirect::Policy::none())
         .user_agent(format!("soldr/{}", crate::core::version()));
     if matches!(protocol, AssetProtocol::Http1Only) {
@@ -1051,6 +1054,13 @@ fn resolve_redirect_url(current: &str, location: &str) -> Result<String, String>
         .join(location)
         .map_err(|e| format!("bad redirect location {location:?}: {e}"))?;
     Ok(next.to_string())
+}
+
+fn same_origin(left: &str, right: &str) -> bool {
+    match (url::Url::parse(left), url::Url::parse(right)) {
+        (Ok(left), Ok(right)) => left.origin() == right.origin(),
+        _ => false,
+    }
 }
 
 /// Send one logical GET, following redirects manually so each hop gets
@@ -1110,7 +1120,7 @@ async fn try_segmented_download(
     } else {
         AssetProtocol::Http1Only
     };
-    let client = segmented_http_client(protocol)
+    let client = segmented_http_client(protocol, config.connect_timeout)
         .map_err(|e| SegmentedFailure::fallback(format!("client build failed: {e}")))?;
 
     let plan = compute_segments(total, config.segment_count);
@@ -1333,17 +1343,20 @@ async fn fetch_segment_once(
 
     let range_value = format!("bytes={start}-{end_inclusive}");
     let token = auth_token();
-    let build_request = |client: &reqwest::Client, url: &str| {
+    let initial_url = url.to_string();
+    let build_request = |client: &reqwest::Client, request_url: &str| {
         let mut req = client
-            .get(url)
+            .get(request_url)
             .header(reqwest::header::RANGE, range_value.clone());
-        if let Some(t) = &token {
-            req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {t}"));
+        if same_origin(&initial_url, request_url) {
+            if let Some(t) = &token {
+                req = req.header(reqwest::header::AUTHORIZATION, format!("Bearer {t}"));
+            }
         }
         req
     };
 
-    let send_fut = send_with_hop_timeout(client, url, build_request, connect_timeout);
+    let send_fut = send_with_hop_timeout(client, &initial_url, build_request, connect_timeout);
     let mut resp = match permit.race_preemption(send_fut).await {
         Err(()) => return SegmentAttemptOutcome::Preempted,
         Ok(Err(reason)) => return SegmentAttemptOutcome::Failed(0, reason),
