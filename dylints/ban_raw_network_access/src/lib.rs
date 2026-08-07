@@ -14,8 +14,9 @@ dylint_linting::declare_late_lint! {
     /// ### What it does
     ///
     /// Rejects direct reqwest transport operations in production soldr-fetch
-    /// code. `fetch::stream_download` is the one blessed boundary that owns
-    /// timeout policy, streaming, retry-compatible diagnostics, and hashing.
+    /// code. The `fetch::stream_download` / `fetch::segmented_download`
+    /// boundary is the one blessed place that owns timeout policy, streaming,
+    /// retry-compatible diagnostics, and hashing (see `is_boundary_file`).
     pub BAN_RAW_NETWORK_ACCESS,
     Deny,
     "require production fetch network I/O to use fetch::stream_download"
@@ -82,9 +83,26 @@ fn span_is_in_scope(cx: &LateContext<'_>, span: rustc_span::Span) -> bool {
     }
     let is_fetch_source = filename.contains("/crates/soldr-fetch/src/")
         || filename.starts_with("crates/soldr-fetch/src/");
-    let is_boundary = filename.ends_with("/fetch/stream_download.rs")
-        || filename.ends_with("fetch/stream_download.rs");
-    is_fetch_source && !is_boundary
+    is_fetch_source && !is_boundary_file(&filename)
+}
+
+/// The blessed fetch network boundary: the files that own timeout policy,
+/// streaming, retry-compatible diagnostics, and hashing, and are therefore
+/// allowed to call raw reqwest. Originally a single file; the segmented
+/// downloader (soldr#2320) was extracted into its own module and test
+/// helpers to stay under the per-file line ceiling (soldr#1966), so the
+/// boundary now spans those files too. Matching on the path suffix keeps
+/// both `/crates/.../fetch/x.rs` and a bare `fetch/x.rs` in scope.
+fn is_boundary_file(filename: &str) -> bool {
+    const BOUNDARY_SUFFIXES: &[&str] = &[
+        "fetch/stream_download.rs",
+        "fetch/segmented_download.rs",
+        "fetch/segmented_download_tests.rs",
+        "fetch/segmented_download_tests_extra.rs",
+    ];
+    BOUNDARY_SUFFIXES
+        .iter()
+        .any(|&suffix| filename.ends_with(suffix))
 }
 
 fn source_filename(cx: &LateContext<'_>, span: rustc_span::Span) -> String {

@@ -25,6 +25,7 @@ pub mod rustup_init;
 pub mod install_api;
 mod net_guard;
 mod retry;
+pub(crate) mod segmented_download;
 /// soldr#2310 — whole-source-tree acquisition via GitHub codeload zips.
 pub mod source_zip;
 pub(crate) mod stream_download;
