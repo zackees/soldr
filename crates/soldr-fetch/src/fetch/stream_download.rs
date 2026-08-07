@@ -1231,6 +1231,7 @@ async fn run_all_segments(
 }
 
 /// Outcome of one attempt at a segment's byte range.
+#[derive(Debug, PartialEq)]
 enum SegmentAttemptOutcome {
     /// Fully delivered `n` bytes this attempt.
     Completed(u64),
@@ -1864,8 +1865,8 @@ mod tests {
         std::env::set_var(MAX_SOCKETS_ENV_VAR, "0");
         assert_eq!(
             parse_max_sockets(),
-            16,
-            "0 is not meaningful -- fails safe to default"
+            None,
+            "0 disables the Bulk pool cap"
         );
         std::env::set_var(MAX_SOCKETS_ENV_VAR, "banana");
         assert_eq!(parse_max_sockets(), 16);
@@ -1880,7 +1881,7 @@ mod tests {
         std::env::set_var(QUICK_POOL_ENV_VAR, "8");
         assert_eq!(parse_quick_pool_size(), 8);
         std::env::set_var(QUICK_POOL_ENV_VAR, "0");
-        assert_eq!(parse_quick_pool_size(), 4, "0 fails safe to default");
+        assert_eq!(parse_quick_pool_size(), None, "0 disables the Quick pool cap");
         std::env::set_var(QUICK_POOL_ENV_VAR, "nope");
         assert_eq!(parse_quick_pool_size(), 4);
         clear_segmented_env();
