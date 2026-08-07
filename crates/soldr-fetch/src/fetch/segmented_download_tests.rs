@@ -1,5 +1,4 @@
 use super::*;
-use super::*;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -33,7 +32,7 @@ async fn serve_chunks(chunks: Vec<(Vec<u8>, Duration)>, content_length: usize) -
     format!("http://{address}/asset")
 }
 
-fn runtime() -> tokio::runtime::Runtime {
+pub(super) fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -42,9 +41,9 @@ fn runtime() -> tokio::runtime::Runtime {
 
 /// Serialised because these tests mutate process env (segmented-
 /// download knobs).
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+pub(super) static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-fn clear_segmented_env() {
+pub(super) fn clear_segmented_env() {
     for var in [
         SEGMENTED_DOWNLOAD_ENV_VAR,
         SEGMENTED_DOWNLOAD_N_ENV_VAR,
@@ -827,7 +826,7 @@ crate::timed_test!(
 /// plain GET, tracking concurrent-connection high-water-mark via an
 /// atomic counter incremented on accept and decremented once the
 /// response is fully written.
-async fn serve_range_tracking_concurrency(
+pub(super) async fn serve_range_tracking_concurrency(
     body: Vec<u8>,
 ) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
