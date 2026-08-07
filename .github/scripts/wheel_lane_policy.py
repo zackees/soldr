@@ -76,9 +76,7 @@ def is_wheel_relevant_path(path: str) -> bool:
     return normalized in WHEEL_FILES
 
 
-def decide_wheel_lane(
-    *, event_name: str, changed_paths: Sequence[str]
-) -> Decision:
+def decide_wheel_lane(*, event_name: str, changed_paths: Sequence[str]) -> Decision:
     if event_name != "pull_request":
         return Decision(True, f"{event_name or 'non-PR'} event: always verify")
     if not changed_paths:
@@ -130,9 +128,7 @@ def main() -> int:
     decision = decide_wheel_lane(event_name=args.event_name, changed_paths=paths)
     matrix = WHEEL_MATRIX if decision.run else []
 
-    print(
-        f"soldr wheel lane: {'run' if decision.run else 'skip'} ({decision.reason})"
-    )
+    print(f"soldr wheel lane: {'run' if decision.run else 'skip'} ({decision.reason})")
     if not args.github_output:
         raise SystemExit("--github-output (or GITHUB_OUTPUT) is required")
     with Path(args.github_output).open("a", encoding="utf-8") as output:
