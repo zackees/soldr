@@ -253,7 +253,7 @@ fn nextest_inner_command_index(args: &[String]) -> Option<usize> {
 /// `SOLDR_MSVC_DISCOVERY=off` if the auto-probe trips on an unusual
 /// install — the underlying cargo invocation still runs and emits
 /// its own (better) error if it actually needs the env.
-pub(crate) fn ensure_msvc_host_env_for_native(args: &[String]) {
+pub(crate) async fn ensure_msvc_host_env_for_native(args: &[String]) {
     if !cfg!(target_os = "windows") {
         return;
     }
@@ -264,7 +264,7 @@ pub(crate) fn ensure_msvc_host_env_for_native(args: &[String]) {
             Err(_) => return,
         },
     };
-    match crate::msvc_host::ensure_msvc_env_for_native(&target) {
+    match crate::msvc_host::ensure_msvc_env_for_native(&target).await {
         Ok(true) => {
             tracing::debug!(
                 target: "soldr::msvc_host",
