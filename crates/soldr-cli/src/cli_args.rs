@@ -275,7 +275,7 @@ pub(crate) const CARGO_BUILTIN_VERBS: &[&str] = &[
     "verify-project",
     "locate-project",
     "report",
-    "install",
+    // `install` is NOT here: soldr#2310 promoted it to `Commands::Install`.
     "uninstall",
     "publish",
 ];
@@ -293,6 +293,7 @@ pub(crate) const SOLDR_BUILTIN_VERBS: &[&str] = &[
     // cargo front door and stays paired with `Commands::Build` in the
     // enum.
     "build",
+    "install", // soldr#2310 — soldr-native verb (Commands::Install)
     // soldr#2139 gap 1 — the blessed abi3 Python wheel surface.
     "wheel",
     "cargo",
@@ -710,6 +711,10 @@ pub(crate) enum Commands {
         #[arg(long, value_name = "VERSION")]
         version: Option<String>,
     },
+
+    /// Install a Rust tool from a GitHub URL or local path, prebuilt-first
+    /// (soldr#2310). Args flattened from [`crate::install::InstallArgs`].
+    Install(#[command(flatten)] crate::install::InstallArgs),
 
     /// Manage the long-lived soldr-daemon process
     Daemon {

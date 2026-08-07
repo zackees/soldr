@@ -561,7 +561,9 @@ fn cargo_builtin_shorthand_covers_every_verb_in_the_const() {
         "verify-project",
         "locate-project",
         "report",
-        "install",
+        // `install` deliberately not in this list: soldr#2310 promoted
+        // `install` to a soldr-native verb (`Commands::Install`), clap-
+        // captured before the External arm runs.
         "uninstall",
         "publish",
     ];
@@ -629,15 +631,14 @@ fn cargo_builtin_shorthand_skips_when_user_pinned_a_version() {
 }
 
 #[test]
-fn cargo_builtin_shorthand_includes_borderline_install_verb() {
-    // Bare `soldr install <crate>` is documented to route to
-    // `cargo install <crate>` because that's the far more common
-    // interpretation. (soldr#1368 removed the former `install-zccache`
-    // built-in — zccache now ships compiled-in — so there is no longer a
-    // competing soldr `install`-prefixed verb.)
+fn install_is_soldr_native_not_a_cargo_builtin() {
+    // soldr#2310 promoted `install` to Commands::Install (clap captures it
+    // before the External arm), so it must NOT be a cargo built-in anymore.
+    // `soldr install <github-url|path>` is the prebuilt-first tool installer;
+    // `soldr cargo install <crate>` remains the crates.io passthrough.
     assert!(
-        is_cargo_builtin_verb("install"),
-        "bare `soldr install` must route to `cargo install`"
+        !is_cargo_builtin_verb("install"),
+        "soldr-native `install` must NOT be in CARGO_BUILTIN_VERBS (soldr#2310)"
     );
 }
 

@@ -205,6 +205,46 @@ pub struct SoldrConfig {
     /// [`crate::core::jobs`] for the full precedence chain.
     #[serde(default)]
     pub jobs: crate::core::jobs::JobsConfig,
+    /// `soldr install` source-cache retention knobs (soldr#2310).
+    #[serde(default)]
+    pub install: InstallConfig,
+}
+
+/// `install` section of `config.toml` (soldr#2310).
+///
+/// ```toml
+/// [install]
+/// source_ttl_days = 2   # eager TTL for the git source cache
+/// source_max_gb   = 5   # soft size cap, coldest-first eviction
+/// ```
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct InstallConfig {
+    /// Delete source-cache entries whose last-use is older than this,
+    /// regardless of disk pressure (disposable cache).
+    #[serde(default = "InstallConfig::default_source_ttl_days")]
+    pub source_ttl_days: u64,
+    /// Soft size cap for the install source cache, in gibibytes.
+    #[serde(default = "InstallConfig::default_source_max_gb")]
+    pub source_max_gb: u64,
+}
+
+impl InstallConfig {
+    pub const fn default_source_ttl_days() -> u64 {
+        2
+    }
+    pub const fn default_source_max_gb() -> u64 {
+        5
+    }
+}
+
+impl Default for InstallConfig {
+    fn default() -> Self {
+        Self {
+            source_ttl_days: Self::default_source_ttl_days(),
+            source_max_gb: Self::default_source_max_gb(),
+        }
+    }
 }
 
 /// `pins` section of `config.toml` (issue #861).
@@ -560,6 +600,23 @@ mod tests {
         assert_eq!(cfg.auto_gc.trigger_free_gb, 20);
         assert_eq!(cfg.auto_gc.target_free_gb, 30);
         assert_eq!(cfg.auto_gc.min_age_secs, 3600);
+    }
+
+    #[test]
+    fn install_config_defaults_and_custom_values_parse() {
+        // soldr#2310: [install] defaults to 2-day TTL / 5 GiB soft cap.
+        let empty: SoldrConfig = toml::from_str("").unwrap();
+        assert_eq!(empty.install, InstallConfig::default());
+        assert_eq!(empty.install.source_ttl_days, 2);
+        assert_eq!(empty.install.source_max_gb, 5);
+
+        let custom: SoldrConfig =
+            toml::from_str("[install]\nsource_ttl_days = 7\nsource_max_gb = 20\n").unwrap();
+        assert_eq!(custom.install.source_ttl_days, 7);
+        assert_eq!(custom.install.source_max_gb, 20);
+
+        // Unknown keys are rejected (deny_unknown_fields).
+        assert!(toml::from_str::<SoldrConfig>("[install]\nbogus = 1\n").is_err());
     }
 
     #[test]
