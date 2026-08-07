@@ -14,7 +14,10 @@
 //!   [`crate::fetch::xwin_cache`])
 //! * `x86_64-pc-windows-gnu` on Windows x64 hosts - managed
 //!   MinGW-w64 GCC from the soldr-toolchain catalogue, prepended to
-//!   PATH with target-scoped Cargo/cc-rs env.
+//!   PATH with target-scoped Cargo/cc-rs env. On non-Windows hosts
+//!   (soldr#2336) the host-neutral `mingw-w64-sysroot` is materialized
+//!   instead and its discovery env published, for a consumer that
+//!   brings its own PE-COFF linker (e.g. reld).
 //! * `*-apple-darwin` — target-aware Apple SDK provisioning plus
 //!   clang/SDK env injection through
 //!   [`crate::fetch::apple_sdk::ensure_apple_sdk`].
@@ -206,15 +209,9 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
 
     // --------------------------- Windows GNU GCC ----------------------------
     if target_triple == crate::fetch::mingw_w64_gcc::MINGW_W64_GCC_TARGET {
-        if !crate::fetch::mingw_w64_gcc::current_host_supports_mingw_w64_gcc() {
-            return Err(SoldrError::UnsupportedPlatform(format!(
-                "managed Windows GNU target {target_triple} requires a Windows x64 host; \
-                 cargo-zigbuild is no longer used as the blessed Windows GNU fallback"
-            )));
-        }
-        let mingw_root =
-            crate::fetch::mingw_w64_gcc::ensure_mingw_w64_gcc(paths, target_triple).await?;
-        add_mingw_w64_gcc_env(&mut prep, target_triple, &mingw_root);
+        // Host-shaped win-gnu prep (gcc bundle on Windows x64, host-neutral
+        // sysroot elsewhere) lives in `win_gnu_prep` (soldr#2336).
+        crate::win_gnu_prep::prepare_env(paths, target_triple, &mut prep).await?;
     }
 
     // ------------------------------ Apple Darwin -----------------------------
@@ -493,19 +490,6 @@ fn find_dsymutil_in_rustup() -> Option<PathBuf> {
         }
     }
     None
-}
-
-fn add_mingw_w64_gcc_env(
-    prep: &mut BlessedPrep,
-    target_triple: &str,
-    mingw_root: &std::path::Path,
-) {
-    prep.path_dirs
-        .insert(0, crate::fetch::mingw_w64_gcc::bin_dir(mingw_root));
-    prep.env.extend(crate::fetch::mingw_w64_gcc::env_for_target(
-        mingw_root,
-        target_triple,
-    ));
 }
 
 /// Env var that opts out of the managed cmake/ninja injection and
@@ -1229,65 +1213,6 @@ mod tests {
                 "non-Linux fallback keeps platform clang behavior unless managed LLVM is present",
             );
         }
-    });
-
-    crate::timed_test!(mingw_w64_gcc_env_injects_target_scoped_tools, {
-        let tmp = tempfile::tempdir().expect("tmpdir");
-        let root = tmp.path().join("mingw");
-        let mut prep = BlessedPrep::default();
-
-        add_mingw_w64_gcc_env(&mut prep, "x86_64-pc-windows-gnu", &root);
-
-        assert_eq!(
-            prep.path_dirs,
-            vec![crate::fetch::mingw_w64_gcc::bin_dir(&root)]
-        );
-        let names: std::collections::HashSet<&str> =
-            prep.env.iter().map(|(name, _)| name.as_str()).collect();
-        for required in [
-            "MINGW_W64_GCC_ROOT",
-            "MINGW_W64_GCC_BIN",
-            "CC_x86_64_pc_windows_gnu",
-            "CXX_x86_64_pc_windows_gnu",
-            "AR_x86_64_pc_windows_gnu",
-            "RANLIB_x86_64_pc_windows_gnu",
-            "WINDRES_x86_64_pc_windows_gnu",
-            "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER",
-        ] {
-            assert!(names.contains(required), "missing env var {required}");
-        }
-    });
-
-    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
-    crate::timed_test!(windows_gnu_requires_supported_mingw_host, {
-        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let prev_sys = std::env::var_os(USE_LEGACY_VENDORED_SYS_ENV_VAR);
-        let prev_cmake = std::env::var_os(USE_SYSTEM_CMAKE_ENV_VAR);
-
-        std::env::set_var(USE_LEGACY_VENDORED_SYS_ENV_VAR, "1");
-        std::env::set_var(USE_SYSTEM_CMAKE_ENV_VAR, "1");
-
-        let tmp = tempfile::tempdir().expect("tmpdir");
-        let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
-        let result = tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(prepare(&paths, "x86_64-pc-windows-gnu"));
-
-        match prev_sys {
-            Some(v) => std::env::set_var(USE_LEGACY_VENDORED_SYS_ENV_VAR, v),
-            None => std::env::remove_var(USE_LEGACY_VENDORED_SYS_ENV_VAR),
-        }
-        match prev_cmake {
-            Some(v) => std::env::set_var(USE_SYSTEM_CMAKE_ENV_VAR, v),
-            None => std::env::remove_var(USE_SYSTEM_CMAKE_ENV_VAR),
-        }
-
-        let err = result.expect_err("unsupported host should fail before cargo");
-        assert!(matches!(err, SoldrError::UnsupportedPlatform(_)));
-        assert!(
-            err.to_string().contains("cargo-zigbuild is no longer used"),
-            "unexpected error: {err}"
-        );
     });
 
     crate::timed_test!(cmake_generator_sweep_removes_only_mismatches, {

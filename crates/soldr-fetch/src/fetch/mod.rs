@@ -80,6 +80,10 @@ pub mod gnu_linux_toolchain;
 pub mod lzma_sysroot;
 pub mod mimalloc_sysroot;
 pub mod mingw_w64_gcc;
+/// soldr#2336 / soldr-toolchain#114 — host-neutral MinGW-w64 sysroot
+/// (headers + import libs + CRT, no host executables) so Linux/macOS
+/// hosts that bring their own linker (reld) can cross-link win-gnu.
+pub mod mingw_w64_sysroot;
 /// soldr#2292 / soldr#1079 — managed MSVC toolset bundle, the
 /// download-fallback half of native Windows MSVC host discovery.
 /// Stub-until-ingested consumer like the *-sys sysroots and

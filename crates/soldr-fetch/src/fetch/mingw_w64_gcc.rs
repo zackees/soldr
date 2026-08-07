@@ -65,6 +65,29 @@ pub fn tool_path(bundle_root: &Path, tool: &str) -> PathBuf {
     bin_dir(bundle_root).join(exe_name(tool))
 }
 
+/// Files whose presence proves a *complete* MinGW-w64 GCC bundle — not
+/// just the compiler driver but the binutils a win-gnu link needs
+/// (`dlltool` for import libs, `windres` for resources) and the sysroot
+/// itself (a representative header + import library).
+///
+/// soldr#2336 item 3: `expected_state_paths` used to check only
+/// `bin/gcc.exe`, so a truncated restore that dropped the sysroot or the
+/// resource/import-lib tools was reported "present" and then failed far
+/// later at the actual link. Verified against the published bundle
+/// layout: `bin/{gcc,dlltool,windres}.exe`,
+/// `x86_64-w64-mingw32/include/windows.h`,
+/// `x86_64-w64-mingw32/lib/libkernel32.a`.
+pub fn verification_paths(bundle_root: &Path) -> Vec<PathBuf> {
+    let sysroot = bundle_root.join(super::mingw_w64_sysroot::MINGW_TARGET_PREFIX);
+    vec![
+        tool_path(bundle_root, "gcc"),
+        tool_path(bundle_root, "dlltool"),
+        tool_path(bundle_root, "windres"),
+        sysroot.join("include").join("windows.h"),
+        sysroot.join("lib").join("libkernel32.a"),
+    ]
+}
+
 /// Target-scoped env consumed by Cargo, rustc, cc-rs, and resource
 /// build scripts for `x86_64-pc-windows-gnu`.
 pub fn env_for_target(bundle_root: &Path, target_triple: &str) -> Vec<(String, String)> {
@@ -86,6 +109,12 @@ pub fn env_for_target(bundle_root: &Path, target_triple: &str) -> Vec<(String, S
         (format!("AR_{target_u}"), tool("ar")),
         (format!("RANLIB_{target_u}"), tool("ranlib")),
         (format!("WINDRES_{target_u}"), tool("windres")),
+        // soldr#2336 item 4: the bundle ships `dlltool`, but it was never
+        // surfaced. cc-rs / import-lib generators and external linkers
+        // (reld's win-gnu path) look for `DLLTOOL_<triple>` to build
+        // import libraries from a `.def`; without it they fall back to a
+        // bare `dlltool` PATH lookup that misses the managed toolchain.
+        (format!("DLLTOOL_{target_u}"), tool("dlltool")),
         (format!("CARGO_TARGET_{target_u_upper}_LINKER"), tool("gcc")),
     ]
 }
@@ -123,6 +152,29 @@ mod tests {
         assert_eq!(slug_for_target("x86_64-pc-windows-msvc"), None);
     });
 
+    crate::timed_test!(verification_paths_cover_binutils_and_sysroot, {
+        let root = Path::new("C:/soldr/mingw/package");
+        let paths = verification_paths(root);
+        let joined: Vec<String> = paths
+            .iter()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .collect();
+        let all = joined.join("\n");
+        // Not just the compiler driver, but the import-lib + resource
+        // tools and a real header + import lib from the sysroot.
+        assert!(all.contains("bin/gcc"), "{all}");
+        assert!(all.contains("bin/dlltool"), "{all}");
+        assert!(all.contains("bin/windres"), "{all}");
+        assert!(
+            all.contains("x86_64-w64-mingw32/include/windows.h"),
+            "{all}"
+        );
+        assert!(
+            all.contains("x86_64-w64-mingw32/lib/libkernel32.a"),
+            "{all}"
+        );
+    });
+
     crate::timed_test!(host_scope_is_windows_x64_only, {
         assert_eq!(
             current_host_supports_mingw_w64_gcc(),
@@ -143,6 +195,7 @@ mod tests {
         assert!(lookup("CXX_x86_64_pc_windows_gnu").contains("g++"));
         assert!(lookup("AR_x86_64_pc_windows_gnu").contains("ar"));
         assert!(lookup("WINDRES_x86_64_pc_windows_gnu").contains("windres"));
+        assert!(lookup("DLLTOOL_x86_64_pc_windows_gnu").contains("dlltool"));
         assert!(lookup("CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER").contains("gcc"));
     });
 }

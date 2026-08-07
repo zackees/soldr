@@ -553,28 +553,11 @@ pub(crate) fn expected_state_paths(
             path: xwin_root,
         });
     }
-    if attrs.needs_mingw_w64_gcc
-        && crate::fetch::mingw_w64_gcc::current_host_supports_mingw_w64_gcc()
-    {
-        let mingw = paths
-            .bin
-            .join("syslib")
-            .join(crate::fetch::mingw_w64_gcc::MINGW_W64_GCC_TOOL)
-            .join(crate::fetch::mingw_w64_gcc::MANAGED_MINGW_W64_GCC_VERSION)
-            .join(crate::fetch::mingw_w64_gcc::MINGW_W64_GCC_SLUG);
-        let package = mingw.join("package");
-        entries.push(RestoreEntry {
-            label: format!(
-                "MinGW-w64 GCC {}",
-                crate::fetch::mingw_w64_gcc::MANAGED_MINGW_W64_GCC_VERSION
-            ),
-            present: mingw.join(".complete").is_file()
-                && package
-                    .join("bin")
-                    .join(crate::fetch::mingw_w64_gcc::exe_name("gcc"))
-                    .is_file(),
-            path: package,
-        });
+    if attrs.needs_mingw_w64_gcc {
+        // soldr#2336 item 3: the host-shaped win-gnu restore entry (gcc bundle
+        // on Windows x64, host-neutral sysroot elsewhere) verifies the binutils
+        // + sysroot a link needs, not just the gcc driver.
+        entries.push(crate::win_gnu_prep::restore_entry(paths));
     }
     if attrs.needs_apple_sdk {
         let selection = crate::fetch::apple_sdk::resolve_apple_sdk_selection(Some(&attrs.triple));

@@ -268,6 +268,11 @@ pub mod version_trampoline;
 /// soldr#2139 gap 1 — the `soldr wheel --target <triple>` surface. Thin,
 /// abi3-only front end over the existing `soldr maturin ...` execution path.
 pub mod wheel_cmd;
+/// soldr#2336 — win-gnu toolchain preparation + restore auditing, split
+/// out of `blessed_build`/`prepare_cmd` (both over the LOC ceiling) so
+/// the host-shaped gcc-bundle-vs-host-neutral-sysroot dispatch lives in
+/// one place.
+pub mod win_gnu_prep;
 /// Detects an uninitialized vendored zccache submodule before Cargo renders
 /// its opaque missing-manifest error (soldr#2232).
 pub(crate) mod worktree_submodule;

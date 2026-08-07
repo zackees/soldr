@@ -105,11 +105,22 @@ soldr prepare --target x86_64-pc-windows-gnu --github-env $env:GITHUB_ENV
 ```
 
 Scope is intentionally narrow: first-class managed MinGW provisioning
-currently supports only `x86_64-pc-windows-gnu` on Windows x64 hosts.
-`i686-pc-windows-gnu`, `aarch64-pc-windows-gnullvm`, and other Windows
-GNU-family targets are follow-ups. Linux hosts are not a blessed Windows
-GNU path in soldr; do not use `cargo-zigbuild` as a substitute for this
-target.
+(the full `gcc`-driven build above) supports only `x86_64-pc-windows-gnu`
+on Windows x64 hosts. `i686-pc-windows-gnu`, `aarch64-pc-windows-gnullvm`,
+and other Windows GNU-family targets are follow-ups; do not use
+`cargo-zigbuild` as a substitute for this target.
+
+**Non-Windows hosts (soldr#2336).** On a Linux or macOS host,
+`soldr prepare --target x86_64-pc-windows-gnu` no longer hard-errors: it
+materializes the host-neutral `mingw-w64-sysroot` (headers, import
+libraries, CRT startup objects, and the gcc runtime — no host
+executables) and exports `MINGW_W64_SYSROOT_{ROOT,INCLUDE,LIBDIR,GCCLIBDIR}`.
+soldr provisions the sysroot only; a consumer that brings its own PE-COFF
+linker (e.g. [`reld`](https://github.com/zackees/reld)) sets the linker and
+links against it. There is no host `gcc` driver on this path, so a bare
+`soldr build --target x86_64-pc-windows-gnu` from a non-Windows host still
+cannot complete the link on its own. This path is exercised by the
+scheduled `win-gnu-sysroot.yml` lane.
 
 ---
 

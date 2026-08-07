@@ -1,0 +1,113 @@
+name: win-gnu sysroot (scheduled)
+
+# soldr#2336 — re-adds win-gnu CI, SCHEDULED-ONLY.
+#
+# The old `windows-gnu-mingw-validation.yml` lane was deleted in soldr#1982 for
+# path-triggering on nearly every PR and running two full release builds for a
+# non-canonical target. This replacement is `schedule` + `workflow_dispatch`
+# ONLY — never push / pull_request — so it costs nothing per PR and runs when
+# the weekly cron fires or a human asks.
+#
+# What it proves, per host:
+#   * Linux / macOS host  — the NEW soldr#2336 path: a non-Windows host
+#     materializes the *host-neutral* `mingw-w64-sysroot` (headers + import
+#     libs + CRT, no host executables) instead of hard-erroring, unblocking the
+#     Linux-hosted win-gnu story (reld's `cross-release` lane).
+#   * Windows host        — the WinLibs `mingw-w64-gcc` bundle still materializes
+#     with its binutils (gcc/dlltool/windres) + sysroot intact.
+#
+# Each lane builds soldr FROM THE CHECKOUT (a pinned release predates this
+# behaviour), runs `soldr prepare --target x86_64-pc-windows-gnu`, and asserts
+# the materialized tree via .github/scripts/win_gnu_sysroot_smoke.py — the grid
+# logic lives there, not in this YAML, per CLAUDE.md.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly, Mondays 07:17 UTC. Off-peak minute to dodge cron congestion.
+    - cron: "17 7 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: win-gnu-sysroot-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # Authenticated GitHub Releases lookups (5,000/hr) for soldr's asset fetches.
+  SOLDR_GITHUB_TOKEN: ${{ github.token }}
+
+jobs:
+  materialize:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    # A from-source soldr build plus a catalogue fetch; the Windows gcc bundle
+    # is ~190 MB, so give the slowest cell headroom.
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-host → host-neutral sysroot
+            runner: ubuntu-24.04
+            tool: mingw-w64-sysroot
+            soldr_bin: ./target/debug/soldr
+          - name: macos-host → host-neutral sysroot
+            runner: macos-15
+            tool: mingw-w64-sysroot
+            soldr_bin: ./target/debug/soldr
+          - name: windows-host → mingw-w64-gcc bundle
+            runner: windows-2025
+            tool: mingw-w64-gcc
+            soldr_bin: ./target/debug/soldr.exe
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          submodules: recursive
+
+      # Rust std for the cross target (soldr's own `rustup target add` is a
+      # no-op once this has installed it). soldr provisions the sysroot itself.
+      - name: Install Rust toolchain + cross target
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.94.1
+          targets: x86_64-pc-windows-gnu
+
+      # Pinned soldr as the build DRIVER only; the freshly built binary is what
+      # exercises the soldr#2336 behaviour. cache:false — this is a rare lane.
+      - name: Setup soldr
+        uses: zackees/setup-soldr@62d1596b70168e422156f12273a2ed476d3a16dc
+        with:
+          version: 0.8.29
+          toolchain: 1.94.1
+          cache: false
+
+      - name: Build soldr from this checkout
+        shell: bash
+        run: soldr cargo build -p soldr-cli --bin soldr
+
+      # Materialize-only: `soldr prepare` provisions the toolchain/sysroot and
+      # exits WITHOUT invoking cargo, so there is no link step to need a linker
+      # this lane deliberately does not provide. SOLDR_CACHE_DIR pins where the
+      # sysroot lands so the verifier can find it deterministically.
+      - name: Materialize win-gnu toolchain
+        shell: bash
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-cross
+        run: |
+          set -euo pipefail
+          "${{ matrix.soldr_bin }}" prepare --target x86_64-pc-windows-gnu
+
+      - name: Verify materialized ${{ matrix.tool }}
+        shell: bash
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-cross
+        run: |
+          set -euo pipefail
+          pkg="$(python3 .github/scripts/win_gnu_sysroot_smoke.py locate \
+            --soldr-home "$SOLDR_CACHE_DIR" --tool "${{ matrix.tool }}")"
+          python3 .github/scripts/win_gnu_sysroot_smoke.py verify \
+            --package "$pkg" --tool "${{ matrix.tool }}" \
+            --summary "$GITHUB_STEP_SUMMARY"
