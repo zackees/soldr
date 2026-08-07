@@ -40,7 +40,7 @@ jobs:
           toolchain: 1.94.1
 
       - name: Setup soldr (managed home, like reld#66)
-        uses: zackees/setup-soldr@main
+        uses: zackees/setup-soldr@62d1596b70168e422156f12273a2ed476d3a16dc
         with:
           version: 0.8.44
           toolchain: 1.94.1
