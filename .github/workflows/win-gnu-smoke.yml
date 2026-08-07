@@ -1,0 +1,91 @@
+name: win-gnu link smoke (scheduled)
+
+# soldr#2336's final checklist item — a scheduled-only win-gnu CI lane, with a
+# Windows-host and a Linux-host lane.
+#
+# TRIGGER DISCIPLINE: `schedule` + `workflow_dispatch` ONLY, never push /
+# pull_request. The old `windows-gnu-mingw-validation.yml` lane was deleted in
+# soldr#1982 for path-triggering on nearly every PR; this is the regression
+# canary that runs weekly (or on demand) instead. It is distinct from the
+# dispatch-only cross-compile *stress matrix* (soldr#2337): that surfaces gaps
+# across the whole host×target grid on demand; this is a focused, hard-green
+# win-gnu link check on a cron.
+#
+# Each lane builds soldr FROM THE CHECKOUT (a pinned release can predate the
+# win-gnu behaviour), then cross-builds a fixture to x86_64-pc-windows-gnu and
+# asserts the emitted binary is a PE32+ x86-64 image (via `--no-cache`, to
+# dodge the win-gnu embedded-cache `.pdb` defect soldr#2347). The build + PE parse live
+# in .github/scripts/win_gnu_link_smoke.py (pytest-covered) — this YAML stays
+# orchestration-only, per CLAUDE.md.
+#
+#   * Windows host → WinLibs mingw-w64-gcc bundle.
+#   * Linux x64 host → conda-forge mingw-w64 *cross* gcc toolchain (soldr#2341 /
+#     soldr-toolchain#114 Phase 2). Other non-Windows hosts have no cross bundle
+#     yet, so only these two lanes exist.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly, Mondays 07:31 UTC. Off-peak minute to dodge cron congestion.
+    - cron: "31 7 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: win-gnu-smoke-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # Authenticated GitHub Releases lookups (5,000/hr) for soldr's asset fetches.
+  SOLDR_GITHUB_TOKEN: ${{ github.token }}
+
+jobs:
+  link-smoke:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    # A from-source soldr build plus a cross toolchain fetch + fixture link.
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-host → win-gnu (conda cross gcc)
+            runner: ubuntu-24.04
+            soldr_bin: ./target/debug/soldr
+          - name: windows-host → win-gnu (WinLibs gcc)
+            runner: windows-2025
+            soldr_bin: ./target/debug/soldr.exe
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain + cross target
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.94.1
+          targets: x86_64-pc-windows-gnu
+
+      # Pinned soldr as the build DRIVER only; the freshly built binary is what
+      # exercises the win-gnu behaviour. cache:false — this is a rare lane.
+      - name: Setup soldr
+        uses: zackees/setup-soldr@62d1596b70168e422156f12273a2ed476d3a16dc
+        with:
+          version: 0.8.29
+          toolchain: 1.94.1
+          cache: false
+
+      - name: Build soldr from this checkout
+        shell: bash
+        run: soldr cargo build -p soldr-cli --bin soldr
+
+      - name: win-gnu link smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/win_gnu_link_smoke.py smoke \
+            --soldr "${{ matrix.soldr_bin }}" \
+            --target x86_64-pc-windows-gnu \
+            --summary "$GITHUB_STEP_SUMMARY"
