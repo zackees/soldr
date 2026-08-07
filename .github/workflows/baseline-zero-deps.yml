@@ -16,33 +16,14 @@ name: Baseline Zero-Deps Docker
 # story to be honest.
 
 on:
+  # Manual-only. This is an expensive (~42-minute) zero-deps bootstrap
+  # acceptance test; it used to auto-run on every fetch/bootstrap-touching
+  # PR (via `pull_request: paths:`) and on every push-to-main, which was a
+  # lot of runner time for a check that only needs to be exercised
+  # deliberately. Run it on demand from the Actions tab (Run workflow) when
+  # validating fetch/bootstrap behaviour, the pinned tool set, the
+  # dependency graph, or the baseline images.
   workflow_dispatch:
-  # soldr#1907 follow-up. This was `paths-ignore: **/*.md`, i.e. it ran on
-  # every non-markdown PR — a 42-minute bootstrap acceptance triggered by a
-  # workflow-only or test-only change. What it actually proves is that soldr
-  # can fetch its whole toolchain into a bare image, so it only needs to run
-  # when fetch/bootstrap behaviour, the pinned tool set, the dependency graph,
-  # or the images themselves move.
-  #
-  # Still runs unconditionally on push-to-main below, so a miss here is caught
-  # before release rather than never.
-  pull_request:
-    paths:
-      - ".github/docker/**"
-      - ".github/workflows/baseline-zero-deps.yml"
-      - "Cargo.lock"
-      - "Cargo.toml"
-      - "crates/soldr-cli/src/bootstrap.rs"
-      - "crates/soldr-core/**"
-      - "crates/soldr-fetch/**"
-      - "rust-toolchain.toml"
-      - "_vender/zccache"
-  push:
-    branches:
-      - main
-    paths-ignore:
-      - "*.md"
-      - "**/*.md"
 
 permissions:
   contents: read
