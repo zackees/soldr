@@ -11,7 +11,8 @@
 #                                             env (cargo-xwin fallback when
 #                                             managed cache is unavailable)
 #
-# Output: release binary at target/<triple>/release/soldr[.exe] + an
+# Output: the soldr binary (ci-nextest profile, NOT --release — soldr#1981)
+# at target/<triple>/ci-nextest/soldr[.exe] + an
 # optional cargo nextest archive at dist/<artifact_name>-tests.tar.zst.
 # Both are uploaded as the named artifact for downstream
 # _ci-target-run.yml consumption.
@@ -338,7 +339,7 @@ jobs:
       # The target-scoped lifecycle probe below is narrower and verifies
       # compiler/SDK preparation for this specific matrix target.
 
-      # Stage B — release binary build, tool dispatched per target.
+      # Stage B — soldr binary build (ci-nextest profile), tool dispatched per target.
       # Windows MSVC + Apple Darwin: `soldr build` (the blessed cross-
       # compile surface per CLAUDE.md "Two build paths" — handles
       # xwin-cache + clang shim + lld-link for win, and Apple SDK +
@@ -349,7 +350,7 @@ jobs:
       # Apple SDK but NOT in zig's bundled minimal darwin sysroot.
       # `cargo zigbuild` fails to compile mimalloc; `soldr build`
       # exports SDKROOT + CC_<triple>=clang and finds the header.
-      - name: Cross-build release binary
+      - name: Cross-build soldr (ci-nextest profile)
         shell: bash
         run: |
           set -euo pipefail
@@ -511,7 +512,7 @@ jobs:
             --locked \
             -- -D warnings
 
-      - name: Validate warm Windows cache restoration (release binary)
+      - name: Validate warm Windows cache restoration (ci-nextest binary)
         if: contains(inputs.target, 'pc-windows-msvc')
         shell: bash
         run: |

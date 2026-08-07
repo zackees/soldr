@@ -64,6 +64,19 @@ ALLOWLIST: dict[str, str] = {
 # continuation.
 RELEASE_FLAG = re.compile(r"(?<![\w-])--release(?![\w-])")
 
+# `--profile release` / `--profile=release` — the same expensive profile spelled
+# the long way. soldr#2303: this evaded the check, so `cargo build --profile
+# release` for the Dylint driver cdylibs slipped past a policy whose whole point
+# is that this regression is impossible. The `release` profile *name* only — the
+# cheap `--profile ci-release` / `ci-bootstrap` must NOT match (the `(?![\w-])`
+# tail is what keeps `ci-release` and `release-foo` out).
+PROFILE_RELEASE = re.compile(r"--profile[=\s]+release(?![\w-])")
+
+
+def uses_release_profile(line: str) -> bool:
+    """True when *line* asks cargo for the `release` profile, either spelling."""
+    return bool(RELEASE_FLAG.search(line) or PROFILE_RELEASE.search(line))
+
 # Line-level, reason-bearing opt-out, in the same shape as the repo's
 # `// allow-bare-test: <reason>` escape from the timed_test lint.
 #
@@ -131,7 +144,7 @@ def scan(workflows_dir: Path) -> list[tuple[str, int, str]]:
         for index, line in enumerate(lines):
             if is_comment(line):
                 continue
-            if RELEASE_FLAG.search(line) and not is_exempt(lines, index):
+            if uses_release_profile(line) and not is_exempt(lines, index):
                 findings.append((path.name, index + 1, line.strip()))
     return findings
 
@@ -152,7 +165,7 @@ def unused_allowlist_entries(workflows_dir: Path) -> list[str]:
             continue
         text = path.read_text(encoding="utf-8")
         if not any(
-            RELEASE_FLAG.search(line)
+            uses_release_profile(line)
             for line in text.splitlines()
             if not is_comment(line)
         ):
