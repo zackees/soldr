@@ -217,16 +217,7 @@ async fn resolve_container_version() -> ContainerSoldrVersion {
 /// network error is treated as "not available" so a transient failure degrades
 /// to the latest-tag fallback rather than aborting the build.
 async fn pypi_has_version(pkg: &str, version: &str) -> bool {
-    let url = format!("https://pypi.org/pypi/{pkg}/{version}/json");
-    match reqwest::Client::new()
-        .get(&url)
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await
-    {
-        Ok(resp) => resp.status().is_success(),
-        Err(_) => false,
-    }
+    crate::fetch::pypi_has_version(pkg, version).await
 }
 
 /// Probe `docker version`. Returns an actionable error (item C2) when Docker is

@@ -24,6 +24,7 @@ pub mod rustup_init;
 mod net_guard;
 mod retry;
 pub(crate) mod stream_download;
+pub use stream_download::pypi_has_version;
 
 pub use rustup_init::{
     auto_bootstrap_if_missing, auto_bootstrap_if_missing_blocking, bootstrap_rustup,

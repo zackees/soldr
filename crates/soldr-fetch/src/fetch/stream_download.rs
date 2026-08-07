@@ -71,6 +71,19 @@ pub(crate) fn get_request(client: &reqwest::Client, url: &str) -> reqwest::Reque
     client.get(url)
 }
 
+/// Probe a PyPI release through soldr-fetch's sole HTTP boundary.
+pub async fn pypi_has_version(pkg: &str, version: &str) -> bool {
+    let url = format!("https://pypi.org/pypi/{pkg}/{version}/json");
+    let Ok(client) = control_http_client("PyPI release availability") else {
+        return false;
+    };
+    get_request(&client, &url)
+        .send()
+        .await
+        .map(|response| response.status().is_success())
+        .unwrap_or(false)
+}
+
 /// Build a POST request through the fetch boundary.
 pub(crate) fn post_request(client: &reqwest::Client, url: &str) -> reqwest::RequestBuilder {
     client.post(url)
