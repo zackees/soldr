@@ -2,8 +2,6 @@
 //! clap flag mutual-exclusion, dry-run planning, and a local-path
 //! end-to-end install into a synthetic `SoldrPaths`.
 
-use std::time::Duration;
-
 use crate::cli_args::Cli;
 use crate::core::SoldrPaths;
 use clap::Parser;
@@ -152,7 +150,14 @@ crate::timed_test!(install_dry_run_prints_plan_and_does_not_fetch, {
     );
 });
 
-crate::timed_test!(install_local_dot_end_to_end, Duration::from_secs(300), {
+// soldr#2310: this end-to-end path compiles a fixture crate via
+// `cargo install --path`, which needs a toolchain + crates.io index and is
+// unreliable inside the `soldr cargo test` sandbox. Gate with #[ignore]
+// (runnable via `cargo test -- --ignored`); the other install unit tests keep
+// CI coverage of the pipeline.
+#[test]
+#[ignore = "builds a fixture crate; needs toolchain+crates.io index -- run via `cargo test -- --ignored` (soldr#2310)"]
+fn install_local_dot_end_to_end() {
     // Build a tiny fixture crate and install it from a local path into
     // a synthetic SoldrPaths; assert a runnable binary lands under
     // bin/installed/<name>/.
@@ -179,4 +184,4 @@ crate::timed_test!(install_local_dot_end_to_end, Duration::from_secs(300), {
         "expected installed binary at {}",
         expected.display()
     );
-});
+}
