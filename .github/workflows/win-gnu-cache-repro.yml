@@ -64,6 +64,33 @@ jobs:
           echo "--- does the win-gnu std dir exist under RUSTUP_HOME? ---"
           find "${RUSTUP_HOME:-$HOME/.rustup}" -type d -name 'x86_64-pc-windows-gnu' 2>/dev/null | head || true
 
+      - name: Cached win-gnu build with RELEASED 0.8.44 (reld#66 exact binary)
+        shell: bash
+        run: |
+          set -x
+          released="$(command -v soldr)"
+          echo "released soldr = $released"
+          "$released" --version || true
+          work="$RUNNER_TEMP/fixture-released"
+          mkdir -p "$work/src"
+          cat > "$work/Cargo.toml" <<'EOF'
+          [package]
+          name = "wingnu-repro"
+          version = "0.0.0"
+          edition = "2021"
+          [[bin]]
+          name = "wingnu-repro"
+          path = "src/main.rs"
+          EOF
+          echo 'fn main() { println!("ok"); }' > "$work/src/main.rs"
+          cd "$work"
+          "$released" build --target x86_64-pc-windows-gnu 2>&1 | tee "$RUNNER_TEMP/released.log" || true
+          if grep -q 'E0463' "$RUNNER_TEMP/released.log"; then
+            echo "RELEASED-0.8.44 REPRODUCED: E0463" >&2
+          else
+            echo "RELEASED-0.8.44: no E0463 (built ok)" >&2
+          fi
+
       - name: Cached win-gnu build (the daemon path — repro target)
         id: build
         shell: bash
