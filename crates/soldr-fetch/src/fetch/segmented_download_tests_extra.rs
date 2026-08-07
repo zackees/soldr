@@ -1,4 +1,6 @@
-use super::{clear_segmented_env, runtime, serve_range_tracking_concurrency, ENV_LOCK};
+use super::{
+    clear_segmented_env, runtime, serve_range_tracking_concurrency, set_segmented_env, ENV_LOCK,
+};
 use crate::fetch::segmented_download::{
     SocketPool, SEGMENTED_DOWNLOAD_ENV_VAR, SEGMENTED_DOWNLOAD_N_ENV_VAR,
 };
@@ -17,8 +19,10 @@ crate::timed_test!(
     {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_segmented_env();
-        std::env::set_var(SEGMENTED_DOWNLOAD_ENV_VAR, "1");
-        std::env::set_var(SEGMENTED_DOWNLOAD_N_ENV_VAR, "3");
+        set_segmented_env(&[
+            (SEGMENTED_DOWNLOAD_ENV_VAR, "1"),
+            (SEGMENTED_DOWNLOAD_N_ENV_VAR, "3"),
+        ]);
 
         runtime().block_on(async {
                 // One large (segmentable) download against Bulk, plus
