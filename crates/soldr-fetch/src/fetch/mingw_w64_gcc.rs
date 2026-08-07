@@ -91,17 +91,13 @@ pub fn mingw_w64_sysroot_asset_url_for(version: &str, slug: &str) -> String {
 /// (or compiler) bundle root — where CRT startup objects (`crt2.o`,
 /// `dllcrt2.o`) and import libraries live.
 pub fn sysroot_lib_dir(bundle_root: &Path) -> PathBuf {
-    bundle_root
-        .join("x86_64-w64-mingw32")
-        .join("lib")
+    bundle_root.join("x86_64-w64-mingw32").join("lib")
 }
 
 /// The `x86_64-w64-mingw32/include` directory inside a materialized
 /// bundle root.
 pub fn sysroot_include_dir(bundle_root: &Path) -> PathBuf {
-    bundle_root
-        .join("x86_64-w64-mingw32")
-        .join("include")
+    bundle_root.join("x86_64-w64-mingw32").join("include")
 }
 
 pub fn bin_dir(bundle_root: &Path) -> PathBuf {
@@ -210,10 +206,8 @@ mod tests {
     crate::timed_test!(sysroot_asset_url_layout_matches_catalogue, {
         // soldr-toolchain#114 host-neutral sysroot lives beside the
         // compiler bundle under its own tool subtree, same version/slug.
-        let url = mingw_w64_sysroot_asset_url_for(
-            MANAGED_MINGW_W64_GCC_VERSION,
-            MINGW_W64_GCC_SLUG,
-        );
+        let url =
+            mingw_w64_sysroot_asset_url_for(MANAGED_MINGW_W64_GCC_VERSION, MINGW_W64_GCC_SLUG);
         assert!(url.contains("/mingw-w64-sysroot/"));
         assert!(url.contains("/15.3.0posix-14.0.0-msvcrt-r1/windows-x64-gnu/"));
         assert!(url.ends_with("/bundle.tar.zst"));
