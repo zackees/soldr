@@ -15,8 +15,8 @@ is a **PE32+ x86-64** image. The PE parse is pure and unit-tested by
 `--no-cache` is deliberate: it exercises the *toolchain/link* path, which is
 what this lane guards, and side-steps an unrelated embedded-cache defect on
 win-gnu output (no `.pdb` is produced, so the cache's compiler-output
-materialization trips). That defect is tracked separately; conflating it with a
-link regression here would make the canary lie.
+materialization trips — soldr#2347). Conflating that cache defect with a link
+regression here would make the canary lie.
 
 Subcommands
 -----------

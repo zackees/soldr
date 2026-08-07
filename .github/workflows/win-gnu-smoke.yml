@@ -13,7 +13,8 @@ name: win-gnu link smoke (scheduled)
 #
 # Each lane builds soldr FROM THE CHECKOUT (a pinned release can predate the
 # win-gnu behaviour), then cross-builds a fixture to x86_64-pc-windows-gnu and
-# asserts the emitted binary is a PE32+ x86-64 image. The build + PE parse live
+# asserts the emitted binary is a PE32+ x86-64 image (via `--no-cache`, to
+# dodge the win-gnu embedded-cache `.pdb` defect soldr#2347). The build + PE parse live
 # in .github/scripts/win_gnu_link_smoke.py (pytest-covered) — this YAML stays
 # orchestration-only, per CLAUDE.md.
 #
