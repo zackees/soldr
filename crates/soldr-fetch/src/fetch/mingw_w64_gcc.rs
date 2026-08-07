@@ -164,6 +164,33 @@ pub fn cross_env_for_target(bundle_root: &Path, target_triple: &str) -> Vec<(Str
     ]
 }
 
+/// Prepare the compiler/linker env for `soldr build --target
+/// x86_64-pc-windows-gnu` (soldr#2336). Windows x64 host → managed
+/// WinLibs gcc bundle; Linux x64 host → managed conda-forge mingw
+/// **cross** toolchain (soldr-toolchain#114 Phase 2, PE-link-proven);
+/// any other host → a clear error. Returns the `bin/` dir to prepend to
+/// PATH plus the target-scoped cc-rs/cargo env pairs — so the blessed
+/// build's host-branch stays a single call and this policy lives in the
+/// fetch crate beside the bundles it selects.
+pub async fn prepare_win_gnu_env(
+    paths: &SoldrPaths,
+    target_triple: &str,
+) -> Result<(PathBuf, Vec<(String, String)>), SoldrError> {
+    if current_host_supports_mingw_w64_gcc() {
+        let root = ensure_mingw_w64_gcc(paths, target_triple).await?;
+        Ok((bin_dir(&root), env_for_target(&root, target_triple)))
+    } else if current_host_supports_mingw_w64_cross() {
+        let root = ensure_mingw_w64_cross(paths).await?;
+        Ok((bin_dir(&root), cross_env_for_target(&root, target_triple)))
+    } else {
+        Err(SoldrError::UnsupportedPlatform(format!(
+            "managed Windows GNU target {target_triple} requires a Windows x64 host \
+             (WinLibs bundle) or a Linux x64 host (conda-forge mingw cross toolchain); \
+             cargo-zigbuild is no longer used as the blessed Windows GNU fallback"
+        )))
+    }
+}
+
 /// The `x86_64-w64-mingw32/lib` directory inside a materialized sysroot
 /// (or compiler) bundle root — where CRT startup objects (`crt2.o`,
 /// `dllcrt2.o`) and import libraries live.

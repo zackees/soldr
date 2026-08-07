@@ -205,16 +205,13 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
     }
 
     // --------------------------- Windows GNU GCC ----------------------------
+    // Windows x64 host → WinLibs gcc; Linux x64 host → conda mingw cross
+    // toolchain (soldr-toolchain#114 Phase 2). Policy lives in the fetch crate.
     if target_triple == crate::fetch::mingw_w64_gcc::MINGW_W64_GCC_TARGET {
-        if !crate::fetch::mingw_w64_gcc::current_host_supports_mingw_w64_gcc() {
-            return Err(SoldrError::UnsupportedPlatform(format!(
-                "managed Windows GNU target {target_triple} requires a Windows x64 host; \
-                 cargo-zigbuild is no longer used as the blessed Windows GNU fallback"
-            )));
-        }
-        let mingw_root =
-            crate::fetch::mingw_w64_gcc::ensure_mingw_w64_gcc(paths, target_triple).await?;
-        add_mingw_w64_gcc_env(&mut prep, target_triple, &mingw_root);
+        let (mingw_bin, mingw_env) =
+            crate::fetch::mingw_w64_gcc::prepare_win_gnu_env(paths, target_triple).await?;
+        prep.path_dirs.insert(0, mingw_bin);
+        prep.env.extend(mingw_env);
     }
 
     // ------------------------------ Apple Darwin -----------------------------
@@ -495,6 +492,9 @@ fn find_dsymutil_in_rustup() -> Option<PathBuf> {
     None
 }
 
+// Retained for the env-injection unit test; the live path now goes
+// through `fetch::mingw_w64_gcc::prepare_win_gnu_env` (soldr#2336).
+#[cfg(test)]
 fn add_mingw_w64_gcc_env(
     prep: &mut BlessedPrep,
     target_triple: &str,
