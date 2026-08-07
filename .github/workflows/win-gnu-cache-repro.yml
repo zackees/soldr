@@ -8,6 +8,11 @@ name: win-gnu cache repro (#2348)
 
 on:
   workflow_dispatch:
+  # Temporary: run on push to the fix branch so the diagnostic can iterate
+  # before the workflow exists on the default branch. Removed before merge.
+  push:
+    branches:
+      - fix/win-gnu-rustup-home
 
 permissions:
   contents: read
