@@ -122,7 +122,12 @@ jobs:
         uses: ./.github/actions/cache-delta-experiment
         with:
           cache-dir: ${{ runner.temp }}/cache-delta-exp-soldr
-          shared-key: x86_64-unknown-linux-gnu
+          # soldr#1978 item 6 — was the bare triple `x86_64-unknown-linux-gnu`,
+          # one string collision away from poisoning a real lane. Namespaced
+          # to this experiment, and deliberately NOT on the `ws-` scheme: this
+          # workflow compares cache strategies, so its namespace must stay
+          # private to it.
+          shared-key: cache-delta-exp-x86_64-unknown-linux-gnu
           # Cook + build commands. Both go through soldr so the
           # zccache RUSTC_WRAPPER picks up the layered cache dir
           # naturally. soldr cook with no flags prepares the

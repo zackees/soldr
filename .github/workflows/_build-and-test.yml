@@ -110,7 +110,13 @@ jobs:
       - name: Restore cargo + target caches
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          shared-key: build-and-test-${{ inputs.target }}
+          # soldr#1978 item 6 — keyed on (profile, target), not on the job,
+          # so this lane shares one namespace with `lint` in ci.yml: both
+          # build the same dependency graph at the dev profile for the same
+          # triple. The build below passes `--target`, and lint was given a
+          # matching `--target` so both land in the same directory; without
+          # that the shared key would be cosmetic.
+          shared-key: ws-dev-${{ inputs.target }}
 
       # soldr#1335 — removed `Enable Windows line-table debug symbols`
       # + `Upload Windows test PDBs on failure`. Both gated on
