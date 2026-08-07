@@ -13,6 +13,10 @@ soldr-cache = { path = "../soldr-cache" }
 soldr-daemon = { path = "../soldr-daemon" }
 soldr-core = { path = "../soldr-core" }
 soldr-fetch = { path = "../soldr-fetch" }
+# soldr#2319: docker_cross probes PyPI for the host version before pinning the
+# container's soldr. reqwest is already in the tree via soldr-fetch; a direct
+# edge lets non-test code use it. (Also stays in dev-dependencies-inherited use.)
+reqwest = { workspace = true }
 
 cap-fs-ext = { workspace = true }
 cap-std = { workspace = true }
@@ -80,7 +84,6 @@ windows-sys = { version = "0.59", features = [
 
 [dev-dependencies]
 filetime = { workspace = true }
-reqwest = { workspace = true }
 running-process = { version = "4.8.1", default-features = false, features = ["client"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
