@@ -362,8 +362,12 @@ jobs:
         # without it only because `uv run` picked up the project .venv,
         # which CI does not have -- the same environment-parity trap that
         # bit the flake8 step in #2103.
+        # types-PyYAML: tests/test_wheel_lane_policy.py imports yaml (already
+        # importable in this env -- the Python tests step passes) but mypy
+        # needs the stub package to type it.
         run: >-
           uv run --no-project --with 'mypy>=1.18,<2' --with 'pytest>=8.0'
+          --with types-PyYAML
           python -m mypy src tests .github/scripts .github/actions ci tools .claude/hooks
 
 
