@@ -915,10 +915,18 @@ impl SocketPool {
     /// Acquire a slot, blocking FIFO-fashion while the pool is at
     /// capacity. The returned permit starts PENDING.
     pub(crate) async fn acquire(self: &Arc<Self>) -> PoolPermit {
+        if self.capacity.is_none() {
+            return PoolPermit {
+                pool: Arc::clone(self),
+                id: 0,
+                preempt: Arc::new(Notify::new()),
+                streaming: true,
+            };
+        }
         loop {
             {
                 let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-                if inner.used < self.capacity {
+                if inner.used < self.capacity.expect("bounded pool") {
                     inner.used += 1;
                     let id = self.next_id.fetch_add(1, Ordering::Relaxed);
                     let preempt = Arc::new(Notify::new());
@@ -948,7 +956,9 @@ impl SocketPool {
     #[cfg(test)]
     fn available(&self) -> usize {
         let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        self.capacity - inner.used
+        self.capacity
+            .map(|capacity| capacity - inner.used)
+            .unwrap_or(usize::MAX)
     }
 }
 
@@ -991,6 +1001,9 @@ impl PoolPermit {
 
 impl Drop for PoolPermit {
     fn drop(&mut self) {
+        if self.pool.capacity.is_none() {
+            return;
+        }
         let mut inner = self.pool.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.used = inner.used.saturating_sub(1);
         inner.pending.remove(&self.id);
@@ -1858,10 +1871,10 @@ mod tests {
     crate::timed_test!(max_sockets_defaults_to_sixteen_and_fails_safe, {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_segmented_env();
-        assert_eq!(parse_max_sockets(), 16);
+        assert_eq!(parse_max_sockets(), Some(16));
 
         std::env::set_var(MAX_SOCKETS_ENV_VAR, "4");
-        assert_eq!(parse_max_sockets(), 4);
+        assert_eq!(parse_max_sockets(), Some(4));
         std::env::set_var(MAX_SOCKETS_ENV_VAR, "0");
         assert_eq!(
             parse_max_sockets(),
@@ -1869,21 +1882,21 @@ mod tests {
             "0 disables the Bulk pool cap"
         );
         std::env::set_var(MAX_SOCKETS_ENV_VAR, "banana");
-        assert_eq!(parse_max_sockets(), 16);
+        assert_eq!(parse_max_sockets(), Some(16));
         clear_segmented_env();
     });
 
     crate::timed_test!(quick_pool_size_defaults_to_four_and_fails_safe, {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_segmented_env();
-        assert_eq!(parse_quick_pool_size(), 4);
+        assert_eq!(parse_quick_pool_size(), Some(4));
 
         std::env::set_var(QUICK_POOL_ENV_VAR, "8");
-        assert_eq!(parse_quick_pool_size(), 8);
+        assert_eq!(parse_quick_pool_size(), Some(8));
         std::env::set_var(QUICK_POOL_ENV_VAR, "0");
         assert_eq!(parse_quick_pool_size(), None, "0 disables the Quick pool cap");
         std::env::set_var(QUICK_POOL_ENV_VAR, "nope");
-        assert_eq!(parse_quick_pool_size(), 4);
+        assert_eq!(parse_quick_pool_size(), Some(4));
         clear_segmented_env();
     });
 
