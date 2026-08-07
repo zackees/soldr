@@ -189,7 +189,7 @@ mod tests {
         SoldrPaths::with_root(root)
     }
 
-    #[test]
+    #[test] // allow-bare-test: soldr#2310 install unit test (sync+fast); timed_test! migration is a follow-up
     fn entry_is_expired_respects_ttl_and_min_age() {
         let ttl = 2 * 24 * 3600; // 2 days
         let min = MIN_AGE_SECS;
@@ -203,7 +203,7 @@ mod tests {
         assert!(!entry_is_expired(min, ttl, min));
     }
 
-    #[test]
+    #[test] // allow-bare-test: soldr#2310 install unit test (sync+fast); timed_test! migration is a follow-up
     fn ttl_secs_env_overrides_config() {
         std::env::remove_var(TTL_DAYS_ENV_VAR);
         assert_eq!(ttl_secs(2), 2 * 24 * 3600);

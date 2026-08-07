@@ -185,7 +185,7 @@ mod tests {
         classify(t).unwrap()
     }
 
-    #[test]
+    #[test] // allow-bare-test: soldr#2310 install unit test (sync+fast); timed_test! migration is a follow-up
     fn install_target_url_is_remote_git() {
         match github("https://github.com/zackees/clud") {
             InstallTarget::GitHub {
@@ -199,7 +199,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test] // allow-bare-test: soldr#2310 install unit test (sync+fast); timed_test! migration is a follow-up
     fn install_target_slug_is_local_path_not_github() {
         // RED rule: `zackees/clud` (no scheme) is a LOCAL PATH, not GitHub.
         assert_eq!(
@@ -208,7 +208,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[test] // allow-bare-test: soldr#2310 install unit test (sync+fast); timed_test! migration is a follow-up
     fn install_target_dot_and_relative_and_abs_are_local() {
         for t in [".", "./crates/foo", "/abs/path", "~/x"] {
             assert!(
@@ -218,7 +218,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test] // allow-bare-test: soldr#2310 install unit test (sync+fast); timed_test! migration is a follow-up
     fn install_target_git_at_and_ssh_are_remote() {
         match github("git@github.com:zackees/clud.git") {
             InstallTarget::GitHub {
@@ -242,7 +242,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test] // allow-bare-test: soldr#2310 install unit test (sync+fast); timed_test! migration is a follow-up
     fn install_target_native_url_paths_parse() {
         match github("https://github.com/zackees/clud/tree/dev") {
             InstallTarget::GitHub { url_ref, .. } => {
@@ -270,7 +270,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[test] // allow-bare-test: soldr#2310 install unit test (sync+fast); timed_test! migration is a follow-up
     fn install_fragment_ref_parses() {
         match github("https://github.com/zackees/clud#dev") {
             InstallTarget::GitHub { url_ref, .. } => {

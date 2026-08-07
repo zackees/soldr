@@ -99,7 +99,7 @@ fn paths_equal(a: &Path, b: &Path) -> bool {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test] // allow-bare-test: soldr#2310 install unit test (sync+fast); timed_test! migration is a follow-up
     fn install_root_defaults_to_bin_installed() {
         let paths = SoldrPaths::with_root(PathBuf::from("/home/x/.soldr"));
         assert_eq!(
@@ -110,7 +110,7 @@ mod tests {
         assert_eq!(install_root(&paths, Some(&custom)), custom);
     }
 
-    #[test]
+    #[test] // allow-bare-test: soldr#2310 install unit test (sync+fast); timed_test! migration is a follow-up
     fn binary_ext_matches_triple() {
         assert_eq!(binary_ext_for_triple("x86_64-pc-windows-msvc"), ".exe");
         assert_eq!(binary_ext_for_triple("x86_64-unknown-linux-gnu"), "");

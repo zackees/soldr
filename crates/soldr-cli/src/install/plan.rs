@@ -167,13 +167,13 @@ fn human_size(bytes: u64) -> String {
 mod tests {
     use super::*;
 
-    #[test]
+    #[test] // allow-bare-test: soldr#2310 install unit test (sync+fast); timed_test! migration is a follow-up
     fn short_sha_is_first_seven() {
         assert_eq!(short_sha("9f2c1ab3d4e5"), "9f2c1ab");
         assert_eq!(short_sha("abc"), "abc");
     }
 
-    #[test]
+    #[test] // allow-bare-test: soldr#2310 install unit test (sync+fast); timed_test! migration is a follow-up
     fn human_size_scales() {
         assert_eq!(human_size(512), "512 B");
         assert_eq!(human_size(2048), "2.0 KB");

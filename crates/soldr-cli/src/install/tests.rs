@@ -12,7 +12,7 @@ fn try_parse(argv: &[&str]) -> Result<Cli, clap::Error> {
     Cli::try_parse_from(argv)
 }
 
-#[test]
+#[test] // allow-bare-test: soldr#2310 install unit test (sync+fast); timed_test! migration is a follow-up
 fn install_release_and_tag_are_mutually_exclusive() {
     // `--release` (install a Release) and `--tag` (build SOURCE at a git
     // tag) are contradictory; clap must reject the combination.
@@ -27,7 +27,7 @@ fn install_release_and_tag_are_mutually_exclusive() {
     assert!(err.is_err(), "--release + --tag must be a parse error");
 }
 
-#[test]
+#[test] // allow-bare-test: soldr#2310 install unit test (sync+fast); timed_test! migration is a follow-up
 fn install_head_branch_rev_tag_conflict() {
     // Any two raw source-ref flags conflict via the `source_ref` group.
     for pair in [
@@ -50,7 +50,7 @@ fn install_head_branch_rev_tag_conflict() {
     }
 }
 
-#[test]
+#[test] // allow-bare-test: soldr#2310 install unit test (sync+fast); timed_test! migration is a follow-up
 fn install_prebuilt_and_build_conflict() {
     let err = try_parse(&[
         "soldr",
@@ -62,7 +62,7 @@ fn install_prebuilt_and_build_conflict() {
     assert!(err.is_err(), "--prebuilt + --build must be a parse error");
 }
 
-#[test]
+#[test] // allow-bare-test: soldr#2310 install unit test (sync+fast); timed_test! migration is a follow-up
 fn install_bare_release_parses_as_latest() {
     // Bare `--release` must parse (default_missing_value = "").
     let cli = try_parse(&["soldr", "install", "https://github.com/o/r", "--release"])
@@ -155,7 +155,7 @@ crate::timed_test!(install_dry_run_prints_plan_and_does_not_fetch, {
 // unreliable inside the `soldr cargo test` sandbox. Gate with #[ignore]
 // (runnable via `cargo test -- --ignored`); the other install unit tests keep
 // CI coverage of the pipeline.
-#[test]
+#[test] // allow-bare-test: soldr#2310 install unit test (sync+fast); timed_test! migration is a follow-up
 #[ignore = "builds a fixture crate; needs toolchain+crates.io index -- run via `cargo test -- --ignored` (soldr#2310)"]
 fn install_local_dot_end_to_end() {
     // Build a tiny fixture crate and install it from a local path into
