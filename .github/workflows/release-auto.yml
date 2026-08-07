@@ -1933,6 +1933,12 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      # Checkout only for ci/smoke_release_artifacts.py — the smoke
+      # logic lives in a testable Python file, not inline YAML.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ needs.prepare.outputs.commit_sha }}
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-soldr-aarch64-apple-darwin
@@ -1945,39 +1951,11 @@ jobs:
 
       - name: Architecture-check and smoke archive and wheel
         shell: bash
-        env:
-          EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
-          python3 -m venv .venv
-          .venv/bin/python -m pip install --disable-pip-version-check dist/*.whl
-
-          expected="${EXPECTED_VERSION#v}"
-          wheel_version="$(.venv/bin/soldr version --json)"
-          printf 'ARM macOS wheel version: %s\n' "$wheel_version"
-          wheel_compact="$(printf '%s' "$wheel_version" | tr -d ' \n\r\t')"
-          printf '%s' "$wheel_compact" | grep -q "\"soldr_version\":\"${expected}\""
-
-          archive="dist/soldr-${EXPECTED_VERSION}-aarch64-apple-darwin.tar.zst"
-          test -f "$archive"
-          mkdir extracted
-          .venv/bin/soldr archive --input "$archive" --extract-dir extracted
-
-          file_output="$(file extracted/soldr)"
-          printf 'ARM macOS archive architecture: %s\n' "$file_output"
-          printf '%s' "$file_output" | grep -q 'Mach-O 64-bit executable arm64'
-          archive_archs="$(lipo -archs extracted/soldr)"
-          printf 'ARM macOS archive lipo architectures: %s\n' "$archive_archs"
-          printf '%s' "$archive_archs" | grep -qw arm64
-
-          archive_version="$(extracted/soldr version --json)"
-          printf 'ARM macOS archive version: %s\n' "$archive_version"
-          archive_compact="$(printf '%s' "$archive_version" | tr -d ' \n\r\t')"
-          printf '%s' "$archive_compact" | grep -q "\"soldr_version\":\"${expected}\""
-          extracted/soldr --version
-          extracted/soldr-daemon --help >/dev/null
-          extracted/crgx --version
-          extracted/cargo-chef --version
+          python3 ci/smoke_release_artifacts.py \
+            --target aarch64-apple-darwin \
+            --expected-version '${{ needs.prepare.outputs.version }}'
 
   # soldr#2294: Windows MSVC artifacts are cross-built on Linux;
   # EXECUTION still needs native Windows. One smoke job per arch,
@@ -2004,6 +1982,12 @@ jobs:
             target: aarch64-pc-windows-msvc
 
     steps:
+      # Checkout only for ci/smoke_release_artifacts.py — the smoke
+      # logic lives in a testable Python file, not inline YAML.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ needs.prepare.outputs.commit_sha }}
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-soldr-${{ matrix.target }}
@@ -2019,53 +2003,13 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Smoke archive and wheel
+      - name: Smoke archive and wheel (incl. required PDB sidecar)
         shell: bash
-        env:
-          EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
-          python -m venv .venv
-          .venv/Scripts/python -m pip install --disable-pip-version-check dist/*.whl
-
-          expected="${EXPECTED_VERSION#v}"
-          out="$(.venv/Scripts/soldr.exe --version)"
-          printf 'Windows ${{ matrix.arch }} wheel — soldr --version: %s\n' "$out"
-          case "$out" in
-              "soldr "*) ;;
-              *) echo "ERROR: 'soldr --version' output did not start with 'soldr ' (soldr#1140 stub guard)." >&2; exit 1 ;;
-          esac
-          wheel_version="$(.venv/Scripts/soldr.exe version --json)"
-          test -n "$wheel_version"
-          printf 'Windows ${{ matrix.arch }} wheel version: %s\n' "$wheel_version"
-          wheel_compact="$(printf '%s' "$wheel_version" | tr -d ' \n\r\t')"
-          printf '%s' "$wheel_compact" | grep -q "\"soldr_version\":\"${expected}\""
-
-          archive="dist/soldr-${EXPECTED_VERSION}-${{ matrix.target }}.tar.zst"
-          test -f "$archive"
-          mkdir extracted
-          .venv/Scripts/soldr.exe archive --input "$archive" --extract-dir extracted
-
-          # The archive must ship the full Windows runtime surface,
-          # including the required PDB sidecar (docs/DEBUG_SIDECARS.md).
-          for required in soldr.exe soldr-daemon.exe crgx.exe cargo-chef.exe manifest.json; do
-            test -f "extracted/$required" \
-              || { echo "missing $required in $archive" >&2; exit 1; }
-          done
-          if ! find extracted -maxdepth 1 -type f \( -name 'soldr.pdb' -o -name 'soldr_cli.pdb' \) | grep -q .; then
-            echo "missing soldr PDB sidecar in $archive" >&2
-            exit 1
-          fi
-
-          archive_version="$(extracted/soldr.exe version --json)"
-          test -n "$archive_version"
-          printf 'Windows ${{ matrix.arch }} archive version: %s\n' "$archive_version"
-          archive_compact="$(printf '%s' "$archive_version" | tr -d ' \n\r\t')"
-          printf '%s' "$archive_compact" | grep -q "\"soldr_version\":\"${expected}\""
-          extracted/soldr.exe --version
-          extracted/soldr-daemon.exe --help >/dev/null
-          extracted/crgx.exe --version
-          extracted/cargo-chef.exe --version
+          python ci/smoke_release_artifacts.py \
+            --target '${{ matrix.target }}' \
+            --expected-version '${{ needs.prepare.outputs.version }}'
 
   publish:
     name: Attest and publish release assets
