@@ -366,7 +366,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             // No-op when not on Windows, when the user opted out via
             // `SOLDR_MSVC_DISCOVERY=off`, when LIB is already set, or
             // when the resolved target is non-MSVC.
-            ensure_msvc_host_env_for_native(&full_args);
+            ensure_msvc_host_env_for_native(&full_args).await;
 
             guarded_exit(
                 cargo_front_door::run_cargo_front_door(
@@ -394,7 +394,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             // `Commands::Build` does, so `soldr cargo build` /
             // `soldr cargo test` on a native Windows MSVC target also
             // succeed from a plain PowerShell without `$env:LIB`.
-            ensure_msvc_host_env_for_native(&args);
+            ensure_msvc_host_env_for_native(&args).await;
             guarded_exit(
                 cargo_front_door::run_cargo_front_door(
                     &args,
@@ -985,7 +985,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 // `soldr test` on Windows behave the same as the
                 // explicit `soldr cargo ...` forms with respect to
                 // rust-lld's `LIB` requirement.
-                ensure_msvc_host_env_for_native(&cargo_args);
+                ensure_msvc_host_env_for_native(&cargo_args).await;
                 guarded_exit(
                     cargo_front_door::run_cargo_front_door(
                         &cargo_args,

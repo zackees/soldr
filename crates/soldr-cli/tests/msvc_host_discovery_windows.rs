@@ -107,7 +107,9 @@ timed_test!(
         );
 
         // ----- The contract under test. -----
-        let applied = ensure_msvc_env_for_native("x86_64-pc-windows-msvc")
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let applied = rt
+            .block_on(ensure_msvc_env_for_native("x86_64-pc-windows-msvc"))
             .expect("discovery should succeed on a Windows host with VS installed");
 
         // ----- GREEN check: env is now usable. -----
