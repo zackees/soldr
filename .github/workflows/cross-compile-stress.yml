@@ -1,0 +1,163 @@
+name: Cross-compile stress matrix
+
+# soldr#2337 — a dispatch-only sweep whose whole point is to SURFACE GAPS.
+#
+# Each host OS (Linux / macOS / Windows), on both x64 and arm runners, cross-
+# builds the soldr binary for the OTHER two OSes, across the full Windows
+# {arch} x {abi} grid (msvc + gnu + gnullvm). Where a cross path is missing an
+# asset, a linker, or a sysroot, its cell goes red — that is the signal.
+#
+# TRIGGER DISCIPLINE: workflow_dispatch ONLY. No push / pull_request triggers.
+# This runs dozens of full cross-builds; a path trigger is exactly what got the
+# old windows-gnu-mingw-validation lane deleted in soldr#1982. It runs when a
+# human asks.
+#
+# The cell -> runner/target mapping, the known-gap classification, and the
+# pass/fail grid all live in .github/scripts/cross_stress_matrix.py (unit-tested
+# by test_cross_stress_matrix.py) — this YAML stays orchestration-only, per
+# CLAUDE.md. Known gaps (win-gnu from a non-Windows host, and gnullvm) do NOT
+# fail the run; any other red cell does.
+
+on:
+  workflow_dispatch:
+    inputs:
+      host_arch:
+        description: "Host arch to sweep: both | x64 | arm64"
+        required: false
+        default: "both"
+        type: choice
+        options:
+          - both
+          - x64
+          - arm64
+      include_known_gaps:
+        description: "Include the known-gap cells (win-gnu / gnullvm)"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cross-compile-stress-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # Authenticated GitHub Releases lookups (5,000/hr) for soldr's asset fetches
+  # instead of the unauthenticated 60/hr per-runner-IP budget.
+  SOLDR_GITHUB_TOKEN: ${{ github.token }}
+
+jobs:
+  resolve-matrix:
+    name: Resolve stress matrix
+    runs-on: ubuntu-24.04
+    # Checkout plus one resolver script; seconds in practice.
+    timeout-minutes: 15
+    outputs:
+      matrix: ${{ steps.resolve.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Resolve cells
+        id: resolve
+        shell: bash
+        run: |
+          python3 .github/scripts/cross_stress_matrix.py matrix \
+            --host-arch "${{ inputs.host_arch }}" \
+            --include-known-gaps "${{ inputs.include_known_gaps }}" \
+            --output "$GITHUB_OUTPUT"
+
+  cross-build:
+    name: ${{ matrix.name }} (${{ matrix.target }})
+    needs: resolve-matrix
+    runs-on: ${{ matrix.runner }}
+    # A cross-build of the whole soldr workspace; ~3x the observed warm time.
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.resolve-matrix.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          submodules: recursive
+
+      # Rust std for the cross target. soldr provisions the C cross toolchain
+      # (sysroots, compiler, linker) itself — that machinery is what this sweep
+      # stresses — so there is deliberately NO host apt/brew cross toolchain.
+      - name: Install Rust toolchain + cross target
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.94.1
+          targets: ${{ matrix.target }}
+
+      # The pinned soldr that drives the cross-build (self-provisions the
+      # toolchain). SHA + version kept in step with every other build lane; the
+      # setup-soldr pin guards assert both stay current.
+      - name: Setup soldr
+        uses: zackees/setup-soldr@62d1596b70168e422156f12273a2ed476d3a16dc
+        with:
+          version: 0.8.29
+          toolchain: 1.94.1
+          cache: false
+
+      # continue-on-error: a red cross-build is a finding here, not an abort.
+      # The record step below turns the outcome into a result row regardless.
+      - name: Cross-build soldr — soldr build --target ${{ matrix.target }}
+        id: build
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::group::soldr build --target ${{ matrix.target }}"
+          soldr build \
+            --target "${{ matrix.target }}" \
+            --package soldr-cli \
+            --bin soldr
+          echo "::endgroup::"
+
+      - name: Record result
+        if: always()
+        shell: bash
+        run: |
+          python3 .github/scripts/cross_stress_matrix.py verify-binary \
+            --host-os "${{ matrix.host_os }}" \
+            --host-arch "${{ matrix.host_arch }}" \
+            --target "${{ matrix.target }}" \
+            --binary "target/${{ matrix.target }}/debug/soldr${{ matrix.exe_suffix }}" \
+            --build-outcome "${{ steps.build.outcome }}" \
+            --output "result.json"
+
+      - name: Upload result row
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: result-${{ matrix.host_os }}-${{ matrix.host_arch }}-${{ matrix.target }}
+          path: result.json
+          if-no-files-found: warn
+          retention-days: 7
+
+  summarize:
+    name: Grid summary
+    needs: cross-build
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Download result rows
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          path: results
+          pattern: result-*
+          merge-multiple: true
+
+      # Exits non-zero if any NON-gap cell failed — that is the regression gate.
+      - name: Render grid + gate on unexpected failures
+        shell: bash
+        run: |
+          python3 .github/scripts/cross_stress_matrix.py summarize \
+            --results-dir results \
+            --output "$GITHUB_STEP_SUMMARY"
