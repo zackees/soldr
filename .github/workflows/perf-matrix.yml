@@ -296,6 +296,38 @@ jobs:
       # same context is available at `runs-on:` and inside step
       # `if:` blocks. Mirrors the gate-step pattern used by the
       # bench job below.
+      #
+      # soldr#1978 item 7 proposed replacing this whole pattern: resolve the
+      # scope in `setup`, then select the *matrix itself* via `fromJSON` (as
+      # `ci.yml` does for `pep517-daemon-smoke`), so an out-of-scope cell
+      # never expands and never takes a runner. The pattern is right and it
+      # does transfer. It is deliberately not applied yet, because counted
+      # against the matrices that actually exist today it buys almost
+      # nothing:
+      #
+      #   build-soldr  linux                          1 cell
+      #   bench        linux x {medium, sqlite-link}  2 cells
+      #   evaluate     linux                          1 cell
+      #
+      # Every cell is linux, so any scope containing `linux` or `all`
+      # selects all of them. Scenarios are not a matrix axis at all -- they
+      # are passed into the bench job via SELECTED_SCENARIOS -- so narrowing
+      # the scenario axis wastes no allocation. The only reachable waste is
+      # a fixture-narrowed branch (e.g. `perf/linux-sqlite-touch`) starting
+      # the `medium` bench cell and skipping it: one ubuntu-24.04 slot.
+      #
+      # The trade matters because this workflow cannot be validated from an
+      # ordinary PR branch -- perf-matrix triggers only on `main`, `perf/**`,
+      # and `evaluate/**` (see PERF.md "How it triggers"), so the change
+      # would either land unexercised or require deliberately spending a
+      # perf run to test it.
+      #
+      # Revisit when the win / mac-arm rows in the matrix below actually
+      # land: at that point out-of-scope cells are scarce Windows and macOS
+      # runners rather than one ubuntu slot, the pattern pays for itself,
+      # and it can be validated by the same narrow `perf/**` push that
+      # exercises the new platforms. Measure the cell count again before
+      # trusting this comment.
       - name: Gate cell against resolved scope
         id: gate
         env:
