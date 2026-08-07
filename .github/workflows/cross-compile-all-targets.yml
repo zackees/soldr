@@ -37,17 +37,10 @@ name: Cross-compile soldr (bootstrap + all targets, single linux-x86_64 runner f
 # targets from a clean Linux x64 runner before merge.
 
 on:
+  # Opt-in only: this is a long-running full cross-compile sweep, so it no
+  # longer path-triggers on every PR (it burned CI on nearly every code change).
+  # Run it deliberately via the Actions "Run workflow" button / `gh workflow run`.
   workflow_dispatch:
-  pull_request:
-    paths:
-      - "crates/soldr-cli/src/**"
-      - "crates/soldr-cli/tests/**"
-      - "src/soldr/**"
-      - ".github/actions/prepare-cross-toolchain/**"
-      - ".github/workflows/_ci-cross-build-linux.yml"
-      - ".github/workflows/cross-compile-all-targets.yml"
-      - ".github/scripts/fetch_or_build_tool.sh"
-      - "ci/canonical-targets.json"
 
 permissions:
   contents: read
@@ -115,10 +108,10 @@ jobs:
 
       # Bare cargo here — soldr isn't built yet. This is the ONLY job
       # in the workflow that runs cargo without going through soldr.
-      # Once the binary at target/x86_64-unknown-linux-gnu/release/soldr
+      # Once the binary at target/x86_64-unknown-linux-gnu/debug/soldr
       # exists, the rest of this job (and every downstream cross job)
       # drives cargo via that soldr.
-      - name: Build soldr — --release x86_64-unknown-linux-gnu (bare cargo bootstrap)
+      - name: Build soldr — debug x86_64-unknown-linux-gnu (bare cargo bootstrap)
         env:
           # The bootstrap build deliberately doesn't engage zccache —
           # the binary it produces is the thing that engages zccache
@@ -128,23 +121,22 @@ jobs:
           set -euo pipefail
           .github/scripts/print_build_banner.sh \
               "soldr-cli (in-tree)" \
-              release \
+              debug \
               x86_64-unknown-linux-gnu \
               "cargo (bare bootstrap, RUSTC_WRAPPER unset)" \
               "$(pwd)/Cargo.toml"
           cargo build \
             --package soldr-cli \
-            --release \
             --locked \
             --target x86_64-unknown-linux-gnu
-          ls -la target/x86_64-unknown-linux-gnu/release/soldr
-          file target/x86_64-unknown-linux-gnu/release/soldr
+          ls -la target/x86_64-unknown-linux-gnu/debug/soldr
+          file target/x86_64-unknown-linux-gnu/debug/soldr
 
       - name: Stage bootstrap-soldr artifact
         run: |
           set -euo pipefail
           mkdir -p dist/bootstrap
-          cp target/x86_64-unknown-linux-gnu/release/soldr dist/bootstrap/soldr
+          cp target/x86_64-unknown-linux-gnu/debug/soldr dist/bootstrap/soldr
           chmod +x dist/bootstrap/soldr
           # tar+zstd the single binary so the artifact name lines up
           # with the rest of the workflow's tar.zst convention.
@@ -165,7 +157,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/soldr-bin"
-          cp target/x86_64-unknown-linux-gnu/release/soldr "$RUNNER_TEMP/soldr-bin/soldr"
+          cp target/x86_64-unknown-linux-gnu/debug/soldr "$RUNNER_TEMP/soldr-bin/soldr"
           chmod +x "$RUNNER_TEMP/soldr-bin/soldr"
           echo "$RUNNER_TEMP/soldr-bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/soldr-bin/soldr" --version
@@ -174,7 +166,7 @@ jobs:
         run: |
           set -euo pipefail
           target=x86_64-unknown-linux-gnu
-          soldr build --release --locked --target "$target" \
+          soldr build --locked --target "$target" \
             --package soldr-cli --bin soldr
           soldr cargo clippy --locked --target "$target" \
             --package soldr-cli --lib --no-deps -- -D warnings
@@ -201,7 +193,7 @@ jobs:
           set -euo pipefail
           python3 .github/scripts/verify_glibc_baseline.py \
             --max-glibc 2.28 \
-            target/x86_64-unknown-linux-gnu/release/soldr
+            target/x86_64-unknown-linux-gnu/debug/soldr
 
       - name: Stage layout for linux-x86 archive
         run: mkdir -p dist/package dist/zccache-stage stats
@@ -211,7 +203,7 @@ jobs:
       - name: Stage soldr binary for linux-x86 archive
         run: |
           set -euo pipefail
-          cp target/x86_64-unknown-linux-gnu/release/soldr dist/package/soldr
+          cp target/x86_64-unknown-linux-gnu/debug/soldr dist/package/soldr
           chmod +x dist/package/soldr
 
       - name: Fetch matched zccache release for linux-x86
@@ -314,7 +306,7 @@ jobs:
           compression-level: 0
 
   cross-compile:
-    name: ${{ matrix.friendly }} (--release ${{ matrix.target }})
+    name: ${{ matrix.friendly }} (debug ${{ matrix.target }})
     needs: bootstrap-and-linux-x86
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -412,7 +404,7 @@ jobs:
           soldr cargo test --no-run --locked --target '${{ matrix.target }}' \
             --package soldr-cli --lib
 
-      - name: Cross-compile soldr — --release ${{ matrix.target }}
+      - name: Cross-compile soldr — debug ${{ matrix.target }}
         id: build
         env:
           CARGO_TARGET_DIR: target
@@ -430,7 +422,7 @@ jobs:
           log=stats/${{ matrix.friendly }}.log
           .github/scripts/print_build_banner.sh \
               "soldr-cli (in-tree)" \
-              release \
+              debug \
               "${{ matrix.target }}" \
               "soldr build" \
               "$(pwd)/Cargo.toml" | tee -a "$log"
@@ -438,7 +430,6 @@ jobs:
           t_start_ns=$(date +%s%N)
           soldr build \
             --package soldr-cli \
-            --release \
             --locked \
             --target "${{ matrix.target }}" 2>&1 | tee -a "$log"
           t_end_ns=$(date +%s%N)
@@ -464,7 +455,7 @@ jobs:
           set -euo pipefail
           python3 .github/scripts/verify_glibc_baseline.py \
             --max-glibc 2.28 \
-            "target/${{ matrix.target }}/release/soldr"
+            "target/${{ matrix.target }}/debug/soldr"
 
       - name: Capture per-target stats
         run: |
@@ -485,7 +476,7 @@ jobs:
             "friendly":          "${{ matrix.friendly }}",
             "target":            "${{ matrix.target }}",
             "tool":              "soldr-build",
-            "profile":           "release",
+            "profile":           "debug",
             "wall_clock_ms":     ${{ steps.build.outputs.duration_ms }},
             "zccache": {
               "compilations":    ${comp:-null},
@@ -549,18 +540,18 @@ jobs:
         run: |
           set -euo pipefail
           suffix="${{ matrix.exe_suffix }}"
-          built="target/${{ matrix.target }}/release/soldr${suffix}"
+          built="target/${{ matrix.target }}/debug/soldr${suffix}"
           if [ ! -f "$built" ]; then
             echo "expected soldr binary not found at $built" >&2
-            ls -la "target/${{ matrix.target }}/release/" >&2 || true
+            ls -la "target/${{ matrix.target }}/debug/" >&2 || true
             exit 1
           fi
           cp "$built" "dist/package/soldr${suffix}"
           chmod +x "dist/package/soldr${suffix}" || true
           if [[ "${{ matrix.target }}" == *-pc-windows-msvc ]]; then
             for cand in \
-              "target/${{ matrix.target }}/release/soldr.pdb" \
-              "target/${{ matrix.target }}/release/soldr_cli.pdb"; do
+              "target/${{ matrix.target }}/debug/soldr.pdb" \
+              "target/${{ matrix.target }}/debug/soldr_cli.pdb"; do
               if [ -f "$cand" ]; then
                 cp "$cand" "dist/package/$(basename "$cand")"
                 break
