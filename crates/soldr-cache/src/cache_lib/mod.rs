@@ -61,8 +61,20 @@ pub fn gc_log_dir(paths: &SoldrPaths) -> PathBuf {
 }
 
 /// Directory that holds soldr-daemon's IPC endpoint, PID file, and logs.
+///
+/// soldr#2352: for DEV builds this is namespaced by a per-version stamp
+/// (`soldr-daemon/dev-<stamp>/`) so two soldr versions sharing `~/.soldr-dev`
+/// get independent pid files / lifecycle logs / unix sockets and never displace
+/// each other's daemon. The displace-stale check keys on the pid file, so the
+/// endpoint alone (the pipe name) is not enough — the whole identity must move.
+/// Official builds keep the bare `soldr-daemon/` (single-daemon prod semantics).
+/// `dev_daemon_stamp` is a pure hash (no I/O), so this stays a path computation.
 pub fn soldr_daemon_dir(paths: &SoldrPaths) -> PathBuf {
-    paths.cache.join("soldr-daemon")
+    let base = paths.cache.join("soldr-daemon");
+    match dev_daemon_stamp(paths) {
+        Some(stamp) => base.join(format!("dev-{stamp}")),
+        None => base,
+    }
 }
 
 /// Unix-domain-socket path used by soldr-daemon on Unix. On Windows the
@@ -149,7 +161,94 @@ pub fn compose_daemon_pipe_name(user_identity: &[u8], cache_root: &Path) -> Stri
 #[cfg(windows)]
 pub fn daemon_pipe_name(paths: &SoldrPaths) -> Result<String, String> {
     let identity = windows_user_identity()?;
-    Ok(compose_daemon_pipe_name(&identity, &paths.cache))
+    let base = compose_daemon_pipe_name(&identity, &paths.cache);
+    // soldr#2352 slice 1: version/install-isolate the DEV daemon so two soldr
+    // builds sharing `~/.soldr-dev` don't rendezvous on one pipe and displace
+    // each other as "stale-version" every call. Official builds keep the bare
+    // name (single-daemon prod semantics on `~/.soldr`).
+    Ok(match dev_daemon_stamp(paths) {
+        Some(stamp) => format!("{base}-{stamp}"),
+        None => base,
+    })
+}
+
+/// A per-version stamp for the DEV daemon identity (soldr#2352), or `None` for
+/// official builds. It is a deterministic 16-hex hash of the versioned root
+/// (`~/.soldr-dev/v<X.Y.Z>`): distinct soldr versions yield distinct stamps, so
+/// their daemons never share a pid file or pipe — while the client and the
+/// same-version daemon it spawns derive the identical value with **no shared
+/// file and no I/O** (important, because [`soldr_daemon_dir`] is called widely
+/// and must stay a pure path computation).
+///
+/// Official builds return `None`, keeping the bare `soldr-daemon/` dir + pipe so
+/// a newer release still displaces the old daemon on upgrade (prod semantics).
+///
+/// Isolating same-*version* rebuilds (a persisted random per install, read by
+/// both sides from `<versioned_root>/daemon-id`) is a documented follow-up in
+/// soldr#2352; this deterministic-per-version stamp is the side-effect-free
+/// foundation that fixes the reported cross-version thrash.
+fn dev_daemon_stamp(paths: &SoldrPaths) -> Option<String> {
+    if soldr_core::build_provenance::is_official_build() {
+        return None;
+    }
+    Some(deterministic_dev_stamp(&paths.versioned_root()))
+}
+
+fn deterministic_dev_stamp(versioned_root: &Path) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    versioned_root.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+#[cfg(test)]
+mod dev_daemon_stamp_tests {
+    use super::*;
+
+    fn stamp_is_valid(s: &str) -> bool {
+        s.len() == 16 && s.bytes().all(|b| b.is_ascii_hexdigit())
+    }
+
+    crate::timed_test!(dev_stamp_is_deterministic_hex_and_version_scoped, {
+        // Same versioned root -> identical stamp (client + same-version daemon
+        // agree with no shared file); different versions -> different stamps.
+        let a = deterministic_dev_stamp(Path::new("/home/u/.soldr-dev/v1.0.0"));
+        let b = deterministic_dev_stamp(Path::new("/home/u/.soldr-dev/v1.0.0"));
+        let c = deterministic_dev_stamp(Path::new("/home/u/.soldr-dev/v2.0.0"));
+        assert!(stamp_is_valid(&a), "stamp must be 16 hex: {a}");
+        assert_eq!(a, b, "same version must agree");
+        assert_ne!(a, c, "distinct versions must not collide");
+    });
+
+    crate::timed_test!(dev_build_stamps_the_daemon_dir_distinctly_per_version, {
+        // The test binary is a dev (non-official) build, so the daemon dir is
+        // namespaced by the per-version stamp — the pid file / lifecycle / sock
+        // then live under distinct dirs for distinct versions (soldr#2352).
+        let p1 = crate::core::SoldrPaths::with_root(Path::new("/x/.soldr-dev").into());
+        let dir = soldr_daemon_dir(&p1);
+        let s = dir.to_string_lossy().replace('\\', "/");
+        assert!(
+            s.contains("/soldr-daemon/dev-"),
+            "dev daemon dir must carry the stamp segment: {s}"
+        );
+        // pid + sock inherit the stamped dir automatically.
+        assert!(daemon_pid_path(&p1)
+            .to_string_lossy()
+            .replace('\\', "/")
+            .contains("/soldr-daemon/dev-"));
+    });
+
+    #[cfg(windows)]
+    crate::timed_test!(dev_build_pipe_carries_the_same_stamp_as_the_dir, {
+        let paths = crate::core::SoldrPaths::with_root(std::env::temp_dir().join("wg2352"));
+        let stamp = dev_daemon_stamp(&paths).expect("dev build must produce a stamp");
+        assert!(stamp_is_valid(&stamp));
+        let pipe = daemon_pipe_name(&paths).expect("pipe name");
+        assert!(
+            pipe.ends_with(&format!("-{stamp}")),
+            "pipe must carry the same stamp as the dir: {pipe}"
+        );
+    });
 }
 
 /// Opaque, stable per-user identity: the raw bytes of the current process
