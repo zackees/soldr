@@ -1878,56 +1878,6 @@ fn known_cargo_build_target_prefers_defaulted_target_then_env() {
 }
 
 #[test]
-fn dylint_subcommand_suppresses_windows_target_injection() {
-    // soldr#2350: a `cargo dylint` lint library is a host cdylib. Injecting the
-    // MSVC build target nests the stamped `@<toolchain>.dll` under
-    // `target/.../<triple>/release/`, where cargo-dylint's lookup (which expects
-    // `target/.../release/`) cannot find it. dylint must build host-default.
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _guard = EnvVarGuard::remove("CARGO_BUILD_TARGET");
-    assert!(!target::should_inject_windows_target(
-        &argvec("dylint --all"),
-        true,
-    ));
-    assert!(!target::should_inject_windows_target(
-        &argvec("dylint"),
-        true
-    ));
-}
-
-#[test]
-fn non_dylint_build_injects_windows_target_when_unspecified() {
-    // The MSVC-on-Windows default still applies to ordinary builds.
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _guard = EnvVarGuard::remove("CARGO_BUILD_TARGET");
-    assert!(target::should_inject_windows_target(
-        &argvec("build --release"),
-        false,
-    ));
-}
-
-#[test]
-fn explicit_target_or_env_suppresses_windows_target_injection() {
-    // Unchanged behavior: an explicit --target or a caller-set
-    // CARGO_BUILD_TARGET means soldr does not inject its own default.
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    {
-        let _guard = EnvVarGuard::remove("CARGO_BUILD_TARGET");
-        assert!(!target::should_inject_windows_target(
-            &argvec("build --target x86_64-pc-windows-gnu"),
-            false,
-        ));
-    }
-    {
-        let _guard = EnvVarGuard::set("CARGO_BUILD_TARGET", "x86_64-pc-windows-msvc");
-        assert!(!target::should_inject_windows_target(
-            &argvec("build"),
-            false
-        ));
-    }
-}
-
-#[test]
 fn extract_target_arg_handles_space_separated_form() {
     assert_eq!(
         extract_target_arg(&argvec(
