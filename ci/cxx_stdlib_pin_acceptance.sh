@@ -37,6 +37,17 @@ cd "$FIXTURE"
 "$SOLDR_BIN" build --target "$TARGET" -vv 2>&1 | tee "$LOG"
 
 echo "== assertions =="
+# 0. The fixture's C++ was compiled by the catalogue g++ — the compiler pin
+#    (CXX_<triple> / CMAKE_CXX_COMPILER) is what keeps compile and link on
+#    one stdlib; CXXSTDLIB is the belt-and-braces knob on top.
+#    (cc-rs does not echo compiler command lines even under -vv; its env
+#     resolution dump is the observable: CXX_<triple> = Some(<g++ path>).)
+grep -E "CXX_${TARGET//-/_} = Some\(.*conda-linux-gnu-g\+\+" "$LOG" >/dev/null \
+    || { echo "FAIL: cc-rs did not resolve the catalogue g++ for the C++ half" >&2; exit 1; }
+echo "ok: cc-rs resolved the catalogue g++ (CXX_${TARGET//-/_})"
+grep -E "CXX compiler identification is GNU" "$LOG" >/dev/null \
+    || { echo "FAIL: CMake did not identify a GNU C++ compiler" >&2; exit 1; }
+echo "ok: CMake configured with the catalogue g++ (GNU identification)"
 # 1. No -lc++ on any compile/link line (word-bounded: -lstdc++ must not match).
 if grep -E '(^|[ "=])-lc\+\+($|[ "])' "$LOG"; then
     echo "FAIL: a link line requested -lc++ (LLVM libc++)" >&2
@@ -76,4 +87,24 @@ else
     echo "$DYN" >&2
     exit 1
 fi
+# 4. RED half — reproduce the clud#858 mechanism. The vendored whisper-style
+#    picker in build.rs sniffs zig signals and does NOT read CXXSTDLIB, so a
+#    leaked ZIG_COMMAND makes it emit -lc++ while the catalogue GNU driver
+#    (libstdc++ only) does the final link. That build MUST fail with the
+#    exact downstream error; if it ever starts passing, either the sysroot
+#    grew a libc++ (env pin story changed) or the fixture lost its teeth.
+echo "== RED half: leaked zig signal must reproduce clud#858 =="
+REDLOG="$(mktemp /tmp/cxx-stdlib-pin-red.XXXXXX.log)"
+"$SOLDR_BIN" cargo clean --target "$TARGET" -p cxx-stdlib-pin 2>/dev/null || true
+# --no-cache: the compile cache must not replay the green run's link
+# artifact for this deliberately-broken variant (observed: with caching on,
+# the changed `-l dylib=c++` link flag was served a stale cached link).
+if ZIG_COMMAND=zig "$SOLDR_BIN" --no-cache build --target "$TARGET" >"$REDLOG" 2>&1; then
+    echo "FAIL: build succeeded despite the zig-sniffed -lc++ on a libstdc++-only toolchain" >&2
+    exit 1
+fi
+grep -E "cannot find -lc\+\+" "$REDLOG" >/dev/null \
+    || { echo "FAIL: RED build failed for an unrelated reason:" >&2; tail -30 "$REDLOG" >&2; exit 1; }
+echo "ok: leaked ZIG_COMMAND reproduces 'ld: cannot find -lc++' (clud#858 mechanism)"
+
 echo "PASS: cxx-stdlib-pin acceptance ($TARGET)"
