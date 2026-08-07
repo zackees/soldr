@@ -35,6 +35,8 @@ use wait_timeout::ChildExt;
 
 mod build_session;
 mod cache_plan;
+/// soldr#2302 — per-unit cache HIT/MISS annotations + auto stats summary.
+pub(crate) mod cache_states;
 mod clang_cl_shim;
 mod component_install;
 mod config_args;
@@ -1983,6 +1985,25 @@ pub(crate) async fn run_cargo_front_door(
     }
     let compile_journal_start_len = file_len(&embedded_compile_journal_path(&paths));
     let compile_fallback_cursor = crate::compile_dispatch::compile_daemon_fallback_cursor(&paths);
+    // soldr#2302: live per-unit HIT/MISS annotations. Only tail a real cache
+    // session's journal — a `--no-cache` run has none, so nothing prints (which
+    // is also the acceptance criterion). Stamp with the same elapsed-seconds
+    // format as the relayed cargo output when that prefix is on, so the two
+    // read as one stream in a CI log.
+    let cache_state_tail = cache_plan.zccache_session().and_then(|_| {
+        let stamp_from = timestamp_tee::should_timestamp(
+            std::env::var(timestamp_tee::TIMESTAMP_LINES_ENV_VAR)
+                .ok()
+                .as_deref(),
+            std::io::stderr().is_terminal(),
+        )
+        .then(Instant::now);
+        cache_states::CacheStateTail::start(
+            embedded_compile_journal_path(&paths),
+            compile_journal_start_len,
+            stamp_from,
+        )
+    });
     // Everything above is pure soldr overhead the user pays before Cargo
     // starts. Emit the breakdown here so the total excludes Cargo itself.
     profile.finish_labeled("cargo front door", "pre_spawn_tail");
@@ -1999,6 +2020,12 @@ pub(crate) async fn run_cargo_front_door(
         run_command_inheriting_stdio(&mut command, cargo_wait_timeout)
             .map(|status| (status, None, None))
     };
+    // soldr#2302: cargo has exited, so no more compiles will land — drain the
+    // final journal records and stop the per-unit tail before the tail summary
+    // prints, on both the success and error paths.
+    if let Some(tail) = cache_state_tail {
+        tail.stop_and_join();
+    }
     // soldr#1843: BuildSessionStart must land before any BuildSessionEnd below.
     let _ = session_publish.join();
     let (status, diagnostic_capture, cargo_artifact_paths) = match cargo_run_result {
@@ -2045,6 +2072,13 @@ pub(crate) async fn run_cargo_front_door(
             drop(build_activity_lease);
             let compile_fallback_log =
                 emit_compile_fallback_summary(&paths, &compile_fallback_cursor, session_id);
+            // soldr#2302: whatever the cache managed before the abort.
+            cache_states::emit_cache_stats(
+                cache_plan
+                    .zccache_session()
+                    .and_then(|session| read_build_cache_summary(&session.session_stats_path))
+                    .as_ref(),
+            );
             // soldr#1813: an aborted/timed-out cargo run is exactly when the
             // user most needs the log paths, and this arm always returns early —
             // so the summary is emitted here too rather than at the shared tail.
@@ -2194,6 +2228,15 @@ pub(crate) async fn run_cargo_front_door(
         effective_exit_code,
         compile_journal_start_len,
         &cargo,
+    );
+    // soldr#2302: automatic cache-stats summary, read from the session
+    // baseline-diff (precisely build-scoped, independent of the daemon-wide
+    // journal). Printed just above the log-paths block.
+    cache_states::emit_cache_stats(
+        cache_plan
+            .zccache_session()
+            .and_then(|session| read_build_cache_summary(&session.session_stats_path))
+            .as_ref(),
     );
     // soldr#1813: tell the user where the logs went. Printed here because this
     // is the last point both the success and the compiler-failure paths pass
