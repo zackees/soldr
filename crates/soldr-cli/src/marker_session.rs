@@ -129,29 +129,26 @@ mod tests {
     // soldr#2317 decision core: a marker strictly older than session start is
     // from a prior invocation; one at/after belongs to this session; with no
     // session context nothing predates (TTL-only legacy behavior).
-    #[test]
-    fn marker_predates_session_only_when_strictly_older() {
+    crate::timed_test!(marker_predates_session_only_when_strictly_older, {
         assert!(marker_ms_predates_session(1_000, Some(2_000)));
         assert!(!marker_ms_predates_session(2_000, Some(2_000)));
         assert!(!marker_ms_predates_session(3_000, Some(2_000)));
         assert!(!marker_ms_predates_session(1_000, None));
-    }
+    });
 
-    #[test]
-    fn marker_modified_unix_ms_reads_existing_and_missing() {
+    crate::timed_test!(marker_modified_unix_ms_reads_existing_and_missing, {
         let temp = tempfile::tempdir().expect("tempdir");
         let marker = temp.path().join("compile-daemon-unavailable");
         assert!(marker_modified_unix_ms(&marker).is_none(), "absent -> None");
         std::fs::write(&marker, "daemon unavailable\n").expect("write marker");
         let ms = marker_modified_unix_ms(&marker).expect("present -> Some");
         assert!(ms > 1_000_000_000_000, "implausibly small mtime: {ms}");
-    }
+    });
 
     // The decode must invert the front door's id packing: an id whose high 32
     // bits are `(started_ms & 0xFFFF_FFFF)` recovers `started_ms` exactly for a
     // recent session, and correctly unwraps across a 32-bit ms boundary.
-    #[test]
-    fn decode_session_started_ms_inverts_id_high_bits() {
+    crate::timed_test!(decode_session_started_ms_inverts_id_high_bits, {
         let started: i64 = 1_780_000_000_123;
         let id: u64 = (((started as u64) & 0xFFFF_FFFF) << 32) | 0xDEAD_BEEF;
         // "now" a few seconds after start, same 32-bit window.
@@ -162,20 +159,22 @@ mod tests {
         let start_before = near_wrap - 20; // low bits wrap below 10 -> in prev window
         let id2: u64 = (((start_before as u64) & 0xFFFF_FFFF) << 32) | 1;
         assert_eq!(decode_session_started_ms(id2, near_wrap), start_before);
-    }
+    });
 
-    #[test]
-    fn skipped_retry_message_carries_marker_and_expiry_and_reason() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let marker = temp.path().join("compile-daemon-unavailable");
-        std::fs::write(&marker, "daemon unavailable\n").expect("write marker");
-        let msg = skipped_retry_message(&marker, Some("boom".to_string()));
-        assert!(msg.contains("skipped spawn retry"), "{msg}");
-        assert!(msg.contains("expires_in="), "must surface TTL: {msg}");
-        assert!(msg.contains("marker="), "must name the marker path: {msg}");
-        assert!(
-            msg.contains("prior_failure=boom"),
-            "must keep the reason: {msg}"
-        );
-    }
+    crate::timed_test!(
+        skipped_retry_message_carries_marker_and_expiry_and_reason,
+        {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let marker = temp.path().join("compile-daemon-unavailable");
+            std::fs::write(&marker, "daemon unavailable\n").expect("write marker");
+            let msg = skipped_retry_message(&marker, Some("boom".to_string()));
+            assert!(msg.contains("skipped spawn retry"), "{msg}");
+            assert!(msg.contains("expires_in="), "must surface TTL: {msg}");
+            assert!(msg.contains("marker="), "must name the marker path: {msg}");
+            assert!(
+                msg.contains("prior_failure=boom"),
+                "must keep the reason: {msg}"
+            );
+        }
+    );
 }
