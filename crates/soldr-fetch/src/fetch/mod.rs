@@ -23,6 +23,10 @@ pub mod rustup_init;
 /// soldr#2132: shared retry-with-backoff for network fetches.
 mod net_guard;
 mod retry;
+/// setup-soldr feat/segmented-download-experiment: N-way HTTP Range
+/// segmented download prototype. Opt-in via `SOLDR_SEGMENTED_DOWNLOAD`;
+/// see the module docs for the measurement this is based on.
+pub(crate) mod segmented_download;
 pub(crate) mod stream_download;
 
 pub use rustup_init::{

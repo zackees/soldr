@@ -92,6 +92,18 @@ pub(crate) struct DownloadedAsset {
 }
 
 impl DownloadedAsset {
+    /// Build a [`DownloadedAsset`] from a completed transfer whose bytes
+    /// and digest were computed outside this module's own streaming loop
+    /// (e.g. [`super::segmented_download`], which writes N concurrent
+    /// Range segments and then hashes the assembled file in one pass).
+    pub(crate) fn from_parts(file: tempfile::NamedTempFile, sha256: String, bytes: u64) -> Self {
+        Self {
+            file,
+            sha256,
+            bytes,
+        }
+    }
+
     pub(crate) fn path(&self) -> &Path {
         self.file.path()
     }
