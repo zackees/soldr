@@ -563,30 +563,13 @@ pub(crate) fn expected_state_paths(
             .join(crate::fetch::mingw_w64_gcc::MANAGED_MINGW_W64_GCC_VERSION)
             .join(crate::fetch::mingw_w64_gcc::MINGW_W64_GCC_SLUG);
         let package = mingw.join("package");
-        // soldr#2336 gap #3: harden restore verification. A bundle that
-        // restored only `bin/gcc.exe` but is missing dlltool/windres or
-        // the sysroot import libs + headers reads as "present" yet fails
-        // at link time. Assert the tools AND the sysroot inputs a
-        // win-gnu link actually consumes.
-        let bin = package.join("bin");
-        let has_tool = |tool: &str| {
-            bin.join(crate::fetch::mingw_w64_gcc::exe_name(tool))
-                .is_file()
-        };
-        let sysroot_lib = crate::fetch::mingw_w64_gcc::sysroot_lib_dir(&package);
-        let sysroot_include = crate::fetch::mingw_w64_gcc::sysroot_include_dir(&package);
         entries.push(RestoreEntry {
             label: format!(
                 "MinGW-w64 GCC {}",
                 crate::fetch::mingw_w64_gcc::MANAGED_MINGW_W64_GCC_VERSION
             ),
-            present: mingw.join(".complete").is_file()
-                && has_tool("gcc")
-                && has_tool("dlltool")
-                && has_tool("windres")
-                && sysroot_lib.join("crt2.o").is_file()
-                && sysroot_lib.join("libmsvcrt.a").is_file()
-                && sysroot_include.join("stdio.h").is_file(),
+            // soldr#2336 gap #3: verify tools + sysroot inputs, not just gcc.
+            present: crate::fetch::mingw_w64_gcc::managed_restore_present(&mingw, &package),
             path: package,
         });
     }
