@@ -112,24 +112,63 @@ pub async fn ensure(
             "catalogue-backed GNU/Linux toolchain does not support `{target_triple}`"
         ))
     })?;
-    let root = super::syslib_common::ensure_syslib_bundle(
-        paths,
-        GNU_LINUX_TOOLCHAIN,
-        GNU_LINUX_TOOLCHAIN_VERSION,
-        target.slug(),
-    )
-    .await?;
-    let bin_dir = root.join("bin");
-    let sysroot = root.join(target.compiler_prefix()).join("sysroot");
-    let toolchain = GnuLinuxToolchain {
-        root,
-        bin_dir,
-        sysroot,
-        target,
+    let make_toolchain = |root: PathBuf| {
+        let bin_dir = root.join("bin");
+        let sysroot = root.join(target.compiler_prefix()).join("sysroot");
+        GnuLinuxToolchain {
+            root,
+            bin_dir,
+            sysroot,
+            target,
+        }
     };
-    validate(&toolchain)?;
+    let ensure_bundle = || {
+        super::syslib_common::ensure_syslib_bundle(
+            paths,
+            GNU_LINUX_TOOLCHAIN,
+            GNU_LINUX_TOOLCHAIN_VERSION,
+            target.slug(),
+        )
+    };
+    let toolchain = make_toolchain(ensure_bundle().await?);
+    if let Err(err) = validate(&toolchain) {
+        if !sysroot_has_wrong_flavor_link(&toolchain) {
+            return Err(err);
+        }
+        // soldr#2300 self-heal: an extraction by an older soldr on Windows
+        // left file-flavor NTFS symlinks pointing at directories, which are
+        // non-traversable. Re-extracting with the fixed symlink-aware
+        // unpack (`fetch::tar_extract`) produces a working sysroot.
+        let install_root = toolchain
+            .root
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| toolchain.root.clone());
+        eprintln!(
+            "soldr: GNU/Linux sysroot under {} contains non-traversable symlinks \
+             (extracted by an earlier soldr on Windows); deleting and re-extracting...",
+            install_root.display()
+        );
+        std::fs::remove_dir_all(&install_root)?;
+        let toolchain = make_toolchain(ensure_bundle().await?);
+        validate(&toolchain)?;
+        return Ok(toolchain);
+    }
     Ok(toolchain)
 }
+
+/// True when a required sysroot child exists on disk but does not pass a
+/// link-following directory stat — the soldr#2300 signature of a
+/// wrong-flavor NTFS symlink (a *file* symlink pointing at a directory)
+/// created by tar extraction on Windows before the `tar_extract` fix.
+fn sysroot_has_wrong_flavor_link(toolchain: &GnuLinuxToolchain) -> bool {
+    SYSROOT_REQUIRED_DIRS.iter().any(|child| {
+        let path = toolchain.sysroot.join(child);
+        !path.is_dir() && path.symlink_metadata().is_ok()
+    })
+}
+
+const SYSROOT_REQUIRED_DIRS: [&str; 2] = ["usr/include", "usr/lib"];
 
 fn validate(toolchain: &GnuLinuxToolchain) -> Result<(), SoldrError> {
     let missing: Vec<_> = ["gcc", "g++", "ar", "ranlib", "ld", "readelf"]
@@ -148,15 +187,31 @@ fn validate(toolchain: &GnuLinuxToolchain) -> Result<(), SoldrError> {
                 .join(", ")
         )));
     }
-    for child in ["usr/include", "usr/lib"] {
+    for child in SYSROOT_REQUIRED_DIRS {
         let path = toolchain.sysroot.join(child);
-        if !path.is_dir() {
+        if path.is_dir() {
+            continue;
+        }
+        // soldr#2300: distinguish "missing" from "present but not
+        // traversable" (a wrong-flavor NTFS symlink from an older
+        // extraction) and name the exact remedy.
+        if path.symlink_metadata().is_ok() {
+            let install_root = toolchain.root.parent().unwrap_or(toolchain.root.as_path());
             return Err(SoldrError::Archive(format!(
-                "GNU/Linux toolchain {} is missing sysroot directory {}",
+                "GNU/Linux toolchain {} sysroot entry {} exists but is not a \
+                 traversable directory (likely a wrong-flavor symlink created \
+                 by an older soldr extraction on Windows); delete {} and re-run \
+                 so soldr re-extracts the bundle",
                 toolchain.root.display(),
-                path.display()
+                path.display(),
+                install_root.display()
             )));
         }
+        return Err(SoldrError::Archive(format!(
+            "GNU/Linux toolchain {} is missing sysroot directory {}",
+            toolchain.root.display(),
+            path.display()
+        )));
     }
     Ok(())
 }
@@ -221,6 +276,72 @@ mod tests {
         let url = asset_url_for(GNU_LINUX_TOOLCHAIN_VERSION, "linux-arm64-gnu");
         assert!(url.contains("/gnu-linux-toolchain/gcc-13.3.0-glibc-2.17-1/linux-arm64-gnu/"));
         assert!(url.ends_with("/bundle.tar.zst"));
+    });
+
+    /// A minimal on-disk toolchain layout that passes the tool-binary
+    /// half of `validate()`. `usr/lib` is created per `lib_kind`:
+    /// a real directory, a regular file (stand-in for a wrong-flavor
+    /// symlink: exists, but fails a link-following dir stat), or absent.
+    fn synth_toolchain(tmp: &Path, lib_kind: &str) -> GnuLinuxToolchain {
+        let root = tmp.join("linux-x64-gnu").join("package");
+        let bin_dir = root.join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        for tool in ["gcc", "g++", "ar", "ranlib", "ld", "readelf"] {
+            std::fs::write(bin_dir.join(format!("x86_64-conda-linux-gnu-{tool}")), "").unwrap();
+        }
+        let sysroot = root.join("x86_64-conda-linux-gnu").join("sysroot");
+        std::fs::create_dir_all(sysroot.join("usr/include")).unwrap();
+        match lib_kind {
+            "dir" => std::fs::create_dir_all(sysroot.join("usr/lib")).unwrap(),
+            "wrong-flavor" => std::fs::write(sysroot.join("usr/lib"), "").unwrap(),
+            "absent" => {}
+            other => panic!("unknown lib_kind {other}"),
+        }
+        GnuLinuxToolchain {
+            root,
+            bin_dir,
+            sysroot,
+            target: GnuLinuxToolchainTarget::X86_64,
+        }
+    }
+
+    crate::timed_test!(validate_accepts_real_sysroot_dirs, {
+        let tmp = tempfile::tempdir().unwrap();
+        let toolchain = synth_toolchain(tmp.path(), "dir");
+        validate(&toolchain).expect("real dirs must validate");
+        assert!(!sysroot_has_wrong_flavor_link(&toolchain));
+    });
+
+    crate::timed_test!(validate_names_remedy_for_non_traversable_sysroot_entry, {
+        let tmp = tempfile::tempdir().unwrap();
+        let toolchain = synth_toolchain(tmp.path(), "wrong-flavor");
+        let err = validate(&toolchain).expect_err("wrong-flavor entry must fail");
+        let message = err.to_string();
+        assert!(
+            message.contains("not a traversable directory"),
+            "must not report the entry as merely missing: {message}"
+        );
+        let install_root = toolchain.root.parent().unwrap();
+        assert!(
+            message.contains(&install_root.display().to_string()),
+            "must name the exact directory to delete: {message}"
+        );
+        assert!(sysroot_has_wrong_flavor_link(&toolchain));
+    });
+
+    crate::timed_test!(validate_reports_truly_missing_sysroot_dir, {
+        let tmp = tempfile::tempdir().unwrap();
+        let toolchain = synth_toolchain(tmp.path(), "absent");
+        let err = validate(&toolchain).expect_err("absent entry must fail");
+        let message = err.to_string();
+        assert!(
+            message.contains("missing sysroot directory"),
+            "absent entry keeps the missing wording: {message}"
+        );
+        assert!(
+            !sysroot_has_wrong_flavor_link(&toolchain),
+            "absent entry must NOT trigger the self-heal re-extract"
+        );
     });
 
     crate::timed_test!(target_env_uses_prefixed_gcc_and_sysroot, {

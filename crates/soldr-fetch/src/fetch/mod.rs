@@ -87,6 +87,11 @@ pub mod sqlite_sysroot;
 /// *-sys C library catalogue bundles. The per-lib modules each
 /// call this helper with their own `(lib, version, slug)` tuple.
 pub mod syslib_common;
+/// soldr#2300 — tar extraction that materializes symlink entries with
+/// the correct NTFS flavor on Windows (dir links must be `symlink_dir`
+/// or they are non-traversable). Byte-identical to `tar::Archive::unpack`
+/// on non-Windows.
+pub mod tar_extract;
 /// soldr#1264 follow-on — manual uv-provisioned maturin env (fallback
 /// when the prebuilt maturin binary fetch misses). Hand-rolled on
 /// purpose; see module doc for why not the `uv-iso-env` package.
