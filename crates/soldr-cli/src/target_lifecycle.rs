@@ -125,6 +125,18 @@ pub(crate) async fn prepare_target(
         debug_assert_eq!(toolchain.target, bundle);
         prep.path_dirs.push(toolchain.bin_dir.clone());
         let mut env = crate::fetch::gnu_linux_toolchain::env_for_target(&toolchain, base);
+        // soldr#2309: pin the C++ stdlib end to end. The catalogue GNU driver
+        // ships libstdc++ only, so any phase that decides on `-lc++` (CMake
+        // detecting a clang-family compiler, zig's bundled clang on the
+        // legacy path) fails the final link with `ld: cannot find -lc++`.
+        // Setdefault semantics: a caller-set value through any spelling in
+        // cc-rs's lookup chain wins, matching the CARGO_BUILD_TARGET /
+        // CMAKE injection precedent.
+        env.extend(crate::fetch::gnu_linux_toolchain::cxx_stdlib_pin_env(
+            base,
+            cfg!(target_os = "linux"),
+            |key| std::env::var_os(key).is_some(),
+        ));
         let sysroot = toolchain.sysroot.to_string_lossy().into_owned();
         env.push((
             format!("CARGO_TARGET_{upper}_RUSTFLAGS"),
@@ -724,6 +736,34 @@ mod tests {
             "normal GNU plans must not advertise Zig: {json}"
         );
         assert!(!json.contains("cargo-zigbuild"));
+    });
+
+    // soldr#2309: the linux-gnu plan advertises the C++ stdlib pin; every
+    // other family stays unchanged (musl/windows/darwin ship no such pin).
+    crate::timed_test!(only_linux_gnu_plans_advertise_the_cxx_stdlib_pin, {
+        let host = "x86_64-unknown-linux-gnu";
+        let gnu = plan_for_host("aarch64-unknown-linux-gnu", host).unwrap();
+        assert!(gnu
+            .environment
+            .keys
+            .contains(&"CXXSTDLIB_aarch64_unknown_linux_gnu".to_string()));
+        assert!(gnu.environment.keys.contains(&"CXXSTDLIB".to_string()));
+        for other in [
+            "aarch64-unknown-linux-musl",
+            "x86_64-pc-windows-msvc",
+            "aarch64-apple-darwin",
+        ] {
+            let plan = plan_for_host(other, host).unwrap();
+            assert!(
+                !plan
+                    .environment
+                    .keys
+                    .iter()
+                    .any(|key| key.starts_with("CXXSTDLIB")),
+                "{other} must not carry a C++ stdlib pin: {:?}",
+                plan.environment.keys
+            );
+        }
     });
 
     crate::timed_test!(linux_musl_plan_uses_catalogue_toolchain_without_zig, {

@@ -1,0 +1,15 @@
+[package]
+name = "cxx-stdlib-pin"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Acceptance fixture for soldr#2309 — a C++-using crate cross-built for
+# aarch64-unknown-linux-gnu must link libstdc++ with no -lc++ anywhere.
+# Driven by ci/cxx_stdlib_pin_acceptance.sh; not part of the soldr workspace.
+
+[workspace]
+
+[build-dependencies]
+cc = "1"
+cmake = "0.1"

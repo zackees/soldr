@@ -66,6 +66,8 @@ pub fn env_keys_for_target(target_triple: &str) -> Vec<String> {
     vec![
         format!("CC_{target_u}"),
         format!("CXX_{target_u}"),
+        format!("CXXSTDLIB_{target_u}"),
+        "CXXSTDLIB".to_string(),
         format!("AR_{target_u}"),
         format!("RANLIB_{target_u}"),
         format!("CFLAGS_{target_u}"),
@@ -253,6 +255,68 @@ pub fn path_prefix(toolchain: &GnuLinuxToolchain) -> &Path {
     &toolchain.bin_dir
 }
 
+/// The C++ standard library the catalogue GNU driver ships (soldr#2309).
+///
+/// `<triple>-gcc` carries libstdc++ only; there is no libc++ anywhere in the
+/// bundle, so any build phase that decides on `-lc++` (a CMake configure that
+/// detects a clang-family compiler, a caller-provided clang, zig's bundled
+/// clang on the legacy path) produces a deterministic
+/// `ld: cannot find -lc++` at the final rustc link.
+pub const GNU_CXX_STDLIB: &str = "stdc++";
+
+/// cc-rs's `CXXSTDLIB` lookup chain for a cross build to `target_triple`,
+/// highest priority first. Mirrors `cc::Build::target_envs` (verified against
+/// cc 1.4.0): `CXXSTDLIB_<triple>`, `CXXSTDLIB_<triple_underscored>`,
+/// `TARGET_CXXSTDLIB`, then bare `CXXSTDLIB`.
+///
+/// The pin below stays out of the way when the caller set *any* of these —
+/// including an empty value, which cc-rs interprets as "link no stdlib".
+pub fn cxx_stdlib_lookup_keys(target_triple: &str) -> [String; 4] {
+    let target_u = target_triple.replace('-', "_");
+    [
+        format!("CXXSTDLIB_{target_triple}"),
+        format!("CXXSTDLIB_{target_u}"),
+        "TARGET_CXXSTDLIB".to_string(),
+        "CXXSTDLIB".to_string(),
+    ]
+}
+
+/// The C++ stdlib pin entries for a `*-unknown-linux-gnu` target (soldr#2309).
+///
+/// Setdefault semantics: when `caller_set` reports any key from
+/// [`cxx_stdlib_lookup_keys`] as already present, the caller made this
+/// decision and nothing is injected. Otherwise:
+///
+/// * `CXXSTDLIB_<triple_underscored>=stdc++` — the target-scoped cc-rs knob,
+///   matching the `CC_<triple_underscored>` pattern this module already
+///   exports. Scoped to the cross target, so host-side build-dependency
+///   compiles are untouched on every host.
+/// * bare `CXXSTDLIB=stdc++` — only when `host_defaults_to_stdcxx` (a Linux
+///   host, whose cc-rs host default is already `stdc++`, so the bare form
+///   cannot mis-steer host compiles there). Non-cc-rs consumers (hand-rolled
+///   `build.rs` stdlib pickers, CMake wrappers) read only this bare form. On
+///   macOS/Windows hosts the bare form is withheld because cc-rs's HOST
+///   lookup chain falls through to it and would force `stdc++` onto host
+///   compiles whose platform stdlib is libc++ / MSVC-none.
+pub fn cxx_stdlib_pin_env(
+    target_triple: &str,
+    host_defaults_to_stdcxx: bool,
+    caller_set: impl Fn(&str) -> bool,
+) -> Vec<(String, String)> {
+    if cxx_stdlib_lookup_keys(target_triple)
+        .iter()
+        .any(|key| caller_set(key))
+    {
+        return Vec::new();
+    }
+    let target_u = target_triple.replace('-', "_");
+    let mut env = vec![(format!("CXXSTDLIB_{target_u}"), GNU_CXX_STDLIB.to_string())];
+    if host_defaults_to_stdcxx {
+        env.push(("CXXSTDLIB".to_string(), GNU_CXX_STDLIB.to_string()));
+    }
+    env
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -385,5 +449,63 @@ mod tests {
             "x86_64-unknown-linux-musl",
             GNU_LINUX_GLIBC_BASELINE
         ));
+    });
+
+    // soldr#2309: the pin must sit exactly on cc-rs's lookup chain, or a
+    // caller override through one of the other spellings would be shadowed
+    // instead of respected.
+    crate::timed_test!(cxx_stdlib_lookup_matches_cc_rs_chain, {
+        assert_eq!(
+            cxx_stdlib_lookup_keys("aarch64-unknown-linux-gnu"),
+            [
+                "CXXSTDLIB_aarch64-unknown-linux-gnu".to_string(),
+                "CXXSTDLIB_aarch64_unknown_linux_gnu".to_string(),
+                "TARGET_CXXSTDLIB".to_string(),
+                "CXXSTDLIB".to_string(),
+            ]
+        );
+    });
+
+    crate::timed_test!(cxx_stdlib_pin_defaults_to_stdcxx, {
+        let env = cxx_stdlib_pin_env("aarch64-unknown-linux-gnu", true, |_| false);
+        assert_eq!(
+            env,
+            vec![
+                (
+                    "CXXSTDLIB_aarch64_unknown_linux_gnu".to_string(),
+                    "stdc++".to_string()
+                ),
+                ("CXXSTDLIB".to_string(), "stdc++".to_string()),
+            ]
+        );
+        let keys = env_keys_for_target("aarch64-unknown-linux-gnu");
+        for (key, _) in &env {
+            assert!(keys.contains(key), "pin key {key} missing from plan keys");
+        }
+    });
+
+    crate::timed_test!(cxx_stdlib_pin_withholds_bare_form_on_non_linux_hosts, {
+        let env = cxx_stdlib_pin_env("x86_64-unknown-linux-gnu", false, |_| false);
+        assert_eq!(
+            env,
+            vec![(
+                "CXXSTDLIB_x86_64_unknown_linux_gnu".to_string(),
+                "stdc++".to_string()
+            )]
+        );
+    });
+
+    crate::timed_test!(caller_set_stdlib_wins_over_the_pin, {
+        // Any spelling in cc-rs's chain -- including the caller pinning it
+        // to a *different* stdlib, or to empty ("link no stdlib") -- must
+        // suppress the injection entirely.
+        for caller_key in cxx_stdlib_lookup_keys("aarch64-unknown-linux-gnu") {
+            let env =
+                cxx_stdlib_pin_env("aarch64-unknown-linux-gnu", true, |key| key == caller_key);
+            assert!(
+                env.is_empty(),
+                "caller-set {caller_key} must suppress the pin, got {env:?}"
+            );
+        }
     });
 }
