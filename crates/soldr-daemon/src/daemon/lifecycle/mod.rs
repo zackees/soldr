@@ -182,9 +182,20 @@ pub fn describe_root_ownership_conflict(paths: &SoldrPaths) -> String {
             "soldr root ownership is busy: {root} (held by PID {pid}, image {})",
             exe.display()
         ),
-        (false, _) => format!(
-            "soldr root ownership is busy: {root} (recorded PID {pid} is not alive;              the lock is held by an unrecorded process)"
-        ),
+        (false, _) => {
+            // soldr#2316: recorded owner dead but the lock is still held, so an
+            // unrecorded orphaned soldr-daemon holds it. Hand over the fix
+            // instead of dead-ending; daemons respawn on demand, so it is safe.
+            let kill_hint = if cfg!(windows) {
+                "Get-Process soldr-daemon | Stop-Process -Force"
+            } else {
+                "pkill -f soldr-daemon"
+            };
+            format!(
+                "soldr root ownership is busy: {root} -- recorded owner PID {pid} is dead, but the              lock is held by an unrecorded orphaned soldr-daemon that outlived the PID file; `soldr daemon stop` cannot reach it (it probes the pipe, not the lock; soldr#1987, soldr#2316).
+             soldr: terminate the orphaned daemon(s) to recover (safe -- respawned on demand): {kill_hint}"
+            )
+        }
     }
 }
 

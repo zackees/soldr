@@ -240,6 +240,49 @@ mod root_ownership_diagnostic_tests {
         );
     });
 
+    // soldr#2316: recorded owner is dead but acquisition still failed, so an
+    // unrecorded process (an orphaned soldr-daemon) holds the lock. The old
+    // message dead-ended on "an unrecorded process"; it must now hand the
+    // operator an actionable remediation command instead of naming nobody.
+    crate::timed_test!(a_dead_recorded_owner_points_at_the_orphan_remediation, {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("root"));
+        // A large positive PID that is almost certainly not running. Not
+        // `u32::MAX` (casts to the `-1` "all processes" wildcard on unix and
+        // would spuriously look alive) and not `0` (the process-group
+        // wildcard) — matches the `i32::MAX as u32` idiom used elsewhere in
+        // these lifecycle tests.
+        let dead = i32::MAX as u32;
+        let some_image = temp.path().join("soldr-daemon.exe");
+        std::fs::create_dir_all(crate::cache_lib::soldr_daemon_dir(&paths)).expect("dir");
+        std::fs::write(
+            crate::cache_lib::daemon_pid_path(&paths),
+            format!("{dead}\n{}\n", some_image.display()),
+        )
+        .expect("pid file");
+
+        let msg = describe_root_ownership_conflict(&paths);
+        assert!(
+            msg.contains("soldr#2316"),
+            "must point at the orphan-holder issue: {msg}"
+        );
+        // The core regression: no longer a dead end. It must carry a concrete
+        // kill command the operator can run.
+        let hint = if cfg!(windows) {
+            "Stop-Process"
+        } else {
+            "pkill"
+        };
+        assert!(
+            msg.contains(hint),
+            "must give a platform-appropriate remediation command ({hint}): {msg}"
+        );
+        assert!(
+            msg.contains("orphan"),
+            "must name the culprit class (orphaned daemon): {msg}"
+        );
+    });
+
     // No PID file at all must still produce something better than silence.
     crate::timed_test!(a_missing_pid_file_says_so_rather_than_naming_nobody, {
         let temp = TempDir::new().expect("tempdir");
