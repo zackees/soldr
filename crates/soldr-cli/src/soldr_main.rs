@@ -607,6 +607,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
         } => {
             build_from_source_cmd::run(&tool, target, version)?;
         }
+        Commands::Install(args) => crate::install::run(args).await?,
         Commands::Env {
             target,
             shell_export,
@@ -622,12 +623,8 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 cache::print_status_output(&output);
             }
         }
-        Commands::Clean => {
-            cache::clear_zccache_cache()?;
-        }
-        Commands::Purge => {
-            cache::purge_soldr_cache()?;
-        }
+        Commands::Clean => cache::clear_zccache_cache()?,
+        Commands::Purge => cache::purge_soldr_cache()?,
         Commands::Config => {
             println!("(config not yet implemented)");
         }

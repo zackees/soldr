@@ -323,6 +323,22 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
     };
     let config = full_config.auto_gc.clone();
     let cook_config = full_config.cook.clone();
+
+    // soldr#2310: install source cache is a disposable, content-addressed
+    // category (extracted codeload zips + shallow clones) with an eager
+    // 2-day TTL — the first value-bearing cache evicted, costing only a
+    // network re-fetch to restore. Runs every throttle window regardless
+    // of disk pressure, honoring SOLDR_INSTALL_SRC_TTL_DAYS /
+    // SOLDR_NO_INSTALL_SRC_GC. Never opens state.redb, so no daemon
+    // ownership conflict.
+    let install_source_removed =
+        crate::install::cache::sweep_with_config(&paths, full_config.install.source_ttl_days);
+    if install_source_removed > 0 {
+        let _ = append_auto_gc_log_line(
+            &log_path,
+            &format!("auto-gc tier=0 install_source_entries_reclaimed={install_source_removed}"),
+        );
+    }
     let (validated, warnings) = crate::cache_lib::auto_gc::validate_config(&config);
     for warning in &warnings {
         let _ = append_auto_gc_log_line(&log_path, &format!("warning: {warning}"));

@@ -21,8 +21,12 @@ pub use trust::{
 pub mod rustup_init;
 
 /// soldr#2132: shared retry-with-backoff for network fetches.
+/// soldr#2310 — GitHub ref/release resolution for `soldr install`.
+pub mod install_api;
 mod net_guard;
 mod retry;
+/// soldr#2310 — whole-source-tree acquisition via GitHub codeload zips.
+pub mod source_zip;
 pub(crate) mod stream_download;
 
 pub use rustup_init::{
