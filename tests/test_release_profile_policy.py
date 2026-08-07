@@ -156,6 +156,50 @@ def test_an_allow_marker_two_lines_up_does_not_reach(mod, tmp_path):
     assert len(mod.scan(tmp_path)) == 1, "the marker must sit on or above the line"
 
 
+# soldr#2303: `--profile release` is the same expensive profile spelled the long
+# way, and it used to slip past the `--release`-only regex.
+def test_profile_release_is_flagged(mod, tmp_path):
+    _write(
+        tmp_path,
+        "long.yml",
+        "jobs:\n  a:\n    run: cargo build --profile release -p soldr-cli\n",
+    )
+    findings = mod.scan(tmp_path)
+    assert len(findings) == 1, f"--profile release must be caught: {findings}"
+    assert findings[0][1] == 3
+
+
+def test_profile_equals_release_is_flagged(mod, tmp_path):
+    _write(
+        tmp_path,
+        "eq.yml",
+        "jobs:\n  a:\n    run: cargo build --profile=release\n",
+    )
+    assert len(mod.scan(tmp_path)) == 1
+
+
+@pytest.mark.parametrize("profile", ["ci-release", "ci-bootstrap", "ci-nextest"])
+def test_cheap_named_profiles_are_not_flagged(mod, tmp_path, profile):
+    # The `release` profile *name* is the target; profiles whose names merely
+    # end in `-release` (or start with `ci-`) must not false-positive.
+    _write(
+        tmp_path,
+        "cheap.yml",
+        f"jobs:\n  a:\n    run: cargo build --profile {profile}\n",
+    )
+    assert mod.scan(tmp_path) == [], f"--profile {profile} must pass"
+
+
+def test_a_marker_excuses_a_profile_release_line(mod, tmp_path):
+    _write(
+        tmp_path,
+        "marked.yml",
+        "jobs:\n  a:\n    run: cargo build --profile release  "
+        "# allow-release: dylint loads these cdylibs from the release-profile path\n",
+    )
+    assert mod.scan(tmp_path) == []
+
+
 def test_the_real_repository_is_clean(mod):
     """The policy must hold on the tree that ships it."""
     workflows = Path(__file__).resolve().parents[1] / ".github" / "workflows"
