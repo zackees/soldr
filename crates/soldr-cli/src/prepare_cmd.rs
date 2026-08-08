@@ -907,6 +907,9 @@ pub(crate) fn rustup_add_target(triple: &str) -> Result<(), SoldrError> {
     let paths = SoldrPaths::new()?;
     let channel = pinned_toolchain_channel()?;
     let (cargo_home, rustup_home) = resolved_toolchain_homes(&paths);
+    if std::env::var_os("SOLDR_DEBUG_COMPILE_ENV").is_some() {
+        eprintln!("soldr[dbg#2348]: rustup_add_target({triple}) channel={channel:?}");
+    }
 
     let status = rustup_target_op(&cargo_home, &rustup_home, channel.as_deref(), "add", triple)?;
     if !status.success() {

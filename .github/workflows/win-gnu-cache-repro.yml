@@ -50,58 +50,32 @@ jobs:
         shell: bash
         run: soldr cargo build -p soldr-cli --bin soldr
 
-      - name: Diagnose toolchain homes before the build
+      - name: Poison the toolchain (rustup manifest lies, payload absent)
         shell: bash
         run: |
-          set -x
-          echo "RUSTUP_HOME=${RUSTUP_HOME:-<unset>} CARGO_HOME=${CARGO_HOME:-<unset>} RUSTUP_TOOLCHAIN=${RUSTUP_TOOLCHAIN:-<unset>}"
+          set -euxo pipefail
           rh="${RUSTUP_HOME:-$HOME/.rustup}"
-          echo "--- toolchains in the managed home ---"
-          ls -la "$rh/toolchains" || true
-          for tc in "$rh"/toolchains/*/; do
-            echo "=== $tc rustlib targets ==="
-            ls "$tc/lib/rustlib" 2>/dev/null || true
-            echo "  is-linked-file? $( [ -f "$tc" ] && echo yes || echo no )"
-          done
-          echo "--- MANUAL: rustup target add x86_64-pc-windows-gnu --toolchain 1.94.1 (RUSTUP_HOME=$rh) ---"
-          RUSTUP_HOME="$rh" rustup target add x86_64-pc-windows-gnu --toolchain 1.94.1; echo "manual add exit=$?"
-          echo "--- after manual add: rustlib targets ---"
-          for tc in "$rh"/toolchains/*/; do echo "=== $tc ==="; ls "$tc/lib/rustlib" 2>/dev/null || true; done
-          echo "--- rustup toolchain list ---"
-          RUSTUP_HOME="$rh" rustup toolchain list || true
+          tc="$rh/toolchains/1.94.1-x86_64-unknown-linux-gnu"
+          # Materialize the target normally (downloads std + records the manifest).
+          rustup target add x86_64-pc-windows-gnu --toolchain 1.94.1
+          test -d "$tc/lib/rustlib/x86_64-pc-windows-gnu/lib"
+          # Poison: delete the std payload but leave rustup's installed-manifest
+          # intact — exactly the state a solo-toolchain-cache restore leaves
+          # (soldr#2348). rustup now reports the target as installed while the
+          # rlibs are gone, so a plain `rustup target add` no-ops.
+          rm -rf "$tc/lib/rustlib/x86_64-pc-windows-gnu"
+          rustup target list --installed --toolchain 1.94.1 | grep -q x86_64-pc-windows-gnu \
+            && echo "manifest still lists win-gnu (poison in place)"
+          rustup target add x86_64-pc-windows-gnu --toolchain 1.94.1 2>&1 | tee /tmp/reAdd.log
+          grep -q 'up to date' /tmp/reAdd.log && echo "confirmed: rustup no-ops ('up to date') despite missing payload"
+          test ! -d "$tc/lib/rustlib/x86_64-pc-windows-gnu/lib" && echo "confirmed: payload absent"
 
-      - name: Cached win-gnu build with RELEASED 0.8.44 (reld#66 exact binary)
+      - name: Fixed build must recover (RED->GREEN for #2348)
         shell: bash
+        env:
+          SOLDR_DEBUG_COMPILE_ENV: "1"
         run: |
-          set -x
-          released="$(command -v soldr)"
-          echo "released soldr = $released"
-          "$released" --version || true
-          work="$RUNNER_TEMP/fixture-released"
-          mkdir -p "$work/src"
-          cat > "$work/Cargo.toml" <<'EOF'
-          [package]
-          name = "wingnu-repro"
-          version = "0.0.0"
-          edition = "2021"
-          [[bin]]
-          name = "wingnu-repro"
-          path = "src/main.rs"
-          EOF
-          echo 'fn main() { println!("ok"); }' > "$work/src/main.rs"
-          cd "$work"
-          "$released" build --target x86_64-pc-windows-gnu 2>&1 | tee "$RUNNER_TEMP/released.log" || true
-          if grep -q 'E0463' "$RUNNER_TEMP/released.log"; then
-            echo "RELEASED-0.8.44 REPRODUCED: E0463" >&2
-          else
-            echo "RELEASED-0.8.44: no E0463 (built ok)" >&2
-          fi
-
-      - name: Cached win-gnu build (the daemon path — repro target)
-        id: build
-        shell: bash
-        run: |
-          set -x
+          set -euxo pipefail
           work="$RUNNER_TEMP/fixture"
           mkdir -p "$work/src"
           cat > "$work/Cargo.toml" <<'EOF'
@@ -115,17 +89,18 @@ jobs:
           EOF
           echo 'fn main() { println!("ok"); }' > "$work/src/main.rs"
           cd "$work"
-          # CACHED build (no --no-cache) — routes compiles through the daemon.
-          # This runs the CHECKOUT soldr (with the #2348 fix), immediately after
-          # the released 0.8.44 build above has poisoned the toolchain manifest.
-          # RED->GREEN: released fails E0463; the fixed build must recover.
+          # The checkout soldr carries the #2348 fix: rustup_add_target must
+          # detect the empty libdir and force a remove+add reinstall, so the
+          # build recovers instead of failing E0463.
           "$GITHUB_WORKSPACE/target/debug/soldr" build --target x86_64-pc-windows-gnu 2>&1 | tee "$RUNNER_TEMP/build.log"
           echo "---- outcome ----"
+          grep -nE "dbg#2348|forcing a rustup reinstall|E0463" "$RUNNER_TEMP/build.log" || true
           if grep -q 'E0463' "$RUNNER_TEMP/build.log"; then
-            echo "FAIL: E0463 persisted with the fix" >&2
-            exit 1
+            echo "FAIL: E0463 persisted with the fix" >&2; exit 1
           fi
+          grep -q 'forcing a rustup reinstall' "$RUNNER_TEMP/build.log" \
+            || { echo "FAIL: the #2348 reinstall path did not trigger" >&2; exit 1; }
           exe="$work/target/x86_64-pc-windows-gnu/debug/wingnu-repro.exe"
           test -f "$exe"
           python3 "$GITHUB_WORKSPACE/.github/scripts/win_gnu_link_smoke.py" assert-pe --path "$exe"
-          echo "PASS: fixed checkout build produced a PE after the poisoned released build"
+          echo "PASS: fix re-materialized the std and produced a PE"
