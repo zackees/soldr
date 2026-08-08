@@ -75,6 +75,12 @@ jobs:
           rustup target add x86_64-pc-windows-gnu --toolchain 1.94.1 2>&1 | tee /tmp/reAdd.log || true
           grep -q 'up to date' /tmp/reAdd.log && echo "confirmed: rustup no-ops despite missing payload"
           [ ! -d "$payload" ] && echo "confirmed: win-gnu payload absent"
+          echo "===== rustup tracking layout (soldr#2348 diagnosis) ====="
+          echo "--- $tc/lib/rustlib listing ---"; ls -la "$tc/lib/rustlib/" || true
+          echo "--- components file ---"; cat "$tc/lib/rustlib/components" 2>/dev/null || echo "(no components file)"
+          echo "--- multirust-config.toml ---"; cat "$tc/lib/rustlib/multirust-config.toml" 2>/dev/null || echo "(no multirust-config)"
+          echo "--- any file mentioning windows-gnu under the toolchain ---"
+          grep -rl "x86_64-pc-windows-gnu" "$tc/lib/rustlib" 2>/dev/null | head || echo "(none)"
           true
 
       - name: Fixed build must recover (RED->GREEN for #2348)
