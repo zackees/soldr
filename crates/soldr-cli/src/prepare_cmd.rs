@@ -851,7 +851,8 @@ fn target_std_present(
     command.env(crate::core::CARGO_HOME_ENV_VAR, cargo_home);
     command.env(crate::core::RUSTUP_HOME_ENV_VAR, rustup_home);
     if let Some(channel) = channel {
-        command.env(crate::core::RUSTUP_TOOLCHAIN_ENV_VAR, channel);
+        // Literal name: the core const is pub(crate) to soldr-core only.
+        command.env("RUSTUP_TOOLCHAIN", channel);
     }
     command.args(["--print", "target-libdir", "--target", triple]);
     crate::core::suppress_windows_console_window(&mut command);
