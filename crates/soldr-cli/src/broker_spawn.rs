@@ -201,18 +201,16 @@ mod tests {
     // env-var-gated tests in this crate use.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    #[test]
-    fn wrapper_invocation_is_never_eligible_even_with_env_set() {
+    crate::timed_test!(wrapper_invocation_is_never_eligible_even_with_env_set, {
         let _guard = ENV_LOCK.lock().unwrap();
         set_use_broker(Some("1"));
         let raw_args = vec!["soldr".to_string(), "/usr/bin/rustc".to_string()];
         assert!(crate::wrapper::is_wrapper_invocation(&raw_args[1]));
         assert!(!front_door_broker_spawn_eligible(&raw_args));
         set_use_broker(None);
-    }
+    });
 
-    #[test]
-    fn broker_subcommand_itself_does_not_recursively_spawn() {
+    crate::timed_test!(broker_subcommand_itself_does_not_recursively_spawn, {
         let _guard = ENV_LOCK.lock().unwrap();
         set_use_broker(Some("1"));
         let raw_args = vec![
@@ -222,31 +220,28 @@ mod tests {
         ];
         assert!(!front_door_broker_spawn_eligible(&raw_args));
         set_use_broker(None);
-    }
+    });
 
-    #[test]
-    fn ordinary_invocation_is_ineligible_when_env_unset() {
+    crate::timed_test!(ordinary_invocation_is_ineligible_when_env_unset, {
         let _guard = ENV_LOCK.lock().unwrap();
         set_use_broker(None);
         let raw_args = vec!["soldr".to_string(), "status".to_string()];
         assert!(!front_door_broker_spawn_eligible(&raw_args));
-    }
+    });
 
-    #[test]
-    fn ordinary_invocation_is_eligible_when_env_set() {
+    crate::timed_test!(ordinary_invocation_is_eligible_when_env_set, {
         let _guard = ENV_LOCK.lock().unwrap();
         set_use_broker(Some("1"));
         let raw_args = vec!["soldr".to_string(), "status".to_string()];
         assert!(front_door_broker_spawn_eligible(&raw_args));
         set_use_broker(None);
-    }
+    });
 
-    #[test]
-    fn no_positional_arg_is_ineligible() {
+    crate::timed_test!(no_positional_arg_is_ineligible, {
         let _guard = ENV_LOCK.lock().unwrap();
         set_use_broker(Some("1"));
         let raw_args = vec!["soldr".to_string()];
         assert!(!front_door_broker_spawn_eligible(&raw_args));
         set_use_broker(None);
-    }
+    });
 }
