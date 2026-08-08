@@ -777,22 +777,10 @@ where
     let budget = resolved_spawn_retry_budget();
     let start = Instant::now();
     let deadline = start + budget;
-    let mut prepared_spawn = None;
-    let spawn_err = if spawn_on_first_failure {
-        match crate::binaries::ensure_daemon_executable_handoff() {
-            Ok(_) => match crate::daemon::lifecycle::try_spawn_detached_until(Some(deadline)) {
-                Ok(prepared) => {
-                    prepared_spawn = prepared;
-                    None
-                }
-                Err(error) => Some(format!("initial daemon spawn failed: {error:?}")),
-            },
-            Err(error) => Some(format!(
-                "canonical soldr-daemon handoff materialization failed: {error}"
-            )),
-        }
+    let (prepared_spawn, spawn_err) = if spawn_on_first_failure {
+        crate::broker_discovery_gate::spawn_or_confirm_broker_daemon(deadline)
     } else {
-        None
+        (None, None)
     };
     let result = retry_within_budget(
         sock_path,
