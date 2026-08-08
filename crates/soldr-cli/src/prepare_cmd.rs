@@ -920,20 +920,18 @@ pub(crate) fn rustup_add_target(triple: &str) -> Result<(), SoldrError> {
     }
 
     // soldr#2348: rustup may report the target "up to date" while its rustlib
-    // payload is missing (cache restored the manifest but not the files). Force
-    // a re-materialize (remove clears the stale manifest; add re-downloads).
+    // payload is missing (a toolchain-cache restore that kept rustup's
+    // `components` tracking but not the std files). `rustup target remove`
+    // then chokes ("could not read component file … No such file") and a
+    // plain re-`add` no-ops, so rustc keeps failing E0463. Clear the stale
+    // `rust-std-<triple>` entry from the toolchain's `components` tracking
+    // directly, then `add` genuinely re-downloads.
     if !target_std_present(&cargo_home, &rustup_home, channel.as_deref(), triple)? {
         eprintln!(
             "soldr: target {triple} std reported installed but its libdir is empty; \
-             forcing a rustup reinstall (soldr#2348)"
+             clearing the stale rustup component tracking and reinstalling (soldr#2348)"
         );
-        let _ = rustup_target_op(
-            &cargo_home,
-            &rustup_home,
-            channel.as_deref(),
-            "remove",
-            triple,
-        );
+        clear_stale_target_component(&cargo_home, &rustup_home, channel.as_deref(), triple)?;
         let status =
             rustup_target_op(&cargo_home, &rustup_home, channel.as_deref(), "add", triple)?;
         if !status.success() {
@@ -949,6 +947,76 @@ pub(crate) fn rustup_add_target(triple: &str) -> Result<(), SoldrError> {
         }
     }
     Ok(())
+}
+
+/// Resolve the active toolchain's sysroot via `rustc --print sysroot`, so we
+/// can surgically repair a corrupt component tracking (soldr#2348).
+fn resolve_sysroot(
+    cargo_home: &std::ffi::OsStr,
+    rustup_home: &std::ffi::OsStr,
+    channel: Option<&str>,
+) -> Option<std::path::PathBuf> {
+    let rustc = crate::binaries::resolve_toolchain_binary("rustc").ok()?;
+    let mut command = std::process::Command::new(rustc);
+    command.env(crate::core::CARGO_HOME_ENV_VAR, cargo_home);
+    command.env(crate::core::RUSTUP_HOME_ENV_VAR, rustup_home);
+    if let Some(channel) = channel {
+        command.env("RUSTUP_TOOLCHAIN", channel);
+    }
+    command.args(["--print", "sysroot"]);
+    crate::core::suppress_windows_console_window(&mut command);
+    let output = command.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let sysroot = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if sysroot.is_empty() {
+        None
+    } else {
+        Some(std::path::PathBuf::from(sysroot))
+    }
+}
+
+/// Purge a stale `rust-std-<triple>` entry from a toolchain that rustup still
+/// believes is installed (soldr#2348). Drops the line from the `components`
+/// tracking file and deletes any orphaned `manifest-rust-std-<triple>` marker
+/// and empty `lib/rustlib/<triple>` dir, so the follow-up `rustup target add`
+/// re-downloads the payload instead of no-oping.
+fn clear_stale_target_component(
+    cargo_home: &std::ffi::OsStr,
+    rustup_home: &std::ffi::OsStr,
+    channel: Option<&str>,
+    triple: &str,
+) -> Result<(), SoldrError> {
+    let Some(sysroot) = resolve_sysroot(cargo_home, rustup_home, channel) else {
+        // Best-effort: without a sysroot we can't repair; let the add retry.
+        return Ok(());
+    };
+    let rustlib = sysroot.join("lib").join("rustlib");
+    purge_target_component_tracking(&rustlib, triple);
+    Ok(())
+}
+
+/// Pure filesystem repair (soldr#2348), factored out so it is unit-testable
+/// against a synthetic rustlib layout. Removes the `rust-std-<triple>` line
+/// from `components`, the `manifest-rust-std-<triple>` marker, and the
+/// `<triple>` payload dir.
+fn purge_target_component_tracking(rustlib: &std::path::Path, triple: &str) {
+    let component = format!("rust-std-{triple}");
+    let components = rustlib.join("components");
+    if let Ok(body) = std::fs::read_to_string(&components) {
+        let kept: Vec<&str> = body
+            .lines()
+            .filter(|line| line.trim() != component)
+            .collect();
+        let mut rewritten = kept.join("\n");
+        if !rewritten.is_empty() {
+            rewritten.push('\n');
+        }
+        let _ = std::fs::write(&components, rewritten);
+    }
+    let _ = std::fs::remove_file(rustlib.join(format!("manifest-{component}")));
+    let _ = std::fs::remove_dir_all(rustlib.join(triple));
 }
 
 fn pinned_toolchain_channel() -> Result<Option<String>, SoldrError> {
@@ -1452,6 +1520,43 @@ mod tests {
             libdir_has_std(tmp.path()),
             "libstd rlib must read as present"
         );
+    });
+
+    crate::timed_test!(purge_target_component_tracking_clears_stale_entry, {
+        // soldr#2348: the repair drops the stale `rust-std-<triple>` line and
+        // its orphaned marker/dir so a follow-up `rustup target add` re-downloads.
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let rustlib = tmp.path();
+        let triple = "x86_64-pc-windows-gnu";
+        std::fs::write(
+            rustlib.join("components"),
+            "rustc\nrust-std-x86_64-unknown-linux-gnu\nrust-std-x86_64-pc-windows-gnu\n",
+        )
+        .unwrap();
+        std::fs::write(
+            rustlib.join("manifest-rust-std-x86_64-pc-windows-gnu"),
+            b"stale",
+        )
+        .unwrap();
+        std::fs::create_dir_all(rustlib.join(triple).join("lib")).unwrap();
+
+        purge_target_component_tracking(rustlib, triple);
+
+        let comps = std::fs::read_to_string(rustlib.join("components")).unwrap();
+        assert!(
+            !comps.contains("rust-std-x86_64-pc-windows-gnu"),
+            "stale target line must be removed"
+        );
+        assert!(
+            comps.contains("rust-std-x86_64-unknown-linux-gnu") && comps.contains("rustc"),
+            "other components must be kept"
+        );
+        assert!(!rustlib
+            .join("manifest-rust-std-x86_64-pc-windows-gnu")
+            .exists());
+        assert!(!rustlib.join(triple).exists());
+        // Tolerant of an already-clean/missing state (no panic).
+        purge_target_component_tracking(rustlib, triple);
     });
 
     crate::timed_test!(parse_target_arg_all_is_sentinel, {
