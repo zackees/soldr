@@ -801,47 +801,150 @@ pub(crate) fn restore_prepare_state(archive: &Path, paths: &SoldrPaths) -> Resul
     Ok(())
 }
 
-/// Run `rustup target add <triple>` for the active toolchain.
-/// Idempotent — already-installed targets are a no-op.
-pub(crate) fn rustup_add_target(triple: &str) -> Result<(), SoldrError> {
-    let paths = SoldrPaths::new()?;
-    let rustup = crate::binaries::rustup_binary();
-    let mut command = std::process::Command::new(rustup);
-    command.args(["target", "add", triple]);
-    if let Some(channel) = pinned_toolchain_channel()? {
-        command.args(["--toolchain", &channel]);
-    }
-    command.env(
-        crate::core::CARGO_HOME_ENV_VAR,
-        std::env::var_os(crate::core::CARGO_HOME_ENV_VAR)
-            .unwrap_or_else(|| crate::fetch::managed_cargo_home(&paths).into_os_string()),
-    );
-    command.env(
-        crate::core::RUSTUP_HOME_ENV_VAR,
-        std::env::var_os(crate::core::RUSTUP_HOME_ENV_VAR)
-            .unwrap_or_else(|| crate::fetch::managed_rustup_home(&paths).into_os_string()),
-    );
-    crate::core::suppress_windows_console_window(&mut command);
-    let status = run_rustup_target_add(&mut command, triple)?;
-    if !status.success() {
-        return Err(SoldrError::Other(format!(
-            "rustup target add {triple} exited with {}",
-            status
-        )));
-    }
-    Ok(())
+/// Resolved (CARGO_HOME, RUSTUP_HOME) for rustup/rustc invocations: the
+/// caller's values when set, else soldr's managed homes.
+fn resolved_toolchain_homes(paths: &SoldrPaths) -> (std::ffi::OsString, std::ffi::OsString) {
+    let cargo_home = std::env::var_os(crate::core::CARGO_HOME_ENV_VAR)
+        .unwrap_or_else(|| crate::fetch::managed_cargo_home(paths).into_os_string());
+    let rustup_home = std::env::var_os(crate::core::RUSTUP_HOME_ENV_VAR)
+        .unwrap_or_else(|| crate::fetch::managed_rustup_home(paths).into_os_string());
+    (cargo_home, rustup_home)
 }
 
-fn run_rustup_target_add(
-    command: &mut std::process::Command,
+fn rustup_command(
+    cargo_home: &std::ffi::OsStr,
+    rustup_home: &std::ffi::OsStr,
+) -> std::process::Command {
+    let mut command = std::process::Command::new(crate::binaries::rustup_binary());
+    command.env(crate::core::CARGO_HOME_ENV_VAR, cargo_home);
+    command.env(crate::core::RUSTUP_HOME_ENV_VAR, rustup_home);
+    crate::core::suppress_windows_console_window(&mut command);
+    command
+}
+
+/// True when the target's rust-std payload is actually materialized on disk
+/// — not merely what `rustup` *reports*. soldr#2348: a toolchain-cache
+/// restore can leave rustup's component manifest claiming a target is
+/// installed while its `lib/rustlib/<triple>/lib` payload is absent, so
+/// `rustup target add` no-ops ("… is up to date") and rustc then fails
+/// E0463. We ask rustc for the target libdir and check it holds a `libstd`.
+fn target_std_present(
+    cargo_home: &std::ffi::OsStr,
+    rustup_home: &std::ffi::OsStr,
+    channel: Option<&str>,
+    triple: &str,
+) -> Result<bool, SoldrError> {
+    // The fake-rustup unit tests can't answer `rustc --print target-libdir`;
+    // skip the on-disk verification under a test rustup and trust the add,
+    // exactly as before #2348. Real runs always take the verifying path.
+    if std::env::var_os(crate::TEST_RUSTUP_BIN_ENV_VAR).is_some() {
+        return Ok(true);
+    }
+    let Some(channel) = channel else {
+        // No pinned channel to interrogate deterministically; preserve the
+        // pre-#2348 behavior (trust the add) rather than guess a toolchain.
+        return Ok(true);
+    };
+    let mut command = rustup_command(cargo_home, rustup_home);
+    command.args([
+        "run",
+        channel,
+        "rustc",
+        "--print",
+        "target-libdir",
+        "--target",
+        triple,
+    ]);
+    let output = command
+        .output()
+        .map_err(|e| SoldrError::Other(format!("probing target-libdir for {triple}: {e}")))?;
+    if !output.status.success() {
+        return Ok(false);
+    }
+    let libdir = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if libdir.is_empty() {
+        return Ok(false);
+    }
+    Ok(libdir_has_std(std::path::Path::new(&libdir)))
+}
+
+/// True when `libdir` holds a `libstd-*` rlib — the payload rustc needs for the
+/// target. Pure, so the soldr#2348 "manifest lies, payload absent" check is
+/// unit-testable without a real rustc/rustup.
+fn libdir_has_std(libdir: &std::path::Path) -> bool {
+    std::fs::read_dir(libdir)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .any(|e| e.file_name().to_string_lossy().starts_with("libstd-"))
+        })
+        .unwrap_or(false)
+}
+
+fn rustup_target_op(
+    cargo_home: &std::ffi::OsStr,
+    rustup_home: &std::ffi::OsStr,
+    channel: Option<&str>,
+    op: &str,
     triple: &str,
 ) -> Result<std::process::ExitStatus, SoldrError> {
+    let mut command = rustup_command(cargo_home, rustup_home);
+    command.args(["target", op, triple]);
+    if let Some(channel) = channel {
+        command.args(["--toolchain", channel]);
+    }
     run_installer_command(
-        command,
-        &format!("rustup target add {triple}"),
+        &mut command,
+        &format!("rustup target {op} {triple}"),
         "target-install",
         InstallerWatchdogConfig::from_env(RUSTUP_TARGET_ADD_TIMEOUT_ENV_VAR),
     )
+}
+
+/// Run `rustup target add <triple>` for the active toolchain, then ensure the
+/// std payload is really present (soldr#2348). Idempotent.
+pub(crate) fn rustup_add_target(triple: &str) -> Result<(), SoldrError> {
+    let paths = SoldrPaths::new()?;
+    let channel = pinned_toolchain_channel()?;
+    let (cargo_home, rustup_home) = resolved_toolchain_homes(&paths);
+
+    let status = rustup_target_op(&cargo_home, &rustup_home, channel.as_deref(), "add", triple)?;
+    if !status.success() {
+        return Err(SoldrError::Other(format!(
+            "rustup target add {triple} exited with {status}"
+        )));
+    }
+
+    // soldr#2348: rustup may report the target "up to date" while its rustlib
+    // payload is missing (cache restored the manifest but not the files). Force
+    // a re-materialize (remove clears the stale manifest; add re-downloads).
+    if !target_std_present(&cargo_home, &rustup_home, channel.as_deref(), triple)? {
+        eprintln!(
+            "soldr: target {triple} std reported installed but its libdir is empty; \
+             forcing a rustup reinstall (soldr#2348)"
+        );
+        let _ = rustup_target_op(
+            &cargo_home,
+            &rustup_home,
+            channel.as_deref(),
+            "remove",
+            triple,
+        );
+        let status =
+            rustup_target_op(&cargo_home, &rustup_home, channel.as_deref(), "add", triple)?;
+        if !status.success() {
+            return Err(SoldrError::Other(format!(
+                "rustup target add {triple} (forced reinstall) exited with {status}"
+            )));
+        }
+        if !target_std_present(&cargo_home, &rustup_home, channel.as_deref(), triple)? {
+            return Err(SoldrError::Other(format!(
+                "rustup target add {triple} reported success but the std libdir is still \
+                 absent after a forced reinstall (rustup manifest/payload mismatch, soldr#2348)"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn pinned_toolchain_channel() -> Result<Option<String>, SoldrError> {
@@ -1325,6 +1428,25 @@ mod tests {
         assert_eq!(
             InstallerWatchdogConfig::from_env(RUSTUP_TARGET_ADD_TIMEOUT_ENV_VAR).safety_timeout,
             Duration::from_secs(crate::core::DEFAULT_INSTALLER_SAFETY_TIMEOUT_SECS)
+        );
+    });
+
+    crate::timed_test!(libdir_has_std_detects_missing_payload, {
+        // soldr#2348: an empty target libdir is the "manifest lies, payload
+        // absent" state that makes rustc fail E0463 — it must read as missing.
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        assert!(
+            !libdir_has_std(tmp.path()),
+            "empty libdir must read as no-std"
+        );
+        // A nonexistent dir must not panic and must read as missing.
+        assert!(!libdir_has_std(&tmp.path().join("does-not-exist")));
+        // A materialized libstd rlib means the payload is present.
+        std::fs::write(tmp.path().join("libstd-0123456789abcdef.rlib"), b"x")
+            .expect("write libstd");
+        assert!(
+            libdir_has_std(tmp.path()),
+            "libstd rlib must read as present"
         );
     });
 

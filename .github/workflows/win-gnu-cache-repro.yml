@@ -116,11 +116,16 @@ jobs:
           echo 'fn main() { println!("ok"); }' > "$work/src/main.rs"
           cd "$work"
           # CACHED build (no --no-cache) — routes compiles through the daemon.
-          "$GITHUB_WORKSPACE/target/debug/soldr" build --target x86_64-pc-windows-gnu 2>&1 | tee "$RUNNER_TEMP/build.log" || true
-          echo "---- grep the #2348 diagnostic + E0463 ----"
-          grep -nE "dbg#2348|E0463|can't find crate|RUSTUP_HOME=" "$RUNNER_TEMP/build.log" || true
-          # Surface the outcome without failing (diagnostic run).
+          # This runs the CHECKOUT soldr (with the #2348 fix), immediately after
+          # the released 0.8.44 build above has poisoned the toolchain manifest.
+          # RED->GREEN: released fails E0463; the fixed build must recover.
+          "$GITHUB_WORKSPACE/target/debug/soldr" build --target x86_64-pc-windows-gnu 2>&1 | tee "$RUNNER_TEMP/build.log"
+          echo "---- outcome ----"
           if grep -q 'E0463' "$RUNNER_TEMP/build.log"; then
-            echo "REPRODUCED: E0463 on the cached win-gnu build" >&2
+            echo "FAIL: E0463 persisted with the fix" >&2
+            exit 1
           fi
-          ls -la "$work/target/x86_64-pc-windows-gnu/debug/" 2>/dev/null || true
+          exe="$work/target/x86_64-pc-windows-gnu/debug/wingnu-repro.exe"
+          test -f "$exe"
+          python3 "$GITHUB_WORKSPACE/.github/scripts/win_gnu_link_smoke.py" assert-pe --path "$exe"
+          echo "PASS: fixed checkout build produced a PE after the poisoned released build"
