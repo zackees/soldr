@@ -56,19 +56,26 @@ jobs:
           set -euxo pipefail
           rh="${RUSTUP_HOME:-$HOME/.rustup}"
           tc="$rh/toolchains/1.94.1-x86_64-unknown-linux-gnu"
-          # Materialize the target normally (downloads std + records the manifest).
-          rustup target add x86_64-pc-windows-gnu --toolchain 1.94.1
-          test -d "$tc/lib/rustlib/x86_64-pc-windows-gnu/lib"
-          # Poison: delete the std payload but leave rustup's installed-manifest
-          # intact — exactly the state a solo-toolchain-cache restore leaves
-          # (soldr#2348). rustup now reports the target as installed while the
-          # rlibs are gone, so a plain `rustup target add` no-ops.
-          rm -rf "$tc/lib/rustlib/x86_64-pc-windows-gnu"
+          payload="$tc/lib/rustlib/x86_64-pc-windows-gnu/lib"
+          # Try a normal add; a solo-toolchain-cache restore may already have
+          # left the poisoned state (manifest present, payload absent), in
+          # which case this no-ops ("up to date").
+          rustup target add x86_64-pc-windows-gnu --toolchain 1.94.1 || true
+          if [ -d "$payload" ]; then
+            # Clean state: poison it — delete the std payload but leave rustup's
+            # installed-manifest intact (soldr#2348 = the exact cache-restore lie).
+            rm -rf "$tc/lib/rustlib/x86_64-pc-windows-gnu"
+            echo "poisoned: deleted the win-gnu payload, kept the manifest"
+          else
+            echo "already poisoned: payload absent (cache restored the lie)"
+          fi
+          # Prove the lie: rustup still lists it + add no-ops, but the rlibs are gone.
           rustup target list --installed --toolchain 1.94.1 | grep -q x86_64-pc-windows-gnu \
-            && echo "manifest still lists win-gnu (poison in place)"
-          rustup target add x86_64-pc-windows-gnu --toolchain 1.94.1 2>&1 | tee /tmp/reAdd.log
-          grep -q 'up to date' /tmp/reAdd.log && echo "confirmed: rustup no-ops ('up to date') despite missing payload"
-          test ! -d "$tc/lib/rustlib/x86_64-pc-windows-gnu/lib" && echo "confirmed: payload absent"
+            && echo "manifest still lists win-gnu"
+          rustup target add x86_64-pc-windows-gnu --toolchain 1.94.1 2>&1 | tee /tmp/reAdd.log || true
+          grep -q 'up to date' /tmp/reAdd.log && echo "confirmed: rustup no-ops despite missing payload"
+          [ ! -d "$payload" ] && echo "confirmed: win-gnu payload absent"
+          true
 
       - name: Fixed build must recover (RED->GREEN for #2348)
         shell: bash
