@@ -223,37 +223,9 @@ pub fn resolved_spawn_retry_budget() -> Duration {
     Duration::from_millis(ms)
 }
 
-/// soldr#2364: under the opt-in `SOLDR_USE_BROKER=1` front door, give a
-/// front-door-spawned broker a chance to serve this compile before falling
-/// to the legacy direct-spawn path.
-///
-/// Root-caused on the Linux Docker harness (soldr#2364): this dispatch
-/// path never consulted broker discovery at all before this change, so
-/// a front-door-spawned broker (even correctly namespaced, #2379) was
-/// never dialed by a real build -- every cold compile fell straight to
-/// legacy spawn regardless of whether a broker was running. Gated
-/// behind the same env var that gates the front door's own spawn
-/// (`broker_spawn::broker_enabled`) -- there is no reason to pay a
-/// discovery round-trip against a broker this invocation was never
-/// asked to use.
-///
-/// Returns `true` only when broker discovery confirms a live daemon PID
-/// (`DiscoveryRoute::BrokerNegotiated` followed by a successful local
-/// probe -- see `broker_discovery::soldr_daemon_pid_via_broker`). Every
-/// other outcome (broker disabled, unreachable, refused, or a
-/// negotiated-but-unconfirmed backend) returns `false` so the existing
-/// legacy spawn behavior is exactly unchanged -- this is additive, not a
-/// replacement for the direct-connect-first / legacy-spawn-on-failure
-/// model.
-fn broker_confirmed_daemon_live() -> bool {
-    if !crate::broker_spawn::broker_enabled() {
-        return false;
-    }
-    let Ok(paths) = SoldrPaths::new() else {
-        return false;
-    };
-    crate::daemon::broker_discovery::soldr_daemon_pid_via_broker(&paths).is_some()
-}
+// `broker_confirmed_daemon_live` lives in `broker_discovery_gate.rs`, not
+// here -- this file is already over the repo's loc_ratchet ceiling. See
+// that module's doc for the soldr#2364 root cause.
 
 /// Terminal failure from the compile dispatch (soldr#1300).
 ///
@@ -811,7 +783,7 @@ where
     let deadline = start + budget;
     let mut prepared_spawn = None;
     let spawn_err = if spawn_on_first_failure {
-        if broker_confirmed_daemon_live() {
+        if crate::broker_discovery_gate::broker_confirmed_daemon_live() {
             // soldr#2364: a broker (front-door-spawned under
             // SOLDR_USE_BROKER=1) already negotiated a live daemon at
             // the deterministic socket `sock_path` names -- either an
@@ -1863,34 +1835,8 @@ mod tests {
         }
     );
 
-    // soldr#2364: `broker_confirmed_daemon_live` must degrade to `false`
-    // (never panic, never hang) whenever the broker is disabled or
-    // unreachable, so the legacy spawn path this dispatch has always used
-    // is unaffected unless a front-door-spawned broker actually confirms
-    // a live daemon. Proving the `true` branch needs a real broker + a
-    // real launched daemon (covered by the Linux Docker harness, not a
-    // unit test); these lock down the two safe-degrade branches that a
-    // unit test *can* exercise without spawning anything.
-    timed_test!(
-        broker_confirmed_daemon_live_is_false_when_broker_disabled,
-        {
-            let _g = EnvVarGuard::acquire("SOLDR_USE_BROKER");
-            // SOLDR_USE_BROKER left unset by EnvVarGuard::acquire.
-            assert!(!broker_confirmed_daemon_live());
-        }
-    );
-
-    timed_test!(
-        broker_confirmed_daemon_live_is_false_when_broker_enabled_but_unreachable,
-        {
-            let g = EnvVarGuard::acquire("SOLDR_USE_BROKER");
-            g.set("SOLDR_USE_BROKER", "1");
-            // No broker is running in the test environment, so discovery
-            // must resolve to a fallback route and this must return false,
-            // never panic and never hang.
-            assert!(!broker_confirmed_daemon_live());
-        }
-    );
+    // `broker_confirmed_daemon_live`'s tests live in
+    // `broker_discovery_gate.rs`, not here (soldr#2364).
 
     timed_test!(
         recent_daemon_unavailable_marker_skips_spawn_retry_budget,
