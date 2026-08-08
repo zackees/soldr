@@ -9,7 +9,7 @@ description = "CLI for soldr — instant tools, instant builds"
 publish = false
 
 [dependencies]
-running-process = { version = "4.10.1", git = "https://github.com/zackees/running-process.git", rev = "db97ef9783ad3b37a6f7e52ec77b907ed3d20545", default-features = false, features = ["client"] }
+running-process = { version = "4.10.1", git = "https://github.com/zackees/running-process.git", rev = "d45c90d278318e667652e1f16711dc79573e5ee8", default-features = false, features = ["client"] }
 soldr-cache = { path = "../soldr-cache" }
 soldr-daemon = { path = "../soldr-daemon" }
 soldr-core = { path = "../soldr-core" }
