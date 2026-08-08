@@ -54,15 +54,21 @@ jobs:
         shell: bash
         run: |
           set -x
-          echo "RUSTUP_HOME=${RUSTUP_HOME:-<unset>}"
-          echo "CARGO_HOME=${CARGO_HOME:-<unset>}"
-          echo "RUSTUP_TOOLCHAIN=${RUSTUP_TOOLCHAIN:-<unset>}"
-          which rustc cargo rustup || true
-          rustup show || true
-          echo "--- targets installed in the ACTIVE home ---"
-          rustup target list --installed || true
-          echo "--- does the win-gnu std dir exist under RUSTUP_HOME? ---"
-          find "${RUSTUP_HOME:-$HOME/.rustup}" -type d -name 'x86_64-pc-windows-gnu' 2>/dev/null | head || true
+          echo "RUSTUP_HOME=${RUSTUP_HOME:-<unset>} CARGO_HOME=${CARGO_HOME:-<unset>} RUSTUP_TOOLCHAIN=${RUSTUP_TOOLCHAIN:-<unset>}"
+          rh="${RUSTUP_HOME:-$HOME/.rustup}"
+          echo "--- toolchains in the managed home ---"
+          ls -la "$rh/toolchains" || true
+          for tc in "$rh"/toolchains/*/; do
+            echo "=== $tc rustlib targets ==="
+            ls "$tc/lib/rustlib" 2>/dev/null || true
+            echo "  is-linked-file? $( [ -f "$tc" ] && echo yes || echo no )"
+          done
+          echo "--- MANUAL: rustup target add x86_64-pc-windows-gnu --toolchain 1.94.1 (RUSTUP_HOME=$rh) ---"
+          RUSTUP_HOME="$rh" rustup target add x86_64-pc-windows-gnu --toolchain 1.94.1; echo "manual add exit=$?"
+          echo "--- after manual add: rustlib targets ---"
+          for tc in "$rh"/toolchains/*/; do echo "=== $tc ==="; ls "$tc/lib/rustlib" 2>/dev/null || true; done
+          echo "--- rustup toolchain list ---"
+          RUSTUP_HOME="$rh" rustup toolchain list || true
 
       - name: Cached win-gnu build with RELEASED 0.8.44 (reld#66 exact binary)
         shell: bash
