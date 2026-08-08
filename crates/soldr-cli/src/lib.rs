@@ -167,6 +167,7 @@ pub mod binaries;
 pub mod blessed_build;
 pub mod bootstrap;
 pub mod broker_cmd;
+pub mod broker_spawn;
 pub mod build_from_source_cmd;
 /// soldr#1790 — always-on hierarchical per-build XML log
 /// (`<soldr root>/logs/builds/<timestamp>-<cwd-slug>.xml`). See the
