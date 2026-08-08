@@ -47,10 +47,13 @@ pub(crate) fn run_broker_command(command: BrokerSubcommand) -> Result<(), SoldrE
 }
 
 /// Bind the v2 broker socket for `program` and serve Hello connections,
-/// launching soldr-daemon on a verified registry miss (soldr-daemon's own
-/// `.servicedef.v2`, written by `soldr daemon install-servicedef`, is what
-/// tells the broker how -- with none installed, every Hello is correctly
-/// refused as `ServiceUnknown` rather than the broker guessing).
+/// launching soldr-daemon on a verified registry miss. Installs (or
+/// refreshes) soldr-daemon's own `.servicedef.v2` first -- the file that
+/// tells the broker how -- so a freshly-started broker is immediately
+/// useful without a separate `soldr daemon install-servicedef` step. If
+/// that install fails, every Hello is still correctly refused as
+/// `ServiceUnknown` rather than the broker guessing, matching the
+/// pre-auto-install behavior.
 ///
 /// Uses `running_process::broker::server::serve_launching_backends`, the
 /// same production accept loop / launcher machinery
@@ -64,6 +67,28 @@ fn run_broker_serve(program: &str) -> Result<(), SoldrError> {
     use running_process::broker::server::{serve_launching_backends, BrokerLaunchServeConfig};
 
     const BROKER_PIPE_IDX: u32 = 0;
+
+    // Best-effort: without this, every Hello is correctly but uselessly
+    // refused as ServiceUnknown until someone remembers to run
+    // `soldr daemon install-servicedef` by hand first. A failure here
+    // (e.g. no sibling soldr-daemon binary next to this soldr binary in a
+    // partial dev build) does not stop the broker from serving -- it just
+    // stays in that same refuse-everything state, which is the existing,
+    // safe fallback behavior.
+    match crate::daemon::service_definition::install_default_service_definition() {
+        Ok(installed) => {
+            println!(
+                "soldr broker: soldr-daemon servicedef installed at {}",
+                installed.path.display()
+            );
+        }
+        Err(err) => {
+            eprintln!(
+                "soldr broker: could not install soldr-daemon servicedef ({err}); \
+                 continuing without daemon-launch capability for this service."
+            );
+        }
+    }
 
     let sid = user_sid_hash()
         .map_err(|e| SoldrError::Other(format!("soldr broker: user_sid_hash failed: {e}")))?;
