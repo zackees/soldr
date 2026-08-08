@@ -17,7 +17,7 @@ fs2 = { workspace = true }
 hex = { workspace = true }
 prost = { workspace = true }
 redb = { workspace = true }
-running-process = { version = "4.10.1", git = "https://github.com/zackees/running-process.git", rev = "1da8fa5970bbfffadf67ee4c93d7a074285b897b", default-features = false, features = ["client"] }
+running-process = { version = "4.10.1", git = "https://github.com/zackees/running-process.git", rev = "d5d2b2a7a8658d35d4f17b2b2e002405caa10d71", default-features = false, features = ["client"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
