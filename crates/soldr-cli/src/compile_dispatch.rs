@@ -223,10 +223,6 @@ pub fn resolved_spawn_retry_budget() -> Duration {
     Duration::from_millis(ms)
 }
 
-// `broker_confirmed_daemon_live` lives in `broker_discovery_gate.rs`, not
-// here -- this file is already over the repo's loc_ratchet ceiling. See
-// that module's doc for the soldr#2364 root cause.
-
 /// Terminal failure from the compile dispatch (soldr#1300).
 ///
 /// Structured (rather than a pre-formatted `SoldrError::Other`) so the
@@ -781,35 +777,10 @@ where
     let budget = resolved_spawn_retry_budget();
     let start = Instant::now();
     let deadline = start + budget;
-    let mut prepared_spawn = None;
-    let spawn_err = if spawn_on_first_failure {
-        if crate::broker_discovery_gate::broker_confirmed_daemon_live() {
-            // soldr#2364: a broker (front-door-spawned under
-            // SOLDR_USE_BROKER=1) already negotiated a live daemon at
-            // the deterministic socket `sock_path` names -- either an
-            // already-registered backend, or one it just launched and
-            // confirmed via `probe_soldr_daemon`. The legacy spawn
-            // below would be redundant (and would race the broker's
-            // own singleton bookkeeping), so skip straight to the
-            // retry loop, which redials `sock_path` and finds the
-            // daemon broker discovery just confirmed.
-            None
-        } else {
-            match crate::binaries::ensure_daemon_executable_handoff() {
-                Ok(_) => match crate::daemon::lifecycle::try_spawn_detached_until(Some(deadline)) {
-                    Ok(prepared) => {
-                        prepared_spawn = prepared;
-                        None
-                    }
-                    Err(error) => Some(format!("initial daemon spawn failed: {error:?}")),
-                },
-                Err(error) => Some(format!(
-                    "canonical soldr-daemon handoff materialization failed: {error}"
-                )),
-            }
-        }
+    let (prepared_spawn, spawn_err) = if spawn_on_first_failure {
+        crate::broker_discovery_gate::spawn_or_confirm_broker_daemon(deadline)
     } else {
-        None
+        (None, None)
     };
     let result = retry_within_budget(
         sock_path,
@@ -1834,9 +1805,6 @@ mod tests {
             );
         }
     );
-
-    // `broker_confirmed_daemon_live`'s tests live in
-    // `broker_discovery_gate.rs`, not here (soldr#2364).
 
     timed_test!(
         recent_daemon_unavailable_marker_skips_spawn_retry_budget,
