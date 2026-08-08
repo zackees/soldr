@@ -185,6 +185,10 @@ pub mod compile_dispatch;
 pub mod compile_fallback_rollup;
 pub mod cook;
 pub mod daemon_entry;
+/// soldr#2360 — actionable attribution for a daemon-unavailable compile
+/// dispatch failure, split out of `compile_dispatch.rs` (over the #1966
+/// line ceiling) into its own module.
+pub mod daemon_infra_remedy;
 /// soldr#2023 — `soldr daemon status` rendering, split out of
 /// `soldr_main.rs` so that file could stop growing.
 pub(crate) mod daemon_status_render;

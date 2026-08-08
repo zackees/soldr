@@ -275,11 +275,11 @@ impl DispatchError {
     }
 
     /// Collapse into the flat `SoldrError` shape the pre-#1300 callers
-    /// expect. Message format is unchanged from the original dispatch
-    /// error (plus an optional `spawn_err=` suffix) so existing log
-    /// grep patterns keep working.
+    /// expect, EXCEPT for a daemon-unavailable failure, which gets an
+    /// actionable infra-attributed message (soldr#2360) — see
+    /// [`crate::daemon_infra_remedy`].
     pub fn into_soldr_error(self) -> SoldrError {
-        SoldrError::Other(self.to_string())
+        crate::daemon_infra_remedy::into_soldr_error(self)
     }
 }
 
