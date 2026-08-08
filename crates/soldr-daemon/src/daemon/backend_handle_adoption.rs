@@ -43,7 +43,19 @@ pub(crate) const PROBE_INCONCLUSIVE_RETRY_BUDGET: Duration = Duration::from_secs
 /// probe deadline that dominates each attempt.
 pub(crate) const PROBE_INCONCLUSIVE_RETRY_BACKOFF: Duration = Duration::from_millis(50);
 
-pub(crate) const SOLDR_DAEMON_SERVICE_NAME: &str = "soldr-daemon";
+/// Also the v2 broker `--program` namespace soldr's front door spawns its
+/// broker under (soldr#2364): [`running_process::broker::client_v2::connect`]
+/// dials [`running_process::broker::lifecycle::names_v2::v2_program_pipe`]
+/// keyed on this same string for both the bind-namespace lookup *and* the
+/// Hello `service_name` it sends (the v2 API conflates the two — see that
+/// function's doc). A front door spawning the broker under any other
+/// `--program` value binds a pipe this dial can never reach: the client
+/// silently falls through to `DiscoveryRoute::DirectFallbackUnavailable`
+/// and the legacy direct-spawn path serves the compile instead, leaving the
+/// broker running but never consulted. Public so `soldr-cli`'s
+/// `broker_spawn` module can spawn the broker under the exact namespace this
+/// crate's own discovery dials, instead of duplicating the literal.
+pub const SOLDR_DAEMON_SERVICE_NAME: &str = "soldr-daemon";
 pub(crate) const SOLDR_DAEMON_SERVICE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub(crate) const RUNNING_PROCESS_DISABLE_ENV: &str = "RUNNING_PROCESS_DISABLE";
 
