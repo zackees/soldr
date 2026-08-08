@@ -9,6 +9,7 @@ description = "CLI for soldr — instant tools, instant builds"
 publish = false
 
 [dependencies]
+running-process = { version = "4.10.1", git = "https://github.com/zackees/running-process.git", rev = "d5d2b2a7a8658d35d4f17b2b2e002405caa10d71", default-features = false, features = ["client"] }
 soldr-cache = { path = "../soldr-cache" }
 soldr-daemon = { path = "../soldr-daemon" }
 soldr-core = { path = "../soldr-core" }
@@ -81,7 +82,6 @@ windows-sys = { version = "0.59", features = [
 [dev-dependencies]
 filetime = { workspace = true }
 reqwest = { workspace = true }
-running-process = { version = "4.10.1", default-features = false, features = ["client"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 

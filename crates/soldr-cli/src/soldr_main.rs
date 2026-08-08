@@ -20,10 +20,10 @@ use crate::{
 };
 
 pub(crate) use crate::cli_args::{
-    is_cargo_builtin_verb, CacheSubcommand, Cli, Commands, DaemonBuildsSubcommand,
-    DaemonSubcommand, DefenderExclusionsSubcommand, GcCargoArgs, GcListKind, GcSubcommand,
-    GcSweepArgs, LogsSubcommand, ToolchainSubcommand, TrimProfileArg, ZccacheSourceArg,
-    CARGO_BUILTIN_VERBS, SOLDR_BUILTIN_VERBS,
+    is_cargo_builtin_verb, BrokerSubcommand, CacheSubcommand, Cli, Commands,
+    DaemonBuildsSubcommand, DaemonSubcommand, DefenderExclusionsSubcommand, GcCargoArgs,
+    GcListKind, GcSubcommand, GcSweepArgs, LogsSubcommand, ToolchainSubcommand, TrimProfileArg,
+    ZccacheSourceArg, CARGO_BUILTIN_VERBS, SOLDR_BUILTIN_VERBS,
 };
 
 use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
@@ -922,6 +922,9 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
         Commands::Daemon { command } => {
             run_daemon_command(command).await?;
         }
+        Commands::Broker { command } => {
+            run_broker_command(command)?;
+        }
         Commands::External(args) => {
             if args.is_empty() {
                 eprintln!("usage: soldr <tool>[@version] [args...]");
@@ -1571,6 +1574,89 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
             ),
         },
     }
+}
+
+/// Dispatch `soldr broker <verb>` (soldr#2361 Phase 2, dormant/opt-in --
+/// nothing spawns this yet).
+fn run_broker_command(command: BrokerSubcommand) -> Result<(), SoldrError> {
+    match command {
+        BrokerSubcommand::Serve { program } => run_broker_serve(&program),
+    }
+}
+
+/// Bind the v2 broker socket for `program` and serve Hello connections,
+/// launching soldr-daemon on a verified registry miss (soldr-daemon's own
+/// `.servicedef.v2`, written by `soldr daemon install-servicedef`, is what
+/// tells the broker how -- with none installed, every Hello is correctly
+/// refused as `ServiceUnknown` rather than the broker guessing).
+///
+/// Uses `running_process::broker::server::serve_launching_backends`, the
+/// same production accept loop / launcher machinery
+/// `running-process-broker-v2` is built on, so this inherits its Hello
+/// validation, version-floor check, and (once soldr starts minting them --
+/// separate follow-up work) composite session-token enforcement for free.
+fn run_broker_serve(program: &str) -> Result<(), SoldrError> {
+    use running_process::broker::lifecycle::names_v2::v2_program_pipe;
+    use running_process::broker::lifecycle::sid::user_sid_hash;
+    use running_process::broker::server::singleton_bind::resolve_socket_path;
+    use running_process::broker::server::{serve_launching_backends, BrokerLaunchServeConfig};
+
+    const BROKER_PIPE_IDX: u32 = 0;
+
+    let sid = user_sid_hash()
+        .map_err(|e| SoldrError::Other(format!("soldr broker: user_sid_hash failed: {e}")))?;
+    let pipe_name = v2_program_pipe(program, &sid, BROKER_PIPE_IDX)
+        .map_err(|e| SoldrError::Other(format!("soldr broker: v2_program_pipe failed: {e}")))?;
+    let socket_path = resolve_socket_path(&pipe_name)
+        .map_err(|e| SoldrError::Other(format!("soldr broker: resolve_socket_path failed: {e}")))?;
+
+    println!("soldr broker: binding at {socket_path} (program={program})");
+
+    let config = BrokerLaunchServeConfig::unbounded(socket_path.clone());
+    match serve_launching_backends(config) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            if broker_serve_error_is_already_bound(&err) {
+                eprintln!(
+                    "soldr broker: another broker is already bound at {socket_path} \
+                     (program={program}). Refusing to start to avoid double-bind. \
+                     Stop the other broker first, or pass a distinct --program."
+                );
+                exit_guard::mark_spoke(); // soldr#2024: this IS the explanation.
+                guarded_exit(75); // EX_TEMPFAIL -- supervisor can retry after the other broker exits
+            }
+            Err(SoldrError::Other(format!(
+                "soldr broker: serve failed: {err}"
+            )))
+        }
+    }
+}
+
+/// Classify a [`running_process::broker::server::BrokerServeError`] as
+/// "another broker already owns this bind path" vs any other serve
+/// failure. Mirrors `running-process-broker-v2::is_already_bound_error`
+/// (now `singleton_bind::is_already_bound_error`) plus the
+/// `AlreadyExists` path-precheck `serve_launching_backends`'s own bind
+/// step uses, which is stricter than `singleton_bind::bind_singleton`
+/// (no self-healing stale-socket cleanup) -- a known follow-up to unify,
+/// not a correctness issue for this dormant/opt-in first slice.
+fn broker_serve_error_is_already_bound(
+    err: &running_process::broker::server::BrokerServeError,
+) -> bool {
+    use running_process::broker::server::singleton_bind::is_already_bound_error;
+    use running_process::broker::server::{
+        BrokerConnectionError, BrokerServeError, ControlSocketError,
+    };
+
+    let io_err: Option<&std::io::Error> = match err {
+        BrokerServeError::Connection(BrokerConnectionError::Io(e)) => Some(e),
+        BrokerServeError::ControlSocket(ControlSocketError::Connection(
+            BrokerConnectionError::Io(e),
+        )) => Some(e),
+        _ => None,
+    };
+    io_err
+        .is_some_and(|e| e.kind() == std::io::ErrorKind::AlreadyExists || is_already_bound_error(e))
 }
 
 #[cfg(test)]

@@ -338,6 +338,7 @@ pub(crate) const SOLDR_BUILTIN_VERBS: &[&str] = &[
     "prepare",
     "build-from-source",
     "daemon",
+    "broker", // soldr#2361 Phase 2 (Commands::Broker)
     "shims",
 ];
 
@@ -721,6 +722,11 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         command: DaemonSubcommand,
     },
+    /// Manage the v2 broker (soldr#2361 Phase 2, dormant/opt-in)
+    Broker {
+        #[command(subcommand)]
+        command: BrokerSubcommand,
+    },
     /// Start a zccache session and print its id
     ///
     /// Idempotent: when `ZCCACHE_SESSION_ID` is already set in the
@@ -824,6 +830,32 @@ pub(crate) enum DaemonSubcommand {
     Builds {
         #[command(subcommand)]
         command: DaemonBuildsSubcommand,
+    },
+}
+
+/// Verbs for `soldr broker` (soldr#2361 Phase 2).
+///
+/// This is a new dispatch surface, not an argv[0] shim identity like
+/// `soldr-daemon` (see `multicall.rs`'s `ShimIdentity`) — nothing external
+/// ever needs to find a broker process by a conventional binary name, only
+/// soldr's own front door spawns it, so a plain subcommand is simpler than
+/// installing a hardlinked shim (soldr#2364 design comment).
+#[derive(clap::Subcommand)]
+pub(crate) enum BrokerSubcommand {
+    /// Bind the v2 broker socket and serve Hello connections, launching
+    /// soldr-daemon on a verified registry miss. Blocks until the process
+    /// is killed or (future work) an idle/displacement policy exits it.
+    ///
+    /// Currently dormant / opt-in: nothing in soldr's front door spawns
+    /// this yet (that wiring is separate follow-up work). Running it
+    /// manually is safe -- it enforces the same per-user-session
+    /// singleton property `running-process-broker-v2` does, refusing to
+    /// start a second instance rather than racing one.
+    Serve {
+        /// Program namespace for the bind name (advanced/testing only --
+        /// distinct programs bind distinct sockets). Defaults to "soldr".
+        #[arg(long, default_value = "soldr")]
+        program: String,
     },
 }
 
