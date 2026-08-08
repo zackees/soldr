@@ -840,21 +840,21 @@ fn target_std_present(
     if std::env::var_os(crate::TEST_RUSTUP_BIN_ENV_VAR).is_some() {
         return Ok(true);
     }
-    let Some(channel) = channel else {
-        // No pinned channel to interrogate deterministically; preserve the
-        // pre-#2348 behavior (trust the add) rather than guess a toolchain.
+    // Ask rustc itself for the target libdir — channel-independent, so a
+    // project with no rust-toolchain.toml (channel = None) is still verified.
+    // If rustc can't be resolved, trust the add rather than force a needless
+    // reinstall.
+    let Ok(rustc) = crate::binaries::resolve_toolchain_binary("rustc") else {
         return Ok(true);
     };
-    let mut command = rustup_command(cargo_home, rustup_home);
-    command.args([
-        "run",
-        channel,
-        "rustc",
-        "--print",
-        "target-libdir",
-        "--target",
-        triple,
-    ]);
+    let mut command = std::process::Command::new(rustc);
+    command.env(crate::core::CARGO_HOME_ENV_VAR, cargo_home);
+    command.env(crate::core::RUSTUP_HOME_ENV_VAR, rustup_home);
+    if let Some(channel) = channel {
+        command.env(crate::core::RUSTUP_TOOLCHAIN_ENV_VAR, channel);
+    }
+    command.args(["--print", "target-libdir", "--target", triple]);
+    crate::core::suppress_windows_console_window(&mut command);
     let output = command
         .output()
         .map_err(|e| SoldrError::Other(format!("probing target-libdir for {triple}: {e}")))?;
