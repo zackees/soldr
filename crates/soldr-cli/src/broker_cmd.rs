@@ -1,5 +1,7 @@
-//! Dispatch for `soldr broker <verb>` (soldr#2361 Phase 2, dormant/opt-in --
-//! nothing spawns this yet).
+//! Dispatch for `soldr broker <verb>` (soldr#2361 Phase 2). The front door
+//! spawns `soldr broker serve` as an opt-in exception under
+//! `SOLDR_USE_BROKER=1` (see `broker_spawn.rs`); manual invocation remains
+//! supported and safe.
 //!
 //! Split out of `soldr_main.rs` on introduction rather than grown inline
 //! there: that file is already over the repo's 1,500-line ratchet
@@ -27,15 +29,21 @@ pub(crate) enum BrokerSubcommand {
     /// soldr-daemon on a verified registry miss. Blocks until the process
     /// is killed or (future work) an idle/displacement policy exits it.
     ///
-    /// Currently dormant / opt-in: nothing in soldr's front door spawns
-    /// this yet (that wiring is separate follow-up work). Running it
-    /// manually is safe -- it enforces the same per-user-session
-    /// singleton property `running-process-broker-v2` does, refusing to
-    /// start a second instance rather than racing one.
+    /// Opt-in via the front door's `SOLDR_USE_BROKER=1` (see
+    /// `broker_spawn.rs`); running it manually is also safe -- it enforces
+    /// the same per-user-session singleton property
+    /// `running-process-broker-v2` does, refusing to start a second
+    /// instance rather than racing one.
     Serve {
         /// Program namespace for the bind name (advanced/testing only --
-        /// distinct programs bind distinct sockets). Defaults to "soldr".
-        #[arg(long, default_value = "soldr")]
+        /// distinct programs bind distinct sockets). Defaults to
+        /// soldr-daemon's own service name -- the same string
+        /// `broker_discovery::discover_via_broker` dials via
+        /// `client_v2::connect`, since that API's `program` doubles as the
+        /// Hello `service_name` (soldr#2364). Overriding this without also
+        /// overriding `SOLDR_BROKER_PROGRAM` on the client side makes every
+        /// discovery dial miss this broker.
+        #[arg(long, default_value = "soldr-daemon")]
         program: String,
     },
 }
@@ -144,4 +152,39 @@ fn broker_serve_error_is_already_bound(
     };
     io_err
         .is_some_and(|e| e.kind() == std::io::ErrorKind::AlreadyExists || is_already_bound_error(e))
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::CommandFactory;
+
+    // soldr#2364: caught empirically on the Linux Docker harness -- a
+    // front-door-spawned broker bound under a *different* `--program`
+    // string than `broker_discovery::discover_via_broker` dials is an
+    // unreachable broker. This locks the manual-invocation default
+    // (`soldr broker serve` with no `--program`) to the same string the
+    // front door passes and discovery dials, so the three can never drift
+    // apart silently again.
+    crate::timed_test!(serve_program_default_matches_daemon_service_name, {
+        let command = crate::cli_args::Cli::command();
+        let broker = command
+            .find_subcommand("broker")
+            .expect("broker subcommand registered");
+        let serve = broker
+            .find_subcommand("serve")
+            .expect("serve subcommand registered");
+        let program_arg = serve
+            .get_arguments()
+            .find(|arg| arg.get_id() == "program")
+            .expect("program arg exists");
+        let default: Vec<String> = program_arg
+            .get_default_values()
+            .iter()
+            .map(|v| v.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            default,
+            vec![crate::daemon::backend_handle_adoption::SOLDR_DAEMON_SERVICE_NAME.to_string()],
+        );
+    });
 }

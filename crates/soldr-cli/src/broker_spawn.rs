@@ -42,9 +42,24 @@ use std::time::{Duration, Instant};
 /// Opt-in gate. Default OFF -- see module doc.
 const USE_BROKER_ENV_VAR: &str = "SOLDR_USE_BROKER";
 
-/// Overrides the broker's bind namespace (default "soldr"). Test-only in
-/// practice today: production has exactly one soldr broker per user
-/// session, so there is normally nothing to disambiguate.
+/// Overrides the broker's bind namespace (default matches
+/// [`crate::daemon::backend_handle_adoption::SOLDR_DAEMON_SERVICE_NAME`]).
+/// Test-only in practice today: production has exactly one soldr broker per
+/// user session, so there is normally nothing to disambiguate.
+///
+/// Must default to the same string `broker_discovery::discover_via_broker`
+/// dials (soldr#2364 e2e proof on the Linux Docker harness): the v2
+/// `client_v2::connect(program, ...)` API dials
+/// `v2_program_pipe(program, ...)` and sends `program` as the Hello
+/// `service_name` in one shot, so the broker's `--program` and the client's
+/// dial program must be the identical string or the client's Hello never
+/// reaches this broker at all -- it silently falls through to the legacy
+/// direct-spawn path instead, leaving an idle, unreachable broker running.
+/// Caught empirically: a cold-start `soldr cargo build` under
+/// `SOLDR_USE_BROKER=1` spawned a broker bound at program="soldr" while
+/// discovery dialed program="soldr-daemon"; the daemon that served the
+/// build was launched by the pre-existing direct-spawn path, not the
+/// broker, which was never contacted.
 const BROKER_PROGRAM_ENV_VAR: &str = "SOLDR_BROKER_PROGRAM";
 
 /// How long the front door waits for a freshly-spawned broker to either log
@@ -113,7 +128,7 @@ pub(crate) fn maybe_spawn_broker_front_door(raw_args: &[String]) {
     let Ok(self_exe) = std::env::current_exe() else {
         return;
     };
-    let program = std::env::var(BROKER_PROGRAM_ENV_VAR).unwrap_or_else(|_| "soldr".to_string());
+    let program = broker_program();
 
     let mut command = std::process::Command::new(self_exe);
     command.args(["broker", "serve", "--program", &program]);
@@ -132,6 +147,18 @@ pub(crate) fn maybe_spawn_broker_front_door(raw_args: &[String]) {
     }
 
     wait_for_outcome(&log_path, Instant::now() + SPAWN_WAIT_TIMEOUT);
+}
+
+/// The `--program` namespace the front door spawns its broker under.
+/// Pulled out of [`maybe_spawn_broker_front_door`] so the default is
+/// directly unit-testable against
+/// [`crate::daemon::backend_handle_adoption::SOLDR_DAEMON_SERVICE_NAME`] --
+/// see [`BROKER_PROGRAM_ENV_VAR`]'s doc for why the two must never drift
+/// apart.
+fn broker_program() -> String {
+    std::env::var(BROKER_PROGRAM_ENV_VAR).unwrap_or_else(|_| {
+        crate::daemon::backend_handle_adoption::SOLDR_DAEMON_SERVICE_NAME.to_string()
+    })
 }
 
 fn open_append(path: &std::path::Path) -> Option<std::fs::File> {
@@ -235,6 +262,28 @@ mod tests {
         let raw_args = vec!["soldr".to_string(), "status".to_string()];
         assert!(front_door_broker_spawn_eligible(&raw_args));
         set_use_broker(None);
+    });
+
+    crate::timed_test!(
+        default_broker_program_matches_daemon_service_name_dialed_by_discovery,
+        {
+            let _guard = ENV_LOCK.lock().unwrap();
+            std::env::remove_var(BROKER_PROGRAM_ENV_VAR);
+            assert_eq!(
+                broker_program(),
+                crate::daemon::backend_handle_adoption::SOLDR_DAEMON_SERVICE_NAME,
+                "the front door's broker --program must match the program \
+                 client_v2::connect dials in broker_discovery, or the spawned \
+                 broker is bound but unreachable (soldr#2364)",
+            );
+        }
+    );
+
+    crate::timed_test!(broker_program_env_override_takes_precedence, {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var(BROKER_PROGRAM_ENV_VAR, "custom-program");
+        assert_eq!(broker_program(), "custom-program");
+        std::env::remove_var(BROKER_PROGRAM_ENV_VAR);
     });
 
     crate::timed_test!(no_positional_arg_is_ineligible, {

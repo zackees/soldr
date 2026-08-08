@@ -599,7 +599,8 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         command: DaemonSubcommand,
     },
-    /// Manage the v2 broker (soldr#2361 Phase 2, dormant/opt-in)
+    /// Manage the v2 broker (soldr#2361 Phase 2; front door spawns this
+    /// under SOLDR_USE_BROKER=1)
     Broker {
         #[command(subcommand)]
         command: BrokerSubcommand,
