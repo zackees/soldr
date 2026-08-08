@@ -313,7 +313,11 @@ pub(crate) fn discover_via_broker_with_disabled(running_process_disabled: bool) 
 /// broker verifies the endpoint; the PID file supplies the process id the
 /// rest of soldr's lifecycle machinery expects). Every other route
 /// returns `None` so the caller falls through to the direct path.
-pub(crate) fn soldr_daemon_pid_via_broker(paths: &SoldrPaths) -> Option<u32> {
+///
+/// Public (soldr#2364) so `soldr-cli`'s `compile_dispatch` can consult
+/// broker discovery on the actual compile hot path before falling to the
+/// legacy direct-spawn path -- see that module's `broker_confirmed_daemon_live`.
+pub fn soldr_daemon_pid_via_broker(paths: &SoldrPaths) -> Option<u32> {
     soldr_daemon_pid_via_broker_with_disabled(paths, running_process_disabled())
 }
 

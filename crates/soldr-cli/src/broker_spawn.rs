@@ -77,6 +77,16 @@ fn truthy_env(key: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Whether `SOLDR_USE_BROKER=1` is set. Shared with `compile_dispatch.rs`
+/// (soldr#2364) so the opt-in gate around "attempt broker discovery before
+/// legacy-spawning on a cold connect failure" matches the gate around
+/// "the front door spawns the broker at all" -- there is no point trying
+/// discovery against a broker this invocation never spawned and no other
+/// invocation was asked to spawn either.
+pub(crate) fn broker_enabled() -> bool {
+    truthy_env(USE_BROKER_ENV_VAR)
+}
+
 /// Pure predicate: should this top-level invocation attempt to spawn the
 /// broker as its allowlisted exception? `raw_args` is the full argv
 /// (`raw_args[0]` is the program name), matching `run_main`'s shape.
@@ -85,7 +95,7 @@ fn truthy_env(key: &str) -> bool {
 /// self-recursion-exclusion rules are unit-testable without spawning a
 /// process.
 pub(crate) fn front_door_broker_spawn_eligible(raw_args: &[String]) -> bool {
-    if !truthy_env(USE_BROKER_ENV_VAR) {
+    if !broker_enabled() {
         return false;
     }
     let Some(first_positional) = raw_args.get(1) else {
