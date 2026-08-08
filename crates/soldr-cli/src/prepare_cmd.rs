@@ -921,17 +921,26 @@ pub(crate) fn rustup_add_target(triple: &str) -> Result<(), SoldrError> {
 
     // soldr#2348: rustup may report the target "up to date" while its rustlib
     // payload is missing (a toolchain-cache restore that kept rustup's
-    // `components` tracking but not the std files). `rustup target remove`
-    // then chokes ("could not read component file … No such file") and a
-    // plain re-`add` no-ops, so rustc keeps failing E0463. Clear the stale
-    // `rust-std-<triple>` entry from the toolchain's `components` tracking
-    // directly, then `add` genuinely re-downloads.
+    // `multirust-config.toml`/`components` tracking but not the std files).
+    // A plain re-`add` then no-ops and rustc keeps failing E0463, and
+    // `rustup target remove` chokes because the target's component manifest
+    // file is gone too. Stub that missing manifest so `remove` succeeds and
+    // authoritatively clears rustup's tracking, then `add` re-downloads.
     if !target_std_present(&cargo_home, &rustup_home, channel.as_deref(), triple)? {
         eprintln!(
             "soldr: target {triple} std reported installed but its libdir is empty; \
-             clearing the stale rustup component tracking and reinstalling (soldr#2348)"
+             clearing rustup's stale tracking and reinstalling (soldr#2348)"
         );
-        clear_stale_target_component(&cargo_home, &rustup_home, channel.as_deref(), triple)?;
+        if let Some(sysroot) = resolve_sysroot(&cargo_home, &rustup_home, channel.as_deref()) {
+            stub_missing_component_manifest(&sysroot.join("lib").join("rustlib"), triple);
+        }
+        let _ = rustup_target_op(
+            &cargo_home,
+            &rustup_home,
+            channel.as_deref(),
+            "remove",
+            triple,
+        );
         let status =
             rustup_target_op(&cargo_home, &rustup_home, channel.as_deref(), "add", triple)?;
         if !status.success() {
@@ -977,46 +986,20 @@ fn resolve_sysroot(
     }
 }
 
-/// Purge a stale `rust-std-<triple>` entry from a toolchain that rustup still
-/// believes is installed (soldr#2348). Drops the line from the `components`
-/// tracking file and deletes any orphaned `manifest-rust-std-<triple>` marker
-/// and empty `lib/rustlib/<triple>` dir, so the follow-up `rustup target add`
-/// re-downloads the payload instead of no-oping.
-fn clear_stale_target_component(
-    cargo_home: &std::ffi::OsStr,
-    rustup_home: &std::ffi::OsStr,
-    channel: Option<&str>,
-    triple: &str,
-) -> Result<(), SoldrError> {
-    let Some(sysroot) = resolve_sysroot(cargo_home, rustup_home, channel) else {
-        // Best-effort: without a sysroot we can't repair; let the add retry.
-        return Ok(());
-    };
-    let rustlib = sysroot.join("lib").join("rustlib");
-    purge_target_component_tracking(&rustlib, triple);
-    Ok(())
-}
-
-/// Pure filesystem repair (soldr#2348), factored out so it is unit-testable
-/// against a synthetic rustlib layout. Removes the `rust-std-<triple>` line
-/// from `components`, the `manifest-rust-std-<triple>` marker, and the
-/// `<triple>` payload dir.
-fn purge_target_component_tracking(rustlib: &std::path::Path, triple: &str) {
-    let component = format!("rust-std-{triple}");
-    let components = rustlib.join("components");
-    if let Ok(body) = std::fs::read_to_string(&components) {
-        let kept: Vec<&str> = body
-            .lines()
-            .filter(|line| line.trim() != component)
-            .collect();
-        let mut rewritten = kept.join("\n");
-        if !rewritten.is_empty() {
-            rewritten.push('\n');
-        }
-        let _ = std::fs::write(&components, rewritten);
+/// Pure filesystem repair (soldr#2348): `rustup target remove` reads the
+/// target's `manifest-rust-std-<triple>` file to know what to delete and
+/// errors ("could not read component file … No such file") when a
+/// toolchain-cache restore left that file absent while rustup's
+/// `multirust-config.toml` still lists the target installed. Creating an
+/// empty manifest lets `remove` proceed (it deletes nothing, then clears the
+/// target from rustup's authoritative tracking), so the follow-up `add`
+/// re-downloads. No-op when the manifest already exists. Factored out for a
+/// unit test against a synthetic rustlib layout.
+fn stub_missing_component_manifest(rustlib: &std::path::Path, triple: &str) {
+    let manifest = rustlib.join(format!("manifest-rust-std-{triple}"));
+    if !manifest.exists() {
+        let _ = std::fs::write(&manifest, b"");
     }
-    let _ = std::fs::remove_file(rustlib.join(format!("manifest-{component}")));
-    let _ = std::fs::remove_dir_all(rustlib.join(triple));
 }
 
 fn pinned_toolchain_channel() -> Result<Option<String>, SoldrError> {
@@ -1522,41 +1505,21 @@ mod tests {
         );
     });
 
-    crate::timed_test!(purge_target_component_tracking_clears_stale_entry, {
-        // soldr#2348: the repair drops the stale `rust-std-<triple>` line and
-        // its orphaned marker/dir so a follow-up `rustup target add` re-downloads.
+    crate::timed_test!(stub_missing_component_manifest_creates_only_when_absent, {
+        // soldr#2348: stub the missing manifest so `rustup target remove` can
+        // proceed; never clobber a real one.
         let tmp = tempfile::tempdir().expect("tmpdir");
         let rustlib = tmp.path();
         let triple = "x86_64-pc-windows-gnu";
-        std::fs::write(
-            rustlib.join("components"),
-            "rustc\nrust-std-x86_64-unknown-linux-gnu\nrust-std-x86_64-pc-windows-gnu\n",
-        )
-        .unwrap();
-        std::fs::write(
-            rustlib.join("manifest-rust-std-x86_64-pc-windows-gnu"),
-            b"stale",
-        )
-        .unwrap();
-        std::fs::create_dir_all(rustlib.join(triple).join("lib")).unwrap();
-
-        purge_target_component_tracking(rustlib, triple);
-
-        let comps = std::fs::read_to_string(rustlib.join("components")).unwrap();
-        assert!(
-            !comps.contains("rust-std-x86_64-pc-windows-gnu"),
-            "stale target line must be removed"
-        );
-        assert!(
-            comps.contains("rust-std-x86_64-unknown-linux-gnu") && comps.contains("rustc"),
-            "other components must be kept"
-        );
-        assert!(!rustlib
-            .join("manifest-rust-std-x86_64-pc-windows-gnu")
-            .exists());
-        assert!(!rustlib.join(triple).exists());
-        // Tolerant of an already-clean/missing state (no panic).
-        purge_target_component_tracking(rustlib, triple);
+        let manifest = rustlib.join("manifest-rust-std-x86_64-pc-windows-gnu");
+        assert!(!manifest.exists());
+        stub_missing_component_manifest(rustlib, triple);
+        assert!(manifest.exists(), "missing manifest must be stubbed");
+        assert_eq!(std::fs::read(&manifest).unwrap(), b"", "stub is empty");
+        // An existing (real) manifest must be preserved, not truncated.
+        std::fs::write(&manifest, b"real contents").unwrap();
+        stub_missing_component_manifest(rustlib, triple);
+        assert_eq!(std::fs::read(&manifest).unwrap(), b"real contents");
     });
 
     crate::timed_test!(parse_target_arg_all_is_sentinel, {
