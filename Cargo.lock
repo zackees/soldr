@@ -247,6 +247,7 @@ dependencies = [
  "cfg-if",
  "constant_time_eq",
  "cpufeatures 0.3.0",
+ "memmap2",
  "rayon-core",
 ]
 
@@ -2494,7 +2495,7 @@ dependencies = [
 
 [[package]]
 name = "running-process"
-version = "4.8.1"
+version = "4.10.1"
 dependencies = [
  "anyhow",
  "blake3",
