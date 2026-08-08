@@ -919,9 +919,8 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
         Commands::SessionEnd { id, clear, json } => {
             cache::run_session_end_command(id, clear, json)?;
         }
-        Commands::Daemon { command } => {
-            run_daemon_command(command).await?;
-        }
+        Commands::Daemon { command } => run_daemon_command(command).await?,
+        Commands::Broker { command } => crate::broker_cmd::run_broker_command(command)?,
         Commands::External(args) => {
             if args.is_empty() {
                 eprintln!("usage: soldr <tool>[@version] [args...]");
