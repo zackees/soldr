@@ -18,6 +18,7 @@ pub mod cook_archive;
 pub mod cook_gc;
 pub mod cook_index;
 pub mod gc;
+pub mod gc_policy;
 pub mod path_safety;
 pub mod pep517_gc;
 pub mod prune_target;

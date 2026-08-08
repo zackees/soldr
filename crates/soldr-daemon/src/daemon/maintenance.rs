@@ -425,16 +425,36 @@ fn run_local_components(
     db_path: &Path,
     kind: MaintenanceKind,
     now: SystemTime,
-    pressure: bool,
+    _pressure: bool,
 ) -> LocalOutcomes {
     let mut out = LocalOutcomes::default();
     let config = paths.load_config();
+    let policy_context = crate::cache_lib::gc_policy::GcContext {
+        driver: crate::cache_lib::gc_policy::Driver::Daemon,
+        tick: if kind == MaintenanceKind::Full {
+            crate::cache_lib::gc_policy::TickKind::Full
+        } else {
+            crate::cache_lib::gc_policy::TickKind::Pressure
+        },
+        free_by_volume: Vec::new(),
+        config: config.as_ref().cloned().unwrap_or_default(),
+        daemon_events_available: true,
+        daemon_live: true,
+    };
+    let policy_actions = crate::cache_lib::gc_policy::plan(
+        &crate::cache_lib::gc_policy::registry(),
+        &policy_context,
+    );
+    let has_action = |id: &str| policy_actions.iter().any(|action| action.category_id == id);
     match &config {
-        Ok(config) => {
+        Ok(config) if has_action("cook") => {
             let cook = crate::cache_lib::cook_gc::cook_evict_pass_with_absolute_age(
                 paths,
                 &config.cook,
-                (kind == MaintenanceKind::Full).then_some(FULL_STALE_AGE),
+                policy_actions
+                    .iter()
+                    .find(|action| action.category_id == "cook")
+                    .and_then(|action| action.older_than),
             );
             out.cook = ComponentOutcome {
                 items_removed: (cook.time_evicted + cook.size_evicted + cook.quarantine_evicted)
@@ -443,6 +463,7 @@ fn run_local_components(
                 error: (cook.errors > 0).then(|| format!("{} cook eviction errors", cook.errors)),
             };
         }
+        Ok(_) => {}
         Err(error) => {
             let message = Some(format!("invalid_config: {error}"));
             out.cook.error = message.clone();
@@ -469,12 +490,12 @@ fn run_local_components(
         error: (history.failed > 0).then(|| format!("{} history deletion errors", history.failed)),
     };
 
-    if kind == MaintenanceKind::Full || pressure {
-        let max_age = if kind == MaintenanceKind::Full {
-            crate::cache_lib::pep517_gc::ABSOLUTE_MAX_AGE
-        } else {
-            crate::cache_lib::pep517_gc::PRESSURE_MAX_AGE
-        };
+    if has_action("pep517_targets") {
+        let max_age = policy_actions
+            .iter()
+            .find(|action| action.category_id == "pep517_targets")
+            .and_then(|action| action.older_than)
+            .unwrap_or(crate::cache_lib::pep517_gc::PRESSURE_MAX_AGE);
         let pep = crate::cache_lib::pep517_gc::sweep(paths, now, max_age);
         out.pep517_targets = ComponentOutcome {
             items_removed: pep.removed as u64,
@@ -489,21 +510,23 @@ fn run_local_components(
         };
     }
 
-    match crate::cache_lib::trash_gc::sweep_trash(paths) {
-        Ok(trash) => {
-            out.trash.items_removed = trash.removed;
-            out.trash.error =
-                (trash.retained > 0).then(|| format!("{} trash entries retained", trash.retained));
+    if has_action("trash") {
+        match crate::cache_lib::trash_gc::sweep_trash(paths) {
+            Ok(trash) => {
+                out.trash.items_removed = trash.removed;
+                out.trash.error = (trash.retained > 0)
+                    .then(|| format!("{} trash entries retained", trash.retained));
+            }
+            Err(error) => out.trash.error = Some(error.to_string()),
         }
-        Err(error) => out.trash.error = Some(error.to_string()),
     }
 
     if let Ok(config) = &config {
-        if config.auto_gc.enabled && (kind == MaintenanceKind::Full || pressure) {
+        if has_action("workspace_targets") {
             out.workspace_targets = sweep_workspace_targets(paths, config, kind);
         }
     }
-    if kind == MaintenanceKind::Full {
+    if has_action("daemon_events") {
         let cutoff = unix_millis(now).saturating_sub(EVENT_RETENTION.as_millis() as i64);
         match db::prune_events_older_than(db_path, cutoff) {
             Ok(removed) => out.daemon_events.items_removed = removed,
@@ -515,7 +538,12 @@ fn run_local_components(
     } else {
         PRESSURE_STALE_AGE
     };
-    if kind == MaintenanceKind::Full || pressure {
+    if has_action("legacy_zccache") {
+        let legacy_age = policy_actions
+            .iter()
+            .find(|action| action.category_id == "legacy_zccache")
+            .and_then(|action| action.older_than)
+            .unwrap_or(legacy_age);
         let legacy = crate::zccache_embedded::sweep_legacy_cache_roots(paths, now, legacy_age);
         out.legacy_zccache = ComponentOutcome {
             items_removed: legacy.removed as u64,
