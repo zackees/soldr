@@ -87,6 +87,10 @@ jobs:
         shell: bash
         env:
           SOLDR_DEBUG_COMPILE_ENV: "1"
+          # #2348 is the std/toolchain-home E0463. Use the mingw gcc's own ld
+          # (not soldr's default `fast` -> -fuse-ld=lld, which the cross gcc
+          # can't resolve — a separate linker concern, reld#66 / soldr#2347).
+          SOLDR_LINKER: platform-default
         run: |
           set -euxo pipefail
           work="$RUNNER_TEMP/fixture"
