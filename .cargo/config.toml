@@ -1,0 +1,22 @@
+# Enable Tokio's unstable task instrumentation for every soldr build.
+#
+# soldr ships tokio-console support compiled into every wheel (see
+# `[tool.maturin] features = ["tokio-console"]` in pyproject.toml). The
+# console-subscriber layer is only *activated* at runtime when
+# `SOLDR_DAEMON_TOKIO_CONSOLE=1` is set (see `maybe_init_tokio_console`
+# in crates/soldr-daemon/src/daemon/server.rs), so the always-on cost is
+# just Tokio's task-tracing hooks — but those hooks only exist when the
+# crate is compiled with `--cfg tokio_unstable`. Without this cfg,
+# `console_subscriber::Builder::spawn()` panics and the daemon logs an
+# "inert" hint instead of exposing the console. Setting it here makes
+# tokio-console *always available* on demand with no rebuild.
+#
+# NOTE ON PRECEDENCE: cargo's rustflags do NOT merge — the first of
+# CARGO_ENCODED_RUSTFLAGS / RUSTFLAGS / CARGO_TARGET_<triple>_RUSTFLAGS /
+# [build] rustflags that is present wins outright. The macOS cross lane
+# sets CARGO_TARGET_<triple>_RUSTFLAGS, so it appends `--cfg
+# tokio_unstable` itself (ci/docker-darwin-cross/build-soldr-for-darwin.sh)
+# to avoid silently dropping this. Windows/Linux/native builds have no
+# such override and inherit the flag from here.
+[build]
+rustflags = ["--cfg", "tokio_unstable"]

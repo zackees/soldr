@@ -13,7 +13,7 @@
 # soldr#1264/#1269. See README "Use soldr as your PEP 517 build
 # backend".
 [build-system]
-requires = ["soldr==0.8.20"]
+requires = ["soldr==0.8.44"]
 build-backend = "soldr"
 
 [project]
@@ -51,7 +51,13 @@ dev = [
 manifest-path = "crates/soldr-cli/Cargo.toml"
 module-name = "soldr._native"
 python-source = "src"
-features = []
+# tokio-console is compiled into every published wheel so it is always
+# available on demand. The subscriber only starts when the daemon sees
+# `SOLDR_DAEMON_TOKIO_CONSOLE=1`, so this adds no runtime cost to normal
+# builds — only Tokio's task-tracing hooks, which require the matching
+# `--cfg tokio_unstable` set in .cargo/config.toml. Attach at runtime
+# with `tokio-console` (default 127.0.0.1:6669).
+features = ["tokio-console"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"
