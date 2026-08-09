@@ -70,12 +70,20 @@ help                   Print this message or the help of the given subcommand\n\
     max_term_width = 80
 )]
 pub(crate) struct Cli {
+    // Deprecated (soldr#2364 follow-up): the `--no-cache` flag is hidden from
+    // the user-facing surface in favor of the equivalent `ZCCACHE_DISABLE=1`
+    // env kill-switch. It still functions so the internal uncached re-exec
+    // paths and the integration suite keep working; a later dedicated PR
+    // removes the token entirely (a suite-wide, atomic change). `hide = true`
+    // drops it from `--help` so new users are steered to the env var.
     #[arg(
         long,
-        help = "Disable soldr's compilation cache for this run",
-        long_help = "Disable soldr's compilation cache for this run (bypasses the \
-wrapper + daemon; also the recovery path if a build hangs on a wedged cache). \
-A truthy `ZCCACHE_DISABLE` env var is equivalent."
+        hide = true,
+        help = "Deprecated: use ZCCACHE_DISABLE=1 instead",
+        long_help = "Deprecated in favor of the `ZCCACHE_DISABLE=1` env var, which is \
+equivalent and is the supported way to disable soldr's compilation cache for a run \
+(bypasses the wrapper + daemon; also the recovery path if a build hangs on a wedged \
+cache). This flag is hidden and retained only for backward compatibility."
     )]
     pub(crate) no_cache: bool,
     /// Trust inherited soldr/zccache workspace environment for cargo runs
