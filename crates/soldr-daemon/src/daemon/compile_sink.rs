@@ -86,9 +86,3 @@ where
         .await
     }
 }
-
-// Keep `AsyncWriteExt` in scope: `write_frame_async` flushes through it, and a
-// future in-crate sink may write directly. Referencing it here documents the
-// dependency without an unused-import warning.
-#[allow(unused_imports)]
-use AsyncWriteExt as _KeepAsyncWriteExt;
