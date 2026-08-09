@@ -35,32 +35,13 @@
 //! invocation) has already returned -- caught by hand while smoke-testing
 //! this against the real binary, not by any written test.
 
+use crate::daemon::backend_handle_adoption::broker_program;
 use running_process::{DaemonStdio, DaemonStdioSource, EnvironmentPolicy};
 use std::io::Read;
 use std::time::{Duration, Instant};
 
 /// Opt-in gate. Default OFF -- see module doc.
 const USE_BROKER_ENV_VAR: &str = "SOLDR_USE_BROKER";
-
-/// Overrides the broker's bind namespace (default matches
-/// [`crate::daemon::backend_handle_adoption::SOLDR_DAEMON_SERVICE_NAME`]).
-/// Test-only in practice today: production has exactly one soldr broker per
-/// user session, so there is normally nothing to disambiguate.
-///
-/// Must default to the same string `broker_discovery::discover_via_broker`
-/// dials (soldr#2364 e2e proof on the Linux Docker harness): the v2
-/// `client_v2::connect(program, ...)` API dials
-/// `v2_program_pipe(program, ...)` and sends `program` as the Hello
-/// `service_name` in one shot, so the broker's `--program` and the client's
-/// dial program must be the identical string or the client's Hello never
-/// reaches this broker at all -- it silently falls through to the legacy
-/// direct-spawn path instead, leaving an idle, unreachable broker running.
-/// Caught empirically: a cold-start `soldr cargo build` under
-/// `SOLDR_USE_BROKER=1` spawned a broker bound at program="soldr" while
-/// discovery dialed program="soldr-daemon"; the daemon that served the
-/// build was launched by the pre-existing direct-spawn path, not the
-/// broker, which was never contacted.
-const BROKER_PROGRAM_ENV_VAR: &str = "SOLDR_BROKER_PROGRAM";
 
 /// How long the front door waits for a freshly-spawned broker to either log
 /// its "binding at" line or report an already-bound refusal. Bounded so a
@@ -159,18 +140,6 @@ pub(crate) fn maybe_spawn_broker_front_door(raw_args: &[String]) {
     wait_for_outcome(&log_path, Instant::now() + SPAWN_WAIT_TIMEOUT);
 }
 
-/// The `--program` namespace the front door spawns its broker under.
-/// Pulled out of [`maybe_spawn_broker_front_door`] so the default is
-/// directly unit-testable against
-/// [`crate::daemon::backend_handle_adoption::SOLDR_DAEMON_SERVICE_NAME`] --
-/// see [`BROKER_PROGRAM_ENV_VAR`]'s doc for why the two must never drift
-/// apart.
-fn broker_program() -> String {
-    std::env::var(BROKER_PROGRAM_ENV_VAR).unwrap_or_else(|_| {
-        crate::daemon::backend_handle_adoption::SOLDR_DAEMON_SERVICE_NAME.to_string()
-    })
-}
-
 fn open_append(path: &std::path::Path) -> Option<std::fs::File> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok()?;
@@ -224,6 +193,7 @@ fn wait_for_outcome(log_path: &std::path::Path, deadline: Instant) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::daemon::backend_handle_adoption::SOLDR_BROKER_PROGRAM_ENV_VAR as BROKER_PROGRAM_ENV_VAR;
 
     fn set_use_broker(value: Option<&str>) {
         match value {

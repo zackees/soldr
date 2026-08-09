@@ -25,7 +25,8 @@
 
 use crate::core::SoldrPaths;
 use crate::daemon::backend_handle_adoption::{
-    running_process_disabled, SOLDR_DAEMON_SERVICE_NAME, SOLDR_DAEMON_SERVICE_VERSION,
+    broker_program, running_process_disabled, SOLDR_DAEMON_SERVICE_NAME,
+    SOLDR_DAEMON_SERVICE_VERSION,
 };
 use prost::Message as _;
 use running_process::broker::client_v2::{self, BrokerV2Error};
@@ -293,7 +294,12 @@ pub(crate) fn discover_via_broker_with_disabled(running_process_disabled: bool) 
         return DiscoveryRoute::DirectFallbackDisabled;
     }
 
-    match client_v2::connect(SOLDR_DAEMON_SERVICE_NAME, SOLDR_DAEMON_SERVICE_VERSION) {
+    // Resolve the program through the shared `broker_program()` so a
+    // `SOLDR_BROKER_PROGRAM` override dials the exact namespace the front door
+    // bound the broker under (soldr#2364). Without this the override moved the
+    // bind but not the dial, so it could never actually reach an overridden
+    // broker — the same drift soldr#2379 fixed for the default.
+    match client_v2::connect(&broker_program(), SOLDR_DAEMON_SERVICE_VERSION) {
         Ok(session) => DiscoveryRoute::BrokerNegotiated {
             endpoint: session.negotiated().backend_pipe.clone(),
         },

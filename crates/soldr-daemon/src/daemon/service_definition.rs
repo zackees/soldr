@@ -8,9 +8,7 @@
 //! switch. When no broker is reachable the daemon is still found via the
 //! direct PID-file probe (see `broker_discovery.rs`).
 
-use crate::daemon::backend_handle_adoption::{
-    SOLDR_DAEMON_SERVICE_NAME, SOLDR_DAEMON_SERVICE_VERSION,
-};
+use crate::daemon::backend_handle_adoption::{broker_program, SOLDR_DAEMON_SERVICE_VERSION};
 use running_process::broker::protocol_v2::{
     service_definition_dir_v2, service_definition_path_v2, write_service_definition_v2,
     BrokerIsolation, ServiceDefinition, ServiceDefinitionBuilder,
@@ -67,17 +65,21 @@ pub(crate) fn soldr_daemon_service_definition(
         )
     })?;
 
-    let definition = ServiceDefinitionBuilder::shared_broker(
-        SOLDR_DAEMON_SERVICE_NAME,
-        binary.display().to_string(),
-    )
-    .per_version_binary_dir(binary_dir.display().to_string())
-    .min_version(SOLDR_DAEMON_SERVICE_VERSION)
-    .version_allow_list([SOLDR_DAEMON_SERVICE_VERSION])
-    .label("vendor", "zackees")
-    .label("package", "soldr")
-    .label("running-process-tracker", "zackees/soldr#1495")
-    .build();
+    // The broker matches the Hello `service_name` (which `client_v2::connect`
+    // sends equal to the dial `program`) against the servicedef name, so the
+    // servicedef must be installed under the SAME `broker_program()` the front
+    // door binds and discovery dials -- otherwise a `SOLDR_BROKER_PROGRAM`
+    // override binds+dials one name but serves a servicedef under another and
+    // every Hello is refused (soldr#2364). Defaults to `soldr-daemon`.
+    let definition =
+        ServiceDefinitionBuilder::shared_broker(broker_program(), binary.display().to_string())
+            .per_version_binary_dir(binary_dir.display().to_string())
+            .min_version(SOLDR_DAEMON_SERVICE_VERSION)
+            .version_allow_list([SOLDR_DAEMON_SERVICE_VERSION])
+            .label("vendor", "zackees")
+            .label("package", "soldr")
+            .label("running-process-tracker", "zackees/soldr#1495")
+            .build();
 
     debug_assert_eq!(definition.isolation, BrokerIsolation::SharedBroker as i32);
     Ok(definition)
@@ -108,8 +110,7 @@ pub fn install_service_definition_to_dir(
         write_service_definition_v2(service_root, &definition).map_err(servicedef_io_error)?;
     debug_assert_eq!(
         path,
-        service_definition_path_v2(service_root, SOLDR_DAEMON_SERVICE_NAME)
-            .expect("valid service name"),
+        service_definition_path_v2(service_root, &broker_program()).expect("valid service name"),
     );
     Ok(InstalledServiceDefinition { path, definition })
 }
