@@ -57,6 +57,9 @@ pub mod maintenance;
 pub mod protocol;
 pub mod server;
 pub mod service_definition;
+/// SESSION `0x5350` compile serve — the codec-bridge (soldr#2388 Step 6c):
+/// SessionStart → shared parser → embedded zccache → `SessionFrame` output.
+pub(crate) mod session_serve;
 /// SESSION `0x5350` output sink (soldr#2388 Step 6) — renders a compile's
 /// captured stdout/stderr/exit as running-process `SessionFrame`s for the
 /// broker-relayed SESSION wire.
