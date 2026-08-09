@@ -2896,6 +2896,7 @@ dependencies = [
  "flate2",
  "fs2",
  "hex",
+ "interprocess",
  "jwalk",
  "libc",
  "prost",

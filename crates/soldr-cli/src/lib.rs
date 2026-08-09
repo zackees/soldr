@@ -251,6 +251,7 @@ pub mod pyo3_detect;
 pub mod release_sidecar;
 pub mod rust_plan;
 pub mod save_load;
+pub mod session_transport;
 pub mod shim_dir;
 pub(crate) mod shim_hygiene;
 pub mod shim_materialize;
