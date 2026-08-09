@@ -57,6 +57,10 @@ pub mod maintenance;
 pub mod protocol;
 pub mod server;
 pub mod service_definition;
+/// SESSION `0x5350` endpoint per-connection handler (soldr#2388 Step 6d /
+/// #2386 Option A): drives the `BackendEndpointMux` (probe + `0x5350`) and, on a
+/// SESSION frame, replays the buffer into [`session_serve::serve_session_compile`].
+pub(crate) mod session_endpoint;
 /// SESSION `0x5350` compile serve — the codec-bridge (soldr#2388 Step 6c):
 /// SessionStart → shared parser → embedded zccache → `SessionFrame` output.
 pub(crate) mod session_serve;

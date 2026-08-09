@@ -827,6 +827,39 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
         })
     };
 
+    // SESSION `0x5350` endpoint (soldr#2388 Step 6d / #2386 Option A). Served on
+    // a *separate* broker-facing endpoint from the legacy `handle_connection`
+    // loop above, which stays untouched. Opt-in until Phase 2 makes the broker
+    // the daemon's spawner and hands over the listener (Step 8): with no
+    // `SOLDR_SESSION_ENDPOINT_PATH` set, `resolve_session_listener` returns
+    // `None` and no endpoint is served, so today's direct path is unchanged.
+    let session_handle = match crate::daemon::session_endpoint::resolve_session_listener() {
+        Ok(Some(listener)) => {
+            let mux = Arc::new(crate::daemon::session_endpoint::soldr_session_endpoint_mux(
+                state.daemon_identity.clone(),
+            ));
+            let service = Arc::clone(&state.compile_service);
+            let session_paths = paths.clone();
+            Some(tokio::spawn(async move {
+                if let Err(err) = crate::daemon::session_endpoint::serve_session_endpoint(
+                    listener,
+                    service,
+                    session_paths,
+                    mux,
+                )
+                .await
+                {
+                    tracing::warn!(target: "soldr::daemon", "SESSION endpoint serve ended: {err}");
+                }
+            }))
+        }
+        Ok(None) => None,
+        Err(err) => {
+            tracing::warn!(target: "soldr::daemon", "SESSION endpoint bind failed: {err}");
+            None
+        }
+    };
+
     let idle_handle = (opts.idle_timeout != Duration::MAX).then(|| {
         let idle_state = state.clone();
         let idle_timeout = opts.idle_timeout;
@@ -874,6 +907,9 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     state.shutdown.wait().await;
     arm_shutdown_watchdog();
     accept_handle.abort();
+    if let Some(handle) = session_handle {
+        handle.abort();
+    }
     if let Some(handle) = idle_handle {
         handle.abort();
     }

@@ -2955,6 +2955,7 @@ dependencies = [
  "filetime",
  "fs2",
  "hex",
+ "interprocess",
  "libc",
  "prost",
  "redb",
