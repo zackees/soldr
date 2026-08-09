@@ -57,6 +57,37 @@ pub(crate) const PROBE_INCONCLUSIVE_RETRY_BACKOFF: Duration = Duration::from_mil
 /// crate's own discovery dials, instead of duplicating the literal.
 pub const SOLDR_DAEMON_SERVICE_NAME: &str = "soldr-daemon";
 pub(crate) const SOLDR_DAEMON_SERVICE_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Env override for the broker `--program` namespace (default
+/// [`SOLDR_DAEMON_SERVICE_NAME`]). Test-only in practice: production has
+/// exactly one soldr broker per user session, so there is normally nothing
+/// to disambiguate.
+///
+/// The override MUST be honored by BOTH the front-door broker spawn
+/// (`soldr_cli::broker_spawn`) AND [`super::broker_discovery::discover_via_broker`]
+/// via the single [`broker_program`] resolver below, or they drift: the v2
+/// `client_v2::connect(program, ...)` API dials
+/// `v2_program_pipe(program, ...)` and sends `program` as the Hello
+/// `service_name` in one shot, so the broker's bind `--program` and the
+/// client's dial program must be the identical string or the Hello never
+/// reaches the broker — it silently falls through to
+/// `DiscoveryRoute::DirectFallbackUnavailable` and the legacy direct-spawn
+/// path serves the compile, leaving the broker running but never consulted.
+/// soldr#2379 fixed this for the *default*; keeping the *override* on the
+/// same resolver stops it re-drifting (and is what lets broker tests bind an
+/// isolated program the same discovery dials).
+pub const SOLDR_BROKER_PROGRAM_ENV_VAR: &str = "SOLDR_BROKER_PROGRAM";
+
+/// Resolve the broker `--program` namespace: the [`SOLDR_BROKER_PROGRAM_ENV_VAR`]
+/// value when set and non-empty, else [`SOLDR_DAEMON_SERVICE_NAME`]. Single
+/// source of truth for both the front-door broker spawn and the discovery
+/// dial so the two can never drift (soldr#2364).
+pub fn broker_program() -> String {
+    std::env::var(SOLDR_BROKER_PROGRAM_ENV_VAR)
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| SOLDR_DAEMON_SERVICE_NAME.to_string())
+}
 pub(crate) const RUNNING_PROCESS_DISABLE_ENV: &str = "RUNNING_PROCESS_DISABLE";
 
 pub(crate) const RUNNING_PROCESS_BACKEND_HANDLE_STATUS: RunningProcessBackendHandleStatus =
