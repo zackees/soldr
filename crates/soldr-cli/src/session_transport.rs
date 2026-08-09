@@ -41,6 +41,22 @@ use running_process::broker::session_codec::{encode_session_frame, try_decode_se
 /// derive the same path from `broker_program()` via this index.
 const SESSION_PIPE_IDX: u32 = 1;
 
+/// Opt-in env var routing the compile hot path through the SESSION transport.
+const USE_SESSION_ENV_VAR: &str = "SOLDR_USE_SESSION";
+
+/// Whether `SOLDR_USE_SESSION` is truthy — the client should try the SESSION
+/// transport (client → broker relay → daemon) before the legacy direct-connect.
+///
+/// Default **off**: the legacy path is unchanged until a caller explicitly opts
+/// in, and even then a SESSION failure falls back to legacy (see
+/// `compile_dispatch`). SESSION rides on the broker, so it is only meaningful
+/// with the broker enabled ([`broker_spawn::broker_enabled`](crate::broker_spawn)).
+pub fn session_enabled() -> bool {
+    std::env::var(USE_SESSION_ENV_VAR)
+        .map(|v| matches!(v.trim(), "1" | "true" | "TRUE" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
 /// Resolve the companion SESSION socket path for `program` — the same
 /// derivation the broker binds and the client dials.
 pub fn session_socket_path(program: &str) -> io::Result<String> {
@@ -128,11 +144,55 @@ pub fn spawn_session_relay(program: &str, backend_pipe: String) -> io::Result<()
         .map_err(|e| io::Error::other(format!("spawn SESSION relay thread: {e}")))
 }
 
+/// A SESSION compile failure, tagged with whether any compiler output was
+/// already emitted locally.
+///
+/// The fallback-safety boundary (see `compile_dispatch`): a **pre-output**
+/// failure (connect / Hello / negotiate / `SessionStart` send) is safe to retry
+/// on the legacy path — nothing was printed. Once the daemon's output has begun
+/// streaming to local stdio, a legacy retry would **double-print**, so such a
+/// failure must be surfaced as a hard error instead.
+#[derive(Debug)]
+pub struct SessionError {
+    /// Whether compiler stdout/stderr was written locally before the failure.
+    pub output_started: bool,
+    /// The underlying transport / protocol error.
+    pub source: io::Error,
+}
+
+impl SessionError {
+    fn pre_output(source: io::Error) -> Self {
+        Self {
+            output_started: false,
+            source,
+        }
+    }
+}
+
+impl std::fmt::Display for SessionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "SESSION compile failed (output_started={}): {}",
+            self.output_started, self.source
+        )
+    }
+}
+
+impl std::error::Error for SessionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
 /// Run one compile over the SESSION path using this process's cwd + environment.
 ///
 /// `rustc_argv[0]` is the compiler path; `rustc_argv[1..]` its arguments.
-pub fn run_session_compile(program: &str, rustc_argv: &[String]) -> io::Result<i32> {
-    let cwd = std::env::current_dir()?.display().to_string();
+pub fn run_session_compile(program: &str, rustc_argv: &[String]) -> Result<i32, SessionError> {
+    let cwd = std::env::current_dir()
+        .map_err(SessionError::pre_output)?
+        .display()
+        .to_string();
     let env: Vec<SessionEnvVar> = std::env::vars()
         .map(|(key, value)| SessionEnvVar { key, value })
         .collect();
@@ -147,10 +207,11 @@ pub fn run_session_compile_with(
     rustc_argv: &[String],
     cwd: String,
     env: Vec<SessionEnvVar>,
-) -> io::Result<i32> {
+) -> Result<i32, SessionError> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
-        .build()?
+        .build()
+        .map_err(SessionError::pre_output)?
         .block_on(run_session_compile_async(program, rustc_argv, cwd, env))
 }
 
@@ -159,18 +220,27 @@ async fn run_session_compile_async(
     rustc_argv: &[String],
     cwd: String,
     env: Vec<SessionEnvVar>,
-) -> io::Result<i32> {
-    let session_socket = session_socket_path(program)?;
-    let name = local_session_name(&session_socket)?;
-    let mut stream = Stream::connect(name).await?;
+) -> Result<i32, SessionError> {
+    // Setup — connect / Hello / negotiate / SessionStart send. Every failure
+    // here is pre-output (nothing printed yet), so it is safe to fall back.
+    let session_socket = session_socket_path(program).map_err(SessionError::pre_output)?;
+    let name = local_session_name(&session_socket).map_err(SessionError::pre_output)?;
+    let mut stream = Stream::connect(name)
+        .await
+        .map_err(SessionError::pre_output)?;
 
     // v2 Hello — identical to legacy. The relay's responder ignores the payload,
     // so an empty Hello suffices to negotiate.
     let hello = encode_framed(&Frame::request(CONTROL_PAYLOAD_PROTOCOL, Vec::new()))
-        .map_err(io::Error::other)?;
-    stream.write_all(&hello).await?;
-    stream.flush().await?;
-    read_negotiated(&mut stream).await?;
+        .map_err(|e| SessionError::pre_output(io::Error::other(e)))?;
+    stream
+        .write_all(&hello)
+        .await
+        .map_err(SessionError::pre_output)?;
+    stream.flush().await.map_err(SessionError::pre_output)?;
+    read_negotiated(&mut stream)
+        .await
+        .map_err(SessionError::pre_output)?;
 
     // From here the connection is a transparent SESSION relay to the daemon.
     let start = SessionStart {
@@ -186,10 +256,15 @@ async fn run_session_compile_async(
         },
         0,
     )
-    .map_err(io::Error::other)?;
-    stream.write_all(&start_frame).await?;
-    stream.flush().await?;
+    .map_err(|e| SessionError::pre_output(io::Error::other(e)))?;
+    stream
+        .write_all(&start_frame)
+        .await
+        .map_err(SessionError::pre_output)?;
+    stream.flush().await.map_err(SessionError::pre_output)?;
 
+    // Output phase — a failure after the first byte is printed is a hard error
+    // (a legacy retry would double-print).
     pump_session_output(&mut stream).await
 }
 
@@ -219,33 +294,93 @@ async fn read_negotiated(stream: &mut Stream) -> io::Result<()> {
 
 /// Pump SESSION frames from the relay: stdout/stderr to local stdio, returning
 /// the compiler exit code on the terminal `Exit` frame.
-async fn pump_session_output(stream: &mut Stream) -> io::Result<i32> {
+///
+/// `output_started` flips to `true` the moment any stdout/stderr byte is written
+/// locally; every error is tagged with it so the caller knows whether a legacy
+/// fallback would double-print.
+async fn pump_session_output(stream: &mut Stream) -> Result<i32, SessionError> {
     let mut buf: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 8192];
     let mut stdout = tokio::io::stdout();
     let mut stderr = tokio::io::stderr();
+    let mut output_started = false;
+    let tag = |output_started: bool, e: io::Error| SessionError {
+        output_started,
+        source: e,
+    };
     loop {
-        while let Some(decoded) = try_decode_session_frame(&buf).map_err(io::Error::other)? {
-            let consumed = decoded.consumed;
-            let kind = decoded.frame.kind.clone();
-            buf.drain(..consumed);
-            match kind {
-                Some(session_frame::Kind::Stdout(b)) => {
-                    stdout.write_all(&b).await?;
-                    stdout.flush().await?;
+        loop {
+            match try_decode_session_frame(&buf) {
+                Ok(Some(decoded)) => {
+                    let consumed = decoded.consumed;
+                    let kind = decoded.frame.kind.clone();
+                    buf.drain(..consumed);
+                    match kind {
+                        Some(session_frame::Kind::Stdout(b)) => {
+                            output_started = true;
+                            stdout
+                                .write_all(&b)
+                                .await
+                                .map_err(|e| tag(output_started, e))?;
+                            stdout.flush().await.map_err(|e| tag(output_started, e))?;
+                        }
+                        Some(session_frame::Kind::Stderr(b)) => {
+                            output_started = true;
+                            stderr
+                                .write_all(&b)
+                                .await
+                                .map_err(|e| tag(output_started, e))?;
+                            stderr.flush().await.map_err(|e| tag(output_started, e))?;
+                        }
+                        Some(session_frame::Kind::Exit(exit)) => return Ok(exit.code),
+                        _ => {}
+                    }
                 }
-                Some(session_frame::Kind::Stderr(b)) => {
-                    stderr.write_all(&b).await?;
-                    stderr.flush().await?;
-                }
-                Some(session_frame::Kind::Exit(exit)) => return Ok(exit.code),
-                _ => {}
+                Ok(None) => break,
+                Err(e) => return Err(tag(output_started, io::Error::other(e))),
             }
         }
-        let n = stream.read(&mut chunk).await?;
+        let n = stream
+            .read(&mut chunk)
+            .await
+            .map_err(|e| tag(output_started, e))?;
         if n == 0 {
-            return Err(io::Error::other("SESSION relay closed before Exit"));
+            return Err(tag(
+                output_started,
+                io::Error::other("SESSION relay closed before Exit"),
+            ));
         }
         buf.extend_from_slice(&chunk[..n]);
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    crate::timed_test!(pre_output_error_is_safe_to_fall_back, {
+        let err = SessionError::pre_output(io::Error::other("connect refused"));
+        assert!(
+            !err.output_started,
+            "a pre-output failure must be flagged safe for legacy fallback"
+        );
+    });
+
+    crate::timed_test!(session_enabled_follows_env, {
+        let _lock = crate::TEST_PROCESS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        {
+            let _g = crate::EnvVarGuard::remove(USE_SESSION_ENV_VAR);
+            assert!(!session_enabled(), "default (unset) is off");
+        }
+        {
+            let _g = crate::EnvVarGuard::set(USE_SESSION_ENV_VAR, "1");
+            assert!(session_enabled(), "SOLDR_USE_SESSION=1 enables");
+        }
+        {
+            let _g = crate::EnvVarGuard::set(USE_SESSION_ENV_VAR, "0");
+            assert!(!session_enabled(), "SOLDR_USE_SESSION=0 stays off");
+        }
+    });
 }
