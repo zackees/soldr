@@ -1963,11 +1963,16 @@ where
     let mut stdout_chunks = 0usize;
     let mut stderr_chunks = 0usize;
 
+    // Stream the captured output through a transport sink (soldr#2388 Step 5):
+    // the legacy DaemonRequest wire here, the SESSION `0x5350` wire elsewhere,
+    // over one embedded-zccache execution. The legacy sink is byte-identical to
+    // the pre-refactor wire (locked by `tests/phase5_contract.rs`).
+    use crate::daemon::compile_sink::CompileOutputSink as _;
+    let mut sink = crate::daemon::compile_sink::LegacyDaemonSink { stream };
+
     let wire_stdout_started = std::time::Instant::now();
     for chunk in body.stdout.chunks(CHUNK_BYTES) {
-        if let Err(err) =
-            write_frame_async(stream, &Response::CompileStdoutChunk(chunk.to_vec())).await
-        {
+        if let Err(err) = sink.emit_stdout_chunk(chunk).await {
             return Err(crate::daemon::disconnect::report_reply_write_failure(
                 &state.paths,
                 &compile_id,
@@ -1994,9 +1999,7 @@ where
 
     let wire_stderr_started = std::time::Instant::now();
     for chunk in body.stderr.chunks(CHUNK_BYTES) {
-        if let Err(err) =
-            write_frame_async(stream, &Response::CompileStderrChunk(chunk.to_vec())).await
-        {
+        if let Err(err) = sink.emit_stderr_chunk(chunk).await {
             return Err(crate::daemon::disconnect::report_reply_write_failure(
                 &state.paths,
                 &compile_id,
@@ -2021,12 +2024,6 @@ where
         &compile_id,
     );
 
-    let done = Response::CompileDone {
-        exit_code: body.exit_code,
-        cached: body.cached,
-        cache_outcome: body.cache_outcome,
-        compile_id: String::new(),
-    };
     tracing::debug!(
         target: "soldr::daemon::compile_stream",
         exit_code = body.exit_code,
@@ -2039,17 +2036,25 @@ where
         "compile done — streaming reply complete",
     );
     let wire_done_started = std::time::Instant::now();
-    let res = write_frame_async(stream, &done).await.map_err(|err| {
-        crate::daemon::disconnect::report_reply_write_failure(
-            &state.paths,
-            &compile_id,
-            lifecycle.as_ref(),
-            inner_started,
-            "done",
-            err,
+    let res = sink
+        .emit_done(
             body.exit_code,
+            body.cached,
+            body.cache_outcome,
+            &compile_id,
         )
-    });
+        .await
+        .map_err(|err| {
+            crate::daemon::disconnect::report_reply_write_failure(
+                &state.paths,
+                &compile_id,
+                lifecycle.as_ref(),
+                inner_started,
+                "done",
+                err,
+                body.exit_code,
+            )
+        });
     crate::daemon::compile_trace::record(
         "wire_done",
         wire_done_started.elapsed().as_micros() as u64,
