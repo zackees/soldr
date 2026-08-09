@@ -80,6 +80,15 @@ docs/_build/
 # PyBuilder
 target/
 
+# Repo-local CARGO_HOME cache (perf_local.py / Docker harnesses point
+# CARGO_HOME at ./.cargo). The tracked `.cargo/config.toml` stays; only the
+# downloaded/build caches are ignored so `git add -A` can never sweep them in.
+/.cargo/registry/
+/.cargo/git/
+/.cargo/.global-cache
+/.cargo/.package-cache
+/.cargo/.package-cache-mutate
+
 # Jupyter Notebook
 .ipynb_checkpoints
 
