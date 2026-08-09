@@ -642,6 +642,25 @@ where
     O: Write,
     E: Write,
 {
+    // SESSION hot path (soldr#2388 Step 7b): opt-in via `SOLDR_USE_SESSION`.
+    // Ensure the broker + daemon are up, then relay the compile over SESSION
+    // (client → broker → daemon). Fall back to the legacy path ONLY on a
+    // pre-output failure — a mid-stream failure would double-print — so the
+    // default (flag-unset) path is never regressed.
+    if crate::session_transport::session_enabled() {
+        match try_session_dispatch(rustc_argv) {
+            Ok(exit_code) => return Ok(exit_code),
+            Err(err) if err.output_started => {
+                return Err(DispatchError::Setup(SoldrError::Other(format!(
+                    "SESSION compile failed after output began (no safe legacy fallback): {err}"
+                ))));
+            }
+            Err(err) => {
+                eprintln!("soldr: SESSION compile unavailable ({err}); using legacy path");
+            }
+        }
+    }
+
     let paths = SoldrPaths::new().map_err(|e| {
         DispatchError::Setup(SoldrError::Other(format!("resolve soldr paths: {e}")))
     })?;
@@ -660,6 +679,21 @@ where
         counted.report_if_silently_failed(*exit_code);
     }
     result
+}
+
+/// Ensure the broker + daemon are up, then run the compile over the SESSION
+/// transport (soldr#2388 Step 7b). Best-effort ensure: the SESSION dial +
+/// [`SessionError`](crate::session_transport::SessionError) boundary handle a
+/// not-yet-ready broker by surfacing a pre-output failure the caller falls back
+/// on. Output goes straight to the process's stdio (the daemon streams it),
+/// which is what the `RUSTC_WRAPPER` hot path passes anyway.
+fn try_session_dispatch(
+    rustc_argv: &[String],
+) -> Result<i32, crate::session_transport::SessionError> {
+    let deadline = Instant::now() + resolved_spawn_retry_budget();
+    let _ = crate::broker_discovery_gate::spawn_or_confirm_broker_daemon(deadline);
+    let program = crate::daemon::backend_handle_adoption::broker_program();
+    crate::session_transport::run_session_compile(&program, rustc_argv)
 }
 
 fn dispatch_compile_with_sock_and_marker_detailed<O, E>(
