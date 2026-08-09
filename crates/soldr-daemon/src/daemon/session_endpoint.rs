@@ -48,7 +48,7 @@ use crate::zccache_embedded::SoldrZccacheService;
 
 /// Concrete legacy detector type of the SESSION mux — a plain `fn` pointer so
 /// the mux (and therefore the accept-loop `Arc<..>`) has a nameable type.
-type SessionMux = BackendEndpointMux<fn(&[u8]) -> LegacyClassification>;
+pub type SessionMux = BackendEndpointMux<fn(&[u8]) -> LegacyClassification>;
 
 /// Names an explicit soldr-owned SESSION endpoint socket path.
 ///
@@ -67,7 +67,7 @@ pub(crate) const SOLDR_SESSION_ENDPOINT_PATH_ENV: &str = "SOLDR_SESSION_ENDPOINT
 /// built with `served = &[]` for the *legacy* endpoint and MUST NOT be reused —
 /// serving `0x5350` there would change `handle_connection`, which the audit
 /// correction forbids.
-pub(crate) fn soldr_session_endpoint_mux(daemon: DaemonProcess) -> SessionMux {
+pub fn soldr_session_endpoint_mux(daemon: DaemonProcess) -> SessionMux {
     BackendEndpointMux::new(daemon, &[SESSION_PAYLOAD_PROTOCOL], classify_never_legacy)
 }
 
@@ -201,37 +201,59 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for ReplayReader<S> {
     }
 }
 
-/// Resolve the SESSION endpoint listener, or `None` when no SESSION endpoint
-/// should be served.
+/// The deterministic SESSION endpoint path this daemon serves, derived from
+/// `paths` as a sibling of the legacy IPC endpoint (`daemon_sock_path` on Unix /
+/// `daemon_pipe_name` on Windows) with a `-session` / `.session` suffix.
 ///
-/// Today this only honors [`SOLDR_SESSION_ENDPOINT_PATH_ENV`] (unset → `None` →
-/// production is unchanged). Step 8 will prepend the broker-inherited-fd adopt
-/// path (`broker_owned_bind::recover_from_env`) here, ahead of the bind
-/// fallback, so a broker-spawned daemon serves the endpoint the broker created.
+/// Both the daemon (which binds it) and the broker's SESSION relay (which dials
+/// it as `Negotiated.backend_pipe`) compute this same value — the #2386
+/// Option-A "bind-by-advertised-name" contract (mechanism ii), the portable
+/// cross-platform path. (Unix fd-adopt via `broker_owned_bind` is an optional
+/// optimization layered on later; Windows has no fd handover at all.)
+pub fn daemon_session_endpoint_path(paths: &SoldrPaths) -> io::Result<String> {
+    #[cfg(unix)]
+    {
+        let sock = crate::cache_lib::daemon_sock_path(paths);
+        Ok(format!("{}.session", sock.display()))
+    }
+    #[cfg(windows)]
+    {
+        let pipe = crate::cache_lib::daemon_pipe_name(paths).map_err(io::Error::other)?;
+        Ok(format!("{pipe}-session"))
+    }
+}
+
+/// Resolve the SESSION endpoint listener the daemon serves.
+///
+/// Honors [`SOLDR_SESSION_ENDPOINT_PATH_ENV`] first (tests / diagnostics), then
+/// falls back to the deterministic [`daemon_session_endpoint_path`] so the
+/// broker's SESSION relay can always reach the daemon at the advertised name.
+/// Step 8 will prepend the broker-inherited-fd adopt path
+/// (`broker_owned_bind::recover_from_env`, Unix only) ahead of the bind.
 ///
 /// # Errors
 ///
-/// Fails only if a configured path cannot be bound (e.g. already in use).
-pub(crate) fn resolve_session_listener() -> io::Result<Option<SessionListener>> {
-    let Some(path) = std::env::var_os(SOLDR_SESSION_ENDPOINT_PATH_ENV) else {
-        return Ok(None);
-    };
-    let path = path.to_string_lossy();
-    if path.is_empty() {
-        return Ok(None);
+/// Fails only if the resolved path cannot be bound (e.g. already in use).
+pub(crate) fn resolve_session_listener(paths: &SoldrPaths) -> io::Result<Option<SessionListener>> {
+    if let Some(path) = std::env::var_os(SOLDR_SESSION_ENDPOINT_PATH_ENV) {
+        let path = path.to_string_lossy();
+        if !path.is_empty() {
+            return bind_session_listener(&path).map(Some);
+        }
     }
+    let path = daemon_session_endpoint_path(paths)?;
     bind_session_listener(&path).map(Some)
 }
 
 /// The tokio local-socket listener type served by the SESSION endpoint.
-pub(crate) type SessionListener = interprocess::local_socket::tokio::Listener;
+pub type SessionListener = interprocess::local_socket::tokio::Listener;
 
 /// Bind a tokio local-socket SESSION listener at `socket_path`.
 ///
 /// Resolves the platform local-socket name the same way running-process's broker
 /// SESSION bind does (Unix filesystem path, Windows namespaced pipe), so the
 /// daemon endpoint and the broker's relay dial name the same path identically.
-pub(crate) fn bind_session_listener(socket_path: &str) -> io::Result<SessionListener> {
+pub fn bind_session_listener(socket_path: &str) -> io::Result<SessionListener> {
     use interprocess::local_socket::ListenerOptions;
 
     let name = local_session_name(socket_path)?;
@@ -262,7 +284,7 @@ fn local_session_name(socket_path: &str) -> io::Result<interprocess::local_socke
 /// # Errors
 ///
 /// Returns the first fatal `accept()` error (the listener is unusable).
-pub(crate) async fn serve_session_endpoint(
+pub async fn serve_session_endpoint(
     listener: SessionListener,
     service: Arc<SoldrZccacheService>,
     paths: SoldrPaths,

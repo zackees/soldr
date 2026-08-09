@@ -827,13 +827,14 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
         })
     };
 
-    // SESSION `0x5350` endpoint (soldr#2388 Step 6d / #2386 Option A). Served on
-    // a *separate* broker-facing endpoint from the legacy `handle_connection`
-    // loop above, which stays untouched. Opt-in until Phase 2 makes the broker
-    // the daemon's spawner and hands over the listener (Step 8): with no
-    // `SOLDR_SESSION_ENDPOINT_PATH` set, `resolve_session_listener` returns
-    // `None` and no endpoint is served, so today's direct path is unchanged.
-    let session_handle = match crate::daemon::session_endpoint::resolve_session_listener() {
+    // SESSION `0x5350` endpoint (soldr#2388 Step 6d/7 / #2386 Option A). Served
+    // on a *separate* broker-facing endpoint from the legacy `handle_connection`
+    // loop above, which stays untouched. The daemon binds the deterministic
+    // `daemon_session_endpoint_path` (or `SOLDR_SESSION_ENDPOINT_PATH` override)
+    // so the broker's SESSION relay can reach it by advertised name (#2386
+    // Option A mechanism ii). Step 8 will prepend the Unix broker-inherited-fd
+    // adopt path.
+    let session_handle = match crate::daemon::session_endpoint::resolve_session_listener(&paths) {
         Ok(Some(listener)) => {
             let mux = Arc::new(crate::daemon::session_endpoint::soldr_session_endpoint_mux(
                 state.daemon_identity.clone(),
