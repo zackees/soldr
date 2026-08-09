@@ -1958,25 +1958,51 @@ where
         &compile_id,
     );
 
+    // Stream the captured output through a transport sink (soldr#2388 Step 5/6):
+    // the legacy DaemonRequest wire here (byte-identical, `phase5_contract`), the
+    // SESSION `0x5350` wire elsewhere, over one embedded-zccache execution.
+    let mut sink = crate::daemon::compile_sink::LegacyDaemonSink { stream };
+    stream_compile_output(
+        &mut sink,
+        &body,
+        state,
+        &compile_id,
+        lifecycle.as_ref(),
+        inner_started,
+        total,
+    )
+    .await
+}
+
+/// Stream a completed compile's captured output through `sink` — the legacy
+/// `Response` wire (`LegacyDaemonSink`) or the SESSION `0x5350` wire
+/// (`session_sink::SessionCompileSink`), over one embedded-zccache execution
+/// (soldr#2388 Step 5/6). Shared so both wires stay byte-transparent and the
+/// disconnect error-attribution + per-compile telemetry are identical.
+async fn stream_compile_output<Sink>(
+    sink: &mut Sink,
+    body: &crate::daemon::protocol::CompileResponseBody,
+    state: &Arc<State>,
+    compile_id: &str,
+    lifecycle: Option<&crate::daemon::protocol::CompileLifecycle>,
+    inner_started: std::time::Instant,
+    total: std::time::Instant,
+) -> std::io::Result<()>
+where
+    Sink: crate::daemon::compile_sink::CompileOutputSink,
+{
     let stdout_len = body.stdout.len();
     let stderr_len = body.stderr.len();
     let mut stdout_chunks = 0usize;
     let mut stderr_chunks = 0usize;
-
-    // Stream the captured output through a transport sink (soldr#2388 Step 5):
-    // the legacy DaemonRequest wire here, the SESSION `0x5350` wire elsewhere,
-    // over one embedded-zccache execution. The legacy sink is byte-identical to
-    // the pre-refactor wire (locked by `tests/phase5_contract.rs`).
-    use crate::daemon::compile_sink::CompileOutputSink as _;
-    let mut sink = crate::daemon::compile_sink::LegacyDaemonSink { stream };
 
     let wire_stdout_started = std::time::Instant::now();
     for chunk in body.stdout.chunks(CHUNK_BYTES) {
         if let Err(err) = sink.emit_stdout_chunk(chunk).await {
             return Err(crate::daemon::disconnect::report_reply_write_failure(
                 &state.paths,
-                &compile_id,
-                lifecycle.as_ref(),
+                compile_id,
+                lifecycle,
                 inner_started,
                 "stdout_chunk",
                 err,
@@ -1994,7 +2020,7 @@ where
     crate::daemon::compile_trace::record(
         "wire_stdout",
         wire_stdout_started.elapsed().as_micros() as u64,
-        &compile_id,
+        compile_id,
     );
 
     let wire_stderr_started = std::time::Instant::now();
@@ -2002,8 +2028,8 @@ where
         if let Err(err) = sink.emit_stderr_chunk(chunk).await {
             return Err(crate::daemon::disconnect::report_reply_write_failure(
                 &state.paths,
-                &compile_id,
-                lifecycle.as_ref(),
+                compile_id,
+                lifecycle,
                 inner_started,
                 "stderr_chunk",
                 err,
@@ -2021,7 +2047,7 @@ where
     crate::daemon::compile_trace::record(
         "wire_stderr",
         wire_stderr_started.elapsed().as_micros() as u64,
-        &compile_id,
+        compile_id,
     );
 
     tracing::debug!(
@@ -2037,13 +2063,13 @@ where
     );
     let wire_done_started = std::time::Instant::now();
     let res = sink
-        .emit_done(body.exit_code, body.cached, body.cache_outcome, &compile_id)
+        .emit_done(body.exit_code, body.cached, body.cache_outcome, compile_id)
         .await
         .map_err(|err| {
             crate::daemon::disconnect::report_reply_write_failure(
                 &state.paths,
-                &compile_id,
-                lifecycle.as_ref(),
+                compile_id,
+                lifecycle,
                 inner_started,
                 "done",
                 err,
@@ -2053,16 +2079,16 @@ where
     crate::daemon::compile_trace::record(
         "wire_done",
         wire_done_started.elapsed().as_micros() as u64,
-        &compile_id,
+        compile_id,
     );
     crate::daemon::compile_trace::record(
         "total_dispatch",
         total.elapsed().as_micros() as u64,
-        &compile_id,
+        compile_id,
     );
     // Co-record per-compile output bytes for cross-axis analysis.
-    crate::daemon::compile_trace::record("stdout_bytes", stdout_len as u64, &compile_id);
-    crate::daemon::compile_trace::record("stderr_bytes", stderr_len as u64, &compile_id);
+    crate::daemon::compile_trace::record("stdout_bytes", stdout_len as u64, compile_id);
+    crate::daemon::compile_trace::record("stderr_bytes", stderr_len as u64, compile_id);
     res
 }
 

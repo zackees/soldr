@@ -57,6 +57,10 @@ pub mod maintenance;
 pub mod protocol;
 pub mod server;
 pub mod service_definition;
+/// SESSION `0x5350` output sink (soldr#2388 Step 6) — renders a compile's
+/// captured stdout/stderr/exit as running-process `SessionFrame`s for the
+/// broker-relayed SESSION wire.
+pub(crate) mod session_sink;
 /// soldr#1838 Phase 1 -- progressive heartbeats so a long daemon wait
 /// says what it is waiting on instead of going silent to the backstop.
 pub(crate) mod wait_heartbeat;
