@@ -29,6 +29,7 @@ pub mod client;
 /// could not hand back to the wrapper. The artifact that distinguishes
 /// "rustc rejected your code" from "soldr lost a finished compile".
 pub mod compile_delivery;
+pub(crate) mod compile_sink;
 /// Per-compile JSONL phase trace, gated by `SOLDR_DAEMON_TRACE`.
 /// Diagnostic-only — see `compile_trace.rs` for format. Wired in by
 /// soldr#981 to identify the per-compile dispatch bottleneck that
