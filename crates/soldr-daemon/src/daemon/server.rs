@@ -1965,7 +1965,7 @@ where
     stream_compile_output(
         &mut sink,
         &body,
-        state,
+        &state.paths,
         &compile_id,
         lifecycle.as_ref(),
         inner_started,
@@ -1979,10 +1979,10 @@ where
 /// (`session_sink::SessionCompileSink`), over one embedded-zccache execution
 /// (soldr#2388 Step 5/6). Shared so both wires stay byte-transparent and the
 /// disconnect error-attribution + per-compile telemetry are identical.
-async fn stream_compile_output<Sink>(
+pub(crate) async fn stream_compile_output<Sink>(
     sink: &mut Sink,
     body: &crate::daemon::protocol::CompileResponseBody,
-    state: &Arc<State>,
+    paths: &crate::core::SoldrPaths,
     compile_id: &str,
     lifecycle: Option<&crate::daemon::protocol::CompileLifecycle>,
     inner_started: std::time::Instant,
@@ -2000,7 +2000,7 @@ where
     for chunk in body.stdout.chunks(CHUNK_BYTES) {
         if let Err(err) = sink.emit_stdout_chunk(chunk).await {
             return Err(crate::daemon::disconnect::report_reply_write_failure(
-                &state.paths,
+                paths,
                 compile_id,
                 lifecycle,
                 inner_started,
@@ -2027,7 +2027,7 @@ where
     for chunk in body.stderr.chunks(CHUNK_BYTES) {
         if let Err(err) = sink.emit_stderr_chunk(chunk).await {
             return Err(crate::daemon::disconnect::report_reply_write_failure(
-                &state.paths,
+                paths,
                 compile_id,
                 lifecycle,
                 inner_started,
@@ -2067,7 +2067,7 @@ where
         .await
         .map_err(|err| {
             crate::daemon::disconnect::report_reply_write_failure(
-                &state.paths,
+                paths,
                 compile_id,
                 lifecycle,
                 inner_started,
@@ -2095,7 +2095,7 @@ where
 /// Monotonic per-daemon compile counter. The id is stable within one
 /// daemon process and meaningless across restarts — exactly the scope
 /// the `SOLDR_DAEMON_TRACE` JSONL is designed for.
-fn next_compile_id() -> String {
+pub(crate) fn next_compile_id() -> String {
     use std::sync::atomic::{AtomicU64, Ordering as AOrdering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let n = SEQ.fetch_add(1, AOrdering::Relaxed);
