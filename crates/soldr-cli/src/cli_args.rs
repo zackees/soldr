@@ -72,10 +72,10 @@ help                   Print this message or the help of the given subcommand\n\
 pub(crate) struct Cli {
     #[arg(
         long,
-        help = "Disable soldr's compilation cache for this run",
-        long_help = "Disable soldr's compilation cache for this run (bypasses the \
-wrapper + daemon; also the recovery path if a build hangs on a wedged cache). \
-A truthy `ZCCACHE_DISABLE` env var is equivalent."
+        hide = true,
+        help = "Deprecated: use ZCCACHE_DISABLE=1 instead",
+        long_help = "Deprecated (soldr#2364) in favor of `ZCCACHE_DISABLE=1`, the \
+supported kill-switch for soldr's compilation cache. Hidden; retained for compatibility."
     )]
     pub(crate) no_cache: bool,
     /// Trust inherited soldr/zccache workspace environment for cargo runs
