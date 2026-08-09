@@ -2037,12 +2037,7 @@ where
     );
     let wire_done_started = std::time::Instant::now();
     let res = sink
-        .emit_done(
-            body.exit_code,
-            body.cached,
-            body.cache_outcome,
-            &compile_id,
-        )
+        .emit_done(body.exit_code, body.cached, body.cache_outcome, &compile_id)
         .await
         .map_err(|err| {
             crate::daemon::disconnect::report_reply_write_failure(
