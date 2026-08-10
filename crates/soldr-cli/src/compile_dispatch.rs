@@ -642,23 +642,18 @@ where
     O: Write,
     E: Write,
 {
-    // SESSION hot path (soldr#2388 Step 7b): opt-in via `SOLDR_USE_SESSION`.
-    // Ensure the broker + daemon are up, then relay the compile over SESSION
-    // (client → broker → daemon). Fall back to the legacy path ONLY on a
-    // pre-output failure — a mid-stream failure would double-print — so the
-    // default (flag-unset) path is never regressed.
-    if crate::session_transport::session_enabled() {
-        match try_session_dispatch(rustc_argv) {
-            Ok(exit_code) => return Ok(exit_code),
-            Err(err) if err.output_started => {
-                return Err(DispatchError::Setup(SoldrError::Other(format!(
-                    "SESSION compile failed after output began (no safe legacy fallback): {err}"
-                ))));
-            }
-            Err(err) => {
-                eprintln!("soldr: SESSION compile unavailable ({err}); using legacy path");
-            }
+    // SESSION hot path (soldr#2388 Step 7b): opt-in via `SOLDR_USE_SESSION`. All
+    // policy lives in `session_transport::session_hot_path`; here we only route
+    // its outcome. A mid-stream failure is a hard error (a legacy retry would
+    // double-print); anything else falls through to the unchanged legacy path.
+    match crate::session_transport::session_hot_path(rustc_argv) {
+        crate::session_transport::SessionHotPathOutcome::Served(exit_code) => return Ok(exit_code),
+        crate::session_transport::SessionHotPathOutcome::HardFail(err) => {
+            return Err(DispatchError::Setup(SoldrError::Other(format!(
+                "SESSION compile failed after output began (no safe legacy fallback): {err}"
+            ))));
         }
+        crate::session_transport::SessionHotPathOutcome::Fallthrough => {}
     }
 
     let paths = SoldrPaths::new().map_err(|e| {
@@ -679,65 +674,6 @@ where
         counted.report_if_silently_failed(*exit_code);
     }
     result
-}
-
-/// Ensure the broker + daemon are up, then run the compile over the SESSION
-/// transport (soldr#2388 Step 7b). Best-effort ensure: the SESSION dial +
-/// [`SessionError`](crate::session_transport::SessionError) boundary handle a
-/// not-yet-ready broker by surfacing a pre-output failure the caller falls back
-/// on. Output goes straight to the process's stdio (the daemon streams it),
-/// which is what the `RUSTC_WRAPPER` hot path passes anyway.
-fn try_session_dispatch(
-    rustc_argv: &[String],
-) -> Result<i32, crate::session_transport::SessionError> {
-    use crate::session_transport::SessionError;
-    use running_process::broker::protocol_v2::SessionEnvVar;
-
-    let deadline = Instant::now() + resolved_spawn_retry_budget();
-    let _ = crate::broker_discovery_gate::spawn_or_confirm_broker_daemon(deadline);
-    let program = crate::daemon::backend_handle_adoption::broker_program();
-    let cwd = std::env::current_dir()
-        .map_err(SessionError::pre_output)?
-        .display()
-        .to_string();
-    let env: Vec<SessionEnvVar> = std::env::vars()
-        .map(|(key, value)| SessionEnvVar { key, value })
-        .collect();
-    // Retry on PRE-OUTPUT failures until the spawn-retry budget elapses — the
-    // broker + daemon (+ companion relay) may still be coming up when the first
-    // dial lands, exactly as the legacy path's retry_within_budget waits for the
-    // daemon. A pre-output failure printed nothing, so retrying is safe; a
-    // mid-stream failure is returned immediately as a hard error (a legacy
-    // fallback would double-print). On budget exhaustion the last pre-output
-    // error is returned so the caller falls back to legacy.
-    loop {
-        match crate::session_transport::run_session_compile_with_detailed(
-            &program,
-            rustc_argv,
-            cwd.clone(),
-            env.clone(),
-        ) {
-            Ok(outcome) => {
-                // Observability (opt-in, no production noise): a SESSION-served
-                // marker the multi-process smoke greps to prove SESSION carried
-                // the compile. `cache_outcome`: 1=Hit, 2=Miss, 3=Error.
-                if std::env::var_os("SOLDR_SESSION_DEBUG").is_some() {
-                    eprintln!(
-                        "soldr: SESSION compile served (cache_outcome={:?})",
-                        outcome.cache_outcome
-                    );
-                }
-                return Ok(outcome.exit_code);
-            }
-            Err(err) if err.output_started => return Err(err),
-            Err(err) => {
-                if Instant::now() >= deadline {
-                    return Err(err);
-                }
-                std::thread::sleep(RETRY_INTERVAL);
-            }
-        }
-    }
 }
 
 fn dispatch_compile_with_sock_and_marker_detailed<O, E>(
