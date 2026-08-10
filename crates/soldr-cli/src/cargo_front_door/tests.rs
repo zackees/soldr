@@ -940,22 +940,19 @@ fn cargo_args_are_cacheable_for_every_registry_inner_build_subcommand() {
 }
 
 crate::timed_test!(
-    dylint_link_source_fallback_is_limited_to_missing_or_unrunnable_prebuilts,
+    dylint_unavailable_diagnostic_names_host_component_and_remediation,
     {
-        assert!(dylint_link_prebuilt_requires_source_fallback(
-            &SoldrError::UnsupportedPlatform(
-                "asset matching failed: no asset matches target aarch64-apple-darwin".into()
-            )
-        ));
-        assert!(dylint_link_prebuilt_requires_source_fallback(
-            &SoldrError::Other("smoke test failed: dylint-link needs a newer GLIBC".into())
-        ));
-        assert!(!dylint_link_prebuilt_requires_source_fallback(
-            &SoldrError::Network("release download failed".into())
-        ));
-        assert!(!dylint_link_prebuilt_requires_source_fallback(
-            &SoldrError::Other("checksum pin mismatch".into())
-        ));
+        let error = dylint_unavailable_error(
+            "dylint-link",
+            "6.0.1",
+            &SoldrError::UnsupportedPlatform("no matching asset".into()),
+        );
+        let message = error.to_string();
+        assert!(message.contains(&crate::core::TargetTriple::host().unwrap().triple()));
+        assert!(message.contains("dylint-link"));
+        assert!(message.contains("Dylint v6.0.1 is not built for this machine"));
+        assert!(message.contains("Soldr will not build Dylint from source"));
+        assert!(message.contains("Corrective action:"));
     }
 );
 
@@ -974,46 +971,25 @@ crate::timed_test!(cached_dylint_link_is_revalidated_and_evicted, {
     };
 
     let error = validated_dylint_link_prebuilt(&result).unwrap_err();
-    assert!(dylint_link_prebuilt_requires_source_fallback(&error));
+    assert!(error.to_string().starts_with("smoke test failed:"));
     assert!(
         !binary.exists(),
-        "incompatible cached prebuilt must be evicted before source fallback"
+        "incompatible cached prebuilt must be evicted before returning an error"
     );
 });
 
-crate::timed_test!(cached_source_built_dylint_link_is_reused_before_network, {
-    let temp = tempfile::tempdir().unwrap();
-    let paths = SoldrPaths::with_root(temp.path().join("soldr"));
-    let plan = crate::build_from_source_cmd::resolve_plan("dylint-link", None, None, &paths)
-        .expect("resolve source-built dylint-link");
-    std::fs::create_dir_all(&plan.install_dir).unwrap();
-    std::fs::write(&plan.final_binary, b"complete source-built dylint-link").unwrap();
-    let digest = crate::build_from_source_cmd::sha256_of_file(&plan.final_binary).unwrap();
-    std::fs::write(
-        plan.final_binary.with_extension("sha256"),
-        format!(
-            "{digest}  {}\n",
-            plan.final_binary.file_name().unwrap().to_string_lossy()
-        ),
-    )
-    .unwrap();
-
-    let selected = tokio::runtime::Runtime::new()
-        .unwrap()
-        .block_on(dylint_link_bin_dir(&paths))
-        .expect("valid source-built cache must short-circuit remote resolution");
-
-    assert_eq!(selected, plan.install_dir);
-});
-
-crate::timed_test!(managed_dylint_always_uses_pinned_source_build, {
-    assert!(requires_managed_dylint_source_build("dylint"));
-    for subcommand in ["nextest", "zigbuild", "xwin", "audit"] {
-        assert!(
-            !requires_managed_dylint_source_build(subcommand),
-            "{subcommand} must retain the generic prebuilt/PATH-first policy"
-        );
-    }
+crate::timed_test!(managed_dylint_missing_prebuilt_is_binary_or_error, {
+    let mut source_build_ran = false;
+    let result = resolve_dylint_binary(
+        "cargo-dylint",
+        Err(SoldrError::UnsupportedPlatform("no matching asset".into())),
+        || {
+            source_build_ran = true;
+            Ok(PathBuf::from("/source/bin/cargo-dylint"))
+        },
+    );
+    assert!(result.is_err());
+    assert!(!source_build_ran);
 });
 
 crate::timed_test!(dylint_dependency_cook_marker_is_private_to_front_door, {
@@ -2760,7 +2736,7 @@ crate::timed_test!(dylint_uses_prebuilt_when_fetch_succeeds, {
     );
 });
 
-crate::timed_test!(dylint_falls_back_to_source_build_when_smoke_test_fails, {
+crate::timed_test!(dylint_smoke_failure_never_calls_source_build, {
     let mut source_build_ran = false;
     // Shaped like the real `smoke_test_or_evict` error: the download
     // succeeded, the `--version` probe did not.
@@ -2771,33 +2747,63 @@ crate::timed_test!(dylint_falls_back_to_source_build_when_smoke_test_fails, {
             .to_string(),
     ));
 
-    let resolved = resolve_dylint_binary("cargo-dylint", fetched, || {
+    let error = resolve_dylint_binary("cargo-dylint", fetched, || {
         source_build_ran = true;
         Ok(PathBuf::from("/source/bin/cargo-dylint"))
     })
-    .expect("smoke-test failure must fall back, not propagate");
+    .expect_err("smoke-test failure must fail instead of compiling");
 
     assert!(
-        source_build_ran,
-        "an unusable prebuilt must trigger the pinned source build"
+        !source_build_ran,
+        "an unusable prebuilt must never trigger the pinned source build"
     );
-    assert_eq!(resolved, PathBuf::from("/source/bin/cargo-dylint"));
+    let message = error.to_string();
+    assert!(
+        message.contains("cargo-dylint"),
+        "unexpected error: {message}"
+    );
+    assert!(
+        message.contains("Dylint v6.0.1 is not built for this machine"),
+        "unexpected error: {message}"
+    );
+    assert!(
+        message.contains("Soldr will not build Dylint from source"),
+        "unexpected error: {message}"
+    );
+    assert!(
+        message.contains("Corrective action:"),
+        "unexpected error: {message}"
+    );
 });
 
-crate::timed_test!(dylint_source_build_failure_propagates, {
-    // The fallback must not swallow a genuine source-build failure —
-    // otherwise a broken pinned build degrades into a confusing
-    // "cargo-dylint not found" further downstream.
-    let fetched = Err(SoldrError::Other("prebuilt unusable".to_string()));
+crate::timed_test!(missing_dylint_driver_fails_before_tool_launch, {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = SoldrPaths::with_root(temp.path().join("soldr"));
+    let plan = crate::dylint_toolchain::DylintToolchainPlan {
+        channel: "nightly-2026-05-28".to_string(),
+        compiler_release: "1.96.0-nightly".to_string(),
+        compiler_commit: "0123456789abcdef".to_string(),
+    };
 
-    let error = resolve_dylint_binary("cargo-dylint", fetched, || {
-        Err(SoldrError::Other("pinned source build failed".to_string()))
-    })
-    .expect_err("source-build failure must propagate");
+    let error = crate::dylint_toolchain::require_prebuilt_driver(&plan, &paths)
+        .expect_err("an absent driver must fail before cargo-dylint launches");
 
+    let message = error.to_string();
     assert!(
-        error.to_string().contains("pinned source build failed"),
-        "unexpected error: {error}"
+        message.contains("dylint-driver"),
+        "unexpected error: {message}"
+    );
+    assert!(
+        message.contains("nightly-2026-05-28"),
+        "unexpected error: {message}"
+    );
+    assert!(
+        message.contains("Dylint v6.0.1 is not built for this machine"),
+        "unexpected error: {message}"
+    );
+    assert!(
+        message.contains("Corrective action:"),
+        "unexpected error: {message}"
     );
 });
 

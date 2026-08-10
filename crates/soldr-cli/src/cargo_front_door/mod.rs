@@ -1529,7 +1529,22 @@ pub(crate) async fn run_cargo_front_door(
         crate::dylint_toolchain::clear_success_marker()?;
     }
     let workspace_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let dylint_plan = if dylint_scoped {
+    // A missing cargo-dylint or dylint-link asset is a release-packaging
+    // failure, not a reason to prepare a nightly toolchain. Resolve both
+    // binaries first so unsupported hosts fail in seconds without downloads,
+    // component probes, compiler work, or source-build fallback.
+    let early_dylint = if dylint_entrypoint {
+        let bootstrap = ensure_known_subcommand_tool(args, &paths).await?;
+        let plan =
+            crate::dylint_toolchain::resolve_plan(explicit_toolchain, &workspace_root).await?;
+        crate::dylint_toolchain::require_prebuilt_driver(&plan, &paths)?;
+        Some((bootstrap, plan))
+    } else {
+        None
+    };
+    let dylint_plan = if let Some((_, plan)) = early_dylint.as_ref() {
+        Some(crate::dylint_toolchain::prepare_resolved(plan.clone())?)
+    } else if dylint_scoped {
         Some(crate::dylint_toolchain::prepare(explicit_toolchain, &workspace_root).await?)
     } else {
         None
@@ -1570,7 +1585,10 @@ pub(crate) async fn run_cargo_front_door(
     // PATH so cargo's subcommand dispatch finds it. Also collect transitive
     // bootstrap env (e.g. SDKROOT for explicit legacy
     // `cargo zigbuild --target *-apple-darwin`).
-    let mut subcommand_tool_bootstrap = ensure_known_subcommand_tool(args, &paths).await?;
+    let mut subcommand_tool_bootstrap = match early_dylint {
+        Some((bootstrap, _)) => bootstrap,
+        None => ensure_known_subcommand_tool(args, &paths).await?,
+    };
     host_tooling::inject(args, &paths, &mut subcommand_tool_bootstrap).await;
     let owned_bootstrap_args;
     let args: &[String] = if subcommand_tool_bootstrap.cargo_args.is_empty() {
@@ -2738,6 +2756,13 @@ async fn ensure_known_subcommand_tool(
     if !force_managed_cargo_subcommands() {
         let exe_name = format!("cargo-{sub}");
         if let Some(path) = find_on_path(&exe_name) {
+            if sub == "dylint" {
+                let version = spec.pinned_version.unwrap_or("unknown");
+                validate_dylint_path_binary(&path, "cargo-dylint", version)?;
+                if let Some(link) = find_on_path("dylint-link") {
+                    validate_dylint_path_binary(&link, "dylint-link", version)?;
+                }
+            }
             eprintln!(
                 "soldr: deferring to {exe_name} on PATH at {} (set SOLDR_FORCE_MANAGED_CARGO_SUBCOMMANDS=1 to override)",
                 path.display()
@@ -2766,27 +2791,6 @@ async fn ensure_known_subcommand_tool(
         }
     }
 
-    // Dylint v6.0.1's published cargo-dylint binary is not relocatable:
-    // its driver manifest embeds the release runner's absolute
-    // `/home/runner/work/dylint/dylint/driver` path. For managed
-    // resolution, source-build the pinned cargo-dylint crate on every host
-    // so the installed driver source remains available and the result is
-    // portable across libc versions. A user-provided cargo-dylint on PATH
-    // remains an intentional override under the generic PATH-first policy.
-    // `dylint-link` is resolved separately and may still use its healthy
-    // official prebuilt.
-    if requires_managed_dylint_source_build(sub) {
-        return dylint_source_build_bootstrap(
-            args,
-            paths,
-            extra_bin_dirs,
-            extra_env,
-            extra_cargo_args,
-            "cargo-dylint v6.0.1's official binary is not relocatable",
-        )
-        .await;
-    }
-
     let version = spec
         .pinned_version
         .map(|v| VersionSpec::Exact(v.to_string()))
@@ -2801,6 +2805,13 @@ async fn ensure_known_subcommand_tool(
     .await
     {
         Ok(result) => result,
+        Err(error) if sub == "dylint" => {
+            return Err(dylint_unavailable_error(
+                "cargo-dylint",
+                spec.pinned_version.unwrap_or("unknown"),
+                &error,
+            ));
+        }
         Err(error) => return Err(error),
     };
 
@@ -2840,41 +2851,7 @@ async fn ensure_known_subcommand_tool(
     })
 }
 
-async fn dylint_source_build_bootstrap(
-    args: &[String],
-    paths: &SoldrPaths,
-    mut extra_bin_dirs: Vec<std::path::PathBuf>,
-    mut extra_env: Vec<(String, String)>,
-    mut extra_cargo_args: Vec<String>,
-    reason: &str,
-) -> Result<SubcommandToolBootstrap, SoldrError> {
-    eprintln!("soldr: {reason}; preparing pinned source fallback...");
-    extra_bin_dirs.push(source_built_dylint_bin_dir("cargo-dylint", paths)?);
-    extra_bin_dirs.push(dylint_link_bin_dir(paths).await?);
-    append_subcommand_transitive_bin_dirs(
-        "dylint",
-        args,
-        paths,
-        &mut extra_bin_dirs,
-        &mut extra_env,
-        &mut extra_cargo_args,
-    )
-    .await?;
-    Ok(SubcommandToolBootstrap {
-        bin_dirs: extra_bin_dirs,
-        env: extra_env,
-        cargo_args: extra_cargo_args,
-    })
-}
-
 async fn dylint_link_bin_dir(paths: &SoldrPaths) -> Result<std::path::PathBuf, SoldrError> {
-    if let Some(directory) = cached_source_built_dylint_bin_dir("dylint-link", paths)? {
-        eprintln!(
-            "soldr: using cached source-built dylint-link at {}",
-            directory.display()
-        );
-        return Ok(directory);
-    }
     let pinned_version = crate::fetch::known_tools::lookup_by_crate("dylint-link")
         .and_then(|spec| spec.pinned_version)
         .ok_or_else(|| SoldrError::Other("dylint-link must have a registry pin".into()))?;
@@ -2883,14 +2860,11 @@ async fn dylint_link_bin_dir(paths: &SoldrPaths) -> Result<std::path::PathBuf, S
     match crate::fetch::fetch_tool_for_host_with_paths("dylint-link", &version, paths).await {
         Ok(result) => {
             if let Err(error) = validated_dylint_link_prebuilt(&result) {
-                if dylint_link_prebuilt_requires_source_fallback(&error) {
-                    eprintln!(
-                        "soldr: dylint-link prebuilt is unavailable or not executable on this host ({error}); \
-                         building pinned source fallback..."
-                    );
-                    return source_built_dylint_bin_dir("dylint-link", paths);
-                }
-                return Err(error);
+                return Err(dylint_unavailable_error(
+                    "dylint-link",
+                    pinned_version,
+                    &error,
+                ));
             }
             if result.cached {
                 eprintln!("soldr: using cached dylint-link v{}", result.version);
@@ -2908,14 +2882,11 @@ async fn dylint_link_bin_dir(paths: &SoldrPaths) -> Result<std::path::PathBuf, S
                     ))
                 })
         }
-        Err(error) if dylint_link_prebuilt_requires_source_fallback(&error) => {
-            eprintln!(
-                "soldr: dylint-link prebuilt is unavailable or not executable on this host ({error}); \
-                 building pinned source fallback..."
-            );
-            source_built_dylint_bin_dir("dylint-link", paths)
-        }
-        Err(error) => Err(error),
+        Err(error) => Err(dylint_unavailable_error(
+            "dylint-link",
+            pinned_version,
+            &error,
+        )),
     }
 }
 
@@ -2924,79 +2895,75 @@ fn validated_dylint_link_prebuilt(result: &crate::fetch::FetchResult) -> Result<
     crate::fetch::smoke_test_or_evict(&result.binary_path, "dylint-link", &target)
 }
 
-fn source_built_dylint_bin_dir(
-    tool: &str,
-    paths: &SoldrPaths,
-) -> Result<std::path::PathBuf, SoldrError> {
-    if let Some(directory) = cached_source_built_dylint_bin_dir(tool, paths)? {
-        eprintln!(
-            "soldr: using cached source-built {tool} at {}",
-            directory.display()
-        );
-        return Ok(directory);
-    }
-    let plan = crate::build_from_source_cmd::resolve_plan(tool, None, None, paths)?;
-    let binary = crate::build_from_source_cmd::execute_plan(&plan)?.binary;
-    binary
-        .parent()
-        .map(std::path::Path::to_path_buf)
-        .ok_or_else(|| {
-            SoldrError::Other(format!(
-                "failed to resolve bin dir for source-built {tool}: {}",
-                binary.display()
-            ))
-        })
+fn dylint_unavailable_error(component: &str, version: &str, error: &SoldrError) -> SoldrError {
+    let host = crate::core::TargetTriple::host()
+        .map(|target| target.triple().to_string())
+        .unwrap_or_else(|_| "unknown-host".to_string());
+    SoldrError::Other(format!(
+        "Dylint v{version} is not built for this machine (host: {host}; missing or unusable \
+         component: {component}). Soldr will not build Dylint from source. Cause: {error}. \
+         Corrective action: install compatible Dylint v{version} binaries for {host} on PATH \
+         (and dylint-driver under DYLINT_DRIVER_PATH), publish matching prebuilt release assets, \
+         or select a Dylint version that provides {host} prebuilts."
+    ))
 }
 
-fn cached_source_built_dylint_bin_dir(
-    tool: &str,
-    paths: &SoldrPaths,
-) -> Result<Option<std::path::PathBuf>, SoldrError> {
-    let plan = crate::build_from_source_cmd::resolve_plan(tool, None, None, paths)?;
-    if !crate::build_from_source_cmd::cached_build_is_valid(&plan)? {
-        if plan.final_binary.exists() || plan.final_binary.with_extension("sha256").exists() {
-            eprintln!(
-                "soldr: rejecting incomplete or mismatched source-built {tool} cache at {}",
-                plan.final_binary.display()
-            );
+fn validate_dylint_path_binary(
+    binary: &Path,
+    component: &str,
+    version: &str,
+) -> Result<(), SoldrError> {
+    let host = crate::core::TargetTriple::host()?;
+    let mut failures = Vec::new();
+    for argument in ["--version", "--help"] {
+        let mut command = std::process::Command::new(binary);
+        command
+            .arg(argument)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        if component == "dylint-link" {
+            command.env("RUSTUP_TOOLCHAIN", format!("nightly-{}", host.triple()));
         }
-        return Ok(None);
+        suppress_windows_console_window(&mut command);
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                failures.push(format!("{argument} could not start: {error}"));
+                continue;
+            }
+        };
+        match child.wait_timeout(Duration::from_secs(2)) {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(status)) => failures.push(format!("{argument} exited with {status}")),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                failures.push(format!("{argument} exceeded 2 seconds"));
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                failures.push(format!("{argument} wait failed: {error}"));
+            }
+        }
     }
-    plan.final_binary
-        .parent()
-        .map(std::path::Path::to_path_buf)
-        .map(Some)
-        .ok_or_else(|| {
-            SoldrError::Other(format!(
-                "failed to resolve bin dir for cached source-built {tool}: {}",
-                plan.final_binary.display()
-            ))
-        })
-}
-
-fn dylint_link_prebuilt_requires_source_fallback(error: &SoldrError) -> bool {
-    // The fetcher uses this typed variant when the release has no asset for
-    // the current host (Dylint 6.0.1 publishes Linux assets only). Network,
-    // checksum, and trust failures use other variants and must remain hard
-    // errors rather than being masked by a source build.
-    matches!(error, SoldrError::UnsupportedPlatform(_))
-        || matches!(
-            error,
-            SoldrError::Other(message) if message.starts_with("smoke test failed:")
-        )
-}
-
-fn requires_managed_dylint_source_build(sub: &str) -> bool {
-    sub == "dylint"
+    Err(dylint_unavailable_error(
+        component,
+        version,
+        &SoldrError::Other(format!(
+            "PATH binary at {} failed bounded validation: {}",
+            binary.display(),
+            failures.join("; ")
+        )),
+    ))
 }
 
 /// Pick the cargo-dylint binary to use given the outcome of the managed
-/// prebuilt fetch, falling back to the pinned source build when the
-/// prebuilt is unusable on this host.
+/// prebuilt fetch. Source compilation is intentionally never consulted.
 ///
-/// Split out of `ensure_known_subcommand_tool` so the fallback policy is
+/// Split out of `ensure_known_subcommand_tool` so the binary-only policy is
 /// unit-testable without a network round-trip: the fetch outcome is an
-/// already-resolved `Result` and the source build is a closure.
+/// already-resolved `Result` and the forbidden source build is a closure.
 ///
 /// The failure this exists for is a *smoke-test* failure, not a download
 /// failure. `fetch_tool_for_host_with_paths` runs `--version` on the
@@ -3008,7 +2975,7 @@ fn requires_managed_dylint_source_build(sub: &str) -> bool {
 fn resolve_dylint_binary<S>(
     crate_name: &str,
     fetched: Result<crate::fetch::FetchResult, SoldrError>,
-    source_build: S,
+    _source_build: S,
 ) -> Result<std::path::PathBuf, SoldrError>
 where
     S: FnOnce() -> Result<std::path::PathBuf, SoldrError>,
@@ -3023,11 +2990,10 @@ where
             Ok(result.binary_path)
         }
         Err(error) => {
-            eprintln!(
-                "soldr: prebuilt cargo-dylint is unusable on this host ({error}); \
-                 falling back to pinned source build..."
-            );
-            source_build()
+            let version = crate::fetch::known_tools::lookup_by_crate(crate_name)
+                .and_then(|spec| spec.pinned_version)
+                .unwrap_or("unknown");
+            Err(dylint_unavailable_error(crate_name, version, &error))
         }
     }
 }

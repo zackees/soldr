@@ -245,8 +245,8 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
     },
     // Phase 5 — web/wasm + cache. Top-level tools invoked directly.
     // `cargo-dylint` is the compiler-plugin runner used by `soldr lint`.
-    // Dylint 6.0.1's archive embeds its CI checkout path, so managed cargo
-    // front-door resolution source-builds this exact pin on every host.
+    // Dylint resolution is binary-only (soldr#2432): an absent or unusable
+    // archive is an actionable error, never an implicit source build.
     ToolSpec {
         crate_name: "cargo-dylint",
         cargo_subcommand: Some("dylint"),

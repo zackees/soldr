@@ -16,7 +16,7 @@ fn write_script(path: &Path, body: String) {
     fs::set_permissions(path, permissions).expect("chmod fake tool");
 }
 
-fn install_dylint_toolchain(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
+fn install_dylint_toolchain(root: &Path) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
     let tools = root.join("tools");
     fs::create_dir_all(&tools).expect("create fake tool dir");
     let log = root.join("tool.log");
@@ -47,6 +47,10 @@ exec "{cargo_dylint}" "$@"
         format!(
             r#"#!/bin/sh
 echo "cargo-dylint argv=$* wrapper=${{RUSTC_WRAPPER:-}}" >> "{log}"
+case "${{1:-}}" in
+  --version) printf 'cargo-dylint 6.0.1\n'; exit 0 ;;
+  --help) exit 0 ;;
+esac
 case "${{RUSTC_WRAPPER:-}}" in
   /*/soldr-dylint) ;;
   *) echo "RUSTC_WRAPPER is not an absolute soldr-dylint path: ${{RUSTC_WRAPPER:-}}" >&2; exit 91 ;;
@@ -107,12 +111,29 @@ echo "dylint compile diagnostic on stderr" >&2
         ),
     );
 
-    (cargo, rustc, zccache)
+    let driver_root = root.join("drivers");
+    let driver_channel = format!(
+        "nightly-2026-05-26-{}",
+        soldr_cli::pyo3_detect::host_triple()
+    );
+    let prebuilt_driver = driver_root.join(driver_channel).join("dylint-driver");
+    fs::create_dir_all(prebuilt_driver.parent().expect("driver parent"))
+        .expect("create prebuilt driver dir");
+    write_script(
+        &prebuilt_driver,
+        "#!/bin/sh\nprintf 'dylint-driver 6.0.1\\n'\n".to_string(),
+    );
+
+    (cargo, rustc, zccache, driver_root)
 }
 
 fn dylint_command(root: &Path) -> std::process::Command {
-    let (cargo, rustc, zccache) = install_dylint_toolchain(root);
-    let identity = "nightly-2026-05-26|1.89.0-nightly|0123456789abcdef0123456789abcdef01234567";
+    let (cargo, rustc, zccache, driver_root) = install_dylint_toolchain(root);
+    let channel = format!(
+        "nightly-2026-05-26-{}",
+        soldr_cli::pyo3_detect::host_triple()
+    );
+    let identity = format!("{channel}|1.89.0-nightly|0123456789abcdef0123456789abcdef01234567");
     let mut command = isolated_soldr_command();
     command
         .current_dir(root)
@@ -122,7 +143,8 @@ fn dylint_command(root: &Path) -> std::process::Command {
         .env("SOLDR_TEST_CARGO_BIN", cargo)
         .env("SOLDR_TEST_RUSTC_BIN", rustc)
         .env("SOLDR_TEST_ZCCACHE_BIN", zccache)
-        .env("SOLDR_DYLINT_CONFIGURED_TOOLCHAIN", "nightly-2026-05-26")
+        .env("DYLINT_DRIVER_PATH", driver_root)
+        .env("SOLDR_DYLINT_CONFIGURED_TOOLCHAIN", channel)
         .env("SOLDR_DYLINT_CONFIGURED_RUSTC_RELEASE", "1.89.0-nightly")
         .env(
             "SOLDR_DYLINT_CONFIGURED_RUSTC_COMMIT_HASH",
@@ -211,6 +233,37 @@ timed_test!(
                 && log.contains("dylint-driver argv=")
                 && log.contains("dylint_nested"),
             "top-level soldr dylint did not preserve the nested failure chain: {log}"
+        );
+    }
+);
+
+timed_test!(
+    missing_prebuilt_driver_fails_before_cargo_dylint_launch,
+    Duration::from_secs(60),
+    {
+        let root = unique_temp_dir("dylint-missing-prebuilt");
+        let mut command = dylint_command(&root);
+        fs::remove_dir_all(root.join("drivers")).expect("remove prebuilt driver fixture");
+
+        let output = command
+            .args(["dylint", "--all"])
+            .output()
+            .expect("run soldr dylint without a prebuilt driver");
+
+        assert_eq!(output.status.code(), Some(1));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("Dylint v6.0.1 is not built for this machine"),
+            "unexpected stderr: {stderr}"
+        );
+        assert!(
+            stderr.contains("Corrective action:"),
+            "unexpected stderr: {stderr}"
+        );
+        let log = fs::read_to_string(root.join("tool.log")).unwrap_or_default();
+        assert!(
+            !log.contains("cargo-dylint argv=dylint"),
+            "cargo-dylint lint execution must not launch when its driver is absent: {log}"
         );
     }
 );
