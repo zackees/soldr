@@ -42,11 +42,25 @@ pub(crate) enum BrokerSubcommand {
         #[arg(long, default_value = "soldr-daemon")]
         program: String,
     },
+    /// Query the running broker over its control socket and print an admin
+    /// status snapshot (owned routes, uptime, versions). Prints a clean
+    /// "not running" line and exits 0 when no broker is bound (soldr#2442
+    /// slice 2). Read-only: it never starts a broker.
+    Status {
+        /// Program namespace whose broker to query. Must match the value the
+        /// broker was started with (defaults to the stable singleton name).
+        #[arg(long, default_value = "soldr-daemon")]
+        program: String,
+        /// Emit the broker's JSON status payload instead of its text render.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 pub(crate) fn run_broker_command(command: BrokerSubcommand) -> Result<(), SoldrError> {
     match command {
         BrokerSubcommand::Serve { program } => run_broker_serve(&program),
+        BrokerSubcommand::Status { program, json } => run_broker_status(&program, json),
     }
 }
 
@@ -66,22 +80,14 @@ pub(crate) fn run_broker_command(command: BrokerSubcommand) -> Result<(), SoldrE
 /// design ruling (the persistent SESSION pipe already signals a cycle by EOF).
 fn run_broker_serve(program: &str) -> Result<(), SoldrError> {
     use fs2::FileExt;
-    use running_process::broker::lifecycle::names_v2::v2_program_pipe;
     use running_process::broker::server::session_token::SessionTokenAuthority;
-    use running_process::broker::server::singleton_bind::resolve_socket_path;
     use running_process::broker::server::{
         serve_launching_backends_with_launcher, BrokerLaunchServeConfig,
     };
 
-    const BROKER_PIPE_IDX: u32 = 0;
-
     // soldr#2388: container-safe identity — the broker is mandatory for every
     // compile, so it must not hard-fail where the OS ships no /etc/machine-id.
-    let sid = crate::broker_identity::resolve_user_sid();
-    let pipe_name = v2_program_pipe(program, &sid, BROKER_PIPE_IDX)
-        .map_err(|e| SoldrError::Other(format!("soldr broker: v2_program_pipe failed: {e}")))?;
-    let socket_path = resolve_socket_path(&pipe_name)
-        .map_err(|e| SoldrError::Other(format!("soldr broker: resolve_socket_path failed: {e}")))?;
+    let socket_path = broker_control_socket_path(program)?;
 
     let ownership_file = broker_ownership_file(program)?;
     if let Err(err) = ownership_file.try_lock_exclusive() {
@@ -159,6 +165,60 @@ fn run_broker_serve(program: &str) -> Result<(), SoldrError> {
                 "soldr broker: serve failed: {err}"
             )))
         }
+    }
+}
+
+/// Resolve the broker's control-socket path for `program` — the same
+/// derivation `run_broker_serve` binds and `run_broker_status` dials, so a
+/// status query always targets the exact socket the broker owns. Control is
+/// pipe index 0 (the SESSION companion relay is index 1).
+fn broker_control_socket_path(program: &str) -> Result<String, SoldrError> {
+    use running_process::broker::lifecycle::names_v2::v2_program_pipe;
+    use running_process::broker::server::singleton_bind::resolve_socket_path;
+
+    const BROKER_PIPE_IDX: u32 = 0;
+
+    let sid = crate::broker_identity::resolve_user_sid();
+    let pipe_name = v2_program_pipe(program, &sid, BROKER_PIPE_IDX)
+        .map_err(|e| SoldrError::Other(format!("soldr broker: v2_program_pipe failed: {e}")))?;
+    resolve_socket_path(&pipe_name)
+        .map_err(|e| SoldrError::Other(format!("soldr broker: resolve_socket_path failed: {e}")))
+}
+
+/// `soldr broker status`: send one admin STATUS request to the running broker
+/// and print its reply (soldr#2442 slice 2). A missing broker is not an error
+/// — it prints a "not running" line and exits 0, mirroring
+/// `soldr daemon stop`'s not-running convention — so scripts can probe without
+/// starting anything. Read-only: this never binds or launches a broker.
+fn run_broker_status(program: &str, json: bool) -> Result<(), SoldrError> {
+    use running_process::broker::client::{send_admin_request, BrokerClientError};
+    use running_process::broker::protocol::{AdminRequest, AdminVerb};
+
+    let socket_path = broker_control_socket_path(program)?;
+    let request = AdminRequest {
+        verb: AdminVerb::Status as i32,
+        json,
+        ..Default::default()
+    };
+    match send_admin_request(&socket_path, request) {
+        Ok(reply) => {
+            print!("{}", reply.body);
+            if !reply.body.ends_with('\n') {
+                println!();
+            }
+            Ok(())
+        }
+        // No broker bound at this socket: report cleanly and succeed, rather
+        // than surfacing a transport error, so `broker status` is a safe probe.
+        Err(BrokerClientError::BrokerConnect(_)) => {
+            println!(
+                "soldr broker: not running (no broker bound at {socket_path} for program={program})"
+            );
+            Ok(())
+        }
+        Err(err) => Err(SoldrError::Other(format!(
+            "soldr broker: status query failed: {err}"
+        ))),
     }
 }
 
