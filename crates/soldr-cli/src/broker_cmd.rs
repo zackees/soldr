@@ -58,11 +58,16 @@ pub(crate) fn run_broker_command(command: BrokerSubcommand) -> Result<(), SoldrE
 /// Uses `running_process::broker::server::serve_launching_backends`, the
 /// same production accept loop / launcher machinery
 /// `running-process-broker-v2` is built on, so this inherits its Hello
-/// validation, version-floor check, and (once soldr starts minting them --
-/// separate follow-up work) composite session-token enforcement for free.
+/// validation and version-floor check for free. soldr#2442 slice 1 also mints
+/// broker-internal generation identity here: the broker half at startup and
+/// each route's daemon half at launch (`SoldrBackendLauncher`), injected into
+/// the daemon's launch env. soldr's dumb-terminal client does not present
+/// these tokens, so nothing validates them on the hot path — see the #2442
+/// design ruling (the persistent SESSION pipe already signals a cycle by EOF).
 fn run_broker_serve(program: &str) -> Result<(), SoldrError> {
     use fs2::FileExt;
     use running_process::broker::lifecycle::names_v2::v2_program_pipe;
+    use running_process::broker::server::session_token::SessionTokenAuthority;
     use running_process::broker::server::singleton_bind::resolve_socket_path;
     use running_process::broker::server::{
         serve_launching_backends_with_launcher, BrokerLaunchServeConfig,
@@ -97,6 +102,22 @@ fn run_broker_serve(program: &str) -> Result<(), SoldrError> {
 
     println!("soldr broker: binding at {socket_path} (program={program})");
 
+    // soldr#2442 slice 1: one broker/daemon generation-token authority per
+    // broker process, minted at startup (broker half from OS randomness) and
+    // shared — memory-only, never persisted — with both the launcher (which
+    // mints each route's daemon half at launch) and the SESSION relay (which
+    // validates the composite token a client presents). Rotating the broker
+    // half invalidates every session across every daemon at once; invalidating
+    // one daemon's half signals only that daemon's sessions.
+    let session_tokens = match SessionTokenAuthority::new() {
+        Ok(authority) => std::sync::Arc::new(std::sync::Mutex::new(authority)),
+        Err(err) => {
+            return Err(SoldrError::Other(format!(
+                "soldr broker: could not mint broker session token: {err}"
+            )));
+        }
+    };
+
     // SESSION 0x5350 companion relay (soldr#2388 Step 7 / #2386 Option A, topology
     // (c)): a second socket serving the async full-proxy relay to the daemon's
     // deterministic SESSION endpoint, alongside the sync control serve below.
@@ -108,12 +129,19 @@ fn run_broker_serve(program: &str) -> Result<(), SoldrError> {
     // key on and the actual singleton bind, widening the two-broker race (this
     // regressed `two_brokers_against_one_program_never_coexist`). A failure to
     // resolve/spawn the relay is non-fatal — the control socket still serves.
+    //
+    // The SESSION relay does NOT validate a client-presented composite token:
+    // soldr's client is a dumb terminal holding one persistent connection per
+    // compile, so a broker/daemon cycle breaks that pipe directly (EOF) and
+    // needs no lazy token check. The generation-token machinery is kept as
+    // broker-internal identity only. See soldr#2442 and the design comment at
+    // https://github.com/zackees/soldr/issues/2442#issuecomment-5246922460.
     if let Err(err) = crate::session_transport::spawn_routed_session_relay(program) {
         eprintln!("soldr broker: could not start SESSION relay ({err})");
     }
 
     let config = BrokerLaunchServeConfig::unbounded(socket_path.clone());
-    let launcher = crate::broker_launcher::SoldrBackendLauncher::new();
+    let launcher = crate::broker_launcher::SoldrBackendLauncher::new(session_tokens);
     match serve_launching_backends_with_launcher(config, &launcher) {
         Ok(()) => Ok(()),
         Err(err) => {
