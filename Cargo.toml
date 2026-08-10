@@ -147,6 +147,8 @@ cap-fs-ext = { path = "_vender/cap-fs-ext" }
 cap-std = { path = "_vender/cap-std" }
 fs-set-times = { path = "_vender/fs-set-times" }
 io-extras = { path = "_vender/io-extras" }
+# soldr#2406: bump petgraph hashbrown 0.15→0.17 to converge.
+petgraph = { path = "_vender/petgraph" }
 
 [patch."https://github.com/zackees/running-process.git"]
 running-process = { path = "_vender/running-process/crates/running-process" }
