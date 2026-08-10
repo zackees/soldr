@@ -144,7 +144,6 @@ Ship `v0.5.0` only when all of these are true:
 
 Do not cut `1.0.0-rc` until:
 
-- `soldr cargo ...` enables managed zccache by default with `--no-cache` as the explicit opt-out
 - the cache-enabled wrapper path delegates through managed zccache instead of acting as pure rustc pass-through
 - the public cache commands describe and manage real behavior instead of placeholders
 

@@ -106,16 +106,24 @@ pub(crate) fn front_door_broker_spawn_eligible(raw_args: &[String]) -> bool {
 /// not used either: on a registry miss, Hello is launch-capable and a mere
 /// readiness check must never resurrect the daemon.
 ///
-/// Never fails the caller's command on any outcome; compilation retains its
-/// own bounded acquisition/fallback path.
+/// Never fails a non-compiling caller merely because eager broker startup did
+/// not finish. A later cacheable compile uses the mandatory broker route and
+/// reports an attributed hard failure if that route is still unavailable.
 pub(crate) fn maybe_spawn_broker_front_door(raw_args: &[String]) {
     if !front_door_broker_spawn_eligible(raw_args) {
         return;
     }
     let program = broker_program();
+    let Ok(probe_runtime) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return;
+    };
+    let deadline = Instant::now() + SPAWN_WAIT_TIMEOUT;
     ensure_broker_ready_until(
-        Instant::now() + SPAWN_WAIT_TIMEOUT,
-        || broker_control_is_ready(&program),
+        deadline,
+        || broker_control_is_ready_until(&probe_runtime, &program, deadline),
         || {
             let paths = crate::core::SoldrPaths::new().ok()?;
             let log_file = open_append(&paths.root.join("broker-spawn.log"))?;
@@ -135,7 +143,7 @@ pub(crate) fn maybe_spawn_broker_front_door(raw_args: &[String]) {
     );
 }
 
-fn open_append(path: &std::path::Path) -> Option<std::fs::File> {
+pub(crate) fn open_append(path: &std::path::Path) -> Option<std::fs::File> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok()?;
     }
@@ -146,7 +154,7 @@ fn open_append(path: &std::path::Path) -> Option<std::fs::File> {
         .ok()
 }
 
-fn daemon_stdio(log: &std::fs::File) -> DaemonStdio<'_> {
+pub(crate) fn daemon_stdio(log: &std::fs::File) -> DaemonStdio<'_> {
     #[cfg(unix)]
     {
         use std::os::fd::AsFd;
@@ -170,8 +178,11 @@ fn daemon_stdio(log: &std::fs::File) -> DaemonStdio<'_> {
 /// selected and the broker therefore has no request that could launch a
 /// backend. This also avoids the admin client's much longer request timeout in
 /// a short startup polling loop.
-fn broker_control_is_ready(program: &str) -> bool {
-    use running_process::broker::client::connect_local_socket;
+fn broker_control_is_ready_until(
+    runtime: &tokio::runtime::Runtime,
+    program: &str,
+    deadline: Instant,
+) -> bool {
     use running_process::broker::lifecycle::names_v2::v2_program_pipe;
     use running_process::broker::server::singleton_bind::resolve_socket_path;
 
@@ -182,13 +193,26 @@ fn broker_control_is_ready(program: &str) -> bool {
     let Ok(endpoint) = resolve_socket_path(&pipe_name) else {
         return false;
     };
-    if connect_local_socket(&endpoint).is_err() {
-        return false;
-    }
     let Ok(session_endpoint) = crate::session_transport::session_socket_path(program) else {
         return false;
     };
-    connect_local_socket(&session_endpoint).is_ok()
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return false;
+    }
+    runtime.block_on(async {
+        use interprocess::local_socket::tokio::prelude::*;
+        use interprocess::local_socket::tokio::Stream;
+
+        let probe = async {
+            let control_name = crate::session_transport::local_session_name(&endpoint)?;
+            let _control = Stream::connect(control_name).await?;
+            let session_name = crate::session_transport::local_session_name(&session_endpoint)?;
+            let _session = Stream::connect(session_name).await?;
+            Ok::<(), std::io::Error>(())
+        };
+        matches!(tokio::time::timeout(remaining, probe).await, Ok(Ok(())))
+    })
 }
 
 /// Probe before spawning, spawn at most once, then poll to the deadline. The

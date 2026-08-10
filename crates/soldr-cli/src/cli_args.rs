@@ -676,13 +676,11 @@ pub(crate) enum Commands {
 
 #[derive(clap::Subcommand)]
 pub(crate) enum DaemonSubcommand {
-    /// Start the soldr-daemon. With `--foreground`, runs in the current
-    /// process (blocks until the daemon exits); without it, spawns the
-    /// daemon detached and returns immediately.
+    /// Ask the singleton broker to start this Soldr root's daemon route.
     Start {
         #[arg(long)]
         foreground: bool,
-        /// Seconds of inactivity after which the daemon auto-exits.
+        /// Incompatible legacy option; broker-owned daemons own their lifetime.
         #[arg(long, value_name = "SECS", default_value_t = 0)]
         idle_timeout: u64,
     },

@@ -37,6 +37,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
+use tokio::sync::watch;
 
 use running_process::broker::backend_handle::DaemonProcess;
 use running_process::broker::backend_sdk::{BackendEndpointMux, LegacyClassification, MuxPoll};
@@ -50,15 +51,60 @@ use crate::zccache_embedded::SoldrZccacheService;
 /// the mux (and therefore the accept-loop `Arc<..>`) has a nameable type.
 pub type SessionMux = BackendEndpointMux<fn(&[u8]) -> LegacyClassification>;
 
+type CompileServiceResult = Result<Arc<SoldrZccacheService>, Arc<str>>;
+
+/// Awaitable publication point for the daemon's embedded compile service.
+///
+/// The SESSION listener is intentionally started before zccache and the
+/// daemon database finish initializing. Backend-handle probes therefore stay
+/// responsive during startup, while a real compile waits here instead of
+/// making the broker mistake slow initialization for a dead daemon.
+#[derive(Clone)]
+pub(crate) struct CompileServiceReadiness {
+    receiver: watch::Receiver<Option<CompileServiceResult>>,
+}
+
+pub(crate) struct CompileServicePublisher {
+    sender: watch::Sender<Option<CompileServiceResult>>,
+}
+
+impl CompileServiceReadiness {
+    pub(crate) fn pending() -> (Self, CompileServicePublisher) {
+        let (sender, receiver) = watch::channel(None);
+        (Self { receiver }, CompileServicePublisher { sender })
+    }
+
+    pub(crate) fn ready(service: Arc<SoldrZccacheService>) -> Self {
+        let (sender, receiver) = watch::channel(Some(Ok(service)));
+        drop(sender);
+        Self { receiver }
+    }
+
+    async fn wait(&self) -> io::Result<Arc<SoldrZccacheService>> {
+        let mut receiver = self.receiver.clone();
+        loop {
+            if let Some(result) = receiver.borrow().clone() {
+                return result.map_err(|message| io::Error::other(message.to_string()));
+            }
+            receiver.changed().await.map_err(|_| {
+                io::Error::other("embedded compile service initialization ended unexpectedly")
+            })?;
+        }
+    }
+}
+
+impl CompileServicePublisher {
+    pub(crate) fn publish(&self, result: CompileServiceResult) {
+        self.sender.send_replace(Some(result));
+    }
+}
+
 /// Names an explicit soldr-owned SESSION endpoint socket path.
 ///
-/// Phase 2 (Step 8) will instead adopt the **broker-passed** listener via
-/// `RUNNING_PROCESS_BROKER_LISTENER_FD` (`broker_owned_bind::recover_from_env`),
-/// which is where Option A's "broker binds, daemon inherits" actually lands.
-/// Until the broker is the daemon's spawner, this opt-in lets the endpoint be
-/// bound and exercised while keeping production unchanged: unset → no SESSION
-/// endpoint is served (see [`resolve_session_listener`]).
-pub(crate) const SOLDR_SESSION_ENDPOINT_PATH_ENV: &str = "SOLDR_SESSION_ENDPOINT_PATH";
+/// The broker launcher assigns this route-local endpoint when it creates the
+/// daemon. It is mandatory for broker-owned production startup; tests may set
+/// it explicitly to exercise the endpoint without a broker process.
+pub const SOLDR_SESSION_ENDPOINT_PATH_ENV: &str = "SOLDR_SESSION_ENDPOINT_PATH";
 
 /// The mux for the SESSION endpoint: serves the `0x5350` lane and declares
 /// **no** legacy wire.
@@ -99,7 +145,7 @@ fn classify_never_legacy(_buf: &[u8]) -> LegacyClassification {
 /// `Exit` (no silent close).
 pub(crate) async fn serve_session_connection<IO, F>(
     mut io: IO,
-    service: &SoldrZccacheService,
+    service: &CompileServiceReadiness,
     paths: &SoldrPaths,
     mux: &BackendEndpointMux<F>,
 ) -> io::Result<()>
@@ -132,7 +178,8 @@ where
                 // SessionStart frame + any trailing bytes) so serve_session_compile
                 // can re-read the opening SessionStart via session_codec.
                 let replay = ReplayReader::new(buf, io);
-                return serve_session_compile(replay, service, paths).await;
+                let service = service.wait().await?;
+                return serve_session_compile(replay, &service, paths).await;
             }
             MuxPoll::Legacy => {
                 return Err(io::Error::other(
@@ -223,6 +270,16 @@ pub fn daemon_session_endpoint_path(paths: &SoldrPaths) -> io::Result<String> {
     }
 }
 
+pub fn resolved_session_endpoint_path(paths: &SoldrPaths) -> io::Result<String> {
+    if let Some(path) = std::env::var_os(SOLDR_SESSION_ENDPOINT_PATH_ENV) {
+        let path = path.to_string_lossy();
+        if !path.is_empty() {
+            return Ok(path.into_owned());
+        }
+    }
+    daemon_session_endpoint_path(paths)
+}
+
 /// Resolve the SESSION endpoint listener the daemon serves.
 ///
 /// Honors [`SOLDR_SESSION_ENDPOINT_PATH_ENV`] first (tests / diagnostics), then
@@ -235,13 +292,7 @@ pub fn daemon_session_endpoint_path(paths: &SoldrPaths) -> io::Result<String> {
 ///
 /// Fails only if the resolved path cannot be bound (e.g. already in use).
 pub(crate) fn resolve_session_listener(paths: &SoldrPaths) -> io::Result<Option<SessionListener>> {
-    if let Some(path) = std::env::var_os(SOLDR_SESSION_ENDPOINT_PATH_ENV) {
-        let path = path.to_string_lossy();
-        if !path.is_empty() {
-            return bind_session_listener(&path).map(Some);
-        }
-    }
-    let path = daemon_session_endpoint_path(paths)?;
+    let path = resolved_session_endpoint_path(paths)?;
     bind_session_listener(&path).map(Some)
 }
 
@@ -265,7 +316,27 @@ pub fn bind_session_listener(socket_path: &str) -> io::Result<SessionListener> {
     }
 
     let name = local_session_name(socket_path)?;
-    ListenerOptions::new().name(name).create_tokio()
+    let first = ListenerOptions::new().name(name).create_tokio();
+    #[cfg(unix)]
+    {
+        match first {
+            Ok(listener) => Ok(listener),
+            Err(err)
+                if running_process::broker::server::singleton_bind::is_already_bound_error(&err)
+                    && running_process::broker::server::singleton_bind::unix_socket_path_is_stale(
+                        socket_path,
+                    ) =>
+            {
+                let _ = std::fs::remove_file(socket_path);
+                let retry_name = local_session_name(socket_path)?;
+                ListenerOptions::new().name(retry_name).create_tokio()
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    #[cfg(not(unix))]
+    first
 }
 
 fn local_session_name(socket_path: &str) -> io::Result<interprocess::local_socket::Name<'_>> {
@@ -298,11 +369,26 @@ pub async fn serve_session_endpoint(
     paths: SoldrPaths,
     mux: Arc<SessionMux>,
 ) -> io::Result<()> {
+    serve_session_endpoint_with_readiness(
+        listener,
+        CompileServiceReadiness::ready(service),
+        paths,
+        mux,
+    )
+    .await
+}
+
+pub(crate) async fn serve_session_endpoint_with_readiness(
+    listener: SessionListener,
+    service: CompileServiceReadiness,
+    paths: SoldrPaths,
+    mux: Arc<SessionMux>,
+) -> io::Result<()> {
     use interprocess::local_socket::tokio::prelude::*;
 
     loop {
         let stream = listener.accept().await?;
-        let service = Arc::clone(&service);
+        let service = service.clone();
         let paths = paths.clone();
         let mux = Arc::clone(&mux);
         tokio::spawn(async move {

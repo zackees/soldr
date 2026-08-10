@@ -1,58 +1,65 @@
-//! Source-policy guard for the Windows daemon-console regression (soldr#2039).
+//! Source-policy guard for broker-only daemon creation (soldr#2427).
 //!
-//! Both managed daemon entrypoints must route their pre-server relocation
-//! through `reexec_from_runtime_root_for_daemon_entry`, which honors the
-//! running-process daemon marker (detach with no console when the process was
-//! launched through the managed daemon boundary; keep the terminal only for a
-//! genuine user-invoked foreground run). The popup-producing revision hardcoded
-//! `reexec_from_runtime_root(false)` in `soldr_main`, sending a managed
-//! `via_self` daemon (`soldr daemon start --foreground`, spawned detached) down
-//! the `show_console = true` foreground path and popping a visible
-//! `soldr-daemon` console on Windows.
-//!
-//! This test fails against that revision and passes with the fix, without
-//! spawning any process or mutating global environment (cf. soldr#1663). Source
-//! files are resolved through the runtime workspace root (`common::crate_root`),
-//! not the compile-time crate-manifest env, so the test survives archival to a
-//! target-run host (cf. `test_archived_source_tests_use_only_runtime_workspace_
-//! resolution`).
+//! The requesting Soldr process registers the exact source image and cache
+//! root in a service definition. Only `broker_launcher` may place and spawn the
+//! long-lived daemon. CLI, wrapper, and daemon entrypoints must never recreate
+//! the former client-owned spawn or direct-rustc fallback paths.
 
 mod common;
 
 fn read_crate_src(rel: &str) -> String {
     let path = common::crate_root().join(rel);
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()))
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()))
 }
 
-soldr_cli::timed_test!(daemon_entrypoints_use_marker_aware_relocation, {
-    let soldr_main = read_crate_src("src/soldr_main.rs");
-    let daemon_entry = read_crate_src("src/daemon_entry.rs");
+soldr_cli::timed_test!(only_broker_launcher_places_and_spawns_daemon, {
+    let launcher = read_crate_src("src/broker_launcher.rs");
+    assert!(
+        launcher.contains("ensure_daemon_relocated"),
+        "broker_launcher must own daemon image placement"
+    );
+    assert!(
+        launcher.contains("spawn_daemon_with_stdio_and_env_policy"),
+        "broker_launcher must own detached daemon creation"
+    );
 
-    // The raw-literal bypass that popped a console (soldr#2039) must not return
-    // to either managed daemon entrypoint. Only the shared helper is allowed to
-    // consult the marker and forward the resulting bool to
-    // `reexec_from_runtime_root`.
-    for (name, src) in [
-        ("soldr_main.rs", &soldr_main),
-        ("daemon_entry.rs", &daemon_entry),
+    for rel in [
+        "src/compile_dispatch.rs",
+        "src/daemon_entry.rs",
+        "src/multicall.rs",
+        "src/soldr_main.rs",
+        "src/wrapper.rs",
     ] {
+        let source = read_crate_src(rel);
         assert!(
-            !src.contains("reexec_from_runtime_root(false)")
-                && !src.contains("reexec_from_runtime_root(true)"),
-            "{name} calls reexec_from_runtime_root with a hardcoded literal; managed daemon \
-             entrypoints must use reexec_from_runtime_root_for_daemon_entry so the running-process \
-             daemon marker decides console/detach (soldr#2039)"
+            !source.contains("try_spawn_detached"),
+            "{rel} must not create soldr-daemon; route through the broker"
+        );
+        assert!(
+            !source.contains("reexec_from_runtime_root"),
+            "{rel} must not relocate/re-exec soldr-daemon; the broker places it"
         );
     }
 
-    // Both entrypoints must route through the marker-aware helper.
-    assert!(
-        soldr_main.contains("reexec_from_runtime_root_for_daemon_entry"),
-        "soldr_main.rs must relocate the foreground daemon start through \
-         reexec_from_runtime_root_for_daemon_entry (soldr#2039)"
-    );
-    assert!(
-        daemon_entry.contains("reexec_from_runtime_root_for_daemon_entry"),
-        "daemon_entry.rs must relocate through reexec_from_runtime_root_for_daemon_entry (soldr#2039)"
-    );
+    for rel in ["src/multicall.rs", "src/wrapper.rs"] {
+        let source = read_crate_src(rel);
+        assert!(
+            !source.contains("should_fall_back_to_direct_rustc"),
+            "{rel} must hard-fail broker/daemon infrastructure errors"
+        );
+    }
+
+    let compile_dispatch = read_crate_src("src/compile_dispatch.rs");
+    for forbidden in [
+        "client::compile_streaming",
+        "dispatch_compile_with_sock",
+        "resolved_spawn_retry_budget",
+        "append_compile_daemon_fallback_event",
+    ] {
+        assert!(
+            !compile_dispatch.contains(forbidden),
+            "compile_dispatch must have no direct daemon acquisition API: {forbidden}"
+        );
+    }
 });

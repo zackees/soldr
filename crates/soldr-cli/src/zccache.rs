@@ -285,6 +285,9 @@ pub(crate) struct ManagedZccacheWrapperPlan {
     /// own executable is named `rustc`/`clang`; launching that image directly
     /// would make the PID safety gate correctly reject the daemon.
     pub(crate) daemon_path: std::path::PathBuf,
+    /// Route registered by the front door for the broker. Compiler shims carry
+    /// only this opaque identity; they never place or spawn the daemon.
+    pub(crate) broker_service_name: String,
 }
 
 #[derive(Debug, Clone)]
@@ -323,9 +326,10 @@ impl RustcWrapperPlan {
                 // path-remap vars.
                 cargo.env("RUSTC_WRAPPER", &plan.wrapper_path);
                 cargo.env(
-                    crate::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR,
-                    &plan.daemon_path,
+                    crate::daemon::backend_handle_adoption::SOLDR_BROKER_SERVICE_ENV_VAR,
+                    &plan.broker_service_name,
                 );
+                cargo.env_remove(crate::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR);
                 remove_managed_zccache_env(cargo);
                 cargo.env_remove(SOLDR_ZCCACHE_SESSION_DIR_ENV_VAR);
                 cargo.env_remove(ZCCACHE_DAEMON_NAMESPACE_ENV_VAR);
@@ -439,11 +443,19 @@ async fn prepare_zccache_build(
 
     let wrapper_path = crate::binaries::rustc_wrapper_shim_binary(paths)?;
     let daemon_path = crate::binaries::soldr_daemon_binary()?;
+    let installed = crate::daemon::service_definition::install_service_definition(&daemon_path)
+        .map_err(|err| {
+            SoldrError::Other(format!(
+                "failed to register soldr-daemon image {} with the broker: {err}",
+                daemon_path.display()
+            ))
+        })?;
     Ok(ManagedZccacheWrapperPlan {
         session,
         child_env,
         wrapper_path,
         daemon_path,
+        broker_service_name: installed.definition.service_name,
     })
 }
 

@@ -143,7 +143,7 @@ Anything not registered falls through the generic External subcommand, which res
 - **Soldr daemon auto-starts**: The first cacheable wrapper call starts
   `soldr-daemon`, which owns the embedded zccache service. No standalone
   zccache process is started and no manual `soldr start` is required.
-- **Recovery from a wedged cache** (#1364): if a build hangs on the compile cache, run `soldr --no-cache cargo ...` (note: `--no-cache` goes *before* `cargo`) or set `ZCCACHE_DISABLE=1` — both bypass the wrapper + daemon and run rustc directly. `SOLDR_COMPILE_REPLY_TIMEOUT_SECS=<n>` shortens the 30-min compile-reply backstop to fail fast. **For the full failure-mode → signal → remedy runbook (all daemon timeouts, `soldr doctor`/`soldr status` diagnostics, the degrade policy), see [docs/DAEMON_TIMEOUTS.md](docs/DAEMON_TIMEOUTS.md).**
+- **Recovery from a wedged cache**: `SOLDR_COMPILE_REPLY_TIMEOUT_SECS=<n>` shortens the 30-min compile-reply backstop so the build fails quickly. Inspect `soldr doctor`, `soldr status`, and `soldr logs paths`; restart the broker-owned route with `soldr daemon stop` followed by `soldr daemon start`. Cacheable compiler work never silently bypasses the broker/daemon. See [docs/DAEMON_TIMEOUTS.md](docs/DAEMON_TIMEOUTS.md).
 - **Embedded cache location is Soldr-owned**: By default the service receives
   `~/.soldr/cache/zccache/daemon-state/embedded-v1` as its top-level cache
   root and zccache versions persistent state beneath `v<VERSION>/`. Per-build
@@ -278,7 +278,7 @@ pins are unaffected.
 - `docs/CROSS_COMPILE.md` — blessed cross-compile recipes, including managed Windows GNU and MSVC `cargo-xwin`
 - `docs/DEBUG_SIDECARS.md` — debug-symbol sidecar policy for release archives (`.pdb` / `.dSYM` / `.dwp`, `manifest.json` `debug_info` contract)
 - `docs/TRUST_BOUNDARIES.md` — Runtime fetch policy, what integrity is enforced, what remains follow-up
-- `docs/DAEMON_TIMEOUTS.md` — Daemon timeout & stall runbook: failure mode → signal → remedy, the timeout surface, `soldr doctor`/`soldr status` diagnostics, and the degrade policy (soldr#1838)
+- `docs/DAEMON_TIMEOUTS.md` — Daemon timeout & stall runbook: failure mode → signal → bounded broker-owned recovery, plus `soldr doctor`/`soldr status` diagnostics
 - `README.md` — User-facing motivation and prior art comparison
 
 ## GitHub Actions workflow conventions
@@ -332,7 +332,7 @@ platform behavioral tests reach the target-run lanes.
 - **Per-test watchdog (`timed_test!`)**: Tests must be declared with the `timed_test!` macro re-exported by `soldr_cli` and implemented in `crates/soldr-core/src/test_util.rs`. The default deadline is **2 minutes**; pass a `Duration` as the second argument to override (e.g. `timed_test!(name, Duration::from_secs(300), { ... })`). If the body does not return in time the watchdog prints `TEST HUNG (>Ns): <name>` plus a backtrace to stderr and aborts the test binary, guaranteeing a single hung test cannot block the whole suite. The self-test feature `test-watchdog-self-test` plus the `#[ignore]`d `deliberate_hang` cases verify the abort path end-to-end.
 - **Triaging a red lane that shows `0xC0000409`**: On Windows, `abort()` raises `__fastfail(FAST_FAIL_FATAL_APP_EXIT)` and Windows reports it as `0xC0000409 STATUS_STACK_BUFFER_OVERRUN`. **It is a watchdog timeout, not memory corruption** (soldr#1999). To attribute it:
   1. Find the `ABORT [ Ns] (n/total) <crate>::<binary> <test_name>` line in the log — nextest names the test that blew its budget. The `SLOW [>120.000s]` line just above it is the same test.
-  2. Decide whether that named test can even reach your change. A test that runs `soldr --no-cache ...`, for example, bypasses the wrapper **and** the daemon, so it cannot be affected by daemon/IPC changes.
+  2. Decide whether that named test can even reach your change. A tool-fetch-only or parser-only test, for example, cannot be affected by daemon/IPC changes.
   3. These Windows `target-run` lanes abort on `main` too, under runner contention — **rerun the failed job before blaming the PR** (`gh run rerun <run-id> --failed`), and diff a red lane against `main` *by test name*, not by lane name.
   4. Only raise a test's budget if the test is *legitimately* long. A stub-driven test that suddenly takes 120 s is an environmental stall; raising the budget masks the hang the watchdog exists to surface.
 - **Lint enforcement (`crates/soldr-cli/tests/timed_test_lint.rs`)**: A regression-guard integration test walks every workspace crate's Rust sources and integration tests and fails the build if any *new* file declares a bare `#[test]` instead of using `timed_test!`. Pre-existing files are grandfathered via `LEGACY_ALLOWLIST` in the lint file; the list shrinks as files are migrated. Opt-outs: pair the test with `#[ignore]` (an ignored test cannot hang the suite) or annotate the line with `// allow-bare-test: <reason>` for the rare cases that genuinely cannot use the macro.

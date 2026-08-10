@@ -1419,10 +1419,8 @@ fn report_and_exit(error: SoldrError) -> i32 {
 
 async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError> {
     use crate::daemon::client;
-    use crate::daemon::lifecycle::{is_live, try_spawn_detached_with_idle_timeout};
-    use crate::daemon::server::{run_async, server_sock_path, ServerOptions};
+    use crate::daemon::server::server_sock_path;
     use core::SoldrPaths;
-    use std::time::Duration;
 
     let paths = SoldrPaths::new()?;
     let sock = server_sock_path(&paths);
@@ -1433,34 +1431,38 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
             idle_timeout,
         } => {
             crate::daemon::tombstone::clear(&paths); // explicit start lifts the stop tombstone (soldr#2388)
-            if foreground {
-                // soldr#2016/#2039: re-exec + marker-aware detached start (no
-                // `soldr-daemon` console; see relocate.rs).
-                crate::daemon::lifecycle::reexec_from_runtime_root_for_daemon_entry();
-                let idle = if idle_timeout == 0 {
-                    ServerOptions::default().idle_timeout
-                } else {
-                    Duration::from_secs(idle_timeout)
-                };
-                let opts = ServerOptions { idle_timeout: idle };
-                // Inside main()'s Tokio runtime already; run_async avoids the
-                // nested-runtime panic (soldr#985).
-                run_async(opts)
-                    .await
-                    .map_err(|e| SoldrError::Other(format!("soldr-daemon failed: {e:?}")))?;
-                Ok(())
-            } else {
-                if is_live(&paths).is_some() {
-                    println!("soldr-daemon already running");
-                    return Ok(());
-                }
-                let _ = crate::binaries::soldr_daemon_binary();
-                try_spawn_detached_with_idle_timeout(idle_timeout).map_err(|e| {
-                    SoldrError::Other(format!("failed to spawn soldr-daemon: {e:?}"))
-                })?;
-                println!("soldr-daemon: spawn requested");
-                Ok(())
+            if foreground || idle_timeout != 0 {
+                return Err(SoldrError::Other(
+                    "`soldr daemon start --foreground/--idle-timeout` is incompatible with the broker-owned daemon model; run `soldr daemon start` and let the singleton broker own placement and lifetime"
+                        .to_string(),
+                ));
             }
+            let daemon = crate::binaries::soldr_daemon_binary()?;
+            let installed = crate::daemon::service_definition::install_service_definition(&daemon)
+                .map_err(|err| {
+                    SoldrError::Other(format!(
+                        "failed to register soldr-daemon image {} with the broker: {err}",
+                        daemon.display()
+                    ))
+                })?;
+            std::env::set_var(
+                crate::daemon::backend_handle_adoption::SOLDR_BROKER_SERVICE_ENV_VAR,
+                &installed.definition.service_name,
+            );
+            running_process::broker::client_v2::connect_service_with_deadline(
+                &crate::daemon::backend_handle_adoption::broker_program(),
+                &installed.definition.service_name,
+                crate::daemon::backend_handle_adoption::SOLDR_DAEMON_SERVICE_VERSION,
+                std::time::Duration::from_secs(30),
+            )
+            .map_err(|err| {
+                SoldrError::Other(format!(
+                    "broker could not start soldr-daemon route {}: {err}",
+                    installed.definition.service_name
+                ))
+            })?;
+            println!("soldr-daemon: broker route ready");
+            Ok(())
         }
         DaemonSubcommand::Stop => {
             crate::daemon::tombstone::plant(&paths, crate::daemon::tombstone::TOMBSTONE_DURATION);

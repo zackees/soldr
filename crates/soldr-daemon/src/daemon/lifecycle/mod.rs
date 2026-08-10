@@ -7,13 +7,8 @@
 //! authoritative if the PID is alive AND its exe stem is
 //! `soldr-daemon`. Defends against recycled PIDs the way zccache does.
 
-mod relocate;
 mod spawn;
 mod spawn_env;
-pub use relocate::{
-    current_process_is_declared_daemon, reexec_from_runtime_root,
-    reexec_from_runtime_root_for_daemon_entry,
-};
 pub(crate) use spawn::*;
 pub(crate) use spawn_env::*;
 
@@ -102,13 +97,10 @@ pub fn daemon_image_present() -> Option<bool> {
 
 /// Tracks sustained absence of the daemon's own image (soldr#1987).
 ///
-/// A daemon spawned from a temp directory that is later deleted -- a `uv` or
-/// `pip` build does exactly this -- keeps running and keeps the root-ownership
-/// lock, so every later spawn fails `AddrInUse` and every compile on the
-/// machine degrades to direct rustc. On the reporting host that lasted 28
-/// hours. The orphan cannot be reached by `soldr daemon stop`, which probes
-/// the pipe while the orphan holds the filesystem lock, so nothing external
-/// can clear it.
+/// A daemon spawned from a temp directory that is later deleted can keep the
+/// root-ownership lock indefinitely. The broker-owned placement model prevents
+/// new daemons from using disposable images; this detector remains to retire
+/// orphans created by older Soldr versions.
 ///
 /// A daemon whose own executable is gone can never again be a legitimate
 /// owner: it cannot be upgraded, restarted in place, or verified by the
@@ -146,11 +138,10 @@ impl MissingImageDetector {
 
 /// Explain who owns the soldr root when acquisition fails.
 ///
-/// soldr#1987: a daemon spawned from a temp directory that is later deleted --
-/// a `uv`/`pip` build does exactly this -- keeps holding the root lock. Every
-/// later spawn fails `AddrInUse`, so every compile silently degrades to direct
-/// rustc. On the reporting host that ran for 28 hours and 246/246 compiles,
-/// visible only as `compiler cache unavailable` with nothing naming a cause.
+/// soldr#1987: older versions could spawn a daemon from a disposable build
+/// directory and leave it holding the root after its image vanished. Mandatory
+/// broker routing now reports that ownership conflict as a hard failure, while
+/// the detector below supplies the recorded PID and image-presence evidence.
 ///
 /// The orphan is also unreachable by `soldr daemon stop`, which probes the
 /// pipe while the orphan holds only the filesystem lock. So the message has to
@@ -217,33 +208,11 @@ pub fn read_pid_file(paths: &SoldrPaths) -> Option<(u32, PathBuf)> {
 /// running exe stem looks like a soldr-daemon. Returns the PID on
 /// success, None on any mismatch / missing file.
 pub fn is_live(paths: &SoldrPaths) -> Option<u32> {
-    is_live_with_running_process_disabled(
-        paths,
-        crate::daemon::backend_handle_adoption::running_process_disabled(),
-    )
+    direct_backend_handle_probe(paths)
 }
 
-pub(crate) fn is_live_with_running_process_disabled(
-    paths: &SoldrPaths,
-    running_process_disabled: bool,
-) -> Option<u32> {
-    if running_process_disabled {
-        return direct_pid_file_live(paths);
-    }
-
-    // Full v1 broker adoption (zackees/running-process#434): try broker
-    // discovery first. The broker negotiates a verified backend endpoint via a
-    // Hello handshake. When the broker is unreachable, refuses, or is disabled,
-    // `broker_discovery::soldr_daemon_pid_via_broker` returns None and we fall
-    // through to the existing direct `BackendHandle` probe — keeping the direct
-    // soldr-daemon path active during the rollout window.
-    crate::daemon::broker_discovery::soldr_daemon_pid_via_broker(paths)
-        .or_else(|| direct_backend_handle_probe(paths))
-}
-
-/// The pre-#434 direct discovery path: probe the local PID file's recorded
-/// daemon with the `running-process` `BackendHandle` nonce challenge. Kept as
-/// the fall-through when broker discovery does not resolve a backend.
+/// Probe the route-local PID file's recorded daemon with the
+/// `running-process` `BackendHandle` nonce challenge.
 pub(crate) fn direct_backend_handle_probe(paths: &SoldrPaths) -> Option<u32> {
     crate::daemon::backend_handle_adoption::probe_soldr_daemon(paths).map(|handle| handle.pid())
 }
@@ -526,10 +495,9 @@ pub fn displace_stale_daemon(paths: &SoldrPaths, source: Option<LifecycleSource>
 
 /// One-shot preflight for the managed-build front door (soldr#1495).
 /// Mode 1 — a same-`PROTOCOL_VERSION` older release serving our compiles
-/// — never fails the hot path, so `try_spawn_detached`'s displacement is
-/// never reached during a build. Run this once at `soldr cargo` startup:
-/// if a stale-version daemon holds the endpoint, displace it here so the
-/// build's first wrapper call spawns a current-version daemon. A no-op
+/// — never fails the hot path. Run this once at `soldr cargo` startup: if a
+/// stale-version daemon holds the endpoint, displace it here so the broker can
+/// launch the current route image on the first compile request. A no-op
 /// when displacement is disabled or the running daemon is already current.
 pub fn preflight_displace_stale_daemon(paths: &SoldrPaths) {
     if !displacement_enabled() {
@@ -885,413 +853,6 @@ pub fn append_lifecycle_event_with(paths: &SoldrPaths, event: &str, details: Lif
     }
     if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&path) {
         let _ = writeln!(f, "{line}");
-    }
-}
-
-/// Attempt to spawn a detached `soldr-daemon`. Resolves the daemon
-/// binary as a sibling of the current `soldr` executable, **relocates
-/// it into `~/.soldr/runtime/soldr-daemon/<hash>/`** so the long-lived
-/// daemon doesn't hold a file lock on the original (worktree target/,
-/// site-packages, package upgrade, etc.) — and only then spawns.
-/// Mirrors the pattern `self_relocate.rs` already uses for `soldr`
-/// itself, sharing the same hash / lock / periodic-GC machinery via a
-/// sibling `runtime/soldr-daemon/` sub-tree.
-///
-/// Spawn-herd safety (issue #474): when a `soldr cargo build` fans out
-/// hundreds of parallel rustc invocations, EVERY wrapper sees the
-/// daemon missing simultaneously and races to spawn it. To keep that
-/// from forking N children, we take an OS-level non-blocking exclusive
-/// lock on `<cache>/soldr-daemon/.spawn.lock` before relocating /
-/// spawning. Lock losers re-check liveness (the lock holder is racing
-/// `write_pid_file`) and short-circuit with `Ok(())` once the daemon
-/// shows up. If the lock is unobtainable AND no daemon ever appears
-/// within a short window, the loser still returns `Ok(())` — the next
-/// wrapper invocation will reprobe and try again.
-///
-/// Best-effort: returns Ok(()) on spawn success, Err otherwise. The
-/// spawn owner keeps the herd lock briefly after spawn while waiting
-/// for the daemon endpoint to become live; if readiness still races or
-/// times out, callers must keep using their normal retry budget.
-#[derive(Clone, Debug)]
-pub struct PreparedDaemonSpawn {
-    executable: PathBuf,
-    via_self: bool,
-    idle_timeout_secs: Option<u64>,
-}
-
-pub fn try_spawn_detached() -> Result<(), LifecycleError> {
-    try_spawn_detached_until_with_idle_timeout(None, None).map(|_| ())
-}
-
-/// Spawn the managed daemon with an explicit inactivity timeout.
-///
-/// A value of zero preserves the normal long-lived daemon behavior.
-pub fn try_spawn_detached_with_idle_timeout(idle_timeout_secs: u64) -> Result<(), LifecycleError> {
-    let idle_timeout_secs = (idle_timeout_secs != 0).then_some(idle_timeout_secs);
-    try_spawn_detached_until_with_idle_timeout(None, idle_timeout_secs).map(|_| ())
-}
-
-/// Spawn a daemon while honoring an optional absolute startup deadline.
-///
-/// On a successful owned spawn, returns the already-relocated image so a
-/// caller can retry after an early child death without hashing or relocating
-/// the executable again.
-pub fn try_spawn_detached_until(
-    deadline: Option<Instant>,
-) -> Result<Option<PreparedDaemonSpawn>, LifecycleError> {
-    try_spawn_detached_until_with_idle_timeout(deadline, None)
-}
-
-fn try_spawn_detached_until_with_idle_timeout(
-    deadline: Option<Instant>,
-    idle_timeout_secs: Option<u64>,
-) -> Result<Option<PreparedDaemonSpawn>, LifecycleError> {
-    ensure_startup_deadline_remaining(deadline)?;
-    let current = std::env::current_exe().map_err(|_| LifecycleError::NoExe)?;
-    // Prefer the sibling `soldr-daemon` binary (dev builds + maturin
-    // wheels ship both). Fall back to the running soldr binary itself
-    // invoked as `soldr daemon start --foreground` when the sibling
-    // isn't present — this lets CI workflows and slimmed-down
-    // deployments (which historically distributed only `soldr`) still
-    // bring up the daemon now that Phase 5/7 made the embedded
-    // backend mandatory. The daemon subcommand is already a clap-
-    // matched verb in `cli_args.rs`; the `soldr-daemon` argv[0] alias
-    // routes through the main binary.
-    let configured = configured_daemon_executable(std::env::var_os(SOLDR_DAEMON_EXE_ENV_VAR));
-    let sibling = crate::daemon::service_definition::sibling_daemon_binary(&current);
-    let (daemon_src, daemon_via_self) = if let Some(configured) = configured {
-        (configured, false)
-    } else if sibling.exists() {
-        (sibling, false)
-    } else if executable_has_stem(&current, "soldr") {
-        (current.clone(), true)
-    } else {
-        return Err(LifecycleError::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!(
-                "refusing to spawn soldr-daemon from compiler-named executable {}; \
-                 the caller must provide a canonical image through {SOLDR_DAEMON_EXE_ENV_VAR}",
-                current.display()
-            ),
-        )));
-    };
-
-    let paths = SoldrPaths::new().ok();
-    let _spawn_lock = paths.as_ref().and_then(acquire_spawn_lock);
-    // Re-check liveness while holding the lock (or after failing to
-    // acquire it): if a daemon of THIS version already brought the
-    // endpoint up we short-circuit before doing relocate + spawn.
-    // soldr#1495: if a *stale-version* daemon holds the endpoint instead,
-    // displace it (graceful shutdown → verified-PID kill) so our spawn
-    // can bind — this is what breaks the version shadow, both for a
-    // silently-serving older release and a protocol-mismatched daemon.
-    if let Some(p) = paths.as_ref() {
-        let current_is_live = if deadline.is_some() {
-            is_live_current_version_direct(p).is_some()
-        } else {
-            is_live_current_version(p).is_some()
-        };
-        if current_is_live {
-            return Ok(None);
-        }
-        if displacement_enabled() && stale_daemon_occupies_endpoint(p).is_some() {
-            if let Some(deadline) = deadline {
-                displace_stale_daemon_before(p, deadline);
-            } else {
-                displace_stale_daemon(p, Some(LifecycleSource::Preflight));
-            }
-        }
-    }
-    // Without the lock, another wrapper is currently mid-spawn. Don't
-    // pile on — the next wrapper will reprobe.
-    if paths.is_some() && _spawn_lock.is_none() {
-        return Ok(None);
-    }
-
-    ensure_startup_deadline_remaining(deadline)?;
-    // Compile-dispatch recovery is deadline-sensitive. Its source is already
-    // a stable soldr/soldr-daemon runtime image, so avoid synchronous hashing,
-    // relocation, and runtime GC here. Normal daemon startup still takes the
-    // durable relocated path below.
-    let executable = if deadline.is_some() {
-        daemon_src
-    } else {
-        resolve_daemon_spawn_image(paths.as_ref(), &daemon_src)
-    };
-    let prepared = PreparedDaemonSpawn {
-        executable,
-        via_self: daemon_via_self,
-        idle_timeout_secs,
-    };
-
-    spawn_prepared_daemon(&prepared, paths.as_ref(), deadline)?;
-    Ok(Some(prepared))
-}
-
-fn configured_daemon_executable(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
-    let path = PathBuf::from(value?);
-    (path.is_file()
-        && executable_has_stem(
-            &path,
-            crate::daemon::backend_handle_adoption::SOLDR_DAEMON_SERVICE_NAME,
-        ))
-    .then_some(path)
-}
-
-fn executable_has_stem(path: &Path, expected: &str) -> bool {
-    path.file_stem()
-        .and_then(std::ffi::OsStr::to_str)
-        .is_some_and(|stem| stem.eq_ignore_ascii_case(expected))
-}
-
-/// Retry a daemon spawn from an image prepared by
-/// [`try_spawn_detached_until`]. This path deliberately skips executable
-/// discovery, hashing, and relocation.
-pub fn try_spawn_detached_prepared_until(
-    prepared: &PreparedDaemonSpawn,
-    deadline: Instant,
-) -> Result<(), LifecycleError> {
-    let paths = SoldrPaths::new().ok();
-    let _spawn_lock = paths.as_ref().and_then(acquire_spawn_lock);
-    if let Some(p) = paths.as_ref() {
-        if is_live_current_version_direct(p).is_some() {
-            return Ok(());
-        }
-        if displacement_enabled() && stale_daemon_occupies_endpoint(p).is_some() {
-            displace_stale_daemon_before(p, deadline);
-        }
-    }
-    if paths.is_some() && _spawn_lock.is_none() {
-        return Ok(());
-    }
-
-    spawn_prepared_daemon(prepared, paths.as_ref(), Some(deadline))
-}
-
-fn spawn_prepared_daemon(
-    prepared: &PreparedDaemonSpawn,
-    paths: Option<&SoldrPaths>,
-    deadline: Option<Instant>,
-) -> Result<(), LifecycleError> {
-    ensure_startup_deadline_remaining(deadline)?;
-
-    if deadline.is_none()
-        && !prepared.via_self
-        && !crate::daemon::backend_handle_adoption::running_process_disabled()
-    {
-        let _ = crate::daemon::service_definition::install_service_definition(&prepared.executable);
-    }
-    let args = detached_spawn_args(prepared.via_self, prepared.idle_timeout_secs);
-    let spawn_result = if prepared.via_self {
-        spawn_detached_self_inner(&prepared.executable, &args).map_err(LifecycleError::Spawn)
-    } else {
-        spawn_detached_inner(&prepared.executable, &args).map_err(LifecycleError::Spawn)
-    };
-    spawn_result?;
-
-    // Keep the spawn lock held until the daemon has written its PID file and
-    // answered the active endpoint probe. Without this, a cargo fan-out on
-    // Windows can acquire the lock sequentially in several rustc-wrapper
-    // processes and spawn multiple `soldr daemon start --foreground` children
-    // before the first one is ready.
-    if let Some(paths) = paths {
-        let readiness_timeout = deadline
-            .map(|deadline| deadline.saturating_duration_since(Instant::now()))
-            .unwrap_or(Duration::from_secs(5))
-            .min(Duration::from_secs(5));
-        if !readiness_timeout.is_zero() {
-            if deadline.is_some() {
-                wait_for_spawned_daemon_ready_direct(paths, readiness_timeout);
-            } else {
-                wait_for_spawned_daemon_ready(paths, readiness_timeout);
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn detached_spawn_args(via_self: bool, idle_timeout_secs: Option<u64>) -> Vec<String> {
-    let mut args = if via_self {
-        vec!["daemon".into(), "start".into(), "--foreground".into()]
-    } else {
-        vec!["--foreground".into()]
-    };
-    if let Some(seconds) = idle_timeout_secs {
-        args.push(if via_self {
-            "--idle-timeout".into()
-        } else {
-            "--idle-timeout-secs".into()
-        });
-        args.push(seconds.to_string());
-    }
-    args
-}
-
-fn ensure_startup_deadline_remaining(deadline: Option<Instant>) -> Result<(), LifecycleError> {
-    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-        return Err(LifecycleError::Io(std::io::Error::new(
-            std::io::ErrorKind::TimedOut,
-            "daemon startup deadline elapsed before spawn",
-        )));
-    }
-    Ok(())
-}
-
-fn displace_stale_daemon_before(paths: &SoldrPaths, deadline: Instant) -> bool {
-    let Some(pid) = stale_daemon_occupies_endpoint(paths) else {
-        return true;
-    };
-    if Instant::now() >= deadline {
-        return false;
-    }
-
-    // The deadline-sensitive recovery path avoids a potentially slow IPC
-    // shutdown probe. The PID identity gate is the same one used by the normal
-    // graceful-then-kill path, so an unrelated recycled PID is never signaled.
-    if !pid_is_soldr_daemon(pid) {
-        if !pid_is_alive(pid) {
-            append_lifecycle_event_with(
-                paths,
-                "previous-daemon-vanished-without-ack",
-                LifecycleDetails::vanished_without_ack(Some(pid), LifecycleReason::StartupDeadline)
-                    .from_current_process(Some(LifecycleSource::Preflight)),
-            );
-            return true;
-        }
-        return false;
-    }
-
-    // This path skips the IPC probe entirely, so the kill is attributable to
-    // the expiring spawn deadline rather than anything learned about daemon.
-    terminate_pid(pid, Some(deadline));
-    let remaining = deadline
-        .saturating_duration_since(Instant::now())
-        .min(Duration::from_secs(5));
-    let exited = if remaining.is_zero() {
-        !pid_is_alive(pid)
-    } else {
-        wait_for_pid_exit(pid, remaining)
-    };
-    append_lifecycle_event_with(
-        paths,
-        "displace-kill-fallback",
-        LifecycleDetails::forced(pid, LifecycleReason::StartupDeadline)
-            .with_outcome(if exited {
-                LifecycleOutcome::Forced
-            } else {
-                LifecycleOutcome::Failed
-            })
-            .from_current_process(Some(LifecycleSource::Preflight)),
-    );
-    exited
-}
-
-/// Resolve the on-disk image the daemon child will exec from.
-///
-/// Every spawn shape — the sibling `soldr-daemon` binary AND the
-/// via-self `soldr daemon start --foreground` fallback — routes through
-/// `ensure_daemon_relocated` into `~/.soldr/runtime/soldr-daemon/`
-/// (issue #1516). Via-self used to skip relocation and pin whatever
-/// `current_exe` resolved to; when the self-relocation guard env vars
-/// leak in from a parent process (or on slim installs), that pinned the
-/// package-manager-owned `Scripts\soldr.exe`, so `pip install
-/// --force-reinstall` wedged with WinError 5 while the daemon lived.
-/// Relocating decouples the long-lived daemon from the installed
-/// binary; `ensure_daemon_relocated` still runs maturin-repaired-wheel
-/// layouts in place (soldr#1300) and no-ops when the source already
-/// lives under the daemon runtime root.
-///
-/// Relocation failures fall back to running the source in place — a
-/// pinned daemon beats no daemon — but say so. soldr#1987: that fallback
-/// is how a daemon ends up running from a `uv`/`pip` temp directory, which
-/// is then deleted, leaving an orphan holding the root-ownership lock
-/// indefinitely. Silently pinning the one image we were trying not to pin
-/// is the step that turns a recoverable I/O error into a 28-hour outage,
-/// so the trade is made loudly and names both the path and the reason.
-fn resolve_daemon_spawn_image(paths: Option<&SoldrPaths>, daemon_src: &Path) -> PathBuf {
-    match paths {
-        Some(paths) => crate::self_relocate::ensure_daemon_relocated(paths, daemon_src)
-            .inspect(|r| {
-                crate::self_relocate::run_periodic_daemon_runtime_gc(paths, Some(r));
-            })
-            .unwrap_or_else(|error| {
-                tracing::warn!(
-                    event = "daemon_relocation_failed",
-                    source = %daemon_src.display(),
-                    %error,
-                    "could not relocate the daemon into the runtime root; spawning                      from its original location, which will stay pinned for the                      daemon's lifetime (soldr#1987)"
-                );
-                eprintln!(
-                    "soldr: could not relocate soldr-daemon into the runtime root ({error});                      spawning from {} instead. That path stays locked while the daemon runs                      -- if it is a temporary directory, deleting it will strand the daemon                      (soldr#1987).",
-                    daemon_src.display()
-                );
-                daemon_src.to_path_buf()
-            }),
-        // No cache root resolved → run in place. The daemon itself
-        // tries SoldrPaths::new() at startup and will surface the
-        // same error there.
-        None => daemon_src.to_path_buf(),
-    }
-}
-
-fn wait_for_spawned_daemon_ready(paths: &SoldrPaths, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if is_live(paths).is_some() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    false
-}
-
-fn wait_for_spawned_daemon_ready_direct(paths: &SoldrPaths, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        // Recovery runs inside a strict compile-dispatch budget. Avoid the full
-        // backend adoption probe here because its fallback can hash an image.
-        // PID identity plus the current-version claim are sufficient to prove
-        // that this just-spawned process reached daemon initialization.
-        if is_live_current_version_direct(paths).is_some() {
-            return true;
-        }
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(50).min(remaining));
-    }
-    false
-}
-
-/// Acquire the spawn-herd lock. Returns `Some(file)` when the
-/// non-blocking exclusive lock was claimed (this caller is the spawn
-/// owner), `None` when another wrapper already holds it (this caller
-/// is a loser and should bail). The lock is released when the returned
-/// `File` is dropped — typically at the end of `try_spawn_detached`.
-///
-/// Errors creating/opening the lock file are treated as "no lock
-/// available" so a broken filesystem doesn't gate progress; we'd
-/// rather have the herd-spawn fallback than block the build.
-///
-/// Exposed as `pub(crate)` so the unit tests below can verify the
-/// exclusivity invariant without spawning a real daemon binary.
-pub(crate) fn acquire_spawn_lock(paths: &SoldrPaths) -> Option<std::fs::File> {
-    use fs2::FileExt;
-    let dir = crate::cache_lib::soldr_daemon_dir(paths);
-    std::fs::create_dir_all(&dir).ok()?;
-    let lock_path = dir.join(".spawn.lock");
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&lock_path)
-        .ok()?;
-    match file.try_lock_exclusive() {
-        Ok(()) => Some(file),
-        Err(_) => None,
     }
 }
 

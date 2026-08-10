@@ -732,36 +732,122 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     let (unix_listener, unix_socket_identity) = claim_unix_endpoint(&paths)?;
 
     let db_path = data_db_path(&paths);
-    // Startup schema work, all three opens on the blocking pool
-    // (soldr#2224) so a `state.redb` still held by the daemon we are
-    // displacing never parks a runtime thread.
-    let startup_db_path = db_path.clone();
-    tokio::task::spawn_blocking(move || {
-        // Touch the file at startup so a path error (no parent dir, no
-        // permissions) surfaces immediately rather than on the first
-        // RecordTargetTouch. Drop the handle right away — see State::db_path.
-        let touched = TargetRegistry::open(&startup_db_path).map(|_| ());
-        // Initialize the Phase 2 daemon tables (idempotent). Errors here
-        // are non-fatal — Phase 1 target tracking still works without them.
-        let _ = db::ensure_initialized(&startup_db_path);
-        // Initialize the cook_index_v1 table (issue #576). Idempotent and
-        // non-fatal — old soldr versions ignore this table entirely.
-        let _ = cook_index::ensure_initialized(&startup_db_path);
-        touched
-    })
-    .await
-    .map_err(|err| ServerError::Io(std::io::Error::other(err.to_string())))??;
     let start_instant = Instant::now();
     let idle_timeout_secs = u32::try_from(opts.idle_timeout.as_secs()).ok();
     let daemon_identity = current_daemon_process(&paths, idle_timeout_secs)
         .map_err(|err| ServerError::Io(std::io::Error::other(err.to_string())))?;
 
-    // Issue #977 / #980 L1 — start the embedded zccache compile
-    // service here so the daemon's tokio runtime owns its background
-    // tasks. tokio-console sees the union of soldr + zccache work
-    // from a single attach. Embedded is mandatory; if start fails,
-    // the daemon refuses to come up.
-    let compile_service = start_compile_service(&paths, &daemon_identity).await?;
+    // Bind and serve the broker-facing endpoint before heavyweight startup.
+    // BackendHandle probes need only the process identity; real SESSION
+    // payloads await the shared compile-service publication point below.
+    let session_listener = crate::daemon::session_endpoint::resolve_session_listener(&paths)?
+        .ok_or_else(|| {
+            ServerError::Io(std::io::Error::other(
+                "broker-facing SESSION endpoint was not configured",
+            ))
+        })?;
+
+    if let Err(error) = write_pid_file(&paths) {
+        #[cfg(unix)]
+        {
+            let _ = remove_unix_socket_if_matches(&daemon_sock_path(&paths), unix_socket_identity);
+        }
+        return Err(match error {
+            crate::daemon::lifecycle::LifecycleError::Io(error) => ServerError::Io(error),
+            crate::daemon::lifecycle::LifecycleError::NoExe => ServerError::Io(
+                std::io::Error::new(std::io::ErrorKind::NotFound, "current_exe unavailable"),
+            ),
+            crate::daemon::lifecycle::LifecycleError::Spawn(error) => ServerError::Io(error),
+        });
+    }
+    append_lifecycle_event(&paths, "spawn");
+
+    if let Err(err) = crate::daemon::broker_discovery::write_root_version_claim(&paths) {
+        tracing::warn!(target: "soldr::daemon", "failed to publish version claim: {err}");
+    }
+    let _ = crate::daemon::broker_discovery::publish_cache_manifest(&paths);
+
+    let mut session_identity = daemon_identity.clone();
+    session_identity.ipc_endpoint.path =
+        crate::daemon::session_endpoint::resolved_session_endpoint_path(&paths)?;
+    if let Ok(namespace_id) = std::env::var("RUNNING_PROCESS_BROKER_V1_BACKEND_NAMESPACE") {
+        if !namespace_id.is_empty() {
+            session_identity.ipc_endpoint.namespace_id = namespace_id;
+        }
+    }
+    let session_mux = Arc::new(crate::daemon::session_endpoint::soldr_session_endpoint_mux(
+        session_identity,
+    ));
+    let (compile_readiness, compile_publisher) =
+        crate::daemon::session_endpoint::CompileServiceReadiness::pending();
+    let session_paths = paths.clone();
+    let session_handle = tokio::spawn(async move {
+        if let Err(err) = crate::daemon::session_endpoint::serve_session_endpoint_with_readiness(
+            session_listener,
+            compile_readiness,
+            session_paths,
+            session_mux,
+        )
+        .await
+        {
+            tracing::warn!(target: "soldr::daemon", "SESSION endpoint serve ended: {err}");
+        }
+    });
+
+    // Embedded zccache initializes asynchronously. The first operation that
+    // actually needs it awaits this task through `CompileServiceReadiness`;
+    // broker probes remain independent and responsive throughout.
+    let compile_paths = paths.clone();
+    let compile_identity = daemon_identity.clone();
+    let compile_handle = tokio::spawn(async move {
+        let result = start_compile_service(&compile_paths, &compile_identity).await;
+        match &result {
+            Ok(service) => compile_publisher.publish(Ok(Arc::clone(service))),
+            Err(error) => compile_publisher.publish(Err(format!(
+                "embedded compile service initialization failed: {error:?}"
+            )
+            .into())),
+        }
+        result
+    });
+
+    // Database initialization runs concurrently on the blocking pool. It is
+    // not a prerequisite for broker readiness or SESSION compile execution.
+    let startup_db_path = db_path.clone();
+    let db_result = tokio::task::spawn_blocking(move || {
+        let touched = TargetRegistry::open(&startup_db_path).map(|_| ());
+        let _ = db::ensure_initialized(&startup_db_path);
+        let _ = cook_index::ensure_initialized(&startup_db_path);
+        touched
+    })
+    .await;
+    let db_result = match db_result {
+        Ok(result) => result,
+        Err(error) => {
+            compile_handle.abort();
+            session_handle.abort();
+            return Err(ServerError::Io(std::io::Error::other(error.to_string())));
+        }
+    };
+    if let Err(error) = db_result {
+        compile_handle.abort();
+        session_handle.abort();
+        return Err(ServerError::Registry(error));
+    }
+
+    let compile_service = match compile_handle.await {
+        Ok(Ok(service)) => service,
+        Ok(Err(error)) => {
+            session_handle.abort();
+            return Err(error);
+        }
+        Err(error) => {
+            session_handle.abort();
+            return Err(ServerError::Io(std::io::Error::other(format!(
+                "embedded compile service initialization task failed: {error}"
+            ))));
+        }
+    };
 
     // L4 (issue soldr#980): start the background event-flusher BEFORE we
     // accept any IPC traffic so the very first compile event lands on
@@ -789,31 +875,6 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
         compile_service,
     });
 
-    if let Err(error) = write_pid_file(&paths) {
-        #[cfg(unix)]
-        {
-            let _ = remove_unix_socket_if_matches(&daemon_sock_path(&paths), unix_socket_identity);
-        }
-        return Err(match error {
-            crate::daemon::lifecycle::LifecycleError::Io(error) => ServerError::Io(error),
-            crate::daemon::lifecycle::LifecycleError::NoExe => ServerError::Io(
-                std::io::Error::new(std::io::ErrorKind::NotFound, "current_exe unavailable"),
-            ),
-            crate::daemon::lifecycle::LifecycleError::Spawn(error) => ServerError::Io(error),
-        });
-    }
-    append_lifecycle_event(&paths, "spawn");
-
-    // soldr#1495: publish this daemon's version claim so a newer client
-    // can detect a stale daemon and displace it. Best-effort — a failure
-    // to write the manifest (e.g. permission-restricted root on an
-    // unusual host) must not stop the daemon; version-aware liveness then
-    // simply treats this daemon as version-unknown.
-    if let Err(err) = crate::daemon::broker_discovery::write_root_version_claim(&paths) {
-        tracing::warn!(target: "soldr::daemon", "failed to publish version claim: {err}");
-    }
-    let _ = crate::daemon::broker_discovery::publish_cache_manifest(&paths);
-
     let accept_state = state.clone();
     #[cfg(unix)]
     let accept_handle = tokio::spawn(async move {
@@ -825,40 +886,6 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
         tokio::spawn(async move {
             let _ = run_accept_loop(paths_for_accept, accept_state).await;
         })
-    };
-
-    // SESSION `0x5350` endpoint (soldr#2388 Step 6d/7 / #2386 Option A). Served
-    // on a *separate* broker-facing endpoint from the legacy `handle_connection`
-    // loop above, which stays untouched. The daemon binds the deterministic
-    // `daemon_session_endpoint_path` (or `SOLDR_SESSION_ENDPOINT_PATH` override)
-    // so the broker's SESSION relay can reach it by advertised name (#2386
-    // Option A mechanism ii). Step 8 will prepend the Unix broker-inherited-fd
-    // adopt path.
-    let session_handle = match crate::daemon::session_endpoint::resolve_session_listener(&paths) {
-        Ok(Some(listener)) => {
-            let mux = Arc::new(crate::daemon::session_endpoint::soldr_session_endpoint_mux(
-                state.daemon_identity.clone(),
-            ));
-            let service = Arc::clone(&state.compile_service);
-            let session_paths = paths.clone();
-            Some(tokio::spawn(async move {
-                if let Err(err) = crate::daemon::session_endpoint::serve_session_endpoint(
-                    listener,
-                    service,
-                    session_paths,
-                    mux,
-                )
-                .await
-                {
-                    tracing::warn!(target: "soldr::daemon", "SESSION endpoint serve ended: {err}");
-                }
-            }))
-        }
-        Ok(None) => None,
-        Err(err) => {
-            tracing::warn!(target: "soldr::daemon", "SESSION endpoint bind failed: {err}");
-            None
-        }
     };
 
     let idle_handle = (opts.idle_timeout != Duration::MAX).then(|| {
@@ -908,9 +935,7 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     state.shutdown.wait().await;
     arm_shutdown_watchdog();
     accept_handle.abort();
-    if let Some(handle) = session_handle {
-        handle.abort();
-    }
+    session_handle.abort();
     if let Some(handle) = idle_handle {
         handle.abort();
     }
@@ -1933,19 +1958,14 @@ where
                     inner_started.elapsed().as_micros() as u64,
                     &compile_id,
                 );
-                // soldr#1838 Phase 2: while retiring, the compile service has
-                // latched shut, so every error it returns means "not serving
-                // work" rather than "something is broken inside me". Saying
-                // which one it is decides whether the wrapper degrades to
-                // direct rustc or hard-fails the build: `Error` becomes
-                // `ClientError::Protocol`, which is deliberately classified as
-                // NOT daemon-unavailable so a real daemon bug is never masked.
-                // Reporting a normal drain that way failed builds (#1837).
+                // During graceful shutdown, preserve the explicit Retiring reply so
+                // the mandatory SESSION client can attribute the infrastructure failure
+                // correctly. Other embedded-service errors remain protocol failures.
                 let reply = if state.shutdown.is_requested() {
                     tracing::info!(
                         target: "soldr::daemon::compile_stream",
                         compile_id = compile_id.as_str(),
-                        "compile arrived during shutdown; answering Retiring so the                          wrapper degrades to direct rustc",
+                        "compile arrived during shutdown; answering Retiring to the mandatory SESSION client",
                     );
                     Response::Retiring
                 } else {

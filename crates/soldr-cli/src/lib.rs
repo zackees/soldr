@@ -167,7 +167,6 @@ pub mod binaries;
 pub mod blessed_build;
 pub mod bootstrap;
 pub mod broker_cmd;
-pub(crate) mod broker_discovery_gate;
 /// soldr#2388: container-safe broker/session socket identity (graceful fallback
 /// when the OS provides no `/etc/machine-id`).
 pub(crate) mod broker_identity;
@@ -196,7 +195,6 @@ pub mod daemon_entry;
 /// soldr#2360 — actionable attribution for a daemon-unavailable compile
 /// dispatch failure, split out of `compile_dispatch.rs` (over the #1966
 /// line ceiling) into its own module.
-pub mod daemon_infra_remedy;
 /// soldr#2023 — `soldr daemon status` rendering, split out of
 /// `soldr_main.rs` so that file could stop growing.
 pub(crate) mod daemon_status_render;
@@ -232,7 +230,6 @@ pub mod lint_ci;
 pub mod lint_cmd;
 pub mod linux_cross;
 pub mod logs_cmd;
-pub mod marker_session;
 /// soldr#1079 — Windows MSVC host-toolchain auto-discovery. Probes
 /// vswhere + the Windows SDK and synthesizes LIB/INCLUDE/PATH/LIBPATH
 /// onto the current process so `soldr cargo build` / `soldr cargo test`

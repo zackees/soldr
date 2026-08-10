@@ -19,13 +19,10 @@ struct Cli {
 /// Run the daemon surface selected by the `soldr-daemon` argv[0] alias.
 pub fn run() -> i32 {
     let cli = Cli::parse();
-    // Managed startup reaches this entrypoint through running-process's
-    // detached-daemon boundary, which marks the child explicitly. Relocation
-    // may detach its replacement in that case so the trampoline exits instead
-    // of becoming a second long-lived waiter. A direct foreground invocation
-    // has no marker and must preserve its terminal/stdout/stderr contract by
-    // waiting for the relocated child (soldr#2037).
-    crate::daemon::lifecycle::reexec_from_runtime_root_for_daemon_entry();
+    // The broker launches this entrypoint only after it has placed the image
+    // in the route's stable runtime tree.  Never relocate or spawn from here:
+    // doing so would replace the broker-owned child PID with an untracked
+    // process and reopen the multi-process spawn race (soldr#2427).
     let opts = ServerOptions {
         idle_timeout: if cli.idle_timeout_secs == 0 {
             ServerOptions::default().idle_timeout

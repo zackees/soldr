@@ -40,11 +40,6 @@ impl EnvScope {
         // Never let an ambient wrapper leak into the probe.
         keys.push(("RUSTC_WRAPPER", std::env::var_os("RUSTC_WRAPPER")));
         std::env::remove_var("RUSTC_WRAPPER");
-        keys.push((
-            "RUNNING_PROCESS_DISABLE",
-            std::env::var_os("RUNNING_PROCESS_DISABLE"),
-        ));
-        std::env::set_var("RUNNING_PROCESS_DISABLE", "1");
         Self { keys }
     }
 }
@@ -95,10 +90,6 @@ fn run_soldr(args: &[&str], cache_root: &Path, home_root: &Path, fake_version: O
     if let Some(v) = fake_version {
         cmd.env("SOLDR_TEST_DAEMON_FAKE_PKG_VERSION", v);
     }
-    // Displacement is the behavior under test. Keep optional broker discovery
-    // out of this fixture so its network/process probe latency cannot consume
-    // the lifecycle watchdog.
-    cmd.env("RUNNING_PROCESS_DISABLE", "1");
     cmd.env_remove("RUSTC_WRAPPER");
     let status = cmd.status().expect("run isolated soldr command");
     assert!(status.success(), "isolated soldr command failed: {args:?}");

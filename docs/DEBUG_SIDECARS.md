@@ -35,45 +35,17 @@ release size for symbol data nobody currently consumes. Revisit by
 flipping `split-debuginfo` in the release profile — no workflow change
 is needed, the staging + manifest recording pick the artifacts up.
 
-## Caveat: the Windows guarantee is about soldr's release, not your build
+## Caveat: cached Windows debug sidecars
 
 > [!WARNING]
-> A Windows build that goes **through soldr's compile cache** currently
-> does *not* keep its `.pdb` — the file is produced and then dropped
-> (soldr#2148). Only `--no-cache` / `ZCCACHE_DISABLE=1` builds keep it.
+> A cached Windows build currently drops its `.pdb` after linking (soldr#2148).
+> Because cacheable builds now have one mandatory broker route, release or
+> debugging workflows that require a PDB must treat a missing sidecar as a hard
+> failure until the vendored cache output enumeration is fixed.
 
-The row above is easy to read as "Windows builds always have symbols".
-It holds for soldr's published archive, and only because that lane opts
-out of the cache for an unrelated reason — `release-auto.yml` passes
-`--no-cache` on `*-pc-windows-msvc`:
-
-```yaml
-# Native MSVC release runners are already CPU-bound and have no warm
-# cache. Keep soldr's toolchain/syslib prep, but avoid routing this one
-# release build through the embedded zccache wrapper path that can hang
-# the hosted Windows jobs.
-*-pc-windows-msvc) soldr_build_args+=(--no-cache) ;;
-```
-
-Two consequences worth knowing:
-
-- **The `expected a soldr PDB sidecar` guard gives no coverage for
-  soldr#2148.** It only ever inspects the one path that does not have
-  the bug, so a regression there would keep it green.
-- **soldr ships a symbolizable `soldr.exe` while its users do not.**
-  Anyone building their own Windows project through the default cached
-  path loses their `.pdb`, which is why this surfaced downstream rather
-  than here.
-
-Reproduce either way on any crate with `debug` enabled in the profile:
-
-```console
-$ soldr build --release --target x86_64-pc-windows-msvc   # no .pdb
-$ soldr --no-cache build --release --target x86_64-pc-windows-msvc   # .pdb
-```
-
-Remove this section when soldr#2148 is fixed and the cached path keeps
-the sidecar.
+The release archive guard still requires `soldr.pdb`; it must not bypass the
+cache to manufacture a green result. Remove this caveat when soldr#2148 is
+fixed and the cached path retains the sidecar.
 
 ## Verifying an archive
 
@@ -104,26 +76,9 @@ checkout whose `_vender/zccache` submodule contains the code under test. There
 is no external zccache daemon or `SOLDR_ZCCACHE_LOCAL_DIR` symbol-copy path in
 the embedded architecture.
 
-> **Windows: a cached build produces no `.pdb` today (soldr#2148).**
->
-> This section used to say "debug the resulting Soldr binary and its normal
-> `.pdb`". On Windows that instruction silently does not work: a build through
-> the compilation cache emits the `.exe` without its `.pdb`, so a minidump
-> resolves to `module+0xNNNN` and nothing else.
->
-> To get a symbolizable binary, disable the cache for that build:
->
-> ```console
-> ZCCACHE_DISABLE=1 soldr cargo build --release
-> ```
->
-> The `.exe` still carries an `RSDS` CodeView record naming the `.pdb` it
-> expects, so the file was emitted and then dropped — which is why the failure
-> reads as "debug info was never enabled" rather than "debug info was
-> discarded". Verified by isolating one variable at a time: `ZCCACHE_DISABLE=1`
-> restores the `.pdb` **with soldr's rustc wrapper still active**, and the
-> `SOLDR_LINKER` choice makes no difference, so this is the cache layer and not
-> the wrapper or the blessed-prep linker substitution.
+> **Windows:** a cached build currently emits the executable without retaining
+> its PDB (soldr#2148). Treat that as an unsupported cached-debug result: fail
+> the build and fix or update the vendored cache implementation.
 >
 > The cause is in the vendored zccache submodule. The rustc path already
 > handles *multiple* outputs — the daemon carries `rustc_all_outputs` and

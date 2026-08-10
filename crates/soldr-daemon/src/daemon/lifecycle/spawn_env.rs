@@ -66,12 +66,13 @@ pub(crate) fn filter_forwarded_env(
     vars: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
 ) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
     vars.into_iter()
-        .filter(|(name, _)| {
-            // Env names compare case-insensitively on Windows; match the
-            // FBUILD_* passthrough in FastLED/fbuild#1170 and accept any
-            // casing of the prefix on every platform.
-            let name = name.to_string_lossy().to_ascii_uppercase();
-            name.starts_with(FORWARDED_ENV_PREFIX) || FORWARDED_ZCCACHE_ENV.contains(&name.as_str())
-        })
+        .filter(|(name, _)| forwarded_env_name(name))
         .collect()
+}
+
+pub(crate) fn forwarded_env_name(name: &std::ffi::OsStr) -> bool {
+    // Env names compare case-insensitively on Windows; accept any casing on
+    // every platform so persisted broker registrations validate identically.
+    let name = name.to_string_lossy().to_ascii_uppercase();
+    name.starts_with(FORWARDED_ENV_PREFIX) || FORWARDED_ZCCACHE_ENV.contains(&name.as_str())
 }

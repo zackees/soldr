@@ -474,10 +474,6 @@ soldr_cli::timed_test!(
 
 #[test]
 fn start_status_stop_round_trip() {
-    // `running_process_disable_uses_direct_daemon_liveness` mutates the
-    // process-global RUNNING_PROCESS_DISABLE flag. Serialize the direct
-    // `is_live` assertion with that test so parallel execution cannot switch
-    // backend policy between the CLI status probe and this library probe.
     let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
     let daemon = Daemon::spawn();
     let cache_root = daemon.cache_root.clone();
@@ -519,175 +515,6 @@ fn start_status_stop_round_trip() {
         "a retained PID claim must not count as a live daemon"
     );
 }
-
-#[test]
-fn running_process_disable_uses_direct_daemon_liveness() {
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-    let daemon = Daemon::spawn();
-    let cache_root = daemon.cache_root.clone();
-    let home_root = daemon.home_root.clone();
-
-    let status = run_soldr(&["daemon", "status", "--json"], &cache_root, &home_root);
-    assert!(
-        status.status.success(),
-        "soldr daemon status failed: stdout={:?} stderr={:?}",
-        String::from_utf8_lossy(&status.stdout),
-        String::from_utf8_lossy(&status.stderr)
-    );
-    let body: Value = serde_json::from_slice(&status.stdout).expect("status json");
-    let pid = body["pid"].as_u64().expect("status carries pid");
-
-    let _env = EnvScope::set("RUNNING_PROCESS_DISABLE", "1");
-    let paths = SoldrPaths::with_root(cache_root);
-    assert_eq!(
-        soldr_cli::daemon::lifecycle::is_live(&paths).map(u64::from),
-        Some(pid),
-        "RUNNING_PROCESS_DISABLE=1 should bypass BackendHandle but keep direct daemon liveness",
-    );
-
-    drop(daemon);
-}
-
-#[test]
-fn direct_recovery_accepts_slim_via_self_daemon() {
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-    let cache_root = unique_temp_dir("daemon-via-self-cache");
-    let home_root = unique_temp_dir("daemon-via-self-home");
-    let slim_bin_dir = unique_temp_dir("daemon-via-self-bin");
-    let slim_soldr = slim_bin_dir.join(if cfg!(windows) { "soldr.exe" } else { "soldr" });
-    fs::copy(common::soldr_bin(), &slim_soldr).expect("copy slim soldr executable");
-
-    let run_slim = |args: &[&str]| {
-        let mut cmd = Command::new(&slim_soldr);
-        cmd.args(args);
-        for (key, value) in isolated_env(&cache_root, &home_root) {
-            cmd.env(key, value);
-        }
-        cmd.env("RUNNING_PROCESS_DISABLE", "1");
-        scrub_outer_soldr_runtime(&mut cmd);
-        cmd.output().expect("run slim soldr")
-    };
-
-    let first = run_slim(&["daemon", "start", "--idle-timeout", "60"]);
-    assert!(first.status.success(), "first slim start failed: {first:?}");
-    assert!(
-        wait_for_ready(
-            &cache_root,
-            &home_root,
-            Instant::now() + Duration::from_secs(40)
-        ),
-        "slim via-self daemon did not become ready"
-    );
-    let paths = SoldrPaths::with_root(cache_root.clone());
-    let first_pid = soldr_cli::daemon::lifecycle::is_live(&paths)
-        .expect("direct liveness must accept a soldr-named daemon");
-
-    let second = run_slim(&["daemon", "start", "--idle-timeout", "60"]);
-    assert!(
-        second.status.success(),
-        "second slim start failed: {second:?}"
-    );
-    assert_eq!(
-        soldr_cli::daemon::lifecycle::is_live(&paths),
-        Some(first_pid),
-        "recovery must preserve the already-live via-self daemon"
-    );
-
-    let stop = run_slim(&["daemon", "stop"]);
-    assert!(stop.status.success(), "slim daemon stop failed: {stop:?}");
-}
-
-soldr_cli::timed_test!(
-    standalone_compiler_shim_recovers_with_canonical_daemon_image,
-    Duration::from_secs(120),
-    {
-        let cache_root = unique_temp_dir("daemon-standalone-wrapper-cache");
-        let home_root = unique_temp_dir("daemon-standalone-wrapper-home");
-        let shim_dir = unique_temp_dir("daemon-standalone-wrapper-bin");
-        let workspace = unique_temp_dir("daemon-standalone-wrapper-workspace");
-        let _cleanup = DaemonCleanup {
-            cache_root: cache_root.clone(),
-            home_root: home_root.clone(),
-        };
-
-        let compiler_shim = shim_dir.join(if cfg!(windows) { "rustc.exe" } else { "rustc" });
-        fs::copy(common::soldr_bin(), &compiler_shim).expect("copy compiler-named soldr shim");
-        let source = workspace.join("probe.rs");
-        let out_dir = workspace.join("out");
-        fs::create_dir_all(&out_dir).expect("create rustc out dir");
-        fs::write(&source, "pub fn answer() -> u8 { 42 }\n").expect("write rust source");
-
-        let mut cmd = Command::new(&compiler_shim);
-        cmd.args([
-            common::rustup_which("rustc"),
-            "--crate-name".to_string(),
-            "standalone_wrapper_probe".to_string(),
-            "--crate-type".to_string(),
-            "lib".to_string(),
-            "--emit".to_string(),
-            "metadata".to_string(),
-            source.display().to_string(),
-            "--out-dir".to_string(),
-            out_dir.display().to_string(),
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-        for (key, value) in isolated_env(&cache_root, &home_root) {
-            cmd.env(key, value);
-        }
-        cmd.env("RUNNING_PROCESS_DISABLE", "1")
-            .env("SOLDR_CACHE_ENABLED", "1")
-            .env("SOLDR_DAEMON_REQUIRED", "1")
-            .env("SOLDR_DAEMON_SPAWN_RETRY_BUDGET_MS", "40000")
-            .env("SOLDR_COMPILE_REPLY_TIMEOUT_SECS", "60")
-            .env_remove("RUSTC_WRAPPER")
-            .env_remove("SOLDR_INTERNAL_DAEMON_EXE")
-            .env_remove("SOLDR_ORIGINAL_EXE")
-            .env_remove("SOLDR_RELOCATED_EXE");
-
-        let mut child = cmd.spawn().expect("spawn standalone compiler shim");
-        if child
-            .wait_timeout(Duration::from_secs(90))
-            .expect("wait for standalone compiler shim")
-            .is_none()
-        {
-            let _ = child.kill();
-            let output = child.wait_with_output().expect("collect timed-out wrapper");
-            panic!(
-                "standalone compiler shim timed out\nstdout:\n{}\nstderr:\n{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-        let output = child.wait_with_output().expect("collect compiler shim");
-        assert!(
-            output.status.success(),
-            "standalone compiler shim failed\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-
-        let paths = SoldrPaths::with_root(cache_root.clone());
-        let (_pid, daemon_exe) =
-            soldr_cli::daemon::lifecycle::read_pid_file(&paths).expect("daemon PID publication");
-        assert_eq!(
-            daemon_exe.file_stem().and_then(std::ffi::OsStr::to_str),
-            Some("soldr-daemon"),
-            "compiler recovery must never leave a rustc-named daemon: {}",
-            daemon_exe.display()
-        );
-        assert!(
-            shim_dir
-                .join(if cfg!(windows) {
-                    "soldr-daemon.exe"
-                } else {
-                    "soldr-daemon"
-                })
-                .is_file(),
-            "standalone wrapper recovery must materialize the canonical daemon alias"
-        );
-    }
-);
 
 #[test]
 fn doctor_uses_same_endpoint_as_daemon_status_for_cook_counts() {
@@ -860,7 +687,11 @@ fn install_servicedef_writes_running_process_definition() {
         String::from_utf8_lossy(&out.stderr),
     );
     let body: Value = serde_json::from_slice(&out.stdout).expect("servicedef json");
-    assert_eq!(body["service_name"].as_str(), Some("soldr-daemon"));
+    let service_name = body["service_name"]
+        .as_str()
+        .expect("service_name")
+        .to_string();
+    assert!(service_name.starts_with("soldr-daemon-"));
     // #1501 moved servicedef to the running-process v2 surface; the
     // remaining deferred item is the upstream-gated broker-owned
     // UpgradeDaemon handoff (see SOLDR_DAEMON_SERVICE_DEF_DEFERRED).
@@ -875,9 +706,9 @@ fn install_servicedef_writes_running_process_definition() {
     // #1501: servicedefs are written as `.servicedef.v2` protobufs and
     // load through the protocol_v2 loader.
     let loaded = running_process::broker::protocol_v2::ServiceDefinitionLoader::new(&service_root)
-        .load("soldr-daemon")
+        .load(&service_name)
         .expect("running-process loader validates soldr servicedef");
-    assert_eq!(loaded.service_name, "soldr-daemon");
+    assert_eq!(loaded.service_name, service_name);
     assert_eq!(
         loaded.isolation,
         running_process::broker::protocol_v2::BrokerIsolation::SharedBroker as i32,

@@ -95,10 +95,8 @@ use serde::{Deserialize, Serialize};
 ///   front-door tail stops doing its own get/mutate/upsert of the build
 ///   record (slice 2d).
 /// * v20 (soldr#1838 Phase 2): adds `Retiring`, so a daemon that is shutting
-///   down can say so instead of returning an `Error` frame. The wrapper then
-///   degrades to direct rustc; previously this arrived as
-///   `ClientError::Protocol`, which is deliberately classified as NOT
-///   daemon-unavailable, so the build hard-failed (#1837).
+///   down can distinguish graceful retirement from an internal compile error.
+///   Mandatory broker clients surface either condition as a hard failure.
 /// * v21 (soldr#2023): `StatusInfo` publishes the compile limit the daemon
 ///   actually applied at startup, and `BuildSessionStart` is acknowledged
 ///   with `BuildSessionStarted` (carrying the same pair) instead of a bare
@@ -369,15 +367,9 @@ pub enum Response {
     /// The daemon is retiring and will not serve this request.
     ///
     /// soldr#1838 Phase 2. Distinct from [`Response::Error`], which means the
-    /// daemon answered and something went wrong *inside* it — worth failing
-    /// the build over, because degrading would mask a real daemon bug. A
-    /// retiring daemon is behaving correctly and simply cannot help, so the
-    /// client should fall back to direct rustc.
-    ///
-    /// Before this existed, a wrapper that connected during graceful drain
-    /// reached a compile service that had already latched shut and got an
-    /// `Error` frame, i.e. `ClientError::Protocol` — classified as NOT
-    /// unavailable, denying the fallback and failing the build (#1837).
+    /// daemon encountered an internal compile-service error. The mandatory
+    /// broker route reports both as hard failures while preserving the
+    /// distinction for diagnostics and graceful-drain attribution.
     /// #1837 narrowed that window by releasing the Windows pipe instance
     /// early; this closes it, for any request that still lands inside it.
     Retiring,

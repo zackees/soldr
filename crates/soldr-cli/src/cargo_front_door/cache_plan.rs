@@ -362,6 +362,7 @@ mod tests {
             },
             wrapper_path: std::path::PathBuf::from("/tmp/soldr-shims/rustc"),
             daemon_path: std::path::PathBuf::from("/tmp/soldr-daemon"),
+            broker_service_name: "soldr-daemon-test-route".to_string(),
         }))
     }
 
@@ -389,8 +390,16 @@ mod tests {
             Some(Some(OsString::from("/tmp/soldr-shims/rustc")))
         );
         assert_eq!(
+            command_env_override(
+                &command,
+                crate::daemon::backend_handle_adoption::SOLDR_BROKER_SERVICE_ENV_VAR
+            ),
+            Some(Some(OsString::from("soldr-daemon-test-route")))
+        );
+        assert_eq!(
             command_env_override(&command, crate::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR),
-            Some(Some(OsString::from("/tmp/soldr-daemon")))
+            Some(None),
+            "compiler children receive only a broker route, never a daemon spawn image"
         );
         // soldr#1368: the front door no longer plumbs an external zccache
         // binary or managed session — those env vars are cleared, not set.

@@ -50,11 +50,8 @@ The `zackees/setup-soldr@v0` action (generated from [`action.yml`](../action.yml
 - **Rehydrated state.** On a cache hit, the action restores the soldr root, `CARGO_HOME`, and `RUSTUP_HOME` under the runner-local cache/state root. The resolved Rust toolchain and the `soldr` binary are then provisioned on top of whatever was restored.
 - **Build-artifact cache enabled by default.** The action also restores the Soldr-owned zccache cache root with a toolchain-scoped key and saves it at end-of-job, so zccache compilation artifacts survive across runs unless you opt out with `build-cache: false`.
 - **Thin Rust artifact cache enabled by default.** The action restores a zccache-owned Rust artifact plan cache when a `Cargo.lock` is present. `soldr cargo ...` generates a `thin` plan by default and asks zccache to restore/save bounded dependency artifacts. It does not use an action-owned full `target/` snapshot unless the workflow explicitly sets `target-cache-mode: full`, which is still executed by zccache from the soldr-generated plan.
-- **Native C/C++ compiler cache enabled by default.** Build-script work (bundled SQLite from `libsqlite3-sys`, `ring`, etc.) compiles through `cc-rs`, which `soldr cargo ...` now wraps with zccache by default so the same managed cache serves both rustc and native compilations. Set `native-cache: false` on the setup step to write `SOLDR_NATIVE_CACHE=0` for the rest of the job and skip just the native wrapping; rustc-side caching stays on. The cross-platform `native-sqlite` validation (formerly a job here) now lives in `zackees/setup-soldr` as part of the third-party comparison cluster; see soldr#674. The native-cache toggle does not affect the action-managed cache layers above; it changes how `soldr cargo ...` constructs the build subprocess environment. The runtime kill-switch `soldr --no-cache cargo ...` still disables both layers at command time.
 
-Release/LTO musl downstreams should not need a permanent `--no-cache`
-workaround on `soldr 0.8.0+`. The datalake-core release-musl tracker,
-manual repro, and daemon-death diagnostic contract live in
+Release/LTO musl validation and daemon-failure diagnostics live in
 [`docs/DATALAKE_RELEASE_MUSL.md`](DATALAKE_RELEASE_MUSL.md).
 
 ## Minimum Config For An External Repo

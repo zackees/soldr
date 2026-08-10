@@ -37,12 +37,8 @@ pub(crate) enum BrokerSubcommand {
     Serve {
         /// Program namespace for the bind name (advanced/testing only --
         /// distinct programs bind distinct sockets). Defaults to
-        /// soldr-daemon's own service name -- the same string
-        /// `broker_discovery::discover_via_broker` dials via
-        /// `client_v2::connect`, since that API's `program` doubles as the
-        /// Hello `service_name` (soldr#2364). Overriding this without also
-        /// overriding `SOLDR_BROKER_PROGRAM` on the client side makes every
-        /// discovery dial miss this broker.
+        /// soldr-daemon's stable singleton program name. Overriding this
+        /// requires the same `SOLDR_BROKER_PROGRAM` value on clients.
         #[arg(long, default_value = "soldr-daemon")]
         program: String,
     },
@@ -55,13 +51,9 @@ pub(crate) fn run_broker_command(command: BrokerSubcommand) -> Result<(), SoldrE
 }
 
 /// Bind the v2 broker socket for `program` and serve Hello connections,
-/// launching soldr-daemon on a verified registry miss. Installs (or
-/// refreshes) soldr-daemon's own `.servicedef.v2` first -- the file that
-/// tells the broker how -- so a freshly-started broker is immediately
-/// useful without a separate `soldr daemon install-servicedef` step. If
-/// that install fails, every Hello is still correctly refused as
-/// `ServiceUnknown` rather than the broker guessing, matching the
-/// pre-auto-install behavior.
+/// launching soldr-daemon on a verified registry miss.  The requesting soldr
+/// front door registers the exact source image and route before Cargo starts;
+/// the broker never guesses a sibling image from its own executable.
 ///
 /// Uses `running_process::broker::server::serve_launching_backends`, the
 /// same production accept loop / launcher machinery
@@ -69,6 +61,7 @@ pub(crate) fn run_broker_command(command: BrokerSubcommand) -> Result<(), SoldrE
 /// validation, version-floor check, and (once soldr starts minting them --
 /// separate follow-up work) composite session-token enforcement for free.
 fn run_broker_serve(program: &str) -> Result<(), SoldrError> {
+    use fs2::FileExt;
     use running_process::broker::lifecycle::names_v2::v2_program_pipe;
     use running_process::broker::server::singleton_bind::resolve_socket_path;
     use running_process::broker::server::{
@@ -77,30 +70,6 @@ fn run_broker_serve(program: &str) -> Result<(), SoldrError> {
 
     const BROKER_PIPE_IDX: u32 = 0;
 
-    let paths = crate::core::SoldrPaths::new()?;
-
-    // Best-effort: without this, every Hello is correctly but uselessly
-    // refused as ServiceUnknown until someone remembers to run
-    // `soldr daemon install-servicedef` by hand first. A failure here
-    // (e.g. no sibling soldr-daemon binary next to this soldr binary in a
-    // partial dev build) does not stop the broker from serving -- it just
-    // stays in that same refuse-everything state, which is the existing,
-    // safe fallback behavior.
-    match crate::daemon::service_definition::install_default_service_definition() {
-        Ok(installed) => {
-            println!(
-                "soldr broker: soldr-daemon servicedef installed at {}",
-                installed.path.display()
-            );
-        }
-        Err(err) => {
-            eprintln!(
-                "soldr broker: could not install soldr-daemon servicedef ({err}); \
-                 continuing without daemon-launch capability for this service."
-            );
-        }
-    }
-
     // soldr#2388: container-safe identity — the broker is mandatory for every
     // compile, so it must not hard-fail where the OS ships no /etc/machine-id.
     let sid = crate::broker_identity::resolve_user_sid();
@@ -108,6 +77,23 @@ fn run_broker_serve(program: &str) -> Result<(), SoldrError> {
         .map_err(|e| SoldrError::Other(format!("soldr broker: v2_program_pipe failed: {e}")))?;
     let socket_path = resolve_socket_path(&pipe_name)
         .map_err(|e| SoldrError::Other(format!("soldr broker: resolve_socket_path failed: {e}")))?;
+
+    let ownership_file = broker_ownership_file(program)?;
+    if let Err(err) = ownership_file.try_lock_exclusive() {
+        if broker_lock_is_contended(&err) {
+            eprintln!(
+                "soldr broker: another broker already owns program={program}; refusing split control/SESSION ownership"
+            );
+            exit_guard::mark_spoke();
+            guarded_exit(75);
+        }
+        return Err(SoldrError::Other(format!(
+            "soldr broker: could not acquire ownership lock: {err}"
+        )));
+    }
+    // Held for the complete serve lifetime. Both control and SESSION bind only
+    // after this point, so concurrent starters cannot split endpoint ownership.
+    let _ownership_file = ownership_file;
 
     println!("soldr broker: binding at {socket_path} (program={program})");
 
@@ -122,36 +108,12 @@ fn run_broker_serve(program: &str) -> Result<(), SoldrError> {
     // key on and the actual singleton bind, widening the two-broker race (this
     // regressed `two_brokers_against_one_program_never_coexist`). A failure to
     // resolve/spawn the relay is non-fatal — the control socket still serves.
-    {
-        let program = program.to_string();
-        let paths = paths.clone();
-        std::thread::Builder::new()
-            .name("soldr-broker-session-setup".into())
-            .spawn(move || {
-                match crate::daemon::session_endpoint::daemon_session_endpoint_path(&paths)
-                    .map_err(|e| format!("{e}"))
-                {
-                    Ok(backend_pipe) => {
-                        if let Err(err) =
-                            crate::session_transport::spawn_session_relay(&program, backend_pipe)
-                        {
-                            eprintln!("soldr broker: could not start SESSION relay ({err})");
-                        }
-                    }
-                    Err(err) => eprintln!(
-                        "soldr broker: could not resolve daemon SESSION endpoint ({err}); \
-                         continuing without SESSION relay."
-                    ),
-                }
-            })
-            .ok();
+    if let Err(err) = crate::session_transport::spawn_routed_session_relay(program) {
+        eprintln!("soldr broker: could not start SESSION relay ({err})");
     }
 
     let config = BrokerLaunchServeConfig::unbounded(socket_path.clone());
-    let launcher = crate::broker_launcher::SoldrBackendLauncher::new(
-        crate::broker_spawn::broker_spawn_env(),
-        paths,
-    );
+    let launcher = crate::broker_launcher::SoldrBackendLauncher::new();
     match serve_launching_backends_with_launcher(config, &launcher) {
         Ok(()) => Ok(()),
         Err(err) => {
@@ -169,6 +131,24 @@ fn run_broker_serve(program: &str) -> Result<(), SoldrError> {
             )))
         }
     }
+}
+
+fn broker_ownership_file(program: &str) -> Result<std::fs::File, SoldrError> {
+    use sha2::{Digest, Sha256};
+
+    let root = crate::daemon::service_definition::broker_owned_paths().root;
+    std::fs::create_dir_all(&root)?;
+    let digest = hex::encode(Sha256::digest(program.as_bytes()));
+    Ok(std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(root.join(format!("broker-owner-{}.lock", &digest[..24])))?)
+}
+
+fn broker_lock_is_contended(err: &std::io::Error) -> bool {
+    err.kind() == std::io::ErrorKind::WouldBlock
+        || cfg!(windows) && matches!(err.raw_os_error(), Some(32 | 33))
 }
 
 /// Classify a [`running_process::broker::server::BrokerServeError`] as
@@ -200,15 +180,13 @@ fn broker_serve_error_is_already_bound(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use clap::CommandFactory;
+    use fs2::FileExt;
 
     // soldr#2364: caught empirically on the Linux Docker harness -- a
-    // front-door-spawned broker bound under a *different* `--program`
-    // string than `broker_discovery::discover_via_broker` dials is an
-    // unreachable broker. This locks the manual-invocation default
-    // (`soldr broker serve` with no `--program`) to the same string the
-    // front door passes and discovery dials, so the three can never drift
-    // apart silently again.
+    // A front-door-spawned broker under a different `--program` is unreachable
+    // to the SESSION client. Lock manual invocation to the shared resolver.
     crate::timed_test!(serve_program_default_matches_daemon_service_name, {
         let command = crate::cli_args::Cli::command();
         let broker = command
@@ -230,5 +208,21 @@ mod tests {
             default,
             vec![crate::daemon::backend_handle_adoption::SOLDR_DAEMON_SERVICE_NAME.to_string()],
         );
+    });
+
+    crate::timed_test!(one_process_owns_control_and_session_as_a_unit, {
+        let program = format!("soldr-broker-owner-test-{}", std::process::id());
+        let first = broker_ownership_file(&program).expect("first ownership file");
+        first.try_lock_exclusive().expect("first owner");
+        let second = broker_ownership_file(&program).expect("second ownership file");
+        let err = second
+            .try_lock_exclusive()
+            .expect_err("a second broker must not enter either bind path");
+        assert!(broker_lock_is_contended(&err), "{err}");
+        FileExt::unlock(&first).expect("unlock first owner");
+        second
+            .try_lock_exclusive()
+            .expect("ownership must recover after owner exit");
+        FileExt::unlock(&second).expect("unlock second owner");
     });
 }
