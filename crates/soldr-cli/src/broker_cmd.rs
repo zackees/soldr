@@ -109,28 +109,40 @@ fn run_broker_serve(program: &str) -> Result<(), SoldrError> {
 
     // SESSION 0x5350 companion relay (soldr#2388 Step 7 / #2386 Option A, topology
     // (c)): a second socket serving the async full-proxy relay to the daemon's
-    // deterministic SESSION endpoint, alongside the sync control serve below. A
-    // failure to resolve the endpoint path or spawn the relay is non-fatal — the
-    // control socket (legacy + launch) still serves, matching the servicedef
-    // best-effort stance above.
-    match crate::core::SoldrPaths::new()
-        .map_err(|e| format!("{e}"))
-        .and_then(|paths| {
-            crate::daemon::session_endpoint::daemon_session_endpoint_path(&paths)
-                .map_err(|e| format!("{e}"))
-        }) {
-        Ok(backend_pipe) => {
-            match crate::session_transport::spawn_session_relay(program, backend_pipe.clone()) {
-                Ok(()) => {
-                    println!("soldr broker: SESSION relay serving (backend_pipe={backend_pipe})")
+    // deterministic SESSION endpoint, alongside the sync control serve below.
+    //
+    // Do ALL of the relay setup (path resolution + bind + serve) on a background
+    // thread so the main thread goes straight from the "binding at" line to the
+    // control-socket bind (`serve_launching_backends`). Otherwise the endpoint
+    // resolution here would sit in the window between the readiness line callers
+    // key on and the actual singleton bind, widening the two-broker race (this
+    // regressed `two_brokers_against_one_program_never_coexist`). A failure to
+    // resolve/spawn the relay is non-fatal — the control socket still serves.
+    {
+        let program = program.to_string();
+        std::thread::Builder::new()
+            .name("soldr-broker-session-setup".into())
+            .spawn(move || {
+                match crate::core::SoldrPaths::new()
+                    .map_err(|e| format!("{e}"))
+                    .and_then(|paths| {
+                        crate::daemon::session_endpoint::daemon_session_endpoint_path(&paths)
+                            .map_err(|e| format!("{e}"))
+                    }) {
+                    Ok(backend_pipe) => {
+                        if let Err(err) =
+                            crate::session_transport::spawn_session_relay(&program, backend_pipe)
+                        {
+                            eprintln!("soldr broker: could not start SESSION relay ({err})");
+                        }
+                    }
+                    Err(err) => eprintln!(
+                        "soldr broker: could not resolve daemon SESSION endpoint ({err}); \
+                         continuing without SESSION relay."
+                    ),
                 }
-                Err(err) => eprintln!("soldr broker: could not start SESSION relay ({err})"),
-            }
-        }
-        Err(err) => eprintln!(
-            "soldr broker: could not resolve daemon SESSION endpoint ({err}); \
-             continuing without SESSION relay."
-        ),
+            })
+            .ok();
     }
 
     let config = BrokerLaunchServeConfig::unbounded(socket_path.clone());

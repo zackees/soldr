@@ -57,6 +57,70 @@ pub fn session_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Retry cadence for the SESSION hot path while the broker/daemon come up.
+const SESSION_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Outcome of the SESSION compile hot path ([`session_hot_path`]), consumed by
+/// `compile_dispatch`. All SESSION policy (opt-in gate, broker/daemon ensure,
+/// pre-output retry, and the mid-stream-vs-fallback boundary) lives here rather
+/// than in the already-oversized `compile_dispatch`.
+pub enum SessionHotPathOutcome {
+    /// SESSION served the compile; return this exit code.
+    Served(i32),
+    /// SESSION failed AFTER output began — a legacy retry would double-print, so
+    /// this is a hard error carrying the cause.
+    HardFail(io::Error),
+    /// SESSION was disabled, or failed pre-output (nothing printed); the caller
+    /// should run the legacy path.
+    Fallthrough,
+}
+
+/// SESSION compile hot path (soldr#2388 Step 7b): when `SOLDR_USE_SESSION` is
+/// enabled, ensure the broker + daemon are up and relay the compile client →
+/// broker → daemon, retrying **pre-output** failures within the spawn-retry
+/// budget (the broker/daemon may still be coming up, exactly as the legacy path
+/// waits for the daemon). A pre-output failure printed nothing, so retrying and
+/// then falling back is safe; a mid-stream failure is a hard error.
+pub fn session_hot_path(rustc_argv: &[String]) -> SessionHotPathOutcome {
+    use std::time::Instant;
+
+    if !session_enabled() {
+        return SessionHotPathOutcome::Fallthrough;
+    }
+    let deadline = Instant::now() + crate::compile_dispatch::resolved_spawn_retry_budget();
+    let _ = crate::broker_discovery_gate::spawn_or_confirm_broker_daemon(deadline);
+    let program = crate::daemon::backend_handle_adoption::broker_program();
+    let Ok(cwd) = std::env::current_dir() else {
+        return SessionHotPathOutcome::Fallthrough;
+    };
+    let cwd = cwd.display().to_string();
+    let env: Vec<SessionEnvVar> = std::env::vars()
+        .map(|(key, value)| SessionEnvVar { key, value })
+        .collect();
+    loop {
+        match run_session_compile_with_detailed(&program, rustc_argv, cwd.clone(), env.clone()) {
+            Ok(outcome) => {
+                // Observability (opt-in, no production noise): a SESSION-served
+                // marker the multi-process smoke greps to prove SESSION carried
+                // the compile. `cache_outcome`: 1=Hit, 2=Miss, 3=Error.
+                if std::env::var_os("SOLDR_SESSION_DEBUG").is_some() {
+                    eprintln!(
+                        "soldr: SESSION compile served (cache_outcome={:?})",
+                        outcome.cache_outcome
+                    );
+                }
+                return SessionHotPathOutcome::Served(outcome.exit_code);
+            }
+            Err(err) if err.output_started => return SessionHotPathOutcome::HardFail(err.source),
+            Err(err) if Instant::now() >= deadline => {
+                eprintln!("soldr: SESSION compile unavailable ({err}); using legacy path");
+                return SessionHotPathOutcome::Fallthrough;
+            }
+            Err(_) => std::thread::sleep(SESSION_RETRY_INTERVAL),
+        }
+    }
+}
+
 /// Resolve the companion SESSION socket path for `program` — the same
 /// derivation the broker binds and the client dials.
 pub fn session_socket_path(program: &str) -> io::Result<String> {
