@@ -1,0 +1,207 @@
+//! Multi-process SESSION production-path smoke (soldr#2388 Step 8 / #2361
+//! Phase 3): a **real** `soldr broker serve` process plus a **real** soldr
+//! RUSTC_WRAPPER invocation with `SOLDR_USE_BROKER=1` + `SOLDR_USE_SESSION=1`
+//! compile a tiny crate end-to-end through the broker relay to the daemon.
+//!
+//! The in-process anchor (`session_real_compile_e2e`) proves the data path; this
+//! proves the piece it cannot: the production **spawn** path — the broker as a
+//! separate process, the daemon launched under it, and the client dialing the
+//! broker's companion SESSION socket by program namespace. The
+//! `SOLDR_SESSION_DEBUG` "SESSION compile served" marker proves SESSION actually
+//! carried the compile rather than silently falling back to the legacy path.
+//!
+//! Heavy + multi-process by nature (per the codebase, this true-branch is what
+//! the Docker harness covers); it runs under a generous `timed_test!` budget and
+//! is designed to fail loudly in CI if the production SESSION path regresses.
+
+mod common;
+
+use soldr_cli::timed_test;
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+fn unique_program(label: &str) -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    format!("soldr-session-mp-{label}-{:012x}", nanos & 0xFFFF_FFFF_FFFF)
+}
+
+/// rustc as the sibling of cargo's `CARGO` env — dep-free, the pinned toolchain.
+fn sibling_rustc() -> PathBuf {
+    let cargo = std::env::var_os("CARGO").expect("CARGO set by cargo test");
+    Path::new(&cargo).with_file_name(format!("rustc{}", std::env::consts::EXE_SUFFIX))
+}
+
+use std::sync::{Arc, Mutex};
+
+/// Drain a child stream on a background thread into a shared line buffer, so the
+/// pipe never blocks and the full broker log is available for diagnostics.
+fn drain_lines<R: std::io::Read + Send + 'static>(reader: R) -> Arc<Mutex<Vec<String>>> {
+    let lines = Arc::new(Mutex::new(Vec::<String>::new()));
+    let sink = Arc::clone(&lines);
+    std::thread::spawn(move || {
+        for line in BufReader::new(reader).lines().map_while(Result::ok) {
+            sink.lock().unwrap().push(line);
+        }
+    });
+    lines
+}
+
+/// Wait until a collected line contains `needle`, or the deadline passes.
+fn wait_for(lines: &Arc<Mutex<Vec<String>>>, needle: &str, deadline: Instant) -> bool {
+    loop {
+        if lines.lock().unwrap().iter().any(|l| l.contains(needle)) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Kill any daemon this test's broker/client launched, so none leaks past the
+/// test (a leaked daemon holding the isolated root's sockets/alias would
+/// cascade-fail sibling tests in a shared nextest run). Robust to the exact
+/// pidfile derivation: recursively find every `daemon.pid` under the isolated
+/// root and terminate its pid.
+fn stop_daemon_in_root(root: &Path) {
+    fn find_pids(dir: &Path, out: &mut Vec<u32>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                find_pids(&path, out);
+            } else if path.file_name().is_some_and(|n| n == "daemon.pid") {
+                if let Ok(text) = std::fs::read_to_string(&path) {
+                    if let Some(pid) = text
+                        .split_whitespace()
+                        .next()
+                        .and_then(|s| s.parse::<u32>().ok())
+                    {
+                        out.push(pid);
+                    }
+                }
+            }
+        }
+    }
+    let mut pids = Vec::new();
+    find_pids(root, &mut pids);
+    for pid in pids {
+        #[cfg(windows)]
+        let _ = Command::new("taskkill")
+            .args(["/F", "/PID", &pid.to_string()])
+            .output();
+        #[cfg(unix)]
+        let _ = Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .output();
+    }
+}
+
+timed_test!(
+    session_compile_over_broker_multiprocess,
+    Duration::from_secs(180),
+    {
+        let rustc = sibling_rustc();
+        if !rustc.is_file() {
+            eprintln!("skip: no sibling rustc at {rustc:?}");
+            return;
+        }
+
+        let root = common::unique_temp_dir("session-mp-root");
+        let program = unique_program("prog");
+        let project = root.join("workspace");
+        std::fs::create_dir_all(project.join("src")).expect("create project src");
+        std::fs::write(project.join("src/lib.rs"), "pub fn mp() -> u32 { 909 }\n")
+            .expect("write source");
+
+        // 1) Spawn the real broker on the isolated cache root. It installs the
+        //    servicedef, binds the control socket, and serves the companion
+        //    SESSION relay to the daemon's deterministic endpoint.
+        let mut broker = Command::new(common::soldr_bin())
+            .args(["broker", "serve", "--program", &program])
+            .env("SOLDR_CACHE_DIR", &root)
+            .env("SOLDR_USE_BROKER", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn soldr broker serve");
+
+        let broker_out = drain_lines(broker.stdout.take().expect("broker stdout"));
+        let broker_err = drain_lines(broker.stderr.take().expect("broker stderr"));
+        // Wait for the SESSION relay to actually BIND (not just the control
+        // socket) so the client never races the relay's bind.
+        let bound = wait_for(
+            &broker_out,
+            "SESSION relay bound at",
+            Instant::now() + Duration::from_secs(30),
+        );
+
+        // 2) Run soldr in RUSTC_WRAPPER mode (argv[1] = rustc) through the SESSION
+        //    hot path: it ensures the daemon under the broker, then relays the
+        //    compile client -> broker -> daemon.
+        let mut cmd = Command::new(common::soldr_bin());
+        common::scrub_outer_soldr_env(&mut cmd);
+        let out = cmd
+            .arg(&rustc)
+            .args([
+                "--edition",
+                "2021",
+                "--crate-type",
+                "lib",
+                "--crate-name",
+                "soldr_session_mp",
+                "--emit=metadata",
+                "-C",
+                "metadata=mp1",
+                "--out-dir",
+                "target/debug/deps",
+                "src/lib.rs",
+            ])
+            .current_dir(&project)
+            .env("SOLDR_CACHE_DIR", &root)
+            .env("SOLDR_USE_BROKER", "1")
+            .env("SOLDR_USE_SESSION", "1")
+            .env("SOLDR_SESSION_DEBUG", "1")
+            .env("SOLDR_BROKER_PROGRAM", &program)
+            .output()
+            .expect("run soldr RUSTC_WRAPPER over SESSION");
+
+        // Cleanup before asserting so a failure never leaks processes.
+        let _ = broker.kill();
+        let _ = broker.wait();
+        stop_daemon_in_root(&root);
+
+        let blog = |label: &str, l: &Arc<Mutex<Vec<String>>>| {
+            format!("{label}:\n  {}", l.lock().unwrap().join("\n  "))
+        };
+        let broker_log = format!(
+            "{}\n{}",
+            blog("broker stdout", &broker_out),
+            blog("broker stderr", &broker_err)
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            bound,
+            "broker SESSION relay did not bind within 30s\n{broker_log}"
+        );
+        assert!(
+            out.status.success(),
+            "SESSION wrapper compile failed\nstdout:\n{stdout}\nstderr:\n{stderr}\n{broker_log}"
+        );
+        assert!(
+            stderr.contains("SESSION compile served"),
+            "SESSION did not carry the compile (silent legacy fallback?)\n\
+             wrapper stderr:\n{stderr}\n{broker_log}"
+        );
+    }
+);

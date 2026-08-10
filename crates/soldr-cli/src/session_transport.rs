@@ -109,6 +109,8 @@ impl HelloResponder for SessionRelayResponder {
 /// process exits. `backend_pipe` is the daemon's SESSION endpoint the relay
 /// dials per negotiated connection.
 pub fn spawn_session_relay(program: &str, backend_pipe: String) -> io::Result<()> {
+    use running_process::broker::server::session_serve_async::serve_broker_session_endpoint;
+
     let session_socket = session_socket_path(program)?;
     std::thread::Builder::new()
         .name("soldr-broker-session".into())
@@ -130,15 +132,31 @@ pub fn spawn_session_relay(program: &str, backend_pipe: String) -> io::Result<()
                 return;
             };
             let responder = SessionRelayResponder { backend_pipe };
-            if let Err(err) = rt.block_on(
-                running_process::broker::server::session_serve_async::serve_broker_session_socket(
-                    &session_socket,
-                    &responder,
-                    &peer_policy,
-                ),
-            ) {
-                eprintln!("soldr broker: SESSION relay ended: {err}");
-            }
+            rt.block_on(async move {
+                // Bind with soldr's OWN listener helper so the relay's socket name
+                // is produced by the exact same conversion the client's dial uses
+                // (`local_session_name`) — binding through running-process's
+                // `serve_broker_session_socket` used a separate name path, which
+                // could yield a pipe the client never finds (os error 2). Emit a
+                // real BOUND signal only after the socket exists, so callers never
+                // race the bind.
+                let listener =
+                    match crate::daemon::session_endpoint::bind_session_listener(&session_socket) {
+                        Ok(listener) => listener,
+                        Err(err) => {
+                            eprintln!(
+                            "soldr broker: SESSION relay could not bind {session_socket}: {err}"
+                        );
+                            return;
+                        }
+                    };
+                println!("soldr broker: SESSION relay bound at {session_socket}");
+                if let Err(err) =
+                    serve_broker_session_endpoint(listener, &responder, &peer_policy).await
+                {
+                    eprintln!("soldr broker: SESSION relay ended: {err}");
+                }
+            });
         })
         .map(|_| ())
         .map_err(|e| io::Error::other(format!("spawn SESSION relay thread: {e}")))
@@ -161,7 +179,7 @@ pub struct SessionError {
 }
 
 impl SessionError {
-    fn pre_output(source: io::Error) -> Self {
+    pub(crate) fn pre_output(source: io::Error) -> Self {
         Self {
             output_started: false,
             source,
@@ -248,6 +266,9 @@ async fn run_session_compile_async(
     // Setup — connect / Hello / negotiate / SessionStart send. Every failure
     // here is pre-output (nothing printed yet), so it is safe to fall back.
     let session_socket = session_socket_path(program).map_err(SessionError::pre_output)?;
+    if std::env::var_os("SOLDR_SESSION_DEBUG").is_some() {
+        eprintln!("soldr: SESSION dialing program={program} socket={session_socket}");
+    }
     let name = local_session_name(&session_socket).map_err(SessionError::pre_output)?;
     let mut stream = Stream::connect(name)
         .await
