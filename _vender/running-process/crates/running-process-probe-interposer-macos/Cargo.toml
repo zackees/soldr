@@ -1,0 +1,29 @@
+[package]
+name = "running-process-probe-interposer-macos"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "macOS DYLD_INSERT_LIBRARIES interposer for the running-process file-hook tier (#551 slice 5)"
+publish = false
+
+# cdylib so the resulting
+# `librunning_process_probe_interposer_macos.dylib` can be set in
+# `DYLD_INSERT_LIBRARIES` for target processes. rlib also listed so
+# the workspace builds for non-macOS targets (the lib.rs body is
+# `#![cfg(target_os = "macos")]`-gated to an empty stub on every
+# other host).
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+test-seams = []
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
+[lints]
+workspace = true

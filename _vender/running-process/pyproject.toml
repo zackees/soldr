@@ -1,0 +1,104 @@
+[build-system]
+requires = ["soldr>=0.7.98"]
+build-backend = "soldr"
+
+[project]
+name = "running_process"
+version = "4.8.1"
+description = "A Rust-backed subprocess wrapper with split stdout/stderr streaming"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "BSD 3-Clause License" }
+license-files = ["LICENSE"]
+authors = [{ name = "Your Name", email = "your.email@example.com" }]
+dependencies = []
+
+[project.scripts]
+running-process = "running_process.cli:main"
+running-processor = "running_process.processor_cli:main"
+
+[project.urls]
+Homepage = "https://github.com/zackees/running-process"
+Repository = "https://github.com/zackees/running-process"
+Issues = "https://github.com/zackees/running-process/issues"
+
+[dependency-groups]
+dev = [
+    # No `[zig]` extra: zig is a competing cross-compile toolchain and is
+    # banned by ci/cross_compiler_guard.py. Old-glibc wheels come from the
+    # manylinux2014 container instead.
+    "maturin>=1.7,<2",
+    "pytest>=8.0.0",
+    "pytest-cov>=6.0.0",
+    # pytest-timeout enforces the per-test wall-clock kill configured in
+    # [tool.pytest.ini_options] below. On fire it dumps every thread's
+    # Python stack so the offending test is identifiable in CI logs.
+    "pytest-timeout>=2.3.0",
+    "ruff>=0.8.0",
+]
+
+[tool.maturin]
+manifest-path = "crates/running-process-py/Cargo.toml"
+module-name = "running_process._native"
+python-source = "src"
+features = ["pyo3/extension-module", "pyo3/abi3-py310"]
+
+[tool.uv]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "Cargo.toml" },
+    { file = "Cargo.lock" },
+    { file = "build.py" },
+    { file = "src/**/*.py" },
+    { file = "crates/**/*.rs" },
+    { file = "crates/**/*.toml" },
+]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = ["-ra", "--strict-markers"]
+testpaths = ["tests"]
+# Hard 2-minute wall-clock per test, enforced by pytest-timeout. The
+# `thread` method (rather than `signal`) is cross-platform — it works
+# on Windows where SIGALRM isn't available — and on fire it raises in
+# the main thread AND dumps every thread's stack so the offending test
+# is identifiable in CI logs.
+timeout = 120
+timeout_method = "thread"
+markers = [
+    "live: exercises real OS process and signal behavior; skipped unless RUNNING_PROCESS_LIVE_TESTS=1",
+    "windows_encoding: exercises every captured-output path on Windows against UTF-8 payloads under a cp1252 console; skipped unless RUNNING_PROCESS_WINDOWS_ENCODING_TESTS=1 and sys.platform == 'win32'. Run via: pytest -m windows_encoding tests/encoding",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N", "PT", "RUF"]
+# Codes owned by ci/lint_python/keyboard_interrupt_checker.py. Without this,
+# ruff treats `# noqa: KBI002` as an unused directive (RUF100) and `--fix`
+# DELETES it — silently disarming the suppression, so `./lint` then fails on
+# the very line that was deliberately exempted.
+external = ["KBI001", "KBI002"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["N802", "N803", "N806", "PT009", "PT027"]
+
+[tool.coverage.run]
+source = ["running_process"]
+omit = ["tests/*", "ci/*"]
+
+[tool.coverage.report]
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.",
+]
+
+[tool.coverage.xml]
+output = "coverage-python.xml"
+
+[tool.coverage.html]
+directory = "htmlcov"

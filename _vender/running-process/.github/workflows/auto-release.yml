@@ -1,0 +1,876 @@
+name: Auto Release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "[0-9]*"
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Optional tag to publish, for example 3.2.1 or v3.2.1. Leave empty to use the current pyproject version.
+        required: false
+        type: string
+      dry_run:
+        description: Build everything but publish nothing. Use this to validate a change to this workflow from a PR branch before merging it.
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  # Pinned so a soldr release cannot silently change how release artifacts
+  # are built (#561).
+  #
+  # 0.8.29 rather than the newest: 0.8.30 was published minutes before this
+  # ran and pip on the runner still enumerated 0.8.29 as the maximum, so the
+  # install failed. Both have identical file sets and requires-python; the
+  # difference was index propagation. Pinning a version the index has settled
+  # on avoids a release that fails for a reason unrelated to this repo.
+  SOLDR_VERSION: "0.8.29"
+
+jobs:
+  detect-bump:
+    name: Detect version bump
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.check.outputs.should_release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Determine whether to proceed
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          read_version() {
+            python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+          data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+          print(data["project"]["version"])
+          PY
+          }
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "manual dispatch — proceeding"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          NEW_VERSION="$(read_version)"
+
+          if [ "$EVENT_NAME" = "push" ] && [ "$REF_TYPE" = "branch" ]; then
+            OLD_VERSION="$(git show HEAD^:pyproject.toml 2>/dev/null \
+              | python3 -c "import sys, tomllib; print(tomllib.loads(sys.stdin.read())['project']['version'])" 2>/dev/null \
+              || echo "")"
+            if [ -z "$OLD_VERSION" ] || [ "$NEW_VERSION" = "$OLD_VERSION" ]; then
+              echo "no pyproject version change ($NEW_VERSION) — skipping release"
+              echo "should_release=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "version bumped: $OLD_VERSION -> $NEW_VERSION"
+          fi
+
+          for CANDIDATE in "$NEW_VERSION" "v$NEW_VERSION"; do
+            if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$CANDIDATE" >/dev/null 2>&1; then
+              echo "release $CANDIDATE already exists — skipping"
+              echo "should_release=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+
+          echo "should_release=true" >> "$GITHUB_OUTPUT"
+
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-latest
+    needs: detect-bump
+    if: needs.detect-bump.outputs.should_release == 'true'
+    outputs:
+      checkout_ref: ${{ steps.meta.outputs.checkout_ref }}
+      release_tag: ${{ steps.meta.outputs.release_tag }}
+      version: ${{ steps.meta.outputs.version }}
+      pypi_complete: ${{ steps.registries.outputs.pypi_complete }}
+      crates_complete: ${{ steps.registries.outputs.crates_complete }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_type == 'tag' && github.ref_name || github.ref_name }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Validate version consistency between pyproject.toml and Cargo.toml
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import sys
+          import tomllib
+          from pathlib import Path
+
+          py = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+          cargo = tomllib.loads(Path("Cargo.toml").read_text(encoding="utf-8"))
+          py_version = py["project"]["version"]
+          cargo_version = cargo["workspace"]["package"]["version"]
+          if py_version != cargo_version:
+              print(
+                  f"pyproject.toml version ({py_version}) does not match "
+                  f"Cargo.toml workspace version ({cargo_version})",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          print(f"version consistency OK: {py_version}")
+          PY
+
+      - name: Resolve release version and fail on already-published release
+        id: meta
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RAW_TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          VERSION="$(python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+          data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+          print(data["project"]["version"])
+          PY
+          )"
+
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${GITHUB_REF_NAME#refs/tags/}"
+            CHECKOUT_REF="$TAG"
+          else
+            TAG="${RAW_TAG#refs/tags/}"
+            if [ -z "$TAG" ]; then
+              if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
+                TAG="$VERSION"
+                CHECKOUT_REF="$VERSION"
+              elif git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+                TAG="v$VERSION"
+                CHECKOUT_REF="$TAG"
+              else
+                TAG="$VERSION"
+                CHECKOUT_REF="$GITHUB_SHA"
+              fi
+            else
+              if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+                CHECKOUT_REF="$TAG"
+              else
+                CHECKOUT_REF="$GITHUB_SHA"
+              fi
+            fi
+          fi
+
+          NORMALIZED_TAG="${TAG#v}"
+
+          if [ "$NORMALIZED_TAG" != "$VERSION" ]; then
+            echo "Tag $TAG does not match pyproject version $VERSION" >&2
+            exit 1
+          fi
+
+          SEEN=""
+          for CANDIDATE in "$TAG" "$NORMALIZED_TAG" "v$NORMALIZED_TAG"; do
+            [ -z "$CANDIDATE" ] && continue
+            case " $SEEN " in
+              *" $CANDIDATE "*) continue ;;
+            esac
+            SEEN="$SEEN $CANDIDATE"
+
+            RELEASE_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/$CANDIDATE" 2>/dev/null || true)"
+            [ -z "$RELEASE_JSON" ] && continue
+
+            PUBLISHED_AT="$(RELEASE_JSON="$RELEASE_JSON" python3 - <<'PY'
+          import json
+          import os
+
+          data = json.loads(os.environ["RELEASE_JSON"])
+          print(data.get("published_at") or "")
+          PY
+            )"
+            if [ -n "$PUBLISHED_AT" ]; then
+              # This guard exists to stop a second publish of a version that
+              # already shipped. A dry run publishes nothing, so the guard has
+              # nothing to protect — and enforcing it there makes the dry run
+              # useless: between version bumps (the normal state of main) it
+              # aborts before a single build job runs, which is exactly what
+              # happened on the first attempt at run 30667355874.
+              if [ "$DRY_RUN" = "true" ]; then
+                echo "Release $CANDIDATE is already published at $PUBLISHED_AT" >&2
+                echo "dry run: continuing anyway so the build matrix is exercised" >&2
+              else
+                echo "Release $CANDIDATE is already published at $PUBLISHED_AT" >&2
+                exit 1
+              fi
+            fi
+          done
+
+          echo "checkout_ref=$CHECKOUT_REF" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check PyPI and crates.io publish status
+        id: registries
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.meta.outputs.version }}"
+          export RP_VERSION="$VERSION"
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+          version = os.environ["RP_VERSION"]
+
+          # ----- PyPI -----
+          pypi_url = f"https://pypi.org/pypi/running_process/{version}/json"
+          try:
+              with urllib.request.urlopen(pypi_url, timeout=10) as resp:
+                  data = json.loads(resp.read())
+              urls = data.get("urls") or []
+              has_wheel = any(u.get("packagetype") == "bdist_wheel" for u in urls)
+              has_sdist = any(u.get("packagetype") == "sdist" for u in urls)
+              pypi_complete = has_wheel and has_sdist
+          except urllib.error.HTTPError as exc:
+              if exc.code == 404:
+                  pypi_complete = False
+              else:
+                  raise
+
+          # ----- crates.io -----
+          # Keep this in sync with PUBLISH_ORDER in the publish-crates job.
+          # Wave 7 of #165: post-consolidation crate set.
+          # Keep in dependency order, and in sync with PUBLISH_ORDER below.
+          # `running-process`'s `probe` feature depends on
+          # `running-process-probe`, and `running-process-probe-daemon`
+          # depends on both — so the probe crate must exist on crates.io
+          # before `running-process` can even resolve.
+          rust_crates = (
+              "running-process-probe",
+              "running-process",
+              "running-process-probe-daemon",
+              "running-process-py",
+          )
+
+          def crate_version_exists(name: str, version: str) -> bool:
+              url = f"https://crates.io/api/v1/crates/{name}/{version}"
+              try:
+                  with urllib.request.urlopen(url, timeout=10) as resp:
+                      json.loads(resp.read())
+                  return True
+              except urllib.error.HTTPError as exc:
+                  if exc.code == 404:
+                      return False
+                  raise
+
+          crates_existing = [c for c in rust_crates if crate_version_exists(c, version)]
+          crates_complete = len(crates_existing) == len(rust_crates)
+
+          print(f"pypi_complete={'true' if pypi_complete else 'false'}")
+          print(f"crates_complete={'true' if crates_complete else 'false'}")
+          PY
+          echo "registry status:"
+          cat "$GITHUB_OUTPUT" | tail -2
+
+  build-sidecars:
+    # #447: build the Win10 ConPTY sidecar tarballs and emit the
+    # `conpty-sidecar.sha256.toml` manifest that every downstream build
+    # step (wheels, binaries, crate publish) consumes so build.rs bakes
+    # the matching hashes into the crate. Running this BEFORE wheels /
+    # binaries / crate publish is what makes the SHA-verification path
+    # actually verify in the same workflow run that ships the tarballs.
+    name: Build ConPTY sidecars and manifest (#447)
+    runs-on: ubuntu-latest
+    needs: preflight
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.checkout_ref }}
+
+      - name: Build sidecar tarballs + manifest
+        shell: bash
+        env:
+          RP_VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Hermetic + reproducible: the release no longer fetches
+          # ConPTY assets from NuGet at build time. Per-arch
+          # `conpty.dll` + `OpenConsole.exe` bytes are vendored under
+          # `vendor/win32/conpty/<arch>/` so release builds have no NuGet
+          # network dependency and produce byte-identical tarballs
+          # from any git SHA. NuGet drift is observed by the
+          # `dependency-check.yml` cron workflow which opens an
+          # issue on drift but never auto-updates the vendored bytes.
+          # See `vendor/win32/conpty/README.md` for the refresh procedure.
+          #
+          # WINDOWS_CONPTY_VERSION.txt records the NuGet revision the
+          # vendored bytes came from and travels alongside the
+          # binaries in the tarballs as `VERSION.txt`.
+          VERSION=$(grep -E '^Microsoft\.Windows\.Console\.ConPTY' WINDOWS_CONPTY_VERSION.txt | awk '{print $NF}')
+          if [ -z "$VERSION" ]; then
+            echo "could not parse pinned NuGet version from WINDOWS_CONPTY_VERSION.txt" >&2
+            exit 1
+          fi
+          echo "Vendored ConPTY source: NuGet Microsoft.Windows.Console.ConPTY $VERSION"
+          mkdir -p sidecar-out
+
+          # Header is regenerated on every release; the dev-checkout
+          # copy in the repo root is treated as a placeholder.
+          {
+            echo "# Per-arch SHA-256 hashes of the conpty-sidecar-<arch>.tar.zst assets attached"
+            echo "# to release v${RP_VERSION}. Regenerated by .github/workflows/auto-release.yml"
+            echo "# (build-sidecars job, #447). Build.rs at the crate root reads this file at"
+            echo "# compile time and bakes the per-arch hashes into the running-process crate."
+            echo "# An arch entry missing from this file disables verification for that arch."
+            echo
+          } > sidecar-out/conpty-sidecar.sha256.toml
+
+          # Read the vendored per-arch bytes straight from the repo
+          # checkout. No /tmp staging needed — `tar -C vendor/win32/conpty/${short}`
+          # tars conpty.dll + OpenConsole.exe in place, and VERSION.txt
+          # is generated next to them in a per-arch scratch dir so
+          # vendored files stay untouched.
+          for arch in x64 x86 arm64; do
+            short="$arch"
+            out_name="conpty-sidecar-${short}.tar.zst"
+            dll_src="vendor/win32/conpty/${short}/conpty.dll"
+            exe_src="vendor/win32/conpty/${short}/OpenConsole.exe"
+            if [ ! -f "$dll_src" ] || [ ! -f "$exe_src" ]; then
+              echo "missing vendored ConPTY assets for $arch — skipping" >&2
+              echo "  conpty.dll: $dll_src ($( [ -f "$dll_src" ] && echo present || echo MISSING))" >&2
+              echo "  OpenConsole.exe: $exe_src ($( [ -f "$exe_src" ] && echo present || echo MISSING))" >&2
+              continue
+            fi
+            stage="/tmp/conpty-stage/${short}"
+            mkdir -p "$stage"
+            cp "$dll_src" "$stage/conpty.dll"
+            cp "$exe_src" "$stage/OpenConsole.exe"
+            printf 'Microsoft.Windows.Console.ConPTY %s\nrunning-process %s\n' \
+              "$VERSION" "$RP_VERSION" > "$stage/VERSION.txt"
+            tar -C "$stage" -cf - conpty.dll OpenConsole.exe VERSION.txt \
+              | zstd -19 -o "sidecar-out/$out_name"
+            sha=$(sha256sum "sidecar-out/$out_name" | awk '{print $1}')
+            size=$(stat -c%s "sidecar-out/$out_name")
+            {
+              echo "[asset.${short}]"
+              echo "sha256 = \"$sha\""
+              echo "size_bytes = $size"
+              echo
+            } >> sidecar-out/conpty-sidecar.sha256.toml
+          done
+
+          echo "Manifest:"
+          cat sidecar-out/conpty-sidecar.sha256.toml
+          echo "Tarballs:"
+          ls -la sidecar-out/conpty-sidecar-*.tar.zst
+
+      - name: Upload sidecar artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: conpty-sidecars
+          path: sidecar-out/*
+          if-no-files-found: error
+
+  build-wheels-linux-x86:
+    name: Build wheels (linux x86)
+    needs: [preflight, build-sidecars]
+    # A dry run builds even when the version is already on PyPI; otherwise
+    # it skips the wheel jobs entirely and verifies nothing about them.
+    # Publishing stays gated separately on `dry_run != true`.
+    if: inputs.dry_run == true || needs.preflight.outputs.pypi_complete != 'true'
+    uses: ./.github/workflows/_build.yml
+    with:
+      runs-on: ubuntu-24.04
+      artifact-name: wheels-linux-x86
+      # Built where an old glibc actually lives, rather than by linking
+      # through zig to fake a baseline older than the host.
+      #
+      # manylinux_2_28, not manylinux2014: GitHub's runner Node needs
+      # GLIBC_2.28, so it cannot execute inside the 2.17 image at all —
+      # `actions/checkout` dies before any build step. 2.28 is the oldest
+      # baseline that still runs the JS actions this template depends on.
+      container: quay.io/pypa/manylinux_2_28_x86_64
+      build-mode: release
+      include-sdist: true
+      sidecar-manifest-artifact: conpty-sidecars
+
+  build-wheels-linux-arm:
+    name: Build wheels (linux arm)
+    needs: [preflight, build-sidecars]
+    # A dry run builds even when the version is already on PyPI; otherwise
+    # it skips the wheel jobs entirely and verifies nothing about them.
+    # Publishing stays gated separately on `dry_run != true`.
+    if: inputs.dry_run == true || needs.preflight.outputs.pypi_complete != 'true'
+    uses: ./.github/workflows/_build.yml
+    with:
+      runs-on: ubuntu-24.04-arm
+      artifact-name: wheels-linux-arm
+      # Built where an old glibc actually lives, rather than by linking
+      # through zig to fake a baseline older than the host.
+      #
+      # manylinux_2_28, not manylinux2014: GitHub's runner Node needs
+      # GLIBC_2.28, so it cannot execute inside the 2.17 image at all —
+      # `actions/checkout` dies before any build step. 2.28 is the oldest
+      # baseline that still runs the JS actions this template depends on.
+      container: quay.io/pypa/manylinux_2_28_aarch64
+      build-mode: release
+      sidecar-manifest-artifact: conpty-sidecars
+
+  build-wheels-macos-x86:
+    name: Build wheels (macos x86)
+    needs: [preflight, build-sidecars]
+    # A dry run builds even when the version is already on PyPI; otherwise
+    # it skips the wheel jobs entirely and verifies nothing about them.
+    # Publishing stays gated separately on `dry_run != true`.
+    if: inputs.dry_run == true || needs.preflight.outputs.pypi_complete != 'true'
+    uses: ./.github/workflows/_build.yml
+    with:
+      runs-on: macos-15-intel
+      artifact-name: wheels-macos-x86
+      build-mode: release
+      sidecar-manifest-artifact: conpty-sidecars
+
+  build-wheels-macos-arm:
+    name: Build wheels (macos arm)
+    needs: [preflight, build-sidecars]
+    # A dry run builds even when the version is already on PyPI; otherwise
+    # it skips the wheel jobs entirely and verifies nothing about them.
+    # Publishing stays gated separately on `dry_run != true`.
+    if: inputs.dry_run == true || needs.preflight.outputs.pypi_complete != 'true'
+    uses: ./.github/workflows/_build.yml
+    with:
+      runs-on: macos-15
+      artifact-name: wheels-macos-arm
+      build-mode: release
+      sidecar-manifest-artifact: conpty-sidecars
+
+  build-wheels-windows-x86:
+    name: Build wheels (windows x86)
+    needs: [preflight, build-sidecars]
+    # A dry run builds even when the version is already on PyPI; otherwise
+    # it skips the wheel jobs entirely and verifies nothing about them.
+    # Publishing stays gated separately on `dry_run != true`.
+    if: inputs.dry_run == true || needs.preflight.outputs.pypi_complete != 'true'
+    uses: ./.github/workflows/_build.yml
+    with:
+      runs-on: windows-2025
+      artifact-name: wheels-windows-x86
+      build-mode: release
+      sidecar-manifest-artifact: conpty-sidecars
+
+  build-wheels-windows-arm:
+    name: Build wheels (windows arm)
+    needs: [preflight, build-sidecars]
+    # A dry run builds even when the version is already on PyPI; otherwise
+    # it skips the wheel jobs entirely and verifies nothing about them.
+    # Publishing stays gated separately on `dry_run != true`.
+    if: inputs.dry_run == true || needs.preflight.outputs.pypi_complete != 'true'
+    uses: ./.github/workflows/_build.yml
+    with:
+      runs-on: windows-11-arm
+      artifact-name: wheels-windows-arm
+      build-mode: release
+      sidecar-manifest-artifact: conpty-sidecars
+
+  build-binaries:
+    name: Build standalone binaries (${{ matrix.target }})
+    needs: [preflight, build-sidecars]
+    # One runner family for every target (#561). Previously this matrix used
+    # six native runners; cross-compiling from Linux removes five queues, and
+    # the macOS/Windows runner classes are the scarce ones.
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            archive_ext: tar.gz
+            binary_ext: ""
+          - target: aarch64-unknown-linux-gnu
+            archive_ext: tar.gz
+            binary_ext: ""
+          - target: x86_64-apple-darwin
+            archive_ext: tar.gz
+            binary_ext: ""
+          - target: aarch64-apple-darwin
+            archive_ext: tar.gz
+            binary_ext: ""
+          - target: x86_64-pc-windows-msvc
+            archive_ext: zip
+            binary_ext: ".exe"
+          - target: aarch64-pc-windows-msvc
+            archive_ext: zip
+            binary_ext: ".exe"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.checkout_ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.94.1"
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-binaries-${{ matrix.target }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # soldr resolves the rustup-managed toolchain rather than whatever shim
+      # happens to be first on PATH — the same reason the repo requires it
+      # locally. Pinned so a soldr release cannot silently change how release
+      # artifacts are built.
+      - name: Bootstrap soldr
+        run: pipx install "soldr==${{ env.SOLDR_VERSION }}"
+
+      # #447: pull the sidecar manifest from build-sidecars so build.rs
+      # bakes the per-arch SHAs into the daemon/runpm binaries we ship.
+      - uses: actions/download-artifact@v4
+        with:
+          name: conpty-sidecars
+          path: sidecar-out
+
+      - name: Stage sidecar manifest at workspace root
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp sidecar-out/conpty-sidecar.sha256.toml ./conpty-sidecar.sha256.toml
+          echo "Manifest staged:"
+          cat ./conpty-sidecar.sha256.toml
+
+      - name: Build binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Wave 7 of #165: both runpm and the daemon binary live inside
+          # the mono `running-process` crate now. Building them needs the
+          # right feature set per the [[bin]] required-features.
+          # `soldr build`, not `soldr cargo build`: the former is soldr's
+          # blessed cross-compile surface. It prepares the target sysroot and
+          # the compiler/linker environment itself — including the managed
+          # xwin cache with clang/lld for the MSVC targets — so this workflow
+          # installs no cross-compiler of its own. Enforced by
+          # ci/cross_compiler_guard.py.
+          soldr build --release --target ${{ matrix.target }} \
+            --features daemon \
+            --bin runpm \
+            --bin running-process-daemon
+
+      - name: Stage release artifacts
+        id: stage
+        shell: bash
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+          TARGET: ${{ matrix.target }}
+          BINARY_EXT: ${{ matrix.binary_ext }}
+          ARCHIVE_EXT: ${{ matrix.archive_ext }}
+        run: |
+          set -euo pipefail
+          STAGE="staging/running-process-${VERSION}-${TARGET}"
+          mkdir -p "$STAGE"
+          cp "target/${TARGET}/release/runpm${BINARY_EXT}" "$STAGE/"
+          cp "target/${TARGET}/release/running-process-daemon${BINARY_EXT}" "$STAGE/"
+          cp LICENSE "$STAGE/" 2>/dev/null || true
+          cp README.md "$STAGE/" 2>/dev/null || true
+
+          ARCHIVE_BASENAME="running-process-${VERSION}-${TARGET}"
+          mkdir -p dist-binaries
+          cd staging
+          if [ "$ARCHIVE_EXT" = "zip" ]; then
+            7z a -tzip "../dist-binaries/${ARCHIVE_BASENAME}.zip" "running-process-${VERSION}-${TARGET}"
+          else
+            tar -czf "../dist-binaries/${ARCHIVE_BASENAME}.tar.gz" "running-process-${VERSION}-${TARGET}"
+          fi
+          echo "archive=dist-binaries/${ARCHIVE_BASENAME}.${ARCHIVE_EXT}" >> "$GITHUB_OUTPUT"
+
+      # A cross-compiled artifact cannot be smoke-tested by running it, so the
+      # check is that it is the right machine type. Without this a
+      # misconfigured target silently ships six copies of the host binary.
+      - name: Verify the artifact is actually for the target architecture
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          BINARY_EXT: ${{ matrix.binary_ext }}
+        run: |
+          set -euo pipefail
+          BIN="target/${TARGET}/release/runpm${BINARY_EXT}"
+          echo "file(1) says:"
+          file "$BIN"
+          case "$TARGET" in
+            x86_64-unknown-linux-*)   file "$BIN" | grep -q "x86-64" ;;
+            aarch64-unknown-linux-*)  file "$BIN" | grep -q "aarch64" ;;
+            x86_64-apple-darwin)      file "$BIN" | grep -qi "mach-o.*x86_64" ;;
+            aarch64-apple-darwin)     file "$BIN" | grep -qi "mach-o.*arm64" ;;
+            x86_64-pc-windows-msvc)   file "$BIN" | grep -qi "PE32+.*x86-64" ;;
+            aarch64-pc-windows-msvc)  file "$BIN" | grep -qi "PE32+.*Aarch64" ;;
+            *) echo "unhandled target $TARGET" >&2; exit 1 ;;
+          esac
+          echo "architecture OK for $TARGET"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.target }}
+          path: ${{ steps.stage.outputs.archive }}
+          if-no-files-found: error
+
+  publish-pypi:
+    name: Publish PyPI
+    runs-on: ubuntu-latest
+    needs:
+      - preflight
+      - build-wheels-linux-x86
+      - build-wheels-linux-arm
+      - build-wheels-macos-x86
+      - build-wheels-macos-arm
+      - build-wheels-windows-x86
+      - build-wheels-windows-arm
+    if: inputs.dry_run != true && needs.preflight.outputs.pypi_complete != 'true'
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+
+      - name: List wheel artifacts
+        shell: bash
+        run: ls -la dist
+
+      - name: Publish wheel distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          print-hash: true
+          skip-existing: true
+
+  publish-crates:
+    name: Publish crates.io
+    runs-on: ubuntu-latest
+    needs:
+      - preflight
+      - build-sidecars
+      - publish-pypi
+    # Run after PyPI either succeeds or was skipped (already-published).
+    # Skip the job entirely if every crate is already on crates.io.
+    if: |
+      always()
+      && inputs.dry_run != true
+      && needs.preflight.result == 'success'
+      && needs.preflight.outputs.crates_complete != 'true'
+      && needs.build-sidecars.result == 'success'
+      && (needs.publish-pypi.result == 'success' || needs.publish-pypi.result == 'skipped')
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.checkout_ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.94.1"
+
+      # #447: stage the manifest so `cargo publish`'s implicit verify
+      # build reads the per-arch SHAs that match the tarballs uploaded
+      # to this release. Without this, build.rs reads the placeholder
+      # manifest at the repo root and bakes empty hashes.
+      - uses: actions/download-artifact@v4
+        with:
+          name: conpty-sidecars
+          path: sidecar-out
+
+      - name: Stage sidecar manifest at workspace root
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp sidecar-out/conpty-sidecar.sha256.toml ./conpty-sidecar.sha256.toml
+          echo "Manifest staged for crate publish:"
+          cat ./conpty-sidecar.sha256.toml
+
+      - name: Publish crates in dependency order
+        shell: bash
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          RP_VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
+            echo "::error::CARGO_REGISTRY_TOKEN secret is not set" >&2
+            exit 1
+          fi
+
+          # Wave 7 of #165: post-consolidation crate set. `running-process`
+          # is the only Rust crate; `running-process-py` depends on it.
+          # Keep in sync with the rust_crates tuple in preflight's
+          # registry-check step.
+          # Dependency order, not preference. `running-process` has a versioned
+          # dependency on `running-process-probe` (behind its `probe` feature),
+          # and `running-process-probe-daemon` depends on both, so publishing
+          # out of this order fails to resolve rather than merely being untidy.
+          PUBLISH_ORDER=(
+            running-process-probe
+            running-process
+            running-process-probe-daemon
+            running-process-py
+          )
+
+          # `cargo publish` already waits for the published crate to appear
+          # in the sparse index before returning success — that's the index
+          # the NEXT `cargo publish` reads when resolving deps, so cargo's
+          # own wait is sufficient. We don't add a second poll against the
+          # JSON API at /api/v1/crates/$name/$version because that endpoint
+          # propagates separately and can lag the index by several minutes,
+          # which would cause a spurious timeout (saw this on
+          # run 26152536023 with proto v3.2.1).
+          crate_visible() {
+            local name="$1" version="$2"
+            curl -sf "https://crates.io/api/v1/crates/$name/$version" >/dev/null
+          }
+
+          for crate in "${PUBLISH_ORDER[@]}"; do
+            if crate_visible "$crate" "$RP_VERSION"; then
+              echo "skip $crate $RP_VERSION — already on crates.io"
+              continue
+            fi
+            echo "publishing $crate $RP_VERSION"
+            cargo publish --allow-dirty --no-verify -p "$crate"
+          done
+
+  publish-release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs:
+      - preflight
+      - build-sidecars
+      - build-wheels-linux-x86
+      - build-wheels-linux-arm
+      - build-wheels-macos-x86
+      - build-wheels-macos-arm
+      - build-wheels-windows-x86
+      - build-wheels-windows-arm
+      - build-binaries
+      - publish-pypi
+      - publish-crates
+    if: |
+      always()
+      && inputs.dry_run != true
+      && needs.preflight.result == 'success'
+      && needs.build-sidecars.result == 'success'
+      && needs.build-binaries.result == 'success'
+      && (needs.build-wheels-linux-x86.result == 'success' || needs.build-wheels-linux-x86.result == 'skipped')
+      && (needs.build-wheels-linux-arm.result == 'success' || needs.build-wheels-linux-arm.result == 'skipped')
+      && (needs.build-wheels-macos-x86.result == 'success' || needs.build-wheels-macos-x86.result == 'skipped')
+      && (needs.build-wheels-macos-arm.result == 'success' || needs.build-wheels-macos-arm.result == 'skipped')
+      && (needs.build-wheels-windows-x86.result == 'success' || needs.build-wheels-windows-x86.result == 'skipped')
+      && (needs.build-wheels-windows-arm.result == 'success' || needs.build-wheels-windows-arm.result == 'skipped')
+      && (needs.publish-pypi.result == 'success' || needs.publish-pypi.result == 'skipped')
+      && (needs.publish-crates.result == 'success' || needs.publish-crates.result == 'skipped')
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.checkout_ref }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: release-assets/wheels
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binaries-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Flatten wheels into release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -d release-assets/wheels ]; then
+            mv release-assets/wheels/* release-assets/ 2>/dev/null || true
+            rmdir release-assets/wheels 2>/dev/null || true
+          fi
+          ls -la release-assets
+
+      - name: Add installer scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp install.sh release-assets/install.sh
+          cp install.ps1 release-assets/install.ps1
+          chmod 755 release-assets/install.sh
+
+      # #447: pull the prebuilt sidecar tarballs + manifest from
+      # build-sidecars (the SAME bytes whose SHA the wheels and crate
+      # were built against) and copy them into release-assets/.
+      - uses: actions/download-artifact@v4
+        with:
+          name: conpty-sidecars
+          path: sidecar-out
+
+      - name: Stage sidecar tarballs and manifest into release-assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp sidecar-out/conpty-sidecar-*.tar.zst release-assets/
+          cp sidecar-out/conpty-sidecar.sha256.toml release-assets/
+          echo "ConPTY sidecar assets:"
+          ls -la release-assets/conpty-sidecar-*.tar.zst
+          echo "Sidecar manifest:"
+          cat release-assets/conpty-sidecar.sha256.toml
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-assets
+          find . -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.preflight.outputs.release_tag }}
+          name: running-process ${{ needs.preflight.outputs.version }}
+          body: |
+            ## Install (Python package)
+
+            ```bash
+            pip install running-process==${{ needs.preflight.outputs.version }}
+            ```
+
+            ## Install (standalone `runpm` / `running-process-daemon` binaries)
+
+            ```bash
+            curl -LsSf https://github.com/${{ github.repository }}/releases/latest/download/install.sh | sh
+            ```
+
+            ```powershell
+            powershell -ExecutionPolicy Bypass -c "irm https://github.com/${{ github.repository }}/releases/latest/download/install.ps1 | iex"
+            ```
+          files: release-assets/*
+          fail_on_unmatched_files: true

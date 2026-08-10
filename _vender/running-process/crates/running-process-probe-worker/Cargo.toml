@@ -1,0 +1,61 @@
+[package]
+name = "running-process-probe-worker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+# Never published: this is an internal sidecar binary shipped alongside the
+# daemon, and it is the crate that will own the heavy symbol-file parsers.
+publish = false
+
+[lints]
+workspace = true
+
+[lib]
+name = "running_process_probe_worker"
+path = "src/lib.rs"
+
+[[bin]]
+name = "running-process-probe-worker"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+thiserror = { workspace = true }
+ureq = { version = "2.12", default-features = false, features = ["tls"] }
+url = "2"
+
+# Symbol-file parsers. These live HERE and nowhere else: the crate exists so
+# the daemon never links a parser that can be crashed by malformed input.
+# PDB parsing is Windows-only; object-file parsing covers PE identity on
+# Windows and ELF/DWARF plus Mach-O/dSYM identity and symbols on Unix.
+[target.'cfg(target_os = "windows")'.dependencies]
+pdb = "0.8"
+# Line programs only. `pdb` 0.8 resolves names fine but panics
+# (`modi/mod.rs:200`) iterating the line programs rustc emits, so the
+# file:line half goes through this crate instead of a second parser of our
+# own. Same isolation argument as every other parser here: it lives in the
+# disposable worker, never in the daemon.
+pdb-addr2line = "0.12"
+object = { version = "0.36", default-features = false, features = ["read", "std"] }
+
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+lzma-rs = "0.3"
+object = { version = "0.36", default-features = false, features = ["read", "std"] }
+# DWARF line programs, for resolving a frame to file:line (#803).
+#
+# The `loader` feature is what provides `addr2line::Loader`, which owns its
+# mapped bytes. That matters: `addr2line::Context` borrows from the parsed
+# object, so anything holding a bare Context must also own the file — a
+# self-referential borrow this side-steps entirely.
+#
+# Unix-only, alongside the rest of the ELF/Mach-O parsing. The Windows half is
+# blocked separately: `pdb` 0.8 panics iterating line programs on PDBs rustc
+# produces, so that side needs a different crate (see #803).
+addr2line = { version = "0.24", default-features = false, features = [
+    "std",
+    "loader",
+] }

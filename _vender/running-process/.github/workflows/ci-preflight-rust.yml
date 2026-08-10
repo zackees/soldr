@@ -1,0 +1,152 @@
+name: CI Preflight Rust-only (Reusable)
+
+# Rust-only variant of ci-preflight.yml for cross-compile targets
+# (currently the musl variants of linux). The Python wheel + pytest
+# path is skipped because:
+#
+#   1. The Python interpreter on the runner is glibc-linked. A musl
+#      maturin extension would not load.
+#   2. The purpose of these matrix entries is to PROVE the workspace
+#      compiles + lints + Rust-tests against the musl target. The
+#      Python ABI surface is exercised by the native ci-preflight.yml
+#      jobs.
+#
+# Cross-compile path:
+#   - apt installs `musl-tools` so `musl-gcc` is on PATH for the
+#     C-build-script crates (rusqlite/bundled, blake3 asm, etc.).
+#   - `dtolnay/rust-toolchain@stable` with `targets:` provisions the
+#     rust-std for the musl target alongside the host toolchain.
+#   - `cargo build/clippy/nextest --target <triple>` builds against
+#     the musl target.
+#
+# Why NOT setup-soldr / soldr / zccache — see ci-preflight.yml header.
+# In short: running-process is upstream of soldr (which depends on
+# zccache, which depends on running-process's broker), so consuming
+# `setup-soldr@v0` in this CI introduces a circular tooling
+# dependency that has been blocking us via soldr#806 / #809.
+
+on:
+  workflow_call:
+    inputs:
+      os:
+        description: Runner label (e.g. ubuntu-24.04, ubuntu-24.04-arm).
+        type: string
+        required: true
+      label:
+        description: Human-readable platform label (e.g. linux-x86-musl) used in job names + artifact suffixes.
+        type: string
+        required: true
+      target:
+        description: Rust target triple to cross-compile for (e.g. x86_64-unknown-linux-musl).
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: "always"
+
+jobs:
+  warm:
+    name: warm-build (${{ inputs.label }})
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 45
+    env:
+      RUST_BACKTRACE: "full"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install musl-tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.94.1"
+          components: clippy, rustfmt
+          targets: ${{ inputs.target }}
+
+      - name: Rust build cache (shared across warm + sub-workers)
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ inputs.label }}-shared
+          cache-on-failure: true
+
+      - name: cargo build --target ${{ inputs.target }}
+        run: cargo build --workspace --exclude running-process-py --all-targets --features client --target ${{ inputs.target }}
+
+  lint:
+    name: lint (${{ inputs.label }})
+    needs: warm
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 30
+    env:
+      RUST_BACKTRACE: "full"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install musl-tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.94.1"
+          components: clippy, rustfmt
+          targets: ${{ inputs.target }}
+      - name: Rust build cache (restore warm)
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ inputs.label }}-shared
+          cache-on-failure: true
+      - name: cargo clippy --target ${{ inputs.target }}
+        run: cargo clippy --workspace --exclude running-process-py --all-targets --features client --target ${{ inputs.target }} -- -D warnings
+
+  unit-test:
+    name: unit-test (${{ inputs.label }})
+    needs: warm
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 45
+    env:
+      RUST_BACKTRACE: "full"
+      RUNNING_PROCESS_TEST_NOCAPTURE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install musl-tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.94.1"
+          components: clippy, rustfmt
+          targets: ${{ inputs.target }}
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      - name: Rust build cache (restore warm)
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ inputs.label }}-shared
+          cache-on-failure: true
+      # musl binaries are statically linked and run on the host-arch
+      # glibc runner without QEMU. If a downstream lane introduces a
+      # non-host musl triple (e.g. aarch64-musl on x86 runner), this
+      # step needs `qemu-user-static` and `cross` instead — flag in
+      # PR review.
+      # Fixtures are built once, up front; the tests look them up rather
+      # than each invoking `cargo build` themselves (running-process#747).
+      # This lane calls nextest directly instead of going through
+      # `ci.test`, so it needs its own build — with the same `--target`,
+      # or the binaries land in the host tree and the tests miss them.
+      - name: Build test fixtures
+        run: cargo build -p testbins --target ${{ inputs.target }}
+      # NOT built here: `testbins-tokio`, the console-subscriber fixture
+      # (#788). It needs `--cfg tokio_unstable`, which forces a full tokio
+      # rebuild, and it would have to be cross-compiled for this lane's
+      # target. The tokio console-api tests skip with an explanatory message
+      # when the fixture is absent, so this lane loses that one test's
+      # coverage rather than failing. The six `ci-preflight.yml` lanes go
+      # through `ci.test`, which does build it — so the subscription is
+      # exercised on every host platform, just not on the musl cross targets.
+      - name: cargo nextest run --target ${{ inputs.target }}
+        run: cargo nextest run --workspace --exclude running-process-py --features client --target ${{ inputs.target }}

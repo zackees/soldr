@@ -1,0 +1,11 @@
+[package]
+name = "running-process-release-handles-cli"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+running-process = { path = "../../crates/running-process", features = ["client"] }
+

@@ -1,0 +1,75 @@
+syntax = "proto3";
+
+package running_process.probe_diag.v1;
+
+import "probe_diag_v1/probe_diag_v1_common.proto";
+import "probe_diag_v1/probe_diag_v1_registration.proto";
+import "probe_diag_v1/probe_diag_v1_capture.proto";
+import "probe_diag_v1/probe_diag_v1_profile.proto";
+import "probe_diag_v1/probe_diag_v1_query.proto";
+import "probe_diag_v1/probe_diag_v1_crash.proto";
+
+// The probe daemon's top-level message.
+//
+// Framed on the wire as [u8 framing_version=1][u32 LE len][prost ProbeEnvelope],
+// reusing running_process::broker::protocol::framing (16 MiB cap).
+//
+// This is a STANDALONE wire. It is deliberately NOT multiplexed over the frozen
+// broker `Frame` registry and has no broker payload_protocol id: the probe
+// daemon is not a broker backend, so borrowing the broker's envelope would
+// couple this schema to a frozen wire it does not otherwise need.
+message ProbeEnvelope {
+  // Always 1 within probe_diag.v1. A peer that sees another value must refuse
+  // rather than guess — the field exists so a future wire break is detectable
+  // at the first byte of the body instead of surfacing as a decode error.
+  uint32 wire_version = 1;
+
+  // Client-assigned; echoed on the reply so responses can be correlated on a
+  // multiplexed connection.
+  uint64 request_id = 2;
+
+  // Absolute wall-clock deadline. Absolute rather than a relative timeout so a
+  // request queued behind other work cannot silently extend its own budget.
+  uint64 deadline_unix_ms = 3;
+
+  oneof body {
+    RegisterProcess register = 16;
+    RegistrationStatus registration_status = 17;
+    Heartbeat heartbeat = 18;
+    UnregisterProcess unregister = 19;
+    ListProcesses list_processes = 20;
+
+    CaptureStackRequest capture_stack = 21;
+    CaptureReply capture_reply = 22;
+    GetJobStatus job_status_req = 23;
+    JobStatus job_status = 24;
+    CancelJob cancel_job = 25;
+
+    StartProfile start_profile = 26;
+    StopProfile stop_profile = 27;
+    ProfileStatus profile_status = 28;
+    ProfileChunk profile_chunk = 29;
+
+    ProcessQuery process_query = 30;
+    ProcessQueryReply process_query_reply = 33;
+    CrashQuery crash_query = 31;
+    CrashRecord crash_record = 32;
+    CrashQueryReply crash_query_reply = 34;
+
+    // Beacon identity handshake (#631). Additive into the headroom the
+    // original reserved range left open.
+    ProbeHello probe_hello = 35;
+    ProbeHelloReply probe_hello_reply = 36;
+
+    // Crash rollups (#641). A distinct body from `crash_query` because the
+    // reply shape differs — counts, not a truncated page of rows.
+    CrashStatsQuery crash_stats_query = 37;
+    CrashStatsReply crash_stats_reply = 38;
+  }
+
+  // Headroom so hot-path header fields can still be added inside the 1-byte
+  // tag range (fields 1-15 encode their tag in a single byte).
+  reserved 4 to 15;
+
+  reserved 39 to 63;
+}

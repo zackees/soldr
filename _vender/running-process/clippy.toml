@@ -1,0 +1,13 @@
+# Workspace-wide clippy configuration.
+#
+# Phase 0 of #228 forbids bincode on the broker wire and in persisted
+# state. All schemas must round-trip through prost-encoded protobuf so
+# the v1 frozen-forever contract has a single serializer with documented
+# wire stability semantics. Mirrors the policy already in place upstream
+# in zackees/soldr.
+disallowed-methods = [
+    { path = "bincode::serialize", reason = "use prost-encoded protobuf — bincode wire format is not frozen for v1" },
+    { path = "bincode::deserialize", reason = "use prost-encoded protobuf — bincode wire format is not frozen for v1" },
+    { path = "bincode::serialize_into", reason = "use prost-encoded protobuf — bincode wire format is not frozen for v1" },
+    { path = "bincode::deserialize_from", reason = "use prost-encoded protobuf — bincode wire format is not frozen for v1" },
+]

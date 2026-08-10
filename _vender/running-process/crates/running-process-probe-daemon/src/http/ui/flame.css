@@ -1,0 +1,50 @@
+/* Flame-graph page styling. Inline, self-contained, no external fonts. */
+
+:root {
+  --bg: #ffffff;
+  --fg: #1a1a1a;
+  --muted: #666;
+  --line: #d8d8d8;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #16181c; --fg: #e6e6e6; --muted: #9aa0a6; --line: #33363d; }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 0 1rem 3rem;
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+header { border-bottom: 1px solid var(--line); padding: 1rem 0 0.6rem; cursor: pointer; }
+h1 { font-size: 1.05rem; margin: 0; font-weight: 600; }
+.subtitle, .hint { color: var(--muted); font-size: 0.82rem; margin: 0.25rem 0 0; }
+.hint { margin: 0.75rem 0; }
+
+#flame { overflow-x: auto; }
+
+.flame-row { display: block; white-space: nowrap; height: 19px; }
+
+.flame-frame {
+  border: 1px solid var(--bg);
+  border-radius: 2px;
+  color: #1a1a1a;
+  cursor: pointer;
+  display: inline-block;
+  font-size: 11px;
+  height: 18px;
+  line-height: 17px;
+  overflow: hidden;
+  padding: 0 3px;
+  text-overflow: ellipsis;
+  vertical-align: top;
+}
+
+.flame-frame:hover { outline: 1px solid var(--fg); }
+
+.empty { color: var(--muted); }

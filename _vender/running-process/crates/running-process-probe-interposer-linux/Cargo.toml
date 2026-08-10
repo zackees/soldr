@@ -1,0 +1,35 @@
+[package]
+name = "running-process-probe-interposer-linux"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Linux LD_PRELOAD interposer for the running-process file-hook tier (#551 slice 4)"
+publish = false
+
+# cdylib so the resulting `librunning_process_probe_interposer_linux.so`
+# can be `LD_PRELOAD`'d into target processes. This crate exists in the
+# workspace ONLY on Linux targets — the lib.rs body is `#![cfg(target_os
+# = "linux")]`-gated to an empty stub on every other host so the
+# workspace still builds on Windows + macOS.
+# `cdylib` is the consumer-facing build product — the .so is the
+# LD_PRELOAD payload. `rlib` is also listed so workspaces that build
+# for `x86_64-unknown-linux-musl` (which doesn't support cdylib because
+# its CRT is statically linked) still get an rlib and don't fail the
+# workspace build. The musl rlib is inert — there's no `.so` to
+# LD_PRELOAD into a musl binary anyway (LD_PRELOAD is a glibc loader
+# feature).
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+test-seams = []
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[lints]
+workspace = true

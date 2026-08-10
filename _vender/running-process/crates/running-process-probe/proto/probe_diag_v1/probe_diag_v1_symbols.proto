@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+package running_process.probe_diag.v1;
+
+// Symbol identity for off-process symbolization.
+//
+// Symbolization runs in a separate worker so the daemon never links the debug-
+// info parsers. What travels here is *identity* — enough to locate the right
+// debug file — never the debug data itself.
+
+enum SymbolFormat {
+  SYMBOL_FORMAT_UNSPECIFIED = 0;
+  SYMBOL_FORMAT_ELF_DWARF = 1;
+  SYMBOL_FORMAT_PE_PDB = 2;
+  SYMBOL_FORMAT_MACHO_DSYM = 3;
+  reserved 4 to 15;
+}
+
+message SymbolModule {
+  string module_path = 1;
+
+  // GNU build-id (ELF) or equivalent. Exact-match identity: a module whose
+  // build_id differs is a different binary, even at the same path and version.
+  bytes build_id = 2;
+
+  // Platform debug identity — PDB GUID+age on Windows, LC_UUID on macOS.
+  string debug_id = 3;
+
+  SymbolFormat format = 4;
+
+  // Where the module is mapped in the target, so raw addresses can be
+  // resolved to module-relative offsets.
+  uint64 load_address = 5;
+  uint64 size = 6;
+
+  reserved 7 to 15;
+}
+
+message SymbolManifest {
+  repeated SymbolModule modules = 1;
+  reserved 2 to 15;
+}

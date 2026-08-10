@@ -1,0 +1,88 @@
+name: CI Preflight (Linux)
+
+# Thin dispatcher — calls ci-preflight.yml twice for native glibc
+# (linux-x86 + linux-arm) and ci-preflight-rust.yml twice for musl
+# cross targets (linux-x86-musl + linux-arm-musl). musl variants are
+# Rust-only because the runner's Python is glibc-linked (see header
+# of ci-preflight-rust.yml).
+#
+# rustdoc is enabled only on linux-x86 (matches the historical sprawl
+# where only linux-x86-rustdoc.yml existed).
+#
+# See zackees/running-process#513 for the consolidation plan.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-linux-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  x86:
+    uses: ./.github/workflows/ci-preflight.yml
+    with:
+      os: ubuntu-24.04
+      label: linux-x86
+      rustdoc: true
+      integration-test: true
+      dylint: true
+
+  arm:
+    uses: ./.github/workflows/ci-preflight.yml
+    with:
+      os: ubuntu-24.04-arm
+      label: linux-arm
+      rustdoc: false
+      integration-test: true
+
+  x86-musl:
+    uses: ./.github/workflows/ci-preflight-rust.yml
+    with:
+      os: ubuntu-24.04
+      label: linux-x86-musl
+      target: x86_64-unknown-linux-musl
+
+  arm-musl:
+    uses: ./.github/workflows/ci-preflight-rust.yml
+    with:
+      os: ubuntu-24.04-arm
+      label: linux-arm-musl
+      target: aarch64-unknown-linux-musl
+
+  # Spot-check for the RUNNING_PROCESS_REPRODUCIBLE=1 seam (#392):
+  # build the debug `runpm` binary twice (cleaning only the workspace
+  # crate in between) and require byte-identical SHA256 digests.
+  # Moved here from linux-x86-build.yml when that workflow became
+  # dispatch-only. See docs/reproducible-builds.md for the recipe.
+  reproducible-spot-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.94.1"
+
+      - name: Rust build cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ubuntu-24.04-reproducible
+          cache-on-failure: true
+
+      - name: Double-build runpm and compare SHA256
+        run: uv run --no-project --module ci.reproducible --verify

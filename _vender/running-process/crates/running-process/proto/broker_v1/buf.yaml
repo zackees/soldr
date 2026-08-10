@@ -1,0 +1,24 @@
+# Phase 0 of #228: buf config for the v1 broker proto modules.
+#
+# Used by `.github/workflows/proto-breaking.yml` to enforce the
+# frozen-forever contract — any non-additive change to a broker_v1_*
+# file fails the PR. Adding new fields with new field numbers is fine;
+# renaming, renumbering, deleting, or retyping is not.
+#
+# This module covers only the broker_v1_* schemas. The pre-existing
+# `daemon.proto` lives in the parent `proto/` directory and is not part
+# of any frozen-forever contract yet.
+version: v2
+modules:
+  - path: .
+# No lint rule set — the broker_v1_* schemas are FROZEN VERBATIM from
+# #228 / #227, and buf's STANDARD lint set flags enum-value-prefix and
+# zero-value-suffix conventions that the spec'd names already violate
+# (e.g. `SPAWN_ATTEMPT` without an `EVENT_KIND_` prefix). Changing the
+# names to silence lint would deviate from the frozen contract, so the
+# CI gate intentionally only enforces breaking-change semantics. The
+# WIRE_JSON breaking-rule category is the strongest one buf offers and
+# is what the issue acceptance criteria call for.
+breaking:
+  use:
+    - WIRE_JSON

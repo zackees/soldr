@@ -1,0 +1,29 @@
+# A separate workspace on purpose (#788).
+#
+# `console-subscriber` only works when the application is built with
+# `--cfg tokio_unstable`, and Cargo has no per-crate RUSTFLAGS: setting it in
+# the root `.cargo/config.toml` would apply the cfg to every crate in the
+# workspace — including the published `running-process` — and invalidate every
+# build cache in CI.
+#
+# Keeping this out of the root workspace means the flag is set only for the one
+# fixture that needs it, by whatever builds it (see `ci/test.py`). The root
+# manifest lists this directory under `[workspace] exclude` so cargo does not
+# adopt it.
+[package]
+name = "testbins-tokio"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+# Spawns a deliberately blocked task so an off-CPU profile has an unambiguous
+# dominant entry, then stays alive long enough to be sampled.
+name = "testbin-tokio-blocked"
+path = "src/blocked.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+console-subscriber = "0.5"
+
+[workspace]

@@ -1,0 +1,8 @@
+error: use the canonical constant for this RUNNING_PROCESS_* environment control
+  --> $DIR/main.rs:2:30
+   |
+LL |     let _ = std::env::var_os("RUNNING_PROCESS_DISABLE");
+   |                              ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: aborting due to 1 previous error
+

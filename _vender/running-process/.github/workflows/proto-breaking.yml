@@ -1,0 +1,71 @@
+# Phase 0 of #228 — broker proto schemas are FROZEN FOREVER once v1.0
+# ships. This workflow runs `buf breaking` against `main` and fails the
+# PR if any field is removed, renumbered, renamed, or retyped. Additive
+# changes (new fields with new field numbers, new enum values in
+# reserved ranges, new messages) pass.
+#
+# A deliberate breaking-change test PR proves the gate fires — that
+# verification is part of the issue's acceptance criteria.
+
+name: Proto breaking-change check
+
+on:
+  pull_request:
+    paths:
+      - "crates/running-process/proto/broker_v1/**"
+      - ".github/workflows/proto-breaking.yml"
+  push:
+    branches: [main]
+    paths:
+      - "crates/running-process/proto/broker_v1/**"
+      - ".github/workflows/proto-breaking.yml"
+  workflow_dispatch:
+
+jobs:
+  buf-breaking:
+    name: buf breaking
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout (full history for buf breaking against main)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install buf
+        uses: bufbuild/buf-setup-action@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build broker_v1 image (smoke check that protos parse)
+        run: buf build
+        working-directory: crates/running-process/proto/broker_v1
+
+      - name: Does broker_v1 exist on main yet?
+        # First PR (this one) introduces the broker_v1 subdir; main has
+        # nothing to compare against, and buf returns
+        #   "Module had no .proto files"
+        # for an empty subdir. Detect the bootstrap case so the gate
+        # passes on the introducing PR but stays armed on every PR
+        # afterwards.
+        id: have_baseline
+        run: |
+          if git ls-tree -r --name-only origin/main -- crates/running-process/proto/broker_v1 \
+               | grep -q '\.proto$'; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::broker_v1 has no .proto files on main yet — skipping breaking check on the bootstrap PR. The gate will engage on every subsequent PR."
+          fi
+
+      - name: Breaking-change check against main
+        # On main itself this is a no-op (nothing to compare against).
+        # On PRs / forks we compare against origin/main. We fetch via
+        # GitHub HTTPS rather than the local .git directory because
+        # actions/checkout@v4 only materializes the PR head as a local
+        # branch — `main` lives under refs/remotes/origin/ and isn't
+        # reachable as a plain `branch=main` ref via buf's git fetcher.
+        if: github.ref != 'refs/heads/main' && steps.have_baseline.outputs.present == 'true'
+        run: |
+          buf breaking \
+            --against "https://github.com/${GITHUB_REPOSITORY}.git#branch=main,subdir=crates/running-process/proto/broker_v1"
+        working-directory: crates/running-process/proto/broker_v1

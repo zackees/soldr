@@ -1,0 +1,220 @@
+// running-process v1 broker — cache manifest schema.
+//
+// FROZEN FOREVER once v1.0 ships. See issue #228 ("Frozen-forever
+// commitments") for rationale.
+//
+// Manifest invariants (NOT encoded in proto3 — enforced in code / CI):
+//   - LifecycleEvent encoded size MUST <= POSIX PIPE_BUF (4096 on Linux,
+//     512 minimum elsewhere). Enforced via debug_assert! + runtime check.
+//     Without this, atomic-append breaks silently.
+//   - self_sha256 is computed over the serialized manifest with the
+//     self_sha256 field zeroed (OCI pattern).
+//   - Field-number reserves are CI-enforced via buf breaking.
+//
+// Persisted at TWO locations:
+//   1. Inside daemon's cache root: <cache_root>/.running-process-manifest.pb
+//   2. In central registry: <broker_state>/manifests/{service}-{version}.pb
+
+syntax = "proto3";
+package running_process.broker.v1;
+
+message CacheManifest {
+  // OCI trio
+  uint32 manifest_schema_version = 100;
+  string media_type = 101;                // "application/vnd.running-process.cache-manifest.v1"
+  bytes self_sha256 = 102;                // hash of serialized manifest with this field zeroed
+
+  // Host identity (multi-machine NFS awareness)
+  HostIdentity host = 103;
+
+  // In-flight state
+  Operation current_operation = 104;
+
+  // TTL
+  uint64 valid_until_unix_ms = 105;
+
+  // Existing fields
+  string service_name = 1;
+  string service_version = 2;
+  string broker_envelope_version = 3;     // "v1"
+  uint64 created_at_unix_ms = 4;
+  uint64 last_active_unix_ms = 5;
+  repeated CacheRoot roots = 10;
+  optional DaemonProcess current_daemon = 20;
+  CleanupPolicy cleanup_policy = 30;
+  string broker_instance = 40;
+
+  // Dependencies
+  repeated ManifestRef depends_on = 50;
+  repeated string provides = 51;
+
+  // Observability
+  ObservabilityInfo observability = 60;
+
+  // Bundle id
+  string bundle_id = 70;
+
+  reserved 110 to 199;                    // v1.x cleanup-policy expansions
+  reserved 200 to 255;                    // long-range future
+}
+
+message HostIdentity {
+  string hostname = 1;
+  string machine_id = 2;                  // /etc/machine-id or Windows MachineGuid
+  string boot_id = 3;                     // /proc/sys/kernel/random/boot_id or equivalent
+  uint64 fs_dev_id = 4;                   // st_dev of the cache root
+  string namespace_id = 5;                // mount-ns + pid-ns inode pair (container awareness)
+}
+
+message Operation {
+  OperationKind kind = 1;
+  uint64 started_at_unix_ms = 2;
+  uint64 expected_done_unix_ms = 3;
+}
+
+enum OperationKind {
+  OPERATION_IDLE = 0;
+  OPERATION_COMPACTING = 1;
+  OPERATION_MIGRATING = 2;
+  OPERATION_REBUILDING_INDEX = 3;
+  OPERATION_EVICTING_LRU = 4;
+  OPERATION_ARCHIVING = 5;
+}
+
+message CacheRoot {
+  string path = 1;                        // absolute path
+  CacheRootKind kind = 2;
+  uint64 estimated_size_bytes = 3;
+  StorageDisposition disposition = 4;
+  map<string, string> labels = 5;
+  Quota quota = 6;
+  TeardownHook teardown_hook = 7;
+  repeated string exclude_globs = 8;
+  map<string, string> platform_paths = 9; // alternate paths per platform
+  Ownership ownership = 10;
+  Endpoint endpoint = 11;                 // (namespace_id, path) for ipc endpoint roots
+}
+
+message Endpoint {
+  string namespace_id = 1;                // mount-ns id when known
+  string path = 2;                        // pipe name / socket path / TCP loopback
+}
+
+enum CacheRootKind {
+  CACHE_ROOT_KIND_UNSPECIFIED = 0;
+  CACHE_DATA = 1;        // cached data (zccache artifacts, soldr state.redb)
+  CACHE_LOGS = 2;        // lifecycle / debug logs
+  CACHE_LOCKS = 3;       // PID files, lock files, sockets, manifests
+  CACHE_RUNTIME = 4;     // copied daemon binaries (ensure_relocated destination)
+  CACHE_TMP = 5;         // ephemeral / repeatedly emptied
+  CACHE_CONFIG = 6;      // user config (do NOT prune)
+  CACHE_INDEX = 7;       // separately bounded index (redb, etc.)
+  CACHE_JOURNAL = 8;     // WAL files needing separate fsync semantics
+  CACHE_SECRETS = 9;     // API keys / tokens - mode 0600, never logged
+  reserved 10 to 20;
+}
+
+enum StorageDisposition {
+  PRUNE_ON_UNINSTALL = 0;
+  PRESERVE_ACROSS_UNINSTALL = 1;          // e.g., soldr's pinned_bin
+  PRUNE_WHEN_DORMANT = 2;
+  NEVER_PRUNE = 3;                        // user-owned data
+  PRUNE_ON_CRASH = 4;                     // only valid while writing process alive
+  reserved 5 to 10;
+}
+
+message TeardownHook {
+  TeardownKind kind = 1;
+  repeated string argv = 2;
+  uint64 timeout_secs = 3;
+}
+
+enum TeardownKind {
+  TEARDOWN_NONE = 0;
+  TEARDOWN_REDB_COMPACT = 1;
+  TEARDOWN_SQLITE_VACUUM = 2;
+  TEARDOWN_CUSTOM_COMMAND = 3;
+}
+
+message Quota {
+  uint64 hard_max_bytes = 1;
+  uint64 soft_target_bytes = 2;
+  uint64 reserved_bytes = 3;
+}
+
+message Ownership {
+  uint32 uid = 1;
+  uint32 gid = 2;
+  uint32 mode = 3;
+  string windows_sid = 4;
+}
+
+message DaemonProcess {
+  uint32 pid = 1;
+  string exe_path = 2;
+  bytes exe_sha256 = 3;
+  Endpoint ipc_endpoint = 4;              // structured (namespace_id, path)
+  uint64 started_at_unix_ms = 5;
+  string boot_id = 6;                     // copy of HostIdentity.boot_id at start
+  optional uint32 idle_timeout_secs = 7;
+}
+
+message CleanupPolicy {
+  uint64 dormant_after_secs = 1;          // default: 30 days
+  uint32 keep_last_n_versions = 2;        // default: 2
+  bool keep_current = 3;                  // default: true
+  uint64 min_size_for_prune_bytes = 4;
+}
+
+message ManifestRef {
+  string service_name = 1;
+  string min_version = 2;
+  bool optional = 3;
+}
+
+message ObservabilityInfo {
+  string metrics_endpoint = 1;
+  string log_path = 2;
+  string health_check_endpoint = 3;
+}
+
+message LifecycleEvent {
+  uint64 ts_ms = 1;
+  uint32 pid = 2;
+  string service_name = 3;
+  EventKind kind = 4;
+  string reason = 5;
+  map<string, string> extra = 6;
+  uint32 severity_number = 7;             // OTel SeverityNumber 1-24
+  string severity_text = 8;
+  string request_id = 9;
+  uint64 connection_id = 10;
+  string broker_instance = 11;
+}
+
+enum EventKind {
+  EVENT_KIND_UNSPECIFIED = 0;
+  SPAWN_ATTEMPT = 1;
+  SPAWN = 2;
+  DIED_IDLE = 3;
+  DIED_SHUTDOWN = 4;
+  DIED_CRASH = 5;
+  VERSION_MISMATCH = 6;
+  REPLACED_BY_NEWER = 7;
+  HELLO_ACCEPTED = 8;
+  HELLO_REFUSED = 9;
+  SERVICE_DEF_LOADED = 10;
+  SERVICE_DEF_CHANGED = 11;
+  BROADCAST_SENT = 12;
+  BROADCAST_ACK = 13;
+  BROADCAST_TIMEOUT = 14;
+  PROTOCOL_DOWNGRADE = 15;
+  CACHE_CORRUPTION_DETECTED = 16;
+  RESOURCE_PRESSURE = 17;
+  SECURITY_VIOLATION = 18;
+  TEARDOWN_HOOK_FAILED = 19;
+  MANIFEST_REWRITTEN = 20;
+  reserved 21 to 30;                      // v1.x resource-pressure (FD pressure, inode pressure)
+  reserved 31 to 40;                      // v1.x cleanup/doctor events
+  reserved 41 to 50;                      // long-range future
+}

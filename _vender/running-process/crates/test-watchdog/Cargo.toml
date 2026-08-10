@@ -1,0 +1,19 @@
+[package]
+name = "test-watchdog"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Test-only watchdog: dumps process state on hang. Minidump via procdump on Windows; all-thread backtraces via gdb/lldb on Unix."
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# PR_SET_PTRACER so the child debugger may attach under Yama ptrace_scope=1.
+libc = "0.2"
+
+[lints]
+workspace = true
+
+[dependencies]
+# The cooperative in-process hang dump (#649). Preferred over an external
+# debugger, which needs an install and an attach permission that the hosts
+# most in need of a dump are the least likely to grant.
+running-process-probe = { path = "../running-process-probe", version = "4.6.4", default-features = false }

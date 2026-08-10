@@ -69,7 +69,7 @@ zccache = { version = "1.13.0", path = "../../_vender/zccache/crates/zccache", d
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = [
+windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
@@ -81,7 +81,7 @@ windows-sys = { version = "0.59", features = [
 [dev-dependencies]
 filetime = { workspace = true }
 reqwest = { workspace = true }
-running-process = { version = "4.8.1", default-features = false, features = ["client"] }
+running-process = { version = "4.10", default-features = false, features = ["client"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 

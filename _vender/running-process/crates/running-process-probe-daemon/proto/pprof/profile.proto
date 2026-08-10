@@ -1,0 +1,107 @@
+// Copyright 2016 Google Inc. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+// Vendored verbatim (trimmed to the messages this daemon writes) from
+// github.com/google/pprof/proto/profile.proto.
+//
+// Vendored rather than taken from the `pprof` crate on purpose: that crate
+// carries an open RUSTSEC unsoundness advisory, and all this daemon needs from
+// it is a schema. Emitting the protobuf directly costs one .proto file and
+// removes the dependency entirely.
+
+syntax = "proto3";
+
+package perftools.profiles;
+
+// Profile is the top-level container.
+message Profile {
+  // The kind of each Sample.value. Sample.value has the same length.
+  repeated ValueType sample_type = 1;
+  repeated Sample sample = 2;
+  repeated Mapping mapping = 3;
+  repeated Location location = 4;
+  repeated Function function = 5;
+
+  // Every string in this profile is an index into here. Index 0 MUST be "".
+  repeated string string_table = 6;
+
+  int64 drop_frames = 7;
+  int64 keep_frames = 8;
+
+  // Time of collection, and duration covered, in nanoseconds.
+  int64 time_nanos = 9;
+  int64 duration_nanos = 10;
+
+  // The kind of the measurement the sampling period describes.
+  ValueType period_type = 11;
+  // The number of events between samples.
+  int64 period = 12;
+
+  repeated int64 comment = 13;
+  int64 default_sample_type = 14;
+}
+
+message ValueType {
+  int64 type = 1;  // index into string_table
+  int64 unit = 2;  // index into string_table
+}
+
+message Sample {
+  // Locations, leaf first.
+  repeated uint64 location_id = 1;
+  repeated int64 value = 2;
+  repeated Label label = 3;
+}
+
+message Label {
+  int64 key = 1;
+  int64 str = 2;
+  int64 num = 3;
+  int64 num_unit = 4;
+}
+
+message Mapping {
+  uint64 id = 1;
+  uint64 memory_start = 2;
+  uint64 memory_limit = 3;
+  uint64 file_offset = 4;
+  int64 filename = 5;   // index into string_table
+  int64 build_id = 6;   // index into string_table
+  bool has_functions = 7;
+  bool has_filenames = 8;
+  bool has_line_numbers = 9;
+  bool has_inline_frames = 10;
+}
+
+message Location {
+  uint64 id = 1;
+  uint64 mapping_id = 2;
+  uint64 address = 3;
+  // Multiple lines describe inlined frames, leaf first.
+  repeated Line line = 4;
+  bool is_folded = 5;
+}
+
+message Line {
+  uint64 function_id = 1;
+  int64 line = 2;
+}
+
+message Function {
+  uint64 id = 1;
+  int64 name = 2;         // index into string_table
+  int64 system_name = 3;  // index into string_table
+  int64 filename = 4;     // index into string_table
+  int64 start_line = 5;
+}

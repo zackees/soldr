@@ -1,0 +1,74 @@
+syntax = "proto3";
+
+package running_process.probe_diag.v1;
+
+import "probe_diag_v1/probe_diag_v1_common.proto";
+
+// Sampling profiles (CPU, heap, off-CPU/async).
+//
+// The target streams raw samples; the daemon symbolizes and lowers them into a
+// pprof. Raw frames stay small enough to ride the framed wire, which is why
+// profiles stream as chunks while stack captures return an artifact path.
+
+enum ProfileKind {
+  PROFILE_KIND_UNSPECIFIED = 0;
+  PROFILE_KIND_CPU = 1;
+  PROFILE_KIND_HEAP = 2;
+  // Off-CPU / async: an adapter lowers a source (tokio, asyncio, custom) into
+  // the same pprof shape.
+  PROFILE_KIND_OFF_CPU = 3;
+  reserved 4 to 15;
+}
+
+message StartProfile {
+  ProcessKey key = 1;
+  ProfileKind kind = 2;
+
+  // Sampling frequency in Hz.
+  uint32 hz = 3;
+
+  // Bounded at 60_000 (60s). Enforced in code, not by the wire — proto3 has no
+  // range constraints, so the limit is restated at every validation boundary.
+  // An unbounded profile would pin the daemon and grow the artifact without
+  // limit.
+  uint32 duration_ms = 4;
+
+  reserved 5 to 15;
+}
+
+message StopProfile {
+  string profile_id = 1;
+  reserved 2 to 7;
+}
+
+message ProfileStatus {
+  string profile_id = 1;
+  ProfileKind kind = 2;
+  bool running = 3;
+  uint64 started_unix_ms = 4;
+  uint64 samples_collected = 5;
+
+  // Non-zero means the sampler could not keep up and the profile
+  // under-represents the workload.
+  uint64 samples_lost = 6;
+
+  ProbeErrorCode error = 7;
+  string detail = 8;
+
+  reserved 9 to 23;
+}
+
+message ProfileChunk {
+  string profile_id = 1;
+
+  // Raw, unsymbolized sample bytes. The daemon owns symbolization so the
+  // target pays as little as possible.
+  bytes raw = 2;
+
+  uint64 lost_samples = 3;
+
+  // Set on the final chunk of a stream.
+  bool last = 4;
+
+  reserved 5 to 15;
+}

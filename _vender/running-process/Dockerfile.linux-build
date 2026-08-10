@@ -1,0 +1,118 @@
+# syntax=docker/dockerfile:1.7
+
+ARG PYTHON_VERSION=3.11
+
+FROM python:${PYTHON_VERSION}-alpine AS substrate
+
+WORKDIR /work
+
+RUN apk add --no-cache \
+    bash \
+    build-base \
+    cargo \
+    git \
+    linux-headers \
+    patchelf \
+    pkgconf \
+    rust
+
+FROM substrate AS python-tools
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install --upgrade pip \
+ && python -m pip install "maturin>=1.7,<2"
+
+ENV CARGO_TARGET_DIR=/work/target \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+FROM python-tools AS rust-manifests
+
+# Cache-warmup stage. Cargo loads the ENTIRE root workspace even though the
+# build below names a single package, so every member manifest listed in
+# `[workspace] members` has to be here — plus the build scripts and proto
+# inputs those manifests read, and a stub for every declared target.
+# `ci/docker_manifest_guard.py` (run by ./lint) fails if a member is missing,
+# which is how #772 caught this list going four members stale.
+COPY Cargo.toml Cargo.lock /work/
+COPY crates/running-process/Cargo.toml /work/crates/running-process/Cargo.toml
+COPY crates/running-process/build.rs /work/crates/running-process/build.rs
+COPY crates/running-process/proto /work/crates/running-process/proto
+COPY crates/running-process-probe/Cargo.toml /work/crates/running-process-probe/Cargo.toml
+COPY crates/running-process-probe/build.rs /work/crates/running-process-probe/build.rs
+COPY crates/running-process-probe/proto /work/crates/running-process-probe/proto
+COPY crates/running-process-probe-daemon/Cargo.toml /work/crates/running-process-probe-daemon/Cargo.toml
+COPY crates/running-process-probe-daemon/build.rs /work/crates/running-process-probe-daemon/build.rs
+COPY crates/running-process-probe-daemon/proto /work/crates/running-process-probe-daemon/proto
+COPY crates/running-process-probe-worker/Cargo.toml /work/crates/running-process-probe-worker/Cargo.toml
+COPY crates/running-process-probe-interposer-linux/Cargo.toml /work/crates/running-process-probe-interposer-linux/Cargo.toml
+COPY crates/running-process-probe-interposer-macos/Cargo.toml /work/crates/running-process-probe-interposer-macos/Cargo.toml
+COPY crates/running-process-probe-interposer-windows/Cargo.toml /work/crates/running-process-probe-interposer-windows/Cargo.toml
+COPY crates/running-process-py/Cargo.toml /work/crates/running-process-py/Cargo.toml
+COPY crates/running-process-win-gnu-bridge/Cargo.toml /work/crates/running-process-win-gnu-bridge/Cargo.toml
+COPY crates/test-watchdog/Cargo.toml /work/crates/test-watchdog/Cargo.toml
+COPY testbins/Cargo.toml /work/testbins/Cargo.toml
+
+RUN mkdir -p /work/crates/running-process/src/bin \
+    /work/crates/running-process/examples \
+    /work/crates/running-process-probe/src/bin \
+    /work/crates/running-process-probe-daemon/src/bin \
+    /work/crates/running-process-probe-worker/src \
+    /work/crates/running-process-probe-interposer-linux/src \
+    /work/crates/running-process-probe-interposer-macos/src \
+    /work/crates/running-process-probe-interposer-windows/src \
+    /work/crates/running-process-py/src \
+    /work/crates/running-process-win-gnu-bridge/src \
+    /work/crates/test-watchdog/src \
+    /work/testbins/src/bin \
+ && printf "pub fn cache_warmup() {}\n" > /work/crates/running-process/src/lib.rs \
+ && printf "fn main() {}\n" > /work/crates/running-process/examples/handoff_rollout_evidence.rs \
+ && for b in runpm daemon trampoline running-process-broker-v1 running-process-broker-v2 running-process-cleanup; do \
+        printf "fn main() {}\n" > /work/crates/running-process/src/bin/$b.rs ; \
+    done \
+ && printf "pub fn cache_warmup() {}\n" > /work/crates/running-process-probe/src/lib.rs \
+ && printf "fn main() {}\n" > /work/crates/running-process-probe/src/bin/helper.rs \
+ && printf "pub fn cache_warmup() {}\n" > /work/crates/running-process-probe-daemon/src/lib.rs \
+ && printf "fn main() {}\n" > /work/crates/running-process-probe-daemon/src/bin/rpprobed.rs \
+ && printf "fn main() {}\n" > /work/crates/running-process-probe-daemon/src/bin/rpprobe.rs \
+ && printf "pub fn cache_warmup() {}\n" > /work/crates/running-process-probe-worker/src/lib.rs \
+ && printf "fn main() {}\n" > /work/crates/running-process-probe-worker/src/main.rs \
+ && printf "pub fn cache_warmup() {}\n" > /work/crates/running-process-probe-interposer-linux/src/lib.rs \
+ && printf "pub fn cache_warmup() {}\n" > /work/crates/running-process-probe-interposer-macos/src/lib.rs \
+ && printf "pub fn cache_warmup() {}\n" > /work/crates/running-process-probe-interposer-windows/src/lib.rs \
+ && printf "pub fn cache_warmup() {}\n" > /work/crates/running-process-win-gnu-bridge/src/lib.rs \
+ && printf "pub fn cache_warmup() {}\n" > /work/crates/test-watchdog/src/lib.rs \
+ && printf "use pyo3::prelude::*;\n#[pymodule]\nfn _native(_py: Python<'_>, _m: &Bound<'_, PyModule>) -> PyResult<()> { Ok(()) }\n" > /work/crates/running-process-py/src/lib.rs \
+ && for b in createfilew_probe cwd_reporter dies_after_spawn emitter env_dump env_reporter probe_crasher sleeper slow_stdin_reader spawner stdin_echoer stubborn tui_counter; do \
+        printf "fn main() {}\n" > /work/testbins/src/bin/$b.rs ; \
+    done
+
+FROM rust-manifests AS rust-deps
+
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git/db \
+    cargo build --release --manifest-path crates/running-process-py/Cargo.toml --features pyo3/extension-module
+
+FROM python-tools AS build
+
+COPY --from=rust-deps /work/target /work/target
+COPY Cargo.toml Cargo.lock pyproject.toml README.md LICENSE /work/
+COPY crates /work/crates
+COPY testbins /work/testbins
+COPY src /work/src
+
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git/db \
+    mkdir -p /dist \
+ && python -m maturin build \
+    --release \
+    --interpreter python \
+    --manifest-path crates/running-process-py/Cargo.toml \
+    --out /dist \
+    --compatibility musllinux_1_2
+
+# Final step: the script should run `docker cp <container_id>:/dist/. linux/`.
+FROM scratch AS artifact
+
+COPY --from=build /dist/ /

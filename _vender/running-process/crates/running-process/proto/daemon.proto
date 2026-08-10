@@ -1,0 +1,996 @@
+// Proto3 schema for running-process daemon IPC.
+//
+// Convention: RequestType enum values are chosen so that each value matches
+// the field number of the corresponding payload message inside DaemonRequest
+// and DaemonResponse.  For example, REGISTER = 10 corresponds to
+// `RegisterRequest register = 10;` in DaemonRequest and
+// `RegisterResponse register = 10;` in DaemonResponse.
+
+syntax = "proto3";
+package running_process.daemon.v1;
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum RequestType {
+  REQUEST_TYPE_UNSPECIFIED     = 0;
+  REQUEST_TYPE_REGISTER        = 10;
+  REQUEST_TYPE_UNREGISTER      = 11;
+  REQUEST_TYPE_SPAWN_DAEMON    = 12;
+  REQUEST_TYPE_LIST_ACTIVE     = 20;
+  REQUEST_TYPE_LIST_BY_ORIGINATOR = 21;
+  REQUEST_TYPE_GET_PROCESS_TREE = 22;
+  REQUEST_TYPE_KILL_ZOMBIES    = 30;
+  REQUEST_TYPE_KILL_TREE       = 31;
+  REQUEST_TYPE_PING            = 40;
+  REQUEST_TYPE_SHUTDOWN        = 41;
+  REQUEST_TYPE_STATUS          = 42;
+  // Service supervision (runpm) — Phase 1 ships stubs that respond OK.
+  REQUEST_TYPE_SERVICE_START     = 50;
+  REQUEST_TYPE_SERVICE_STOP      = 51;
+  REQUEST_TYPE_SERVICE_RESTART   = 52;
+  REQUEST_TYPE_SERVICE_DELETE    = 53;
+  REQUEST_TYPE_SERVICE_LIST      = 54;
+  REQUEST_TYPE_SERVICE_DESCRIBE  = 55;
+  REQUEST_TYPE_SERVICE_LOGS      = 56;
+  REQUEST_TYPE_SERVICE_FLUSH     = 57;
+  REQUEST_TYPE_SERVICE_SAVE      = 58;
+  REQUEST_TYPE_SERVICE_RESURRECT = 59;
+  // Detachable PTY sessions (issue #130 milestone 2).
+  REQUEST_TYPE_SPAWN_PTY_SESSION     = 60;
+  REQUEST_TYPE_ATTACH_PTY_SESSION    = 61;
+  REQUEST_TYPE_DETACH_PTY_SESSION    = 62;
+  REQUEST_TYPE_LIST_PTY_SESSIONS     = 63;
+  REQUEST_TYPE_TERMINATE_PTY_SESSION = 64;
+  // Detachable pipe-backed sessions (issue #130 milestone 3).
+  // Pipe sessions own three independently-attachable streams (stdin is
+  // write-only, exposed as WRITE_PIPE_STDIN; stdout and stderr are
+  // streaming attaches via ATTACH_PIPE_STREAM with a stream selector).
+  REQUEST_TYPE_SPAWN_PIPE_SESSION     = 65;
+  REQUEST_TYPE_ATTACH_PIPE_STREAM     = 66;
+  REQUEST_TYPE_DETACH_PIPE_STREAM     = 67;
+  REQUEST_TYPE_LIST_PIPE_SESSIONS     = 68;
+  REQUEST_TYPE_TERMINATE_PIPE_SESSION = 69;
+  REQUEST_TYPE_WRITE_PIPE_STDIN       = 70;
+  // Session backlog snapshot (#130 milestone 7 B4). Returns the current
+  // ring-buffer contents for any daemon-owned session (PTY or pipe)
+  // without consuming them — same buffer continues to fill, and a real
+  // attach later still sees the same backlog.
+  REQUEST_TYPE_GET_SESSION_BACKLOG    = 71;
+  // Bulk session ops (#130 milestone 9 H4).
+  REQUEST_TYPE_PURGE_EXITED_SESSIONS  = 72;
+  REQUEST_TYPE_BULK_TERMINATE_SESSIONS = 73;
+  // Resize a PTY session without attaching (#130 M5 follow-up).
+  REQUEST_TYPE_RESIZE_PTY_SESSION     = 74;
+  // Optional daemon-owned tee telemetry (#131).
+  REQUEST_TYPE_REGISTER_SESSION_TEE   = 75;
+  REQUEST_TYPE_UNREGISTER_SESSION_TEE = 76;
+  REQUEST_TYPE_GET_SESSION_TEE_STATUS = 77;
+  // Optional daemon-owned observer subscriptions (#221 Phase 2 / #429).
+  REQUEST_TYPE_REGISTER_SESSION_OBSERVER   = 78;
+  REQUEST_TYPE_UNREGISTER_SESSION_OBSERVER = 79;
+  REQUEST_TYPE_GET_SESSION_OBSERVER_STATUS = 80;
+}
+
+enum StatusCode {
+  STATUS_CODE_OK               = 0;
+  STATUS_CODE_ERROR            = 1;
+  STATUS_CODE_UNKNOWN_REQUEST  = 2;
+  STATUS_CODE_INVALID_ARGUMENT = 3;
+  STATUS_CODE_NOT_FOUND        = 4;
+  STATUS_CODE_INTERNAL         = 5;
+  STATUS_CODE_UNAVAILABLE      = 6;
+  STATUS_CODE_VERSION_MISMATCH = 7;
+  STATUS_CODE_RATE_LIMITED     = 8;
+  STATUS_CODE_UNIMPLEMENTED    = 9;
+  STATUS_CODE_ALREADY_ATTACHED = 10;
+}
+
+enum ProcessState {
+  PROCESS_STATE_UNKNOWN = 0;
+  PROCESS_STATE_ALIVE   = 1;
+  PROCESS_STATE_DEAD    = 2;
+  PROCESS_STATE_ZOMBIE  = 3;
+}
+
+enum GraphicsProtocol {
+  GRAPHICS_PROTOCOL_UNSPECIFIED = 0;
+  GRAPHICS_PROTOCOL_SIXEL       = 1;
+  GRAPHICS_PROTOCOL_KITTY       = 2;
+  GRAPHICS_PROTOCOL_ITERM2_FILE = 3;
+}
+
+enum CapabilityStatus {
+  CAPABILITY_STATUS_UNSPECIFIED = 0;
+  CAPABILITY_STATUS_SUPPORTED   = 1;
+  CAPABILITY_STATUS_UNSUPPORTED = 2;
+  CAPABILITY_STATUS_UNKNOWN     = 3;
+  CAPABILITY_STATUS_BLOCKED     = 4;
+}
+
+enum EvidenceStrength {
+  EVIDENCE_STRENGTH_UNSPECIFIED        = 0;
+  EVIDENCE_STRENGTH_PROBE              = 1;
+  EVIDENCE_STRENGTH_STRONG_HOST_SIGNAL = 2;
+  EVIDENCE_STRENGTH_TERMINFO           = 3;
+  EVIDENCE_STRENGTH_WEAK_ENV           = 4;
+  EVIDENCE_STRENGTH_USER_OVERRIDE      = 5;
+}
+
+// ---------------------------------------------------------------------------
+// Envelope messages
+// ---------------------------------------------------------------------------
+
+message DaemonRequest {
+  uint64      id               = 1;
+  RequestType type             = 2;
+  uint32      protocol_version = 3;
+  string      client_name      = 4;
+
+  // Payload fields — field numbers match RequestType enum values.
+  RegisterRequest         register          = 10;
+  UnregisterRequest       unregister        = 11;
+  SpawnDaemonRequest      spawn_daemon      = 12;
+  ListActiveRequest       list_active       = 20;
+  ListByOriginatorRequest list_by_originator = 21;
+  GetProcessTreeRequest   get_process_tree  = 22;
+  KillZombiesRequest      kill_zombies      = 30;
+  KillTreeRequest         kill_tree         = 31;
+  PingRequest             ping              = 40;
+  ShutdownRequest         shutdown          = 41;
+  StatusRequest           status            = 42;
+  ServiceStartRequest     service_start     = 50;
+  ServiceStopRequest      service_stop      = 51;
+  ServiceRestartRequest   service_restart   = 52;
+  ServiceDeleteRequest    service_delete    = 53;
+  ServiceListRequest      service_list      = 54;
+  ServiceDescribeRequest  service_describe  = 55;
+  ServiceLogsRequest      service_logs      = 56;
+  ServiceFlushRequest     service_flush     = 57;
+  ServiceSaveRequest      service_save      = 58;
+  ServiceResurrectRequest service_resurrect = 59;
+  SpawnPtySessionRequest     spawn_pty_session     = 60;
+  AttachPtySessionRequest    attach_pty_session    = 61;
+  DetachPtySessionRequest    detach_pty_session    = 62;
+  ListPtySessionsRequest     list_pty_sessions     = 63;
+  TerminatePtySessionRequest terminate_pty_session = 64;
+  SpawnPipeSessionRequest     spawn_pipe_session     = 65;
+  AttachPipeStreamRequest     attach_pipe_stream     = 66;
+  DetachPipeStreamRequest     detach_pipe_stream     = 67;
+  ListPipeSessionsRequest     list_pipe_sessions     = 68;
+  TerminatePipeSessionRequest terminate_pipe_session = 69;
+  WritePipeStdinRequest       write_pipe_stdin       = 70;
+  GetSessionBacklogRequest    get_session_backlog    = 71;
+  PurgeExitedSessionsRequest  purge_exited_sessions  = 72;
+  BulkTerminateSessionsRequest bulk_terminate_sessions = 73;
+  ResizePtySessionRequest     resize_pty_session     = 74;
+  RegisterSessionTeeRequest   register_session_tee   = 75;
+  UnregisterSessionTeeRequest unregister_session_tee = 76;
+  GetSessionTeeStatusRequest  get_session_tee_status = 77;
+  RegisterSessionObserverRequest   register_session_observer   = 78;
+  UnregisterSessionObserverRequest unregister_session_observer = 79;
+  GetSessionObserverStatusRequest  get_session_observer_status = 80;
+}
+
+message DaemonResponse {
+  uint64     request_id = 1;
+  StatusCode code       = 2;
+  string     message    = 3;
+
+  // Payload fields — field numbers match RequestType enum values.
+  RegisterResponse         register          = 10;
+  UnregisterResponse       unregister        = 11;
+  SpawnDaemonResponse      spawn_daemon      = 12;
+  ListActiveResponse       list_active       = 20;
+  ListByOriginatorResponse list_by_originator = 21;
+  GetProcessTreeResponse   get_process_tree  = 22;
+  KillZombiesResponse      kill_zombies      = 30;
+  KillTreeResponse         kill_tree         = 31;
+  PingResponse             ping              = 40;
+  ShutdownResponse         shutdown          = 41;
+  StatusResponse           status            = 42;
+  ServiceStartResponse     service_start     = 50;
+  ServiceStopResponse      service_stop      = 51;
+  ServiceRestartResponse   service_restart   = 52;
+  ServiceDeleteResponse    service_delete    = 53;
+  ServiceListResponse      service_list      = 54;
+  ServiceDescribeResponse  service_describe  = 55;
+  ServiceLogsResponse      service_logs      = 56;
+  ServiceFlushResponse     service_flush     = 57;
+  ServiceSaveResponse      service_save      = 58;
+  ServiceResurrectResponse service_resurrect = 59;
+  SpawnPtySessionResponse     spawn_pty_session     = 60;
+  AttachPtySessionResponse    attach_pty_session    = 61;
+  DetachPtySessionResponse    detach_pty_session    = 62;
+  ListPtySessionsResponse     list_pty_sessions     = 63;
+  TerminatePtySessionResponse terminate_pty_session = 64;
+  SpawnPipeSessionResponse     spawn_pipe_session     = 65;
+  AttachPipeStreamResponse     attach_pipe_stream     = 66;
+  DetachPipeStreamResponse     detach_pipe_stream     = 67;
+  ListPipeSessionsResponse     list_pipe_sessions     = 68;
+  TerminatePipeSessionResponse terminate_pipe_session = 69;
+  WritePipeStdinResponse       write_pipe_stdin       = 70;
+  GetSessionBacklogResponse    get_session_backlog    = 71;
+  PurgeExitedSessionsResponse  purge_exited_sessions  = 72;
+  BulkTerminateSessionsResponse bulk_terminate_sessions = 73;
+  ResizePtySessionResponse     resize_pty_session     = 74;
+  RegisterSessionTeeResponse   register_session_tee   = 75;
+  UnregisterSessionTeeResponse unregister_session_tee = 76;
+  GetSessionTeeStatusResponse  get_session_tee_status = 77;
+  RegisterSessionObserverResponse   register_session_observer   = 78;
+  UnregisterSessionObserverResponse unregister_session_observer = 79;
+  GetSessionObserverStatusResponse  get_session_observer_status = 80;
+}
+
+// ---------------------------------------------------------------------------
+// Payload messages
+// ---------------------------------------------------------------------------
+
+// Ordered key/value pair, used by env-carrying requests where the protobuf
+// `map` type's unordered semantics would race case-insensitive dedup on
+// Windows (see SpawnDaemonRequest.env).
+message KeyValue {
+  string key   = 1;
+  string value = 2;
+}
+
+message TerminalGraphicsCapability {
+  GraphicsProtocol protocol = 1;
+  CapabilityStatus status   = 2;
+  EvidenceStrength evidence = 3;
+  string source             = 4;
+  repeated string risks     = 5;
+}
+
+message TerminalGraphicsCapabilities {
+  repeated TerminalGraphicsCapability protocols = 1;
+  GraphicsProtocol preferred = 2;
+}
+
+message RegisterRequest {
+  uint32 pid        = 1;
+  double created_at = 2;
+  string kind       = 3;
+  string command    = 4;
+  string cwd        = 5;
+  string originator = 6;
+  string containment = 7;
+}
+
+message RegisterResponse {}
+
+message UnregisterRequest {
+  uint32 pid = 1;
+}
+
+message UnregisterResponse {}
+
+message SpawnDaemonRequest {
+  string command = 1;
+  string cwd = 2;
+  // Environment variables to apply to the spawned subprocess. Default
+  // behaviour (clear_inherited_env=false) is to LAYER these on top of
+  // the daemon's own inherited env — the subprocess sees
+  // the daemon environment plus these entries, with these entries winning ties.
+  //
+  // When clear_inherited_env=true, the subprocess sees ONLY these
+  // entries, nothing inherited from the daemon. This mirrors Python's
+  // `subprocess.Popen(env=…)` semantic: `env=None` (this field empty +
+  // clear_inherited_env=false) inherits, `env=<dict>` (with
+  // clear_inherited_env=true) replaces.
+  //
+  // Ordering: this is `repeated KeyValue`, not a `map`, because the
+  // daemon needs to dedup case-insensitively on Windows where Rust's
+  // `Command::env` collapses "PATH" and "Path" into one slot. The LAST
+  // entry per case-folded key wins. Using a `map` here would lose the
+  // ordering protobuf provides and race the dedup against HashMap
+  // iteration order.
+  //
+  // Practical note for Windows callers: `cmd.exe` needs SystemRoot in
+  // its env to load DLLs; when using replace mode on Windows you'll
+  // typically want to copy SystemRoot (and any other essentials) into
+  // this list yourself.
+  repeated KeyValue env = 3;
+  string originator = 4;
+  bool clear_inherited_env = 5;
+}
+
+message SpawnDaemonResponse {
+  uint32 pid = 1;
+  double created_at = 2;
+  string command = 3;
+  string cwd = 4;
+  string originator = 5;
+  string containment = 6;
+}
+
+message ListActiveRequest {}
+
+message ListActiveResponse {
+  repeated TrackedProcess processes = 1;
+}
+
+message ListByOriginatorRequest {
+  string tool = 1;
+}
+
+message ListByOriginatorResponse {
+  repeated TrackedProcess processes = 1;
+}
+
+message GetProcessTreeRequest {
+  uint32 pid = 1;
+}
+
+message GetProcessTreeResponse {
+  string tree_display = 1;
+}
+
+message KillZombiesRequest {
+  bool dry_run = 1;
+}
+
+message KillZombiesResponse {
+  repeated ZombieReport zombies = 1;
+}
+
+message ZombieReport {
+  uint32 pid     = 1;
+  string command = 2;
+  string reason  = 3;
+  bool   killed  = 4;
+}
+
+message KillTreeRequest {
+  uint32 pid             = 1;
+  double timeout_seconds = 2;
+}
+
+message KillTreeResponse {
+  uint32 processes_killed = 1;
+}
+
+message PingRequest {}
+
+message PingResponse {
+  int64 server_time_ms = 1;
+}
+
+message ShutdownRequest {
+  bool   graceful        = 1;
+  double timeout_seconds = 2;
+}
+
+message ShutdownResponse {}
+
+message StatusRequest {}
+
+message StatusResponse {
+  string version                = 1;
+  uint64 uptime_seconds         = 2;
+  uint32 tracked_process_count  = 3;
+  uint32 active_connections     = 4;
+  string socket_path            = 5;
+  string db_path                = 6;
+  string scope                  = 7;
+  string scope_hash             = 8;
+  string scope_cwd              = 9;
+  // ENOSPC emergency-reserve lifecycle state (#390): "armed",
+  // "released" (deleted to recover from a full disk), or "degraded"
+  // (pre-allocation failed at startup). Additive field; older clients
+  // ignore it.
+  string emergency_reserve      = 10;
+}
+
+message TrackedProcess {
+  uint32       pid              = 1;
+  double       created_at       = 2;
+  string       kind             = 3;
+  string       command          = 4;
+  string       cwd              = 5;
+  string       originator       = 6;
+  string       containment      = 7;
+  double       registered_at    = 8;
+  double       uptime_seconds   = 9;
+  bool         parent_alive     = 10;
+  ProcessState state            = 11;
+  double       last_validated_at = 12;
+}
+
+// ---------------------------------------------------------------------------
+// Service supervision (runpm) — Phase 1
+//
+// All handlers in Phase 1 return STATUS_CODE_OK with empty/default payloads.
+// Real lifecycle, restart policy, and persistence land in Phase 2.
+// ---------------------------------------------------------------------------
+
+message ServiceConfig {
+  string              name           = 1;
+  repeated string     cmd            = 2;
+  string              cwd            = 3;
+  map<string, string> env            = 4;
+  bool                autorestart    = 5;
+  uint32              max_restarts   = 6;
+  uint32              restart_delay_ms = 7;
+  uint32              kill_timeout_ms  = 8;
+  uint32              min_uptime_ms    = 9;
+}
+
+message ServiceState {
+  string         name             = 1;
+  uint32         id               = 2;
+  string         status           = 3;  // "online" | "stopped" | "errored" | "starting"
+  uint32         pid              = 4;
+  uint32         restart_count    = 5;
+  double         last_started_at  = 6;
+  double         last_exited_at   = 7;
+  int32          last_exit_code   = 8;
+  ServiceConfig  config           = 9;
+}
+
+message ServiceStartRequest {
+  ServiceConfig config = 1;
+}
+message ServiceStartResponse {
+  ServiceState service = 1;
+}
+
+message ServiceStopRequest {
+  string target = 1;  // name | id | "all"
+}
+message ServiceStopResponse {
+  uint32 stopped_count = 1;
+}
+
+message ServiceRestartRequest {
+  string target = 1;
+}
+message ServiceRestartResponse {
+  uint32 restarted_count = 1;
+}
+
+message ServiceDeleteRequest {
+  string target = 1;
+}
+message ServiceDeleteResponse {
+  uint32 deleted_count = 1;
+}
+
+message ServiceListRequest {}
+message ServiceListResponse {
+  repeated ServiceState services = 1;
+}
+
+message ServiceDescribeRequest {
+  string target = 1;
+}
+message ServiceDescribeResponse {
+  ServiceState service = 1;
+}
+
+message ServiceLogsRequest {
+  string target = 1;  // name | id | "" for all
+  uint32 lines  = 2;
+  bool   follow = 3;
+}
+message ServiceLogsResponse {
+  string log_text = 1;
+}
+
+message ServiceFlushRequest {
+  string target = 1;
+}
+message ServiceFlushResponse {
+  uint32 flushed_count = 1;
+}
+
+message ServiceSaveRequest {}
+message ServiceSaveResponse {
+  string snapshot_path = 1;
+  uint32 service_count = 2;
+}
+
+message ServiceResurrectRequest {}
+message ServiceResurrectResponse {
+  uint32 restored_count = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Detachable PTY sessions (issue #130) — milestone 2 scaffold.
+//
+// Wire protocol for AttachPtySession is intentionally not finalized in this
+// scaffold. The default plan is to multiplex PtyStreamFrame/PtyInputFrame
+// over the same socket after the AttachPtySessionResponse is sent; the
+// alternative is a per-attachment socket path returned in the response.
+// The choice will be made in the milestone 2 implementation commit; for
+// now the handler responds with STATUS_CODE_UNIMPLEMENTED.
+//
+// Design decision (see plan docs): the daemon owns the ConPTY / PTY
+// master and the child process. Clients never receive raw OS handles —
+// they receive bytes over IPC and submit bytes/resize/interrupt via RPC.
+// This sidesteps DuplicateHandle and POSIX controlling-terminal handoff.
+// ---------------------------------------------------------------------------
+
+message SpawnPtySessionRequest {
+  // Argv. argv[0] is the program; remaining are arguments.
+  repeated string argv = 1;
+  string cwd = 2;
+  // Environment for the spawned child. Same layering semantics as
+  // SpawnDaemonRequest.env: ordered repeated KeyValue with case-insensitive
+  // last-wins dedup on Windows.
+  repeated KeyValue env = 3;
+  bool clear_inherited_env = 4;
+  // Initial terminal size. 0 = use daemon defaults (24x80).
+  uint32 rows = 5;
+  uint32 cols = 6;
+  // Originator tag, e.g. "clud". Stored in registry for discovery.
+  string originator = 7;
+}
+
+message SpawnPtySessionResponse {
+  // UUID v4 string. Used as the handle for subsequent Attach/Detach/Terminate.
+  string session_id = 1;
+  uint32 pid        = 2;
+  double created_at = 3;
+}
+
+message AttachPtySessionRequest {
+  string session_id = 1;
+  // Client-side terminal dimensions; daemon resizes the PTY to match.
+  uint32 rows = 2;
+  uint32 cols = 3;
+  // If true, evict any currently-attached client. Default false: a second
+  // attach attempt fails with STATUS_CODE_ALREADY_ATTACHED.
+  bool steal = 4;
+  // Terminal capabilities for renegotiation; informational only for now.
+  string term            = 5;
+  bool   is_tty          = 6;
+  TerminalGraphicsCapabilities graphics_capabilities = 7;
+}
+
+message AttachPtySessionResponse {
+  // If the wire protocol ends up using a per-attachment socket, this is
+  // the path / pipe name to connect to. Empty string means "multiplex on
+  // the existing socket" (default plan).
+  string stream_endpoint = 1;
+  // Bytes the client missed while detached; included as a one-shot
+  // backlog before the live stream starts. Bounded by daemon config.
+  bytes  backlog         = 2;
+  // True if the backlog ring buffer dropped bytes before this attach.
+  // Client should render a "missed N bytes" indicator.
+  bool   backlog_truncated = 3;
+  uint64 bytes_missed     = 4;
+}
+
+message DetachPtySessionRequest {
+  string session_id = 1;
+}
+message DetachPtySessionResponse {}
+
+message ListPtySessionsRequest {
+  // Optional originator filter; empty string returns all sessions in scope.
+  string originator = 1;
+}
+
+message ListPtySessionsResponse {
+  repeated PtySessionInfo sessions = 1;
+}
+
+message PtySessionInfo {
+  string session_id = 1;
+  uint32 pid        = 2;
+  string command    = 3;
+  string cwd        = 4;
+  string originator = 5;
+  double created_at = 6;
+  bool   attached   = 7;
+  // Populated only after the child has exited.
+  bool   exited     = 8;
+  int32  exit_code  = 9;
+  double exited_at  = 10;
+  uint32 rows       = 11;
+  uint32 cols       = 12;
+  // Which termination path the session took. UNSPECIFIED while the
+  // session is live or for pre-#130 callers.
+  TerminationOutcome termination_outcome = 13;
+  // Whether the current attached client identified itself as a TTY.
+  // Meaningful only when `attached=true`; set to the value of
+  // AttachPtySessionRequest.is_tty at attach time. The daemon uses
+  // this to skip resize/cursor-query side effects for non-TTY
+  // clients (e.g. stream-JSON renderers). #130 M6 C9.
+  bool   attached_is_tty = 14;
+  // TERM string supplied by the attached client at attach time.
+  // Informational; the daemon does not propagate this to the running
+  // child's environment (you cannot change a live child's TERM).
+  // Empty when no client is attached.
+  string attached_term = 15;
+  // Graphics capability metadata supplied by the currently attached
+  // client. Missing metadata from older clients is treated as unknown.
+  TerminalGraphicsCapabilities attached_graphics_capabilities = 16;
+}
+
+message TerminatePtySessionRequest {
+  string session_id = 1;
+  // Soft-then-hard schedule. Daemon sends SIGTERM/CTRL_BREAK_EVENT,
+  // waits up to grace_ms, then escalates to SIGKILL / Job-Object kill.
+  // Fire-and-forget from the client's perspective: response returns as
+  // soon as the schedule is accepted, not when the child has exited.
+  uint32 grace_ms = 2;
+}
+
+message TerminatePtySessionResponse {}
+
+// Frame envelopes for the bidirectional attach stream. Not part of the
+// request/response envelope above; sent after attach succeeds.
+//
+// Daemon -> client.
+message PtyStreamFrame {
+  oneof frame {
+    // Raw bytes from the PTY master (output).
+    bytes  output       = 1;
+    // Child exited; final exit code. Always followed by stream close.
+    int32  exit_code    = 2;
+    // Daemon dropped this many bytes from the head of the ring buffer
+    // before this point. Client should render a "missed N bytes" marker.
+    uint64 missed_bytes = 3;
+    // Error during streaming; daemon will close the stream after sending.
+    string error        = 4;
+    // Sent when the attached client was evicted via a steal from a peer.
+    string stolen_by    = 5;
+  }
+}
+
+// Client -> daemon.
+message PtyInputFrame {
+  oneof frame {
+    // Raw bytes to write to the PTY master (stdin).
+    bytes  input     = 1;
+    // Terminal resize; daemon applies via portable-pty resize.
+    PtyResize resize = 2;
+    // Send SIGINT / CTRL_C_EVENT to the child process group.
+    bool   interrupt = 3;
+    // Clean detach. Daemon keeps the session alive but releases this
+    // attachment.
+    bool   detach    = 4;
+  }
+}
+
+message PtyResize {
+  uint32 rows = 1;
+  uint32 cols = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Detachable pipe-backed sessions (issue #130 milestone 3).
+//
+// A pipe session is the daemon-owned analog of `subprocess.Popen` with
+// stdin/stdout/stderr each independently attachable. Stdin is write-only
+// (no streaming attach — clients call WritePipeStdin). Stdout and stderr
+// use AttachPipeStream with a `stream` selector and receive PipeStreamFrame
+// payloads on the same socket after the response.
+//
+// Design parity with PTY sessions (M2): daemon owns the child process and
+// pipe handles; clients never receive raw OS handles. Ring buffer per
+// stream with drop-oldest semantics. Single attachment per stream;
+// `steal=true` evicts the existing attachment.
+// ---------------------------------------------------------------------------
+
+enum PipeStreamKind {
+  PIPE_STREAM_KIND_UNSPECIFIED = 0;
+  PIPE_STREAM_KIND_STDOUT      = 1;
+  PIPE_STREAM_KIND_STDERR      = 2;
+}
+
+// How a session reached its terminal state. Reported on
+// PtySessionInfo/PipeSessionInfo/GetSessionBacklogResponse once
+// `exited=true`. Useful for understanding whether the soft signal
+// worked or whether the daemon had to escalate to a hard kill.
+enum TerminationOutcome {
+  // Default for live sessions and pre-#130 callers.
+  TERMINATION_OUTCOME_UNSPECIFIED = 0;
+  // The child exited on its own. No terminate RPC fired before exit.
+  TERMINATION_OUTCOME_NATURAL_EXIT = 1;
+  // Terminate RPC fired; child exited within the grace window before
+  // the daemon issued the hard kill. The soft signal worked.
+  TERMINATION_OUTCOME_SOFT_EXIT    = 2;
+  // Terminate RPC fired; child did not exit within the grace window;
+  // the daemon's hard kill ran.
+  TERMINATION_OUTCOME_HARD_KILLED  = 3;
+}
+
+message SpawnPipeSessionRequest {
+  repeated string argv = 1;
+  string cwd = 2;
+  repeated KeyValue env = 3;
+  bool clear_inherited_env = 4;
+  string originator = 5;
+  // Capture stderr separately (default) or merge into stdout.
+  bool merge_stderr_into_stdout = 6;
+}
+
+message SpawnPipeSessionResponse {
+  string session_id = 1;
+  uint32 pid        = 2;
+  double created_at = 3;
+}
+
+message AttachPipeStreamRequest {
+  string         session_id = 1;
+  PipeStreamKind stream     = 2;
+  // If true, evict any currently-attached client on this stream.
+  bool steal = 3;
+}
+
+message AttachPipeStreamResponse {
+  // Initial backlog the client missed before this attach. Same semantics
+  // as AttachPtySessionResponse: empty if nothing has been emitted yet.
+  bytes  backlog          = 1;
+  bool   backlog_truncated = 2;
+  uint64 bytes_missed      = 3;
+}
+
+message DetachPipeStreamRequest {
+  string         session_id = 1;
+  PipeStreamKind stream     = 2;
+}
+message DetachPipeStreamResponse {}
+
+message ListPipeSessionsRequest {
+  string originator = 1;
+}
+
+message ListPipeSessionsResponse {
+  repeated PipeSessionInfo sessions = 1;
+}
+
+message PipeSessionInfo {
+  string session_id = 1;
+  uint32 pid        = 2;
+  string command    = 3;
+  string cwd        = 4;
+  string originator = 5;
+  double created_at = 6;
+  bool   stdout_attached = 7;
+  bool   stderr_attached = 8;
+  bool   exited     = 9;
+  int32  exit_code  = 10;
+  double exited_at  = 11;
+  bool   merge_stderr_into_stdout = 12;
+  TerminationOutcome termination_outcome = 13;
+}
+
+message TerminatePipeSessionRequest {
+  string session_id = 1;
+  uint32 grace_ms   = 2;
+}
+message TerminatePipeSessionResponse {}
+
+message WritePipeStdinRequest {
+  string session_id = 1;
+  bytes  data       = 2;
+  // If true, close stdin after writing the supplied bytes. Subsequent
+  // writes to the same session return STATUS_CODE_INVALID_ARGUMENT.
+  bool   close      = 3;
+}
+message WritePipeStdinResponse {
+  uint64 bytes_written = 1;
+}
+
+message GetSessionBacklogRequest {
+  string session_id = 1;
+  // Pipe sessions only: which stream's backlog to return. Ignored for
+  // PTY sessions (PTY has a single merged output buffer).
+  PipeStreamKind pipe_stream = 2;
+}
+
+message GetSessionBacklogResponse {
+  bytes  backlog          = 1;
+  uint64 bytes_missed     = 2;
+  // "pty" or "pipe", or empty if the session was not found.
+  string session_kind     = 3;
+  bool   exited           = 4;
+  int32  exit_code        = 5;
+  double exited_at        = 6;
+  TerminationOutcome termination_outcome = 7;
+}
+
+message PurgeExitedSessionsRequest {
+  // Filter by originator. Empty matches all.
+  string originator = 1;
+}
+message PurgeExitedSessionsResponse {
+  uint32 pty_purged  = 1;
+  uint32 pipe_purged = 2;
+}
+
+message BulkTerminateSessionsRequest {
+  // Terminate every session whose age is strictly greater than this
+  // many seconds. Zero terminates everything in scope.
+  uint64 older_than_secs = 1;
+  // Filter by originator. Empty matches all.
+  string originator      = 2;
+  // Soft-signal grace window before hard kill.
+  uint32 grace_ms        = 3;
+}
+message BulkTerminateSessionsResponse {
+  uint32 pty_terminated  = 1;
+  uint32 pipe_terminated = 2;
+}
+
+// Resize a PTY session without going through an attach. Useful for
+// scripts that adjust the PTY dimensions between attaches, or for an
+// orchestrator that wants to set the size once before any client
+// connects. No-op on pipe sessions (no PTY to resize).
+message ResizePtySessionRequest {
+  string session_id = 1;
+  uint32 rows       = 2;
+  uint32 cols       = 3;
+}
+message ResizePtySessionResponse {}
+
+// ---------------------------------------------------------------------------
+// Optional session tee telemetry (#131).
+// ---------------------------------------------------------------------------
+
+enum TeeSessionKind {
+  TEE_SESSION_KIND_UNSPECIFIED = 0;
+  TEE_SESSION_KIND_PTY         = 1;
+  TEE_SESSION_KIND_PIPE        = 2;
+}
+
+enum TeeStreamKind {
+  TEE_STREAM_KIND_UNSPECIFIED = 0;
+  TEE_STREAM_KIND_PTY_OUTPUT  = 1;
+  TEE_STREAM_KIND_STDOUT      = 2;
+  TEE_STREAM_KIND_STDERR      = 3;
+  TEE_STREAM_KIND_STDIN       = 4;
+}
+
+enum TeeSinkKind {
+  TEE_SINK_KIND_UNSPECIFIED = 0;
+  // Daemon opens the path and owns the file descriptor until the tee is
+  // removed or the session ends. Path bytes are OS-native, not UTF-8.
+  TEE_SINK_KIND_FILE        = 1;
+}
+
+enum TeeFileMode {
+  TEE_FILE_MODE_APPEND   = 0;
+  TEE_FILE_MODE_TRUNCATE = 1;
+}
+
+enum TeeBackpressure {
+  TEE_BACKPRESSURE_DROP_OLDEST = 0;
+  TEE_BACKPRESSURE_BLOCK       = 1;
+}
+
+message RegisterSessionTeeRequest {
+  string session_id          = 1;
+  TeeSessionKind session_kind = 2;
+  TeeStreamKind stream       = 3;
+  TeeSinkKind sink_kind      = 4;
+  // OS-native path bytes: Unix = OsStr bytes; Windows = little-endian UTF-16.
+  bytes  file_path           = 5;
+  TeeFileMode file_mode      = 6;
+  // 0 means use the daemon default.
+  uint32 queue_capacity      = 7;
+  // false means write missed-byte markers, matching the Rust default.
+  bool   suppress_missed_markers = 8;
+  TeeBackpressure backpressure = 9;
+}
+
+message RegisterSessionTeeResponse {
+  uint64 tee_handle = 1;
+}
+
+message UnregisterSessionTeeRequest {
+  string session_id          = 1;
+  TeeSessionKind session_kind = 2;
+  uint64 tee_handle          = 3;
+}
+message UnregisterSessionTeeResponse {}
+
+message GetSessionTeeStatusRequest {
+  string session_id          = 1;
+  TeeSessionKind session_kind = 2;
+  uint64 tee_handle          = 3;
+}
+
+message GetSessionTeeStatusResponse {
+  TeeStreamKind stream       = 1;
+  uint64 missed_bytes        = 2;
+  bool   disconnected        = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Optional session observer subscriptions (#221 Phase 2 / #429).
+//
+// Observer registrations live on the per-session struct, not on a per-client
+// IPC connection. They survive the client's IPC connection going away. When a
+// new client reconnects and re-registers it gets a fresh subscription — but
+// events that arrived while no client was attached are NOT replayed. This is
+// different from the PTY/pipe backlog (which is byte-stream-style); observer
+// events are event-stream-style and are dropped (and counted) once the bounded
+// sink fills, per the configured backpressure policy.
+// ---------------------------------------------------------------------------
+
+enum ObserverSessionKind {
+  OBSERVER_SESSION_KIND_UNSPECIFIED = 0;
+  OBSERVER_SESSION_KIND_PTY         = 1;
+  OBSERVER_SESSION_KIND_PIPE        = 2;
+}
+
+// EventCategory values match `observer::EventCategory` integer ordering:
+// 0=Lifecycle, 1=File, 2=Network, 3=Process. Phase 1 only honors Lifecycle;
+// the others are accepted (so the client can request them ahead of Phase 3
+// platform backends) but currently produce no events.
+enum ObserverEventCategory {
+  OBSERVER_EVENT_CATEGORY_LIFECYCLE = 0;
+  OBSERVER_EVENT_CATEGORY_FILE      = 1;
+  OBSERVER_EVENT_CATEGORY_NETWORK   = 2;
+  OBSERVER_EVENT_CATEGORY_PROCESS   = 3;
+}
+
+// Backpressure for the bounded observer sink. Mirrors TeeBackpressure
+// semantics: DropOldest never blocks the emitter, Block waits.
+enum ObserverBackpressure {
+  OBSERVER_BACKPRESSURE_DROP_OLDEST = 0;
+  OBSERVER_BACKPRESSURE_BLOCK       = 1;
+}
+
+message RegisterSessionObserverRequest {
+  string session_id                       = 1;
+  ObserverSessionKind session_kind        = 2;
+  // Requested categories. Each value is an ObserverEventCategory integer
+  // (stored as repeated uint32 to match the Phase 1 in-process config which
+  // accepts an arbitrary set). Empty = lifecycle only.
+  repeated uint32 categories              = 3;
+  // 0 means use the daemon default (1024).
+  uint32 ring_capacity_events             = 4;
+  ObserverBackpressure backpressure       = 5;
+}
+
+message RegisterSessionObserverResponse {
+  // Server-assigned UUID for this subscription. Used by Unregister and
+  // GetStatus. Not reused after Unregister.
+  string subscriber_id = 1;
+}
+
+message UnregisterSessionObserverRequest {
+  string session_id                = 1;
+  ObserverSessionKind session_kind = 2;
+  string subscriber_id             = 3;
+}
+message UnregisterSessionObserverResponse {}
+
+message GetSessionObserverStatusRequest {
+  string session_id                = 1;
+  ObserverSessionKind session_kind = 2;
+  string subscriber_id             = 3;
+}
+
+message GetSessionObserverStatusResponse {
+  // Cumulative number of events that arrived while the bounded sink was
+  // full. Increments only under DropOldest; Block backpressure never drops.
+  uint64 missed_events = 1;
+  // True if the downstream receiver has disconnected.
+  bool   disconnected  = 2;
+  // Cumulative number of events successfully delivered to this sink.
+  uint64 delivered_events = 3;
+}
+
+// Daemon -> client stream frame for an attached stdout/stderr.
+message PipeStreamFrame {
+  oneof frame {
+    bytes  bytes        = 1;
+    // The child closed this stream (EOF). Terminal frame for the
+    // attachment; the daemon will close the stream connection after.
+    bool   eof          = 2;
+    // The child has exited; the int payload is the exit code. Terminal
+    // frame.
+    int32  exit_code    = 3;
+    uint64 missed_bytes = 4;
+    string error        = 5;
+    string stolen_by    = 6;
+  }
+}

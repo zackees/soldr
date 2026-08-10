@@ -1,0 +1,130 @@
+/* rpprobed UI styling.
+ *
+ * Served by the daemon, so it uses only system fonts and no external
+ * resources of any kind — the surface has to work on a host with no network,
+ * which is exactly the host you are most likely debugging on.
+ */
+
+:root {
+  --bg: #ffffff;
+  --fg: #1a1a1a;
+  --muted: #666;
+  --line: #d8d8d8;
+  --accent: #1c5d99;
+  --warn: #a33;
+  --row: #f6f6f6;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16181c;
+    --fg: #e6e6e6;
+    --muted: #9aa0a6;
+    --line: #33363d;
+    --accent: #6fa8dc;
+    --warn: #e88;
+    --row: #1d2026;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 0 1.25rem 3rem;
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+header {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  padding: 1rem 0 0.5rem;
+  border-bottom: 1px solid var(--line);
+}
+
+h1 { font-size: 1.1rem; margin: 0; font-weight: 600; letter-spacing: 0.01em; }
+
+.status { color: var(--muted); font-size: 0.85rem; }
+.status.error { color: var(--warn); }
+
+nav { display: flex; gap: 0.25rem; margin: 0.75rem 0 1rem; flex-wrap: wrap; }
+
+nav button {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  padding: 0.35rem 0.7rem;
+}
+
+nav button.active { background: var(--row); border-color: var(--line); color: var(--fg); }
+
+.view { display: none; }
+.view.active { display: block; }
+
+.controls {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  margin-bottom: 0.9rem;
+}
+
+.controls label { display: flex; flex-direction: column; font-size: 0.8rem; color: var(--muted); gap: 0.2rem; }
+.controls label.check { flex-direction: row; align-items: center; gap: 0.35rem; }
+
+.controls input[type="text"], .controls input:not([type]) {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--fg);
+  font: inherit;
+  padding: 0.3rem 0.45rem;
+  min-width: 12rem;
+}
+
+.controls button, .row-action {
+  background: var(--accent);
+  border: none;
+  border-radius: 5px;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  padding: 0.35rem 0.8rem;
+}
+
+.row-action { padding: 0.15rem 0.5rem; font-size: 0.8rem; }
+
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { border-bottom: 1px solid var(--line); padding: 0.4rem 0.6rem; text-align: left; }
+th { color: var(--muted); font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+tbody tr:nth-child(even) { background: var(--row); }
+td.mono, .summary code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.85em; }
+
+.summary { color: var(--muted); font-size: 0.85rem; }
+
+/* Flame graph. One row per stack depth, width proportional to samples. */
+#flame-canvas { overflow-x: auto; }
+.flame-row { display: block; white-space: nowrap; }
+
+.flame-frame {
+  border: 1px solid var(--bg);
+  border-radius: 2px;
+  color: #1a1a1a;
+  cursor: pointer;
+  display: inline-block;
+  font-size: 11px;
+  height: 18px;
+  line-height: 17px;
+  overflow: hidden;
+  padding: 0 3px;
+  text-overflow: ellipsis;
+  vertical-align: top;
+}
+
+.flame-frame:hover { outline: 1px solid var(--fg); }

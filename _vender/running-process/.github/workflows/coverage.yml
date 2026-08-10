@@ -1,0 +1,180 @@
+name: Coverage
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  coverage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      # RUST_LOG intentionally NOT set — uv subprocesses spawned by
+      # pytest will dump debug output into captured stdout and break
+      # assertions that compare against fixed strings.
+      RUST_BACKTRACE: "full"
+      RUST_LIB_BACKTRACE: "full"
+      RUNNING_PROCESS_TEST_NOCAPTURE: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Cache venv
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-ubuntu-24.04-py3.11-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            venv-ubuntu-24.04-py3.11-
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.94.1"
+          components: clippy, rustfmt, llvm-tools-preview
+
+      - name: Rust build cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ubuntu-24.04-coverage
+          cache-on-failure: true
+
+      - name: Sync
+        run: uv sync --frozen --group dev --no-install-project --python 3.11 -v
+
+      - name: Dev build
+        run: uv run --no-sync --module ci.run_logged logs/dev-build.log -- uv run --no-sync --module ci.build_wheel --dev
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      # cargo-nextest is the runner ci/test.py invokes under coverage
+      # (`cargo llvm-cov nextest ...`). Prebuilt binary install.
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+
+      - name: Run tests with coverage
+        run: uv run --no-sync --module ci.run_logged logs/test.log -- uv run --no-sync --module ci.test --coverage
+
+      - name: Coverage profraw diagnostics
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          set +e
+          PROFDATA="$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-profdata"
+          echo "::group::llvm-profdata identity"
+          "$PROFDATA" --version || true
+          file "$PROFDATA" || true
+          echo "::endgroup::"
+
+          echo "::group::per-profraw validation bisect"
+          mkdir -p logs/bad-profraw
+          found_bad=0
+          while IFS= read -r -d '' f; do
+            "$PROFDATA" show "$f" >/dev/null 2>&1
+            rc=$?
+            if [ "$rc" -ne 0 ]; then
+              echo "BAD (rc=$rc): $f ($(stat -c%s "$f") bytes)"
+              cp "$f" logs/bad-profraw/ || true
+              found_bad=1
+            fi
+          done < <(find target/llvm-cov-target -name '*.profraw' -print0 2>/dev/null)
+          [ "$found_bad" -eq 0 ] && echo "no individually-invalid profraw found; crash may need the full merge set"
+          [ -f logs/bad-profraw/manifest.json ] && cat logs/bad-profraw/manifest.json
+          echo "::endgroup::"
+
+          echo "::group::merge retry excluding bad files"
+          find target/llvm-cov-target -name '*.profraw' 2>/dev/null | while read -r f; do
+            "$PROFDATA" show "$f" >/dev/null 2>&1 && echo "$f"
+          done > logs/good-profraw-list
+          wc -l logs/good-profraw-list
+          "$PROFDATA" merge -sparse -f logs/good-profraw-list -o logs/retry.profdata && echo "merge retry excluding individually rejected files succeeded"
+          echo "::endgroup::"
+
+      - name: Upload rejected profraw evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-bad-profraw
+          path: logs/bad-profraw/**
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload Python coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-python
+          path: coverage-python.xml
+          if-no-files-found: warn
+
+      - name: Upload Rust coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-rust
+          path: coverage-rust.lcov
+          if-no-files-found: warn
+
+      - name: Upload to Codecov
+        if: always()
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage-python.xml,coverage-rust.lcov
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Display failure diagnostics
+        if: ${{ failure() || cancelled() }}
+        shell: bash
+        run: |
+          if ls logs/*.analytics.json >/dev/null 2>&1; then
+            echo "::warning::Failure analytics detected"
+            for f in logs/*.analytics.json; do
+              [ -f "$f" ] && echo "--- $f ---" && cat "$f"
+            done
+          fi
+          if [ -d logs/running-process ]; then
+            echo "::warning::running-process diagnostics detected"
+            for f in logs/running-process/*; do
+              [ -f "$f" ] || continue
+              case "$f" in
+                *.json)
+                  echo "--- $f ---"
+                  cat "$f"
+                  ;;
+                *.log)
+                  echo "--- $f (tail -200) ---"
+                  tail -n 200 "$f"
+                  ;;
+              esac
+            done
+          fi
+          echo "::group::Rust toolchain diagnostics"
+          command -v rustup >/dev/null 2>&1 && rustup show || true
+          command -v rustup >/dev/null 2>&1 && rustup toolchain list || true
+          command -v rustc >/dev/null 2>&1 && rustc -Vv || true
+          command -v cargo >/dev/null 2>&1 && cargo -V || true
+          command -v cargo-clippy >/dev/null 2>&1 && cargo-clippy -V || true
+          echo "::endgroup::"
+
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-logs-coverage
+          path: logs/*
+          if-no-files-found: warn

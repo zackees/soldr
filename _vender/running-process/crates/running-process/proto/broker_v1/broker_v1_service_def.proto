@@ -1,0 +1,41 @@
+// running-process v1 broker — service definition schema.
+//
+// FROZEN FOREVER once v1.0 ships. See issue #228 ("Frozen-forever
+// commitments") for rationale.
+//
+// Service-definition files live in:
+//   Linux:   $XDG_CONFIG_HOME/running-process/services/{service-name}.servicedef
+//   macOS:   ~/Library/Application Support/running-process/services/
+//   Windows: %APPDATA%\running-process\services\
+//
+// Directory mode MUST be 0700 (Unix) or current-user-only ACL (Windows).
+// Broker refuses to load any .servicedef whose parent directory has
+// group/other write bits.
+
+syntax = "proto3";
+package running_process.broker.v1;
+
+message ServiceDefinition {
+  string service_name = 1;                // [a-z0-9-]{1,64}
+  string binary_path = 2;                 // canonical path to backend binary
+  BrokerIsolation isolation = 3;          // PRIVATE_BROKER (default), SHARED_BROKER, EXPLICIT_INSTANCE
+  string explicit_instance = 4;           // used only when isolation == EXPLICIT_INSTANCE
+  string per_version_binary_dir = 5;      // canonicalized allow-list root for backends
+  string min_version = 6;                 // semver floor - refuses wanted_version below this
+  repeated string version_allow_list = 7; // optional strict pin
+  map<string, string> labels = 8;
+}
+
+enum BrokerIsolation {
+  // DEFAULT - safe; private broker per service. Third-party consumers
+  // get isolation automatically with zero ceremony.
+  PRIVATE_BROKER = 0;
+
+  // Opt-in to per-user shared broker. Recommended for first-party tools
+  // that benefit from shared infrastructure + cross-service ops.
+  SHARED_BROKER = 1;
+
+  // Named broker instance, e.g. "ci-trusted" / "ci-untrusted" for
+  // explicit trust grouping.
+  EXPLICIT_INSTANCE = 2;
+}

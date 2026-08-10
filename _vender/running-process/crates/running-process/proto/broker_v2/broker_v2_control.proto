@@ -1,0 +1,45 @@
+// running-process v2 broker — control-plane messages.
+//
+// Pairs with `broker_v2_service_def.proto` (same `running_process.broker.v2`
+// package). This file carries the broker↔daemon and CLI↔broker control
+// messages introduced in #483:
+//
+//   - `BackendHttpReady` — daemon → broker notification on the existing
+//     broker↔daemon control channel after the daemon binds `127.0.0.1:0`
+//     for its HTTP server. Carries the OS-allocated port back so the
+//     broker can route the aggregator iframe.
+//
+//   - `GetBrokerHttpEndpointRequest` / `GetBrokerHttpEndpointResponse` —
+//     the CLI↔broker control RPC pair. The CLI (already on the v2 broker
+//     control pipe) calls this to discover the broker's HTTP endpoint.
+//     This is the single discovery surface (#483 §4); there is no
+//     out-of-band file.
+//
+// Slice 2 of #483 adds only the message definitions + prost wiring; the
+// broker binary, broker↔daemon transport, and CLI dispatch land in later
+// slices once the v2 baseline exists.
+
+syntax = "proto3";
+package running_process.broker.v2;
+
+// Notification frame sent from a daemon to its broker once the daemon's
+// HTTP server has bound a port. `port` is `u16` in Rust; proto's narrowest
+// integer is `uint32` so the wire type is `uint32` and the broker
+// validates the range on receipt.
+message BackendHttpReady {
+  uint32 port = 1;
+}
+
+// CLI→broker request for the broker's own HTTP endpoint. Empty marker —
+// no fields are necessary; the broker fronts exactly one HTTP server.
+message GetBrokerHttpEndpointRequest {}
+
+// Broker→CLI response carrying the resolved HTTP endpoint. `port` is the
+// port the broker is currently bound on (after env-override / config
+// resolution per #483 §3); `pid` is the broker's process id, included so
+// a mid-restart consumer can distinguish a stale answer from a live one
+// without needing a separate liveness probe.
+message GetBrokerHttpEndpointResponse {
+  uint32 port = 1;
+  uint32 pid = 2;
+}

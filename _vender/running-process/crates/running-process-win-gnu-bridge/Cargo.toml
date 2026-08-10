@@ -1,0 +1,37 @@
+[package]
+name = "running-process-win-gnu-bridge"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Build seam (#580) exposing the MSVC-obligatory Windows API surface (ConPTY) to x86_64-pc-windows-gnu builds"
+publish = false
+
+# Plain rlib. This crate is a build seam, not a shipped artifact: on
+# MSVC it is an inert no-op that only keeps the workspace member valid;
+# on `*-pc-windows-gnu` it forces the linker to bind the ConPTY import
+# symbols, proving the surface is reachable without MSVC `link.exe`.
+[lib]
+crate-type = ["rlib"]
+
+# The ConPTY surface (`CreatePseudoConsole` / `ResizePseudoConsole` /
+# `ClosePseudoConsole`) is reachable under the GNU toolchain because
+# `windows-sys` bundles a per-target import library (via
+# `windows-targets` → `windows_x86_64_gnu`) — no Windows SDK and no
+# MSVC `link.exe` required. Gated on `target_os = "windows"` so the
+# crate is a valid, empty workspace member on Linux/macOS CI (mirrors
+# the interposer stub pattern).
+#
+# Feature set is intentionally the minimal subset the ConPTY wrappers
+# touch — a strict subset of what `crates/running-process` already
+# enables (#150), so no new transitive surface is introduced.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+] }
+
+[lints]
+workspace = true

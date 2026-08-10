@@ -118,7 +118,21 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # soldr#2031: one process-creation implementation across Soldr and its
 # embedded zccache graph. Remove this git patch after the file-backed daemon
 # stdio API ships in a running-process release and every consumer is bumped.
-running-process = { git = "https://github.com/zackees/running-process.git", rev = "359b4e3d92660e54eb9b16b6e83de8ce26932ff8" }
+running-process = { path = "_vender/running-process/crates/running-process" }
+# soldr#2406: use the vendored notify with bumped windows-sys (0.52→0.61)
+# and HANDLE type fixes for 0.59+ API to converge the dependency graph.
+notify = { path = "_vender/notify" }
+# soldr#2406: bump filetime_creation's windows-sys (0.52→0.61) to converge.
+filetime_creation = { path = "_vender/patches/filetime_creation" }
+# soldr#2406: relax windows-sys caps across the cap-std ecosystem so the
+# entire workspace converges on a single windows-sys version. Upstream
+# caps at <=0.59; the APIs used are stable through 0.61.
+winx = { path = "_vender/winx" }
+cap-primitives = { path = "_vender/cap-primitives" }
+cap-fs-ext = { path = "_vender/cap-fs-ext" }
+cap-std = { path = "_vender/cap-std" }
+fs-set-times = { path = "_vender/fs-set-times" }
+io-extras = { path = "_vender/io-extras" }
 
 # Release profile size optimization (#920). soldr ships as a template
 # binary that every CI consumer downloads via setup-soldr / actions/

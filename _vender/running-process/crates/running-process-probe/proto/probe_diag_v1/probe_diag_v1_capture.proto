@@ -1,0 +1,81 @@
+syntax = "proto3";
+
+package running_process.probe_diag.v1;
+
+import "probe_diag_v1/probe_diag_v1_common.proto";
+
+// Stack capture and the async job model.
+//
+// Captures return an artifact *path*, never inline bytes: a minidump routinely
+// exceeds the 16 MiB frame cap, so the payload travels on the filesystem while
+// the wire carries only the reference.
+
+message CaptureStackRequest {
+  ProcessKey key = 1;
+  uint32 max_depth = 2;
+
+  // Bitmask; 0 means every thread.
+  uint32 thread_filter = 3;
+
+  // Snapshot of the target's ARMED registration declarations. The daemon is
+  // authoritative: the target copies these paths into the raw artifact
+  // instead of consulting mutable local configuration after the lease.
+  string symbol_manifest_path = 4;
+  repeated string symbol_paths = 5;
+
+  reserved 6 to 15;
+}
+
+message CaptureReply {
+  string job_id = 1;
+  uint64 started_unix_ms = 2;
+
+  // Filesystem path to the capture artifact. See the file-header note above.
+  string artifact_path = 3;
+
+  uint32 threads_captured = 4;
+
+  // Non-zero means the snapshot is partial — some threads could not be walked
+  // (blocked in a syscall, exited mid-capture). Callers must not read a partial
+  // snapshot as a complete one.
+  uint32 threads_dropped = 5;
+
+  // How long the target was actually paused. The cost the capture imposed.
+  uint64 pause_ns = 6;
+
+  ProbeErrorCode error = 7;
+  string detail = 8;
+
+  reserved 9 to 23;
+}
+
+message GetJobStatus {
+  string job_id = 1;
+  reserved 2 to 7;
+}
+
+message JobStatus {
+  enum State {
+    STATE_UNSPECIFIED = 0;
+    STATE_PENDING = 1;
+    STATE_RUNNING = 2;
+    STATE_COMPLETE = 3;
+    STATE_FAILED = 4;
+    STATE_CANCELLED = 5;
+    reserved 6 to 15;
+  }
+
+  string job_id = 1;
+  State state = 2;
+  uint32 percent_complete = 3;
+  string artifact_path = 4;
+  ProbeErrorCode error = 5;
+  string detail = 6;
+
+  reserved 7 to 15;
+}
+
+message CancelJob {
+  string job_id = 1;
+  reserved 2 to 7;
+}

@@ -1,0 +1,248 @@
+name: Dependency Check
+
+# Umbrella workflow for validating every vendored binary dependency
+# under `vendor/`. Each external dep gets its own job pair:
+#
+#   <dep>-lint   — verify the vendored bytes are present + shape-valid
+#                  for the architecture they claim to be (PE header
+#                  for Windows; ELF / Mach-O when those land).
+#   <dep>-drift  — compare the vendored bytes to the upstream source
+#                  at the recorded pin. Opens an issue on drift but
+#                  never auto-updates — every refresh is an
+#                  operator-reviewed PR.
+#
+# When a new vendored dependency lands under `vendor/`, add a matching
+# pair of jobs here. Do NOT add separate per-dep workflow files —
+# this umbrella keeps the dependency picture in one place so periodic
+# triggers cover everything at once.
+
+on:
+  schedule:
+    # Mondays 13:00 UTC. Early-week so any drift / lint failure has
+    # working hours to triage before the next release window.
+    - cron: '0 13 * * 1'
+  push:
+    branches: [main]
+    paths:
+      - 'vendor/**'
+      - '.github/workflows/dependency-check.yml'
+  pull_request:
+    paths:
+      - 'vendor/**'
+      - '.github/workflows/dependency-check.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: dependency-check
+  cancel-in-progress: false
+
+jobs:
+  conpty-lint:
+    name: ConPTY — lint vendored PE shape (all arches)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Verify vendored binaries are PE-valid for the expected arch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # IMAGE_FILE_HEADER.Machine values for the PE archs we ship.
+          # Source: <winnt.h>. The architecture byte sits at the byte
+          # offset stored in the IMAGE_DOS_HEADER.e_lfanew field
+          # (offset 0x3c, 4-byte LE), then +4 bytes past the 'PE\0\0'
+          # signature.
+          declare -A expected_machine
+          expected_machine[x64]="8664"     # IMAGE_FILE_MACHINE_AMD64
+          expected_machine[x86]="014c"     # IMAGE_FILE_MACHINE_I386
+          expected_machine[arm64]="aa64"   # IMAGE_FILE_MACHINE_ARM64
+
+          for arch in x64 x86 arm64; do
+            for file in conpty.dll OpenConsole.exe; do
+              path="vendor/win32/conpty/${arch}/${file}"
+              if [ ! -f "$path" ]; then
+                echo "MISSING: $path" >&2
+                exit 1
+              fi
+              if [ ! -s "$path" ]; then
+                echo "EMPTY: $path" >&2
+                exit 1
+              fi
+
+              # PE magic check — first two bytes must be 'MZ' (0x4d 0x5a).
+              magic=$(head -c 2 "$path" | xxd -p | tr '[:upper:]' '[:lower:]')
+              if [ "$magic" != "4d5a" ]; then
+                echo "NOT PE: $path (magic=$magic, expected 4d5a 'MZ')" >&2
+                exit 1
+              fi
+
+              # IMAGE_DOS_HEADER.e_lfanew → offset of PE signature, LE u32.
+              e_lfanew=$(xxd -s 0x3c -l 4 -p "$path" \
+                | sed -E 's/(..)(..)(..)(..)/0x\4\3\2\1/')
+              e_lfanew_dec=$((e_lfanew))
+
+              # 'PE\0\0' signature must sit at e_lfanew.
+              pe_sig=$(xxd -s $e_lfanew_dec -l 4 -p "$path")
+              if [ "$pe_sig" != "50450000" ]; then
+                echo "NOT PE: $path (sig at $e_lfanew_dec = $pe_sig, expected 50450000)" >&2
+                exit 1
+              fi
+
+              # IMAGE_FILE_HEADER.Machine = 2 bytes immediately after
+              # the 'PE\0\0' signature, little-endian.
+              machine_off=$((e_lfanew_dec + 4))
+              machine_le=$(xxd -s $machine_off -l 2 -p "$path")
+              machine="${machine_le:2:2}${machine_le:0:2}"
+
+              if [ "$machine" != "${expected_machine[$arch]}" ]; then
+                echo "ARCH MISMATCH: $path (machine=$machine, expected ${expected_machine[$arch]} for $arch)" >&2
+                exit 1
+              fi
+
+              size=$(stat -c%s "$path")
+              echo "  ok: $path ($size bytes, machine=$machine, $arch)"
+            done
+          done
+          echo "PASS: all vendored ConPTY binaries are PE-valid for their expected arch"
+
+  conpty-drift:
+    name: ConPTY — drift check vs pinned NuGet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Resolve pinned NuGet version
+        id: pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(grep -E '^Microsoft\.Windows\.Console\.ConPTY' WINDOWS_CONPTY_VERSION.txt | awk '{print $NF}')
+          if [ -z "$VERSION" ]; then
+            echo "could not parse pinned NuGet version" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Compute drift report
+        id: drift
+        shell: bash
+        env:
+          VERSION: ${{ steps.pin.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          # The nupkg URL can disappear (Microsoft has yanked old
+          # versions). Treat fetch failure as drift — there is no
+          # upstream to compare against, which is itself an
+          # operator-visible event.
+          if ! curl -fsSL "https://www.nuget.org/api/v2/package/Microsoft.Windows.Console.ConPTY/${VERSION}" -o /tmp/conpty.nupkg; then
+            {
+              echo "drift=true"
+              echo "fetch_failed=true"
+            } | tee -a "$GITHUB_OUTPUT"
+            cat <<EOF > /tmp/drift-report.md
+          ## ConPTY drift detected: pinned NuGet version is no longer served
+
+          The vendor pin \`Microsoft.Windows.Console.ConPTY ${VERSION}\` returned a
+          non-2xx response from \`nuget.org/api/v2\` during the periodic dependency
+          check. This usually means Microsoft yanked or replaced the version.
+
+          **Action:** the vendored bytes in \`vendor/win32/conpty/\` are unaffected —
+          release builds remain hermetic. But the drift check can no longer
+          verify the pin until \`WINDOWS_CONPTY_VERSION.txt\` is bumped to a
+          version NuGet still serves AND the vendored bytes are refreshed to
+          match. See \`vendor/win32/conpty/README.md\` for the refresh procedure.
+          EOF
+            exit 0
+          fi
+
+          mkdir -p /tmp/conpty-extracted
+          unzip -q /tmp/conpty.nupkg -d /tmp/conpty-extracted
+
+          DRIFT=false
+          {
+            echo "## ConPTY drift detected vs pinned NuGet \`${VERSION}\`"
+            echo
+            echo "The vendored bytes in \`vendor/win32/conpty/\` no longer match the current"
+            echo "contents of the pinned NuGet revision. **The release pipeline is"
+            echo "unaffected** — it reads from the vendored copy, not NuGet. This"
+            echo "issue exists so an operator can review the upstream change and"
+            echo "decide whether to refresh per \`vendor/win32/conpty/README.md\`."
+            echo
+            echo "### Per-arch hash comparison"
+            echo
+            echo "| arch | file | vendored sha256 | nupkg sha256 |"
+            echo "|------|------|-----------------|--------------|"
+          } > /tmp/drift-report.md
+
+          for arch in x64 x86 arm64; do
+            for file in conpty.dll OpenConsole.exe; do
+              if [ "$file" = "conpty.dll" ]; then
+                upstream="/tmp/conpty-extracted/runtimes/win-${arch}/native/${file}"
+              else
+                upstream="/tmp/conpty-extracted/build/native/runtimes/${arch}/${file}"
+              fi
+              vendored="vendor/win32/conpty/${arch}/${file}"
+              if [ ! -f "$upstream" ]; then
+                echo "| $arch | $file | $(sha256sum "$vendored" | awk '{print $1}') | _missing in nupkg_ |" >> /tmp/drift-report.md
+                DRIFT=true
+                continue
+              fi
+              if [ ! -f "$vendored" ]; then
+                echo "| $arch | $file | _missing in vendor/_ | $(sha256sum "$upstream" | awk '{print $1}') |" >> /tmp/drift-report.md
+                DRIFT=true
+                continue
+              fi
+              vsha=$(sha256sum "$vendored" | awk '{print $1}')
+              usha=$(sha256sum "$upstream" | awk '{print $1}')
+              if [ "$vsha" != "$usha" ]; then
+                echo "| $arch | $file | $vsha | $usha |" >> /tmp/drift-report.md
+                DRIFT=true
+              fi
+            done
+          done
+
+          if ! $DRIFT; then
+            echo "No drift: vendored bytes match pinned NuGet ${VERSION}."
+            echo "drift=false" | tee -a "$GITHUB_OUTPUT"
+          else
+            {
+              echo
+              echo "Refresh procedure: see \`vendor/win32/conpty/README.md\`."
+            } >> /tmp/drift-report.md
+            echo "drift=true" | tee -a "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open drift issue
+        if: steps.drift.outputs.drift == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.pin.outputs.version }}
+        run: |
+          set -euo pipefail
+          TITLE="ConPTY vendor drift detected vs NuGet ${VERSION}"
+          # If an open drift issue already exists for this version,
+          # comment on it instead of opening a duplicate.
+          EXISTING=$(gh issue list --repo "${{ github.repository }}" \
+            --state open \
+            --search "in:title \"$TITLE\"" \
+            --json number -q '.[0].number' || echo "")
+          if [ -n "$EXISTING" ]; then
+            echo "Re-using open issue #$EXISTING"
+            gh issue comment "$EXISTING" --repo "${{ github.repository }}" \
+              --body-file /tmp/drift-report.md
+          else
+            gh issue create --repo "${{ github.repository }}" \
+              --title "$TITLE" \
+              --label "release" \
+              --body-file /tmp/drift-report.md
+          fi

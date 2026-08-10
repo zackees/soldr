@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.zackees.running-process-broker-v1</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/running-process-broker-v1</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>RP_BROKER_LOG_FORMAT</key>
+    <string>json</string>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/running-process-broker-v1.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/tmp/running-process-broker-v1.err.log</string>
+
+  <key>HardResourceLimits</key>
+  <dict>
+    <key>NumberOfFiles</key>
+    <integer>4096</integer>
+  </dict>
+
+  <key>SoftResourceLimits</key>
+  <dict>
+    <key>NumberOfFiles</key>
+    <integer>1024</integer>
+  </dict>
+</dict>
+</plist>

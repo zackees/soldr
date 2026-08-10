@@ -1,0 +1,133 @@
+// running-process v2 broker — cache manifest schema.
+//
+// v2 supersedes the v1 cache manifest (`broker_v1_manifest.proto`,
+// FROZEN FOREVER per #228). The v2 schema lives in its own package so the
+// two coexist during rollout; consumers opt in to v2 individually.
+//
+// Persistence layout mirrors v1:
+//   1. Inside daemon's cache root: `<cache_root>/.running-process-manifest.v2.pb`
+//   2. In central registry: `<broker_state>/manifests/{service}-{version}.v2.pb`
+//
+// The `.v2` suffix on the on-disk file lets a v1 broker and a v2 broker
+// coexist without misreading each other's manifests.
+//
+// Field-number policy: numbers used by v1 are reused here for diff
+// legibility (service_name=1, service_version=2, etc.). v2-only fields
+// (none yet at slice 23-A) start at 200 to leave room for backports
+// of mid-range v1 expansions.
+//
+// Slice 23-A of zackees/zccache#782: this slice introduces only the
+// fields downstream consumers (zccache) write today — `service_name`,
+// `service_version`, `created_at_unix_ms`, `last_active_unix_ms`,
+// `broker_envelope_version`, `broker_instance`, `bundle_id`, and the
+// `roots` list with the [`CacheRootKind`] enum. The HostIdentity /
+// Operation / observability v1 fields land in follow-up slices once a
+// v2 broker actually consumes them. Per proto3 forward-compat, adding
+// fields later is non-breaking for existing consumers.
+
+syntax = "proto3";
+package running_process.broker.v2;
+
+// One cache root the daemon exposes. v2 mirrors v1's shape so the
+// CacheManifestBuilder API is identical at the call site.
+message CacheRoot {
+  // Logical role of this root (see [`CacheRootKind`]).
+  CacheRootKind kind = 1;
+
+  // Canonical absolute path on the daemon's host.
+  string path = 2;
+}
+
+// Logical role classification for cache roots. Wire values mirror v1's
+// `broker_v1.CacheRootKind` EXACTLY (see `broker_v1_manifest.proto`).
+// Keeping the integer values aligned avoids subtle bugs when consumers
+// mix the two generations (e.g. via `as i32` casts in test fixtures or
+// in code that bridges between v1 and v2). New kinds land in the
+// reserved range; v1's enum is FROZEN so anything past 9 is v2-only.
+enum CacheRootKind {
+  // Unknown / unset (proto3 zero value). Consumers MUST treat this as
+  // "ignore" rather than a real cache role.
+  CACHE_ROOT_KIND_UNSPECIFIED = 0;
+
+  // Primary cache data (the largest root; sccache-style content store).
+  CACHE_DATA = 1;
+
+  // Log directory (daemon stderr / structured event log).
+  CACHE_LOGS = 2;
+
+  // PID files, lock files, sockets, manifests, identity JSON.
+  CACHE_LOCKS = 3;
+
+  // Copied daemon binaries (relocated install destination).
+  CACHE_RUNTIME = 4;
+
+  // Temporary / ephemeral working tree (artifact build scratch,
+  // depfile staging, repeatedly emptied).
+  CACHE_TMP = 5;
+
+  // User config (do NOT prune).
+  CACHE_CONFIG = 6;
+
+  // Separately bounded index (redb, depgraph snapshot, compile journal).
+  CACHE_INDEX = 7;
+
+  // WAL files needing separate fsync semantics.
+  CACHE_JOURNAL = 8;
+
+  // API keys / tokens. mode 0600. NEVER LOGGED.
+  CACHE_SECRETS = 9;
+
+  // v2-only future kinds live here.
+  reserved 10 to 20;
+}
+
+// v2 cache manifest envelope.
+//
+// Carries the daemon's identity (service + version), heartbeat
+// timestamps, and the list of cache roots brokers care about.
+// `broker_envelope_version` is "v2" for files written under this
+// schema.
+//
+// Field numbers shared with v1 (service_name=1, service_version=2,
+// broker_envelope_version=3, created_at_unix_ms=4, last_active_unix_ms=5,
+// roots=10, broker_instance=40, bundle_id=70) keep the human-readable
+// diff between v1 and v2 manifests obvious and make the consumer-side
+// migration mechanical.
+message CacheManifest {
+  // Service this manifest describes. Same validation as
+  // ServiceDefinition.service_name.
+  string service_name = 1;
+
+  // Semver of the daemon binary that wrote this manifest.
+  string service_version = 2;
+
+  // Always "v2" for files written under this schema. Pinning this in
+  // the proto rather than relying on the file extension alone lets a
+  // broker mis-route detection work even when the file has been
+  // renamed.
+  string broker_envelope_version = 3;
+
+  // Unix-ms timestamp the daemon first wrote this manifest.
+  uint64 created_at_unix_ms = 4;
+
+  // Unix-ms timestamp of the daemon's last heartbeat write.
+  uint64 last_active_unix_ms = 5;
+
+  // Cache roots the daemon exposes for broker-side discovery
+  // (eviction, observability, etc.). Order is not significant.
+  repeated CacheRoot roots = 10;
+
+  // Broker instance label this daemon is registered under. Empty for
+  // private brokers; mirrors `ServiceDefinition.explicit_instance`
+  // for shared-broker deployments.
+  string broker_instance = 40;
+
+  // Opaque bundle identifier for deployments that ship multiple
+  // related services. Empty when unused.
+  string bundle_id = 70;
+
+  // Field numbers reserved for v1 fields that will be backported in
+  // subsequent slices (HostIdentity, Operation, observability,
+  // dependencies, cleanup policy, current_daemon).
+  reserved 20, 30, 50, 51, 60, 100 to 199;
+}

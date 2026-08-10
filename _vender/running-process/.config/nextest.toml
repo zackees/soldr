@@ -1,0 +1,75 @@
+# cargo-nextest configuration.
+#
+# We use nextest instead of bare `cargo test` for two reasons:
+#
+# 1. Per-test PROCESS isolation. Each #[test] runs in its own process,
+#    so the pyo3 GIL + PTY deadlock that forces `--test-threads=1` under
+#    `cargo test` on Windows doesn't apply here. (We still set
+#    test-threads in the windows profile below as a belt-and-braces
+#    measure for FS / port-collision races.)
+#
+# 2. Per-test WALL-CLOCK timeout via `slow-timeout.terminate-after`.
+#    Any individual test that runs longer than the deadline is killed
+#    with SIGKILL (Unix) / TerminateProcess (Windows), and nextest
+#    prints the test name + captured stdout/stderr in the failure
+#    summary — enough for a CI agent to identify what hung and start
+#    fixing it.
+
+[profile.default]
+# Effective per-test wall clock: period × terminate-after = 60s × 2 = 120s.
+# `period` controls how often nextest re-checks (and re-prints) that a
+# test is still running past the threshold, so the log shows a "SLOW"
+# line at 60s and a final TERMINATE at 120s.
+slow-timeout = { period = "60s", terminate-after = 2, grace-period = "10s" }
+
+# Fix Wave T3 of #165: a handful of Windows tests that spawn subprocess
+# pipes intermittently lose captured stdout/stderr bytes when the
+# suite runs under heavy parallel load (timing-sensitive races in the
+# pipe drain path). One retry catches the transient flakes and lets
+# nextest report them as flaky rather than failing the suite. Hard
+# hangs still surface immediately via slow-timeout.
+retries = 2
+
+# Always print captured stdout/stderr for failed and timed-out tests,
+# both immediately when they fire and again in the final summary, so
+# the diagnostics survive interleaved CI log output.
+failure-output = "immediate-final"
+
+# Show pass/fail/skip status per test (the default "fail" hides passing
+# tests, which makes hangs harder to identify since you don't see which
+# tests completed before the hang).
+status-level = "pass"
+
+# Emit JUnit XML so CI dashboards can render per-test results.
+[profile.default.junit]
+path = "target/nextest/junit.xml"
+
+# CI profile inherits the defaults; opt in via `cargo nextest run -P ci`.
+# Reserved for future tightening (e.g. shorter slow-timeout, retries on
+# known-flaky tests) — for now identical to default.
+[profile.ci]
+slow-timeout = { period = "60s", terminate-after = 2, grace-period = "10s" }
+failure-output = "immediate-final"
+status-level = "pass"
+
+# #452: the byte-exact MITM substrate tests in `pty_mitm_stdin_test`
+# and `pty_mitm_paste_test` each spawn a fresh PTY + testbin per
+# `#[test]`. On Windows Server 2025 runners (`windows-latest`), the
+# ConPTY allocator + renderer cannot keep up when many of these
+# tests run in parallel — the testbin's startup byte takes 25+ s to
+# arrive at the master pipe under contention, so handshake timeouts
+# fire even though the substrate itself is fine. Pin the group to
+# max-threads = 1 so the tests run serially. Other suites are
+# unaffected. POSIX runners would tolerate parallel execution but
+# the cost of serializing 28 quick tests is small (~5-10 s wall
+# time), so the override applies uniformly.
+[test-groups]
+pty-mitm-substrate = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'binary(pty_mitm_stdin_test) or binary(pty_mitm_paste_test)'
+test-group = 'pty-mitm-substrate'
+
+[[profile.ci.overrides]]
+filter = 'binary(pty_mitm_stdin_test) or binary(pty_mitm_paste_test)'
+test-group = 'pty-mitm-substrate'

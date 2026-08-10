@@ -1,0 +1,45 @@
+// running-process v1 broker admin payload schema.
+//
+// Admin frames use Frame.payload_protocol = 0xAD01 and carry AdminRequest or
+// AdminReply in Frame.payload. This file is part of the frozen v1 broker
+// package; breaking changes require a v2 broker.
+
+syntax = "proto3";
+package running_process.broker.v1;
+
+message AdminRequest {
+  AdminVerb verb = 1;
+  bool json = 2;
+  string service_name = 3;   // backend-health
+  string output_path = 4;    // diagnose
+  reserved 10 to 20;
+}
+
+message AdminReply {
+  AdminReplyKind kind = 1;
+  string body = 2;
+  uint32 exit_code = 3;
+  string content_type = 4;
+  reserved 10 to 20;
+}
+
+enum AdminVerb {
+  ADMIN_VERB_UNSPECIFIED = 0;
+  ADMIN_VERB_STATUS = 1;
+  ADMIN_VERB_DUMP = 2;
+  ADMIN_VERB_LIST_INSTANCES = 3;
+  ADMIN_VERB_HEALTHZ = 4;
+  ADMIN_VERB_READYZ = 5;
+  ADMIN_VERB_BACKEND_HEALTH = 6;
+  ADMIN_VERB_CONFIG = 7;
+  ADMIN_VERB_DIAGNOSE = 8;
+  ADMIN_VERB_METRICS = 9;
+  reserved 10 to 20;
+}
+
+enum AdminReplyKind {
+  ADMIN_REPLY_KIND_TEXT = 0;
+  ADMIN_REPLY_KIND_JSON = 1;
+  ADMIN_REPLY_KIND_OPENMETRICS = 2;
+  reserved 10 to 20;
+}

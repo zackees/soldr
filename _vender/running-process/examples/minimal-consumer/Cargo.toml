@@ -1,0 +1,12 @@
+[package]
+name = "running-process-minimal-consumer"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+prost = "0.14"
+running-process = { path = "../../crates/running-process", features = ["client"] }
+

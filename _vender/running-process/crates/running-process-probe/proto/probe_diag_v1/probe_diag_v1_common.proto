@@ -1,0 +1,65 @@
+syntax = "proto3";
+
+package running_process.probe_diag.v1;
+
+// Shared leaf types for the probe_diag.v1 wire.
+//
+// This file exists to break an import cycle. `ProbeEnvelope` (in
+// probe_diag_v1_envelope.proto) multiplexes every request/reply message, so it
+// must import the files that define them. Those files in turn need `ProcessKey`
+// and `ProbeErrorCode`. Protobuf forbids circular imports, so the types both
+// sides need live here, and this file imports nothing.
+//
+// Dependency direction (acyclic):
+//   common  <-  {registration, capture, profile, symbols, query, crash}  <-  envelope
+//   common  <-  envelope
+
+// OS process identity that survives PID reuse.
+//
+// `pid` alone is not an identity: the OS recycles PIDs, so a probe that
+// addressed a process by pid could act on an unrelated process that inherited
+// the number. `start_time` pins the identity to a specific process instance,
+// and `boot_id` distinguishes instances across reboots (start times restart
+// from the same epoch after a boot).
+//
+// Both qualifiers are optional because not every OS exposes them cheaply;
+// callers that omit them get pid-only addressing and accept the reuse risk.
+message ProcessKey {
+  uint64 pid = 1;
+
+  // Linux: `starttime` from /proc/<pid>/stat (clock ticks since boot).
+  // Windows: process creation time from GetProcessTimes.
+  // macOS: p_starttime from the kinfo_proc struct.
+  optional uint64 start_time = 2;
+
+  // Linux: /proc/sys/kernel/random/boot_id. Absent elsewhere.
+  optional string boot_id = 3;
+
+  reserved 4 to 15;
+}
+
+// Failure classification carried on reply messages.
+//
+// Deliberately coarse: the wire reports the *category* a caller must branch on,
+// while human-readable detail travels in message-specific string fields. Adding
+// a variant is additive; values are never reused.
+enum ProbeErrorCode {
+  PROBE_ERROR_UNSPECIFIED = 0;
+
+  // The addressed pid no longer refers to the registered process instance —
+  // `ProcessKey.start_time` / `boot_id` did not match. Never act on the pid.
+  PROBE_ERROR_PID_REUSE = 1;
+
+  // No ARMED registration exists for this key.
+  PROBE_ERROR_NOT_REGISTERED = 2;
+
+  // The target's AllowPolicy refused the operation.
+  PROBE_ERROR_POLICY_DENIED = 3;
+
+  // `ProbeEnvelope.deadline_unix_ms` passed before the work completed.
+  PROBE_ERROR_DEADLINE = 4;
+
+  PROBE_ERROR_INTERNAL = 5;
+
+  reserved 6 to 31;
+}

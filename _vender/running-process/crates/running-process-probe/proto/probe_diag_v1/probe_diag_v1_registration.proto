@@ -1,0 +1,172 @@
+syntax = "proto3";
+
+package running_process.probe_diag.v1;
+
+import "probe_diag_v1/probe_diag_v1_common.proto";
+
+// Registration: how a process enrolls itself with the probe daemon.
+//
+// The probe model is enrollment, not discovery — an app opts in by registering
+// itself, and only ARMED processes are findable. Nothing here grants access on
+// its own; the daemon enforces the state machine (S3).
+
+enum Runtime {
+  RUNTIME_UNSPECIFIED = 0;
+  RUNTIME_NATIVE = 1;
+  // Mixed-mode: a Python process also carries native frames beneath the
+  // interpreter frames, so it still needs native symbolization.
+  RUNTIME_PYTHON = 2;
+  reserved 3 to 15;
+}
+
+enum SupportedOp {
+  SUPPORTED_OP_UNSPECIFIED = 0;
+  SUPPORTED_OP_STACK_CAPTURE = 1;
+  SUPPORTED_OP_CPU_PROFILE = 2;
+  SUPPORTED_OP_HEAP_PROFILE = 3;
+  SUPPORTED_OP_OFF_CPU_PROFILE = 4;
+  reserved 5 to 31;
+}
+
+enum SymbolSource {
+  SYMBOL_SOURCE_UNSPECIFIED = 0;
+  SYMBOL_SOURCE_NONE = 1;
+  SYMBOL_SOURCE_LOCAL = 2;
+  SYMBOL_SOURCE_MANIFEST = 3;
+  reserved 4 to 15;
+}
+
+// What the registering process permits.
+//
+// Env values are default-deny: an operator opts specific variables in by name
+// via `env_allowlist`. Process environments routinely carry credentials, so
+// exposing them wholesale on a query surface would leak secrets.
+message AllowPolicy {
+  bool allow_all_ops = 1;
+  repeated string env_allowlist = 2;
+  reserved 3 to 15;
+}
+
+// What the process discloses about itself on query surfaces.
+message Disclosure {
+  bool expose_exe_path = 1;
+  bool expose_cmdline = 2;
+  bool expose_env_names = 3;
+  reserved 4 to 15;
+}
+
+message RegisterProcess {
+  ProcessKey key = 1;
+
+  string exe_path = 2;
+  bytes exe_sha256 = 3;
+
+  // Coarse grouping for cross-instance queries ("all clud crashes").
+  string app_class = 4;
+  string app_name = 5;
+  string app_version = 6;
+  string instance_name = 7;
+
+  string arch = 8;
+  string os = 9;
+
+  Runtime runtime = 10;
+  repeated SupportedOp supported_ops = 11;
+  SymbolSource symbol_source = 12;
+  AllowPolicy allow_policy = 13;
+  Disclosure disclosure = 14;
+
+  // Version range the client can speak. The daemon picks one or refuses.
+  uint32 protocol_min = 15;
+  uint32 protocol_max = 16;
+
+  // Single-use, client-generated. The daemon rejects a replayed nonce so a
+  // captured registration frame cannot be used to re-enroll later.
+  bytes registration_nonce = 17;
+
+  // Optional worker-only symbol discovery inputs. The daemon records these
+  // declarations but never opens or parses them; the target copies them into
+  // its raw capture and the isolated symbolization worker verifies every
+  // candidate against the module's exact build identity.
+  string symbol_manifest_path = 18;
+  repeated string symbol_paths = 19;
+
+  // Query disclosures are copied by the registrant, never scraped by the
+  // daemon. Only env names present in AllowPolicy.env_allowlist are valid.
+  string disclosed_cwd = 20;
+  map<string, string> disclosed_env = 21;
+
+  reserved 22 to 31;
+}
+
+message RegistrationStatus {
+  enum State {
+    STATE_UNREGISTERED = 0;
+    STATE_REGISTERING = 1;
+    // Reached only after identity-verify AND capability-grant both succeed.
+    STATE_ARMED = 2;
+    STATE_DROPPED = 3;
+    reserved 4 to 15;
+  }
+
+  State state = 1;
+  ProbeErrorCode error = 2;
+  string detail = 3;
+
+  // The daemon's own identity, so the app can verify who it is talking to
+  // before granting anything. Mutual identity, not one-way.
+  ProcessKey daemon_key = 4;
+
+  reserved 5 to 15;
+}
+
+// Liveness. A registration whose heartbeats stop is reaped.
+message Heartbeat {
+  ProcessKey key = 1;
+  reserved 2 to 7;
+}
+
+message UnregisterProcess {
+  ProcessKey key = 1;
+  reserved 2 to 7;
+}
+
+message ListProcesses {
+  // Legacy unfiltered listing request. It shares the ProcessQueryReply shape
+  // and still requires the same explicit result bound.
+  uint32 limit = 1;
+  bool include_env = 2;
+  reserved 3 to 7;
+}
+
+// Beacon identity handshake (#631).
+//
+// Anything can bind a TCP port, so a successful connect to the beacon proves
+// nothing. Before a client treats a listener as the probe daemon it sends this
+// hello and requires the daemon to echo the nonce and return a fixed magic.
+// A decoy that doesn't speak the framed protocol fails the exchange, and the
+// client classifies it as a stranger rather than mis-registering with it.
+message ProbeHello {
+  // Fresh per attempt. Echoed back so a replayed or canned reply captured from
+  // an earlier exchange doesn't satisfy a later one.
+  bytes nonce = 1;
+  reserved 2 to 7;
+}
+
+message ProbeHelloReply {
+  // Must equal the ProbeHello nonce byte-for-byte.
+  bytes nonce_echo = 1;
+
+  // Fixed protocol magic. See PROBE_HELLO_MAGIC in the daemon crate.
+  uint64 magic = 2;
+
+  uint64 daemon_pid = 3;
+
+  // Where to reach the daemon proper. The bearer token is deliberately NOT
+  // here — it lives only in the owner-only discovery file, so a peer that can
+  // reach the loopback beacon still cannot obtain it.
+  string control_socket = 4;
+  uint32 http_port = 5;
+
+  reserved 6 to 15;
+}

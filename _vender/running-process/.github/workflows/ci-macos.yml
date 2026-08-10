@@ -1,0 +1,36 @@
+name: CI Preflight (macOS)
+
+# Thin dispatcher — calls ci-preflight.yml twice, once per macOS arch.
+# Supersedes preflight-macos.yml (PR #510 precedent); the older file
+# is left in place for the soak period per #513 acceptance criteria
+# and removed in a follow-up PR.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-macos-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  x86:
+    uses: ./.github/workflows/ci-preflight.yml
+    with:
+      os: macos-15-intel
+      label: macos-x86
+      rustdoc: false
+      integration-test: true
+
+  arm:
+    uses: ./.github/workflows/ci-preflight.yml
+    with:
+      os: macos-14
+      label: macos-arm
+      rustdoc: false
+      integration-test: true

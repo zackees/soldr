@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rpprobed</title>
+<link rel="stylesheet" href="/assets/probe.css">
+</head>
+<body>
+<header>
+  <h1>rpprobed</h1>
+  <span id="status" class="status"></span>
+</header>
+
+<nav>
+  <button data-view="processes" class="active">Processes</button>
+  <button data-view="crashes">Crashes</button>
+  <button data-view="stats">Crash stats</button>
+  <button data-view="flame">Flame graph</button>
+</nav>
+
+<main>
+  <section id="processes" class="view active">
+    <form class="controls" id="ps-controls">
+      <label>Name <input name="name" placeholder="*worker*"></label>
+      <label class="check"><input type="checkbox" name="include_unregistered"> Include unregistered</label>
+      <label class="check"><input type="checkbox" name="include_env"> Include allowlisted env</label>
+      <button type="submit">Refresh</button>
+    </form>
+    <table id="ps-table"><thead><tr>
+      <th>PID</th><th>Name</th><th>Class</th><th>CWD</th><th>Registered</th><th>Env</th><th></th>
+    </tr></thead><tbody></tbody></table>
+  </section>
+
+  <section id="crashes" class="view">
+    <form class="controls" id="crash-controls">
+      <label>Class <input name="class_like" placeholder="clud%"></label>
+      <label>Signature <input name="signature"></label>
+      <button type="submit">Refresh</button>
+    </form>
+    <table id="crash-table"><thead><tr>
+      <th>When</th><th>Class</th><th>Signature</th><th>Fault</th><th>PID</th><th>Size</th><th></th>
+    </tr></thead><tbody></tbody></table>
+  </section>
+
+  <section id="stats" class="view">
+    <form class="controls" id="stats-controls">
+      <label>Class <input name="class_like" placeholder="clud%"></label>
+      <button type="submit">Refresh</button>
+    </form>
+    <p id="stats-summary" class="summary"></p>
+    <table id="stats-table"><thead><tr>
+      <th>Signature</th><th>Count</th><th>First</th><th>Last</th><th>Classes</th>
+    </tr></thead><tbody></tbody></table>
+  </section>
+
+  <section id="flame" class="view">
+    <form class="controls" id="flame-controls">
+      <label>Artifact id <input name="artifact" inputmode="numeric"></label>
+      <button type="submit">Render</button>
+    </form>
+    <p id="flame-hint" class="summary">Click a frame to zoom; click the root to reset.</p>
+    <div id="flame-canvas"></div>
+  </section>
+</main>
+
+<script src="/assets/probe.js"></script>
+</body>
+</html>

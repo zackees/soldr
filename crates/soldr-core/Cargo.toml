@@ -26,7 +26,7 @@ libc = "0.2"
 [target.'cfg(windows)'.dependencies]
 # soldr#1761: `GetLogicalProcessorInformationEx` is the only way to read
 # physical-core topology on Windows without adding a heavier crate.
-windows-sys = { version = "0.59", features = ["Win32_System_SystemInformation"] }
+windows-sys = { version = "0.61", features = ["Win32_System_SystemInformation"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

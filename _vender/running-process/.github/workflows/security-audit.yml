@@ -1,0 +1,46 @@
+name: Security audit
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/security-audit.yml"
+      - "Cargo.lock"
+      - "**/Cargo.toml"
+      - "docs/v1-security-model.md"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/security-audit.yml"
+      - "Cargo.lock"
+      - "**/Cargo.toml"
+      - "docs/v1-security-model.md"
+  schedule:
+    - cron: "41 10 * * *"
+  workflow_dispatch:
+
+jobs:
+  cargo-audit:
+    name: cargo audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.94.1"
+
+      - name: Rust build cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ubuntu-24.04-security-audit
+          cache-on-failure: true
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: Audit dependencies
+        run: cargo audit --deny warnings

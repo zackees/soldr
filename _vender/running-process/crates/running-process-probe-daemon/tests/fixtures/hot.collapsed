@@ -1,0 +1,4 @@
+main;spin_hot 950
+main;setup 40
+main;setup;read_config 8
+main;teardown 2

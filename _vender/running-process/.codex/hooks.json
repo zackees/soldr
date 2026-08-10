@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$(git rev-parse --show-toplevel)/.codex/hooks/force_soldr.py\"",
+            "statusMessage": "Checking build command policy"
+          }
+        ]
+      }
+    ]
+  }
+}
