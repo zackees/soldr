@@ -427,9 +427,6 @@ jobs:
               "soldr build" \
               "$(pwd)/Cargo.toml" | tee -a "$log"
 
-          # soldr#2388 Step 4 (#2415): ensure broker is running before soldr build.
-          soldr broker serve &
-          sleep 2
           t_start_ns=$(date +%s%N)
           soldr build \
             --package soldr-cli \

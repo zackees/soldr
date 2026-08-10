@@ -79,47 +79,8 @@ pub(crate) fn front_door_broker_spawn_eligible(raw_args: &[String]) -> bool {
     if first_positional == "broker" {
         return false;
     }
-    // soldr#2388: only compile-bound invocations need the broker. A command
-    // that never drives a `RUSTC_WRAPPER` compile (status, version, rustfmt,
-    // …) must NOT pay the broker-spawn cost. This is a DENYLIST on purpose: a
-    // compile command accidentally omitted here still spawns the broker (the
-    // safe default), while a non-compile command listed here merely skips a
-    // spawn it never needed. Getting the denylist "too small" wastes a spawn;
-    // it can never break a build by withholding the broker from a real compile.
-    if NON_COMPILE_COMMANDS.contains(&first_positional.as_str()) {
-        return false;
-    }
     true
 }
-
-/// Top-level `soldr` subcommands that never drive a wrapper compile, so the
-/// front door must not spawn a broker for them (soldr#2388). Compile-bound
-/// verbs (`cargo`, `build`, `test`, `check`, `run`, `bench`, `doc`, `clippy`,
-/// `fix`, `cook`, …) are deliberately absent — anything not listed spawns.
-const NON_COMPILE_COMMANDS: &[&str] = &[
-    "status",
-    "clean",
-    "config",
-    "cache",
-    "version",
-    "help",
-    "doctor",
-    "wheel",
-    "rustup",
-    "toolchain",
-    "rustfmt",
-    "fmt",
-    "rustdoc",
-    "rust-gdb",
-    "rust-lldb",
-    "rust-analyzer",
-    "clippy-driver",
-    "logs",
-    "save",
-    "load",
-    "archive",
-    "self-update",
-];
 
 /// Best-effort: spawn a detached `soldr broker serve` and wait up to
 /// [`SPAWN_WAIT_TIMEOUT`] for its log to report either a successful bind or
@@ -242,29 +203,12 @@ mod tests {
         assert!(!front_door_broker_spawn_eligible(&raw_args));
     });
 
-    // soldr#2388: a compile-bound invocation is always eligible (the broker is
-    // unconditional; there is no opt-out).
-    crate::timed_test!(compile_invocation_is_eligible, {
+    // soldr#2388: the broker is unconditional — an ordinary invocation is
+    // always eligible (there is no opt-out).
+    crate::timed_test!(ordinary_invocation_is_eligible, {
         let _guard = ENV_LOCK.lock().unwrap();
-        for verb in ["cargo", "build", "test", "check", "run", "clippy"] {
-            let raw_args = vec!["soldr".to_string(), verb.to_string()];
-            assert!(
-                front_door_broker_spawn_eligible(&raw_args),
-                "compile-bound `{verb}` must be broker-eligible"
-            );
-        }
-    });
-
-    // soldr#2388: non-compile commands must NOT pay the broker-spawn cost.
-    crate::timed_test!(non_compile_invocation_is_ineligible, {
-        let _guard = ENV_LOCK.lock().unwrap();
-        for verb in ["status", "version", "rustfmt", "fmt", "doctor", "toolchain"] {
-            let raw_args = vec!["soldr".to_string(), verb.to_string()];
-            assert!(
-                !front_door_broker_spawn_eligible(&raw_args),
-                "non-compile `{verb}` must not spawn a broker"
-            );
-        }
+        let raw_args = vec!["soldr".to_string(), "status".to_string()];
+        assert!(front_door_broker_spawn_eligible(&raw_args));
     });
 
     crate::timed_test!(

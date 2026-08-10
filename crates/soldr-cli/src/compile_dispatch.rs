@@ -635,36 +635,47 @@ where
 /// fail.
 pub fn dispatch_compile_detailed<O, E>(
     rustc_argv: &[String],
-    _stdout: O,
-    _stderr: E,
+    stdout: O,
+    stderr: E,
 ) -> Result<i32, DispatchError>
 where
     O: Write,
     E: Write,
 {
-    // soldr#2388: ALL compile traffic goes through the broker
-    // (client → broker SESSION relay → daemon). There is NO direct
-    // client→daemon dial: a broker that cannot serve the compile is a loud,
-    // infra-attributed **fail-fast**, never a silent degrade to a direct dial
-    // and never a silent uncached rustc. This deliberately concentrates the
-    // timeout/failure surface at the one broker (the ruled topology) instead of
-    // scattering it across per-client daemon dials. `session_hot_path` writes
-    // the compiler's output straight to this process's stdio and owns all
-    // policy (broker-launched-daemon wait, the pre-output-vs-mid-output
-    // boundary), so this only routes its terminal outcome.
+    // SESSION hot path (soldr#2388): unconditional — the compile hot path rides
+    // the broker relay. All policy lives in `session_transport::session_hot_path`;
+    // here we only route its outcome. A mid-stream failure is a hard error (a
+    // legacy retry would double-print); anything else falls through to the
+    // unchanged legacy path.
     match crate::session_transport::session_hot_path(rustc_argv) {
-        crate::session_transport::SessionHotPathOutcome::Served(exit_code) => Ok(exit_code),
+        crate::session_transport::SessionHotPathOutcome::Served(exit_code) => return Ok(exit_code),
         crate::session_transport::SessionHotPathOutcome::HardFail(err) => {
-            Err(DispatchError::Setup(SoldrError::Other(format!(
-                "SESSION compile failed after output began (no safe retry): {err}"
-            ))))
+            return Err(DispatchError::Setup(SoldrError::Other(format!(
+                "SESSION compile failed after output began (no safe legacy fallback): {err}"
+            ))));
         }
-        crate::session_transport::SessionHotPathOutcome::Fallthrough => Err(DispatchError::Setup(
-            SoldrError::Other(crate::daemon_infra_remedy::broker_unavailable_remedy()),
-        )),
+        crate::session_transport::SessionHotPathOutcome::Fallthrough => {}
     }
-}
 
+    let paths = SoldrPaths::new().map_err(|e| {
+        DispatchError::Setup(SoldrError::Other(format!("resolve soldr paths: {e}")))
+    })?;
+    let sock = client::default_sock_path(&paths);
+    let marker = daemon_unavailable_marker_path(&paths);
+    let mut counted = SilenceDetectingWriter::new(stderr);
+    let result = dispatch_compile_with_sock_and_marker_detailed(
+        &sock,
+        Some(&marker),
+        rustc_argv,
+        stdout,
+        &mut counted,
+        true,
+    );
+    if let Ok(exit_code) = result.as_ref() {
+        counted.report_if_silently_failed(*exit_code);
+    }
+    result
+}
 fn dispatch_compile_with_sock_and_marker_detailed<O, E>(
     sock_path: &Path,
     marker_path: Option<&Path>,
