@@ -19,6 +19,22 @@
 use crate::compile_dispatch::DispatchError;
 use crate::core::{SoldrError, SoldrPaths};
 
+/// Actionable infra-attributed message for a compile that could not be served
+/// because the broker (and therefore the broker-launched daemon) was
+/// unavailable. soldr#2388: all compiles route through the broker and there is
+/// no direct-daemon fallback, so this names the concrete remedy rather than
+/// degrading silently. Lives here (not in the over-ceiling `compile_dispatch`)
+/// alongside the other daemon-unavailable remedy text.
+pub(crate) fn broker_unavailable_remedy() -> String {
+    "soldr: compile could not be served — the broker-fronted compile daemon was \
+     unavailable (not a compiler error). All compiles route through the broker; \
+     there is no direct-daemon fallback. Remedy: run a top-level `soldr cargo …` \
+     build (its front door starts the broker), or start one explicitly with \
+     `soldr broker serve`; then re-run. See `soldr status` / `soldr doctor` and \
+     docs/DAEMON_TIMEOUTS.md."
+        .to_string()
+}
+
 /// See the module docs. Free function (rather than living directly on
 /// [`DispatchError`]) so the substantial remedy-lookup logic stays out of
 /// `compile_dispatch.rs`, which is already over the repo's per-file line
