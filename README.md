@@ -187,7 +187,6 @@ If soldr solves that one problem well, it becomes a super tool: the command you 
 # Build through soldr's front door:
 soldr cargo build --release
 soldr cargo test
-soldr --no-cache cargo test
 soldr purge
 SOLDR_RUSTC_WRAPPER=sccache soldr cargo build
 SOLDR_RUSTC_WRAPPER=none soldr cargo build
@@ -404,7 +403,7 @@ If you also have many separate test binaries, consider consolidating them under 
 
 - **One obvious command**: Fetch tools, pick the right Windows target, and run through Soldr's embedded zccache service through the same entry point.
 - **Front-door builds**: `soldr cargo ...` is the primary build UX.
-- **Invisible caching**: `soldr cargo ...` uses the zccache service embedded in `soldr-daemon` by default, with `soldr --no-cache cargo ...` as the opt-out.
+- **Broker-owned caching**: `soldr cargo ...` uses the zccache service embedded in a broker-placed `soldr-daemon`; cacheable compiler work has one mandatory route.
 - **Real cache controls**: `soldr status`, `soldr cache`, and `soldr clean` report and manage embedded-zccache state, while `soldr purge` removes all Soldr-managed cache artifacts for bug clearing and benchmarking.
 - **One cache boundary**: official soldr keeps its tools and cache state under `~/.soldr/`; development builds use `~/.soldr-dev/`. Use `SOLDR_CACHE_DIR` to select an explicit root.
 - **Bounded while idle**: the long-lived daemon owns only its selected root,

@@ -19,14 +19,17 @@
 //! sockets and Windows named pipes (Windows has no fd handover).
 
 use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use interprocess::local_socket::tokio::prelude::*;
 use interprocess::local_socket::tokio::Stream;
+use prost::Message;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use running_process::broker::protocol::{
-    encode_framed, hello_reply::Result as HelloReplyResult, try_decode_framed,
-    CONTROL_PAYLOAD_PROTOCOL,
+    encode_framed, hello_reply::Result as HelloReplyResult, try_decode_framed, ErrorCode, Hello,
+    Refused, CONTROL_PAYLOAD_PROTOCOL, ENVELOPE_VERSION,
 };
 use running_process::broker::protocol::{Frame, HelloReply, Negotiated};
 use running_process::broker::protocol_v2::{
@@ -41,80 +44,50 @@ use running_process::broker::session_codec::{encode_session_frame, try_decode_se
 /// derive the same path from `broker_program()` via this index.
 const SESSION_PIPE_IDX: u32 = 1;
 
-/// Whether the client should route the compile through the SESSION transport
-/// (client → broker relay → daemon) before the legacy direct-connect.
-///
-/// **Always true** (soldr#2388): SESSION is the compile hot path, with no
-/// env-var opt-out — the broker-fronted daemon is the only supported topology.
-/// A SESSION failure still falls back to legacy pre-output (see
-/// `compile_dispatch` / [`session_hot_path`]), so "always attempt SESSION" is
-/// safe: a broker/daemon that is not up yet degrades to legacy, never wedges.
-pub fn session_enabled() -> bool {
-    crate::broker_spawn::broker_enabled()
-}
-
-/// Retry cadence for the SESSION hot path while the broker/daemon come up.
+/// Retry cadence while the mandatory broker/daemon SESSION route comes up.
 const SESSION_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// Outcome of the SESSION compile hot path ([`session_hot_path`]), consumed by
-/// `compile_dispatch`. All SESSION policy (opt-in gate, broker/daemon ensure,
-/// pre-output retry, and the mid-stream-vs-fallback boundary) lives here rather
-/// than in the already-oversized `compile_dispatch`.
+/// `compile_dispatch`. All bounded retry and error attribution lives here.
 pub enum SessionHotPathOutcome {
     /// SESSION served the compile; return this exit code.
     Served(i32),
-    /// SESSION failed AFTER output began — a legacy retry would double-print, so
-    /// this is a hard error carrying the cause.
+    /// SESSION infrastructure failed; cacheable compiles have no alternate route.
     HardFail(io::Error),
-    /// SESSION was disabled, or failed pre-output (nothing printed); the caller
-    /// should run the legacy path.
-    Fallthrough,
 }
 
-/// Short budget for smoothing a broker-relay-not-yet-ready race once the daemon
-/// is confirmed up. Deliberately far shorter than the daemon spawn-retry budget:
-/// the daemon cold-start wait happens in `spawn_or_confirm_broker_daemon` below;
-/// by the time we dial SESSION the relay is bound or the broker is simply
-/// absent (`broker_unreachable` → immediate fallthrough, no wait).
+/// Short budget for smoothing broker-to-route startup. Broker-unreachable
+/// errors return immediately; an existing broker gets a bounded window to
+/// launch or reconnect the requested daemon partition.
 /// Overridable for tests via `SOLDR_SESSION_ATTEMPT_BUDGET_MS`.
 fn session_attempt_budget() -> std::time::Duration {
     let ms = std::env::var("SOLDR_SESSION_ATTEMPT_BUDGET_MS")
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
-        .unwrap_or(5_000)
+        .unwrap_or(30_000)
         .max(1);
     std::time::Duration::from_millis(ms)
 }
 
-/// SESSION compile hot path (soldr#2388 Step 3/7b): **default ON**. Ensure the
-/// daemon is up, then relay the compile client → broker → daemon.
-///
-/// Fallback contract (see the module + `compile_dispatch`):
-/// * **broker unreachable** (no broker bound at the SESSION socket) → fall
-///   through to legacy **immediately**, never spinning the spawn budget on a
-///   socket nothing is listening on;
-/// * broker up but relay still settling → retry within the short
-///   [`session_attempt_budget`], then fall through to legacy;
-/// * a **mid-output** failure → hard error (a legacy retry would double-print).
-///
-/// The legacy path this falls through to owns robust daemon acquisition and the
-/// no-silent-uncached-fallback attribution, so a SESSION-unavailable compile is
-/// always served (or hard-failed with a remedy), never silently uncached.
+/// Mandatory SESSION compile hot path: relay client → broker → daemon.
+/// A missing broker fails immediately; an existing broker gets the bounded
+/// [`session_attempt_budget`] to provide the requested route. Every terminal
+/// infrastructure error is hard because there is no legacy acquisition path.
 pub fn session_hot_path(rustc_argv: &[String]) -> SessionHotPathOutcome {
     use std::time::Instant;
 
-    if !session_enabled() {
-        return SessionHotPathOutcome::Fallthrough;
-    }
-    // Ensure the daemon is up before dialing SESSION. Bounded by the daemon
-    // spawn-retry budget for a cold start. (soldr#2388 Step 4 moves this
-    // daemon-spawn responsibility to the broker and deletes the client path.)
-    let daemon_deadline = Instant::now() + crate::compile_dispatch::resolved_spawn_retry_budget();
-    let _ = crate::broker_discovery_gate::spawn_or_confirm_broker_daemon(daemon_deadline);
-
     let program = crate::daemon::backend_handle_adoption::broker_program();
-    let Ok(cwd) = std::env::current_dir() else {
-        return SessionHotPathOutcome::Fallthrough;
+    let service_name = match crate::daemon::backend_handle_adoption::broker_service_name() {
+        Ok(service_name) => service_name,
+        Err(err) => {
+            return SessionHotPathOutcome::HardFail(io::Error::other(format!(
+                "cannot resolve the broker daemon route: {err}; invoke this compiler through a soldr build front door"
+            )))
+        }
+    };
+    let cwd = match std::env::current_dir() {
+        Ok(cwd) => cwd,
+        Err(err) => return SessionHotPathOutcome::HardFail(err),
     };
     let cwd = cwd.display().to_string();
     let env: Vec<SessionEnvVar> = std::env::vars()
@@ -123,7 +96,13 @@ pub fn session_hot_path(rustc_argv: &[String]) -> SessionHotPathOutcome {
 
     let session_deadline = Instant::now() + session_attempt_budget();
     loop {
-        match run_session_compile_with_detailed(&program, rustc_argv, cwd.clone(), env.clone()) {
+        match run_session_compile_with_detailed_for_service(
+            &program,
+            &service_name,
+            rustc_argv,
+            cwd.clone(),
+            env.clone(),
+        ) {
             Ok(outcome) => {
                 // Observability (opt-in, no production noise): a SESSION-served
                 // marker the multi-process smoke greps to prove SESSION carried
@@ -137,19 +116,18 @@ pub fn session_hot_path(rustc_argv: &[String]) -> SessionHotPathOutcome {
                 return SessionHotPathOutcome::Served(outcome.exit_code);
             }
             Err(err) if err.output_started => return SessionHotPathOutcome::HardFail(err.source),
-            // No broker bound here — don't burn the budget dialing a dead
-            // socket; the legacy path is the correct home for this compile.
+            // No broker is bound here, so do not burn the route-start budget
+            // repeatedly dialing a dead socket.
             Err(err) if err.broker_unreachable => {
-                if std::env::var_os("SOLDR_SESSION_DEBUG").is_some() {
-                    eprintln!("soldr: SESSION broker unreachable ({err}); using legacy path");
-                }
-                return SessionHotPathOutcome::Fallthrough;
+                return SessionHotPathOutcome::HardFail(io::Error::other(format!(
+                    "soldr broker is unreachable: {err}; invoke this compiler through `soldr cargo ...` (or another soldr build front door) so the singleton broker is started"
+                )));
             }
             Err(err) if Instant::now() >= session_deadline => {
-                if std::env::var_os("SOLDR_SESSION_DEBUG").is_some() {
-                    eprintln!("soldr: SESSION unavailable ({err}); using legacy path");
-                }
-                return SessionHotPathOutcome::Fallthrough;
+                return SessionHotPathOutcome::HardFail(io::Error::other(format!(
+                    "soldr broker could not provide daemon route {service_name} within {}ms: {err}; inspect `soldr logs paths` and `soldr daemon status`",
+                    session_attempt_budget().as_millis()
+                )));
             }
             Err(_) => std::thread::sleep(SESSION_RETRY_INTERVAL),
         }
@@ -170,7 +148,9 @@ pub fn session_socket_path(program: &str) -> io::Result<String> {
     resolve_socket_path(&pipe).map_err(|e| io::Error::other(format!("resolve_socket_path: {e}")))
 }
 
-fn local_session_name(socket_path: &str) -> io::Result<interprocess::local_socket::Name<'_>> {
+pub(crate) fn local_session_name(
+    socket_path: &str,
+) -> io::Result<interprocess::local_socket::Name<'_>> {
     #[cfg(unix)]
     {
         use interprocess::local_socket::{GenericFilePath, ToFsName};
@@ -188,18 +168,54 @@ fn local_session_name(socket_path: &str) -> io::Result<interprocess::local_socke
 /// socket serves exactly one daemon, so a fixed target is correct; 7b swaps this
 /// for a `HelloRouter` that launches-on-miss. Peer credentials still gate every
 /// connection before this runs (`serve_broker_session_socket`).
+enum SessionRelayRoute {
+    Fixed(String),
+    Broker { program: String },
+}
+
 struct SessionRelayResponder {
-    backend_pipe: String,
+    route: SessionRelayRoute,
 }
 
 impl HelloResponder for SessionRelayResponder {
-    fn handle_frame(&self, _frame: Frame, _peer: PeerIdentity) -> HelloReply {
-        HelloReply {
-            result: Some(HelloReplyResult::Negotiated(Negotiated {
-                backend_pipe: self.backend_pipe.clone(),
-                ..Default::default()
-            })),
+    fn handle_frame(&self, frame: Frame, _peer: PeerIdentity) -> HelloReply {
+        match &self.route {
+            SessionRelayRoute::Fixed(backend_pipe) => HelloReply {
+                result: Some(HelloReplyResult::Negotiated(Negotiated {
+                    backend_pipe: backend_pipe.clone(),
+                    ..Default::default()
+                })),
+            },
+            SessionRelayRoute::Broker { program } => route_hello_via_control(program, &frame),
         }
+    }
+}
+
+fn route_hello_via_control(program: &str, frame: &Frame) -> HelloReply {
+    let hello = match Hello::decode(frame.payload.as_slice()) {
+        Ok(hello) => hello,
+        Err(err) => return refused_session_hello(format!("invalid SESSION Hello: {err}")),
+    };
+    match running_process::broker::client_v2::connect_service_with_deadline(
+        program,
+        &hello.service_name,
+        &hello.wanted_version,
+        std::time::Duration::from_secs(30),
+    ) {
+        Ok(session) => HelloReply {
+            result: Some(HelloReplyResult::Negotiated(session.negotiated().clone())),
+        },
+        Err(err) => refused_session_hello(format!("daemon route unavailable: {err}")),
+    }
+}
+
+fn refused_session_hello(reason: String) -> HelloReply {
+    HelloReply {
+        result: Some(HelloReplyResult::Refused(Refused {
+            reason,
+            code: ErrorCode::ErrorBackendSpawnFailed as i32,
+            ..Default::default()
+        })),
     }
 }
 
@@ -209,7 +225,20 @@ impl HelloResponder for SessionRelayResponder {
 /// process exits. `backend_pipe` is the daemon's SESSION endpoint the relay
 /// dials per negotiated connection.
 pub fn spawn_session_relay(program: &str, backend_pipe: String) -> io::Result<()> {
-    use running_process::broker::server::session_serve_async::serve_broker_session_endpoint;
+    spawn_session_relay_with(program, SessionRelayRoute::Fixed(backend_pipe))
+}
+
+pub fn spawn_routed_session_relay(program: &str) -> io::Result<()> {
+    spawn_session_relay_with(
+        program,
+        SessionRelayRoute::Broker {
+            program: program.to_string(),
+        },
+    )
+}
+
+fn spawn_session_relay_with(program: &str, route: SessionRelayRoute) -> io::Result<()> {
+    use running_process::broker::server::session_serve_async::serve_broker_session_endpoint_concurrently;
 
     let session_socket = session_socket_path(program)?;
     std::thread::Builder::new()
@@ -231,7 +260,7 @@ pub fn spawn_session_relay(program: &str, backend_pipe: String) -> io::Result<()
                 );
                 return;
             };
-            let responder = SessionRelayResponder { backend_pipe };
+            let responder = Arc::new(SessionRelayResponder { route });
             rt.block_on(async move {
                 // Bind with soldr's OWN listener helper so the relay's socket name
                 // is produced by the exact same conversion the client's dial uses
@@ -244,24 +273,28 @@ pub fn spawn_session_relay(program: &str, backend_pipe: String) -> io::Result<()
                 // then lose the control-socket singleton race. Retry here so
                 // the durable control owner takes SESSION after that losing
                 // process exits instead of serving forever without its relay.
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                let mut last_report = std::time::Instant::now();
                 let listener = loop {
                     match crate::daemon::session_endpoint::bind_session_listener(&session_socket) {
                         Ok(listener) => break listener,
-                        Err(_) if std::time::Instant::now() < deadline => {
-                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                        }
                         Err(err) => {
-                            eprintln!(
-                                "soldr broker: SESSION relay could not bind {session_socket}: {err}"
-                            );
-                            return;
+                            if last_report.elapsed() >= std::time::Duration::from_secs(5) {
+                                eprintln!(
+                                    "soldr broker: SESSION relay still waiting to bind {session_socket}: {err}"
+                                );
+                                last_report = std::time::Instant::now();
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                         }
                     }
                 };
                 println!("soldr broker: SESSION relay bound at {session_socket}");
-                if let Err(err) =
-                    serve_broker_session_endpoint(listener, &responder, &peer_policy).await
+                if let Err(err) = serve_broker_session_endpoint_concurrently(
+                    listener,
+                    responder,
+                    &peer_policy,
+                )
+                .await
                 {
                     eprintln!("soldr broker: SESSION relay ended: {err}");
                 }
@@ -274,21 +307,17 @@ pub fn spawn_session_relay(program: &str, backend_pipe: String) -> io::Result<()
 /// A SESSION compile failure, tagged with whether any compiler output was
 /// already emitted locally.
 ///
-/// The fallback-safety boundary (see `compile_dispatch`): a **pre-output**
-/// failure (connect / Hello / negotiate / `SessionStart` send) is safe to retry
-/// on the legacy path — nothing was printed. Once the daemon's output has begun
-/// streaming to local stdio, a legacy retry would **double-print**, so such a
-/// failure must be surfaced as a hard error instead.
+/// `output_started` preserves diagnostic attribution: a failure after compiler
+/// output began may have emitted a partial diagnostic, while a setup failure
+/// did not. Both are hard failures on the mandatory SESSION route.
 #[derive(Debug)]
 pub struct SessionError {
     /// Whether compiler stdout/stderr was written locally before the failure.
     pub output_started: bool,
     /// Whether the broker's SESSION socket was unreachable (dial refused /
     /// absent) — i.e. there is no broker to talk to, as opposed to a broker
-    /// that answered but whose daemon relay is not ready yet. The hot path
-    /// treats this as "fall through to legacy immediately" rather than retrying
-    /// (soldr#2388 Step 3): retrying a socket nothing is bound to just burns the
-    /// spawn budget before the inevitable legacy fallback.
+    /// that answered but whose daemon relay is not ready yet. This fails
+    /// immediately instead of burning the route-start budget.
     pub broker_unreachable: bool,
     /// The underlying transport / protocol error.
     pub source: io::Error,
@@ -376,21 +405,68 @@ pub fn run_session_compile_with_detailed(
     cwd: String,
     env: Vec<SessionEnvVar>,
 ) -> Result<SessionCompileOutcome, SessionError> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(SessionError::pre_output)?
-        .block_on(run_session_compile_async(program, rustc_argv, cwd, env))
+    run_session_compile_with_detailed_for_service(program, program, rustc_argv, cwd, env)
 }
 
-async fn run_session_compile_async(
+fn run_session_compile_with_detailed_for_service(
     program: &str,
+    service_name: &str,
     rustc_argv: &[String],
     cwd: String,
     env: Vec<SessionEnvVar>,
 ) -> Result<SessionCompileOutcome, SessionError> {
-    // Setup — connect / Hello / negotiate / SessionStart send. Every failure
-    // here is pre-output (nothing printed yet), so it is safe to fall back.
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(SessionError::pre_output)?
+        .block_on(run_session_compile_async(
+            program,
+            service_name,
+            rustc_argv,
+            cwd,
+            env,
+        ))
+}
+
+async fn run_session_compile_async(
+    program: &str,
+    service_name: &str,
+    rustc_argv: &[String],
+    cwd: String,
+    env: Vec<SessionEnvVar>,
+) -> Result<SessionCompileOutcome, SessionError> {
+    let setup_timeout = session_attempt_budget();
+    let mut stream = match tokio::time::timeout(
+        setup_timeout,
+        establish_session(program, service_name, rustc_argv, cwd, env),
+    )
+    .await
+    {
+        Ok(result) => result?,
+        Err(_) => {
+            return Err(SessionError::pre_output(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "SESSION setup did not complete within {}ms",
+                    setup_timeout.as_millis()
+                ),
+            )))
+        }
+    };
+
+    pump_session_output_with_timeout(&mut stream, crate::daemon::client::compile_reply_timeout())
+        .await
+}
+
+async fn establish_session(
+    program: &str,
+    service_name: &str,
+    rustc_argv: &[String],
+    cwd: String,
+    env: Vec<SessionEnvVar>,
+) -> Result<Stream, SessionError> {
+    // Setup — connect / Hello / negotiate / SessionStart send. Failures here
+    // are tagged pre-output for precise diagnostics.
     let session_socket = session_socket_path(program).map_err(SessionError::broker_unreachable)?;
     if std::env::var_os("SOLDR_SESSION_DEBUG").is_some() {
         eprintln!("soldr: SESSION dialing program={program} socket={session_socket}");
@@ -404,7 +480,21 @@ async fn run_session_compile_async(
 
     // v2 Hello — identical to legacy. The relay's responder ignores the payload,
     // so an empty Hello suffices to negotiate.
-    let hello = encode_framed(&Frame::request(CONTROL_PAYLOAD_PROTOCOL, Vec::new()))
+    let hello_payload = Hello {
+        client_min_protocol: ENVELOPE_VERSION as u32,
+        client_max_protocol: ENVELOPE_VERSION as u32,
+        service_name: service_name.to_string(),
+        wanted_version: crate::daemon::backend_handle_adoption::SOLDR_DAEMON_SERVICE_VERSION
+            .to_string(),
+        client_version: env!("CARGO_PKG_VERSION").to_string(),
+        request_id: format!("soldr-session-{}", std::process::id()),
+        peer_pid: std::process::id(),
+        client_lib_name: "soldr-session".to_string(),
+        client_lib_version: env!("CARGO_PKG_VERSION").to_string(),
+        ..Default::default()
+    }
+    .encode_to_vec();
+    let hello = encode_framed(&Frame::request(CONTROL_PAYLOAD_PROTOCOL, hello_payload))
         .map_err(|e| SessionError::pre_output(io::Error::other(e)))?;
     stream
         .write_all(&hello)
@@ -438,11 +528,14 @@ async fn run_session_compile_async(
 
     // Output phase — a failure after the first byte is printed is a hard error
     // (a legacy retry would double-print).
-    pump_session_output(&mut stream).await
+    Ok(stream)
 }
 
 /// Read and validate the broker's framed `Negotiated` reply.
-async fn read_negotiated(stream: &mut Stream) -> io::Result<()> {
+async fn read_negotiated<S>(stream: &mut S) -> io::Result<()>
+where
+    S: tokio::io::AsyncRead + Unpin,
+{
     use prost::Message as _;
     let mut buf: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 4096];
@@ -469,13 +562,49 @@ async fn read_negotiated(stream: &mut Stream) -> io::Result<()> {
 /// outcome — matches `soldr_daemon::daemon::session_sink::META_CACHE_OUTCOME`.
 const META_CACHE_OUTCOME: &str = "cache_outcome";
 
+async fn pump_session_output_with_timeout<S>(
+    stream: &mut S,
+    reply_timeout: std::time::Duration,
+) -> Result<SessionCompileOutcome, SessionError>
+where
+    S: tokio::io::AsyncRead + Unpin,
+{
+    let output_started = Arc::new(AtomicBool::new(false));
+    match tokio::time::timeout(
+        reply_timeout,
+        pump_session_output(stream, Arc::clone(&output_started)),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(SessionError {
+            output_started: output_started.load(Ordering::Acquire),
+            broker_unreachable: false,
+            source: io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "SESSION compile reply did not complete within {}s; adjust {} only while diagnosing",
+                    reply_timeout.as_secs_f64(),
+                    crate::daemon::client::REPLY_TIMEOUT_ENV
+                ),
+            ),
+        }),
+    }
+}
+
 /// Pump SESSION frames from the relay: stdout/stderr to local stdio, returning
 /// the compiler exit code + `cache_outcome` on the terminal `Exit` frame.
 ///
 /// `output_started` flips to `true` the moment any stdout/stderr byte is written
 /// locally; every error is tagged with it so the caller knows whether a legacy
 /// fallback would double-print.
-async fn pump_session_output(stream: &mut Stream) -> Result<SessionCompileOutcome, SessionError> {
+async fn pump_session_output<S>(
+    stream: &mut S,
+    output_seen: Arc<AtomicBool>,
+) -> Result<SessionCompileOutcome, SessionError>
+where
+    S: tokio::io::AsyncRead + Unpin,
+{
     let mut buf: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 8192];
     let mut stdout = tokio::io::stdout();
@@ -496,6 +625,7 @@ async fn pump_session_output(stream: &mut Stream) -> Result<SessionCompileOutcom
                     match kind {
                         Some(session_frame::Kind::Stdout(b)) => {
                             output_started = true;
+                            output_seen.store(true, Ordering::Release);
                             stdout
                                 .write_all(&b)
                                 .await
@@ -504,6 +634,7 @@ async fn pump_session_output(stream: &mut Stream) -> Result<SessionCompileOutcom
                         }
                         Some(session_frame::Kind::Stderr(b)) => {
                             output_started = true;
+                            output_seen.store(true, Ordering::Release);
                             stderr
                                 .write_all(&b)
                                 .await
@@ -545,25 +676,43 @@ async fn pump_session_output(stream: &mut Stream) -> Result<SessionCompileOutcom
 mod tests {
     use super::*;
 
-    crate::timed_test!(pre_output_error_is_safe_to_fall_back, {
+    crate::timed_test!(pre_output_error_is_attributed_without_output, {
         let err = SessionError::pre_output(io::Error::other("connect refused"));
         assert!(
             !err.output_started,
-            "a pre-output failure must be flagged safe for legacy fallback"
+            "a setup failure must be identified as pre-output"
         );
     });
 
-    crate::timed_test!(session_is_unconditionally_enabled, {
-        let _lock = crate::TEST_PROCESS_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        // soldr#2388: SESSION is the only supported hot path — no env-var
-        // opt-out. Enabled regardless of any (now-ignored) env state.
-        let _s = crate::EnvVarGuard::set("SOLDR_USE_SESSION", "0");
-        let _b = crate::EnvVarGuard::set("SOLDR_USE_BROKER", "0");
-        assert!(
-            session_enabled(),
-            "SESSION is unconditional; there is no opt-out env var"
-        );
+    crate::timed_test!(accepted_relay_that_never_negotiates_is_bounded, {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async {
+            let (mut client, _server) = tokio::io::duplex(64);
+            let result = tokio::time::timeout(
+                std::time::Duration::from_millis(20),
+                read_negotiated(&mut client),
+            )
+            .await;
+            assert!(result.is_err(), "a silent relay must not wait forever");
+        });
+    });
+
+    crate::timed_test!(compile_service_that_never_publishes_is_bounded, {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async {
+            let (mut client, _server) = tokio::io::duplex(64);
+            let err =
+                pump_session_output_with_timeout(&mut client, std::time::Duration::from_millis(20))
+                    .await
+                    .expect_err("a silent compile service must time out");
+            assert_eq!(err.source.kind(), io::ErrorKind::TimedOut);
+            assert!(!err.output_started);
+        });
     });
 }

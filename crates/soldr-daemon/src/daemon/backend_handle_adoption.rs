@@ -43,53 +43,91 @@ pub(crate) const PROBE_INCONCLUSIVE_RETRY_BUDGET: Duration = Duration::from_secs
 /// probe deadline that dominates each attempt.
 pub(crate) const PROBE_INCONCLUSIVE_RETRY_BACKOFF: Duration = Duration::from_millis(50);
 
-/// Also the v2 broker `--program` namespace soldr's front door spawns its
-/// broker under (soldr#2364): [`running_process::broker::client_v2::connect`]
-/// dials [`running_process::broker::lifecycle::names_v2::v2_program_pipe`]
-/// keyed on this same string for both the bind-namespace lookup *and* the
-/// Hello `service_name` it sends (the v2 API conflates the two — see that
-/// function's doc). A front door spawning the broker under any other
-/// `--program` value binds a pipe this dial can never reach: the client
-/// silently falls through to `DiscoveryRoute::DirectFallbackUnavailable`
-/// and the legacy direct-spawn path serves the compile instead, leaving the
-/// broker running but never consulted. Public so `soldr-cli`'s
-/// `broker_spawn` module can spawn the broker under the exact namespace this
-/// crate's own discovery dials, instead of duplicating the literal.
+/// Stable v2 broker `--program` namespace. Every Soldr root and version shares
+/// this singleton broker; the requested service name partitions backend
+/// routes by canonical root, Soldr version, and daemon image digest.
 pub const SOLDR_DAEMON_SERVICE_NAME: &str = "soldr-daemon";
-pub(crate) const SOLDR_DAEMON_SERVICE_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const SOLDR_DAEMON_SERVICE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Env override for the broker `--program` namespace (default
-/// [`SOLDR_DAEMON_SERVICE_NAME`]). Test-only in practice: production has
-/// exactly one soldr broker per user session, so there is normally nothing
-/// to disambiguate.
+/// Env override for the broker `--program` namespace. Test-only in practice:
+/// production uses one stable per-user broker program while service names
+/// partition default and explicit roots into distinct daemon routes.
 ///
-/// The override MUST be honored by BOTH the front-door broker spawn
-/// (`soldr_cli::broker_spawn`) AND [`super::broker_discovery::discover_via_broker`]
-/// via the single [`broker_program`] resolver below, or they drift: the v2
-/// `client_v2::connect(program, ...)` API dials
-/// `v2_program_pipe(program, ...)` and sends `program` as the Hello
-/// `service_name` in one shot, so the broker's bind `--program` and the
-/// client's dial program must be the identical string or the Hello never
-/// reaches the broker — it silently falls through to
-/// `DiscoveryRoute::DirectFallbackUnavailable` and the legacy direct-spawn
-/// path serves the compile, leaving the broker running but never consulted.
-/// soldr#2379 fixed this for the *default*; keeping the *override* on the
-/// same resolver stops it re-drifting (and is what lets broker tests bind an
-/// isolated program the same discovery dials).
+/// The override is honored by both broker spawn and SESSION clients through
+/// this single resolver, which keeps isolated tests on one bind namespace.
 pub const SOLDR_BROKER_PROGRAM_ENV_VAR: &str = "SOLDR_BROKER_PROGRAM";
+pub const SOLDR_BROKER_SERVICE_ENV_VAR: &str = "SOLDR_BROKER_SERVICE";
+pub const SOLDR_DAEMON_IMAGE_SHA256_LABEL: &str = "soldr-image-sha256";
 
-/// Resolve the broker `--program` namespace: the [`SOLDR_BROKER_PROGRAM_ENV_VAR`]
-/// value when set and non-empty, else [`SOLDR_DAEMON_SERVICE_NAME`]. Single
-/// source of truth for both the front-door broker spawn and the discovery
-/// dial so the two can never drift (soldr#2364).
+/// Resolve the singleton broker namespace: the explicit test override when
+/// present, otherwise the stable `soldr-daemon` program name.
 pub fn broker_program() -> String {
     std::env::var(SOLDR_BROKER_PROGRAM_ENV_VAR)
         .ok()
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| SOLDR_DAEMON_SERVICE_NAME.to_string())
 }
-pub(crate) const RUNNING_PROCESS_DISABLE_ENV: &str = "RUNNING_PROCESS_DISABLE";
 
+pub fn broker_service_name_for(paths: &SoldrPaths, daemon_binary: &Path) -> io::Result<String> {
+    broker_route_identity(paths, daemon_binary).map(|identity| identity.service_name)
+}
+
+pub struct BrokerRouteIdentity {
+    pub service_name: String,
+    pub image_sha256: String,
+}
+
+pub fn broker_route_identity(
+    paths: &SoldrPaths,
+    daemon_binary: &Path,
+) -> io::Result<BrokerRouteIdentity> {
+    let normalized = std::fs::canonicalize(&paths.root).unwrap_or_else(|_| {
+        if paths.root.is_absolute() {
+            paths.root.clone()
+        } else {
+            std::env::current_dir()
+                .unwrap_or_default()
+                .join(&paths.root)
+        }
+    });
+    let identity = normalized.to_string_lossy().into_owned();
+    #[cfg(windows)]
+    let identity = identity.replace('\\', "/").to_ascii_lowercase();
+    let image_hash = sha256_file(daemon_binary)?;
+    let mut hasher = Sha256::new();
+    hasher.update(identity.as_bytes());
+    hasher.update([0]);
+    hasher.update(SOLDR_DAEMON_SERVICE_VERSION.as_bytes());
+    hasher.update([0]);
+    hasher.update(image_hash);
+    let digest = hasher.finalize();
+    Ok(BrokerRouteIdentity {
+        service_name: format!("{SOLDR_DAEMON_SERVICE_NAME}-{}", hex::encode(&digest[..16])),
+        image_sha256: hex::encode(image_hash),
+    })
+}
+
+pub fn broker_service_name() -> io::Result<String> {
+    if let Some(service) = std::env::var(SOLDR_BROKER_SERVICE_ENV_VAR)
+        .ok()
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(service);
+    }
+    let paths = SoldrPaths::new().map_err(|err| io::Error::other(err.to_string()))?;
+    let current = std::env::current_exe()?;
+    let daemon = current
+        .parent()
+        .map(|parent| {
+            parent.join(if cfg!(windows) {
+                "soldr-daemon.exe"
+            } else {
+                "soldr-daemon"
+            })
+        })
+        .unwrap_or_else(|| PathBuf::from("soldr-daemon"));
+    broker_service_name_for(&paths, &daemon)
+}
 pub(crate) const RUNNING_PROCESS_BACKEND_HANDLE_STATUS: RunningProcessBackendHandleStatus =
     RunningProcessBackendHandleStatus {
         crate_name: "running-process",
@@ -138,10 +176,6 @@ impl SoldrDaemonBackendHandle {
     pub(crate) fn is_alive(&self) -> bool {
         pid_is_alive(self.pid) && pid_exe_stem_matches(self.pid, SOLDR_DAEMON_SERVICE_NAME)
     }
-}
-
-pub(crate) fn running_process_disabled() -> bool {
-    std::env::var(RUNNING_PROCESS_DISABLE_ENV).is_ok_and(|value| value == "1")
 }
 
 /// Outcome of a single `BackendHandle` probe attempt.
@@ -284,6 +318,71 @@ pub(crate) fn probe_soldr_daemon(paths: &SoldrPaths) -> Option<SoldrDaemonBacken
     }
 }
 
+/// Wait for a broker-placed daemon to publish its PID/image and answer on the
+/// broker-assigned SESSION endpoint.
+pub fn wait_for_broker_backend_handle(
+    paths: &SoldrPaths,
+    service_name: &str,
+    service_version: &str,
+    endpoint: &Endpoint,
+    timeout: Duration,
+) -> io::Result<BackendHandle> {
+    wait_for_broker_backend_handle_while(
+        paths,
+        service_name,
+        service_version,
+        endpoint,
+        timeout,
+        || Ok(None),
+    )
+}
+
+/// Variant used by the owning launcher. An actual child exit terminates the
+/// wait immediately; a slow but live cold start keeps its one process for the
+/// entire bounded acquisition window instead of being killed and resurrected.
+pub fn wait_for_broker_backend_handle_while(
+    paths: &SoldrPaths,
+    service_name: &str,
+    service_version: &str,
+    endpoint: &Endpoint,
+    timeout: Duration,
+    mut child_status: impl FnMut() -> io::Result<Option<i32>>,
+) -> io::Result<BackendHandle> {
+    let deadline = Instant::now() + timeout;
+    let mut last_error = "daemon has not published its PID yet".to_string();
+    loop {
+        if let Some(status) = child_status()? {
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                format!("broker-launched soldr-daemon exited before readiness ({status})"),
+            ));
+        }
+        if let Some((pid, exe_path)) = read_pid_file(paths) {
+            if let Some(mut daemon) = daemon_process_from_pid_file(paths, pid, exe_path) {
+                daemon.ipc_endpoint = endpoint.clone();
+                match BackendHandle::probe_with_service(
+                    service_name.to_string(),
+                    service_version.to_string(),
+                    endpoint,
+                    &daemon,
+                ) {
+                    Ok(handle) => return Ok(handle),
+                    Err(err) => last_error = err.to_string(),
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "broker-launched soldr-daemon was not ready within {timeout:?}: {last_error}"
+                ),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 pub(crate) fn current_daemon_process(
     paths: &SoldrPaths,
     idle_timeout_secs: Option<u32>,
@@ -385,6 +484,32 @@ mod tests {
         .expect("write pid file");
     }
 
+    crate::timed_test!(broker_service_partition_covers_root_and_image_hash, {
+        let temp = TempDir::new().expect("tempdir");
+        let binary_a = temp.path().join("soldr-daemon-a");
+        let binary_b = temp.path().join("soldr-daemon-b");
+        std::fs::write(&binary_a, b"image-a").expect("binary a");
+        std::fs::write(&binary_b, b"image-b").expect("binary b");
+        let root_a = SoldrPaths::with_root(temp.path().join("root-a"));
+        let root_b = SoldrPaths::with_root(temp.path().join("root-b"));
+
+        let route = broker_service_name_for(&root_a, &binary_a).expect("route");
+        assert_eq!(
+            route,
+            broker_service_name_for(&root_a, &binary_a).expect("stable route")
+        );
+        assert_ne!(
+            route,
+            broker_service_name_for(&root_b, &binary_a).expect("different root")
+        );
+        assert_ne!(
+            route,
+            broker_service_name_for(&root_a, &binary_b).expect("different image")
+        );
+        assert!(route.starts_with("soldr-daemon-"));
+        assert_eq!(route.len(), "soldr-daemon-".len() + 32);
+    });
+
     crate::timed_test!(dependency_status_documents_active_backend_handle_usage, {
         let status = RUNNING_PROCESS_BACKEND_HANDLE_STATUS;
         assert_eq!(status.crate_name, "running-process");
@@ -401,26 +526,6 @@ mod tests {
         assert_eq!(status.soldr_issue, "zackees/soldr#718");
         assert!(status.active_endpoint_probe);
         assert!(status.remaining_gate.contains("BackendEndpointMux adopted"));
-    });
-
-    crate::timed_test!(running_process_disable_requires_exact_one, {
-        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        let prior = std::env::var_os(RUNNING_PROCESS_DISABLE_ENV);
-
-        std::env::remove_var(RUNNING_PROCESS_DISABLE_ENV);
-        assert!(!running_process_disabled());
-
-        std::env::set_var(RUNNING_PROCESS_DISABLE_ENV, "true");
-        assert!(!running_process_disabled());
-
-        std::env::set_var(RUNNING_PROCESS_DISABLE_ENV, "1");
-        assert!(running_process_disabled());
-
-        match prior {
-            Some(value) => std::env::set_var(RUNNING_PROCESS_DISABLE_ENV, value),
-            None => std::env::remove_var(RUNNING_PROCESS_DISABLE_ENV),
-        }
     });
 
     crate::timed_test!(probe_missing_pid_file_reports_no_handle, {

@@ -26,8 +26,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use std::sync::Arc;
 
 use super::{
-    bind_session_listener, local_session_name, serve_session_connection, serve_session_endpoint,
-    soldr_session_endpoint_mux,
+    bind_session_listener, local_session_name, serve_session_connection,
+    serve_session_endpoint_with_readiness, soldr_session_endpoint_mux, CompileServiceReadiness,
 };
 use crate::core::SoldrPaths;
 use crate::zccache_embedded::SoldrZccacheService;
@@ -137,6 +137,7 @@ crate::timed_test!(
                 let service = SoldrZccacheService::start(&paths, &daemon)
                     .await
                     .expect("start embedded zccache service");
+                let service = CompileServiceReadiness::ready(Arc::new(service));
                 let mux = soldr_session_endpoint_mux(daemon);
 
                 let (mut client, server) = tokio::io::duplex(1 << 20);
@@ -188,14 +189,11 @@ crate::timed_test!(session_endpoint_answers_backend_handle_probe, {
             let daemon = test_daemon_identity();
             let mux = soldr_session_endpoint_mux(daemon);
 
-            // The compile service is not touched on the probe branch, but the
-            // handler signature requires one; an isolated embedded service is
-            // the honest way to prove probe + SESSION coexist on one handler.
+            // Keep initialization deliberately unresolved: a broker liveness
+            // probe must never await the heavyweight compile service.
             let temp = tempfile::tempdir().expect("tempdir");
             let paths = SoldrPaths::with_root(temp.path().join("root"));
-            let service = SoldrZccacheService::start(&paths, &test_daemon_identity())
-                .await
-                .expect("start embedded zccache service");
+            let (service, _publisher) = CompileServiceReadiness::pending();
 
             // Build a BackendHandle endpoint probe request: Frame{0xB232, nonce}.
             let nonce = vec![7u8; PROBE_NONCE_BYTES];
@@ -275,13 +273,15 @@ crate::timed_test!(session_endpoint_accept_loop_binds_and_dispatches_probe, {
             let listener = bind_session_listener(&socket).expect("bind SESSION listener");
 
             let paths = SoldrPaths::with_root(temp.path().join("root"));
-            let service = Arc::new(
+            let service = CompileServiceReadiness::ready(Arc::new(
                 SoldrZccacheService::start(&paths, &test_daemon_identity())
                     .await
                     .expect("start embedded zccache service"),
-            );
+            ));
             let mux = Arc::new(soldr_session_endpoint_mux(test_daemon_identity()));
-            let server = tokio::spawn(serve_session_endpoint(listener, service, paths, mux));
+            let server = tokio::spawn(serve_session_endpoint_with_readiness(
+                listener, service, paths, mux,
+            ));
 
             // Dial the real transport (the listener is bound before accept runs,
             // so the connect queues in the backlog).

@@ -40,7 +40,6 @@ Current support policy:
 soldr cargo build --release
 soldr cargo test
 soldr cargo run -- --help
-soldr --no-cache cargo build
 ```
 
 Behavior:
@@ -51,20 +50,18 @@ Behavior:
 - Fall back to `rustup which <tool>` when no matching binary is present in the
   selected toolchain location.
 - Set `RUSTC_WRAPPER` to a compiler-named Soldr shim when caching is enabled.
-- Give that shim a canonically named `soldr-daemon` recovery image. Direct
-  wrapper invocations lazily materialize the same alias; lifecycle refuses to
-  spawn a daemon from a `rustc`, `clippy-driver`, or `zccache-soldr` image.
-- Route cacheable rustc work over Soldr IPC to the zccache service compiled
-  into `soldr-daemon`; no separate zccache binary or daemon is fetched.
+- Register the exact `soldr-daemon` image and selected root with the singleton
+  broker before Cargo starts. Only the broker places and starts that image.
+- Route cacheable compiler work through the broker SESSION service to the zccache
+  service compiled into `soldr-daemon`; no separate zccache binary or daemon
+  is fetched.
 - Start a per-build correlation session while keeping cache artifacts under
   the exact selected Soldr root.
 - Delegate to Cargo with the exact flags the user passed.
 
-Current cache-control behavior:
+Current cache behavior:
 
 - caching is enabled by default for `soldr cargo ...`
-- `soldr --no-cache cargo ...` disables soldr's compilation-cache path for that invocation
-- `soldr cargo --no-cache ...` is rejected; `--no-cache` is a top-level soldr flag only
 - `--zccache=managed` and the legacy `--zccache=system` spelling are retained
   for CLI compatibility; both use the embedded runtime. To deliberately put an
   external compiler cache in Cargo's wrapper slot, use
@@ -454,7 +451,6 @@ supported environment variables.
 soldr cargo build --release
 soldr cargo test --workspace
 soldr cargo check -p soldr-cli
-soldr --no-cache cargo test
 ```
 
 For cross-target builds (`soldr cargo --target ...`), the target's Rust standard library must be provisioned separately — see the [native vs cross targets](../README.md#native-vs-cross-targets) section of the README.
@@ -797,9 +793,9 @@ mtime-replay walk.
 
 ### `soldr status`
 
-Show cache and target information, including a compile-daemon **fallbacks**
-rollup — how many recent builds ran uncached via the direct compiler (see
-[Compiler-cache fallback output](#compiler-cache-fallback-output)).
+Show cache and target information. The stable JSON shape retains the historical
+compile-daemon `fallbacks` rollup for upgrade compatibility; the mandatory
+broker route no longer appends new fallback records.
 
 Stable machine-facing mode:
 
@@ -1291,10 +1287,9 @@ set but did not take effect
 (the soldr#1837 malformed-value-falls-back-to-default rule), broken out so CI
 can assert on it without string-matching `source`.
 
-**`fallbacks`** (soldr#1838 Phase 4). The compile-daemon fallback rollup —
-`{ total, recent[] }` — described under [Compiler-cache fallback
-output](#compiler-cache-fallback-output). Always present; `total: 0` means the
-cache was never bypassed.
+**`fallbacks`** (soldr#1838 Phase 4). Historical compile-daemon fallback
+telemetry retained as `{ total, recent[] }` for JSON compatibility. The
+mandatory broker route does not append new records.
 
 **Defender probe** (issue #357, Windows-only). `soldr doctor` runs a
 throttled empirical scan probe to detect whether the soldr cache
@@ -1957,7 +1952,6 @@ Commands:
 | `SOLDR_REAL_CARGO`, `SOLDR_REAL_RUSTC`, ... | Internal real-tool path overrides used by setup-soldr PATH shims to avoid recursive tool lookup | unset |
 | `SOLDR_ZCCACHE_BIN` | Legacy compatibility variable; it does not replace the embedded service on the normal `soldr cargo ...` path. Use `SOLDR_RUSTC_WRAPPER=/path/to/zccache` for an intentional external-wrapper experiment. | unset |
 | `SOLDR_ZCCACHE_LOCAL_DIR` | Legacy compatibility variable from the removed downloaded-zccache flow; ignored by the normal embedded path. Develop against `_vender/zccache` and rebuild Soldr instead. | unset |
-| `SOLDR_DAEMON_REQUIRED` | Wrapper-mode escape hatch (issue #1300). When truthy (`1`/`true`/`yes`/`on`), a compile-daemon that is unreachable after the spawn-retry budget hard-fails the build (the pre-#1300 behavior) instead of degrading to a direct uncached rustc exec. Intended for CI lanes that want to catch daemon regressions. A compile failure always propagates regardless of this variable; which *daemon* failures degrade is a six-way matrix, not just unavailability — see "Which failures degrade, and which hard-fail" below. | unset (fallback enabled) |
 | `SOLDR_CACHE_DIR` | Override the exact product root owned by this soldr daemon. **On Windows, keep this path short** — see the note below. | official builds: `~/.soldr`; development builds: `~/.soldr-dev` |
 | `ZCCACHE_CACHE_SIZE_BYTES` | Exact embedded artifact budget in bytes. Mutually exclusive with `ZCCACHE_CACHE_SIZE_PERCENT`. | dynamic 5%, clamped 40–200 GiB |
 | `ZCCACHE_CACHE_SIZE_PERCENT` | Embedded artifact budget as an integer percentage from 1 through 100. Mutually exclusive with `ZCCACHE_CACHE_SIZE_BYTES`. | dynamic 5%, clamped 40–200 GiB |
@@ -1971,10 +1965,8 @@ Commands:
 | `SOLDR_SAVE_PROFILE` | Default payload profile for `soldr save` when `--ci` / `--minimal` is not passed. Values: `full`/`default`/`complete` for historical all-files archives, or `ci`/`minimal` for the CI/minimal profile that excludes runtime-only files, zccache runtime binaries, and reports `excluded_files` / `excluded_bytes`. CLI flags win over the env var. | `full` |
 | `ZCCACHE_CACHE_DIR` | Auxiliary zccache front-door/session, rust-plan, and direct-rustfmt cache-root override. It does not relocate the compiler service embedded in `soldr-daemon`; use `SOLDR_CACHE_DIR` for that. `soldr cargo ...` ignores inherited values by default so stale workspace state from setup/action wrappers cannot bleed across projects; pass `--trust-inherited-soldr-env` or set `SOLDR_TRUST_INHERITED_ENV=1` only when intentionally injecting this state. | unset |
 | `ZCCACHE_SESSION_ID` | Per-build zccache session identifier set by soldr | unset |
-| `ZCCACHE_DISABLE` | The standard zccache kill-switch. Truthy values (`1`/`true`/`yes`/`on`) are treated as `--no-cache` for `soldr cargo ...`: the wrapper + daemon are bypassed and rustc runs directly (uncached). Use this — or `soldr --no-cache cargo ...` — to recover if a build hangs on a wedged cache. | unset |
 | `SOLDR_NATIVE_CACHE` | Native C/C++ compiler cache toggle. Falsy values (`0`/`false`/`no`/`off`) disable only cc-rs `CC`/`CXX` wrapper injection, leaving rustc-side zccache enabled. Useful when a target cross compiler, such as the managed MinGW `gcc.exe` / `g++.exe` path, must run directly while Rust compilation still uses the cache. | unset (on) |
-| `SOLDR_CARGO_WAIT_TIMEOUT_SECS` | Opt-in wall-clock watchdog for the Cargo child. Normal `soldr cargo ...` invocations have no soldr-imposed wall-clock deadline and may run for hours. Set a positive integer only for diagnostic/CI watchdog use; `0` explicitly disables the deadline. Empty, negative, malformed, and overflowing values are configuration errors. An explicit timeout retains process-tree termination, abort cleanup/logging, and eligible one-shot no-cache recovery. | unset (no deadline) |
-| `SOLDR_NO_CARGO_TIMEOUT_RETRY` | Disable the one-shot `soldr --no-cache cargo <same args>` recovery after an explicitly configured Cargo wait timeout. Auto-retry is limited to cache-enabled `build`/`b`, `check`/`c`, `test`/`t`, `clippy`, and `doc`/`d`; already-uncached invocations never auto-retry. After trimming whitespace, any non-empty value except case-insensitive `false` or `0` disables retry (`1`, `yes`, `no`, `on`, and `off` are therefore all truthy). | unset |
+| `SOLDR_CARGO_WAIT_TIMEOUT_SECS` | Opt-in wall-clock watchdog for the Cargo child. Normal `soldr Cargo ...` invocations have no Soldr-imposed wall-clock deadline and may run for hours. A timeout terminates the process tree, records abort diagnostics, and returns failure without changing compile topology. | unset (no deadline) |
 | `SOLDR_COMPILE_REPLY_TIMEOUT_SECS` | Overrides the compile-dispatch reply timeout. Default is 30 min so a legitimate slow release compile is never cut off; set a small value (e.g. `30`) to fail fast instead of waiting out the backstop if the daemon stops responding. `0`/empty/unparseable falls back to the default. | 1800 |
 | `ZCCACHE_PATH_REMAP` | zccache path-remap mode. soldr seeds `auto` on the child cargo for managed-zccache builds so multiple git worktrees of the same repo share cache hits (issue #352, Tier L1.x). Caller-supplied values are preserved. Works for non-git checkouts too: since zccache#353, `ZCCACHE_PATH_REMAP=auto` with no `.git/` ancestor falls back to the cwd as the remap root and still injects `--remap-path-prefix=<cwd>=.`, so tarball/zip/git-archive checkouts produce path-independent artifacts and share hits (the `.git/` walk is only how the preferred worktree root is discovered). | unset (soldr injects `auto`) |
 | `SOLDR_PATH_REMAP` | Escape hatch for the default `ZCCACHE_PATH_REMAP=auto` injection. `off` (case-insensitive) suppresses the injection; any other value, or unset, keeps the default behavior. | unset (`auto`) |
@@ -1992,7 +1984,7 @@ Commands:
 | `SOLDR_RUST_PLAN_SKIP_WARM_RESTORE` | Default-on: skip `rust-plan restore` when `target/` is already warm from a prior step in the same GitHub Actions job + attempt (issue #229). Set to a falsy value (`0` / `false` / `no` / `off`) to opt out. | unset (on) |
 | `SOLDR_DYLINT_PREPARE_TTL_SECS` | Freshness window (seconds) for the dylint prepared-toolchain marker under `<soldr root>/dylint/prepared/v1/`. A fresh, valid marker lets a warm top-level `soldr cargo dylint` skip the nightly-map HTTP fetch and the `rustup component list` / `rustc -vV` probes entirely. `0` means never trust the marker (every run pays the full cold path). | `86400` (24 h) |
 | `SOLDR_DYLINT_REVERIFY` | Truthy (`1`/`true`) bypasses the dylint prepared-toolchain marker and always re-runs the full catalogue-fetch + rustup verification path. Use after manually mutating the nightly toolchain or when diagnosing identity mismatches. | unset |
-| `SOLDR_SOURCE_BUILD_CACHE` | Falsy (`0`/`false`/`no`/`off`) restores the historical fully-uncached `cargo install` spawn for `soldr build-from-source` and the cargo-dylint source-build fallback. By default those builds route rustc through soldr's zccache wrapper so fresh machines/containers reuse the shared object cache instead of recompiling every dependency (issue #1788). `ZCCACHE_DISABLE=1` also disables it. | unset (cached) |
+| `SOLDR_SOURCE_BUILD_CACHE` | Falsy (`0`/`false`/`no`/`off`) restores the historical fully-uncached source-build spawn. By default `soldr build-from-source` and dylint source preparation route compiler work through Soldr so fresh machines can reuse cached objects. | unset (cached) |
 | `SOLDR_TOOLCHAIN_BIN_CACHE` | `off` (case-insensitive) disables the in-process memo and on-disk cache (`<soldr root>/cache/toolchain-bins/v2/<rustup-home+host-scope>/<channel>/<tool>.path`) for channel-scoped `rustup which` binary resolution. The cache saves one `rustup which` subprocess spawn per tool per nested cargo-dylint re-entry; entries self-invalidate when the cached path no longer exists, and the v2 scope prevents one toolchain home or host architecture from reusing another's path. | unset (on) |
 | `DYLINT_DRIVER_PATH` | Soldr sets this on the dylint child process tree to `<soldr root>/dylint/drivers` (a stable soldr-owned home for cargo-dylint's per-toolchain driver builds) **only when the caller has not already set it** — an explicit caller value always wins. A fixed path means warm runs reuse the already-built driver and CI caches have a deterministic path to restore. | soldr-injected |
 | `SOLDR_TARGET_CACHE_MODE` | **Master toggle for target-cache.** `thin` enables thin-slice mode (zccache saves the rmeta/dep-info skeleton, restores it before `cargo build`). `full` enables full-target mode (zccache saves+restores the entire `target/` tree). `off` / `false` / `0` / `no` / empty / unset disables the feature entirely — `maybe_prepare_rust_artifact_plan` short-circuits to `Ok(None)` and no surrounding code (front-door, GC, registry) does any "free" work on this path. Designed for CI runners that can persist `~/.cache/zccache/` across runs; **off by default** because a local dev machine has nothing to save it to. CI workflows that want it set this explicitly (typically via `setup-soldr`). See [Target cache](#target-cache-default-off) for the contract. | unset (off) |
@@ -2024,31 +2016,18 @@ project, which is why soldr calls that out explicitly when it detects it
 (soldr#1969). The fix is a shorter root — the default `~/.soldr` is well within
 budget; a root nested inside a temp/scratch tree may not be.
 
-`RUSTC_WRAPPER=soldr cargo build` remains a valid low-level passthrough path, but it is no longer the preferred user-facing workflow. As of #980 L1 (second pass) the rustc-wrapper invocation dispatches every per-compile call over IPC to the daemon's embedded `zccache::embedded::ZccacheService`; there is no longer a fork-zccache.exe fallback. The daemon auto-starts on first wrapper call (see `soldr daemon status`). As of #1300, if the daemon cannot be reached within the spawn-retry budget the wrapper **degrades to a direct uncached rustc exec** (one `soldr: compile daemon unavailable ... (soldr#1300)` notice on stderr) so daemon unavailability costs cache hits, not the build. That first failure records a short-lived marker under the soldr daemon state directory; sibling rustc-wrapper processes that still cannot connect skip the full spawn budget and fall back immediately, avoiding a per-rustc retry storm. Set `SOLDR_DAEMON_REQUIRED=1` to restore the hard-fail behavior. A compile failure always propagates and never triggers the degradation.
+`RUSTC_WRAPPER=soldr cargo build` remains a low-level passthrough path, but it
+does not create infrastructure. A top-level Soldr front door must first
+register the exact daemon image/root route and ensure the singleton broker is
+available. Every cacheable wrapper invocation then uses that broker SESSION
+route. Broker, daemon, transport, version-skew, retirement, initialization,
+and protocol failures are hard failures; there is no direct-daemon or
+direct-compiler fallback.
 
-#### Which failures degrade, and which hard-fail
-
-soldr#1838 bullet 5. The rule is **not** "unavailable degrades, replies propagate" — it is *can this daemon ever serve this compile, and would degrading hide a bug?* A daemon that answers can still be unable to serve, and degrading there masks nothing. The decision lives in `client_error_indicates_daemon_unavailable` (`crates/soldr-cli/src/compile_dispatch.rs`); this table is that matrix in prose.
-
-| Failure | Behaviour | Why |
-|---|---|---|
-| `NotRunning` | degrade | No daemon to serve the compile. |
-| `Io` | degrade | Transport died; nothing answered. |
-| `VersionMismatch` | degrade | Deployment skew (#1853). It answered, but can never serve this compile — from the wrapper's view, indistinguishable from no daemon. |
-| `Retiring` | degrade | The daemon said it is draining (#1954). Not buggy, and it will never serve this compile, so degrading hides nothing. Before this reply existed it arrived as `Protocol` and hard-failed a *normal graceful shutdown* (#1837). |
-| `CompileStalled` | degrade | The compile stopped progressing (#1955). The wrapper cannot finish it either way; whether output was seen changes the *advice*, not the decision. |
-| `Protocol` | **hard-fail** | A genuine daemon-side bug. Degrading would hide it behind a silently uncached build — the one outcome worth failing for. |
-
-`SOLDR_DAEMON_REQUIRED=1` turns every degrade above into a hard failure, for CI lanes that would rather catch a daemon regression than absorb it as a cache miss.
-
-The distinction that took three issues to settle: **"the daemon replied" is not evidence the daemon can help.** `Retiring` and `VersionMismatch` are well-formed replies from healthy processes, and treating a reply as proof of serviceability is what turned an orderly drain into a failed build.
 When `SOLDR_RUSTC_WRAPPER` is set to a non-empty value such as `sccache`, soldr puts that binary in the wrapper slot instead of itself, bypassing the embedded path entirely. If it is set to `none` or an empty string, soldr leaves `RUSTC_WRAPPER` unset for that build.
 
-For release/LTO musl workloads that previously carried `soldr --no-cache`
-workarounds, see [`DATALAKE_RELEASE_MUSL.md`](DATALAKE_RELEASE_MUSL.md).
-That tracker records the `soldr 0.8.0+` status, a datalake-core-like manual
-Docker repro, and the diagnostic contract for embedded zccache daemon
-death/no-response failures.
+Release/LTO musl validation and daemon-failure diagnostics are recorded in
+[`DATALAKE_RELEASE_MUSL.md`](DATALAKE_RELEASE_MUSL.md).
 
 On the normal embedded path, `soldr cargo ...` resolves a fresh Soldr
 workspace context by default. It preserves normal process environment used by
@@ -2061,32 +2040,25 @@ modes leave caller-provided wrapper environment alone; when
 `SOLDR_RUSTC_WRAPPER=sccache` and the caller has set `SCCACHE_DIR` themselves,
 Soldr forwards their value rather than overriding it.
 
-`soldr cargo ...` only starts `soldr-daemon` and its embedded build cache for
-compile-like Cargo subcommands such as `build`, `check`, `test`, `run`, `doc`,
-`clippy`, and `nextest`. Non-build Cargo commands such as `cargo metadata` and
-`cargo --version` pass through without starting the service.
+Compile-capable Soldr front doors register the exact daemon image, root, and
+route service before starting the build tool. Non-compiling commands do not
+request a daemon route.
 
-Daemon recovery uses a private `SOLDR_INTERNAL_DAEMON_EXE` parent-to-child
-handoff. It is implementation plumbing, not an operator override; the path must
-exist and have the `soldr-daemon` executable stem. The front door supplies it
-for Rust and native compiler shims, and standalone wrapper dispatch repairs a
-missing/invalid handoff before attempting startup.
+Daemon recovery uses that registered service definition. Wrappers carry only
+the route service name and never locate, place, or start a daemon image.
 
-Startup and cleanup are ownership-fenced. The wrapper-side `.spawn.lock`
-suppresses a Cargo fan-out spawn herd; the child holds `root-owner.lock` for its
-entire lifetime, and explicit orphan-root maintenance uses that same ownership
-fence. On Unix the socket is bound before the PID/version claim is published.
-Retiring daemons deliberately leave the PID, version, and socket claims in
-place. The next startup validates process liveness, reclaims any stale socket
-while it owns the root, binds the replacement endpoint, and then publishes its
-new claims. Deferring cleanup to the successor avoids a check-then-unlink race
-where an older idle-timeout shutdown could remove a live successor's endpoint.
+The singleton broker serializes creation per root/version/image route. It
+places the image under its stable user-owned root, launches one child, watches
+early exit, and returns only after the route-local endpoint answers an active
+BackendHandle probe.
 
 Bootstrap cargo-install paths are intentionally uncached. `soldr build-from-source ...` and `[soldr.plugins]` installs from `soldr toolchain prepare` / `ensure` invoke the directly resolved cargo binary and scrub inherited `RUSTC_WRAPPER` / `RUSTC_WORKSPACE_WRAPPER`. Those commands install dev tools and cross-target helper binaries; routing them through Soldr's wrapper slot would make setup recursively depend on the cache layer it is preparing.
 
 `rustdoc` is intentionally not a zccache driver route today. Direct `soldr rustdoc ...` invocations and `rustdoc` PATH shims resolve the toolchain `rustdoc` binary and run it directly. `soldr cargo doc`, `soldr doc`, and doc tests still run with `RUSTC_WRAPPER=soldr`, so rustc dependency compile units remain cached; only the rustdoc driver phase itself is uncached because the embedded zccache runtime has no rustdoc parser/route.
 
-`rust-analyzer` is also launched as the real toolchain language server, not as a zccache-wrapped compiler. When caching is enabled, `soldr rust-analyzer ...` gives the server process Soldr's cache policy plus a scoped child PATH shim so rust-analyzer-spawned `cargo check` / `rustc` work can re-enter `soldr cargo ...` and the embedded zccache route. `soldr --no-cache rust-analyzer ...`, `ZCCACHE_DISABLE=1`, or `SOLDR_DISABLE_CHILD_SHIMS=1` keep the language server as a direct passthrough for editor/LSP setups that want to own their own cargo environment.
+
+`rust-analyzer` is launched as the real toolchain language server, not as a cache driver. When caching is enabled, `soldr rust-analyzer ...` gives the server process Soldr's cache policy plus a scoped child PATH shim so language-server child builds can re-enter the broker-owned route. `SOLDR_DISABLE_CHILD_SHIMS=1` keeps the language server as a direct passthrough when an editor owns its build environment.
+
 
 Set `SOLDR_CACHE_LIFECYCLE=command` for self-build jobs that need embedded
 cache state flushed before a following archive or test step. Command mode
@@ -2263,40 +2235,12 @@ For bootstrap verification of another Rust project:
 
 ---
 
-## Compiler-cache fallback output
+## Broker/daemon failure output
 
-When a cacheable compile cannot reach the daemon, Soldr runs the compiler
-directly (uncached) and records it in `compile-daemon-fallbacks.jsonl`. A
-managed front-door build reports cache unavailability once per build session,
-including the number of affected compiler invocations and the full journal
-path. Per-compile reasons stay in that structured log and are not replayed as
-cached compiler diagnostics. On the first build after upgrading, Soldr also
-removes matching notices persisted by older versions from that target
-directory's fingerprint diagnostics.
-
-Because a fallback means the build silently ran uncached (the "quietly slower,
-indefinitely" symptom), that journal is surfaced without having to open it
-(soldr#1838):
-
-- **`soldr doctor` and `soldr status`** print a rollup — the total fallback
-  count and the most recent reasons — next to the effective timeout table.
-  Both expose it in `--json` as an additive field:
-
-  ```json
-  "fallbacks": { "total": 2, "recent": [ { "ts_ms": 1785400500000, "reason": "compile reply timed out after 1800s" } ] }
-  ```
-
-  An empty rollup (`total: 0`) reads as "the cache was never bypassed".
-
-- **CI guard.** `.github/scripts/check_compile_fallbacks.py` reads that
-  `fallbacks` rollup and exits non-zero when any fallback was recorded, so a
-  lane that silently degraded fails instead of passing green. It is wired into
-  `_build-and-test.yml` (hard-fail on the native `linux-gnu` lane, advisory
-  elsewhere).
-
-For the failure-mode → signal → remedy runbook (all daemon timeouts, the
-diagnostics above, and the degrade policy), see
-[docs/DAEMON_TIMEOUTS.md](DAEMON_TIMEOUTS.md).
+A cacheable compile that cannot use its registered broker route fails with an
+infrastructure-attributed diagnostic. `soldr doctor`, `soldr status`, and
+`soldr logs paths` provide the route, process, timeout, and log evidence. See
+[docs/DAEMON_TIMEOUTS.md](DAEMON_TIMEOUTS.md) for bounded recovery steps.
 
 ## Summary
 

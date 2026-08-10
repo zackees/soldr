@@ -124,9 +124,8 @@ pub enum EmbeddedServiceError {
     #[error("zccache embedded maintenance failed: {0}")]
     Maintenance(String),
     /// Issue #977 Phase 5 / #980 L1 — surfaced by [`SoldrZccacheService::compile`].
-    /// Maps to a soldr-side `Response::Error`; errors from a healthy
-    /// embedded service propagate to the wrapper and never trigger the
-    /// daemon-unavailable direct-rustc fallback.
+    /// Maps to a soldr-side `Response::Error`; the mandatory broker route
+    /// propagates the compile-service failure without changing execution mode.
     #[error("zccache embedded compile failed: {0}")]
     Compile(String),
     /// Issue #977 Phase 5 — the wrapper sent a `CompileRequest` with an

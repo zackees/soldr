@@ -285,40 +285,16 @@ pub(crate) fn run_rustc_wrapper(
         // dedicated `zccache-soldr` shim binary can share the same
         // hang-safe retry logic.
         //
-        // soldr#1300 — when the retry budget is exhausted and the
-        // terminal condition is daemon UNAVAILABILITY (NotRunning /
-        // spawn failure / transport error — NOT a compile failure or
-        // error reply from a healthy daemon), degrade to the same
-        // direct-exec path used for non-cacheable rustc invocations
-        // below: run the real rustc uncached instead of failing the
-        // build. A daemon-reported compile failure never reaches this
-        // branch — it arrives as `Ok(exit_code != 0)` and is
-        // propagated to cargo unchanged. `SOLDR_DAEMON_REQUIRED=1`
-        // restores the pre-#1300 hard-fail for CI lanes that want to
-        // catch daemon regressions.
-        return match crate::compile_dispatch::compile_via_daemon_detailed(&compile_args[1..]) {
-            Ok(code) => Ok(code),
-            Err(failure) if crate::compile_dispatch::should_fall_back_to_direct_rustc(&failure) => {
-                crate::compile_dispatch::log_direct_exec_fallback_once(&failure);
-                // Issue #1817: this build started with a managed session, so
-                // the front door's whole-tree no-cache preflight was skipped.
-                // Any output already delivered by zccache is a protected
-                // read-only hardlink, and rustc refuses to overwrite it. Take
-                // ownership of the declared outputs first, or fail loudly
-                // rather than emit `<file> is not writeable`.
-                crate::fallback_detach::detach_outputs_for_direct_exec(&compile_args[1..])?;
-                direct_exec_tool(tool_arg, tool_stem, &compile_args, None)
-            }
-            Err(failure) => Err(failure.into_soldr_error()),
-        };
+        // Cacheable rustc invocations always use the broker SESSION route.
+        // The broker owns daemon acquisition and placement; failure is hard.
+        return crate::compile_dispatch::compile_via_daemon(&compile_args[1..]);
     }
 
     direct_exec_tool(tool_arg, tool_stem, &compile_args, Some(profile))
 }
 
 /// Direct (uncached) exec of the wrapped tool — the non-daemon path.
-/// Used for clippy-driver / non-cacheable rustc invocations, and as
-/// the soldr#1300 degradation when the compile daemon is unavailable.
+/// Used only for clippy-driver and non-cacheable rustc invocations.
 /// Preserves rustc's stdout/stderr/exit-code passthrough exactly: the
 /// child inherits the wrapper's stdio and the exit code is returned
 /// to cargo unchanged.

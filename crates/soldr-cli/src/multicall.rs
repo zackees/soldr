@@ -253,38 +253,14 @@ fn run_zccache_soldr() -> i32 {
         return 2;
     }
 
-    match crate::compile_dispatch::dispatch_compile_detailed(
+    match crate::compile_dispatch::dispatch_compile(
         &rustc_argv,
         std::io::stdout(),
         std::io::stderr(),
     ) {
         Ok(code) => normalize_exit_code(code),
-        Err(failure) if crate::compile_dispatch::should_fall_back_to_direct_rustc(&failure) => {
-            crate::compile_dispatch::log_direct_exec_fallback_once(&failure);
-            // Issue #1817: see the matching site in `wrapper.rs`. Outputs
-            // zccache already delivered are protected read-only hardlinks, so
-            // take ownership of them before a direct compiler tries to
-            // overwrite them.
-            if let Err(err) = crate::fallback_detach::detach_outputs_for_direct_exec(&rustc_argv) {
-                eprintln!(
-                    "zccache-soldr: refusing direct rustc fallback — could not detach \
-                     cache-delivered outputs safely: {err}"
-                );
-                return 101;
-            }
-            match crate::compile_dispatch::direct_exec_rustc(&rustc_argv) {
-                Ok(code) => normalize_exit_code(code),
-                Err(err) => {
-                    eprintln!("zccache-soldr: direct rustc fallback failed: {err}");
-                    101
-                }
-            }
-        }
         Err(failure) => {
-            eprintln!(
-                "zccache-soldr: dispatch failed: {}",
-                failure.into_soldr_error()
-            );
+            eprintln!("zccache-soldr: dispatch failed: {failure}");
             101
         }
     }

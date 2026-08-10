@@ -4,17 +4,31 @@
 //! writes the soldr-daemon `.servicedef.v2` file the v2 broker reads to
 //! discover the daemon, its `per_version_binary_dir` allow-list root,
 //! and its version policy (`min_version` + `version_allow_list`). The v2
-//! adoption is mandatory — there is no v1 fallback lane and no opt-in
-//! switch. When no broker is reachable the daemon is still found via the
-//! direct PID-file probe (see `broker_discovery.rs`).
+//! adoption is mandatory: there is no direct daemon-acquisition lane, opt-in
+//! switch, or client-owned placement path.
 
-use crate::daemon::backend_handle_adoption::{broker_program, SOLDR_DAEMON_SERVICE_VERSION};
+use crate::daemon::backend_handle_adoption::{
+    broker_route_identity, SOLDR_DAEMON_IMAGE_SHA256_LABEL, SOLDR_DAEMON_SERVICE_VERSION,
+};
 use running_process::broker::protocol_v2::{
     service_definition_dir_v2, service_definition_path_v2, write_service_definition_v2,
     BrokerIsolation, ServiceDefinition, ServiceDefinitionBuilder,
 };
 use std::io;
 use std::path::{Path, PathBuf};
+
+pub const SOLDR_ROOT_SERVICE_LABEL: &str = "soldr-root";
+pub const SOLDR_DAEMON_ENV_LABEL_PREFIX: &str = "soldr-env:";
+
+/// Stable, user-scoped storage owned by the singleton broker rather than by
+/// any daemon route.  Daemon images are content/version addressed below this
+/// root and can therefore be shared by distinct `SOLDR_CACHE_DIR` partitions;
+/// daemon state and sockets remain rooted in each route's [`SoldrPaths`].
+pub fn broker_owned_paths() -> crate::core::SoldrPaths {
+    let services = service_definition_dir_v2();
+    let owner = services.parent().unwrap_or(&services);
+    crate::core::SoldrPaths::with_root(owner.join("soldr-broker"))
+}
 
 /// Work intentionally left out of the v2 adoption slice, tracked under
 /// soldr#1495 Workstream B: the broker-owned `UpgradeDaemon` graceful
@@ -57,6 +71,14 @@ pub(crate) fn default_daemon_binary() -> io::Result<PathBuf> {
 pub(crate) fn soldr_daemon_service_definition(
     daemon_binary: &Path,
 ) -> io::Result<ServiceDefinition> {
+    let paths = crate::core::SoldrPaths::new().map_err(|err| io::Error::other(err.to_string()))?;
+    soldr_daemon_service_definition_for_paths(&paths, daemon_binary)
+}
+
+pub(crate) fn soldr_daemon_service_definition_for_paths(
+    paths: &crate::core::SoldrPaths,
+    daemon_binary: &Path,
+) -> io::Result<ServiceDefinition> {
     let binary = std::fs::canonicalize(daemon_binary)?;
     let binary_dir = binary.parent().ok_or_else(|| {
         io::Error::new(
@@ -65,24 +87,82 @@ pub(crate) fn soldr_daemon_service_definition(
         )
     })?;
 
-    // The broker matches the Hello `service_name` (which `client_v2::connect`
-    // sends equal to the dial `program`) against the servicedef name, so the
-    // servicedef must be installed under the SAME `broker_program()` the front
-    // door binds and discovery dials -- otherwise a `SOLDR_BROKER_PROGRAM`
-    // override binds+dials one name but serves a servicedef under another and
-    // every Hello is refused (soldr#2364). Defaults to `soldr-daemon`.
-    let definition =
-        ServiceDefinitionBuilder::shared_broker(broker_program(), binary.display().to_string())
+    let route = broker_route_identity(paths, &binary)?;
+    let root = paths.root.to_str().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Soldr root is not valid Unicode and cannot be routed by the broker",
+        )
+    })?;
+    let mut definition =
+        ServiceDefinitionBuilder::shared_broker(route.service_name, binary.display().to_string())
             .per_version_binary_dir(binary_dir.display().to_string())
             .min_version(SOLDR_DAEMON_SERVICE_VERSION)
             .version_allow_list([SOLDR_DAEMON_SERVICE_VERSION])
+            .label(SOLDR_ROOT_SERVICE_LABEL, root)
+            .label(SOLDR_DAEMON_IMAGE_SHA256_LABEL, route.image_sha256)
             .label("vendor", "zackees")
             .label("package", "soldr")
             .label("running-process-tracker", "zackees/soldr#1495")
             .build();
+    add_daemon_env_labels(
+        &mut definition,
+        crate::daemon::lifecycle::forwarded_soldr_env(),
+    )?;
 
     debug_assert_eq!(definition.isolation, BrokerIsolation::SharedBroker as i32);
     Ok(definition)
+}
+
+fn add_daemon_env_labels(
+    definition: &mut ServiceDefinition,
+    env: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> io::Result<()> {
+    for (name, value) in env {
+        let name = name.into_string().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "daemon environment variable name is not valid Unicode",
+            )
+        })?;
+        let value = value.into_string().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("daemon environment value for {name} is not valid Unicode"),
+            )
+        })?;
+        definition
+            .labels
+            .insert(format!("{SOLDR_DAEMON_ENV_LABEL_PREFIX}{name}"), value);
+    }
+    Ok(())
+}
+
+pub fn daemon_env_from_service_definition(
+    definition: &ServiceDefinition,
+) -> io::Result<Vec<(std::ffi::OsString, std::ffi::OsString)>> {
+    daemon_env_from_labels(&definition.labels)
+}
+
+pub fn daemon_env_from_labels(
+    labels: &std::collections::HashMap<String, String>,
+) -> io::Result<Vec<(std::ffi::OsString, std::ffi::OsString)>> {
+    let mut env = Vec::new();
+    for (label, value) in labels {
+        let Some(name) = label.strip_prefix(SOLDR_DAEMON_ENV_LABEL_PREFIX) else {
+            continue;
+        };
+        if name.is_empty()
+            || !crate::daemon::lifecycle::forwarded_env_name(std::ffi::OsStr::new(name))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid daemon environment label {label:?}"),
+            ));
+        }
+        env.push((name.into(), value.into()));
+    }
+    Ok(env)
 }
 
 fn servicedef_io_error(err: impl std::fmt::Display) -> io::Error {
@@ -101,8 +181,17 @@ pub fn install_service_definition_to_dir(
     service_root: impl AsRef<Path>,
     daemon_binary: &Path,
 ) -> io::Result<InstalledServiceDefinition> {
+    let paths = crate::core::SoldrPaths::new().map_err(|err| io::Error::other(err.to_string()))?;
+    install_service_definition_to_dir_for_paths(service_root, &paths, daemon_binary)
+}
+
+pub fn install_service_definition_to_dir_for_paths(
+    service_root: impl AsRef<Path>,
+    paths: &crate::core::SoldrPaths,
+    daemon_binary: &Path,
+) -> io::Result<InstalledServiceDefinition> {
     let service_root = service_root.as_ref();
-    let definition = soldr_daemon_service_definition(daemon_binary)?;
+    let definition = soldr_daemon_service_definition_for_paths(paths, daemon_binary)?;
     // `write_service_definition_v2` creates the (privately-permissioned)
     // dir, validates the service name, and writes the `.servicedef.v2`
     // protobuf.
@@ -110,7 +199,8 @@ pub fn install_service_definition_to_dir(
         write_service_definition_v2(service_root, &definition).map_err(servicedef_io_error)?;
     debug_assert_eq!(
         path,
-        service_definition_path_v2(service_root, &broker_program()).expect("valid service name"),
+        service_definition_path_v2(service_root, &definition.service_name)
+            .expect("valid service name"),
     );
     Ok(InstalledServiceDefinition { path, definition })
 }
@@ -137,7 +227,7 @@ mod tests {
 
         let definition = soldr_daemon_service_definition(&daemon).expect("definition");
 
-        assert_eq!(definition.service_name, "soldr-daemon");
+        assert!(definition.service_name.starts_with("soldr-daemon-"));
         assert_eq!(definition.isolation, BrokerIsolation::SharedBroker as i32);
         assert_eq!(definition.min_version, env!("CARGO_PKG_VERSION"));
         assert_eq!(definition.version_allow_list, [env!("CARGO_PKG_VERSION")]);
@@ -145,6 +235,34 @@ mod tests {
             definition.labels.get("package").map(String::as_str),
             Some("soldr"),
         );
+        assert!(definition.labels.contains_key(SOLDR_ROOT_SERVICE_LABEL));
+    });
+
+    crate::timed_test!(daemon_environment_is_owned_by_each_route_registration, {
+        let mut definition = ServiceDefinitionBuilder::shared_broker("svc", "/bin/svc").build();
+        add_daemon_env_labels(
+            &mut definition,
+            [
+                ("SOLDR_JOBS".into(), "2".into()),
+                ("ZCCACHE_STAGING_DIR".into(), "/tmp/staging".into()),
+            ],
+        )
+        .expect("encode daemon env");
+
+        let decoded = daemon_env_from_service_definition(&definition).expect("decode daemon env");
+        assert!(decoded.contains(&("SOLDR_JOBS".into(), "2".into())));
+        assert!(decoded.contains(&("ZCCACHE_STAGING_DIR".into(), "/tmp/staging".into())));
+    });
+
+    crate::timed_test!(daemon_environment_labels_reject_unapproved_names, {
+        let mut definition = ServiceDefinitionBuilder::shared_broker("svc", "/bin/svc").build();
+        definition.labels.insert(
+            format!("{SOLDR_DAEMON_ENV_LABEL_PREFIX}PATH"),
+            "/untrusted".into(),
+        );
+        let err = daemon_env_from_service_definition(&definition)
+            .expect_err("PATH must not cross the broker registration boundary");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     });
 
     crate::timed_test!(
@@ -160,10 +278,13 @@ mod tests {
             // v2 files carry the `.servicedef.v2` extension.
             assert_eq!(
                 installed.path,
-                service_root.join("soldr-daemon.servicedef.v2")
+                service_root.join(format!(
+                    "{}.servicedef.v2",
+                    installed.definition.service_name
+                ))
             );
             let loaded = ServiceDefinitionLoader::new(&service_root)
-                .load("soldr-daemon")
+                .load(&installed.definition.service_name)
                 .expect("load service definition");
             assert_eq!(loaded, installed.definition);
         }

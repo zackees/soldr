@@ -186,11 +186,9 @@ fn source_build_cache_disabled() -> bool {
 /// Route the source-build `cargo install`'s rustc invocations through
 /// soldr's compiler-named zccache wrapper shim so explicit tool source builds
 /// hit the shared object cache instead of recompiling every dependency from
-/// scratch on each fresh machine/container (issue #1788). Best-effort:
-/// if the shim cannot be materialized the build simply runs uncached,
-/// exactly like the historical behavior. The wrapper itself degrades to
-/// a direct rustc exec when the cache daemon is unavailable, so this
-/// never adds a hard dependency to the bootstrap path.
+/// scratch on each fresh machine/container (issue #1788). Best-effort image
+/// preparation is retained, but once installed the cacheable compiler route is
+/// mandatory and broker/daemon infrastructure failures are hard failures.
 pub(crate) fn apply_source_build_cache_wrapper(command: &mut std::process::Command) {
     if source_build_cache_disabled() {
         return;

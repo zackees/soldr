@@ -7,6 +7,4 @@
 
 mod events;
 mod pid_liveness;
-mod spawn_image;
-mod spawn_lock;
 mod spawn_log;

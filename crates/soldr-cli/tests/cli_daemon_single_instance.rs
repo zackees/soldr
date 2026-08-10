@@ -67,9 +67,6 @@ fn spawn_daemon(cache_root: &Path, home_root: &Path) -> std::process::Child {
         .env("SOLDR_CACHE_DIR", cache_root)
         .env("HOME", home_root)
         .env("USERPROFILE", home_root)
-        // Force the direct PID-file liveness path so the outcome does not
-        // depend on the running-process broker being up.
-        .env("RUNNING_PROCESS_DISABLE", "1")
         .env_remove("RUSTC_WRAPPER")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

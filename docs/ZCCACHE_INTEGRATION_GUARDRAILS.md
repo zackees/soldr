@@ -29,16 +29,16 @@ new work.
 Run these hard gates for zccache integration refactor waves:
 
 ```powershell
-soldr --no-cache cargo test -p soldr-cli --test no_standalone_spawn_lint --locked
-soldr --no-cache cargo test -p soldr-cli --test zccache_trampoline_gate --locked
-soldr --no-cache cargo test -p soldr-cli --test cli_cargo_wrappers --locked
-soldr --no-cache cargo test -p soldr-cli --test cli_rust_plan --locked
-soldr --no-cache cargo test -p soldr-cli --test cli_cache --locked
-soldr --no-cache cargo test -p soldr-cli --lib --locked cache::session::tests
-soldr --no-cache cargo test -p soldr-cli --lib --locked native_cc::tests
-soldr --no-cache cargo test -p soldr-cli --test cli_cargo_native_cc --locked
-soldr --no-cache cargo test -p soldr-cli --test cli_wrapper_perf --locked
-soldr --no-cache cargo test -p soldr-cli --test timed_test_lint --locked
+soldr cargo test -p soldr-cli --test no_standalone_spawn_lint --locked
+soldr cargo test -p soldr-cli --test zccache_trampoline_gate --locked
+soldr cargo test -p soldr-cli --test cli_cargo_wrappers --locked
+soldr cargo test -p soldr-cli --test cli_rust_plan --locked
+soldr cargo test -p soldr-cli --test cli_cache --locked
+soldr cargo test -p soldr-cli --lib --locked cache::session::tests
+soldr cargo test -p soldr-cli --lib --locked native_cc::tests
+soldr cargo test -p soldr-cli --test cli_cargo_native_cc --locked
+soldr cargo test -p soldr-cli --test cli_wrapper_perf --locked
+soldr cargo test -p soldr-cli --test timed_test_lint --locked
 uv run --no-sync pytest tests/test_zccache_integration_guardrails.py tests/test_zccache_runtime_contract.py tests/test_setup_soldr_action.py tests/test_setup_soldr_exporter.py tests/test_setup_soldr_ensure_soldr.py -q
 node scripts/test-npm-package.js
 ```
@@ -65,9 +65,8 @@ gh workflow run perf-matrix.yml -f platforms=linux -f fixtures=medium -f scenari
 - `rust-plan-cache`: locks in-process rust-plan restore before Cargo and save
   after Cargo, the artifact bundle location, partial-restore diagnostics, and
   compile-count-driven warm-save decisions.
-- `disabled-and-non-build`: locks `--no-cache` and non-build cargo command
-  policy so cache disablement reaches Cargo and bypasses the embedded compile
-  service where required.
+- `non-build`: locks non-build command policy so commands that do not compile
+  avoid unnecessary cache/session work.
 - `embedded-flush-shutdown`: locks command-lifetime durability through the
   embedded flush IPC, compile-stat finalization, soldr-daemon shutdown, and
   exact responder-generation tracking. A daemon that acknowledges shutdown is
