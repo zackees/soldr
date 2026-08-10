@@ -71,8 +71,23 @@ pub enum SessionHotPathOutcome {
     Fallthrough,
 }
 
-/// SESSION compile hot path (soldr#2388 Step 3/7b): **default ON**. Relay the
-/// compile client → broker → daemon; the broker owns daemon launch.
+/// Short budget for smoothing a broker-relay-not-yet-ready race once the daemon
+/// is confirmed up. Deliberately far shorter than the daemon spawn-retry budget:
+/// the daemon cold-start wait happens in `spawn_or_confirm_broker_daemon` below;
+/// by the time we dial SESSION the relay is bound or the broker is simply
+/// absent (`broker_unreachable` → immediate fallthrough, no wait).
+/// Overridable for tests via `SOLDR_SESSION_ATTEMPT_BUDGET_MS`.
+fn session_attempt_budget() -> std::time::Duration {
+    let ms = std::env::var("SOLDR_SESSION_ATTEMPT_BUDGET_MS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(5_000)
+        .max(1);
+    std::time::Duration::from_millis(ms)
+}
+
+/// SESSION compile hot path (soldr#2388 Step 3/7b): **default ON**. Ensure the
+/// daemon is up, then relay the compile client → broker → daemon.
 ///
 /// Fallback contract (see the module + `compile_dispatch`):
 /// * **broker unreachable** (no broker bound at the SESSION socket) → fall
@@ -91,6 +106,12 @@ pub fn session_hot_path(rustc_argv: &[String]) -> SessionHotPathOutcome {
     if !session_enabled() {
         return SessionHotPathOutcome::Fallthrough;
     }
+    // Ensure the daemon is up before dialing SESSION. Bounded by the daemon
+    // spawn-retry budget for a cold start. (soldr#2388 Step 4 moves this
+    // daemon-spawn responsibility to the broker and deletes the client path.)
+    let daemon_deadline = Instant::now() + crate::compile_dispatch::resolved_spawn_retry_budget();
+    let _ = crate::broker_discovery_gate::spawn_or_confirm_broker_daemon(daemon_deadline);
+
     let program = crate::daemon::backend_handle_adoption::broker_program();
     let Ok(cwd) = std::env::current_dir() else {
         return SessionHotPathOutcome::Fallthrough;
@@ -100,13 +121,7 @@ pub fn session_hot_path(rustc_argv: &[String]) -> SessionHotPathOutcome {
         .map(|(key, value)| SessionEnvVar { key, value })
         .collect();
 
-    // soldr#2388 Step 4: the broker is the sole daemon-spawner — this path never
-    // spawns. A broker that is up but whose daemon is still cold-starting shows
-    // up as a (non-`broker_unreachable`) pre-output error; retry it across the
-    // full daemon spawn-retry budget so the broker-launched daemon has time to
-    // bind. A broker that is simply ABSENT (`broker_unreachable`) falls through
-    // to legacy immediately rather than waiting on a socket nothing serves.
-    let session_deadline = Instant::now() + crate::compile_dispatch::resolved_spawn_retry_budget();
+    let session_deadline = Instant::now() + session_attempt_budget();
     loop {
         match run_session_compile_with_detailed(&program, rustc_argv, cwd.clone(), env.clone()) {
             Ok(outcome) => {

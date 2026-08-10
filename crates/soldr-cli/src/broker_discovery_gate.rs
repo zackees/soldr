@@ -32,21 +32,38 @@ pub(crate) fn broker_confirmed_daemon_live() -> bool {
     crate::daemon::broker_discovery::soldr_daemon_pid_via_broker(&paths).is_some()
 }
 
-/// soldr#2388 Step 4: the client **never** spawns the daemon — the broker is
-/// the sole daemon-spawner (it materializes the daemon image and launches it at
-/// startup; see `broker_cmd.rs`). The compile hot path only *dials* the
-/// daemon's deterministic socket; on a cold-connect failure the caller's retry
-/// loop simply redials until the broker-launched daemon binds, or the retry
-/// budget expires and the failure is surfaced as an infra-attributed hard error
-/// with a remedy (`daemon_infra_remedy`) — never a client spawn, never a silent
-/// uncached rustc. Returns `(None, None)`: no prepared spawn, no spawn error.
+/// The `compile_dispatch.rs` cold-connect-failure branch, factored out here
+/// so that file (already over the loc_ratchet ceiling) doesn't grow. On a
+/// [`broker_confirmed_daemon_live`] hit, the legacy spawn is skipped
+/// entirely -- it would be redundant with (and could race) the broker's own
+/// singleton bookkeeping -- and the caller's retry loop simply redials the
+/// deterministic socket the broker-confirmed daemon is already bound to.
+/// Otherwise this is exactly the legacy spawn behavior compile_dispatch has
+/// always had.
 pub(crate) fn spawn_or_confirm_broker_daemon(
-    _deadline: std::time::Instant,
+    deadline: std::time::Instant,
 ) -> (
     Option<crate::daemon::lifecycle::PreparedDaemonSpawn>,
     Option<String>,
 ) {
-    (None, None)
+    if broker_confirmed_daemon_live() {
+        return (None, None);
+    }
+    match crate::binaries::ensure_daemon_executable_handoff() {
+        Ok(_) => match crate::daemon::lifecycle::try_spawn_detached_until(Some(deadline)) {
+            Ok(prepared) => (prepared, None),
+            Err(error) => (
+                None,
+                Some(format!("initial daemon spawn failed: {error:?}")),
+            ),
+        },
+        Err(error) => (
+            None,
+            Some(format!(
+                "canonical soldr-daemon handoff materialization failed: {error}"
+            )),
+        ),
+    }
 }
 
 #[cfg(test)]

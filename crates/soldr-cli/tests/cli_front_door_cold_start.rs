@@ -92,7 +92,7 @@ timed_test!(
         let mut first = Command::new(common::soldr_bin());
         common::scrub_outer_soldr_env(&mut first);
         let mut first_child = first
-            .args(["cargo", "--version"])
+            .arg("status")
             .env("SOLDR_CACHE_DIR", &root)
             .env("SOLDR_BROKER_PROGRAM", &program)
             .stdin(Stdio::null())
@@ -120,7 +120,7 @@ timed_test!(
         let mut second = Command::new(common::soldr_bin());
         common::scrub_outer_soldr_env(&mut second);
         let mut second_child = second
-            .args(["cargo", "--version"])
+            .arg("status")
             .env("SOLDR_CACHE_DIR", &root)
             .env("SOLDR_BROKER_PROGRAM", &program)
             .stdin(Stdio::null())

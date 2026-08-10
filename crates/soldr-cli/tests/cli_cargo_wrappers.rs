@@ -1043,12 +1043,7 @@ fn embedded_rustfmt_preserves_toolchain_timeout() {
         .expect("run embedded rustfmt timeout case");
 
     assert!(!output.status.success());
-    // The property under test is that the 1s toolchain watchdog fires (asserted
-    // on stderr below), not raw wall-clock: under the full parallel test binary,
-    // sibling tests each stand up a broker+daemon (soldr#2388/#2410) and the CPU
-    // contention delays process scheduling. This budget absorbs that — the test
-    // runs in ~1.3s in isolation.
-    assert!(started.elapsed() < std::time::Duration::from_secs(15));
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("installer watchdog category=safety-ceiling")
@@ -1290,15 +1285,9 @@ fn cache_enabled_zccache_build_completes_under_20_seconds() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    // soldr#2388: the broker-fronted topology adds a one-time broker+daemon
-    // startup cost to a build (amortized across a real build's many compiles;
-    // here it dominates a single trivial build). Under the full parallel test
-    // binary, many sibling tests each stand up a broker+daemon, so this budget
-    // absorbs that contention — the test still guards against a genuinely wedged
-    // build (it passes in ~7s in isolation).
     assert!(
-        elapsed < Duration::from_secs(45),
-        "cache-enabled zccache build took {elapsed:?}, expected under 45s"
+        elapsed < Duration::from_secs(20),
+        "cache-enabled zccache build took {elapsed:?}, expected under 20s"
     );
 
     let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");

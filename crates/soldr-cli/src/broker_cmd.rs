@@ -75,28 +75,6 @@ fn run_broker_serve(program: &str) -> Result<(), SoldrError> {
 
     const BROKER_PIPE_IDX: u32 = 0;
 
-    // soldr#2388 Step 4: the broker is the sole daemon-spawner, so it — not the
-    // (now-deleted) client-spawn path — must materialize the canonical
-    // `soldr-daemon` multicall alias the servicedef's `binary_path` points at.
-    // Without a materialized sibling, `serve_launching_backends`'
-    // `CommandBackendLauncher` has no binary to launch and every Hello is
-    // refused. Best-effort: a failure here leaves the broker in the same
-    // refuse-everything state install failure already produces (safe fallback).
-    match crate::binaries::ensure_daemon_executable_handoff() {
-        Ok(path) => {
-            println!(
-                "soldr broker: soldr-daemon image materialized at {}",
-                path.display()
-            );
-        }
-        Err(err) => {
-            eprintln!(
-                "soldr broker: could not materialize soldr-daemon image ({err}); \
-                 continuing — daemon launch will be unavailable until it exists."
-            );
-        }
-    }
-
     // Best-effort: without this, every Hello is correctly but uselessly
     // refused as ServiceUnknown until someone remembers to run
     // `soldr daemon install-servicedef` by hand first. A failure here
@@ -161,48 +139,6 @@ fn run_broker_serve(program: &str) -> Result<(), SoldrError> {
                     Err(err) => eprintln!(
                         "soldr broker: could not resolve daemon SESSION endpoint ({err}); \
                          continuing without SESSION relay."
-                    ),
-                }
-            })
-            .ok();
-    }
-
-    // soldr#2388 Step 4: the broker is the sole daemon-spawner. Proactively
-    // bring the daemon up so the SESSION relay's deterministic
-    // `daemon_session_endpoint_path` (and the legacy IPC socket) are reachable
-    // without any client-side spawn. `CommandBackendLauncher` cannot do this —
-    // it allocates its own endpoint and probes it, but soldr-daemon binds its
-    // OWN deterministic endpoint and ignores the broker-allocated pipe, so the
-    // launcher's post-spawn probe always fails and kills the child. Spawning the
-    // daemon directly (the same detach machinery the deleted client-spawn used)
-    // makes the daemon bind the endpoint the relay already targets. On a
-    // background thread + best-effort: a cold daemon init must not delay the
-    // control-socket bind below, and the daemon's own root-ownership singleton
-    // collapses any duplicate. The daemon idle-times out if no compile arrives.
-    {
-        std::thread::Builder::new()
-            .name("soldr-broker-daemon-launch".into())
-            .spawn(|| {
-                // soldr#2388 tombstone: an explicit `soldr daemon stop` suppresses
-                // implicit resurrections for a short window. This proactive launch
-                // is the one implicit-start path, so honor it — otherwise a stop
-                // would immediately trigger the thundering-herd restart the
-                // tombstone exists to prevent. `soldr daemon start` clears it.
-                if let Ok(paths) = crate::core::SoldrPaths::new() {
-                    if crate::daemon::tombstone::is_active(&paths) {
-                        eprintln!(
-                            "soldr broker: daemon tombstone active (recent `soldr daemon \
-                             stop`); skipping proactive launch — run `soldr daemon start` \
-                             to override."
-                        );
-                        return;
-                    }
-                }
-                match crate::daemon::lifecycle::try_spawn_detached() {
-                    Ok(()) => {}
-                    Err(err) => eprintln!(
-                        "soldr broker: could not launch soldr-daemon ({err:?}); \
-                         compiles will fail-fast until a daemon is available."
                     ),
                 }
             })
