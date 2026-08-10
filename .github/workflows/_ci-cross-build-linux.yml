@@ -350,6 +350,17 @@ jobs:
       # Apple SDK but NOT in zig's bundled minimal darwin sysroot.
       # `cargo zigbuild` fails to compile mimalloc; `soldr build`
       # exports SDKROOT + CC_<triple>=clang and finds the header.
+      # soldr#2388 Step 4 (#2415): the broker is the sole daemon-spawner.
+      # Start it before the blessed build so the daemon is bound and ready
+      # when the first compile request arrives.
+      - name: Ensure broker is running
+        shell: bash
+        run: |
+          set -euo pipefail
+          soldr broker serve &
+          broker_pid=$!
+          sleep 2
+          echo "broker started (pid $broker_pid)"
       - name: Cross-build soldr (ci-nextest profile)
         shell: bash
         run: |
