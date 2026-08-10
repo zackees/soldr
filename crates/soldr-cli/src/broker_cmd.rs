@@ -1,7 +1,7 @@
 //! Dispatch for `soldr broker <verb>` (soldr#2361 Phase 2). The front door
-//! spawns `soldr broker serve` as an opt-in exception under
-//! `SOLDR_USE_BROKER=1` (see `broker_spawn.rs`); manual invocation remains
-//! supported and safe.
+//! spawns `soldr broker serve` as its sole allowlisted spawn exception
+//! (unconditional — soldr#2388, see `broker_spawn.rs`); manual invocation
+//! remains supported and safe.
 //!
 //! Split out of `soldr_main.rs` on introduction rather than grown inline
 //! there: that file is already over the repo's 1,500-line ratchet
@@ -29,7 +29,7 @@ pub(crate) enum BrokerSubcommand {
     /// soldr-daemon on a verified registry miss. Blocks until the process
     /// is killed or (future work) an idle/displacement policy exits it.
     ///
-    /// Opt-in via the front door's `SOLDR_USE_BROKER=1` (see
+    /// Spawned unconditionally by the front door (soldr#2388, see
     /// `broker_spawn.rs`); running it manually is also safe -- it enforces
     /// the same per-user-session singleton property
     /// `running-process-broker-v2` does, refusing to start a second

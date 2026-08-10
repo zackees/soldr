@@ -642,8 +642,9 @@ where
     O: Write,
     E: Write,
 {
-    // SESSION hot path (soldr#2388 Step 7b): opt-in via `SOLDR_USE_SESSION`. All
-    // policy lives in `session_transport::session_hot_path`; here we only route
+    // SESSION hot path (soldr#2388): unconditional — the compile hot path rides
+    // the broker relay. All policy lives in `session_transport::session_hot_path`;
+    // here we only route
     // its outcome. A mid-stream failure is a hard error (a legacy retry would
     // double-print); anything else falls through to the unchanged legacy path.
     match crate::session_transport::session_hot_path(rustc_argv) {

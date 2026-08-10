@@ -18,22 +18,14 @@
 //! (soldr#2379), while correct, could never actually route a real build
 //! through a front-door-spawned broker: nothing tried.
 
-/// Consulted only under the existing `SOLDR_USE_BROKER=1` opt-in -- there is
-/// no reason to pay a discovery round-trip against a broker this invocation
-/// was never asked to use.
-///
 /// Returns `true` only when broker discovery confirms a live daemon PID
 /// (`DiscoveryRoute::BrokerNegotiated` followed by a successful local probe
 /// -- see `broker_discovery::soldr_daemon_pid_via_broker`). Every other
-/// outcome (broker disabled, unreachable, refused, or a
-/// negotiated-but-unconfirmed backend) returns `false`, leaving the
-/// existing legacy-spawn-on-failure behavior exactly unchanged -- this is
-/// additive, not a replacement for the direct-connect-first /
-/// legacy-spawn-on-failure model.
+/// outcome (broker unreachable, refused, or a negotiated-but-unconfirmed
+/// backend) returns `false`, leaving the legacy-spawn-on-failure behavior
+/// unchanged -- this is additive, not a replacement for the
+/// direct-connect-first / legacy-spawn-on-failure model.
 pub(crate) fn broker_confirmed_daemon_live() -> bool {
-    if !crate::broker_spawn::broker_enabled() {
-        return false;
-    }
     let Ok(paths) = crate::core::SoldrPaths::new() else {
         return false;
     };
@@ -78,43 +70,20 @@ pub(crate) fn spawn_or_confirm_broker_daemon(
 mod tests {
     use super::*;
 
-    // soldr#2364: `broker_confirmed_daemon_live` must degrade to `false`
-    // (never panic, never hang) whenever the broker is disabled or
-    // unreachable, so the legacy spawn path this dispatch has always used
-    // is unaffected unless a front-door-spawned broker actually confirms a
-    // live daemon. Proving the `true` branch needs a real broker + a real
-    // launched daemon (covered by the Linux Docker harness, not a unit
-    // test); these lock down the two safe-degrade branches a unit test
-    // *can* exercise without spawning anything.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn set_use_broker(value: Option<&str>) {
-        match value {
-            Some(v) => std::env::set_var("SOLDR_USE_BROKER", v),
-            None => std::env::remove_var("SOLDR_USE_BROKER"),
-        }
-    }
-
+    // soldr#2364/#2388: `broker_confirmed_daemon_live` must degrade to `false`
+    // (never panic, never hang) when no broker is reachable, so the legacy
+    // spawn path is unaffected unless a front-door-spawned broker actually
+    // confirms a live daemon. Proving the `true` branch needs a real broker +
+    // a real launched daemon (covered by the real-process integration harness
+    // `session_multiprocess_smoke`); this locks down the safe-degrade branch a
+    // unit test can exercise without spawning anything.
     crate::timed_test!(
-        broker_confirmed_daemon_live_is_false_when_broker_disabled,
+        broker_confirmed_daemon_live_is_false_when_broker_unreachable,
         {
-            let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-            set_use_broker(None);
+            // No broker is running in the test environment, so discovery must
+            // resolve to a fallback route and this must return false, never
+            // panic and never hang.
             assert!(!broker_confirmed_daemon_live());
-        }
-    );
-
-    crate::timed_test!(
-        broker_confirmed_daemon_live_is_false_when_broker_enabled_but_unreachable,
-        {
-            let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-            set_use_broker(Some("1"));
-            // No broker is running in the test environment, so discovery
-            // must resolve to a fallback route and this must return false,
-            // never panic and never hang.
-            let result = broker_confirmed_daemon_live();
-            set_use_broker(None);
-            assert!(!result);
         }
     );
 }
