@@ -53,6 +53,26 @@ pub(crate) fn broker_enabled() -> bool {
     true
 }
 
+/// Preserve Soldr's complete identity namespace across the detached front-door
+/// broker spawn. `UserBaseline` intentionally removes process-local variables;
+/// without this overlay a custom `SOLDR_CACHE_DIR` reaches the wrapper but not
+/// the broker or the daemon it later launches.
+fn broker_spawn_env() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    filter_broker_spawn_env(std::env::vars_os())
+}
+
+fn filter_broker_spawn_env(
+    vars: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    vars.into_iter()
+        .filter(|(name, _)| {
+            name.to_string_lossy()
+                .to_ascii_uppercase()
+                .starts_with("SOLDR_")
+        })
+        .collect()
+}
+
 /// Pure predicate: should this top-level invocation attempt to spawn the
 /// broker as its allowlisted exception? `raw_args` is the full argv
 /// (`raw_args[0]` is the program name), matching `run_main`'s shape.
@@ -108,6 +128,7 @@ pub(crate) fn maybe_spawn_broker_front_door(raw_args: &[String]) {
 
     let mut command = std::process::Command::new(self_exe);
     command.args(["broker", "serve", "--program", &program]);
+    command.envs(broker_spawn_env());
     let stdio = daemon_stdio(&log_file);
     // Best-effort: a failure to spawn just means no broker came up this
     // time, exactly like any other transient daemon-launch failure this
@@ -185,6 +206,35 @@ mod tests {
     // never interleave with each other -- matches the pattern other
     // env-var-gated tests in this crate use.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    crate::timed_test!(broker_spawn_env_preserves_only_soldr_namespace, {
+        use std::ffi::OsString;
+
+        let forwarded = filter_broker_spawn_env(vec![
+            (
+                OsString::from("SOLDR_CACHE_DIR"),
+                OsString::from("/tmp/cache"),
+            ),
+            (
+                OsString::from("soldr_broker_program"),
+                OsString::from("test-broker"),
+            ),
+            (OsString::from("PATH"), OsString::from("/usr/bin")),
+        ]);
+        assert_eq!(
+            forwarded,
+            vec![
+                (
+                    OsString::from("SOLDR_CACHE_DIR"),
+                    OsString::from("/tmp/cache")
+                ),
+                (
+                    OsString::from("soldr_broker_program"),
+                    OsString::from("test-broker")
+                ),
+            ],
+        );
+    });
 
     crate::timed_test!(wrapper_invocation_is_never_eligible, {
         let _guard = ENV_LOCK.lock().unwrap();
