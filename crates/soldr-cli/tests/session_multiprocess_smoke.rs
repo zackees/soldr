@@ -1,7 +1,8 @@
 //! Multi-process SESSION production-path smoke (soldr#2388 Step 8 / #2361
 //! Phase 3): a **real** `soldr broker serve` process plus a **real** soldr
-//! RUSTC_WRAPPER invocation with `SOLDR_USE_BROKER=1` + `SOLDR_USE_SESSION=1`
-//! compile a tiny crate end-to-end through the broker relay to the daemon.
+//! RUSTC_WRAPPER invocation compile a tiny crate end-to-end through the broker
+//! relay to the daemon. The broker + SESSION path is unconditional (soldr#2388),
+//! so this exercises the default compile topology, not an opt-in.
 //!
 //! The in-process anchor (`session_real_compile_e2e`) proves the data path; this
 //! proves the piece it cannot: the production **spawn** path — the broker as a
@@ -135,7 +136,6 @@ timed_test!(
         let mut broker = Command::new(common::soldr_bin())
             .args(["broker", "serve", "--program", &program])
             .env("SOLDR_CACHE_DIR", &root)
-            .env("SOLDR_USE_BROKER", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -175,8 +175,6 @@ timed_test!(
             ])
             .current_dir(&project)
             .env("SOLDR_CACHE_DIR", &root)
-            .env("SOLDR_USE_BROKER", "1")
-            .env("SOLDR_USE_SESSION", "1")
             .env("SOLDR_SESSION_DEBUG", "1")
             .env("SOLDR_BROKER_PROGRAM", &program)
             .output()

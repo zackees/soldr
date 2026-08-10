@@ -1,17 +1,13 @@
 //! soldr#2361 Phase 2: the front door's "spawn the broker" allowlisted
-//! exception. Opt-in via `SOLDR_USE_BROKER=1`, default OFF -- nothing calls
-//! this unless the env var is set, so the default `broker-enhanced` build
-//! behaves exactly as it did before this module existed.
+//! exception. **Unconditional** (soldr#2388): every eligible top-level `soldr`
+//! invocation spawns/confirms the broker, and the compile hot path routes
+//! through it. There is no env-var opt-out — the broker-fronted daemon is the
+//! only supported topology.
 //!
-//! Per the #2364 design comment, the eventual end state deletes every
-//! client-side direct-spawn path in favor of routing through the broker.
-//! This slice does not do that yet -- the broker isn't consumed by anything
-//! downstream, so today this is purely "does the broker come up when asked."
-//! Deleting the working direct-spawn path before the broker path is proven
-//! end-to-end (compile actually routed through a broker-launched daemon,
-//! which needs the Linux Docker harness per this repo's Agent Development
-//! Environment Rule -- not yet built) would trade a working default for a
-//! non-functional one. Opt-in keeps this reversible until that proof exists.
+//! Per the #2364 design, the front door is the sole broker-spawner, and the
+//! broker is the sole daemon-spawner via `serve_launching_backends`. The
+//! broker→daemon→SESSION compile path is proven end-to-end on the real-process
+//! integration harness (`session_multiprocess_smoke`).
 //!
 //! The one invariant that must never regress: a `RUSTC_WRAPPER` re-entry
 //! (`soldr /path/to/rustc ...`, cargo calling back into soldr once per
@@ -40,9 +36,6 @@ use running_process::{DaemonStdio, DaemonStdioSource, EnvironmentPolicy};
 use std::io::Read;
 use std::time::{Duration, Instant};
 
-/// Opt-in gate. Default OFF -- see module doc.
-const USE_BROKER_ENV_VAR: &str = "SOLDR_USE_BROKER";
-
 /// How long the front door waits for a freshly-spawned broker to either log
 /// its "binding at" line or report an already-bound refusal. Bounded so a
 /// wedged or slow-starting broker can never turn an ordinary `soldr`
@@ -51,21 +44,13 @@ const USE_BROKER_ENV_VAR: &str = "SOLDR_USE_BROKER";
 const SPAWN_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-fn truthy_env(key: &str) -> bool {
-    std::env::var(key)
-        .ok()
-        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-}
-
-/// Whether `SOLDR_USE_BROKER=1` is set. Shared with `compile_dispatch.rs`
-/// (soldr#2364) so the opt-in gate around "attempt broker discovery before
-/// legacy-spawning on a cold connect failure" matches the gate around
-/// "the front door spawns the broker at all" -- there is no point trying
-/// discovery against a broker this invocation never spawned and no other
-/// invocation was asked to spawn either.
+/// Whether the broker path is enabled — **always true** (soldr#2388). The
+/// broker-fronted daemon is the only supported topology: there is no env-var
+/// opt-out and no legacy "direct client → daemon without a broker" mode to
+/// select. Kept as a named predicate so the call sites read intentionally
+/// rather than hard-coding `true`.
 pub(crate) fn broker_enabled() -> bool {
-    truthy_env(USE_BROKER_ENV_VAR)
+    true
 }
 
 /// Pure predicate: should this top-level invocation attempt to spawn the
@@ -195,53 +180,35 @@ mod tests {
     use super::*;
     use crate::daemon::backend_handle_adoption::SOLDR_BROKER_PROGRAM_ENV_VAR as BROKER_PROGRAM_ENV_VAR;
 
-    fn set_use_broker(value: Option<&str>) {
-        match value {
-            Some(v) => std::env::set_var(USE_BROKER_ENV_VAR, v),
-            None => std::env::remove_var(USE_BROKER_ENV_VAR),
-        }
-    }
-
     // soldr#2024-adjacent hazard: env::set_var/remove_var races across
     // threads within one test binary. These tests share one lock so they
     // never interleave with each other -- matches the pattern other
     // env-var-gated tests in this crate use.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    crate::timed_test!(wrapper_invocation_is_never_eligible_even_with_env_set, {
+    crate::timed_test!(wrapper_invocation_is_never_eligible, {
         let _guard = ENV_LOCK.lock().unwrap();
-        set_use_broker(Some("1"));
         let raw_args = vec!["soldr".to_string(), "/usr/bin/rustc".to_string()];
         assert!(crate::wrapper::is_wrapper_invocation(&raw_args[1]));
         assert!(!front_door_broker_spawn_eligible(&raw_args));
-        set_use_broker(None);
     });
 
     crate::timed_test!(broker_subcommand_itself_does_not_recursively_spawn, {
         let _guard = ENV_LOCK.lock().unwrap();
-        set_use_broker(Some("1"));
         let raw_args = vec![
             "soldr".to_string(),
             "broker".to_string(),
             "serve".to_string(),
         ];
         assert!(!front_door_broker_spawn_eligible(&raw_args));
-        set_use_broker(None);
     });
 
-    crate::timed_test!(ordinary_invocation_is_ineligible_when_env_unset, {
+    // soldr#2388: the broker is unconditional — an ordinary invocation is
+    // always eligible (there is no opt-out).
+    crate::timed_test!(ordinary_invocation_is_eligible, {
         let _guard = ENV_LOCK.lock().unwrap();
-        set_use_broker(None);
-        let raw_args = vec!["soldr".to_string(), "status".to_string()];
-        assert!(!front_door_broker_spawn_eligible(&raw_args));
-    });
-
-    crate::timed_test!(ordinary_invocation_is_eligible_when_env_set, {
-        let _guard = ENV_LOCK.lock().unwrap();
-        set_use_broker(Some("1"));
         let raw_args = vec!["soldr".to_string(), "status".to_string()];
         assert!(front_door_broker_spawn_eligible(&raw_args));
-        set_use_broker(None);
     });
 
     crate::timed_test!(
@@ -268,9 +235,7 @@ mod tests {
 
     crate::timed_test!(no_positional_arg_is_ineligible, {
         let _guard = ENV_LOCK.lock().unwrap();
-        set_use_broker(Some("1"));
         let raw_args = vec!["soldr".to_string()];
         assert!(!front_door_broker_spawn_eligible(&raw_args));
-        set_use_broker(None);
     });
 }

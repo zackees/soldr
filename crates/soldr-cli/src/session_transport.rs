@@ -41,20 +41,16 @@ use running_process::broker::session_codec::{encode_session_frame, try_decode_se
 /// derive the same path from `broker_program()` via this index.
 const SESSION_PIPE_IDX: u32 = 1;
 
-/// Opt-in env var routing the compile hot path through the SESSION transport.
-const USE_SESSION_ENV_VAR: &str = "SOLDR_USE_SESSION";
-
-/// Whether `SOLDR_USE_SESSION` is truthy — the client should try the SESSION
-/// transport (client → broker relay → daemon) before the legacy direct-connect.
+/// Whether the client should route the compile through the SESSION transport
+/// (client → broker relay → daemon) before the legacy direct-connect.
 ///
-/// Default **off**: the legacy path is unchanged until a caller explicitly opts
-/// in, and even then a SESSION failure falls back to legacy (see
-/// `compile_dispatch`). SESSION rides on the broker, so it is only meaningful
-/// with the broker enabled ([`broker_spawn::broker_enabled`](crate::broker_spawn)).
+/// **Always true** (soldr#2388): SESSION is the compile hot path, with no
+/// env-var opt-out — the broker-fronted daemon is the only supported topology.
+/// A SESSION failure still falls back to legacy pre-output (see
+/// `compile_dispatch` / [`session_hot_path`]), so "always attempt SESSION" is
+/// safe: a broker/daemon that is not up yet degrades to legacy, never wedges.
 pub fn session_enabled() -> bool {
-    std::env::var(USE_SESSION_ENV_VAR)
-        .map(|v| matches!(v.trim(), "1" | "true" | "TRUE" | "yes" | "on"))
-        .unwrap_or(false)
+    crate::broker_spawn::broker_enabled()
 }
 
 /// Retry cadence for the SESSION hot path while the broker/daemon come up.
@@ -75,20 +71,47 @@ pub enum SessionHotPathOutcome {
     Fallthrough,
 }
 
-/// SESSION compile hot path (soldr#2388 Step 7b): when `SOLDR_USE_SESSION` is
-/// enabled, ensure the broker + daemon are up and relay the compile client →
-/// broker → daemon, retrying **pre-output** failures within the spawn-retry
-/// budget (the broker/daemon may still be coming up, exactly as the legacy path
-/// waits for the daemon). A pre-output failure printed nothing, so retrying and
-/// then falling back is safe; a mid-stream failure is a hard error.
+/// Short budget for smoothing a broker-relay-not-yet-ready race once the daemon
+/// is confirmed up. Deliberately far shorter than the daemon spawn-retry budget:
+/// the daemon cold-start wait happens in `spawn_or_confirm_broker_daemon` below;
+/// by the time we dial SESSION the relay is bound or the broker is simply
+/// absent (`broker_unreachable` → immediate fallthrough, no wait).
+/// Overridable for tests via `SOLDR_SESSION_ATTEMPT_BUDGET_MS`.
+fn session_attempt_budget() -> std::time::Duration {
+    let ms = std::env::var("SOLDR_SESSION_ATTEMPT_BUDGET_MS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(5_000)
+        .max(1);
+    std::time::Duration::from_millis(ms)
+}
+
+/// SESSION compile hot path (soldr#2388 Step 3/7b): **default ON**. Ensure the
+/// daemon is up, then relay the compile client → broker → daemon.
+///
+/// Fallback contract (see the module + `compile_dispatch`):
+/// * **broker unreachable** (no broker bound at the SESSION socket) → fall
+///   through to legacy **immediately**, never spinning the spawn budget on a
+///   socket nothing is listening on;
+/// * broker up but relay still settling → retry within the short
+///   [`session_attempt_budget`], then fall through to legacy;
+/// * a **mid-output** failure → hard error (a legacy retry would double-print).
+///
+/// The legacy path this falls through to owns robust daemon acquisition and the
+/// no-silent-uncached-fallback attribution, so a SESSION-unavailable compile is
+/// always served (or hard-failed with a remedy), never silently uncached.
 pub fn session_hot_path(rustc_argv: &[String]) -> SessionHotPathOutcome {
     use std::time::Instant;
 
     if !session_enabled() {
         return SessionHotPathOutcome::Fallthrough;
     }
-    let deadline = Instant::now() + crate::compile_dispatch::resolved_spawn_retry_budget();
-    let _ = crate::broker_discovery_gate::spawn_or_confirm_broker_daemon(deadline);
+    // Ensure the daemon is up before dialing SESSION. Bounded by the daemon
+    // spawn-retry budget for a cold start. (soldr#2388 Step 4 moves this
+    // daemon-spawn responsibility to the broker and deletes the client path.)
+    let daemon_deadline = Instant::now() + crate::compile_dispatch::resolved_spawn_retry_budget();
+    let _ = crate::broker_discovery_gate::spawn_or_confirm_broker_daemon(daemon_deadline);
+
     let program = crate::daemon::backend_handle_adoption::broker_program();
     let Ok(cwd) = std::env::current_dir() else {
         return SessionHotPathOutcome::Fallthrough;
@@ -97,6 +120,8 @@ pub fn session_hot_path(rustc_argv: &[String]) -> SessionHotPathOutcome {
     let env: Vec<SessionEnvVar> = std::env::vars()
         .map(|(key, value)| SessionEnvVar { key, value })
         .collect();
+
+    let session_deadline = Instant::now() + session_attempt_budget();
     loop {
         match run_session_compile_with_detailed(&program, rustc_argv, cwd.clone(), env.clone()) {
             Ok(outcome) => {
@@ -112,8 +137,18 @@ pub fn session_hot_path(rustc_argv: &[String]) -> SessionHotPathOutcome {
                 return SessionHotPathOutcome::Served(outcome.exit_code);
             }
             Err(err) if err.output_started => return SessionHotPathOutcome::HardFail(err.source),
-            Err(err) if Instant::now() >= deadline => {
-                eprintln!("soldr: SESSION compile unavailable ({err}); using legacy path");
+            // No broker bound here — don't burn the budget dialing a dead
+            // socket; the legacy path is the correct home for this compile.
+            Err(err) if err.broker_unreachable => {
+                if std::env::var_os("SOLDR_SESSION_DEBUG").is_some() {
+                    eprintln!("soldr: SESSION broker unreachable ({err}); using legacy path");
+                }
+                return SessionHotPathOutcome::Fallthrough;
+            }
+            Err(err) if Instant::now() >= session_deadline => {
+                if std::env::var_os("SOLDR_SESSION_DEBUG").is_some() {
+                    eprintln!("soldr: SESSION unavailable ({err}); using legacy path");
+                }
                 return SessionHotPathOutcome::Fallthrough;
             }
             Err(_) => std::thread::sleep(SESSION_RETRY_INTERVAL),
@@ -238,6 +273,13 @@ pub fn spawn_session_relay(program: &str, backend_pipe: String) -> io::Result<()
 pub struct SessionError {
     /// Whether compiler stdout/stderr was written locally before the failure.
     pub output_started: bool,
+    /// Whether the broker's SESSION socket was unreachable (dial refused /
+    /// absent) — i.e. there is no broker to talk to, as opposed to a broker
+    /// that answered but whose daemon relay is not ready yet. The hot path
+    /// treats this as "fall through to legacy immediately" rather than retrying
+    /// (soldr#2388 Step 3): retrying a socket nothing is bound to just burns the
+    /// spawn budget before the inevitable legacy fallback.
+    pub broker_unreachable: bool,
     /// The underlying transport / protocol error.
     pub source: io::Error,
 }
@@ -246,6 +288,16 @@ impl SessionError {
     pub(crate) fn pre_output(source: io::Error) -> Self {
         Self {
             output_started: false,
+            broker_unreachable: false,
+            source,
+        }
+    }
+
+    /// The broker's SESSION socket could not be dialed — no broker is serving.
+    pub(crate) fn broker_unreachable(source: io::Error) -> Self {
+        Self {
+            output_started: false,
+            broker_unreachable: true,
             source,
         }
     }
@@ -329,14 +381,16 @@ async fn run_session_compile_async(
 ) -> Result<SessionCompileOutcome, SessionError> {
     // Setup — connect / Hello / negotiate / SessionStart send. Every failure
     // here is pre-output (nothing printed yet), so it is safe to fall back.
-    let session_socket = session_socket_path(program).map_err(SessionError::pre_output)?;
+    let session_socket = session_socket_path(program).map_err(SessionError::broker_unreachable)?;
     if std::env::var_os("SOLDR_SESSION_DEBUG").is_some() {
         eprintln!("soldr: SESSION dialing program={program} socket={session_socket}");
     }
-    let name = local_session_name(&session_socket).map_err(SessionError::pre_output)?;
+    let name = local_session_name(&session_socket).map_err(SessionError::broker_unreachable)?;
+    // A failed dial means no broker is bound at this socket — fall through to
+    // legacy immediately rather than retrying (soldr#2388 Step 3).
     let mut stream = Stream::connect(name)
         .await
-        .map_err(SessionError::pre_output)?;
+        .map_err(SessionError::broker_unreachable)?;
 
     // v2 Hello — identical to legacy. The relay's responder ignores the payload,
     // so an empty Hello suffices to negotiate.
@@ -419,6 +473,7 @@ async fn pump_session_output(stream: &mut Stream) -> Result<SessionCompileOutcom
     let mut output_started = false;
     let tag = |output_started: bool, e: io::Error| SessionError {
         output_started,
+        broker_unreachable: false,
         source: e,
     };
     loop {
@@ -488,21 +543,17 @@ mod tests {
         );
     });
 
-    crate::timed_test!(session_enabled_follows_env, {
+    crate::timed_test!(session_is_unconditionally_enabled, {
         let _lock = crate::TEST_PROCESS_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        {
-            let _g = crate::EnvVarGuard::remove(USE_SESSION_ENV_VAR);
-            assert!(!session_enabled(), "default (unset) is off");
-        }
-        {
-            let _g = crate::EnvVarGuard::set(USE_SESSION_ENV_VAR, "1");
-            assert!(session_enabled(), "SOLDR_USE_SESSION=1 enables");
-        }
-        {
-            let _g = crate::EnvVarGuard::set(USE_SESSION_ENV_VAR, "0");
-            assert!(!session_enabled(), "SOLDR_USE_SESSION=0 stays off");
-        }
+        // soldr#2388: SESSION is the only supported hot path — no env-var
+        // opt-out. Enabled regardless of any (now-ignored) env state.
+        let _s = crate::EnvVarGuard::set("SOLDR_USE_SESSION", "0");
+        let _b = crate::EnvVarGuard::set("SOLDR_USE_BROKER", "0");
+        assert!(
+            session_enabled(),
+            "SESSION is unconditional; there is no opt-out env var"
+        );
     });
 }
