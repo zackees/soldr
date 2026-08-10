@@ -70,7 +70,6 @@ pub(crate) fn run_broker_command(command: BrokerSubcommand) -> Result<(), SoldrE
 /// separate follow-up work) composite session-token enforcement for free.
 fn run_broker_serve(program: &str) -> Result<(), SoldrError> {
     use running_process::broker::lifecycle::names_v2::v2_program_pipe;
-    use running_process::broker::lifecycle::sid::user_sid_hash;
     use running_process::broker::server::singleton_bind::resolve_socket_path;
     use running_process::broker::server::{serve_launching_backends, BrokerLaunchServeConfig};
 
@@ -120,8 +119,9 @@ fn run_broker_serve(program: &str) -> Result<(), SoldrError> {
         }
     }
 
-    let sid = user_sid_hash()
-        .map_err(|e| SoldrError::Other(format!("soldr broker: user_sid_hash failed: {e}")))?;
+    // soldr#2388: container-safe identity — the broker is mandatory for every
+    // compile, so it must not hard-fail where the OS ships no /etc/machine-id.
+    let sid = crate::broker_identity::resolve_user_sid();
     let pipe_name = v2_program_pipe(program, &sid, BROKER_PIPE_IDX)
         .map_err(|e| SoldrError::Other(format!("soldr broker: v2_program_pipe failed: {e}")))?;
     let socket_path = resolve_socket_path(&pipe_name)
