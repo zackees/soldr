@@ -71,9 +71,13 @@ pub(crate) fn run_broker_command(command: BrokerSubcommand) -> Result<(), SoldrE
 fn run_broker_serve(program: &str) -> Result<(), SoldrError> {
     use running_process::broker::lifecycle::names_v2::v2_program_pipe;
     use running_process::broker::server::singleton_bind::resolve_socket_path;
-    use running_process::broker::server::{serve_launching_backends, BrokerLaunchServeConfig};
+    use running_process::broker::server::{
+        serve_launching_backends_with_launcher, BrokerLaunchServeConfig,
+    };
 
     const BROKER_PIPE_IDX: u32 = 0;
+
+    let paths = crate::core::SoldrPaths::new()?;
 
     // Best-effort: without this, every Hello is correctly but uselessly
     // refused as ServiceUnknown until someone remembers to run
@@ -120,15 +124,13 @@ fn run_broker_serve(program: &str) -> Result<(), SoldrError> {
     // resolve/spawn the relay is non-fatal — the control socket still serves.
     {
         let program = program.to_string();
+        let paths = paths.clone();
         std::thread::Builder::new()
             .name("soldr-broker-session-setup".into())
             .spawn(move || {
-                match crate::core::SoldrPaths::new()
+                match crate::daemon::session_endpoint::daemon_session_endpoint_path(&paths)
                     .map_err(|e| format!("{e}"))
-                    .and_then(|paths| {
-                        crate::daemon::session_endpoint::daemon_session_endpoint_path(&paths)
-                            .map_err(|e| format!("{e}"))
-                    }) {
+                {
                     Ok(backend_pipe) => {
                         if let Err(err) =
                             crate::session_transport::spawn_session_relay(&program, backend_pipe)
@@ -146,7 +148,11 @@ fn run_broker_serve(program: &str) -> Result<(), SoldrError> {
     }
 
     let config = BrokerLaunchServeConfig::unbounded(socket_path.clone());
-    match serve_launching_backends(config) {
+    let launcher = crate::broker_launcher::SoldrBackendLauncher::new(
+        crate::broker_spawn::broker_spawn_env(),
+        paths,
+    );
+    match serve_launching_backends_with_launcher(config, &launcher) {
         Ok(()) => Ok(()),
         Err(err) => {
             if broker_serve_error_is_already_bound(&err) {

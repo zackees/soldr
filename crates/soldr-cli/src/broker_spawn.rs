@@ -33,14 +33,11 @@
 
 use crate::daemon::backend_handle_adoption::broker_program;
 use running_process::{DaemonStdio, DaemonStdioSource, EnvironmentPolicy};
-use std::io::Read;
 use std::time::{Duration, Instant};
 
-/// How long the front door waits for a freshly-spawned broker to either log
-/// its "binding at" line or report an already-bound refusal. Bounded so a
-/// wedged or slow-starting broker can never turn an ordinary `soldr`
-/// invocation into a hang -- this whole path is best-effort, and the user's
-/// actual command proceeds either way once this returns.
+/// How long the front door actively waits for a freshly-spawned broker's
+/// control listener. Bounded so a wedged or slow-starting broker can never
+/// turn an ordinary `soldr` invocation into a hang.
 const SPAWN_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
@@ -57,7 +54,7 @@ pub(crate) fn broker_enabled() -> bool {
 /// broker spawn. `UserBaseline` intentionally removes process-local variables;
 /// without this overlay a custom `SOLDR_CACHE_DIR` reaches the wrapper but not
 /// the broker or the daemon it later launches.
-fn broker_spawn_env() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+pub(crate) fn broker_spawn_env() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
     filter_broker_spawn_env(std::env::vars_os())
 }
 
@@ -102,48 +99,40 @@ pub(crate) fn front_door_broker_spawn_eligible(raw_args: &[String]) -> bool {
     true
 }
 
-/// Best-effort: spawn a detached `soldr broker serve` and wait up to
-/// [`SPAWN_WAIT_TIMEOUT`] for its log to report either a successful bind or
-/// an already-bound refusal (the latter also means "a broker is available",
-/// since the goal is that outcome, not that this particular invocation's
-/// spawn won the race). Never fails the caller's command on any outcome --
-/// this is a dormant/opt-in prototype with nothing downstream consuming the
-/// broker yet, so the only thing at stake here is proving the plumbing
-/// works, not the user's build.
+/// Best-effort: confirm an existing broker or spawn one detached, then wait
+/// for an active connection to its control socket. Log text is deliberately
+/// not synchronization: it can be stale in the append-only spawn log and is
+/// printed before the control socket is usable. A broker Hello is deliberately
+/// not used either: on a registry miss, Hello is launch-capable and a mere
+/// readiness check must never resurrect the daemon.
+///
+/// Never fails the caller's command on any outcome; compilation retains its
+/// own bounded acquisition/fallback path.
 pub(crate) fn maybe_spawn_broker_front_door(raw_args: &[String]) {
     if !front_door_broker_spawn_eligible(raw_args) {
         return;
     }
-    let Ok(paths) = crate::core::SoldrPaths::new() else {
-        return;
-    };
-    let log_path = paths.root.join("broker-spawn.log");
-    let Some(log_file) = open_append(&log_path) else {
-        return;
-    };
-    let Ok(self_exe) = std::env::current_exe() else {
-        return;
-    };
     let program = broker_program();
-
-    let mut command = std::process::Command::new(self_exe);
-    command.args(["broker", "serve", "--program", &program]);
-    command.envs(broker_spawn_env());
-    let stdio = daemon_stdio(&log_file);
-    // Best-effort: a failure to spawn just means no broker came up this
-    // time, exactly like any other transient daemon-launch failure this
-    // opt-in prototype doesn't yet act on.
-    if running_process::spawn_daemon_with_stdio_and_env_policy(
-        &mut command,
-        stdio,
-        EnvironmentPolicy::UserBaseline,
-    )
-    .is_err()
-    {
-        return;
-    }
-
-    wait_for_outcome(&log_path, Instant::now() + SPAWN_WAIT_TIMEOUT);
+    ensure_broker_ready_until(
+        Instant::now() + SPAWN_WAIT_TIMEOUT,
+        || broker_control_is_ready(&program),
+        || {
+            let paths = crate::core::SoldrPaths::new().ok()?;
+            let log_file = open_append(&paths.root.join("broker-spawn.log"))?;
+            let self_exe = std::env::current_exe().ok()?;
+            let mut command = std::process::Command::new(self_exe);
+            command.args(["broker", "serve", "--program", &program]);
+            command.envs(broker_spawn_env());
+            let stdio = daemon_stdio(&log_file);
+            running_process::spawn_daemon_with_stdio_and_env_policy(
+                &mut command,
+                stdio,
+                EnvironmentPolicy::UserBaseline,
+            )
+            .ok()?;
+            Some(())
+        },
+    );
 }
 
 fn open_append(path: &std::path::Path) -> Option<std::fs::File> {
@@ -176,23 +165,52 @@ fn daemon_stdio(log: &std::fs::File) -> DaemonStdio<'_> {
     }
 }
 
-/// Poll `log_path`'s tail for either broker outcome line until `deadline`.
-/// Best-effort: giving up silently just leaves the broker to keep starting
-/// in the background, unobserved by this invocation.
-fn wait_for_outcome(log_path: &std::path::Path, deadline: Instant) {
+/// An accepted local-socket connection is active proof that the broker control
+/// listener owns the endpoint. Drop it without sending a Hello: no service is
+/// selected and the broker therefore has no request that could launch a
+/// backend. This also avoids the admin client's much longer request timeout in
+/// a short startup polling loop.
+fn broker_control_is_ready(program: &str) -> bool {
+    use running_process::broker::client::connect_local_socket;
+    use running_process::broker::lifecycle::names_v2::v2_program_pipe;
+    use running_process::broker::server::singleton_bind::resolve_socket_path;
+
+    let sid = crate::broker_identity::resolve_user_sid();
+    let Ok(pipe_name) = v2_program_pipe(program, &sid, 0) else {
+        return false;
+    };
+    let Ok(endpoint) = resolve_socket_path(&pipe_name) else {
+        return false;
+    };
+    if connect_local_socket(&endpoint).is_err() {
+        return false;
+    }
+    let Ok(session_endpoint) = crate::session_transport::session_socket_path(program) else {
+        return false;
+    };
+    connect_local_socket(&session_endpoint).is_ok()
+}
+
+/// Probe before spawning, spawn at most once, then poll to the deadline. The
+/// injected closures keep the anti-resurrection policy unit-testable without
+/// binding sockets or creating processes.
+fn ensure_broker_ready_until(
+    deadline: Instant,
+    mut ready: impl FnMut() -> bool,
+    spawn: impl FnOnce() -> Option<()>,
+) {
+    if ready() || spawn().is_none() {
+        return;
+    }
     loop {
-        if let Ok(mut file) = std::fs::File::open(log_path) {
-            let mut contents = String::new();
-            if file.read_to_string(&mut contents).is_ok()
-                && (contents.contains("binding at") || contents.contains("already bound"))
-            {
-                return;
-            }
+        if ready() {
+            return;
         }
         if Instant::now() >= deadline {
             return;
         }
-        std::thread::sleep(POLL_INTERVAL);
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        std::thread::sleep(POLL_INTERVAL.min(remaining));
     }
 }
 
@@ -287,5 +305,41 @@ mod tests {
         let _guard = ENV_LOCK.lock().unwrap();
         let raw_args = vec!["soldr".to_string()];
         assert!(!front_door_broker_spawn_eligible(&raw_args));
+    });
+
+    crate::timed_test!(ready_broker_is_not_spawned_again, {
+        let mut probes = 0;
+        let mut spawns = 0;
+        ensure_broker_ready_until(
+            Instant::now() + Duration::from_secs(1),
+            || {
+                probes += 1;
+                true
+            },
+            || {
+                spawns += 1;
+                Some(())
+            },
+        );
+        assert_eq!(probes, 1);
+        assert_eq!(spawns, 0, "readiness must prevent a duplicate spawn");
+    });
+
+    crate::timed_test!(startup_spawns_once_then_requires_a_live_probe, {
+        let mut probes = 0;
+        let mut spawns = 0;
+        ensure_broker_ready_until(
+            Instant::now() + Duration::from_secs(1),
+            || {
+                probes += 1;
+                probes == 3
+            },
+            || {
+                spawns += 1;
+                Some(())
+            },
+        );
+        assert_eq!(probes, 3, "the wait must return only after a live probe");
+        assert_eq!(spawns, 1, "startup may create at most one broker");
     });
 }
