@@ -175,6 +175,18 @@ Anything not registered falls through the generic External subcommand, which res
 
 This rule was set during the #1105 fix: the `rust-lld` LIB-injection feature was developed and tested entirely under `examples/docker-cross-win/` before the Windows-only end-to-end gate was added.
 
+## Working Location Rule
+
+**Do all soldr work directly in this repository checkout. No sibling clones, no
+git worktrees — not even under this repo.** Owner directive (2026-08-10):
+create a feature branch here and work on it in place; do not `git clone` a
+sibling copy (`../soldr-wt-*`, `../soldr2`, …) and do not `git worktree add` a
+linked tree. Sibling/worktree checkouts break the Docker Linux runner
+(`ci/perf_local.py` mounts *this* checkout root as `/repo`, so a tree outside it
+is invisible) and fragment the warm cargo/soldr volumes. Switch branches in
+place with `git checkout -b`; if another agent needs isolation, coordinate on a
+branch, not a second working tree.
+
 ## Agent Completion Rules
 
 - **Finish on a branch**: When an agent completes a task, it must put the work on a dedicated branch rather than leaving it only in the local worktree.

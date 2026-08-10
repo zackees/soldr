@@ -7,6 +7,7 @@
 
 use running_process::broker::backend_handle::BackendHandle;
 use running_process::broker::protocol::Endpoint;
+use running_process::broker::server::session_token::SessionTokenAuthority;
 use running_process::broker::server::{
     BackendEndpointAllocator, BackendLaunchError, BackendLaunchRequest, BackendLauncher,
     BACKEND_ENV_ENDPOINT_NAMESPACE, BACKEND_ENV_ENDPOINT_PATH, BACKEND_ENV_INSTANCE,
@@ -16,7 +17,7 @@ use running_process::broker::server::{
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const BACKEND_ENV_SESSION_TOKEN: &str = "RUNNING_PROCESS_BROKER_V1_SESSION_TOKEN";
@@ -25,6 +26,12 @@ pub(crate) struct SoldrBackendLauncher {
     user_sid_hash: String,
     allocators: Mutex<HashMap<String, BackendEndpointAllocator>>,
     placed_images: Mutex<HashMap<String, PlacedImage>>,
+    /// Shared broker/daemon generation-token authority (soldr#2442 slice 1).
+    /// The broker mints one at startup (broker half) and shares this handle
+    /// with both this launcher (which mints each route's daemon half at
+    /// launch) and the SESSION relay responder (which validates presented
+    /// composite tokens). Memory-only, broker-process-lived; never persisted.
+    session_tokens: Arc<Mutex<SessionTokenAuthority>>,
 }
 
 struct PlacedImage {
@@ -40,12 +47,39 @@ struct FileFingerprint {
 }
 
 impl SoldrBackendLauncher {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(session_tokens: Arc<Mutex<SessionTokenAuthority>>) -> Self {
         Self {
             user_sid_hash: crate::broker_identity::resolve_user_sid(),
             allocators: Mutex::new(HashMap::new()),
             placed_images: Mutex::new(HashMap::new()),
+            session_tokens,
         }
+    }
+
+    /// Mint (or re-mint) this route's daemon token half and return the
+    /// composite `broker_half ‖ daemon_half` to inject into the daemon's
+    /// launch environment (soldr#2442 slice 1).
+    ///
+    /// Re-minting on every launch is deliberate: a replaced daemon gets a
+    /// fresh half, so any composite a client still holds against the prior
+    /// generation of this route stops validating
+    /// (`SessionTokenRejection::DaemonHalfMismatch`) — the per-daemon
+    /// invalidation the feature exists to provide. Best-effort: a randomness
+    /// failure returns `None` and the daemon simply launches without a token
+    /// (the SESSION relay fails open on an absent token), never blocking a
+    /// build.
+    fn register_route_token(&self, service_name: &str) -> Option<Vec<u8>> {
+        let mut authority = self
+            .session_tokens
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Err(err) = authority.register_daemon(service_name.to_string()) {
+            eprintln!(
+                "soldr broker: could not mint session token for route {service_name}: {err}"
+            );
+            return None;
+        }
+        authority.composed_token_for(service_name)
     }
 
     fn allocate_endpoint(
@@ -106,6 +140,15 @@ impl BackendLauncher for SoldrBackendLauncher {
         command.envs(daemon_env);
         command.env(crate::core::SOLDR_CACHE_DIR_ENV_VAR, &paths.root);
         configure_backend_command(&mut command, request, &endpoint);
+        // soldr#2442 slice 1: mint this route's daemon token half and inject
+        // the composite broker‖daemon token into the daemon's launch env,
+        // registering the generation in the shared authority the SESSION relay
+        // validates against. Overrides any `request.session_token` (unset on
+        // soldr's path, where the router carries no authority). Best-effort:
+        // absent token => daemon launches untokened and the relay fails open.
+        if let Some(composite) = self.register_route_token(&request.key.service_name) {
+            command.env(BACKEND_ENV_SESSION_TOKEN, hex_encode(&composite));
+        }
         let log = crate::broker_spawn::open_append(&paths.root.join("daemon-spawn.log"))
             .ok_or_else(|| {
                 BackendLaunchError::Launcher(format!(
@@ -401,6 +444,12 @@ mod tests {
         (definition, key, TraceContext::default())
     }
 
+    fn test_authority() -> Arc<Mutex<SessionTokenAuthority>> {
+        Arc::new(Mutex::new(
+            SessionTokenAuthority::new().expect("mint broker token"),
+        ))
+    }
+
     crate::timed_test!(active_tombstone_refuses_before_image_or_spawn_work, {
         let temp = tempfile::tempdir().expect("tempdir");
         let root = temp.path().join("root");
@@ -415,11 +464,72 @@ mod tests {
             session_token: None,
         };
 
-        let err = match SoldrBackendLauncher::new().launch(&request) {
+        let err = match SoldrBackendLauncher::new(test_authority()).launch(&request) {
             Ok(_) => panic!("tombstone must suppress launch"),
             Err(err) => err,
         };
         assert!(err.to_string().contains("tombstone active"), "{err}");
+    });
+
+    // soldr#2442 slice 1: the broker mints a per-route daemon token half at
+    // each launch and shares the authority so its own generation identity is
+    // observable. soldr's dumb-terminal client does not present these tokens
+    // (see the #2442 design ruling), but the mint/invalidation semantics are
+    // the foundation slice 2's `broker status` and slice 3's per-generation
+    // observability build on, so lock them down here.
+    crate::timed_test!(route_relaunch_mints_fresh_half_and_invalidates_prior_generation, {
+        let authority = test_authority();
+        let launcher = SoldrBackendLauncher::new(authority.clone());
+
+        let first = launcher
+            .register_route_token("soldr-daemon")
+            .expect("first launch mints a composite");
+        authority
+            .lock()
+            .unwrap()
+            .validate(&first, "soldr-daemon")
+            .expect("the freshly minted composite validates");
+
+        // A relaunch/replacement of the same route re-mints the daemon half...
+        let second = launcher
+            .register_route_token("soldr-daemon")
+            .expect("relaunch mints a composite");
+        assert_ne!(first, second, "a relaunch must mint a fresh daemon half");
+
+        // ...so a client still holding the prior generation's composite is
+        // invalidated for exactly that route (DaemonHalfMismatch).
+        assert!(
+            authority.lock().unwrap().validate(&first, "soldr-daemon").is_err(),
+            "the prior generation's composite must stop validating"
+        );
+        authority
+            .lock()
+            .unwrap()
+            .validate(&second, "soldr-daemon")
+            .expect("the current generation's composite validates");
+    });
+
+    crate::timed_test!(broker_rotation_invalidates_every_route_at_once, {
+        let authority = test_authority();
+        let launcher = SoldrBackendLauncher::new(authority.clone());
+
+        let route_a = launcher.register_route_token("route-a").expect("route-a composite");
+        let route_b = launcher.register_route_token("route-b").expect("route-b composite");
+        authority.lock().unwrap().validate(&route_a, "route-a").expect("a valid");
+        authority.lock().unwrap().validate(&route_b, "route-b").expect("b valid");
+
+        // Rotating the broker half is the broker-wide invalidation path: every
+        // route's composite stops validating at once, independent of the
+        // per-daemon halves.
+        authority.lock().unwrap().rotate_broker_token().expect("rotate broker half");
+        assert!(
+            authority.lock().unwrap().validate(&route_a, "route-a").is_err(),
+            "broker rotation invalidates route-a"
+        );
+        assert!(
+            authority.lock().unwrap().validate(&route_b, "route-b").is_err(),
+            "broker rotation invalidates route-b"
+        );
     });
 
     crate::timed_test!(changed_registered_image_is_rejected_before_spawn, {
@@ -435,7 +545,7 @@ mod tests {
             session_token: None,
         };
 
-        let err = match SoldrBackendLauncher::new().launch(&request) {
+        let err = match SoldrBackendLauncher::new(test_authority()).launch(&request) {
             Ok(_) => panic!("stale image registration must fail"),
             Err(err) => err,
         };
