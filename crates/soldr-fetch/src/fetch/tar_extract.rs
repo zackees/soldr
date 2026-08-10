@@ -41,7 +41,50 @@ pub fn unpack_tar<R: Read>(archive: &mut tar::Archive<R>, dest: &Path) -> Result
     }
     #[cfg(windows)]
     {
-        windows_impl::unpack_deferring_symlinks(archive, dest)
+        windows_impl::unpack_deferring_symlinks(archive, dest, |_| Ok(false))
+    }
+}
+
+/// Unpack `archive` into `dest`, skipping entries selected by `filter`.
+///
+/// This is the filtered counterpart to [`unpack_tar`]. It exists for archive
+/// formats, such as Apple SDK bundles, that contain known host-invalid optional
+/// entries but still need the shared Windows symlink materialization path.
+/// `filter` receives each archive-relative path and returns whether to skip it.
+pub fn unpack_tar_filtered<R: Read, F>(
+    archive: &mut tar::Archive<R>,
+    dest: &Path,
+    filter: F,
+) -> Result<(), SoldrError>
+where
+    F: FnMut(&Path) -> Result<bool, SoldrError>,
+{
+    #[cfg(not(windows))]
+    {
+        let mut filter = filter;
+        for entry in archive
+            .entries()
+            .map_err(|e| SoldrError::Archive(format!("tar unpack: {e}")))?
+        {
+            let mut entry = entry.map_err(|e| SoldrError::Archive(format!("tar unpack: {e}")))?;
+            let path = entry
+                .path()
+                .map_err(|e| SoldrError::Archive(format!("tar unpack: {e}")))?
+                .into_owned();
+            if filter(&path)? {
+                std::io::copy(&mut entry, &mut std::io::sink())
+                    .map_err(|e| SoldrError::Archive(format!("tar unpack: {e}")))?;
+                continue;
+            }
+            entry
+                .unpack_in(dest)
+                .map_err(|e| SoldrError::Archive(format!("tar unpack: {e}")))?;
+        }
+        Ok(())
+    }
+    #[cfg(windows)]
+    {
+        windows_impl::unpack_deferring_symlinks(archive, dest, filter)
     }
 }
 
@@ -106,15 +149,23 @@ mod windows_impl {
         target: PathBuf,
     }
 
-    pub(super) fn unpack_deferring_symlinks<R: Read>(
+    pub(super) fn unpack_deferring_symlinks<R: Read, F>(
         archive: &mut tar::Archive<R>,
         dest: &Path,
-    ) -> Result<(), SoldrError> {
+        mut filter: F,
+    ) -> Result<(), SoldrError>
+    where
+        F: FnMut(&Path) -> Result<bool, SoldrError>,
+    {
         let mut deferred: Vec<DeferredLink> = Vec::new();
         for entry in archive.entries().map_err(archive_err)? {
             let mut entry = entry.map_err(archive_err)?;
+            let rel = entry.path().map_err(archive_err)?.into_owned();
+            if filter(&rel)? {
+                std::io::copy(&mut entry, &mut std::io::sink()).map_err(archive_err)?;
+                continue;
+            }
             if entry.header().entry_type().is_symlink() {
-                let rel = entry.path().map_err(archive_err)?.into_owned();
                 let target = entry
                     .link_name()
                     .map_err(archive_err)?
@@ -180,13 +231,27 @@ mod windows_impl {
             let mut dangling = 0usize;
             for link in &unresolved {
                 let link_path = dest.join(&link.rel);
-                if std::os::windows::fs::symlink_file(&link.target, &link_path).is_ok() {
+                let Some(_) = resolve_link_target(dest, &link_path, &link.target) else {
+                    // Never reproduce an absolute or escaping target in the
+                    // extracted Windows tree. In particular, this prevents a
+                    // later consumer from following an archive-controlled
+                    // reparse point outside the SDK root.
+                    eprintln!(
+                        "soldr: warning: skipped escaping tar symlink {} -> {}",
+                        link.rel.display(),
+                        link.target.display(),
+                    );
+                    continue;
+                };
+                let target = windows_link_target(&link.target);
+                if std::os::windows::fs::symlink_file(&target, &link_path).is_ok() {
                     dangling += 1;
                 } else {
                     eprintln!(
-                        "soldr: warning: skipped unresolvable tar symlink {} -> {}",
+                        "soldr: warning: skipped unresolvable tar symlink {} -> {} (Windows target {})",
                         link.rel.display(),
-                        link.target.display()
+                        link.target.display(),
+                        target.display(),
                     );
                 }
             }
@@ -221,21 +286,35 @@ mod windows_impl {
                 std::fs::remove_file(&link_path)
             };
         }
-        // Create the link with its stored (usually relative) target so
-        // the extracted tree stays relocatable.
+        // Keep archive links relative so the tree is relocatable, but Windows
+        // needs backslash separators in the reparse-point target. A literal
+        // POSIX `pthread/pthread.h` target can be created on NTFS yet be
+        // unreadable (`ERROR_INVALID_PARAMETER`).
+        let windows_target = windows_link_target(&link.target);
         let created = if is_dir {
-            std::os::windows::fs::symlink_dir(&link.target, &link_path)
+            std::os::windows::fs::symlink_dir(&windows_target, &link_path)
         } else {
-            std::os::windows::fs::symlink_file(&link.target, &link_path)
+            std::os::windows::fs::symlink_file(&windows_target, &link_path)
         };
-        match created {
+        match created.and_then(|()| verify_materialization(&link_path, is_dir)) {
             Ok(()) => {
                 *linked += 1;
                 Ok(())
             }
-            Err(_) => {
-                // No symlink privilege: materialize as a copy of the
-                // resolved target. Always traversable; costs disk.
+            Err(err) => {
+                // A successful API call is insufficient: Windows can leave a
+                // broken reparse point behind. Remove it before falling back
+                // to a safe copy of the lexically-contained target.
+                remove_materialization(&link_path, is_dir);
+                eprintln!(
+                    "soldr: tar symlink fallback member={} stored_target={} resolved_target={} \
+                     windows_target={} kind={}; materializing a copy after: {err}",
+                    link.rel.display(),
+                    link.target.display(),
+                    target_path.display(),
+                    windows_target.display(),
+                    if is_dir { "directory" } else { "file" },
+                );
                 if is_dir {
                     copy_dir_recursive(target_path, &link_path)?;
                 } else {
@@ -245,6 +324,39 @@ mod windows_impl {
                 Ok(())
             }
         }
+    }
+
+    fn windows_link_target(target: &Path) -> PathBuf {
+        PathBuf::from(target.to_string_lossy().replace('/', "\\"))
+    }
+
+    fn verify_materialization(link_path: &Path, is_dir: bool) -> std::io::Result<()> {
+        let metadata = std::fs::metadata(link_path)?;
+        if is_dir {
+            if !metadata.is_dir() {
+                return Err(std::io::Error::other(
+                    "directory link resolved to a non-directory",
+                ));
+            }
+            std::fs::read_dir(link_path)?;
+        } else {
+            if metadata.is_dir() {
+                return Err(std::io::Error::other("file link resolved to a directory"));
+            }
+            std::fs::File::open(link_path)?;
+        }
+        Ok(())
+    }
+
+    fn remove_materialization(path: &Path, is_dir: bool) {
+        // `symlink_metadata` reports a directory symlink as a symlink rather
+        // than a directory. Use the target kind determined before creation so
+        // Windows receives the matching remove operation.
+        let _ = if is_dir {
+            std::fs::remove_dir(path).or_else(|_| std::fs::remove_file(path))
+        } else {
+            std::fs::remove_file(path)
+        };
     }
 
     fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), SoldrError> {
@@ -319,6 +431,88 @@ mod tests {
         builder.into_inner().unwrap()
     }
 
+    /// Minimal Apple SDK shape with the two POSIX links that fail when their
+    /// archive `/` separators reach a Windows reparse point unchanged.
+    fn synthetic_apple_sdk_tar() -> Vec<u8> {
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut dir = tar::Header::new_gnu();
+        dir.set_entry_type(tar::EntryType::Directory);
+        dir.set_size(0);
+        dir.set_mode(0o755);
+        dir.set_cksum();
+        for path in [
+            "package/",
+            "package/sdk/",
+            "package/sdk/usr/",
+            "package/sdk/usr/include/",
+            "package/sdk/System/",
+            "package/sdk/System/Library/",
+            "package/sdk/System/Library/Frameworks/",
+            "package/sdk/System/Library/Frameworks/CoreFoundation.framework/",
+            "package/sdk/System/Library/Frameworks/CoreFoundation.framework/Versions/",
+        ] {
+            builder
+                .append_data(&mut dir.clone(), path, std::io::empty())
+                .unwrap();
+        }
+
+        let mut link = tar::Header::new_gnu();
+        link.set_entry_type(tar::EntryType::Symlink);
+        link.set_size(0);
+        link.set_mode(0o777);
+        builder
+            .append_link(
+                &mut link.clone(),
+                "package/sdk/usr/include/pthread.h",
+                "pthread/pthread.h",
+            )
+            .unwrap();
+        builder
+            .append_link(
+                &mut link.clone(),
+                "package/sdk/System/Library/Frameworks/CoreFoundation.framework/Headers",
+                "Versions/Current/Headers",
+            )
+            .unwrap();
+        builder
+            .append_link(
+                &mut link.clone(),
+                "package/sdk/System/Library/Frameworks/CoreFoundation.framework/Versions/Current",
+                "A",
+            )
+            .unwrap();
+
+        for path in [
+            "package/sdk/usr/include/pthread/",
+            "package/sdk/System/Library/Frameworks/CoreFoundation.framework/Versions/A/",
+            "package/sdk/System/Library/Frameworks/CoreFoundation.framework/Versions/A/Headers/",
+        ] {
+            builder
+                .append_data(&mut dir.clone(), path, std::io::empty())
+                .unwrap();
+        }
+        let mut file = tar::Header::new_gnu();
+        file.set_entry_type(tar::EntryType::Regular);
+        file.set_mode(0o644);
+        file.set_size(7);
+        file.set_cksum();
+        builder
+            .append_data(
+                &mut file.clone(),
+                "package/sdk/usr/include/pthread/pthread.h",
+                &b"pthread"[..],
+            )
+            .unwrap();
+        builder
+            .append_data(
+                &mut file,
+                "package/sdk/System/Library/Frameworks/CoreFoundation.framework/Versions/A/Headers/CoreFoundation.h",
+                &b"header!"[..],
+            )
+            .unwrap();
+        builder.into_inner().unwrap()
+    }
+
     crate::timed_test!(unpack_tar_makes_dir_symlinks_traversable, {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let dest = tmp.path();
@@ -369,6 +563,32 @@ mod tests {
                 "dir link must enumerate its target's children: {names:?}"
             );
         }
+    });
+
+    crate::timed_test!(unpack_tar_materializes_posix_apple_links, {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let dest = tmp.path();
+        let mut archive = tar::Archive::new(Cursor::new(synthetic_apple_sdk_tar()));
+        unpack_tar(&mut archive, dest).expect("unpack");
+
+        let pthread = dest.join("package/sdk/usr/include/pthread.h");
+        assert_eq!(
+            std::fs::read_to_string(&pthread).expect("read POSIX file link"),
+            "pthread"
+        );
+        let headers =
+            dest.join("package/sdk/System/Library/Frameworks/CoreFoundation.framework/Headers");
+        assert!(headers.is_dir(), "framework Headers must be traversable");
+        assert_eq!(
+            std::fs::read_to_string(headers.join("CoreFoundation.h"))
+                .expect("read through chained framework links"),
+            "header!"
+        );
+        #[cfg(windows)]
+        assert!(
+            std::fs::read_dir(&headers).is_ok(),
+            "framework Headers must support directory enumeration on Windows"
+        );
     });
 
     crate::timed_test!(resolve_link_target_stays_inside_dest, {
