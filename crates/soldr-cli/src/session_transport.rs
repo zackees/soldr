@@ -199,6 +199,18 @@ pub fn run_session_compile(program: &str, rustc_argv: &[String]) -> Result<i32, 
     run_session_compile_with(program, rustc_argv, cwd, env)
 }
 
+/// The result of a SESSION compile: the compiler exit code plus the daemon's
+/// `cache_outcome` (`CacheOutcome` discriminant: 1=Hit, 2=Miss, 3=Error) carried
+/// on the terminal `Exit` frame's metadata — `None` if the daemon did not report
+/// one (e.g. an infra exit).
+#[derive(Debug, Clone)]
+pub struct SessionCompileOutcome {
+    /// The compiler's exit code.
+    pub exit_code: i32,
+    /// The daemon's cache outcome discriminant, if reported.
+    pub cache_outcome: Option<i32>,
+}
+
 /// [`run_session_compile`] with an explicit `cwd` + `env` (the carried
 /// `SessionStart` fields) — the daemon filters the env itself. Explicit so the
 /// SESSION e2e can drive a deterministic compile without mutating process state.
@@ -208,6 +220,18 @@ pub fn run_session_compile_with(
     cwd: String,
     env: Vec<SessionEnvVar>,
 ) -> Result<i32, SessionError> {
+    run_session_compile_with_detailed(program, rustc_argv, cwd, env).map(|o| o.exit_code)
+}
+
+/// [`run_session_compile_with`] returning the full [`SessionCompileOutcome`]
+/// (exit code + `cache_outcome`), for callers that assert or log the cache
+/// decision (the anchor e2e; hot-path observability).
+pub fn run_session_compile_with_detailed(
+    program: &str,
+    rustc_argv: &[String],
+    cwd: String,
+    env: Vec<SessionEnvVar>,
+) -> Result<SessionCompileOutcome, SessionError> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -220,7 +244,7 @@ async fn run_session_compile_async(
     rustc_argv: &[String],
     cwd: String,
     env: Vec<SessionEnvVar>,
-) -> Result<i32, SessionError> {
+) -> Result<SessionCompileOutcome, SessionError> {
     // Setup — connect / Hello / negotiate / SessionStart send. Every failure
     // here is pre-output (nothing printed yet), so it is safe to fall back.
     let session_socket = session_socket_path(program).map_err(SessionError::pre_output)?;
@@ -292,13 +316,17 @@ async fn read_negotiated(stream: &mut Stream) -> io::Result<()> {
     }
 }
 
+/// Metadata key on the terminal `Exit` frame carrying the daemon's cache
+/// outcome — matches `soldr_daemon::daemon::session_sink::META_CACHE_OUTCOME`.
+const META_CACHE_OUTCOME: &str = "cache_outcome";
+
 /// Pump SESSION frames from the relay: stdout/stderr to local stdio, returning
-/// the compiler exit code on the terminal `Exit` frame.
+/// the compiler exit code + `cache_outcome` on the terminal `Exit` frame.
 ///
 /// `output_started` flips to `true` the moment any stdout/stderr byte is written
 /// locally; every error is tagged with it so the caller knows whether a legacy
 /// fallback would double-print.
-async fn pump_session_output(stream: &mut Stream) -> Result<i32, SessionError> {
+async fn pump_session_output(stream: &mut Stream) -> Result<SessionCompileOutcome, SessionError> {
     let mut buf: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 8192];
     let mut stdout = tokio::io::stdout();
@@ -332,7 +360,16 @@ async fn pump_session_output(stream: &mut Stream) -> Result<i32, SessionError> {
                                 .map_err(|e| tag(output_started, e))?;
                             stderr.flush().await.map_err(|e| tag(output_started, e))?;
                         }
-                        Some(session_frame::Kind::Exit(exit)) => return Ok(exit.code),
+                        Some(session_frame::Kind::Exit(exit)) => {
+                            let cache_outcome = exit
+                                .metadata
+                                .get(META_CACHE_OUTCOME)
+                                .and_then(|v| v.parse::<i32>().ok());
+                            return Ok(SessionCompileOutcome {
+                                exit_code: exit.code,
+                                cache_outcome,
+                            });
+                        }
                         _ => {}
                     }
                 }
