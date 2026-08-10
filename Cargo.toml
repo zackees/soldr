@@ -17,8 +17,17 @@ members = [
 # keeps cargo from trying to fold its crates into soldr's workspace —
 # the path-dep in `crates/soldr-cli/Cargo.toml` still resolves the
 # specific `_vender/zccache/crates/zccache` crate we link against.
+#
+# Same for the vendored running-process submodule: it is its own
+# workspace (`version.workspace = true` -> 4.8.x). Without this exclude,
+# cargo folds `_vender/running-process/crates/running-process` into
+# soldr's workspace and mis-versions it as soldr's 0.8.44, so the
+# `[patch]` to the vendored path is dropped ("patch not used"). Excluding
+# it lets the crate inherit running-process's own 4.8.x version, which
+# satisfies the `^4.8.1` requirement and makes the patch apply.
 exclude = [
     "_vender/zccache",
+    "_vender/running-process",
 ]
 
 [workspace.package]
@@ -115,9 +124,14 @@ url = "2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 
 [patch.crates-io]
-# soldr#2031: one process-creation implementation across Soldr and its
-# embedded zccache graph. Remove this git patch after the file-backed daemon
-# stdio API ships in a running-process release and every consumer is bumped.
+# soldr#2031: one process-creation implementation across Soldr and its embedded
+# zccache graph. Vendored as a submodule at `_vender/running-process` (same
+# pattern as `_vender/zccache`) so running-process can be iterated on locally
+# without waiting for a crates.io/git release. Both patch tables below redirect
+# to the vendored path: `[patch.crates-io]` covers the crates.io-sourced dep
+# (soldr-cli), and the `[patch."…git"]` table covers the git-sourced deps
+# (soldr-daemon + the vendored zccache submodule) — so every consumer resolves
+# to the one vendored copy.
 running-process = { path = "_vender/running-process/crates/running-process" }
 # soldr#2406: use the vendored notify with bumped windows-sys (0.52→0.61)
 # and HANDLE type fixes for 0.59+ API to converge the dependency graph.
@@ -133,6 +147,9 @@ cap-fs-ext = { path = "_vender/cap-fs-ext" }
 cap-std = { path = "_vender/cap-std" }
 fs-set-times = { path = "_vender/fs-set-times" }
 io-extras = { path = "_vender/io-extras" }
+
+[patch."https://github.com/zackees/running-process.git"]
+running-process = { path = "_vender/running-process/crates/running-process" }
 
 # Release profile size optimization (#920). soldr ships as a template
 # binary that every CI consumer downloads via setup-soldr / actions/

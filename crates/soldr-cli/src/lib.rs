@@ -166,11 +166,15 @@ pub mod binaries;
 /// xwin-cache materialization + clang-shim install + env var setup.
 pub mod blessed_build;
 pub mod bootstrap;
+pub mod broker_cmd;
+pub(crate) mod broker_discovery_gate;
+pub mod broker_spawn;
 pub mod build_from_source_cmd;
 /// soldr#1790 — always-on hierarchical per-build XML log
 /// (`<soldr root>/logs/builds/<timestamp>-<cwd-slug>.xml`). See the
 /// module doc for the schema and the derived-link / cpu_ms caveats.
 pub mod build_log;
+pub mod builtin_verbs;
 pub mod cache;
 pub mod cargo_diagnostics;
 pub mod cargo_front_door;
@@ -185,6 +189,10 @@ pub mod compile_dispatch;
 pub mod compile_fallback_rollup;
 pub mod cook;
 pub mod daemon_entry;
+/// soldr#2360 — actionable attribution for a daemon-unavailable compile
+/// dispatch failure, split out of `compile_dispatch.rs` (over the #1966
+/// line ceiling) into its own module.
+pub mod daemon_infra_remedy;
 /// soldr#2023 — `soldr daemon status` rendering, split out of
 /// `soldr_main.rs` so that file could stop growing.
 pub(crate) mod daemon_status_render;
@@ -247,6 +255,7 @@ pub mod pyo3_detect;
 pub mod release_sidecar;
 pub mod rust_plan;
 pub mod save_load;
+pub mod session_transport;
 pub mod shim_dir;
 pub(crate) mod shim_hygiene;
 pub mod shim_materialize;

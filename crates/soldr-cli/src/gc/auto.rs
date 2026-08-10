@@ -261,6 +261,25 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
     // went unnoticed.
     let _ = append_auto_gc_log_line(&log_path, "auto-gc status=run stage=start");
 
+    let cli_policy_config = paths.load_config().unwrap_or_default();
+    let cli_policy_context = crate::cache_lib::gc_policy::GcContext {
+        driver: crate::cache_lib::gc_policy::Driver::Cli,
+        tick: crate::cache_lib::gc_policy::TickKind::Pressure,
+        free_by_volume: Vec::new(),
+        config: cli_policy_config,
+        daemon_events_available: crate::cache_lib::data_db_path(&paths).exists(),
+        daemon_live: crate::daemon::lifecycle::stale_daemon_occupies_endpoint(&paths).is_some(),
+    };
+    let cli_policy_actions = crate::cache_lib::gc_policy::plan(
+        &crate::cache_lib::gc_policy::registry(),
+        &cli_policy_context,
+    );
+    let has_policy_action = |id: &str| {
+        cli_policy_actions
+            .iter()
+            .any(|action| action.category_id == id)
+    };
+
     // Tier-0 (Phase 2): prune `daemon_events` rows older than 30 days
     // before any disk-pressure tiers run. Bounded, cheap, runs even when
     // the volume isn't below trigger so the event log can't grow
@@ -268,13 +287,17 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
     // Scratch reclamation must NOT be gated on the state DB existing -- a
     // machine whose DB was never created (or was deleted) is exactly where
     // scratch accumulates unnoticed.
-    let scratch_removed = sweep_stale_scratch(
-        &paths,
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0),
-    );
+    let scratch_removed = if has_policy_action("scratch") {
+        sweep_stale_scratch(
+            &paths,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0),
+        )
+    } else {
+        0
+    };
     if scratch_removed > 0 {
         let _ = append_auto_gc_log_line(
             &log_path,
@@ -286,7 +309,8 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
     // loop. When it is stopped, run the pass only under the same root lock
     // the daemon would hold, never as an opportunistic second opener.
     let db_path = crate::cache_lib::data_db_path(&paths);
-    if db_path.exists()
+    if has_policy_action("daemon_events")
+        && db_path.exists()
         && crate::daemon::lifecycle::stale_daemon_occupies_endpoint(&paths).is_none()
     {
         let now_ms = std::time::SystemTime::now()
@@ -331,8 +355,11 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
     // of disk pressure, honoring SOLDR_INSTALL_SRC_TTL_DAYS /
     // SOLDR_NO_INSTALL_SRC_GC. Never opens state.redb, so no daemon
     // ownership conflict.
-    let install_source_removed =
-        crate::install::cache::sweep_with_config(&paths, full_config.install.source_ttl_days);
+    let install_source_removed = if has_policy_action("install_source") {
+        crate::install::cache::sweep_with_config(&paths, full_config.install.source_ttl_days)
+    } else {
+        0
+    };
     if install_source_removed > 0 {
         let _ = append_auto_gc_log_line(
             &log_path,
@@ -348,7 +375,7 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
     // tiering: cook artifacts can grow unbounded even on a volume that
     // is well above `trigger_free_gb`, so the eviction pass runs every
     // throttle window when the cook knobs are non-zero.
-    if cook_config.max_total_gb > 0 || cook_config.max_age_days > 0 {
+    if has_policy_action("cook") {
         // soldr#1814 slice 2b (criterion 2 — single owning process per file).
         // `cook_evict_pass` opens `state.redb` via `cook_index`, so running it
         // here makes the CLI a second opener alongside the daemon.
@@ -401,15 +428,17 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
     // get reclaimed without requiring the user to call
     // `soldr cache sweep-trash` manually. Tolerates per-entry failures
     // (Windows daemon may still hold handles); retries next pass.
-    if let Ok(report) = crate::cache::sweep_trash(&paths) {
-        if report.removed > 0 || report.retained > 0 {
-            let _ = append_auto_gc_log_line(
-                &log_path,
-                &format!(
-                    "trash-sweep removed={} retained={}",
-                    report.removed, report.retained,
-                ),
-            );
+    if has_policy_action("trash") {
+        if let Ok(report) = crate::cache::sweep_trash(&paths) {
+            if report.removed > 0 || report.retained > 0 {
+                let _ = append_auto_gc_log_line(
+                    &log_path,
+                    &format!(
+                        "trash-sweep removed={} retained={}",
+                        report.removed, report.retained,
+                    ),
+                );
+            }
         }
     }
 
@@ -469,7 +498,9 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
 
         // Tier 2: soldr target purge (only if volume holds workspace
         // targets and we're still under target).
-        if crate::cache_lib::auto_gc::next_tier(free_bytes, target_bytes, last_tier).is_some() {
+        if has_policy_action("workspace_targets")
+            && crate::cache_lib::auto_gc::next_tier(free_bytes, target_bytes, last_tier).is_some()
+        {
             let workspace_targets: Vec<_> = plan
                 .paths
                 .iter()

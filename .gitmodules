@@ -2,3 +2,6 @@
 	path = _vender/zccache
 	url = https://github.com/zackees/zccache.git
 	branch = main
+[submodule "_vender/running-process"]
+	path = _vender/running-process
+	url = https://github.com/zackees/running-process.git

@@ -133,7 +133,12 @@ export "CXXFLAGS_${TARGET_U}=-isysroot ${SDKROOT} -mmacosx-version-min=11.0 -std
 # bleed into other targets.
 export CPPFLAGS="--target=${CLANG_ARCH} -isysroot ${SDKROOT} -mmacosx-version-min=11.0"
 export "CARGO_TARGET_${TARGET_U_UPPER}_LINKER=$WRAP_DIR/clang"
-export "CARGO_TARGET_${TARGET_U_UPPER}_RUSTFLAGS=-C link-arg=-fuse-ld=lld"
+# `--cfg tokio_unstable` must be repeated here: this per-target RUSTFLAGS
+# overrides (does not merge with) the `[build] rustflags` in
+# .cargo/config.toml, so without it the macOS wheels would compile the
+# tokio-console feature but leave console-subscriber inert. See the note
+# in .cargo/config.toml on cargo's rustflags precedence.
+export "CARGO_TARGET_${TARGET_U_UPPER}_RUSTFLAGS=-C link-arg=-fuse-ld=lld --cfg tokio_unstable"
 # Drop the explicit CPPFLAGS — the wrapper takes care of it.
 unset CPPFLAGS
 

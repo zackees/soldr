@@ -1,7 +1,6 @@
-//! CLI entry logic — everything that used to be `main.rs`'s crate
-//! root (#1490 Phase 1). The binary shim at `src/main.rs` calls
-//! [`run`]; `lib.rs` glob-re-exports this module at the crate root so
-//! historical `crate::<item>` paths keep resolving.
+//! CLI entry logic — everything that used to be `main.rs`'s crate root
+//! (#1490 Phase 1). The binary shim at `src/main.rs` calls [`run`]; `lib.rs`
+//! glob-re-exports this module at the crate root so historical `crate::<item>` paths keep resolving.
 #![allow(dead_code, unused_imports)]
 
 use clap::Parser;
@@ -188,6 +187,7 @@ fn run_main(raw_args: Vec<String>) -> i32 {
         return wrapper::run_rustc_wrapper(&raw_args, profile).unwrap_or_else(report_and_exit);
     }
 
+    crate::broker_spawn::maybe_spawn_broker_front_door(&raw_args);
     // `--as <version>` trampoline. Peeled off before clap so the fetched
     // older soldr parses its own argv on its own terms.
     let (pinned_version, trampoline_args) = match extract_as_pin(&raw_args[1..]) {
@@ -919,9 +919,8 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
         Commands::SessionEnd { id, clear, json } => {
             cache::run_session_end_command(id, clear, json)?;
         }
-        Commands::Daemon { command } => {
-            run_daemon_command(command).await?;
-        }
+        Commands::Daemon { command } => run_daemon_command(command).await?,
+        Commands::Broker { command } => crate::broker_cmd::run_broker_command(command)?,
         Commands::External(args) => {
             if args.is_empty() {
                 eprintln!("usage: soldr <tool>[@version] [args...]");

@@ -827,6 +827,40 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
         })
     };
 
+    // SESSION `0x5350` endpoint (soldr#2388 Step 6d/7 / #2386 Option A). Served
+    // on a *separate* broker-facing endpoint from the legacy `handle_connection`
+    // loop above, which stays untouched. The daemon binds the deterministic
+    // `daemon_session_endpoint_path` (or `SOLDR_SESSION_ENDPOINT_PATH` override)
+    // so the broker's SESSION relay can reach it by advertised name (#2386
+    // Option A mechanism ii). Step 8 will prepend the Unix broker-inherited-fd
+    // adopt path.
+    let session_handle = match crate::daemon::session_endpoint::resolve_session_listener(&paths) {
+        Ok(Some(listener)) => {
+            let mux = Arc::new(crate::daemon::session_endpoint::soldr_session_endpoint_mux(
+                state.daemon_identity.clone(),
+            ));
+            let service = Arc::clone(&state.compile_service);
+            let session_paths = paths.clone();
+            Some(tokio::spawn(async move {
+                if let Err(err) = crate::daemon::session_endpoint::serve_session_endpoint(
+                    listener,
+                    service,
+                    session_paths,
+                    mux,
+                )
+                .await
+                {
+                    tracing::warn!(target: "soldr::daemon", "SESSION endpoint serve ended: {err}");
+                }
+            }))
+        }
+        Ok(None) => None,
+        Err(err) => {
+            tracing::warn!(target: "soldr::daemon", "SESSION endpoint bind failed: {err}");
+            None
+        }
+    };
+
     let idle_handle = (opts.idle_timeout != Duration::MAX).then(|| {
         let idle_state = state.clone();
         let idle_timeout = opts.idle_timeout;
@@ -874,6 +908,9 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     state.shutdown.wait().await;
     arm_shutdown_watchdog();
     accept_handle.abort();
+    if let Some(handle) = session_handle {
+        handle.abort();
+    }
     if let Some(handle) = idle_handle {
         handle.abort();
     }
@@ -1958,6 +1995,39 @@ where
         &compile_id,
     );
 
+    // Stream the captured output through a transport sink (soldr#2388 Step 5/6):
+    // the legacy DaemonRequest wire here (byte-identical, `phase5_contract`), the
+    // SESSION `0x5350` wire elsewhere, over one embedded-zccache execution.
+    let mut sink = crate::daemon::compile_sink::LegacyDaemonSink { stream };
+    stream_compile_output(
+        &mut sink,
+        &body,
+        &state.paths,
+        &compile_id,
+        lifecycle.as_ref(),
+        inner_started,
+        total,
+    )
+    .await
+}
+
+/// Stream a completed compile's captured output through `sink` — the legacy
+/// `Response` wire (`LegacyDaemonSink`) or the SESSION `0x5350` wire
+/// (`session_sink::SessionCompileSink`), over one embedded-zccache execution
+/// (soldr#2388 Step 5/6). Shared so both wires stay byte-transparent and the
+/// disconnect error-attribution + per-compile telemetry are identical.
+pub(crate) async fn stream_compile_output<Sink>(
+    sink: &mut Sink,
+    body: &crate::daemon::protocol::CompileResponseBody,
+    paths: &crate::core::SoldrPaths,
+    compile_id: &str,
+    lifecycle: Option<&crate::daemon::protocol::CompileLifecycle>,
+    inner_started: std::time::Instant,
+    total: std::time::Instant,
+) -> std::io::Result<()>
+where
+    Sink: crate::daemon::compile_sink::CompileOutputSink,
+{
     let stdout_len = body.stdout.len();
     let stderr_len = body.stderr.len();
     let mut stdout_chunks = 0usize;
@@ -1965,13 +2035,11 @@ where
 
     let wire_stdout_started = std::time::Instant::now();
     for chunk in body.stdout.chunks(CHUNK_BYTES) {
-        if let Err(err) =
-            write_frame_async(stream, &Response::CompileStdoutChunk(chunk.to_vec())).await
-        {
+        if let Err(err) = sink.emit_stdout_chunk(chunk).await {
             return Err(crate::daemon::disconnect::report_reply_write_failure(
-                &state.paths,
-                &compile_id,
-                lifecycle.as_ref(),
+                paths,
+                compile_id,
+                lifecycle,
                 inner_started,
                 "stdout_chunk",
                 err,
@@ -1989,18 +2057,16 @@ where
     crate::daemon::compile_trace::record(
         "wire_stdout",
         wire_stdout_started.elapsed().as_micros() as u64,
-        &compile_id,
+        compile_id,
     );
 
     let wire_stderr_started = std::time::Instant::now();
     for chunk in body.stderr.chunks(CHUNK_BYTES) {
-        if let Err(err) =
-            write_frame_async(stream, &Response::CompileStderrChunk(chunk.to_vec())).await
-        {
+        if let Err(err) = sink.emit_stderr_chunk(chunk).await {
             return Err(crate::daemon::disconnect::report_reply_write_failure(
-                &state.paths,
-                &compile_id,
-                lifecycle.as_ref(),
+                paths,
+                compile_id,
+                lifecycle,
                 inner_started,
                 "stderr_chunk",
                 err,
@@ -2018,15 +2084,9 @@ where
     crate::daemon::compile_trace::record(
         "wire_stderr",
         wire_stderr_started.elapsed().as_micros() as u64,
-        &compile_id,
+        compile_id,
     );
 
-    let done = Response::CompileDone {
-        exit_code: body.exit_code,
-        cached: body.cached,
-        cache_outcome: body.cache_outcome,
-        compile_id: String::new(),
-    };
     tracing::debug!(
         target: "soldr::daemon::compile_stream",
         exit_code = body.exit_code,
@@ -2039,37 +2099,40 @@ where
         "compile done — streaming reply complete",
     );
     let wire_done_started = std::time::Instant::now();
-    let res = write_frame_async(stream, &done).await.map_err(|err| {
-        crate::daemon::disconnect::report_reply_write_failure(
-            &state.paths,
-            &compile_id,
-            lifecycle.as_ref(),
-            inner_started,
-            "done",
-            err,
-            body.exit_code,
-        )
-    });
+    let res = sink
+        .emit_done(body.exit_code, body.cached, body.cache_outcome, compile_id)
+        .await
+        .map_err(|err| {
+            crate::daemon::disconnect::report_reply_write_failure(
+                paths,
+                compile_id,
+                lifecycle,
+                inner_started,
+                "done",
+                err,
+                body.exit_code,
+            )
+        });
     crate::daemon::compile_trace::record(
         "wire_done",
         wire_done_started.elapsed().as_micros() as u64,
-        &compile_id,
+        compile_id,
     );
     crate::daemon::compile_trace::record(
         "total_dispatch",
         total.elapsed().as_micros() as u64,
-        &compile_id,
+        compile_id,
     );
     // Co-record per-compile output bytes for cross-axis analysis.
-    crate::daemon::compile_trace::record("stdout_bytes", stdout_len as u64, &compile_id);
-    crate::daemon::compile_trace::record("stderr_bytes", stderr_len as u64, &compile_id);
+    crate::daemon::compile_trace::record("stdout_bytes", stdout_len as u64, compile_id);
+    crate::daemon::compile_trace::record("stderr_bytes", stderr_len as u64, compile_id);
     res
 }
 
 /// Monotonic per-daemon compile counter. The id is stable within one
 /// daemon process and meaningless across restarts — exactly the scope
 /// the `SOLDR_DAEMON_TRACE` JSONL is designed for.
-fn next_compile_id() -> String {
+pub(crate) fn next_compile_id() -> String {
     use std::sync::atomic::{AtomicU64, Ordering as AOrdering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let n = SEQ.fetch_add(1, AOrdering::Relaxed);

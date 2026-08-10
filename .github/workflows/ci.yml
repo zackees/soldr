@@ -132,6 +132,14 @@ jobs:
           git fetch --no-tags origin "$GITHUB_BASE_REF"
           python3 .github/scripts/loc_ratchet.py --base-ref "origin/$GITHUB_BASE_REF"
 
+      # soldr#2360/#2363 — the broker-fronted daemon design deliberately
+      # keeps the wire at protocol_v2/client_v2, broken in place; a
+      # protocol_v3/client_v3 module would mean two wire majors coexisting,
+      # which defeats the minimum-version floor the design relies on to force
+      # upgrades. Cheap static grep, no build required.
+      - name: No protocol_v3 policy
+        run: python3 .github/scripts/no_protocol_v3.py
+
       # soldr#1981 — `--release` costs thin-LTO + single-CU codegen, and paying
       # that on a job whose output never ships is pure waste. soldr#1982 removed
       # the offenders; this keeps them gone. Runs before the toolchain setup so
