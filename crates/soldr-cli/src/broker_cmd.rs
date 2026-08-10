@@ -231,5 +231,4 @@ mod tests {
             vec![crate::daemon::backend_handle_adoption::SOLDR_DAEMON_SERVICE_NAME.to_string()],
         );
     });
-
 }

@@ -72,8 +72,8 @@ impl BackendLauncher for SoldrBackendLauncher {
         let mut command = std::process::Command::new(&binary_path);
         command.envs(self.soldr_env.iter().cloned());
         configure_backend_command(&mut command, request, &endpoint);
-        let mut child = running_process::spawn_daemon(&mut command)
-            .map_err(BackendLaunchError::Spawn)?;
+        let mut child =
+            running_process::spawn_daemon(&mut command).map_err(BackendLaunchError::Spawn)?;
 
         // Close the stop-vs-launch window: if stop planted its tombstone after
         // the first check, do not allow this child to become ready.
@@ -136,13 +136,11 @@ fn canonical_backend_binary(
         return Err(BackendLaunchError::EmptyPerVersionBinaryDir);
     }
     let path = PathBuf::from(&definition.binary_path);
-    let binary = std::fs::canonicalize(&path).map_err(|source| {
-        BackendLaunchError::CanonicalizeBinary { path, source }
-    })?;
+    let binary = std::fs::canonicalize(&path)
+        .map_err(|source| BackendLaunchError::CanonicalizeBinary { path, source })?;
     let path = PathBuf::from(&definition.per_version_binary_dir);
-    let root = std::fs::canonicalize(&path).map_err(|source| {
-        BackendLaunchError::CanonicalizeBinaryRoot { path, source }
-    })?;
+    let root = std::fs::canonicalize(&path)
+        .map_err(|source| BackendLaunchError::CanonicalizeBinaryRoot { path, source })?;
     if !binary.starts_with(&root) {
         return Err(BackendLaunchError::BinaryOutsideAllowRoot { binary, root });
     }
