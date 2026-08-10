@@ -240,16 +240,25 @@ pub fn spawn_session_relay(program: &str, backend_pipe: String) -> io::Result<()
                 // could yield a pipe the client never finds (os error 2). Emit a
                 // real BOUND signal only after the socket exists, so callers never
                 // race the bind.
-                let listener =
+                // A concurrent first-start broker can briefly win SESSION and
+                // then lose the control-socket singleton race. Retry here so
+                // the durable control owner takes SESSION after that losing
+                // process exits instead of serving forever without its relay.
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                let listener = loop {
                     match crate::daemon::session_endpoint::bind_session_listener(&session_socket) {
-                        Ok(listener) => listener,
+                        Ok(listener) => break listener,
+                        Err(_) if std::time::Instant::now() < deadline => {
+                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        }
                         Err(err) => {
                             eprintln!(
-                            "soldr broker: SESSION relay could not bind {session_socket}: {err}"
-                        );
+                                "soldr broker: SESSION relay could not bind {session_socket}: {err}"
+                            );
                             return;
                         }
-                    };
+                    }
+                };
                 println!("soldr broker: SESSION relay bound at {session_socket}");
                 if let Err(err) =
                     serve_broker_session_endpoint(listener, &responder, &peer_policy).await

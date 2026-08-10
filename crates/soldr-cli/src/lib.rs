@@ -167,6 +167,7 @@ pub mod binaries;
 pub mod blessed_build;
 pub mod bootstrap;
 pub mod broker_cmd;
+mod broker_launcher;
 pub(crate) mod broker_discovery_gate;
 /// soldr#2388: container-safe broker/session socket identity (graceful fallback
 /// when the OS provides no `/etc/machine-id`).
