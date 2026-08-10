@@ -145,10 +145,11 @@ pub fn session_hot_path(rustc_argv: &[String]) -> SessionHotPathOutcome {
 /// derivation the broker binds and the client dials.
 pub fn session_socket_path(program: &str) -> io::Result<String> {
     use running_process::broker::lifecycle::names_v2::v2_program_pipe;
-    use running_process::broker::lifecycle::sid::user_sid_hash;
     use running_process::broker::server::singleton_bind::resolve_socket_path;
 
-    let sid = user_sid_hash().map_err(|e| io::Error::other(format!("user_sid_hash: {e}")))?;
+    // soldr#2388: same container-safe identity the broker binds with, so a
+    // machine-id-less environment still agrees on the socket name.
+    let sid = crate::broker_identity::resolve_user_sid();
     let pipe = v2_program_pipe(program, &sid, SESSION_PIPE_IDX)
         .map_err(|e| io::Error::other(format!("v2_program_pipe: {e}")))?;
     resolve_socket_path(&pipe).map_err(|e| io::Error::other(format!("resolve_socket_path: {e}")))
