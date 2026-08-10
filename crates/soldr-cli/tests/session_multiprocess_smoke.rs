@@ -64,20 +64,19 @@ fn wait_for(lines: &Arc<Mutex<Vec<String>>>, needle: &str, deadline: Instant) ->
     }
 }
 
-/// Kill any daemon this test's broker/client launched, so none leaks past the
-/// test (a leaked daemon holding the isolated root's sockets/alias would
-/// cascade-fail sibling tests in a shared nextest run). Robust to the exact
-/// pidfile derivation: recursively find every `daemon.pid` under the isolated
-/// root and terminate its pid.
-fn stop_daemon_in_root(root: &Path) {
-    fn find_pids(dir: &Path, out: &mut Vec<u32>) {
+/// Recursively find every `daemon.pid` under the isolated root and return the
+/// pids. Robust to the exact pidfile derivation. Used both to assert the
+/// single-daemon invariant (#2364: one build → exactly one daemon) and to reap
+/// the daemon in cleanup.
+fn find_daemon_pids(root: &Path) -> Vec<u32> {
+    fn walk(dir: &Path, out: &mut Vec<u32>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
         };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                find_pids(&path, out);
+                walk(&path, out);
             } else if path.file_name().is_some_and(|n| n == "daemon.pid") {
                 if let Ok(text) = std::fs::read_to_string(&path) {
                     if let Some(pid) = text
@@ -92,7 +91,15 @@ fn stop_daemon_in_root(root: &Path) {
         }
     }
     let mut pids = Vec::new();
-    find_pids(root, &mut pids);
+    walk(root, &mut pids);
+    pids
+}
+
+/// Kill any daemon this test's broker/client launched, so none leaks past the
+/// test (a leaked daemon holding the isolated root's sockets/alias would
+/// cascade-fail sibling tests in a shared nextest run).
+fn stop_daemon_in_root(root: &Path) {
+    let pids = find_daemon_pids(root);
     for pid in pids {
         #[cfg(windows)]
         let _ = Command::new("taskkill")
@@ -175,6 +182,11 @@ timed_test!(
             .output()
             .expect("run soldr RUSTC_WRAPPER over SESSION");
 
+        // #2364 singleton invariant: one build routed through the broker
+        // produces exactly one daemon (no spawn-storm, no double-daemon).
+        // Captured before cleanup; the pidfiles persist after the kill.
+        let daemon_pids = find_daemon_pids(&root);
+
         // Cleanup before asserting so a failure never leaks processes.
         let _ = broker.kill();
         let _ = broker.wait();
@@ -202,6 +214,12 @@ timed_test!(
             stderr.contains("SESSION compile served"),
             "SESSION did not carry the compile (silent legacy fallback?)\n\
              wrapper stderr:\n{stderr}\n{broker_log}"
+        );
+        assert_eq!(
+            daemon_pids.len(),
+            1,
+            "exactly one daemon must serve the build (#2364 singleton invariant); \
+             found pids {daemon_pids:?}\n{broker_log}"
         );
     }
 );

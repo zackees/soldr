@@ -21,8 +21,10 @@ use running_process::broker::protocol_v2::{session_frame, SessionStart};
 use running_process::broker::session_codec::try_decode_session_frame;
 
 use crate::core::SoldrPaths;
+use crate::daemon::compile_delivery::UndeliveredKind;
 use crate::daemon::compile_request::build_compile_request_from;
 use crate::daemon::compile_sink::CompileOutputSink;
+use crate::daemon::disconnect::{race_against_disconnect, record_undelivered, DispatchOutcome};
 use crate::daemon::server::{next_compile_id, stream_compile_output};
 use crate::daemon::session_sink::SessionCompileSink;
 use crate::zccache_embedded::SoldrZccacheService;
@@ -73,6 +75,17 @@ where
 /// Run `req` through the embedded zccache service and stream its output as
 /// `SessionFrame`s. Reuses the same execution + output plumbing as the legacy
 /// wire (`SoldrZccacheService::compile` + `stream_compile_output`).
+///
+/// Cancel-on-disconnect (soldr#2388 Step 9): the compile is raced against the
+/// client's read side via [`race_against_disconnect`], byte-for-byte the same
+/// kill-matrix obligation the legacy wire honors in
+/// [`dispatch_compile_streaming`](crate::daemon::server). A wrapper that dies
+/// mid-compile closes its end of the relayed SESSION connection; the daemon
+/// sees EOF and drops the zccache future at the `select!` boundary, so the
+/// rustc child it owns is reaped instead of running to completion for output
+/// no one will read. Without this the SESSION path — the one Phase 2 wants to
+/// make the default — silently violated "kill client mid-compile → daemon
+/// cancels that unit" while the legacy path honored it.
 async fn dispatch_compile_session<IO>(
     compile_service: &SoldrZccacheService,
     paths: &SoldrPaths,
@@ -87,9 +100,14 @@ where
     let lifecycle = req.lifecycle.clone();
     let inner_started = std::time::Instant::now();
 
-    let body = match compile_service.compile(req).await {
-        Ok(body) => body,
-        Err(err) => {
+    // Box the compile future before it enters the disconnect `select!`, for the
+    // same reason the legacy path does (`dispatch_compile_streaming`): the
+    // staged-output future is large and carrying it inline through the generic
+    // race helper can exhaust Tokio's worker stack under a parallel cold build.
+    let compile_fut = Box::pin(compile_service.compile(req));
+    let body = match race_against_disconnect(io, compile_fut).await {
+        DispatchOutcome::Completed(Ok(body)) => body,
+        DispatchOutcome::Completed(Err(err)) => {
             // Infra failure — report it to the client, never a silent close and
             // never a compiler verdict (fable5 no-silent-fallback / infra≠verdict).
             let mut sink = SessionCompileSink::new(io);
@@ -105,6 +123,29 @@ where
                 &compile_id,
             )
             .await?;
+            return Ok(());
+        }
+        DispatchOutcome::ClientDisconnected(reason) => {
+            // The wrapper is gone — the relayed SESSION connection closed
+            // mid-compile, so the embedded zccache future was dropped at the
+            // `select!` boundary and its rustc child reaped. Don't write a
+            // reply into a dead pipe; record the disconnect so postmortems can
+            // count it (mirrors the legacy `dispatch_compile_streaming` arm).
+            record_undelivered(
+                paths,
+                &compile_id,
+                lifecycle.as_ref(),
+                inner_started,
+                UndeliveredKind::ClientDisconnected,
+                &reason.detail(),
+                None,
+            );
+            tracing::info!(
+                target: "soldr::daemon::compile_stream",
+                compile_id = compile_id.as_str(),
+                reason = reason.detail().as_str(),
+                "SESSION client disconnected during compile — aborting in-flight work",
+            );
             return Ok(());
         }
     };
