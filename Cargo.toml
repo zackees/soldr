@@ -149,9 +149,8 @@ fs-set-times = { path = "_vender/fs-set-times" }
 io-extras = { path = "_vender/io-extras" }
 # soldr#2406: bump petgraph hashbrown 0.15→0.17 to converge.
 petgraph = { path = "_vender/petgraph" }
-# soldr#2406: bump sysinfo windows 0.52→0.62 to converge.
-sysinfo = { path = "_vender/sysinfo" }
-
+# soldr#2406: bump protox-parse logos 0.15→0.16 to converge.
+protox-parse = { path = "_vender/protox-parse" }
 [patch."https://github.com/zackees/running-process.git"]
 running-process = { path = "_vender/running-process/crates/running-process" }
 
