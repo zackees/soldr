@@ -71,6 +71,10 @@ pub(crate) mod session_serve;
 /// captured stdout/stderr/exit as running-process `SessionFrame`s for the
 /// broker-relayed SESSION wire.
 pub(crate) mod session_sink;
+/// soldr#2388 -- daemon tombstone: an explicit `soldr daemon stop` suppresses
+/// implicit resurrections (the broker's proactive launch) for a short window,
+/// guarding against a thundering herd of restarts.
+pub mod tombstone;
 /// soldr#1838 Phase 1 -- progressive heartbeats so a long daemon wait
 /// says what it is waiting on instead of going silent to the backstop.
 pub(crate) mod wait_heartbeat;
