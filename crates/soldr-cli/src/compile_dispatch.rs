@@ -660,23 +660,9 @@ where
             ))))
         }
         crate::session_transport::SessionHotPathOutcome::Fallthrough => Err(DispatchError::Setup(
-            SoldrError::Other(broker_unavailable_remedy()),
+            SoldrError::Other(crate::daemon_infra_remedy::broker_unavailable_remedy()),
         )),
     }
-}
-
-/// Actionable infra-attributed message for a compile that could not be served
-/// because the broker (and therefore the broker-launched daemon) was
-/// unavailable. soldr#2388: there is no direct-daemon fallback, so this names
-/// the concrete remedy rather than degrading silently.
-fn broker_unavailable_remedy() -> String {
-    "soldr: compile could not be served — the broker-fronted compile daemon was \
-     unavailable (not a compiler error). All compiles route through the broker; \
-     there is no direct-daemon fallback. Remedy: run a top-level `soldr cargo …` \
-     build (its front door starts the broker), or start one explicitly with \
-     `soldr broker serve`; then re-run. See `soldr status` / `soldr doctor` and \
-     docs/DAEMON_TIMEOUTS.md."
-        .to_string()
 }
 
 fn dispatch_compile_with_sock_and_marker_detailed<O, E>(
