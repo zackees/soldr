@@ -55,13 +55,40 @@ pub(crate) enum BrokerSubcommand {
         #[arg(long)]
         json: bool,
     },
+    /// Stop the running broker and reap the daemon routes it owns (soldr#2442
+    /// slice 2). Targets are taken from the broker's own admin snapshot — its
+    /// self-reported PIDs — so nothing is ever killed by process name. With no
+    /// broker bound it prints a "not running" line and exits 0.
+    Stop {
+        /// Program namespace whose broker to stop (defaults to the stable
+        /// singleton name).
+        #[arg(long, default_value = "soldr-daemon")]
+        program: String,
+    },
 }
 
 pub(crate) fn run_broker_command(command: BrokerSubcommand) -> Result<(), SoldrError> {
     match command {
         BrokerSubcommand::Serve { program } => run_broker_serve(&program),
         BrokerSubcommand::Status { program, json } => run_broker_status(&program, json),
+        BrokerSubcommand::Stop { program } => run_broker_stop(&program),
     }
+}
+
+/// Bounded deadline for `broker stop` to observe graceful exits before it
+/// force-kills stragglers (soldr#2442). A single constant so implementation,
+/// diagnostics, and tests agree on one number; env-overridable for tests,
+/// mirroring `SOLDR_SESSION_ATTEMPT_BUDGET_MS`. When the cooperative-drain
+/// running-process `SHUTDOWN` verb lands (Option B), this same value travels
+/// in the request as `drain_deadline_ms`.
+fn broker_stop_deadline() -> std::time::Duration {
+    const DEFAULT_MS: u64 = 10_000;
+    let ms = std::env::var("SOLDR_BROKER_DRAIN_DEADLINE_MS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_MS)
+        .max(1);
+    std::time::Duration::from_millis(ms)
 }
 
 /// Bind the v2 broker socket for `program` and serve Hello connections,
@@ -220,6 +247,125 @@ fn run_broker_status(program: &str, json: bool) -> Result<(), SoldrError> {
             "soldr broker: status query failed: {err}"
         ))),
     }
+}
+
+/// `soldr broker stop`: stop the running broker and reap the daemon routes it
+/// owns (soldr#2442 slice 2). The broker's own admin STATUS snapshot is the
+/// source of truth for what to terminate — its self-reported broker PID and
+/// backend route PIDs — so nothing is resolved by process name (the migration
+/// contract the issue's open question requires). A missing broker prints a
+/// "not running" line and exits 0.
+///
+/// This is the verified-PID baseline (and the migration fallback for brokers
+/// that predate cooperative drain). It terminates the broker first — which
+/// stops new admission and releases its control + SESSION endpoints and its
+/// ownership lock on exit — then reaps the daemon routes it owned, bounded by
+/// [`broker_stop_deadline`], force-killing anything that overruns. In-flight
+/// compiles see their SESSION pipe close (EOF): the defined cut. The
+/// cooperative-drain path (the running-process `SHUTDOWN` admin verb, Option B)
+/// quiesces sessions before this terminate and is the next increment.
+fn run_broker_stop(program: &str) -> Result<(), SoldrError> {
+    use running_process::broker::backend_lifecycle::verify_pid::{
+        force_kill_pid, process_is_alive, signal_terminate,
+    };
+    use running_process::broker::client::{send_admin_request, BrokerClientError};
+    use running_process::broker::protocol::{AdminRequest, AdminVerb};
+
+    let socket_path = broker_control_socket_path(program)?;
+
+    let reply = match send_admin_request(
+        &socket_path,
+        AdminRequest {
+            verb: AdminVerb::Status as i32,
+            json: true,
+            ..Default::default()
+        },
+    ) {
+        Ok(reply) => reply,
+        Err(BrokerClientError::BrokerConnect(_)) => {
+            println!("soldr broker: not running (nothing to stop for program={program})");
+            return Ok(());
+        }
+        Err(err) => {
+            return Err(SoldrError::Other(format!(
+                "soldr broker: could not query broker before stop: {err}"
+            )))
+        }
+    };
+
+    let snapshot: serde_json::Value = serde_json::from_str(&reply.body).map_err(|err| {
+        SoldrError::Other(format!(
+            "soldr broker: could not parse broker status snapshot before stop: {err}"
+        ))
+    })?;
+    let broker_pid = snapshot
+        .get("broker_pid")
+        .and_then(serde_json::Value::as_u64)
+        .filter(|pid| *pid != 0)
+        .map(|pid| pid as u32);
+    let daemon_pids: Vec<u32> = snapshot
+        .get("backends")
+        .and_then(serde_json::Value::as_array)
+        .map(|backends| {
+            backends
+                .iter()
+                .filter_map(|backend| backend.get("pid").and_then(serde_json::Value::as_u64))
+                .filter(|pid| *pid != 0)
+                .map(|pid| pid as u32)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let Some(broker_pid) = broker_pid else {
+        return Err(SoldrError::Other(format!(
+            "soldr broker: the broker for program={program} answered status but reported no \
+             pid; refusing to stop by any less-verified means"
+        )));
+    };
+
+    // Verified kill list: broker first (stops admission, releases endpoints +
+    // ownership lock on exit), then the daemon routes it owned.
+    let mut targets: Vec<(&str, u32)> = vec![("broker", broker_pid)];
+    targets.extend(daemon_pids.iter().map(|pid| ("daemon", *pid)));
+
+    for (kind, pid) in &targets {
+        if let Err(err) = signal_terminate(*pid) {
+            eprintln!("soldr broker: could not signal {kind} pid {pid} to terminate: {err}");
+        }
+    }
+
+    let deadline = std::time::Instant::now() + broker_stop_deadline();
+    loop {
+        let alive: Vec<(&str, u32)> = targets
+            .iter()
+            .copied()
+            .filter(|(_, pid)| process_is_alive(*pid))
+            .collect();
+        if alive.is_empty() {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            for (kind, pid) in &alive {
+                eprintln!(
+                    "soldr broker: {kind} pid {pid} did not exit within the stop deadline; \
+                     force-killing"
+                );
+                let _ = force_kill_pid(*pid);
+            }
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    if daemon_pids.is_empty() {
+        println!("soldr broker: stopped (broker pid {broker_pid})");
+    } else {
+        println!(
+            "soldr broker: stopped (broker pid {broker_pid}, {} daemon route(s) reaped)",
+            daemon_pids.len()
+        );
+    }
+    Ok(())
 }
 
 fn broker_ownership_file(program: &str) -> Result<std::fs::File, SoldrError> {
