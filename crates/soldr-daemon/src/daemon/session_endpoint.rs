@@ -256,6 +256,14 @@ pub type SessionListener = interprocess::local_socket::tokio::Listener;
 pub fn bind_session_listener(socket_path: &str) -> io::Result<SessionListener> {
     use interprocess::local_socket::ListenerOptions;
 
+    // Unix local sockets are filesystem entries. The broker's runtime namespace
+    // may not exist in a clean container, so create its parent before binding.
+    // Windows named pipes do not have a filesystem parent.
+    #[cfg(unix)]
+    if let Some(parent) = std::path::Path::new(socket_path).parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
     let name = local_session_name(socket_path)?;
     ListenerOptions::new().name(name).create_tokio()
 }

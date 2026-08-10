@@ -318,3 +318,25 @@ crate::timed_test!(session_endpoint_accept_loop_binds_and_dispatches_probe, {
             server.abort();
         });
 });
+
+#[cfg(unix)]
+crate::timed_test!(session_listener_creates_missing_socket_parent, {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime")
+        .block_on(async {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let parent = temp.path().join("missing").join("runtime");
+            let socket = parent.join("daemon.session");
+            assert!(!parent.exists(), "test requires a missing socket parent");
+
+            let listener = bind_session_listener(&socket.display().to_string())
+                .expect("bind creates the missing socket parent");
+            assert!(
+                parent.is_dir(),
+                "SESSION bind must create its socket parent"
+            );
+            drop(listener);
+        });
+});
