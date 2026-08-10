@@ -151,6 +151,8 @@ io-extras = { path = "_vender/io-extras" }
 petgraph = { path = "_vender/petgraph" }
 # soldr#2406: bump protox-parse logos 0.15→0.16 to converge.
 protox-parse = { path = "_vender/protox-parse" }
+# soldr#2406: bump hashlink hashbrown 0.14→0.17 to converge.
+hashlink = { path = "_vender/hashlink" }
 [patch."https://github.com/zackees/running-process.git"]
 running-process = { path = "_vender/running-process/crates/running-process" }
 
