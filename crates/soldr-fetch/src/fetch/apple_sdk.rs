@@ -19,6 +19,7 @@ use super::stream_download::{
     asset_http_client_with_protocol, get_request, send_asset_request, stream_response_to_temp_file,
     AssetProtocol, DownloadedAsset, ASSET_HEADER_TIMEOUT, ASSET_IDLE_TIMEOUT,
 };
+use super::tar_extract::unpack_tar_filtered;
 
 /// Pinned macOS SDK version used when the caller does not set
 /// `SOLDR_APPLE_SDK_VERSION`.
@@ -43,6 +44,7 @@ pub const MANAGED_APPLE_SDK_SHA256: &str =
 
 const SDKROOT_ENV_VAR: &str = "SDKROOT";
 const LEGACY_APPLE_SDK_VERSION: &str = "11.3";
+const APPLE_SDK_EXTRACTION_FORMAT: &str = "apple-sdk-extract-v2";
 
 /// Env var that pins the Apple SDK version soldr fetches.
 pub const APPLE_SDK_VERSION_ENV_VAR: &str = "SOLDR_APPLE_SDK_VERSION";
@@ -222,6 +224,20 @@ pub fn sdk_dir_for_target(paths: &SoldrPaths, target_triple: Option<&str>) -> Pa
     sdk_dir_for_selection(paths, &selection)
 }
 
+fn expected_cache_stamp(selection: &AppleSdkSelection) -> String {
+    format!(
+        "{APPLE_SDK_EXTRACTION_FORMAT} {} {}",
+        selection.version,
+        selection.shape.catalogue_slug()
+    )
+}
+
+fn cache_stamp_is_current(stamp: &Path, selection: &AppleSdkSelection) -> bool {
+    std::fs::read_to_string(stamp)
+        .map(|contents| contents.trim() == expected_cache_stamp(selection))
+        .unwrap_or(false)
+}
+
 /// Ensure an Apple macOS SDK is available. Returns the path of the
 /// `*.sdk` directory so callers can set `SDKROOT`.
 pub async fn ensure_apple_sdk(
@@ -280,18 +296,22 @@ async fn fetch_managed_sdk(
     let stamp = install_dir.join(".complete");
     let expected_sdk_dir = sdk_dir_for_selection(paths, &selection);
 
-    if stamp.is_file() {
+    if cache_stamp_is_current(&stamp, &selection) {
         if let Ok(found) = find_extracted_sdk_dir(&install_dir, &expected_sdk_dir) {
-            return Ok(found);
+            if validate_extracted_sdk(&found).is_ok() {
+                return Ok(found);
+            }
         }
     }
 
     let lock_key = format!("{}-{}", selection.version, selection.shape.catalogue_slug());
     let _install_lock =
         super::syslib_common::acquire_install_lock(&paths.bin.join("apple-sdk"), &lock_key)?;
-    if stamp.is_file() {
+    if cache_stamp_is_current(&stamp, &selection) {
         if let Ok(found) = find_extracted_sdk_dir(&install_dir, &expected_sdk_dir) {
-            return Ok(found);
+            if validate_extracted_sdk(&found).is_ok() {
+                return Ok(found);
+            }
         }
     }
 
@@ -370,14 +390,12 @@ async fn fetch_managed_sdk(
             &staging,
             &staging.join(expected_sdk_dir.file_name().unwrap_or_default()),
         )?;
+        validate_extracted_sdk(&sdk_dir)?;
         let sdk_relative = sdk_dir
             .strip_prefix(&staging)
             .map_err(|_| SoldrError::Archive("Apple SDK path escaped staging directory".into()))?
             .to_path_buf();
-        std::fs::write(
-            staging.join(".complete"),
-            format!("{} {}", selection.version, selection.shape.catalogue_slug()),
-        )?;
+        std::fs::write(staging.join(".complete"), expected_cache_stamp(&selection))?;
 
         // Promote only after extraction and validation have succeeded.  A
         // pre-existing install is moved aside rather than synchronously
@@ -483,35 +501,58 @@ fn is_apple_sdk_dir(path: &Path) -> bool {
         && path.join("usr").is_dir()
 }
 
+fn validate_extracted_sdk(sdk_dir: &Path) -> Result<(), SoldrError> {
+    let pthread = sdk_dir.join("usr/include/pthread.h");
+    let pthread_meta = std::fs::metadata(&pthread).map_err(|err| {
+        SoldrError::Archive(format!(
+            "Apple SDK validation failed: {} is unreadable: {err}",
+            pthread.display()
+        ))
+    })?;
+    if pthread_meta.is_dir() {
+        return Err(SoldrError::Archive(format!(
+            "Apple SDK validation failed: {} resolves to a directory, expected a header file",
+            pthread.display()
+        )));
+    }
+    std::fs::File::open(&pthread).map_err(|err| {
+        SoldrError::Archive(format!(
+            "Apple SDK validation failed: {} cannot be opened: {err}",
+            pthread.display()
+        ))
+    })?;
+
+    // Framework Headers is a chained directory-link path in Apple's SDKs:
+    // Headers -> Versions/Current/Headers and Current -> A. Traversal proves
+    // both target separator normalization and NTFS directory-link flavor.
+    let framework_headers =
+        sdk_dir.join("System/Library/Frameworks/CoreFoundation.framework/Headers");
+    if !framework_headers.is_dir() {
+        return Err(SoldrError::Archive(format!(
+            "Apple SDK validation failed: {} is not a traversable directory",
+            framework_headers.display()
+        )));
+    }
+    std::fs::read_dir(&framework_headers).map_err(|err| {
+        SoldrError::Archive(format!(
+            "Apple SDK validation failed: {} cannot be enumerated: {err}",
+            framework_headers.display()
+        ))
+    })?;
+    Ok(())
+}
+
 fn extract_tar_zst_tree<R: std::io::Read>(reader: R, dest: &Path) -> Result<(), SoldrError> {
     let zst = zstd::stream::read::Decoder::new(reader)
         .map_err(|e| SoldrError::Archive(format!("zstd decoder init: {e}")))?;
     let mut archive = tar::Archive::new(zst);
-    for item in archive
-        .entries()
-        .map_err(|e| SoldrError::Archive(format!("tar.zst entries: {e}")))?
-    {
-        let mut entry = item.map_err(|e| SoldrError::Archive(format!("tar.zst entry: {e}")))?;
-        let path = entry
-            .path()
-            .map_err(|e| SoldrError::Archive(format!("tar.zst path: {e}")))?
-            .into_owned();
-        if is_optional_man_entry(&path) {
-            // Drain skipped entries so the tar reader remains aligned for
-            // the following (essential) SDK files.
-            std::io::copy(&mut entry, &mut std::io::sink())
-                .map_err(|e| SoldrError::Archive(format!("tar.zst skip: {e}")))?;
-            continue;
+    unpack_tar_filtered(&mut archive, dest, |path| {
+        if is_optional_man_entry(path) {
+            return Ok(true);
         }
-        validate_archive_path(&path)?;
-        if let Some(parent) = dest.join(&path).parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        entry
-            .unpack_in(dest)
-            .map_err(|e| SoldrError::Archive(format!("tar.zst unpack: {e}")))?;
-    }
-    Ok(())
+        validate_archive_path(path)?;
+        Ok(false)
+    })
 }
 
 fn is_optional_man_entry(path: &Path) -> bool {
@@ -766,6 +807,42 @@ mod tests {
     crate::timed_test!(supported_versions_include_default, {
         assert!(SUPPORTED_APPLE_SDK_VERSIONS.contains(&MANAGED_APPLE_SDK_VERSION));
     });
+
+    crate::timed_test!(cache_stamp_requires_current_extraction_format, {
+        let selection = AppleSdkSelection {
+            version: "14.5".to_string(),
+            shape: AppleSdkShape::ThinX86_64,
+        };
+        let temp = tempfile::tempdir().expect("tempdir");
+        let stamp = temp.path().join(".complete");
+        std::fs::write(&stamp, "14.5 darwin-x86_64").expect("write legacy stamp");
+        assert!(
+            !cache_stamp_is_current(&stamp, &selection),
+            "legacy extraction stamps must trigger self-healing"
+        );
+        std::fs::write(&stamp, expected_cache_stamp(&selection)).expect("write current stamp");
+        assert!(cache_stamp_is_current(&stamp, &selection));
+    });
+
+    crate::timed_test!(
+        validate_extracted_sdk_requires_readable_header_and_framework_dir,
+        {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let sdk = temp.path().join("MacOSX14.5.sdk");
+            let pthread = sdk.join("usr/include/pthread.h");
+            let headers = sdk.join("System/Library/Frameworks/CoreFoundation.framework/Headers");
+            std::fs::create_dir_all(headers).expect("create framework headers");
+            std::fs::create_dir_all(pthread.parent().expect("header parent"))
+                .expect("create include dir");
+            std::fs::write(&pthread, "header").expect("write pthread header");
+            assert!(validate_extracted_sdk(&sdk).is_ok());
+
+            std::fs::remove_file(&pthread).expect("remove pthread header");
+            let err =
+                validate_extracted_sdk(&sdk).expect_err("missing header must fail validation");
+            assert!(err.to_string().contains("pthread.h"));
+        }
+    );
 
     crate::timed_test!(find_extracted_sdk_dir_accepts_single_sdk_dir, {
         let tmp = tempfile::tempdir().expect("tmpdir");
