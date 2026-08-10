@@ -26,6 +26,7 @@ repository = "https://github.com/kyren/hashlink"
 
 [dependencies.hashbrown]
 version = "0.17"
+features = ["default-hasher"]
 
 default-features = false
 
