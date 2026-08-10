@@ -100,15 +100,14 @@ fn run_broker_serve(program: &str) -> Result<(), SoldrError> {
     // after this point, so concurrent starters cannot split endpoint ownership.
     let _ownership_file = ownership_file;
 
-    println!("soldr broker: binding at {socket_path} (program={program})");
-
     // soldr#2442 slice 1: one broker/daemon generation-token authority per
-    // broker process, minted at startup (broker half from OS randomness) and
-    // shared — memory-only, never persisted — with both the launcher (which
-    // mints each route's daemon half at launch) and the SESSION relay (which
-    // validates the composite token a client presents). Rotating the broker
-    // half invalidates every session across every daemon at once; invalidating
-    // one daemon's half signals only that daemon's sessions.
+    // broker process, minted here (broker half from OS randomness) and shared —
+    // memory-only, never persisted — with the launcher, which mints each
+    // route's daemon half at launch. Minted BEFORE the "binding at" line so it
+    // stays out of the latency-sensitive window between that readiness line and
+    // the control-socket bind (the window `two_brokers_against_one_program_never_coexist`
+    // guards). Rotating the broker half invalidates every session across every
+    // daemon at once; invalidating one daemon's half signals only that daemon's.
     let session_tokens = match SessionTokenAuthority::new() {
         Ok(authority) => std::sync::Arc::new(std::sync::Mutex::new(authority)),
         Err(err) => {
@@ -117,6 +116,8 @@ fn run_broker_serve(program: &str) -> Result<(), SoldrError> {
             )));
         }
     };
+
+    println!("soldr broker: binding at {socket_path} (program={program})");
 
     // SESSION 0x5350 companion relay (soldr#2388 Step 7 / #2386 Option A, topology
     // (c)): a second socket serving the async full-proxy relay to the daemon's
