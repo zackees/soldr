@@ -247,6 +247,7 @@ dependencies = [
  "cfg-if",
  "constant_time_eq",
  "cpufeatures 0.3.0",
+ "memmap2",
  "rayon-core",
 ]
 
@@ -1394,8 +1395,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "798de1433ba514cc6c04c4144c2469af81396e4906195218737c776d47769572"
 dependencies = [
  "doctest-file",
+ "futures-core",
  "libc",
  "recvmsg",
+ "tokio",
  "widestring",
  "windows-sys 0.61.2",
 ]
@@ -2494,12 +2497,14 @@ dependencies = [
 
 [[package]]
 name = "running-process"
-version = "4.8.1"
+version = "4.10.1"
 dependencies = [
  "anyhow",
  "blake3",
+ "bytes",
  "clap",
  "dirs",
+ "futures-util",
  "getrandom 0.4.3",
  "interprocess",
  "libc",
@@ -2508,16 +2513,27 @@ dependencies = [
  "prost-build",
  "prost-types",
  "protox",
+ "running-process-platform-internal",
  "serde",
  "serde_json",
  "sha2",
  "sysinfo",
  "thiserror",
  "tokio",
+ "tokio-util",
  "toml",
  "winapi",
  "windows-sys 0.59.0",
  "x11rb",
+]
+
+[[package]]
+name = "running-process-platform-internal"
+version = "4.10.1"
+dependencies = [
+ "libc",
+ "tokio",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2880,6 +2896,7 @@ dependencies = [
  "flate2",
  "fs2",
  "hex",
+ "interprocess",
  "jwalk",
  "libc",
  "prost",
@@ -2939,6 +2956,7 @@ dependencies = [
  "filetime",
  "fs2",
  "hex",
+ "interprocess",
  "libc",
  "prost",
  "redb",

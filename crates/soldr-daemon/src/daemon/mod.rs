@@ -29,6 +29,11 @@ pub mod client;
 /// could not hand back to the wrapper. The artifact that distinguishes
 /// "rustc rejected your code" from "soldr lost a finished compile".
 pub mod compile_delivery;
+/// Shared argv → `CompileRequest` parser (soldr#2388 Step 6). One parser for
+/// the `RUSTC_WRAPPER` client (via `soldr_cli::compile_dispatch`) and the
+/// daemon's SESSION codec-bridge, so both convert argv+env+cwd identically.
+pub mod compile_request;
+pub(crate) mod compile_sink;
 /// Per-compile JSONL phase trace, gated by `SOLDR_DAEMON_TRACE`.
 /// Diagnostic-only — see `compile_trace.rs` for format. Wired in by
 /// soldr#981 to identify the per-compile dispatch bottleneck that
@@ -52,6 +57,20 @@ pub mod maintenance;
 pub mod protocol;
 pub mod server;
 pub mod service_definition;
+/// SESSION `0x5350` endpoint per-connection handler (soldr#2388 Step 6d/7 /
+/// #2386 Option A): drives the `BackendEndpointMux` (probe + `0x5350`) and, on a
+/// SESSION frame, replays the buffer into [`session_serve::serve_session_compile`].
+/// `pub` (not `pub(crate)`): the deterministic `daemon_session_endpoint_path` +
+/// the serve entry points are consumed by soldr-cli's broker relay + SESSION
+/// e2e anchor.
+pub mod session_endpoint;
+/// SESSION `0x5350` compile serve — the codec-bridge (soldr#2388 Step 6c):
+/// SessionStart → shared parser → embedded zccache → `SessionFrame` output.
+pub(crate) mod session_serve;
+/// SESSION `0x5350` output sink (soldr#2388 Step 6) — renders a compile's
+/// captured stdout/stderr/exit as running-process `SessionFrame`s for the
+/// broker-relayed SESSION wire.
+pub(crate) mod session_sink;
 /// soldr#1838 Phase 1 -- progressive heartbeats so a long daemon wait
 /// says what it is waiting on instead of going silent to the backstop.
 pub(crate) mod wait_heartbeat;

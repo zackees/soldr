@@ -38,7 +38,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::core::{SoldrError, SoldrPaths};
 use crate::daemon::client;
-use crate::daemon::protocol::{CompileLifecycle, CompileRequest};
+use crate::daemon::protocol::CompileRequest;
 
 /// Escape-hatch env var (soldr#1300): when truthy (`1`, `true`, ...),
 /// a daemon-unavailability failure after the retry budget hard-fails
@@ -110,44 +110,11 @@ pub(crate) const DAEMON_UNAVAILABLE_MARKER_TTL: Duration = Duration::from_secs(3
 /// denylist (session noise still never crosses the wire) and by the
 /// fact that zccache's fingerprint only hashes `CARGO_*` vars, so the
 /// extra forwarded vars do not churn cache keys.
-pub fn is_compile_env_var(name: &str) -> bool {
-    // Desktop / login-session plumbing. Prefix matches.
-    const NOISE_PREFIXES: &[&str] = &[
-        "XDG_",     // XDG_SESSION_TYPE, XDG_RUNTIME_DIR, ...
-        "GNOME_",   // GNOME_TERMINAL_SERVICE, ...
-        "GDM",      // GDM_LANG, GDMSESSION
-        "DESKTOP_", // DESKTOP_SESSION-adjacent
-    ];
-    if NOISE_PREFIXES.iter().any(|p| name.starts_with(p)) {
-        return false;
-    }
-    // Shell-prompt / terminal-session state. Exact matches.
-    !matches!(
-        name,
-        "PROMPT"
-            | "PS1"
-            | "PS2"
-            | "PS4"
-            | "OLDPWD"
-            | "SHLVL"
-            | "DISPLAY"
-            | "WAYLAND_DISPLAY"
-            | "DBUS_SESSION_BUS_ADDRESS"
-            | "SESSION_MANAGER"
-            | "LS_COLORS"
-            | "LSCOLORS"
-            | "PSModulePath"
-            | "ChocolateyInstall"
-            | "ChocolateyLastPathUpdate"
-            | "WSL_DISTRO_NAME"
-            | "WSL_INTEROP"
-            | "WT_SESSION"
-            | "WT_PROFILE_ID"
-            | "WINDOWID"
-            | "COLORTERM"
-            | "VTE_VERSION"
-    )
-}
+///
+/// Moved to the shared daemon-side parser in soldr#2388 Step 6 (so the wrapper
+/// and the SESSION codec-bridge filter env identically); re-exported here so
+/// existing callers and `tests/phase5_contract.rs` keep this path.
+pub use crate::daemon::compile_request::is_compile_env_var;
 
 /// Build a `CompileRequest` from a rustc-style argv. `argv[0]` is the
 /// rustc path (or clippy-driver, etc.) and `argv[1..]` are the
@@ -161,54 +128,11 @@ pub fn build_compile_request(rustc_argv: &[String]) -> CompileRequest {
     let cwd = std::env::current_dir()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
-    let env: Vec<(String, String)> = std::env::vars()
-        .filter(|(k, _)| is_compile_env_var(k))
-        .collect();
-    CompileRequest {
-        args: rustc_argv.to_vec(),
-        cwd,
-        env,
-        stdin: Vec::new(),
-        lifecycle: build_compile_lifecycle(rustc_argv),
-        ipc_busy_retries: 0,
-    }
-}
-
-fn build_compile_lifecycle(rustc_argv: &[String]) -> Option<CompileLifecycle> {
-    let session_id = std::env::var(crate::cache_lib::SOLDR_BUILD_SESSION_ID_ENV_VAR)
-        .ok()?
-        .parse::<u64>()
-        .ok()?;
-    let rustc_args = rustc_argv.get(1..).unwrap_or_default();
-    let target_dir = crate::cache_lib::target_registry::resolve_workspace_target_dir(rustc_args)?;
-    Some(CompileLifecycle {
-        session_id,
-        crate_name: parse_crate_name(rustc_args)
-            .unwrap_or("unknown")
-            .to_string(),
-        target_dir: target_dir.display().to_string(),
-        started_at_ms: current_unix_ms(),
-    })
-}
-
-fn parse_crate_name(args: &[String]) -> Option<&str> {
-    let mut args = args.iter();
-    while let Some(arg) = args.next() {
-        if arg == "--crate-name" {
-            return args.next().map(String::as_str);
-        }
-        if let Some(value) = arg.strip_prefix("--crate-name=") {
-            return Some(value);
-        }
-    }
-    None
-}
-
-fn current_unix_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as i64)
-        .unwrap_or(0)
+    // The argv/env→request parsing is the shared daemon-side function (soldr#2388
+    // Step 6) so the wrapper and the SESSION codec-bridge parse identically. The
+    // wrapper's own process cwd/env is what feeds it here; the daemon feeds a
+    // SessionStart's carried cwd/env.
+    crate::daemon::compile_request::build_compile_request_from(rustc_argv, cwd, std::env::vars())
 }
 
 /// Read the spawn-retry budget from env (overridable for tests) or
@@ -718,6 +642,20 @@ where
     O: Write,
     E: Write,
 {
+    // SESSION hot path (soldr#2388 Step 7b): opt-in via `SOLDR_USE_SESSION`. All
+    // policy lives in `session_transport::session_hot_path`; here we only route
+    // its outcome. A mid-stream failure is a hard error (a legacy retry would
+    // double-print); anything else falls through to the unchanged legacy path.
+    match crate::session_transport::session_hot_path(rustc_argv) {
+        crate::session_transport::SessionHotPathOutcome::Served(exit_code) => return Ok(exit_code),
+        crate::session_transport::SessionHotPathOutcome::HardFail(err) => {
+            return Err(DispatchError::Setup(SoldrError::Other(format!(
+                "SESSION compile failed after output began (no safe legacy fallback): {err}"
+            ))));
+        }
+        crate::session_transport::SessionHotPathOutcome::Fallthrough => {}
+    }
+
     let paths = SoldrPaths::new().map_err(|e| {
         DispatchError::Setup(SoldrError::Other(format!("resolve soldr paths: {e}")))
     })?;
@@ -777,22 +715,10 @@ where
     let budget = resolved_spawn_retry_budget();
     let start = Instant::now();
     let deadline = start + budget;
-    let mut prepared_spawn = None;
-    let spawn_err = if spawn_on_first_failure {
-        match crate::binaries::ensure_daemon_executable_handoff() {
-            Ok(_) => match crate::daemon::lifecycle::try_spawn_detached_until(Some(deadline)) {
-                Ok(prepared) => {
-                    prepared_spawn = prepared;
-                    None
-                }
-                Err(error) => Some(format!("initial daemon spawn failed: {error:?}")),
-            },
-            Err(error) => Some(format!(
-                "canonical soldr-daemon handoff materialization failed: {error}"
-            )),
-        }
+    let (prepared_spawn, spawn_err) = if spawn_on_first_failure {
+        crate::broker_discovery_gate::spawn_or_confirm_broker_daemon(deadline)
     } else {
-        None
+        (None, None)
     };
     let result = retry_within_budget(
         sock_path,

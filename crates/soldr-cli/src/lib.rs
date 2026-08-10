@@ -166,11 +166,15 @@ pub mod binaries;
 /// xwin-cache materialization + clang-shim install + env var setup.
 pub mod blessed_build;
 pub mod bootstrap;
+pub mod broker_cmd;
+pub(crate) mod broker_discovery_gate;
+pub mod broker_spawn;
 pub mod build_from_source_cmd;
 /// soldr#1790 — always-on hierarchical per-build XML log
 /// (`<soldr root>/logs/builds/<timestamp>-<cwd-slug>.xml`). See the
 /// module doc for the schema and the derived-link / cpu_ms caveats.
 pub mod build_log;
+pub mod builtin_verbs;
 pub mod cache;
 pub mod cargo_diagnostics;
 pub mod cargo_front_door;
@@ -251,6 +255,7 @@ pub mod pyo3_detect;
 pub mod release_sidecar;
 pub mod rust_plan;
 pub mod save_load;
+pub mod session_transport;
 pub mod shim_dir;
 pub(crate) mod shim_hygiene;
 pub mod shim_materialize;
