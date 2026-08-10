@@ -119,6 +119,15 @@ timed_test!(
         let dylint_release = "1.89.0-nightly";
         let dylint_commit = "0123456789abcdef0123456789abcdef01234567";
         let dylint_identity = format!("{dylint_channel}|{dylint_release}|{dylint_commit}");
+        let driver_root = root.join("drivers");
+        let driver = fake_script_path(&driver_root.join(&dylint_channel), "dylint-driver");
+        fs::create_dir_all(driver.parent().expect("driver parent"))
+            .expect("create prebuilt driver dir");
+        #[cfg(windows)]
+        let driver_script = "@echo off\necho dylint-driver 6.0.1\nexit /b 0\n";
+        #[cfg(not(windows))]
+        let driver_script = "#!/bin/sh\nprintf 'dylint-driver 6.0.1\\n'\n";
+        write_fake_script(&driver, driver_script);
         let rustc = install_versioned_fake_rustc(
             "rustc 1.89.0-nightly (0123456789abcdef0123456789abcdef01234567 2026-05-26)",
         );
@@ -132,6 +141,7 @@ timed_test!(
             .env("SOLDR_DYLINT_CONFIGURED_RUSTC_RELEASE", dylint_release)
             .env("SOLDR_DYLINT_CONFIGURED_RUSTC_COMMIT_HASH", dylint_commit)
             .env("SOLDR_DYLINT_PREPARED_IDENTITY", dylint_identity)
+            .env("DYLINT_DRIVER_PATH", driver_root)
             .env("PATH", prepend_to_path(&tools))
             .output()
             .expect("run soldr lint rust");

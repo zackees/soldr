@@ -184,9 +184,8 @@ fn source_build_cache_disabled() -> bool {
 }
 
 /// Route the source-build `cargo install`'s rustc invocations through
-/// soldr's compiler-named zccache wrapper shim so tool source builds
-/// (notably cargo-dylint on hosts without a prebuilt asset) hit the
-/// shared object cache instead of recompiling every dependency from
+/// soldr's compiler-named zccache wrapper shim so explicit tool source builds
+/// hit the shared object cache instead of recompiling every dependency from
 /// scratch on each fresh machine/container (issue #1788). Best-effort:
 /// if the shim cannot be materialized the build simply runs uncached,
 /// exactly like the historical behavior. The wrapper itself degrades to

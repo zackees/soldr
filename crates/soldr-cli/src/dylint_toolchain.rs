@@ -3,9 +3,12 @@
 use serde::Deserialize;
 use std::{
     collections::BTreeMap,
+    io::Read,
     path::{Path, PathBuf},
+    process::Stdio,
     time::{Duration, SystemTime},
 };
+use wait_timeout::ChildExt;
 
 use crate::core::{
     command_output_with_timeout, suppress_windows_console_window, SoldrError, SoldrPaths,
@@ -74,6 +77,109 @@ impl DylintToolchainPlan {
         command.env(PREPARED_IDENTITY_ENV_VAR, self.cache_identity());
         apply_dylint_driver_path(command);
     }
+}
+
+/// Refuse to launch cargo-dylint unless its exact toolchain driver already
+/// exists and answers the bounded version probe. Upstream cargo-dylint builds
+/// this driver automatically when it is absent or stale; preflighting the same
+/// version signal is what makes Soldr's binary-or-exit policy cover the driver,
+/// not just the two CLI executables.
+pub(crate) fn require_prebuilt_driver(
+    plan: &DylintToolchainPlan,
+    paths: &SoldrPaths,
+) -> Result<PathBuf, SoldrError> {
+    let driver_root = std::env::var_os("DYLINT_DRIVER_PATH")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| paths.root.join("dylint").join("drivers"));
+    let driver_channel = if is_fully_qualified_nightly(&plan.channel) {
+        plan.channel.clone()
+    } else {
+        let host = TargetTriple::host()?.triple();
+        format!("{}-{host}", plan.channel)
+    };
+    let driver_dir = driver_root.join(&driver_channel);
+    let driver = ["dylint-driver", "dylint-driver.exe", "dylint-driver.cmd"]
+        .into_iter()
+        .map(|name| driver_dir.join(name))
+        .find(|candidate| candidate.is_file())
+        .ok_or_else(|| unavailable_driver_error(plan, "prebuilt driver is missing"))?;
+
+    let mut command = std::process::Command::new(&driver);
+    command
+        .arg("-V")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    suppress_windows_console_window(&mut command);
+    let mut child = command.spawn().map_err(|error| {
+        unavailable_driver_error(plan, &format!("version probe could not start: {error}"))
+    })?;
+    let status = match child.wait_timeout(Duration::from_secs(2)) {
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(unavailable_driver_error(
+                plan,
+                &format!("version probe failed: {error}"),
+            ));
+        }
+        Ok(Some(status)) => status,
+        Ok(None) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(unavailable_driver_error(
+                plan,
+                "version probe exceeded the 2-second deadline",
+            ));
+        }
+    };
+    let mut stdout = String::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        pipe.read_to_string(&mut stdout).map_err(|error| {
+            unavailable_driver_error(plan, &format!("version probe output failed: {error}"))
+        })?;
+    }
+    if !status.success() {
+        return Err(unavailable_driver_error(
+            plan,
+            &format!("version probe exited with {status}"),
+        ));
+    }
+    let expected = crate::fetch::known_tools::lookup_by_crate("cargo-dylint")
+        .and_then(|spec| spec.pinned_version)
+        .ok_or_else(|| SoldrError::Other("cargo-dylint must have a registry pin".into()))?;
+    let actual = dylint_driver_version(&stdout);
+    if actual != Some(expected) {
+        return Err(unavailable_driver_error(
+            plan,
+            &format!("driver version is {actual:?}, expected {expected:?}"),
+        ));
+    }
+    Ok(driver)
+}
+
+fn dylint_driver_version(stdout: &str) -> Option<&str> {
+    stdout
+        .split_whitespace()
+        .last()
+        .filter(|value| !value.is_empty())
+}
+
+fn unavailable_driver_error(plan: &DylintToolchainPlan, reason: &str) -> SoldrError {
+    let host = TargetTriple::host()
+        .map(|target| target.triple())
+        .unwrap_or_else(|_| "unknown-host".to_string());
+    let version = crate::fetch::known_tools::lookup_by_crate("cargo-dylint")
+        .and_then(|spec| spec.pinned_version)
+        .unwrap_or("unknown");
+    SoldrError::Other(format!(
+        "Dylint v{version} is not built for this machine (host: {host}; missing or unusable \
+         component: dylint-driver for {}). Soldr will not build Dylint from source. \
+         Cause: {reason}. Corrective action: install the Dylint v{version} driver for {host} \
+         under DYLINT_DRIVER_PATH, publish a matching prebuilt release asset, or select a \
+         Dylint version that provides {host} prebuilts.",
+        plan.channel
+    ))
 }
 
 /// Give the dylint driver cargo-dylint builds a stable soldr-owned
@@ -259,7 +365,9 @@ fn install_and_observe_explicit_nightly(channel: &str) -> Result<DylintToolchain
     })
 }
 
-fn prepare_resolved(mut plan: DylintToolchainPlan) -> Result<DylintToolchainPlan, SoldrError> {
+pub(crate) fn prepare_resolved(
+    mut plan: DylintToolchainPlan,
+) -> Result<DylintToolchainPlan, SoldrError> {
     let prepared_identity = plan.cache_identity();
     if non_empty_env(PREPARED_IDENTITY_ENV_VAR).as_deref() != Some(prepared_identity.as_str()) {
         ensure_installed(&plan)?;
@@ -803,6 +911,14 @@ mod tests {
     use super::*;
 
     const COMMIT: &str = "31a9463c6e2794a59ce57a8f37abc6966afc2a58";
+
+    crate::timed_test!(parses_prebuilt_dylint_driver_version, {
+        assert_eq!(
+            dylint_driver_version("dylint-driver 6.0.1\n"),
+            Some("6.0.1")
+        );
+        assert_eq!(dylint_driver_version(""), None);
+    });
 
     fn sample_map(selected: &str) -> Vec<u8> {
         format!(
