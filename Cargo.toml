@@ -133,6 +133,20 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # (soldr-daemon + the vendored zccache submodule) — so every consumer resolves
 # to the one vendored copy.
 running-process = { path = "_vender/running-process/crates/running-process" }
+# soldr#2406: use the vendored notify with bumped windows-sys (0.52→0.61)
+# and HANDLE type fixes for 0.59+ API to converge the dependency graph.
+notify = { path = "_vender/notify" }
+# soldr#2406: bump filetime_creation's windows-sys (0.52→0.61) to converge.
+filetime_creation = { path = "_vender/patches/filetime_creation" }
+# soldr#2406: relax windows-sys caps across the cap-std ecosystem so the
+# entire workspace converges on a single windows-sys version. Upstream
+# caps at <=0.59; the APIs used are stable through 0.61.
+winx = { path = "_vender/winx" }
+cap-primitives = { path = "_vender/cap-primitives" }
+cap-fs-ext = { path = "_vender/cap-fs-ext" }
+cap-std = { path = "_vender/cap-std" }
+fs-set-times = { path = "_vender/fs-set-times" }
+io-extras = { path = "_vender/io-extras" }
 
 [patch."https://github.com/zackees/running-process.git"]
 running-process = { path = "_vender/running-process/crates/running-process" }
