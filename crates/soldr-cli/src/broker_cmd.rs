@@ -323,20 +323,41 @@ fn run_broker_stop(program: &str) -> Result<(), SoldrError> {
         )));
     };
 
-    // Verified kill list: broker first (stops admission, releases endpoints +
-    // ownership lock on exit), then the daemon routes it owned.
-    let mut targets: Vec<(&str, u32)> = vec![("broker", broker_pid)];
-    targets.extend(daemon_pids.iter().map(|pid| ("daemon", *pid)));
+    // soldr#2442 Option B: prefer a cooperative drain. Ask the broker to shut
+    // itself down gracefully — it stops admission, drains in-flight sessions as
+    // the accept loop's worker scope joins, and exits. Brokers that predate the
+    // SHUTDOWN verb answer exit_code 2 (or the request errors), and we fall back
+    // to terminating the broker by its verified PID.
+    let cooperative = try_cooperative_shutdown(&socket_path);
+    if cooperative {
+        println!(
+            "soldr broker: requested cooperative shutdown (drain deadline {}ms)",
+            broker_stop_deadline().as_millis()
+        );
+    }
 
-    for (kind, pid) in &targets {
+    // The broker does not reap its own daemon routes on shutdown, so reap them
+    // here regardless. Terminate the broker by PID only when cooperative drain
+    // was unavailable; otherwise let it exit on its own and force-kill below
+    // only if it overruns the deadline.
+    let mut terminate: Vec<(&str, u32)> = Vec::new();
+    if !cooperative {
+        terminate.push(("broker", broker_pid));
+    }
+    terminate.extend(daemon_pids.iter().map(|pid| ("daemon", *pid)));
+    for (kind, pid) in &terminate {
         if let Err(err) = signal_terminate(*pid) {
             eprintln!("soldr broker: could not signal {kind} pid {pid} to terminate: {err}");
         }
     }
 
+    // Watch the broker too, so a cooperative drain that overruns the deadline is
+    // force-killed rather than left running.
+    let mut watch: Vec<(&str, u32)> = vec![("broker", broker_pid)];
+    watch.extend(daemon_pids.iter().map(|pid| ("daemon", *pid)));
     let deadline = std::time::Instant::now() + broker_stop_deadline();
     loop {
-        let alive: Vec<(&str, u32)> = targets
+        let alive: Vec<(&str, u32)> = watch
             .iter()
             .copied()
             .filter(|(_, pid)| process_is_alive(*pid))
@@ -366,6 +387,26 @@ fn run_broker_stop(program: &str) -> Result<(), SoldrError> {
         );
     }
     Ok(())
+}
+
+/// Ask the broker to shut down cooperatively via the running-process
+/// `SHUTDOWN` admin verb (soldr#2442 Option B), carrying the drain deadline.
+/// Returns true if the broker acknowledged (exit_code 0); false if it does not
+/// support the verb (exit_code 2) or the request failed — the caller then falls
+/// back to verified-PID termination.
+fn try_cooperative_shutdown(socket_path: &str) -> bool {
+    use running_process::broker::client::send_admin_request;
+    use running_process::broker::protocol::{AdminRequest, AdminVerb};
+
+    let request = AdminRequest {
+        verb: AdminVerb::Shutdown as i32,
+        drain_deadline_ms: broker_stop_deadline().as_millis() as u64,
+        ..Default::default()
+    };
+    matches!(
+        send_admin_request(socket_path, request),
+        Ok(reply) if reply.exit_code == 0
+    )
 }
 
 fn broker_ownership_file(program: &str) -> Result<std::fs::File, SoldrError> {
