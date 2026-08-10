@@ -114,6 +114,12 @@ soldr_cli::timed_test!(
             stop_out.contains("stopped"),
             "stop must confirm it stopped the broker; got:\n{stop_out}"
         );
+        // soldr#2442 Option B: a current broker supports the SHUTDOWN verb, so
+        // stop must take the cooperative-drain path (not verified-PID fallback).
+        assert!(
+            stop_out.contains("cooperative shutdown"),
+            "stop against a current broker must use cooperative shutdown; got:\n{stop_out}"
+        );
 
         // The spawned broker process must actually exit.
         let exit_deadline = Instant::now() + STOP_EXIT_BUDGET;
