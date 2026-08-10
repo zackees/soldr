@@ -182,12 +182,29 @@ fn run_broker_serve(program: &str) -> Result<(), SoldrError> {
     {
         std::thread::Builder::new()
             .name("soldr-broker-daemon-launch".into())
-            .spawn(|| match crate::daemon::lifecycle::try_spawn_detached() {
-                Ok(()) => {}
-                Err(err) => eprintln!(
-                    "soldr broker: could not launch soldr-daemon ({err:?}); \
-                     compiles will fail-fast until a daemon is available."
-                ),
+            .spawn(|| {
+                // soldr#2388 tombstone: an explicit `soldr daemon stop` suppresses
+                // implicit resurrections for a short window. This proactive launch
+                // is the one implicit-start path, so honor it — otherwise a stop
+                // would immediately trigger the thundering-herd restart the
+                // tombstone exists to prevent. `soldr daemon start` clears it.
+                if let Ok(paths) = crate::core::SoldrPaths::new() {
+                    if crate::daemon::tombstone::is_active(&paths) {
+                        eprintln!(
+                            "soldr broker: daemon tombstone active (recent `soldr daemon \
+                             stop`); skipping proactive launch — run `soldr daemon start` \
+                             to override."
+                        );
+                        return;
+                    }
+                }
+                match crate::daemon::lifecycle::try_spawn_detached() {
+                    Ok(()) => {}
+                    Err(err) => eprintln!(
+                        "soldr broker: could not launch soldr-daemon ({err:?}); \
+                         compiles will fail-fast until a daemon is available."
+                    ),
+                }
             })
             .ok();
     }

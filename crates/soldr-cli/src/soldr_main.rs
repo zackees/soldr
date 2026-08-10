@@ -1432,10 +1432,10 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
             foreground,
             idle_timeout,
         } => {
+            crate::daemon::tombstone::clear(&paths); // explicit start lifts the stop tombstone (soldr#2388)
             if foreground {
-                // soldr#2016: re-exec here too (bypasses `daemon_entry::run`).
-                // soldr#2039: the marker-aware helper detaches a managed start
-                // so it never pops a `soldr-daemon` console (see relocate.rs).
+                // soldr#2016/#2039: re-exec + marker-aware detached start (no
+                // `soldr-daemon` console; see relocate.rs).
                 crate::daemon::lifecycle::reexec_from_runtime_root_for_daemon_entry();
                 let idle = if idle_timeout == 0 {
                     ServerOptions::default().idle_timeout
@@ -1443,10 +1443,8 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
                     Duration::from_secs(idle_timeout)
                 };
                 let opts = ServerOptions { idle_timeout: idle };
-                // Already inside main()'s Tokio runtime, so the sync
-                // `server::run` would build a second one and panic with
-                // "Cannot start a runtime from within a runtime" (soldr#985).
-                // `run_async` does the same work without a runtime.
+                // Inside main()'s Tokio runtime already; run_async avoids the
+                // nested-runtime panic (soldr#985).
                 run_async(opts)
                     .await
                     .map_err(|e| SoldrError::Other(format!("soldr-daemon failed: {e:?}")))?;
@@ -1465,6 +1463,7 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
             }
         }
         DaemonSubcommand::Stop => {
+            crate::daemon::tombstone::plant(&paths, crate::daemon::tombstone::TOMBSTONE_DURATION);
             match client::shutdown(&sock) {
                 Ok(responder) => {
                     let outcome = crate::daemon::lifecycle::wait_for_shutdown_responder(
