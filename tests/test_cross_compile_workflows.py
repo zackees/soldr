@@ -705,6 +705,22 @@ def test_windows_wheel_does_not_reuse_archive_executable_output() -> None:
     )
 
 
+def test_partial_immutable_release_can_recover_missing_pypi_wheels() -> None:
+    release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
+    pypi_job = _job_block(release, "publish-pypi", "publish-npm")
+
+    assert (
+        "github_release_immutable: ${{ steps.validate.outputs.github_release_immutable }}"
+        in release
+    )
+    assert 'gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${version}"' in release
+    assert "github_release_immutable != 'true'" in release
+    assert "needs.verify_github_release.result == 'success'" in pypi_job
+    assert "github.event_name == 'workflow_dispatch'" in pypi_job
+    assert "inputs.force_pypi_publish" in pypi_job
+    assert "skip-existing: true" in pypi_job
+
+
 def test_cross_compile_docs_match_current_blessed_surfaces() -> None:
     docs = (REPO_ROOT / "docs" / "CROSS_COMPILE.md").read_text(encoding="utf-8")
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")

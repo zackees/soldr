@@ -45,6 +45,7 @@ jobs:
       should_publish_npm: ${{ steps.validate.outputs.should_publish_npm }}
       tag_exists: ${{ steps.validate.outputs.tag_exists }}
       github_release_complete: ${{ steps.validate.outputs.github_release_complete }}
+      github_release_immutable: ${{ steps.validate.outputs.github_release_immutable }}
       pypi_has_version: ${{ steps.validate.outputs.pypi_has_version }}
       pypi_file_count: ${{ steps.validate.outputs.pypi_file_count }}
       npm_has_version: ${{ steps.validate.outputs.npm_has_version }}
@@ -104,6 +105,7 @@ jobs:
           fi
 
           github_release_complete=false
+          github_release_immutable=false
           github_release_missing_assets="release-not-found"
           expected_assets=(
             "soldr-${version}-x86_64-unknown-linux-gnu.tar.zst"
@@ -124,9 +126,10 @@ jobs:
             "soldr-${cargo_version}-py3-none-win_arm64.whl"
             "soldr-${version}-SHA256SUMS.txt"
           )
-          release_json="$(gh release view "$version" --repo "$GITHUB_REPOSITORY" --json assets,isDraft 2>/dev/null || true)"
+          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${version}" 2>/dev/null || true)"
           if [[ -n "$release_json" ]]; then
-            is_draft="$(jq -r '.isDraft' <<< "$release_json")"
+            is_draft="$(jq -r '.draft' <<< "$release_json")"
+            github_release_immutable="$(jq -r '.immutable // false' <<< "$release_json")"
             # No `mapfile`: this workflow also runs on macOS, whose bash is
             # 3.2. Keeping one style across the file means a step cannot be
             # re-gated onto a darwin lane and break there.
@@ -175,7 +178,7 @@ jobs:
           fi
 
           should_publish_github_release=false
-          if [[ "$github_release_complete" != "true" ]]; then
+          if [[ "$github_release_complete" != "true" && "$github_release_immutable" != "true" ]]; then
             should_publish_github_release=true
           fi
 
@@ -204,6 +207,7 @@ jobs:
             echo "- npm has candidate: \`$npm_has_version\`"
             echo "- GitHub tag exists: \`$tag_exists\`"
             echo "- GitHub release complete: \`$github_release_complete\`"
+            echo "- GitHub release immutable: \`$github_release_immutable\`"
             echo "- GitHub release missing assets: \`${github_release_missing_assets:-none}\`"
             echo "- force PyPI publish: \`$force_pypi_publish\`"
             echo "- publish GitHub release assets: \`$should_publish_github_release\`"
@@ -218,6 +222,7 @@ jobs:
             echo "should_publish_npm=$should_publish_npm"
             echo "tag_exists=$tag_exists"
             echo "github_release_complete=$github_release_complete"
+            echo "github_release_immutable=$github_release_immutable"
             echo "pypi_has_version=$pypi_has_version"
             echo "pypi_file_count=$pypi_file_count"
             echo "npm_has_version=$npm_has_version"
@@ -1867,7 +1872,7 @@ jobs:
       - prepare
       - build
       - publish
-    if: always() && needs.prepare.outputs.should_release == 'true' && needs.build.result == 'success'
+    if: always() && needs.prepare.outputs.should_release == 'true' && needs.build.result == 'success' && needs.prepare.outputs.github_release_immutable != 'true'
     runs-on: ubuntu-24.04
     # Asset-set assertion against the GitHub API; observed max 0.1 min.
     timeout-minutes: 15
@@ -1930,10 +1935,9 @@ jobs:
       - prepare
       - build
       - verify_github_release
-    # Registry publishes must happen only after the GitHub Release has
-    # all expected binary/wheel assets. An existing tag or release is not
-    # enough; verify_github_release checks the actual asset set.
-    if: always() && needs.prepare.outputs.should_publish_pypi == 'true' && needs.verify_github_release.result == 'success'
+    # Explicit recovery can add missing PyPI files when an earlier partial
+    # publish made the corresponding GitHub Release immutable.
+    if: always() && needs.prepare.outputs.should_publish_pypi == 'true' && (needs.verify_github_release.result == 'success' || (needs.prepare.outputs.github_release_immutable == 'true' && github.event_name == 'workflow_dispatch' && inputs.force_pypi_publish))
     runs-on: ubuntu-24.04
     # Wheel download + twine upload; observed max 1.9 min.
     timeout-minutes: 30
@@ -1955,16 +1959,11 @@ jobs:
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
         with:
           packages-dir: dist
+          skip-existing: true
 
       - name: Verify all wheels visible on PyPI
-        # pypa/gh-action-pypi-publish uploads wheels sequentially via twine.
-        # For an N-wheel matrix there is an N x ~2-3s window during which
-        # `https://pypi.org/pypi/<project>/<version>/json` returns a partial
-        # set, and downstream resolvers (e.g. `uv sync`) can cache a
-        # "no compatible wheel" failure for the platforms not yet uploaded.
-        # Poll the JSON endpoint until the full set is visible before the
-        # workflow returns success. See issue #605 for the downstream
-        # breakage that motivated this.
+        # Poll until all sequential uploads are visible so downstream
+        # resolvers cannot cache a transient "no compatible wheel" result.
         shell: bash
         env:
           PYPI_VERSION: ${{ needs.prepare.outputs.version }}
