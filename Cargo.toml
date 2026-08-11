@@ -244,6 +244,9 @@ strip = "symbols"
 # for useful backtraces from archived tests.
 [profile.ci-nextest]
 inherits = "ci-release"
+# These artifacts exist only for cross-target test execution. Avoid LLVM's
+# optimized-codegen memory cost on cold, all-miss hosted-runner builds.
+opt-level = 0
 debug = "line-tables-only"
 strip = "none"
 

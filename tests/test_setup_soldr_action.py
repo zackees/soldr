@@ -270,13 +270,19 @@ def test_ci_only_profiles_avoid_full_release_codegen() -> None:
         r"(?ms)^\[profile\.ci-release\]\n(?P<body>.*?)(?=^\[)",
         cargo_toml,
     )
+    ci_nextest = re.search(
+        r"(?ms)^\[profile\.ci-nextest\]\n(?P<body>.*?)(?=^\[)",
+        cargo_toml,
+    )
 
     assert ci_bootstrap is not None
     assert ci_release is not None
+    assert ci_nextest is not None
     assert "opt-level = 0" in ci_bootstrap.group("body")
     assert "lto = false" in ci_bootstrap.group("body")
     assert "opt-level = 1" in ci_release.group("body")
     assert "lto = false" in ci_release.group("body")
+    assert "opt-level = 0" in ci_nextest.group("body")
 
 
 def test_cross_build_uses_deferred_cook_after_target_setup() -> None:

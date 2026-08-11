@@ -18,6 +18,7 @@ pub use soldr_core::{core, self_relocate, timed_test};
 
 /// soldr#2023 — the daemon's single resolution of the compile limit.
 pub(crate) mod compile_limit;
+mod compiler_exit;
 pub mod daemon;
 pub mod zccache_embedded;
 pub(crate) mod zccache_staging;

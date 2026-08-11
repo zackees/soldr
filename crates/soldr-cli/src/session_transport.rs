@@ -562,6 +562,14 @@ where
 /// outcome — matches `soldr_daemon::daemon::session_sink::META_CACHE_OUTCOME`.
 const META_CACHE_OUTCOME: &str = "cache_outcome";
 
+fn mark_relayed_output(bytes: &[u8]) -> bool {
+    let marked = !bytes.is_empty();
+    if marked {
+        crate::exit_guard::mark_spoke();
+    }
+    marked
+}
+
 async fn pump_session_output_with_timeout<S>(
     stream: &mut S,
     reply_timeout: std::time::Duration,
@@ -630,6 +638,7 @@ where
                                 .write_all(&b)
                                 .await
                                 .map_err(|e| tag(output_started, e))?;
+                            mark_relayed_output(&b);
                             stdout.flush().await.map_err(|e| tag(output_started, e))?;
                         }
                         Some(session_frame::Kind::Stderr(b)) => {
@@ -639,6 +648,7 @@ where
                                 .write_all(&b)
                                 .await
                                 .map_err(|e| tag(output_started, e))?;
+                            mark_relayed_output(&b);
                             stderr.flush().await.map_err(|e| tag(output_started, e))?;
                         }
                         Some(session_frame::Kind::Exit(exit)) => {
@@ -682,6 +692,17 @@ mod tests {
             !err.output_started,
             "a setup failure must be identified as pre-output"
         );
+    });
+
+    crate::timed_test!(relayed_diagnostic_suppresses_the_silent_fault_annotation, {
+        assert!(mark_relayed_output(
+            b"compiler terminated by a Unix signal\n"
+        ));
+        assert!(crate::exit_guard::spoke());
+        assert!(!crate::exit_guard::needs_annotation(
+            -1,
+            crate::exit_guard::spoke()
+        ));
     });
 
     crate::timed_test!(accepted_relay_that_never_negotiates_is_bounded, {

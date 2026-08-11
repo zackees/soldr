@@ -477,6 +477,20 @@ def test_normal_gnu_lifecycle_has_no_zig_fallback() -> None:
     assert "soldr build + catalogue-backed GCC" in cross
 
 
+def test_all_miss_cross_builds_bound_compile_concurrency() -> None:
+    """#2453: cache-disabled hosted lanes must retain memory headroom."""
+    cross = (WORKFLOWS / "_ci-cross-build-linux.yml").read_text(encoding="utf-8")
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+
+    cross_job = _job_block(cross, "cross-build", "")
+    wheel_job = _job_block(ci, "wheel-cross-verify")
+    for job in (cross_job, wheel_job):
+        assert 'CARGO_BUILD_JOBS: "2"' in job
+        assert 'SOLDR_JOBS: "2"' in job
+    assert 'CARGO_PROFILE_CI_NEXTEST_CODEGEN_UNITS: "4"' in cross_job
+    assert "shared-key: cross-build-${{ inputs.target }}-v7" in cross_job
+
+
 def test_gnu_catalogue_fixture_is_part_of_both_gnu_ci_lanes() -> None:
     """#2236: CI must execute the mixed-language catalogue proof, not just compile Soldr."""
     cross = (WORKFLOWS / "_ci-cross-build-linux.yml").read_text(encoding="utf-8")
@@ -520,9 +534,11 @@ def test_mac_x64_distribution_is_cross_built_and_intel_smoke_tested() -> None:
     assert "if: false" not in mac_build
     assert "target: x86_64-apple-darwin" in mac_build
 
+    # soldr#2453: macOS x64 is now built natively on macos-15-intel
+    # instead of cross-compiled on Linux, to avoid soldr daemon OOM.
     assert (
-        "- name: macOS x64 (cross-compiled)\n"
-        "            runner: ubuntu-24.04\n"
+        "- name: macOS x64\n"
+        "            runner: macos-15-intel\n"
         "            target: x86_64-apple-darwin" in release
     )
     assert '"x86_64-apple-darwin": {"os": "darwin", "arch": "x86_64"}' in release

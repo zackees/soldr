@@ -110,12 +110,9 @@ impl SpawnedDaemon {
         let cache_root = unique_temp_dir("displace-cache");
         let home_root = unique_temp_dir("displace-home");
         // `soldr daemon start` requests a detached spawn and returns.
-        run_soldr(
-            &["daemon", "start", "--idle-timeout", "120"],
-            &cache_root,
-            &home_root,
-            fake_version,
-        );
+        // soldr#2441: the broker-owned daemon model rejects --idle-timeout;
+        // lifetime is now managed by the singleton broker.
+        run_soldr(&["daemon", "start"], &cache_root, &home_root, fake_version);
         let this = Self {
             cache_root,
             home_root,
