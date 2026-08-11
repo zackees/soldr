@@ -124,9 +124,9 @@ timed_test!(
         fs::create_dir_all(driver.parent().expect("driver parent"))
             .expect("create prebuilt driver dir");
         #[cfg(windows)]
-        let driver_script = "@echo off\necho dylint-driver 6.0.1\nexit /b 0\n";
+        let driver_script = "@echo off\necho dylint-driver 6.0.3\nexit /b 0\n";
         #[cfg(not(windows))]
-        let driver_script = "#!/bin/sh\nprintf 'dylint-driver 6.0.1\\n'\n";
+        let driver_script = "#!/bin/sh\nprintf 'dylint-driver 6.0.3\\n'\n";
         write_fake_script(&driver, driver_script);
         let rustc = install_versioned_fake_rustc(
             "rustc 1.89.0-nightly (0123456789abcdef0123456789abcdef01234567 2026-05-26)",

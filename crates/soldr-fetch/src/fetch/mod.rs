@@ -61,6 +61,7 @@ pub mod openssl_sysroot;
 /// explicitly selected build shapes. Ordinary ABI3 extension cross-builds do
 /// not fetch this bundle (soldr#1610).
 pub mod python_sysroot;
+mod toolchain_packaged;
 /// soldr#1012 PR 5 — xwin-cache catalogue materialization for the
 /// blessed `*-pc-windows-msvc` cross-compile path.
 pub mod xwin_cache;
@@ -549,6 +550,11 @@ async fn fetch_repo_binary_once(
         // mode (404, parse error, network, SOLDR_MANIFEST_DISABLE=1)
         // fall through to the live GitHub Releases API path below.
         if let VersionSpec::Exact(ref tag) = version {
+            if let Some(result) =
+                toolchain_packaged::try_binary(paths, cache_name, binary_names, tag, target).await?
+            {
+                return Ok(result);
+            }
             if let Some(result) = try_manifest_first(
                 paths,
                 cache_name,

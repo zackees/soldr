@@ -253,7 +253,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         binary_name: "cargo-dylint",
         repo: Some(("trailofbits", "dylint")),
         tag_prefix: None,
-        pinned_version: Some("6.0.1"),
+        pinned_version: Some("6.0.3"),
         wraps_inner_cargo_build: true, // Dylint runs cargo check-like builds.
     },
     // Companion linker required by every Dylint lint-library package.
@@ -263,7 +263,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         binary_name: "dylint-link",
         repo: Some(("trailofbits", "dylint")),
         tag_prefix: None,
-        pinned_version: Some("6.0.1"),
+        pinned_version: Some("6.0.3"),
         wraps_inner_cargo_build: false,
     },
     ToolSpec {

@@ -944,13 +944,13 @@ crate::timed_test!(
     {
         let error = dylint_unavailable_error(
             "dylint-link",
-            "6.0.1",
+            "6.0.3",
             &SoldrError::UnsupportedPlatform("no matching asset".into()),
         );
         let message = error.to_string();
         assert!(message.contains(&crate::core::TargetTriple::host().unwrap().triple()));
         assert!(message.contains("dylint-link"));
-        assert!(message.contains("Dylint v6.0.1 is not built for this machine"));
+        assert!(message.contains("Dylint v6.0.3 is not built for this machine"));
         assert!(message.contains("Soldr will not build Dylint from source"));
         assert!(message.contains("Corrective action:"));
     }
@@ -966,7 +966,7 @@ crate::timed_test!(cached_dylint_link_is_revalidated_and_evicted, {
     std::fs::write(&binary, b"not an executable").unwrap();
     let result = crate::fetch::FetchResult {
         binary_path: binary.clone(),
-        version: "6.0.1".into(),
+        version: "6.0.3".into(),
         cached: true,
     };
 
@@ -2710,7 +2710,7 @@ reason=daemon unavailable\n";
     assert_eq!(std::fs::read(&later).unwrap(), notice);
 });
 
-// soldr#1788: cargo-dylint prebuilt fallback. Upstream's 6.0.1 Linux GNU
+// soldr#1788: cargo-dylint prebuilt fallback. An unusable downloaded
 // asset is linked against GLIBC_2.39, so it downloads cleanly on Debian 12
 // and then fails `smoke_test_or_evict`'s `--version` probe. These cover the
 // policy in `resolve_dylint_binary` without touching the network.
@@ -2719,7 +2719,7 @@ crate::timed_test!(dylint_uses_prebuilt_when_fetch_succeeds, {
     let mut source_build_ran = false;
     let fetched = Ok(crate::fetch::FetchResult {
         binary_path: PathBuf::from("/managed/bin/cargo-dylint"),
-        version: "6.0.1".to_string(),
+        version: "6.0.3".to_string(),
         cached: false,
     });
 
@@ -2763,7 +2763,7 @@ crate::timed_test!(dylint_smoke_failure_never_calls_source_build, {
         "unexpected error: {message}"
     );
     assert!(
-        message.contains("Dylint v6.0.1 is not built for this machine"),
+        message.contains("Dylint v6.0.3 is not built for this machine"),
         "unexpected error: {message}"
     );
     assert!(
@@ -2798,7 +2798,7 @@ crate::timed_test!(missing_dylint_driver_fails_before_tool_launch, {
         "unexpected error: {message}"
     );
     assert!(
-        message.contains("Dylint v6.0.1 is not built for this machine"),
+        message.contains("Dylint v6.0.3 is not built for this machine"),
         "unexpected error: {message}"
     );
     assert!(

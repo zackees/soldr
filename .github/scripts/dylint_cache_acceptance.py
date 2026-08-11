@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the real cargo-dylint 6.0.1 cache acceptance matrix in Docker/Linux."""
+"""Run the real cargo-dylint 6.0.3 cache acceptance matrix in Docker/Linux."""
 
 from __future__ import annotations
 
@@ -33,8 +33,8 @@ WATCHDOG_POLL_SECS=10
 WATCHDOG_INACTIVE_GRACE_SECS=60
 WATCHDOG_POST_CAPTURE_SECS=300
 # The external watchdog below is progress-aware. Keep soldr's wall-clock
-# timeout disabled: a legitimate first source build of cargo-dylint plus its
-# per-nightly driver can exceed 15 minutes. The watchdog still captures and
+# timeout disabled: a legitimate first catalogue fetch plus per-nightly driver
+# build can exceed 15 minutes. The watchdog still captures and
 # terminates a semantic stall, including a continuously busy-spin process.
 export SOLDR_CARGO_WAIT_TIMEOUT_SECS=0
 export SOLDR_DAEMON_TOKIO_CONSOLE=1
@@ -584,7 +584,7 @@ def main() -> int:
         summary = os.environ.get("GITHUB_STEP_SUMMARY")
         if summary:
             with open(summary, "a", encoding="utf-8") as output:
-                output.write("## Dylint 6.0.1 cache acceptance\n\n")
+                output.write("## Dylint 6.0.3 cache acceptance\n\n")
                 output.write(
                     "| Scenario | Wall ms | Hits | Misses |\n|---|---:|---:|---:|\n"
                 )
