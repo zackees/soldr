@@ -473,6 +473,16 @@ jobs:
           chmod +x target/release/soldr
           target/release/soldr --version
 
+      # soldr#2453: the Linux release lanes build via the soldr driver, so the
+      # resident embedded-zccache daemon shares the runner with a cold
+      # codegen-units=1 thin-LTO compile of the daemon crates. That peak
+      # OOM-killed the release build (run 31449899782). Add swap headroom
+      # before the build, the same safety valve the CI cross-build lanes use.
+      - name: Enlarge swap (OOM headroom)
+        if: matrix.build_driver == 'soldr'
+        shell: bash
+        run: bash .github/scripts/setup_ci_swap.sh
+
       # ── Build release binary ──
       - name: Build release binary (soldr-driven)
         if: matrix.build_driver == 'soldr'
@@ -482,6 +492,11 @@ jobs:
           CARGO_PROFILE_RELEASE_DEBUG: "0"
           CARGO_PROFILE_RELEASE_LTO: ${{ contains(matrix.target, 'pc-windows-msvc') && 'false' || 'thin' }}
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ contains(matrix.target, 'pc-windows-msvc') && '16' || '1' }}
+          # soldr#2453: bound Cargo's producer queue and zccache's admission
+          # gate so the swap headroom above is a safety valve, not the primary
+          # defense. These lanes previously ran unbounded on a 4-vCPU runner.
+          CARGO_BUILD_JOBS: "2"
+          SOLDR_JOBS: "2"
         run: |
           set -euo pipefail
           git restore -- Cargo.toml Cargo.lock crates/soldr-cli/Cargo.toml || true
