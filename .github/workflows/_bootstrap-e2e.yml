@@ -155,7 +155,16 @@ jobs:
           # tests/test_setup_soldr_version_pins.py.
           version: 0.8.29
           toolchain-file: rust-toolchain.ci.toml
+          # soldr#2451: turn off every setup-soldr reuse layer, not just the
+          # `cache` umbrella (which does not gate soldr-mini / solo-toolchain /
+          # build-cache). This lane builds + smoke-tests the soldr under test,
+          # so it must never restore a prebuilt soldr binary.
           cache: false
+          build-cache: false
+          target-cache: false
+          cargo-registry-cache: false
+          soldr-mini-cache: false
+          solo-toolchain-cache: false
           zccache-seed-strict: true
           linker: platform-default
 
