@@ -114,6 +114,7 @@ pub(crate) fn maybe_spawn_broker_front_door(raw_args: &[String]) {
         return;
     }
     let program = broker_program();
+    emit_ci_endpoint_diagnostics(&program);
     let Ok(probe_runtime) = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -141,6 +142,65 @@ pub(crate) fn maybe_spawn_broker_front_door(raw_args: &[String]) {
             Some(())
         },
     );
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct BrokerEndpointDiagnostics {
+    control: String,
+    session: String,
+    log: std::path::PathBuf,
+}
+
+fn broker_endpoint_diagnostics(program: &str) -> Result<BrokerEndpointDiagnostics, String> {
+    use running_process::broker::lifecycle::names_v2::v2_program_pipe;
+    use running_process::broker::server::singleton_bind::resolve_socket_path;
+
+    let sid = crate::broker_identity::resolve_user_sid();
+    let control_name = v2_program_pipe(program, &sid, 0)
+        .map_err(|error| format!("derive control endpoint: {error}"))?;
+    let control = resolve_socket_path(&control_name)
+        .map_err(|error| format!("resolve control endpoint: {error}"))?;
+    let session = crate::session_transport::session_socket_path(program)
+        .map_err(|error| format!("resolve SESSION endpoint: {error}"))?;
+    let paths =
+        crate::core::SoldrPaths::new().map_err(|error| format!("resolve Soldr paths: {error}"))?;
+    Ok(BrokerEndpointDiagnostics {
+        control,
+        session,
+        log: paths.root.join("broker-spawn.log"),
+    })
+}
+
+fn render_ci_endpoint_diagnostics(
+    ci_label: &str,
+    program: &str,
+    diagnostics: &BrokerEndpointDiagnostics,
+) -> String {
+    format!(
+        "soldr broker endpoints: ci={ci_label} program={program} control={} session={} log={}",
+        diagnostics.control,
+        diagnostics.session,
+        diagnostics.log.display()
+    )
+}
+
+/// CI owns no interactive terminal and detached broker output goes to the
+/// append-only spawn log. Print the resolved bind/dial contract from the
+/// parent process so a failed job always identifies both endpoint names and
+/// the file containing the broker's own startup diagnostics.
+fn emit_ci_endpoint_diagnostics(program: &str) {
+    let Some(ci_label) = crate::optimize_detect::detect_ci() else {
+        return;
+    };
+    match broker_endpoint_diagnostics(program) {
+        Ok(diagnostics) => eprintln!(
+            "{}",
+            render_ci_endpoint_diagnostics(ci_label, program, &diagnostics)
+        ),
+        Err(error) => {
+            eprintln!("soldr broker endpoints: ci={ci_label} program={program} unresolved: {error}")
+        }
+    }
 }
 
 pub(crate) fn open_append(path: &std::path::Path) -> Option<std::fs::File> {
@@ -276,6 +336,22 @@ mod tests {
                 ),
             ],
         );
+    });
+
+    crate::timed_test!(ci_diagnostics_name_both_endpoints_and_spawn_log, {
+        let diagnostics = BrokerEndpointDiagnostics {
+            control: r"\\.\pipe\rpb-v2-soldr-session-user-0".to_string(),
+            session: r"\\.\pipe\rpb-v2-soldr-session-user-1".to_string(),
+            log: std::path::PathBuf::from(r"C:\soldr\broker-spawn.log"),
+        };
+        let rendered =
+            render_ci_endpoint_diagnostics("github_actions", "soldr-session", &diagnostics);
+
+        assert!(rendered.contains("ci=github_actions"));
+        assert!(rendered.contains("program=soldr-session"));
+        assert!(rendered.contains(r"control=\\.\pipe\rpb-v2-soldr-session-user-0"));
+        assert!(rendered.contains(r"session=\\.\pipe\rpb-v2-soldr-session-user-1"));
+        assert!(rendered.contains(r"log=C:\soldr\broker-spawn.log"));
     });
 
     crate::timed_test!(wrapper_invocation_is_never_eligible, {
