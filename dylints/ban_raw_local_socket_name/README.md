@@ -9,5 +9,6 @@ normalizes an already-resolved Windows `\\.\pipe\...` path exactly once.
 Run its UI tests with:
 
 ```console
-cargo test --manifest-path dylints/ban_raw_local_socket_name/Cargo.toml
+cd dylints/ban_raw_local_socket_name
+soldr cargo test --manifest-path Cargo.toml
 ```

@@ -43,7 +43,9 @@ impl<'tcx> LateLintPass<'tcx> for BanRawLocalSocketName {
             return;
         };
         if !matches!(method, "to_ns_name" | "to_fs_name")
-            || !path.iter().any(|part| *part == Symbol::intern("interprocess"))
+            || !path
+                .iter()
+                .any(|part| *part == Symbol::intern("interprocess"))
         {
             return;
         }
@@ -61,7 +63,11 @@ impl<'tcx> LateLintPass<'tcx> for BanRawLocalSocketName {
 }
 
 fn span_is_in_scope(cx: &LateContext<'_>, span: rustc_span::Span) -> bool {
-    let filename = source_filename(cx, span).replace('\\', "/");
+    filename_is_in_scope(&source_filename(cx, span))
+}
+
+fn filename_is_in_scope(filename: &str) -> bool {
+    let filename = filename.replace('\\', "/");
     if filename.starts_with("ui/") || filename.contains("/ui/") {
         return true;
     }
@@ -69,10 +75,12 @@ fn span_is_in_scope(cx: &LateContext<'_>, span: rustc_span::Span) -> bool {
         || filename.starts_with("crates/soldr-cli/src/")
         || filename.contains("/crates/soldr-daemon/src/")
         || filename.starts_with("crates/soldr-daemon/src/");
-    let is_running_process = filename.contains("/_vender/running-process/crates/running-process/src/")
+    let is_running_process = filename
+        .contains("/_vender/running-process/crates/running-process/src/")
         || filename.starts_with("_vender/running-process/crates/running-process/src/");
+    let is_test_module = filename.ends_with("/tests.rs") || filename.contains("/tests/");
     let is_canonical_boundary = filename.ends_with("/broker/server/singleton_bind.rs");
-    is_soldr || (is_running_process && !is_canonical_boundary)
+    !is_test_module && (is_soldr || (is_running_process && !is_canonical_boundary))
 }
 
 fn source_filename(cx: &LateContext<'_>, span: rustc_span::Span) -> String {
@@ -95,4 +103,17 @@ fn source_filename(cx: &LateContext<'_>, span: rustc_span::Span) -> String {
 #[test]
 fn ui() {
     dylint_testing::ui_test(env!("CARGO_PKG_NAME"), "ui");
+}
+
+#[test]
+fn scope_covers_running_process_production_but_not_its_raw_conversion_fixtures() {
+    assert!(filename_is_in_scope(
+        "/src/_vender/running-process/crates/running-process/src/broker/client_v2.rs"
+    ));
+    assert!(!filename_is_in_scope(
+        "/src/_vender/running-process/crates/running-process/src/broker/session_relay/tests.rs"
+    ));
+    assert!(!filename_is_in_scope(
+        "/src/_vender/running-process/crates/running-process/src/broker/server/singleton_bind.rs"
+    ));
 }
