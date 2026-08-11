@@ -341,11 +341,7 @@ soldr_cli::timed_test!(
             home_root: home_root.clone(),
         };
 
-        let first = run_soldr(
-            &["daemon", "start"],
-            &cache_root,
-            &home_root,
-        );
+        let first = run_soldr(&["daemon", "start"], &cache_root, &home_root);
         assert!(
             first.status.success(),
             "first detached start failed: stdout={}; stderr={}",

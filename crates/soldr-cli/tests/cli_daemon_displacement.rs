@@ -112,12 +112,7 @@ impl SpawnedDaemon {
         // `soldr daemon start` requests a detached spawn and returns.
         // soldr#2441: the broker-owned daemon model rejects --idle-timeout;
         // lifetime is now managed by the singleton broker.
-        run_soldr(
-            &["daemon", "start"],
-            &cache_root,
-            &home_root,
-            fake_version,
-        );
+        run_soldr(&["daemon", "start"], &cache_root, &home_root, fake_version);
         let this = Self {
             cache_root,
             home_root,
