@@ -8,7 +8,7 @@ For the product-level support contract about what counts as a supported external
 
 soldr is a single front door for Rust tool execution and Rust builds.
 
-It has three invocation modes:
+It has four invocation modes:
 
 1. `soldr cargo ...`
    Delegates to the real Cargo binary while routing cacheable compiler work to
@@ -17,6 +17,8 @@ It has three invocation modes:
    Fetches and runs a Rust CLI tool binary.
 3. `soldr rustc ...`
    Low-level passthrough wrapper mode for explicit `RUSTC_WRAPPER=soldr` usage.
+4. `soldr cc ...` / `soldr c++ ...`
+   Compile native source through a catalogue-backed compiler and sysroot.
 
 The primary user experience is `soldr cargo ...`.
 
@@ -352,6 +354,43 @@ When soldr starts, it decides its mode in this order:
 ---
 
 ## Built-in Commands
+
+### `soldr cc` / `soldr c++` (soldr#2335)
+
+Compile and link C or C++ with a verified compiler/sysroot bundle from the
+soldr-toolchain catalogue:
+
+```bash
+soldr cc --target x86_64-linux-gnu.2.17 hello.c -o hello
+soldr c++ --target linux-x64 main.cpp -o app
+```
+
+`--target` accepts the regular friendly aliases and Rust triples and defaults
+to `host`. The supported standalone targets are GNU/Linux, musl/Linux, and
+`x86_64-pc-windows-gnu`; unsupported host/target pairs fail explicitly.
+GNU/Linux uses the catalogue's glibc 2.17 sysroot whether the suffix is
+explicit or omitted.
+
+Arguments not consumed by the front door are forwarded verbatim to the
+compiler. Exactly one of these query flags may be used instead of compiler
+arguments:
+
+- `--print-cc`
+- `--print-cxx`
+- `--print-ar`
+- `--print-linker`
+
+The query output is only the prepared executable path. Invoke the `soldr cc`
+or `soldr c++` wrapper when the target's required sysroot arguments must be
+applied. CMake supports that shape through its `CC` and `CXX` environment
+variables:
+
+```bash
+CC="soldr cc --target x86_64-linux-gnu.2.17" \
+CXX="soldr c++ --target x86_64-linux-gnu.2.17" \
+  cmake -S . -B build
+cmake --build build
+```
 
 ### `soldr wheel` (soldr#2139)
 

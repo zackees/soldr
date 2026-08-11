@@ -25,6 +25,8 @@ including environment variables, exit codes, and on-disk layout.";
 const ROOT_BEFORE_HELP: &str = "\
 Common commands:\n  \
 cargo                  Run cargo through soldr (cached, pinned toolchain)\n  \
+cc                     Compile C with a catalogue-backed toolchain\n  \
+c++                    Compile C++ with a catalogue-backed toolchain\n  \
 rustc                  Compile Rust source via the pinned toolchain\n  \
 lint                   Run Soldr's unified Rust and dependency lint suites\n  \
 rustfmt                Format Rust source via the pinned toolchain\n  \
@@ -243,6 +245,11 @@ pub(crate) enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Compile C source with a catalogue-backed target compiler (soldr#2335)
+    Cc(crate::cc_cmd::CcArgs),
+    /// Compile C++ source with a catalogue-backed target compiler (soldr#2335)
+    #[command(name = "c++")]
+    Cxx(crate::cc_cmd::CcArgs),
     /// Build an abi3 Python wheel through soldr's blessed toolchain (soldr#2139)
     ///
     /// `soldr wheel [--release] [--target <triple>]` resolves the target

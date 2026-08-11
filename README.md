@@ -215,6 +215,32 @@ formatter because Cargo's explicit crate-root argv does not include child
 modules that rustfmt discovers itself. A content-marker shortcut is used only
 for invocations that explicitly set `skip_children=true`.
 
+## Compile C and C++ directly
+
+`soldr cc` and `soldr c++` expose the same catalogue-backed compilers and
+sysroots used by blessed Rust cross-builds. GNU/Linux defaults to the pinned
+glibc 2.17 toolchain:
+
+```bash
+soldr cc --target x86_64-linux-gnu.2.17 hello.c -o hello
+./hello
+```
+
+CMake accepts the command plus its required target arguments through `CC` and
+`CXX`:
+
+```bash
+CC="soldr cc --target x86_64-linux-gnu.2.17" \
+CXX="soldr c++ --target x86_64-linux-gnu.2.17" \
+  cmake -S . -B build
+cmake --build build
+```
+
+Omit `--target` to select the host triple. The first standalone slice supports
+the catalogue GNU/Linux and musl/Linux targets plus
+`x86_64-pc-windows-gnu`. External build tooling can query the prepared tool
+paths with `--print-cc`, `--print-cxx`, `--print-ar`, and `--print-linker`.
+
 ## Use soldr as your PEP 517 build backend (instead of maturin)
 
 For Rust+Python packages, point `pyproject.toml` at soldr instead of
