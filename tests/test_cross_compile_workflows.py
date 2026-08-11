@@ -547,7 +547,7 @@ def test_mac_x64_distribution_uses_pinned_setup_soldr_on_intel() -> None:
         "uses: zackees/setup-soldr@62d1596b70168e422156f12273a2ed476d3a16dc" in release
     )
     assert "version: 0.8.44" in release
-    assert "cross-targets: ${{ matrix.target }}" in release
+    assert "cross-targets: ${{ matrix.setup_target }}" in release
     assert "target-wheel-hook" in release
     assert "soldr-${version}-x86_64-apple-darwin.tar.zst" in release
     intel_wheel = "soldr-${cargo_version}-py3-none-macosx_10_12_x86_64.whl"
@@ -583,7 +583,7 @@ def test_release_wheels_use_setup_soldr_target_hooks_without_zig_or_xwin() -> No
         "uses: zackees/setup-soldr@62d1596b70168e422156f12273a2ed476d3a16dc" in release
     )
     assert "version: 0.8.44" in release
-    assert "cross-targets: ${{ matrix.target }}" in release
+    assert "cross-targets: ${{ matrix.setup_target }}" in release
     assert "wheel_hook='${{ steps.setup_soldr.outputs.target-wheel-hook }}'" in release
     assert ".github/scripts/build_release_wheel.py" in release
     assert "uv python install 3.13" in release
@@ -594,6 +594,14 @@ def test_release_wheels_use_setup_soldr_target_hooks_without_zig_or_xwin() -> No
     assert "lzma_pkgconfig" not in release
     assert "runner: ubuntu-24.04-arm" in release
     assert "startsWith(matrix.target, 'aarch64-')" not in release
+    assert (
+        "target: aarch64-unknown-linux-musl\n"
+        '            setup_target: ""\n'
+        "            binary: soldr" in release
+    )
+    native_arm_musl = _step_block(release, "Build ARM64 musl release binary natively")
+    assert "CC_aarch64_unknown_linux_musl: musl-gcc" in native_arm_musl
+    assert '"$driver" --no-cache cargo build' in native_arm_musl
 
 
 def test_release_target_prepare_retries_transient_setup_failure() -> None:
@@ -607,8 +615,11 @@ def test_release_target_prepare_retries_transient_setup_failure() -> None:
     )
     wheel = _step_block(release, "Build wheel through setup-soldr target environment")
 
-    assert "continue-on-error: true" in setup
-    assert "if: steps.setup_soldr.outcome == 'failure'" in retry
+    assert "continue-on-error: ${{ matrix.setup_target != '' }}" in setup
+    assert (
+        "if: steps.setup_soldr.outcome == 'failure' && matrix.setup_target != ''"
+        in retry
+    )
     assert ".github/scripts/prepare_release_target.py" in retry
     assert '--github-env "$GITHUB_ENV"' in retry
     assert "Get-Command soldr -ErrorAction Stop" in materialize
@@ -648,6 +659,13 @@ def test_windows_wheel_does_not_reuse_archive_executable_output() -> None:
     smoke_windows = _job_block(release, "smoke_windows", "publish")
     assert "runner: windows-2025" in smoke_windows
     assert "target: x86_64-pc-windows-msvc" in smoke_windows
+    assert "runner: windows-11-arm" in smoke_windows
+    assert "target: aarch64-pc-windows-msvc" in smoke_windows
+    assert (
+        "- name: Windows ARM64 (Linux cross)\n"
+        "            runner: ubuntu-24.04\n"
+        "            target: aarch64-pc-windows-msvc" in matrix
+    )
 
 
 def test_cross_compile_docs_match_current_blessed_surfaces() -> None:

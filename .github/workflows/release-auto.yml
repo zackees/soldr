@@ -242,40 +242,47 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # GNU Linux and Windows x64 use catalogue-backed Soldr cross
-          # environments on Linux. Native smoke jobs below execute the
-          # resulting artifacts on their destination platforms.
+          # Cross targets use catalogue-backed Soldr environments. ARM64
+          # musl builds natively because its catalogue compiler is i386-hosted.
           - name: Linux x64 (glibc)
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
+            setup_target: x86_64-unknown-linux-gnu
             binary: soldr
           - name: Linux ARM64 (glibc)
             runner: ubuntu-24.04
             target: aarch64-unknown-linux-gnu
+            setup_target: aarch64-unknown-linux-gnu
             binary: soldr
           - name: Linux x64 (musl)
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
+            setup_target: x86_64-unknown-linux-musl
             binary: soldr
           - name: Linux ARM64 (musl)
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
+            setup_target: ""
             binary: soldr
           - name: macOS x64
             runner: macos-15-intel
             target: x86_64-apple-darwin
+            setup_target: x86_64-apple-darwin
             binary: soldr
           - name: macOS ARM64
             runner: macos-15
             target: aarch64-apple-darwin
+            setup_target: aarch64-apple-darwin
             binary: soldr
           - name: Windows x64 (Linux cross)
             runner: ubuntu-24.04
             target: x86_64-pc-windows-msvc
+            setup_target: x86_64-pc-windows-msvc
             binary: soldr.exe
-          - name: Windows ARM64
-            runner: windows-11-arm
+          - name: Windows ARM64 (Linux cross)
+            runner: ubuntu-24.04
             target: aarch64-pc-windows-msvc
+            setup_target: aarch64-pc-windows-msvc
             binary: soldr.exe
 
     steps:
@@ -301,13 +308,14 @@ jobs:
       # artifact restore that every-commit CI now uses.
       - name: Install pinned Soldr and prepare target environment
         id: setup_soldr
-        continue-on-error: true
+        continue-on-error: ${{ matrix.setup_target != '' }}
         uses: zackees/setup-soldr@62d1596b70168e422156f12273a2ed476d3a16dc
         with:
           enable: true
           version: 0.8.44
           toolchain: 1.94.1
-          cross-targets: ${{ matrix.target }}
+          cross-targets: ${{ matrix.setup_target }}
+          linker: platform-default
           cache: false
           build-cache: false
           target-cache: false
@@ -318,31 +326,13 @@ jobs:
           zccache-seed-strict: false
 
       - name: Retry target preparation after setup transport failure
-        if: steps.setup_soldr.outcome == 'failure'
+        if: steps.setup_soldr.outcome == 'failure' && matrix.setup_target != ''
         shell: bash
-        run: python3 .github/scripts/prepare_release_target.py --target "${{ matrix.target }}" --github-env "$GITHUB_ENV"
+        run: python3 .github/scripts/prepare_release_target.py --target "${{ matrix.setup_target }}" --github-env "$GITHUB_ENV"
 
       - name: Add cross-compile target
         shell: bash
         run: soldr rustup target add ${{ matrix.target }}
-
-      - name: Install Rust toolchain (native)
-        if: matrix.build_driver == 'cargo'
-        shell: bash
-        run: |
-          set -euo pipefail
-          if ! command -v rustup >/dev/null 2>&1; then
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.94.1 --profile minimal --no-self-update
-            source "$HOME/.cargo/env"
-          else
-            rustup toolchain install 1.94.1 --profile minimal --no-self-update
-            rustup default 1.94.1
-          fi
-          # Ensure cargo/rustc are on PATH for subsequent steps.
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          rustup show
-          cargo --version
-          rustc --version
 
       # ── Build driver download (Linux only) ──
       # soldr#2294: the driver is built once in the bootstrap job and
@@ -373,6 +363,7 @@ jobs:
 
       # ── Build release binary ──
       - name: Build release binary (soldr-driven)
+        if: matrix.target != 'aarch64-unknown-linux-musl'
         shell: bash
         env:
           SOLDR_RELEASE_CI: "1"
@@ -409,33 +400,29 @@ jobs:
           ls -la "target/$target/release/" 2>&1 | head -20 || true
           echo "==================================================="
 
-      - name: Build release binary (native cargo)
-        if: matrix.build_driver == 'cargo'
+      - name: Build ARM64 musl release binary natively
+        if: matrix.target == 'aarch64-unknown-linux-musl'
         shell: bash
         env:
           SOLDR_RELEASE_CI: "1"
           CARGO_PROFILE_RELEASE_DEBUG: "0"
-          CARGO_PROFILE_RELEASE_LTO: ${{ contains(matrix.target, 'pc-windows-msvc') && 'false' || 'thin' }}
-          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ contains(matrix.target, 'pc-windows-msvc') && '16' || '1' }}
-          RUSTFLAGS: ${{ contains(matrix.target, 'musl') && '-C link-arg=-fuse-ld=mold' || '' }}
-          # Each musl lane runs on its matching native architecture.
-          CC_x86_64_unknown_linux_musl: ${{ matrix.target == 'x86_64-unknown-linux-musl' && 'musl-gcc' || '' }}
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: ${{ matrix.target == 'x86_64-unknown-linux-musl' && 'musl-gcc' || '' }}
-          CC_aarch64_unknown_linux_musl: ${{ matrix.target == 'aarch64-unknown-linux-musl' && 'musl-gcc' || '' }}
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: ${{ matrix.target == 'aarch64-unknown-linux-musl' && 'musl-gcc' || '' }}
+          CARGO_PROFILE_RELEASE_LTO: thin
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
+          CARGO_BUILD_JOBS: "2"
+          SOLDR_JOBS: "2"
+          CC_aarch64_unknown_linux_musl: musl-gcc
+          CXX_aarch64_unknown_linux_musl: musl-gcc
+          AR_aarch64_unknown_linux_musl: ar
+          RANLIB_aarch64_unknown_linux_musl: ranlib
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: |
           set -euo pipefail
-          git restore -- Cargo.toml Cargo.lock crates/soldr-cli/Cargo.toml || true
-          cargo clean -p soldr-cli --target "${{ matrix.target }}" --release 2>/dev/null || true
-
-          target='${{ matrix.target }}'
-          cargo build --release --locked --target "$target" \
-            --package soldr-cli \
-            --bin soldr
-
-          echo "=== post-build diagnostic: target/$target/release/ ==="
+          driver="target/release/soldr"
+          target='aarch64-unknown-linux-musl'
+          "$driver" cargo clean -p soldr-cli --target "$target" --release 2>/dev/null || true
+          "$driver" --no-cache cargo build --release --locked --target "$target" \
+            --package soldr-cli --bin soldr
           ls -la "target/$target/release/" 2>&1 | head -20 || true
-          echo "==================================================="
 
       # soldr#1060 acceptance: the musl artifacts are the "runs anywhere"
       # build precisely because they carry no dynamic dependencies. A musl
@@ -1089,6 +1076,11 @@ jobs:
         env:
           EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
           SOLDR_RELEASE_CI: "1"
+          CC_aarch64_unknown_linux_musl: ${{ matrix.target == 'aarch64-unknown-linux-musl' && 'musl-gcc' || '' }}
+          CXX_aarch64_unknown_linux_musl: ${{ matrix.target == 'aarch64-unknown-linux-musl' && 'musl-gcc' || '' }}
+          AR_aarch64_unknown_linux_musl: ${{ matrix.target == 'aarch64-unknown-linux-musl' && 'ar' || '' }}
+          RANLIB_aarch64_unknown_linux_musl: ${{ matrix.target == 'aarch64-unknown-linux-musl' && 'ranlib' || '' }}
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: ${{ matrix.target == 'aarch64-unknown-linux-musl' && 'musl-gcc' || '' }}
         run: |
           set -euo pipefail
           rm -f dist/*.whl
@@ -1412,7 +1404,7 @@ jobs:
           )
 
       - name: Smoke test wheel
-        # GNU ARM64 and Windows x64 are cross-built on Linux. Musl wheels run
+        # GNU ARM64 and Windows are cross-built on Linux. Musl wheels run
         # under Alpine; Windows wheels run in the smoke_windows job below.
         if: |
           !contains(matrix.target, 'musl') &&
@@ -1685,9 +1677,8 @@ jobs:
             --target aarch64-apple-darwin \
             --expected-version '${{ needs.prepare.outputs.version }}'
 
-  # Windows x64 is cross-built on Linux, while ARM64 builds natively;
-  # EXECUTION still needs native Windows on both architectures. Each smoke
-  # job consumes its build lane's uploaded artifacts.
+  # Windows artifacts are cross-built on Linux; execution still needs native
+  # Windows on both architectures. Each smoke consumes uploaded artifacts.
   smoke_windows:
     name: Smoke Windows release artifacts (${{ matrix.arch }})
     needs:
