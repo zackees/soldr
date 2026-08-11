@@ -487,6 +487,8 @@ def test_all_miss_cross_builds_bound_compile_concurrency() -> None:
     for job in (cross_job, wheel_job):
         assert 'CARGO_BUILD_JOBS: "2"' in job
         assert 'SOLDR_JOBS: "2"' in job
+    assert 'CARGO_PROFILE_CI_NEXTEST_CODEGEN_UNITS: "4"' in cross_job
+    assert 'shared-key: cross-build-${{ inputs.target }}-v7' in cross_job
 
 
 def test_gnu_catalogue_fixture_is_part_of_both_gnu_ci_lanes() -> None:
