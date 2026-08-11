@@ -1,5 +1,6 @@
 # Soldr / Rust
 
+<i>BETA SOFTWARE - PLEASE PIN</i>
 
 <img width="1536" height="1024" alt="ChatGPT Image Apr 19, 2026, 09_43_32 PM" src="https://github.com/user-attachments/assets/87d94693-3542-4f4f-8b02-600bf0b9810e" />
 
