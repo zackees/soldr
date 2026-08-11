@@ -616,7 +616,9 @@ def test_release_wheels_use_setup_soldr_target_hooks_without_zig_or_xwin() -> No
     target_hook_wheel = _step_block(
         release, "Build wheel through setup-soldr target environment"
     )
-    assert "if: !contains(matrix.target, 'unknown-linux-musl')" in target_hook_wheel
+    assert (
+        "if: ${{ !contains(matrix.target, 'unknown-linux-musl') }}" in target_hook_wheel
+    )
 
     native_arm_wheel = _step_block(release, "Build musl wheel in an explicit uv venv")
     assert "CC_aarch64_unknown_linux_musl: musl-gcc" in native_arm_wheel
