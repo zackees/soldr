@@ -6,7 +6,6 @@
 
 *A tool to download rust tool sets and aggressive cache your build. **2× faster cross-PR builds** via content-addressed caching that swatinem's per-key cache cannot share. GH and local builds. Just add soldr before all your build commands.*
 
-Third-party comparison (soldr vs Swatinem/rust-cache vs ...): published from `zackees/setup-soldr` — see its `comparison-cluster` workflow and the rendered page once the migration in soldr#674 completes. The legacy `https://zackees.github.io/soldr/` page is being repurposed for soldr-internal per-scenario regression history (no third-party comparison surface lives on this repo anymore).
 
 [![CI](https://github.com/zackees/soldr/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/zackees/soldr/actions/workflows/ci.yml)
 [![Autonomous Release](https://github.com/zackees/soldr/actions/workflows/release-auto.yml/badge.svg?branch=main)](https://github.com/zackees/soldr/actions/workflows/release-auto.yml)
