@@ -1083,7 +1083,7 @@ jobs:
 
       # ── Wheel build (soldr-driven, Linux) ──
       - name: Build wheel through setup-soldr target environment
-        if: !contains(matrix.target, 'unknown-linux-musl')
+        if: ${{ !contains(matrix.target, 'unknown-linux-musl') }}
         shell: bash
         env:
           EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
