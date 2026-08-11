@@ -13,7 +13,7 @@ def test_release_workflow_builds_and_publishes_musllinux_wheels() -> None:
         "uses: zackees/setup-soldr@62d1596b70168e422156f12273a2ed476d3a16dc" in workflow
     )
     assert "version: 0.8.44" in workflow
-    assert "cross-targets: ${{ matrix.target }}" in workflow
+    assert "cross-targets: ${{ matrix.setup_target }}" in workflow
     assert "target-wheel-hook" in workflow
     assert ".github/scripts/build_release_wheel.py" in workflow
     assert "target: x86_64-unknown-linux-musl" in workflow
