@@ -755,10 +755,13 @@ jobs:
                   # soldr#2453: native builds put the binary under the
                   # target-triple directory; Linux cross-builds use the
                   # bootstrap driver at target/release/soldr.
+                  # Windows binaries carry a .exe suffix.
+                  suffix = ".exe" if os.name == "nt" else ""
                   driver_candidates = [
                       Path(os.environ["SOLD_DRIVER_PATH"]),
-                      Path(f"target/{os.environ['TARGET_TRIPLE']}/release/soldr"),
-                      Path("target/release/soldr"),
+                      Path(os.environ["SOLD_DRIVER_PATH"] + suffix),
+                      Path(f"target/{os.environ['TARGET_TRIPLE']}/release/soldr{suffix}"),
+                      Path(f"target/release/soldr{suffix}"),
                   ]
                   driver = None
                   for c in driver_candidates:
@@ -1167,9 +1170,14 @@ jobs:
           set -euo pipefail
           version="${{ needs.prepare.outputs.version }}"
           name="soldr-${version}-${{ matrix.target }}"
-          # soldr#2453: native builds use the just-built binary;
-          # Linux cross-builds use the bootstrap driver.
-          driver="${{ matrix.build_driver == 'soldr' && 'target/release/soldr' || format('target/{0}/release/soldr', matrix.target) }}"
+          # soldr#2453: native builds use the just-built binary with the
+          # platform-appropriate suffix; Linux cross-builds use the
+          # bootstrap driver.
+          case "${{ matrix.target }}" in
+            *-pc-windows-msvc) driver_suffix=".exe" ;;
+            *) driver_suffix="" ;;
+          esac
+          driver="${{ matrix.build_driver == 'soldr' && 'target/release/soldr' || format('target/{0}/release/soldr', matrix.target) }}${driver_suffix}"
           "$driver" archive --stage-dir dist/package --output "dist/${name}.tar.zst"
           ls -la "dist/${name}.tar.zst"
           echo "compressed_size_bytes=$(wc -c < "dist/${name}.tar.zst")"
@@ -1637,7 +1645,11 @@ jobs:
           test -f "$archive" || { echo "missing archive: $archive" >&2; exit 1; }
 
           extract=$(mktemp -d)
-          driver="${{ matrix.build_driver == 'soldr' && 'target/release/soldr' || format('target/{0}/release/soldr', matrix.target) }}"
+          case "${{ matrix.target }}" in
+            *-pc-windows-msvc) driver_suffix=".exe" ;;
+            *) driver_suffix="" ;;
+          esac
+          driver="${{ matrix.build_driver == 'soldr' && 'target/release/soldr' || format('target/{0}/release/soldr', matrix.target) }}${driver_suffix}"
           "$driver" archive --input "$archive" --extract-dir "$extract"
           echo "--- extracted layout ---"
           ls -la "$extract"
