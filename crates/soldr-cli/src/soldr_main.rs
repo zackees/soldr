@@ -276,18 +276,10 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
 
     match cli.command {
         Commands::Build { args } => {
-            // soldr#1012 PR 1 + PR 5. The `soldr build` surface
-            // routes through `blessed_build::prepare` for any
-            // canonical target triple it can identify in argv (looks
-            // for `--target X` / `--target=X`). On MSVC targets that
-            // step materializes the xwin-cache from the soldr-
-            // toolchain catalogue, installs the multicall clang shim
-            // ahead of system clang on PATH, and sets the cc-rs +
-            // cargo target-specific env vars. The cargo front door is
-            // then invoked with the same args + the prep env applied.
-            //
-            // Targets with no prep need (linux musl, linux gnu) get
-            // a no-op prep + the standard cargo front door behavior.
+            // soldr#1012: prepare a recognized `--target X` / `--target=X`
+            // through the blessed catalogue before entering the cargo front
+            // door. This materializes the required SDK/sysroot and compiler
+            // shims, then applies their target-scoped environment.
             // `SOLDR_USE_LEGACY_XWIN=1` opts out of the blessed path
             // and falls through to the explicit cargo-xwin flow.
             let mut full_args = Vec::with_capacity(args.len() + 1);
@@ -376,6 +368,12 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 )
                 .await?,
             );
+        }
+        Commands::Cc(args) => {
+            guarded_exit(crate::cc_cmd::run(args, crate::cc_cmd::Language::C).await?)
+        }
+        Commands::Cxx(args) => {
+            guarded_exit(crate::cc_cmd::run(args, crate::cc_cmd::Language::Cxx).await?)
         }
         Commands::Wheel(args) => {
             // soldr#2139 gap 1. Re-enter through `soldr maturin build ...` so
