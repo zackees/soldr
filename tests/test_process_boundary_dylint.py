@@ -47,8 +47,7 @@ def test_required_ci_runs_root_dylint_policy() -> None:
     assert "-- --workspace --all-targets" in workflow
     assert "--manifest-path _vender/running-process/Cargo.toml" in workflow
     assert (
-        "libban_raw_local_socket_name@"
-        "nightly-2026-05-26-x86_64-unknown-linux-gnu.so"
+        "libban_raw_local_socket_name@" "nightly-2026-05-26-x86_64-unknown-linux-gnu.so"
     ) in workflow
     assert "Test daemon process-creation boundary lint" in workflow
     assert "working-directory: dylints/ban_raw_process_creation" in workflow
