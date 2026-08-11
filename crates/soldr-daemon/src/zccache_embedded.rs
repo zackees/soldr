@@ -285,6 +285,7 @@ impl SoldrZccacheService {
         } else {
             zresp.stderr
         };
+        let stderr = crate::compiler_exit::annotate_signal_termination(zresp.exit_code, stderr);
         Ok(CompileResponseBody {
             exit_code: zresp.exit_code,
             stdout: zresp.stdout,
@@ -591,7 +592,6 @@ fn uuid_like_random_id() -> String {
     hasher.update(&nanos.to_le_bytes());
     hex::encode(&hasher.finalize().as_bytes()[..16])
 }
-
 /// Encode [`CacheOutcome`] as the integer protocol expects on the wire:
 /// 1=Hit, 2=Miss, 3=Error. Kept inside the embedded module so the
 /// soldr daemon layer never imports `CacheOutcome` directly.

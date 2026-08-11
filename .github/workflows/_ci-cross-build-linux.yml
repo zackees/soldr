@@ -78,6 +78,15 @@ jobs:
       # window can push a lane into the `cargo install zccache` fallback
       # (~700 s of source compile) — observed in run 28731872479.
       SOLDR_GITHUB_TOKEN: ${{ github.token }}
+      # soldr#2453: these lanes deliberately disable every build-cache layer,
+      # so Stage C can have four memory-heavy rustc/clang children plus the
+      # embedded cache's resident artifact state on a 4-vCPU hosted runner.
+      # The resulting Unix signal exits moved between unrelated crates and
+      # platforms. Bound both Cargo's producer queue and zccache's admission
+      # gate at two: enough parallelism for the runner while retaining memory
+      # headroom during the all-miss nextest archive build.
+      CARGO_BUILD_JOBS: "2"
+      SOLDR_JOBS: "2"
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6

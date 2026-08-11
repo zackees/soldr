@@ -477,6 +477,18 @@ def test_normal_gnu_lifecycle_has_no_zig_fallback() -> None:
     assert "soldr build + catalogue-backed GCC" in cross
 
 
+def test_all_miss_cross_builds_bound_compile_concurrency() -> None:
+    """#2453: cache-disabled hosted lanes must retain memory headroom."""
+    cross = (WORKFLOWS / "_ci-cross-build-linux.yml").read_text(encoding="utf-8")
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+
+    cross_job = _job_block(cross, "cross-build", "")
+    wheel_job = _job_block(ci, "wheel-cross-verify")
+    for job in (cross_job, wheel_job):
+        assert 'CARGO_BUILD_JOBS: "2"' in job
+        assert 'SOLDR_JOBS: "2"' in job
+
+
 def test_gnu_catalogue_fixture_is_part_of_both_gnu_ci_lanes() -> None:
     """#2236: CI must execute the mixed-language catalogue proof, not just compile Soldr."""
     cross = (WORKFLOWS / "_ci-cross-build-linux.yml").read_text(encoding="utf-8")
