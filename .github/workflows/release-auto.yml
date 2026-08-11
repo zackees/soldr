@@ -302,54 +302,61 @@ jobs:
           # crgx, and cargo-chef. One fetch from
           # GitHub Releases installs the full runtime surface; registry
           # publishes are gated on that GitHub asset set being complete.
+          #
+          # Build driver column:
+          #   soldr — Linux-hosted (native or cross) via bootstrap driver
+          #   cargo — native OS build via bare cargo (no soldr daemon)
           - name: Linux x64
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             binary: soldr
+            build_driver: soldr
           - name: Linux ARM64
             # The catalogue ARM toolchains are x86-hosted cross compilers;
             # build them on the same x64 Linux host as regular cross CI.
             runner: ubuntu-24.04
             target: aarch64-unknown-linux-gnu
             binary: soldr
+            build_driver: soldr
           - name: Linux x64 (musl)
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
             binary: soldr
+            build_driver: soldr
           - name: Linux ARM64 (musl)
             # Same x86-hosted catalogue cross-compiler constraint as GNU.
             runner: ubuntu-24.04
             target: aarch64-unknown-linux-musl
             binary: soldr
-          # Intel macOS is cross-built on Linux through the blessed Apple
-          # SDK path. A separate macos-15-intel job architecture-checks and
-          # executes the archive and wheel before publication, so release
-          # production does not depend on native Intel builder capacity.
-          - name: macOS x64 (cross-compiled)
-            runner: ubuntu-24.04
+            build_driver: soldr
+          # macOS targets are built natively to avoid soldr daemon OOM
+          # during Linux-hosted cross-compilation (soldr#2453).
+          # The smoke_macos_* jobs are absorbed into the build lanes
+          # since the build now runs on the same native runner.
+          - name: macOS x64
+            runner: macos-15-intel
             target: x86_64-apple-darwin
             binary: soldr
-          # ARM macOS is cross-built on Linux through the same blessed
-          # Apple SDK path as Intel macOS above (soldr#2294). The
-          # smoke_macos_arm64 job executes the archive and wheel on a
-          # native macos-15 runner before publication.
+            build_driver: cargo
           - name: macOS ARM64
-            runner: ubuntu-24.04
+            runner: macos-15
             target: aarch64-apple-darwin
             binary: soldr
-          # Windows MSVC targets are cross-built on Linux via soldr's
-          # blessed xwin/LLVM path (soldr#2294) — the same route
-          # cross-compile-all-targets.yml exercises on every push to
-          # main. The smoke_windows_* jobs execute the archives and
-          # wheels on native Windows runners before publication.
+            build_driver: cargo
+          # Windows MSVC targets are built natively to avoid soldr daemon
+          # OOM during Linux-hosted cross-compilation (soldr#2453).
+          # The smoke_windows_* jobs are absorbed into the build lanes
+          # since the build now runs on the same native runner.
           - name: Windows x64
-            runner: ubuntu-24.04
+            runner: windows-2025
             target: x86_64-pc-windows-msvc
             binary: soldr.exe
+            build_driver: cargo
           - name: Windows ARM64
-            runner: ubuntu-24.04
+            runner: windows-11-arm
             target: aarch64-pc-windows-msvc
             binary: soldr.exe
+            build_driver: cargo
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -357,22 +364,14 @@ jobs:
           submodules: recursive
           ref: ${{ needs.prepare.outputs.commit_sha }}
 
+      # ── Linux (soldr-driven) toolchain setup ──
       # soldr#1061 phase A: replaced dtolnay/rust-toolchain +
       # Swatinem/rust-cache with setup-soldr's integrated
       # `prebuild-deps: soldr-cook` flow so the release build benefits
       # from the same `target/<triple>/release/build/*/out/` cc-rs-
-      # artifact restore that every-commit CI now uses. Saves the
-      # 45-70s/lane that release builds were spending on bit-identical
-      # libsqlite3-sys / tikv-jemalloc-sys / zstd-sys / ring rebuilds.
-      # soldr#1248/#2 follow-up: setup-soldr remains in passthrough
-      # mode here until release cook can run after target-specific
-      # toolchain/syslib setup with release-shaped flags. #1224 fixed
-      # the old source-restore blocker; the active blocker is ordering
-      # + profile wiring.
-      # soldr#1340 — pre-cache the 1.94.1 toolchain in ~/.rustup so
-      # setup-soldr uses it without spending the release lane on a fresh
-      # rustup install. Same pattern as #1341/#1342/#1343/#1345.
+      # artifact restore that every-commit CI now uses.
       - name: Cache rustup 1.94.1 in ~/.rustup
+        if: matrix.build_driver == 'soldr'
         id: rustup_cache
         uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
@@ -380,42 +379,31 @@ jobs:
           key: rustup-1.94.1-linux-x64-v1
 
       - name: Install rustup 1.94.1 to ~/.rustup (if not cached)
-        if: steps.rustup_cache.outputs.cache-hit != 'true'
+        if: matrix.build_driver == 'soldr' && steps.rustup_cache.outputs.cache-hit != 'true'
         run: rustup toolchain install 1.94.1 --profile minimal --no-self-update
 
-      - name: Setup Rust toolchain
+      - name: Setup Rust toolchain (Linux)
+        if: matrix.build_driver == 'soldr'
         uses: zackees/setup-soldr@62d1596b70168e422156f12273a2ed476d3a16dc
         with:
-          # Release CI runs the checked-out soldr CLI as the build driver
-          # below, because the previous released soldr can lack the
-          # exact cross-build behavior needed to build the
-          # next release. Keep setup-soldr in passthrough mode here so it
-          # only provisions Rust and cannot enter stale standalone
-          # zccache setup paths.
           enable: false
           toolchain: 1.94.1
           cache: false
           build-cache: false
           target-cache: false
           cargo-registry-cache: false
-          # soldr#2451: solo-toolchain-cache is gated ONLY on its own input, not
-          # the `cache` umbrella, so disable it explicitly. (soldr-mini-cache is
-          # already ineligible under enable:false, but pin it off for parity.)
           soldr-mini-cache: false
           solo-toolchain-cache: false
           prebuild-deps: none
           zccache-seed-strict: false
 
       - name: Add cross-compile target
+        if: matrix.build_driver == 'soldr'
         shell: bash
         run: rustup target add ${{ matrix.target }}
 
-      # Mirrors `_bootstrap-e2e.yml`'s musl-tools install: retried apt
-      # update + install, --no-install-recommends to narrow the input
-      # surface (#41), and an installed-version log line so the workflow
-      # run is auditable.
       - name: Install musl tools
-        if: contains(matrix.target, 'musl')
+        if: matrix.build_driver == 'soldr' && contains(matrix.target, 'musl')
         shell: bash
         run: |
           set -euo pipefail
@@ -429,11 +417,6 @@ jobs:
             fi
             sleep $((attempts * 3))
           done
-          # cmake + perl added soldr#1022: zstd-sys (cmake) and
-          # openssl-sys (perl) transitively-depended build scripts
-          # need them. ubuntu-latest ships both, so this was implicit;
-          # locally-validated in `ci/docker-aarch64-musl-cross/` via a
-          # vanilla ubuntu:24.04 container to surface the dependency.
           attempts=0
           until sudo apt-get install -y --no-install-recommends musl-tools cmake perl; do
             attempts=$((attempts + 1))
@@ -447,86 +430,67 @@ jobs:
           dpkg-query -W -f='cmake installed version: ${Version}\n' cmake
           dpkg-query -W -f='perl installed version: ${Version}\n' perl
 
+      # ── Native (cargo-driven) toolchain setup ──
+      # soldr#2453: macOS and Windows builds run natively with bare cargo
+      # to avoid the soldr daemon OOM that blocks Linux-hosted cross-
+      # compilation. No setup-soldr, no cross-compile targets, no musl.
+      - name: Install Rust toolchain (native)
+        if: matrix.build_driver == 'cargo'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.94.1 --profile minimal --no-self-update
+            source "$HOME/.cargo/env"
+          else
+            rustup toolchain install 1.94.1 --profile minimal --no-self-update
+            rustup default 1.94.1
+          fi
+          # Ensure cargo/rustc are on PATH for subsequent steps.
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          rustup show
+          cargo --version
+          rustc --version
+
+      # ── Build driver download (Linux only) ──
       # soldr#2294: the driver is built once in the bootstrap job and
       # shared. Download it to the exact path the per-lane `cargo build`
       # used to produce, so every later `driver="target/release/soldr"`
       # reference (archive packaging, support-binary extraction, smoke
       # steps) is unchanged.
       - name: Download bootstrap release driver
+        if: matrix.build_driver == 'soldr'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: release-bootstrap-soldr
           path: target/release
 
-      # Artifact zips do not preserve the executable bit; restore it.
-      # Same idiom as `_ci-target-run.yml`'s "Restore executable bit"
-      # step.
       - name: Restore executable bit on bootstrap driver
+        if: matrix.build_driver == 'soldr'
         shell: bash
         run: |
           set -euo pipefail
           chmod +x target/release/soldr
           target/release/soldr --version
 
-      - name: Build release binary
+      # ── Build release binary ──
+      - name: Build release binary (soldr-driven)
+        if: matrix.build_driver == 'soldr'
         shell: bash
         env:
-          # soldr#1597 Phase 2: build.rs (crates/soldr-core/build.rs) turns
-          # this into a compile-time SOLDR_OFFICIAL_BUILD const, letting
-          # runtime code (build_provenance::is_official_build) tell a
-          # genuine CI-released binary apart from a dev/manual build.
-          # Set ONLY here — never in local dev workflows.
           SOLDR_RELEASE_CI: "1"
           CARGO_PROFILE_RELEASE_DEBUG: "0"
-          # Native MSVC release links are too slow with the workspace's
-          # size-optimized thin-LTO/single-CGU profile on hosted runners.
           CARGO_PROFILE_RELEASE_LTO: ${{ contains(matrix.target, 'pc-windows-msvc') && 'false' || 'thin' }}
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ contains(matrix.target, 'pc-windows-msvc') && '16' || '1' }}
         run: |
-          # soldr#1140 root-cause fix: restore Cargo.toml + Cargo.lock
-          # + crates/soldr-cli/Cargo.toml BEFORE cargo runs.
-          #
-          # setup-soldr's `cook` step (which fires before this one on any
-          # cache-hit lane) strips [workspace.package] from Cargo.toml
-          # for cache-key stability and compiles soldr-cli as v0.0.1 into
-          # target/. Without a restore + clean here, the subsequent
-          # `cargo build --release` sees a stub target/ + a stripped
-          # manifest, does not detect a version change, and links a
-          # v0.0.1 stub binary (~118K on Windows, ~332K on Linux gnu)
-          # that ships to PyPI as the release binary. Symptom: every
-          # soldr invocation from `pip install soldr` silently exits 0
-          # — see soldr#1140 and the FastLED-side fallback in
-          # FastLED/FastLED#3523 for the downstream impact.
-          #
-          # `git restore` is the same incantation the wheel-build step
-          # below already uses (v0.7.81 lesson); this just moves the
-          # rescue earlier so the tar.zst archive + wheel both start
-          # from the correct workspace.package version.
-          #
-          # `cargo clean -p soldr-cli` purges cook's stub soldr-cli
-          # artifacts specifically; the 200+ transitive deps keep their
-          # cached object code so cold recompile stays ~30-60s, not
-          # multi-minute.
+          set -euo pipefail
           git restore -- Cargo.toml Cargo.lock crates/soldr-cli/Cargo.toml || true
           cargo clean -p soldr-cli --target "${{ matrix.target }}" --release 2>/dev/null || true
 
           target='${{ matrix.target }}'
-          # Release CI runs the checked-out soldr CLI (built once in the
-          # bootstrap job, downloaded above) as the build driver and
-          # lets `soldr build` own all target-specific toolchain
-          # dispatch. The workflow must not install or invoke
-          # lower-level cross-build helpers directly.
           driver="target/release/soldr"
           soldr_build_args=()
           case "$target" in
-            # soldr#2294: this guard originally existed because the
-            # embedded zccache wrapper path could hang the hosted
-            # Windows runners; the lanes are Linux cross-builds now, so
-            # that reason is gone. It is KEPT because a Windows build
-            # routed through the compile cache drops its .pdb
-            # (soldr#2148, docs/DEBUG_SIDECARS.md caveat) and the PDB
-            # sidecar is a required archive member below. Remove only
-            # together with a fix for soldr#2148.
             *-pc-windows-msvc) soldr_build_args+=(--no-cache) ;;
           esac
           "$driver" \
@@ -535,15 +499,29 @@ jobs:
             --package soldr-cli \
             --bin soldr
 
-          # `soldr build` applies the blessed target environment to its child
-          # cargo process only. Persist the same catalogue-backed compiler,
-          # sysroot, linker, and PATH values for Maturin's later direct Cargo
-          # invocation. GNU and Darwin catalogue toolchains are hosted on the
-          # Linux build runner; ARM-musl packaging is handled separately on a
-          # native ARM runner because its catalogue GCC is i386-hosted.
           if [[ "$target" == *-unknown-linux-gnu || "$target" == *-apple-darwin ]]; then
             "$driver" prepare --target "$target" --github-env "$GITHUB_ENV"
           fi
+          echo "=== post-build diagnostic: target/$target/release/ ==="
+          ls -la "target/$target/release/" 2>&1 | head -20 || true
+          echo "==================================================="
+
+      - name: Build release binary (native cargo)
+        if: matrix.build_driver == 'cargo'
+        shell: bash
+        env:
+          SOLDR_RELEASE_CI: "1"
+          CARGO_PROFILE_RELEASE_DEBUG: "0"
+        run: |
+          set -euo pipefail
+          git restore -- Cargo.toml Cargo.lock crates/soldr-cli/Cargo.toml || true
+          cargo clean -p soldr-cli --target "${{ matrix.target }}" --release 2>/dev/null || true
+
+          target='${{ matrix.target }}'
+          cargo build --release --locked --target "$target" \
+            --package soldr-cli \
+            --bin soldr
+
           echo "=== post-build diagnostic: target/$target/release/ ==="
           ls -la "target/$target/release/" 2>&1 | head -20 || true
           echo "==================================================="
@@ -673,6 +651,7 @@ jobs:
         env:
           TARGET_TRIPLE: ${{ matrix.target }}
           SUPPORT_ISSUE_URL: https://github.com/zackees/soldr-toolchain/issues/47
+          SOLD_DRIVER_PATH: ${{ matrix.build_driver == 'soldr' && 'target/release/soldr' || format('target/{0}/release/soldr', matrix.target) }}
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -758,7 +737,21 @@ jobs:
           def extract_archive(archive: Path, extract_dir: Path) -> None:
               name = archive.name
               if name.endswith(".tar.zst"):
-                  driver = Path("target/release/soldr.exe" if os.name == "nt" else "target/release/soldr")
+                  # soldr#2453: native builds put the binary under the
+                  # target-triple directory; Linux cross-builds use the
+                  # bootstrap driver at target/release/soldr.
+                  driver_candidates = [
+                      Path(os.environ["SOLD_DRIVER_PATH"]),
+                      Path(f"target/{os.environ['TARGET_TRIPLE']}/release/soldr"),
+                      Path("target/release/soldr"),
+                  ]
+                  driver = None
+                  for c in driver_candidates:
+                      if c.is_file():
+                          driver = c
+                          break
+                  if driver is None:
+                      raise SystemExit(f"no soldr driver found; tried {driver_candidates}")
                   if not driver.is_file():
                       raise SystemExit(f"checked-out soldr driver missing at {driver}")
                   subprocess.run(
@@ -1159,7 +1152,9 @@ jobs:
           set -euo pipefail
           version="${{ needs.prepare.outputs.version }}"
           name="soldr-${version}-${{ matrix.target }}"
-          driver="target/release/soldr"
+          # soldr#2453: native builds use the just-built binary;
+          # Linux cross-builds use the bootstrap driver.
+          driver="${{ matrix.build_driver == 'soldr' && 'target/release/soldr' || format('target/{0}/release/soldr', matrix.target) }}"
           "$driver" archive --stage-dir dist/package --output "dist/${name}.tar.zst"
           ls -la "dist/${name}.tar.zst"
           echo "compressed_size_bytes=$(wc -c < "dist/${name}.tar.zst")"
@@ -1169,40 +1164,15 @@ jobs:
         with:
           enable-cache: false
 
-      - name: Build hardened wheel from shared target directory
-        if: matrix.target != 'aarch64-unknown-linux-musl'
+      # ── Wheel build (soldr-driven, Linux) ──
+      - name: Build hardened wheel from shared target directory (soldr)
+        if: matrix.build_driver == 'soldr' && matrix.target != 'aarch64-unknown-linux-musl'
         shell: bash
         env:
           EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
-          # soldr#1597 Phase 2: this maturin-driven build also produces a
-          # shipped (PyPI) binary, so it needs the same official-build
-          # stamp as the "Build release binary" step above.
           SOLDR_RELEASE_CI: "1"
         run: |
           set -euo pipefail
-          # soldr#1083 follow-up: aggressive cache bust before maturin.
-          # Linux GNU lanes were producing wheels tagged with
-          # version "0.0.1" instead of the workspace version
-          # because setup-soldr's target/ cache restored stale
-          # build artifacts whose fingerprints lied about the
-          # crate version. macOS ARM64 + Windows lanes didn't have
-          # this contamination and produced correct wheels.
-          #
-          # Steps:
-          #   1. Wipe ANY .whl anywhere under dist/ or target/.
-          #      Belt-and-suspenders for stale wheels.
-          #   2. Wipe maturin's internal staging dirs.
-          #   3. `cargo clean -p soldr-cli --target $T --release`
-          #      invalidates the soldr-cli per-package fingerprint
-          #      so the upcoming maturin-driven cargo build
-          #      re-evaluates the crate version from the (correct)
-          #      Cargo.toml on disk. Only invalidates soldr-cli
-          #      itself; the 200+ transitive deps keep their cached
-          #      object code. Recompile cost: ~30-60s.
-          #   4. Verify the source-of-truth version BEFORE maturin
-          #      runs (defense in depth — the wheel-lint after
-          #      maturin would still catch this, but failing early
-          #      with the exact diagnostic is friendlier).
           rm -f dist/*.whl
           rm -rf target/wheels target/maturin
           find target -name "*.whl" -delete 2>/dev/null || true
@@ -1210,52 +1180,19 @@ jobs:
           mkdir -p dist
 
           expected="${EXPECTED_VERSION#v}"
-          # v0.7.81 lesson: the workspace `Cargo.toml` on disk at
-          # this point is a STRIPPED variant (only `[workspace]` +
-          # `[workspace.dependencies]`, missing `[workspace.package]`
-          # entirely). Some prior step in this matrix lane is
-          # replacing the manifest — most likely setup-soldr's
-          # cache restoration normalizing it for cache-key
-          # stability. The result: maturin reads the wrong
-          # manifest, writes wheels tagged with whatever first
-          # `version = "X"` line is in the stripped file (the
-          # first dep version, usually clap's "4"), and downstream
-          # twine aborts the PyPI upload.
-          #
-          # Restore the real manifest tree from git BEFORE
-          # anything reads it. Cheap (just file IO from
-          # .git/objects).
           git restore -- Cargo.toml Cargo.lock crates/soldr-cli/Cargo.toml || true
 
-          echo "=== pre-maturin diagnostic ==="
-          echo "pwd: $(pwd)"
-          echo "ls Cargo.toml Cargo.lock:"
-          ls -la Cargo.toml Cargo.lock 2>&1 || true
-          echo "head -30 Cargo.toml:"
-          head -30 Cargo.toml || true
-          echo "================================"
-
-          # Authoritative version via cargo metadata.
           cargo_version="$(cargo metadata --no-deps --format-version 1 --manifest-path crates/soldr-cli/Cargo.toml 2>/dev/null \
               | python3 -c 'import json,sys; d=json.load(sys.stdin); pkgs=[p for p in d["packages"] if p["name"]=="soldr-cli"]; print(pkgs[0]["version"] if pkgs else "")' 2>/dev/null || true)"
-          echo "cargo metadata reports soldr-cli version = $cargo_version"
-          echo "Expected (from prepare.outputs.version) = $expected"
           if [ -z "$cargo_version" ]; then
               echo "ERROR: cargo metadata returned no version for soldr-cli" >&2
               exit 1
           fi
           if [ "$cargo_version" != "$expected" ]; then
-              echo "ERROR: soldr-cli version ($cargo_version) does not match prepare.outputs.version ($expected) — possible cache contamination" >&2
+              echo "ERROR: soldr-cli version ($cargo_version) does not match prepare.outputs.version ($expected)" >&2
               exit 1
           fi
 
-          # `soldr prepare --github-env` exports the blessed cross toolchain
-          # both globally and per target. Maturin also compiles host build
-          # helpers (for example zstd-sys); make their host tuple explicit so
-          # cc-rs selects native tools before falling back to the global
-          # cross compiler. Keep the global values intact: they provide the
-          # target's sysroot/library search environment needed by Rust's final
-          # link (notably liblzma).
           if [[ "${{ matrix.target }}" != "x86_64-unknown-linux-gnu" && ( "${{ matrix.target }}" == *-unknown-linux-gnu || "${{ matrix.target }}" == *-apple-darwin ) ]]; then
             export CC_x86_64_unknown_linux_gnu="$(command -v cc)"
             export CXX_x86_64_unknown_linux_gnu="$(command -v c++)"
@@ -1263,29 +1200,9 @@ jobs:
             export RANLIB_x86_64_unknown_linux_gnu="$(command -v ranlib)"
           fi
 
-          # soldr#2294: `soldr wheel` replaces the raw `maturin build`
-          # here. The verb provisions its own managed maturin and owns
-          # the compatibility-tag policy (wheel_cmd.rs
-          # `compatibility_for_target`): release CROSS builds are tagged
-          # manylinux_2_17 (gnu) / musllinux_1_2 (musl), everything else
-          # `pypi` — exactly what the deleted bash `case` pinned.
-          # `--target-dir target` reuses the build step's target dir so
-          # this is incremental over `soldr build`, not a second cold
-          # compile. Auditwheel repair is maturin's default mode, so the
-          # old explicit `--auditwheel repair` flag is redundant.
           wheel_args=()
           case "${{ matrix.target }}" in
             x86_64-unknown-linux-gnu)
-              # Host-native target: `soldr wheel` only claims a
-              # manylinux floor on CROSS builds (floor_claim_is_backed),
-              # so left alone it would pass `--compatibility pypi` and
-              # maturin would auto-tag from the runner glibc
-              # (manylinux_2_39 — the soldr#1005 trap). The floor IS
-              # backed on this lane by `soldr prepare --github-env`
-              # above, so pin the tag explicitly; `soldr wheel` skips
-              # its own policy when the caller supplies one. The
-              # byte-level `verify_wheel_glibc.py --max-glibc 2.17` gate
-              # below keeps this honest.
               wheel_args+=(--compatibility manylinux_2_17)
               ;;
           esac
@@ -1293,6 +1210,41 @@ jobs:
           "$driver" wheel --release --target "${{ matrix.target }}" \
             "${wheel_args[@]}" \
             --locked --target-dir target --out dist
+
+      # ── Wheel build (native cargo, macOS / Windows) ──
+      # soldr#2453: native builds use maturin directly to avoid the soldr
+      # daemon. Compatibility tags come from the native platform because
+      # there is no cross-compile to lie about.
+      - name: Build wheel natively (cargo)
+        if: matrix.build_driver == 'cargo'
+        shell: bash
+        env:
+          EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
+          SOLDR_RELEASE_CI: "1"
+        run: |
+          set -euo pipefail
+          rm -f dist/*.whl
+          rm -rf target/wheels target/maturin
+          find target -name "*.whl" -delete 2>/dev/null || true
+          mkdir -p dist
+
+          expected="${EXPECTED_VERSION#v}"
+          git restore -- Cargo.toml Cargo.lock crates/soldr-cli/Cargo.toml || true
+
+          cargo_version="$(cargo metadata --no-deps --format-version 1 --manifest-path crates/soldr-cli/Cargo.toml 2>/dev/null \
+              | python3 -c 'import json,sys; d=json.load(sys.stdin); pkgs=[p for p in d["packages"] if p["name"]=="soldr-cli"]; print(pkgs[0]["version"] if pkgs else "")' 2>/dev/null || true)"
+          if [ -z "$cargo_version" ]; then
+              echo "ERROR: cargo metadata returned no version for soldr-cli" >&2
+              exit 1
+          fi
+          if [ "$cargo_version" != "$expected" ]; then
+              echo "ERROR: soldr-cli version ($cargo_version) does not match prepare.outputs.version ($expected)" >&2
+              exit 1
+          fi
+
+          uv tool install "maturin>=1.7,<2"
+          uv tool run maturin build --release --locked --target "${{ matrix.target }}" \
+            --target-dir target --out dist
 
       - name: Lint wheel filenames against workspace version
         if: matrix.target != 'aarch64-unknown-linux-musl'
@@ -1547,14 +1499,13 @@ jobs:
           )
 
       - name: Smoke test wheel
-        # Cross-OS and cross-architecture wheels cannot execute on the Linux
-        # x64 build host, so only the host-native gnu wheel is executed
-        # inline. The x64 musl wheel runs in the Alpine docker smoke
-        # below; macOS wheels are exercised by smoke_macos_x64 /
-        # smoke_macos_arm64 and Windows wheels by smoke_windows_x64 /
-        # smoke_windows_arm64 (soldr#2294). ARM Linux wheels still
-        # receive structural wheel and archive checks in this job.
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        # Cross-OS and cross-architecture wheels cannot execute on the
+        # Linux x64 build host. Native macOS / Windows builds (soldr#2453)
+        # CAN execute their own wheels inline, so this gate now covers
+        # every native-arch build lane.
+        if: |
+          matrix.target == 'x86_64-unknown-linux-gnu' ||
+          matrix.build_driver == 'cargo'
         shell: bash
         env:
           EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
@@ -1562,10 +1513,6 @@ jobs:
           set -euo pipefail
           uv venv .venv
           uv pip install --python .venv dist/*.whl
-          # soldr#1140: previously this step only checked exit code. A
-          # stub bin that silently exits 0 (as v0.7.87 shipped on
-          # win_amd64) trivially passed. Capture stdout and require it
-          # to start with "soldr " so a stub can never sneak through.
           if [ -x .venv/bin/soldr ]; then
               soldr_bin=".venv/bin/soldr"
           else
@@ -1578,12 +1525,6 @@ jobs:
               *) echo "ERROR: 'soldr --version' output did not start with 'soldr ' — likely shipping a stub binary (soldr#1140)." >&2; exit 1 ;;
           esac
 
-          # soldr#1202: cross-check via `soldr version --json` — the
-          # dispatch-arm code path (Commands::Version) is distinct from
-          # clap's built-in --version and downstream tooling parses the
-          # JSON. v0.7.87 shipped a binary whose `--version` passed
-          # (`soldr 0.0.1`) but whose `version --json` returned empty
-          # stdout, breaking setup-soldr's verify step. Guard both.
           expected_soldr_version="${EXPECTED_VERSION#v}"
           json_out="$("$soldr_bin" version --json)"
           if [ -z "$json_out" ]; then
@@ -1681,7 +1622,7 @@ jobs:
           test -f "$archive" || { echo "missing archive: $archive" >&2; exit 1; }
 
           extract=$(mktemp -d)
-          driver="target/release/soldr"
+          driver="${{ matrix.build_driver == 'soldr' && 'target/release/soldr' || format('target/{0}/release/soldr', matrix.target) }}"
           "$driver" archive --input "$archive" --extract-dir "$extract"
           echo "--- extracted layout ---"
           ls -la "$extract"
