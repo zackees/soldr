@@ -2968,7 +2968,7 @@ fn validate_dylint_path_binary(
 /// The failure this exists for is a *smoke-test* failure, not a download
 /// failure. `fetch_tool_for_host_with_paths` runs `--version` on the
 /// extracted binary (soldr#936, `smoke_test_or_evict`) and evicts it on a
-/// non-zero exit, so upstream's GLIBC_2.39-linked 6.0.1 asset downloads
+/// non-zero exit, so an incompatible upstream Dylint asset download
 /// fine on Debian 12 and then fails the probe with a loader error — which
 /// is exactly the `Err` arm below.
 #[cfg(test)]

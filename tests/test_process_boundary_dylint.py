@@ -14,23 +14,18 @@ def test_root_workspace_loads_process_boundary_dylint() -> None:
 def test_required_ci_runs_root_dylint_policy() -> None:
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert "Enforce daemon process-creation boundary" in workflow
-    # The version is pinned once in `DYLINT_VERSION` and read by both the
-    # install lines and the binary cache key, so this asserts the *pin* rather
-    # than a literal command string. The literal broke when the installs were
-    # cached (they now read `${DYLINT_VERSION}`) even though the pin was intact
-    # -- an assertion that fails on a refactor it should not care about is
-    # testing the spelling, not the policy.
-    assert re.search(
-        r"^      DYLINT_VERSION: \d+\.\d+\.\d+$", workflow, re.M
-    ), "the dylint version must stay pinned to an exact release in one place"
-    assert (
-        'soldr cargo install cargo-dylint --version "${DYLINT_VERSION}" --locked'
-        in workflow
+    assert re.search(r"^      DYLINT_VERSION: 6\.0\.3$", workflow, re.M)
+    assert ".github/scripts/install_catalogued_tools.py" in workflow
+    assert "--target x86_64-unknown-linux-gnu" in workflow
+    assert '--version "${DYLINT_VERSION}"' in workflow
+    assert '--output-dir "${CARGO_HOME}/bin"' in workflow
+    assert "cargo-dylint dylint-link" in workflow
+    executable = "\n".join(
+        line for line in workflow.splitlines() if not line.lstrip().startswith("#")
     )
-    assert (
-        'soldr cargo install dylint-link --version "${DYLINT_VERSION}" --locked'
-        in workflow
-    )
+    assert "cargo install cargo-dylint" not in executable
+    assert "cargo install dylint-link" not in executable
+    assert "Cache Dylint binaries" not in workflow
     assert "Install Dylint toolchain" in workflow
     assert "soldr rustup toolchain install" in workflow
     assert "--component rustc-dev" in workflow

@@ -17,6 +17,7 @@ OLD_SETUP_SOLDR_SHA = "1937c19529f3690df5553a36dd33f39ccb20b070"
 SETUP_SOLDR_V0_2_SHA = "13b2e37f3ee8dc6867f08d3b2fe49ece4783dba2"
 SETUP_SOLDR_V0_4_3_SHA = "6c48a0946390a3520a853e30fe417db7465b9119"
 SETUP_SOLDR_V0_9_12_SHA = "cca74625e75e70b56f1805fa6eeee9069f945d48"
+SETUP_SOLDR_V0_9_73_SHA = "62d1596b70168e422156f12273a2ed476d3a16dc"
 SETUP_SOLDR_USE_RE = re.compile(
     r"\buses:\s*(zackees/setup-soldr(?:/[A-Za-z0-9_.-]+)?)@([^\s#]+)"
 )
@@ -89,6 +90,7 @@ def verify_setup_soldr_pins(repo_root: Path = REPO_ROOT) -> None:
         SETUP_SOLDR_V0_2_SHA,
         SETUP_SOLDR_V0_4_3_SHA,
         SETUP_SOLDR_V0_9_12_SHA,
+        SETUP_SOLDR_V0_9_73_SHA,
     ]:
         if old_sha in text:
             errors.append(f"stale setup-soldr SHA remains in workflows: {old_sha}")

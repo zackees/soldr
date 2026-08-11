@@ -48,7 +48,7 @@ exec "{cargo_dylint}" "$@"
             r#"#!/bin/sh
 echo "cargo-dylint argv=$* wrapper=${{RUSTC_WRAPPER:-}}" >> "{log}"
 case "${{1:-}}" in
-  --version) printf 'cargo-dylint 6.0.1\n'; exit 0 ;;
+  --version) printf 'cargo-dylint 6.0.3\n'; exit 0 ;;
   --help) exit 0 ;;
 esac
 case "${{RUSTC_WRAPPER:-}}" in
@@ -121,7 +121,7 @@ echo "dylint compile diagnostic on stderr" >&2
         .expect("create prebuilt driver dir");
     write_script(
         &prebuilt_driver,
-        "#!/bin/sh\nprintf 'dylint-driver 6.0.1\\n'\n".to_string(),
+        "#!/bin/sh\nprintf 'dylint-driver 6.0.3\\n'\n".to_string(),
     );
 
     (cargo, rustc, zccache, driver_root)
@@ -253,7 +253,7 @@ timed_test!(
         assert_eq!(output.status.code(), Some(1));
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.contains("Dylint v6.0.1 is not built for this machine"),
+            stderr.contains("Dylint v6.0.3 is not built for this machine"),
             "unexpected stderr: {stderr}"
         );
         assert!(

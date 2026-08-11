@@ -544,7 +544,7 @@ def test_mac_x64_distribution_uses_pinned_setup_soldr_on_intel() -> None:
     assert '"x86_64-apple-darwin": {"os": "darwin", "arch": "x86_64"}' in release
     assert 'prepare --target "$target" --github-env "$GITHUB_ENV"' in release
     assert (
-        "uses: zackees/setup-soldr@62d1596b70168e422156f12273a2ed476d3a16dc" in release
+        "uses: zackees/setup-soldr@40320d277ba4946e38d4b3c02e6c7a15a29c3f3f" in release
     )
     assert "version: 0.8.44" in release
     assert "cross-targets: ${{ matrix.setup_target }}" in release
@@ -590,7 +590,7 @@ def test_release_wheels_use_setup_soldr_target_hooks_without_zig_or_xwin() -> No
 
     assert '"$driver" prepare --target "$target" --github-env "$GITHUB_ENV"' in release
     assert (
-        "uses: zackees/setup-soldr@62d1596b70168e422156f12273a2ed476d3a16dc" in release
+        "uses: zackees/setup-soldr@40320d277ba4946e38d4b3c02e6c7a15a29c3f3f" in release
     )
     assert "version: 0.8.44" in release
     assert "cross-targets: ${{ matrix.setup_target }}" in release

@@ -10,7 +10,7 @@ def test_release_workflow_builds_and_publishes_musllinux_wheels() -> None:
     assert "py3-none-musllinux_1_2_x86_64.whl" in workflow
     assert "py3-none-musllinux_1_2_aarch64.whl" in workflow
     assert (
-        "uses: zackees/setup-soldr@62d1596b70168e422156f12273a2ed476d3a16dc" in workflow
+        "uses: zackees/setup-soldr@40320d277ba4946e38d4b3c02e6c7a15a29c3f3f" in workflow
     )
     assert "version: 0.8.44" in workflow
     assert "cross-targets: ${{ matrix.setup_target }}" in workflow

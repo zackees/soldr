@@ -602,7 +602,7 @@ mod tests {
             &paths,
         )
         .expect("cargo-dylint resolve");
-        assert_eq!(dylint.version, "6.0.1");
+        assert_eq!(dylint.version, "6.0.3");
         let dylint_link = resolve_plan(
             "dylint-link",
             Some("x86_64-pc-windows-msvc".to_string()),

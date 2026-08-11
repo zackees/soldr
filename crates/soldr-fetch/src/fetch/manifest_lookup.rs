@@ -271,6 +271,19 @@ impl ManifestIndex {
             .filter(|e| e.owner == owner && e.repo == repo && e.tag == tag)
             .collect()
     }
+
+    /// Look up an exact asset filename regardless of its catalogue owner.
+    ///
+    /// soldr-toolchain republishes some cross-platform tools under its own
+    /// `assets` identity when the upstream release does not cover every Soldr
+    /// target. Those rows retain an exact, versioned filename, so filename is
+    /// the stable lookup key for that explicitly opted-in path.
+    pub fn lookup_asset(&self, asset: &str) -> Vec<&ManifestEntry> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.asset == asset)
+            .collect()
+    }
 }
 
 /// Process-wide one-shot cache of the parsed manifest. Stores
@@ -611,6 +624,13 @@ mod tests {
         let hits = idx.lookup_release("zackees", "zccache", "1.12.9");
         assert_eq!(hits.len(), 1);
         assert!(hits[0].asset.contains("zccache"));
+    });
+
+    crate::timed_test!(lookup_asset_finds_toolchain_owned_repackages, {
+        let idx = ManifestIndex::from_json(sample_json()).unwrap();
+        let hits = idx.lookup_asset("cargo-chef-x86_64-pc-windows-msvc.tar.gz");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].repo, "cargo-chef");
     });
 
     crate::timed_test!(catalogue_asset_digest_is_mandatory, {

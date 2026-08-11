@@ -914,8 +914,8 @@ mod tests {
 
     crate::timed_test!(parses_prebuilt_dylint_driver_version, {
         assert_eq!(
-            dylint_driver_version("dylint-driver 6.0.1\n"),
-            Some("6.0.1")
+            dylint_driver_version("dylint-driver 6.0.3\n"),
+            Some("6.0.3")
         );
         assert_eq!(dylint_driver_version(""), None);
     });

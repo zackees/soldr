@@ -90,7 +90,9 @@ jobs:
       # One definition: the cache key and both `cargo install` lines read
       # this, so the key cannot describe a version other than the one
       # actually installed.
-      DYLINT_VERSION: 6.0.1
+      DYLINT_VERSION: 6.0.3
+      # The preceding note describes the retired pre-#2469 cache path; this
+      # exact version now drives the verified catalogue installer below.
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -182,9 +184,9 @@ jobs:
         run: rustup toolchain install 1.94.1 --profile minimal --no-self-update
 
       - name: Setup soldr build cache
-        # SHA pin resolved from setup-soldr@v0 on 2026-08-07; the pin guard
+        # SHA pin resolved from setup-soldr@v0 on 2026-08-11; the pin guard
         # verifies this remains current when the upstream tag advances.
-        uses: zackees/setup-soldr@62d1596b70168e422156f12273a2ed476d3a16dc
+        uses: zackees/setup-soldr@40320d277ba4946e38d4b3c02e6c7a15a29c3f3f
         with:
           # soldr#1799: pin the soldr that builds us -- the action's default
           # (0.8.23) predates #1820 and GCs live target/ artifacts after every
@@ -426,32 +428,19 @@ jobs:
           --target x86_64-unknown-linux-gnu -- -D warnings
 
       # soldr#1978. `cargo install cargo-dylint` compiles from source, and on a
-      # run where the Rust cache misses it is the most expensive step in this
-      # job: 168s of a 10m51s run.
-      #
-      # `Swatinem/rust-cache` above does restore `~/.cargo/bin` when it hits --
-      # measured: the same install takes 1s on a warm run. The gap this closes
-      # is that its key is invalidated by lockfile and toolchain changes, which
-      # happen constantly, while these two binaries only change when
-      # DYLINT_VERSION does. Keying them separately means the 168s rebuild is
-      # paid once per version bump instead of once per dependency change.
-      #
-      # Same shape as `Cache rustup ... / Install ... (if not cached)` earlier
-      # in this job.
-      - name: Cache Dylint binaries
-        id: dylint_bins
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
-        with:
-          path: |
-            ~/.cargo/bin/cargo-dylint
-            ~/.cargo/bin/dylint-link
-          key: dylint-bins-${{ env.DYLINT_VERSION }}-linux-x64-v1
-
-      - name: Install Dylint (if not cached)
-        if: steps.dylint_bins.outputs.cache-hit != 'true'
-        run: |
-          soldr cargo install cargo-dylint --version "${DYLINT_VERSION}" --locked
-          soldr cargo install dylint-link --version "${DYLINT_VERSION}" --locked
+      # run where the Rust cache misses it was once the most expensive step in
+      # this job: 168s of a 10m51s run. soldr#2469 Phase 0.2 removes that cache-
+      # dependent source build: both 6.0.3 binaries are selected from the exact
+      # target row in the soldr-toolchain catalogue, hash-verified before
+      # extraction, and version-smoked before entering PATH.
+      - name: Install catalogued Dylint binaries
+        run: >-
+          uv run --no-project python
+          .github/scripts/install_catalogued_tools.py
+          --target x86_64-unknown-linux-gnu
+          --version "${DYLINT_VERSION}"
+          --output-dir "${CARGO_HOME}/bin"
+          cargo-dylint dylint-link
 
       - name: Install Dylint toolchain
         run: >-
@@ -601,7 +590,7 @@ jobs:
         run: rustup toolchain install 1.94.1 --profile minimal --no-self-update
 
       - name: Setup soldr build cache
-        uses: zackees/setup-soldr@62d1596b70168e422156f12273a2ed476d3a16dc
+        uses: zackees/setup-soldr@40320d277ba4946e38d4b3c02e6c7a15a29c3f3f
         with:
           # soldr#1799: pin the soldr that builds us -- the action's default
           # (0.8.23) predates #1820 and GCs live target/ artifacts after every
