@@ -172,6 +172,7 @@ pub mod broker_cmd;
 pub(crate) mod broker_identity;
 mod broker_launcher;
 pub mod broker_spawn;
+mod broker_startup;
 pub mod build_from_source_cmd;
 /// soldr#1790 — always-on hierarchical per-build XML log
 /// (`<soldr root>/logs/builds/<timestamp>-<cwd-slug>.xml`). See the
@@ -297,8 +298,8 @@ pub mod zccache_lifecycle;
 // crate. `timed_test` is the `#[macro_export]` watchdog macro.
 pub use soldr_cache::cache_lib;
 pub use soldr_core::{
-    build_log_meta, cargo_path_check, core, defender, defender_probe, fuzzy_match, self_relocate,
-    startup_profile, test_util, timed_test,
+    broker_identity as installed_broker_identity, build_log_meta, cargo_path_check, core, defender,
+    defender_probe, fuzzy_match, self_relocate, startup_profile, test_util, timed_test,
 };
 pub use soldr_daemon::{daemon, zccache_embedded};
 pub use soldr_fetch::fetch;

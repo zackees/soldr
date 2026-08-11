@@ -13,6 +13,7 @@
 
 #![allow(dead_code)]
 
+pub mod broker_identity;
 pub mod build_log_meta;
 pub mod build_provenance;
 pub mod cargo_path_check;

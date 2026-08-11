@@ -7,7 +7,7 @@
 //! (running-process#899/#901): the first process to bind wins, and a second
 //! process against the same bind name must be refused rather than racing it.
 
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod common;
@@ -24,9 +24,14 @@ fn unique_program(label: &str) -> String {
     format!("soldr-broker-test-{label}-{:010x}", nanos & 0xFF_FFFF_FFFF)
 }
 
-fn spawn_broker(program: &str) -> std::process::Child {
-    Command::new(common::soldr_bin())
+fn spawn_broker(program: &str, runtime_dir: &std::path::Path) -> std::process::Child {
+    common::isolated_soldr_command()
         .args(["broker", "serve", "--program", program])
+        // Path-scoped endpoints must ignore the legacy per-user resolver's
+        // runtime roots. Distinct values simulate processes entering through
+        // different user/session environments while targeting one install.
+        .env("XDG_RUNTIME_DIR", runtime_dir)
+        .env("TMPDIR", runtime_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -74,7 +79,9 @@ soldr_cli::timed_test!(
     {
         let program = unique_program("coexist");
 
-        let mut first = spawn_broker(&program);
+        let first_runtime = common::unique_temp_dir("broker-runtime-first");
+        let second_runtime = common::unique_temp_dir("broker-runtime-second");
+        let mut first = spawn_broker(&program, &first_runtime);
         let ready = wait_until_bound(&mut first, Instant::now() + READY_TIMEOUT);
         assert!(
             ready.is_some(),
@@ -82,7 +89,7 @@ soldr_cli::timed_test!(
         );
 
         // Second broker, same program namespace: must refuse, not coexist.
-        let second = spawn_broker(&program);
+        let second = spawn_broker(&program, &second_runtime);
         let output = {
             let deadline = Instant::now() + LOSER_EXIT_TIMEOUT;
             let mut second = second;
@@ -104,16 +111,16 @@ soldr_cli::timed_test!(
             }
         };
 
-        assert_eq!(
-            output.status.code(),
-            Some(75),
-            "loser broker must exit EX_TEMPFAIL(75), got {:?}",
-            output.status
-        );
         let combined = format!(
             "{}{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(75),
+            "loser broker must exit EX_TEMPFAIL(75), got {:?}; output was:\n{combined}",
+            output.status
         );
         assert!(
             combined.contains("another broker already owns"),

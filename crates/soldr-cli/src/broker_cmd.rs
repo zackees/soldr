@@ -31,7 +31,7 @@ pub(crate) enum BrokerSubcommand {
     ///
     /// Spawned unconditionally by the front door (soldr#2388, see
     /// `broker_spawn.rs`); running it manually is also safe -- it enforces
-    /// the same per-user-session singleton property
+    /// the same install-path-scoped singleton property
     /// `running-process-broker-v2` does, refusing to start a second
     /// instance rather than racing one.
     Serve {
@@ -106,7 +106,6 @@ fn broker_stop_deadline() -> std::time::Duration {
 /// these tokens, so nothing validates them on the hot path — see the #2442
 /// design ruling (the persistent SESSION pipe already signals a cycle by EOF).
 fn run_broker_serve(program: &str) -> Result<(), SoldrError> {
-    use fs2::FileExt;
     use running_process::broker::server::session_token::SessionTokenAuthority;
     use running_process::broker::server::{
         serve_launching_backends_with_launcher, BrokerLaunchServeConfig,
@@ -115,23 +114,6 @@ fn run_broker_serve(program: &str) -> Result<(), SoldrError> {
     // soldr#2388: container-safe identity — the broker is mandatory for every
     // compile, so it must not hard-fail where the OS ships no /etc/machine-id.
     let socket_path = broker_control_socket_path(program)?;
-
-    let ownership_file = broker_ownership_file(program)?;
-    if let Err(err) = ownership_file.try_lock_exclusive() {
-        if broker_lock_is_contended(&err) {
-            eprintln!(
-                "soldr broker: another broker already owns program={program}; refusing split control/SESSION ownership"
-            );
-            exit_guard::mark_spoke();
-            guarded_exit(75);
-        }
-        return Err(SoldrError::Other(format!(
-            "soldr broker: could not acquire ownership lock: {err}"
-        )));
-    }
-    // Held for the complete serve lifetime. Both control and SESSION bind only
-    // after this point, so concurrent starters cannot split endpoint ownership.
-    let _ownership_file = ownership_file;
 
     // soldr#2442 slice 1: one broker/daemon generation-token authority per
     // broker process, minted here (broker half from OS randomness) and shared —
@@ -150,19 +132,14 @@ fn run_broker_serve(program: &str) -> Result<(), SoldrError> {
         }
     };
 
-    println!("soldr broker: binding at {socket_path} (program={program})");
-
     // SESSION 0x5350 companion relay (soldr#2388 Step 7 / #2386 Option A, topology
     // (c)): a second socket serving the async full-proxy relay to the daemon's
     // deterministic SESSION endpoint, alongside the sync control serve below.
     //
-    // Do ALL of the relay setup (path resolution + bind + serve) on a background
-    // thread so the main thread goes straight from the "binding at" line to the
-    // control-socket bind (`serve_launching_backends`). Otherwise the endpoint
-    // resolution here would sit in the window between the readiness line callers
-    // key on and the actual singleton bind, widening the two-broker race (this
-    // regressed `two_brokers_against_one_program_never_coexist`). A failure to
-    // resolve/spawn the relay is non-fatal — the control socket still serves.
+    // Bind SESSION synchronously first. It is the install-scoped ownership
+    // point: only its winner proceeds to control bind, so different users or
+    // runtime directories cannot split the two endpoints across processes.
+    // There is no control-only fallback.
     //
     // The SESSION relay does NOT validate a client-presented composite token:
     // soldr's client is a dumb terminal holding one persistent connection per
@@ -171,8 +148,19 @@ fn run_broker_serve(program: &str) -> Result<(), SoldrError> {
     // broker-internal identity only. See soldr#2442 and the design comment at
     // https://github.com/zackees/soldr/issues/2442#issuecomment-5246922460.
     if let Err(err) = crate::session_transport::spawn_routed_session_relay(program) {
-        eprintln!("soldr broker: could not start SESSION relay ({err})");
+        if running_process::broker::server::singleton_bind::is_already_bound_error(&err) {
+            eprintln!(
+                "soldr broker: another broker already owns program={program}; refusing split control/SESSION ownership"
+            );
+            exit_guard::mark_spoke();
+            guarded_exit(75);
+        }
+        return Err(SoldrError::Other(format!(
+            "soldr broker: could not bind SESSION relay: {err}"
+        )));
     }
+
+    println!("soldr broker: binding at {socket_path} (program={program})");
 
     let config = BrokerLaunchServeConfig::unbounded(socket_path.clone());
     let launcher = crate::broker_launcher::SoldrBackendLauncher::new(session_tokens);
@@ -200,16 +188,23 @@ fn run_broker_serve(program: &str) -> Result<(), SoldrError> {
 /// status query always targets the exact socket the broker owns. Control is
 /// pipe index 0 (the SESSION companion relay is index 1).
 fn broker_control_socket_path(program: &str) -> Result<String, SoldrError> {
-    use running_process::broker::lifecycle::names_v2::v2_program_pipe;
-    use running_process::broker::server::singleton_bind::resolve_socket_path;
+    use running_process::broker::lifecycle::names_v2::v2_broker_path_pipe;
+    use running_process::broker::server::singleton_bind::resolve_path_scoped_socket_path;
 
     const BROKER_PIPE_IDX: u32 = 0;
 
-    let sid = crate::broker_identity::resolve_user_sid();
-    let pipe_name = v2_program_pipe(program, &sid, BROKER_PIPE_IDX)
-        .map_err(|e| SoldrError::Other(format!("soldr broker: v2_program_pipe failed: {e}")))?;
-    resolve_socket_path(&pipe_name)
-        .map_err(|e| SoldrError::Other(format!("soldr broker: resolve_socket_path failed: {e}")))
+    let broker = crate::installed_broker_identity::installed_broker_executable()?;
+    let pipe_name = v2_broker_path_pipe(program, &broker, BROKER_PIPE_IDX).map_err(|e| {
+        SoldrError::Other(format!(
+            "soldr broker: path-scoped pipe derivation failed for {}: {e}",
+            broker.display()
+        ))
+    })?;
+    resolve_path_scoped_socket_path(&pipe_name).map_err(|e| {
+        SoldrError::Other(format!(
+            "soldr broker: resolve_path_scoped_socket_path failed: {e}"
+        ))
+    })
 }
 
 /// `soldr broker status`: send one admin STATUS request to the running broker
@@ -258,8 +253,8 @@ fn run_broker_status(program: &str, json: bool) -> Result<(), SoldrError> {
 ///
 /// This is the verified-PID baseline (and the migration fallback for brokers
 /// that predate cooperative drain). It terminates the broker first — which
-/// stops new admission and releases its control + SESSION endpoints and its
-/// ownership lock on exit — then reaps the daemon routes it owned, bounded by
+/// stops new admission and releases its control + SESSION endpoints on exit —
+/// then reaps the daemon routes it owned, bounded by
 /// [`broker_stop_deadline`], force-killing anything that overruns. In-flight
 /// compiles see their SESSION pipe close (EOF): the defined cut. The
 /// cooperative-drain path (the running-process `SHUTDOWN` admin verb, Option B)
@@ -409,29 +404,6 @@ fn try_cooperative_shutdown(socket_path: &str) -> bool {
     )
 }
 
-fn broker_ownership_file(program: &str) -> Result<std::fs::File, SoldrError> {
-    use sha2::{Digest, Sha256};
-
-    let root = crate::daemon::service_definition::broker_owned_paths().root;
-    std::fs::create_dir_all(&root)?;
-    let digest = hex::encode(Sha256::digest(program.as_bytes()));
-    Ok(std::fs::OpenOptions::new()
-        .create(true)
-        // This is an advisory lock file, not a data file: opening it must never
-        // discard a concurrent owner's contents. `.truncate(false)` states that
-        // explicitly (clippy::suspicious_open_options) and matches the prior
-        // create+read+write behavior.
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(root.join(format!("broker-owner-{}.lock", &digest[..24])))?)
-}
-
-fn broker_lock_is_contended(err: &std::io::Error) -> bool {
-    err.kind() == std::io::ErrorKind::WouldBlock
-        || cfg!(windows) && matches!(err.raw_os_error(), Some(32 | 33))
-}
-
 /// Classify a [`running_process::broker::server::BrokerServeError`] as
 /// "another broker already owns this bind path" vs any other serve
 /// failure. Mirrors `running-process-broker-v2::is_already_bound_error`
@@ -463,7 +435,6 @@ fn broker_serve_error_is_already_bound(
 mod tests {
     use super::*;
     use clap::CommandFactory;
-    use fs2::FileExt;
 
     // soldr#2364: caught empirically on the Linux Docker harness -- a
     // A front-door-spawned broker under a different `--program` is unreachable
@@ -489,21 +460,5 @@ mod tests {
             default,
             vec![crate::daemon::backend_handle_adoption::SOLDR_DAEMON_SERVICE_NAME.to_string()],
         );
-    });
-
-    crate::timed_test!(one_process_owns_control_and_session_as_a_unit, {
-        let program = format!("soldr-broker-owner-test-{}", std::process::id());
-        let first = broker_ownership_file(&program).expect("first ownership file");
-        first.try_lock_exclusive().expect("first owner");
-        let second = broker_ownership_file(&program).expect("second ownership file");
-        let err = second
-            .try_lock_exclusive()
-            .expect_err("a second broker must not enter either bind path");
-        assert!(broker_lock_is_contended(&err), "{err}");
-        FileExt::unlock(&first).expect("unlock first owner");
-        second
-            .try_lock_exclusive()
-            .expect("ownership must recover after owner exit");
-        FileExt::unlock(&second).expect("unlock second owner");
     });
 }

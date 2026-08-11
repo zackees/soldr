@@ -38,8 +38,12 @@ use std::time::{Duration, Instant};
 /// How long the front door actively waits for a freshly-spawned broker's
 /// control listener. Bounded so a wedged or slow-starting broker can never
 /// turn an ordinary `soldr` invocation into a hang.
-const SPAWN_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+const SPAWN_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
+const PIPE_PROBE_TIMEOUT: Duration = Duration::from_millis(250);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
+const STARTUP_LEASE_DURATION: Duration = Duration::from_secs(2);
+const MIN_STARTUP_JITTER: Duration = Duration::from_millis(15);
+const STARTUP_JITTER_SPAN_MS: u64 = 60;
 
 /// Whether the broker path is enabled — **always true** (soldr#2388). The
 /// broker-fronted daemon is the only supported topology: there is no env-var
@@ -99,48 +103,78 @@ pub(crate) fn front_door_broker_spawn_eligible(raw_args: &[String]) -> bool {
     true
 }
 
-/// Best-effort: confirm an existing broker or spawn one detached, then wait
+/// Confirm an existing broker or elect one detached starter, then wait
 /// for an active connection to its control socket. Log text is deliberately
 /// not synchronization: it can be stale in the append-only spawn log and is
 /// printed before the control socket is usable. A broker Hello is deliberately
 /// not used either: on a registry miss, Hello is launch-capable and a mere
 /// readiness check must never resurrect the daemon.
 ///
-/// Never fails a non-compiling caller merely because eager broker startup did
-/// not finish. A later cacheable compile uses the mandatory broker route and
-/// reports an attributed hard failure if that route is still unavailable.
-pub(crate) fn maybe_spawn_broker_front_door(raw_args: &[String]) {
+/// A coordination error is terminal. Falling back to an uncoordinated spawn
+/// would recreate the multi-process start storm this election exists to
+/// prevent and could bind an endpoint unrelated to the installed broker.
+pub(crate) fn maybe_spawn_broker_front_door(
+    raw_args: &[String],
+) -> Result<(), crate::core::SoldrError> {
     if !front_door_broker_spawn_eligible(raw_args) {
-        return;
+        return Ok(());
     }
     let program = broker_program();
-    let Ok(probe_runtime) = tokio::runtime::Builder::new_current_thread()
+    let probe_runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-    else {
-        return;
-    };
+        .map_err(crate::core::SoldrError::from)?;
+    let broker_path = crate::installed_broker_identity::installed_broker_executable()?;
     let deadline = Instant::now() + SPAWN_WAIT_TIMEOUT;
-    ensure_broker_ready_until(
+    coordinate_broker_ready_until(
         deadline,
         || broker_control_is_ready_until(&probe_runtime, &program, deadline),
         || {
-            let paths = crate::core::SoldrPaths::new().ok()?;
-            let log_file = open_append(&paths.root.join("broker-spawn.log"))?;
-            let self_exe = std::env::current_exe().ok()?;
-            let mut command = std::process::Command::new(self_exe);
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err("startup deadline expired before SQLite election".to_string());
+            }
+            crate::broker_startup::try_claim(
+                &broker_path,
+                &program,
+                STARTUP_LEASE_DURATION,
+                remaining,
+            )
+            .map(|claim| match claim {
+                crate::broker_startup::StartupClaim::Owner(lease) => StartupElection::Owner(lease),
+                crate::broker_startup::StartupClaim::Contended(wait) => {
+                    StartupElection::Contended(wait)
+                }
+            })
+        },
+        || {
+            let paths = crate::core::SoldrPaths::new().map_err(|err| err.to_string())?;
+            let log_file = open_append(&paths.root.join("broker-spawn.log"))
+                .ok_or_else(|| "cannot open broker-spawn.log".to_string())?;
+            let mut command = std::process::Command::new(&broker_path);
             command.args(["broker", "serve", "--program", &program]);
             command.envs(broker_spawn_env());
+            // The installed broker image may itself have been reached through
+            // a multicall alias. Force this detached child into the soldr
+            // command surface so argv[0]=cargo/rustc cannot redispatch the
+            // broker command as a toolchain invocation.
+            command.env(crate::multicall::SHIM_ARGV0_ENV, "soldr");
+            command.env(
+                crate::installed_broker_identity::BROKER_EXECUTABLE_ENV_VAR,
+                &broker_path,
+            );
             let stdio = daemon_stdio(&log_file);
             running_process::spawn_daemon_with_stdio_and_env_policy(
                 &mut command,
                 stdio,
                 EnvironmentPolicy::UserBaseline,
             )
-            .ok()?;
-            Some(())
+            .map_err(|err| format!("spawn broker: {err}"))?;
+            Ok(())
         },
-    );
+        startup_jitter,
+    )
+    .map_err(|err| crate::core::SoldrError::Other(format!("broker startup failed: {err}")))
 }
 
 pub(crate) fn open_append(path: &std::path::Path) -> Option<std::fs::File> {
@@ -183,20 +217,24 @@ fn broker_control_is_ready_until(
     program: &str,
     deadline: Instant,
 ) -> bool {
-    use running_process::broker::lifecycle::names_v2::v2_program_pipe;
-    use running_process::broker::server::singleton_bind::resolve_socket_path;
+    use running_process::broker::lifecycle::names_v2::v2_broker_path_pipe;
+    use running_process::broker::server::singleton_bind::resolve_path_scoped_socket_path;
 
-    let sid = crate::broker_identity::resolve_user_sid();
-    let Ok(pipe_name) = v2_program_pipe(program, &sid, 0) else {
+    let Ok(broker) = crate::installed_broker_identity::installed_broker_executable() else {
         return false;
     };
-    let Ok(endpoint) = resolve_socket_path(&pipe_name) else {
+    let Ok(pipe_name) = v2_broker_path_pipe(program, &broker, 0) else {
+        return false;
+    };
+    let Ok(endpoint) = resolve_path_scoped_socket_path(&pipe_name) else {
         return false;
     };
     let Ok(session_endpoint) = crate::session_transport::session_socket_path(program) else {
         return false;
     };
-    let remaining = deadline.saturating_duration_since(Instant::now());
+    let remaining = deadline
+        .saturating_duration_since(Instant::now())
+        .min(PIPE_PROBE_TIMEOUT);
     if remaining.is_zero() {
         return false;
     }
@@ -215,27 +253,88 @@ fn broker_control_is_ready_until(
     })
 }
 
-/// Probe before spawning, spawn at most once, then poll to the deadline. The
-/// injected closures keep the anti-resurrection policy unit-testable without
-/// binding sockets or creating processes.
-fn ensure_broker_ready_until(
+enum StartupElection<G> {
+    Owner(G),
+    Contended(Duration),
+}
+
+/// Probe, jitter, then use the timed SQLite election before spawning. The
+/// winner holds its exact-generation guard through readiness; every loser
+/// remains a WAL reader and retries the one path-derived endpoint.
+fn coordinate_broker_ready_until<G>(
     deadline: Instant,
     mut ready: impl FnMut() -> bool,
-    spawn: impl FnOnce() -> Option<()>,
-) {
-    if ready() || spawn().is_none() {
-        return;
+    mut claim: impl FnMut() -> Result<StartupElection<G>, String>,
+    mut spawn: impl FnMut() -> Result<(), String>,
+    mut jitter: impl FnMut() -> Duration,
+) -> Result<(), String> {
+    if ready() {
+        return Ok(());
+    }
+    sleep_until_deadline(jitter(), deadline);
+    if ready() {
+        return Ok(());
     }
     loop {
-        if ready() {
-            return;
-        }
         if Instant::now() >= deadline {
-            return;
+            return Err("the path-derived control and SESSION pipes did not become ready before the startup deadline".to_string());
         }
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        std::thread::sleep(POLL_INTERVAL.min(remaining));
+        match claim()? {
+            StartupElection::Owner(_lease) => {
+                if Instant::now() >= deadline {
+                    return Err(
+                        "startup deadline expired during SQLite election; broker was not spawned"
+                            .to_string(),
+                    );
+                }
+                // A peer may have completed between our optimistic read and
+                // the write election. Recheck before creating a process.
+                if ready() {
+                    return Ok(());
+                }
+                if Instant::now() >= deadline {
+                    return Err(
+                        "startup deadline expired during the final pipe probe; broker was not spawned"
+                            .to_string(),
+                    );
+                }
+                spawn()?;
+                loop {
+                    if ready() {
+                        return Ok(());
+                    }
+                    if Instant::now() >= deadline {
+                        return Err("the elected broker process did not bind its path-derived pipes before the startup deadline".to_string());
+                    }
+                    sleep_until_deadline(POLL_INTERVAL, deadline);
+                }
+            }
+            StartupElection::Contended(lease_remaining) => {
+                let retry = (POLL_INTERVAL + jitter()).min(lease_remaining.max(POLL_INTERVAL));
+                sleep_until_deadline(retry, deadline);
+                if ready() {
+                    return Ok(());
+                }
+            }
+        }
     }
+}
+
+fn sleep_until_deadline(duration: Duration, deadline: Instant) {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if !remaining.is_zero() {
+        std::thread::sleep(duration.min(remaining));
+    }
+}
+
+fn startup_jitter() -> Duration {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.subsec_nanos())
+        .unwrap_or_default();
+    let mixed = u64::from(nanos) ^ u64::from(std::process::id()).wrapping_mul(0x9e37_79b9);
+    MIN_STARTUP_JITTER + Duration::from_millis(mixed % STARTUP_JITTER_SPAN_MS)
 }
 
 #[cfg(test)]
@@ -334,17 +433,22 @@ mod tests {
     crate::timed_test!(ready_broker_is_not_spawned_again, {
         let mut probes = 0;
         let mut spawns = 0;
-        ensure_broker_ready_until(
+        coordinate_broker_ready_until(
             Instant::now() + Duration::from_secs(1),
             || {
                 probes += 1;
                 true
             },
+            || -> Result<StartupElection<()>, String> {
+                panic!("a ready broker must not enter startup election")
+            },
             || {
                 spawns += 1;
-                Some(())
+                Ok(())
             },
-        );
+            || Duration::ZERO,
+        )
+        .expect("ready");
         assert_eq!(probes, 1);
         assert_eq!(spawns, 0, "readiness must prevent a duplicate spawn");
     });
@@ -352,18 +456,66 @@ mod tests {
     crate::timed_test!(startup_spawns_once_then_requires_a_live_probe, {
         let mut probes = 0;
         let mut spawns = 0;
-        ensure_broker_ready_until(
+        coordinate_broker_ready_until(
             Instant::now() + Duration::from_secs(1),
             || {
                 probes += 1;
-                probes == 3
+                probes == 4
+            },
+            || Ok(StartupElection::Owner(())),
+            || {
+                spawns += 1;
+                Ok(())
+            },
+            || Duration::ZERO,
+        )
+        .expect("startup");
+        assert_eq!(probes, 4, "the wait must return only after a live probe");
+        assert_eq!(spawns, 1, "startup may create at most one broker");
+    });
+
+    crate::timed_test!(expired_sqlite_election_never_spawns_late_broker, {
+        let mut spawns = 0;
+        let result = coordinate_broker_ready_until(
+            Instant::now() + Duration::from_millis(5),
+            || false,
+            || {
+                std::thread::sleep(Duration::from_millis(10));
+                Ok(StartupElection::Owner(()))
             },
             || {
                 spawns += 1;
-                Some(())
+                Ok(())
             },
+            || Duration::ZERO,
         );
-        assert_eq!(probes, 3, "the wait must return only after a live probe");
-        assert_eq!(spawns, 1, "startup may create at most one broker");
+        assert!(result.is_err(), "expired election must fail");
+        assert_eq!(spawns, 0, "no broker may spawn after the total deadline");
+    });
+
+    crate::timed_test!(expired_final_pipe_probe_never_spawns_late_broker, {
+        let mut probes = 0;
+        let mut spawns = 0;
+        let result = coordinate_broker_ready_until(
+            Instant::now() + Duration::from_millis(5),
+            || {
+                probes += 1;
+                if probes == 3 {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                false
+            },
+            || Ok(StartupElection::Owner(())),
+            || {
+                spawns += 1;
+                Ok(())
+            },
+            || Duration::ZERO,
+        );
+        assert!(result.is_err(), "expired final probe must fail");
+        assert_eq!(
+            spawns, 0,
+            "no broker may spawn after the final probe deadline"
+        );
     });
 }

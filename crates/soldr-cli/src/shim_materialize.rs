@@ -486,6 +486,26 @@ fn materialization_memo_matches(source: &Path, target: &Path) -> bool {
     materialization_memo(source, target).is_some_and(|current| current == saved)
 }
 
+/// Recover the canonical soldr source recorded when `target` was materialized.
+///
+/// Native multicall hardlinks/copies execute with the shim path as
+/// `current_exe()`. The verified memo is therefore how a cold PATH-shim
+/// invocation carries the exact installed broker executable without deriving
+/// a second endpoint identity from the alias path. Both file stamps must still
+/// match; stale or edited metadata is ignored.
+pub(crate) fn materialized_source_for(target: &Path) -> Option<PathBuf> {
+    let raw = std::fs::read(materialization_memo_path(target)).ok()?;
+    let saved = serde_json::from_slice::<MaterializationMemo>(&raw).ok()?;
+    if saved.version != MATERIALIZATION_MEMO_VERSION || file_stamp(target)? != saved.target {
+        return None;
+    }
+    let source = PathBuf::from(saved.source_path);
+    if file_stamp(&source)? != saved.source {
+        return None;
+    }
+    std::fs::canonicalize(source).ok()
+}
+
 fn write_materialization_memo_if_unchanged(
     source: &Path,
     target: &Path,
@@ -660,6 +680,11 @@ mod tests {
         assert!(result.created);
         assert!([LINK_MODE_HARDLINK, LINK_MODE_COPY].contains(&result.link_mode));
         assert_eq!(std::fs::read(&target).unwrap(), b"fake-soldr-v1");
+        assert_eq!(
+            materialized_source_for(&target),
+            Some(std::fs::canonicalize(&source).unwrap()),
+            "a native shim must carry its exact installed soldr source"
+        );
     });
 
     crate::timed_test!(materialize_executable_is_idempotent_for_matching_bytes, {

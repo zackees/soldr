@@ -2,7 +2,7 @@
 //! reaps the daemon routes it owns, using the broker's self-reported PIDs (never
 //! by process name). With no broker bound it prints "not running" and exits 0.
 
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod common;
@@ -21,7 +21,7 @@ fn unique_program(label: &str) -> String {
 }
 
 fn spawn_broker(program: &str) -> std::process::Child {
-    Command::new(common::soldr_bin())
+    common::isolated_soldr_command()
         .args(["broker", "serve", "--program", program])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -31,7 +31,7 @@ fn spawn_broker(program: &str) -> std::process::Child {
 }
 
 fn run_broker(program: &str, verb: &str) -> (String, i32) {
-    let out = Command::new(common::soldr_bin())
+    let out = common::isolated_soldr_command()
         .args(["broker", verb, "--program", program])
         .stdin(Stdio::null())
         .output()

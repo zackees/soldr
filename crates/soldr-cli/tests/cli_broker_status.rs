@@ -3,7 +3,7 @@
 //! bound it prints a clean "not running" line and exits 0 so scripts can probe
 //! without starting anything.
 
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod common;
@@ -24,7 +24,7 @@ fn unique_program(label: &str) -> String {
 }
 
 fn spawn_broker(program: &str) -> std::process::Child {
-    Command::new(common::soldr_bin())
+    common::isolated_soldr_command()
         .args(["broker", "serve", "--program", program])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -36,7 +36,7 @@ fn spawn_broker(program: &str) -> std::process::Child {
 /// Run `soldr broker status --program <program>` once and return (stdout+stderr,
 /// exit code).
 fn run_status(program: &str) -> (String, i32) {
-    let out = Command::new(common::soldr_bin())
+    let out = common::isolated_soldr_command()
         .args(["broker", "status", "--program", program])
         .stdin(Stdio::null())
         .output()

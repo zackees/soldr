@@ -363,6 +363,7 @@ mod tests {
             wrapper_path: std::path::PathBuf::from("/tmp/soldr-shims/rustc"),
             daemon_path: std::path::PathBuf::from("/tmp/soldr-daemon"),
             broker_service_name: "soldr-daemon-test-route".to_string(),
+            broker_executable: std::path::PathBuf::from("/tmp/soldr"),
         }))
     }
 
@@ -395,6 +396,13 @@ mod tests {
                 crate::daemon::backend_handle_adoption::SOLDR_BROKER_SERVICE_ENV_VAR
             ),
             Some(Some(OsString::from("soldr-daemon-test-route")))
+        );
+        assert_eq!(
+            command_env_override(
+                &command,
+                crate::installed_broker_identity::BROKER_EXECUTABLE_ENV_VAR
+            ),
+            Some(Some(OsString::from("/tmp/soldr")))
         );
         assert_eq!(
             command_env_override(&command, crate::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR),

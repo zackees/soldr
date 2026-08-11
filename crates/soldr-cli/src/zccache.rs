@@ -288,6 +288,10 @@ pub(crate) struct ManagedZccacheWrapperPlan {
     /// Route registered by the front door for the broker. Compiler shims carry
     /// only this opaque identity; they never place or spawn the daemon.
     pub(crate) broker_service_name: String,
+    /// Canonical installed soldr executable that owns the broker endpoint.
+    /// Compiler-named shims inherit it because their own `current_exe()` is
+    /// intentionally a different path.
+    pub(crate) broker_executable: std::path::PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -325,10 +329,15 @@ impl RustcWrapperPlan {
                 // the legacy session env and only seed the parent-cache
                 // path-remap vars.
                 cargo.env("RUSTC_WRAPPER", &plan.wrapper_path);
-                cargo.env(
-                    crate::daemon::backend_handle_adoption::SOLDR_BROKER_SERVICE_ENV_VAR,
-                    &plan.broker_service_name,
-                );
+                cargo
+                    .env(
+                        crate::daemon::backend_handle_adoption::SOLDR_BROKER_SERVICE_ENV_VAR,
+                        &plan.broker_service_name,
+                    )
+                    .env(
+                        crate::installed_broker_identity::BROKER_EXECUTABLE_ENV_VAR,
+                        &plan.broker_executable,
+                    );
                 cargo.env_remove(crate::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR);
                 remove_managed_zccache_env(cargo);
                 cargo.env_remove(SOLDR_ZCCACHE_SESSION_DIR_ENV_VAR);
@@ -443,12 +452,14 @@ async fn prepare_zccache_build(
 
     let wrapper_path = crate::binaries::rustc_wrapper_shim_binary(paths)?;
     let (daemon_path, broker_service_name) = register_broker_daemon_service()?;
+    let broker_executable = crate::installed_broker_identity::installed_broker_executable()?;
     Ok(ManagedZccacheWrapperPlan {
         session,
         child_env,
         wrapper_path,
         daemon_path,
         broker_service_name,
+        broker_executable,
     })
 }
 

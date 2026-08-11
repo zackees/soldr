@@ -198,6 +198,13 @@ impl BackendLauncher for SoldrBackendLauncher {
             }
             Err(err) => {
                 let _ = child.kill();
+                if debug {
+                    eprintln!(
+                        "soldr broker: route failed route={} elapsed={:?}: {err}",
+                        request.key.service_name,
+                        started.elapsed()
+                    );
+                }
                 Err(BackendLaunchError::Launcher(err.to_string()))
             }
         }

@@ -233,6 +233,8 @@ pub(crate) fn scrub_outer_soldr_env(command: &mut Command) -> &mut Command {
         // binary behaves like a fresh top-level invocation.
         .env_remove("SOLDR_ORIGINAL_EXE")
         .env_remove("SOLDR_RELOCATED_EXE")
+        .env_remove(soldr_cli::installed_broker_identity::BROKER_EXECUTABLE_ENV_VAR)
+        .env_remove("SOLDR_BROKER_ROUTE_ATTEMPT_BUDGET_MS")
         // A parent soldr daemon handoff points at the outer process image;
         // fixture children must resolve and materialize their own daemon.
         .env_remove(soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR);
@@ -254,7 +256,7 @@ pub(crate) fn scrub_outer_soldr_env(command: &mut Command) -> &mut Command {
 }
 
 pub(crate) fn rustup_which(tool: &str) -> String {
-    let output = Command::new(soldr_bin())
+    let output = isolated_soldr_command()
         .args(["rustup", "which", tool])
         .output()
         .expect("failed to resolve tool through soldr rustup");

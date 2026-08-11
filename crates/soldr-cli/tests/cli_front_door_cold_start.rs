@@ -1,17 +1,15 @@
-//! soldr#2388 Step 3 — cold-start acceptance: the broker is unconditional, so a
-//! front-door `soldr` invocation on a clean isolated root spawns **exactly one**
-//! broker, and a second front-door invocation against the same program does NOT
-//! spawn a second (the front door is the sole broker-spawner and the broker
-//! singleton-binds). Paired with `session_multiprocess_smoke`'s one-daemon
+//! soldr#2388 Step 3 — cold-start acceptance: the broker is unconditional, so
+//! concurrent front-door `soldr` invocations on a clean isolated root elect
+//! **exactly one** broker starter through the SQLite WAL lease. Every contender
+//! derives the same install-path-scoped pipe, and none falls back to an
+//! uncoordinated spawn. Paired with `session_multiprocess_smoke`'s one-daemon
 //! assertion, this is the "one build → one broker + one daemon" invariant #2364
 //! calls for, exercised on the real process harness (no Docker required).
 
 mod common;
 
-use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use soldr_cli::timed_test;
@@ -33,10 +31,11 @@ fn count_substr(text: &str, needle: &str) -> usize {
     text.lines().filter(|l| l.contains(needle)).count()
 }
 
-/// Kill every daemon and broker this test launched under `root`, so nothing
-/// leaks past the test. Brokers are `soldr` processes; daemons publish a
-/// `daemon.pid`. We can only reliably reap daemons by pid-file here; the broker
-/// is reaped by the caller holding its `Child`.
+const CONTENDER_COUNT: usize = 8;
+
+/// Kill every daemon this test launched under `root`, so nothing leaks past the
+/// test. The broker is stopped separately through its path-derived control
+/// pipe; daemons also publish a `daemon.pid` for this cleanup backstop.
 fn stop_daemons_in_root(root: &Path) {
     fn walk(dir: &Path, out: &mut Vec<u32>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -69,16 +68,14 @@ fn stop_daemons_in_root(root: &Path) {
     }
 }
 
-/// Drain a child stream into a shared buffer so its pipe never blocks.
-fn drain<R: std::io::Read + Send + 'static>(reader: R) -> Arc<Mutex<Vec<String>>> {
-    let lines = Arc::new(Mutex::new(Vec::new()));
-    let sink = Arc::clone(&lines);
-    std::thread::spawn(move || {
-        for line in BufReader::new(reader).lines().map_while(Result::ok) {
-            sink.lock().unwrap().push(line);
-        }
-    });
-    lines
+fn stop_broker(root: &Path, program: &str) {
+    let mut stop = Command::new(common::soldr_bin());
+    common::scrub_outer_soldr_env(&mut stop);
+    let _ = stop
+        .args(["broker", "stop", "--program", program])
+        .env("SOLDR_CACHE_DIR", root)
+        .env("SOLDR_BROKER_DRAIN_DEADLINE_MS", "1000")
+        .output();
 }
 
 timed_test!(
@@ -88,67 +85,124 @@ timed_test!(
         let root = common::unique_temp_dir("coldstart-root");
         let program = unique_program("prog");
 
-        // First front-door invocation on a clean root: it must spawn the broker.
-        let mut first = Command::new(common::soldr_bin());
-        common::scrub_outer_soldr_env(&mut first);
-        let mut first_child = first
-            .arg("status")
-            .env("SOLDR_CACHE_DIR", &root)
-            .env("SOLDR_BROKER_PROGRAM", &program)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn first front-door soldr status");
-        let _o1 = drain(first_child.stdout.take().expect("stdout"));
-        let _e1 = drain(first_child.stderr.take().expect("stderr"));
-        let _ = first_child.wait().expect("wait first status");
+        // Start all contenders before waiting on any one of them. Each process
+        // owns a separate SQLite connection; one takes the short write lease
+        // while the rest remain optimistic WAL readers and poll the exact pipe.
+        let mut contenders = Vec::with_capacity(CONTENDER_COUNT);
+        for _ in 0..CONTENDER_COUNT {
+            let mut command = Command::new(common::soldr_bin());
+            common::scrub_outer_soldr_env(&mut command);
+            contenders.push(
+                command
+                    .arg("status")
+                    .env("SOLDR_CACHE_DIR", &root)
+                    .env("SOLDR_BROKER_PROGRAM", &program)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .expect("spawn concurrent front-door soldr status"),
+            );
+        }
+        let outputs: Vec<_> = contenders
+            .into_iter()
+            .map(|child| child.wait_with_output().expect("wait concurrent status"))
+            .collect();
 
-        // The front door waits for the broker to report a bind (or an
-        // already-bound refusal) before returning; give it a moment to flush.
-        let deadline = Instant::now() + Duration::from_secs(30);
+        // A successful front door returns only after both broker pipes accept
+        // a short probe. Give the detached broker log one final flush interval.
+        let deadline = Instant::now() + Duration::from_secs(2);
         while count_substr(&broker_spawn_log(&root), "binding at") == 0 && Instant::now() < deadline
         {
             std::thread::sleep(Duration::from_millis(100));
         }
-        let binds_after_first = count_substr(&broker_spawn_log(&root), "binding at");
-
-        // Second front-door invocation against the SAME program. It may reuse
-        // the live singleton without spawning a duplicate candidate.
-        let mut second = Command::new(common::soldr_bin());
-        common::scrub_outer_soldr_env(&mut second);
-        let mut second_child = second
-            .arg("status")
-            .env("SOLDR_CACHE_DIR", &root)
-            .env("SOLDR_BROKER_PROGRAM", &program)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn second front-door soldr status");
-        let _o2 = drain(second_child.stdout.take().expect("stdout"));
-        let _e2 = drain(second_child.stderr.take().expect("stderr"));
-        let second_status = second_child.wait().expect("wait second status");
         std::thread::sleep(Duration::from_millis(500));
         let log = broker_spawn_log(&root);
-        let total_binds = count_substr(&log, "binding at");
 
-        // Cleanup before asserting so a failure never leaks processes.
+        // Cleanup through the exact same path-derived control pipe before any
+        // assertion can panic and leak the detached broker.
+        stop_broker(&root, &program);
         stop_daemons_in_root(&root);
 
         assert!(
-            binds_after_first >= 1,
-            "the first front-door invocation on a clean root must bring up a \
-             broker (no 'binding at' line in the spawn log)\n{log}"
-        );
-        assert!(
-            second_status.success(),
-            "the second front-door command must reuse the live broker\n{log}"
+            outputs.iter().all(|output| output.status.success()),
+            "every concurrent front door must observe the elected broker; outputs={:?}\n{log}",
+            outputs
+                .iter()
+                .map(|output| (
+                    output.status.code(),
+                    String::from_utf8_lossy(&output.stderr)
+                ))
+                .collect::<Vec<_>>()
         );
         assert_eq!(
-            total_binds, 1,
-            "exactly one broker may bind one program; the front door may reuse \
-             it without spawning a duplicate candidate\n{log}"
+            count_substr(&log, "binding at"),
+            1,
+            "the concurrent cold start must elect exactly one broker\n{log}"
+        );
+        assert_eq!(
+            count_substr(&log, "another broker already owns"),
+            0,
+            "SQLite election must prevent loser processes from spawning an \
+             already-owned broker candidate\n{log}"
+        );
+    }
+);
+
+timed_test!(
+    generated_cargo_shim_cold_starts_the_source_broker,
+    Duration::from_secs(90),
+    {
+        let root = common::unique_temp_dir("cargo-shim-cold-root");
+        let shim_dir = root.join("shims");
+
+        let link_program = unique_program("link");
+        let link_output = common::isolated_soldr_command()
+            .args([
+                "toolchain",
+                "link",
+                "--shim-dir",
+                &shim_dir.display().to_string(),
+            ])
+            .env("SOLDR_CACHE_DIR", &root)
+            .env("SOLDR_BROKER_PROGRAM", &link_program)
+            .output()
+            .expect("materialize toolchain shims");
+        stop_broker(&root, &link_program);
+        assert!(
+            link_output.status.success(),
+            "toolchain link failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&link_output.stdout),
+            String::from_utf8_lossy(&link_output.stderr)
+        );
+
+        let program = unique_program("cargo");
+        let cargo_shim = shim_dir.join(format!("cargo{}", std::env::consts::EXE_SUFFIX));
+        let mut command = Command::new(&cargo_shim);
+        common::scrub_outer_soldr_env(&mut command);
+        let output = command
+            .arg("--version")
+            .env("SOLDR_CACHE_DIR", &root)
+            .env("SOLDR_BROKER_PROGRAM", &program)
+            .output()
+            .expect("run cold cache-enabled generated cargo shim");
+
+        let log = broker_spawn_log(&root);
+        stop_broker(&root, &program);
+        stop_daemons_in_root(&root);
+
+        assert!(
+            output.status.success(),
+            "generated cargo shim failed its cold cache-enabled invocation\nstdout:\n{}\nstderr:\n{}\n{log}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            log.lines()
+                .filter(|line| line.contains("binding at") && line.contains(&program))
+                .count(),
+            1,
+            "the generated cargo shim must cold-start exactly one source-identity broker\n{log}"
         );
     }
 );

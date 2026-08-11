@@ -173,10 +173,16 @@ timed_test!(
         // 1) Spawn the real broker on the isolated cache root. It installs the
         //    servicedef, binds the control socket, and serves the companion
         //    SESSION relay to the daemon's deterministic endpoint.
-        let mut broker = Command::new(common::soldr_bin())
+        let mut broker_command = Command::new(common::soldr_bin());
+        common::scrub_outer_soldr_env(&mut broker_command);
+        let mut broker = broker_command
             .args(["broker", "serve", "--program", &program])
             .env("SOLDR_CACHE_DIR", &root_a)
             .env("SOLDR_BROKER_DEBUG", "1")
+            // The pipes must bind within two seconds. Only the broker's
+            // behind-the-live-pipe debug image placement gets this wider
+            // test budget; production route negotiation remains five seconds.
+            .env("SOLDR_BROKER_ROUTE_ATTEMPT_BUDGET_MS", "30000")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -190,7 +196,7 @@ timed_test!(
         let bound = wait_for(
             &broker_out,
             "SESSION relay bound at",
-            Instant::now() + Duration::from_secs(30),
+            Instant::now() + Duration::from_secs(2),
         );
 
         // 2) Run soldr in RUSTC_WRAPPER mode (argv[1] = rustc) through the SESSION
@@ -217,6 +223,10 @@ timed_test!(
                 .current_dir(project)
                 .env("SOLDR_CACHE_DIR", root)
                 .env("SOLDR_SESSION_DEBUG", "1")
+                // The broker's test-only route allowance is 30s. Give the
+                // already-connected SESSION exchange a small delivery margin
+                // around that bounded verdict so the two deadlines never race.
+                .env("SOLDR_SESSION_ATTEMPT_BUDGET_MS", "35000")
                 .env("SOLDR_BROKER_PROGRAM", &program)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -233,6 +243,10 @@ timed_test!(
         // Captured before cleanup; the pidfiles persist after the kill.
         let daemon_pids_a = find_daemon_pids(&root_a);
         let daemon_pids_b = find_daemon_pids(&root_b);
+        let daemon_log_a = std::fs::read_to_string(root_a.join("daemon-spawn.log"))
+            .unwrap_or_else(|err| format!("<unavailable: {err}>"));
+        let daemon_log_b = std::fs::read_to_string(root_b.join("daemon-spawn.log"))
+            .unwrap_or_else(|err| format!("<unavailable: {err}>"));
 
         // Cleanup before asserting so a failure never leaks processes.
         let _ = broker.kill();
@@ -244,9 +258,11 @@ timed_test!(
             format!("{label}:\n  {}", l.lock().unwrap().join("\n  "))
         };
         let broker_log = format!(
-            "{}\n{}",
+            "{}\n{}\ndaemon root-a:\n{}\ndaemon root-b:\n{}",
             blog("broker stdout", &broker_out),
-            blog("broker stderr", &broker_err)
+            blog("broker stderr", &broker_err),
+            daemon_log_a,
+            daemon_log_b,
         );
         let stdout_a = String::from_utf8_lossy(&out_a.stdout);
         let stderr_a = String::from_utf8_lossy(&out_a.stderr);
@@ -254,7 +270,7 @@ timed_test!(
         let stderr_b = String::from_utf8_lossy(&out_b.stderr);
         assert!(
             bound,
-            "broker SESSION relay did not bind within 30s\n{broker_log}"
+            "broker SESSION relay did not bind within 2s\n{broker_log}"
         );
         assert!(
             out_a.status.success() && out_b.status.success(),

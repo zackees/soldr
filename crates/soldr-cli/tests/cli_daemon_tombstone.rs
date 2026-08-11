@@ -97,7 +97,8 @@ timed_test!(
             )
             .expect("install isolated daemon service definition");
         let _service_definition = ServiceDefinitionGuard(installed.path.clone());
-        let mut broker_command = Command::new(common::soldr_bin());
+        let broker_executable = common::soldr_bin();
+        let mut broker_command = Command::new(&broker_executable);
         common::scrub_outer_soldr_env(&mut broker_command);
         let child = broker_command
             .args(["broker", "serve", "--program", &program])
@@ -114,14 +115,16 @@ timed_test!(
         let out = drain(broker.child.stdout.take().expect("broker stdout"));
         let err = drain(broker.child.stderr.take().expect("broker stderr"));
 
-        let request_deadline = Instant::now() + Duration::from_secs(30);
+        let request_deadline = Instant::now() + Duration::from_secs(5);
         let request_error = loop {
-            let result = running_process::broker::client_v2::connect_service_with_deadline(
-                &program,
-                &installed.definition.service_name,
-                SOLDR_DAEMON_SERVICE_VERSION,
-                Duration::from_secs(5),
-            );
+            let result =
+                running_process::broker::client_v2::connect_service_for_broker_path_with_deadline(
+                    &program,
+                    &broker_executable,
+                    &installed.definition.service_name,
+                    SOLDR_DAEMON_SERVICE_VERSION,
+                    Duration::from_secs(2),
+                );
             let error =
                 result.expect_err("the broker request must fail while the tombstone is live");
             if error.to_string().contains("tombstone active") || Instant::now() >= request_deadline
