@@ -21,7 +21,6 @@
 
 pub mod backend_handle_adoption;
 pub mod broker_discovery;
-pub mod image_hash;
 /// soldr#2224 — the three IPC handlers that touch `state.redb`, split
 /// out of the oversized `server.rs`.
 pub mod build_session_ops;
@@ -51,6 +50,7 @@ pub mod disconnect;
 /// per-compile redb event writes into one fsync per 64 rows / 100 ms.
 pub mod event_batcher;
 pub mod history_gc;
+pub mod image_hash;
 pub mod ipc;
 pub(crate) mod ipc_peer;
 pub mod lifecycle;

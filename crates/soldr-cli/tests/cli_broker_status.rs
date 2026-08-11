@@ -17,7 +17,10 @@ fn unique_program(label: &str) -> String {
         .duration_since(UNIX_EPOCH)
         .expect("time went backwards")
         .as_nanos();
-    format!("soldr-broker-status-{label}-{:010x}", nanos & 0xFF_FFFF_FFFF)
+    format!(
+        "soldr-broker-status-{label}-{:010x}",
+        nanos & 0xFF_FFFF_FFFF
+    )
 }
 
 fn spawn_broker(program: &str) -> std::process::Child {
@@ -80,7 +83,10 @@ soldr_cli::timed_test!(
         // say "not running", and must exit 0 (a safe probe).
         let program = unique_program("absent");
         let (output, code) = run_status(&program);
-        assert_eq!(code, 0, "status against no broker must exit 0; got:\n{output}");
+        assert_eq!(
+            code, 0,
+            "status against no broker must exit 0; got:\n{output}"
+        );
         assert!(
             output.contains("not running"),
             "status against no broker must report 'not running'; got:\n{output}"

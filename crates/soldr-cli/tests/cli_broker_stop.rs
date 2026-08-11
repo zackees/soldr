@@ -74,7 +74,10 @@ soldr_cli::timed_test!(
     {
         let program = unique_program("absent");
         let (output, code) = run_broker(&program, "stop");
-        assert_eq!(code, 0, "stop against no broker must exit 0; got:\n{output}");
+        assert_eq!(
+            code, 0,
+            "stop against no broker must exit 0; got:\n{output}"
+        );
         assert!(
             output.contains("not running"),
             "stop against no broker must report 'not running'; got:\n{output}"
