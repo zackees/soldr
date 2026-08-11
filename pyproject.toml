@@ -13,7 +13,14 @@
 # soldr#1264/#1269. See README "Use soldr as your PEP 517 build
 # backend".
 [build-system]
-requires = ["soldr==0.8.44"]
+requires = [
+    "soldr==0.8.44",
+    # Maturin repairs Linux bin-binding wheels with patchelf when a linked
+    # shared library (liblzma for soldr) must be bundled. The managed maturin
+    # executable does not carry its Python `patchelf` extra, so provision the
+    # helper in pip's isolated build environment.
+    "patchelf; platform_system == 'Linux'",
+]
 build-backend = "soldr"
 
 [project]
