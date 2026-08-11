@@ -25,7 +25,7 @@ def test_retry_publishes_only_successful_environment(
     monkeypatch, tmp_path: Path
 ) -> None:
     calls = []
-    sleeps = []
+    sleeps: list[float] = []
 
     def fake_run(command, *, check):
         calls.append(command)
