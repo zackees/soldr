@@ -79,37 +79,58 @@ assert.deepStrictEqual(pkg.files, [
 const bin = fs.readFileSync(path.join(root, pkg.bin.soldr), "utf8");
 assert(bin.startsWith("#!/usr/bin/env node"), "bin/soldr.js must have a node shebang");
 
-// Linux: triple selection branches on libc. `platformTarget` accepts an
-// explicit `libc` arg so tests don't depend on the runtime detector.
+// soldr#2453: the Autonomous Release matrix publishes exactly 3 native
+// targets -- x86_64 Linux (musl, universal for glibc hosts too), Apple
+// Silicon macOS, and x86_64 Windows. `platformTarget` accepts an explicit
+// `libc` arg so tests don't depend on the runtime detector, but linux-x64
+// no longer branches on it: both libc families resolve to the same musl
+// asset because there is no separate gnu-linux release asset, and no
+// glibc-version gate, anymore.
 assert.strictEqual(
   install.platformTarget("linux", "x64", "gnu").triple,
-  "x86_64-unknown-linux-gnu",
+  "x86_64-unknown-linux-musl",
 );
 assert.strictEqual(
   install.platformTarget("linux", "x64", "musl").triple,
   "x86_64-unknown-linux-musl",
 );
-assert.strictEqual(
-  install.platformTarget("linux", "arm64", "gnu").triple,
-  "aarch64-unknown-linux-gnu",
-);
-assert.strictEqual(
-  install.platformTarget("linux", "arm64", "musl").triple,
-  "aarch64-unknown-linux-musl",
-);
-// Default (no libc arg) falls back to detectLibc; on most CI hosts that's
-// gnu. We don't assert the triple here — just that the call resolves.
-assert.ok(install.platformTarget("linux", "x64").triple.startsWith("x86_64-unknown-linux-"));
-// An explicitly-unknown libc must take the runs-anywhere build, matching
-// detectLibc's own unknown case rather than contradicting it.
+// An explicitly-unknown libc must still take the runs-anywhere musl build.
 assert.strictEqual(
   install.platformTarget("linux", "x64", null).triple,
   "x86_64-unknown-linux-musl",
 );
-assert.strictEqual(install.platformTarget("darwin", "x64").triple, "x86_64-apple-darwin");
+// Default (no libc arg) falls back to detectLibc; either family still
+// resolves to the musl asset.
+assert.strictEqual(install.platformTarget("linux", "x64").triple, "x86_64-unknown-linux-musl");
+
+// arm64 Linux has no published asset in this release, for either libc
+// family -- must throw a clear, actionable error rather than attempt a
+// download that 404s.
+assert.throws(
+  () => install.platformTarget("linux", "arm64", "gnu"),
+  /unsupported platform/,
+  "linux-arm64 (gnu) has no published asset and must throw",
+);
+assert.throws(
+  () => install.platformTarget("linux", "arm64", "musl"),
+  /unsupported platform/,
+  "linux-arm64 (musl) has no published asset and must throw",
+);
+
 assert.strictEqual(install.platformTarget("darwin", "arm64").triple, "aarch64-apple-darwin");
 assert.strictEqual(install.platformTarget("win32", "x64").triple, "x86_64-pc-windows-msvc");
-assert.strictEqual(install.platformTarget("win32", "arm64").triple, "aarch64-pc-windows-msvc");
+
+// Intel macOS and Windows arm64 have no published asset in this release.
+assert.throws(
+  () => install.platformTarget("darwin", "x64"),
+  /unsupported platform/,
+  "darwin-x64 (Intel mac) has no published asset and must throw",
+);
+assert.throws(
+  () => install.platformTarget("win32", "arm64"),
+  /unsupported platform/,
+  "win32-arm64 has no published asset and must throw",
+);
 assert.throws(() => install.platformTarget("freebsd", "x64"), /unsupported platform/);
 
 // detectLibc must return null on non-Linux platforms so the platform key
