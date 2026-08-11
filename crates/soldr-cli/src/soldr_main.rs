@@ -126,24 +126,7 @@ pub fn run() -> std::process::ExitCode {
             Some(multicall::MulticallDispatch::Exit(code)) => guarded_exit(code),
             Some(multicall::MulticallDispatch::ExitCode(code)) => return code,
             Some(multicall::MulticallDispatch::SoldrArgs(args)) => {
-                if std::env::var_os(crate::installed_broker_identity::BROKER_EXECUTABLE_ENV_VAR)
-                    .is_none()
-                {
-                    if let Ok(shim) = std::env::current_exe() {
-                        if let Some(source) =
-                            crate::shim_materialize::materialized_source_for(&shim)
-                        {
-                            std::env::set_var(
-                                crate::installed_broker_identity::BROKER_EXECUTABLE_ENV_VAR,
-                                source,
-                            );
-                        }
-                    }
-                }
-                let mut soldr_args = Vec::with_capacity(args.len() + 1);
-                soldr_args.push("soldr".to_string());
-                soldr_args.extend(args);
-                guarded_exit(run_main(soldr_args));
+                guarded_exit(run_main(crate::shim_materialize::shim_args(args)));
             }
             None => {}
         }
@@ -204,9 +187,8 @@ fn run_main(raw_args: Vec<String>) -> i32 {
         return wrapper::run_rustc_wrapper(&raw_args, profile).unwrap_or_else(report_and_exit);
     }
 
-    if let Err(err) = crate::broker_spawn::maybe_spawn_broker_front_door(&raw_args) {
-        eprintln!("soldr: {err}");
-        guarded_exit(1);
+    if let Err(error) = crate::broker_spawn::maybe_spawn_broker_front_door(&raw_args) {
+        return report_and_exit(error);
     }
     // `--as <version>` trampoline. Peeled off before clap so the fetched
     // older soldr parses its own argv on its own terms.
@@ -1196,10 +1178,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                         command.env_remove("RUSTC_WRAPPER");
                     }
                 } else if cache_enabled {
-                    command.env(
-                        crate::installed_broker_identity::BROKER_EXECUTABLE_ENV_VAR,
-                        crate::installed_broker_identity::installed_broker_executable()?,
-                    );
+                    crate::installed_broker_identity::apply_to_command(&mut command)?;
                     crate::zccache::ZccacheChildEnv::from_current_process()?
                         .apply_to_command(&mut command);
                     // soldr#2451: the caller (e.g. the PEP 517 backend, which
@@ -1494,13 +1473,8 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
                 crate::daemon::backend_handle_adoption::SOLDR_BROKER_SERVICE_ENV_VAR,
                 &installed.definition.service_name,
             );
-            let broker = crate::installed_broker_identity::installed_broker_executable()?;
-            running_process::broker::client_v2::connect_service_for_broker_path_with_deadline(
-                &crate::daemon::backend_handle_adoption::broker_program(),
-                &broker,
+            crate::session_transport::connect_default_daemon_route(
                 &installed.definition.service_name,
-                crate::daemon::backend_handle_adoption::SOLDR_DAEMON_SERVICE_VERSION,
-                std::time::Duration::from_secs(5),
             )
             .map_err(|err| {
                 SoldrError::Other(format!(

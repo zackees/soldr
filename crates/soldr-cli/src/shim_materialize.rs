@@ -506,6 +506,22 @@ pub(crate) fn materialized_source_for(target: &Path) -> Option<PathBuf> {
     std::fs::canonicalize(source).ok()
 }
 
+/// Restore the installed broker identity hidden by a native multicall shim
+/// and rebuild argv for the normal soldr front door.
+pub(crate) fn shim_args(args: Vec<String>) -> Vec<String> {
+    if std::env::var_os(crate::installed_broker_identity::BROKER_EXECUTABLE_ENV_VAR).is_none() {
+        if let Ok(shim) = std::env::current_exe() {
+            if let Some(source) = materialized_source_for(&shim) {
+                std::env::set_var(
+                    crate::installed_broker_identity::BROKER_EXECUTABLE_ENV_VAR,
+                    source,
+                );
+            }
+        }
+    }
+    std::iter::once("soldr".to_string()).chain(args).collect()
+}
+
 fn write_materialization_memo_if_unchanged(
     source: &Path,
     target: &Path,

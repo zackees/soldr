@@ -399,5 +399,28 @@ pub(crate) async fn serve_session_endpoint_with_readiness(
     }
 }
 
+/// Spawn the broker-facing accept loop and wait until its task has actually
+/// entered the serve future. This keeps synchronous compile-service startup
+/// from starving BackendHandle probes after the listener has already bound.
+pub(crate) async fn spawn_ready_session_endpoint(
+    listener: SessionListener,
+    service: CompileServiceReadiness,
+    paths: SoldrPaths,
+    mux: Arc<SessionMux>,
+) -> io::Result<tokio::task::JoinHandle<()>> {
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let handle = tokio::spawn(async move {
+        let _ = started_tx.send(());
+        if let Err(err) = serve_session_endpoint_with_readiness(listener, service, paths, mux).await
+        {
+            tracing::warn!(target: "soldr::daemon", "SESSION endpoint serve ended: {err}");
+        }
+    });
+    started_rx
+        .await
+        .map_err(|_| io::Error::other("SESSION endpoint task exited before startup"))?;
+    Ok(handle)
+}
+
 #[cfg(test)]
 mod tests;

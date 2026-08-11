@@ -231,6 +231,21 @@ fn broker_route_attempt_budget() -> std::time::Duration {
     std::time::Duration::from_millis(milliseconds)
 }
 
+pub(crate) fn connect_default_daemon_route(
+    service_name: &str,
+) -> Result<running_process::broker::client_v2::ClientSession, String> {
+    let broker = crate::installed_broker_identity::installed_broker_executable()
+        .map_err(|err| err.to_string())?;
+    running_process::broker::client_v2::connect_service_for_broker_path_with_deadline(
+        &crate::daemon::backend_handle_adoption::broker_program(),
+        broker,
+        service_name,
+        crate::daemon::backend_handle_adoption::SOLDR_DAEMON_SERVICE_VERSION,
+        std::time::Duration::from_secs(5),
+    )
+    .map_err(|err| err.to_string())
+}
+
 fn refused_session_hello(reason: String) -> HelloReply {
     HelloReply {
         result: Some(HelloReplyResult::Refused(Refused {

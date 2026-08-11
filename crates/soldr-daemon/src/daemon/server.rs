@@ -781,18 +781,13 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     let (compile_readiness, compile_publisher) =
         crate::daemon::session_endpoint::CompileServiceReadiness::pending();
     let session_paths = paths.clone();
-    let session_handle = tokio::spawn(async move {
-        if let Err(err) = crate::daemon::session_endpoint::serve_session_endpoint_with_readiness(
-            session_listener,
-            compile_readiness,
-            session_paths,
-            session_mux,
-        )
-        .await
-        {
-            tracing::warn!(target: "soldr::daemon", "SESSION endpoint serve ended: {err}");
-        }
-    });
+    let session_handle = crate::daemon::session_endpoint::spawn_ready_session_endpoint(
+        session_listener,
+        compile_readiness,
+        session_paths,
+        session_mux,
+    )
+    .await?;
 
     // Embedded zccache initializes asynchronously. The first operation that
     // actually needs it awaits this task through `CompileServiceReadiness`;

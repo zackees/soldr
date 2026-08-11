@@ -30,6 +30,12 @@ pub fn installed_broker_executable() -> io::Result<PathBuf> {
     canonical_existing(current, "current executable")
 }
 
+/// Carry the exact installed identity into a child command.
+pub fn apply_to_command(command: &mut std::process::Command) -> io::Result<()> {
+    command.env(BROKER_EXECUTABLE_ENV_VAR, installed_broker_executable()?);
+    Ok(())
+}
+
 fn canonical_existing(path: PathBuf, source: &str) -> io::Result<PathBuf> {
     std::fs::canonicalize(&path).map_err(|err| {
         io::Error::new(
