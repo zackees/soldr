@@ -1180,6 +1180,29 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 } else if cache_enabled {
                     crate::zccache::ZccacheChildEnv::from_current_process()?
                         .apply_to_command(&mut command);
+                    // soldr#2451: the caller (e.g. the PEP 517 backend, which
+                    // presets RUSTC_WRAPPER=soldr) owns the wrapper, so we must
+                    // not override it — but the cargo children it spawns still
+                    // re-enter soldr as that wrapper and resolve the broker
+                    // daemon route by SOLDR_BROKER_SERVICE. The managed-plan
+                    // branch above sets it; this caller-wrapper branch used to
+                    // skip it, leaving a wheel-consumer build with no way to
+                    // name the route (no sibling soldr-daemon beside the
+                    // wrapper) — the "cannot resolve the broker daemon route
+                    // (os error 2)" pep517-daemon-smoke failure. Register the
+                    // daemon image and pass the service name down explicitly.
+                    match crate::zccache::register_broker_daemon_service() {
+                        Ok((_daemon, service_name)) => {
+                            command.env(
+                                crate::daemon::backend_handle_adoption::SOLDR_BROKER_SERVICE_ENV_VAR,
+                                service_name,
+                            );
+                        }
+                        Err(err) => eprintln!(
+                            "soldr warning: could not register the broker daemon route for the \
+                             caller-provided RUSTC_WRAPPER; cacheable compiles may fail: {err}"
+                        ),
+                    }
                 }
                 let mut prep = crate::blessed_build::BlessedPrep::default();
                 crate::blessed_build::inject_cmake_tooling(&paths, &mut prep).await;

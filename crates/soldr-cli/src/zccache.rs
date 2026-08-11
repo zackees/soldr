@@ -442,6 +442,27 @@ async fn prepare_zccache_build(
     };
 
     let wrapper_path = crate::binaries::rustc_wrapper_shim_binary(paths)?;
+    let (daemon_path, broker_service_name) = register_broker_daemon_service()?;
+    Ok(ManagedZccacheWrapperPlan {
+        session,
+        child_env,
+        wrapper_path,
+        daemon_path,
+        broker_service_name,
+    })
+}
+
+/// Materialize + register the soldr-daemon image with the broker and return
+/// `(daemon_path, service_name)`.
+///
+/// soldr#2451: shared by [`prepare_rustc_wrapper_plan`] and the
+/// caller-provided-`RUSTC_WRAPPER` maturin path. Any build front door that
+/// hands a child `RUSTC_WRAPPER=soldr` must also hand it `SOLDR_BROKER_SERVICE`,
+/// because the cargo wrapper re-entries resolve the broker route by that name.
+/// Without it they fall back to hashing a sibling `soldr-daemon` next to the
+/// wrapper — which does not exist in a wheel install — and fail as
+/// "cannot resolve the broker daemon route (os error 2)".
+pub(crate) fn register_broker_daemon_service() -> Result<(std::path::PathBuf, String), SoldrError> {
     let daemon_path = crate::binaries::soldr_daemon_binary()?;
     let installed = crate::daemon::service_definition::install_service_definition(&daemon_path)
         .map_err(|err| {
@@ -450,13 +471,7 @@ async fn prepare_zccache_build(
                 daemon_path.display()
             ))
         })?;
-    Ok(ManagedZccacheWrapperPlan {
-        session,
-        child_env,
-        wrapper_path,
-        daemon_path,
-        broker_service_name: installed.definition.service_name,
-    })
+    Ok((daemon_path, installed.definition.service_name))
 }
 
 /// Generate a short, unique-enough id for a front-door build session
