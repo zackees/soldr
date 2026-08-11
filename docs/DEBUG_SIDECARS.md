@@ -42,9 +42,18 @@ is needed, the staging + manifest recording pick the artifacts up.
 > Because cacheable builds now have one mandatory broker route, release or
 > debugging workflows that require a PDB must treat a missing sidecar as a hard
 > failure until the vendored cache output enumeration is fixed.
+>
+> To produce a symbolizable Windows build today, take that unit off the cache
+> so the `.pdb` survives linking:
+>
+> ```console
+> $ ZCCACHE_DISABLE=1 soldr build --release --target x86_64-pc-windows-msvc
+> ```
+>
+> (`soldr --no-cache build …` does the same thing — both keep the sidecar.)
 
 The release archive guard still requires `soldr.pdb`; it must not bypass the
-cache to manufacture a green result. Remove this caveat when soldr#2148 is
+cache to manufacture a green result. Remove this note when soldr#2148 is
 fixed and the cached path retains the sidecar.
 
 ## Verifying an archive

@@ -100,7 +100,16 @@ jobs:
         with:
           version: 0.8.29
           toolchain: 1.94.1
+          # soldr#2451: disable every setup-soldr reuse layer, not just the
+          # `cache` umbrella (soldr-mini / solo-toolchain / build-cache each
+          # ignore it). This lane builds + tests the soldr under test, so it
+          # must never restore a prebuilt soldr binary.
           cache: false
+          build-cache: false
+          target-cache: false
+          cargo-registry-cache: false
+          soldr-mini-cache: false
+          solo-toolchain-cache: false
           zccache-seed-strict: true
 
       # soldr#1241 — cache ~/.cargo/{registry,git} + target/ so

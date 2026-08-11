@@ -73,9 +73,7 @@ impl SoldrBackendLauncher {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Err(err) = authority.register_daemon(service_name.to_string()) {
-            eprintln!(
-                "soldr broker: could not mint session token for route {service_name}: {err}"
-            );
+            eprintln!("soldr broker: could not mint session token for route {service_name}: {err}");
             return None;
         }
         authority.composed_token_for(service_name)
@@ -475,57 +473,88 @@ mod tests {
     // (see the #2442 design ruling), but the mint/invalidation semantics are
     // the foundation slice 2's `broker status` and slice 3's per-generation
     // observability build on, so lock them down here.
-    crate::timed_test!(route_relaunch_mints_fresh_half_and_invalidates_prior_generation, {
-        let authority = test_authority();
-        let launcher = SoldrBackendLauncher::new(authority.clone());
+    crate::timed_test!(
+        route_relaunch_mints_fresh_half_and_invalidates_prior_generation,
+        {
+            let authority = test_authority();
+            let launcher = SoldrBackendLauncher::new(authority.clone());
 
-        let first = launcher
-            .register_route_token("soldr-daemon")
-            .expect("first launch mints a composite");
-        authority
-            .lock()
-            .unwrap()
-            .validate(&first, "soldr-daemon")
-            .expect("the freshly minted composite validates");
+            let first = launcher
+                .register_route_token("soldr-daemon")
+                .expect("first launch mints a composite");
+            authority
+                .lock()
+                .unwrap()
+                .validate(&first, "soldr-daemon")
+                .expect("the freshly minted composite validates");
 
-        // A relaunch/replacement of the same route re-mints the daemon half...
-        let second = launcher
-            .register_route_token("soldr-daemon")
-            .expect("relaunch mints a composite");
-        assert_ne!(first, second, "a relaunch must mint a fresh daemon half");
+            // A relaunch/replacement of the same route re-mints the daemon half...
+            let second = launcher
+                .register_route_token("soldr-daemon")
+                .expect("relaunch mints a composite");
+            assert_ne!(first, second, "a relaunch must mint a fresh daemon half");
 
-        // ...so a client still holding the prior generation's composite is
-        // invalidated for exactly that route (DaemonHalfMismatch).
-        assert!(
-            authority.lock().unwrap().validate(&first, "soldr-daemon").is_err(),
-            "the prior generation's composite must stop validating"
-        );
-        authority
-            .lock()
-            .unwrap()
-            .validate(&second, "soldr-daemon")
-            .expect("the current generation's composite validates");
-    });
+            // ...so a client still holding the prior generation's composite is
+            // invalidated for exactly that route (DaemonHalfMismatch).
+            assert!(
+                authority
+                    .lock()
+                    .unwrap()
+                    .validate(&first, "soldr-daemon")
+                    .is_err(),
+                "the prior generation's composite must stop validating"
+            );
+            authority
+                .lock()
+                .unwrap()
+                .validate(&second, "soldr-daemon")
+                .expect("the current generation's composite validates");
+        }
+    );
 
     crate::timed_test!(broker_rotation_invalidates_every_route_at_once, {
         let authority = test_authority();
         let launcher = SoldrBackendLauncher::new(authority.clone());
 
-        let route_a = launcher.register_route_token("route-a").expect("route-a composite");
-        let route_b = launcher.register_route_token("route-b").expect("route-b composite");
-        authority.lock().unwrap().validate(&route_a, "route-a").expect("a valid");
-        authority.lock().unwrap().validate(&route_b, "route-b").expect("b valid");
+        let route_a = launcher
+            .register_route_token("route-a")
+            .expect("route-a composite");
+        let route_b = launcher
+            .register_route_token("route-b")
+            .expect("route-b composite");
+        authority
+            .lock()
+            .unwrap()
+            .validate(&route_a, "route-a")
+            .expect("a valid");
+        authority
+            .lock()
+            .unwrap()
+            .validate(&route_b, "route-b")
+            .expect("b valid");
 
         // Rotating the broker half is the broker-wide invalidation path: every
         // route's composite stops validating at once, independent of the
         // per-daemon halves.
-        authority.lock().unwrap().rotate_broker_token().expect("rotate broker half");
+        authority
+            .lock()
+            .unwrap()
+            .rotate_broker_token()
+            .expect("rotate broker half");
         assert!(
-            authority.lock().unwrap().validate(&route_a, "route-a").is_err(),
+            authority
+                .lock()
+                .unwrap()
+                .validate(&route_a, "route-a")
+                .is_err(),
             "broker rotation invalidates route-a"
         );
         assert!(
-            authority.lock().unwrap().validate(&route_b, "route-b").is_err(),
+            authority
+                .lock()
+                .unwrap()
+                .validate(&route_b, "route-b")
+                .is_err(),
             "broker rotation invalidates route-b"
         );
     });

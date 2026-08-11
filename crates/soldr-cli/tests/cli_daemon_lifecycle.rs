@@ -33,28 +33,6 @@ use windows_sys::Win32::System::Threading::{
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-struct EnvScope {
-    key: &'static str,
-    prior: Option<OsString>,
-}
-
-impl EnvScope {
-    fn set(key: &'static str, value: &str) -> Self {
-        let prior = std::env::var_os(key);
-        std::env::set_var(key, value);
-        Self { key, prior }
-    }
-}
-
-impl Drop for EnvScope {
-    fn drop(&mut self) {
-        match &self.prior {
-            Some(value) => std::env::set_var(self.key, value),
-            None => std::env::remove_var(self.key),
-        }
-    }
-}
-
 fn unique_temp_dir(label: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -224,11 +202,15 @@ impl Drop for Daemon {
     }
 }
 
+// Only the `#[cfg(windows)]` herd-spawning regression test below constructs
+// this; without the gate it is dead code on non-Windows targets (-D warnings).
+#[cfg(windows)]
 struct DaemonCleanup {
     cache_root: PathBuf,
     home_root: PathBuf,
 }
 
+#[cfg(windows)]
 impl Drop for DaemonCleanup {
     fn drop(&mut self) {
         let _ = run_soldr(&["daemon", "stop"], &self.cache_root, &self.home_root);

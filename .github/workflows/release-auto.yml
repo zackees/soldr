@@ -398,6 +398,11 @@ jobs:
           build-cache: false
           target-cache: false
           cargo-registry-cache: false
+          # soldr#2451: solo-toolchain-cache is gated ONLY on its own input, not
+          # the `cache` umbrella, so disable it explicitly. (soldr-mini-cache is
+          # already ineligible under enable:false, but pin it off for parity.)
+          soldr-mini-cache: false
+          solo-toolchain-cache: false
           prebuild-deps: none
           zccache-seed-strict: false
 

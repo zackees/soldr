@@ -17,7 +17,10 @@ fn unique_program(label: &str) -> String {
         .duration_since(UNIX_EPOCH)
         .expect("time went backwards")
         .as_nanos();
-    format!("soldr-broker-status-{label}-{:010x}", nanos & 0xFF_FFFF_FFFF)
+    format!(
+        "soldr-broker-status-{label}-{:010x}",
+        nanos & 0xFF_FFFF_FFFF
+    )
 }
 
 fn spawn_broker(program: &str) -> std::process::Child {
@@ -80,7 +83,10 @@ soldr_cli::timed_test!(
         // say "not running", and must exit 0 (a safe probe).
         let program = unique_program("absent");
         let (output, code) = run_status(&program);
-        assert_eq!(code, 0, "status against no broker must exit 0; got:\n{output}");
+        assert_eq!(
+            code, 0,
+            "status against no broker must exit 0; got:\n{output}"
+        );
         assert!(
             output.contains("not running"),
             "status against no broker must report 'not running'; got:\n{output}"
@@ -102,15 +108,13 @@ soldr_cli::timed_test!(
         // The control socket binds just after the "binding at" line, so poll the
         // status query until the admin round-trip lands (or the budget expires).
         let deadline = Instant::now() + STATUS_POLL_BUDGET;
-        let mut last = String::new();
-        let ok = loop {
+        let (ok, last) = loop {
             let (output, code) = run_status(&program);
-            last = output;
-            if code == 0 && last.contains("broker_instance:") {
-                break true;
+            if code == 0 && output.contains("broker_instance:") {
+                break (true, output);
             }
             if Instant::now() >= deadline {
-                break false;
+                break (false, output);
             }
             std::thread::sleep(POLL);
         };

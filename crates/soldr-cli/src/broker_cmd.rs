@@ -417,6 +417,11 @@ fn broker_ownership_file(program: &str) -> Result<std::fs::File, SoldrError> {
     let digest = hex::encode(Sha256::digest(program.as_bytes()));
     Ok(std::fs::OpenOptions::new()
         .create(true)
+        // This is an advisory lock file, not a data file: opening it must never
+        // discard a concurrent owner's contents. `.truncate(false)` states that
+        // explicitly (clippy::suspicious_open_options) and matches the prior
+        // create+read+write behavior.
+        .truncate(false)
         .read(true)
         .write(true)
         .open(root.join(format!("broker-owner-{}.lock", &digest[..24])))?)

@@ -149,6 +149,9 @@ mod tests {
         let second = cached_blake3_hex(&cache, &f).expect("second");
 
         assert_ne!(first, second, "new content must produce a new digest");
-        assert_eq!(second, zccache::hash::hash_bytes(b"payload-v2-longer").to_hex());
+        assert_eq!(
+            second,
+            zccache::hash::hash_bytes(b"payload-v2-longer").to_hex()
+        );
     });
 }

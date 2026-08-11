@@ -124,7 +124,20 @@ jobs:
           # tests/test_setup_soldr_version_pins.py.
           version: 0.8.29
           toolchain: 1.94.1
+          # soldr#2451: `cache: false` alone does NOT stop setup-soldr's
+          # soldr-mini / solo-toolchain / build-cache layers (each is gated on
+          # its own input, not the umbrella), so the failing lanes still logged
+          # `Using cached soldr 0.8.29` + `setup-soldr-buildcache-v2` hits. This
+          # repo IS soldr; its self-build lanes must never restore a cached
+          # soldr binary. The `soldr build` driver here is the fresh HEAD
+          # bootstrap (downloaded/rebuilt above), so setup-soldr only provisions
+          # the Rust toolchain — turn every reuse layer off.
           cache: false
+          build-cache: false
+          target-cache: false
+          cargo-registry-cache: false
+          soldr-mini-cache: false
+          solo-toolchain-cache: false
           zccache-seed-strict: true
 
       # Every cross tool is resolved by soldr. The blessed MSVC/Darwin
@@ -225,7 +238,13 @@ jobs:
         uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: ${{ runner.temp }}/soldr-bin
-          key: bootstrap-soldr-blessed-linux-gnu-${{ hashFiles('crates/**', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml') }}
+          # soldr#2451: key on the commit SHA, not hashFiles('crates/**', ...),
+          # which excludes `_vender/**` submodules. This binary is the broker-
+          # spawning `soldr build` driver; a submodule-only broker bump must
+          # rebuild it. (Only used by manual callers that omit
+          # bootstrap_artifact_name; main CI downloads the shared artifact,
+          # whose producer job is fixed the same way.)
+          key: bootstrap-soldr-blessed-linux-gnu-${{ github.sha }}
 
       - name: Bootstrap soldr for SDK / blessed-build prep
         if: (contains(inputs.target, 'apple-darwin') || contains(inputs.target, 'pc-windows-msvc')) && inputs.bootstrap_artifact_name == '' && steps.bootstrap_cache.outputs.cache-hit != 'true'
