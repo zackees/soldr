@@ -191,6 +191,13 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
         in target_run
     )
     assert "artifact/package/soldr$suffix" in target_run
+    assert "artifact/package/soldr-daemon$suffix" in target_run
+    assert 'echo "SOLDR_INTERNAL_DAEMON_EXE=$daemon_bin"' in target_run
+    assert 'cp "dist/package/soldr$suffix" "dist/package/soldr-daemon$suffix"' in cross
+    assert 'cargo_bin=$("$SOLDR_BIN" rustup which cargo)' in target_run
+    assert 'rustc_bin=$("$SOLDR_BIN" rustup which rustc)' in target_run
+    assert 'echo "CARGO=$cargo_bin"' in target_run
+    assert 'echo "RUSTC=$rustc_bin"' in target_run
     assert "artifact/package/tools/cargo-nextest$suffix" in target_run
     assert 'echo "SOLDR_TEST_WORKSPACE_ROOT=$GITHUB_WORKSPACE"' in target_run
     assert "SOLDR_GITHUB_TOKEN: ${{ github.token }}" in target_run
@@ -484,9 +491,10 @@ def test_all_miss_cross_builds_bound_compile_concurrency() -> None:
 
     cross_job = _job_block(cross, "cross-build", "")
     wheel_job = _job_block(ci, "wheel-cross-verify")
-    for job in (cross_job, wheel_job):
-        assert 'CARGO_BUILD_JOBS: "2"' in job
-        assert 'SOLDR_JOBS: "2"' in job
+    assert 'CARGO_BUILD_JOBS: "2"' in cross_job
+    assert 'SOLDR_JOBS: "2"' in cross_job
+    assert "CARGO_BUILD_JOBS: ${{ matrix.jobs }}" in wheel_job
+    assert "SOLDR_JOBS: ${{ matrix.jobs }}" in wheel_job
     assert 'CARGO_PROFILE_CI_NEXTEST_CODEGEN_UNITS: "4"' in cross_job
     assert "shared-key: cross-build-${{ inputs.target }}-v7" in cross_job
 

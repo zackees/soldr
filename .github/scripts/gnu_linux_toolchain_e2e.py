@@ -24,6 +24,20 @@ TARGETS = {
     "aarch64-unknown-linux-gnu": ("aarch64", "AArch64"),
 }
 VALID_ENV = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+OUTER_SOLDR_ENV = (
+    "RUSTC_WRAPPER",
+    "RUSTC_WORKSPACE_WRAPPER",
+    "SOLDR_BROKER_SERVICE",
+    "SOLDR_INTERNAL_DAEMON_EXE",
+)
+
+
+def fresh_checkout_env(source: dict[str, str] | None = None) -> dict[str, str]:
+    """Drop setup-soldr state before exercising the checkout-built binary."""
+    env = os.environ.copy() if source is None else source.copy()
+    for name in OUTER_SOLDR_ENV:
+        env.pop(name, None)
+    return env
 
 
 def run(
@@ -61,8 +75,8 @@ def require_no_zig(text: str, context: str) -> None:
             raise RuntimeError(f"{context} unexpectedly references {forbidden}: {text}")
 
 
-def assert_plan(soldr: str, target: str) -> None:
-    payload = json.loads(run([soldr, "env", "--target", target, "--json"]))
+def assert_plan(soldr: str, target: str, env: dict[str, str]) -> None:
+    payload = json.loads(run([soldr, "env", "--target", target, "--json"], env=env))
     plan = payload["target_plan"]
     rendered = json.dumps(plan, sort_keys=True)
     require_no_zig(rendered, "GNU target plan")
@@ -304,21 +318,26 @@ def main() -> int:
     parser.add_argument("--repo", type=Path, required=True)
     args = parser.parse_args()
     soldr = str(Path(args.soldr).resolve())
-    assert_plan(soldr, args.target)
+    checkout_env = fresh_checkout_env()
+    assert_plan(soldr, args.target, checkout_env)
     with tempfile.TemporaryDirectory(
         prefix=f"soldr-gnu-e2e-{TARGETS[args.target][0]}-"
     ) as raw:
         work = Path(raw)
         archive = work / "prepared.tar.zst"
         source_env = prepare(
-            soldr, args.target, work / "source-github.env", save=archive
+            soldr,
+            args.target,
+            work / "source-github.env",
+            env=checkout_env,
+            save=archive,
         )
         source_root, _ = assert_managed_environment(source_env, args.target)
         # Warm Cargo's fixture dependencies before proving that the restored
         # toolchain itself is enough when Soldr is forbidden from networking.
         build_fixture(soldr, args.target, source_env, work / "source-build")
 
-        restored_env = os.environ.copy()
+        restored_env = fresh_checkout_env()
         restored_env["SOLDR_CACHE_DIR"] = str(work / "restored-soldr")
         restored_env["SOLDR_TEST_NO_NETWORK"] = "1"
         env = prepare(

@@ -66,7 +66,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for bin in artifact/package/soldr artifact/package/tools/cargo-nextest; do
+          for bin in artifact/package/soldr artifact/package/soldr-daemon artifact/package/tools/cargo-nextest; do
             if [ -f "$bin" ]; then
               chmod +x "$bin"
               echo "chmod +x $bin"
@@ -80,13 +80,16 @@ jobs:
           suffix=""
           case '${{ inputs.target }}' in *-pc-windows-msvc) suffix=".exe" ;; esac
           soldr_bin="$GITHUB_WORKSPACE/artifact/package/soldr$suffix"
+          daemon_bin="$GITHUB_WORKSPACE/artifact/package/soldr-daemon$suffix"
           nextest_bin="$GITHUB_WORKSPACE/artifact/package/tools/cargo-nextest$suffix"
           fixtures="$GITHUB_WORKSPACE/artifact/package/fixtures"
           test -f "$soldr_bin"
+          test -f "$daemon_bin"
           test -f "$nextest_bin"
           test -d "$fixtures"
           {
             echo "SOLDR_BIN=$soldr_bin"
+            echo "SOLDR_INTERNAL_DAEMON_EXE=$daemon_bin"
             echo "NEXTEST_BIN=$nextest_bin"
             echo "SOLDR_TEST_WORKSPACE_ROOT=$GITHUB_WORKSPACE"
             echo "SOLDR_TEST_FIXTURES_DIR=$fixtures"
@@ -124,6 +127,14 @@ jobs:
             echo "soldr toolchain link failed with status $link_status" >&2
             exit "$link_status"
           fi
+          cargo_bin=$("$SOLDR_BIN" rustup which cargo)
+          rustc_bin=$("$SOLDR_BIN" rustup which rustc)
+          test -f "$cargo_bin"
+          test -f "$rustc_bin"
+          {
+            echo "CARGO=$cargo_bin"
+            echo "RUSTC=$rustc_bin"
+          } >> "$GITHUB_ENV"
           echo "$TOOLCHAIN_SHIM_DIR" >> "$GITHUB_PATH"
 
       - name: Verify pinned Rust toolchain

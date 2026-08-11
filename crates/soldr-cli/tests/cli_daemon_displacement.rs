@@ -7,7 +7,7 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -65,39 +65,36 @@ fn unique_temp_dir(label: &str) -> PathBuf {
     dir
 }
 
-fn isolated_env(cache_root: &Path, home_root: &Path) -> Vec<(&'static str, OsString)> {
-    vec![
-        ("SOLDR_CACHE_DIR", cache_root.as_os_str().to_os_string()),
-        ("HOME", home_root.as_os_str().to_os_string()),
-        ("USERPROFILE", home_root.as_os_str().to_os_string()),
-    ]
+fn isolated_env(cache_root: &Path) -> Vec<(&'static str, OsString)> {
+    vec![("SOLDR_CACHE_DIR", cache_root.as_os_str().to_os_string())]
 }
 
 /// Run a `soldr <args>` subprocess in the daemon's isolated root.
-fn run_soldr(args: &[&str], cache_root: &Path, home_root: &Path, fake_version: Option<&str>) {
-    let mut cmd = Command::new(common::soldr_bin());
+fn run_soldr(args: &[&str], cache_root: &Path, fake_version: Option<&str>) {
+    let mut cmd = common::isolated_soldr_command();
     cmd.args(args)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
         // A dogfooded outer `soldr cargo test` exports its installed daemon
         // image for compiler-child recovery. This isolated fixture must spawn
         // the daemon built alongside CARGO_BIN_EXE_soldr instead.
         .env_remove(soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR);
-    for (k, v) in isolated_env(cache_root, home_root) {
+    for (k, v) in isolated_env(cache_root) {
         cmd.env(k, v);
     }
     if let Some(v) = fake_version {
         cmd.env("SOLDR_TEST_DAEMON_FAKE_PKG_VERSION", v);
     }
-    cmd.env_remove("RUSTC_WRAPPER");
-    let status = cmd.status().expect("run isolated soldr command");
-    assert!(status.success(), "isolated soldr command failed: {args:?}");
+    let output = cmd.output().expect("run isolated soldr command");
+    assert!(
+        output.status.success(),
+        "isolated soldr command failed: {args:?}\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
 }
 
 struct SpawnedDaemon {
     cache_root: PathBuf,
-    home_root: PathBuf,
 }
 
 impl SpawnedDaemon {
@@ -108,15 +105,11 @@ impl SpawnedDaemon {
     /// the liveness check). Optionally claims a faked package version.
     fn spawn(fake_version: Option<&str>) -> Self {
         let cache_root = unique_temp_dir("displace-cache");
-        let home_root = unique_temp_dir("displace-home");
         // `soldr daemon start` requests a detached spawn and returns.
         // soldr#2441: the broker-owned daemon model rejects --idle-timeout;
         // lifetime is now managed by the singleton broker.
-        run_soldr(&["daemon", "start"], &cache_root, &home_root, fake_version);
-        let this = Self {
-            cache_root,
-            home_root,
-        };
+        run_soldr(&["daemon", "start"], &cache_root, fake_version);
+        let this = Self { cache_root };
         assert!(
             this.wait_until_live(Duration::from_secs(60)),
             "daemon never became live"
@@ -128,11 +121,7 @@ impl SpawnedDaemon {
     /// process-globally (caller holds ENV_LOCK) and reading it back the
     /// same way production code does.
     fn paths(&self) -> (EnvScope, SoldrPaths) {
-        let scope = EnvScope::apply(&[
-            ("SOLDR_CACHE_DIR", &self.cache_root),
-            ("HOME", &self.home_root),
-            ("USERPROFILE", &self.home_root),
-        ]);
+        let scope = EnvScope::apply(&[("SOLDR_CACHE_DIR", &self.cache_root)]);
         let paths = SoldrPaths::new().expect("resolve paths");
         (scope, paths)
     }
@@ -167,7 +156,7 @@ impl SpawnedDaemon {
 impl Drop for SpawnedDaemon {
     fn drop(&mut self) {
         // Best-effort teardown of any daemon still holding the endpoint.
-        run_soldr(&["daemon", "stop"], &self.cache_root, &self.home_root, None);
+        run_soldr(&["daemon", "stop"], &self.cache_root, None);
     }
 }
 

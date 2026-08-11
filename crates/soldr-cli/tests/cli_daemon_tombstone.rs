@@ -1,15 +1,19 @@
 //! soldr#2388 — daemon tombstone end-to-end: an explicit `soldr daemon stop`
-//! plants a suppression window during which the broker's proactive daemon
+//! plants a suppression window during which the broker's requested daemon
 //! launch (the one implicit-start path post-Step-4) is skipped, guarding
 //! against a thundering herd of restarts. `soldr daemon start` lifts it.
 
 mod common;
 
 use std::io::{BufRead, BufReader};
-use std::process::{Command, Stdio};
+use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use running_process::broker::protocol_v2::service_definition_dir_v2;
+use soldr_cli::core::SoldrPaths;
+use soldr_cli::daemon::backend_handle_adoption::SOLDR_DAEMON_SERVICE_VERSION;
 use soldr_cli::timed_test;
 
 fn unique_program(label: &str) -> String {
@@ -43,6 +47,29 @@ fn wait_for(lines: &Arc<Mutex<Vec<String>>>, needle: &str, deadline: Instant) ->
     }
 }
 
+struct ServiceDefinitionGuard(PathBuf);
+
+impl Drop for ServiceDefinitionGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+struct BrokerGuard {
+    child: Child,
+    root: PathBuf,
+}
+
+impl Drop for BrokerGuard {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        if let Some(pid) = find_daemon_pid(&self.root) {
+            let _ = kill_pid(pid);
+        }
+    }
+}
+
 timed_test!(
     daemon_stop_tombstone_suppresses_broker_proactive_launch,
     Duration::from_secs(90),
@@ -69,10 +96,22 @@ timed_test!(
             String::from_utf8_lossy(&stop_out.stderr)
         );
 
-        // 2) Start a broker on the same root. Its proactive daemon launch must
-        //    observe the live tombstone and skip — logging the skip and leaving
-        //    no daemon behind.
-        let mut broker = Command::new(common::soldr_bin())
+        // 2) Register this root's route and start a broker. Since #2441 the
+        //    broker is passive until a client requests a registered route; that
+        //    requested launch must observe the live tombstone and leave no
+        //    daemon behind.
+        let paths = SoldrPaths::with_root(root.clone());
+        let installed =
+            soldr_cli::daemon::service_definition::install_service_definition_to_dir_for_paths(
+                service_definition_dir_v2(),
+                &paths,
+                &common::soldr_daemon_bin(),
+            )
+            .expect("install isolated daemon service definition");
+        let _service_definition = ServiceDefinitionGuard(installed.path.clone());
+        let mut broker_command = Command::new(common::soldr_bin());
+        common::scrub_outer_soldr_env(&mut broker_command);
+        let child = broker_command
             .args(["broker", "serve", "--program", &program])
             .env("SOLDR_CACHE_DIR", &root)
             .stdin(Stdio::null())
@@ -80,36 +119,41 @@ timed_test!(
             .stderr(Stdio::piped())
             .spawn()
             .expect("spawn broker");
-        let out = drain(broker.stdout.take().expect("broker stdout"));
-        let err = drain(broker.stderr.take().expect("broker stderr"));
+        let mut broker = BrokerGuard {
+            child,
+            root: root.clone(),
+        };
+        let out = drain(broker.child.stdout.take().expect("broker stdout"));
+        let err = drain(broker.child.stderr.take().expect("broker stderr"));
 
-        // The broker's daemon-launch thread runs at startup; wait for its skip.
-        let skipped = wait_for(
-            &err,
-            "tombstone active",
-            Instant::now() + Duration::from_secs(20),
+        assert!(
+            wait_for(&out, "binding at", Instant::now() + Duration::from_secs(10)),
+            "broker did not become ready"
         );
+        let request_error = running_process::broker::client_v2::connect_service_with_deadline(
+            &program,
+            &installed.definition.service_name,
+            SOLDR_DAEMON_SERVICE_VERSION,
+            Duration::from_secs(10),
+        )
+        .expect_err("the broker request must fail while the tombstone is live");
+        let request_message = request_error.to_string();
 
         // Give any (erroneous) launch a moment to publish a pidfile before we
         // assert none exists.
         std::thread::sleep(Duration::from_secs(2));
         let daemon_launched = find_daemon_pid(&root);
 
-        let _ = broker.kill();
-        let _ = broker.wait();
-        // Reap any daemon that slipped through so the test never leaks one.
-        if let Some(pid) = daemon_launched {
-            let _ = kill_pid(pid);
-        }
+        drop(broker);
 
         let log = format!(
-            "broker stdout:\n  {}\nbroker stderr:\n  {}",
+            "broker request: {request_error:?}\nbroker stdout:\n  {}\nbroker stderr:\n  {}",
             out.lock().unwrap().join("\n  "),
             err.lock().unwrap().join("\n  ")
         );
         assert!(
-            skipped,
-            "broker must log that it skipped the proactive launch under a live \
+            request_message.contains("tombstone active"),
+            "broker must report that it skipped the requested launch under a live \
              tombstone\n{log}"
         );
         assert!(

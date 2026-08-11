@@ -96,6 +96,7 @@ def test_matrix_cell_is_a_linux_cross_build() -> None:
     assert cell["target"] == "aarch64-unknown-linux-gnu"
     assert cell["expected_tag"] == "manylinux_2_17"
     assert cell["max_glibc"] == "2.17"
+    assert cell["jobs"] == "1"
 
 
 def _ci_jobs() -> dict:
