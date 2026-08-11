@@ -21,6 +21,7 @@
 
 pub mod backend_handle_adoption;
 pub mod broker_discovery;
+pub mod image_hash;
 /// soldr#2224 — the three IPC handlers that touch `state.redb`, split
 /// out of the oversized `server.rs`.
 pub mod build_session_ops;

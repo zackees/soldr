@@ -93,17 +93,23 @@ pub fn broker_route_identity(
     let identity = normalized.to_string_lossy().into_owned();
     #[cfg(windows)]
     let identity = identity.replace('\\', "/").to_ascii_lowercase();
-    let image_hash = sha256_file(daemon_binary)?;
+    // soldr#2442 / 0.9.0: blake3 (via zccache's shared hasher) with a
+    // (path,size,mtime) cache, replacing the whole-file SHA-256 read that made
+    // cold daemon-image placement slow. The digest is a hex string on both this
+    // registration side and the broker's verification side, so the label
+    // matches.
+    let image_hash =
+        super::image_hash::cached_blake3_hex(&paths.cache.join("image-hash"), daemon_binary)?;
     let mut hasher = Sha256::new();
     hasher.update(identity.as_bytes());
     hasher.update([0]);
     hasher.update(SOLDR_DAEMON_SERVICE_VERSION.as_bytes());
     hasher.update([0]);
-    hasher.update(image_hash);
+    hasher.update(image_hash.as_bytes());
     let digest = hasher.finalize();
     Ok(BrokerRouteIdentity {
         service_name: format!("{SOLDR_DAEMON_SERVICE_NAME}-{}", hex::encode(&digest[..16])),
-        image_sha256: hex::encode(image_hash),
+        image_sha256: image_hash,
     })
 }
 
@@ -460,6 +466,13 @@ fn soldr_daemon_endpoint(paths: &SoldrPaths) -> Endpoint {
     }
 }
 
+/// SHA-256 of a file's bytes. Retained specifically for `exe_sha256`, which is
+/// a cross-repo daemon-identity contract: running-process computes the same
+/// field via SHA-256 (`backend_lifecycle::identity`) and compares it in
+/// `verify_daemon_process`, so this side must stay SHA-256 to match. The
+/// *image-placement* hashing (the cold-start hotspot) moved to blake3 via
+/// `super::image_hash`; migrating this identity field to blake3 would require a
+/// coordinated running-process wire-format change (soldr#2442 follow-up).
 fn sha256_file(path: &Path) -> io::Result<[u8; 32]> {
     let bytes = std::fs::read(path)?;
     let digest = Sha256::digest(&bytes);

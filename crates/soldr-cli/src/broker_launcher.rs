@@ -14,7 +14,6 @@ use running_process::broker::server::{
     BACKEND_ENV_SERVICE_NAME, BACKEND_ENV_SERVICE_VERSION, BACKEND_ENV_TRACEPARENT,
     BACKEND_ENV_TRACESTATE,
 };
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -242,7 +241,17 @@ impl SoldrBackendLauncher {
             }
             placed.remove(&cache_key);
         }
-        let source_hash = sha256_hex(source_binary).map_err(|err| {
+        // soldr#2442 / 0.9.0: blake3 (via zccache's shared hasher) with a
+        // (path,size,mtime) cache instead of a whole-file SHA-256 read, so a
+        // warm image is not re-read on every launch. Matches the registration
+        // side's algorithm so the label comparison below still holds.
+        let source_hash = crate::daemon::image_hash::cached_blake3_hex(
+            &crate::daemon::service_definition::broker_owned_paths()
+                .cache
+                .join("image-hash"),
+            source_binary,
+        )
+        .map_err(|err| {
             BackendLaunchError::Launcher(format!(
                 "could not hash registered soldr-daemon image {}: {err}",
                 source_binary.display()
@@ -275,18 +284,11 @@ impl SoldrBackendLauncher {
                 path.display()
             ))
         })?;
-        let placed_hash = sha256_hex(&path).map_err(|err| {
-            BackendLaunchError::Launcher(format!(
-                "could not verify broker-owned soldr-daemon image {}: {err}",
-                path.display()
-            ))
-        })?;
-        if !placed_hash.eq_ignore_ascii_case(image_hash) {
-            return Err(BackendLaunchError::Launcher(format!(
-                "broker-owned soldr-daemon image failed verification: expected {image_hash}, got {placed_hash} for {}",
-                path.display()
-            )));
-        }
+        // soldr#2442 / 0.9.0: the source was already hash-verified against the
+        // label above, and a same-filesystem copy is byte-faithful, so a full
+        // re-hash of the placed copy (a third whole-file read of a large binary
+        // on the cold path) is redundant. Guard the copy with its (size, mtime)
+        // fingerprint, which catches a truncated or replaced file.
         if file_fingerprint(&path).ok() != Some(placed_fingerprint) {
             return Err(BackendLaunchError::Launcher(format!(
                 "broker-owned soldr-daemon image changed while it was being verified: {}",
@@ -303,10 +305,6 @@ impl SoldrBackendLauncher {
         );
         Ok(path)
     }
-}
-
-fn sha256_hex(path: &std::path::Path) -> std::io::Result<String> {
-    Ok(hex::encode(Sha256::digest(std::fs::read(path)?)))
 }
 
 fn file_fingerprint(path: &std::path::Path) -> std::io::Result<FileFingerprint> {
