@@ -14,7 +14,10 @@ on:
         required: false
         type: boolean
         default: false
-
+      npm_release_ref:
+        description: Publish only the npm package from this git ref (for manual release recovery).
+        type: string
+        default: ""
 permissions:
   contents: write
   attestations: write
@@ -35,6 +38,7 @@ concurrency:
 jobs:
   prepare:
     name: Detect release version bump
+    if: github.event_name != 'workflow_dispatch' || inputs.npm_release_ref == ''
     runs-on: ubuntu-24.04
     # Version/tag lookups only; observed max 0.2 min over 10 runs.
     timeout-minutes: 15
@@ -2007,50 +2011,44 @@ jobs:
       - build
       - verify_github_release
       - publish-pypi
-    if: always() && needs.prepare.outputs.should_publish_npm == 'true' && needs.verify_github_release.result == 'success' && (needs.publish-pypi.result == 'success' || needs.publish-pypi.result == 'skipped')
+    if: always() && ((github.event_name == 'workflow_dispatch' && inputs.npm_release_ref != '') || (needs.prepare.outputs.should_publish_npm == 'true' && needs.verify_github_release.result == 'success' && (needs.publish-pypi.result == 'success' || needs.publish-pypi.result == 'skipped')))
     runs-on: ubuntu-24.04
-    # Single `npm publish`; observed max 0.5 min.
     timeout-minutes: 15
     environment: release
     permissions:
       contents: read
       id-token: write
-
+    defaults:
+      run:
+        working-directory: release-source
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Checkout release controls
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          path: release-control
+      - name: Checkout npm package source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           submodules: recursive
-          ref: ${{ needs.prepare.outputs.commit_sha }}
-
+          ref: ${{ inputs.npm_release_ref != '' && format('refs/tags/{0}', inputs.npm_release_ref) || needs.prepare.outputs.commit_sha }}
+          path: release-source
+      - name: Validate immutable npm recovery release
+        if: github.event_name == 'workflow_dispatch' && inputs.npm_release_ref != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python3 ../release-control/.github/scripts/validate_npm_release_recovery.py
+          --repository "$GITHUB_REPOSITORY"
+          --release-ref "${{ inputs.npm_release_ref }}"
+          --source-dir .
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: "24"
           registry-url: https://registry.npmjs.org
-
       - name: Install npm CLI with trusted publishing support
         shell: bash
         run: npm install --global npm@11.12.1
-
       - name: Validate npm package
-        shell: bash
-        run: |
-          set -euo pipefail
-          node --version
-          npm --version
-          node scripts/test-npm-package.js
-          npm pack --dry-run
-
+        run: node scripts/test-npm-package.js && npm pack --dry-run
       - name: Publish package to npm
-        shell: bash
-        run: |
-          set -euo pipefail
-          package_name="$(node -p "require('./package.json').name")"
-          package_version="$(node -p "require('./package.json').version")"
-          package_spec="${package_name}@${package_version}"
-
-          if npm dist-tag ls "$package_name" | awk '{print $2}' | grep -Fx "$package_version" >/dev/null; then
-            echo "$package_spec is already published; skipping npm publish."
-            exit 0
-          fi
-
-          npm publish
+        run: python3 ../release-control/.github/scripts/publish_npm_package.py --source-dir .
