@@ -81,6 +81,11 @@ pub fn broker_route_identity(
     paths: &SoldrPaths,
     daemon_binary: &Path,
 ) -> io::Result<BrokerRouteIdentity> {
+    // The image-hash cache below creates this root anyway. Create it before
+    // canonicalizing so a symlinked existing ancestor (notably macOS /var ->
+    // /private/var) cannot make the first route use the lexical path and the
+    // second route use a different canonical path.
+    std::fs::create_dir_all(&paths.root)?;
     let normalized = std::fs::canonicalize(&paths.root).unwrap_or_else(|_| {
         if paths.root.is_absolute() {
             paths.root.clone()
@@ -505,8 +510,13 @@ mod tests {
         std::fs::write(&binary_b, b"image-b").expect("binary b");
         let root_a = SoldrPaths::with_root(temp.path().join("root-a"));
         let root_b = SoldrPaths::with_root(temp.path().join("root-b"));
+        assert!(!root_a.root.exists(), "fixture root starts absent");
 
         let route = broker_service_name_for(&root_a, &binary_a).expect("route");
+        assert!(
+            root_a.root.exists(),
+            "route identity materializes its cache root"
+        );
         assert_eq!(
             route,
             broker_service_name_for(&root_a, &binary_a).expect("stable route")

@@ -43,6 +43,9 @@ WHEEL_MATRIX = [
         "target": "aarch64-unknown-linux-gnu",
         "expected_tag": "manylinux_2_17",
         "max_glibc": "2.17",
+        # LTO for zccache-daemon-core exceeded the hosted runner's memory
+        # ceiling at two concurrent rustc processes (soldr#2469 bootstrap).
+        "jobs": "1",
     }
 ]
 

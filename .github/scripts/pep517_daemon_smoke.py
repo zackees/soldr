@@ -19,6 +19,12 @@ import tempfile
 from pathlib import Path
 
 DEFAULT_RUST_TOOLCHAIN = "1.94.1"
+OUTER_SOLDR_ENV = (
+    "RUSTC_WRAPPER",
+    "RUSTC_WORKSPACE_WRAPPER",
+    "SOLDR_BROKER_SERVICE",
+    "SOLDR_INTERNAL_DAEMON_EXE",
+)
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -56,6 +62,14 @@ def resolve_wheel(patterns: list[str]) -> Path:
 
 def venv_bin(venv: Path) -> Path:
     return venv / ("Scripts" if os.name == "nt" else "bin")
+
+
+def isolated_smoke_env(source: dict[str, str] | None = None) -> dict[str, str]:
+    """Keep the installed wheel under test independent of setup-soldr."""
+    env = os.environ.copy() if source is None else source.copy()
+    for name in OUTER_SOLDR_ENV:
+        env.pop(name, None)
+    return env
 
 
 def run(
@@ -207,7 +221,7 @@ def main() -> int:
 
         write_project(project)
         wheelhouse.mkdir()
-        env = os.environ.copy()
+        env = isolated_smoke_env()
         env["PATH"] = str(venv_bin(venv)) + os.pathsep + env.get("PATH", "")
         env["SOLDR_DAEMON_REQUIRED"] = "1"
         env.setdefault("SOLDR_DAEMON_SPAWN_RETRY_BUDGET_MS", "5000")
