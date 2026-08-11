@@ -35,18 +35,6 @@ fn drain<R: std::io::Read + Send + 'static>(reader: R) -> Arc<Mutex<Vec<String>>
     lines
 }
 
-fn wait_for(lines: &Arc<Mutex<Vec<String>>>, needle: &str, deadline: Instant) -> bool {
-    loop {
-        if lines.lock().unwrap().iter().any(|l| l.contains(needle)) {
-            return true;
-        }
-        if Instant::now() >= deadline {
-            return false;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
 struct ServiceDefinitionGuard(PathBuf);
 
 impl Drop for ServiceDefinitionGuard {
@@ -126,17 +114,22 @@ timed_test!(
         let out = drain(broker.child.stdout.take().expect("broker stdout"));
         let err = drain(broker.child.stderr.take().expect("broker stderr"));
 
-        assert!(
-            wait_for(&out, "binding at", Instant::now() + Duration::from_secs(10)),
-            "broker did not become ready"
-        );
-        let request_error = running_process::broker::client_v2::connect_service_with_deadline(
-            &program,
-            &installed.definition.service_name,
-            SOLDR_DAEMON_SERVICE_VERSION,
-            Duration::from_secs(10),
-        )
-        .expect_err("the broker request must fail while the tombstone is live");
+        let request_deadline = Instant::now() + Duration::from_secs(30);
+        let request_error = loop {
+            let result = running_process::broker::client_v2::connect_service_with_deadline(
+                &program,
+                &installed.definition.service_name,
+                SOLDR_DAEMON_SERVICE_VERSION,
+                Duration::from_secs(5),
+            );
+            let error =
+                result.expect_err("the broker request must fail while the tombstone is live");
+            if error.to_string().contains("tombstone active") || Instant::now() >= request_deadline
+            {
+                break error;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        };
         let request_message = request_error.to_string();
 
         // Give any (erroneous) launch a moment to publish a pidfile before we

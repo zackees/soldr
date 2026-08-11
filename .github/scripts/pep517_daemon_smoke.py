@@ -22,6 +22,7 @@ DEFAULT_RUST_TOOLCHAIN = "1.94.1"
 OUTER_SOLDR_ENV = (
     "RUSTC_WRAPPER",
     "RUSTC_WORKSPACE_WRAPPER",
+    "SOLDR_BROKER_PROGRAM",
     "SOLDR_BROKER_SERVICE",
     "SOLDR_INTERNAL_DAEMON_EXE",
 )
@@ -64,11 +65,17 @@ def venv_bin(venv: Path) -> Path:
     return venv / ("Scripts" if os.name == "nt" else "bin")
 
 
-def isolated_smoke_env(source: dict[str, str] | None = None) -> dict[str, str]:
+def isolated_smoke_env(
+    source: dict[str, str] | None = None,
+    *,
+    broker_program: str | None = None,
+) -> dict[str, str]:
     """Keep the installed wheel under test independent of setup-soldr."""
     env = os.environ.copy() if source is None else source.copy()
     for name in OUTER_SOLDR_ENV:
         env.pop(name, None)
+    if broker_program is not None:
+        env["SOLDR_BROKER_PROGRAM"] = broker_program
     return env
 
 
@@ -197,6 +204,21 @@ def stop_soldr_daemon(soldr: Path, env: dict[str, str]) -> None:
         print(f"warning: best-effort `soldr daemon stop` failed: {exc}", flush=True)
 
 
+def stop_soldr_broker(soldr: Path, env: dict[str, str]) -> None:
+    program = env.get("SOLDR_BROKER_PROGRAM")
+    if not program:
+        return
+    try:
+        subprocess.run(
+            [str(soldr), "broker", "stop", "--program", program],
+            env=env,
+            timeout=20,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"warning: best-effort isolated broker stop failed: {exc}", flush=True)
+
+
 def main() -> int:
     args = parse_args()
     wheel = resolve_wheel(args.wheel)
@@ -221,7 +243,7 @@ def main() -> int:
 
         write_project(project)
         wheelhouse.mkdir()
-        env = isolated_smoke_env()
+        env = isolated_smoke_env(broker_program=f"soldr-pep517-smoke-{os.getpid()}")
         env["PATH"] = str(venv_bin(venv)) + os.pathsep + env.get("PATH", "")
         env["SOLDR_DAEMON_REQUIRED"] = "1"
         env.setdefault("SOLDR_DAEMON_SPAWN_RETRY_BUDGET_MS", "5000")
@@ -249,7 +271,10 @@ def main() -> int:
             stop_soldr_daemon(soldr, env)
             print_soldr_logs(cache_dir)
             raise
-        stop_soldr_daemon(soldr, env)
+        else:
+            stop_soldr_daemon(soldr, env)
+        finally:
+            stop_soldr_broker(soldr, env)
 
         built = sorted(wheelhouse.glob("soldr_pep517_daemon_smoke-*.whl"))
         if len(built) != 1:

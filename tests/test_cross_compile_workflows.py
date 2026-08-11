@@ -198,6 +198,9 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
     assert 'rustc_bin=$("$SOLDR_BIN" rustup which rustc)' in target_run
     assert 'echo "CARGO=$cargo_bin"' in target_run
     assert 'echo "RUSTC=$rustc_bin"' in target_run
+    assert 'SOLDR_SESSION_ATTEMPT_BUDGET_MS: "90000"' in target_run
+    assert 'RUNNING_PROCESS_BROKER_CLIENT_TIMEOUT_MS: "90000"' in target_run
+    assert 'echo "$TOOLCHAIN_SHIM_DIR" >> "$GITHUB_PATH"' not in target_run
     assert "artifact/package/tools/cargo-nextest$suffix" in target_run
     assert 'echo "SOLDR_TEST_WORKSPACE_ROOT=$GITHUB_WORKSPACE"' in target_run
     assert "SOLDR_GITHUB_TOKEN: ${{ github.token }}" in target_run

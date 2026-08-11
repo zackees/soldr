@@ -34,6 +34,11 @@ jobs:
     timeout-minutes: 30
     env:
       SOLDR_GITHUB_TOKEN: ${{ github.token }}
+      # ARM target runners can spend 10-20s placing each broker-owned daemon
+      # image under full nextest load. Preserve the production broker path but
+      # allow its existing retry loop to survive more than one 30s attempt.
+      SOLDR_SESSION_ATTEMPT_BUDGET_MS: "90000"
+      RUNNING_PROCESS_BROKER_CLIENT_TIMEOUT_MS: "90000"
     steps:
       # Nextest archive replay needs the workspace manifest. Several contract
       # tests also inspect vendored sources, so preserve complete source context.
@@ -135,7 +140,6 @@ jobs:
             echo "CARGO=$cargo_bin"
             echo "RUSTC=$rustc_bin"
           } >> "$GITHUB_ENV"
-          echo "$TOOLCHAIN_SHIM_DIR" >> "$GITHUB_PATH"
 
       - name: Verify pinned Rust toolchain
         shell: bash

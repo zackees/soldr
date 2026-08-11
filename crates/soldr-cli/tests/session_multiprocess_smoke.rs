@@ -37,6 +37,17 @@ fn sibling_rustc() -> PathBuf {
     Path::new(&cargo).with_file_name(format!("rustc{}", std::env::consts::EXE_SUFFIX))
 }
 
+/// Prefer the real compiler resolved by the soldr under test. An outer action
+/// can otherwise make the inherited executable path point at a soldr shim.
+fn toolchain_rustc() -> PathBuf {
+    let resolved = PathBuf::from(common::rustup_which("rustc"));
+    if resolved.is_file() {
+        resolved
+    } else {
+        sibling_rustc()
+    }
+}
+
 use std::sync::{Arc, Mutex};
 
 /// Drain a child stream on a background thread into a shared line buffer, so the
@@ -117,9 +128,9 @@ timed_test!(
     session_compile_over_broker_multiprocess,
     Duration::from_secs(60),
     {
-        let rustc = sibling_rustc();
+        let rustc = toolchain_rustc();
         if !rustc.is_file() {
-            eprintln!("skip: no sibling rustc at {rustc:?}");
+            eprintln!("skip: no resolved rustc at {rustc:?}");
             return;
         }
 
