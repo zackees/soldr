@@ -534,71 +534,51 @@ def test_mac_x64_distribution_is_cross_built_and_intel_smoke_tested() -> None:
     assert "if: false" not in mac_build
     assert "target: x86_64-apple-darwin" in mac_build
 
-    # soldr#2453: macOS x64 is now built natively on macos-15-intel
-    # instead of cross-compiled on Linux, to avoid soldr daemon OOM.
+    # soldr#2453: macOS x64 is documented-exclusion from the 3-target
+    # native release (musl-x64, mac-arm64, win-x64). It still has CI
+    # cross-build coverage; the exclusion is marked in the workflow and
+    # in canonical-targets.json.
     assert (
-        "- name: macOS x64\n"
-        "            runner: macos-15-intel\n"
-        "            target: x86_64-apple-darwin" in release
+        "release-exclusion:x86_64-apple-darwin:soldr#2453-native-3-target"
+        in release
     )
-    assert '"x86_64-apple-darwin": {"os": "darwin", "arch": "x86_64"}' in release
-    assert 'prepare --target "$target" --github-env "$GITHUB_ENV"' in release
-    assert "smoke_macos_x64:" in release
-    assert "runs-on: macos-15-intel" in release
-    assert "Mach-O 64-bit executable x86_64" in release
-    assert "lipo -archs extracted/soldr" in release
-    assert "needs.smoke_macos_x64.result == 'success'" in release
-    assert "soldr-${version}-x86_64-apple-darwin.tar.zst" in release
-    intel_wheel = "soldr-${cargo_version}-py3-none-macosx_10_12_x86_64.whl"
-    assert release.count(intel_wheel) == 2
-    assert "soldr-${cargo_version}-py3-none-macosx_11_0_x86_64.whl" not in release
+    assert "soldr-${version}-x86_64-apple-darwin.tar.zst" not in release
 
-    assert '"darwin-x64": { triple: "x86_64-apple-darwin"' in install
-    assert "intentionally not published" not in install
-    assert "x86_64-apple-darwin" in npm_docs
-    assert "macos-15-intel" in npm_docs
-    assert "x86_64-apple-darwin" in verification_docs
-    assert "Mach-O x86_64" in verification_docs
+    # install.js surface: Intel Mac is not a supported download target.
+    assert "darwin-x64" in install
+    assert "not published in this release" in install
 
 
 def test_linux_arm64_release_uses_the_x64_catalogue_cross_compiler_host() -> None:
-    """ARM archives are built on x64; ARM-musl wheels are packaged separately."""
+    """ARM archives are excluded from the 3-target native release."""
     release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
-    assert "- name: Linux ARM64\n" in release
-    assert "- name: Linux ARM64 (musl)\n" in release
-    arm_blocks = re.findall(
-        r"- name: Linux ARM64(?: \(musl\))?\n(?:\s+#.*\n)*\s+runner: ([^\n]+)",
-        release,
+    # soldr#2453: both Linux ARM64 and ARM64 musl are documented-exclusion
+    # from the 3-target native release. The exclusion markers are in the
+    # workflow and in canonical-targets.json.
+    assert (
+        "release-exclusion:aarch64-unknown-linux-gnu:soldr#2453-native-3-target"
+        in release
     )
-    assert arm_blocks == ["ubuntu-24.04", "ubuntu-24.04"]
+    assert (
+        "release-exclusion:aarch64-unknown-linux-musl:soldr#2453-native-3-target"
+        in release
+    )
 
 
 def test_linux_arm64_release_wheels_avoid_zig_and_xwin() -> None:
-    """Maturin uses blessed GNU env or native ARM musl, never Zig/xwin."""
+    """ARM musl wheel is excluded from the 3-target native release."""
     release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
 
-    assert '"$driver" prepare --target "$target" --github-env "$GITHUB_ENV"' in release
-    # soldr#2294: wheels are produced by `soldr wheel`, whose
-    # `compatibility_for_target` policy (wheel_cmd.rs) owns the
-    # manylinux_2_17 / musllinux_1_2 tags for release cross builds. The
-    # only compat flag the workflow still passes by hand is the
-    # host-native x86_64-gnu pin, where no cross floor claim exists.
-    assert '"$driver" wheel --release --target "${{ matrix.target }}"' in release
-    assert release.count("--compatibility manylinux_2_17") == 1
-    assert (
-        "--compatibility musllinux_1_2"
-        not in release.split("Build ARM musllinux wheel natively", 1)[0]
-    )
+    # soldr#2453: the 3-target native release uses maturin directly
+    # (no soldr wheel, no zig, no xwin). The ARM musl lanes are
+    # documented-exclusion with markers in the workflow.
     assert "maturin --zig" not in release
     assert "Setup zig for Linux wheel lanes" not in release
-    assert 'CC_x86_64_unknown_linux_gnu="$(command -v cc)"' in release
-    assert 'CXX_x86_64_unknown_linux_gnu="$(command -v c++)"' in release
     assert "lzma_pkgconfig" not in release
-    assert "name: Build ARM musllinux wheel natively" in release
-    assert "runs-on: ubuntu-24.04-arm" in release
-    assert "CC_aarch64_unknown_linux_musl: musl-gcc" in release
-    assert "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc" in release
-    assert "startsWith(matrix.target, 'aarch64-')" in release
+    assert (
+        "release-exclusion:aarch64-unknown-linux-musl:soldr#2453-native-3-target"
+        in release
+    )
 
 
 def test_cross_compile_docs_match_current_blessed_surfaces() -> None:

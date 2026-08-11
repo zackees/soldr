@@ -97,6 +97,14 @@ jobs:
           submodules: recursive
           ref: ${{ inputs.source_ref != '' && inputs.source_ref || github.sha }}
 
+      # soldr#2453: give the all-miss cross-build room to spill transient
+      # LLVM/LTO peaks instead of tripping the OOM killer. Bounding
+      # CARGO_BUILD_JOBS/SOLDR_JOBS (above) narrowed but did not close the
+      # signal-kill; the swap headroom is the safety valve that does.
+      - name: Enlarge swap (OOM headroom)
+        shell: bash
+        run: bash .github/scripts/setup_ci_swap.sh
+
       # soldr#1698: use an empty job-local cache so Stage B/C's first Windows
       # invocation is provably cold and the forced repeat is provably warm.
       # This keeps the embedded zccache wrapper active; it is not a bypass.
