@@ -106,12 +106,22 @@ jobs:
           github_release_complete=false
           github_release_missing_assets="release-not-found"
           expected_assets=(
+            "soldr-${version}-x86_64-unknown-linux-gnu.tar.zst"
+            "soldr-${version}-aarch64-unknown-linux-gnu.tar.zst"
             "soldr-${version}-x86_64-unknown-linux-musl.tar.zst"
+            "soldr-${version}-aarch64-unknown-linux-musl.tar.zst"
+            "soldr-${version}-x86_64-apple-darwin.tar.zst"
             "soldr-${version}-aarch64-apple-darwin.tar.zst"
             "soldr-${version}-x86_64-pc-windows-msvc.tar.zst"
+            "soldr-${version}-aarch64-pc-windows-msvc.tar.zst"
+            "soldr-${cargo_version}-py3-none-macosx_10_12_x86_64.whl"
             "soldr-${cargo_version}-py3-none-macosx_11_0_arm64.whl"
+            "soldr-${cargo_version}-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl"
+            "soldr-${cargo_version}-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+            "soldr-${cargo_version}-py3-none-musllinux_1_2_aarch64.whl"
             "soldr-${cargo_version}-py3-none-musllinux_1_2_x86_64.whl"
             "soldr-${cargo_version}-py3-none-win_amd64.whl"
+            "soldr-${cargo_version}-py3-none-win_arm64.whl"
             "soldr-${version}-SHA256SUMS.txt"
           )
           release_json="$(gh release view "$version" --repo "$GITHUB_REPOSITORY" --json assets,isDraft 2>/dev/null || true)"
@@ -221,9 +231,8 @@ jobs:
       - prepare
     if: needs.prepare.outputs.should_release == 'true'
     runs-on: ${{ matrix.runner }}
-    # Slowest lane was Windows x64 native: observed max 30.3 min, p50
-    # 29.1 min over 7 releases. All lanes are Linux cross-builds now
-    # (soldr#2294); 90 leaves ample headroom for a cold runner.
+    # Windows x64's Linux cross-wheel takes roughly 37 minutes cold in the
+    # Docker reproduction. Ninety minutes leaves room for runner variance.
     timeout-minutes: 90
     # Every release lane is required. Registry publishes are gated on a
     # verified GitHub Release asset set, so a missing target must stop the
@@ -233,41 +242,41 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # soldr#2453: every release lane is now a NATIVE build via bare
-          # cargo (no soldr driver, no Linux-hosted cross-compilation).
-          # Native builds eliminate the cross-compile daemon OOM that used
-          # to block this workflow. Every target produces a single
-          # `.tar.zst` archive that bundles soldr alongside its
-          # same-target multicall aliases, crgx, and cargo-chef. One
-          # fetch from GitHub Releases installs the full runtime surface;
-          # registry publishes are gated on that GitHub asset set being
-          # complete.
-          #
-          # Dropped from the release matrix (documented-exclusion in
-          # ci/canonical-targets.json, soldr#2453-native-3-target):
-          #   x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu,
-          #   aarch64-unknown-linux-musl, x86_64-apple-darwin,
-          #   aarch64-pc-windows-msvc
-          # release-exclusion:x86_64-unknown-linux-gnu:soldr#2453-native-3-target
-          # release-exclusion:aarch64-unknown-linux-gnu:soldr#2453-native-3-target
-          # release-exclusion:aarch64-unknown-linux-musl:soldr#2453-native-3-target
-          # release-exclusion:x86_64-apple-darwin:soldr#2453-native-3-target
-          # release-exclusion:aarch64-pc-windows-msvc:soldr#2453-native-3-target
-          - name: Linux x64
+          # GNU Linux and Windows x64 use catalogue-backed Soldr cross
+          # environments on Linux. Native smoke jobs below execute the
+          # resulting artifacts on their destination platforms.
+          - name: Linux x64 (glibc)
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            binary: soldr
+          - name: Linux ARM64 (glibc)
+            runner: ubuntu-24.04
+            target: aarch64-unknown-linux-gnu
+            binary: soldr
+          - name: Linux x64 (musl)
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
             binary: soldr
-            build_driver: cargo
+          - name: Linux ARM64 (musl)
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            binary: soldr
+          - name: macOS x64
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+            binary: soldr
           - name: macOS ARM64
             runner: macos-15
             target: aarch64-apple-darwin
             binary: soldr
-            build_driver: cargo
-          - name: Windows x64
-            runner: windows-2025
+          - name: Windows x64 (Linux cross)
+            runner: ubuntu-24.04
             target: x86_64-pc-windows-msvc
             binary: soldr.exe
-            build_driver: cargo
+          - name: Windows ARM64
+            runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            binary: soldr.exe
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -275,30 +284,29 @@ jobs:
           submodules: recursive
           ref: ${{ needs.prepare.outputs.commit_sha }}
 
+      - name: Install native musl build tools
+        if: contains(matrix.target, 'musl')
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools mold cmake perl
+          musl-gcc --version
+
       # ── Linux (soldr-driven) toolchain setup ──
       # soldr#1061 phase A: replaced dtolnay/rust-toolchain +
       # Swatinem/rust-cache with setup-soldr's integrated
       # `prebuild-deps: soldr-cook` flow so the release build benefits
       # from the same `target/<triple>/release/build/*/out/` cc-rs-
       # artifact restore that every-commit CI now uses.
-      - name: Cache rustup 1.94.1 in ~/.rustup
-        if: matrix.build_driver == 'soldr'
-        id: rustup_cache
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
-        with:
-          path: ~/.rustup/toolchains/1.94.1-x86_64-unknown-linux-gnu
-          key: rustup-1.94.1-linux-x64-v1
-
-      - name: Install rustup 1.94.1 to ~/.rustup (if not cached)
-        if: matrix.build_driver == 'soldr' && steps.rustup_cache.outputs.cache-hit != 'true'
-        run: rustup toolchain install 1.94.1 --profile minimal --no-self-update
-
-      - name: Setup Rust toolchain (Linux)
-        if: matrix.build_driver == 'soldr'
+      - name: Install pinned Soldr and prepare target environment
+        id: setup_soldr
         uses: zackees/setup-soldr@62d1596b70168e422156f12273a2ed476d3a16dc
         with:
-          enable: false
+          enable: true
+          version: 0.8.44
           toolchain: 1.94.1
+          cross-targets: ${{ matrix.target }}
           cache: false
           build-cache: false
           target-cache: false
@@ -309,37 +317,8 @@ jobs:
           zccache-seed-strict: false
 
       - name: Add cross-compile target
-        if: matrix.build_driver == 'soldr'
         shell: bash
-        run: rustup target add ${{ matrix.target }}
-
-      - name: Install musl tools
-        if: matrix.build_driver == 'soldr' && contains(matrix.target, 'musl')
-        shell: bash
-        run: |
-          set -euo pipefail
-          attempts=0
-          max_attempts=3
-          until sudo apt-get update; do
-            attempts=$((attempts + 1))
-            if [ "$attempts" -ge "$max_attempts" ]; then
-              echo "apt-get update failed after $max_attempts attempts" >&2
-              exit 1
-            fi
-            sleep $((attempts * 3))
-          done
-          attempts=0
-          until sudo apt-get install -y --no-install-recommends musl-tools cmake perl; do
-            attempts=$((attempts + 1))
-            if [ "$attempts" -ge "$max_attempts" ]; then
-              echo "apt-get install musl-tools+cmake+perl failed after $max_attempts attempts" >&2
-              exit 1
-            fi
-            sleep $((attempts * 3))
-          done
-          dpkg-query -W -f='musl-tools installed version: ${Version}\n' musl-tools
-          dpkg-query -W -f='cmake installed version: ${Version}\n' cmake
-          dpkg-query -W -f='perl installed version: ${Version}\n' perl
+        run: soldr rustup target add ${{ matrix.target }}
 
       # ── Native (cargo-driven) toolchain setup ──
       # soldr#2453: every lane runs natively with bare cargo to avoid the
@@ -364,45 +343,36 @@ jobs:
           cargo --version
           rustc --version
 
-      - name: Add musl target (native)
-        if: contains(matrix.target, 'musl')
-        shell: bash
-        run: rustup target add x86_64-unknown-linux-musl
-
-      - name: Install mold linker (Linux)
-        if: contains(matrix.target, 'musl')
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends mold musl-tools
-          mold --version
-          musl-gcc --version
-
       # ── Build driver download (Linux only) ──
       # soldr#2294: the driver is built once in the bootstrap job and
       # shared. Download it to the exact path the per-lane `cargo build`
       # used to produce, so every later `driver="target/release/soldr"`
       # reference (archive packaging, support-binary extraction, smoke
       # steps) is unchanged.
-      - name: Download bootstrap release driver
-        if: matrix.build_driver == 'soldr'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: release-bootstrap-soldr
-          path: target/release
+      - name: Materialize installed Soldr as release build driver
+        shell: pwsh
+        env:
+          SOLDR_DRIVER: ${{ steps.setup_soldr.outputs.soldr-path }}
+        run: |
+          New-Item -ItemType Directory -Force -Path target/release | Out-Null
+          if ($env:RUNNER_OS -eq 'Windows') {
+            Copy-Item -LiteralPath $env:SOLDR_DRIVER -Destination target/release/soldr.exe -Force
+          } else {
+            Copy-Item -LiteralPath $env:SOLDR_DRIVER -Destination target/release/soldr -Force
+          }
 
       - name: Restore executable bit on bootstrap driver
-        if: matrix.build_driver == 'soldr'
         shell: bash
         run: |
           set -euo pipefail
-          chmod +x target/release/soldr
-          target/release/soldr --version
+          case "$RUNNER_OS" in
+            Windows) driver="target/release/soldr.exe" ;;
+            *) driver="target/release/soldr"; chmod +x "$driver" ;;
+          esac
+          "$driver" --version
 
       # ── Build release binary ──
       - name: Build release binary (soldr-driven)
-        if: matrix.build_driver == 'soldr'
         shell: bash
         env:
           SOLDR_RELEASE_CI: "1"
@@ -417,14 +387,15 @@ jobs:
         run: |
           set -euo pipefail
           git restore -- Cargo.toml Cargo.lock crates/soldr-cli/Cargo.toml || true
-          cargo clean -p soldr-cli --target "${{ matrix.target }}" --release 2>/dev/null || true
-
           target='${{ matrix.target }}'
-          driver="target/release/soldr"
-          soldr_build_args=()
-          case "$target" in
-            *-pc-windows-msvc) soldr_build_args+=(--no-cache) ;;
+          case "$RUNNER_OS" in
+            Windows) driver="target/release/soldr.exe" ;;
+            *) driver="target/release/soldr" ;;
           esac
+          "$driver" cargo clean -p soldr-cli --target "$target" --release 2>/dev/null || true
+          # Avoid the resident embedded daemon that caused the old
+          # Linux-hosted cross-build memory collision.
+          soldr_build_args=(--no-cache)
           "$driver" \
             "${soldr_build_args[@]}" \
             build --release --locked --target "$target" \
@@ -447,14 +418,11 @@ jobs:
           CARGO_PROFILE_RELEASE_LTO: ${{ contains(matrix.target, 'pc-windows-msvc') && 'false' || 'thin' }}
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ contains(matrix.target, 'pc-windows-msvc') && '16' || '1' }}
           RUSTFLAGS: ${{ contains(matrix.target, 'musl') && '-C link-arg=-fuse-ld=mold' || '' }}
-          # soldr#2453: x86_64-unknown-linux-musl on a glibc host is a
-          # cross-compile for the C deps (libsqlite3-sys/zstd-sys/lzma/ring),
-          # so cc-rs must use the musl C compiler or it links them against
-          # glibc and breaks the static binary. musl-gcc (from musl-tools) is
-          # both the cc-rs compiler and the rustc linker driver; mold is
-          # selected through it via the -fuse-ld=mold RUSTFLAG above.
-          CC_x86_64_unknown_linux_musl: ${{ contains(matrix.target, 'musl') && 'musl-gcc' || '' }}
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: ${{ contains(matrix.target, 'musl') && 'musl-gcc' || '' }}
+          # Each musl lane runs on its matching native architecture.
+          CC_x86_64_unknown_linux_musl: ${{ matrix.target == 'x86_64-unknown-linux-musl' && 'musl-gcc' || '' }}
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: ${{ matrix.target == 'x86_64-unknown-linux-musl' && 'musl-gcc' || '' }}
+          CC_aarch64_unknown_linux_musl: ${{ matrix.target == 'aarch64-unknown-linux-musl' && 'musl-gcc' || '' }}
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: ${{ matrix.target == 'aarch64-unknown-linux-musl' && 'musl-gcc' || '' }}
         run: |
           set -euo pipefail
           git restore -- Cargo.toml Cargo.lock crates/soldr-cli/Cargo.toml || true
@@ -594,7 +562,7 @@ jobs:
         env:
           TARGET_TRIPLE: ${{ matrix.target }}
           SUPPORT_ISSUE_URL: https://github.com/zackees/soldr-toolchain/issues/47
-          SOLD_DRIVER_PATH: ${{ matrix.build_driver == 'soldr' && 'target/release/soldr' || format('target/{0}/release/soldr', matrix.target) }}
+          SOLD_DRIVER_PATH: target/release/soldr
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -1101,11 +1069,11 @@ jobs:
           # soldr#2453: native builds use the just-built binary with the
           # platform-appropriate suffix; Linux cross-builds use the
           # bootstrap driver.
-          case "${{ matrix.target }}" in
-            *-pc-windows-msvc) driver_suffix=".exe" ;;
+          case "$RUNNER_OS" in
+            Windows) driver_suffix=".exe" ;;
             *) driver_suffix="" ;;
           esac
-          driver="${{ matrix.build_driver == 'soldr' && 'target/release/soldr' || format('target/{0}/release/soldr', matrix.target) }}${driver_suffix}"
+          driver="target/release/soldr${driver_suffix}"
           "$driver" archive --stage-dir dist/package --output "dist/${name}.tar.zst"
           ls -la "dist/${name}.tar.zst"
           echo "compressed_size_bytes=$(wc -c < "dist/${name}.tar.zst")"
@@ -1116,8 +1084,7 @@ jobs:
           enable-cache: false
 
       # ── Wheel build (soldr-driven, Linux) ──
-      - name: Build hardened wheel from shared target directory (soldr)
-        if: matrix.build_driver == 'soldr' && matrix.target != 'aarch64-unknown-linux-musl'
+      - name: Build wheel through setup-soldr target environment
         shell: bash
         env:
           EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
@@ -1127,13 +1094,17 @@ jobs:
           rm -f dist/*.whl
           rm -rf target/wheels target/maturin
           find target -name "*.whl" -delete 2>/dev/null || true
-          cargo clean -p soldr-cli --target "${{ matrix.target }}" --release 2>/dev/null || true
+          case "$RUNNER_OS" in
+            Windows) driver="target/release/soldr.exe" ;;
+            *) driver="target/release/soldr" ;;
+          esac
+          "$driver" cargo clean -p soldr-cli --target "${{ matrix.target }}" --release 2>/dev/null || true
           mkdir -p dist
 
           expected="${EXPECTED_VERSION#v}"
           git restore -- Cargo.toml Cargo.lock crates/soldr-cli/Cargo.toml || true
 
-          cargo_version="$(cargo metadata --no-deps --format-version 1 --manifest-path crates/soldr-cli/Cargo.toml 2>/dev/null \
+          cargo_version="$("$driver" cargo metadata --no-deps --format-version 1 --manifest-path crates/soldr-cli/Cargo.toml 2>/dev/null \
               | python3 -c 'import json,sys; d=json.load(sys.stdin); pkgs=[p for p in d["packages"] if p["name"]=="soldr-cli"]; print(pkgs[0]["version"] if pkgs else "")' 2>/dev/null || true)"
           if [ -z "$cargo_version" ]; then
               echo "ERROR: cargo metadata returned no version for soldr-cli" >&2
@@ -1144,23 +1115,17 @@ jobs:
               exit 1
           fi
 
-          if [[ "${{ matrix.target }}" != "x86_64-unknown-linux-gnu" && ( "${{ matrix.target }}" == *-unknown-linux-gnu || "${{ matrix.target }}" == *-apple-darwin ) ]]; then
-            export CC_x86_64_unknown_linux_gnu="$(command -v cc)"
-            export CXX_x86_64_unknown_linux_gnu="$(command -v c++)"
-            export AR_x86_64_unknown_linux_gnu="$(command -v ar)"
-            export RANLIB_x86_64_unknown_linux_gnu="$(command -v ranlib)"
+          wheel_hook='${{ steps.setup_soldr.outputs.target-wheel-hook }}'
+          if [ -z "$wheel_hook" ]; then
+            echo "setup-soldr did not advertise a PEP 517 wheel hook for ${{ matrix.target }}" >&2
+            exit 1
           fi
-
-          wheel_args=()
-          case "${{ matrix.target }}" in
-            x86_64-unknown-linux-gnu)
-              wheel_args+=(--compatibility manylinux_2_17)
-              ;;
-          esac
-          driver="target/release/soldr"
-          "$driver" wheel --release --target "${{ matrix.target }}" \
-            "${wheel_args[@]}" \
-            --locked --target-dir target --out dist
+          echo "setup-soldr wheel hook: $wheel_hook"
+          uv python install 3.13
+          uv run --no-project --python 3.13 --with build python \
+            .github/scripts/build_release_wheel.py \
+            --target "${{ matrix.target }}" \
+            --hook "$wheel_hook"
 
       # ── Wheel build (native cargo, macOS / Windows) ──
       # soldr#2453: native builds use maturin directly to avoid the soldr
@@ -1194,22 +1159,10 @@ jobs:
           fi
 
           uv tool install "maturin>=1.7,<2"
-          # soldr#2453/#909: maturin can't detect musl from a glibc host, so it
-          # defaults the musl-target wheel to a manylinux tag (observed:
-          # manylinux_2_5_x86_64). Force the PEP 656 musllinux_1_2 tag
-          # explicitly or `pip install` on Alpine skips the binary wheel and
-          # falls back to an sdist build. Plain string (not a bash array) to
-          # stay safe under `set -u` on the macOS runner's bash 3.2.
-          maturin_compat=""
-          case "${{ matrix.target }}" in
-            *-unknown-linux-musl) maturin_compat="--compatibility musllinux_1_2" ;;
-          esac
           uv tool run maturin build --release --locked --target "${{ matrix.target }}" \
-            $maturin_compat \
             --target-dir target --out dist
 
       - name: Lint wheel filenames against workspace version
-        if: matrix.target != 'aarch64-unknown-linux-musl'
         shell: python
         env:
           EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
@@ -1327,7 +1280,7 @@ jobs:
           python3 .github/scripts/verify_wheel_glibc.py --max-glibc 2.17 dist/*.whl
 
       - name: Assert linux-musl wheels are tagged musllinux_1_2
-        if: contains(matrix.target, 'unknown-linux-musl') && matrix.target != 'aarch64-unknown-linux-musl'
+        if: contains(matrix.target, 'unknown-linux-musl')
         shell: python
         run: |
           import sys
@@ -1355,7 +1308,6 @@ jobs:
               print(f"  - {w.name}")
 
       - name: Verify wheel ships the bin script at the spec path
-        if: matrix.target != 'aarch64-unknown-linux-musl'
         shell: python
         run: |
           import zipfile
@@ -1461,14 +1413,12 @@ jobs:
           )
 
       - name: Smoke test wheel
-        # Native macOS / Windows builds (soldr#2453) CAN execute their own
-        # wheels inline on their own runner. The musl lane is the exception:
-        # it is built on the glibc Linux host but produces a musllinux_1_2
-        # wheel, which uv/pip refuses to install on a manylinux (glibc)
-        # interpreter ("incompatible with the current platform"). The musl
-        # wheel is instead exercised by the dedicated "Smoke test musllinux
-        # wheel on Alpine" step below, so skip this glibc-host install for it.
-        if: matrix.build_driver == 'cargo' && !contains(matrix.target, 'musl')
+        # GNU ARM64 and Windows x64 are cross-built on Linux. Musl wheels run
+        # under Alpine; Windows wheels run in the smoke_windows job below.
+        if: |
+          !contains(matrix.target, 'musl') &&
+          !contains(matrix.target, 'pc-windows-msvc') &&
+          matrix.target != 'aarch64-unknown-linux-gnu'
         shell: bash
         env:
           EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
@@ -1502,10 +1452,8 @@ jobs:
           fi
 
       - name: Smoke test musllinux wheel on Alpine
-        # The ARM wheel is built on an x64 compiler host. Do not execute it
-        # under the host's x64 Alpine container; wheel/archive structure is
-        # still verified above and the binary receives a size-floor check.
-        if: ${{ contains(matrix.target, 'musl') && !startsWith(matrix.target, 'aarch64-') }}
+        # Both musl lanes run on matching native-architecture Linux hosts.
+        if: contains(matrix.target, 'musl')
         shell: bash
         env:
           EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
@@ -1542,7 +1490,7 @@ jobs:
         # musllinux. Keep this direct binary smoke too: the standalone
         # musl binary is statically linked so it CAN run on glibc, and
         # it catches broken tarball artifacts before release upload.
-        if: ${{ contains(matrix.target, 'musl') && !startsWith(matrix.target, 'aarch64-') }}
+        if: contains(matrix.target, 'musl')
         shell: bash
         env:
           EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
@@ -1585,11 +1533,11 @@ jobs:
           test -f "$archive" || { echo "missing archive: $archive" >&2; exit 1; }
 
           extract=$(mktemp -d)
-          case "${{ matrix.target }}" in
-            *-pc-windows-msvc) driver_suffix=".exe" ;;
+          case "$RUNNER_OS" in
+            Windows) driver_suffix=".exe" ;;
             *) driver_suffix="" ;;
           esac
-          driver="${{ matrix.build_driver == 'soldr' && 'target/release/soldr' || format('target/{0}/release/soldr', matrix.target) }}${driver_suffix}"
+          driver="target/release/soldr${driver_suffix}"
           "$driver" archive --input "$archive" --extract-dir "$extract"
           echo "--- extracted layout ---"
           ls -la "$extract"
@@ -1697,7 +1645,6 @@ jobs:
           path: dist/soldr-*.tar.zst
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        if: matrix.target != 'aarch64-unknown-linux-musl'
         with:
           name: pypi-soldr-${{ matrix.target }}
           path: dist/*.whl
@@ -1739,11 +1686,9 @@ jobs:
             --target aarch64-apple-darwin \
             --expected-version '${{ needs.prepare.outputs.version }}'
 
-  # soldr#2294: Windows MSVC artifacts are cross-built on Linux;
-  # EXECUTION still needs native Windows. One smoke job per arch,
-  # consuming the lane's uploaded artifacts (the soldr#1978 build/run
-  # split: cross-building removes the build reason for a native runner,
-  # not the run reason).
+  # Windows x64 is cross-built on Linux, while ARM64 builds natively;
+  # EXECUTION still needs native Windows on both architectures. Each smoke
+  # job consumes its build lane's uploaded artifacts.
   smoke_windows:
     name: Smoke Windows release artifacts (${{ matrix.arch }})
     needs:
@@ -1759,6 +1704,9 @@ jobs:
           - arch: x64
             runner: windows-2025
             target: x86_64-pc-windows-msvc
+          - arch: arm64
+            runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
 
     steps:
       # Checkout only for ci/smoke_release_artifacts.py — the smoke
@@ -1811,7 +1759,7 @@ jobs:
 
       # Wheels ship as GH-release assets alongside the .tar.zst archives.
       # This is parity with what `publish-pypi` uploads to PyPI: the same
-      # 3 platform wheels become offline-installable via
+      # 8 platform wheels become offline-installable via
       # `pip install <release-asset-url>`, and the assets are attestation-
       # covered via the same SHA256SUMS file below.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -1950,12 +1898,22 @@ jobs:
             exit 1
           fi
           expected_assets=(
+            "soldr-${tag}-x86_64-unknown-linux-gnu.tar.zst"
+            "soldr-${tag}-aarch64-unknown-linux-gnu.tar.zst"
             "soldr-${tag}-x86_64-unknown-linux-musl.tar.zst"
+            "soldr-${tag}-aarch64-unknown-linux-musl.tar.zst"
+            "soldr-${tag}-x86_64-apple-darwin.tar.zst"
             "soldr-${tag}-aarch64-apple-darwin.tar.zst"
             "soldr-${tag}-x86_64-pc-windows-msvc.tar.zst"
+            "soldr-${tag}-aarch64-pc-windows-msvc.tar.zst"
+            "soldr-${cargo_version}-py3-none-macosx_10_12_x86_64.whl"
             "soldr-${cargo_version}-py3-none-macosx_11_0_arm64.whl"
+            "soldr-${cargo_version}-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl"
+            "soldr-${cargo_version}-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+            "soldr-${cargo_version}-py3-none-musllinux_1_2_aarch64.whl"
             "soldr-${cargo_version}-py3-none-musllinux_1_2_x86_64.whl"
             "soldr-${cargo_version}-py3-none-win_amd64.whl"
+            "soldr-${cargo_version}-py3-none-win_arm64.whl"
             "soldr-${tag}-SHA256SUMS.txt"
           )
           missing=()
@@ -2026,8 +1984,8 @@ jobs:
           # Tag-style version is `vX.Y.Z`; PyPI keys releases by `X.Y.Z`.
           pypi_version="${PYPI_VERSION#v}"
           # Expected wheel count == number of PyPI wheel matrix rows in the
-          # `build` job. 3 = linux-musl x86_64 + darwin arm64 + windows x86_64.
-          expected=3
+          # `build` job: two architectures for glibc, musl, macOS, and Windows.
+          expected=8
           deadline=$(( $(date +%s) + 1800 ))
           attempts=0
           max_attempts=60

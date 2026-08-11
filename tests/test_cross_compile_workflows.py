@@ -521,7 +521,7 @@ def test_gnu_catalogue_fixture_is_part_of_both_gnu_ci_lanes() -> None:
         assert required in proof
 
 
-def test_mac_x64_distribution_is_cross_built_and_intel_smoke_tested() -> None:
+def test_mac_x64_distribution_uses_pinned_setup_soldr_on_intel() -> None:
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
     release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
     install = (REPO_ROOT / "scripts" / "install.js").read_text(encoding="utf-8")
@@ -534,51 +534,101 @@ def test_mac_x64_distribution_is_cross_built_and_intel_smoke_tested() -> None:
     assert "if: false" not in mac_build
     assert "target: x86_64-apple-darwin" in mac_build
 
-    # soldr#2453: macOS x64 is documented-exclusion from the 3-target
-    # native release (musl-x64, mac-arm64, win-x64). It still has CI
-    # cross-build coverage; the exclusion is marked in the workflow and
-    # in canonical-targets.json.
+    # Release lanes use the same pinned setup-soldr target environment;
+    # macOS x64 stays native on the Intel runner.
     assert (
-        "release-exclusion:x86_64-apple-darwin:soldr#2453-native-3-target"
-        in release
+        "- name: macOS x64\n"
+        "            runner: macos-15-intel\n"
+        "            target: x86_64-apple-darwin" in release
     )
-    assert "soldr-${version}-x86_64-apple-darwin.tar.zst" not in release
+    assert '"x86_64-apple-darwin": {"os": "darwin", "arch": "x86_64"}' in release
+    assert 'prepare --target "$target" --github-env "$GITHUB_ENV"' in release
+    assert (
+        "uses: zackees/setup-soldr@62d1596b70168e422156f12273a2ed476d3a16dc" in release
+    )
+    assert "version: 0.8.44" in release
+    assert "cross-targets: ${{ matrix.target }}" in release
+    assert "target-wheel-hook" in release
+    assert "soldr-${version}-x86_64-apple-darwin.tar.zst" in release
+    intel_wheel = "soldr-${cargo_version}-py3-none-macosx_10_12_x86_64.whl"
+    assert release.count(intel_wheel) == 2
+    assert "soldr-${cargo_version}-py3-none-macosx_11_0_x86_64.whl" not in release
 
-    # install.js surface: Intel Mac is not a supported download target.
-    assert "darwin-x64" in install
-    assert "not published in this release" in install
+    assert '"darwin-x64": { triple: "x86_64-apple-darwin"' in install
+    assert "intentionally not published" not in install
+    assert "x86_64-apple-darwin" in npm_docs
+    assert "macos-15-intel" in npm_docs
+    assert "x86_64-apple-darwin" in verification_docs
+    assert "Mach-O x86_64" in verification_docs
 
 
-def test_linux_arm64_release_uses_the_x64_catalogue_cross_compiler_host() -> None:
-    """ARM archives are excluded from the 3-target native release."""
+def test_linux_arm64_release_uses_matching_supported_hosts() -> None:
+    """GNU ARM cross-builds on x64 while musl ARM builds and smokes natively."""
     release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
-    # soldr#2453: both Linux ARM64 and ARM64 musl are documented-exclusion
-    # from the 3-target native release. The exclusion markers are in the
-    # workflow and in canonical-targets.json.
-    assert (
-        "release-exclusion:aarch64-unknown-linux-gnu:soldr#2453-native-3-target"
-        in release
+    assert "- name: Linux ARM64 (glibc)\n" in release
+    assert "- name: Linux ARM64 (musl)\n" in release
+    arm_blocks = re.findall(
+        r"- name: Linux ARM64 \((?:glibc|musl)\)\n(?:\s+#.*\n)*\s+runner: ([^\n]+)",
+        release,
     )
-    assert (
-        "release-exclusion:aarch64-unknown-linux-musl:soldr#2453-native-3-target"
-        in release
-    )
+    assert arm_blocks == ["ubuntu-24.04", "ubuntu-24.04-arm"]
 
 
-def test_linux_arm64_release_wheels_avoid_zig_and_xwin() -> None:
-    """ARM musl wheel is excluded from the 3-target native release."""
+def test_release_wheels_use_setup_soldr_target_hooks_without_zig_or_xwin() -> None:
+    """PEP 517 runs inside setup-soldr's prepared target environment."""
     release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
 
-    # soldr#2453: the 3-target native release uses maturin directly
-    # (no soldr wheel, no zig, no xwin). The ARM musl lanes are
-    # documented-exclusion with markers in the workflow.
+    assert '"$driver" prepare --target "$target" --github-env "$GITHUB_ENV"' in release
+    assert (
+        "uses: zackees/setup-soldr@62d1596b70168e422156f12273a2ed476d3a16dc" in release
+    )
+    assert "version: 0.8.44" in release
+    assert "cross-targets: ${{ matrix.target }}" in release
+    assert "wheel_hook='${{ steps.setup_soldr.outputs.target-wheel-hook }}'" in release
+    assert ".github/scripts/build_release_wheel.py" in release
+    assert "uv python install 3.13" in release
+    assert "uv run --no-project --python 3.13 --with build python" in release
+    assert '--target "${{ matrix.target }}"' in release
     assert "maturin --zig" not in release
     assert "Setup zig for Linux wheel lanes" not in release
     assert "lzma_pkgconfig" not in release
-    assert (
-        "release-exclusion:aarch64-unknown-linux-musl:soldr#2453-native-3-target"
-        in release
+    assert "runner: ubuntu-24.04-arm" in release
+    assert "startsWith(matrix.target, 'aarch64-')" not in release
+
+
+def test_windows_wheel_does_not_reuse_archive_executable_output() -> None:
+    """PEP 517 must not rebuild the archive lane's still-open soldr.exe."""
+
+    release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
+    matrix = release.split("      matrix:\n", 1)[1].split("\n    steps:\n", 1)[0]
+    wheel_step = _step_block(
+        release, "Build wheel through setup-soldr target environment"
     )
+    wheel_smoke = _step_block(release, "Smoke test wheel")
+
+    assert "build_driver:" not in matrix
+    assert (
+        "- name: Windows x64 (Linux cross)\n"
+        "            runner: ubuntu-24.04\n"
+        "            target: x86_64-pc-windows-msvc" in matrix
+    )
+    assert ".github/scripts/build_release_wheel.py" in wheel_step
+    assert "--target-dir target" not in wheel_step
+    assert "!contains(matrix.target, 'pc-windows-msvc')" in wheel_smoke
+
+    for step_name in [
+        "Restore executable bit on bootstrap driver",
+        "Build release binary (soldr-driven)",
+        "Package combined archive (tar.zst level 19)",
+        "Build wheel through setup-soldr target environment",
+        "Smoke test combined tar.zst archive",
+    ]:
+        step = _step_block(release, step_name)
+        assert 'case "$RUNNER_OS" in' in step
+
+    smoke_windows = _job_block(release, "smoke_windows", "publish")
+    assert "runner: windows-2025" in smoke_windows
+    assert "target: x86_64-pc-windows-msvc" in smoke_windows
 
 
 def test_cross_compile_docs_match_current_blessed_surfaces() -> None:

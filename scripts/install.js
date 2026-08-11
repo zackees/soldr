@@ -21,24 +21,15 @@ const PACKAGE_JSON = require(path.join(PACKAGE_ROOT, "package.json"));
 // through the managed-download path.
 const ARCHIVE_EXT = zccacheContract.ARCHIVE_EXT;
 
-// soldr#2453: the Autonomous Release matrix was reduced to exactly 3
-// published native targets. x86_64 Linux ships only the statically-linked
-// musl binary -- it is verified statically linked before staging
-// (release-auto.yml -> "Verify musl binary is statically linked"), so it
-// has no dynamic loader dependency and is the universal x86_64-linux
-// artifact, running on glibc hosts too. There is no separate gnu-linux
-// asset in this release, so the `-gnu` / `-musl` key split that used to
-// exist for linux-x64 is gone: any x86_64 Linux host, on either libc,
-// resolves to the single entry keyed `linux-x64` below -- there is no
-// glibc-version gate on this selection. arm64 Linux (gnu and musl), Intel
-// macOS (darwin-x64), and Windows arm64 are not published in this release
-// and are intentionally absent from this map -- platformTarget() throws a
-// clear error for them instead of letting a lookup miss fall through to a
-// 404 download.
 const TARGETS = {
-  "linux-x64": { triple: "x86_64-unknown-linux-musl", binary: "soldr" },
+  "linux-x64-gnu": { triple: "x86_64-unknown-linux-gnu", binary: "soldr" },
+  "linux-x64-musl": { triple: "x86_64-unknown-linux-musl", binary: "soldr" },
+  "linux-arm64-gnu": { triple: "aarch64-unknown-linux-gnu", binary: "soldr" },
+  "linux-arm64-musl": { triple: "aarch64-unknown-linux-musl", binary: "soldr" },
+  "darwin-x64": { triple: "x86_64-apple-darwin", binary: "soldr" },
   "darwin-arm64": { triple: "aarch64-apple-darwin", binary: "soldr" },
   "win32-x64": { triple: "x86_64-pc-windows-msvc", binary: "soldr.exe" },
+  "win32-arm64": { triple: "aarch64-pc-windows-msvc", binary: "soldr.exe" },
 };
 
 // Files we expect to find at the root of every extracted release
@@ -62,13 +53,6 @@ const BUNDLED_BINARIES = zccacheContract.RELEASE_BUNDLED_BINARIES;
 // Kept in lockstep with the `--max-glibc` ceiling in release-auto.yml by a
 // check in test-npm-package.js. When the release build is fixed to link
 // against a 2.17 baseline that ceiling drops, and this must follow it down.
-//
-// soldr#2453: no gnu-linux asset is published anymore (see TARGETS above),
-// so this constant no longer selects anything in platformTarget() -- every
-// x86_64 Linux host takes the musl asset regardless of glibc version. It is
-// kept, unchanged, only because test-npm-package.js still asserts it stays
-// in lockstep with the `--max-glibc` value release-auto.yml passes to
-// verify_glibc_baseline.py, and detectLibc() below still consults it.
 const MIN_GLIBC_FOR_GNU = "2.39";
 
 function compareVersions(left, right) {
@@ -85,15 +69,7 @@ function compareVersions(left, right) {
   return 0;
 }
 
-// Classify this host's libc family. Before soldr#2453 this decided which
-// Linux artifact to download (gnu vs musl); now that the release matrix
-// publishes only the musl x86_64-linux asset, platformTarget() below no
-// longer branches on the result -- every linux-x64 host takes the musl
-// download regardless of libc. The detector itself is kept (and still
-// covered directly by test-npm-package.js, and still consulted by
-// MIN_GLIBC_FOR_GNU's own lockstep bookkeeping) since it remains an
-// accurate, independently useful "what libc is this host" probe. Ordered
-// probes:
+// Decide which Linux artifact this host should download. Ordered probes:
 //
 //   1. A musl loader in /lib means the SYSTEM is musl, and that outranks
 //      whatever Node was linked against. This has to run first: a glibc Node
@@ -108,8 +84,13 @@ function compareVersions(left, right) {
 // musl is the safe end of every unknown because that artifact is verified
 // statically linked before it is ever staged (release-auto.yml → "Verify musl
 // binary is statically linked"), so it has no dynamic loader dependency and
-// runs on glibc hosts too. That property is also exactly why soldr#2453
-// could drop the gnu asset from the release matrix in the first place.
+// runs on glibc hosts too. The mistakes are not symmetric:
+//
+//   pick musl, actually glibc      → works, nothing to resolve
+//   pick gnu,  actually musl       → hard failure, "soldr: not found"
+//   pick gnu,  glibc too old       → hard failure, "GLIBC_2.39 not found"
+//
+// Only the first is recoverable.
 //
 // `probes` exists so the branches can be tested on any host; the defaults are
 // the real detectors.
@@ -146,24 +127,14 @@ function detectLibc(platform = process.platform, probes = {}) {
   return "musl";
 }
 
-// soldr#2453: the release matrix publishes exactly 3 native targets, so
-// resolution is a flat `<platform>-<arch>` lookup -- linux no longer keys
-// on libc because both families download the same musl asset (see TARGETS
-// above), and there is no glibc-version gate on that download. The `libc`
-// parameter is still accepted (and still defaults to detectLibc()) purely
-// for call-site/back-compat with existing callers and tests; it plays no
-// role in which target is returned.
 function platformTarget(platform = process.platform, arch = process.arch, libc = detectLibc(platform)) {
-  void libc;
-  const key = `${platform}-${arch}`;
+  const key =
+    platform === "linux"
+      ? `${platform}-${arch}-${libc || "musl"}`
+      : `${platform}-${arch}`;
   const target = TARGETS[key];
   if (!target) {
-    throw new Error(
-      `unsupported platform for soldr npm package: ${key}. This soldr release ` +
-        "publishes prebuilt binaries only for x86_64 Linux, Apple Silicon macOS " +
-        `(arm64), and x86_64 Windows. ${key} is not currently supported by a ` +
-        "prebuilt binary.",
-    );
+    throw new Error(`unsupported platform for soldr npm package: ${key}`);
   }
   return target;
 }
