@@ -1461,13 +1461,14 @@ jobs:
           )
 
       - name: Smoke test wheel
-        # Cross-OS and cross-architecture wheels cannot execute on the
-        # Linux x64 build host. Native macOS / Windows builds (soldr#2453)
-        # CAN execute their own wheels inline, so this gate now covers
-        # every native-arch build lane.
-        if: |
-          matrix.target == 'x86_64-unknown-linux-gnu' ||
-          matrix.build_driver == 'cargo'
+        # Native macOS / Windows builds (soldr#2453) CAN execute their own
+        # wheels inline on their own runner. The musl lane is the exception:
+        # it is built on the glibc Linux host but produces a musllinux_1_2
+        # wheel, which uv/pip refuses to install on a manylinux (glibc)
+        # interpreter ("incompatible with the current platform"). The musl
+        # wheel is instead exercised by the dedicated "Smoke test musllinux
+        # wheel on Alpine" step below, so skip this glibc-host install for it.
+        if: matrix.build_driver == 'cargo' && !contains(matrix.target, 'musl')
         shell: bash
         env:
           EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
