@@ -202,11 +202,15 @@ impl Drop for Daemon {
     }
 }
 
+// Only the `#[cfg(windows)]` herd-spawning regression test below constructs
+// this; without the gate it is dead code on non-Windows targets (-D warnings).
+#[cfg(windows)]
 struct DaemonCleanup {
     cache_root: PathBuf,
     home_root: PathBuf,
 }
 
+#[cfg(windows)]
 impl Drop for DaemonCleanup {
     fn drop(&mut self) {
         let _ = run_soldr(&["daemon", "stop"], &self.cache_root, &self.home_root);
