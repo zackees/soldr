@@ -554,6 +554,16 @@ def test_mac_x64_distribution_uses_pinned_setup_soldr_on_intel() -> None:
     assert release.count(intel_wheel) == 2
     assert "soldr-${cargo_version}-py3-none-macosx_11_0_x86_64.whl" not in release
 
+    sdk_step = _step_block(release, "Restore the native macOS SDK root")
+    assert "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" in sdk_step
+    native_build = _step_block(
+        release, "Build native macOS release binary through pinned Soldr"
+    )
+    assert "if: contains(matrix.target, 'apple-darwin')" in native_build
+    assert ".github/scripts/native_release_build.py binary" in native_build
+    blessed_build = _step_block(release, "Build release binary (soldr-driven)")
+    assert "!contains(matrix.target, 'apple-darwin')" in blessed_build
+
     assert '"darwin-x64": { triple: "x86_64-apple-darwin"' in install
     assert "intentionally not published" not in install
     assert "x86_64-apple-darwin" in npm_docs
@@ -601,7 +611,32 @@ def test_release_wheels_use_setup_soldr_target_hooks_without_zig_or_xwin() -> No
     )
     native_arm_musl = _step_block(release, "Build ARM64 musl release binary natively")
     assert "CC_aarch64_unknown_linux_musl: musl-gcc" in native_arm_musl
-    assert '"$driver" --no-cache cargo build' in native_arm_musl
+    assert ".github/scripts/native_release_build.py binary" in native_arm_musl
+
+    target_hook_wheel = _step_block(
+        release, "Build wheel through setup-soldr target environment"
+    )
+    assert "if: !contains(matrix.target, 'unknown-linux-musl')" in target_hook_wheel
+
+    native_arm_wheel = _step_block(release, "Build musl wheel in an explicit uv venv")
+    assert "CC_aarch64_unknown_linux_musl: musl-gcc" in native_arm_wheel
+    assert ".github/scripts/native_release_build.py musl-wheel" in native_arm_wheel
+    assert '--target "${{ matrix.target }}"' in native_arm_wheel
+
+    native_helper = (
+        REPO_ROOT / ".github" / "scripts" / "native_release_build.py"
+    ).read_text(encoding="utf-8")
+    assert '["uv", "venv", "--python", "3.13", str(venv)]' in native_helper
+    assert "cargo_via_soldr_rustup.sh" in native_helper
+    assert '"musllinux_1_2"' in native_helper
+
+    cargo_bridge = (
+        REPO_ROOT / ".github" / "scripts" / "cargo_via_soldr_rustup.sh"
+    ).read_text(encoding="utf-8")
+    assert (
+        'exec "$SOLDR_RELEASE_DRIVER" rustup run "$SOLDR_RELEASE_TOOLCHAIN" cargo "$@"'
+        in cargo_bridge
+    )
 
 
 def test_release_target_prepare_retries_transient_setup_failure() -> None:
