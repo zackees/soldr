@@ -342,7 +342,7 @@ soldr_cli::timed_test!(
         };
 
         let first = run_soldr(
-            &["daemon", "start", "--idle-timeout", "60"],
+            &["daemon", "start"],
             &cache_root,
             &home_root,
         );
