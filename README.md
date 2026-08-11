@@ -1,12 +1,13 @@
 # Soldr / Rust
 
 
+
 <img width="1536" height="1024" alt="ChatGPT Image Apr 19, 2026, 09_43_32 PM" src="https://github.com/user-attachments/assets/87d94693-3542-4f4f-8b02-600bf0b9810e" />
 
+*Beta software, please pin*
 
 *A tool to download rust tool sets and aggressive cache your build. **2× faster cross-PR builds** via content-addressed caching that swatinem's per-key cache cannot share. GH and local builds. Just add soldr before all your build commands.*
 
-Third-party comparison (soldr vs Swatinem/rust-cache vs ...): published from `zackees/setup-soldr` — see its `comparison-cluster` workflow and the rendered page once the migration in soldr#674 completes. The legacy `https://zackees.github.io/soldr/` page is being repurposed for soldr-internal per-scenario regression history (no third-party comparison surface lives on this repo anymore).
 
 [![CI](https://github.com/zackees/soldr/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/zackees/soldr/actions/workflows/ci.yml)
 [![Autonomous Release](https://github.com/zackees/soldr/actions/workflows/release-auto.yml/badge.svg?branch=main)](https://github.com/zackees/soldr/actions/workflows/release-auto.yml)
