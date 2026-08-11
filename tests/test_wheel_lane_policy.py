@@ -51,6 +51,7 @@ def test_non_pull_request_events_always_run(event_name: str) -> None:
         "crates/soldr-cli/src/wheel_cmd.rs",
         "pyproject.toml",
         ".github/workflows/ci.yml",
+        ".github/scripts/build_release_wheel.py",
         ".github/scripts/verify_wheel_glibc.py",
         ".github/scripts/wheel_lane_policy.py",
     ],

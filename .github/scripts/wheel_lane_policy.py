@@ -52,6 +52,7 @@ WHEEL_FILES = frozenset(
         "crates/soldr-cli/src/wheel_cmd.rs",
         "pyproject.toml",
         ".github/workflows/ci.yml",
+        ".github/scripts/build_release_wheel.py",
         ".github/scripts/wheel_lane_policy.py",
         ".github/scripts/verify_wheel_glibc.py",
         ".github/scripts/verify_glibc_baseline.py",
