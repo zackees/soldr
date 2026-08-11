@@ -1286,9 +1286,6 @@ fn cache_enabled_zccache_build_completes_under_45_seconds() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        // Native Windows ARM64 archive replay measured 28.6s for this
-        // process-heavy fake-toolchain smoke. Keep a bounded regression gate
-        // with enough headroom for that supported host.
         elapsed < Duration::from_secs(45),
         "cache-enabled zccache build took {elapsed:?}, expected under 45s"
     );
