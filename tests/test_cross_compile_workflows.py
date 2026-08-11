@@ -545,10 +545,8 @@ def test_mac_x64_distribution_is_cross_built_and_intel_smoke_tested() -> None:
     assert "soldr-${version}-x86_64-apple-darwin.tar.zst" not in release
 
     # install.js surface: Intel Mac is not a supported download target.
-    assert (
-        "intentionally not published" in install
-        or "macOS Intel" in install
-    )
+    assert "darwin-x64" in install
+    assert "not published in this release" in install
 
 
 def test_linux_arm64_release_uses_the_x64_catalogue_cross_compiler_host() -> None:
@@ -573,15 +571,14 @@ def test_linux_arm64_release_wheels_avoid_zig_and_xwin() -> None:
 
     # soldr#2453: the 3-target native release uses maturin directly
     # (no soldr wheel, no zig, no xwin). The ARM musl lanes are
-    # documented-exclusion.
+    # documented-exclusion with markers in the workflow.
     assert "maturin --zig" not in release
     assert "Setup zig for Linux wheel lanes" not in release
     assert "lzma_pkgconfig" not in release
-    assert "name: Build ARM musllinux wheel natively" in release
-    assert "runs-on: ubuntu-24.04-arm" in release
-    assert "CC_aarch64_unknown_linux_musl: musl-gcc" in release
-    assert "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc" in release
-    assert "startsWith(matrix.target, 'aarch64-')" in release
+    assert (
+        "release-exclusion:aarch64-unknown-linux-musl:soldr#2453-native-3-target"
+        in release
+    )
 
 
 def test_cross_compile_docs_match_current_blessed_surfaces() -> None:
