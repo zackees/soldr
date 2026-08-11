@@ -116,7 +116,7 @@ soldr_cli::timed_test!(
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(
-            combined.contains("already bound"),
+            combined.contains("another broker already owns"),
             "second broker exited without explaining that another broker already \
              owned the bind path; output was:\n{combined}"
         );
