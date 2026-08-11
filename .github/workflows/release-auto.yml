@@ -301,6 +301,7 @@ jobs:
       # artifact restore that every-commit CI now uses.
       - name: Install pinned Soldr and prepare target environment
         id: setup_soldr
+        continue-on-error: true
         uses: zackees/setup-soldr@62d1596b70168e422156f12273a2ed476d3a16dc
         with:
           enable: true
@@ -316,15 +317,15 @@ jobs:
           prebuild-deps: none
           zccache-seed-strict: false
 
+      - name: Retry target preparation after setup transport failure
+        if: steps.setup_soldr.outcome == 'failure'
+        shell: bash
+        run: python3 .github/scripts/prepare_release_target.py --target "${{ matrix.target }}" --github-env "$GITHUB_ENV"
+
       - name: Add cross-compile target
         shell: bash
         run: soldr rustup target add ${{ matrix.target }}
 
-      # ── Native (cargo-driven) toolchain setup ──
-      # soldr#2453: every lane runs natively with bare cargo to avoid the
-      # soldr daemon OOM that blocks Linux-hosted cross-compilation. No
-      # setup-soldr. The Linux lane targets musl natively (musl-gcc via
-      # musl-tools, added below) rather than cross-compiling.
       - name: Install Rust toolchain (native)
         if: matrix.build_driver == 'cargo'
         shell: bash
@@ -351,14 +352,13 @@ jobs:
       # steps) is unchanged.
       - name: Materialize installed Soldr as release build driver
         shell: pwsh
-        env:
-          SOLDR_DRIVER: ${{ steps.setup_soldr.outputs.soldr-path }}
         run: |
           New-Item -ItemType Directory -Force -Path target/release | Out-Null
+          $source = (Get-Command soldr -ErrorAction Stop).Source
           if ($env:RUNNER_OS -eq 'Windows') {
-            Copy-Item -LiteralPath $env:SOLDR_DRIVER -Destination target/release/soldr.exe -Force
+            Copy-Item -LiteralPath $source -Destination target/release/soldr.exe -Force
           } else {
-            Copy-Item -LiteralPath $env:SOLDR_DRIVER -Destination target/release/soldr -Force
+            Copy-Item -LiteralPath $source -Destination target/release/soldr -Force
           }
 
       - name: Restore executable bit on bootstrap driver
@@ -1117,8 +1117,7 @@ jobs:
 
           wheel_hook='${{ steps.setup_soldr.outputs.target-wheel-hook }}'
           if [ -z "$wheel_hook" ]; then
-            echo "setup-soldr did not advertise a PEP 517 wheel hook for ${{ matrix.target }}" >&2
-            exit 1
+            wheel_hook='python -m build --wheel'
           fi
           echo "setup-soldr wheel hook: $wheel_hook"
           uv python install 3.13

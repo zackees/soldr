@@ -596,6 +596,25 @@ def test_release_wheels_use_setup_soldr_target_hooks_without_zig_or_xwin() -> No
     assert "startsWith(matrix.target, 'aarch64-')" not in release
 
 
+def test_release_target_prepare_retries_transient_setup_failure() -> None:
+    release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
+    setup = _step_block(release, "Install pinned Soldr and prepare target environment")
+    retry = _step_block(
+        release, "Retry target preparation after setup transport failure"
+    )
+    materialize = _step_block(
+        release, "Materialize installed Soldr as release build driver"
+    )
+    wheel = _step_block(release, "Build wheel through setup-soldr target environment")
+
+    assert "continue-on-error: true" in setup
+    assert "if: steps.setup_soldr.outcome == 'failure'" in retry
+    assert ".github/scripts/prepare_release_target.py" in retry
+    assert '--github-env "$GITHUB_ENV"' in retry
+    assert "Get-Command soldr -ErrorAction Stop" in materialize
+    assert "wheel_hook='python -m build --wheel'" in wheel
+
+
 def test_windows_wheel_does_not_reuse_archive_executable_output() -> None:
     """PEP 517 must not rebuild the archive lane's still-open soldr.exe."""
 
