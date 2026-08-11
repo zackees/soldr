@@ -1194,7 +1194,18 @@ jobs:
           fi
 
           uv tool install "maturin>=1.7,<2"
+          # soldr#2453/#909: maturin can't detect musl from a glibc host, so it
+          # defaults the musl-target wheel to a manylinux tag (observed:
+          # manylinux_2_5_x86_64). Force the PEP 656 musllinux_1_2 tag
+          # explicitly or `pip install` on Alpine skips the binary wheel and
+          # falls back to an sdist build. Plain string (not a bash array) to
+          # stay safe under `set -u` on the macOS runner's bash 3.2.
+          maturin_compat=""
+          case "${{ matrix.target }}" in
+            *-unknown-linux-musl) maturin_compat="--compatibility musllinux_1_2" ;;
+          esac
           uv tool run maturin build --release --locked --target "${{ matrix.target }}" \
+            $maturin_compat \
             --target-dir target --out dist
 
       - name: Lint wheel filenames against workspace version
