@@ -119,6 +119,38 @@ pub fn session_hot_path(rustc_argv: &[String]) -> SessionHotPathOutcome {
             // No broker is bound here, so do not burn the route-start budget
             // repeatedly dialing a dead socket.
             Err(err) if err.broker_unreachable => {
+                // TEMP DIAGNOSTIC (soldr#2442): the broker-unreachable only
+                // reproduces on GHA; dump where THIS process dialed, its
+                // path-determining env, and the broker's own spawn log so the
+                // bind-vs-dial divergence is visible in the build output.
+                {
+                    let sid = crate::broker_identity::resolve_user_sid();
+                    let sess = session_socket_path(&program).unwrap_or_default();
+                    eprintln!(
+                        "SOLDR-DIAG broker-unreachable: dialed_session={sess} sid={sid} program={program}"
+                    );
+                    eprintln!(
+                        "SOLDR-DIAG env: XDG_RUNTIME_DIR={:?} TMPDIR={:?} HOME={:?}",
+                        std::env::var_os("XDG_RUNTIME_DIR"),
+                        std::env::var_os("TMPDIR"),
+                        std::env::var_os("HOME"),
+                    );
+                    if let Ok(paths) = crate::core::SoldrPaths::new() {
+                        let log = paths.root.join("broker-spawn.log");
+                        match std::fs::read_to_string(&log) {
+                            Ok(contents) => {
+                                eprintln!("SOLDR-DIAG broker-spawn.log ({}):", log.display());
+                                for line in contents.lines().take(60) {
+                                    eprintln!("SOLDR-DIAG| {line}");
+                                }
+                            }
+                            Err(e) => eprintln!(
+                                "SOLDR-DIAG broker-spawn.log unreadable at {} ({e}) — broker never spawned?",
+                                log.display()
+                            ),
+                        }
+                    }
+                }
                 return SessionHotPathOutcome::HardFail(io::Error::other(format!(
                     "soldr broker is unreachable: {err}; invoke this compiler through `soldr cargo ...` (or another soldr build front door) so the singleton broker is started"
                 )));
