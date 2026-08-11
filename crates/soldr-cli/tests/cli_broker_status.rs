@@ -108,15 +108,13 @@ soldr_cli::timed_test!(
         // The control socket binds just after the "binding at" line, so poll the
         // status query until the admin round-trip lands (or the budget expires).
         let deadline = Instant::now() + STATUS_POLL_BUDGET;
-        let mut last = String::new();
-        let ok = loop {
+        let (ok, last) = loop {
             let (output, code) = run_status(&program);
-            last = output;
-            if code == 0 && last.contains("broker_instance:") {
-                break true;
+            if code == 0 && output.contains("broker_instance:") {
+                break (true, output);
             }
             if Instant::now() >= deadline {
-                break false;
+                break (false, output);
             }
             std::thread::sleep(POLL);
         };

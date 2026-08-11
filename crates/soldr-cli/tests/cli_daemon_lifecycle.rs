@@ -33,28 +33,6 @@ use windows_sys::Win32::System::Threading::{
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-struct EnvScope {
-    key: &'static str,
-    prior: Option<OsString>,
-}
-
-impl EnvScope {
-    fn set(key: &'static str, value: &str) -> Self {
-        let prior = std::env::var_os(key);
-        std::env::set_var(key, value);
-        Self { key, prior }
-    }
-}
-
-impl Drop for EnvScope {
-    fn drop(&mut self) {
-        match &self.prior {
-            Some(value) => std::env::set_var(self.key, value),
-            None => std::env::remove_var(self.key),
-        }
-    }
-}
-
 fn unique_temp_dir(label: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
