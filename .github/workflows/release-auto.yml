@@ -330,6 +330,11 @@ jobs:
         shell: bash
         run: python3 .github/scripts/prepare_release_target.py --target "${{ matrix.setup_target }}" --github-env "$GITHUB_ENV"
 
+      - name: Restore the native macOS SDK root
+        if: contains(matrix.target, 'apple-darwin')
+        shell: bash
+        run: echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> "$GITHUB_ENV"
+
       - name: Add cross-compile target
         shell: bash
         run: soldr rustup target add ${{ matrix.target }}
@@ -363,7 +368,7 @@ jobs:
 
       # ── Build release binary ──
       - name: Build release binary (soldr-driven)
-        if: matrix.target != 'aarch64-unknown-linux-musl'
+        if: matrix.target != 'aarch64-unknown-linux-musl' && !contains(matrix.target, 'apple-darwin')
         shell: bash
         env:
           SOLDR_RELEASE_CI: "1"
@@ -393,7 +398,7 @@ jobs:
             --package soldr-cli \
             --bin soldr
 
-          if [[ "$target" == *-unknown-linux-gnu || "$target" == *-apple-darwin ]]; then
+          if [[ "$target" == *-unknown-linux-gnu ]]; then
             "$driver" prepare --target "$target" --github-env "$GITHUB_ENV"
           fi
           echo "=== post-build diagnostic: target/$target/release/ ==="
@@ -404,12 +409,6 @@ jobs:
         if: matrix.target == 'aarch64-unknown-linux-musl'
         shell: bash
         env:
-          SOLDR_RELEASE_CI: "1"
-          CARGO_PROFILE_RELEASE_DEBUG: "0"
-          CARGO_PROFILE_RELEASE_LTO: thin
-          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
-          CARGO_BUILD_JOBS: "2"
-          SOLDR_JOBS: "2"
           CC_aarch64_unknown_linux_musl: musl-gcc
           CXX_aarch64_unknown_linux_musl: musl-gcc
           AR_aarch64_unknown_linux_musl: ar
@@ -417,12 +416,24 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: |
           set -euo pipefail
-          driver="target/release/soldr"
-          target='aarch64-unknown-linux-musl'
-          "$driver" cargo clean -p soldr-cli --target "$target" --release 2>/dev/null || true
-          "$driver" --no-cache cargo build --release --locked --target "$target" \
-            --package soldr-cli --bin soldr
-          ls -la "target/$target/release/" 2>&1 | head -20 || true
+          # The catalogue ARM64-musl compiler shipped for soldr 0.8.44 is an
+          # i386-hosted cross compiler. It cannot execute on the native ARM64
+          # runner, so bypass target preparation while still routing Cargo
+          # through the pinned Soldr and rustup toolchain.
+          python3 .github/scripts/native_release_build.py binary \
+            --driver target/release/soldr --target aarch64-unknown-linux-musl
+
+      - name: Build native macOS release binary through pinned Soldr
+        if: contains(matrix.target, 'apple-darwin')
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Native macOS already has the correct Xcode SDK and clang. Soldr
+          # 0.8.44's blessed build path adds its prepared SDK directory as a
+          # bare linker input, so invoke Cargo through pinned Soldr/rustup
+          # without repeating target preparation.
+          python3 .github/scripts/native_release_build.py binary \
+            --driver target/release/soldr --target "${{ matrix.target }}"
 
       # soldr#1060 acceptance: the musl artifacts are the "runs anywhere"
       # build precisely because they carry no dynamic dependencies. A musl
@@ -1072,6 +1083,7 @@ jobs:
 
       # ── Wheel build (soldr-driven, Linux) ──
       - name: Build wheel through setup-soldr target environment
+        if: !contains(matrix.target, 'unknown-linux-musl')
         shell: bash
         env:
           EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
@@ -1118,40 +1130,27 @@ jobs:
             --target "${{ matrix.target }}" \
             --hook "$wheel_hook"
 
-      # ── Wheel build (native cargo, macOS / Windows) ──
-      # soldr#2453: native builds use maturin directly to avoid the soldr
-      # daemon. Compatibility tags come from the native platform because
-      # there is no cross-compile to lie about.
-      - name: Build wheel natively (cargo)
-        if: matrix.build_driver == 'cargo'
+      - name: Build musl wheel in an explicit uv venv
+        if: contains(matrix.target, 'unknown-linux-musl')
         shell: bash
         env:
           EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
           SOLDR_RELEASE_CI: "1"
+          CARGO_PROFILE_RELEASE_DEBUG: "0"
+          CARGO_PROFILE_RELEASE_LTO: thin
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
+          CARGO_BUILD_JOBS: "2"
+          CC_aarch64_unknown_linux_musl: musl-gcc
+          CXX_aarch64_unknown_linux_musl: musl-gcc
+          AR_aarch64_unknown_linux_musl: ar
+          RANLIB_aarch64_unknown_linux_musl: ranlib
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: |
           set -euo pipefail
-          rm -f dist/*.whl
-          rm -rf target/wheels target/maturin
-          find target -name "*.whl" -delete 2>/dev/null || true
-          mkdir -p dist
-
-          expected="${EXPECTED_VERSION#v}"
-          git restore -- Cargo.toml Cargo.lock crates/soldr-cli/Cargo.toml || true
-
-          cargo_version="$(cargo metadata --no-deps --format-version 1 --manifest-path crates/soldr-cli/Cargo.toml 2>/dev/null \
-              | python3 -c 'import json,sys; d=json.load(sys.stdin); pkgs=[p for p in d["packages"] if p["name"]=="soldr-cli"]; print(pkgs[0]["version"] if pkgs else "")' 2>/dev/null || true)"
-          if [ -z "$cargo_version" ]; then
-              echo "ERROR: cargo metadata returned no version for soldr-cli" >&2
-              exit 1
-          fi
-          if [ "$cargo_version" != "$expected" ]; then
-              echo "ERROR: soldr-cli version ($cargo_version) does not match prepare.outputs.version ($expected)" >&2
-              exit 1
-          fi
-
-          uv tool install "maturin>=1.7,<2"
-          uv tool run maturin build --release --locked --target "${{ matrix.target }}" \
-            --target-dir target --out dist
+          python3 .github/scripts/native_release_build.py musl-wheel \
+            --driver target/release/soldr \
+            --target "${{ matrix.target }}" \
+            --expected-version "${EXPECTED_VERSION#v}"
 
       - name: Lint wheel filenames against workspace version
         shell: python
