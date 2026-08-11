@@ -113,10 +113,8 @@ timed_test!(
         }
         let binds_after_first = count_substr(&broker_spawn_log(&root), "binding at");
 
-        // Second front-door invocation against the SAME program. The front door
-        // is best-effort and may launch another broker candidate, but the
-        // singleton bind must refuse it — the invariant is "exactly one broker
-        // *serves*", proven by an already-bound refusal, never two live serves.
+        // Second front-door invocation against the SAME program. It may reuse
+        // the live singleton without spawning a duplicate candidate.
         let mut second = Command::new(common::soldr_bin());
         common::scrub_outer_soldr_env(&mut second);
         let mut second_child = second
@@ -130,10 +128,10 @@ timed_test!(
             .expect("spawn second front-door soldr status");
         let _o2 = drain(second_child.stdout.take().expect("stdout"));
         let _e2 = drain(second_child.stderr.take().expect("stderr"));
-        let _ = second_child.wait().expect("wait second status");
+        let second_status = second_child.wait().expect("wait second status");
         std::thread::sleep(Duration::from_millis(500));
         let log = broker_spawn_log(&root);
-        let already_bound = count_substr(&log, "already bound");
+        let total_binds = count_substr(&log, "binding at");
 
         // Cleanup before asserting so a failure never leaks processes.
         stop_daemons_in_root(&root);
@@ -144,9 +142,13 @@ timed_test!(
              broker (no 'binding at' line in the spawn log)\n{log}"
         );
         assert!(
-            already_bound >= 1,
-            "a duplicate broker candidate must be refused by the singleton bind \
-             ('already bound') — exactly one broker may serve one program\n{log}"
+            second_status.success(),
+            "the second front-door command must reuse the live broker\n{log}"
+        );
+        assert_eq!(
+            total_binds, 1,
+            "exactly one broker may bind one program; the front door may reuse \
+             it without spawning a duplicate candidate\n{log}"
         );
     }
 );

@@ -1007,10 +1007,12 @@ jobs:
         include: ${{ fromJSON(needs.wheel-cross-policy.outputs.matrix) }}
     env:
       CARGO_TERM_COLOR: always
-      # soldr#2453: this is another cache-disabled, all-miss cross build on a
-      # 4-vCPU Linux host. Match the reusable cross-build lane's memory bound.
-      CARGO_BUILD_JOBS: "2"
-      SOLDR_JOBS: "2"
+      # soldr#2453/#2469: this is a cache-disabled, all-miss release+LTO build.
+      # Two concurrent rustc processes still OOM-killed zccache-daemon-core on
+      # the 4-vCPU hosted runner, so the policy matrix carries the measured
+      # per-cell memory bound.
+      CARGO_BUILD_JOBS: ${{ matrix.jobs }}
+      SOLDR_JOBS: ${{ matrix.jobs }}
       SOLDR_GITHUB_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
