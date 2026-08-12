@@ -143,7 +143,7 @@ fn allowlist_key(
         || normalized == "$DIR"
         || normalized.starts_with("$DIR/")
     {
-        return Some(qualified_key("ui", name, modules, attributes));
+        return Some(qualified_key("$DIR", name, modules, attributes));
     }
     let marker = "crates/soldr-cli/src/";
     let offset = normalized.find(marker)?;

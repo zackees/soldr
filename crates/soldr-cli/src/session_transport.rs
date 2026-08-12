@@ -282,11 +282,6 @@ async fn establish_session(
         eprintln!("soldr: SESSION dialing service={service_name} socket={session_socket}");
     }
     let name = local_session_name(&session_socket).map_err(SessionError::broker_unreachable)?;
-    // A failed dial means no broker is bound at this socket.
-    let mut stream = connect_broker_with_busy_retry(name)
-        .await
-        .map_err(SessionError::broker_unreachable)?;
-
     // Negotiate the requested daemon route over the v2 control envelope.
     let hello_payload = Hello {
         client_min_protocol: ENVELOPE_VERSION as u32,
@@ -308,14 +303,29 @@ async fn establish_session(
     let request_id = hello_frame.request_id;
     let hello =
         encode_framed(&hello_frame).map_err(|e| SessionError::pre_output(io::Error::other(e)))?;
-    stream
-        .write_all(&hello)
-        .await
-        .map_err(SessionError::pre_output)?;
-    stream.flush().await.map_err(SessionError::pre_output)?;
-    read_negotiated(&mut stream, request_id)
-        .await
-        .map_err(SessionError::pre_output)?;
+    // A same-version broker replacement can accept a pipe instance and close
+    // it before replying to Hello. Retrying this pre-session handshake is safe:
+    // no compiler request or output has crossed the connection yet.
+    let mut hello_attempt = 0;
+    let mut stream = loop {
+        hello_attempt += 1;
+        // A failed dial means no broker is bound at this socket.
+        let mut candidate = connect_broker_with_busy_retry(name.clone())
+            .await
+            .map_err(SessionError::broker_unreachable)?;
+        candidate
+            .write_all(&hello)
+            .await
+            .map_err(SessionError::pre_output)?;
+        candidate.flush().await.map_err(SessionError::pre_output)?;
+        match read_negotiated(&mut candidate, request_id).await {
+            Ok(()) => break candidate,
+            Err(error) if hello_attempt < 3 && broker_hello_retryable(&error) => {
+                tokio::time::sleep(busy_jitter()).await;
+            }
+            Err(error) => return Err(SessionError::pre_output(error)),
+        }
+    };
 
     // From here the connection is a transparent SESSION relay to the daemon.
     let start = SessionStart {
@@ -376,6 +386,16 @@ fn broker_connect_is_busy(error: &io::Error, elapsed: Duration) -> bool {
             | io::ErrorKind::TimedOut
             | io::ErrorKind::Interrupted
     ) || matches!(error.raw_os_error(), Some(231) | Some(232) | Some(233))
+}
+
+fn broker_hello_retryable(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::BrokenPipe
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::UnexpectedEof
+    ) || error.to_string() == "broker closed before Hello reply"
 }
 
 fn busy_jitter() -> std::time::Duration {
@@ -703,6 +723,23 @@ mod tests {
                 Duration::from_millis(51)
             ));
         }
+    });
+
+    crate::timed_test!(hello_retry_is_limited_to_pre_reply_disconnects, {
+        assert!(broker_hello_retryable(&io::Error::other(
+            "broker closed before Hello reply"
+        )));
+        assert!(broker_hello_retryable(&io::Error::new(
+            io::ErrorKind::ConnectionReset,
+            "replaced broker"
+        )));
+        assert!(!broker_hello_retryable(&io::Error::other(
+            "broker refused the daemon route"
+        )));
+        assert!(!broker_hello_retryable(&io::Error::new(
+            io::ErrorKind::TimedOut,
+            "route acquisition ceiling"
+        )));
     });
 
     crate::timed_test!(relayed_diagnostic_suppresses_the_silent_fault_annotation, {

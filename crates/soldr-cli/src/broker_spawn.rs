@@ -70,7 +70,13 @@ fn filter_broker_spawn_env(
             name.starts_with("SOLDR_")
                 || matches!(
                     name.as_str(),
-                    "HOME" | "USERPROFILE" | "LOCALAPPDATA" | "XDG_RUNTIME_DIR" | "TMPDIR"
+                    "HOME"
+                        | "USERPROFILE"
+                        | "APPDATA"
+                        | "LOCALAPPDATA"
+                        | "XDG_CONFIG_HOME"
+                        | "XDG_RUNTIME_DIR"
+                        | "TMPDIR"
                 )
         })
         .collect()
@@ -802,6 +808,10 @@ mod tests {
                 ),
                 (OsString::from("HOME"), OsString::from("/mounted/home")),
                 (
+                    OsString::from("XDG_CONFIG_HOME"),
+                    OsString::from("/mounted/config"),
+                ),
+                (
                     OsString::from("XDG_RUNTIME_DIR"),
                     OsString::from("/run/user/123"),
                 ),
@@ -815,6 +825,10 @@ mod tests {
                         OsString::from("/tmp/cache")
                     ),
                     (OsString::from("HOME"), OsString::from("/mounted/home")),
+                    (
+                        OsString::from("XDG_CONFIG_HOME"),
+                        OsString::from("/mounted/config")
+                    ),
                     (
                         OsString::from("XDG_RUNTIME_DIR"),
                         OsString::from("/run/user/123")

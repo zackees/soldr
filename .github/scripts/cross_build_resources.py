@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Select bounded compile concurrency for the cross-build archive stage.
+"""Serialize the memory-heavy cross-build nextest archive stage.
 
-The x86_64 Linux nextest archives are the largest all-miss link sets in the
-per-target builder fleet. Two concurrent compiler processes exceeded the
-hosted runner's memory ceiling in soldr#2481 even with enlarged swap, so those
-archives are serialized. Other targets retain the established two-job bound.
+The all-miss archive link set has exceeded the hosted runner's memory ceiling
+on x86_64 Linux, aarch64 Linux, and aarch64 Windows even with enlarged swap.
+Every target therefore uses one Cargo producer and one Soldr admission slot.
 """
 
 from __future__ import annotations
@@ -13,17 +12,14 @@ import argparse
 import os
 from pathlib import Path
 
-DEFAULT_ARCHIVE_JOBS = 2
-ARCHIVE_JOB_OVERRIDES = {
-    "x86_64-unknown-linux-gnu": 1,
-    "x86_64-unknown-linux-musl": 1,
-}
+ARCHIVE_JOBS = 1
 
 
 def archive_jobs(target: str) -> int:
     """Return the compile/admission limit for *target*'s nextest archive."""
 
-    return ARCHIVE_JOB_OVERRIDES.get(target, DEFAULT_ARCHIVE_JOBS)
+    del target
+    return ARCHIVE_JOBS
 
 
 def main() -> int:
