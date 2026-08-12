@@ -1011,6 +1011,10 @@ jobs:
         include: ${{ fromJSON(needs.wheel-cross-policy.outputs.matrix) }}
     env:
       CARGO_TERM_COLOR: always
+      # Test-only allowance for placing the large checkout-built daemon image
+      # after the live path-derived pipe has answered the short probe.
+      SOLDR_BROKER_ROUTE_ATTEMPT_BUDGET_MS: "30000"
+      SOLDR_SESSION_ATTEMPT_BUDGET_MS: "35000"
       # soldr#2453/#2469: this is a cache-disabled, all-miss release+LTO build.
       # Two concurrent rustc processes still OOM-killed zccache-daemon-core on
       # the 4-vCPU hosted runner, so the policy matrix carries the measured

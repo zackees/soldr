@@ -514,8 +514,11 @@ def test_source_build_jobs_bound_debug_daemon_placement_behind_live_pipe() -> No
         assert 'SOLDR_SESSION_ATTEMPT_BUDGET_MS: "35000"' in workflow
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
     pep517 = _job_block(ci, "pep517-daemon-smoke")
+    wheel_cross = _job_block(ci, "wheel-cross-verify")
     assert 'SOLDR_BROKER_ROUTE_ATTEMPT_BUDGET_MS: "30000"' in pep517
     assert 'SOLDR_SESSION_ATTEMPT_BUDGET_MS: "35000"' in pep517
+    assert 'SOLDR_BROKER_ROUTE_ATTEMPT_BUDGET_MS: "30000"' in wheel_cross
+    assert 'SOLDR_SESSION_ATTEMPT_BUDGET_MS: "35000"' in wheel_cross
 
 
 def test_gnu_catalogue_fixture_is_part_of_both_gnu_ci_lanes() -> None:
