@@ -6,23 +6,13 @@
 mod common;
 
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
-use running_process::broker::protocol_v2::service_definition_dir_v2;
 use soldr_cli::core::SoldrPaths;
-use soldr_cli::daemon::backend_handle_adoption::SOLDR_DAEMON_SERVICE_VERSION;
 use soldr_cli::timed_test;
-
-fn unique_program(label: &str) -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    format!("soldr-tombstone-{label}-{:012x}", nanos & 0xFFFF_FFFF_FFFF)
-}
 
 fn drain<R: std::io::Read + Send + 'static>(reader: R) -> Arc<Mutex<Vec<String>>> {
     let lines = Arc::new(Mutex::new(Vec::new()));
@@ -75,7 +65,12 @@ timed_test!(
     Duration::from_secs(90),
     {
         let root = common::unique_temp_dir("tombstone-root");
-        let program = unique_program("prog");
+        let home = common::unique_temp_dir("tombstone-home");
+        let service_root = home.join("service-definitions");
+        let project = root.join("workspace");
+        std::fs::create_dir_all(project.join("src")).expect("create source directory");
+        std::fs::write(project.join("src/lib.rs"), "pub fn tombstone() {}\n")
+            .expect("write source");
 
         // 1) `soldr daemon stop` on a clean root: the daemon isn't running, but
         //    the tombstone is planted regardless (the suppression window starts
@@ -85,6 +80,8 @@ timed_test!(
         let stop_out = stop
             .args(["daemon", "stop"])
             .env("SOLDR_CACHE_DIR", &root)
+            .env("HOME", &home)
+            .env("USERPROFILE", &home)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -95,6 +92,21 @@ timed_test!(
             "daemon stop failed: {}",
             String::from_utf8_lossy(&stop_out.stderr)
         );
+        // `daemon stop` is an eligible top-level front door, so it first
+        // confirms/resurrects the stable broker before planting the route
+        // tombstone. Stop that broker explicitly before starting the
+        // instrumented foreground broker below; the tombstone itself remains.
+        let broker_stop = Command::new(common::soldr_bin())
+            .args(["broker", "stop"])
+            .env("HOME", &home)
+            .env("USERPROFILE", &home)
+            .output()
+            .expect("stop broker created by daemon stop front door");
+        assert!(
+            broker_stop.status.success(),
+            "broker stop failed: {}",
+            String::from_utf8_lossy(&broker_stop.stderr)
+        );
 
         // 2) Register this root's route and start a broker. Since #2441 the
         //    broker is passive until a client requests a registered route; that
@@ -103,7 +115,7 @@ timed_test!(
         let paths = SoldrPaths::with_root(root.clone());
         let installed =
             soldr_cli::daemon::service_definition::install_service_definition_to_dir_for_paths(
-                service_definition_dir_v2(),
+                &service_root,
                 &paths,
                 &common::soldr_daemon_bin(),
             )
@@ -112,8 +124,11 @@ timed_test!(
         let mut broker_command = Command::new(common::soldr_bin());
         common::scrub_outer_soldr_env(&mut broker_command);
         let child = broker_command
-            .args(["broker", "serve", "--program", &program])
+            .args(["broker", "serve"])
             .env("SOLDR_CACHE_DIR", &root)
+            .env("HOME", &home)
+            .env("USERPROFILE", &home)
+            .env("RUNNING_PROCESS_SERVICE_DEF_DIR", &service_root)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -127,19 +142,48 @@ timed_test!(
         let err = drain(broker.child.stderr.take().expect("broker stderr"));
 
         assert!(
-            wait_for(&out, "binding at", Instant::now() + Duration::from_secs(10)),
+            wait_for(
+                &out,
+                "stable endpoint bound at",
+                Instant::now() + Duration::from_secs(10)
+            ),
             "broker did not become ready"
         );
-        let request_error = running_process::broker::client_v2::connect_service_with_deadline(
-            &program,
-            &installed.definition.service_name,
-            SOLDR_DAEMON_SERVICE_VERSION,
-            Duration::from_secs(10),
-        )
-        .expect_err("the broker request must fail while the tombstone is live");
-        let request_message = request_error.to_string();
+        let rustc = Path::new(&std::env::var_os("CARGO").expect("CARGO set by cargo test"))
+            .with_file_name(format!("rustc{}", std::env::consts::EXE_SUFFIX));
+        let mut request = Command::new(common::soldr_bin());
+        common::scrub_outer_soldr_env(&mut request);
+        let request_output = request
+            .arg(&rustc)
+            .args([
+                "--edition",
+                "2021",
+                "--crate-type",
+                "lib",
+                "--crate-name",
+                "soldr_tombstone_probe",
+                "--emit=metadata",
+                "--out-dir",
+                "target",
+                "src/lib.rs",
+            ])
+            .current_dir(&project)
+            .env("SOLDR_CACHE_DIR", &root)
+            .env("HOME", &home)
+            .env("USERPROFILE", &home)
+            .output()
+            .expect("request tombstoned route through compiler wrapper");
+        assert!(
+            !request_output.status.success(),
+            "the broker request must fail while the tombstone is live"
+        );
+        let request_message = format!(
+            "{}{}",
+            String::from_utf8_lossy(&request_output.stdout),
+            String::from_utf8_lossy(&request_output.stderr)
+        );
 
-        // Give any (erroneous) launch a moment to publish a pidfile before we
+        // Give any (erroneous) launch a moment to publish its route claim before we
         // assert none exists.
         std::thread::sleep(Duration::from_secs(2));
         let daemon_launched = find_daemon_pid(&root);
@@ -147,7 +191,7 @@ timed_test!(
         drop(broker);
 
         let log = format!(
-            "broker request: {request_error:?}\nbroker stdout:\n  {}\nbroker stderr:\n  {}",
+            "broker request: {request_message}\nbroker stdout:\n  {}\nbroker stderr:\n  {}",
             out.lock().unwrap().join("\n  "),
             err.lock().unwrap().join("\n  ")
         );
@@ -164,27 +208,14 @@ timed_test!(
     }
 );
 
-/// Find the first `daemon.pid` under `root`, if any.
+/// Read the daemon PID from the route's protobuf ownership claim, if any.
 fn find_daemon_pid(root: &std::path::Path) -> Option<u32> {
-    fn walk(dir: &std::path::Path) -> Option<u32> {
-        for entry in std::fs::read_dir(dir).ok()?.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                if let Some(pid) = walk(&path) {
-                    return Some(pid);
-                }
-            } else if path.file_name().is_some_and(|n| n == "daemon.pid") {
-                if let Some(pid) = std::fs::read_to_string(&path)
-                    .ok()
-                    .and_then(|t| t.split_whitespace().next().and_then(|s| s.parse().ok()))
-                {
-                    return Some(pid);
-                }
-            }
-        }
-        None
-    }
-    walk(root)
+    soldr_cli::daemon::backend_handle_adoption::read_broker_route_claim(&SoldrPaths::with_root(
+        root.to_path_buf(),
+    ))
+    .ok()
+    .flatten()
+    .map(|claim| claim.pid)
 }
 
 fn kill_pid(pid: u32) -> std::io::Result<()> {

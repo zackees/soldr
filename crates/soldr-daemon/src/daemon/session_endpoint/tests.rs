@@ -26,7 +26,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use std::sync::Arc;
 
 use super::{
-    bind_session_listener, local_session_name, serve_session_connection,
+    bind_session_listener, handoff_endpoint_path, local_session_name,
+    private_control_endpoint_from_session, serve_session_connection,
     serve_session_endpoint_with_readiness, soldr_session_endpoint_mux, CompileServiceReadiness,
 };
 use crate::core::SoldrPaths;
@@ -35,6 +36,19 @@ use crate::zccache_embedded::SoldrZccacheService;
 /// Nonce length for a `BackendHandle` endpoint probe request
 /// (`endpoint_probe_request_from_frame` requires exactly 32 bytes).
 const PROBE_NONCE_BYTES: usize = 32;
+
+#[test]
+fn private_endpoints_are_sibling_names_of_the_daemon_session_path() {
+    let session = "/home/me/.soldr/routes/a/soldr-daemon.session.sock";
+    assert_eq!(
+        private_control_endpoint_from_session(session),
+        "/home/me/.soldr/routes/a/soldr-daemon.control.sock"
+    );
+    assert_eq!(
+        handoff_endpoint_path(session),
+        "/home/me/.soldr/routes/a/soldr-daemon.handoff.sock"
+    );
+}
 
 fn test_daemon_identity() -> DaemonProcess {
     let endpoint = Endpoint {

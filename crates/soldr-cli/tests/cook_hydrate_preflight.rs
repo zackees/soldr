@@ -79,6 +79,10 @@ fn soldr_daemon_bin() -> PathBuf {
     parent.join(stem)
 }
 
+fn direct_sock(root: &Path) -> PathBuf {
+    common::isolated_daemon::isolated_daemon_control_endpoint(&soldr_daemon_bin(), root)
+}
+
 fn soldr_bin() -> PathBuf {
     common::soldr_bin()
 }
@@ -135,7 +139,8 @@ struct DaemonProc {
 
 impl DaemonProc {
     fn spawn(cache_root: &Path, home_root: &Path) -> Self {
-        let mut cmd = Command::new(soldr_daemon_bin());
+        let mut cmd =
+            common::isolated_daemon::isolated_daemon_command(&soldr_daemon_bin(), cache_root);
         cmd.args(["--foreground", "--idle-timeout-secs", "60"])
             .env("SOLDR_CACHE_DIR", cache_root)
             .env("HOME", home_root)
@@ -148,9 +153,8 @@ impl DaemonProc {
         let pid_path = cache_root
             .join("cache")
             .join("soldr-daemon")
-            .join("daemon.pid");
-        let paths = soldr_cli::core::SoldrPaths::with_root(cache_root.to_path_buf());
-        let sock = soldr_cli::daemon::client::default_sock_path(&paths);
+            .join("broker-route-claim.pb");
+        let sock = direct_sock(cache_root);
         while Instant::now() < deadline {
             if pid_path.exists() && soldr_cli::daemon::client::status(&sock).is_ok() {
                 break;
@@ -169,16 +173,14 @@ impl DaemonProc {
     }
 
     fn sock_path(&self) -> PathBuf {
-        let paths = soldr_cli::core::SoldrPaths::with_root(self.cache_root.clone());
-        client::default_sock_path(&paths)
+        direct_sock(&self.cache_root)
     }
 }
 
 impl Drop for DaemonProc {
     fn drop(&mut self) {
         if let Some(mut child) = self.child.take() {
-            let paths = soldr_cli::core::SoldrPaths::with_root(self.cache_root.clone());
-            let _ = client::shutdown(&client::default_sock_path(&paths));
+            let _ = client::shutdown(&direct_sock(&self.cache_root));
             let deadline = Instant::now() + Duration::from_secs(2);
             while Instant::now() < deadline {
                 if let Ok(Some(_)) = child.try_wait() {
@@ -557,12 +559,19 @@ marker = "feature"
         );
 
         let mut soldr = Command::new(soldr_bin());
+        common::isolated_daemon::configure_isolated_daemon_client(
+            &mut soldr,
+            &soldr_daemon_bin(),
+            &cache_root,
+        );
         soldr
             .current_dir(&repo)
             .args(["--no-cache", "cargo", "build", "--quiet"])
             .env("SOLDR_CACHE_DIR", &cache_root)
             .env("HOME", &home_root)
             .env("USERPROFILE", &home_root)
+            .env("CARGO_TARGET_DIR", repo.join("target"))
+            .env("SOLDR_TEST_DIRECT_DAEMON_CONTROL", "1")
             .env("SOLDR_COOK_AUTO_HYDRATE", "1")
             .env("SOLDR_NO_GC_TARGET", "1")
             .env("SOLDR_TEST_FREE_DISK_BYTES", "21474836480")
@@ -588,7 +597,7 @@ marker = "feature"
         );
         assert!(
             repo.join("target").join(&sentinel_path).is_file(),
-            "expected sentinel artifact to be extracted into target/"
+            "expected sentinel artifact to be extracted into target/\nstdout:\n{stdout}\nstderr:\n{stderr}"
         );
     }
 );

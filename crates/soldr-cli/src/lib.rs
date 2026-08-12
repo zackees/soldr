@@ -167,10 +167,13 @@ pub mod binaries;
 pub mod blessed_build;
 pub mod bootstrap;
 pub mod broker_cmd;
+mod broker_control_transport;
 /// soldr#2388: container-safe broker/session socket identity (graceful fallback
 /// when the OS provides no `/etc/machine-id`).
-pub(crate) mod broker_identity;
+pub mod broker_identity;
 mod broker_launcher;
+pub(crate) mod broker_lease;
+pub(crate) mod broker_server;
 pub mod broker_spawn;
 pub mod build_from_source_cmd;
 /// soldr#1790 — always-on hierarchical per-build XML log

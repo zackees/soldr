@@ -56,6 +56,9 @@ where
 {
     let start = read_session_start(&mut io).await?;
 
+    #[cfg(debug_assertions)]
+    test_pause_after_session_start(&start).await;
+
     // SessionStart carries the command the client would have exec'd:
     // `program` is the compiler path, `args` the compiler arguments. The shared
     // parser expects `[compiler, ...args]` (argv[0] = compiler).
@@ -72,20 +75,41 @@ where
     dispatch_compile_session(compile_service, paths, req, &mut io).await
 }
 
+#[cfg(debug_assertions)]
+async fn test_pause_after_session_start(start: &SessionStart) {
+    let value = |name: &str| {
+        start
+            .env
+            .iter()
+            .find(|entry| entry.key == name)
+            .map(|entry| entry.value.as_str())
+    };
+    let Some(milliseconds) = value("SOLDR_TEST_SESSION_COMPILE_PAUSE_MS")
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+    else {
+        return;
+    };
+    if let Some(path) = value("SOLDR_TEST_SESSION_COMPILE_READY_FILE") {
+        let _ = std::fs::write(path, b"session-started\n");
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(milliseconds)).await;
+}
+
 /// Run `req` through the embedded zccache service and stream its output as
-/// `SessionFrame`s. Reuses the same execution + output plumbing as the legacy
+/// `SessionFrame`s. Reuses the same execution + output plumbing as the control
 /// wire (`SoldrZccacheService::compile` + `stream_compile_output`).
 ///
 /// Cancel-on-disconnect (soldr#2388 Step 9): the compile is raced against the
 /// client's read side via [`race_against_disconnect`], byte-for-byte the same
-/// kill-matrix obligation the legacy wire honors in
+/// kill-matrix obligation the control wire honors in
 /// [`dispatch_compile_streaming`](crate::daemon::server). A wrapper that dies
 /// mid-compile closes its end of the relayed SESSION connection; the daemon
 /// sees EOF and drops the zccache future at the `select!` boundary, so the
 /// rustc child it owns is reaped instead of running to completion for output
 /// no one will read. Without this the SESSION path — the one Phase 2 wants to
 /// make the default — silently violated "kill client mid-compile → daemon
-/// cancels that unit" while the legacy path honored it.
+/// cancels that unit" while the control path honored it.
 async fn dispatch_compile_session<IO>(
     compile_service: &SoldrZccacheService,
     paths: &SoldrPaths,
@@ -101,7 +125,7 @@ where
     let inner_started = std::time::Instant::now();
 
     // Box the compile future before it enters the disconnect `select!`, for the
-    // same reason the legacy path does (`dispatch_compile_streaming`): the
+    // same reason the control path does (`dispatch_compile_streaming`): the
     // staged-output future is large and carrying it inline through the generic
     // race helper can exhaust Tokio's worker stack under a parallel cold build.
     let compile_fut = Box::pin(compile_service.compile(req));

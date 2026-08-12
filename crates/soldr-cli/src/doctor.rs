@@ -48,6 +48,11 @@ struct DoctorOutput {
     /// Effective value and provenance of every timeout with an env
     /// override (soldr#1838 Phase 3).
     timeouts: Vec<crate::timeout_registry::DoctorTimeout>,
+    /// Stable-broker route acquisition deadlines and their environment
+    /// provenance (soldr#2476).
+    broker_deadlines: Vec<crate::broker_server::DoctorBrokerDeadline>,
+    /// Authoritative broker installation identity and physical bind endpoint.
+    broker_endpoint: crate::broker_identity::DoctorBrokerEndpoint,
     /// Rollup of compile-daemon fallback events -- builds that ran
     /// uncached via direct rustc (soldr#1838 Phase 4). Empty means the
     /// cache was never bypassed.
@@ -174,6 +179,8 @@ pub(crate) fn run_doctor(
                 missing_components: Vec::new(),
                 missing_targets: Vec::new(),
                 timeouts: crate::timeout_registry::doctor_rows(),
+                broker_deadlines: crate::broker_server::doctor_deadlines(),
+                broker_endpoint: crate::broker_identity::doctor_endpoint(),
                 fallbacks: fallbacks.clone(),
                 zccache: bundle.clone(),
                 soldr_debug_info: soldr_debug_info.clone(),
@@ -187,6 +194,8 @@ pub(crate) fn run_doctor(
                 manifest_path.display()
             );
             print_zccache_sections(&bundle);
+            crate::broker_server::print_doctor_deadlines();
+            crate::broker_identity::print_doctor_endpoint();
             print_soldr_debug_info_human(&soldr_debug_info);
             print_defender_probe_human(defender.as_ref());
             if let Some(c) = cook.as_ref() {
@@ -200,6 +209,8 @@ pub(crate) fn run_doctor(
                 workspace_root.display()
             );
             print_zccache_sections(&bundle);
+            crate::broker_server::print_doctor_deadlines();
+            crate::broker_identity::print_doctor_endpoint();
             print_soldr_debug_info_human(&soldr_debug_info);
             print_defender_probe_human(defender.as_ref());
             if let Some(c) = cook.as_ref() {
@@ -271,6 +282,8 @@ pub(crate) fn run_doctor(
             missing_components,
             missing_targets,
             timeouts: crate::timeout_registry::doctor_rows(),
+            broker_deadlines: crate::broker_server::doctor_deadlines(),
+            broker_endpoint: crate::broker_identity::doctor_endpoint(),
             fallbacks: fallbacks.clone(),
             zccache: bundle.clone(),
             soldr_debug_info: soldr_debug_info.clone(),
@@ -294,6 +307,8 @@ pub(crate) fn run_doctor(
             cook.as_ref(),
         );
         crate::timeout_registry::print_doctor_section();
+        crate::broker_server::print_doctor_deadlines();
+        crate::broker_identity::print_doctor_endpoint();
         crate::compile_fallback_rollup::print_section(&fallbacks);
     }
 

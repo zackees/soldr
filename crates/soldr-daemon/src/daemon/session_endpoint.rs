@@ -5,11 +5,11 @@
 //! A**: soldr-daemon serves SESSION `0x5350` on the **separate broker-facing
 //! backend endpoint** the broker binds and hands over, running the codec-bridge
 //! [`serve_session_compile`](crate::daemon::session_serve::serve_session_compile)
-//! behind it. `handle_connection` (the legacy endpoint) is untouched — its
+//! behind it. `handle_connection` (the private control endpoint) is unchanged — its
 //! `Payload{0x5350} → drain_then_close` stays as the defensive default.
 //!
 //! That endpoint carries three traffic kinds (see running-process
-//! `backend_sdk::mux`): the daemon's legacy wire (none here — SESSION is a
+//! `backend_sdk::mux`): the daemon's control wire (none here — SESSION is a
 //! dedicated endpoint), `BackendHandle` **liveness probes**, and `0x5350`
 //! payload frames. So this handler drives the **full**
 //! [`BackendEndpointMux`]: it answers probe frames with
@@ -105,19 +105,66 @@ impl CompileServicePublisher {
 /// daemon. It is mandatory for broker-owned production startup; tests may set
 /// it explicitly to exercise the endpoint without a broker process.
 pub const SOLDR_SESSION_ENDPOINT_PATH_ENV: &str = "SOLDR_SESSION_ENDPOINT_PATH";
+/// Broker-assigned private endpoint for the daemon's request/response control
+/// protocol. Only the broker and daemon receive this value; user-facing
+/// clients tunnel through the stable broker endpoint.
+pub const SOLDR_CONTROL_ENDPOINT_PATH_ENV: &str = "SOLDR_DAEMON_CONTROL_ENDPOINT_PATH";
+
+pub fn private_control_endpoint_from_session(session_endpoint: &str) -> String {
+    sibling_endpoint(session_endpoint, ".control.sock")
+}
+
+fn sibling_endpoint(session_endpoint: &str, suffix: &str) -> String {
+    session_endpoint.strip_suffix(".session.sock").map_or_else(
+        || format!("{session_endpoint}{suffix}"),
+        |base| format!("{base}{suffix}"),
+    )
+}
+
+pub fn resolved_control_endpoint_path(_paths: &SoldrPaths) -> io::Result<std::path::PathBuf> {
+    let logical = std::env::var_os(SOLDR_CONTROL_ENDPOINT_PATH_ENV)
+        .filter(|path| !path.is_empty())
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "required daemon endpoint variable {SOLDR_CONTROL_ENDPOINT_PATH_ENV} is unset"
+                ),
+            )
+        })?;
+    Ok(runtime_control_endpoint_path(logical))
+}
+
+fn runtime_control_endpoint_path(logical: std::path::PathBuf) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        const PREFIX: &str = r"\\.\pipe\";
+        let rendered = logical.to_string_lossy();
+        if rendered.starts_with(PREFIX) {
+            logical
+        } else {
+            std::path::PathBuf::from(format!("{PREFIX}{rendered}"))
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        logical
+    }
+}
 
 /// The mux for the SESSION endpoint: serves the `0x5350` lane and declares
-/// **no** legacy wire.
+/// **no** daemon control wire.
 ///
 /// Distinct from `backend_handle_adoption::soldr_backend_endpoint_mux`, which is
-/// built with `served = &[]` for the *legacy* endpoint and MUST NOT be reused —
+/// built with `served = &[]` for the private control endpoint and MUST NOT be reused —
 /// serving `0x5350` there would change `handle_connection`, which the audit
 /// correction forbids.
 pub fn soldr_session_endpoint_mux(daemon: DaemonProcess) -> SessionMux {
     BackendEndpointMux::new(daemon, &[SESSION_PAYLOAD_PROTOCOL], classify_never_legacy)
 }
 
-/// The SESSION endpoint has no legacy wire: every framed connection is either a
+/// The SESSION endpoint has no daemon control wire: every framed connection is either a
 /// `BackendHandle` probe (handled inside the mux) or a `0x5350` SESSION frame.
 ///
 /// `mux.poll` short-circuits an empty buffer to `NeedMoreBytes` before calling
@@ -134,7 +181,7 @@ fn classify_never_legacy(_buf: &[u8]) -> LegacyClassification {
 /// - [`MuxPoll::Payload`] carrying `0x5350` → **replay** the undrained buffer +
 ///   the live stream into [`serve_session_compile`] and return whatever it does;
 /// - clean EOF before any frame → `Ok(())`;
-/// - a legacy-wire verdict → an error (the SESSION endpoint serves no legacy
+/// - a control-wire verdict → an error (the SESSION endpoint serves no control
 ///   wire).
 ///
 /// # Errors
@@ -183,7 +230,7 @@ where
             }
             MuxPoll::Legacy => {
                 return Err(io::Error::other(
-                    "unexpected legacy-wire frame on the SESSION endpoint",
+                    "unexpected daemon-control frame on the SESSION endpoint",
                 ));
             }
         }
@@ -248,45 +295,35 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for ReplayReader<S> {
     }
 }
 
-/// The deterministic SESSION endpoint path this daemon serves, derived from
-/// `paths` as a sibling of the legacy IPC endpoint (`daemon_sock_path` on Unix /
-/// `daemon_pipe_name` on Windows) with a `-session` / `.session` suffix.
-///
-/// Both the daemon (which binds it) and the broker's SESSION relay (which dials
-/// it as `Negotiated.backend_pipe`) compute this same value — the #2386
-/// Option-A "bind-by-advertised-name" contract (mechanism ii), the portable
-/// cross-platform path. (Unix fd-adopt via `broker_owned_bind` is an optional
-/// optimization layered on later; Windows has no fd handover at all.)
-pub fn daemon_session_endpoint_path(paths: &SoldrPaths) -> io::Result<String> {
-    #[cfg(unix)]
-    {
-        let sock = crate::cache_lib::daemon_sock_path(paths);
-        Ok(format!("{}.session", sock.display()))
-    }
-    #[cfg(windows)]
-    {
-        let pipe = crate::cache_lib::daemon_pipe_name(paths).map_err(io::Error::other)?;
-        Ok(format!("{pipe}-session"))
-    }
+pub fn resolved_session_endpoint_path(_paths: &SoldrPaths) -> io::Result<String> {
+    std::env::var_os(SOLDR_SESSION_ENDPOINT_PATH_ENV)
+        .filter(|path| !path.is_empty())
+        .map(|path| path.to_string_lossy().into_owned())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "required daemon endpoint variable {SOLDR_SESSION_ENDPOINT_PATH_ENV} is unset"
+                ),
+            )
+        })
 }
 
-pub fn resolved_session_endpoint_path(paths: &SoldrPaths) -> io::Result<String> {
-    if let Some(path) = std::env::var_os(SOLDR_SESSION_ENDPOINT_PATH_ENV) {
-        let path = path.to_string_lossy();
-        if !path.is_empty() {
-            return Ok(path.into_owned());
-        }
-    }
-    daemon_session_endpoint_path(paths)
+/// Deterministic daemon-side handoff endpoint used only by the broker's
+/// SCM_RIGHTS/DuplicateHandle transport. Clients always dial the one stable
+/// broker listener.
+pub fn handoff_endpoint_path(session_endpoint: &str) -> String {
+    sibling_endpoint(session_endpoint, ".handoff.sock")
+}
+
+pub(crate) fn resolve_handoff_listener(paths: &SoldrPaths) -> io::Result<SessionListener> {
+    let session_endpoint = resolved_session_endpoint_path(paths)?;
+    bind_session_listener(&handoff_endpoint_path(&session_endpoint))
 }
 
 /// Resolve the SESSION endpoint listener the daemon serves.
 ///
-/// Honors [`SOLDR_SESSION_ENDPOINT_PATH_ENV`] first (tests / diagnostics), then
-/// falls back to the deterministic [`daemon_session_endpoint_path`] so the
-/// broker's SESSION relay can always reach the daemon at the advertised name.
-/// Step 8 will prepend the broker-inherited-fd adopt path
-/// (`broker_owned_bind::recover_from_env`, Unix only) ahead of the bind.
+/// Requires the broker-provided executable-path-derived endpoint.
 ///
 /// # Errors
 ///
@@ -312,11 +349,26 @@ pub fn bind_session_listener(socket_path: &str) -> io::Result<SessionListener> {
     // Windows named pipes do not have a filesystem parent.
     #[cfg(unix)]
     if let Some(parent) = std::path::Path::new(socket_path).parent() {
-        std::fs::create_dir_all(parent)?;
+        running_process::broker::secure_dir::ensure_private_dir(parent)?;
     }
 
     let name = local_session_name(socket_path)?;
-    let first = ListenerOptions::new().name(name).create_tokio();
+    let options = ListenerOptions::new().name(name).reclaim_name(false);
+    #[cfg(unix)]
+    let options = {
+        use interprocess::os::unix::local_socket::ListenerOptionsExt as _;
+        options.mode(0o600)
+    };
+    #[cfg(windows)]
+    let options = {
+        use interprocess::os::windows::local_socket::ListenerOptionsExt as _;
+        use interprocess::os::windows::security_descriptor::SecurityDescriptor;
+        let sddl = widestring::U16CString::from_str("D:P(A;;GA;;;OW)(A;;GA;;;SY)")
+            .map_err(io::Error::other)?;
+        let descriptor = SecurityDescriptor::deserialize(&sddl).map_err(io::Error::other)?;
+        options.security_descriptor(descriptor)
+    };
+    let first = options.create_tokio();
     #[cfg(unix)]
     {
         match first {
@@ -329,7 +381,11 @@ pub fn bind_session_listener(socket_path: &str) -> io::Result<SessionListener> {
             {
                 let _ = std::fs::remove_file(socket_path);
                 let retry_name = local_session_name(socket_path)?;
-                ListenerOptions::new().name(retry_name).create_tokio()
+                let options = ListenerOptions::new()
+                    .name(retry_name)
+                    .reclaim_name(false);
+                use interprocess::os::unix::local_socket::ListenerOptionsExt as _;
+                options.mode(0o600).create_tokio()
             }
             Err(err) => Err(err),
         }
@@ -380,6 +436,10 @@ pub(crate) async fn serve_session_endpoint_with_readiness(
 
     loop {
         let stream = listener.accept().await?;
+        if !session_peer_is_current_user(&stream) {
+            tracing::warn!(target: "soldr::daemon", "rejected foreign SESSION endpoint peer");
+            continue;
+        }
         let service = service.clone();
         let paths = paths.clone();
         let mux = Arc::clone(&mux);
@@ -389,6 +449,297 @@ pub(crate) async fn serve_session_endpoint_with_readiness(
             }
         });
     }
+}
+
+pub(crate) fn spawn_session_endpoint_servers(
+    session_listener: SessionListener,
+    handoff_listener: SessionListener,
+    readiness: CompileServiceReadiness,
+    paths: SoldrPaths,
+    mux: Arc<SessionMux>,
+) -> (tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>) {
+    let handoff_readiness = readiness.clone();
+    let handoff_paths = paths.clone();
+    let handoff_mux = Arc::clone(&mux);
+    let session = tokio::spawn(async move {
+        if let Err(error) =
+            serve_session_endpoint_with_readiness(session_listener, readiness, paths, mux).await
+        {
+            tracing::warn!(target: "soldr::daemon", "SESSION endpoint serve ended: {error}");
+        }
+    });
+    let handoff = tokio::spawn(async move {
+        if let Err(error) = serve_handoff_endpoint_with_readiness(
+            handoff_listener,
+            handoff_readiness,
+            handoff_paths,
+            handoff_mux,
+        )
+        .await
+        {
+            tracing::warn!(target: "soldr::daemon", "handoff endpoint serve ended: {error}");
+        }
+    });
+    (session, handoff)
+}
+
+/// Accept broker-to-daemon connection handoffs and dispatch every accepted
+/// client connection through the same SESSION handler as the proxy path.
+pub(crate) async fn serve_handoff_endpoint_with_readiness(
+    listener: SessionListener,
+    service: CompileServiceReadiness,
+    paths: SoldrPaths,
+    mux: Arc<SessionMux>,
+) -> io::Result<()> {
+    use interprocess::local_socket::tokio::prelude::*;
+
+    let expected_service_name =
+        std::env::var(running_process::broker::server::BACKEND_ENV_SERVICE_NAME)
+            .ok()
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| {
+                crate::daemon::backend_handle_adoption::SOLDR_DAEMON_SERVICE_NAME.to_string()
+            });
+
+    loop {
+        let control = listener.accept().await?;
+        if !session_peer_is_current_user(&control) {
+            tracing::warn!(target: "soldr::daemon", "rejected foreign handoff endpoint peer");
+            continue;
+        }
+        let service = service.clone();
+        let paths = paths.clone();
+        let mux = Arc::clone(&mux);
+        let expected_service_name = expected_service_name.clone();
+        tokio::spawn(async move {
+            match receive_handed_off_session(control, &expected_service_name).await {
+                Ok(client) => {
+                    if let Err(error) =
+                        serve_session_connection(client, &service, &paths, &mux).await
+                    {
+                        eprintln!("soldr-daemon: handed-off SESSION ended: {error}");
+                    }
+                }
+                Err(error) => {
+                    eprintln!("soldr-daemon: rejected broker connection handoff: {error}");
+                }
+            }
+        });
+    }
+}
+
+fn session_peer_is_current_user(stream: &interprocess::local_socket::tokio::Stream) -> bool {
+    use running_process::broker::server::{connection, PeerCredentialPolicy};
+    let Some(policy) = PeerCredentialPolicy::current_user() else {
+        return false;
+    };
+    connection::peer_identity_from_tokio_stream(stream).is_ok_and(|peer| policy.allows(&peer))
+}
+
+async fn read_handoff_offer_async(
+    stream: &mut interprocess::local_socket::tokio::Stream,
+    expected_service_name: &str,
+) -> io::Result<running_process::broker::protocol::HandoffOffer> {
+    use prost::Message as _;
+    use running_process::broker::protocol::{
+        Frame, FrameKind, HandoffOffer, HANDOFF_PAYLOAD_PROTOCOL,
+    };
+
+    let body = read_envelope_body(stream).await?;
+    let frame = Frame::decode(body.as_slice()).map_err(io::Error::other)?;
+    if FrameKind::try_from(frame.kind) != Ok(FrameKind::Request)
+        || frame.payload_protocol != HANDOFF_PAYLOAD_PROTOCOL
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "handoff control connection did not carry a HandoffOffer request",
+        ));
+    }
+    let offer = HandoffOffer::decode(frame.payload.as_slice()).map_err(io::Error::other)?;
+    if offer.correlation_id != frame.request_id
+        || offer.service_name != expected_service_name
+        || offer.token.len() != running_process::broker::server::HANDOFF_TOKEN_BYTES
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "handoff offer identity, correlation, or token was invalid",
+        ));
+    }
+    Ok(offer)
+}
+
+async fn accept_handoff_offer_async(
+    stream: &mut interprocess::local_socket::tokio::Stream,
+    offer: &running_process::broker::protocol::HandoffOffer,
+) -> io::Result<()> {
+    use prost::Message as _;
+    use running_process::broker::protocol::HandoffAck;
+    use tokio::io::AsyncWriteExt as _;
+
+    let ack = HandoffAck {
+        token: offer.token.clone(),
+        accepted: true,
+        error_detail: String::new(),
+        correlation_id: offer.correlation_id,
+    };
+    let frame = running_process::broker::server::handoff::handoff_ack_frame(&ack);
+    let bytes =
+        running_process::broker::protocol::encode_framed(&frame).map_err(io::Error::other)?;
+    stream.write_all(&bytes).await?;
+    stream.flush().await
+}
+
+async fn read_envelope_body(
+    stream: &mut interprocess::local_socket::tokio::Stream,
+) -> io::Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt as _;
+
+    let mut header = [0_u8; 5];
+    tokio::time::timeout(
+        running_process::broker::server::DEFAULT_HANDOFF_ACK_DEADLINE,
+        stream.read_exact(&mut header),
+    )
+    .await
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "handoff offer header timed out"))??;
+    if header[0] != running_process::broker::protocol::ENVELOPE_VERSION {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "handoff offer used the wrong envelope version",
+        ));
+    }
+    let len = u32::from_le_bytes(header[1..].try_into().expect("four bytes")) as usize;
+    if len > running_process::broker::protocol::MAX_FRAME_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "handoff offer exceeded the frame limit",
+        ));
+    }
+    let mut body = vec![0_u8; len];
+    tokio::time::timeout(
+        running_process::broker::server::DEFAULT_HANDOFF_ACK_DEADLINE,
+        stream.read_exact(&mut body),
+    )
+    .await
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "handoff offer body timed out"))??;
+    Ok(body)
+}
+
+#[cfg(unix)]
+async fn receive_handed_off_session(
+    control: interprocess::local_socket::tokio::Stream,
+    expected_service_name: &str,
+) -> io::Result<interprocess::local_socket::tokio::Stream> {
+    let (mut control, client_fd, transport_token) =
+        tokio::task::spawn_blocking(move || receive_unix_descriptor(control))
+            .await
+            .map_err(|error| io::Error::other(format!("handoff receive task failed: {error}")))??;
+    let offer = read_handoff_offer_async(&mut control, expected_service_name).await?;
+    if offer.token.as_slice() != transport_token {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "SCM_RIGHTS token did not match the framed handoff offer",
+        ));
+    }
+    let stream = interprocess::os::unix::uds_local_socket::tokio::Stream::try_from(client_fd)?;
+    // A positive ACK transfers ownership. Do not send it until the received
+    // descriptor is a usable Tokio SESSION stream.
+    accept_handoff_offer_async(&mut control, &offer).await?;
+    Ok(stream.into())
+}
+
+#[cfg(unix)]
+fn receive_unix_descriptor(
+    control: interprocess::local_socket::tokio::Stream,
+) -> io::Result<(
+    interprocess::local_socket::tokio::Stream,
+    std::os::fd::OwnedFd,
+    [u8; running_process::broker::server::HANDOFF_TOKEN_BYTES],
+)> {
+    use std::os::fd::{AsFd as _, AsRawFd as _, FromRawFd as _};
+
+    let interprocess::local_socket::tokio::Stream::UdSocket(socket) = &control;
+    let socket_fd = socket.as_fd().as_raw_fd();
+    let mut token = [0_u8; running_process::broker::server::HANDOFF_TOKEN_BYTES];
+    let mut iov = libc::iovec {
+        iov_base: token.as_mut_ptr().cast(),
+        iov_len: token.len(),
+    };
+    let mut ancillary =
+        vec![0_u8; unsafe { libc::CMSG_SPACE(std::mem::size_of::<libc::c_int>() as _) as usize }];
+    let deadline =
+        std::time::Instant::now() + running_process::broker::server::DEFAULT_HANDOFF_ACK_DEADLINE;
+    loop {
+        let mut message = unsafe { std::mem::zeroed::<libc::msghdr>() };
+        message.msg_iov = &mut iov;
+        message.msg_iovlen = 1;
+        message.msg_control = ancillary.as_mut_ptr().cast();
+        message.msg_controllen = ancillary.len() as _;
+        let received = unsafe { libc::recvmsg(socket_fd, &mut message, libc::MSG_DONTWAIT) };
+        if received < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::WouldBlock && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                continue;
+            }
+            return Err(error);
+        }
+        if received as usize != token.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "short SCM_RIGHTS token prelude",
+            ));
+        }
+        let header = unsafe { libc::CMSG_FIRSTHDR(&message) };
+        if header.is_null()
+            || unsafe {
+                (*header).cmsg_level != libc::SOL_SOCKET || (*header).cmsg_type != libc::SCM_RIGHTS
+            }
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "handoff prelude omitted SCM_RIGHTS",
+            ));
+        }
+        let received_fd = unsafe { *libc::CMSG_DATA(header).cast::<libc::c_int>() };
+        let owned = unsafe { std::os::fd::OwnedFd::from_raw_fd(received_fd) };
+        let descriptor_flags = unsafe { libc::fcntl(received_fd, libc::F_GETFD) };
+        if descriptor_flags < 0
+            || unsafe {
+                libc::fcntl(
+                    received_fd,
+                    libc::F_SETFD,
+                    descriptor_flags | libc::FD_CLOEXEC,
+                )
+            } < 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        return Ok((control, owned, token));
+    }
+}
+
+#[cfg(windows)]
+async fn receive_handed_off_session(
+    mut control: interprocess::local_socket::tokio::Stream,
+    expected_service_name: &str,
+) -> io::Result<interprocess::local_socket::tokio::Stream> {
+    use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
+
+    let offer = read_handoff_offer_async(&mut control, expected_service_name).await?;
+    if offer.handle_value == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "DuplicateHandle offer carried a null handle",
+        ));
+    }
+    let owned = unsafe { OwnedHandle::from_raw_handle(offer.handle_value as *mut _) };
+    let stream =
+        interprocess::os::windows::named_pipe::local_socket::tokio::Stream::try_from(owned)
+            .map_err(io::Error::other)?;
+    // A positive ACK transfers ownership. Do not send it until the duplicated
+    // handle is a usable Tokio SESSION stream.
+    accept_handoff_offer_async(&mut control, &offer).await?;
+    Ok(stream.into())
 }
 
 #[cfg(test)]

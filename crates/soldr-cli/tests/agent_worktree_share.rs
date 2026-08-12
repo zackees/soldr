@@ -14,6 +14,7 @@ mod common;
 
 use common::unique_temp_dir;
 use serde_json::Value;
+use soldr_cli::core::SoldrPaths;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -43,14 +44,12 @@ impl FixtureGuard {
     }
 
     fn daemon_pid(&self) -> Option<u32> {
-        let raw = fs::read_to_string(
-            self.cache_dir
-                .join("cache")
-                .join("soldr-daemon")
-                .join("daemon.pid"),
-        )
-        .ok()?;
-        raw.lines().next()?.trim().parse().ok()
+        soldr_cli::daemon::backend_handle_adoption::read_broker_route_claim(&SoldrPaths::with_root(
+            self.cache_dir.clone(),
+        ))
+        .ok()
+        .flatten()
+        .map(|claim| claim.pid)
     }
 
     fn stop_daemon(&self) -> std::process::Output {

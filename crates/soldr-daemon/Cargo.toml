@@ -16,6 +16,7 @@ soldr-cache = { path = "../soldr-cache" }
 fs2 = { workspace = true }
 hex = { workspace = true }
 interprocess = { version = "2", features = ["tokio"] }
+widestring = "1"
 prost = { workspace = true }
 redb = { workspace = true }
 running-process = { version = "4.10.1", git = "https://github.com/zackees/running-process.git", rev = "d45c90d278318e667652e1f16711dc79573e5ee8", default-features = false, features = ["client"] }
@@ -49,6 +50,9 @@ tokio-console = [
 # (setsid); Windows uses inline OpenProcess declarations.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 
 [lints]
 workspace = true

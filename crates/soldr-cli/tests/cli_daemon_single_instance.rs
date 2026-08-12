@@ -12,7 +12,7 @@
 //!
 //! 1. `RootOwnershipGuard` — an `flock`'d `<cache>/soldr-daemon/root-owner.lock`
 //!    held for the daemon's whole lifetime, deliberately version-blind.
-//! 2. `existing_daemon_pid` — a PID-file + endpoint-status identity check.
+//! 2. `existing_daemon_pid` — a route-claim + endpoint-status identity check.
 //! 3. `claim_unix_endpoint` — an immediate bind, before init, to close the
 //!    accept race.
 //!
@@ -23,7 +23,7 @@
 //! file closes that gap.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod common;
@@ -59,10 +59,14 @@ fn soldr_daemon_bin() -> PathBuf {
     parent.join(stem)
 }
 
+fn direct_sock(root: &Path) -> PathBuf {
+    common::isolated_daemon::isolated_daemon_control_endpoint(&soldr_daemon_bin(), root)
+}
+
 /// Spawn a foreground daemon against `cache_root`, capturing its output so the
 /// loser's diagnostic can be asserted on.
 fn spawn_daemon(cache_root: &Path, home_root: &Path) -> std::process::Child {
-    let mut cmd = Command::new(soldr_daemon_bin());
+    let mut cmd = common::isolated_daemon::isolated_daemon_command(&soldr_daemon_bin(), cache_root);
     cmd.args(["--foreground", "--idle-timeout-secs", "120"])
         .env("SOLDR_CACHE_DIR", cache_root)
         .env("HOME", home_root)
@@ -122,19 +126,18 @@ fn settled<T>(
     }
 }
 
-fn pid_file(cache_root: &Path) -> PathBuf {
+fn route_claim(cache_root: &Path) -> PathBuf {
     cache_root
         .join("cache")
         .join("soldr-daemon")
-        .join("daemon.pid")
+        .join("broker-route-claim.pb")
 }
 
 /// Wait until the daemon at `cache_root` is serving, or the deadline passes.
 fn wait_until_serving(cache_root: &Path, deadline: Instant) -> bool {
-    let paths = soldr_cli::core::SoldrPaths::with_root(cache_root.to_path_buf());
-    let sock = soldr_cli::daemon::client::default_sock_path(&paths);
+    let sock = direct_sock(cache_root);
     while Instant::now() < deadline {
-        if pid_file(cache_root).exists() && soldr_cli::daemon::client::status(&sock).is_ok() {
+        if route_claim(cache_root).exists() && soldr_cli::daemon::client::status(&sock).is_ok() {
             return true;
         }
         std::thread::sleep(POLL);
@@ -143,9 +146,7 @@ fn wait_until_serving(cache_root: &Path, deadline: Instant) -> bool {
 }
 
 fn stop_daemon(cache_root: &Path, child: &mut std::process::Child) {
-    let paths = soldr_cli::core::SoldrPaths::with_root(cache_root.to_path_buf());
-    let _ =
-        soldr_cli::daemon::client::shutdown(&soldr_cli::daemon::client::default_sock_path(&paths));
+    let _ = soldr_cli::daemon::client::shutdown(&direct_sock(cache_root));
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
         if matches!(child.try_wait(), Ok(Some(_))) {
@@ -175,8 +176,7 @@ soldr_cli::timed_test!(
         // against `first.id()` this is immune to the daemon re-execing or
         // relocating itself (which it does on Windows), while still proving the
         // incumbent was not displaced.
-        let paths = soldr_cli::core::SoldrPaths::with_root(cache_root.clone());
-        let sock = soldr_cli::daemon::client::default_sock_path(&paths);
+        let sock = direct_sock(&cache_root);
         let incumbent_pid = settled(|| soldr_cli::daemon::client::status(&sock))
             .expect("incumbent must be serving")
             .pid;
@@ -219,7 +219,7 @@ soldr_cli::timed_test!(
         );
 
         // The winner is still the one serving — the loser must not have
-        // displaced it, stolen the endpoint, or corrupted the PID file.
+        // displaced it, stolen the endpoint, or corrupted the route claim.
         let status = settled(|| soldr_cli::daemon::client::status(&sock))
             .expect("the original daemon must still be serving after the loser exits");
         assert_eq!(
@@ -261,8 +261,7 @@ soldr_cli::timed_test!(
 
         // The incumbent still answers, which is only possible if its own
         // state-DB access never lost the file lock to the rejected daemon.
-        let paths = soldr_cli::core::SoldrPaths::with_root(cache_root.clone());
-        let sock = soldr_cli::daemon::client::default_sock_path(&paths);
+        let sock = direct_sock(&cache_root);
         assert!(
             settled(|| soldr_cli::daemon::client::status(&sock)).is_ok(),
             "incumbent daemon stopped serving after a second daemon was rejected"

@@ -20,7 +20,6 @@
 #![allow(dead_code, unused_imports)]
 
 pub mod backend_handle_adoption;
-pub mod broker_discovery;
 /// soldr#2224 — the three IPC handlers that touch `state.redb`, split
 /// out of the oversized `server.rs`.
 pub mod build_session_ops;
@@ -61,9 +60,8 @@ pub mod service_definition;
 /// SESSION `0x5350` endpoint per-connection handler (soldr#2388 Step 6d/7 /
 /// #2386 Option A): drives the `BackendEndpointMux` (probe + `0x5350`) and, on a
 /// SESSION frame, replays the buffer into [`session_serve::serve_session_compile`].
-/// `pub` (not `pub(crate)`): the deterministic `daemon_session_endpoint_path` +
-/// the serve entry points are consumed by soldr-cli's broker relay + SESSION
-/// e2e anchor.
+/// `pub` because the endpoint helpers and serve entry points are consumed by
+/// soldr-cli's broker route and SESSION end-to-end tests.
 pub mod session_endpoint;
 /// SESSION `0x5350` compile serve — the codec-bridge (soldr#2388 Step 6c):
 /// SessionStart → shared parser → embedded zccache → `SessionFrame` output.

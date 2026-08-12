@@ -2,7 +2,32 @@
 mod lifecycle_event_tests {
     use crate::core::SoldrPaths;
     use crate::daemon::lifecycle::*;
+    use running_process::broker::backend_handle::DaemonProcess;
+    use running_process::broker::protocol::Endpoint;
     use tempfile::TempDir;
+
+    pub(super) fn write_route_claim(paths: &SoldrPaths, pid: u32, exe_path: &std::path::Path) {
+        #[cfg(unix)]
+        let endpoint = Endpoint::unix_socket(
+            exe_path.display().to_string(),
+            paths.root.join("test.session.sock").display().to_string(),
+        )
+        .expect("test endpoint");
+        #[cfg(windows)]
+        let endpoint = Endpoint::windows_pipe(exe_path.display().to_string(), "soldr-test")
+            .expect("test endpoint");
+        let claim = DaemonProcess {
+            pid,
+            exe_sha256: [0; 32],
+            exe_path: exe_path.to_path_buf(),
+            boot_id: "test-boot".to_string(),
+            ipc_endpoint: endpoint,
+            started_at_unix_ms: 0,
+            idle_timeout_secs: None,
+        };
+        crate::daemon::backend_handle_adoption::publish_broker_route_claim(paths, &claim)
+            .expect("route claim");
+    }
 
     fn read_events(paths: &SoldrPaths) -> Vec<serde_json::Value> {
         let path = crate::cache_lib::daemon_lifecycle_log_path(paths);
@@ -183,6 +208,7 @@ mod lifecycle_event_tests {
 
 #[cfg(test)]
 mod root_ownership_diagnostic_tests {
+    use super::lifecycle_event_tests::write_route_claim;
     use crate::core::SoldrPaths;
     use crate::daemon::lifecycle::*;
     use tempfile::TempDir;
@@ -199,12 +225,7 @@ mod root_ownership_diagnostic_tests {
         // that does not exist, which is exactly the orphan's shape.
         let me = std::process::id();
         let missing = temp.path().join("deleted-by-uv").join("soldr-daemon.exe");
-        std::fs::create_dir_all(crate::cache_lib::soldr_daemon_dir(&paths)).expect("dir");
-        std::fs::write(
-            crate::cache_lib::daemon_pid_path(&paths),
-            format!("{me}\n{}\n", missing.display()),
-        )
-        .expect("pid file");
+        write_route_claim(&paths, me, &missing);
 
         let msg = describe_root_ownership_conflict(&paths);
         assert!(msg.contains(&me.to_string()), "must name the PID: {msg}");
@@ -225,12 +246,7 @@ mod root_ownership_diagnostic_tests {
         let paths = SoldrPaths::with_root(temp.path().join("root"));
         let me = std::process::id();
         let real = std::env::current_exe().expect("current exe");
-        std::fs::create_dir_all(crate::cache_lib::soldr_daemon_dir(&paths)).expect("dir");
-        std::fs::write(
-            crate::cache_lib::daemon_pid_path(&paths),
-            format!("{me}\n{}\n", real.display()),
-        )
-        .expect("pid file");
+        write_route_claim(&paths, me, &real);
 
         let msg = describe_root_ownership_conflict(&paths);
         assert!(msg.contains(&me.to_string()), "{msg}");
@@ -254,12 +270,7 @@ mod root_ownership_diagnostic_tests {
         // these lifecycle tests.
         let dead = i32::MAX as u32;
         let some_image = temp.path().join("soldr-daemon.exe");
-        std::fs::create_dir_all(crate::cache_lib::soldr_daemon_dir(&paths)).expect("dir");
-        std::fs::write(
-            crate::cache_lib::daemon_pid_path(&paths),
-            format!("{dead}\n{}\n", some_image.display()),
-        )
-        .expect("pid file");
+        write_route_claim(&paths, dead, &some_image);
 
         let msg = describe_root_ownership_conflict(&paths);
         assert!(
@@ -283,12 +294,12 @@ mod root_ownership_diagnostic_tests {
         );
     });
 
-    // No PID file at all must still produce something better than silence.
-    crate::timed_test!(a_missing_pid_file_says_so_rather_than_naming_nobody, {
+    // No route claim at all must still produce something better than silence.
+    crate::timed_test!(a_missing_route_claim_says_so_rather_than_naming_nobody, {
         let temp = TempDir::new().expect("tempdir");
         let paths = SoldrPaths::with_root(temp.path().join("root"));
         let msg = describe_root_ownership_conflict(&paths);
-        assert!(msg.contains("no daemon PID file"), "{msg}");
+        assert!(msg.contains("no daemon route claim"), "{msg}");
     });
 }
 

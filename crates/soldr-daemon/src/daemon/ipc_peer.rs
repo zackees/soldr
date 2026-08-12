@@ -24,6 +24,22 @@ impl PeerIdentity {
         }
     }
 
+    #[cfg(unix)]
+    pub(crate) fn from_unix_stream(stream: &tokio::net::UnixStream) -> Self {
+        let pid = stream
+            .peer_cred()
+            .ok()
+            .and_then(|credentials| credentials.pid())
+            .and_then(|pid| u32::try_from(pid).ok());
+        Self {
+            pid,
+            exe: None,
+            source: pid
+                .map(|_| LifecycleSource::IpcPeer)
+                .unwrap_or(LifecycleSource::Unknown),
+        }
+    }
+
     /// Persist requester attribution before the daemon writes its shutdown ACK.
     pub(crate) fn record_shutdown_requested(
         self,
@@ -78,6 +94,80 @@ impl PeerIdentity {
             source: LifecycleSource::IpcPeer,
         }
     }
+}
+
+#[cfg(unix)]
+pub(crate) fn unix_peer_is_current_user(stream: &tokio::net::UnixStream) -> bool {
+    stream
+        .peer_cred()
+        .ok()
+        .is_some_and(|credentials| credentials.uid() == unsafe { libc::geteuid() })
+}
+
+#[cfg(windows)]
+pub(crate) fn create_owner_only_windows_pipe(
+    endpoint: &str,
+    first: bool,
+) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeServer> {
+    use std::ffi::c_void;
+    use tokio::net::windows::named_pipe::ServerOptions;
+
+    #[repr(C)]
+    struct SecurityAttributes {
+        length: u32,
+        descriptor: *mut c_void,
+        inherit: i32,
+    }
+    extern "system" {
+        fn ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            source: *const u16,
+            revision: u32,
+            descriptor: *mut *mut c_void,
+            size: *mut u32,
+        ) -> i32;
+        fn LocalFree(memory: *mut c_void) -> *mut c_void;
+    }
+
+    let wide: Vec<u16> = "D:P(A;;GA;;;OW)(A;;GA;;;SY)"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut descriptor = std::ptr::null_mut();
+    // SAFETY: the UTF-16 input is NUL-terminated and both output pointers are
+    // valid for the duration of this call.
+    if unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            wide.as_ptr(),
+            1,
+            &mut descriptor,
+            std::ptr::null_mut(),
+        )
+    } == 0
+        || descriptor.is_null()
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    let mut attributes = SecurityAttributes {
+        length: std::mem::size_of::<SecurityAttributes>() as u32,
+        descriptor,
+        inherit: 0,
+    };
+    let mut options = ServerOptions::new();
+    options
+        .first_pipe_instance(first)
+        .reject_remote_clients(true);
+    // SAFETY: `attributes` and its descriptor remain alive through the create
+    // call; Windows copies the descriptor into the new pipe object.
+    let result = unsafe {
+        options.create_with_security_attributes_raw(
+            endpoint,
+            std::ptr::addr_of_mut!(attributes).cast(),
+        )
+    };
+    // SAFETY: ConvertStringSecurityDescriptor allocated this block with
+    // LocalAlloc and LocalFree is its documented matching release.
+    unsafe { LocalFree(descriptor) };
+    result
 }
 
 #[cfg(windows)]

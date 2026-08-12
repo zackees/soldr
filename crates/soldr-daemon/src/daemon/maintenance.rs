@@ -368,7 +368,7 @@ pub async fn run_manual_root(root: PathBuf) -> Result<MaintenanceStatus, String>
     let _root_owner = crate::daemon::lifecycle::RootOwnershipGuard::try_acquire(&paths)
         .map_err(|error| format!("acquire root ownership: {error}"))?
         .ok_or_else(|| "refusing orphan-root maintenance: root ownership is busy".to_string())?;
-    if let Some(pid) = crate::daemon::lifecycle::stale_daemon_occupies_endpoint(&paths) {
+    if let Some(pid) = crate::daemon::lifecycle::claimed_daemon_occupies_route(&paths) {
         return Err(format!(
             "refusing orphan-root maintenance: daemon pid {pid} owns {}",
             paths.root.display()

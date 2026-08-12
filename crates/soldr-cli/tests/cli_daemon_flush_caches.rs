@@ -69,10 +69,16 @@ fn soldr_daemon_bin() -> PathBuf {
 
 fn run_soldr(args: &[&str], cache_root: &Path, home_root: &Path) -> std::process::Output {
     let mut cmd = Command::new(common::soldr_bin());
+    common::isolated_daemon::configure_isolated_daemon_client(
+        &mut cmd,
+        &soldr_daemon_bin(),
+        cache_root,
+    );
     cmd.args(args)
         .env("SOLDR_CACHE_DIR", cache_root)
         .env("HOME", home_root)
         .env("USERPROFILE", home_root)
+        .env("SOLDR_TEST_DIRECT_DAEMON_CONTROL", "1")
         .env_remove("RUSTC_WRAPPER");
     cmd.output().expect("run soldr")
 }
@@ -85,7 +91,8 @@ struct DaemonProc {
 
 impl DaemonProc {
     fn spawn(cache_root: &Path, home_root: &Path) -> Self {
-        let mut cmd = Command::new(soldr_daemon_bin());
+        let mut cmd =
+            common::isolated_daemon::isolated_daemon_command(&soldr_daemon_bin(), cache_root);
         cmd.args(["--foreground", "--idle-timeout-secs", "60"])
             .env("SOLDR_CACHE_DIR", cache_root)
             .env("HOME", home_root)
@@ -98,7 +105,7 @@ impl DaemonProc {
         let pid_file = cache_root
             .join("cache")
             .join("soldr-daemon")
-            .join("daemon.pid");
+            .join("broker-route-claim.pb");
         while Instant::now() < deadline {
             if pid_file.exists() {
                 let status = run_soldr(&["daemon", "status", "--json"], cache_root, home_root);

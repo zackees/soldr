@@ -2799,12 +2799,14 @@ dependencies = [
 name = "soldr-cli"
 version = "0.9.0"
 dependencies = [
+ "blake3",
  "cap-fs-ext",
  "cap-std",
  "clap",
  "filetime",
  "flate2",
  "fs2",
+ "getrandom 0.4.3",
  "hex",
  "interprocess",
  "jwalk",
@@ -2824,6 +2826,7 @@ dependencies = [
  "soldr-daemon",
  "soldr-fetch",
  "strsim",
+ "sysinfo",
  "tar",
  "tempfile",
  "thiserror",
@@ -2833,6 +2836,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "wait-timeout",
+ "widestring",
  "windows-sys 0.61.2",
  "xz2",
  "zccache",
@@ -2882,6 +2886,8 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "widestring",
+ "windows-sys 0.61.2",
  "zccache",
 ]
 

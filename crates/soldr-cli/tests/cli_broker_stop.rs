@@ -1,9 +1,10 @@
-//! soldr#2442 slice 2 — `soldr broker stop` terminates the running broker and
-//! reaps the daemon routes it owns, using the broker's self-reported PIDs (never
-//! by process name). With no broker bound it prints "not running" and exits 0.
+//! `soldr broker stop` terminates only the stable broker, using its self-reported
+//! PID (never a process-name sweep). Daemon routes remain alive for re-adoption;
+//! with no broker bound the command prints "not running" and exits 0.
 
+use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 mod common;
 
@@ -12,17 +13,11 @@ const STATUS_POLL_BUDGET: Duration = Duration::from_secs(20);
 const STOP_EXIT_BUDGET: Duration = Duration::from_secs(20);
 const POLL: Duration = Duration::from_millis(100);
 
-fn unique_program(label: &str) -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("time went backwards")
-        .as_nanos();
-    format!("soldr-broker-stop-{label}-{:010x}", nanos & 0xFF_FFFF_FFFF)
-}
-
-fn spawn_broker(program: &str) -> std::process::Child {
+fn spawn_broker(home: &Path) -> std::process::Child {
     Command::new(common::soldr_bin())
-        .args(["broker", "serve", "--program", program])
+        .args(["broker", "serve"])
+        .env("HOME", home)
+        .env("USERPROFILE", home)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -30,9 +25,11 @@ fn spawn_broker(program: &str) -> std::process::Child {
         .expect("spawn soldr broker serve")
 }
 
-fn run_broker(program: &str, verb: &str) -> (String, i32) {
+fn run_broker(verb: &str, home: &Path) -> (String, i32) {
     let out = Command::new(common::soldr_bin())
-        .args(["broker", verb, "--program", program])
+        .args(["broker", verb])
+        .env("HOME", home)
+        .env("USERPROFILE", home)
         .stdin(Stdio::null())
         .output()
         .unwrap_or_else(|e| panic!("run soldr broker {verb}: {e}"));
@@ -51,7 +48,7 @@ fn wait_until_bound(child: &mut std::process::Child, deadline: Instant) -> bool 
     };
     let handle = std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if line.contains("binding at") {
+            if line.contains("stable endpoint bound at") {
                 return true;
             }
         }
@@ -72,8 +69,8 @@ soldr_cli::timed_test!(
     broker_stop_reports_not_running_when_no_broker,
     Duration::from_secs(30),
     {
-        let program = unique_program("absent");
-        let (output, code) = run_broker(&program, "stop");
+        let home = common::unique_temp_dir("broker-stop-absent-home");
+        let (output, code) = run_broker("stop", &home);
         assert_eq!(
             code, 0,
             "stop against no broker must exit 0; got:\n{output}"
@@ -89,29 +86,29 @@ soldr_cli::timed_test!(
     broker_stop_terminates_running_broker,
     Duration::from_secs(120),
     {
-        let program = unique_program("live");
-        let mut broker = spawn_broker(&program);
+        let home = common::unique_temp_dir("broker-stop-live-home");
+        let mut broker = spawn_broker(&home);
         assert!(
             wait_until_bound(&mut broker, Instant::now() + READY_TIMEOUT),
             "broker never printed its bound-at line within {READY_TIMEOUT:?}"
         );
 
-        // Wait for the control socket to actually answer (it binds just after
+        // Wait for the stable endpoint to actually answer (it binds just after
         // the readiness line) so stop has a live broker to snapshot.
         let status_deadline = Instant::now() + STATUS_POLL_BUDGET;
         loop {
-            let (out, code) = run_broker(&program, "status");
+            let (out, code) = run_broker("status", &home);
             if code == 0 && out.contains("broker_instance:") {
                 break;
             }
             assert!(
                 Instant::now() < status_deadline,
-                "broker control socket never answered status; last:\n{out}"
+                "stable broker endpoint never answered status; last:\n{out}"
             );
             std::thread::sleep(POLL);
         }
 
-        let (stop_out, stop_code) = run_broker(&program, "stop");
+        let (stop_out, stop_code) = run_broker("stop", &home);
         assert_eq!(stop_code, 0, "stop must exit 0; got:\n{stop_out}");
         assert!(
             stop_out.contains("stopped"),
@@ -142,7 +139,7 @@ soldr_cli::timed_test!(
         }
 
         // A second status must now report the broker is gone.
-        let (after, after_code) = run_broker(&program, "status");
+        let (after, after_code) = run_broker("status", &home);
         assert_eq!(after_code, 0, "post-stop status must exit 0; got:\n{after}");
         assert!(
             after.contains("not running"),

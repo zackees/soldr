@@ -1,18 +1,16 @@
-//! PID-file based lifecycle for soldr-daemon: detect a live daemon,
-//! spawn one detached when none is found, append structured JSONL
+//! Route-claim based lifecycle for soldr-daemon: detect a live daemon,
+//! spawn one detached when none is found, and append structured JSONL
 //! lifecycle events.
 //!
-//! The PID file stores two lines: the decimal PID and the absolute path
-//! to the daemon executable. Readers verify both — the file is only
-//! authoritative if the PID is alive AND its exe stem is
-//! `soldr-daemon`. Defends against recycled PIDs the way zccache does.
+//! A route-local protobuf claim records the daemon process and its private
+//! endpoint. Readers verify the live process before acting on that claim.
 
 mod spawn;
 mod spawn_env;
 pub(crate) use spawn::*;
 pub(crate) use spawn_env::*;
 
-use crate::cache_lib::{daemon_lifecycle_log_path, daemon_pid_path, soldr_daemon_dir};
+use crate::cache_lib::{daemon_lifecycle_log_path, soldr_daemon_dir};
 use crate::core::SoldrPaths;
 use fs2::FileExt;
 use serde::Serialize;
@@ -33,7 +31,6 @@ pub const SOLDR_DAEMON_EXE_ENV_VAR: &str = "SOLDR_INTERNAL_DAEMON_EXE";
 #[derive(Debug)]
 pub enum LifecycleError {
     Io(std::io::Error),
-    NoExe,
     Spawn(std::io::Error),
 }
 
@@ -148,15 +145,15 @@ impl MissingImageDetector {
 /// carry enough to act on: the PID, and whether its image still exists --
 /// because a holder whose executable is gone cannot be a legitimate owner.
 ///
-/// Deliberately hedged. The PID file records the daemon that last wrote it,
+/// Deliberately hedged. The route claim records the daemon that last wrote it,
 /// which is *probably* the lock holder but is not proven to be, so the wording
 /// says "recorded" rather than asserting identity. Naming a plausible suspect
 /// beats today's silence; claiming certainty we do not have would be worse.
 pub fn describe_root_ownership_conflict(paths: &SoldrPaths) -> String {
     let root = paths.root.display();
-    let Some((pid, exe)) = read_pid_file(paths) else {
+    let Some((pid, exe)) = read_route_claim_identity(paths) else {
         return format!(
-            "soldr root ownership is busy: {root} (no daemon PID file to name the owner)"
+            "soldr root ownership is busy: {root} (no daemon route claim to name the owner)"
         );
     };
     let alive = pid_is_alive(pid);
@@ -183,52 +180,38 @@ pub fn describe_root_ownership_conflict(paths: &SoldrPaths) -> String {
                 "pkill -f soldr-daemon"
             };
             format!(
-                "soldr root ownership is busy: {root} -- recorded owner PID {pid} is dead, but the              lock is held by an unrecorded orphaned soldr-daemon that outlived the PID file; `soldr daemon stop` cannot reach it (it probes the pipe, not the lock; soldr#1987, soldr#2316).
+                "soldr root ownership is busy: {root} -- recorded owner PID {pid} is dead, but the              lock is held by an unrecorded orphaned soldr-daemon that outlived the route claim; `soldr daemon stop` cannot reach it (it probes the endpoint, not the lock; soldr#1987, soldr#2316).
              soldr: terminate the orphaned daemon(s) to recover (safe -- respawned on demand): {kill_hint}"
             )
         }
     }
 }
 
-/// Read the PID file. Returns `(pid, exe_path)` if the file is well
-/// formed; absent / malformed reads return None. **Does not** verify
-/// liveness — that's `is_live`.
-pub fn read_pid_file(paths: &SoldrPaths) -> Option<(u32, PathBuf)> {
-    let raw = fs::read_to_string(daemon_pid_path(paths)).ok()?;
-    let mut lines = raw.lines();
-    let pid: u32 = lines.next()?.trim().parse().ok()?;
-    let exe = lines.next()?.trim();
-    if exe.is_empty() {
-        return None;
-    }
-    Some((pid, PathBuf::from(exe)))
+/// Read `(pid, exe_path)` from the route claim. This does not verify liveness;
+/// [`is_live`] performs the exact process and endpoint probe.
+pub fn read_route_claim_identity(paths: &SoldrPaths) -> Option<(u32, PathBuf)> {
+    crate::daemon::backend_handle_adoption::read_broker_route_claim(paths)
+        .ok()
+        .flatten()
+        .map(|claim| (claim.pid, claim.exe_path))
 }
 
-/// Verify the daemon recorded in the PID file is still alive AND its
+/// Verify the daemon recorded in the route claim is still alive AND its
 /// running exe stem looks like a soldr-daemon. Returns the PID on
 /// success, None on any mismatch / missing file.
 pub fn is_live(paths: &SoldrPaths) -> Option<u32> {
     direct_backend_handle_probe(paths)
 }
 
-/// Probe the route-local PID file's recorded daemon with the
+/// Probe the route-local claim's recorded daemon with the
 /// `running-process` `BackendHandle` nonce challenge.
 pub(crate) fn direct_backend_handle_probe(paths: &SoldrPaths) -> Option<u32> {
     crate::daemon::backend_handle_adoption::probe_soldr_daemon(paths).map(|handle| handle.pid())
 }
 
-pub(crate) fn direct_pid_file_live(paths: &SoldrPaths) -> Option<u32> {
-    let (pid, _exe_path) = read_pid_file(paths)?;
+pub(crate) fn claimed_process_live(paths: &SoldrPaths) -> Option<u32> {
+    let (pid, _exe_path) = read_route_claim_identity(paths)?;
     pid_is_soldr_daemon(pid).then_some(pid)
-}
-
-fn direct_pid_file_live_for_stem(paths: &SoldrPaths, expected_stem: &str) -> Option<u32> {
-    let (pid, _exe_path) = read_pid_file(paths)?;
-    if pid_is_alive(pid) && pid_exe_stem_matches(pid, expected_stem) {
-        Some(pid)
-    } else {
-        None
-    }
 }
 
 /// Env escape hatch (soldr#1495): set `SOLDR_DAEMON_DISPLACE=off` (or
@@ -262,9 +245,8 @@ pub(crate) fn displacement_enabled() -> bool {
 }
 
 /// True when the running daemon's published claim matches this build's
-/// identity — package version **and** vendored zccache version, since the
-/// latter is what versions the embedded store (soldr#2186; see
-/// `broker_discovery::daemon_identity_claim`).
+/// identity. The stable broker route already partitions daemon images by
+/// package version and executable digest.
 ///
 /// A missing claim (a pre-#1495 daemon that never wrote a manifest) is
 /// treated as a mismatch — version-unknown is stale — so a newer client
@@ -272,9 +254,43 @@ pub(crate) fn displacement_enabled() -> bool {
 /// package version, i.e. one built before this change, is stale for the
 /// same reason, and is displaced once on first contact.
 pub(crate) fn current_version_claim_matches(paths: &SoldrPaths) -> bool {
-    crate::daemon::broker_discovery::read_claimed_service_version(paths)
-        .is_some_and(|claimed| claimed == env!("CARGO_PKG_VERSION"))
-        && crate::daemon::broker_discovery::store_version_claim_matches(paths)
+    let service =
+        std::env::var_os(crate::daemon::backend_handle_adoption::SOLDR_BROKER_SERVICE_ENV_VAR);
+    current_version_claim_matches_service(paths, service.as_deref())
+}
+
+fn current_version_claim_matches_service(
+    paths: &SoldrPaths,
+    service: Option<&std::ffi::OsStr>,
+) -> bool {
+    let Some(claim) = crate::daemon::backend_handle_adoption::read_broker_route_claim(paths)
+        .ok()
+        .flatten()
+    else {
+        return false;
+    };
+    let Some(service) = service else {
+        #[cfg(debug_assertions)]
+        if std::env::var_os(crate::daemon::client::TEST_DIRECT_CONTROL_ENV).is_some() {
+            let current = std::env::current_exe()
+                .ok()
+                .and_then(|path| std::fs::canonicalize(path).ok());
+            return current.is_some_and(|path| {
+                std::fs::canonicalize(claim.exe_path).is_ok_and(|claim| claim == path)
+            });
+        }
+        // No route identity means there is no evidence that this claim belongs
+        // to the current daemon image. Accepting any claim here let an old
+        // image suppress displacement before the front door registered its
+        // current route.
+        return false;
+    };
+    let expected_route = crate::daemon::service_definition::broker_owned_paths()
+        .root
+        .join("routes")
+        .join(service);
+    let expected_route = std::fs::canonicalize(&expected_route).unwrap_or(expected_route);
+    std::fs::canonicalize(claim.exe_path).is_ok_and(|path| path.starts_with(expected_route))
 }
 
 /// Version-aware liveness: the daemon is live (passes the existing PID +
@@ -288,19 +304,17 @@ pub fn is_live_current_version(paths: &SoldrPaths) -> Option<u32> {
     current_version_claim_matches(paths).then_some(pid)
 }
 
-fn is_live_current_version_direct(paths: &SoldrPaths) -> Option<u32> {
-    let pid = direct_pid_file_live(paths)?;
-    current_version_claim_matches(paths).then_some(pid)
-}
-
-fn direct_status_current_version(paths: &SoldrPaths) -> Option<u32> {
-    let pid = direct_pid_file_live(paths)?;
+fn direct_status_current_version_for_service(
+    paths: &SoldrPaths,
+    service: Option<&std::ffi::OsStr>,
+) -> Option<u32> {
+    let pid = claimed_process_live(paths)?;
     let sock = crate::daemon::client::default_sock_path(paths);
     let status_pid = crate::daemon::client::status(&sock).ok()?.pid;
     preflight_identity_matches(
         Some(pid),
         Some(status_pid),
-        current_version_claim_matches(paths),
+        current_version_claim_matches_service(paths, service),
     )
     .then_some(pid)
 }
@@ -321,8 +335,8 @@ fn preflight_identity_matches(
 /// bind — distinct from `is_live` (which additionally requires the IPC
 /// probe to succeed, and so misses a protocol-mismatched daemon that is
 /// nonetheless holding the socket).
-pub fn stale_daemon_occupies_endpoint(paths: &SoldrPaths) -> Option<u32> {
-    let (pid, _exe) = read_pid_file(paths)?;
+pub fn claimed_daemon_occupies_route(paths: &SoldrPaths) -> Option<u32> {
+    let (pid, _exe) = read_route_claim_identity(paths)?;
     pid_is_soldr_daemon(pid).then_some(pid)
 }
 
@@ -427,8 +441,8 @@ pub fn wait_for_shutdown_responder(
 /// `source` attributes the request, so two `displace-kill-fallback`
 /// records from different entry points stay distinguishable (soldr#1808).
 pub fn displace_stale_daemon(paths: &SoldrPaths, source: Option<LifecycleSource>) -> bool {
-    let verified_pid = stale_daemon_occupies_endpoint(paths);
-    let recorded_pid = read_pid_file(paths).map(|(pid, _)| pid);
+    let verified_pid = claimed_daemon_occupies_route(paths);
+    let recorded_pid = read_route_claim_identity(paths).map(|(pid, _)| pid);
     let recorded_live_pid = recorded_pid.filter(|pid| pid_is_alive(*pid));
     append_lifecycle_event_with(
         paths,
@@ -500,6 +514,15 @@ pub fn displace_stale_daemon(paths: &SoldrPaths, source: Option<LifecycleSource>
 /// launch the current route image on the first compile request. A no-op
 /// when displacement is disabled or the running daemon is already current.
 pub fn preflight_displace_stale_daemon(paths: &SoldrPaths) {
+    let service =
+        std::env::var_os(crate::daemon::backend_handle_adoption::SOLDR_BROKER_SERVICE_ENV_VAR);
+    preflight_displace_stale_daemon_for_service(paths, service.as_deref());
+}
+
+pub fn preflight_displace_stale_daemon_for_service(
+    paths: &SoldrPaths,
+    service: Option<&std::ffi::OsStr>,
+) {
     if !displacement_enabled() {
         return;
     }
@@ -507,10 +530,10 @@ pub fn preflight_displace_stale_daemon(paths: &SoldrPaths) {
     // The general `is_live_current_version` route probes both the optional
     // broker and a full executable identity hash; together those added tens
     // of seconds to every warm cargo invocation. Requiring the status PID to
-    // match the live PID-file process prevents PID reuse from accepting an
+    // match the live claimed process prevents PID reuse from accepting an
     // unrelated same-stem process, while the normal status wire exchange
     // still proves that the current-protocol daemon owns the endpoint.
-    if direct_status_current_version(paths).is_some() {
+    if direct_status_current_version_for_service(paths, service).is_some() {
         return;
     }
     // Issue #1865: a `None` above is ambiguous — it means either "this daemon
@@ -523,23 +546,22 @@ pub fn preflight_displace_stale_daemon(paths: &SoldrPaths) {
     // Require positive evidence instead. A process that is alive, looks like
     // one of our daemons, and publishes *this exact* version claim cannot be
     // the stale-version daemon this preflight exists to displace, however
-    // unresponsive it currently is. `is_live_current_version_direct` is the
-    // right predicate and costs no IPC, so this stays latency-neutral for the
-    // warm path #1832 tuned.
+    // unresponsive it currently is. Exact claimed-process + route matching
+    // costs no IPC, so this stays latency-neutral for the warm path #1832 tuned.
     //
     // Trade-off: a genuinely wedged current-version daemon is no longer
     // displaced *here*. That is outside preflight's remit (its job is version
     // skew) and is covered by the wedge/recovery ladder — and killing a
     // busy-but-healthy daemon is strictly worse than leaving it alone.
-    let claim_proves_current = is_live_current_version_direct(paths);
-    let recorded_process_is_alive = read_pid_file(paths).is_some_and(|(pid, _)| pid_is_alive(pid));
-    #[cfg(unix)]
-    let endpoint_artifact_exists = crate::cache_lib::daemon_sock_path(paths).exists();
-    #[cfg(windows)]
-    let endpoint_artifact_exists = false;
+    let claim_proves_current = claimed_process_live(paths)
+        .filter(|_| current_version_claim_matches_service(paths, service));
+    let recorded_process_is_alive =
+        read_route_claim_identity(paths).is_some_and(|(pid, _)| pid_is_alive(pid));
+    let endpoint_artifact_exists =
+        crate::daemon::backend_handle_adoption::broker_route_claim_path(paths).exists();
     if preflight_should_displace(
         claim_proves_current.is_some(),
-        stale_daemon_occupies_endpoint(paths).is_some(),
+        claimed_daemon_occupies_route(paths).is_some(),
         recorded_process_is_alive,
         endpoint_artifact_exists,
     ) {
@@ -560,7 +582,7 @@ pub fn preflight_displace_stale_daemon(paths: &SoldrPaths) {
 ///
 /// `claim_proves_current` is the evidence that closes the #1865 hole: the
 /// caller has already failed to get a status answer, and this says whether the
-/// PID-file process is nonetheless alive, one of ours, and publishing this
+/// claimed process is nonetheless alive, one of ours, and publishing this
 /// exact version. When it is, no amount of endpoint occupancy justifies a
 /// displacement — the daemon is current, just unresponsive right now.
 fn preflight_should_displace(
@@ -592,7 +614,7 @@ fn wait_for_pid_exit(pid: u32, timeout: Duration) -> bool {
 
 /// Wait until a daemon PID is no longer alive. A zero timeout is an
 /// instantaneous observation. Callers capture the PID before sending the
-/// shutdown request so removal of the PID file cannot be mistaken for process
+/// shutdown request so removal of the route claim cannot be mistaken for process
 /// exit.
 pub fn wait_for_daemon_exit(pid: u32, timeout: Duration) -> bool {
     wait_for_pid_exit(pid, timeout)
@@ -648,18 +670,6 @@ fn terminate_pid(pid: u32, _deadline: Option<Instant>) {
         TerminateProcess(h, 1);
         CloseHandle(h);
     }
-}
-
-/// Write the PID file for the running daemon. Overwrites any stale
-/// content. Caller is responsible for ensuring `soldr_daemon_dir`
-/// exists.
-pub fn write_pid_file(paths: &SoldrPaths) -> Result<(), LifecycleError> {
-    let exe = std::env::current_exe().map_err(|_| LifecycleError::NoExe)?;
-    fs::create_dir_all(soldr_daemon_dir(paths))?;
-    let pid = std::process::id();
-    let contents = format!("{pid}\n{}\n", exe.display());
-    fs::write(daemon_pid_path(paths), contents)?;
-    Ok(())
 }
 
 /// Why a lifecycle transition happened.
@@ -970,7 +980,7 @@ pub(crate) fn pid_exe_stem_matches(pid: u32, expected_stem: &str) -> bool {
 ///
 /// Absence is deliberately a mismatch: callers use this check immediately
 /// before signalling a PID, so an unavailable image probe must never turn a
-/// stale PID file into authority to terminate an unrelated process.
+/// stale route claim into authority to terminate an unrelated process.
 #[cfg(unix)]
 fn process_image_stem_matches(image: Option<&Path>, expected_stem: &str) -> bool {
     image
