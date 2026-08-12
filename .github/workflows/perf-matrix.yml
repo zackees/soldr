@@ -412,10 +412,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [linux]
-        fixture: [medium, sqlite-link]
         include:
           - platform: linux
+            fixture: medium
+            runs_on: ubuntu-24.04
+          # bundled SQLite is one very large cc-rs translation unit. Running
+          # it beside parallel Rust compiles has repeatedly exhausted hosted
+          # runner memory, so serialize this measurement cell.
+          - platform: linux
+            fixture: sqlite-link
             runs_on: ubuntu-24.04
     runs-on: ${{ matrix.runs_on }}
     steps:
@@ -478,6 +483,12 @@ jobs:
           # explicit so a future image change does not silently break
           # this row.
           which gcc || sudo apt-get install -y gcc
+
+      - name: Serialize the bundled SQLite compile
+        if: steps.gate.outputs.selected == 'true' && matrix.fixture == 'sqlite-link'
+        run: |
+          echo "CARGO_BUILD_JOBS=1" >> "$GITHUB_ENV"
+          echo "SOLDR_JOBS=1" >> "$GITHUB_ENV"
 
       - name: Download soldr binary
         if: steps.gate.outputs.selected == 'true'

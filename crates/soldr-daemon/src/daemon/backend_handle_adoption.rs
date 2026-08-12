@@ -9,7 +9,6 @@
 
 use crate::cache_lib::soldr_daemon_dir;
 use crate::core::SoldrPaths;
-#[cfg(unix)]
 use crate::daemon::client;
 use crate::daemon::lifecycle::{pid_exe_stem_matches, pid_is_alive};
 use crate::daemon::protocol::PROTOCOL_VERSION;

@@ -1,8 +1,9 @@
 //! soldr#2361 Phase 2: the front door's "spawn the broker" allowlisted
 //! exception. **Unconditional** (soldr#2388): every eligible top-level `soldr`
-//! invocation spawns/confirms the broker, and the compile hot path routes
-//! through it. There is no env-var opt-out — the broker-fronted daemon is the
-//! only supported topology.
+//! invocation that may need the broker spawns/confirms it, and the compile hot
+//! path routes through it. Teardown commands never resurrect an absent broker.
+//! There is no env-var opt-out — the broker-fronted daemon is the only
+//! supported topology.
 //!
 //! Per the #2364 design, the front door is the sole broker-spawner, and the
 //! broker is the sole daemon-spawner via `serve_launching_backends`. The
@@ -103,6 +104,21 @@ pub(crate) fn front_door_broker_spawn_eligible(raw_args: &[String]) -> bool {
     true
 }
 
+fn is_teardown_command(raw_args: &[String]) -> bool {
+    let Some(command) = raw_args.get(1).and_then(|first| match first.as_str() {
+        "cache" => Some("shutdown"),
+        "daemon" => Some("stop"),
+        _ => None,
+    }) else {
+        return false;
+    };
+    raw_args
+        .iter()
+        .skip(2)
+        .filter(|arg| !arg.starts_with('-'))
+        .any(|arg| arg == command)
+}
+
 fn ci_endpoint_diagnostics_eligible(raw_args: &[String]) -> bool {
     !raw_args.iter().any(|arg| {
         matches!(arg.as_str(), "--json" | "--github-env" | "--shell-export")
@@ -122,6 +138,20 @@ fn ci_endpoint_diagnostics_eligible(raw_args: &[String]) -> bool {
 /// reports an attributed hard failure if that route is still unavailable.
 pub(crate) fn maybe_spawn_broker_front_door(raw_args: &[String]) {
     if !front_door_broker_spawn_eligible(raw_args) {
+        return;
+    }
+    // An idempotent teardown must observe an absent daemon as already stopped,
+    // not spend the cold-start budget staging a broker solely to ask it the
+    // same question. A live daemon is different: resurrect the broker so it
+    // can re-adopt the backend and flush it gracefully before shutdown.
+    if is_teardown_command(raw_args)
+        && crate::core::SoldrPaths::new()
+            .ok()
+            .and_then(|paths| {
+                soldr_daemon::daemon::lifecycle::claimed_daemon_occupies_route(&paths)
+            })
+            .is_none()
+    {
         return;
     }
     if ci_endpoint_diagnostics_eligible(raw_args) {
@@ -660,6 +690,37 @@ mod tests {
             "serve".to_string(),
         ];
         assert!(!front_door_broker_spawn_eligible(&raw_args));
+    });
+
+    crate::timed_test!(teardown_commands_remain_broker_eligible, {
+        let raw_args = vec![
+            "soldr".to_string(),
+            "cache".to_string(),
+            "shutdown".to_string(),
+            "--json".to_string(),
+        ];
+        assert!(front_door_broker_spawn_eligible(&raw_args));
+        assert!(is_teardown_command(&raw_args));
+
+        let flags_first = vec![
+            "soldr".to_string(),
+            "cache".to_string(),
+            "--json".to_string(),
+            "shutdown".to_string(),
+        ];
+        assert!(front_door_broker_spawn_eligible(&flags_first));
+        assert!(is_teardown_command(&flags_first));
+
+        let daemon_stop = vec![
+            "soldr".to_string(),
+            "daemon".to_string(),
+            "stop".to_string(),
+        ];
+        assert!(front_door_broker_spawn_eligible(&daemon_stop));
+        assert!(is_teardown_command(&daemon_stop));
+
+        let status = vec!["soldr".to_string(), "status".to_string()];
+        assert!(!is_teardown_command(&status));
     });
 
     // soldr#2388: the broker is unconditional — an ordinary invocation is

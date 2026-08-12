@@ -82,9 +82,10 @@ const REPLY_TIMEOUT: Duration = Duration::from_millis(2_000);
 /// index writer, and up to five persistence saves), so its IPC budget must be
 /// longer than the generic status/shutdown request timeout.
 const CACHE_FLUSH_REPLY_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-/// Last protocol spoken by pre-generation shutdown acknowledgements. This
-/// fallback exists only to retire an older local daemon safely during rollout.
-const LEGACY_SHUTDOWN_PROTOCOL_VERSION: u32 = 17;
+/// Historical protocols that must remain able to retire their daemon during
+/// an in-place upgrade. v21 is the immediately preceding released daemon;
+/// v17 is the last protocol whose shutdown acknowledgement lacked identity.
+const SHUTDOWN_COMPAT_PROTOCOL_VERSIONS: &[u32] = &[21, 17];
 
 /// Default compile-dispatch timeout — rustc may take minutes for a release
 /// build of a large crate, so the default stays generous (30 minutes): a
@@ -307,6 +308,32 @@ fn submit_request_for_version(
     }
 }
 
+/// Compatibility-only direct request. A stable broker cannot route a daemon
+/// whose protocol predates its route claim, so retirement probes must dial the
+/// root-local endpoint rather than re-enter the installed broker connector.
+fn submit_direct_request_for_version(
+    sock_path: &Path,
+    req: &Request,
+    protocol_version: u32,
+) -> Result<Response, ClientError> {
+    #[cfg(windows)]
+    {
+        submit_request_windows_with_timeout_and_version(
+            sock_path,
+            req,
+            REPLY_TIMEOUT,
+            protocol_version,
+        )
+    }
+    #[cfg(unix)]
+    {
+        let mut stream = connect(sock_path, REPLY_TIMEOUT)?;
+        write_frame_sync_for_version(&mut stream, req, protocol_version)?;
+        let response: Response = read_frame_sync_for_version(&mut stream, protocol_version)?;
+        Ok(response)
+    }
+}
+
 pub fn status(sock_path: &Path) -> Result<StatusInfo, ClientError> {
     match submit_request(sock_path, &Request::Status)? {
         Response::Status(info) => Ok(info),
@@ -340,39 +367,40 @@ pub fn shutdown(sock_path: &Path) -> Result<ShutdownAck, ClientError> {
                 "unexpected response: {other:?}"
             )))
         }
-        Err(ClientError::NotRunning) => return Err(ClientError::NotRunning),
         Err(error) => error,
     };
 
-    // v18 rollout bridge: v17's empty shutdown Ack cannot identify its
-    // responder. Read v17 status immediately before requesting shutdown, then
-    // use that PID only for waiting. Callers never signal this legacy identity.
-    let legacy_status = match submit_request_for_version(
-        sock_path,
-        &Request::Status,
-        LEGACY_SHUTDOWN_PROTOCOL_VERSION,
-    ) {
-        Ok(Response::Status(status)) => Some(status),
-        _ => None,
-    };
-    match submit_request_for_version(
-        sock_path,
-        &Request::Shutdown,
-        LEGACY_SHUTDOWN_PROTOCOL_VERSION,
-    ) {
-        Ok(Response::ShuttingDown(ack)) if ack.pid != 0 => Ok(ack),
-        Ok(Response::ShuttingDown(_)) => legacy_status
-            .map(|status| ShutdownAck {
-                pid: status.pid,
-                generation: status.generation,
-            })
-            .ok_or_else(|| {
-                ClientError::Protocol(
-                    "legacy daemon acknowledged shutdown without a responder identity".into(),
-                )
-            }),
-        _ => Err(current_error),
+    for &protocol_version in SHUTDOWN_COMPAT_PROTOCOL_VERSIONS {
+        // v18 rollout bridge: v17's empty shutdown Ack cannot identify its
+        // responder. Read status immediately before requesting shutdown, then
+        // use that identity only for waiting. Callers never signal it.
+        let legacy_status = match submit_direct_request_for_version(
+            sock_path,
+            &Request::Status,
+            protocol_version,
+        ) {
+            Ok(Response::Status(status)) => Some(status),
+            _ => None,
+        };
+        match submit_direct_request_for_version(sock_path, &Request::Shutdown, protocol_version) {
+            Ok(Response::ShuttingDown(ack)) if ack.pid != 0 => return Ok(ack),
+            Ok(Response::ShuttingDown(_)) => {
+                return legacy_status
+                    .map(|status| ShutdownAck {
+                        pid: status.pid,
+                        generation: status.generation,
+                    })
+                    .ok_or_else(|| {
+                        ClientError::Protocol(
+                            "legacy daemon acknowledged shutdown without a responder identity"
+                                .into(),
+                        )
+                    });
+            }
+            _ => {}
+        }
     }
+    Err(current_error)
 }
 
 /// Issue #1286 (F1): ask the daemon to checkpoint the embedded zccache

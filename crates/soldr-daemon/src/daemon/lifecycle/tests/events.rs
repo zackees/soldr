@@ -213,6 +213,93 @@ mod root_ownership_diagnostic_tests {
     use crate::daemon::lifecycle::*;
     use tempfile::TempDir;
 
+    fn write_legacy_pid_file(paths: &SoldrPaths, pid: u32, exe_path: &std::path::Path) {
+        let daemon_dir = crate::cache_lib::soldr_daemon_dir(paths);
+        std::fs::create_dir_all(&daemon_dir).expect("daemon dir");
+        std::fs::write(
+            daemon_dir.join("daemon.pid"),
+            format!("{pid}\n{}\n", exe_path.display()),
+        )
+        .expect("legacy daemon pid file");
+    }
+
+    crate::timed_test!(legacy_pid_identity_bridges_an_in_place_upgrade, {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("root"));
+        let exe = temp.path().join("runtime-v0.8.29").join("soldr-daemon");
+        write_legacy_pid_file(&paths, 4242, &exe);
+
+        assert_eq!(
+            read_recorded_daemon_identity(&paths),
+            Some((4242, exe)),
+            "an upgraded broker must still identify the daemon holding the root lock"
+        );
+    });
+
+    crate::timed_test!(a_route_claim_wins_over_a_stale_legacy_pid_file, {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("root"));
+        let legacy_exe = temp.path().join("old").join("soldr-daemon");
+        write_legacy_pid_file(&paths, 111, &legacy_exe);
+        let route_exe = temp.path().join("current").join("soldr-daemon");
+        write_route_claim(&paths, 222, &route_exe);
+
+        assert_eq!(
+            read_recorded_daemon_identity(&paths),
+            Some((222, route_exe)),
+            "the compatibility record must never override a route claim"
+        );
+    });
+
+    crate::timed_test!(
+        a_dead_route_record_does_not_mask_a_verified_legacy_daemon,
+        {
+            let route = Some((111, std::path::PathBuf::from("/dead/soldr-daemon")));
+            let legacy = Some((222, std::path::PathBuf::from("/live/soldr-daemon")));
+
+            assert_eq!(
+                select_recorded_daemon_identity(route, false, legacy.clone(), true),
+                legacy,
+                "the live legacy owner must win over a dead route left by a downgrade"
+            );
+            assert!(should_use_legacy_endpoint(false, true));
+            assert!(!should_use_legacy_endpoint(true, true));
+        }
+    );
+
+    crate::timed_test!(legacy_discovery_accepts_historical_daemon_image_stems, {
+        for stem in ["soldr-daemon", "soldr", "rustc"] {
+            assert!(legacy_executable_stem_is_supported(
+                &std::path::PathBuf::from(stem)
+            ));
+        }
+        assert!(!legacy_executable_stem_is_supported(
+            &std::path::PathBuf::from("unrelated")
+        ));
+    });
+
+    crate::timed_test!(
+        the_current_process_is_never_verified_from_a_legacy_pid_file,
+        {
+            let current_exe = std::env::current_exe().expect("current test executable");
+            assert!(!legacy_daemon_identity_is_verified(&(
+                std::process::id(),
+                current_exe
+            )));
+        }
+    );
+
+    crate::timed_test!(a_malformed_legacy_pid_file_is_not_identity_evidence, {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("root"));
+        let daemon_dir = crate::cache_lib::soldr_daemon_dir(&paths);
+        std::fs::create_dir_all(&daemon_dir).expect("daemon dir");
+        std::fs::write(daemon_dir.join("daemon.pid"), "not-a-pid\n/soldr-daemon\n")
+            .expect("malformed legacy daemon pid file");
+
+        assert_eq!(read_recorded_daemon_identity(&paths), None);
+    });
+
     // soldr#1987. The orphan case is the one that cost 28 hours: a live PID
     // whose image was deleted holds the lock forever, `soldr daemon stop`
     // cannot see it, and the only symptom is `compiler cache unavailable`.

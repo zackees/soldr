@@ -5,6 +5,7 @@
 //! A route-local protobuf claim records the daemon process and its private
 //! endpoint. Readers verify the live process before acting on that claim.
 
+mod legacy_endpoint;
 mod spawn;
 mod spawn_env;
 pub(crate) use spawn::*;
@@ -151,7 +152,7 @@ impl MissingImageDetector {
 /// beats today's silence; claiming certainty we do not have would be worse.
 pub fn describe_root_ownership_conflict(paths: &SoldrPaths) -> String {
     let root = paths.root.display();
-    let Some((pid, exe)) = read_route_claim_identity(paths) else {
+    let Some((pid, exe)) = read_recorded_daemon_identity(paths) else {
         return format!(
             "soldr root ownership is busy: {root} (no daemon route claim to name the owner)"
         );
@@ -194,6 +195,75 @@ pub fn read_route_claim_identity(paths: &SoldrPaths) -> Option<(u32, PathBuf)> {
         .ok()
         .flatten()
         .map(|claim| (claim.pid, claim.exe_path))
+}
+
+/// Read the daemon identity recorded by a release predating route claims.
+///
+/// Soldr 0.8.29 and earlier wrote two lines (`pid`, then executable path) to
+/// `daemon.pid`. Keep this reader private and read-only: new daemons publish a
+/// route claim, but an upgraded broker still needs enough verified identity to
+/// displace the old process that owns the version-independent root lock.
+fn read_legacy_daemon_pid_identity(paths: &SoldrPaths) -> Option<(u32, PathBuf)> {
+    let raw = fs::read_to_string(soldr_daemon_dir(paths).join("daemon.pid")).ok()?;
+    let mut lines = raw.lines();
+    let pid = lines.next()?.trim().parse().ok()?;
+    let exe = lines.next()?.trim();
+    if exe.is_empty() {
+        return None;
+    }
+    Some((pid, PathBuf::from(exe)))
+}
+
+fn legacy_daemon_identity_is_verified(identity: &(u32, PathBuf)) -> bool {
+    let (pid, exe) = identity;
+    *pid != std::process::id()
+        && legacy_executable_stem_is_supported(exe)
+        && pid_is_alive(*pid)
+        && pid_exe_path_matches(*pid, exe)
+}
+
+fn legacy_executable_stem_is_supported(exe: &Path) -> bool {
+    exe.file_stem()
+        .and_then(|stem| stem.to_str())
+        .is_some_and(|stem| {
+            ["soldr-daemon", "soldr", "rustc"]
+                .iter()
+                .any(|expected| stem.eq_ignore_ascii_case(expected))
+        })
+}
+
+fn should_use_legacy_endpoint(route_is_verified: bool, legacy_is_verified: bool) -> bool {
+    !route_is_verified && legacy_is_verified
+}
+
+fn select_recorded_daemon_identity(
+    route: Option<(u32, PathBuf)>,
+    route_is_verified: bool,
+    legacy: Option<(u32, PathBuf)>,
+    legacy_is_verified: bool,
+) -> Option<(u32, PathBuf)> {
+    if route_is_verified {
+        return route;
+    }
+    if legacy_is_verified {
+        return legacy;
+    }
+    route.or(legacy)
+}
+
+/// Prefer a live, verified route claim, then a live legacy identity. Dead
+/// records remain useful for ownership diagnostics, but a dead route claim
+/// must not mask an older daemon that is still holding the root lock.
+fn read_recorded_daemon_identity(paths: &SoldrPaths) -> Option<(u32, PathBuf)> {
+    let route = read_route_claim_identity(paths);
+    let legacy = read_legacy_daemon_pid_identity(paths);
+    let route_is_verified = route
+        .as_ref()
+        .is_some_and(|(pid, _)| pid_is_soldr_daemon(*pid));
+    let legacy_is_verified = legacy
+        .as_ref()
+        .is_some_and(legacy_daemon_identity_is_verified);
+    select_recorded_daemon_identity(route, route_is_verified, legacy, legacy_is_verified)
 }
 
 /// Verify the daemon recorded in the route claim is still alive AND its
@@ -336,6 +406,21 @@ fn preflight_identity_matches(
 /// probe to succeed, and so misses a protocol-mismatched daemon that is
 /// nonetheless holding the socket).
 pub fn claimed_daemon_occupies_route(paths: &SoldrPaths) -> Option<u32> {
+    if let Some((pid, _exe)) = read_route_claim_identity(paths) {
+        if pid_is_soldr_daemon(pid) {
+            return Some(pid);
+        }
+    }
+    read_legacy_daemon_pid_identity(paths)
+        .filter(legacy_daemon_identity_is_verified)
+        .map(|(pid, _)| pid)
+}
+
+/// Only a route claim may authorize the protocol-mismatch signal fallback.
+/// A legacy PID file has no nonce or boot identity, so it is discovery-only:
+/// it may lead us to the old endpoint for graceful shutdown, never to signal a
+/// PID that the operating system could have recycled.
+fn force_terminable_claimed_daemon(paths: &SoldrPaths) -> Option<u32> {
     let (pid, _exe) = read_route_claim_identity(paths)?;
     pid_is_soldr_daemon(pid).then_some(pid)
 }
@@ -441,8 +526,8 @@ pub fn wait_for_shutdown_responder(
 /// `source` attributes the request, so two `displace-kill-fallback`
 /// records from different entry points stay distinguishable (soldr#1808).
 pub fn displace_stale_daemon(paths: &SoldrPaths, source: Option<LifecycleSource>) -> bool {
-    let verified_pid = claimed_daemon_occupies_route(paths);
-    let recorded_pid = read_route_claim_identity(paths).map(|(pid, _)| pid);
+    let verified_pid = force_terminable_claimed_daemon(paths);
+    let recorded_pid = read_recorded_daemon_identity(paths).map(|(pid, _)| pid);
     let recorded_live_pid = recorded_pid.filter(|pid| pid_is_alive(*pid));
     append_lifecycle_event_with(
         paths,
@@ -450,7 +535,17 @@ pub fn displace_stale_daemon(paths: &SoldrPaths, source: Option<LifecycleSource>
         LifecycleDetails::requested(LifecycleReason::StaleVersion).from_current_process(source),
     );
 
-    let sock = crate::daemon::client::default_sock_path(paths);
+    let route_is_verified =
+        read_route_claim_identity(paths).is_some_and(|(pid, _)| pid_is_soldr_daemon(pid));
+    let legacy_is_verified = read_legacy_daemon_pid_identity(paths)
+        .as_ref()
+        .is_some_and(legacy_daemon_identity_is_verified);
+    let sock = if should_use_legacy_endpoint(route_is_verified, legacy_is_verified) {
+        legacy_endpoint::resolve(paths)
+            .unwrap_or_else(|_| crate::daemon::client::default_sock_path(paths))
+    } else {
+        crate::daemon::client::default_sock_path(paths)
+    };
     match crate::daemon::client::shutdown(&sock) {
         Ok(responder) => {
             return wait_for_shutdown_responder(&sock, responder, Duration::from_secs(5))
@@ -466,6 +561,26 @@ pub fn displace_stale_daemon(paths: &SoldrPaths, source: Option<LifecycleSource>
             return true;
         }
         Err(_) => {}
+    }
+
+    // Pre-route-claim daemons can receive this shutdown request but cannot
+    // encode the current responder acknowledgement. Give such a daemon a
+    // brief chance to honor the request before considering the route-claim
+    // signal fallback. The compatibility PID record itself never grants
+    // signal authority.
+    if let Some(pid) = recorded_live_pid {
+        if wait_for_pid_exit(pid, Duration::from_millis(500)) {
+            append_lifecycle_event_with(
+                paths,
+                "previous-daemon-vanished-without-ack",
+                LifecycleDetails::vanished_without_ack(
+                    Some(pid),
+                    LifecycleReason::ProtocolMismatch,
+                )
+                .from_current_process(source),
+            );
+            return true;
+        }
     }
 
     // No acknowledgement: a protocol-mismatched daemon can only be stopped
@@ -555,8 +670,7 @@ pub fn preflight_displace_stale_daemon_for_service(
     // busy-but-healthy daemon is strictly worse than leaving it alone.
     let claim_proves_current = claimed_process_live(paths)
         .filter(|_| current_version_claim_matches_service(paths, service));
-    let recorded_process_is_alive =
-        read_route_claim_identity(paths).is_some_and(|(pid, _)| pid_is_alive(pid));
+    let recorded_process_is_alive = claimed_daemon_occupies_route(paths).is_some();
     let endpoint_artifact_exists =
         crate::daemon::backend_handle_adoption::broker_route_claim_path(paths).exists();
     if preflight_should_displace(
@@ -976,6 +1090,16 @@ pub(crate) fn pid_exe_stem_matches(pid: u32, expected_stem: &str) -> bool {
     process_image_stem_matches(pid_process_image_path(pid).as_deref(), expected_stem)
 }
 
+#[cfg(unix)]
+fn pid_exe_path_matches(pid: u32, expected_path: &Path) -> bool {
+    let Some(actual) = pid_process_image_path(pid) else {
+        return false;
+    };
+    let actual = fs::canonicalize(&actual).unwrap_or(actual);
+    let expected = fs::canonicalize(expected_path).unwrap_or_else(|_| expected_path.to_path_buf());
+    actual == expected
+}
+
 /// Compare an inspected process image to the expected executable stem.
 ///
 /// Absence is deliberately a mismatch: callers use this check immediately
@@ -1026,7 +1150,7 @@ fn pid_process_image_path(pid: u32) -> Option<PathBuf> {
 
 #[cfg(windows)]
 #[allow(clippy::upper_case_acronyms, non_snake_case)]
-pub(crate) fn pid_exe_stem_matches(pid: u32, expected_stem: &str) -> bool {
+fn pid_process_image_path(pid: u32) -> Option<PathBuf> {
     use std::os::windows::raw::HANDLE;
     // Win32 API spelling — clippy would rename to Dword.
     #[allow(clippy::upper_case_acronyms)]
@@ -1047,21 +1171,39 @@ pub(crate) fn pid_exe_stem_matches(pid: u32, expected_stem: &str) -> bool {
     }
     let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     if h.is_null() {
-        return false;
+        return None;
     }
     let mut buf: Vec<WCHAR> = vec![0; 1024];
     let mut size: DWORD = buf.len() as DWORD;
     let ok = unsafe { QueryFullProcessImageNameW(h, 0, buf.as_mut_ptr(), &mut size) };
     unsafe { CloseHandle(h) };
     if ok == 0 {
-        return false;
+        return None;
     }
     let s: String = String::from_utf16_lossy(&buf[..size as usize]);
-    Path::new(&s)
-        .file_stem()
+    Some(PathBuf::from(s))
+}
+
+#[cfg(windows)]
+pub(crate) fn pid_exe_stem_matches(pid: u32, expected_stem: &str) -> bool {
+    pid_process_image_path(pid)
+        .as_deref()
+        .and_then(Path::file_stem)
         .and_then(|s| s.to_str())
         .map(|s| s.eq_ignore_ascii_case(expected_stem))
         .unwrap_or(false)
+}
+
+#[cfg(windows)]
+fn pid_exe_path_matches(pid: u32, expected_path: &Path) -> bool {
+    let Some(actual) = pid_process_image_path(pid) else {
+        return false;
+    };
+    let actual = fs::canonicalize(&actual).unwrap_or(actual);
+    let expected = fs::canonicalize(expected_path).unwrap_or_else(|_| expected_path.to_path_buf());
+    actual
+        .to_string_lossy()
+        .eq_ignore_ascii_case(&expected.to_string_lossy())
 }
 
 #[cfg(test)]
