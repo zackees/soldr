@@ -157,16 +157,8 @@ pub fn session_socket_path(program: &str) -> io::Result<String> {
 pub(crate) fn local_session_name(
     socket_path: &str,
 ) -> io::Result<interprocess::local_socket::Name<'_>> {
-    #[cfg(unix)]
-    {
-        use interprocess::local_socket::{GenericFilePath, ToFsName};
-        socket_path.to_fs_name::<GenericFilePath>()
-    }
-    #[cfg(windows)]
-    {
-        use interprocess::local_socket::{GenericNamespaced, ToNsName};
-        socket_path.to_ns_name::<GenericNamespaced>()
-    }
+    running_process::broker::server::singleton_bind::wrap_socket_name(socket_path)
+        .map_err(io::Error::other)
 }
 
 /// A permissive responder that negotiates every Hello to a fixed

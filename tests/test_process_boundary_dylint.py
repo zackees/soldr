@@ -34,6 +34,9 @@ def test_required_ci_runs_root_dylint_policy() -> None:
     assert "Configure Dylint driver Cargo shim" in workflow
     assert ".github/scripts/configure_dylint_cargo_shim.py" in workflow
     assert "Build daemon process-creation boundary lint" in workflow
+    assert "Build local-socket name boundary lint" in workflow
+    assert "Enforce running-process local-socket name boundary" in workflow
+    assert "Test local-socket name boundary lint" in workflow
     assert "nightly-2026-05-26-x86_64-unknown-linux-gnu" in workflow
     # soldr#2303: the driver cdylibs still build in the release profile (dylint
     # loads them from that path), now carrying the policy exemption marker.
@@ -42,6 +45,10 @@ def test_required_ci_runs_root_dylint_policy() -> None:
     assert '"${CARGO_HOME}/bin/cargo-dylint"' in workflow
     assert "dylint --no-build --all" in workflow
     assert "-- --workspace --all-targets" in workflow
+    assert "--manifest-path _vender/running-process/Cargo.toml" in workflow
+    assert (
+        "libban_raw_local_socket_name@" "nightly-2026-05-26-x86_64-unknown-linux-gnu.so"
+    ) in workflow
     assert "Test daemon process-creation boundary lint" in workflow
     assert "working-directory: dylints/ban_raw_process_creation" in workflow
     # Both process and network boundary lints build and test in the required
@@ -54,8 +61,8 @@ def test_required_ci_runs_root_dylint_policy() -> None:
     ) in workflow
     assert "--manifest-path Cargo.toml" in workflow
     assert "RUSTUP_TOOLCHAIN: nightly-2026-05-26-x86_64-unknown-linux-gnu" in workflow
-    assert workflow.count('SOLDR_NO_GC_TARGET: "1"') == 3
-    assert workflow.count("SOLDR_LINKER: default") == 5
+    assert workflow.count('SOLDR_NO_GC_TARGET: "1"') == 5
+    assert workflow.count("SOLDR_LINKER: default") == 8
     dylint_config = (
         ROOT / "dylints" / "ban_raw_process_creation" / ".cargo" / "config.toml"
     ).read_text(encoding="utf-8")
