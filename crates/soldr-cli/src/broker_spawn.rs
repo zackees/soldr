@@ -99,6 +99,16 @@ pub(crate) fn front_door_broker_spawn_eligible(raw_args: &[String]) -> bool {
     true
 }
 
+fn ci_endpoint_diagnostics_eligible(raw_args: &[String]) -> bool {
+    // These flags promise stdout that callers can parse or source. Some CI
+    // harnesses intentionally merge stderr into stdout, so keep the broker's
+    // forensic banner away from those contracts as well.
+    !raw_args.iter().any(|arg| {
+        matches!(arg.as_str(), "--json" | "--github-env" | "--shell-export")
+            || arg.starts_with("--github-env=")
+    })
+}
+
 /// Best-effort: confirm an existing broker or spawn one detached, then wait
 /// for an active connection to its control socket. Log text is deliberately
 /// not synchronization: it can be stale in the append-only spawn log and is
@@ -114,7 +124,7 @@ pub(crate) fn maybe_spawn_broker_front_door(raw_args: &[String]) {
         return;
     }
     let program = broker_program();
-    emit_ci_endpoint_diagnostics(&program);
+    let emit_endpoint_diagnostics = ci_endpoint_diagnostics_eligible(raw_args);
     let Ok(probe_runtime) = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -125,6 +135,11 @@ pub(crate) fn maybe_spawn_broker_front_door(raw_args: &[String]) {
     ensure_broker_ready_until(
         deadline,
         || broker_control_is_ready_until(&probe_runtime, &program, deadline),
+        || {
+            if emit_endpoint_diagnostics {
+                emit_ci_endpoint_diagnostics(&program);
+            }
+        },
         || {
             let paths = crate::core::SoldrPaths::new().ok()?;
             let log_file = open_append(&paths.root.join("broker-spawn.log"))?;
@@ -281,9 +296,14 @@ fn broker_control_is_ready_until(
 fn ensure_broker_ready_until(
     deadline: Instant,
     mut ready: impl FnMut() -> bool,
+    before_spawn: impl FnOnce(),
     spawn: impl FnOnce() -> Option<()>,
 ) {
-    if ready() || spawn().is_none() {
+    if ready() {
+        return;
+    }
+    before_spawn();
+    if spawn().is_none() {
         return;
     }
     loop {
@@ -354,6 +374,34 @@ mod tests {
         assert!(rendered.contains(r"log=C:\soldr\broker-spawn.log"));
     });
 
+    crate::timed_test!(ci_diagnostics_preserve_machine_readable_output, {
+        assert!(!ci_endpoint_diagnostics_eligible(&[
+            "soldr".into(),
+            "env".into(),
+            "--json".into(),
+        ]));
+        assert!(!ci_endpoint_diagnostics_eligible(&[
+            "soldr".into(),
+            "prepare".into(),
+            "--github-env".into(),
+            "output.env".into(),
+        ]));
+        assert!(!ci_endpoint_diagnostics_eligible(&[
+            "soldr".into(),
+            "prepare".into(),
+            "--github-env=output.env".into(),
+        ]));
+        assert!(!ci_endpoint_diagnostics_eligible(&[
+            "soldr".into(),
+            "env".into(),
+            "--shell-export".into(),
+        ]));
+        assert!(ci_endpoint_diagnostics_eligible(&[
+            "soldr".into(),
+            "build".into(),
+        ]));
+    });
+
     crate::timed_test!(wrapper_invocation_is_never_eligible, {
         let _guard = ENV_LOCK.lock().unwrap();
         let raw_args = vec!["soldr".to_string(), "/usr/bin/rustc".to_string()];
@@ -409,6 +457,7 @@ mod tests {
 
     crate::timed_test!(ready_broker_is_not_spawned_again, {
         let mut probes = 0;
+        let mut diagnostics = 0;
         let mut spawns = 0;
         ensure_broker_ready_until(
             Instant::now() + Duration::from_secs(1),
@@ -416,17 +465,20 @@ mod tests {
                 probes += 1;
                 true
             },
+            || diagnostics += 1,
             || {
                 spawns += 1;
                 Some(())
             },
         );
         assert_eq!(probes, 1);
+        assert_eq!(diagnostics, 0, "a ready broker must emit no spawn banner");
         assert_eq!(spawns, 0, "readiness must prevent a duplicate spawn");
     });
 
     crate::timed_test!(startup_spawns_once_then_requires_a_live_probe, {
         let mut probes = 0;
+        let mut diagnostics = 0;
         let mut spawns = 0;
         ensure_broker_ready_until(
             Instant::now() + Duration::from_secs(1),
@@ -434,12 +486,14 @@ mod tests {
                 probes += 1;
                 probes == 3
             },
+            || diagnostics += 1,
             || {
                 spawns += 1;
                 Some(())
             },
         );
         assert_eq!(probes, 3, "the wait must return only after a live probe");
+        assert_eq!(diagnostics, 1, "a spawn attempt emits exactly one banner");
         assert_eq!(spawns, 1, "startup may create at most one broker");
     });
 }
