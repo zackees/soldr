@@ -1,7 +1,7 @@
 [package]
-name = "ban_raw_network_access"
+name = "ban_platform_cfg_in_public_fn"
 version = "0.1.0"
-description = "Require Soldr fetch network I/O to use stream_download"
+description = "Require platform-neutral public and crate-visible function facades"
 edition = "2021"
 publish = false
 

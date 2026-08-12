@@ -51,9 +51,8 @@ def test_required_ci_runs_root_dylint_policy() -> None:
     ) in workflow
     assert "Test daemon process-creation boundary lint" in workflow
     assert "working-directory: dylints/ban_raw_process_creation" in workflow
-    # Both process and network boundary lints build and test in the required
-    # CI lane, so each owns one nightly build and one UI-test invocation.
-    assert workflow.count("soldr rustup run") == 4
+    # All four boundary lints build and test in the required CI lane.
+    assert workflow.count("soldr rustup run") == 6
     assert (
         "nightly-2026-05-26-x86_64-unknown-linux-gnu\n"
         "          cargo test\n"
@@ -61,8 +60,8 @@ def test_required_ci_runs_root_dylint_policy() -> None:
     ) in workflow
     assert "--manifest-path Cargo.toml" in workflow
     assert "RUSTUP_TOOLCHAIN: nightly-2026-05-26-x86_64-unknown-linux-gnu" in workflow
-    assert workflow.count('SOLDR_NO_GC_TARGET: "1"') == 5
-    assert workflow.count("SOLDR_LINKER: default") == 8
+    assert workflow.count('SOLDR_NO_GC_TARGET: "1"') == 6
+    assert workflow.count("SOLDR_LINKER: default") == 10
     dylint_config = (
         ROOT / "dylints" / "ban_raw_process_creation" / ".cargo" / "config.toml"
     ).read_text(encoding="utf-8")
@@ -73,6 +72,10 @@ def test_required_ci_runs_root_dylint_policy() -> None:
     assert "[profile.release]" in dylint_manifest
     assert "opt-level = 0" in dylint_manifest
     assert "lto = false" in dylint_manifest
+
+    for manifest_path in (ROOT / "dylints").glob("*/Cargo.toml"):
+        manifest_text = manifest_path.read_text(encoding="utf-8")
+        assert 'dylint_testing = "=6.0.3"' in manifest_text
 
 
 def test_process_boundary_has_required_ui_fixtures() -> None:
