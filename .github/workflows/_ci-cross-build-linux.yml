@@ -87,6 +87,11 @@ jobs:
       # headroom during the all-miss nextest archive build.
       CARGO_BUILD_JOBS: "2"
       SOLDR_JOBS: "2"
+      # Current-source CI images are much larger than release binaries. The
+      # broker pipe still has its 250ms probe; only daemon image placement
+      # behind that live pipe receives the debug-fixture allowance.
+      SOLDR_BROKER_ROUTE_ATTEMPT_BUDGET_MS: "30000"
+      SOLDR_SESSION_ATTEMPT_BUDGET_MS: "35000"
       # Keep the developer-facing profile default responsive while reducing
       # LLVM worker fan-out for this memory-constrained CI-only build.
       CARGO_PROFILE_CI_NEXTEST_CODEGEN_UNITS: "4"

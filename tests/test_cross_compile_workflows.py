@@ -502,6 +502,22 @@ def test_all_miss_cross_builds_bound_compile_concurrency() -> None:
     assert "shared-key: cross-build-${{ inputs.target }}-v7" in cross_job
 
 
+def test_source_build_jobs_bound_debug_daemon_placement_behind_live_pipe() -> None:
+    """Large checkout-built images get a test allowance, never a wider pipe probe."""
+    for workflow_name in (
+        "_ci-cross-build-linux.yml",
+        "_bootstrap-e2e.yml",
+        "_build-and-test.yml",
+    ):
+        workflow = (WORKFLOWS / workflow_name).read_text(encoding="utf-8")
+        assert 'SOLDR_BROKER_ROUTE_ATTEMPT_BUDGET_MS: "30000"' in workflow
+        assert 'SOLDR_SESSION_ATTEMPT_BUDGET_MS: "35000"' in workflow
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    pep517 = _job_block(ci, "pep517-daemon-smoke")
+    assert 'SOLDR_BROKER_ROUTE_ATTEMPT_BUDGET_MS: "30000"' in pep517
+    assert 'SOLDR_SESSION_ATTEMPT_BUDGET_MS: "35000"' in pep517
+
+
 def test_gnu_catalogue_fixture_is_part_of_both_gnu_ci_lanes() -> None:
     """#2236: CI must execute the mixed-language catalogue proof, not just compile Soldr."""
     cross = (WORKFLOWS / "_ci-cross-build-linux.yml").read_text(encoding="utf-8")

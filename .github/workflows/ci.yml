@@ -576,6 +576,10 @@ jobs:
       RUST_BACKTRACE: "1"
       CARGO_TERM_COLOR: always
       SOLDR_GITHUB_TOKEN: ${{ github.token }}
+      # Test-only allowance for placing the large wheel-built daemon image
+      # after the broker's short pipe probe has already succeeded.
+      SOLDR_BROKER_ROUTE_ATTEMPT_BUDGET_MS: "30000"
+      SOLDR_SESSION_ATTEMPT_BUDGET_MS: "35000"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
