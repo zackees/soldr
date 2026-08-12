@@ -735,7 +735,7 @@ async fn receive_handed_off_session(
     let owned = unsafe { OwnedHandle::from_raw_handle(offer.handle_value as *mut _) };
     let stream =
         interprocess::os::windows::named_pipe::local_socket::tokio::Stream::try_from(owned)
-            .map_err(io::Error::other)?;
+            .map_err(|error| error.to_io_error())?;
     // A positive ACK transfers ownership. Do not send it until the duplicated
     // handle is a usable Tokio SESSION stream.
     accept_handoff_offer_async(&mut control, &offer).await?;

@@ -30,6 +30,7 @@ pub(crate) const ROUTE_PROGRESS_PAYLOAD_PROTOCOL: u32 = 0x5250;
 /// verified daemon route; after a broker restart it may re-adopt a persisted
 /// claim, but it never launches a missing backend.
 pub(crate) const DAEMON_CONTROL_PAYLOAD_PROTOCOL: u32 = 0x5343;
+#[cfg(target_os = "linux")]
 const BROKER_LISTEN_BACKLOG: i32 = 1024;
 const DEFAULT_FIRST_RESPONSE_MS: u64 = 2_000;
 const DEFAULT_PROGRESS_SILENCE_MS: u64 = 5_000;
@@ -375,6 +376,8 @@ async fn serve_loop(
     peer_policy: Arc<PeerCredentialPolicy>,
     endpoint: String,
 ) -> io::Result<()> {
+    #[cfg(windows)]
+    let _ = endpoint;
     let shutdown = Arc::new(tokio::sync::Notify::new());
     let mut connections = tokio::task::JoinSet::new();
     loop {
@@ -793,10 +796,8 @@ fn duplicate_handoff_stream(
     stream: &interprocess::local_socket::tokio::Stream,
 ) -> io::Result<interprocess::local_socket::Stream> {
     use std::os::windows::io::{AsHandle as _, AsRawHandle as _, FromRawHandle as _};
-    use windows_sys::Win32::Foundation::HANDLE;
-    use windows_sys::Win32::System::Threading::{
-        DuplicateHandle, GetCurrentProcess, DUPLICATE_SAME_ACCESS,
-    };
+    use windows_sys::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE};
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
     let interprocess::local_socket::tokio::Stream::NamedPipe(stream) = stream;
     let process = unsafe { GetCurrentProcess() };
@@ -817,7 +818,7 @@ fn duplicate_handoff_stream(
     }
     let owned = unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(duplicated.cast()) };
     let stream = interprocess::os::windows::named_pipe::local_socket::Stream::try_from(owned)
-        .map_err(io::Error::other)?;
+        .map_err(|error| error.to_io_error())?;
     Ok(stream.into())
 }
 
@@ -977,8 +978,8 @@ fn bind_listener(
 ) -> io::Result<interprocess::local_socket::tokio::Listener> {
     #[cfg(unix)]
     let _guard = UnixBindGuard::acquire(&endpoint.bind_endpoint)?;
+    #[cfg(unix)]
     let listener = create_listener(&endpoint.bind_endpoint).or_else(|error| {
-        #[cfg(unix)]
         if running_process::broker::server::singleton_bind::is_already_bound_error(&error)
             && running_process::broker::server::singleton_bind::unix_socket_path_is_stale(
                 &endpoint.bind_endpoint,
@@ -989,6 +990,8 @@ fn bind_listener(
         }
         Err(error)
     })?;
+    #[cfg(windows)]
+    let listener = create_listener(&endpoint.bind_endpoint)?;
     Ok(listener)
 }
 
@@ -1002,7 +1005,7 @@ fn create_listener(endpoint: &str) -> io::Result<interprocess::local_socket::tok
         use interprocess::os::unix::local_socket::ListenerOptionsExt as _;
         options.mode(0o600)
     };
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     {
         use std::os::fd::{AsFd as _, AsRawFd as _};
         let listener = options
@@ -1011,6 +1014,12 @@ fn create_listener(endpoint: &str) -> io::Result<interprocess::local_socket::tok
             return Err(io::Error::last_os_error());
         }
         Ok(listener.into())
+    }
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        options
+            .create_tokio_as::<interprocess::os::unix::uds_local_socket::tokio::Listener>()
+            .map(Into::into)
     }
     #[cfg(windows)]
     {

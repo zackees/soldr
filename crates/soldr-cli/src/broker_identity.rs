@@ -381,7 +381,7 @@ fn unix_path_is_on_non_bindable_filesystem(path: &Path) -> bool {
         if unsafe { libc::statfs(c_path.as_ptr(), stats.as_mut_ptr()) } != 0 {
             return false;
         }
-        let magic = unsafe { stats.assume_init() }.f_type as u64;
+        let magic = unsafe { stats.assume_init() }.f_type;
         // Network and userspace filesystems that commonly reject or fail to
         // coordinate Unix-domain socket binds. Values come from Linux magic.h.
         matches!(
@@ -418,10 +418,10 @@ fn unix_path_is_on_non_bindable_filesystem(path: &Path) -> bool {
             .map(|byte| byte as u8)
             .collect();
         let fs = String::from_utf8_lossy(&bytes).to_ascii_lowercase();
-        return matches!(
+        matches!(
             fs.as_str(),
             "nfs" | "smbfs" | "afpfs" | "webdav" | "osxfuse" | "macfuse"
-        );
+        )
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -446,7 +446,7 @@ fn resolve_windows_for_executable(
         identity_key(pipe.logical_socket_path.as_bytes())
     );
     Ok(ResolvedBrokerEndpoint {
-        executable_path: executable,
+        executable_path: executable.to_path_buf(),
         logical_socket_path: pipe.logical_socket_path,
         bind_endpoint: format!("{WINDOWS_PIPE_PREFIX}{}", pipe.pipe_leaf),
         windows_pipe_leaf: Some(pipe.pipe_leaf),
@@ -576,8 +576,8 @@ pub fn daemon_session_endpoint_from_executable(
             ".session.sock",
             "soldr-daemon-session",
         )?;
-        return Endpoint::windows_pipe(namespace_id, pipe.pipe_leaf)
-            .map_err(|error| BrokerIdentityError::Endpoint(error.to_string()));
+        Endpoint::windows_pipe(namespace_id, pipe.pipe_leaf)
+            .map_err(|error| BrokerIdentityError::Endpoint(error.to_string()))
     }
     #[cfg(unix)]
     {
