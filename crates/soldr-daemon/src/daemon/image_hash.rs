@@ -64,13 +64,74 @@ pub fn cached_blake3_hex_with_progress(
     target: &Path,
     mut progress: impl FnMut(u64, u64),
 ) -> io::Result<String> {
-    let (size, mtime) = fingerprint(target)?;
+    let (initial_size, initial_mtime) = fingerprint(target)?;
     let entry = cache_entry_path(cache_dir, target);
 
+    if let Some(hex) = read_cache_entry(&entry, initial_size, initial_mtime) {
+        return Ok(hex);
+    }
+
+    // A cold front-door stampede used to make every process hash the same
+    // large executable independently. Serialize only cache misses, then
+    // re-check after acquiring the lock so all contenders except the winner
+    // consume its completed entry. The lock file is persistent disposable
+    // cache state; the OS releases its lock if the computing process exits.
+    let lock = std::fs::create_dir_all(cache_dir)
+        .and_then(|()| {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(entry.with_extension("blake3.lock"))
+        })
+        .ok();
+    if let Some(lock) = lock.as_ref() {
+        use fs2::FileExt as _;
+
+        let mut next_progress = std::time::Instant::now();
+        loop {
+            match lock.try_lock_exclusive() {
+                Ok(()) => break,
+                Err(error) if lock_is_contended(&error) => {
+                    if std::time::Instant::now() >= next_progress {
+                        progress(0, initial_size);
+                        next_progress =
+                            std::time::Instant::now() + std::time::Duration::from_millis(250);
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
+                // Cache locking is an optimization, not an integrity gate.
+                // An unsupported or read-only cache filesystem falls back to
+                // the existing direct hash behavior.
+                Err(_) => break,
+            }
+        }
+    }
+
+    let (size, mtime) = fingerprint(target)?;
     if let Some(hex) = read_cache_entry(&entry, size, mtime) {
         return Ok(hex);
     }
 
+    compute_blake3_hex_with_progress(target, size, &mut progress).inspect(|hex| {
+        // Best-effort store; a cache write failure must never fail the hash.
+        let _ = write_cache_entry(cache_dir, &entry, size, mtime, hex);
+    })
+}
+
+fn lock_is_contended(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::WouldBlock
+        // LockFileEx reports ERROR_LOCK_VIOLATION for a nonblocking collision;
+        // std does not normalize it to WouldBlock on Windows.
+        || (cfg!(windows) && error.raw_os_error() == Some(33))
+}
+
+fn compute_blake3_hex_with_progress(
+    target: &Path,
+    size: u64,
+    progress: &mut impl FnMut(u64, u64),
+) -> io::Result<String> {
     let mut file = File::open(target)?;
     let mut hasher = zccache::hash::StreamHasher::new();
     let mut buffer = vec![0_u8; 1024 * 1024];
@@ -84,10 +145,7 @@ pub fn cached_blake3_hex_with_progress(
         completed = completed.saturating_add(read as u64);
         progress(completed, size);
     }
-    let hex = hasher.finalize().to_hex();
-    // Best-effort store; a cache write failure must never fail the hash.
-    let _ = write_cache_entry(cache_dir, &entry, size, mtime, &hex);
-    Ok(hex)
+    Ok(hasher.finalize().to_hex())
 }
 
 /// Parse a cache entry and return its digest iff the stored `(size, mtime)`
@@ -138,6 +196,15 @@ fn write_cache_entry(
 mod tests {
     use super::*;
 
+    crate::timed_test!(platform_lock_contention_is_retryable, {
+        assert!(lock_is_contended(&io::Error::from(
+            io::ErrorKind::WouldBlock
+        )));
+        if cfg!(windows) {
+            assert!(lock_is_contended(&io::Error::from_raw_os_error(33)));
+        }
+    });
+
     crate::timed_test!(blake3_hex_matches_zccache_reference, {
         let temp = tempfile::tempdir().expect("tempdir");
         let f = temp.path().join("bin");
@@ -154,8 +221,12 @@ mod tests {
         std::fs::write(&f, b"payload-v1").expect("write");
 
         let first = cached_blake3_hex(&cache, &f).expect("first");
-        let entries = std::fs::read_dir(&cache).expect("cache dir").count();
-        assert_eq!(entries, 1, "one cache entry expected");
+        let entries = std::fs::read_dir(&cache)
+            .expect("cache dir")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "blake3"))
+            .count();
+        assert_eq!(entries, 1, "one digest cache entry expected");
         let second = cached_blake3_hex(&cache, &f).expect("second");
         assert_eq!(first, second);
         assert_eq!(first, zccache::hash::hash_bytes(b"payload-v1").to_hex());
@@ -185,6 +256,48 @@ mod tests {
             .expect("hash hit");
         assert_eq!(second, first);
         assert_eq!(hit_events, 0, "a cache hit must not invent byte progress");
+    });
+
+    crate::timed_test!(cold_stampede_hashes_the_file_once, {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let cache = Arc::new(temp.path().join("cache"));
+        let file = Arc::new(temp.path().join("broker"));
+        std::fs::write(&*file, vec![0xa5_u8; 4 * 1024 * 1024]).expect("write broker");
+        let contenders = 16;
+        let barrier = Arc::new(Barrier::new(contenders));
+        let readers = Arc::new(AtomicUsize::new(0));
+        let threads: Vec<_> = (0..contenders)
+            .map(|_| {
+                let cache = Arc::clone(&cache);
+                let file = Arc::clone(&file);
+                let barrier = Arc::clone(&barrier);
+                let readers = Arc::clone(&readers);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let mut counted = false;
+                    cached_blake3_hex_with_progress(&cache, &file, |completed, _| {
+                        if completed > 0 && !counted {
+                            readers.fetch_add(1, Ordering::Relaxed);
+                            counted = true;
+                        }
+                    })
+                    .expect("hash")
+                })
+            })
+            .collect();
+        let hashes: Vec<_> = threads
+            .into_iter()
+            .map(|thread| thread.join().expect("contender"))
+            .collect();
+        assert!(hashes.iter().all(|hash| hash == &hashes[0]));
+        assert_eq!(
+            readers.load(Ordering::Relaxed),
+            1,
+            "only the cache-miss winner may scan the executable"
+        );
     });
 
     crate::timed_test!(changed_content_invalidates_cache, {

@@ -47,7 +47,6 @@ mod common;
 const LEGACY_ALLOWLIST: &[&str] = &[
     // ----- src/ unit-test modules -----
     "crates/soldr-cli/src/binaries.rs",
-    "crates/soldr-cli/src/cache/session.rs",
     "crates/soldr-cache/src/cache_lib/auto_gc.rs",
     "crates/soldr-cache/src/cache_lib/gc.rs",
     "crates/soldr-cache/src/cache_lib/mod.rs",

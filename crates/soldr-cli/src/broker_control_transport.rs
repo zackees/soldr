@@ -5,7 +5,6 @@
 //! so status, shutdown, cache metadata, build logs, GC, and session accounting
 //! never derive or dial that daemon endpoint themselves.
 
-use interprocess::local_socket::traits::Stream as _;
 use prost::Message as _;
 use running_process::broker::protocol::{
     encode_framed, Frame, FrameKind, PayloadEncoding, ENVELOPE_VERSION, MAX_FRAME_BYTES,
@@ -20,6 +19,13 @@ use std::time::Duration;
 use crate::broker_server::{
     DaemonControlTunnelReply, DaemonControlTunnelRequest, DAEMON_CONTROL_PAYLOAD_PROTOCOL,
 };
+
+#[cfg(unix)]
+#[path = "broker_control_transport_unix.rs"]
+mod platform;
+#[cfg(windows)]
+#[path = "broker_control_transport_windows.rs"]
+mod platform;
 
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -41,23 +47,13 @@ impl crate::daemon::client::ControlConnector for BrokerControlConnector {
         let service_name = crate::daemon::backend_handle_adoption::broker_service_name()?;
         let endpoint =
             crate::broker_identity::ResolvedBrokerEndpoint::resolve().map_err(io::Error::other)?;
-        let name = crate::session_transport::local_session_name(&endpoint.bind_endpoint)?;
         // A replacement broker performs one exact BackendHandle verification
         // before it can re-adopt a surviving daemon. That verification hashes
         // the executable and can exceed the ordinary 2s status reply budget
         // for a large debug image. The route handshake gets a separate bounded
         // allowance; once accepted, restore the caller's request timeout.
         let route_timeout = route_handshake_timeout(timeout);
-        let stream = interprocess::local_socket::ConnectOptions::new()
-            .name(name)
-            .wait_mode(interprocess::ConnectWaitMode::Timeout(route_timeout))
-            .connect_sync()?;
-        stream.set_recv_timeout(Some(route_timeout))?;
-        stream.set_send_timeout(Some(route_timeout))?;
-        let stream = negotiate_control_tunnel(stream, route_timeout, service_name)?;
-        stream.set_recv_timeout(Some(timeout.max(Duration::from_millis(200))))?;
-        stream.set_send_timeout(Some(timeout))?;
-        Ok(Box::new(stream))
+        platform::connect(endpoint.bind_endpoint, route_timeout, timeout, service_name)
     }
 }
 
@@ -69,33 +65,45 @@ fn route_handshake_timeout(request_timeout: Duration) -> Duration {
     }
 }
 
-fn negotiate_control_tunnel(
-    mut stream: interprocess::local_socket::Stream,
+fn negotiate_control_tunnel<S: Read + Write>(
+    mut stream: S,
     timeout: Duration,
     service_name: String,
-) -> io::Result<interprocess::local_socket::Stream> {
+) -> io::Result<S> {
+    let frame = control_tunnel_frame(timeout, service_name);
+    let request_id = frame.request_id;
+    stream.write_all(&encode_framed(&frame).map_err(io::Error::other)?)?;
+    stream.flush()?;
+
+    validate_control_tunnel_reply(read_broker_frame(&mut stream)?, request_id)?;
+    Ok(stream)
+}
+
+fn next_request_id() -> u64 {
+    NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed).max(1)
+}
+
+fn control_tunnel_frame(timeout: Duration, service_name: String) -> Frame {
     let host = running_process::broker::host_identity::current();
     let request = DaemonControlTunnelRequest {
         service_name,
         machine_id: host.machine_id,
         boot_id: host.boot_id,
     };
-    let request_id = NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed).max(1);
-    let frame = Frame {
+    Frame {
         envelope_version: PROTOCOL_VERSION,
         kind: FrameKind::Request as i32,
         payload_protocol: DAEMON_CONTROL_PAYLOAD_PROTOCOL,
         payload: request.encode_to_vec(),
-        request_id,
+        request_id: next_request_id(),
         payload_encoding: PayloadEncoding::None as i32,
         deadline_unix_ms: unix_deadline_ms(timeout),
         traceparent: String::new(),
         tracestate: String::new(),
-    };
-    stream.write_all(&encode_framed(&frame).map_err(io::Error::other)?)?;
-    stream.flush()?;
+    }
+}
 
-    let reply_frame = read_broker_frame(&mut stream)?;
+fn validate_control_tunnel_reply(reply_frame: Frame, request_id: u64) -> io::Result<()> {
     if reply_frame.request_id != request_id
         || reply_frame.payload_protocol != DAEMON_CONTROL_PAYLOAD_PROTOCOL
         || FrameKind::try_from(reply_frame.kind) != Ok(FrameKind::Response)
@@ -117,7 +125,7 @@ fn negotiate_control_tunnel(
             reply.error_detail,
         ));
     }
-    Ok(stream)
+    Ok(())
 }
 
 fn read_broker_frame(stream: &mut impl Read) -> io::Result<Frame> {

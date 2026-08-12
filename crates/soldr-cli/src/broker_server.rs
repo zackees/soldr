@@ -22,7 +22,33 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-pub(crate) const BROKER_INSTANCE_ID: &str = concat!("soldr-", env!("CARGO_PKG_VERSION"));
+pub(crate) const BROKER_INSTANCE_ID_ENV: &str = "SOLDR_INTERNAL_BROKER_INSTANCE_ID";
+
+pub(crate) fn broker_image_instance_id() -> io::Result<String> {
+    let executable = std::env::current_exe()?;
+    let cache = crate::daemon::service_definition::broker_owned_paths()
+        .cache
+        .join("broker-image-hash");
+    let digest = crate::daemon::image_hash::cached_blake3_hex(&cache, &executable)?;
+    Ok(format_broker_instance_id(
+        env!("CARGO_PKG_VERSION"),
+        &digest,
+    ))
+}
+
+fn broker_server_instance_id() -> io::Result<String> {
+    if let Some(instance_id) = std::env::var(BROKER_INSTANCE_ID_ENV)
+        .ok()
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(instance_id);
+    }
+    broker_image_instance_id()
+}
+
+fn format_broker_instance_id(version: &str, image_digest: &str) -> String {
+    format!("soldr-{version}-{image_digest}")
+}
 
 /// Protobuf lane for route-start progress events (`RP` in ASCII).
 pub(crate) const ROUTE_PROGRESS_PAYLOAD_PROTOCOL: u32 = 0x5250;
@@ -190,7 +216,14 @@ fn env_duration(name: &str, default_ms: u64) -> Duration {
     )
 }
 
+fn route_progress_heartbeat_interval(progress_silence: Duration) -> Duration {
+    (progress_silence / 3)
+        .max(Duration::from_millis(1))
+        .min(Duration::from_secs(1))
+}
+
 struct BrokerState {
+    instance_id: String,
     loader: CombinedServiceDefinitionLoader,
     registry: Mutex<BackendRegistry>,
     spawn_coordinator: Mutex<SpawnCoordinator>,
@@ -218,7 +251,7 @@ impl BrokerState {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         AdminSnapshot::from_registry(
-            BROKER_INSTANCE_ID,
+            &self.instance_id,
             self.started_at.elapsed(),
             true,
             self.connections_open.load(Ordering::Relaxed),
@@ -342,16 +375,10 @@ fn serve_on_runtime_thread(
         .enable_all()
         .thread_name("soldr-broker")
         .build()?;
-    let runtime_context = runtime.enter();
-    let listener = bind_listener(endpoint)?;
-    drop(runtime_context);
-    println!(
-        "soldr broker: stable endpoint bound at {} (admin+hello+session)",
-        endpoint.bind_endpoint
-    );
     let peer_policy = PeerCredentialPolicy::current_user()
         .ok_or_else(|| io::Error::other("current-user broker peer policy is unavailable"))?;
     let state = Arc::new(BrokerState {
+        instance_id: broker_server_instance_id()?,
         loader: CombinedServiceDefinitionLoader::new(
             running_process::broker::server::service_definition_dir(),
         ),
@@ -362,6 +389,13 @@ fn serve_on_runtime_thread(
         connections_open: AtomicU64::new(0),
         fd_guard: FdPressureGuard::default(),
     });
+    let runtime_context = runtime.enter();
+    let listener = bind_listener(endpoint)?;
+    drop(runtime_context);
+    println!(
+        "soldr broker: stable endpoint bound at {} (admin+hello+session)",
+        endpoint.bind_endpoint
+    );
     runtime.block_on(serve_loop(
         listener,
         state,
@@ -418,13 +452,14 @@ async fn serve_loop(
     // Stop admission, then let already-negotiated same-connection proxies
     // drain. A bounded stop command may still terminate this process if a
     // client never closes.
+    drop(listener);
+    #[cfg(unix)]
+    let _ = std::fs::remove_file(&endpoint);
     while let Some(joined) = connections.join_next().await {
         if let Err(error) = joined {
             eprintln!("soldr broker: draining connection task failed: {error}");
         }
     }
-    #[cfg(unix)]
-    let _ = std::fs::remove_file(endpoint);
     Ok(())
 }
 
@@ -487,6 +522,12 @@ async fn handle_connection(
     );
     let mut observed_progress = state.launcher.subscribe_progress();
     let mut latest_route_result = "broker accepted the route request".to_string();
+    let heartbeat_interval = route_progress_heartbeat_interval(deadlines.progress_silence);
+    let mut heartbeat = tokio::time::interval_at(
+        tokio::time::Instant::now() + heartbeat_interval,
+        heartbeat_interval,
+    );
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     write_progress(
         &mut stream,
         &request,
@@ -530,6 +571,15 @@ async fn handle_connection(
                         }
                     }
                 }
+                _ = heartbeat.tick() => {
+                    write_progress(&mut stream, &request, RouteProgress {
+                        stage: "route-wait".into(),
+                        attempt,
+                        elapsed_ms: route_started.elapsed().as_millis() as u64,
+                        latest_result: latest_route_result.clone(),
+                        retry_after_ms: 0,
+                    }).await?;
+                }
                 _ = tokio::time::sleep_until(route_ceiling) => {
                     route.abort();
                     break 'acquire refused(
@@ -560,17 +610,31 @@ async fn handle_connection(
             },
         )
         .await?;
-        tokio::select! {
-            _ = tokio::time::sleep(delay) => {}
-            _ = tokio::time::sleep_until(route_ceiling) => {
-                break refused(
-                    ErrorCode::ErrorBackendSpawnFailed,
-                    format!(
-                        "route acquisition exceeded its hard ceiling after {} attempts; latest result: {}",
-                        attempt, latest_route_result
-                    ),
-                    0,
-                );
+        let retry_deadline = tokio::time::Instant::now() + delay;
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep_until(retry_deadline) => break,
+                _ = heartbeat.tick() => {
+                    write_progress(&mut stream, &request, RouteProgress {
+                        stage: "single-flight-wait".into(),
+                        attempt,
+                        elapsed_ms: route_started.elapsed().as_millis() as u64,
+                        latest_result: latest_route_result.clone(),
+                        retry_after_ms: retry_deadline
+                            .saturating_duration_since(tokio::time::Instant::now())
+                            .as_millis() as u64,
+                    }).await?;
+                }
+                _ = tokio::time::sleep_until(route_ceiling) => {
+                    break 'acquire refused(
+                        ErrorCode::ErrorBackendSpawnFailed,
+                        format!(
+                            "route acquisition exceeded its hard ceiling after {} attempts; latest result: {}",
+                            attempt, latest_route_result
+                        ),
+                        0,
+                    );
+                }
             }
         }
     };
@@ -1083,8 +1147,32 @@ impl Drop for UnixBindGuard {
 mod tests {
     use super::*;
 
-    #[test]
-    fn progress_and_attestation_are_protobuf_roundtrips() {
+    crate::timed_test!(
+        broker_instance_identity_includes_the_complete_image_digest,
+        {
+            let first = format_broker_instance_id("0.9.0", &"a".repeat(64));
+            let second = format_broker_instance_id("0.9.0", &"b".repeat(64));
+            assert_ne!(first, second, "same-version images must not alias");
+            assert!(first.ends_with(&"a".repeat(64)));
+        }
+    );
+
+    crate::timed_test!(route_heartbeat_stays_inside_the_client_silence_budget, {
+        assert_eq!(
+            route_progress_heartbeat_interval(Duration::from_secs(5)),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            route_progress_heartbeat_interval(Duration::from_millis(30)),
+            Duration::from_millis(10)
+        );
+        assert!(
+            route_progress_heartbeat_interval(Duration::from_millis(30))
+                < Duration::from_millis(30)
+        );
+    });
+
+    crate::timed_test!(progress_and_attestation_are_protobuf_roundtrips, {
         let progress = RouteProgress {
             stage: "spawn".into(),
             attempt: 3,
@@ -1100,18 +1188,19 @@ mod tests {
         let attestation = ClientHostAttestation::decode(bytes.as_slice()).unwrap();
         assert!(!attestation.machine_id.is_empty());
         assert!(!attestation.boot_id.is_empty());
-    }
+    });
 
-    #[test]
-    fn deadline_env_values_are_positive_and_have_contract_defaults() {
-        let deadlines = BrokerDeadlines::from_env();
-        assert!(!deadlines.first_response.is_zero());
-        assert!(!deadlines.progress_silence.is_zero());
-        assert!(!deadlines.route_ceiling.is_zero());
-    }
+    crate::timed_test!(
+        deadline_env_values_are_positive_and_have_contract_defaults,
+        {
+            let deadlines = BrokerDeadlines::from_env();
+            assert!(!deadlines.first_response.is_zero());
+            assert!(!deadlines.progress_silence.is_zero());
+            assert!(!deadlines.route_ceiling.is_zero());
+        }
+    );
 
-    #[test]
-    fn mismatched_machine_attestation_is_refused_as_shared_home() {
+    crate::timed_test!(mismatched_machine_attestation_is_refused_as_shared_home, {
         let hello = Hello {
             client_lib_name: "soldr".into(),
             peer_attestation_nonce: ClientHostAttestation {
@@ -1133,11 +1222,10 @@ mod tests {
         assert!(refused.reason.contains("shared Soldr home"));
         assert!(refused.details.contains_key("client_machine_id"));
         assert!(refused.details.contains_key("broker_machine_id"));
-    }
+    });
 
     #[cfg(unix)]
-    #[test]
-    fn stale_socket_n_way_bind_has_exactly_one_winner() {
+    crate::timed_test!(stale_socket_n_way_bind_has_exactly_one_winner, {
         use std::sync::{mpsc, Barrier};
 
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1181,5 +1269,5 @@ mod tests {
         for thread in threads {
             thread.join().expect("bind contender");
         }
-    }
+    });
 }

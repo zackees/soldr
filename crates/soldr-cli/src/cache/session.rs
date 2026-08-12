@@ -559,7 +559,7 @@ pub(crate) async fn run_cache_shutdown_command(
              graceful daemon shutdown still runs its internal flush"
                 .into(),
         );
-    } else {
+    } else if daemon_pid.is_some() {
         match crate::daemon::client::flush_caches(&sock) {
             Ok(report) => {
                 output.daemon_was_running = true;
@@ -580,54 +580,60 @@ pub(crate) async fn run_cache_shutdown_command(
         }
     }
 
-    match crate::daemon::client::shutdown(&sock) {
-        Ok(responder) => {
-            output.daemon_was_running = true;
-            output.shutdown_requested = true;
-            let timeout = if wait {
-                std::time::Duration::from_secs(shutdown_timeout_seconds)
-            } else {
-                std::time::Duration::ZERO
-            };
-            let outcome =
-                crate::daemon::lifecycle::wait_for_shutdown_responder(&sock, responder, timeout);
-            output.daemon_exited = outcome.is_complete();
-            output.daemon_stopped = output.daemon_exited;
-            if wait && !output.daemon_exited {
-                failure.get_or_insert_with(|| {
-                    format!(
+    if daemon_pid.is_none() {
+        output.daemon_exited = true;
+        notes.push("soldr-daemon was already stopped".into());
+    } else {
+        match crate::daemon::client::shutdown(&sock) {
+            Ok(responder) => {
+                output.daemon_was_running = true;
+                output.shutdown_requested = true;
+                let timeout = if wait {
+                    std::time::Duration::from_secs(shutdown_timeout_seconds)
+                } else {
+                    std::time::Duration::ZERO
+                };
+                let outcome = crate::daemon::lifecycle::wait_for_shutdown_responder(
+                    &sock, responder, timeout,
+                );
+                output.daemon_exited = outcome.is_complete();
+                output.daemon_stopped = output.daemon_exited;
+                if wait && !output.daemon_exited {
+                    failure.get_or_insert_with(|| {
+                        format!(
                         "soldr-daemon generation {} (pid {}) acknowledged shutdown but is still \
                          completing its graceful flush after {shutdown_timeout_seconds}s; it was \
                          not force-killed",
                         responder.generation, responder.pid,
                     )
-                });
+                    });
+                }
             }
-        }
-        Err(crate::daemon::client::ClientError::NotRunning) => {
-            output.daemon_exited = true;
-            notes.push("soldr-daemon was already stopped".into());
-        }
-        Err(err) => {
-            notes.push(format!(
-                "wire shutdown failed ({err:?}); attempting verified-PID displacement"
-            ));
-            if daemon_pid.is_some()
-                && crate::daemon::lifecycle::displace_stale_daemon(
-                    &paths,
-                    Some(crate::daemon::lifecycle::LifecycleSource::Cli),
-                )
-            {
-                output.daemon_stopped = true;
+            Err(crate::daemon::client::ClientError::NotRunning) => {
                 output.daemon_exited = true;
-                notes.push("soldr-daemon stopped through verified-PID fallback".into());
-            } else {
-                failure.get_or_insert_with(|| {
-                    format!(
-                        "daemon shutdown failed without a trusted acknowledgement or \
-                         signal-safe PID: {err:?}"
+                notes.push("soldr-daemon was already stopped".into());
+            }
+            Err(err) => {
+                notes.push(format!(
+                    "wire shutdown failed ({err:?}); attempting verified-PID displacement"
+                ));
+                if daemon_pid.is_some()
+                    && crate::daemon::lifecycle::displace_stale_daemon(
+                        &paths,
+                        Some(crate::daemon::lifecycle::LifecycleSource::Cli),
                     )
-                });
+                {
+                    output.daemon_stopped = true;
+                    output.daemon_exited = true;
+                    notes.push("soldr-daemon stopped through verified-PID fallback".into());
+                } else {
+                    failure.get_or_insert_with(|| {
+                        format!(
+                            "daemon shutdown failed without a trusted acknowledgement or \
+                         signal-safe PID: {err:?}"
+                        )
+                    });
+                }
             }
         }
     }
@@ -794,8 +800,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn session_ids_cannot_escape_baseline_or_archive_directories() {
+    crate::timed_test!(session_ids_cannot_escape_baseline_or_archive_directories, {
         for invalid in [
             "",
             ".",
@@ -815,7 +820,7 @@ mod tests {
             session_baseline_path(root, "build-1.main_ok").expect("valid id"),
             root.join("logs/session-build-1.main_ok.baseline.json")
         );
-    }
+    });
 
     crate::timed_test!(
         compilation_delta_accepts_monotonic_zero_and_nonzero_counts,
@@ -866,8 +871,7 @@ mod tests {
         assert_eq!(stats["phase_profile"]["staged"]["failures"]["copy"], 1);
     });
 
-    #[test]
-    fn clear_session_artifacts_removes_existing_files_only() {
+    crate::timed_test!(clear_session_artifacts_removes_existing_files_only, {
         let tmp = tempfile::tempdir().expect("tempdir");
         let zccache_dir = tmp.path();
         std::fs::create_dir_all(zccache_dir.join("logs")).expect("logs dir");
@@ -884,32 +888,28 @@ mod tests {
         // removed (idempotency contract for `session-end --clear`).
         let removed_again = clear_session_artifacts(zccache_dir).expect("clear-twice");
         assert!(!removed_again, "second clear should be a no-op");
-    }
+    });
 
-    #[test]
-    fn zccache_output_snippet_omits_empty_output() {
+    crate::timed_test!(zccache_output_snippet_omits_empty_output, {
         assert_eq!(zccache_output_snippet(b""), None);
         assert_eq!(zccache_output_snippet(b" \n\t "), None);
-    }
+    });
 
-    #[test]
-    fn zccache_output_snippet_compacts_whitespace() {
+    crate::timed_test!(zccache_output_snippet_compacts_whitespace, {
         assert_eq!(
             zccache_output_snippet(b"  first line\n\nsecond\tline  ").as_deref(),
             Some("first line second line")
         );
-    }
+    });
 
-    #[test]
-    fn zccache_output_snippet_truncates_long_output() {
+    crate::timed_test!(zccache_output_snippet_truncates_long_output, {
         let output = "x".repeat(ZCCACHE_ANALYZE_NOTE_LIMIT + 10);
         let snippet = zccache_output_snippet(output.as_bytes()).unwrap();
         assert_eq!(snippet.chars().count(), ZCCACHE_ANALYZE_NOTE_LIMIT + 3);
         assert!(snippet.ends_with("..."));
-    }
+    });
 
-    #[test]
-    fn zccache_analyze_failure_note_includes_stdout_and_stderr() {
+    crate::timed_test!(zccache_analyze_failure_note_includes_stdout_and_stderr, {
         let note = zccache_analyze_failure_note(
             Some(1),
             br#"{"status":"error","error":"bad input"}"#,
@@ -918,5 +918,5 @@ mod tests {
         assert!(note.contains("rollups: zccache analyze exited with status Some(1)"));
         assert!(note.contains("stderr: expected compile journal JSONL"));
         assert!(note.contains(r#"stdout: {"status":"error","error":"bad input"}"#));
-    }
+    });
 }

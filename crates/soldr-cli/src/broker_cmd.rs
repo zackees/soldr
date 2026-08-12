@@ -356,7 +356,7 @@ fn run_broker_stop() -> Result<(), SoldrError> {
 /// Return the start token only when `pid` still names the exact installed
 /// stable-broker executable. Both fields are required before every signal so
 /// PID reuse can only make stop conclude that the original generation exited.
-fn verified_broker_generation(pid: u32) -> Option<u64> {
+pub(crate) fn verified_broker_generation(pid: u32) -> Option<u64> {
     use sysinfo::{Pid, ProcessRefreshKind, System};
 
     let installed = crate::broker_identity::ResolvedBrokerEndpoint::resolve()
