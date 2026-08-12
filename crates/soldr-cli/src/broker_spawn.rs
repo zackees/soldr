@@ -40,6 +40,7 @@ use std::time::{Duration, Instant};
 /// turn an ordinary `soldr` invocation into a hang.
 const SPAWN_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const RESURRECTION_WAIT_TIMEOUT: Duration = Duration::from_secs(12);
+const EXISTING_BROKER_RETRY_TIMEOUT: Duration = Duration::from_secs(1);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Whether the broker path is enabled — **always true** (soldr#2388). The
@@ -210,10 +211,38 @@ fn ensure_stable_broker_ready() -> Result<(), String> {
         if stable_broker_is_ready(&runtime, &endpoint.bind_endpoint) {
             return Ok(());
         }
-        if let Some(instance) = broker_instance_at(&runtime, &endpoint.bind_endpoint) {
-            stop_incompatible_broker(&runtime, &endpoint.bind_endpoint, &instance)?;
+        let instance = broker_instance_at(&runtime, &endpoint.bind_endpoint).or_else(|| {
+            admission_endpoint_exists(&endpoint.bind_endpoint)
+                .then(|| wait_for_existing_broker(&runtime, &endpoint.bind_endpoint))
+                .flatten()
+        });
+        if let Some(instance) = instance {
+            if broker_instance_is_compatible(&instance) {
+                return Ok(());
+            }
+            stop_incompatible_broker(&runtime, &endpoint.bind_endpoint, &instance, &lease)?;
+            // Another front door may win the replacement race after the old
+            // generation exits. Accept that compatible winner instead of
+            // staging over its live image or spawning a duplicate.
+            if stable_broker_is_ready(&runtime, &endpoint.bind_endpoint) {
+                return Ok(());
+            }
+        } else if admission_endpoint_accepts_connections(&endpoint.bind_endpoint) {
+            // A listener that accepts connections but cannot answer admin
+            // under a startup stampede is still a live owner. Preserve it;
+            // the compile handshake will either succeed or report the
+            // incompatible generation on a later bounded attempt. Spawning a
+            // second candidate here only creates a guaranteed bind loser.
+            return Ok(());
         }
         lease.check_fence().map_err(|error| error.to_string())?;
+        // Publish the desired image identity into the shared hash cache while
+        // this process is still the sole resurrection winner. Once the
+        // listener appears, every contender can compare against this cache
+        // hit instead of racing a cold executable scan while the lease ages.
+        let broker_instance_id = crate::broker_server::broker_image_instance_id()
+            .map_err(|error| format!("could not identify broker image: {error}"))?;
+        lease.renew().map_err(|error| error.to_string())?;
         stage_broker_image(&endpoint.executable_path, &lease).map_err(|error| {
             format!(
                 "could not stage stable broker image {}: {error}",
@@ -234,6 +263,10 @@ fn ensure_stable_broker_ready() -> Result<(), String> {
         let mut command = std::process::Command::new(&endpoint.executable_path);
         command.args(["broker", "serve"]);
         command.envs(broker_spawn_env());
+        command.env(
+            crate::broker_server::BROKER_INSTANCE_ID_ENV,
+            broker_instance_id,
+        );
         let stdio = daemon_stdio(&log_file);
         let child = running_process::spawn_daemon_with_stdio_and_env_policy(
             &mut command,
@@ -314,11 +347,57 @@ fn wait_for_stable_broker(
 }
 
 fn stable_broker_is_ready(runtime: &tokio::runtime::Runtime, endpoint: &str) -> bool {
-    broker_instance_at(runtime, endpoint)
-        .is_some_and(|instance| instance == crate::broker_server::BROKER_INSTANCE_ID)
+    let Some(observed) = broker_instance_at(runtime, endpoint) else {
+        return false;
+    };
+    broker_instance_is_compatible(&observed)
+}
+
+fn broker_instance_is_compatible(observed: &str) -> bool {
+    let Ok(expected) = crate::broker_server::broker_image_instance_id() else {
+        return false;
+    };
+    observed == expected
+}
+
+fn wait_for_existing_broker(runtime: &tokio::runtime::Runtime, endpoint: &str) -> Option<String> {
+    let deadline = Instant::now() + EXISTING_BROKER_RETRY_TIMEOUT;
+    loop {
+        if let Some(instance) = broker_instance_at(runtime, endpoint) {
+            return Some(instance);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+}
+
+#[cfg(unix)]
+fn admission_endpoint_exists(endpoint: &str) -> bool {
+    std::path::Path::new(endpoint).exists()
+}
+
+#[cfg(windows)]
+fn admission_endpoint_exists(_endpoint: &str) -> bool {
+    false
+}
+
+#[cfg(unix)]
+fn admission_endpoint_accepts_connections(endpoint: &str) -> bool {
+    std::os::unix::net::UnixStream::connect(endpoint).is_ok()
+}
+
+#[cfg(windows)]
+fn admission_endpoint_accepts_connections(_endpoint: &str) -> bool {
+    false
 }
 
 fn broker_instance_at(runtime: &tokio::runtime::Runtime, endpoint: &str) -> Option<String> {
+    broker_snapshot_at(runtime, endpoint).map(|(instance, _pid)| instance)
+}
+
+fn broker_snapshot_at(runtime: &tokio::runtime::Runtime, endpoint: &str) -> Option<(String, u32)> {
     runtime.block_on(async {
         use interprocess::local_socket::tokio::prelude::*;
         use prost::Message as _;
@@ -369,11 +448,17 @@ fn broker_instance_at(runtime: &tokio::runtime::Runtime, endpoint: &str) -> Opti
             }
             let snapshot: serde_json::Value =
                 serde_json::from_str(&reply.body).map_err(std::io::Error::other)?;
-            snapshot
+            let instance = snapshot
                 .get("broker_instance")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned)
-                .ok_or_else(|| std::io::Error::other("readiness reply omitted broker_instance"))
+                .ok_or_else(|| std::io::Error::other("readiness reply omitted broker_instance"))?;
+            let pid = snapshot
+                .get("broker_pid")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|pid| u32::try_from(pid).ok())
+                .ok_or_else(|| std::io::Error::other("readiness reply omitted broker_pid"))?;
+            Ok((instance, pid))
         };
         match tokio::time::timeout(
             crate::broker_server::BrokerDeadlines::from_env().first_response,
@@ -391,10 +476,24 @@ fn stop_incompatible_broker(
     runtime: &tokio::runtime::Runtime,
     endpoint: &str,
     instance: &str,
+    lease: &crate::broker_lease::BrokerLease,
 ) -> Result<(), String> {
     use running_process::broker::client::send_admin_request;
     use running_process::broker::protocol::{AdminRequest, AdminVerb};
 
+    let broker_pid = broker_snapshot_at(runtime, endpoint)
+        .filter(|(observed, _)| observed == instance)
+        .map(|(_, pid)| pid)
+        .ok_or_else(|| {
+            format!("incompatible broker instance {instance} changed before shutdown")
+        })?;
+    let broker_start_token = crate::broker_cmd::verified_broker_generation(broker_pid).ok_or_else(
+        || {
+            format!(
+                "incompatible broker pid {broker_pid} is not the verified stable broker; refusing to signal it"
+            )
+        },
+    )?;
     let reply = send_admin_request(
         endpoint,
         AdminRequest {
@@ -411,14 +510,64 @@ fn stop_incompatible_broker(
         ));
     }
     let deadline = Instant::now() + SPAWN_WAIT_TIMEOUT;
-    while broker_instance_at(runtime, endpoint).is_some() {
-        if Instant::now() >= deadline {
-            return Err(format!(
-                "incompatible broker instance {instance} did not release {endpoint}"
-            ));
+    let mut next_renew = Instant::now() + Duration::from_secs(1);
+    while crate::broker_cmd::verified_broker_generation(broker_pid) == Some(broker_start_token)
+        && Instant::now() < deadline
+    {
+        if Instant::now() >= next_renew {
+            lease.renew().map_err(|error| error.to_string())?;
+            next_renew = Instant::now() + Duration::from_secs(1);
         }
         std::thread::sleep(POLL_INTERVAL);
     }
+    if crate::broker_cmd::verified_broker_generation(broker_pid) == Some(broker_start_token) {
+        use running_process::broker::backend_lifecycle::verify_pid::force_kill_pid;
+
+        // Recheck immediately before the signal. PID reuse can only turn this
+        // into an observed exit; it must never target the replacement owner.
+        if crate::broker_cmd::verified_broker_generation(broker_pid) == Some(broker_start_token) {
+            force_kill_pid(broker_pid).map_err(|error| {
+                format!(
+                    "incompatible broker instance {instance} exceeded its drain deadline: {error}"
+                )
+            })?;
+        }
+        let kill_deadline = Instant::now() + SPAWN_WAIT_TIMEOUT;
+        while crate::broker_cmd::verified_broker_generation(broker_pid) == Some(broker_start_token)
+            && Instant::now() < kill_deadline
+        {
+            if Instant::now() >= next_renew {
+                lease.renew().map_err(|error| error.to_string())?;
+                next_renew = Instant::now() + Duration::from_secs(1);
+            }
+            std::thread::sleep(POLL_INTERVAL);
+        }
+        if crate::broker_cmd::verified_broker_generation(broker_pid) == Some(broker_start_token) {
+            return Err(format!(
+                "incompatible broker instance {instance} survived bounded termination"
+            ));
+        }
+    }
+    retire_incompatible_admission_endpoint(endpoint, instance)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn retire_incompatible_admission_endpoint(endpoint: &str, instance: &str) -> Result<(), String> {
+    match std::fs::remove_file(endpoint) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "could not retire incompatible broker instance {instance} at {endpoint}: {error}"
+        )),
+    }
+}
+
+#[cfg(windows)]
+fn retire_incompatible_admission_endpoint(_endpoint: &str, _instance: &str) -> Result<(), String> {
+    // Named-pipe listeners have no filesystem entry to unlink. Once shutdown
+    // is acknowledged, the old broker has stopped admission and a new pipe
+    // instance can take the stable name while established sessions drain.
     Ok(())
 }
 

@@ -133,7 +133,10 @@ impl SoldrBackendLauncher {
             .as_deref()
             .is_none_or(|path| !path.starts_with(&route_runtime))
         {
-            crate::daemon::backend_handle_adoption::prune_broker_route_claim(&paths);
+            // The claim is root-scoped, not route-scoped. A different daemon
+            // image may legitimately own this root while its replacement is
+            // being registered. Preserve that foreign claim so the lifecycle
+            // preflight can identify and retire the incumbent.
             return Ok(None);
         }
         let claimed_binary = claimed_binary.expect("checked above");
@@ -337,9 +340,7 @@ impl SoldrBackendLauncher {
         };
         let expected_binary = std::fs::canonicalize(expected_binary).ok()?;
         let claimed_binary = std::fs::canonicalize(&claim.exe_path).ok();
-        if claimed_binary.as_deref() != Some(expected_binary.as_path())
-            || claim.boot_id != running_process::broker::host_identity::current().boot_id
-        {
+        if claimed_binary.as_deref() != Some(expected_binary.as_path()) {
             if std::env::var_os("SOLDR_BROKER_DEBUG").is_some() {
                 eprintln!(
                     "soldr broker: route claim identity mismatch claimed_binary={:?} expected_binary={} claim_boot={} current_boot={}",
@@ -349,6 +350,12 @@ impl SoldrBackendLauncher {
                     running_process::broker::host_identity::current().boot_id,
                 );
             }
+            // A root-scoped claim for another image route is not corrupt.
+            // Deleting it here prevents preflight from naming the process
+            // that owns the root lock during an image transition.
+            return None;
+        }
+        if claim.boot_id != running_process::broker::host_identity::current().boot_id {
             if prune_invalid {
                 crate::daemon::backend_handle_adoption::prune_broker_route_claim(paths);
             }
@@ -729,6 +736,51 @@ mod tests {
         assert!(
             err.to_string().contains("changed before broker launch"),
             "{err}"
+        );
+    });
+
+    crate::timed_test!(foreign_live_route_claim_survives_replacement_preflight, {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("root");
+        let paths = crate::core::SoldrPaths::with_root(root.clone());
+        let endpoint = running_process::broker::protocol::Endpoint::unix_socket(
+            "incumbent-test",
+            temp.path().join("incumbent.sock").display().to_string(),
+        )
+        .or_else(|_| {
+            running_process::broker::protocol::Endpoint::windows_pipe(
+                "incumbent-test",
+                "soldr-incumbent-test",
+            )
+        })
+        .expect("incumbent endpoint");
+        let incumbent =
+            running_process::broker::backend_handle::DaemonProcess::current_process(endpoint, None)
+                .expect("incumbent claim");
+        crate::daemon::backend_handle_adoption::publish_broker_route_claim(&paths, &incumbent)
+            .expect("publish incumbent claim");
+
+        let replacement = temp.path().join("replacement").join("soldr-daemon");
+        std::fs::create_dir_all(replacement.parent().expect("replacement parent"))
+            .expect("replacement dir");
+        std::fs::write(&replacement, b"replacement image").expect("replacement image");
+        let (definition, key, trace_context) = request_parts(&root, &replacement, &"0".repeat(64));
+        let request = BackendLaunchRequest {
+            key: &key,
+            service_definition: &definition,
+            trace_context: &trace_context,
+            session_token: None,
+        };
+
+        assert!(
+            SoldrBackendLauncher::new()
+                .adopt_route_claim(&request, &paths, &replacement, true)
+                .is_none(),
+            "a foreign image claim must not be adopted"
+        );
+        assert!(
+            crate::daemon::backend_handle_adoption::broker_route_claim_path(&paths).exists(),
+            "replacement preflight still needs the incumbent PID/image claim"
         );
     });
 }

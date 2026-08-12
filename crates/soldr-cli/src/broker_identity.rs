@@ -654,8 +654,7 @@ fn percent_encode_pipe_leaf(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn linux_contract_mapping_is_exact() {
+    crate::timed_test!(linux_contract_mapping_is_exact, {
         #[cfg(unix)]
         {
             let endpoint = resolve_unix_for_home(
@@ -676,44 +675,47 @@ mod tests {
             assert_eq!(endpoint.bind_endpoint, endpoint.logical_socket_path);
             assert_eq!(endpoint.fallback, None);
         }
-    }
+    });
 
-    #[test]
-    fn resurrection_leases_are_partitioned_by_broker_executable_path() {
-        let a = format!(
-            "broker-lease-{}.sqlite3",
-            identity_key(b"/profiles/a/.soldr/broker/soldr-broker.sock")
-        );
-        let b = format!(
-            "broker-lease-{}.sqlite3",
-            identity_key(b"/profiles/b/.soldr/broker/soldr-broker.sock")
-        );
-        assert_ne!(a, b);
-        assert!(a.starts_with("broker-lease-"));
-        assert!(a.ends_with(".sqlite3"));
-    }
-
-    #[test]
-    fn detached_broker_keeps_endpoint_beside_its_staged_executable() {
-        #[cfg(unix)]
+    crate::timed_test!(
+        resurrection_leases_are_partitioned_by_broker_executable_path,
         {
-            let endpoint = resolve_unix_for_executable(
-                Path::new("/mounted/home/.soldr/broker/soldr-broker"),
-                Path::new("/run/user/1000"),
-                Some(false),
-                108,
-            )
-            .expect("endpoint");
-            assert_eq!(
-                endpoint.logical_socket_path,
-                "/mounted/home/.soldr/broker/soldr-broker.sock"
+            let a = format!(
+                "broker-lease-{}.sqlite3",
+                identity_key(b"/profiles/a/.soldr/broker/soldr-broker.sock")
             );
-            assert_eq!(endpoint.bind_endpoint, endpoint.logical_socket_path);
+            let b = format!(
+                "broker-lease-{}.sqlite3",
+                identity_key(b"/profiles/b/.soldr/broker/soldr-broker.sock")
+            );
+            assert_ne!(a, b);
+            assert!(a.starts_with("broker-lease-"));
+            assert!(a.ends_with(".sqlite3"));
         }
-    }
+    );
 
-    #[test]
-    fn windows_contract_mapping_is_exact() {
+    crate::timed_test!(
+        detached_broker_keeps_endpoint_beside_its_staged_executable,
+        {
+            #[cfg(unix)]
+            {
+                let endpoint = resolve_unix_for_executable(
+                    Path::new("/mounted/home/.soldr/broker/soldr-broker"),
+                    Path::new("/run/user/1000"),
+                    Some(false),
+                    108,
+                )
+                .expect("endpoint");
+                assert_eq!(
+                    endpoint.logical_socket_path,
+                    "/mounted/home/.soldr/broker/soldr-broker.sock"
+                );
+                assert_eq!(endpoint.bind_endpoint, endpoint.logical_socket_path);
+            }
+        }
+    );
+
+    crate::timed_test!(windows_contract_mapping_is_exact, {
         let endpoint =
             windows_broker_pipe_from_executable(r"C:\Users\niteris\.soldr\broker\soldr-broker.exe")
                 .expect("endpoint");
@@ -726,29 +728,30 @@ mod tests {
             r"c%3A%5Cusers%5Cniteris%5C.soldr%5Cbroker%5Csoldr-broker.sock"
         );
         assert!(!endpoint.overflowed);
-    }
+    });
 
-    #[test]
-    fn windows_daemon_session_mapping_is_exact_and_contains_no_sid() {
-        let endpoint = windows_pipe_from_executable_with_suffix(
+    crate::timed_test!(
+        windows_daemon_session_mapping_is_exact_and_contains_no_sid,
+        {
+            let endpoint = windows_pipe_from_executable_with_suffix(
             r"C:\Users\niteris\.soldr\broker\routes\root-a\runtime\soldr-daemon\v0.9.0\soldr-daemon.exe",
             ".session.sock",
             "soldr-daemon-session",
         )
         .expect("endpoint");
-        assert_eq!(
-            endpoint.logical_socket_path,
-            r"c:\users\niteris\.soldr\broker\routes\root-a\runtime\soldr-daemon\v0.9.0\soldr-daemon.session.sock"
-        );
-        assert_eq!(
-            endpoint.pipe_leaf,
-            r"c%3A%5Cusers%5Cniteris%5C.soldr%5Cbroker%5Croutes%5Croot-a%5Cruntime%5Csoldr-daemon%5Cv0.9.0%5Csoldr-daemon.session.sock"
-        );
-        assert!(!endpoint.pipe_leaf.contains("sid"));
-    }
+            assert_eq!(
+                endpoint.logical_socket_path,
+                r"c:\users\niteris\.soldr\broker\routes\root-a\runtime\soldr-daemon\v0.9.0\soldr-daemon.session.sock"
+            );
+            assert_eq!(
+                endpoint.pipe_leaf,
+                r"c%3A%5Cusers%5Cniteris%5C.soldr%5Cbroker%5Croutes%5Croot-a%5Cruntime%5Csoldr-daemon%5Cv0.9.0%5Csoldr-daemon.session.sock"
+            );
+            assert!(!endpoint.pipe_leaf.contains("sid"));
+        }
+    );
 
-    #[test]
-    fn unix_daemon_session_mapping_is_executable_sibling() {
+    crate::timed_test!(unix_daemon_session_mapping_is_executable_sibling, {
         #[cfg(unix)]
         {
             let temp = tempfile::tempdir().expect("tempdir");
@@ -765,69 +768,75 @@ mod tests {
             );
             assert!(!endpoint.path.contains("sid"));
         }
-    }
+    });
 
-    #[test]
-    fn unix_daemon_session_mapping_distinguishes_executable_leaves() {
-        #[cfg(unix)]
+    crate::timed_test!(
+        unix_daemon_session_mapping_distinguishes_executable_leaves,
         {
-            let temp = tempfile::tempdir().expect("tempdir");
-            let first_executable = temp.path().join("soldr-daemon-a");
-            let second_executable = temp.path().join("soldr-daemon-b");
-            std::fs::write(&first_executable, b"a").expect("first image");
-            std::fs::write(&second_executable, b"b").expect("second image");
-            let first =
-                daemon_session_endpoint_from_executable(&first_executable).expect("first endpoint");
-            let second = daemon_session_endpoint_from_executable(&second_executable)
-                .expect("second endpoint");
-            assert_ne!(first.path, second.path);
-            assert!(first.path.ends_with("soldr-daemon-a.session.sock"));
-            assert!(second.path.ends_with("soldr-daemon-b.session.sock"));
+            #[cfg(unix)]
+            {
+                let temp = tempfile::tempdir().expect("tempdir");
+                let first_executable = temp.path().join("soldr-daemon-a");
+                let second_executable = temp.path().join("soldr-daemon-b");
+                std::fs::write(&first_executable, b"a").expect("first image");
+                std::fs::write(&second_executable, b"b").expect("second image");
+                let first = daemon_session_endpoint_from_executable(&first_executable)
+                    .expect("first endpoint");
+                let second = daemon_session_endpoint_from_executable(&second_executable)
+                    .expect("second endpoint");
+                assert_ne!(first.path, second.path);
+                assert!(first.path.ends_with("soldr-daemon-a.session.sock"));
+                assert!(second.path.ends_with("soldr-daemon-b.session.sock"));
+            }
         }
-    }
+    );
 
-    #[test]
-    fn canonical_existing_ancestor_collapses_symlinked_home_spelling() {
-        #[cfg(unix)]
+    crate::timed_test!(
+        canonical_existing_ancestor_collapses_symlinked_home_spelling,
         {
-            use std::os::unix::fs::symlink;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::symlink;
 
-            let temp = tempfile::tempdir().expect("tempdir");
-            let real = temp.path().join("real-home");
-            let alias = temp.path().join("alias-home");
-            std::fs::create_dir_all(&real).expect("real home");
-            symlink(&real, &alias).expect("home symlink");
-            let resolved = authoritative_broker_executable(&alias, "soldr-broker");
-            assert_eq!(
-                resolved,
-                std::fs::canonicalize(&real)
-                    .expect("canonical real home")
-                    .join(".soldr/broker/soldr-broker")
-            );
+                let temp = tempfile::tempdir().expect("tempdir");
+                let real = temp.path().join("real-home");
+                let alias = temp.path().join("alias-home");
+                std::fs::create_dir_all(&real).expect("real home");
+                symlink(&real, &alias).expect("home symlink");
+                let resolved = authoritative_broker_executable(&alias, "soldr-broker");
+                assert_eq!(
+                    resolved,
+                    std::fs::canonicalize(&real)
+                        .expect("canonical real home")
+                        .join(".soldr/broker/soldr-broker")
+                );
+            }
         }
-    }
+    );
 
-    #[test]
-    fn unix_daemon_session_overflow_uses_a_short_path_derived_name() {
-        #[cfg(unix)]
+    crate::timed_test!(
+        unix_daemon_session_overflow_uses_a_short_path_derived_name,
         {
-            let temp = tempfile::tempdir().expect("tempdir");
-            let directory = temp.path().join("long-route-segment".repeat(8));
-            std::fs::create_dir_all(&directory).expect("long route directory");
-            let executable = directory.join("soldr-daemon");
-            std::fs::write(&executable, b"daemon").expect("daemon image");
-            let executable = std::fs::canonicalize(executable).expect("canonical daemon");
-            let first = daemon_session_endpoint_from_executable(&executable).expect("endpoint");
-            let second = daemon_session_endpoint_from_executable(&executable).expect("endpoint");
-            assert_eq!(first, second);
-            assert!(unix_path_bytes(Path::new(&first.path)).len() < unix_sun_path_capacity());
-            assert!(first.path.ends_with(".session.sock"));
-            assert!(!first.path.contains("sid"));
+            #[cfg(unix)]
+            {
+                let temp = tempfile::tempdir().expect("tempdir");
+                let directory = temp.path().join("long-route-segment".repeat(8));
+                std::fs::create_dir_all(&directory).expect("long route directory");
+                let executable = directory.join("soldr-daemon");
+                std::fs::write(&executable, b"daemon").expect("daemon image");
+                let executable = std::fs::canonicalize(executable).expect("canonical daemon");
+                let first = daemon_session_endpoint_from_executable(&executable).expect("endpoint");
+                let second =
+                    daemon_session_endpoint_from_executable(&executable).expect("endpoint");
+                assert_eq!(first, second);
+                assert!(unix_path_bytes(Path::new(&first.path)).len() < unix_sun_path_capacity());
+                assert!(first.path.ends_with(".session.sock"));
+                assert!(!first.path.contains("sid"));
+            }
         }
-    }
+    );
 
-    #[test]
-    fn windows_sanitizer_normalizes_supported_spellings() {
+    crate::timed_test!(windows_sanitizer_normalizes_supported_spellings, {
         let expected =
             windows_broker_pipe_from_executable(r"C:\Users\Me\soldr-broker.exe").expect("baseline");
         for spelling in [
@@ -841,10 +850,9 @@ mod tests {
                 "{spelling}"
             );
         }
-    }
+    });
 
-    #[test]
-    fn windows_sanitizer_normalizes_extended_unc() {
+    crate::timed_test!(windows_sanitizer_normalizes_extended_unc, {
         let ordinary = windows_broker_pipe_from_executable(
             r"\\server\profiles\Me\.soldr\broker\soldr-broker.exe",
         )
@@ -857,24 +865,25 @@ mod tests {
         assert!(ordinary
             .logical_socket_path
             .starts_with(r"\\server\profiles"));
-    }
+    });
 
-    #[test]
-    fn windows_sanitizer_encodes_space_percent_and_non_ascii_bytes() {
-        let endpoint =
-            windows_broker_pipe_from_executable("C:\\Users\\Jöhn 100%\\soldr-broker.exe")
-                .expect("endpoint");
-        assert!(endpoint.pipe_leaf.contains("%20"));
-        assert!(endpoint.pipe_leaf.contains("%25"));
-        assert!(endpoint.pipe_leaf.contains("%C3%B6"));
-        assert_eq!(
-            endpoint.logical_socket_path, "c:\\users\\jöhn 100%\\soldr-broker.sock",
-            "non-ASCII case is preserved while ASCII case folds"
-        );
-    }
+    crate::timed_test!(
+        windows_sanitizer_encodes_space_percent_and_non_ascii_bytes,
+        {
+            let endpoint =
+                windows_broker_pipe_from_executable("C:\\Users\\Jöhn 100%\\soldr-broker.exe")
+                    .expect("endpoint");
+            assert!(endpoint.pipe_leaf.contains("%20"));
+            assert!(endpoint.pipe_leaf.contains("%25"));
+            assert!(endpoint.pipe_leaf.contains("%C3%B6"));
+            assert_eq!(
+                endpoint.logical_socket_path, "c:\\users\\jöhn 100%\\soldr-broker.sock",
+                "non-ASCII case is preserved while ASCII case folds"
+            );
+        }
+    );
 
-    #[test]
-    fn windows_sanitizer_rejects_relative_and_parent_paths() {
+    crate::timed_test!(windows_sanitizer_rejects_relative_and_parent_paths, {
         assert!(matches!(
             windows_broker_pipe_from_executable(r"Users\me\soldr-broker.exe"),
             Err(BrokerIdentityError::RelativeWindowsExecutable(_))
@@ -883,10 +892,9 @@ mod tests {
             windows_broker_pipe_from_executable(r"C:\Users\me\..\other\soldr-broker.exe"),
             Err(BrokerIdentityError::WindowsParentComponent(_))
         ));
-    }
+    });
 
-    #[test]
-    fn windows_overflow_fallback_is_deterministic_and_diagnostic() {
+    crate::timed_test!(windows_overflow_fallback_is_deterministic_and_diagnostic, {
         let path = format!(r"C:\Users\{}\soldr-broker.exe", "long-profile-".repeat(30));
         let first = windows_broker_pipe_from_executable(&path).expect("first");
         let second = windows_broker_pipe_from_executable(&path).expect("second");
@@ -897,45 +905,50 @@ mod tests {
         assert!(first.oversized_leaf.as_ref().is_some_and(|leaf| {
             WINDOWS_PIPE_PREFIX.len() + leaf.len() > WINDOWS_PIPE_NAME_LIMIT
         }));
-    }
+    });
 
-    #[test]
-    fn distinct_canonical_windows_paths_have_distinct_regular_leaves() {
-        let cases = [
-            r"C:\Users\a\soldr-broker.exe",
-            r"C:\Users\b\soldr-broker.exe",
-            r"D:\Users\a\soldr-broker.exe",
-            r"\\server\share\a\soldr-broker.exe",
-            "C:\\Users\\Ä\\soldr-broker.exe",
-            "C:\\Users\\ä\\soldr-broker.exe",
-        ];
-        let mut logical = std::collections::HashSet::new();
-        let mut leaves = std::collections::HashSet::new();
-        for case in cases {
-            let endpoint = windows_broker_pipe_from_executable(case).expect(case);
-            assert!(
-                !endpoint.overflowed,
-                "fixture should exercise injective encoding"
-            );
-            assert!(logical.insert(endpoint.logical_socket_path));
-            assert!(leaves.insert(endpoint.pipe_leaf));
+    crate::timed_test!(
+        distinct_canonical_windows_paths_have_distinct_regular_leaves,
+        {
+            let cases = [
+                r"C:\Users\a\soldr-broker.exe",
+                r"C:\Users\b\soldr-broker.exe",
+                r"D:\Users\a\soldr-broker.exe",
+                r"\\server\share\a\soldr-broker.exe",
+                "C:\\Users\\Ä\\soldr-broker.exe",
+                "C:\\Users\\ä\\soldr-broker.exe",
+            ];
+            let mut logical = std::collections::HashSet::new();
+            let mut leaves = std::collections::HashSet::new();
+            for case in cases {
+                let endpoint = windows_broker_pipe_from_executable(case).expect(case);
+                assert!(
+                    !endpoint.overflowed,
+                    "fixture should exercise injective encoding"
+                );
+                assert!(logical.insert(endpoint.logical_socket_path));
+                assert!(leaves.insert(endpoint.pipe_leaf));
+            }
         }
-    }
+    );
 
-    #[test]
-    fn different_profiles_produce_different_endpoints_without_sid_suffixes() {
-        let a =
-            windows_broker_pipe_from_executable(r"C:\Users\alice\.soldr\broker\soldr-broker.exe")
-                .unwrap();
-        let b = windows_broker_pipe_from_executable(r"C:\Users\bob\.soldr\broker\soldr-broker.exe")
+    crate::timed_test!(
+        different_profiles_produce_different_endpoints_without_sid_suffixes,
+        {
+            let a = windows_broker_pipe_from_executable(
+                r"C:\Users\alice\.soldr\broker\soldr-broker.exe",
+            )
             .unwrap();
-        assert_ne!(a.pipe_leaf, b.pipe_leaf);
-        assert!(!a.pipe_leaf.contains("sid"));
-        assert!(!b.pipe_leaf.contains("sid"));
-    }
+            let b =
+                windows_broker_pipe_from_executable(r"C:\Users\bob\.soldr\broker\soldr-broker.exe")
+                    .unwrap();
+            assert_ne!(a.pipe_leaf, b.pipe_leaf);
+            assert!(!a.pipe_leaf.contains("sid"));
+            assert!(!b.pipe_leaf.contains("sid"));
+        }
+    );
 
-    #[test]
-    fn unix_fallback_order_is_overflow_then_filesystem() {
+    crate::timed_test!(unix_fallback_order_is_overflow_then_filesystem, {
         #[cfg(unix)]
         {
             let home = Path::new("/very/long/home/profile");
@@ -967,10 +980,9 @@ mod tests {
             .unwrap();
             assert_ne!(overflow.bind_endpoint, other.bind_endpoint);
         }
-    }
+    });
 
-    #[test]
-    fn endpoint_identity_contains_no_route_or_version_inputs() {
+    crate::timed_test!(endpoint_identity_contains_no_route_or_version_inputs, {
         let first =
             windows_broker_pipe_from_executable(r"C:\Users\same\.soldr\broker\soldr-broker.exe")
                 .unwrap();
@@ -981,5 +993,5 @@ mod tests {
         for forbidden in ["rpb-v2", "soldr-daemon", "0.9", "route", "session-1"] {
             assert!(!first.pipe_leaf.contains(forbidden));
         }
-    }
+    });
 }

@@ -565,6 +565,10 @@ jobs:
       # Every archive routes through soldr. Darwin and Windows MSVC inherit
       # the blessed SDK + clang/lld env; Linux targets retain their
       # CARGO_TARGET_*_LINKER wrappers through the cargo front door.
+      - name: Select nextest archive resources
+        shell: bash
+        run: python3 .github/scripts/cross_build_resources.py --target '${{ inputs.target }}' --github-env "$GITHUB_ENV"
+
       - name: Build nextest archive
         shell: bash
         env:

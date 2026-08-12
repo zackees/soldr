@@ -462,8 +462,7 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Barrier};
 
-    #[test]
-    fn lease_is_single_winner_and_release_allows_next_generation() {
+    crate::timed_test!(lease_is_single_winner_and_release_allows_next_generation, {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("lease.sqlite3");
         let first = BrokerLease::acquire(&path).unwrap();
@@ -474,10 +473,9 @@ mod tests {
         first.release();
         let second = BrokerLease::acquire(&path).unwrap();
         assert!(second.generation > first.generation);
-    }
+    });
 
-    #[test]
-    fn expired_row_is_taken_over_even_when_pid_is_live() {
+    crate::timed_test!(expired_row_is_taken_over_even_when_pid_is_live, {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("lease.sqlite3");
         let first = BrokerLease::acquire(&path).unwrap();
@@ -493,10 +491,9 @@ mod tests {
         second
             .check_fence()
             .expect("a former holder cannot release its successor");
-    }
+    });
 
-    #[test]
-    fn dead_owner_is_taken_over_before_expiry() {
+    crate::timed_test!(dead_owner_is_taken_over_before_expiry, {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("lease.sqlite3");
         let first = BrokerLease::acquire(&path).unwrap();
@@ -511,31 +508,33 @@ mod tests {
 
         let second = BrokerLease::acquire(&path).expect("dead owner is immediately reclaimable");
         assert!(second.generation > first.generation);
-    }
+    });
 
-    #[test]
-    fn reused_pid_with_wrong_start_token_is_taken_over_before_expiry() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("lease.sqlite3");
-        let first = BrokerLease::acquire(&path).unwrap();
-        let connection = open_database(&path).unwrap();
-        connection
-            .execute(
-                "UPDATE broker_lease SET owner_start_token=?1, expires_ms=?2",
-                params![
-                    current_process_start_token().saturating_add(1),
-                    unix_now_ms() + 60_000
-                ],
-            )
-            .unwrap();
-        drop(connection);
+    crate::timed_test!(
+        reused_pid_with_wrong_start_token_is_taken_over_before_expiry,
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("lease.sqlite3");
+            let first = BrokerLease::acquire(&path).unwrap();
+            let connection = open_database(&path).unwrap();
+            connection
+                .execute(
+                    "UPDATE broker_lease SET owner_start_token=?1, expires_ms=?2",
+                    params![
+                        current_process_start_token().saturating_add(1),
+                        unix_now_ms() + 60_000
+                    ],
+                )
+                .unwrap();
+            drop(connection);
 
-        let second = BrokerLease::acquire(&path).expect("reused PID is immediately reclaimable");
-        assert!(second.generation > first.generation);
-    }
+            let second =
+                BrokerLease::acquire(&path).expect("reused PID is immediately reclaimable");
+            assert!(second.generation > first.generation);
+        }
+    );
 
-    #[test]
-    fn concurrent_stampede_has_exactly_one_winner() {
+    crate::timed_test!(concurrent_stampede_has_exactly_one_winner, {
         let temp = tempfile::tempdir().unwrap();
         let path = Arc::new(temp.path().join("lease.sqlite3"));
         let barrier = Arc::new(Barrier::new(64));
@@ -554,10 +553,9 @@ mod tests {
             .filter_map(|thread| thread.join().unwrap())
             .collect();
         assert_eq!(winners.len(), 1);
-    }
+    });
 
-    #[test]
-    fn continuous_sqlite_busy_is_bounded_and_names_the_database() {
+    crate::timed_test!(continuous_sqlite_busy_is_bounded_and_names_the_database, {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("lease.sqlite3");
         let first = BrokerLease::acquire(&path).unwrap();
@@ -581,10 +579,9 @@ mod tests {
         };
         assert_eq!(reported, path);
         assert_eq!(waited, Duration::from_millis(40));
-    }
+    });
 
-    #[test]
-    fn corrupt_disposable_database_is_deleted_and_recreated() {
+    crate::timed_test!(corrupt_disposable_database_is_deleted_and_recreated, {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("lease.sqlite3");
         std::fs::write(&path, b"this is not sqlite").unwrap();
@@ -596,10 +593,9 @@ mod tests {
             .expect("replacement database is healthy");
 
         assert_eq!(std::fs::read(&path).unwrap()[..16], *b"SQLite format 3\0");
-    }
+    });
 
-    #[test]
-    fn incompatible_schema_is_deleted_and_recreated() {
+    crate::timed_test!(incompatible_schema_is_deleted_and_recreated, {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("lease.sqlite3");
         let connection = Connection::open(&path).unwrap();
@@ -611,5 +607,5 @@ mod tests {
         let lease = BrokerLease::acquire(&path).expect("recover incompatible schema");
         lease.check_fence().expect("replacement schema is healthy");
         assert_eq!(std::fs::read(&path).unwrap()[..16], *b"SQLite format 3\0");
-    }
+    });
 }

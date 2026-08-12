@@ -37,6 +37,23 @@ fn spawn_log(home: &Path) -> String {
     std::fs::read_to_string(home.join(".soldr/broker/broker-spawn.log")).unwrap_or_default()
 }
 
+fn broker_status(home: &Path) -> String {
+    let mut command = Command::new(common::soldr_bin());
+    common::scrub_outer_soldr_env(&mut command);
+    let output = command
+        .args(["broker", "status"])
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .stdin(Stdio::null())
+        .output()
+        .expect("query broker status");
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
+
 fn stop_broker(home: &Path) {
     let _ = Command::new(common::soldr_bin())
         .args(["broker", "stop"])
@@ -45,6 +62,80 @@ fn stop_broker(home: &Path) {
         .stdin(Stdio::null())
         .output();
 }
+
+soldr_cli::timed_test!(
+    issue_2481_same_version_old_image_is_replaced_before_readiness,
+    Duration::from_secs(90),
+    {
+        let home = common::unique_temp_dir("broker-same-version-old-image");
+        let old_instance = format!("soldr-{}-{}", env!("CARGO_PKG_VERSION"), "0".repeat(64));
+        let mut incumbent_command = Command::new(common::soldr_bin());
+        common::scrub_outer_soldr_env(&mut incumbent_command);
+        let mut incumbent = incumbent_command
+            .args(["broker", "serve"])
+            .env("HOME", &home)
+            .env("USERPROFILE", &home)
+            .env("SOLDR_INTERNAL_BROKER_INSTANCE_ID", &old_instance)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn simulated old-image broker");
+
+        let ready_deadline = Instant::now() + Duration::from_secs(20);
+        let mut before = String::new();
+        while Instant::now() < ready_deadline {
+            before = broker_status(&home);
+            if before.contains(&old_instance) {
+                break;
+            }
+            std::thread::sleep(POLL);
+        }
+
+        let mut replacement = front_door(&home)
+            .spawn()
+            .expect("start front door against old-image broker");
+        let replacement_status =
+            wait_for_child(&mut replacement, Instant::now() + Duration::from_secs(40));
+
+        let replacement_deadline = Instant::now() + Duration::from_secs(20);
+        let mut after = String::new();
+        while Instant::now() < replacement_deadline {
+            after = broker_status(&home);
+            if after.contains("broker_instance:") && !after.contains(&old_instance) {
+                break;
+            }
+            std::thread::sleep(POLL);
+        }
+
+        stop_broker(&home);
+        let incumbent_exit =
+            wait_for_child(&mut incumbent, Instant::now() + Duration::from_secs(5));
+        if incumbent_exit.is_none() {
+            let _ = incumbent.kill();
+            let _ = incumbent.wait();
+        }
+
+        assert!(
+            before.contains(&old_instance),
+            "simulated old-image broker never became ready; last status:\n{before}"
+        );
+        assert!(
+            replacement_status.is_some_and(|status| status.success()),
+            "front door did not recover through broker replacement; status={replacement_status:?}\n{}",
+            spawn_log(&home)
+        );
+        assert!(
+            after.contains("broker_instance:") && !after.contains(&old_instance),
+            "replacement did not publish a new image identity; last status:\n{after}\n{}",
+            spawn_log(&home)
+        );
+        assert!(
+            incumbent_exit.is_some(),
+            "the incompatible incumbent was not retired"
+        );
+    }
+);
 
 soldr_cli::timed_test!(
     issue_2476_sixty_four_process_stampede_binds_one_broker,
