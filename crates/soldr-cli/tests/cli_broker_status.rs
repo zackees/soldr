@@ -3,8 +3,9 @@
 //! bound it prints a clean "not running" line and exits 0 so scripts can probe
 //! without starting anything.
 
+use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 mod common;
 
@@ -12,20 +13,11 @@ const READY_TIMEOUT: Duration = Duration::from_secs(30);
 const STATUS_POLL_BUDGET: Duration = Duration::from_secs(20);
 const POLL: Duration = Duration::from_millis(100);
 
-fn unique_program(label: &str) -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("time went backwards")
-        .as_nanos();
-    format!(
-        "soldr-broker-status-{label}-{:010x}",
-        nanos & 0xFF_FFFF_FFFF
-    )
-}
-
-fn spawn_broker(program: &str) -> std::process::Child {
+fn spawn_broker(home: &Path) -> std::process::Child {
     Command::new(common::soldr_bin())
-        .args(["broker", "serve", "--program", program])
+        .args(["broker", "serve"])
+        .env("HOME", home)
+        .env("USERPROFILE", home)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -33,11 +25,12 @@ fn spawn_broker(program: &str) -> std::process::Child {
         .expect("spawn soldr broker serve")
 }
 
-/// Run `soldr broker status --program <program>` once and return (stdout+stderr,
-/// exit code).
-fn run_status(program: &str) -> (String, i32) {
+/// Run `soldr broker status` once and return (stdout+stderr, exit code).
+fn run_status(home: &Path) -> (String, i32) {
     let out = Command::new(common::soldr_bin())
-        .args(["broker", "status", "--program", program])
+        .args(["broker", "status"])
+        .env("HOME", home)
+        .env("USERPROFILE", home)
         .stdin(Stdio::null())
         .output()
         .expect("run soldr broker status");
@@ -58,7 +51,7 @@ fn wait_until_bound(child: &mut std::process::Child, deadline: Instant) -> bool 
     };
     let handle = std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if line.contains("binding at") {
+            if line.contains("stable endpoint bound at") {
                 return true;
             }
         }
@@ -79,10 +72,9 @@ soldr_cli::timed_test!(
     broker_status_reports_not_running_when_no_broker,
     Duration::from_secs(30),
     {
-        // A program namespace no broker is serving: status must not error, must
-        // say "not running", and must exit 0 (a safe probe).
-        let program = unique_program("absent");
-        let (output, code) = run_status(&program);
+        // With no broker serving, status must remain a successful probe.
+        let home = common::unique_temp_dir("broker-status-absent-home");
+        let (output, code) = run_status(&home);
         assert_eq!(
             code, 0,
             "status against no broker must exit 0; got:\n{output}"
@@ -98,8 +90,8 @@ soldr_cli::timed_test!(
     broker_status_reports_snapshot_from_running_broker,
     Duration::from_secs(90),
     {
-        let program = unique_program("live");
-        let mut broker = spawn_broker(&program);
+        let home = common::unique_temp_dir("broker-status-live-home");
+        let mut broker = spawn_broker(&home);
         assert!(
             wait_until_bound(&mut broker, Instant::now() + READY_TIMEOUT),
             "broker never printed its bound-at line within {READY_TIMEOUT:?}"
@@ -109,7 +101,7 @@ soldr_cli::timed_test!(
         // status query until the admin round-trip lands (or the budget expires).
         let deadline = Instant::now() + STATUS_POLL_BUDGET;
         let (ok, last) = loop {
-            let (output, code) = run_status(&program);
+            let (output, code) = run_status(&home);
             if code == 0 && output.contains("broker_instance:") {
                 break (true, output);
             }

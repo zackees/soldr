@@ -1452,19 +1452,6 @@ pub(crate) async fn run_cargo_front_door(
         None
     };
 
-    // soldr#1495: preflight the shared daemon once per managed build. If a
-    // stale-version daemon is holding the endpoint (an older release still
-    // serving compiles, or a protocol-mismatched daemon), displace it now
-    // so this build's first rustc wrapper spawns a current-version daemon
-    // instead of silently reusing stale embedded zccache or burning the
-    // retry budget. Cheap when the daemon is already current or absent.
-    if cache_enabled {
-        if let Ok(paths) = crate::core::SoldrPaths::new() {
-            crate::daemon::lifecycle::preflight_displace_stale_daemon(&paths);
-        }
-    }
-    profile.mark("daemon_preflight");
-
     // Retain the old target-GC flags as stripped compatibility no-ops.
     let (args_without_dylint_cook_flag, dylint_dependency_cook) =
         strip_dylint_dependency_cook_flag(args);

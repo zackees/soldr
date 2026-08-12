@@ -1,5 +1,4 @@
-//! soldr#2361 Phase 2 (dormant/opt-in `soldr broker serve`) — two brokers
-//! against the same `--program` namespace must never coexist.
+//! Two brokers for the same installed Soldr endpoint must never coexist.
 //!
 //! Mirrors `cli_daemon_single_instance.rs`'s shape for the analogous
 //! `soldr-daemon` property, applied to the new broker subcommand. `soldr
@@ -7,8 +6,9 @@
 //! (running-process#899/#901): the first process to bind wins, and a second
 //! process against the same bind name must be refused rather than racing it.
 
+use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 mod common;
 
@@ -16,17 +16,11 @@ const READY_TIMEOUT: Duration = Duration::from_secs(30);
 const LOSER_EXIT_TIMEOUT: Duration = Duration::from_secs(15);
 const POLL: Duration = Duration::from_millis(100);
 
-fn unique_program(label: &str) -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("time went backwards")
-        .as_nanos();
-    format!("soldr-broker-test-{label}-{:010x}", nanos & 0xFF_FFFF_FFFF)
-}
-
-fn spawn_broker(program: &str) -> std::process::Child {
+fn spawn_broker(home: &Path) -> std::process::Child {
     Command::new(common::soldr_bin())
-        .args(["broker", "serve", "--program", program])
+        .args(["broker", "serve"])
+        .env("HOME", home)
+        .env("USERPROFILE", home)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -45,7 +39,7 @@ fn wait_until_bound(
     let stdout = child.stdout.take()?;
     let handle = std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if line.contains("binding at") {
+            if line.contains("stable endpoint bound at") {
                 return true;
             }
         }
@@ -69,20 +63,20 @@ fn wait_until_bound(
 }
 
 soldr_cli::timed_test!(
-    two_brokers_against_one_program_never_coexist,
+    two_brokers_against_one_endpoint_never_coexist,
     Duration::from_secs(90),
     {
-        let program = unique_program("coexist");
+        let home = common::unique_temp_dir("broker-single-home");
 
-        let mut first = spawn_broker(&program);
+        let mut first = spawn_broker(&home);
         let ready = wait_until_bound(&mut first, Instant::now() + READY_TIMEOUT);
         assert!(
             ready.is_some(),
             "first broker never printed its bound-at line within {READY_TIMEOUT:?}"
         );
 
-        // Second broker, same program namespace: must refuse, not coexist.
-        let second = spawn_broker(&program);
+        // A second broker for the same installed endpoint must refuse.
+        let second = spawn_broker(&home);
         let output = {
             let deadline = Instant::now() + LOSER_EXIT_TIMEOUT;
             let mut second = second;
@@ -96,8 +90,8 @@ soldr_cli::timed_test!(
                     let _ = first.kill();
                     let _ = first.wait();
                     panic!(
-                        "a second broker stayed alive against program {program:?} for \
-                         {LOSER_EXIT_TIMEOUT:?} -- the singleton guard did not hold"
+                        "a second broker stayed alive for {LOSER_EXIT_TIMEOUT:?} -- the \
+                         singleton guard did not hold"
                     );
                 }
                 std::thread::sleep(POLL);
@@ -116,7 +110,7 @@ soldr_cli::timed_test!(
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(
-            combined.contains("another broker already owns"),
+            combined.contains("another broker is already bound"),
             "second broker exited without explaining that another broker already \
              owned the bind path; output was:\n{combined}"
         );

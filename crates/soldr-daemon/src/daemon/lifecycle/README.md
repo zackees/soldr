@@ -2,14 +2,14 @@
 
 Daemon process lifecycle: spawning a detached daemon, resolving which binary
 image to spawn, the spawn lock that keeps two racing wrappers from starting two
-daemons, PID liveness checks, and displacement of a stale-version daemon.
+daemons, route-claim liveness checks, and displacement of a stale-version daemon.
 
 `mod.rs` was formerly `lifecycle.rs`. It was converted to a directory when it
 crossed the repository's 1,500-line hard ceiling.
 
 | File | Holds |
 |---|---|
-| `mod.rs` | spawn paths, image resolution, spawn lock, PID liveness, displacement |
+| `mod.rs` | spawn paths, image resolution, spawn lock, route-claim liveness, displacement |
 | `spawn_env.rs` | what environment a spawned daemon inherits |
 | `tests/` | the three former inline test modules, one file each |
 

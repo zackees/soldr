@@ -3,7 +3,6 @@
 //! effort: every error variant is mapped to a `ClientError` so the
 //! caller can decide whether to report a daemon-control-plane failure.
 
-use crate::cache_lib::daemon_sock_path;
 use crate::cache_lib::target_registry::current_unix_seconds;
 use crate::core::SoldrPaths;
 #[cfg(windows)]
@@ -11,7 +10,6 @@ use crate::daemon::ipc::{
     read_frame_async, read_frame_async_for_version, write_frame_async,
     write_frame_async_for_version,
 };
-#[cfg(unix)]
 use crate::daemon::ipc::{
     read_frame_sync, read_frame_sync_for_version, write_frame_sync, write_frame_sync_for_version,
 };
@@ -19,9 +17,58 @@ use crate::daemon::protocol::{
     BuildRecord, CacheFlushInfo, CompileRequest, CompileStatsInfo, Request, Response, ShutdownAck,
     StatusInfo,
 };
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
+
+pub trait ControlStream: Read + Write + Send {}
+
+impl<T: Read + Write + Send> ControlStream for T {}
+
+pub type BoxedControlStream = Box<dyn ControlStream>;
+
+/// Process-local transport override installed by the soldr CLI. The daemon
+/// binary never installs it, so its internal lifecycle probes can still use
+/// the private control endpoint while every user-facing soldr client enters
+/// through the stable broker listener.
+pub trait ControlConnector: Send + Sync {
+    fn connect(
+        &self,
+        endpoint_marker: &Path,
+        timeout: Duration,
+    ) -> std::io::Result<BoxedControlStream>;
+}
+
+static CONTROL_CONNECTOR: OnceLock<Arc<dyn ControlConnector>> = OnceLock::new();
+
+/// Debug-only seam for integration tests that exercise the daemon server in
+/// isolation. Production clients cannot opt out of the stable broker route.
+pub const TEST_DIRECT_CONTROL_ENV: &str = "SOLDR_TEST_DIRECT_DAEMON_CONTROL";
+
+pub fn install_control_connector(connector: Arc<dyn ControlConnector>) -> Result<(), &'static str> {
+    CONTROL_CONNECTOR
+        .set(connector)
+        .map_err(|_| "daemon control connector is already installed")
+}
+
+fn connect_through_override(
+    endpoint_marker: &Path,
+    timeout: Duration,
+) -> Result<Option<BoxedControlStream>, ClientError> {
+    #[cfg(debug_assertions)]
+    if std::env::var_os(TEST_DIRECT_CONTROL_ENV).is_some() {
+        return Ok(None);
+    }
+    CONTROL_CONNECTOR
+        .get()
+        .map(|connector| {
+            connector
+                .connect(endpoint_marker, timeout)
+                .map_err(ClientError::from)
+        })
+        .transpose()
+}
 
 /// 50 ms write timeout matches the plan: short enough that the wrapper
 /// never blocks the hot path on a hung daemon.
@@ -197,6 +244,10 @@ impl From<std::io::Error> for ClientError {
 /// any reply. Used for `RecordTargetTouch`. The wrapper hot path calls
 /// this and ignores the result on the failure side.
 pub fn submit_fire_and_forget(sock_path: &Path, req: &Request) -> Result<(), ClientError> {
+    if let Some(mut stream) = connect_through_override(sock_path, HOT_PATH_TIMEOUT)? {
+        write_frame_sync(&mut stream, req)?;
+        return Ok(());
+    }
     #[cfg(windows)]
     {
         submit_fire_and_forget_windows(sock_path, req)
@@ -211,6 +262,10 @@ pub fn submit_fire_and_forget(sock_path: &Path, req: &Request) -> Result<(), Cli
 
 /// Submit `req`, wait for one `Response`, return it.
 pub fn submit_request(sock_path: &Path, req: &Request) -> Result<Response, ClientError> {
+    if let Some(mut stream) = connect_through_override(sock_path, REPLY_TIMEOUT)? {
+        write_frame_sync(&mut stream, req)?;
+        return read_frame_sync(&mut stream).map_err(ClientError::from);
+    }
     #[cfg(windows)]
     {
         submit_request_windows(sock_path, req)
@@ -229,6 +284,11 @@ fn submit_request_for_version(
     req: &Request,
     protocol_version: u32,
 ) -> Result<Response, ClientError> {
+    if let Some(mut stream) = connect_through_override(sock_path, REPLY_TIMEOUT)? {
+        write_frame_sync_for_version(&mut stream, req, protocol_version)?;
+        return read_frame_sync_for_version(&mut stream, protocol_version)
+            .map_err(ClientError::from);
+    }
     #[cfg(windows)]
     {
         submit_request_windows_with_timeout_and_version(
@@ -942,6 +1002,10 @@ pub fn submit_request_with_timeout(
     req: &Request,
     timeout: Duration,
 ) -> Result<Response, ClientError> {
+    if let Some(mut stream) = connect_through_override(sock_path, timeout)? {
+        write_frame_sync(&mut stream, req)?;
+        return read_frame_sync(&mut stream).map_err(ClientError::from);
+    }
     #[cfg(windows)]
     {
         submit_request_windows_with_timeout(sock_path, req, timeout)
@@ -1350,21 +1414,20 @@ where
 /// Returns the well-known socket path the wrapper should use. Centralized
 /// here so callers don't need to import `cache_lib` directly.
 pub fn default_sock_path(paths: &SoldrPaths) -> PathBuf {
-    #[cfg(unix)]
-    {
-        daemon_sock_path(paths)
+    #[cfg(debug_assertions)]
+    if std::env::var_os(TEST_DIRECT_CONTROL_ENV).is_some() {
+        return crate::daemon::session_endpoint::resolved_control_endpoint_path(paths)
+            .unwrap_or_else(|_| PathBuf::from("<missing-daemon-control-endpoint>"));
     }
-    #[cfg(windows)]
-    {
-        use crate::cache_lib::daemon_pipe_name;
-        // soldr#1808: same infallible signature as `server_sock_path`, and
-        // client and daemon must derive the identical name or they never
-        // meet. Failing loudly beats dialing a name nothing is serving.
-        PathBuf::from(format!(
-            r"\\.\pipe\{}",
-            daemon_pipe_name(paths).unwrap_or_else(|err| panic!("{err}"))
-        ))
+    if CONTROL_CONNECTOR.get().is_some() {
+        // Opaque marker only; the installed connector ignores it. Returning a
+        // marker instead of deriving the private path enforces the #2476
+        // boundary that user-facing clients neither learn nor dial a daemon
+        // endpoint.
+        return PathBuf::from("<broker-routed-daemon-control>");
     }
+    crate::daemon::session_endpoint::resolved_control_endpoint_path(paths)
+        .unwrap_or_else(|_| PathBuf::from("<missing-daemon-control-endpoint>"))
 }
 
 #[cfg(test)]

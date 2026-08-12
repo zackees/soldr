@@ -31,7 +31,6 @@
 //! invocation) has already returned -- caught by hand while smoke-testing
 //! this against the real binary, not by any written test.
 
-use crate::daemon::backend_handle_adoption::broker_program;
 use running_process::{DaemonStdio, DaemonStdioSource, EnvironmentPolicy};
 use std::time::{Duration, Instant};
 
@@ -39,6 +38,7 @@ use std::time::{Duration, Instant};
 /// control listener. Bounded so a wedged or slow-starting broker can never
 /// turn an ordinary `soldr` invocation into a hang.
 const SPAWN_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+const RESURRECTION_WAIT_TIMEOUT: Duration = Duration::from_secs(12);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Whether the broker path is enabled — **always true** (soldr#2388). The
@@ -50,10 +50,11 @@ pub(crate) fn broker_enabled() -> bool {
     true
 }
 
-/// Preserve Soldr's complete identity namespace across the detached front-door
-/// broker spawn. `UserBaseline` intentionally removes process-local variables;
-/// without this overlay a custom `SOLDR_CACHE_DIR` reaches the wrapper but not
-/// the broker or the daemon it later launches.
+/// Preserve Soldr's complete identity namespace plus the authoritative
+/// endpoint resolver inputs across the detached front-door broker spawn.
+/// `UserBaseline` intentionally removes process-local variables; without this
+/// overlay the child can resolve a different home/runtime fallback than the
+/// elected starter.
 pub(crate) fn broker_spawn_env() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
     filter_broker_spawn_env(std::env::vars_os())
 }
@@ -63,9 +64,12 @@ fn filter_broker_spawn_env(
 ) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
     vars.into_iter()
         .filter(|(name, _)| {
-            name.to_string_lossy()
-                .to_ascii_uppercase()
-                .starts_with("SOLDR_")
+            let name = name.to_string_lossy().to_ascii_uppercase();
+            name.starts_with("SOLDR_")
+                || matches!(
+                    name.as_str(),
+                    "HOME" | "USERPROFILE" | "LOCALAPPDATA" | "XDG_RUNTIME_DIR" | "TMPDIR"
+                )
         })
         .collect()
 }
@@ -100,9 +104,6 @@ pub(crate) fn front_door_broker_spawn_eligible(raw_args: &[String]) -> bool {
 }
 
 fn ci_endpoint_diagnostics_eligible(raw_args: &[String]) -> bool {
-    // These flags promise stdout that callers can parse or source. Some CI
-    // harnesses intentionally merge stderr into stdout, so keep the broker's
-    // forensic banner away from those contracts as well.
     !raw_args.iter().any(|arg| {
         matches!(arg.as_str(), "--json" | "--github-env" | "--shell-export")
             || arg.starts_with("--github-env=")
@@ -123,98 +124,450 @@ pub(crate) fn maybe_spawn_broker_front_door(raw_args: &[String]) {
     if !front_door_broker_spawn_eligible(raw_args) {
         return;
     }
-    let program = broker_program();
-    let emit_endpoint_diagnostics = ci_endpoint_diagnostics_eligible(raw_args);
-    let Ok(probe_runtime) = tokio::runtime::Builder::new_current_thread()
+    if ci_endpoint_diagnostics_eligible(raw_args) {
+        emit_ci_endpoint_diagnostics();
+    }
+    if let Err(error) = ensure_stable_broker_ready() {
+        eprintln!("soldr: broker resurrection did not complete: {error}");
+    }
+}
+
+fn ensure_stable_broker_ready() -> Result<(), String> {
+    let endpoint = crate::broker_identity::ResolvedBrokerEndpoint::resolve()
+        .map_err(|error| error.to_string())?;
+    endpoint
+        .create_owner_only_directories()
+        .map_err(|error| error.to_string())?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-    else {
-        return;
-    };
-    let deadline = Instant::now() + SPAWN_WAIT_TIMEOUT;
-    ensure_broker_ready_until(
-        deadline,
-        || broker_control_is_ready_until(&probe_runtime, &program, deadline),
-        || {
-            if emit_endpoint_diagnostics {
-                emit_ci_endpoint_diagnostics(&program);
+        .map_err(|error| format!("could not create readiness runtime: {error}"))?;
+    if stable_broker_is_ready(&runtime, &endpoint.bind_endpoint) {
+        return Ok(());
+    }
+
+    let resurrection_deadline = Instant::now() + RESURRECTION_WAIT_TIMEOUT;
+    let lease = loop {
+        match crate::broker_lease::BrokerLease::acquire(&endpoint.lease_database_path) {
+            Ok(lease) => break lease,
+            Err(crate::broker_lease::BrokerLeaseError::Fenced) => {
+                if stable_broker_is_ready(&runtime, &endpoint.bind_endpoint) {
+                    return Ok(());
+                }
+                if Instant::now() >= resurrection_deadline {
+                    return Err(format!(
+                        "broker resurrection lease expired without readiness at {}",
+                        endpoint.bind_endpoint
+                    ));
+                }
+                // A dead or PID-reused owner is reclaimable immediately. A
+                // live/SIGSTOP'd owner remains fenced until expiry.
+                std::thread::sleep(crate::broker_lease::BrokerLease::contention_delay());
             }
-        },
-        || {
-            let paths = crate::core::SoldrPaths::new().ok()?;
-            let log_file = open_append(&paths.root.join("broker-spawn.log"))?;
-            let self_exe = std::env::current_exe().ok()?;
-            let mut command = std::process::Command::new(self_exe);
-            command.args(["broker", "serve", "--program", &program]);
-            command.envs(broker_spawn_env());
-            let stdio = daemon_stdio(&log_file);
-            running_process::spawn_daemon_with_stdio_and_env_policy(
-                &mut command,
-                stdio,
-                EnvironmentPolicy::UserBaseline,
+            Err(error) => return Err(error.to_string()),
+        }
+    };
+
+    #[cfg(debug_assertions)]
+    if !test_pause_after_lease_acquired(&lease)? {
+        lease.release();
+        return Ok(());
+    }
+
+    let result = (|| {
+        // A winner may have become ready while this process was entering the
+        // immediate transaction. Never stage or spawn after that re-probe.
+        if stable_broker_is_ready(&runtime, &endpoint.bind_endpoint) {
+            return Ok(());
+        }
+        if let Some(instance) = broker_instance_at(&runtime, &endpoint.bind_endpoint) {
+            stop_incompatible_broker(&runtime, &endpoint.bind_endpoint, &instance)?;
+        }
+        lease.check_fence().map_err(|error| error.to_string())?;
+        stage_broker_image(&endpoint.executable_path, &lease).map_err(|error| {
+            format!(
+                "could not stage stable broker image {}: {error}",
+                endpoint.executable_path.display()
             )
-            .ok()?;
-            Some(())
+        })?;
+        lease.renew().map_err(|error| error.to_string())?;
+        lease.check_fence().map_err(|error| error.to_string())?;
+
+        let log_file = open_append(
+            &endpoint
+                .executable_path
+                .parent()
+                .expect("broker executable has a parent")
+                .join("broker-spawn.log"),
+        )
+        .ok_or_else(|| "could not open stable broker spawn log".to_string())?;
+        let mut command = std::process::Command::new(&endpoint.executable_path);
+        command.args(["broker", "serve"]);
+        command.envs(broker_spawn_env());
+        let stdio = daemon_stdio(&log_file);
+        let child = running_process::spawn_daemon_with_stdio_and_env_policy(
+            &mut command,
+            stdio,
+            EnvironmentPolicy::UserBaseline,
+        )
+        .map_err(|error| format!("could not spawn stable broker: {error}"))?;
+        wait_for_stable_broker(&runtime, &endpoint.bind_endpoint, Some((&lease, child)))
+    })();
+    lease.release();
+    result
+}
+
+#[cfg(debug_assertions)]
+fn test_pause_after_lease_acquired(
+    lease: &crate::broker_lease::BrokerLease,
+) -> Result<bool, String> {
+    let Some(milliseconds) = std::env::var("SOLDR_TEST_BROKER_LEASE_PAUSE_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+    else {
+        return Ok(true);
+    };
+    if let Some(path) = std::env::var_os("SOLDR_TEST_BROKER_LEASE_READY_FILE") {
+        let _ = std::fs::write(path, b"acquired\n");
+    }
+    // Sleep in short slices so a SIGSTOP'd test owner notices wall-clock
+    // lease expiry promptly after SIGCONT. One long nanosleep may be restarted
+    // with its original remainder by the platform, delaying the fence check
+    // for the full injected pause after the process resumes.
+    let deadline = Instant::now() + Duration::from_millis(milliseconds);
+    while Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    match lease.check_fence() {
+        Ok(()) => Ok(true),
+        Err(crate::broker_lease::BrokerLeaseError::Fenced) => Ok(false),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn wait_for_stable_broker(
+    runtime: &tokio::runtime::Runtime,
+    endpoint: &str,
+    mut owned: Option<(
+        &crate::broker_lease::BrokerLease,
+        running_process::DaemonChild,
+    )>,
+) -> Result<(), String> {
+    let deadline = Instant::now() + SPAWN_WAIT_TIMEOUT;
+    let mut next_renew = Instant::now() + Duration::from_secs(1);
+    loop {
+        if stable_broker_is_ready(runtime, endpoint) {
+            return Ok(());
+        }
+        if let Some((lease, child)) = owned.as_mut() {
+            if child
+                .try_wait()
+                .map_err(|error| format!("could not inspect broker child: {error}"))?
+                .is_some()
+            {
+                return Err("stable broker exited before readiness".into());
+            }
+            if Instant::now() >= next_renew {
+                lease.renew().map_err(|error| error.to_string())?;
+                next_renew = Instant::now() + Duration::from_secs(1);
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "stable broker did not answer readiness at {endpoint} within {}ms",
+                SPAWN_WAIT_TIMEOUT.as_millis()
+            ));
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+}
+
+fn stable_broker_is_ready(runtime: &tokio::runtime::Runtime, endpoint: &str) -> bool {
+    broker_instance_at(runtime, endpoint)
+        .is_some_and(|instance| instance == crate::broker_server::BROKER_INSTANCE_ID)
+}
+
+fn broker_instance_at(runtime: &tokio::runtime::Runtime, endpoint: &str) -> Option<String> {
+    runtime.block_on(async {
+        use interprocess::local_socket::tokio::prelude::*;
+        use prost::Message as _;
+        use running_process::broker::protocol::{
+            validate_frame_envelope, AdminReply, AdminRequest, AdminVerb, Frame, FrameKind,
+            ADMIN_PAYLOAD_PROTOCOL,
+        };
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let probe = async {
+            let name = crate::session_transport::local_session_name(endpoint)?;
+            let mut stream = interprocess::local_socket::tokio::Stream::connect(name).await?;
+            let request = AdminRequest {
+                verb: AdminVerb::Status as i32,
+                json: true,
+                ..Default::default()
+            };
+            let request =
+                Frame::request(ADMIN_PAYLOAD_PROTOCOL, request.encode_to_vec()).with_request_id(1);
+            let bytes = running_process::broker::protocol::encode_framed(&request)
+                .map_err(std::io::Error::other)?;
+            stream.write_all(&bytes).await?;
+            stream.flush().await?;
+            let mut header = [0_u8; 5];
+            stream.read_exact(&mut header).await?;
+            if header[0] != running_process::broker::protocol::ENVELOPE_VERSION {
+                return Err(std::io::Error::other("wrong broker framing version"));
+            }
+            let len = u32::from_le_bytes(header[1..].try_into().expect("four bytes")) as usize;
+            if len > running_process::broker::protocol::MAX_FRAME_BYTES {
+                return Err(std::io::Error::other("oversized readiness reply"));
+            }
+            let mut body = vec![0_u8; len];
+            stream.read_exact(&mut body).await?;
+            let response = Frame::decode(body.as_slice()).map_err(std::io::Error::other)?;
+            validate_frame_envelope(&response, FrameKind::Response, ADMIN_PAYLOAD_PROTOCOL)
+                .map_err(|error| std::io::Error::other(format!("{error:?}")))?;
+            if response.request_id != request.request_id {
+                return Err(std::io::Error::other("readiness request id mismatch"));
+            }
+            let reply =
+                AdminReply::decode(response.payload.as_slice()).map_err(std::io::Error::other)?;
+            if reply.exit_code != 0 {
+                return Err(std::io::Error::other(format!(
+                    "broker readiness returned exit code {}",
+                    reply.exit_code
+                )));
+            }
+            let snapshot: serde_json::Value =
+                serde_json::from_str(&reply.body).map_err(std::io::Error::other)?;
+            snapshot
+                .get("broker_instance")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| std::io::Error::other("readiness reply omitted broker_instance"))
+        };
+        match tokio::time::timeout(
+            crate::broker_server::BrokerDeadlines::from_env().first_response,
+            probe,
+        )
+        .await
+        {
+            Ok(Ok(instance)) => Some(instance),
+            Ok(Err(_)) | Err(_) => None,
+        }
+    })
+}
+
+fn stop_incompatible_broker(
+    runtime: &tokio::runtime::Runtime,
+    endpoint: &str,
+    instance: &str,
+) -> Result<(), String> {
+    use running_process::broker::client::send_admin_request;
+    use running_process::broker::protocol::{AdminRequest, AdminVerb};
+
+    let reply = send_admin_request(
+        endpoint,
+        AdminRequest {
+            verb: AdminVerb::Shutdown as i32,
+            drain_deadline_ms: SPAWN_WAIT_TIMEOUT.as_millis() as u64,
+            ..Default::default()
         },
-    );
+    )
+    .map_err(|error| format!("could not stop incompatible broker instance {instance}: {error}"))?;
+    if reply.exit_code != 0 {
+        return Err(format!(
+            "incompatible broker instance {instance} rejected shutdown with exit code {}",
+            reply.exit_code
+        ));
+    }
+    let deadline = Instant::now() + SPAWN_WAIT_TIMEOUT;
+    while broker_instance_at(runtime, endpoint).is_some() {
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "incompatible broker instance {instance} did not release {endpoint}"
+            ));
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+    Ok(())
+}
+
+fn stage_broker_image(
+    target: &std::path::Path,
+    lease: &crate::broker_lease::BrokerLease,
+) -> Result<(), String> {
+    use std::io::{Read as _, Write as _};
+
+    let source = std::env::current_exe().map_err(|error| error.to_string())?;
+    if source == target {
+        lease.check_fence().map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+    let mut next_renew = Instant::now() + Duration::from_secs(1);
+    let mut checkpoint = || -> Result<(), String> {
+        if Instant::now() >= next_renew {
+            lease.renew().map_err(|error| error.to_string())?;
+            next_renew = Instant::now() + Duration::from_secs(1);
+        }
+        Ok(())
+    };
+    if target.exists() && same_file_contents(&source, target, &mut checkpoint)? {
+        lease.check_fence().map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+    let parent = target
+        .parent()
+        .ok_or_else(|| "stable broker path has no parent".to_string())?;
+    std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    let suffix = if cfg!(windows) { ".exe" } else { "" };
+    let temporary = parent.join(format!(
+        ".soldr-broker.stage-{}-{:016x}{suffix}",
+        std::process::id(),
+        stage_nonce()
+    ));
+    struct RemoveStagingFile(std::path::PathBuf);
+    impl Drop for RemoveStagingFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let _remove_staging_file = RemoveStagingFile(temporary.clone());
+    let mut input = std::fs::File::open(&source).map_err(|error| error.to_string())?;
+    let mut output = std::fs::File::create(&temporary).map_err(|error| error.to_string())?;
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    loop {
+        let read = input.read(&mut buffer).map_err(|error| error.to_string())?;
+        if read == 0 {
+            break;
+        }
+        output
+            .write_all(&buffer[..read])
+            .map_err(|error| error.to_string())?;
+        checkpoint()?;
+    }
+    output.flush().map_err(|error| error.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o700))
+            .map_err(|error| error.to_string())?;
+    }
+    output.sync_all().map_err(|error| error.to_string())?;
+    drop(output);
+    drop(input);
+    lease.check_fence().map_err(|error| error.to_string())?;
+    replace_staged_image(&temporary, target).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn same_file_contents(
+    left: &std::path::Path,
+    right: &std::path::Path,
+    checkpoint: &mut impl FnMut() -> Result<(), String>,
+) -> Result<bool, String> {
+    use std::io::Read as _;
+
+    let left_meta = std::fs::metadata(left).map_err(|error| error.to_string())?;
+    let right_meta = std::fs::metadata(right).map_err(|error| error.to_string())?;
+    if left_meta.len() != right_meta.len() {
+        return Ok(false);
+    }
+    let hash = |path: &std::path::Path,
+                checkpoint: &mut dyn FnMut() -> Result<(), String>|
+     -> Result<zccache::hash::ContentHash, String> {
+        let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+        let mut hasher = zccache::hash::StreamHasher::new();
+        let mut buffer = vec![0_u8; 1024 * 1024];
+        loop {
+            let read = file.read(&mut buffer).map_err(|error| error.to_string())?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+            checkpoint()?;
+        }
+        Ok(hasher.finalize())
+    };
+    Ok(hash(left, checkpoint)? == hash(right, checkpoint)?)
+}
+
+fn stage_nonce() -> u64 {
+    let mut bytes = [0_u8; 8];
+    let _ = getrandom::fill(&mut bytes);
+    u64::from_le_bytes(bytes)
+}
+
+#[cfg(unix)]
+fn replace_staged_image(source: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
+    std::fs::rename(source, target)
 }
 
 #[derive(Debug, PartialEq, Eq)]
 struct BrokerEndpointDiagnostics {
-    control: String,
-    session: String,
+    executable: std::path::PathBuf,
+    logical: String,
+    bind: String,
     log: std::path::PathBuf,
 }
 
-fn broker_endpoint_diagnostics(program: &str) -> Result<BrokerEndpointDiagnostics, String> {
-    use running_process::broker::lifecycle::names_v2::v2_program_pipe;
-    use running_process::broker::server::singleton_bind::resolve_socket_path;
-
-    let sid = crate::broker_identity::resolve_user_sid();
-    let control_name = v2_program_pipe(program, &sid, 0)
-        .map_err(|error| format!("derive control endpoint: {error}"))?;
-    let control = resolve_socket_path(&control_name)
-        .map_err(|error| format!("resolve control endpoint: {error}"))?;
-    let session = crate::session_transport::session_socket_path(program)
-        .map_err(|error| format!("resolve SESSION endpoint: {error}"))?;
-    let paths =
-        crate::core::SoldrPaths::new().map_err(|error| format!("resolve Soldr paths: {error}"))?;
+fn broker_endpoint_diagnostics() -> Result<BrokerEndpointDiagnostics, String> {
+    let endpoint = crate::broker_identity::ResolvedBrokerEndpoint::resolve()
+        .map_err(|error| error.to_string())?;
+    let log = endpoint
+        .executable_path
+        .parent()
+        .ok_or_else(|| "broker executable has no parent".to_string())?
+        .join("broker-spawn.log");
     Ok(BrokerEndpointDiagnostics {
-        control,
-        session,
-        log: paths.root.join("broker-spawn.log"),
+        executable: endpoint.executable_path,
+        logical: endpoint.logical_socket_path,
+        bind: endpoint.bind_endpoint,
+        log,
     })
 }
 
 fn render_ci_endpoint_diagnostics(
     ci_label: &str,
-    program: &str,
     diagnostics: &BrokerEndpointDiagnostics,
 ) -> String {
     format!(
-        "soldr broker endpoints: ci={ci_label} program={program} control={} session={} log={}",
-        diagnostics.control,
-        diagnostics.session,
+        "soldr broker endpoint: ci={ci_label} executable={} logical={} bind={} log={}",
+        diagnostics.executable.display(),
+        diagnostics.logical,
+        diagnostics.bind,
         diagnostics.log.display()
     )
 }
 
-/// CI owns no interactive terminal and detached broker output goes to the
-/// append-only spawn log. Print the resolved bind/dial contract from the
-/// parent process so a failed job always identifies both endpoint names and
-/// the file containing the broker's own startup diagnostics.
-fn emit_ci_endpoint_diagnostics(program: &str) {
+fn emit_ci_endpoint_diagnostics() {
     let Some(ci_label) = crate::optimize_detect::detect_ci() else {
         return;
     };
-    match broker_endpoint_diagnostics(program) {
-        Ok(diagnostics) => eprintln!(
-            "{}",
-            render_ci_endpoint_diagnostics(ci_label, program, &diagnostics)
-        ),
-        Err(error) => {
-            eprintln!("soldr broker endpoints: ci={ci_label} program={program} unresolved: {error}")
-        }
+    match broker_endpoint_diagnostics() {
+        Ok(diagnostics) => eprintln!("{}", render_ci_endpoint_diagnostics(ci_label, &diagnostics)),
+        Err(error) => eprintln!("soldr broker endpoint: ci={ci_label} unresolved: {error}"),
+    }
+}
+
+#[cfg(windows)]
+fn replace_staged_image(source: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+    let target: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
+    if unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            target.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    } == 0
+    {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
     }
 }
 
@@ -248,80 +601,9 @@ pub(crate) fn daemon_stdio(log: &std::fs::File) -> DaemonStdio<'_> {
     }
 }
 
-/// An accepted local-socket connection is active proof that the broker control
-/// listener owns the endpoint. Drop it without sending a Hello: no service is
-/// selected and the broker therefore has no request that could launch a
-/// backend. This also avoids the admin client's much longer request timeout in
-/// a short startup polling loop.
-fn broker_control_is_ready_until(
-    runtime: &tokio::runtime::Runtime,
-    program: &str,
-    deadline: Instant,
-) -> bool {
-    use running_process::broker::lifecycle::names_v2::v2_program_pipe;
-    use running_process::broker::server::singleton_bind::resolve_socket_path;
-
-    let sid = crate::broker_identity::resolve_user_sid();
-    let Ok(pipe_name) = v2_program_pipe(program, &sid, 0) else {
-        return false;
-    };
-    let Ok(endpoint) = resolve_socket_path(&pipe_name) else {
-        return false;
-    };
-    let Ok(session_endpoint) = crate::session_transport::session_socket_path(program) else {
-        return false;
-    };
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    if remaining.is_zero() {
-        return false;
-    }
-    runtime.block_on(async {
-        use interprocess::local_socket::tokio::prelude::*;
-        use interprocess::local_socket::tokio::Stream;
-
-        let probe = async {
-            let control_name = crate::session_transport::local_session_name(&endpoint)?;
-            let _control = Stream::connect(control_name).await?;
-            let session_name = crate::session_transport::local_session_name(&session_endpoint)?;
-            let _session = Stream::connect(session_name).await?;
-            Ok::<(), std::io::Error>(())
-        };
-        matches!(tokio::time::timeout(remaining, probe).await, Ok(Ok(())))
-    })
-}
-
-/// Probe before spawning, spawn at most once, then poll to the deadline. The
-/// injected closures keep the anti-resurrection policy unit-testable without
-/// binding sockets or creating processes.
-fn ensure_broker_ready_until(
-    deadline: Instant,
-    mut ready: impl FnMut() -> bool,
-    before_spawn: impl FnOnce(),
-    spawn: impl FnOnce() -> Option<()>,
-) {
-    if ready() {
-        return;
-    }
-    before_spawn();
-    if spawn().is_none() {
-        return;
-    }
-    loop {
-        if ready() {
-            return;
-        }
-        if Instant::now() >= deadline {
-            return;
-        }
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        std::thread::sleep(POLL_INTERVAL.min(remaining));
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::daemon::backend_handle_adoption::SOLDR_BROKER_PROGRAM_ENV_VAR as BROKER_PROGRAM_ENV_VAR;
 
     // soldr#2024-adjacent hazard: env::set_var/remove_var races across
     // threads within one test binary. These tests share one lock so they
@@ -329,78 +611,39 @@ mod tests {
     // env-var-gated tests in this crate use.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    crate::timed_test!(broker_spawn_env_preserves_only_soldr_namespace, {
-        use std::ffi::OsString;
+    crate::timed_test!(
+        broker_spawn_env_preserves_soldr_and_endpoint_resolver_inputs,
+        {
+            use std::ffi::OsString;
 
-        let forwarded = filter_broker_spawn_env(vec![
-            (
-                OsString::from("SOLDR_CACHE_DIR"),
-                OsString::from("/tmp/cache"),
-            ),
-            (
-                OsString::from("soldr_broker_program"),
-                OsString::from("test-broker"),
-            ),
-            (OsString::from("PATH"), OsString::from("/usr/bin")),
-        ]);
-        assert_eq!(
-            forwarded,
-            vec![
+            let forwarded = filter_broker_spawn_env(vec![
                 (
                     OsString::from("SOLDR_CACHE_DIR"),
-                    OsString::from("/tmp/cache")
+                    OsString::from("/tmp/cache"),
                 ),
+                (OsString::from("HOME"), OsString::from("/mounted/home")),
                 (
-                    OsString::from("soldr_broker_program"),
-                    OsString::from("test-broker")
+                    OsString::from("XDG_RUNTIME_DIR"),
+                    OsString::from("/run/user/123"),
                 ),
-            ],
-        );
-    });
-
-    crate::timed_test!(ci_diagnostics_name_both_endpoints_and_spawn_log, {
-        let diagnostics = BrokerEndpointDiagnostics {
-            control: r"\\.\pipe\rpb-v2-soldr-session-user-0".to_string(),
-            session: r"\\.\pipe\rpb-v2-soldr-session-user-1".to_string(),
-            log: std::path::PathBuf::from(r"C:\soldr\broker-spawn.log"),
-        };
-        let rendered =
-            render_ci_endpoint_diagnostics("github_actions", "soldr-session", &diagnostics);
-
-        assert!(rendered.contains("ci=github_actions"));
-        assert!(rendered.contains("program=soldr-session"));
-        assert!(rendered.contains(r"control=\\.\pipe\rpb-v2-soldr-session-user-0"));
-        assert!(rendered.contains(r"session=\\.\pipe\rpb-v2-soldr-session-user-1"));
-        assert!(rendered.contains(r"log=C:\soldr\broker-spawn.log"));
-    });
-
-    crate::timed_test!(ci_diagnostics_preserve_machine_readable_output, {
-        assert!(!ci_endpoint_diagnostics_eligible(&[
-            "soldr".into(),
-            "env".into(),
-            "--json".into(),
-        ]));
-        assert!(!ci_endpoint_diagnostics_eligible(&[
-            "soldr".into(),
-            "prepare".into(),
-            "--github-env".into(),
-            "output.env".into(),
-        ]));
-        assert!(!ci_endpoint_diagnostics_eligible(&[
-            "soldr".into(),
-            "prepare".into(),
-            "--github-env=output.env".into(),
-        ]));
-        assert!(!ci_endpoint_diagnostics_eligible(&[
-            "soldr".into(),
-            "env".into(),
-            "--shell-export".into(),
-        ]));
-        assert!(ci_endpoint_diagnostics_eligible(&[
-            "soldr".into(),
-            "build".into(),
-        ]));
-    });
+                (OsString::from("PATH"), OsString::from("/usr/bin")),
+            ]);
+            assert_eq!(
+                forwarded,
+                vec![
+                    (
+                        OsString::from("SOLDR_CACHE_DIR"),
+                        OsString::from("/tmp/cache")
+                    ),
+                    (OsString::from("HOME"), OsString::from("/mounted/home")),
+                    (
+                        OsString::from("XDG_RUNTIME_DIR"),
+                        OsString::from("/run/user/123")
+                    ),
+                ],
+            );
+        }
+    );
 
     crate::timed_test!(wrapper_invocation_is_never_eligible, {
         let _guard = ENV_LOCK.lock().unwrap();
@@ -427,73 +670,44 @@ mod tests {
         assert!(front_door_broker_spawn_eligible(&raw_args));
     });
 
-    crate::timed_test!(
-        default_broker_program_matches_daemon_service_name_dialed_by_discovery,
-        {
-            let _guard = ENV_LOCK.lock().unwrap();
-            std::env::remove_var(BROKER_PROGRAM_ENV_VAR);
-            assert_eq!(
-                broker_program(),
-                crate::daemon::backend_handle_adoption::SOLDR_DAEMON_SERVICE_NAME,
-                "the front door's broker --program must match the program \
-                 client_v2::connect dials in broker_discovery, or the spawned \
-                 broker is bound but unreachable (soldr#2364)",
-            );
-        }
-    );
-
-    crate::timed_test!(broker_program_env_override_takes_precedence, {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var(BROKER_PROGRAM_ENV_VAR, "custom-program");
-        assert_eq!(broker_program(), "custom-program");
-        std::env::remove_var(BROKER_PROGRAM_ENV_VAR);
-    });
-
     crate::timed_test!(no_positional_arg_is_ineligible, {
         let _guard = ENV_LOCK.lock().unwrap();
         let raw_args = vec!["soldr".to_string()];
         assert!(!front_door_broker_spawn_eligible(&raw_args));
     });
 
-    crate::timed_test!(ready_broker_is_not_spawned_again, {
-        let mut probes = 0;
-        let mut diagnostics = 0;
-        let mut spawns = 0;
-        ensure_broker_ready_until(
-            Instant::now() + Duration::from_secs(1),
-            || {
-                probes += 1;
-                true
-            },
-            || diagnostics += 1,
-            || {
-                spawns += 1;
-                Some(())
-            },
-        );
-        assert_eq!(probes, 1);
-        assert_eq!(diagnostics, 0, "a ready broker must emit no spawn banner");
-        assert_eq!(spawns, 0, "readiness must prevent a duplicate spawn");
+    crate::timed_test!(ci_diagnostics_preserve_machine_readable_output, {
+        assert!(!ci_endpoint_diagnostics_eligible(&[
+            "soldr".into(),
+            "env".into(),
+            "--json".into(),
+        ]));
+        assert!(!ci_endpoint_diagnostics_eligible(&[
+            "soldr".into(),
+            "prepare".into(),
+            "--github-env=output.env".into(),
+        ]));
+        assert!(!ci_endpoint_diagnostics_eligible(&[
+            "soldr".into(),
+            "env".into(),
+            "--shell-export".into(),
+        ]));
+        assert!(ci_endpoint_diagnostics_eligible(&[
+            "soldr".into(),
+            "build".into(),
+        ]));
     });
 
-    crate::timed_test!(startup_spawns_once_then_requires_a_live_probe, {
-        let mut probes = 0;
-        let mut diagnostics = 0;
-        let mut spawns = 0;
-        ensure_broker_ready_until(
-            Instant::now() + Duration::from_secs(1),
-            || {
-                probes += 1;
-                probes == 3
-            },
-            || diagnostics += 1,
-            || {
-                spawns += 1;
-                Some(())
-            },
-        );
-        assert_eq!(probes, 3, "the wait must return only after a live probe");
-        assert_eq!(diagnostics, 1, "a spawn attempt emits exactly one banner");
-        assert_eq!(spawns, 1, "startup may create at most one broker");
+    crate::timed_test!(ci_diagnostics_show_the_one_stable_path_derived_endpoint, {
+        let diagnostics = BrokerEndpointDiagnostics {
+            executable: std::path::PathBuf::from("/home/me/.soldr/broker/soldr-broker"),
+            logical: "/home/me/.soldr/broker/soldr-broker.sock".into(),
+            bind: "/home/me/.soldr/broker/soldr-broker.sock".into(),
+            log: std::path::PathBuf::from("/home/me/.soldr/broker/broker-spawn.log"),
+        };
+        let rendered = render_ci_endpoint_diagnostics("github_actions", &diagnostics);
+        assert!(rendered.contains("ci=github_actions"));
+        assert!(rendered.contains("logical=/home/me/.soldr/broker/soldr-broker.sock"));
+        assert!(rendered.contains("bind=/home/me/.soldr/broker/soldr-broker.sock"));
     });
 }

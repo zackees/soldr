@@ -90,6 +90,17 @@ pub fn ensure_daemon_relocated(
     paths: &SoldrPaths,
     daemon_src: &Path,
 ) -> Result<PathBuf, SoldrError> {
+    ensure_daemon_relocated_with_progress(paths, daemon_src, |_, _, _| {})
+}
+
+/// [`ensure_daemon_relocated`] with observable byte progress for callers that
+/// must keep a bounded route-acquisition connection alive while hashing or
+/// copying a large daemon image.
+pub fn ensure_daemon_relocated_with_progress(
+    paths: &SoldrPaths,
+    daemon_src: &Path,
+    mut progress: impl FnMut(&'static str, u64, u64),
+) -> Result<PathBuf, SoldrError> {
     // soldr#1300: a maturin-repaired wheel binary loads bundled shared
     // libraries through a path RELATIVE TO THE BINARY'S OWN LOCATION
     // (`@loader_path/../<pkg>.dylibs/...` on macOS). Copying just the
@@ -107,7 +118,91 @@ pub fn ensure_daemon_relocated(
     if path_is_under(daemon_src, &runtime_root) {
         return Ok(daemon_src.to_path_buf());
     }
-    ensure_relocated_exe_in(&runtime_root, daemon_src)
+    ensure_relocated_exe_in_with_progress(&runtime_root, daemon_src, &mut progress)
+}
+
+/// Place a daemon at a route-specific executable path, retaining the repaired
+/// wheel directory layout when the executable loads bundled libraries through
+/// `@loader_path/..`.
+///
+/// Unlike [`ensure_daemon_relocated_with_progress`], this function never
+/// returns a position-dependent wheel executable in place. Broker routes use
+/// the returned executable path as their endpoint identity, so every route
+/// must own a distinct, real path even when multiple roots share one wheel.
+pub fn ensure_daemon_relocated_for_route_with_progress(
+    paths: &SoldrPaths,
+    daemon_src: &Path,
+    mut progress: impl FnMut(&'static str, u64, u64),
+) -> Result<PathBuf, SoldrError> {
+    if !exe_depends_on_bundled_wheel_libs(daemon_src) {
+        return ensure_daemon_relocated_with_progress(paths, daemon_src, progress);
+    }
+
+    let source_scripts = daemon_src.parent().ok_or_else(|| {
+        SoldrError::Other(format!(
+            "failed to determine repaired-wheel scripts directory for {}",
+            daemon_src.display()
+        ))
+    })?;
+    let scripts_name = source_scripts.file_name().ok_or_else(|| {
+        SoldrError::Other(format!(
+            "failed to determine repaired-wheel scripts name for {}",
+            daemon_src.display()
+        ))
+    })?;
+    let package_root = source_scripts.parent().ok_or_else(|| {
+        SoldrError::Other(format!(
+            "failed to determine repaired-wheel package root for {}",
+            daemon_src.display()
+        ))
+    })?;
+    let package = scripts_name
+        .to_str()
+        .and_then(|name| name.strip_suffix(".scripts"))
+        .ok_or_else(|| {
+            SoldrError::Other(format!(
+                "invalid repaired-wheel scripts directory {}",
+                source_scripts.display()
+            ))
+        })?;
+
+    let runtime_root = daemon_runtime_root(paths);
+    fs::create_dir_all(&runtime_root)?;
+    let _lock = lock_runtime_root(&runtime_root)?;
+    let identity = exe_identity_with_progress(daemon_src, &mut progress)?;
+    let dest_root = runtime_root.join(&identity.dir_name);
+    let dest_scripts = dest_root.join(scripts_name);
+    let file_name = daemon_src.file_name().ok_or_else(|| {
+        SoldrError::Other(format!(
+            "failed to determine daemon filename from {}",
+            daemon_src.display()
+        ))
+    })?;
+    let dest = dest_scripts.join(file_name);
+    let complete = dest_root.join(".wheel-bundle-complete");
+    if complete.is_file()
+        && exe_hash_matches_with_progress(&dest, &identity.hash_hex, &mut progress)
+    {
+        touch_last_used(&dest_root)?;
+        return Ok(dest);
+    }
+
+    fs::create_dir_all(&dest_scripts)?;
+    copy_file_with_progress(daemon_src, &dest, &mut progress)?;
+    fs::set_permissions(&dest, fs::metadata(daemon_src)?.permissions())?;
+    for kind in ["dylibs", "libs"] {
+        let source_bundle = package_root.join(format!("{package}.{kind}"));
+        if source_bundle.is_dir() {
+            copy_directory_tree(
+                &source_bundle,
+                &dest_root.join(format!("{package}.{kind}")),
+                &mut progress,
+            )?;
+        }
+    }
+    File::create(&complete)?;
+    touch_last_used(&dest_root)?;
+    Ok(dest)
 }
 
 /// Detect the maturin "repaired wheel" layout (soldr#1300).
@@ -321,10 +416,18 @@ fn truthy_env(name: &str) -> bool {
 }
 
 fn ensure_relocated_exe_in(runtime_root: &Path, current_exe: &Path) -> Result<PathBuf, SoldrError> {
+    ensure_relocated_exe_in_with_progress(runtime_root, current_exe, &mut |_, _, _| {})
+}
+
+fn ensure_relocated_exe_in_with_progress(
+    runtime_root: &Path,
+    current_exe: &Path,
+    progress: &mut dyn FnMut(&'static str, u64, u64),
+) -> Result<PathBuf, SoldrError> {
     fs::create_dir_all(runtime_root)?;
     let _lock = lock_runtime_root(runtime_root)?;
 
-    let identity = exe_identity(current_exe)?;
+    let identity = exe_identity_with_progress(current_exe, progress)?;
     let dest_dir = runtime_root.join(&identity.dir_name);
     fs::create_dir_all(&dest_dir)?;
 
@@ -336,7 +439,7 @@ fn ensure_relocated_exe_in(runtime_root: &Path, current_exe: &Path) -> Result<Pa
     })?;
     let dest = dest_dir.join(file_name);
 
-    if exe_hash_matches(&dest, &identity.hash_hex) {
+    if exe_hash_matches_with_progress(&dest, &identity.hash_hex, progress) {
         touch_last_used(&dest_dir)?;
         return Ok(dest);
     }
@@ -347,17 +450,17 @@ fn ensure_relocated_exe_in(runtime_root: &Path, current_exe: &Path) -> Result<Pa
         std::process::id()
     ));
     let _ = fs::remove_file(&temp);
-    fs::copy(current_exe, &temp)?;
+    copy_file_with_progress(current_exe, &temp, progress)?;
     let permissions = fs::metadata(current_exe)?.permissions();
     fs::set_permissions(&temp, permissions)?;
 
-    if dest.exists() && !exe_hash_matches(&dest, &identity.hash_hex) {
+    if dest.exists() && !exe_hash_matches_with_progress(&dest, &identity.hash_hex, progress) {
         let _ = fs::remove_file(&dest);
     }
 
     match fs::rename(&temp, &dest) {
         Ok(()) => {}
-        Err(_err) if exe_hash_matches(&dest, &identity.hash_hex) => {
+        Err(_err) if exe_hash_matches_with_progress(&dest, &identity.hash_hex, progress) => {
             let _ = fs::remove_file(&temp);
         }
         Err(err) => {
@@ -445,7 +548,14 @@ struct ExeIdentity {
 }
 
 fn exe_identity(path: &Path) -> Result<ExeIdentity, SoldrError> {
-    let hash_hex = hash_file(path)?;
+    exe_identity_with_progress(path, &mut |_, _, _| {})
+}
+
+fn exe_identity_with_progress(
+    path: &Path,
+    progress: &mut dyn FnMut(&'static str, u64, u64),
+) -> Result<ExeIdentity, SoldrError> {
+    let hash_hex = hash_file_with_progress(path, "source-hash", progress)?;
     Ok(ExeIdentity {
         dir_name: relocation_dir_name(env!("CARGO_PKG_VERSION"), &hash_hex),
         hash_hex,
@@ -470,21 +580,89 @@ fn relocation_dir_name(version: &str, hash_hex: &str) -> String {
 }
 
 fn exe_hash_matches(path: &Path, expected_hash: &str) -> bool {
-    path.is_file() && hash_file(path).is_ok_and(|actual| actual == expected_hash)
+    exe_hash_matches_with_progress(path, expected_hash, &mut |_, _, _| {})
+}
+
+fn exe_hash_matches_with_progress(
+    path: &Path,
+    expected_hash: &str,
+    progress: &mut dyn FnMut(&'static str, u64, u64),
+) -> bool {
+    path.is_file()
+        && hash_file_with_progress(path, "placed-hash", progress)
+            .is_ok_and(|actual| actual == expected_hash)
 }
 
 fn hash_file(path: &Path) -> Result<String, SoldrError> {
+    hash_file_with_progress(path, "hash", &mut |_, _, _| {})
+}
+
+fn hash_file_with_progress(
+    path: &Path,
+    stage: &'static str,
+    progress: &mut dyn FnMut(&'static str, u64, u64),
+) -> Result<String, SoldrError> {
     let mut file = File::open(path)?;
+    let total = file.metadata()?.len();
     let mut hasher = Sha256::new();
-    let mut buf = [0u8; 64 * 1024];
+    let mut buf = vec![0u8; 1024 * 1024];
+    let mut completed = 0_u64;
     loop {
         let read = file.read(&mut buf)?;
         if read == 0 {
             break;
         }
         hasher.update(&buf[..read]);
+        completed = completed.saturating_add(read as u64);
+        progress(stage, completed, total);
     }
     Ok(to_hex(&hasher.finalize()))
+}
+
+fn copy_file_with_progress(
+    source: &Path,
+    target: &Path,
+    progress: &mut dyn FnMut(&'static str, u64, u64),
+) -> Result<(), SoldrError> {
+    use std::io::Write as _;
+
+    let mut input = File::open(source)?;
+    let total = input.metadata()?.len();
+    let mut output = File::create(target)?;
+    let mut buf = vec![0u8; 1024 * 1024];
+    let mut completed = 0_u64;
+    loop {
+        let read = input.read(&mut buf)?;
+        if read == 0 {
+            break;
+        }
+        output.write_all(&buf[..read])?;
+        completed = completed.saturating_add(read as u64);
+        progress("copy", completed, total);
+    }
+    output.flush()?;
+    Ok(())
+}
+
+fn copy_directory_tree(
+    source: &Path,
+    target: &Path,
+    progress: &mut dyn FnMut(&'static str, u64, u64),
+) -> Result<(), SoldrError> {
+    fs::create_dir_all(target)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_directory_tree(&source_path, &target_path, progress)?;
+        } else {
+            copy_file_with_progress(&source_path, &target_path, progress)?;
+            fs::set_permissions(&target_path, fs::metadata(&source_path)?.permissions())?;
+        }
+    }
+    fs::set_permissions(target, fs::metadata(source)?.permissions())?;
+    Ok(())
 }
 
 fn to_hex(bytes: &[u8]) -> String {
@@ -747,6 +925,36 @@ mod tests {
         assert_eq!(reused, relocated);
     }
 
+    #[test]
+    fn daemon_relocation_reports_real_byte_progress() {
+        let temp = TempDir::new().expect("tempdir");
+        let source = temp.path().join("soldr-daemon");
+        let contents = vec![0x5a_u8; 2 * 1024 * 1024 + 17];
+        fs::write(&source, &contents).expect("write daemon");
+        let paths = SoldrPaths::with_root(temp.path().join("soldr-root"));
+        let mut events = Vec::new();
+
+        let relocated =
+            ensure_daemon_relocated_with_progress(&paths, &source, |stage, completed, total| {
+                events.push((stage, completed, total))
+            })
+            .expect("relocate with progress");
+
+        assert_eq!(fs::read(relocated).expect("read relocated"), contents);
+        for stage in ["source-hash", "copy"] {
+            let stage_events: Vec<_> = events
+                .iter()
+                .filter(|(reported, _, _)| *reported == stage)
+                .collect();
+            assert!(stage_events.len() >= 2, "missing streaming {stage} events");
+            assert_eq!(
+                stage_events.last().map(|(_, done, _)| *done),
+                Some(contents.len() as u64)
+            );
+            assert!(stage_events.iter().all(|(_, done, total)| done <= total));
+        }
+    }
+
     // soldr#1300 — the maturin-repaired macOS wheel layout: binaries
     // under `<platlib>/soldr.scripts/` load bundled dylibs via
     // `@loader_path/../soldr.dylibs/`. Relocating the daemon out of
@@ -775,6 +983,38 @@ mod tests {
                     .map(|mut d| d.next().is_none())
                     .unwrap_or(true),
             "no runtime copy may be materialized for a repaired-wheel daemon"
+        );
+    });
+
+    crate::timed_test!(route_placement_preserves_repaired_wheel_layout, {
+        let temp = TempDir::new().expect("tempdir");
+        let platlib = temp.path().join("site-packages");
+        let scripts = platlib.join("soldr.scripts");
+        let libs = platlib.join("soldr.dylibs");
+        fs::create_dir_all(&scripts).expect("scripts dir");
+        fs::create_dir_all(&libs).expect("dylibs dir");
+        let daemon = scripts.join("soldr-daemon");
+        fs::write(&daemon, b"daemon-bin").expect("write daemon");
+        fs::write(libs.join("libexample.dylib"), b"library").expect("write library");
+
+        let paths = SoldrPaths::with_root(temp.path().join("route-a"));
+        let resolved =
+            ensure_daemon_relocated_for_route_with_progress(&paths, &daemon, |_, _, _| {})
+                .expect("place route daemon");
+
+        assert_ne!(resolved, daemon);
+        assert_eq!(
+            resolved.parent().and_then(Path::file_name),
+            Some(OsStr::new("soldr.scripts"))
+        );
+        let placed_root = resolved
+            .parent()
+            .and_then(Path::parent)
+            .expect("placed bundle root");
+        assert_eq!(
+            fs::read(placed_root.join("soldr.dylibs/libexample.dylib"))
+                .expect("read placed library"),
+            b"library"
         );
     });
 

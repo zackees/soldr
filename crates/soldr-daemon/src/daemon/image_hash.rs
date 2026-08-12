@@ -21,7 +21,7 @@
 //! boundary; this only accelerates producing the hash value on both sides.
 
 use std::fs::File;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 /// blake3 hex of `path`, streamed through zccache's shared hasher.
@@ -54,6 +54,16 @@ fn cache_entry_path(cache_dir: &Path, target: &Path) -> PathBuf {
 /// fresh [`blake3_hex`] — this never returns a digest for content it did not
 /// actually hash in some run.
 pub fn cached_blake3_hex(cache_dir: &Path, target: &Path) -> io::Result<String> {
+    cached_blake3_hex_with_progress(cache_dir, target, |_, _| {})
+}
+
+/// [`cached_blake3_hex`] with byte-counted progress on a cache miss.
+/// A cache hit performs no file scan and therefore emits no synthetic event.
+pub fn cached_blake3_hex_with_progress(
+    cache_dir: &Path,
+    target: &Path,
+    mut progress: impl FnMut(u64, u64),
+) -> io::Result<String> {
     let (size, mtime) = fingerprint(target)?;
     let entry = cache_entry_path(cache_dir, target);
 
@@ -61,7 +71,20 @@ pub fn cached_blake3_hex(cache_dir: &Path, target: &Path) -> io::Result<String> 
         return Ok(hex);
     }
 
-    let hex = blake3_hex(target)?;
+    let mut file = File::open(target)?;
+    let mut hasher = zccache::hash::StreamHasher::new();
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    let mut completed = 0_u64;
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+        completed = completed.saturating_add(read as u64);
+        progress(completed, size);
+    }
+    let hex = hasher.finalize().to_hex();
     // Best-effort store; a cache write failure must never fail the hash.
     let _ = write_cache_entry(cache_dir, &entry, size, mtime, &hex);
     Ok(hex)
@@ -75,7 +98,11 @@ fn read_cache_entry(entry: &Path, size: u64, mtime: u128) -> Option<String> {
     let cached_size: u64 = parts.next()?.parse().ok()?;
     let cached_mtime: u128 = parts.next()?.parse().ok()?;
     let hex = parts.next()?;
-    if cached_size == size && cached_mtime == mtime && !hex.is_empty() {
+    if cached_size == size
+        && cached_mtime == mtime
+        && hex.len() == 64
+        && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
         Some(hex.to_string())
     } else {
         None
@@ -134,6 +161,32 @@ mod tests {
         assert_eq!(first, zccache::hash::hash_bytes(b"payload-v1").to_hex());
     });
 
+    crate::timed_test!(cache_miss_reports_real_bytes_and_hit_stays_silent, {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let cache = temp.path().join("cache");
+        let file = temp.path().join("daemon");
+        let contents = vec![0xa5_u8; 2 * 1024 * 1024 + 29];
+        std::fs::write(&file, &contents).expect("write");
+        let mut progress = Vec::new();
+
+        let first = cached_blake3_hex_with_progress(&cache, &file, |done, total| {
+            progress.push((done, total));
+        })
+        .expect("hash miss");
+        assert!(progress.len() >= 2);
+        assert_eq!(
+            progress.last(),
+            Some(&(contents.len() as u64, contents.len() as u64))
+        );
+        assert_eq!(first, zccache::hash::hash_bytes(&contents).to_hex());
+
+        let mut hit_events = 0;
+        let second = cached_blake3_hex_with_progress(&cache, &file, |_, _| hit_events += 1)
+            .expect("hash hit");
+        assert_eq!(second, first);
+        assert_eq!(hit_events, 0, "a cache hit must not invent byte progress");
+    });
+
     crate::timed_test!(changed_content_invalidates_cache, {
         let temp = tempfile::tempdir().expect("tempdir");
         let cache = temp.path().join("cache");
@@ -153,5 +206,19 @@ mod tests {
             second,
             zccache::hash::hash_bytes(b"payload-v2-longer").to_hex()
         );
+    });
+
+    crate::timed_test!(malformed_cached_digest_is_recomputed, {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let cache = temp.path().join("cache");
+        let file = temp.path().join("daemon");
+        std::fs::write(&file, b"payload").expect("write");
+        let (size, mtime) = fingerprint(&file).expect("fingerprint");
+        let entry = cache_entry_path(&cache, &file);
+        std::fs::create_dir_all(&cache).expect("cache dir");
+        std::fs::write(&entry, format!("{size}\t{mtime}\tnot-a-digest")).expect("bad cache entry");
+
+        let got = cached_blake3_hex(&cache, &file).expect("recomputed hash");
+        assert_eq!(got, zccache::hash::hash_bytes(b"payload").to_hex());
     });
 }

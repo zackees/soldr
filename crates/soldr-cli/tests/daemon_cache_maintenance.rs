@@ -24,10 +24,12 @@ fn daemon_bin() -> PathBuf {
 }
 
 fn command_env(command: &mut Command, root: &Path, home: &Path) {
+    common::isolated_daemon::configure_isolated_daemon_client(command, &daemon_bin(), root);
     command
         .env("SOLDR_CACHE_DIR", root)
         .env("HOME", home)
         .env("USERPROFILE", home)
+        .env("SOLDR_TEST_DIRECT_DAEMON_CONTROL", "1")
         .env_remove("RUSTC_WRAPPER");
 }
 
@@ -39,7 +41,7 @@ fn run_soldr(root: &Path, home: &Path, args: &[&str]) -> std::process::Output {
 }
 
 fn spawn_daemon(root: &Path, home: &Path) -> Child {
-    let mut command = Command::new(daemon_bin());
+    let mut command = common::isolated_daemon::isolated_daemon_command(&daemon_bin(), root);
     command
         .args(["--foreground", "--idle-timeout-secs", "120"])
         .stdin(Stdio::null())

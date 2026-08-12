@@ -17,10 +17,12 @@ soldr-fetch = { path = "../soldr-fetch" }
 
 cap-fs-ext = { workspace = true }
 cap-std = { workspace = true }
+blake3 = "1"
 clap = { workspace = true }
 filetime = { workspace = true }
 flate2 = { workspace = true }
 fs2 = { workspace = true }
+getrandom = "0.4"
 hex = { workspace = true }
 interprocess = { version = "2", features = ["tokio"] }
 jwalk = { workspace = true }
@@ -33,6 +35,7 @@ serde_json = { workspace = true }
 semver = { workspace = true }
 sha2 = { workspace = true }
 strsim = { workspace = true }
+sysinfo = "0.30"
 tar = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
@@ -71,6 +74,7 @@ zccache = { version = "1.13.0", path = "../../_vender/zccache/crates/zccache", d
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
+widestring = "1"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",

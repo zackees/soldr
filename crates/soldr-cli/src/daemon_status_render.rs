@@ -13,10 +13,9 @@ pub(crate) fn render(info: &StatusInfo, paths: &SoldrPaths, json: bool) {
     // Cook-index aggregate stats (issue #576). Older daemons would emit
     // `cook_stats: None` — render as zero so the surface is stable.
     let cook = info.cook_stats_or_zero();
-    // soldr#1495: surface the running daemon's claimed package version and
-    // whether it matches this CLI, so a version-shadow is visible here.
-    let claimed_pkg = crate::daemon::broker_discovery::read_claimed_service_version(paths);
-    let pkg_matches = claimed_pkg.as_deref() == Some(env!("CARGO_PKG_VERSION"));
+    // The broker route is version-partitioned, so a successful control tunnel
+    // already proves that this CLI reached its own package-version route.
+    let claimed_pkg = env!("CARGO_PKG_VERSION");
     // soldr#2023: the daemon's limit is the one it applied at startup, so
     // compare it against what this CLI would resolve now. A running daemon
     // keeps its startup limit for life, and that used to be invisible.
@@ -33,7 +32,7 @@ pub(crate) fn render(info: &StatusInfo, paths: &SoldrPaths, json: bool) {
             "running": true,
             "version": info.version,
             "pkg_version": claimed_pkg,
-            "pkg_version_matches_cli": pkg_matches,
+            "pkg_version_matches_cli": true,
             "cli_pkg_version": env!("CARGO_PKG_VERSION"),
             "pid": info.pid,
             "generation": info.generation,
@@ -68,14 +67,9 @@ pub(crate) fn render(info: &StatusInfo, paths: &SoldrPaths, json: bool) {
         info.pid, info.generation, info.uptime_secs, info.request_count, info.version
     );
     println!(
-        "  pkg version: {} (this cli: {}){}",
-        claimed_pkg.as_deref().unwrap_or("unknown"),
+        "  pkg version: {} (this cli: {})",
+        claimed_pkg,
         env!("CARGO_PKG_VERSION"),
-        if pkg_matches {
-            ""
-        } else {
-            "  [MISMATCH — stale daemon]"
-        },
     );
     println!(
         "  compile jobs: {} (from {}){}",

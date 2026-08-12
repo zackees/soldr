@@ -268,7 +268,7 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
         free_by_volume: Vec::new(),
         config: cli_policy_config,
         daemon_events_available: crate::cache_lib::data_db_path(&paths).exists(),
-        daemon_live: crate::daemon::lifecycle::stale_daemon_occupies_endpoint(&paths).is_some(),
+        daemon_live: crate::daemon::lifecycle::claimed_daemon_occupies_route(&paths).is_some(),
     };
     let cli_policy_actions = crate::cache_lib::gc_policy::plan(
         &crate::cache_lib::gc_policy::registry(),
@@ -311,7 +311,7 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
     let db_path = crate::cache_lib::data_db_path(&paths);
     if has_policy_action("daemon_events")
         && db_path.exists()
-        && crate::daemon::lifecycle::stale_daemon_occupies_endpoint(&paths).is_none()
+        && crate::daemon::lifecycle::claimed_daemon_occupies_route(&paths).is_none()
     {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -387,7 +387,7 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
         // the absolute-age sweep, which this path never does. So the daemon's
         // coverage is a superset, not a delay.
         //
-        // Use the version-blind PID-file occupancy check, NOT `is_live`.
+        // Use the version-blind route-claim occupancy check, NOT `is_live`.
         // `is_live` probes the optional broker and hashes the executable
         // identity — the #1832 note on `preflight_displace_stale_daemon`
         // records that costing tens of seconds — and CI caught exactly that
@@ -395,7 +395,7 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
         //
         // Version-blind is also the semantically correct question: *any* live
         // soldr daemon owns state.redb, whatever protocol it speaks.
-        match crate::daemon::lifecycle::stale_daemon_occupies_endpoint(&paths) {
+        match crate::daemon::lifecycle::claimed_daemon_occupies_route(&paths) {
             Some(pid) => {
                 let _ = append_auto_gc_log_line(
                     &log_path,

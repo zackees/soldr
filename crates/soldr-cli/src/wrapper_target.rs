@@ -6,7 +6,7 @@
 //! - **Fast path** — `SOLDR_BUILD_SESSION_ID` is NOT set in the env
 //!   (i.e. this rustc invocation didn't come from `soldr cargo …`).
 //!   The wrapper writes the row directly to redb and returns. No
-//!   daemon IPC, no PID-file probe, no spawn attempt.
+//!   daemon IPC, no route-claim probe, no spawn attempt.
 //! - **Slow path** — the session id IS set. The wrapper sends the
 //!   target-touch IPC and opportunistically auto-spawns the daemon.
 //!

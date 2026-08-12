@@ -13,7 +13,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 use soldr_cli::cache_lib::target_registry::TargetRegistry;
-use soldr_cli::core::SoldrPaths;
 use soldr_cli::daemon::client;
 use soldr_cli::daemon::db::{self, Event, EventKind};
 use soldr_cli::daemon::protocol::BuildRecord;
@@ -41,12 +40,22 @@ fn soldr_daemon_bin() -> PathBuf {
     parent.join(stem)
 }
 
+fn direct_sock(root: &Path) -> PathBuf {
+    common::isolated_daemon::isolated_daemon_control_endpoint(&soldr_daemon_bin(), root)
+}
+
 fn run_soldr(args: &[&str], cache_root: &Path, home_root: &Path) -> std::process::Output {
     let mut cmd = Command::new(common::soldr_bin());
+    common::isolated_daemon::configure_isolated_daemon_client(
+        &mut cmd,
+        &soldr_daemon_bin(),
+        cache_root,
+    );
     cmd.args(args)
         .env("SOLDR_CACHE_DIR", cache_root)
         .env("HOME", home_root)
         .env("USERPROFILE", home_root)
+        .env("SOLDR_TEST_DIRECT_DAEMON_CONTROL", "1")
         .env_remove("RUSTC_WRAPPER");
     cmd.output().expect("run soldr")
 }
@@ -59,7 +68,8 @@ struct DaemonProc {
 
 impl DaemonProc {
     fn spawn(cache_root: &Path, home_root: &Path) -> Self {
-        let mut cmd = Command::new(soldr_daemon_bin());
+        let mut cmd =
+            common::isolated_daemon::isolated_daemon_command(&soldr_daemon_bin(), cache_root);
         cmd.args(["--foreground", "--idle-timeout-secs", "60"])
             .env("SOLDR_CACHE_DIR", cache_root)
             .env("HOME", home_root)
@@ -72,7 +82,7 @@ impl DaemonProc {
         let pid_file = cache_root
             .join("cache")
             .join("soldr-daemon")
-            .join("daemon.pid");
+            .join("broker-route-claim.pb");
         while Instant::now() < deadline {
             if pid_file.exists() {
                 let status = run_soldr(&["daemon", "status", "--json"], cache_root, home_root);
@@ -260,8 +270,7 @@ fn gc_list_uses_daemon_owned_registry_while_the_daemon_holds_the_lock() {
         .iter()
         .any(|entry| entry["path"] == live_target.display().to_string()));
 
-    let paths = SoldrPaths::with_root(cache_root.clone());
-    let sock = client::default_sock_path(&paths);
+    let sock = direct_sock(&cache_root);
     let rows = client::list_target_registry(&sock).expect("daemon registry query");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].path, live_target.display().to_string());
@@ -375,8 +384,7 @@ fn logs_unavailable_daemon_never_waits_for_its_database_lock() {
     #[cfg(unix)]
     let _endpoint_owner = {
         let daemon = DaemonProc::spawn(&cache_root, &home_root);
-        let paths = SoldrPaths::with_root(cache_root.clone());
-        let socket = client::default_sock_path(&paths);
+        let socket = direct_sock(&cache_root);
         std::fs::remove_file(&socket).expect("hide daemon socket while it retains the lock");
         daemon
     };
@@ -385,11 +393,17 @@ fn logs_unavailable_daemon_never_waits_for_its_database_lock() {
         .expect("hold the daemon-owned database lock without a named-pipe endpoint");
 
     let mut command = Command::new(common::soldr_bin());
+    common::isolated_daemon::configure_isolated_daemon_client(
+        &mut command,
+        &soldr_daemon_bin(),
+        &cache_root,
+    );
     command
         .args(["logs", "list", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("HOME", &home_root)
         .env("USERPROFILE", &home_root)
+        .env("SOLDR_TEST_DIRECT_DAEMON_CONTROL", "1")
         .env_remove("RUSTC_WRAPPER")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

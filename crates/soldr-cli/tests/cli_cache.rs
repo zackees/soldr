@@ -627,11 +627,19 @@ fn clean_rejects_json_flag() {
 #[test]
 fn cache_flush_fails_when_embedded_daemon_is_unavailable() {
     let cache_root = unique_temp_dir("cache-flush-embedded");
+    let home_root = unique_temp_dir("cache-flush-home");
     let output = common::isolated_soldr_command()
         .args(["cache", "flush", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("HOME", &home_root)
+        .env("USERPROFILE", &home_root)
         .output()
         .expect("failed to run soldr cache flush --json");
+    let _ = common::isolated_soldr_command()
+        .args(["broker", "stop"])
+        .env("HOME", &home_root)
+        .env("USERPROFILE", &home_root)
+        .output();
     assert!(
         !output.status.success(),
         "cache flush --json must fail when no daemon can acknowledge persistence
@@ -662,13 +670,21 @@ stderr:
 #[test]
 fn cache_shutdown_reports_already_absent_truthfully() {
     let cache_root = unique_temp_dir("cache-shutdown-embedded");
+    let home_root = unique_temp_dir("cache-shutdown-home");
     let start = std::time::Instant::now();
     let output = common::isolated_soldr_command()
         .args(["cache", "shutdown", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("HOME", &home_root)
+        .env("USERPROFILE", &home_root)
         .output()
         .expect("failed to run soldr cache shutdown --json");
     let elapsed = start.elapsed();
+    let _ = common::isolated_soldr_command()
+        .args(["broker", "stop"])
+        .env("HOME", &home_root)
+        .env("USERPROFILE", &home_root)
+        .output();
     assert!(
         output.status.success(),
         "cache shutdown --json must succeed

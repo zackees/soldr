@@ -2,16 +2,16 @@
 //!
 //! `running-process` commit 04f6387 added the active endpoint-response probe
 //! required by zackees/running-process#232. soldr now uses that probe at the
-//! old `daemon::lifecycle::is_live` boundary: the PID file is only trusted
-//! after `BackendHandle::probe_with_service` verifies process identity and the
+//! `daemon::lifecycle::is_live` boundary: the route claim is only trusted after
+//! `BackendHandle::probe_with_service` verifies process identity and the
 //! live daemon answers the broker-v1 BackendHandle nonce challenge on its IPC
 //! endpoint.
 
-use crate::cache_lib::daemon_pid_path;
+use crate::cache_lib::soldr_daemon_dir;
 use crate::core::SoldrPaths;
 #[cfg(unix)]
 use crate::daemon::client;
-use crate::daemon::lifecycle::{pid_exe_stem_matches, pid_is_alive, read_pid_file};
+use crate::daemon::lifecycle::{pid_exe_stem_matches, pid_is_alive};
 use crate::daemon::protocol::PROTOCOL_VERSION;
 use running_process::broker::backend_handle::{BackendHandle, BackendHandleError, DaemonProcess};
 use running_process::broker::backend_lifecycle::identity::IdentityError;
@@ -25,7 +25,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-pub(crate) const LEGACY_FRAME_HEADER_BYTES: usize = 8;
+const BROKER_ROUTE_CLAIM_FILE: &str = "broker-route-claim.pb";
+
+pub(crate) const CONTROL_FRAME_HEADER_BYTES: usize = 8;
 
 /// How long to keep retrying a liveness probe that never reached a verdict
 /// (soldr#1893).
@@ -43,30 +45,13 @@ pub(crate) const PROBE_INCONCLUSIVE_RETRY_BUDGET: Duration = Duration::from_secs
 /// probe deadline that dominates each attempt.
 pub(crate) const PROBE_INCONCLUSIVE_RETRY_BACKOFF: Duration = Duration::from_millis(50);
 
-/// Stable v2 broker `--program` namespace. Every Soldr root and version shares
-/// this singleton broker; the requested service name partitions backend
-/// routes by canonical root, Soldr version, and daemon image digest.
+/// Stable daemon service type. The requested route name additionally partitions
+/// by canonical root, Soldr version, and daemon image digest.
 pub const SOLDR_DAEMON_SERVICE_NAME: &str = "soldr-daemon";
 pub const SOLDR_DAEMON_SERVICE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Env override for the broker `--program` namespace. Test-only in practice:
-/// production uses one stable per-user broker program while service names
-/// partition default and explicit roots into distinct daemon routes.
-///
-/// The override is honored by both broker spawn and SESSION clients through
-/// this single resolver, which keeps isolated tests on one bind namespace.
-pub const SOLDR_BROKER_PROGRAM_ENV_VAR: &str = "SOLDR_BROKER_PROGRAM";
 pub const SOLDR_BROKER_SERVICE_ENV_VAR: &str = "SOLDR_BROKER_SERVICE";
-pub const SOLDR_DAEMON_IMAGE_SHA256_LABEL: &str = "soldr-image-sha256";
-
-/// Resolve the singleton broker namespace: the explicit test override when
-/// present, otherwise the stable `soldr-daemon` program name.
-pub fn broker_program() -> String {
-    std::env::var(SOLDR_BROKER_PROGRAM_ENV_VAR)
-        .ok()
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| SOLDR_DAEMON_SERVICE_NAME.to_string())
-}
+pub const SOLDR_DAEMON_IMAGE_HASH_LABEL: &str = "soldr-image-blake3";
 
 pub fn broker_service_name_for(paths: &SoldrPaths, daemon_binary: &Path) -> io::Result<String> {
     broker_route_identity(paths, daemon_binary).map(|identity| identity.service_name)
@@ -74,7 +59,7 @@ pub fn broker_service_name_for(paths: &SoldrPaths, daemon_binary: &Path) -> io::
 
 pub struct BrokerRouteIdentity {
     pub service_name: String,
-    pub image_sha256: String,
+    pub image_hash: String,
 }
 
 pub fn broker_route_identity(
@@ -114,7 +99,7 @@ pub fn broker_route_identity(
     let digest = hasher.finalize();
     Ok(BrokerRouteIdentity {
         service_name: format!("{SOLDR_DAEMON_SERVICE_NAME}-{}", hex::encode(&digest[..16])),
-        image_sha256: image_hash,
+        image_hash,
     })
 }
 
@@ -175,7 +160,7 @@ pub(crate) struct SoldrDaemonBackendHandle {
     pub(crate) pid: u32,
     pub(crate) exe_path: PathBuf,
     pub(crate) endpoint: PathBuf,
-    pub(crate) pid_file: PathBuf,
+    pub(crate) route_claim: PathBuf,
     pub(crate) adoption_status: RunningProcessBackendHandleStatus,
 }
 
@@ -247,11 +232,13 @@ fn probe_error_is_transient(err: &BackendHandleError) -> bool {
 }
 
 fn probe_soldr_daemon_once(paths: &SoldrPaths) -> ProbeOutcome {
-    let Some((pid, exe_path)) = read_pid_file(paths) else {
-        return ProbeOutcome::NotLive;
-    };
-    let Some(expected) = daemon_process_from_pid_file(paths, pid, exe_path) else {
-        return ProbeOutcome::NotLive;
+    let expected = match read_broker_route_claim(paths) {
+        Ok(Some(claim)) => claim,
+        Ok(None) => return ProbeOutcome::NotLive,
+        Err(_) => {
+            prune_broker_route_claim(paths);
+            return ProbeOutcome::NotLive;
+        }
     };
     let handle = match BackendHandle::probe_with_service(
         SOLDR_DAEMON_SERVICE_NAME,
@@ -271,12 +258,12 @@ fn probe_soldr_daemon_once(paths: &SoldrPaths) -> ProbeOutcome {
         pid: handle.daemon_process.pid,
         exe_path: handle.daemon_process.exe_path,
         endpoint: PathBuf::from(handle.daemon_process.ipc_endpoint.path),
-        pid_file: daemon_pid_path(paths),
+        route_claim: broker_route_claim_path(paths),
         adoption_status: RUNNING_PROCESS_BACKEND_HANDLE_STATUS,
     }))
 }
 
-/// Probe the daemon named by the PID file, retrying only while the probe is
+/// Probe the daemon named by the route claim, retrying only while the probe is
 /// inconclusive (soldr#1893).
 ///
 /// A definitive "not live" returns immediately, so the common
@@ -345,6 +332,7 @@ pub fn wait_for_broker_backend_handle(
         endpoint,
         timeout,
         || Ok(None),
+        |_| {},
     )
 }
 
@@ -358,9 +346,11 @@ pub fn wait_for_broker_backend_handle_while(
     endpoint: &Endpoint,
     timeout: Duration,
     mut child_status: impl FnMut() -> io::Result<Option<i32>>,
+    mut progress: impl FnMut(&str),
 ) -> io::Result<BackendHandle> {
     let deadline = Instant::now() + timeout;
-    let mut last_error = "daemon has not published its PID yet".to_string();
+    let mut next_progress = Instant::now() + Duration::from_secs(1);
+    let mut last_error = "daemon has not published its protobuf route claim yet".to_string();
     loop {
         if let Some(status) = child_status()? {
             return Err(io::Error::new(
@@ -368,9 +358,14 @@ pub fn wait_for_broker_backend_handle_while(
                 format!("broker-launched soldr-daemon exited before readiness ({status})"),
             ));
         }
-        if let Some((pid, exe_path)) = read_pid_file(paths) {
-            if let Some(mut daemon) = daemon_process_from_pid_file(paths, pid, exe_path) {
-                daemon.ipc_endpoint = endpoint.clone();
+        match read_broker_route_claim(paths) {
+            Ok(Some(daemon)) if daemon.ipc_endpoint != *endpoint => {
+                last_error = format!(
+                    "daemon route claim endpoint mismatch: claimed={}, expected={}",
+                    daemon.ipc_endpoint.path, endpoint.path
+                );
+            }
+            Ok(Some(daemon)) => {
                 match BackendHandle::probe_with_service(
                     service_name.to_string(),
                     service_version.to_string(),
@@ -381,6 +376,8 @@ pub fn wait_for_broker_backend_handle_while(
                     Err(err) => last_error = err.to_string(),
                 }
             }
+            Ok(None) => {}
+            Err(error) => last_error = format!("daemon route claim is unreadable: {error}"),
         }
         if Instant::now() >= deadline {
             return Err(io::Error::new(
@@ -390,8 +387,83 @@ pub fn wait_for_broker_backend_handle_while(
                 ),
             ));
         }
+        if Instant::now() >= next_progress {
+            progress(&last_error);
+            next_progress = Instant::now() + Duration::from_secs(1);
+        }
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// Deterministic, root-local protobuf claim used only for broker restart
+/// re-adoption. It is disposable discovery state, not authoritative routing
+/// state; every reader must verify it with an exact `BackendHandle` probe.
+pub fn broker_route_claim_path(paths: &SoldrPaths) -> PathBuf {
+    soldr_daemon_dir(paths).join(BROKER_ROUTE_CLAIM_FILE)
+}
+
+pub fn publish_broker_route_claim(paths: &SoldrPaths, daemon: &DaemonProcess) -> io::Result<()> {
+    use prost::Message as _;
+    use std::io::Write as _;
+
+    let directory = soldr_daemon_dir(paths);
+    std::fs::create_dir_all(&directory)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(&directory)?;
+    temporary.write_all(&daemon.to_proto().encode_to_vec())?;
+    temporary.as_file().sync_all()?;
+    let temporary = temporary
+        .into_temp_path()
+        .keep()
+        .map_err(|error| error.error)?;
+    let target = broker_route_claim_path(paths);
+    replace_route_claim(&temporary, &target).inspect_err(|_| {
+        let _ = std::fs::remove_file(&temporary);
+    })
+}
+
+#[cfg(unix)]
+fn replace_route_claim(source: &Path, target: &Path) -> io::Result<()> {
+    std::fs::rename(source, target)
+}
+
+#[cfg(windows)]
+fn replace_route_claim(source: &Path, target: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+    let target: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
+    if unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            target.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    } == 0
+    {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+pub fn read_broker_route_claim(paths: &SoldrPaths) -> io::Result<Option<DaemonProcess>> {
+    use prost::Message as _;
+    let bytes = match std::fs::read(broker_route_claim_path(paths)) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let claim = running_process::broker::protocol::DaemonProcess::decode(bytes.as_slice())
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    DaemonProcess::try_from(claim)
+        .map(Some)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+pub fn prune_broker_route_claim(paths: &SoldrPaths) {
+    let _ = std::fs::remove_file(broker_route_claim_path(paths));
 }
 
 pub(crate) fn current_daemon_process(
@@ -404,15 +476,15 @@ pub(crate) fn current_daemon_process(
 pub(crate) fn soldr_backend_endpoint_mux(
     daemon: DaemonProcess,
 ) -> BackendEndpointMux<fn(&[u8]) -> LegacyClassification> {
-    BackendEndpointMux::new(daemon, &[], classify_soldr_legacy_wire)
+    BackendEndpointMux::new(daemon, &[], classify_soldr_control_wire)
 }
 
-fn classify_soldr_legacy_wire(buf: &[u8]) -> LegacyClassification {
-    if buf.len() < LEGACY_FRAME_HEADER_BYTES {
+fn classify_soldr_control_wire(buf: &[u8]) -> LegacyClassification {
+    if buf.len() < CONTROL_FRAME_HEADER_BYTES {
         return LegacyClassification::NeedMoreBytes;
     }
     let version = u32::from_le_bytes(
-        buf[4..LEGACY_FRAME_HEADER_BYTES]
+        buf[4..CONTROL_FRAME_HEADER_BYTES]
             .try_into()
             .expect("slice is exactly 4 bytes"),
     );
@@ -423,41 +495,23 @@ fn classify_soldr_legacy_wire(buf: &[u8]) -> LegacyClassification {
     }
 }
 
-fn daemon_process_from_pid_file(
-    paths: &SoldrPaths,
-    pid: u32,
-    exe_path: PathBuf,
-) -> Option<DaemonProcess> {
-    Some(DaemonProcess {
-        pid,
-        exe_sha256: sha256_file(&exe_path).ok()?,
-        exe_path,
-        boot_id: host_identity::current().boot_id,
-        ipc_endpoint: soldr_daemon_endpoint(paths),
-        started_at_unix_ms: 0,
-        idle_timeout_secs: None,
-    })
-}
-
 fn soldr_daemon_endpoint(paths: &SoldrPaths) -> Endpoint {
     let namespace_id = host_identity::current().namespace_id;
     // Use running-process's smart constructors (issue #726): on
     // Windows `Endpoint::windows_pipe` enforces the bare-pipe-name
     // invariant (no leading `\\.\pipe\`, never empty), which the
-    // prior manual `Endpoint { path }` literal could silently
-    // violate and address the wrong pipe. `daemon_pipe_name` and
-    // `default_sock_path` are both soldr-controlled producers, so
+    // prior manual `Endpoint { path }` literal could silently violate and
+    // address the wrong pipe. `default_sock_path` is soldr-controlled, so
     // the smart-constructor errors only fire on a programming bug
     // — `expect` is correct.
     #[cfg(windows)]
     {
-        // soldr#1808: the identity lookup is a genuine runtime failure (unlike
-        // the smart-constructor errors this `expect` was written for), so it
-        // gets its own message rather than being folded into that claim.
-        let pipe_name =
-            crate::cache_lib::daemon_pipe_name(paths).unwrap_or_else(|err| panic!("{err}"));
+        let full = client::default_sock_path(paths)
+            .to_string_lossy()
+            .into_owned();
+        let pipe_name = full.strip_prefix(r"\\.\pipe\").unwrap_or(&full);
         Endpoint::windows_pipe(namespace_id, pipe_name)
-            .expect("daemon_pipe_name returns a bare, non-empty pipe name")
+            .expect("resolved control endpoint returns a bare, non-empty pipe name")
     }
     #[cfg(unix)]
     {
@@ -471,36 +525,12 @@ fn soldr_daemon_endpoint(paths: &SoldrPaths) -> Endpoint {
     }
 }
 
-/// SHA-256 of a file's bytes. Retained specifically for `exe_sha256`, which is
-/// a cross-repo daemon-identity contract: running-process computes the same
-/// field via SHA-256 (`backend_lifecycle::identity`) and compares it in
-/// `verify_daemon_process`, so this side must stay SHA-256 to match. The
-/// *image-placement* hashing (the cold-start hotspot) moved to blake3 via
-/// `super::image_hash`; migrating this identity field to blake3 would require a
-/// coordinated running-process wire-format change (soldr#2442 follow-up).
-fn sha256_file(path: &Path) -> io::Result<[u8; 32]> {
-    let bytes = std::fs::read(path)?;
-    let digest = Sha256::digest(&bytes);
-    let mut out = [0_u8; 32];
-    out.copy_from_slice(&digest);
-    Ok(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::cache_lib::soldr_daemon_dir;
     use running_process::broker::backend_sdk::MuxPoll;
     use tempfile::TempDir;
-
-    fn write_pid_file(paths: &SoldrPaths, pid: u32, exe_path: &Path) {
-        std::fs::create_dir_all(soldr_daemon_dir(paths)).expect("daemon dir");
-        std::fs::write(
-            daemon_pid_path(paths),
-            format!("{pid}\n{}\n", exe_path.display()),
-        )
-        .expect("write pid file");
-    }
 
     crate::timed_test!(broker_service_partition_covers_root_and_image_hash, {
         let temp = TempDir::new().expect("tempdir");
@@ -533,6 +563,46 @@ mod tests {
         assert_eq!(route.len(), "soldr-daemon-".len() + 32);
     });
 
+    crate::timed_test!(broker_route_claim_round_trips_and_replaces_atomically, {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("root"));
+        let first = current_daemon_process(&paths, Some(3)).expect("first claim");
+        publish_broker_route_claim(&paths, &first).expect("publish first claim");
+
+        let mut second = first.clone();
+        second.idle_timeout_secs = Some(9);
+        publish_broker_route_claim(&paths, &second).expect("replace claim");
+
+        let observed = read_broker_route_claim(&paths)
+            .expect("read claim")
+            .expect("claim exists");
+        assert_eq!(observed.pid, second.pid);
+        assert_eq!(observed.exe_path, second.exe_path);
+        assert_eq!(observed.exe_sha256, second.exe_sha256);
+        assert_eq!(observed.boot_id, second.boot_id);
+        assert_eq!(observed.ipc_endpoint, second.ipc_endpoint);
+        assert_eq!(observed.idle_timeout_secs, Some(9));
+
+        let leftovers = std::fs::read_dir(soldr_daemon_dir(&paths))
+            .expect("read daemon dir")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path() != broker_route_claim_path(&paths))
+            .count();
+        assert_eq!(leftovers, 0, "atomic publish must not leave temp files");
+    });
+
+    crate::timed_test!(corrupt_broker_route_claim_is_invalid_disposable_state, {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("root"));
+        std::fs::create_dir_all(soldr_daemon_dir(&paths)).expect("daemon dir");
+        std::fs::write(broker_route_claim_path(&paths), b"not protobuf").expect("corrupt claim");
+
+        let error = read_broker_route_claim(&paths).expect_err("corruption must be reported");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        prune_broker_route_claim(&paths);
+        assert!(!broker_route_claim_path(&paths).exists());
+    });
+
     crate::timed_test!(dependency_status_documents_active_backend_handle_usage, {
         let status = RUNNING_PROCESS_BACKEND_HANDLE_STATUS;
         assert_eq!(status.crate_name, "running-process");
@@ -551,48 +621,22 @@ mod tests {
         assert!(status.remaining_gate.contains("BackendEndpointMux adopted"));
     });
 
-    crate::timed_test!(probe_missing_pid_file_reports_no_handle, {
+    crate::timed_test!(probe_missing_route_claim_reports_no_handle, {
         let temp = TempDir::new().expect("tempdir");
         let paths = SoldrPaths::with_root(temp.path().to_path_buf());
 
         assert!(probe_soldr_daemon(&paths).is_none());
     });
-
-    crate::timed_test!(probe_stale_pid_file_reports_no_handle, {
-        let temp = TempDir::new().expect("tempdir");
-        let paths = SoldrPaths::with_root(temp.path().to_path_buf());
-        write_pid_file(&paths, u32::MAX, Path::new("soldr-daemon"));
-
-        assert!(probe_soldr_daemon(&paths).is_none());
-    });
-
-    crate::timed_test!(
-        pid_file_identity_records_running_process_backend_handle_shape,
-        {
-            let temp = TempDir::new().expect("tempdir");
-            let paths = SoldrPaths::with_root(temp.path().to_path_buf());
-            let current_exe = std::env::current_exe().expect("current exe");
-
-            let identity =
-                daemon_process_from_pid_file(&paths, std::process::id(), current_exe.clone())
-                    .expect("identity");
-
-            assert_eq!(identity.pid, std::process::id());
-            assert_eq!(identity.exe_path, current_exe);
-            assert_eq!(identity.ipc_endpoint, soldr_daemon_endpoint(&paths));
-            assert_eq!(identity.exe_sha256, sha256_file(&current_exe).unwrap());
-            assert!(!identity.boot_id.is_empty());
-        }
-    );
 
     crate::timed_test!(backend_endpoint_mux_classifies_soldr_legacy_header, {
-        let temp = TempDir::new().expect("tempdir");
-        let paths = SoldrPaths::with_root(temp.path().to_path_buf());
         let current_exe = std::env::current_exe().expect("current exe");
-        let daemon =
-            daemon_process_from_pid_file(&paths, std::process::id(), current_exe).expect("daemon");
+        let endpoint = Endpoint::unix_socket("test", "/tmp/soldr-test.sock")
+            .or_else(|_| Endpoint::windows_pipe("test", "soldr-test"))
+            .expect("test endpoint");
+        let daemon = DaemonProcess::current_process(endpoint, None).expect("daemon");
+        assert_eq!(daemon.exe_path, current_exe);
         let mux = soldr_backend_endpoint_mux(daemon);
-        let mut soldr_header = [0_u8; LEGACY_FRAME_HEADER_BYTES];
+        let mut soldr_header = [0_u8; CONTROL_FRAME_HEADER_BYTES];
         soldr_header[..4].copy_from_slice(&1_u32.to_le_bytes());
         soldr_header[4..].copy_from_slice(&PROTOCOL_VERSION.to_le_bytes());
 
@@ -600,10 +644,10 @@ mod tests {
     });
 
     crate::timed_test!(soldr_legacy_detector_waits_for_full_header, {
-        let mut partial = [0_u8; LEGACY_FRAME_HEADER_BYTES - 1];
+        let mut partial = [0_u8; CONTROL_FRAME_HEADER_BYTES - 1];
         partial[..4].copy_from_slice(&1_u32.to_le_bytes());
         assert_eq!(
-            classify_soldr_legacy_wire(&partial),
+            classify_soldr_control_wire(&partial),
             LegacyClassification::NeedMoreBytes,
         );
     });

@@ -151,6 +151,8 @@ fn run_main(raw_args: Vec<String>) -> i32 {
         }
     }
 
+    // Route client control through the broker; standalone daemons never install this hook.
+    let _ = crate::broker_control_transport::install();
     if raw_args.len() > 1 && wrapper::is_wrapper_invocation(&raw_args[1]) {
         // Per-phase startup timing for #440. `WrapperProfile::new()` is a
         // cheap branch + one `var_os` syscall when SOLDR_PROFILE_STARTUP
@@ -1440,11 +1442,10 @@ fn report_and_exit(error: SoldrError) -> i32 {
 
 async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError> {
     use crate::daemon::client;
-    use crate::daemon::server::server_sock_path;
     use core::SoldrPaths;
 
     let paths = SoldrPaths::new()?;
-    let sock = server_sock_path(&paths);
+    let sock = client::default_sock_path(&paths);
 
     match command {
         DaemonSubcommand::Start {
@@ -1470,10 +1471,9 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
                 crate::daemon::backend_handle_adoption::SOLDR_BROKER_SERVICE_ENV_VAR,
                 &installed.definition.service_name,
             );
-            running_process::broker::client_v2::connect_service_with_deadline(
-                &crate::daemon::backend_handle_adoption::broker_program(),
+            crate::daemon::lifecycle::preflight_displace_stale_daemon(&paths);
+            crate::session_transport::ensure_broker_route(
                 &installed.definition.service_name,
-                crate::daemon::backend_handle_adoption::SOLDR_DAEMON_SERVICE_VERSION,
                 std::time::Duration::from_secs(30),
             )
             .map_err(|err| {
@@ -1516,9 +1516,9 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
                     // failed. Let the lifecycle layer retry compatibility IPC
                     // before considering a signal-safe, verified-PID fallback.
                     use crate::daemon::lifecycle::{
-                        displace_stale_daemon, stale_daemon_occupies_endpoint, LifecycleSource,
+                        claimed_daemon_occupies_route, displace_stale_daemon, LifecycleSource,
                     };
-                    if stale_daemon_occupies_endpoint(&paths).is_some()
+                    if claimed_daemon_occupies_route(&paths).is_some()
                         && displace_stale_daemon(&paths, Some(LifecycleSource::Cli))
                     {
                         println!("soldr-daemon: stopped through compatibility displacement");

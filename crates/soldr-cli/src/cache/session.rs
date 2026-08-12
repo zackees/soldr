@@ -520,7 +520,7 @@ pub(crate) async fn run_cache_shutdown_command(
     let paths = SoldrPaths::new()?;
     let zccache_dir = managed_zccache_cache_dir(&paths)?;
     let mut notes: Vec<String> = Vec::new();
-    let daemon_pid = crate::daemon::lifecycle::stale_daemon_occupies_endpoint(&paths);
+    let daemon_pid = crate::daemon::lifecycle::claimed_daemon_occupies_route(&paths);
 
     let mut output = CacheShutdownOutput {
         schema_version: JSON_SCHEMA_VERSION,

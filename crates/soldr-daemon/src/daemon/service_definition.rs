@@ -8,7 +8,7 @@
 //! switch, or client-owned placement path.
 
 use crate::daemon::backend_handle_adoption::{
-    broker_route_identity, SOLDR_DAEMON_IMAGE_SHA256_LABEL, SOLDR_DAEMON_SERVICE_VERSION,
+    broker_route_identity, SOLDR_DAEMON_IMAGE_HASH_LABEL, SOLDR_DAEMON_SERVICE_VERSION,
 };
 use running_process::broker::protocol_v2::{
     service_definition_dir_v2, service_definition_path_v2, write_service_definition_v2,
@@ -100,7 +100,7 @@ pub(crate) fn soldr_daemon_service_definition_for_paths(
             .min_version(SOLDR_DAEMON_SERVICE_VERSION)
             .version_allow_list([SOLDR_DAEMON_SERVICE_VERSION])
             .label(SOLDR_ROOT_SERVICE_LABEL, root)
-            .label(SOLDR_DAEMON_IMAGE_SHA256_LABEL, route.image_sha256)
+            .label(SOLDR_DAEMON_IMAGE_HASH_LABEL, route.image_hash)
             .label("vendor", "zackees")
             .label("package", "soldr")
             .label("running-process-tracker", "zackees/soldr#1495")

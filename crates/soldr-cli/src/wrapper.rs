@@ -275,12 +275,6 @@ pub(crate) fn run_rustc_wrapper(
         // the daemon's embedded zccache service over IPC. The legacy
         // `zccache.exe` fork was deleted in the L1 second pass.
         profile.finish("before_embedded_compile_ipc");
-        // soldr#1081 — lifted to `crate::compile_dispatch` so
-        // multicall `zccache-soldr` dispatch can share the same
-        // hang-safe retry logic. The bin-local copy below is the
-        // legacy path retained only for the unit tests that still
-        // import it; the production path now goes through the lifted
-        // function.
         // soldr#1081 — lifted to `crate::compile_dispatch` so the
         // dedicated `zccache-soldr` shim binary can share the same
         // hang-safe retry logic.

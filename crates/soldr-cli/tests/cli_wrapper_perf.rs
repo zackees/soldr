@@ -3,7 +3,7 @@
 //! Asserts the Option A invariant: when `SOLDR_BUILD_SESSION_ID` is
 //! NOT set in the environment, `record_target_dir_in_registry` writes
 //! the target row to redb directly and skips the daemon entirely (no
-//! socket connect, no PID-file probe, no spawn attempt). When it IS
+//! socket connect, no route-claim probe, no spawn attempt). When it IS
 //! set, the function takes the daemon path.
 //!
 //! Also pins a coarse latency budget for the fast path so an

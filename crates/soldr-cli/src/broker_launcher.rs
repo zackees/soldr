@@ -7,30 +7,28 @@
 
 use running_process::broker::backend_handle::BackendHandle;
 use running_process::broker::protocol::Endpoint;
-use running_process::broker::server::session_token::SessionTokenAuthority;
 use running_process::broker::server::{
-    BackendEndpointAllocator, BackendLaunchError, BackendLaunchRequest, BackendLauncher,
-    BACKEND_ENV_ENDPOINT_NAMESPACE, BACKEND_ENV_ENDPOINT_PATH, BACKEND_ENV_INSTANCE,
-    BACKEND_ENV_SERVICE_NAME, BACKEND_ENV_SERVICE_VERSION, BACKEND_ENV_TRACEPARENT,
-    BACKEND_ENV_TRACESTATE,
+    BackendKey, BackendLaunchError, BackendLaunchRequest, BackendLauncher, BrokerInstanceKey,
+    CombinedServiceDefinitionLoader, TraceContext, BACKEND_ENV_ENDPOINT_NAMESPACE,
+    BACKEND_ENV_ENDPOINT_PATH, BACKEND_ENV_INSTANCE, BACKEND_ENV_SERVICE_NAME,
+    BACKEND_ENV_SERVICE_VERSION, BACKEND_ENV_TRACEPARENT, BACKEND_ENV_TRACESTATE,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::Duration;
 
-const BACKEND_ENV_SESSION_TOKEN: &str = "RUNNING_PROCESS_BROKER_V1_SESSION_TOKEN";
-
 pub(crate) struct SoldrBackendLauncher {
-    user_sid_hash: String,
-    allocators: Mutex<HashMap<String, BackendEndpointAllocator>>,
     placed_images: Mutex<HashMap<String, PlacedImage>>,
-    /// Shared broker/daemon generation-token authority (soldr#2442 slice 1).
-    /// The broker mints one at startup (broker half) and shares this handle
-    /// with both this launcher (which mints each route's daemon half at
-    /// launch) and the SESSION relay responder (which validates presented
-    /// composite tokens). Memory-only, broker-process-lived; never persisted.
-    session_tokens: Arc<Mutex<SessionTokenAuthority>>,
+    route_deadlines: Mutex<HashMap<String, std::time::Instant>>,
+    progress: tokio::sync::broadcast::Sender<LauncherProgress>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct LauncherProgress {
+    pub(crate) service_name: String,
+    pub(crate) stage: &'static str,
+    pub(crate) latest_result: String,
 }
 
 struct PlacedImage {
@@ -46,52 +44,115 @@ struct FileFingerprint {
 }
 
 impl SoldrBackendLauncher {
-    pub(crate) fn new(session_tokens: Arc<Mutex<SessionTokenAuthority>>) -> Self {
+    pub(crate) fn new() -> Self {
+        let (progress, _) = tokio::sync::broadcast::channel(256);
         Self {
-            user_sid_hash: crate::broker_identity::resolve_user_sid(),
-            allocators: Mutex::new(HashMap::new()),
             placed_images: Mutex::new(HashMap::new()),
-            session_tokens,
+            route_deadlines: Mutex::new(HashMap::new()),
+            progress,
         }
     }
 
-    /// Mint (or re-mint) this route's daemon token half and return the
-    /// composite `broker_half ‖ daemon_half` to inject into the daemon's
-    /// launch environment (soldr#2442 slice 1).
-    ///
-    /// Re-minting on every launch is deliberate: a replaced daemon gets a
-    /// fresh half, so any composite a client still holds against the prior
-    /// generation of this route stops validating
-    /// (`SessionTokenRejection::DaemonHalfMismatch`) — the per-daemon
-    /// invalidation the feature exists to provide. Best-effort: a randomness
-    /// failure returns `None` and the daemon simply launches without a token
-    /// (the SESSION relay fails open on an absent token), never blocking a
-    /// build.
-    fn register_route_token(&self, service_name: &str) -> Option<Vec<u8>> {
-        let mut authority = self
-            .session_tokens
+    pub(crate) fn note_route_deadline(&self, service_name: &str, deadline: std::time::Instant) {
+        let mut deadlines = self
+            .route_deadlines
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Err(err) = authority.register_daemon(service_name.to_string()) {
-            eprintln!("soldr broker: could not mint session token for route {service_name}: {err}");
-            return None;
-        }
-        authority.composed_token_for(service_name)
+        deadlines
+            .entry(service_name.to_string())
+            .and_modify(|current| *current = (*current).max(deadline))
+            .or_insert(deadline);
     }
 
-    fn allocate_endpoint(
+    fn ensure_route_deadline(
         &self,
         request: &BackendLaunchRequest<'_>,
-    ) -> Result<Endpoint, BackendLaunchError> {
-        let namespace_id = request.key.instance.id();
-        let mut allocators = self
-            .allocators
+    ) -> Result<(), BackendLaunchError> {
+        let deadline = self
+            .route_deadlines
             .lock()
-            .map_err(|_| BackendLaunchError::AllocatorPoisoned)?;
-        Ok(allocators
-            .entry(namespace_id.clone())
-            .or_insert_with(|| BackendEndpointAllocator::new(&self.user_sid_hash, namespace_id))
-            .allocate()?)
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&request.key.service_name)
+            .copied();
+        if deadline.is_some_and(|value| std::time::Instant::now() >= value) {
+            return Err(BackendLaunchError::Launcher(format!(
+                "route {} expired before daemon launch completed",
+                request.key.service_name
+            )));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn subscribe_progress(&self) -> tokio::sync::broadcast::Receiver<LauncherProgress> {
+        self.progress.subscribe()
+    }
+
+    /// Rehydrate a requested control route without launching a missing daemon.
+    /// This is the admin-path counterpart to the Hello launcher's claim-first
+    /// behavior: a broker restart can answer status/stop for a surviving daemon,
+    /// while a genuinely absent route stays absent.
+    pub(crate) fn adopt_existing_control_route(
+        &self,
+        loader: &CombinedServiceDefinitionLoader,
+        service_name: &str,
+    ) -> Result<Option<(BrokerInstanceKey, BackendHandle)>, String> {
+        let definition = loader
+            .lookup_or_reload(service_name)
+            .map_err(|error| error.to_string())?;
+        let instance = BrokerInstanceKey::from_service_definition(&definition)
+            .map_err(|error| error.to_string())?;
+        let key = BackendKey::new(
+            instance.clone(),
+            service_name,
+            crate::daemon::backend_handle_adoption::SOLDR_DAEMON_SERVICE_VERSION,
+            "control-re-adoption",
+        );
+        let trace = TraceContext::default();
+        let request = BackendLaunchRequest {
+            key: &key,
+            service_definition: &definition,
+            trace_context: &trace,
+            session_token: None,
+        };
+        let paths = routed_paths(&request).map_err(|error| error.to_string())?;
+        // The persisted claim already carries the executable path and digest
+        // that BackendHandle verifies. Re-adoption must fit inside a normal
+        // control request's timeout, so do not re-hash and re-place a large
+        // source image after every broker restart. Constrain the claimed path
+        // to this route's broker-owned runtime before probing it.
+        let claim = match crate::daemon::backend_handle_adoption::read_broker_route_claim(&paths)
+            .map_err(|error| error.to_string())?
+        {
+            Some(claim) => claim,
+            None => return Ok(None),
+        };
+        let claimed_binary = std::fs::canonicalize(&claim.exe_path).ok();
+        let route_runtime = crate::self_relocate::daemon_runtime_root(&route_image_paths(&request));
+        let route_runtime = std::fs::canonicalize(&route_runtime).unwrap_or(route_runtime);
+        if claimed_binary
+            .as_deref()
+            .is_none_or(|path| !path.starts_with(&route_runtime))
+        {
+            crate::daemon::backend_handle_adoption::prune_broker_route_claim(&paths);
+            return Ok(None);
+        }
+        let claimed_binary = claimed_binary.expect("checked above");
+        Ok(self
+            .adopt_route_claim(&request, &paths, &claimed_binary, false)
+            .map(|handle| (instance, handle)))
+    }
+
+    fn report_progress(
+        &self,
+        request: &BackendLaunchRequest<'_>,
+        stage: &'static str,
+        latest_result: impl Into<String>,
+    ) {
+        let _ = self.progress.send(LauncherProgress {
+            service_name: request.key.service_name.clone(),
+            stage,
+            latest_result: latest_result.into(),
+        });
     }
 }
 
@@ -108,13 +169,23 @@ impl BackendLauncher for SoldrBackendLauncher {
                 request.key.service_name
             );
         }
+        self.report_progress(
+            request,
+            "route-request",
+            "broker accepted the route request",
+        );
+        self.ensure_route_deadline(request)?;
         let paths = routed_paths(request)?;
         if crate::daemon::tombstone::is_active(&paths) {
             return Err(tombstone_error());
         }
 
-        let endpoint = self.allocate_endpoint(request)?;
         let source_binary = canonical_backend_binary(request)?;
+        self.report_progress(
+            request,
+            "image-source-resolved",
+            format!("resolved daemon image {}", source_binary.display()),
+        );
         // The broker is the sole owner of daemon placement.  Resolve the
         // request's allow-listed source image into this route's stable runtime
         // tree before spawning so the child PID registered below is the
@@ -122,6 +193,31 @@ impl BackendLauncher for SoldrBackendLauncher {
         // `ensure_daemon_relocated` serializes concurrent copies under the
         // route root; running-process serializes launch for the backend key.
         let binary_path = self.place_backend_image(request, &source_binary)?;
+        self.ensure_route_deadline(request)?;
+        self.report_progress(
+            request,
+            "image-verified",
+            format!("verified daemon image {}", binary_path.display()),
+        );
+        if let Some(handle) = self.adopt_route_claim(request, &paths, &binary_path, true) {
+            self.report_progress(
+                request,
+                "claim-adopted",
+                format!("verified live daemon pid={}", handle.daemon_process.pid),
+            );
+            if debug {
+                eprintln!(
+                    "soldr broker: route re-adopted route={} pid={} elapsed={:?}",
+                    request.key.service_name,
+                    handle.daemon_process.pid,
+                    started.elapsed()
+                );
+            }
+            return Ok(handle);
+        }
+        let endpoint =
+            crate::broker_identity::daemon_session_endpoint_from_executable(&binary_path)
+                .map_err(|error| BackendLaunchError::Launcher(error.to_string()))?;
         if debug {
             eprintln!(
                 "soldr broker: image ready route={} elapsed={:?}",
@@ -137,15 +233,6 @@ impl BackendLauncher for SoldrBackendLauncher {
         command.envs(daemon_env);
         command.env(crate::core::SOLDR_CACHE_DIR_ENV_VAR, &paths.root);
         configure_backend_command(&mut command, request, &endpoint);
-        // soldr#2442 slice 1: mint this route's daemon token half and inject
-        // the composite broker‖daemon token into the daemon's launch env,
-        // registering the generation in the shared authority the SESSION relay
-        // validates against. Overrides any `request.session_token` (unset on
-        // soldr's path, where the router carries no authority). Best-effort:
-        // absent token => daemon launches untokened and the relay fails open.
-        if let Some(composite) = self.register_route_token(&request.key.service_name) {
-            command.env(BACKEND_ENV_SESSION_TOKEN, hex_encode(&composite));
-        }
         let log = crate::broker_spawn::open_append(&paths.root.join("daemon-spawn.log"))
             .ok_or_else(|| {
                 BackendLaunchError::Launcher(format!(
@@ -153,12 +240,21 @@ impl BackendLauncher for SoldrBackendLauncher {
                     paths.root.display()
                 ))
             })?;
+        // spawn_blocking cannot cancel a running OS thread. Re-check the
+        // original connection's hard deadline at the last possible point so
+        // a timed-out route worker cannot materialize a daemon afterward.
+        self.ensure_route_deadline(request)?;
         let mut child = running_process::spawn_daemon_with_stdio_and_env_policy(
             &mut command,
             crate::broker_spawn::daemon_stdio(&log),
             running_process::EnvironmentPolicy::UserBaseline,
         )
         .map_err(BackendLaunchError::Spawn)?;
+        self.report_progress(
+            request,
+            "child-spawned",
+            format!("spawned daemon child pid={}", child.id()),
+        );
         if debug {
             eprintln!(
                 "soldr broker: daemon spawned route={} elapsed={:?}",
@@ -174,6 +270,12 @@ impl BackendLauncher for SoldrBackendLauncher {
             return Err(tombstone_error());
         }
 
+        self.report_progress(
+            request,
+            "readiness-probe",
+            "daemon child is alive; waiting for exact endpoint and nonce verification",
+        );
+
         match crate::daemon::backend_handle_adoption::wait_for_broker_backend_handle_while(
             &paths,
             &request.key.service_name,
@@ -181,8 +283,14 @@ impl BackendLauncher for SoldrBackendLauncher {
             &endpoint,
             Duration::from_secs(25),
             || child.try_wait(),
+            |latest_result| {
+                self.report_progress(request, "readiness-probe", latest_result.to_string());
+            },
         ) {
-            Ok(handle) if !crate::daemon::tombstone::is_active(&paths) => {
+            Ok(handle)
+                if !crate::daemon::tombstone::is_active(&paths)
+                    && self.ensure_route_deadline(request).is_ok() =>
+            {
                 if debug {
                     eprintln!(
                         "soldr broker: route ready route={} elapsed={:?}",
@@ -205,6 +313,68 @@ impl BackendLauncher for SoldrBackendLauncher {
 }
 
 impl SoldrBackendLauncher {
+    fn adopt_route_claim(
+        &self,
+        request: &BackendLaunchRequest<'_>,
+        paths: &crate::core::SoldrPaths,
+        expected_binary: &std::path::Path,
+        prune_invalid: bool,
+    ) -> Option<BackendHandle> {
+        let claim = match crate::daemon::backend_handle_adoption::read_broker_route_claim(paths) {
+            Ok(Some(claim)) => claim,
+            Ok(None) => return None,
+            Err(error) => {
+                eprintln!(
+                    "soldr broker: pruning unreadable daemon route claim {}: {error}",
+                    crate::daemon::backend_handle_adoption::broker_route_claim_path(paths)
+                        .display()
+                );
+                if prune_invalid {
+                    crate::daemon::backend_handle_adoption::prune_broker_route_claim(paths);
+                }
+                return None;
+            }
+        };
+        let expected_binary = std::fs::canonicalize(expected_binary).ok()?;
+        let claimed_binary = std::fs::canonicalize(&claim.exe_path).ok();
+        if claimed_binary.as_deref() != Some(expected_binary.as_path())
+            || claim.boot_id != running_process::broker::host_identity::current().boot_id
+        {
+            if std::env::var_os("SOLDR_BROKER_DEBUG").is_some() {
+                eprintln!(
+                    "soldr broker: route claim identity mismatch claimed_binary={:?} expected_binary={} claim_boot={} current_boot={}",
+                    claimed_binary,
+                    expected_binary.display(),
+                    claim.boot_id,
+                    running_process::broker::host_identity::current().boot_id,
+                );
+            }
+            if prune_invalid {
+                crate::daemon::backend_handle_adoption::prune_broker_route_claim(paths);
+            }
+            return None;
+        }
+        match BackendHandle::probe_with_service(
+            request.key.service_name.clone(),
+            request.key.service_version.clone(),
+            &claim.ipc_endpoint,
+            &claim,
+        ) {
+            Ok(handle) => Some(handle),
+            Err(error) => {
+                if std::env::var_os("SOLDR_BROKER_DEBUG").is_some() {
+                    eprintln!(
+                        "soldr broker: daemon route claim failed exact probe and was pruned: {error}"
+                    );
+                }
+                if prune_invalid {
+                    crate::daemon::backend_handle_adoption::prune_broker_route_claim(paths);
+                }
+                None
+            }
+        }
+    }
+
     fn place_backend_image(
         &self,
         request: &BackendLaunchRequest<'_>,
@@ -213,18 +383,44 @@ impl SoldrBackendLauncher {
         let image_hash = request
             .service_definition
             .labels
-            .get(crate::daemon::backend_handle_adoption::SOLDR_DAEMON_IMAGE_SHA256_LABEL)
+            .get(crate::daemon::backend_handle_adoption::SOLDR_DAEMON_IMAGE_HASH_LABEL)
             .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
             .ok_or_else(|| {
                 BackendLaunchError::Launcher(
-                    "soldr daemon service definition is missing a valid image SHA-256".to_string(),
+                    "soldr daemon service definition is missing a valid BLAKE3 image hash"
+                        .to_string(),
                 )
             })?;
-        let cache_key = format!("{}\0{image_hash}", source_binary.display());
-        let mut placed = self
-            .placed_images
-            .lock()
-            .map_err(|_| BackendLaunchError::AllocatorPoisoned)?;
+        let cache_key = format!(
+            "{}\0{}\0{image_hash}",
+            request.key.service_name,
+            source_binary.display()
+        );
+        let lock_started = std::time::Instant::now();
+        let mut next_lock_progress = Duration::from_secs(1);
+        let mut placed = loop {
+            match self.placed_images.try_lock() {
+                Ok(placed) => break placed,
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    return Err(BackendLaunchError::AllocatorPoisoned)
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    let elapsed = lock_started.elapsed();
+                    if elapsed >= next_lock_progress {
+                        self.report_progress(
+                            request,
+                            "image-placement-wait",
+                            format!(
+                                "waiting for concurrent daemon image verification ({}ms)",
+                                elapsed.as_millis()
+                            ),
+                        );
+                        next_lock_progress += Duration::from_secs(1);
+                    }
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+            }
+        };
         let source_fingerprint = file_fingerprint(source_binary).map_err(|err| {
             BackendLaunchError::Launcher(format!(
                 "could not inspect registered soldr-daemon image {}: {err}",
@@ -243,11 +439,31 @@ impl SoldrBackendLauncher {
         // (path,size,mtime) cache instead of a whole-file SHA-256 read, so a
         // warm image is not re-read on every launch. Matches the registration
         // side's algorithm so the label comparison below still holds.
-        let source_hash = crate::daemon::image_hash::cached_blake3_hex(
+        self.report_progress(
+            request,
+            "image-hash",
+            format!(
+                "verifying daemon image hash for {}",
+                source_binary.display()
+            ),
+        );
+        let mut last_hash_progress = std::time::Instant::now();
+        let source_hash = crate::daemon::image_hash::cached_blake3_hex_with_progress(
             &crate::daemon::service_definition::broker_owned_paths()
                 .cache
                 .join("image-hash"),
             source_binary,
+            |completed, total| {
+                if last_hash_progress.elapsed() >= Duration::from_millis(500) || completed >= total
+                {
+                    self.report_progress(
+                        request,
+                        "image-hash",
+                        format!("daemon image hash: {completed}/{total} bytes"),
+                    );
+                    last_hash_progress = std::time::Instant::now();
+                }
+            },
         )
         .map_err(|err| {
             BackendLaunchError::Launcher(format!(
@@ -267,15 +483,45 @@ impl SoldrBackendLauncher {
                 source_binary.display()
             )));
         }
-        let image_paths = crate::daemon::service_definition::broker_owned_paths();
-        let path = crate::self_relocate::ensure_daemon_relocated(&image_paths, source_binary)
-            .map_err(|err| {
-                BackendLaunchError::Launcher(format!(
-                    "could not place soldr-daemon image {} for route {}: {err}",
-                    source_binary.display(),
-                    request.key.service_name
-                ))
-            })?;
+        self.report_progress(
+            request,
+            "image-hash-verified",
+            format!("verified daemon image hash for {}", source_binary.display()),
+        );
+        // Every route gets its own real executable path. The SESSION,
+        // control, and handoff endpoint names are derived from that path, so
+        // distinct soldr roots cannot collide even when they use the same
+        // installed source image.
+        let image_paths = route_image_paths(request);
+        self.report_progress(
+            request,
+            "image-placement",
+            "placing the verified daemon image in the broker-owned runtime",
+        );
+        let mut last_placement_progress = std::time::Instant::now();
+        let path = crate::self_relocate::ensure_daemon_relocated_for_route_with_progress(
+            &image_paths,
+            source_binary,
+            |operation, completed, total| {
+                if last_placement_progress.elapsed() >= Duration::from_millis(500)
+                    || completed >= total
+                {
+                    self.report_progress(
+                        request,
+                        "image-placement",
+                        format!("daemon image {operation}: {completed}/{total} bytes"),
+                    );
+                    last_placement_progress = std::time::Instant::now();
+                }
+            },
+        )
+        .map_err(|err| {
+            BackendLaunchError::Launcher(format!(
+                "could not place soldr-daemon image {} for route {}: {err}",
+                source_binary.display(),
+                request.key.service_name
+            ))
+        })?;
         let placed_fingerprint = file_fingerprint(&path).map_err(|err| {
             BackendLaunchError::Launcher(format!(
                 "could not inspect broker-owned soldr-daemon image {}: {err}",
@@ -303,6 +549,16 @@ impl SoldrBackendLauncher {
         );
         Ok(path)
     }
+}
+
+fn route_image_paths(request: &BackendLaunchRequest<'_>) -> crate::core::SoldrPaths {
+    let broker_paths = crate::daemon::service_definition::broker_owned_paths();
+    crate::core::SoldrPaths::with_root(
+        broker_paths
+            .root
+            .join("routes")
+            .join(&request.key.service_name),
+    )
 }
 
 fn file_fingerprint(path: &std::path::Path) -> std::io::Result<FileFingerprint> {
@@ -379,24 +635,16 @@ fn configure_backend_command(
         crate::daemon::session_endpoint::SOLDR_SESSION_ENDPOINT_PATH_ENV,
         &endpoint.path,
     );
+    command.env(
+        crate::daemon::session_endpoint::SOLDR_CONTROL_ENDPOINT_PATH_ENV,
+        crate::daemon::session_endpoint::private_control_endpoint_from_session(&endpoint.path),
+    );
     if !request.trace_context.traceparent.is_empty() {
         command.env(BACKEND_ENV_TRACEPARENT, &request.trace_context.traceparent);
     }
     if !request.trace_context.tracestate.is_empty() {
         command.env(BACKEND_ENV_TRACESTATE, &request.trace_context.tracestate);
     }
-    if let Some(token) = request.session_token {
-        command.env(BACKEND_ENV_SESSION_TOKEN, hex_encode(token));
-    }
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        let _ = write!(out, "{byte:02x}");
-    }
-    out
 }
 
 #[cfg(test)]
@@ -433,17 +681,11 @@ mod tests {
             root.display().to_string(),
         );
         definition.labels.insert(
-            crate::daemon::backend_handle_adoption::SOLDR_DAEMON_IMAGE_SHA256_LABEL.into(),
+            crate::daemon::backend_handle_adoption::SOLDR_DAEMON_IMAGE_HASH_LABEL.into(),
             image_hash.into(),
         );
         let key = BackendKey::new(BrokerInstanceKey::Shared, "soldr-daemon-test", "1.0.0", "");
         (definition, key, TraceContext::default())
-    }
-
-    fn test_authority() -> Arc<Mutex<SessionTokenAuthority>> {
-        Arc::new(Mutex::new(
-            SessionTokenAuthority::new().expect("mint broker token"),
-        ))
     }
 
     crate::timed_test!(active_tombstone_refuses_before_image_or_spawn_work, {
@@ -460,103 +702,11 @@ mod tests {
             session_token: None,
         };
 
-        let err = match SoldrBackendLauncher::new(test_authority()).launch(&request) {
+        let err = match SoldrBackendLauncher::new().launch(&request) {
             Ok(_) => panic!("tombstone must suppress launch"),
             Err(err) => err,
         };
         assert!(err.to_string().contains("tombstone active"), "{err}");
-    });
-
-    // soldr#2442 slice 1: the broker mints a per-route daemon token half at
-    // each launch and shares the authority so its own generation identity is
-    // observable. soldr's dumb-terminal client does not present these tokens
-    // (see the #2442 design ruling), but the mint/invalidation semantics are
-    // the foundation slice 2's `broker status` and slice 3's per-generation
-    // observability build on, so lock them down here.
-    crate::timed_test!(
-        route_relaunch_mints_fresh_half_and_invalidates_prior_generation,
-        {
-            let authority = test_authority();
-            let launcher = SoldrBackendLauncher::new(authority.clone());
-
-            let first = launcher
-                .register_route_token("soldr-daemon")
-                .expect("first launch mints a composite");
-            authority
-                .lock()
-                .unwrap()
-                .validate(&first, "soldr-daemon")
-                .expect("the freshly minted composite validates");
-
-            // A relaunch/replacement of the same route re-mints the daemon half...
-            let second = launcher
-                .register_route_token("soldr-daemon")
-                .expect("relaunch mints a composite");
-            assert_ne!(first, second, "a relaunch must mint a fresh daemon half");
-
-            // ...so a client still holding the prior generation's composite is
-            // invalidated for exactly that route (DaemonHalfMismatch).
-            assert!(
-                authority
-                    .lock()
-                    .unwrap()
-                    .validate(&first, "soldr-daemon")
-                    .is_err(),
-                "the prior generation's composite must stop validating"
-            );
-            authority
-                .lock()
-                .unwrap()
-                .validate(&second, "soldr-daemon")
-                .expect("the current generation's composite validates");
-        }
-    );
-
-    crate::timed_test!(broker_rotation_invalidates_every_route_at_once, {
-        let authority = test_authority();
-        let launcher = SoldrBackendLauncher::new(authority.clone());
-
-        let route_a = launcher
-            .register_route_token("route-a")
-            .expect("route-a composite");
-        let route_b = launcher
-            .register_route_token("route-b")
-            .expect("route-b composite");
-        authority
-            .lock()
-            .unwrap()
-            .validate(&route_a, "route-a")
-            .expect("a valid");
-        authority
-            .lock()
-            .unwrap()
-            .validate(&route_b, "route-b")
-            .expect("b valid");
-
-        // Rotating the broker half is the broker-wide invalidation path: every
-        // route's composite stops validating at once, independent of the
-        // per-daemon halves.
-        authority
-            .lock()
-            .unwrap()
-            .rotate_broker_token()
-            .expect("rotate broker half");
-        assert!(
-            authority
-                .lock()
-                .unwrap()
-                .validate(&route_a, "route-a")
-                .is_err(),
-            "broker rotation invalidates route-a"
-        );
-        assert!(
-            authority
-                .lock()
-                .unwrap()
-                .validate(&route_b, "route-b")
-                .is_err(),
-            "broker rotation invalidates route-b"
-        );
     });
 
     crate::timed_test!(changed_registered_image_is_rejected_before_spawn, {
@@ -572,7 +722,7 @@ mod tests {
             session_token: None,
         };
 
-        let err = match SoldrBackendLauncher::new(test_authority()).launch(&request) {
+        let err = match SoldrBackendLauncher::new().launch(&request) {
             Ok(_) => panic!("stale image registration must fail"),
             Err(err) => err,
         };

@@ -310,6 +310,67 @@ fn doctor_handles_missing_manifest() {
     );
 }
 
+soldr_cli::timed_test!(issue_2476_doctor_json_reports_broker_deadline_provenance, {
+    let workspace = unique_temp_dir("doctor-broker-deadlines");
+    let mut command = common::isolated_soldr_command();
+    let output = command
+        .args(["doctor", "--json"])
+        .current_dir(&workspace)
+        .env("HOME", &workspace)
+        .env("USERPROFILE", &workspace)
+        .env("SOLDR_CACHE_DIR", &workspace)
+        .env("SOLDR_BROKER_BUSY_BUDGET_MS", "17")
+        .env("SOLDR_BROKER_FIRST_RESPONSE_MS", "0")
+        .env("SOLDR_BROKER_PROGRESS_SILENCE_MS", "23")
+        .env("SOLDR_ROUTE_ACQUIRE_CEILING_MS", "invalid")
+        .output()
+        .expect("run doctor deadline report");
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+        panic!(
+            "doctor deadline JSON failed: {error}\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+    });
+    let rows = json["broker_deadlines"]
+        .as_array()
+        .expect("broker_deadlines array");
+    let row = |env_var: &str| {
+        rows.iter()
+            .find(|row| row["env_var"] == env_var)
+            .unwrap_or_else(|| panic!("missing deadline row {env_var}"))
+    };
+
+    assert!(output.status.success());
+    assert_eq!(row("SOLDR_BROKER_BUSY_BUDGET_MS")["effective_ms"], 17);
+    assert_eq!(row("SOLDR_BROKER_BUSY_BUDGET_MS")["source"], "override");
+    assert_eq!(row("SOLDR_BROKER_FIRST_RESPONSE_MS")["effective_ms"], 2_000);
+    assert!(row("SOLDR_BROKER_FIRST_RESPONSE_MS")["source"]
+        .as_str()
+        .is_some_and(|source| source.contains("ignored")));
+    assert_eq!(row("SOLDR_BROKER_PROGRESS_SILENCE_MS")["effective_ms"], 23);
+    assert_eq!(
+        row("SOLDR_ROUTE_ACQUIRE_CEILING_MS")["effective_ms"],
+        120_000
+    );
+    assert_eq!(json["broker_endpoint"]["resolution_error"], Value::Null);
+    assert!(json["broker_endpoint"]["executable_path"]
+        .as_str()
+        .is_some_and(|value| value.contains(".soldr")));
+    assert!(json["broker_endpoint"]["logical_socket_path"]
+        .as_str()
+        .is_some_and(|value| value.contains("soldr-broker.sock")));
+    assert!(json["broker_endpoint"]["bind_endpoint"]
+        .as_str()
+        .is_some_and(|value| !value.is_empty()));
+
+    let _ = Command::new(common::soldr_bin())
+        .args(["broker", "stop"])
+        .env("HOME", &workspace)
+        .env("USERPROFILE", &workspace)
+        .output();
+});
+
 #[test]
 fn doctor_reports_missing_target() {
     let workspace = unique_temp_dir("doctor-missing-target");

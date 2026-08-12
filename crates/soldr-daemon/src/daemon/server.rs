@@ -5,13 +5,11 @@
 //! zccache pid placeholder for Phase 3).
 
 use crate::cache_lib::cook_index::{self, CookEntry, CookKey};
-#[cfg(unix)]
-use crate::cache_lib::daemon_sock_path;
 use crate::cache_lib::target_registry::TargetRegistry;
 use crate::cache_lib::{data_db_path, soldr_daemon_dir};
 use crate::core::SoldrPaths;
 use crate::daemon::backend_handle_adoption::{
-    current_daemon_process, soldr_backend_endpoint_mux, LEGACY_FRAME_HEADER_BYTES,
+    current_daemon_process, soldr_backend_endpoint_mux, CONTROL_FRAME_HEADER_BYTES,
 };
 use crate::daemon::build_session_ops::{
     attach_build_log_history, finalize_build_session, merge_build_session_start,
@@ -22,9 +20,7 @@ use crate::daemon::disconnect::DispatchOutcome;
 use crate::daemon::event_batcher::EventBatcher;
 use crate::daemon::ipc::{read_frame_async_with_prefix, write_frame_async};
 use crate::daemon::ipc_peer::PeerIdentity;
-use crate::daemon::lifecycle::{
-    append_lifecycle_event, is_live, stale_daemon_occupies_endpoint, write_pid_file,
-};
+use crate::daemon::lifecycle::{append_lifecycle_event, claimed_daemon_occupies_route, is_live};
 use crate::daemon::protocol::{
     BuildRecord, CookStats, IpcBurstStats, Request, Response, ShutdownAck, StatusInfo, CHUNK_BYTES,
     COMPILE_BACKEND_EMBEDDED, PROTOCOL_VERSION,
@@ -418,8 +414,8 @@ struct State {
     /// HOME/SOLDR_CACHE_DIR on every IPC request.
     paths: SoldrPaths,
     /// Identity returned to `running-process` BackendHandle endpoint
-    /// probes. The client-side liveness check only trusts the PID
-    /// file after this endpoint response matches.
+    /// probes. The client-side liveness check only trusts the route
+    /// claim after this endpoint response matches.
     daemon_identity: running_process::broker::backend_handle::DaemonProcess,
     start_instant: Instant,
     request_count: AtomicU64,
@@ -729,7 +725,7 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     // initialization window in which an older daemon could bind and then have
     // its live socket unlinked by this process.
     #[cfg(unix)]
-    let (unix_listener, unix_socket_identity) = claim_unix_endpoint(&paths)?;
+    let (unix_listener, _unix_socket_identity) = claim_unix_endpoint(&paths)?;
 
     let db_path = data_db_path(&paths);
     let start_instant = Instant::now();
@@ -737,36 +733,16 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     let daemon_identity = current_daemon_process(&paths, idle_timeout_secs)
         .map_err(|err| ServerError::Io(std::io::Error::other(err.to_string())))?;
 
-    // Bind and serve the broker-facing endpoint before heavyweight startup.
-    // BackendHandle probes need only the process identity; real SESSION
-    // payloads await the shared compile-service publication point below.
+    // Bind before heavyweight startup; SESSION payloads await compile-service publication.
     let session_listener = crate::daemon::session_endpoint::resolve_session_listener(&paths)?
         .ok_or_else(|| {
             ServerError::Io(std::io::Error::other(
                 "broker-facing SESSION endpoint was not configured",
             ))
         })?;
+    let handoff_listener = crate::daemon::session_endpoint::resolve_handoff_listener(&paths)?;
 
-    if let Err(error) = write_pid_file(&paths) {
-        #[cfg(unix)]
-        {
-            let _ = remove_unix_socket_if_matches(&daemon_sock_path(&paths), unix_socket_identity);
-        }
-        return Err(match error {
-            crate::daemon::lifecycle::LifecycleError::Io(error) => ServerError::Io(error),
-            crate::daemon::lifecycle::LifecycleError::NoExe => ServerError::Io(
-                std::io::Error::new(std::io::ErrorKind::NotFound, "current_exe unavailable"),
-            ),
-            crate::daemon::lifecycle::LifecycleError::Spawn(error) => ServerError::Io(error),
-        });
-    }
     append_lifecycle_event(&paths, "spawn");
-
-    if let Err(err) = crate::daemon::broker_discovery::write_root_version_claim(&paths) {
-        tracing::warn!(target: "soldr::daemon", "failed to publish version claim: {err}");
-    }
-    let _ = crate::daemon::broker_discovery::publish_cache_manifest(&paths);
-
     let mut session_identity = daemon_identity.clone();
     session_identity.ipc_endpoint.path =
         crate::daemon::session_endpoint::resolved_session_endpoint_path(&paths)?;
@@ -775,24 +751,20 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
             session_identity.ipc_endpoint.namespace_id = namespace_id;
         }
     }
+    crate::daemon::backend_handle_adoption::publish_broker_route_claim(&paths, &session_identity)?;
     let session_mux = Arc::new(crate::daemon::session_endpoint::soldr_session_endpoint_mux(
         session_identity,
     ));
     let (compile_readiness, compile_publisher) =
         crate::daemon::session_endpoint::CompileServiceReadiness::pending();
-    let session_paths = paths.clone();
-    let session_handle = tokio::spawn(async move {
-        if let Err(err) = crate::daemon::session_endpoint::serve_session_endpoint_with_readiness(
+    let (session_handle, handoff_handle) =
+        crate::daemon::session_endpoint::spawn_session_endpoint_servers(
             session_listener,
+            handoff_listener,
             compile_readiness,
-            session_paths,
+            paths.clone(),
             session_mux,
-        )
-        .await
-        {
-            tracing::warn!(target: "soldr::daemon", "SESSION endpoint serve ended: {err}");
-        }
-    });
+        );
 
     // Embedded zccache initializes asynchronously. The first operation that
     // actually needs it awaits this task through `CompileServiceReadiness`;
@@ -826,12 +798,14 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
         Err(error) => {
             compile_handle.abort();
             session_handle.abort();
+            handoff_handle.abort();
             return Err(ServerError::Io(std::io::Error::other(error.to_string())));
         }
     };
     if let Err(error) = db_result {
         compile_handle.abort();
         session_handle.abort();
+        handoff_handle.abort();
         return Err(ServerError::Registry(error));
     }
 
@@ -839,10 +813,12 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
         Ok(Ok(service)) => service,
         Ok(Err(error)) => {
             session_handle.abort();
+            handoff_handle.abort();
             return Err(error);
         }
         Err(error) => {
             session_handle.abort();
+            handoff_handle.abort();
             return Err(ServerError::Io(std::io::Error::other(format!(
                 "embedded compile service initialization task failed: {error}"
             ))));
@@ -936,6 +912,7 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     arm_shutdown_watchdog();
     accept_handle.abort();
     session_handle.abort();
+    handoff_handle.abort();
     if let Some(handle) = idle_handle {
         handle.abort();
     }
@@ -954,11 +931,11 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     // any other shutdown work so pending writes flush through.
     shutdown_compile_service(&state).await;
 
-    // Deliberately retain the PID file, version claim, and Unix socket node.
+    // Deliberately retain the protobuf route claim and Unix socket nodes.
     // A check-then-unlink fence is not atomic: an older Soldr release that
     // does not honor `root-owner.lock` can publish a successor between the
     // check and unlink, and the retiring daemon would delete the successor's
-    // state. Startup already probes liveness, overwrites stale claims, and
+    // state. Startup already probes liveness, atomically replaces stale claims, and
     // reclaims a stale socket before binding, so retaining these artifacts is
     // safe and closes that cross-version race.
     let event = if state.exit_via_idle.load(Ordering::Relaxed) {
@@ -1005,7 +982,7 @@ pub(crate) fn parse_watchdog_grace(raw: Option<&str>) -> Option<Duration> {
 /// zccache drain takes an untimed publication write barrier and joins its
 /// index writer, and dropping the multi-thread runtime waits for every
 /// outstanding blocking task. Any one of them wedging left a daemon alive
-/// forever holding the pid file, version claim, and endpoint — and the CLI
+/// forever holding the route claim and endpoints — and the CLI
 /// deliberately never force-kills a daemon that acknowledged shutdown, so
 /// nothing else bounded it.
 ///
@@ -1032,7 +1009,7 @@ fn arm_shutdown_watchdog() {
 
 fn existing_daemon_pid(paths: &SoldrPaths) -> Option<u32> {
     select_existing_daemon_pid(
-        crate::daemon::lifecycle::stale_daemon_occupies_endpoint(paths),
+        crate::daemon::lifecycle::claimed_daemon_occupies_route(paths),
         is_live(paths),
     )
 }
@@ -1062,11 +1039,9 @@ mod endpoint_occupancy_tests {
             .unwrap()
             .block_on(async {
                 let temp = tempfile::tempdir().unwrap();
-                let paths = crate::core::SoldrPaths::with_root(temp.path().join("owned"));
-                std::fs::create_dir_all(crate::cache_lib::soldr_daemon_dir(&paths)).unwrap();
-                let (listener, _) = super::claim_unix_endpoint(&paths).unwrap();
-                let second =
-                    tokio::net::UnixListener::bind(crate::cache_lib::daemon_sock_path(&paths));
+                let socket = temp.path().join("soldr-daemon.control.sock");
+                let (listener, _) = super::claim_unix_endpoint_at(&socket).unwrap();
+                let second = tokio::net::UnixListener::bind(&socket);
                 assert!(second.is_err(), "the endpoint claim must be exclusive");
                 drop(listener);
             });
@@ -1137,18 +1112,32 @@ fn remove_unix_socket_if_matches(
 fn claim_unix_endpoint(
     paths: &SoldrPaths,
 ) -> std::io::Result<(tokio::net::UnixListener, UnixSocketIdentity)> {
-    let sock = daemon_sock_path(paths);
-    match std::fs::remove_file(&sock) {
+    let sock = crate::daemon::session_endpoint::resolved_control_endpoint_path(paths)?;
+    claim_unix_endpoint_at(&sock)
+}
+
+#[cfg(unix)]
+fn claim_unix_endpoint_at(
+    sock: &Path,
+) -> std::io::Result<(tokio::net::UnixListener, UnixSocketIdentity)> {
+    if let Some(parent) = sock.parent() {
+        running_process::broker::secure_dir::ensure_private_dir(parent)?;
+    }
+    match std::fs::remove_file(sock) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
-    let listener = tokio::net::UnixListener::bind(&sock)?;
-    let identity = match unix_socket_identity(&sock) {
+    let listener = tokio::net::UnixListener::bind(sock)?;
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(sock, std::fs::Permissions::from_mode(0o600))?;
+    }
+    let identity = match unix_socket_identity(sock) {
         Ok(identity) => identity,
         Err(error) => {
             drop(listener);
-            let _ = std::fs::remove_file(&sock);
+            let _ = std::fs::remove_file(sock);
             return Err(error);
         }
     };
@@ -1165,9 +1154,14 @@ async fn run_accept_loop(
             Ok(s) => s,
             Err(_) => continue,
         };
+        if !crate::daemon::ipc_peer::unix_peer_is_current_user(&stream) {
+            tracing::warn!(target: "soldr::daemon", "rejected foreign daemon-control peer");
+            continue;
+        }
+        let peer = crate::daemon::ipc_peer::PeerIdentity::from_unix_stream(&stream);
         let state = state.clone();
         tokio::spawn(async move {
-            let _ = handle_connection(stream, state, PeerIdentity::unknown()).await;
+            let _ = handle_connection(stream, state, peer).await;
         });
     }
 }
@@ -1210,10 +1204,9 @@ mod unix_endpoint_ownership_tests {
 async fn run_accept_loop(paths: SoldrPaths, state: Arc<State>) -> std::io::Result<()> {
     // soldr#1808: identity failure is fatal here — this loop *is* the
     // endpoint. Propagating beats a fallback name no client would dial.
-    let pipe_name = format!(
-        r"\\.\pipe\{}",
-        crate::cache_lib::daemon_pipe_name(&paths).map_err(std::io::Error::other)?
-    );
+    let pipe_name = crate::daemon::session_endpoint::resolved_control_endpoint_path(&paths)?
+        .to_string_lossy()
+        .into_owned();
     let pool_size = windows_listener_pool_size();
     tracing::info!(
         pool_size,
@@ -1253,15 +1246,13 @@ async fn accept_windows_pipe_instance(
     state: Arc<State>,
     first_pipe_instance: bool,
 ) -> std::io::Result<()> {
-    use tokio::net::windows::named_pipe::ServerOptions;
     // Never open a fresh instance once teardown has begun; that would
     // re-arm the endpoint the shutdown path is trying to retire.
     if state.shutdown.is_requested() {
         return Ok(());
     }
-    let server = ServerOptions::new()
-        .first_pipe_instance(first_pipe_instance)
-        .create(&pipe_name)?;
+    let server =
+        crate::daemon::ipc_peer::create_owner_only_windows_pipe(&pipe_name, first_pipe_instance)?;
 
     // Drop the instance as soon as shutdown starts. Otherwise a wrapper can
     // connect after the compile service has latched shut. Unix drops its
@@ -1348,7 +1339,8 @@ where
     // used the 5s handshake timeout here and pushed
     // `dependency_failure_cancels_sibling_lint_children` past its 5s budget.
     let _ = timeout(DRAIN_READ_TIMEOUT, stream.shutdown()).await;
-    let cap = u64::from(crate::daemon::protocol::MAX_BODY_BYTES) + LEGACY_FRAME_HEADER_BYTES as u64;
+    let cap =
+        u64::from(crate::daemon::protocol::MAX_BODY_BYTES) + CONTROL_FRAME_HEADER_BYTES as u64;
     let mut sink = [0_u8; 8192];
     let mut drained = 0_u64;
     while drained < cap {
@@ -1381,7 +1373,7 @@ where
     use tokio::time::timeout;
 
     let mux = soldr_backend_endpoint_mux(state.daemon_identity.clone());
-    let mut prefix = [0_u8; LEGACY_FRAME_HEADER_BYTES];
+    let mut prefix = [0_u8; CONTROL_FRAME_HEADER_BYTES];
     if !matches!(
         timeout(HANDSHAKE_READ_TIMEOUT, stream.read_exact(&mut prefix)).await,
         Ok(Ok(_))
@@ -1419,11 +1411,11 @@ where
     // decode fail. A version mismatch is a known, diagnosable condition, and
     // reporting it as an opaque transport reset is what made this cost a day
     // to attribute downstream.
-    if buffered.len() >= LEGACY_FRAME_HEADER_BYTES {
+    if buffered.len() >= CONTROL_FRAME_HEADER_BYTES {
         let peer_version = u32::from_le_bytes(
-            buffered[4..LEGACY_FRAME_HEADER_BYTES]
+            buffered[4..CONTROL_FRAME_HEADER_BYTES]
                 .try_into()
-                .expect("slice of LEGACY_FRAME_HEADER_BYTES-4 bytes is always 4 bytes wide"),
+                .expect("slice of CONTROL_FRAME_HEADER_BYTES-4 bytes is always 4 bytes wide"),
         );
         if peer_version != PROTOCOL_VERSION {
             reject_version_mismatch(&mut stream, peer_version).await;
@@ -2197,20 +2189,5 @@ async fn run_idle_watchdog(state: Arc<State>, idle_timeout: Duration) {
 /// Used by the `soldr daemon` CLI to derive sockets and paths in one
 /// place. Mirrors [`crate::daemon::client::default_sock_path`].
 pub fn server_sock_path(paths: &SoldrPaths) -> PathBuf {
-    #[cfg(unix)]
-    {
-        daemon_sock_path(paths)
-    }
-    #[cfg(windows)]
-    {
-        // soldr#1808: infallible by signature and called from ~34 sites, so
-        // threading `Result` through it is its own change. Failing loudly is
-        // still correct: the process cannot serve or dial an endpoint whose
-        // identity it cannot establish, and the alternative this replaced --
-        // a shared `"soldr"` literal -- silently put every user on one pipe.
-        PathBuf::from(format!(
-            r"\\.\pipe\{}",
-            crate::cache_lib::daemon_pipe_name(paths).unwrap_or_else(|err| panic!("{err}"))
-        ))
-    }
+    crate::daemon::client::default_sock_path(paths)
 }

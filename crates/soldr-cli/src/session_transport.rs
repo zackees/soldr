@@ -1,26 +1,14 @@
-//! SESSION `0x5350` client + broker-relay wiring (soldr#2388 Step 7 / #2386
-//! Option A, topology (c) — two sockets).
+//! SESSION `0x5350` client wiring for Soldr's stable singleton broker.
 //!
-//! Per the advisor ruling on the broker-serve composition:
-//! - the **broker** keeps its sync control socket (`serve_launching_backends`,
-//!   launch + legacy adopt) and adds a **companion SESSION socket** running the
-//!   proven async relay [`serve_broker_session_socket`] on its own tokio runtime
-//!   thread. A negotiated Hello relays (`copy_bidirectional`) to the daemon's
-//!   SESSION endpoint (`backend_pipe`);
-//! - the **client** dials that companion socket, sends the standard v2 Hello
-//!   (`CONTROL_PAYLOAD_PROTOCOL` — identical to legacy), reads `Negotiated`, then
-//!   drives the SESSION wire directly with the sans-io `session_codec` (no
-//!   `daemon`-gated `run_session_client`): `SessionStart` out, then
-//!   stdout/stderr/exit frames in.
-//!
-//! `backend_pipe` is the daemon's deterministic SESSION endpoint
-//! ([`daemon_session_endpoint_path`](crate::daemon::session_endpoint::daemon_session_endpoint_path)),
-//! the #2386 Option-A "bind-by-advertised-name" contract — portable across Unix
-//! sockets and Windows named pipes (Windows has no fd handover).
+//! The compiler wrapper dials the one broker endpoint, sends the standard v2
+//! Hello, then keeps that accepted connection for the SESSION wire. The broker
+//! either hands the connection directly to the daemon or proxies that same
+//! connection when handle passing is unavailable.
 
 use std::io;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use interprocess::local_socket::tokio::prelude::*;
 use interprocess::local_socket::tokio::Stream;
@@ -28,24 +16,23 @@ use prost::Message;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use running_process::broker::protocol::{
-    encode_framed, hello_reply::Result as HelloReplyResult, try_decode_framed, ErrorCode, Hello,
-    Refused, CONTROL_PAYLOAD_PROTOCOL, ENVELOPE_VERSION,
+    encode_framed, hello_reply::Result as HelloReplyResult, try_decode_framed, FrameKind,
+    HandoffAck, Hello, PayloadEncoding, CONTROL_PAYLOAD_PROTOCOL, ENVELOPE_VERSION,
 };
-use running_process::broker::protocol::{Frame, HelloReply, Negotiated};
+use running_process::broker::protocol::{Frame, HelloReply};
 use running_process::broker::protocol_v2::{
     session_frame, SessionEnvVar, SessionFrame, SessionStart,
 };
-use running_process::broker::server::connection::{HelloResponder, PeerCredentialPolicy};
-use running_process::broker::server::hello_handler::PeerIdentity;
 use running_process::broker::session_codec::{encode_session_frame, try_decode_session_frame};
 
-/// Companion SESSION-socket pipe index, distinct from the control socket's `0`
-/// (`broker_cmd::BROKER_PIPE_IDX`). Both the broker (bind) and the client (dial)
-/// derive the same path from `broker_program()` via this index.
-const SESSION_PIPE_IDX: u32 = 1;
+static NEXT_BROKER_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
-/// Retry cadence while the mandatory broker/daemon SESSION route comes up.
-const SESSION_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+fn broker_hello_frame(payload: Vec<u8>) -> Frame {
+    let request_id = NEXT_BROKER_REQUEST_ID
+        .fetch_add(1, Ordering::Relaxed)
+        .max(1);
+    Frame::request(CONTROL_PAYLOAD_PROTOCOL, payload).with_request_id(request_id)
+}
 
 /// Outcome of the SESSION compile hot path ([`session_hot_path`]), consumed by
 /// `compile_dispatch`. All bounded retry and error attribution lives here.
@@ -60,23 +47,11 @@ pub enum SessionHotPathOutcome {
 /// errors return immediately; an existing broker gets a bounded window to
 /// launch or reconnect the requested daemon partition.
 /// Overridable for tests via `SOLDR_SESSION_ATTEMPT_BUDGET_MS`.
-fn session_attempt_budget() -> std::time::Duration {
-    let ms = std::env::var("SOLDR_SESSION_ATTEMPT_BUDGET_MS")
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .unwrap_or(30_000)
-        .max(1);
-    std::time::Duration::from_millis(ms)
-}
-
 /// Mandatory SESSION compile hot path: relay client → broker → daemon.
 /// A missing broker fails immediately; an existing broker gets the bounded
 /// [`session_attempt_budget`] to provide the requested route. Every terminal
 /// infrastructure error is hard because there is no legacy acquisition path.
 pub fn session_hot_path(rustc_argv: &[String]) -> SessionHotPathOutcome {
-    use std::time::Instant;
-
-    let program = crate::daemon::backend_handle_adoption::broker_program();
     let service_name = match crate::daemon::backend_handle_adoption::broker_service_name() {
         Ok(service_name) => service_name,
         Err(err) => {
@@ -94,58 +69,84 @@ pub fn session_hot_path(rustc_argv: &[String]) -> SessionHotPathOutcome {
         .map(|(key, value)| SessionEnvVar { key, value })
         .collect();
 
-    let session_deadline = Instant::now() + session_attempt_budget();
-    loop {
-        match run_session_compile_with_detailed_for_service(
-            &program,
-            &service_name,
-            rustc_argv,
-            cwd.clone(),
-            env.clone(),
-        ) {
-            Ok(outcome) => {
-                // Observability (opt-in, no production noise): a SESSION-served
-                // marker the multi-process smoke greps to prove SESSION carried
-                // the compile. `cache_outcome`: 1=Hit, 2=Miss, 3=Error.
-                if std::env::var_os("SOLDR_SESSION_DEBUG").is_some() {
-                    eprintln!(
-                        "soldr: SESSION compile served (cache_outcome={:?})",
-                        outcome.cache_outcome
-                    );
-                }
-                return SessionHotPathOutcome::Served(outcome.exit_code);
+    match run_session_compile_for_service(&service_name, rustc_argv, cwd, env) {
+        Ok(outcome) => {
+            if std::env::var_os("SOLDR_SESSION_DEBUG").is_some() {
+                eprintln!(
+                    "soldr: SESSION compile served (cache_outcome={:?})",
+                    outcome.cache_outcome
+                );
             }
-            Err(err) if err.output_started => return SessionHotPathOutcome::HardFail(err.source),
-            // No broker is bound here, so do not burn the route-start budget
-            // repeatedly dialing a dead socket.
-            Err(err) if err.broker_unreachable => {
-                return SessionHotPathOutcome::HardFail(io::Error::other(format!(
-                    "soldr broker is unreachable: {err}; invoke this compiler through `soldr cargo ...` (or another soldr build front door) so the singleton broker is started"
-                )));
-            }
-            Err(err) if Instant::now() >= session_deadline => {
-                return SessionHotPathOutcome::HardFail(io::Error::other(format!(
-                    "soldr broker could not provide daemon route {service_name} within {}ms: {err}; inspect `soldr logs paths` and `soldr daemon status`",
-                    session_attempt_budget().as_millis()
-                )));
-            }
-            Err(_) => std::thread::sleep(SESSION_RETRY_INTERVAL),
+            SessionHotPathOutcome::Served(outcome.exit_code)
         }
+        Err(err) if err.broker_unreachable => SessionHotPathOutcome::HardFail(io::Error::other(
+            format!(
+                "soldr broker is unreachable: {err}; invoke this compiler through `soldr cargo ...` (or another soldr build front door) so the singleton broker is resurrected"
+            ),
+        )),
+        Err(err) => SessionHotPathOutcome::HardFail(err.source),
     }
 }
 
-/// Resolve the companion SESSION socket path for `program` — the same
-/// derivation the broker binds and the client dials.
-pub fn session_socket_path(program: &str) -> io::Result<String> {
-    use running_process::broker::lifecycle::names_v2::v2_program_pipe;
-    use running_process::broker::server::singleton_bind::resolve_socket_path;
+/// Ask the stable broker to materialize one route without starting a SESSION.
+/// Used by the explicit `soldr daemon start` front door after broker
+/// resurrection; dropping immediately after `Negotiated` is intentional.
+pub(crate) fn ensure_broker_route(
+    service_name: &str,
+    timeout: std::time::Duration,
+) -> io::Result<()> {
+    let service_name = service_name.to_string();
+    std::thread::scope(|scope| {
+        scope
+            .spawn(move || ensure_broker_route_on_runtime(&service_name, timeout))
+            .join()
+            .map_err(|_| io::Error::other("broker route worker panicked"))?
+    })
+}
 
-    // soldr#2388: same container-safe identity the broker binds with, so a
-    // machine-id-less environment still agrees on the socket name.
-    let sid = crate::broker_identity::resolve_user_sid();
-    let pipe = v2_program_pipe(program, &sid, SESSION_PIPE_IDX)
-        .map_err(|e| io::Error::other(format!("v2_program_pipe: {e}")))?;
-    resolve_socket_path(&pipe).map_err(|e| io::Error::other(format!("resolve_socket_path: {e}")))
+fn ensure_broker_route_on_runtime(service_name: &str, timeout: Duration) -> io::Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        tokio::time::timeout(timeout, async {
+            let endpoint = session_socket_path()?;
+            let name = local_session_name(&endpoint)?;
+            let mut stream = connect_broker_with_busy_retry(name).await?;
+            let hello = Hello {
+                client_min_protocol: ENVELOPE_VERSION as u32,
+                client_max_protocol: ENVELOPE_VERSION as u32,
+                service_name: service_name.to_string(),
+                wanted_version:
+                    crate::daemon::backend_handle_adoption::SOLDR_DAEMON_SERVICE_VERSION
+                        .to_string(),
+                client_version: env!("CARGO_PKG_VERSION").to_string(),
+                request_id: format!("soldr-route-{}", std::process::id()),
+                peer_pid: std::process::id(),
+                client_lib_name: "soldr".into(),
+                client_lib_version: env!("CARGO_PKG_VERSION").to_string(),
+                peer_attestation_nonce: crate::broker_server::client_host_attestation(),
+                // Route-only probes never need to transfer their connection.
+                client_capabilities: 0,
+                ..Default::default()
+            };
+            let frame = broker_hello_frame(hello.encode_to_vec());
+            let request_id = frame.request_id;
+            let bytes = encode_framed(&frame).map_err(io::Error::other)?;
+            stream.write_all(&bytes).await?;
+            stream.flush().await?;
+            read_negotiated(&mut stream, request_id).await
+        })
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "broker route start timed out"))?
+    })
+}
+
+/// Resolve the one stable broker endpoint.
+pub(crate) fn session_socket_path() -> io::Result<String> {
+    crate::broker_identity::ResolvedBrokerEndpoint::resolve()
+        .map(|endpoint| endpoint.bind_endpoint)
+        .map_err(io::Error::other)
 }
 
 pub(crate) fn local_session_name(
@@ -153,147 +154,6 @@ pub(crate) fn local_session_name(
 ) -> io::Result<interprocess::local_socket::Name<'_>> {
     running_process::broker::server::singleton_bind::wrap_socket_name(socket_path)
         .map_err(io::Error::other)
-}
-
-/// A permissive responder that negotiates every Hello to a fixed
-/// `backend_pipe` — the daemon's SESSION endpoint. For Step 7a the SESSION
-/// socket serves exactly one daemon, so a fixed target is correct; 7b swaps this
-/// for a `HelloRouter` that launches-on-miss. Peer credentials still gate every
-/// connection before this runs (`serve_broker_session_socket`).
-enum SessionRelayRoute {
-    Fixed(String),
-    Broker { program: String },
-}
-
-struct SessionRelayResponder {
-    route: SessionRelayRoute,
-}
-
-impl HelloResponder for SessionRelayResponder {
-    fn handle_frame(&self, frame: Frame, _peer: PeerIdentity) -> HelloReply {
-        match &self.route {
-            SessionRelayRoute::Fixed(backend_pipe) => HelloReply {
-                result: Some(HelloReplyResult::Negotiated(Negotiated {
-                    backend_pipe: backend_pipe.clone(),
-                    ..Default::default()
-                })),
-            },
-            SessionRelayRoute::Broker { program } => route_hello_via_control(program, &frame),
-        }
-    }
-}
-
-fn route_hello_via_control(program: &str, frame: &Frame) -> HelloReply {
-    let hello = match Hello::decode(frame.payload.as_slice()) {
-        Ok(hello) => hello,
-        Err(err) => return refused_session_hello(format!("invalid SESSION Hello: {err}")),
-    };
-    match running_process::broker::client_v2::connect_service_with_deadline(
-        program,
-        &hello.service_name,
-        &hello.wanted_version,
-        std::time::Duration::from_secs(30),
-    ) {
-        Ok(session) => HelloReply {
-            result: Some(HelloReplyResult::Negotiated(session.negotiated().clone())),
-        },
-        Err(err) => refused_session_hello(format!("daemon route unavailable: {err}")),
-    }
-}
-
-fn refused_session_hello(reason: String) -> HelloReply {
-    HelloReply {
-        result: Some(HelloReplyResult::Refused(Refused {
-            reason,
-            code: ErrorCode::ErrorBackendSpawnFailed as i32,
-            ..Default::default()
-        })),
-    }
-}
-
-/// Spawn the broker's companion SESSION relay on its own thread + tokio runtime.
-///
-/// Non-blocking: returns once the thread is spawned. The relay serves until the
-/// process exits. `backend_pipe` is the daemon's SESSION endpoint the relay
-/// dials per negotiated connection.
-pub fn spawn_session_relay(program: &str, backend_pipe: String) -> io::Result<()> {
-    spawn_session_relay_with(program, SessionRelayRoute::Fixed(backend_pipe))
-}
-
-pub fn spawn_routed_session_relay(program: &str) -> io::Result<()> {
-    spawn_session_relay_with(
-        program,
-        SessionRelayRoute::Broker {
-            program: program.to_string(),
-        },
-    )
-}
-
-fn spawn_session_relay_with(program: &str, route: SessionRelayRoute) -> io::Result<()> {
-    use running_process::broker::server::session_serve_async::serve_broker_session_endpoint_concurrently;
-
-    let session_socket = session_socket_path(program)?;
-    std::thread::Builder::new()
-        .name("soldr-broker-session".into())
-        .spawn(move || {
-            let rt = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(rt) => rt,
-                Err(err) => {
-                    eprintln!("soldr broker: SESSION relay runtime build failed: {err}");
-                    return;
-                }
-            };
-            let Some(peer_policy) = PeerCredentialPolicy::current_user() else {
-                eprintln!(
-                    "soldr broker: SESSION relay peer policy unavailable; not serving SESSION"
-                );
-                return;
-            };
-            let responder = Arc::new(SessionRelayResponder { route });
-            rt.block_on(async move {
-                // Bind with soldr's OWN listener helper so the relay's socket name
-                // is produced by the exact same conversion the client's dial uses
-                // (`local_session_name`) — binding through running-process's
-                // `serve_broker_session_socket` used a separate name path, which
-                // could yield a pipe the client never finds (os error 2). Emit a
-                // real BOUND signal only after the socket exists, so callers never
-                // race the bind.
-                // A concurrent first-start broker can briefly win SESSION and
-                // then lose the control-socket singleton race. Retry here so
-                // the durable control owner takes SESSION after that losing
-                // process exits instead of serving forever without its relay.
-                let mut last_report = std::time::Instant::now();
-                let listener = loop {
-                    match crate::daemon::session_endpoint::bind_session_listener(&session_socket) {
-                        Ok(listener) => break listener,
-                        Err(err) => {
-                            if last_report.elapsed() >= std::time::Duration::from_secs(5) {
-                                eprintln!(
-                                    "soldr broker: SESSION relay still waiting to bind {session_socket}: {err}"
-                                );
-                                last_report = std::time::Instant::now();
-                            }
-                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                        }
-                    }
-                };
-                println!("soldr broker: SESSION relay bound at {session_socket}");
-                if let Err(err) = serve_broker_session_endpoint_concurrently(
-                    listener,
-                    responder,
-                    &peer_policy,
-                )
-                .await
-                {
-                    eprintln!("soldr broker: SESSION relay ended: {err}");
-                }
-            });
-        })
-        .map(|_| ())
-        .map_err(|e| io::Error::other(format!("spawn SESSION relay thread: {e}")))
 }
 
 /// A SESSION compile failure, tagged with whether any compiler output was
@@ -350,58 +210,19 @@ impl std::error::Error for SessionError {
     }
 }
 
-/// Run one compile over the SESSION path using this process's cwd + environment.
-///
-/// `rustc_argv[0]` is the compiler path; `rustc_argv[1..]` its arguments.
-pub fn run_session_compile(program: &str, rustc_argv: &[String]) -> Result<i32, SessionError> {
-    let cwd = std::env::current_dir()
-        .map_err(SessionError::pre_output)?
-        .display()
-        .to_string();
-    let env: Vec<SessionEnvVar> = std::env::vars()
-        .map(|(key, value)| SessionEnvVar { key, value })
-        .collect();
-    run_session_compile_with(program, rustc_argv, cwd, env)
-}
-
 /// The result of a SESSION compile: the compiler exit code plus the daemon's
 /// `cache_outcome` (`CacheOutcome` discriminant: 1=Hit, 2=Miss, 3=Error) carried
 /// on the terminal `Exit` frame's metadata — `None` if the daemon did not report
 /// one (e.g. an infra exit).
 #[derive(Debug, Clone)]
-pub struct SessionCompileOutcome {
+struct SessionCompileOutcome {
     /// The compiler's exit code.
     pub exit_code: i32,
     /// The daemon's cache outcome discriminant, if reported.
     pub cache_outcome: Option<i32>,
 }
 
-/// [`run_session_compile`] with an explicit `cwd` + `env` (the carried
-/// `SessionStart` fields) — the daemon filters the env itself. Explicit so the
-/// SESSION e2e can drive a deterministic compile without mutating process state.
-pub fn run_session_compile_with(
-    program: &str,
-    rustc_argv: &[String],
-    cwd: String,
-    env: Vec<SessionEnvVar>,
-) -> Result<i32, SessionError> {
-    run_session_compile_with_detailed(program, rustc_argv, cwd, env).map(|o| o.exit_code)
-}
-
-/// [`run_session_compile_with`] returning the full [`SessionCompileOutcome`]
-/// (exit code + `cache_outcome`), for callers that assert or log the cache
-/// decision (the anchor e2e; hot-path observability).
-pub fn run_session_compile_with_detailed(
-    program: &str,
-    rustc_argv: &[String],
-    cwd: String,
-    env: Vec<SessionEnvVar>,
-) -> Result<SessionCompileOutcome, SessionError> {
-    run_session_compile_with_detailed_for_service(program, program, rustc_argv, cwd, env)
-}
-
-fn run_session_compile_with_detailed_for_service(
-    program: &str,
+fn run_session_compile_for_service(
     service_name: &str,
     rustc_argv: &[String],
     cwd: String,
@@ -412,7 +233,6 @@ fn run_session_compile_with_detailed_for_service(
         .build()
         .map_err(SessionError::pre_output)?
         .block_on(run_session_compile_async(
-            program,
             service_name,
             rustc_argv,
             cwd,
@@ -421,16 +241,15 @@ fn run_session_compile_with_detailed_for_service(
 }
 
 async fn run_session_compile_async(
-    program: &str,
     service_name: &str,
     rustc_argv: &[String],
     cwd: String,
     env: Vec<SessionEnvVar>,
 ) -> Result<SessionCompileOutcome, SessionError> {
-    let setup_timeout = session_attempt_budget();
+    let setup_timeout = crate::broker_server::BrokerDeadlines::from_env().route_ceiling;
     let mut stream = match tokio::time::timeout(
         setup_timeout,
-        establish_session(program, service_name, rustc_argv, cwd, env),
+        establish_session(service_name, rustc_argv, cwd, env),
     )
     .await
     {
@@ -451,7 +270,6 @@ async fn run_session_compile_async(
 }
 
 async fn establish_session(
-    program: &str,
     service_name: &str,
     rustc_argv: &[String],
     cwd: String,
@@ -459,19 +277,17 @@ async fn establish_session(
 ) -> Result<Stream, SessionError> {
     // Setup — connect / Hello / negotiate / SessionStart send. Failures here
     // are tagged pre-output for precise diagnostics.
-    let session_socket = session_socket_path(program).map_err(SessionError::broker_unreachable)?;
+    let session_socket = session_socket_path().map_err(SessionError::broker_unreachable)?;
     if std::env::var_os("SOLDR_SESSION_DEBUG").is_some() {
-        eprintln!("soldr: SESSION dialing program={program} socket={session_socket}");
+        eprintln!("soldr: SESSION dialing service={service_name} socket={session_socket}");
     }
     let name = local_session_name(&session_socket).map_err(SessionError::broker_unreachable)?;
-    // A failed dial means no broker is bound at this socket — fall through to
-    // legacy immediately rather than retrying (soldr#2388 Step 3).
-    let mut stream = Stream::connect(name)
+    // A failed dial means no broker is bound at this socket.
+    let mut stream = connect_broker_with_busy_retry(name)
         .await
         .map_err(SessionError::broker_unreachable)?;
 
-    // v2 Hello — identical to legacy. The relay's responder ignores the payload,
-    // so an empty Hello suffices to negotiate.
+    // Negotiate the requested daemon route over the v2 control envelope.
     let hello_payload = Hello {
         client_min_protocol: ENVELOPE_VERSION as u32,
         client_max_protocol: ENVELOPE_VERSION as u32,
@@ -481,19 +297,23 @@ async fn establish_session(
         client_version: env!("CARGO_PKG_VERSION").to_string(),
         request_id: format!("soldr-session-{}", std::process::id()),
         peer_pid: std::process::id(),
-        client_lib_name: "soldr-session".to_string(),
+        client_lib_name: "soldr".to_string(),
         client_lib_version: env!("CARGO_PKG_VERSION").to_string(),
+        peer_attestation_nonce: crate::broker_server::client_host_attestation(),
+        client_capabilities: running_process::broker::capabilities::CAP_HANDLE_PASSING,
         ..Default::default()
     }
     .encode_to_vec();
-    let hello = encode_framed(&Frame::request(CONTROL_PAYLOAD_PROTOCOL, hello_payload))
-        .map_err(|e| SessionError::pre_output(io::Error::other(e)))?;
+    let hello_frame = broker_hello_frame(hello_payload);
+    let request_id = hello_frame.request_id;
+    let hello =
+        encode_framed(&hello_frame).map_err(|e| SessionError::pre_output(io::Error::other(e)))?;
     stream
         .write_all(&hello)
         .await
         .map_err(SessionError::pre_output)?;
     stream.flush().await.map_err(SessionError::pre_output)?;
-    read_negotiated(&mut stream)
+    read_negotiated(&mut stream, request_id)
         .await
         .map_err(SessionError::pre_output)?;
 
@@ -518,31 +338,209 @@ async fn establish_session(
         .map_err(SessionError::pre_output)?;
     stream.flush().await.map_err(SessionError::pre_output)?;
 
-    // Output phase — a failure after the first byte is printed is a hard error
-    // (a legacy retry would double-print).
+    // Output phase — a failure after the first byte is printed is a hard error.
     Ok(stream)
 }
 
+async fn connect_broker_with_busy_retry(
+    name: interprocess::local_socket::Name<'_>,
+) -> io::Result<Stream> {
+    let started = tokio::time::Instant::now();
+    let deadline = started + crate::broker_server::BrokerDeadlines::from_env().busy_budget;
+    loop {
+        match Stream::connect(name.clone()).await {
+            Ok(stream) => return Ok(stream),
+            Err(error)
+                if broker_connect_is_busy(&error, started.elapsed())
+                    && tokio::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(busy_jitter()).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn broker_connect_is_busy(error: &io::Error, elapsed: Duration) -> bool {
+    // Windows briefly reports FILE_NOT_FOUND while a busy named-pipe listener
+    // replaces one accepted instance with the next. One short retry window
+    // absorbs that instance gap without turning a genuinely absent endpoint
+    // into the full one-second busy wait.
+    if cfg!(windows) && error.raw_os_error() == Some(2) {
+        return elapsed < Duration::from_millis(50);
+    }
+    matches!(
+        error.kind(),
+        io::ErrorKind::WouldBlock
+            | io::ErrorKind::ConnectionRefused
+            | io::ErrorKind::TimedOut
+            | io::ErrorKind::Interrupted
+    ) || matches!(error.raw_os_error(), Some(231) | Some(232) | Some(233))
+}
+
+fn busy_jitter() -> std::time::Duration {
+    let mut random = [0_u8; 8];
+    let value = if getrandom::fill(&mut random).is_ok() {
+        u64::from_le_bytes(random)
+    } else {
+        0
+    };
+    std::time::Duration::from_millis(5 + value % 46)
+}
+
 /// Read and validate the broker's framed `Negotiated` reply.
-async fn read_negotiated<S>(stream: &mut S) -> io::Result<()>
+async fn read_negotiated<S>(stream: &mut S, expected_request_id: u64) -> io::Result<()>
+where
+    S: tokio::io::AsyncRead + Unpin,
+{
+    read_negotiated_with_deadlines(
+        stream,
+        expected_request_id,
+        crate::broker_server::BrokerDeadlines::from_env(),
+    )
+    .await
+}
+
+async fn read_negotiated_with_deadlines<S>(
+    stream: &mut S,
+    expected_request_id: u64,
+    deadlines: crate::broker_server::BrokerDeadlines,
+) -> io::Result<()>
 where
     S: tokio::io::AsyncRead + Unpin,
 {
     use prost::Message as _;
+    let started = tokio::time::Instant::now();
+    let route_ceiling = started + deadlines.route_ceiling;
+    let mut response_deadline = started + deadlines.first_response;
+    let mut pending_handoff: Option<(Vec<u8>, u64)> = None;
+    let mut last_progress_elapsed_ms = 0_u64;
     let mut buf: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
-        if let Some(decoded) = try_decode_framed(&buf).map_err(io::Error::other)? {
-            let reply =
-                HelloReply::decode(decoded.frame.payload.as_slice()).map_err(io::Error::other)?;
-            return match reply.result {
-                Some(HelloReplyResult::Negotiated(_)) => Ok(()),
-                other => Err(io::Error::other(format!(
-                    "broker did not negotiate the SESSION Hello: {other:?}"
+        while let Some(decoded) = try_decode_framed(&buf).map_err(io::Error::other)? {
+            let consumed = decoded.consumed;
+            let frame = decoded.frame;
+            buf.drain(..consumed);
+            if frame.envelope_version != ENVELOPE_VERSION as u32
+                || PayloadEncoding::try_from(frame.payload_encoding) != Ok(PayloadEncoding::None)
+            {
+                return Err(io::Error::other(
+                    "broker returned an invalid frame envelope",
+                ));
+            }
+            if FrameKind::try_from(frame.kind) == Ok(FrameKind::Event)
+                && frame.payload_protocol == crate::broker_server::ROUTE_PROGRESS_PAYLOAD_PROTOCOL
+            {
+                if frame.request_id != expected_request_id {
+                    return Err(io::Error::other("broker progress request id mismatch"));
+                }
+                let progress =
+                    crate::broker_server::RouteProgress::decode(frame.payload.as_slice())
+                        .map_err(io::Error::other)?;
+                if progress.stage.is_empty()
+                    || progress.latest_result.is_empty()
+                    || progress.attempt == 0
+                    || progress.elapsed_ms < last_progress_elapsed_ms
+                {
+                    return Err(io::Error::other("broker returned invalid route progress"));
+                }
+                last_progress_elapsed_ms = progress.elapsed_ms;
+                if std::env::var_os("SOLDR_SESSION_DEBUG").is_some() {
+                    eprintln!(
+                        "soldr: broker route progress stage={} attempt={} elapsed_ms={} result={}",
+                        progress.stage,
+                        progress.attempt,
+                        progress.elapsed_ms,
+                        progress.latest_result
+                    );
+                }
+                response_deadline = tokio::time::Instant::now() + deadlines.progress_silence;
+                continue;
+            }
+            if FrameKind::try_from(frame.kind) == Ok(FrameKind::Event)
+                && frame.payload_protocol
+                    == running_process::broker::protocol::HANDOFF_PAYLOAD_PROTOCOL
+            {
+                let Some((expected_token, expected_correlation_id)) = pending_handoff.as_ref()
+                else {
+                    return Err(io::Error::other("unexpected broker handoff-ready event"));
+                };
+                let ack = HandoffAck::decode(frame.payload.as_slice()).map_err(io::Error::other)?;
+                if ack.token != *expected_token || ack.correlation_id != *expected_correlation_id {
+                    return Err(io::Error::other(
+                        "broker handoff event did not match its negotiation",
+                    ));
+                }
+                return Ok(());
+            }
+            if FrameKind::try_from(frame.kind) != Ok(FrameKind::Response)
+                || frame.payload_protocol != CONTROL_PAYLOAD_PROTOCOL
+            {
+                return Err(io::Error::other(format!(
+                    "unexpected broker frame kind={} protocol={:#x}",
+                    frame.kind, frame.payload_protocol
+                )));
+            }
+            if frame.request_id != expected_request_id {
+                return Err(io::Error::other("broker Hello reply request id mismatch"));
+            }
+            let reply = HelloReply::decode(frame.payload.as_slice()).map_err(io::Error::other)?;
+            match reply.result {
+                Some(HelloReplyResult::Negotiated(negotiated)) => {
+                    if negotiated.server_capabilities
+                        & running_process::broker::capabilities::CAP_HANDLE_PASSING
+                        != 0
+                        && !negotiated.handle_passed_token.is_empty()
+                    {
+                        pending_handoff = Some((
+                            negotiated.handle_passed_token,
+                            negotiated.connection_id,
+                        ));
+                        response_deadline = tokio::time::Instant::now()
+                            + running_process::broker::server::DEFAULT_HANDOFF_ACK_DEADLINE
+                            + std::time::Duration::from_millis(100);
+                        continue;
+                    }
+                    return Ok(());
+                }
+                Some(HelloReplyResult::Refused(refused)) => Err(io::Error::other(format!(
+                    "broker refused the daemon route: {} (code={}, retry_after_ms={}, details={:?})",
+                    refused.reason, refused.code, refused.retry_after_ms, refused.details
                 ))),
-            };
+                None => Err(io::Error::other("broker returned an empty HelloReply")),
+            }?;
         }
-        let n = stream.read(&mut chunk).await?;
+        let deadline = if pending_handoff.is_some() {
+            response_deadline
+        } else {
+            response_deadline.min(route_ceiling)
+        };
+        let n = tokio::time::timeout_at(deadline, stream.read(&mut chunk))
+            .await
+            .map_err(|_| {
+                if pending_handoff.is_some() {
+                    return io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "broker did not confirm either handoff ownership or same-connection proxy fallback",
+                    );
+                }
+                let class = if deadline == route_ceiling {
+                    "route acquisition ceiling"
+                } else if response_deadline == started + deadlines.first_response {
+                    "first-response deadline"
+                } else {
+                    "progress-silence deadline"
+                };
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!(
+                        "broker {class} exceeded after {}ms",
+                        started.elapsed().as_millis()
+                    ),
+                )
+            });
+        let n = n??;
         if n == 0 {
             return Err(io::Error::other("broker closed before Hello reply"));
         }
@@ -686,6 +684,27 @@ mod tests {
         );
     });
 
+    crate::timed_test!(busy_class_is_bounded_and_missing_endpoints_are_concrete, {
+        assert!(broker_connect_is_busy(
+            &io::Error::from_raw_os_error(231),
+            Duration::from_millis(500)
+        ));
+        assert!(!broker_connect_is_busy(
+            &io::Error::new(io::ErrorKind::NotFound, "absent"),
+            Duration::ZERO
+        ));
+        if cfg!(windows) {
+            assert!(broker_connect_is_busy(
+                &io::Error::from_raw_os_error(2),
+                Duration::from_millis(1)
+            ));
+            assert!(!broker_connect_is_busy(
+                &io::Error::from_raw_os_error(2),
+                Duration::from_millis(51)
+            ));
+        }
+    });
+
     crate::timed_test!(relayed_diagnostic_suppresses_the_silent_fault_annotation, {
         assert!(mark_relayed_output(
             b"compiler terminated by a Unix signal\n"
@@ -704,12 +723,74 @@ mod tests {
             .expect("runtime");
         runtime.block_on(async {
             let (mut client, _server) = tokio::io::duplex(64);
-            let result = tokio::time::timeout(
-                std::time::Duration::from_millis(20),
-                read_negotiated(&mut client),
+            let error = read_negotiated_with_deadlines(
+                &mut client,
+                1,
+                crate::broker_server::BrokerDeadlines {
+                    busy_budget: Duration::from_millis(10),
+                    first_response: Duration::from_millis(20),
+                    progress_silence: Duration::from_millis(20),
+                    route_ceiling: Duration::from_secs(1),
+                },
             )
-            .await;
-            assert!(result.is_err(), "a silent relay must not wait forever");
+            .await
+            .expect_err("a silent relay must not wait forever");
+            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+            assert!(error.to_string().contains("first-response deadline"));
+        });
+    });
+
+    crate::timed_test!(continuous_progress_is_still_bounded_by_route_ceiling, {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async {
+            let (mut client, mut server) = tokio::io::duplex(4096);
+            let writer = tokio::spawn(async move {
+                let mut elapsed_ms = 1_u64;
+                loop {
+                    let progress = crate::broker_server::RouteProgress {
+                        stage: "probe".into(),
+                        attempt: 3,
+                        elapsed_ms,
+                        latest_result: "daemon still starting".into(),
+                        retry_after_ms: 0,
+                    };
+                    let frame = Frame {
+                        envelope_version: running_process::broker::protocol::PROTOCOL_VERSION,
+                        kind: FrameKind::Event as i32,
+                        payload_protocol: crate::broker_server::ROUTE_PROGRESS_PAYLOAD_PROTOCOL,
+                        payload: progress.encode_to_vec(),
+                        request_id: 2476,
+                        payload_encoding: PayloadEncoding::None as i32,
+                        deadline_unix_ms: 0,
+                        traceparent: String::new(),
+                        tracestate: String::new(),
+                    };
+                    let bytes = encode_framed(&frame).expect("encode progress");
+                    if server.write_all(&bytes).await.is_err() {
+                        break;
+                    }
+                    elapsed_ms += 5;
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            });
+            let error = read_negotiated_with_deadlines(
+                &mut client,
+                2476,
+                crate::broker_server::BrokerDeadlines {
+                    busy_budget: Duration::from_millis(10),
+                    first_response: Duration::from_millis(20),
+                    progress_silence: Duration::from_millis(20),
+                    route_ceiling: Duration::from_millis(60),
+                },
+            )
+            .await
+            .expect_err("progress must not defeat the absolute ceiling");
+            writer.abort();
+            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+            assert!(error.to_string().contains("route acquisition ceiling"));
         });
     });
 

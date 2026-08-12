@@ -9,7 +9,7 @@
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -43,17 +43,6 @@ fn unique_temp_dir(label: &str) -> PathBuf {
     dir
 }
 
-fn soldr_daemon_bin() -> PathBuf {
-    let soldr = common::soldr_bin();
-    let parent = soldr.parent().expect("CARGO_BIN_EXE_soldr has a parent");
-    let stem = if cfg!(windows) {
-        "soldr-daemon.exe"
-    } else {
-        "soldr-daemon"
-    };
-    parent.join(stem)
-}
-
 fn isolated_env(cache_root: &Path, home_root: &Path) -> Vec<(&'static str, OsString)> {
     vec![
         ("SOLDR_CACHE_DIR", cache_root.as_os_str().to_os_string()),
@@ -73,15 +62,14 @@ fn scrub_outer_soldr_runtime(cmd: &mut Command) {
 }
 
 fn wait_for_ready(cache_root: &Path, home_root: &Path, deadline: Instant) -> bool {
-    // PID file is written before the accept loop binds the endpoint, so
-    // it only proves the process started. The CLI contract this test
-    // exercises is `daemon status`, so wait until that endpoint answers.
-    let pid_file = cache_root
+    // The protobuf route claim is published before the daemon is fully ready,
+    // so require the broker-routed status request to answer too.
+    let route_claim = cache_root
         .join("cache")
         .join("soldr-daemon")
-        .join("daemon.pid");
+        .join("broker-route-claim.pb");
     while Instant::now() < deadline {
-        if pid_file.exists() && status_reports_running(cache_root, home_root) {
+        if route_claim.exists() && status_reports_running(cache_root, home_root) {
             return true;
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -149,7 +137,6 @@ fn run_soldr_with_timeout(
 }
 
 struct Daemon {
-    child: Option<Child>,
     cache_root: PathBuf,
     home_root: PathBuf,
 }
@@ -158,16 +145,13 @@ impl Daemon {
     fn spawn() -> Self {
         let cache_root = unique_temp_dir("daemon-lifecycle-cache");
         let home_root = unique_temp_dir("daemon-lifecycle-home");
-        let mut cmd = Command::new(soldr_daemon_bin());
-        cmd.args(["--foreground", "--idle-timeout-secs", "60"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped());
-        for (k, v) in isolated_env(&cache_root, &home_root) {
-            cmd.env(k, v);
-        }
-        scrub_outer_soldr_runtime(&mut cmd);
-        let child = cmd.spawn().expect("spawn soldr-daemon");
+        let start = run_soldr(&["daemon", "start"], &cache_root, &home_root);
+        assert!(
+            start.status.success(),
+            "broker-owned daemon start failed: stdout={}; stderr={}",
+            String::from_utf8_lossy(&start.stdout),
+            String::from_utf8_lossy(&start.stderr)
+        );
         // A cold embedded-zccache initialization can take ~25 seconds in
         // the shared Docker development runner. Keep the fixture bounded,
         // but do not misclassify that cold start as a multicall failure.
@@ -178,7 +162,6 @@ impl Daemon {
             cache_root.display()
         );
         Self {
-            child: Some(child),
             cache_root,
             home_root,
         }
@@ -187,18 +170,8 @@ impl Daemon {
 
 impl Drop for Daemon {
     fn drop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let _ = run_soldr(&["daemon", "stop"], &self.cache_root, &self.home_root);
-            let deadline = Instant::now() + Duration::from_secs(2);
-            while Instant::now() < deadline {
-                if let Ok(Some(_)) = child.try_wait() {
-                    return;
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+        let _ = run_soldr(&["daemon", "stop"], &self.cache_root, &self.home_root);
+        let _ = run_soldr(&["broker", "stop"], &self.cache_root, &self.home_root);
     }
 }
 
@@ -294,7 +267,7 @@ struct DetachedDaemonCleanup {
 #[cfg(windows)]
 impl Drop for DetachedDaemonCleanup {
     fn drop(&mut self) {
-        let pid = soldr_cli::daemon::lifecycle::read_pid_file(&SoldrPaths::with_root(
+        let pid = soldr_cli::daemon::lifecycle::read_route_claim_identity(&SoldrPaths::with_root(
             self.cache_root.clone(),
         ))
         .map(|(pid, _)| pid);
@@ -358,8 +331,8 @@ soldr_cli::timed_test!(
         );
 
         let paths = SoldrPaths::with_root(cache_root.clone());
-        let (pid, exe) =
-            soldr_cli::daemon::lifecycle::read_pid_file(&paths).expect("daemon PID publication");
+        let (pid, exe) = soldr_cli::daemon::lifecycle::read_route_claim_identity(&paths)
+            .expect("daemon route claim publication");
         assert!(
             exe.starts_with(soldr_cli::self_relocate::daemon_runtime_root(&paths)),
             "the PID owner must be the canonical runtime image: {}",
@@ -382,7 +355,7 @@ soldr_cli::timed_test!(
             "second detached start failed: {second:?}"
         );
         assert_eq!(
-            soldr_cli::daemon::lifecycle::read_pid_file(&paths).map(|(pid, _)| pid),
+            soldr_cli::daemon::lifecycle::read_route_claim_identity(&paths).map(|(pid, _)| pid),
             Some(pid),
             "a second managed start must preserve the one root owner"
         );
@@ -395,7 +368,7 @@ soldr_cli::timed_test!(
         assert_eq!(
             daemon.exe.to_ascii_lowercase(),
             "soldr-daemon.exe",
-            "PID file must identify the canonical daemon process"
+            "route claim must identify the canonical daemon process"
         );
         assert!(
             processes.iter().all(|entry| entry.pid != daemon.parent_pid),
@@ -469,10 +442,37 @@ fn start_status_stop_round_trip() {
     let pid = body["pid"].as_u64().expect("status carries pid");
     assert!(pid > 0);
     let paths = SoldrPaths::with_root(cache_root.clone());
+    let claim = soldr_cli::daemon::backend_handle_adoption::read_broker_route_claim(&paths)
+        .expect("read protobuf route claim")
+        .expect("live daemon publishes a route claim");
+    assert_eq!(u64::from(claim.pid), pid);
+    assert!(
+        Path::new(&claim.ipc_endpoint.path).is_absolute() || cfg!(windows),
+        "the daemon route claim must carry its broker-assigned endpoint"
+    );
     assert_eq!(
         soldr_cli::daemon::lifecycle::is_live(&paths).map(u64::from),
         Some(pid),
         "lifecycle::is_live must verify the daemon through running-process BackendHandle",
+    );
+
+    let broker_stop = run_soldr(&["broker", "stop"], &cache_root, &home_root);
+    assert!(
+        broker_stop.status.success(),
+        "broker stop failed: {broker_stop:?}"
+    );
+    let readopted = run_soldr(&["daemon", "status", "--json"], &cache_root, &home_root);
+    assert!(
+        readopted.status.success(),
+        "daemon status after broker restart failed: stdout={}; stderr={}",
+        String::from_utf8_lossy(&readopted.stdout),
+        String::from_utf8_lossy(&readopted.stderr)
+    );
+    let readopted_body: Value = serde_json::from_slice(&readopted.stdout).expect("status json");
+    assert_eq!(
+        readopted_body["pid"].as_u64(),
+        Some(pid),
+        "a replacement broker must re-adopt the surviving daemon before tunneling control traffic"
     );
 
     let stop = run_soldr(&["daemon", "stop"], &cache_root, &home_root);
@@ -483,7 +483,8 @@ fn start_status_stop_round_trip() {
     // Shared claims remain as stale evidence. Startup reclaims them while it
     // owns the root; retirement never performs a racy check-then-unlink.
     assert_eq!(
-        soldr_cli::daemon::lifecycle::read_pid_file(&paths).map(|(pid, _)| u64::from(pid)),
+        soldr_cli::daemon::lifecycle::read_route_claim_identity(&paths)
+            .map(|(pid, _)| u64::from(pid)),
         Some(pid),
         "retirement should preserve the stopped generation's PID claim"
     );
@@ -628,6 +629,12 @@ fn status_when_daemon_absent_reports_not_running() {
     );
     let body: Value = serde_json::from_slice(&out.stdout).expect("status json");
     assert_eq!(body["running"].as_bool(), Some(false));
+    let paths = SoldrPaths::with_root(cache_root.clone());
+    assert!(
+        !soldr_cli::daemon::backend_handle_adoption::broker_route_claim_path(&paths).exists(),
+        "a control-tunnel status probe must not launch an absent route"
+    );
+    let _ = run_soldr(&["broker", "stop"], &cache_root, &home_root);
 }
 
 #[test]

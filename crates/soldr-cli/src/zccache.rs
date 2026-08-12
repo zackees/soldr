@@ -471,6 +471,12 @@ pub(crate) fn register_broker_daemon_service() -> Result<(std::path::PathBuf, St
                 daemon_path.display()
             ))
         })?;
+    if let Ok(paths) = crate::core::SoldrPaths::new() {
+        crate::daemon::lifecycle::preflight_displace_stale_daemon_for_service(
+            &paths,
+            Some(installed.definition.service_name.as_ref()),
+        );
+    }
     Ok((daemon_path, installed.definition.service_name))
 }
 
