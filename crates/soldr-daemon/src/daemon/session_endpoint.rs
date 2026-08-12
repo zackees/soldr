@@ -340,16 +340,8 @@ pub fn bind_session_listener(socket_path: &str) -> io::Result<SessionListener> {
 }
 
 fn local_session_name(socket_path: &str) -> io::Result<interprocess::local_socket::Name<'_>> {
-    #[cfg(unix)]
-    {
-        use interprocess::local_socket::{GenericFilePath, ToFsName};
-        socket_path.to_fs_name::<GenericFilePath>()
-    }
-    #[cfg(windows)]
-    {
-        use interprocess::local_socket::{GenericNamespaced, ToNsName};
-        socket_path.to_ns_name::<GenericNamespaced>()
-    }
+    running_process::broker::server::singleton_bind::wrap_socket_name(socket_path)
+        .map_err(io::Error::other)
 }
 
 /// Accept SESSION connections on `listener` and serve each through

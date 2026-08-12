@@ -239,12 +239,13 @@ pub(crate) fn scrub_outer_soldr_env(command: &mut Command) -> &mut Command {
     for (name, _) in std::env::vars_os() {
         let should_scrub = name.to_str().is_some_and(|name| {
             name.starts_with("CARGO_TARGET_")
-                // The machine-wide Cargo front door exports resolved host
-                // tools before invoking Soldr. Those are outer-process
-                // implementation details, not fixture overrides for the
-                // nested Soldr process under test. Individual tests can set
-                // their intended SOLDR_REAL_* value after this helper.
+                // Outer cache controls and machine-wide Cargo front-door exports
+                // are outer-process implementation details, not fixture overrides
+                // for nested Soldr. Individual tests can set an intended
+                // SOLDR_REAL_* value after this helper; the two cache-disable
+                // flags must never bypass the SESSION route under test.
                 || name.starts_with("SOLDR_REAL_")
+                || matches!(name, "ZCCACHE_DISABLE" | soldr_cli::cache_lib::CACHE_ENABLED_ENV_VAR)
         });
         if should_scrub {
             command.env_remove(name);
