@@ -241,7 +241,7 @@ pub(crate) fn connect_default_daemon_route(
         broker,
         service_name,
         crate::daemon::backend_handle_adoption::SOLDR_DAEMON_SERVICE_VERSION,
-        std::time::Duration::from_secs(5),
+        broker_route_attempt_budget(),
     )
     .map_err(|err| err.to_string())
 }
