@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Select bounded compile concurrency for the cross-build archive stage.
 
-The x86_64 musl nextest archive is the largest all-miss link set in the
-per-target builder fleet. Two concurrent compiler processes still exceeded
-the hosted runner's memory ceiling in soldr#2481 even with enlarged swap, so
-that one archive is serialized. Other targets retain the established two-job
-bound.
+The x86_64 Linux nextest archives are the largest all-miss link sets in the
+per-target builder fleet. Two concurrent compiler processes exceeded the
+hosted runner's memory ceiling in soldr#2481 even with enlarged swap, so those
+archives are serialized. Other targets retain the established two-job bound.
 """
 
 from __future__ import annotations
@@ -15,7 +14,10 @@ import os
 from pathlib import Path
 
 DEFAULT_ARCHIVE_JOBS = 2
-ARCHIVE_JOB_OVERRIDES = {"x86_64-unknown-linux-musl": 1}
+ARCHIVE_JOB_OVERRIDES = {
+    "x86_64-unknown-linux-gnu": 1,
+    "x86_64-unknown-linux-musl": 1,
+}
 
 
 def archive_jobs(target: str) -> int:

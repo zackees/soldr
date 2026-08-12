@@ -5,6 +5,7 @@
 //! so status, shutdown, cache metadata, build logs, GC, and session accounting
 //! never derive or dial that daemon endpoint themselves.
 
+#[cfg(unix)]
 use interprocess::local_socket::traits::Stream as _;
 use prost::Message as _;
 use running_process::broker::protocol::{
@@ -41,24 +42,284 @@ impl crate::daemon::client::ControlConnector for BrokerControlConnector {
         let service_name = crate::daemon::backend_handle_adoption::broker_service_name()?;
         let endpoint =
             crate::broker_identity::ResolvedBrokerEndpoint::resolve().map_err(io::Error::other)?;
-        let name = crate::session_transport::local_session_name(&endpoint.bind_endpoint)?;
         // A replacement broker performs one exact BackendHandle verification
         // before it can re-adopt a surviving daemon. That verification hashes
         // the executable and can exceed the ordinary 2s status reply budget
         // for a large debug image. The route handshake gets a separate bounded
         // allowance; once accepted, restore the caller's request timeout.
         let route_timeout = route_handshake_timeout(timeout);
-        let stream = interprocess::local_socket::ConnectOptions::new()
-            .name(name)
-            .wait_mode(interprocess::ConnectWaitMode::Timeout(route_timeout))
-            .connect_sync()?;
-        stream.set_recv_timeout(Some(route_timeout))?;
-        stream.set_send_timeout(Some(route_timeout))?;
-        let stream = negotiate_control_tunnel(stream, route_timeout, service_name)?;
-        stream.set_recv_timeout(Some(timeout.max(Duration::from_millis(200))))?;
-        stream.set_send_timeout(Some(timeout))?;
-        Ok(Box::new(stream))
+        #[cfg(windows)]
+        return connect_windows_control(
+            endpoint.bind_endpoint,
+            route_timeout,
+            timeout,
+            service_name,
+        );
+        #[cfg(unix)]
+        {
+            let name = crate::session_transport::local_session_name(&endpoint.bind_endpoint)?;
+            let stream = interprocess::local_socket::ConnectOptions::new()
+                .name(name)
+                .wait_mode(interprocess::ConnectWaitMode::Timeout(route_timeout))
+                .connect_sync()?;
+            stream.set_recv_timeout(Some(route_timeout))?;
+            stream.set_send_timeout(Some(route_timeout))?;
+            let stream = negotiate_control_tunnel(stream, route_timeout, service_name)?;
+            stream.set_recv_timeout(Some(timeout.max(Duration::from_millis(200))))?;
+            stream.set_send_timeout(Some(timeout))?;
+            Ok(Box::new(stream))
+        }
     }
+}
+
+#[cfg(windows)]
+struct WindowsDeadlineStream {
+    commands: std::sync::mpsc::Sender<WindowsIoCommand>,
+    recv_timeout: Duration,
+    send_timeout: Duration,
+}
+
+#[cfg(windows)]
+enum WindowsIoCommand {
+    Read {
+        len: usize,
+        timeout: Duration,
+        reply: std::sync::mpsc::Sender<io::Result<Vec<u8>>>,
+    },
+    Write {
+        data: Vec<u8>,
+        timeout: Duration,
+        reply: std::sync::mpsc::Sender<io::Result<usize>>,
+    },
+    Flush {
+        timeout: Duration,
+        reply: std::sync::mpsc::Sender<io::Result<()>>,
+    },
+}
+
+#[cfg(windows)]
+impl WindowsDeadlineStream {
+    fn spawn(
+        endpoint: String,
+        connect_timeout: Duration,
+        recv_timeout: Duration,
+        send_timeout: Duration,
+    ) -> io::Result<Self> {
+        let (commands, receiver) = std::sync::mpsc::channel();
+        let (startup_tx, startup_rx) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("soldr-broker-control-io".into())
+            .spawn(move || {
+                windows_control_io_worker(endpoint, connect_timeout, receiver, startup_tx)
+            })?;
+        windows_control_reply(
+            startup_rx,
+            "connect",
+            connect_timeout.saturating_add(Duration::from_secs(1)),
+        )?;
+        Ok(Self {
+            commands,
+            recv_timeout,
+            send_timeout,
+        })
+    }
+
+    fn send_command(&self, command: WindowsIoCommand) -> io::Result<()> {
+        self.commands.send(command).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "Windows broker control I/O worker stopped",
+            )
+        })
+    }
+}
+
+#[cfg(windows)]
+fn windows_control_io_worker(
+    endpoint: String,
+    connect_timeout: Duration,
+    commands: std::sync::mpsc::Receiver<WindowsIoCommand>,
+    startup: std::sync::mpsc::Sender<io::Result<()>>,
+) {
+    use interprocess::os::windows::named_pipe::{pipe_mode::Bytes, tokio::DuplexPipeStream};
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            let _ = startup.send(Err(error));
+            return;
+        }
+    };
+    let mut stream =
+        match runtime.block_on(DuplexPipeStream::<Bytes>::connect_by_path_with_wait_mode(
+            endpoint.as_str(),
+            interprocess::ConnectWaitMode::Timeout(connect_timeout),
+        )) {
+            Ok(stream) => stream,
+            Err(error) => {
+                let _ = startup.send(Err(error));
+                return;
+            }
+        };
+    if startup.send(Ok(())).is_err() {
+        return;
+    }
+
+    while let Ok(command) = commands.recv() {
+        match command {
+            WindowsIoCommand::Read {
+                len,
+                timeout,
+                reply,
+            } => {
+                let mut data = vec![0_u8; len];
+                let result = runtime.block_on(async {
+                    tokio::time::timeout(timeout, stream.read(&mut data))
+                        .await
+                        .map_err(|_| windows_control_timeout("read", timeout))?
+                        .map(|read| {
+                            data.truncate(read);
+                            data
+                        })
+                });
+                let _ = reply.send(result);
+            }
+            WindowsIoCommand::Write {
+                data,
+                timeout,
+                reply,
+            } => {
+                let result = runtime.block_on(async {
+                    tokio::time::timeout(timeout, stream.write(&data))
+                        .await
+                        .map_err(|_| windows_control_timeout("write", timeout))?
+                });
+                let _ = reply.send(result);
+            }
+            WindowsIoCommand::Flush { timeout, reply } => {
+                let result = runtime.block_on(async {
+                    tokio::time::timeout(timeout, stream.flush())
+                        .await
+                        .map_err(|_| windows_control_timeout("flush", timeout))?
+                });
+                let _ = reply.send(result);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn windows_control_reply<T>(
+    reply: std::sync::mpsc::Receiver<io::Result<T>>,
+    operation: &str,
+    timeout: Duration,
+) -> io::Result<T> {
+    match reply.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            Err(windows_control_timeout(operation, timeout))
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "Windows broker control I/O worker stopped",
+        )),
+    }
+}
+
+#[cfg(windows)]
+impl Read for WindowsDeadlineStream {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
+        let timeout = self.recv_timeout;
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        self.send_command(WindowsIoCommand::Read {
+            len: buf.len(),
+            timeout,
+            reply: reply_tx,
+        })?;
+        let data = windows_control_reply(
+            reply_rx,
+            "read worker",
+            timeout.saturating_add(Duration::from_secs(1)),
+        )?;
+        buf[..data.len()].copy_from_slice(&data);
+        Ok(data.len())
+    }
+}
+
+#[cfg(windows)]
+impl Write for WindowsDeadlineStream {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
+        let timeout = self.send_timeout;
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        self.send_command(WindowsIoCommand::Write {
+            data: buf.to_vec(),
+            timeout,
+            reply: reply_tx,
+        })?;
+        windows_control_reply(
+            reply_rx,
+            "write worker",
+            timeout.saturating_add(Duration::from_secs(1)),
+        )
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        let timeout = self.send_timeout;
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        self.send_command(WindowsIoCommand::Flush {
+            timeout,
+            reply: reply_tx,
+        })?;
+        windows_control_reply(
+            reply_rx,
+            "flush worker",
+            timeout.saturating_add(Duration::from_secs(1)),
+        )
+    }
+}
+
+#[cfg(windows)]
+fn connect_windows_control(
+    endpoint: String,
+    route_timeout: Duration,
+    request_timeout: Duration,
+    service_name: String,
+) -> io::Result<crate::daemon::client::BoxedControlStream> {
+    // Interprocess 2.4.3's high-level Windows local-socket adapters discard
+    // ConnectWaitMode, so the worker uses its low-level named-pipe Tokio API
+    // directly. That API preserves the bounded connect and supports
+    // cancellation of each overlapped I/O future at its deadline. Keeping the
+    // runtime on the worker also remains safe when synchronous daemon control
+    // is called from inside Soldr's existing Tokio runtime.
+    let stream =
+        WindowsDeadlineStream::spawn(endpoint, route_timeout, route_timeout, route_timeout)?;
+    let mut stream = negotiate_control_tunnel(stream, route_timeout, service_name)?;
+    stream.recv_timeout = request_timeout.max(Duration::from_millis(200));
+    stream.send_timeout = request_timeout;
+    Ok(Box::new(stream))
+}
+
+#[cfg(windows)]
+fn windows_control_timeout(operation: &str, timeout: Duration) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::TimedOut,
+        format!(
+            "Windows broker control {operation} timed out after {}ms",
+            timeout.as_millis()
+        ),
+    )
 }
 
 fn route_handshake_timeout(request_timeout: Duration) -> Duration {
@@ -69,11 +330,21 @@ fn route_handshake_timeout(request_timeout: Duration) -> Duration {
     }
 }
 
-fn negotiate_control_tunnel(
-    mut stream: interprocess::local_socket::Stream,
+fn negotiate_control_tunnel<S: Read + Write>(
+    mut stream: S,
     timeout: Duration,
     service_name: String,
-) -> io::Result<interprocess::local_socket::Stream> {
+) -> io::Result<S> {
+    let frame = control_tunnel_frame(timeout, service_name);
+    let request_id = frame.request_id;
+    stream.write_all(&encode_framed(&frame).map_err(io::Error::other)?)?;
+    stream.flush()?;
+
+    validate_control_tunnel_reply(read_broker_frame(&mut stream)?, request_id)?;
+    Ok(stream)
+}
+
+fn control_tunnel_frame(timeout: Duration, service_name: String) -> Frame {
     let host = running_process::broker::host_identity::current();
     let request = DaemonControlTunnelRequest {
         service_name,
@@ -81,7 +352,7 @@ fn negotiate_control_tunnel(
         boot_id: host.boot_id,
     };
     let request_id = NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed).max(1);
-    let frame = Frame {
+    Frame {
         envelope_version: PROTOCOL_VERSION,
         kind: FrameKind::Request as i32,
         payload_protocol: DAEMON_CONTROL_PAYLOAD_PROTOCOL,
@@ -91,11 +362,10 @@ fn negotiate_control_tunnel(
         deadline_unix_ms: unix_deadline_ms(timeout),
         traceparent: String::new(),
         tracestate: String::new(),
-    };
-    stream.write_all(&encode_framed(&frame).map_err(io::Error::other)?)?;
-    stream.flush()?;
+    }
+}
 
-    let reply_frame = read_broker_frame(&mut stream)?;
+fn validate_control_tunnel_reply(reply_frame: Frame, request_id: u64) -> io::Result<()> {
     if reply_frame.request_id != request_id
         || reply_frame.payload_protocol != DAEMON_CONTROL_PAYLOAD_PROTOCOL
         || FrameKind::try_from(reply_frame.kind) != Ok(FrameKind::Response)
@@ -117,7 +387,7 @@ fn negotiate_control_tunnel(
             reply.error_detail,
         ));
     }
-    Ok(stream)
+    Ok(())
 }
 
 fn read_broker_frame(stream: &mut impl Read) -> io::Result<Frame> {
@@ -179,5 +449,29 @@ mod tests {
             route_handshake_timeout(Duration::from_secs(45)),
             Duration::from_secs(45)
         );
+    });
+
+    #[cfg(windows)]
+    crate::timed_test!(windows_missing_pipe_is_bounded_inside_tokio_runtime, {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let endpoint = format!(
+                r"\\.\pipe\soldr-missing-control-test-{}-{}",
+                std::process::id(),
+                NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+            );
+            let timeout = Duration::from_millis(100);
+            let started = std::time::Instant::now();
+            let result = WindowsDeadlineStream::spawn(endpoint, timeout, timeout, timeout);
+            assert!(result.is_err());
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "missing named pipe exceeded its bounded connect: {:?}",
+                started.elapsed()
+            );
+        });
     });
 }

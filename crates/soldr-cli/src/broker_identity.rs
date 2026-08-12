@@ -326,8 +326,29 @@ fn resolve_unix_for_executable(
     let logical = executable.with_file_name("soldr-broker.sock");
     let path_key = identity_key(unix_path_bytes(&logical));
     let lease_file = format!("broker-lease-{path_key}.sqlite3");
-    let local_broker_dir = machine_runtime_dir.join("soldr").join("broker");
-    let fallback_bind = local_broker_dir.join(format!("soldr-broker-{path_key}.sock"));
+    let fallback_leaf = format!("soldr-broker-{path_key}.sock");
+    let fallback_candidates = [
+        machine_runtime_dir
+            .join("soldr")
+            .join("broker")
+            .join(&fallback_leaf),
+        PathBuf::from(format!("/tmp/soldr-{}", unsafe { libc::getuid() }))
+            .join("broker")
+            .join(&fallback_leaf),
+    ];
+    let fallback_bind = fallback_candidates
+        .into_iter()
+        .find(|path| unix_path_bytes(path).len().saturating_add(1) <= sun_path_capacity)
+        .ok_or_else(|| {
+            BrokerIdentityError::Endpoint(format!(
+                "no Unix socket path can represent broker executable {}",
+                executable.display()
+            ))
+        })?;
+    let local_broker_dir = fallback_bind
+        .parent()
+        .expect("broker fallback has a parent")
+        .to_path_buf();
     let logical_len = unix_path_bytes(&logical).len().saturating_add(1);
     let non_bindable =
         non_bindable_override.unwrap_or_else(|| unix_path_is_on_non_bindable_filesystem(&logical));
@@ -951,9 +972,11 @@ mod tests {
     crate::timed_test!(unix_fallback_order_is_overflow_then_filesystem, {
         #[cfg(unix)]
         {
-            let home = Path::new("/very/long/home/profile");
+            let home = Path::new(
+                "/very/long/home/profile/whose/logical/broker/socket/cannot/fit/in/sun_path",
+            );
             let runtime = Path::new("/run/user/123");
-            let overflow = resolve_unix_for_home(home, runtime, Some(true), 16).unwrap();
+            let overflow = resolve_unix_for_home(home, runtime, Some(true), 104).unwrap();
             assert_eq!(
                 overflow.fallback,
                 Some(BrokerEndpointFallback::UnixSunPathOverflow)
@@ -962,6 +985,7 @@ mod tests {
                 .bind_endpoint
                 .starts_with("/run/user/123/soldr/broker/soldr-broker-"));
             assert!(overflow.bind_endpoint.ends_with(".sock"));
+            assert!(unix_path_bytes(Path::new(&overflow.bind_endpoint)).len() < 104);
 
             let network = resolve_unix_for_home(home, runtime, Some(true), 4096).unwrap();
             assert_eq!(
@@ -975,12 +999,37 @@ mod tests {
                 Path::new("/another/very/long/home/profile"),
                 runtime,
                 Some(true),
-                16,
+                104,
             )
             .unwrap();
             assert_ne!(overflow.bind_endpoint, other.bind_endpoint);
         }
     });
+
+    crate::timed_test!(
+        unix_overflow_fallback_retries_under_tmp_when_runtime_dir_is_too_long,
+        {
+            #[cfg(unix)]
+            {
+                let home = Path::new(
+                    "/very/long/home/profile/whose/logical/broker/socket/cannot/fit/in/sun_path",
+                );
+                let runtime =
+                    Path::new("/var/folders/vb/m6r1sg994rbgzbhtsm34bphh0000gn/T/soldr-501");
+                let endpoint = resolve_unix_for_home(home, runtime, Some(false), 104).unwrap();
+                assert_eq!(
+                    endpoint.fallback,
+                    Some(BrokerEndpointFallback::UnixSunPathOverflow)
+                );
+                assert!(endpoint.bind_endpoint.starts_with("/tmp/soldr-"));
+                assert!(unix_path_bytes(Path::new(&endpoint.bind_endpoint)).len() < 104);
+                assert_eq!(
+                    endpoint.lease_database_path.parent(),
+                    Path::new(&endpoint.bind_endpoint).parent()
+                );
+            }
+        }
+    );
 
     crate::timed_test!(endpoint_identity_contains_no_route_or_version_inputs, {
         let first =

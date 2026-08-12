@@ -93,7 +93,7 @@ pub fn cached_blake3_hex_with_progress(
         loop {
             match lock.try_lock_exclusive() {
                 Ok(()) => break,
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                Err(error) if lock_is_contended(&error) => {
                     if std::time::Instant::now() >= next_progress {
                         progress(0, initial_size);
                         next_progress =
@@ -118,6 +118,13 @@ pub fn cached_blake3_hex_with_progress(
         // Best-effort store; a cache write failure must never fail the hash.
         let _ = write_cache_entry(cache_dir, &entry, size, mtime, hex);
     })
+}
+
+fn lock_is_contended(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::WouldBlock
+        // LockFileEx reports ERROR_LOCK_VIOLATION for a nonblocking collision;
+        // std does not normalize it to WouldBlock on Windows.
+        || (cfg!(windows) && error.raw_os_error() == Some(33))
 }
 
 fn compute_blake3_hex_with_progress(
@@ -188,6 +195,15 @@ fn write_cache_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    crate::timed_test!(platform_lock_contention_is_retryable, {
+        assert!(lock_is_contended(&io::Error::from(
+            io::ErrorKind::WouldBlock
+        )));
+        if cfg!(windows) {
+            assert!(lock_is_contended(&io::Error::from_raw_os_error(33)));
+        }
+    });
 
     crate::timed_test!(blake3_hex_matches_zccache_reference, {
         let temp = tempfile::tempdir().expect("tempdir");

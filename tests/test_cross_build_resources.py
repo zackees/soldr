@@ -13,14 +13,14 @@ WORKFLOW = REPO_ROOT / ".github" / "workflows" / "_ci-cross-build-linux.yml"
 _resources = load_script_module(SCRIPT, "cross_build_resources")
 
 
-def test_x86_64_musl_archive_is_serialized() -> None:
-    assert _resources.archive_jobs("x86_64-unknown-linux-musl") == 1
+def test_x86_64_linux_archives_are_serialized() -> None:
+    for target in ["x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl"]:
+        assert _resources.archive_jobs(target) == 1
 
 
 def test_other_archives_keep_the_two_job_bound() -> None:
     for target in [
         "aarch64-unknown-linux-musl",
-        "x86_64-unknown-linux-gnu",
         "aarch64-apple-darwin",
         "x86_64-pc-windows-msvc",
     ]:
