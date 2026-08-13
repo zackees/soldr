@@ -1,3 +1,1 @@
-crates/soldr-cli/src/broker_identity.rs::create_owner_only_directories
-crates/soldr-cli/src/broker_identity.rs::daemon_session_endpoint_from_executable
-crates/soldr-cli/src/broker_identity.rs::resolve
+# The per-function ratchet reached zero with the #2493 platform migration.

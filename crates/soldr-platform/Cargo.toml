@@ -17,6 +17,7 @@ publish = false
 # soldr crate).
 
 [dependencies]
+blake3 = "1"
 running-process = { version = "4.10.1", git = "https://github.com/zackees/running-process.git", rev = "d45c90d278318e667652e1f16711dc79573e5ee8", default-features = false, features = ["client"] }
 fs2 = { workspace = true }
 serde = { workspace = true }

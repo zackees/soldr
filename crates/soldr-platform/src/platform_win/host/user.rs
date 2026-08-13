@@ -3,6 +3,13 @@
 use std::path::Path;
 use std::process::Command;
 
+
+/// The current user id. Windows has no uid concept in the paths the
+/// callers build; the caller only consults this on the Unix branch.
+pub fn uid() -> u32 {
+    0
+}
+
 /// True when the current process holds an administrator token.
 ///
 /// Probes a registry read of `HKLM\SECURITY` — only admin processes can

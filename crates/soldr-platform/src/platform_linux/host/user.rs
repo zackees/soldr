@@ -1,5 +1,12 @@
 //! Linux user identity and elevation.
 
+
+/// The current user id.
+pub fn uid() -> u32 {
+    // SAFETY: getuid has no failure mode.
+    unsafe { libc::getuid() }
+}
+
 /// The Windows admin-token probe has no Linux meaning: the callers that
 /// consult it gate the Windows-only optimize path. Unix privilege is
 /// conventionally checked with `geteuid() == 0`, which is not what the

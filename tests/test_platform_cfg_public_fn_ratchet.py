@@ -12,7 +12,7 @@ def test_allowlist_exactly_matches_current_production_debt() -> None:
     actual = _ratchet.violations(ROOT / "crates" / "soldr-cli" / "src")
     allowed = _ratchet.read_allowlist(ALLOWLIST)
     assert actual == allowed
-    assert len(actual) == 3
+    assert len(actual) == 0
 
 
 def test_detector_ignores_private_functions_comments_and_strings(

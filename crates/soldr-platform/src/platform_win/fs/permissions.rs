@@ -28,3 +28,9 @@ pub fn make_executable(_path: &Path) -> std::io::Result<()> {
 pub fn make_executable_from(path: &Path, source: &std::fs::Permissions) -> std::io::Result<()> {
     std::fs::set_permissions(path, source.clone())
 }
+
+/// NTFS ACLs own directory privacy on Windows; owner-only mode bits
+/// carry no meaning, so nothing to apply.
+pub fn make_private(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
