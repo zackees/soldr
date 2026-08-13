@@ -675,6 +675,7 @@ crate::timed_test!(fuzzy_case_insensitive_classify, {
 });
 
 crate::timed_test!(soldr_workspace_metadata_dogfood, {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Regression guard: soldr's own workspace `Cargo.toml`
     // declares `[workspace.metadata.soldr].targets` (RFC #914).
     // Every entry must classify cleanly via the fuzzy classifier

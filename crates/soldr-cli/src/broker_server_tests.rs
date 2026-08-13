@@ -26,8 +26,6 @@ crate::timed_test!(windows_handoff_ready_uses_async_original_pipe, {
         .build()
         .expect("runtime")
         .block_on(async {
-            use interprocess::local_socket::traits::tokio::Stream as _;
-
             let endpoint = format!(
                 "soldr-handoff-ready-{}-{}",
                 std::process::id(),
@@ -58,7 +56,7 @@ crate::timed_test!(windows_handoff_ready_uses_async_original_pipe, {
                     .expect("write ready event asynchronously on original pipe");
             };
             let client = async {
-                let mut stream = interprocess::local_socket::tokio::Stream::connect(client_name)
+                let mut stream = crate::platform::ipc::connect::connect_local_socket(client_name)
                     .await
                     .expect("connect client");
                 let body = read_frame_async(&mut stream)

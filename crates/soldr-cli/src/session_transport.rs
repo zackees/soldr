@@ -10,7 +10,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use interprocess::local_socket::tokio::prelude::*;
 use interprocess::local_socket::tokio::Stream;
 use prost::Message;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -358,7 +357,7 @@ async fn connect_broker_with_busy_retry(
     let started = tokio::time::Instant::now();
     let deadline = started + crate::broker_server::BrokerDeadlines::from_env().busy_budget;
     loop {
-        match Stream::connect(name.clone()).await {
+        match crate::platform::ipc::connect::connect_local_socket(name.clone()).await {
             Ok(stream) => return Ok(stream),
             Err(error)
                 if broker_connect_is_busy(&error, started.elapsed())
