@@ -1524,7 +1524,7 @@ pub(crate) async fn run_cargo_front_door(
         let bootstrap = ensure_known_subcommand_tool(args, &paths).await?;
         let plan =
             crate::dylint_toolchain::resolve_plan(explicit_toolchain, &workspace_root).await?;
-        crate::dylint_toolchain::require_prebuilt_driver(&plan, &paths)?;
+        crate::dylint_toolchain::ensure_prebuilt_driver(&plan, &paths).await?;
         Some((bootstrap, plan))
     } else {
         None
@@ -2643,7 +2643,7 @@ fn suggest_cargo_subcommand_typo(sub: &str) -> Option<String> {
 pub(crate) const FORCE_MANAGED_CARGO_SUBCOMMANDS_ENV_VAR: &str =
     "SOLDR_FORCE_MANAGED_CARGO_SUBCOMMANDS";
 
-fn force_managed_cargo_subcommands() -> bool {
+fn force_managed() -> bool {
     match std::env::var(FORCE_MANAGED_CARGO_SUBCOMMANDS_ENV_VAR) {
         Ok(value) => {
             let trimmed = value.trim();
@@ -2740,7 +2740,7 @@ async fn ensure_known_subcommand_tool(
     let mut extra_env: Vec<(String, String)> = Vec::new();
     let mut extra_cargo_args: Vec<String> = Vec::new();
 
-    if !force_managed_cargo_subcommands() {
+    if !force_managed() {
         let exe_name = format!("cargo-{sub}");
         if let Some(path) = find_on_path(&exe_name) {
             if sub == "dylint" {
@@ -2754,9 +2754,6 @@ async fn ensure_known_subcommand_tool(
                 "soldr: deferring to {exe_name} on PATH at {} (set SOLDR_FORCE_MANAGED_CARGO_SUBCOMMANDS=1 to override)",
                 path.display()
             );
-            if sub == "dylint" && find_on_path("dylint-link").is_none() {
-                extra_bin_dirs.push(dylint_link_bin_dir(paths).await?);
-            }
             // Even when cargo-zigbuild is provided by the host, it
             // still shells out to `zig`. Run the transitive bootstrap
             // before returning so the deferred-on-PATH branch doesn't
@@ -3005,6 +3002,9 @@ async fn append_subcommand_transitive_bin_dirs(
     extra_env: &mut Vec<(String, String)>,
     extra_cargo_args: &mut Vec<String>,
 ) -> Result<(), SoldrError> {
+    if sub == "dylint" && (force_managed() || find_on_path("dylint-link").is_none()) {
+        extra_bin_dirs.push(dylint_link_bin_dir(paths).await?);
+    }
     if sub == "zigbuild" {
         let zig_dir = crate::fetch::ensure_zig(paths).await?;
         extra_bin_dirs.push(zig_dir.clone());

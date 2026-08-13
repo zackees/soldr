@@ -87,12 +87,10 @@ jobs:
     # gate lying first.
     timeout-minutes: 30
     env:
-      # One definition: the cache key and both `cargo install` lines read
-      # this, so the key cannot describe a version other than the one
-      # actually installed.
+      # One version drives the generic catalogue installer and the
+      # Soldr-owned driver resolver exercised below.
       DYLINT_VERSION: 6.0.3
-      # The preceding note describes the retired pre-#2469 cache path; this
-      # exact version now drives the verified catalogue installer below.
+      DYLINT_DRIVER_PATH: ${{ github.workspace }}/target/dylint/drivers
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -436,7 +434,7 @@ jobs:
       # dependent source build: both 6.0.3 binaries are selected from the exact
       # target row in the soldr-toolchain catalogue, hash-verified before
       # extraction, and version-smoked before entering PATH.
-      - name: Install catalogued Dylint binaries
+      - name: Install catalogued Dylint command binaries
         run: >-
           uv run --no-project python
           .github/scripts/install_catalogued_tools.py
@@ -445,71 +443,87 @@ jobs:
           --output-dir "${CARGO_HOME}/bin"
           cargo-dylint dylint-link
 
+      - name: Build Soldr Dylint front door
+        run: >-
+          soldr cargo build -p soldr-cli --bin soldr --locked
+          --target x86_64-unknown-linux-gnu
+
       - name: Install Dylint toolchain
         run: >-
           soldr rustup toolchain install
-          nightly-2026-05-26
+          nightly-2026-05-28
           --profile minimal
           --component rustc-dev
           --component llvm-tools-preview
           --component rust-src
 
-      - name: Configure Dylint driver Cargo shim
+      - name: Prepare catalogued Dylint components through Soldr
+        env:
+          RUSTUP_TOOLCHAIN: nightly-2026-05-28-x86_64-unknown-linux-gnu
+          SOLDR_LINKER: default
         run: >-
-          uv run --no-project python
-          .github/scripts/configure_dylint_cargo_shim.py
-          --output-dir "${RUNNER_TEMP}/dylint-cargo-shim"
-          --toolchain nightly-2026-05-26-x86_64-unknown-linux-gnu
-          >> "${GITHUB_PATH}"
+          "${GITHUB_WORKSPACE}/target/x86_64-unknown-linux-gnu/debug/soldr"
+          dylint --version
 
       - name: Build daemon process-creation boundary lint
         working-directory: dylints/ban_raw_process_creation
         env:
-          RUSTUP_TOOLCHAIN: nightly-2026-05-26-x86_64-unknown-linux-gnu
+          RUSTUP_TOOLCHAIN: nightly-2026-05-28-x86_64-unknown-linux-gnu
           SOLDR_LINKER: default
         run: >-
           soldr rustup run
-          nightly-2026-05-26-x86_64-unknown-linux-gnu
+          nightly-2026-05-28-x86_64-unknown-linux-gnu
           cargo build
           --target-dir
-          "${GITHUB_WORKSPACE}/target/dylint/libraries/nightly-2026-05-26-x86_64-unknown-linux-gnu"
+          "${GITHUB_WORKSPACE}/target/dylint/libraries/nightly-2026-05-28-x86_64-unknown-linux-gnu"
           --profile release  # allow-release: cargo-dylint --no-build below loads these driver cdylibs from the release-profile target path
 
       - name: Build fetch network boundary lint
         working-directory: dylints/ban_raw_network_access
         env:
-          RUSTUP_TOOLCHAIN: nightly-2026-05-26-x86_64-unknown-linux-gnu
+          RUSTUP_TOOLCHAIN: nightly-2026-05-28-x86_64-unknown-linux-gnu
           SOLDR_LINKER: default
         run: >-
           soldr rustup run
-          nightly-2026-05-26-x86_64-unknown-linux-gnu
+          nightly-2026-05-28-x86_64-unknown-linux-gnu
           cargo build
           --target-dir
-          "${GITHUB_WORKSPACE}/target/dylint/libraries/nightly-2026-05-26-x86_64-unknown-linux-gnu"
+          "${GITHUB_WORKSPACE}/target/dylint/libraries/nightly-2026-05-28-x86_64-unknown-linux-gnu"
           --profile release  # allow-release: cargo-dylint --no-build below loads these driver cdylibs from the release-profile target path
 
       - name: Build local-socket name boundary lint
         working-directory: dylints/ban_raw_local_socket_name
         env:
-          RUSTUP_TOOLCHAIN: nightly-2026-05-26-x86_64-unknown-linux-gnu
+          RUSTUP_TOOLCHAIN: nightly-2026-05-28-x86_64-unknown-linux-gnu
           SOLDR_LINKER: default
         run: >-
           soldr cargo build
           --target-dir
-          "${GITHUB_WORKSPACE}/target/dylint/libraries/nightly-2026-05-26-x86_64-unknown-linux-gnu"
+          "${GITHUB_WORKSPACE}/target/dylint/libraries/nightly-2026-05-28-x86_64-unknown-linux-gnu"
+          --profile release  # allow-release: cargo-dylint --no-build below loads these driver cdylibs from the release-profile target path
+
+      - name: Build raw IPC transport boundary lint
+        working-directory: dylints/ban_raw_ipc_transport
+        env:
+          RUSTUP_TOOLCHAIN: nightly-2026-05-28-x86_64-unknown-linux-gnu
+          SOLDR_LINKER: default
+        run: >-
+          soldr cargo build
+          --target-dir
+          "${GITHUB_WORKSPACE}/target/dylint/libraries/nightly-2026-05-28-x86_64-unknown-linux-gnu"
           --profile release  # allow-release: cargo-dylint --no-build below loads these driver cdylibs from the release-profile target path
 
       - name: Build platform-neutral function boundary lint
         working-directory: dylints/ban_platform_cfg_in_public_fn
         env:
-          RUSTUP_TOOLCHAIN: nightly-2026-05-26-x86_64-unknown-linux-gnu
+          RUSTUP_TOOLCHAIN: nightly-2026-05-28-x86_64-unknown-linux-gnu
           SOLDR_LINKER: default
         run: >-
           soldr rustup run
-          nightly-2026-05-26-x86_64-unknown-linux-gnu
+          nightly-2026-05-28-x86_64-unknown-linux-gnu
           cargo build
           --target-dir
-          "${GITHUB_WORKSPACE}/target/dylint/libraries/nightly-2026-05-26-x86_64-unknown-linux-gnu"
+          "${GITHUB_WORKSPACE}/target/dylint/libraries/nightly-2026-05-28-x86_64-unknown-linux-gnu"
           --profile release  # allow-release: cargo-dylint --no-build below loads these driver cdylibs from the release-profile target path
 
       - name: Enforce daemon process-creation boundary
@@ -528,45 +542,55 @@ jobs:
 
       - name: Enforce running-process local-socket name boundary
         env:
-          RUSTUP_TOOLCHAIN: nightly-2026-05-26-x86_64-unknown-linux-gnu
+          RUSTUP_TOOLCHAIN: nightly-2026-05-28-x86_64-unknown-linux-gnu
           SOLDR_NO_GC_TARGET: "1"
           SOLDR_LINKER: default
         run: >-
           "${CARGO_HOME}/bin/cargo-dylint"
           dylint --no-build
           --lib-path
-          "${GITHUB_WORKSPACE}/target/dylint/libraries/nightly-2026-05-26-x86_64-unknown-linux-gnu/release/libban_raw_local_socket_name@nightly-2026-05-26-x86_64-unknown-linux-gnu.so"
+          "${GITHUB_WORKSPACE}/target/dylint/libraries/nightly-2026-05-28-x86_64-unknown-linux-gnu/release/libban_raw_local_socket_name@nightly-2026-05-28-x86_64-unknown-linux-gnu.so"
           --manifest-path _vender/running-process/Cargo.toml
           -- --workspace --all-targets
 
       - name: Test daemon process-creation boundary lint
         working-directory: dylints/ban_raw_process_creation
         env:
-          RUSTUP_TOOLCHAIN: nightly-2026-05-26-x86_64-unknown-linux-gnu
+          RUSTUP_TOOLCHAIN: nightly-2026-05-28-x86_64-unknown-linux-gnu
           SOLDR_NO_GC_TARGET: "1"
           SOLDR_LINKER: default
         run: >-
           soldr rustup run
-          nightly-2026-05-26-x86_64-unknown-linux-gnu
+          nightly-2026-05-28-x86_64-unknown-linux-gnu
           cargo test
           --manifest-path Cargo.toml
 
       - name: Test fetch network boundary lint
         working-directory: dylints/ban_raw_network_access
         env:
-          RUSTUP_TOOLCHAIN: nightly-2026-05-26-x86_64-unknown-linux-gnu
+          RUSTUP_TOOLCHAIN: nightly-2026-05-28-x86_64-unknown-linux-gnu
           SOLDR_NO_GC_TARGET: "1"
           SOLDR_LINKER: default
         run: >-
           soldr rustup run
-          nightly-2026-05-26-x86_64-unknown-linux-gnu
+          nightly-2026-05-28-x86_64-unknown-linux-gnu
           cargo test
           --manifest-path Cargo.toml
 
       - name: Test local-socket name boundary lint
         working-directory: dylints/ban_raw_local_socket_name
         env:
-          RUSTUP_TOOLCHAIN: nightly-2026-05-26-x86_64-unknown-linux-gnu
+          RUSTUP_TOOLCHAIN: nightly-2026-05-28-x86_64-unknown-linux-gnu
+          SOLDR_NO_GC_TARGET: "1"
+          SOLDR_LINKER: default
+        run: >-
+          soldr cargo test
+          --manifest-path Cargo.toml
+
+      - name: Test raw IPC transport boundary lint
+        working-directory: dylints/ban_raw_ipc_transport
+        env:
+          RUSTUP_TOOLCHAIN: nightly-2026-05-28-x86_64-unknown-linux-gnu
           SOLDR_NO_GC_TARGET: "1"
           SOLDR_LINKER: default
         run: >-
@@ -576,12 +600,12 @@ jobs:
       - name: Test platform-neutral function boundary lint
         working-directory: dylints/ban_platform_cfg_in_public_fn
         env:
-          RUSTUP_TOOLCHAIN: nightly-2026-05-26-x86_64-unknown-linux-gnu
+          RUSTUP_TOOLCHAIN: nightly-2026-05-28-x86_64-unknown-linux-gnu
           SOLDR_NO_GC_TARGET: "1"
           SOLDR_LINKER: default
         run: >-
           soldr rustup run
-          nightly-2026-05-26-x86_64-unknown-linux-gnu
+          nightly-2026-05-28-x86_64-unknown-linux-gnu
           cargo test
           --manifest-path Cargo.toml
 

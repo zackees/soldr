@@ -37,6 +37,22 @@ use crate::zccache_embedded::SoldrZccacheService;
 /// (`endpoint_probe_request_from_frame` requires exactly 32 bytes).
 const PROBE_NONCE_BYTES: usize = 32;
 
+#[cfg(target_os = "macos")]
+crate::timed_test!(macos_session_listener_restricts_socket_after_bind, {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("soldr-daemon.session.sock");
+    let listener = bind_session_listener(&path.display().to_string()).expect("bind listener");
+    let mode = std::fs::metadata(&path)
+        .expect("socket metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600);
+    drop(listener);
+});
+
 crate::timed_test!(
     private_endpoints_are_sibling_names_of_the_daemon_session_path,
     {

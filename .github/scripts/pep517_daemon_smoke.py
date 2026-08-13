@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import TextIO
 
 DEFAULT_RUST_TOOLCHAIN = "1.94.1"
 OUTER_SOLDR_ENV = (
@@ -134,7 +135,45 @@ path = "src/main.rs"
     )
 
 
-def print_soldr_logs(cache_dir: Path, *, stream: object = sys.stdout) -> None:
+def soldr_log_paths(cache_dir: Path) -> list[Path]:
+    """Return only Soldr-owned diagnostics, excluding fetched tool payloads."""
+    wanted_suffixes = {".log", ".jsonl", ".txt"}
+    wanted_names = {"compile-daemon-unavailable", "daemon.pid"}
+    log_roots = [
+        cache_dir / "cache" / "soldr-daemon",
+        cache_dir / "cache" / "zccache" / "logs",
+        cache_dir / "cache" / "zccache" / "daemon-state",
+        cache_dir / "cache" / "zccache" / "history",
+        cache_dir / "logs",
+        cache_dir / "runtime" / "soldr-daemon",
+    ]
+    candidates = [cache_dir / "daemon-spawn.log"]
+    for root in log_roots:
+        try:
+            candidates.extend(root.rglob("*"))
+        except OSError:
+            continue
+
+    seen: set[Path] = set()
+    logs: list[Path] = []
+    for path in candidates:
+        try:
+            resolved = path.resolve()
+            if resolved in seen or not path.is_file():
+                continue
+            seen.add(resolved)
+            if (
+                path.suffix.lower() not in wanted_suffixes
+                and path.name not in wanted_names
+            ):
+                continue
+        except OSError:
+            continue
+        logs.append(path)
+    return sorted(logs)
+
+
+def print_soldr_logs(cache_dir: Path, *, stream: TextIO = sys.stdout) -> None:
     print(f"[pep517-smoke:logs] cache directory: {cache_dir}", file=stream, flush=True)
     try:
         if not cache_dir.exists():
@@ -151,51 +190,14 @@ def print_soldr_logs(cache_dir: Path, *, stream: object = sys.stdout) -> None:
             flush=True,
         )
         return
-    wanted_suffixes = {".log", ".jsonl", ".txt"}
-    wanted_names = {"compile-daemon-unavailable", "daemon.pid"}
-    binary_suffixes = {".exe", ".dll", ".dylib", ".so", ".pdb", ".dwp"}
-    log_roots = [
-        # broker_launcher writes the detached daemon's stdout/stderr directly
-        # under SOLDR_CACHE_DIR, rather than beneath its runtime subdirectory.
-        cache_dir,
-        cache_dir / "cache" / "soldr-daemon",
-        cache_dir / "cache" / "zccache" / "logs",
-        cache_dir / "logs",
-        cache_dir / "runtime" / "soldr-daemon",
-    ]
     # Log dumping is best-effort diagnostics: after the running-process
     # v2 broker migration (#1501) the daemon's runtime dirs under the
     # cache can be permission-locked while the daemon is alive, and a
     # bare `exists()` / `rglob()` then raises WinError 5 *after* the
     # smoke has already succeeded (soldr#1509). Never let the log dump
     # fail the job.
-    seen: set[Path] = set()
-    candidates: list[Path] = []
-    for root in log_roots:
+    for path in soldr_log_paths(cache_dir):
         try:
-            if not root.exists():
-                continue
-            for path in root.rglob("*"):
-                resolved = path.resolve()
-                if resolved not in seen:
-                    seen.add(resolved)
-                    candidates.append(path)
-        except OSError as exc:
-            print(
-                f"[pep517-smoke:logs] {root}: unreadable: {exc}",
-                file=stream,
-                flush=True,
-            )
-            continue
-    for path in sorted(candidates):
-        try:
-            if not path.is_file():
-                continue
-            suffix = path.suffix.lower()
-            if suffix in binary_suffixes:
-                continue
-            if suffix not in wanted_suffixes and path.name not in wanted_names:
-                continue
             rel = path.relative_to(cache_dir)
             text = path.read_text(encoding="utf-8", errors="replace")
             size = path.stat().st_size
@@ -214,7 +216,7 @@ def print_soldr_logs(cache_dir: Path, *, stream: object = sys.stdout) -> None:
         print(text[-16_000:], file=stream, flush=True)
 
 
-def print_broker_spawn_log(*, stream: object = sys.stdout) -> None:
+def print_broker_spawn_log(*, stream: TextIO = sys.stdout) -> None:
     """Expose detached broker startup errors alongside smoke diagnostics."""
     path = Path.home() / ".soldr" / "broker" / "broker-spawn.log"
     try:
@@ -257,13 +259,7 @@ def archive_soldr_logs(cache_dir: Path, log_dir: Path | None) -> None:
         return
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
-        for path in cache_dir.rglob("*"):
-            if not path.is_file() or path.suffix.lower() not in {
-                ".log",
-                ".jsonl",
-                ".txt",
-            }:
-                continue
+        for path in soldr_log_paths(cache_dir):
             destination = log_dir / "cache" / path.relative_to(cache_dir)
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, destination)

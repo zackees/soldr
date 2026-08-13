@@ -62,6 +62,7 @@ pub mod openssl_sysroot;
 /// not fetch this bundle (soldr#1610).
 pub mod python_sysroot;
 mod toolchain_packaged;
+pub use toolchain_packaged::ensure_dylint_driver;
 /// soldr#1012 PR 5 — xwin-cache catalogue materialization for the
 /// blessed `*-pc-windows-msvc` cross-compile path.
 pub mod xwin_cache;
@@ -694,9 +695,28 @@ pub fn smoke_test_or_evict(
             // Some tools (e.g. unusual subcommand stubs) don't support
             // --version cleanly. Fall through to --help as the
             // second-chance probe before evicting.
-            let help_ok = smoke_command(binary_path, cache_name, target, "--help")
+            let help_argument = if cache_name == "dylint-link" {
+                // dylint-link forwards arguments to the platform linker.
+                // MSVC link.exe spells help `/?` and deliberately exits 1100
+                // after printing its banner and usage, so success there is
+                // determined from that recognizable output rather than the
+                // process status alone. Unix linkers normally pass the
+                // --version probe above and never take this branch.
+                "/?"
+            } else {
+                "--help"
+            };
+            let help_ok = smoke_command(binary_path, cache_name, target, help_argument)
                 .output()
-                .map(|h| h.status.success())
+                .map(|help| {
+                    help.status.success()
+                        || (cache_name == "dylint-link"
+                            && dylint_link_help_output_is_valid(
+                                help.status.code(),
+                                &help.stdout,
+                                &help.stderr,
+                            ))
+                })
                 .unwrap_or(false);
             if help_ok {
                 Ok(())
@@ -722,6 +742,26 @@ pub fn smoke_test_or_evict(
             )))
         }
     }
+}
+
+fn dylint_link_help_output_is_valid(
+    status_code: Option<i32>,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> bool {
+    // MSVC itself returns 1100; dylint-link's command adapter normalizes that
+    // non-zero child status to 1 while preserving the banner and usage text.
+    if !matches!(status_code, Some(1 | 1100)) {
+        return false;
+    }
+    let output = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(stdout),
+        String::from_utf8_lossy(stderr)
+    );
+    output.contains("Microsoft (R)")
+        && output.contains("Linker")
+        && output.to_ascii_lowercase().contains("usage: link")
 }
 
 /// Env var (issue #873) controlling which resolver hops fire. Comma-
@@ -1432,5 +1472,18 @@ mod tests {
             Some("nightly-x86_64-unknown-linux-gnu")
         );
         assert_eq!(smoke_rustup_toolchain("cargo-dylint", &target), None);
+    });
+
+    crate::timed_test!(dylint_link_accepts_msvc_help_exit, {
+        let output = b"Microsoft (R) Incremental Linker Version 14.44\r\n\
+                       usage: LINK [options] [files]";
+        assert!(dylint_link_help_output_is_valid(Some(1), output, b""));
+        assert!(dylint_link_help_output_is_valid(Some(1100), output, b""));
+        assert!(!dylint_link_help_output_is_valid(Some(2), output, b""));
+        assert!(!dylint_link_help_output_is_valid(
+            Some(1100),
+            b"unrelated failure",
+            b""
+        ));
     });
 }

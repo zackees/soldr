@@ -236,13 +236,13 @@ impl BackendLauncher for SoldrBackendLauncher {
         command.envs(daemon_env);
         command.env(crate::core::SOLDR_CACHE_DIR_ENV_VAR, &paths.root);
         configure_backend_command(&mut command, request, &endpoint);
-        let log = crate::broker_spawn::open_append(&paths.root.join("daemon-spawn.log"))
-            .ok_or_else(|| {
-                BackendLaunchError::Launcher(format!(
-                    "could not open daemon log under {}",
-                    paths.root.display()
-                ))
-            })?;
+        let daemon_log_path = paths.root.join("daemon-spawn.log");
+        let log = crate::broker_spawn::open_append(&daemon_log_path).ok_or_else(|| {
+            BackendLaunchError::Launcher(format!(
+                "could not open daemon log under {}",
+                paths.root.display()
+            ))
+        })?;
         // spawn_blocking cannot cancel a running OS thread. Re-check the
         // original connection's hard deadline at the last possible point so
         // a timed-out route worker cannot materialize a daemon afterward.
@@ -309,6 +309,8 @@ impl BackendLauncher for SoldrBackendLauncher {
             }
             Err(err) => {
                 let _ = child.kill();
+                drop(log);
+                let err = daemon_launch_failure(&err, &daemon_log_path);
                 if debug {
                     eprintln!(
                         "soldr broker: route failed route={} elapsed={:?}: {err}",
@@ -316,10 +318,32 @@ impl BackendLauncher for SoldrBackendLauncher {
                         started.elapsed()
                     );
                 }
-                Err(BackendLaunchError::Launcher(err.to_string()))
+                Err(BackendLaunchError::Launcher(err))
             }
         }
     }
+}
+
+fn daemon_launch_failure(error: &std::io::Error, log_path: &std::path::Path) -> String {
+    let mut message = error.to_string();
+    let Ok(log) = std::fs::read_to_string(log_path) else {
+        return message;
+    };
+    let excerpt = log
+        .lines()
+        .rev()
+        .filter(|line| !line.trim().is_empty())
+        .take(3)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join(" | ");
+    if !excerpt.is_empty() {
+        message.push_str("; daemon startup log: ");
+        message.push_str(&excerpt);
+    }
+    message
 }
 
 impl SoldrBackendLauncher {
@@ -743,6 +767,28 @@ mod tests {
         assert!(
             err.to_string().contains("changed before broker launch"),
             "{err}"
+        );
+    });
+
+    crate::timed_test!(daemon_launch_failure_surfaces_the_startup_log, {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let log = temp.path().join("daemon-spawn.log");
+        std::fs::write(
+            &log,
+            "old launch\n\nsoldr-daemon failed: Io(Kind(Unsupported))\n",
+        )
+        .expect("write daemon log");
+        let error = std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "broker-launched soldr-daemon exited before readiness (1)",
+        );
+
+        let message = daemon_launch_failure(&error, &log);
+
+        assert!(message.contains("exited before readiness (1)"), "{message}");
+        assert!(
+            message.contains("soldr-daemon failed: Io(Kind(Unsupported))"),
+            "{message}"
         );
     });
 
