@@ -725,10 +725,12 @@ mod tests {
         }
     );
 
-    #[cfg(unix)]
     crate::timed_test!(
         legacy_session_file_migration_rejects_swapped_archive_link,
         {
+            if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+                return;
+            }
             let temp = tempfile::tempdir().unwrap();
             let paths = SoldrPaths::with_root(temp.path().join("owned"));
             let archive = history_root(&paths).join("41");
@@ -741,7 +743,12 @@ mod tests {
             // Simulate a replacement after enumeration but before the
             // migration unlinks a child artifact.
             std::fs::remove_dir_all(&archive).unwrap();
-            std::os::unix::fs::symlink(&external, &archive).unwrap();
+            crate::platform::fs::links::create(
+                external.to_str().expect("UTF-8 test path"),
+                &archive,
+                true,
+            )
+            .unwrap();
 
             assert!(remove_legacy_session_file(&paths.root, &archive, "last-session.log").is_err());
             assert_eq!(
@@ -902,15 +909,22 @@ mod tests {
             .is_some());
     });
 
-    #[cfg(unix)]
     crate::timed_test!(linked_history_collection_is_retained, {
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            return;
+        }
         let temp = tempfile::tempdir().unwrap();
         let paths = SoldrPaths::with_root(temp.path().join("owned"));
         let external = temp.path().join("external");
         std::fs::create_dir_all(external.join("1")).unwrap();
         std::fs::create_dir_all(&paths.cache).unwrap();
         std::fs::create_dir_all(paths.cache.join("zccache")).unwrap();
-        std::os::unix::fs::symlink(&external, history_root(&paths)).unwrap();
+        crate::platform::fs::links::create(
+            external.to_str().expect("UTF-8 test path"),
+            &history_root(&paths),
+            true,
+        )
+        .unwrap();
         let report = sweep_with_ops(
             &paths,
             &paths.root.join("state.redb"),

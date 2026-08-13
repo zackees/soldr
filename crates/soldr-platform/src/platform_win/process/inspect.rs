@@ -1,6 +1,20 @@
 //! Windows PID inspection: liveness and running-image lookup.
 
 use std::path::{Path, PathBuf};
+use windows_sys::Win32::System::Console::{AttachConsole, FreeConsole};
+
+/// Probe whether `pid` owns a Windows console. The caller should isolate this
+/// probe because it detaches the probing process from its inherited console.
+pub fn console_attached(pid: u32) -> Option<bool> {
+    unsafe {
+        let _ = FreeConsole();
+        let attached = AttachConsole(pid) != 0;
+        if attached {
+            let _ = FreeConsole();
+        }
+        Some(attached)
+    }
+}
 
 /// A process observed running from inside a directory tree.
 #[derive(Debug, Clone, PartialEq, Eq)]

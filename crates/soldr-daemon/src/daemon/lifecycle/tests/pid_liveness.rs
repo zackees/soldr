@@ -1,4 +1,4 @@
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod pid_liveness_tests {
     use crate::daemon::lifecycle::*;
     use std::time::{Duration, Instant};
@@ -11,6 +11,9 @@ mod pid_liveness_tests {
     // (which has `/proc/<pid>/stat`) and fatal on macOS, which is exactly how
     // it reached CI.
     crate::timed_test!(exited_unreaped_child_is_not_alive, {
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            return;
+        }
         let mut command = std::process::Command::new("/bin/sh");
         command.args(["-c", "exit 0"]);
         let stdio = running_process::SpawnStdio {

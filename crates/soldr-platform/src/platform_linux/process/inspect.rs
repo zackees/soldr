@@ -2,6 +2,10 @@
 
 use std::path::{Path, PathBuf};
 
+pub fn console_attached(_pid: u32) -> Option<bool> {
+    None
+}
+
 /// A process observed running from inside a directory tree.
 ///
 /// Linux cannot enumerate image paths process-wide without privileges

@@ -556,11 +556,12 @@ fn path_file_name_eq(path: &std::path::Path, expected: &str) -> bool {
 
 fn hash_path_component(hasher: &mut zccache::hash::StreamHasher, path: &std::path::Path) {
     let value = path.display().to_string();
-    let value = if cfg!(windows) {
-        value.to_ascii_lowercase()
-    } else {
-        value
-    };
+    let value =
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            value.to_ascii_lowercase()
+        } else {
+            value
+        };
     hasher.update(value.as_bytes());
     hasher.update(b"\0");
 }

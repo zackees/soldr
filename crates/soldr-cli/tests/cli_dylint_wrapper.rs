@@ -1,19 +1,14 @@
-#![cfg(unix)]
-
 mod common;
 
 use common::{fake_script_path, isolated_soldr_command, prepend_to_path, unique_temp_dir};
 use soldr_cli::timed_test;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 fn write_script(path: &Path, body: String) {
     fs::write(path, body).expect("write fake tool");
-    let mut permissions = fs::metadata(path).expect("stat fake tool").permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(path, permissions).expect("chmod fake tool");
+    soldr_platform::fs::permissions::make_executable(path).expect("chmod fake tool");
 }
 
 fn install_dylint_toolchain(root: &Path) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
@@ -158,6 +153,12 @@ timed_test!(
     dylint_front_door_preserves_direct_and_nested_compiler_chains,
     Duration::from_secs(60),
     {
+        if matches!(
+            soldr_platform::host::facts::os(),
+            soldr_platform::host::facts::HostOs::Windows
+        ) {
+            return;
+        }
         let root = unique_temp_dir("dylint-wrapper-success");
         let output = dylint_command(&root)
             .args(["cargo", "dylint", "--all"])
@@ -211,6 +212,12 @@ timed_test!(
     dylint_front_door_preserves_failing_nested_diagnostics_and_exit,
     Duration::from_secs(60),
     {
+        if matches!(
+            soldr_platform::host::facts::os(),
+            soldr_platform::host::facts::HostOs::Windows
+        ) {
+            return;
+        }
         let root = unique_temp_dir("dylint-wrapper-failure");
         let output = dylint_command(&root)
             .args(["dylint", "--all"])
@@ -241,6 +248,12 @@ timed_test!(
     missing_prebuilt_driver_fails_before_cargo_dylint_launch,
     Duration::from_secs(60),
     {
+        if matches!(
+            soldr_platform::host::facts::os(),
+            soldr_platform::host::facts::HostOs::Windows
+        ) {
+            return;
+        }
         let root = unique_temp_dir("dylint-missing-prebuilt");
         let mut command = dylint_command(&root);
         fs::remove_dir_all(root.join("drivers")).expect("remove prebuilt driver fixture");

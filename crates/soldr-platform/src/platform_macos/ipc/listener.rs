@@ -139,3 +139,47 @@ pub fn bind_owner_only_listener(
     std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))?;
     Ok(listener)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test] // allow-bare-test: soldr-platform is a dependency leaf (#2493)
+    fn session_listener_creates_missing_parent_and_is_private() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let _context = runtime.enter();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let parent = temp.path().join("missing").join("runtime");
+        let socket = parent.join("daemon.session");
+        let listener = bind_owner_only_listener(&socket.display().to_string())
+            .expect("bind owner-only listener");
+        assert!(parent.is_dir());
+        assert_eq!(std::fs::metadata(&socket).unwrap().permissions().mode() & 0o777, 0o600);
+        drop(listener);
+    }
+
+    #[test] // allow-bare-test: soldr-platform is a dependency leaf (#2493)
+    fn endpoint_retirement_is_identity_fenced() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let _context = runtime.enter();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let socket = temp.path().join("control.sock");
+        let (old_listener, old_identity) = claim_control_endpoint_at(&socket).expect("old endpoint");
+        std::fs::remove_file(&socket).expect("unlink old endpoint name");
+        let (replacement_listener, replacement_identity) =
+            claim_control_endpoint_at(&socket).expect("replacement endpoint");
+        assert_ne!(old_identity, replacement_identity);
+        assert!(!remove_unix_socket_if_matches(&socket, old_identity).unwrap());
+        assert!(socket.exists());
+        assert!(remove_unix_socket_if_matches(&socket, replacement_identity).unwrap());
+        drop(replacement_listener);
+        drop(old_listener);
+    }
+}

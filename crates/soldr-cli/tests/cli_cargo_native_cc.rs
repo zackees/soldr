@@ -53,7 +53,10 @@ fn unique_cache_dir() -> PathBuf {
         .as_nanos();
     // Keep this path short: zccache's Unix daemon socket lives below
     // SOLDR_CACHE_DIR, and macOS has a small sockaddr_un path limit.
-    let base = if cfg!(unix) {
+    let base = if !matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         PathBuf::from("/tmp")
     } else {
         std::env::temp_dir()
@@ -89,8 +92,14 @@ fn soldr_bin() -> std::path::PathBuf {
 /// skip the affected tests on Windows AND macOS. Linux still exercises
 /// the full path, so the assertions retain their coverage value.
 fn skip_on_windows(test_name: &str) -> bool {
-    if cfg!(any(target_os = "windows", target_os = "macos")) {
-        let plat = if cfg!(target_os = "windows") {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows | soldr_platform::host::facts::HostOs::MacOs
+    ) {
+        let plat = if matches!(
+            soldr_platform::host::facts::os(),
+            soldr_platform::host::facts::HostOs::Windows
+        ) {
             "Windows"
         } else {
             "macOS"
@@ -112,37 +121,34 @@ struct FakeZccache {
 }
 
 fn fake_script_path(dir: &Path, name: &str) -> PathBuf {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         dir.join(format!("{name}.cmd"))
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         dir.join(name)
     }
 }
 
 fn write_fake_script(path: &Path, body: &str) {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         fs::write(path, body.replace('\n', "\r\n")).expect("failed to write fake script");
-    }
-    #[cfg(not(windows))]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
+    } else {
         fs::write(path, body).expect("failed to write fake script");
-        let mut perms = fs::metadata(path)
-            .expect("failed to stat fake script")
-            .permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(path, perms).expect("failed to chmod fake script");
+        soldr_platform::fs::permissions::make_executable(path)
+            .expect("failed to chmod fake script");
     }
 }
 
 fn fake_zccache_script() -> &'static str {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         r#"@echo off
 if "%~1"=="session-start" (
   echo {"session_id":"test-session"}
@@ -179,9 +185,7 @@ goto args_loop
 call "%rustc%" %args%
 exit /b %ERRORLEVEL%
 "#
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         r#"#!/bin/sh
 case "$1" in
   start)
@@ -396,7 +400,10 @@ timed_test!(
         // On Windows we only wrap when the user pre-sets them, so this test
         // case expects the InjectExistingOnly behaviour (CC stays <UNSET>).
         let cc = env.get("CC").cloned().unwrap_or_default();
-        if cfg!(target_os = "windows") {
+        if matches!(
+            soldr_platform::host::facts::os(),
+            soldr_platform::host::facts::HostOs::Windows
+        ) {
             assert_eq!(
                 cc, "<UNSET>",
                 "Windows default keeps CC unset so cc-rs's vcvars autodetection still runs"

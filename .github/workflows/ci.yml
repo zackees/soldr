@@ -132,6 +132,15 @@ jobs:
           git fetch --no-tags origin "$GITHUB_BASE_REF"
           python3 .github/scripts/loc_ratchet.py --base-ref "origin/$GITHUB_BASE_REF"
 
+      # soldr#2493 — the 1000-line absolute ceiling for production sources.
+      # Unlike the 1500-line ratchet above, this is a hard threshold: every
+      # production file under crates/*/src must be at or under 1000 lines.
+      - name: 1000-line production ceiling
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/loc_ceiling.py
+
       # soldr#2360/#2363 — the broker-fronted daemon design deliberately
       # keeps the wire at protocol_v2/client_v2, broken in place; a
       # protocol_v3/client_v3 module would mean two wire majors coexisting,

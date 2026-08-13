@@ -1,0 +1,690 @@
+//! Unit coverage split from `save.rs` for the soldr#2493 1,000-line
+//! production-source ceiling.
+
+use super::*;
+use crate::timed_test;
+
+timed_test!(full_profile_excludes_soldr_daemon_runtime_state, {
+    let root = tempfile::tempdir().unwrap();
+    let cache = root.path();
+    std::fs::create_dir_all(cache.join("soldr-daemon")).unwrap();
+    std::fs::create_dir_all(cache.join("zccache/artifacts")).unwrap();
+    std::fs::write(cache.join("soldr-daemon/daemon.pid"), b"123\n").unwrap();
+    std::fs::write(cache.join("soldr-daemon/.spawn.lock"), b"").unwrap();
+    std::fs::write(
+        cache.join("soldr-daemon/compile-daemon-unavailable"),
+        b"stale",
+    )
+    .unwrap();
+    let payload = cache.join("zccache/artifacts/hit.bin");
+    std::fs::write(&payload, b"cache payload").unwrap();
+
+    let walk = walk_cache_files_for_profile(cache, None, SaveProfile::Full).unwrap();
+
+    assert_eq!(walk.included_paths, vec![payload]);
+    assert_eq!(walk.excluded_files, 3);
+});
+
+timed_test!(daemon_runtime_exclusion_is_top_level_only, {
+    assert!(archive_always_excludes_cache_path(Path::new(
+        "soldr-daemon/daemon.pid"
+    )));
+    assert!(archive_always_excludes_cache_path(Path::new(
+        "soldr-daemon/nested/state.json"
+    )));
+    assert!(archive_always_excludes_cache_path(Path::new(
+        "Soldr-Daemon/daemon.pid"
+    )));
+    assert!(!archive_always_excludes_cache_path(Path::new(
+        "zccache/artifacts/soldr-daemon/payload.bin"
+    )));
+    assert!(!archive_always_excludes_cache_path(Path::new(
+        "soldr-daemon-cache/payload.bin"
+    )));
+});
+
+// The exact path from the failing bench lane. A full-profile save used to
+// collect this file, then die on it when the daemon removed its own lock
+// between the walk and the stat.
+timed_test!(
+    full_profile_never_archives_live_runtime_coordination_files,
+    {
+        let vanished = Path::new(
+            "zccache/daemon-state/embedded-v1/v1.12.17/staging/2492-0-1785226007178685948/.active.lock",
+        );
+        assert!(
+            archive_always_excludes_cache_path(vanished),
+            "the lock that broke `soldr save` must be excluded from every profile"
+        );
+
+        for rel in [
+            "zccache/daemon-state/embedded-v1/v1/staging/7-0-1/partial.bin",
+            "zccache/x/daemon.sock",
+            "zccache/x/daemon.pid",
+            "zccache/x/.lock",
+        ] {
+            assert!(
+                archive_always_excludes_cache_path(Path::new(rel)),
+                "{rel} is runtime coordination state, not cache payload"
+            );
+        }
+
+        // The exclusion must stay narrow: real payload that merely sits deep
+        // in the same tree still gets archived, or the cache restores empty.
+        for rel in [
+            "zccache/daemon-state/embedded-v1/v1/objects/ab/cdef.o",
+            "zccache/index.redb",
+            "registry/cache/foo-1.0.crate",
+        ] {
+            assert!(
+                !archive_always_excludes_cache_path(Path::new(rel)),
+                "{rel} is cache payload and must still be archived"
+            );
+        }
+    }
+);
+
+// Defence in depth: even with the exclusion, walk-then-stat is two passes
+// over a tree a live daemon writes, so the window cannot be closed
+// entirely.
+timed_test!(a_file_that_vanishes_after_the_walk_is_skipped_not_fatal, {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let cache = tmp.path();
+    let missing = cache.join("gone.bin");
+    assert!(
+        cache_file_entry(cache, &missing)
+            .expect("a vanished file must not fail the save")
+            .is_none(),
+        "a vanished file must be skipped"
+    );
+
+    // ...but a file that is present is still archived, so the tolerance
+    // cannot silently empty an archive.
+    let present = cache.join("present.bin");
+    std::fs::write(&present, b"payload").expect("write");
+    assert!(
+        cache_file_entry(cache, &present).expect("stat").is_some(),
+        "an existing file must still produce an entry"
+    );
+});
+
+timed_test!(legacy_archive_cannot_mutate_live_daemon_runtime, {
+    let root = tempfile::tempdir().unwrap();
+    let archived_cache = root.path().join("archived-cache");
+    let restore_cache = root.path().join("restore-cache");
+    let archived_runtime = archived_cache.join("soldr-daemon");
+    let live_runtime = restore_cache.join("soldr-daemon");
+    std::fs::create_dir_all(&archived_runtime).unwrap();
+    std::fs::create_dir_all(&live_runtime).unwrap();
+    let archived_file = archived_runtime.join("archived.pid");
+    std::fs::write(&archived_file, b"old runtime").unwrap();
+    std::fs::write(live_runtime.join("live.pid"), b"live runtime").unwrap();
+    let (archived_entry, archived_meta) = cache_file_entry(&archived_cache, &archived_file)
+        .unwrap()
+        .expect("the fixture file exists");
+    let manifest = Manifest {
+        version: MANIFEST_VERSION,
+        cache_dir_name: CACHE_DIR_NAME.into(),
+        cache_file_count: 1,
+        cache_layer_kind: CacheLayerKind::Complete as i32,
+        cache_files: vec![archived_entry],
+        deleted_cache_paths: vec!["soldr-daemon/live.pid".into()],
+        cache_symlinks: vec![SymlinkEntry {
+            path: "soldr-daemon/link".into(),
+            target: "archived.pid".into(),
+            is_dir: false,
+        }],
+        ..Manifest::default()
+    };
+    let archive = root.path().join("legacy.tar.zst");
+    write_delta_archive(
+        &archive,
+        1,
+        None,
+        &manifest,
+        &archived_cache,
+        &[(archived_file, archived_meta)],
+    )
+    .unwrap();
+
+    let report = load(&LoadOptions {
+        archive: &archive,
+        cache_dir: Some(&restore_cache),
+        workspace: None,
+        threads: None,
+        mtimes_only: false,
+        profile_extract: false,
+        auto_defender_exclude: false,
+    })
+    .unwrap();
+
+    assert_eq!(report.cache_files_restored, 0);
+    assert_eq!(
+        std::fs::read(live_runtime.join("live.pid")).unwrap(),
+        b"live runtime"
+    );
+    assert!(!live_runtime.join("archived.pid").exists());
+    assert!(!live_runtime.join("link").exists());
+});
+
+timed_test!(delta_ignores_daemon_runtime_from_legacy_base_manifest, {
+    let root = tempfile::tempdir().unwrap();
+    let cache = root.path().join("cache");
+    std::fs::create_dir_all(&cache).unwrap();
+    let base = Manifest {
+        version: MANIFEST_VERSION,
+        cache_dir_name: CACHE_DIR_NAME.into(),
+        cache_layer_kind: CacheLayerKind::Base as i32,
+        cache_files: vec![CacheFile {
+            path: "soldr-daemon/daemon.pid".into(),
+            mtime_ns: 1,
+            size: 3,
+            blake3: vec![0; 32],
+        }],
+        cache_symlinks: vec![SymlinkEntry {
+            path: "soldr-daemon/sock".into(),
+            target: "target".into(),
+            is_dir: false,
+        }],
+        ..Manifest::default()
+    };
+    let archive = root.path().join("delta.tar.zst");
+
+    let report = save_delta(&SaveDeltaOptions {
+        workspace: None,
+        cache_dir: &cache,
+        base_manifest: &base,
+        out: &archive,
+        zstd_level: 1,
+        threads: None,
+        profile: SaveProfile::Full,
+    })
+    .unwrap();
+    let delta = read_manifest_from_archive(&archive).unwrap();
+
+    assert_eq!(report.deleted_cache_files, 0);
+    assert!(delta.deleted_cache_paths.is_empty());
+});
+
+timed_test!(cargo_input_inventory_selects_declared_inputs, {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    let target = workspace.join("target");
+    let source = workspace.join("src/main.rs");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(target.join("debug/deps")).unwrap();
+    std::fs::write(&source, "fn main() {}\n").unwrap();
+    std::fs::write(workspace.join("Cargo.toml"), "[package]\n").unwrap();
+    std::fs::write(workspace.join("Cargo.lock"), "# lock\n").unwrap();
+    std::fs::write(workspace.join("irrelevant.log"), "noise\n").unwrap();
+    let source_text = source.display().to_string().replace('\\', "/");
+    std::fs::write(
+        target.join("debug/deps/app.d"),
+        format!("target: {source_text}\n"),
+    )
+    .unwrap();
+
+    let files = cargo_input_inventory(&workspace, &target, None)
+        .unwrap()
+        .expect("valid dep-info should produce an inventory");
+    assert!(files.contains(&PathBuf::from("src/main.rs")));
+    assert!(files.contains(&PathBuf::from("Cargo.toml")));
+    assert!(files.contains(&PathBuf::from("Cargo.lock")));
+    assert!(!files.contains(&PathBuf::from("irrelevant.log")));
+});
+
+timed_test!(cargo_input_inventory_falls_back_on_malformed_dep_info, {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    let target = workspace.join("target/debug/deps");
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::write(target.join("broken.d"), "not makefile dep-info\n").unwrap();
+    assert!(
+        cargo_input_inventory(&workspace, workspace.join("target").as_path(), None)
+            .unwrap()
+            .is_none()
+    );
+});
+
+timed_test!(profile_line_matches_documented_shape, {
+    // Synthetic per-file latencies: 6 values with known order so the
+    // percentile math is hand-checkable. p50/p95/p99 indices on a
+    // 6-element vec are round((6-1)*p): 3 → 250, 5 → 1200, 5 → 1200.
+    let latencies = vec![100u64, 150, 200, 250, 450, 1200];
+    let per_worker_counts = vec![2usize, 2, 1, 1];
+    let phases = ExtractPhaseTimings {
+        zstd_decode_us: 4_120_000,
+        tar_parse_us: 890_000,
+        extract_total_us: 10_510_000,
+    };
+    let line = format_profile_line(phases, &per_worker_counts, &latencies, 6);
+
+    assert!(
+        line.starts_with("soldr load: profile: "),
+        "missing prefix: {line}"
+    );
+    assert!(
+        line.contains("zstd_decode=4120ms"),
+        "wrong zstd_decode: {line}"
+    );
+    assert!(line.contains("tar_parse=890ms"), "wrong tar_parse: {line}");
+    assert!(
+        line.contains("extract_total=10510ms"),
+        "wrong extract_total: {line}"
+    );
+    assert!(
+        line.contains("workers={0:n=2, 1:n=2, 2:n=1, 3:n=1}"),
+        "wrong workers shape: {line}"
+    );
+    assert!(line.contains("per_file_p50_us=250"), "p50 wrong: {line}");
+    assert!(line.contains("p95_us=1200"), "p95 wrong: {line}");
+    assert!(line.contains("p99_us=1200"), "p99 wrong: {line}");
+    assert!(line.contains("cache_files=6"), "files count wrong: {line}");
+});
+
+timed_test!(profile_line_handles_empty_latencies, {
+    // No per-file data (e.g. cache had zero regular entries) — must
+    // still emit a parseable line, with zeros for the percentiles.
+    let line = format_profile_line(
+        ExtractPhaseTimings {
+            zstd_decode_us: 0,
+            tar_parse_us: 0,
+            extract_total_us: 1_000,
+        },
+        &[],
+        &[],
+        0,
+    );
+    assert!(line.contains("per_file_p50_us=0"), "{line}");
+    assert!(line.contains("p95_us=0"), "{line}");
+    assert!(line.contains("p99_us=0"), "{line}");
+    assert!(line.contains("workers={}"), "{line}");
+});
+
+// extract_one is the worker entrypoint. Pointing it at a destination
+// whose parent path conflicts with a pre-existing regular file makes
+// create_dir_all fail. Gives us a deterministic, OS-agnostic failure
+// injection without patching production code. The first-error-wins
+// semantic is exercised end-to-end in tests/save_roundtrip.rs.
+timed_test!(extract_one_returns_error_with_failing_path, {
+    let tmp = tempfile::tempdir().unwrap();
+    let blocking_file = tmp.path().join("not-a-dir");
+    std::fs::write(&blocking_file, b"i am a file").unwrap();
+
+    // Now try to extract a job whose dest claims the blocking file
+    // is a parent directory. create_dir_all should bail.
+    let job = ExtractJob {
+        dest: blocking_file.join("child.bin"),
+        entry_type: tar::EntryType::Regular,
+        body: b"unused".to_vec(),
+        mtime_secs: None,
+        mtime_ns: None,
+        mode_bits: None,
+    };
+    let err = extract_one(&job).expect_err("worker must surface the IO error");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("not-a-dir"),
+        "error must mention the offending path: {msg}"
+    );
+});
+
+// #1909: dropping the dispatch without `finish()` -- which is what
+// every `?` in the driver loop does -- must still wait for workers.
+//
+// Before the Drop impl those workers kept writing into the cache tree
+// after `load()` had returned. Cargo exec'ing a build script while a
+// worker still held it open for write is exactly `ETXTBSY`. The
+// workers also leaked permanently, parked on a barrier whose final
+// party had already gone home.
+//
+// The assertion is that drop *returns at all*: if the barrier is not
+// satisfied it blocks forever, so a regression hangs this test rather
+// than failing it. That is deliberate -- there is no non-racy way to
+// observe "a worker is still running" from outside, and a hang is an
+// unambiguous signal. `timed_test!` bounds it.
+timed_test!(dropping_dispatch_without_finish_still_waits_for_workers, {
+    let tmp = tempfile::tempdir().unwrap();
+    let pool = build_pool(Some(2)).expect("pool");
+    let err_slot: Arc<Mutex<Option<SaveLoadError>>> = Arc::new(Mutex::new(None));
+    let counter = Arc::new(AtomicU64::new(0));
+
+    let dest = tmp.path().join("nested").join("payload.bin");
+    {
+        let dispatch = ExtractDispatch::start(
+            &pool,
+            Some(2),
+            Arc::clone(&err_slot),
+            Arc::clone(&counter),
+            None,
+        );
+        dispatch
+            .send(ExtractJob {
+                dest: dest.clone(),
+                entry_type: tar::EntryType::Regular,
+                body: b"payload".to_vec(),
+                mtime_secs: None,
+                mtime_ns: None,
+                mode_bits: None,
+            })
+            .expect("send");
+        // Deliberately no `finish()` -- emulate a `?` bailing out of
+        // the driver loop with work still in flight.
+    }
+
+    // Reaching here at all means Drop waited. And because it waited,
+    // the in-flight job is guaranteed complete -- no sleep, no poll.
+    assert!(
+        dest.exists(),
+        "drop must not return until workers have finished writing"
+    );
+    assert_eq!(counter.load(Ordering::Relaxed), 1, "job should be counted");
+    assert!(err_slot.lock().unwrap().is_none(), "no worker error");
+});
+
+// #1548 — purely-lexical symlink-target containment. Runs on every
+// platform (no symlink creation involved), which is what gives the
+// Windows lanes coverage of the validation logic that the
+// #[cfg(unix)] integration tests exercise end-to-end.
+timed_test!(symlink_target_validation_accepts_safe_relative_targets, {
+    // Sibling file.
+    assert_eq!(
+        resolve_symlink_target_in_root(Path::new("deps/link.rlib"), "libfoo.rlib"),
+        Some(PathBuf::from("deps").join("libfoo.rlib"))
+    );
+    // Up-and-over that stays inside the root.
+    assert_eq!(
+        resolve_symlink_target_in_root(Path::new("out/link"), "../deps/libfoo.rlib"),
+        Some(PathBuf::from("deps").join("libfoo.rlib"))
+    );
+    // `.` components are harmless.
+    assert_eq!(
+        resolve_symlink_target_in_root(Path::new("a/link"), "./b/./c"),
+        Some(PathBuf::from("a").join("b").join("c"))
+    );
+    // Link at the root pointing at a root-level sibling.
+    assert_eq!(
+        resolve_symlink_target_in_root(Path::new("link"), "payload.bin"),
+        Some(PathBuf::from("payload.bin"))
+    );
+});
+
+timed_test!(symlink_target_validation_rejects_unsafe_targets, {
+    // Absolute POSIX target — rejected even when it would point back
+    // inside the root; we only ever preserve relative links.
+    assert_eq!(
+        resolve_symlink_target_in_root(Path::new("a/link"), "/etc/passwd"),
+        None
+    );
+    // Escapes the root via `..`.
+    assert_eq!(
+        resolve_symlink_target_in_root(Path::new("link"), "../outside.txt"),
+        None
+    );
+    assert_eq!(
+        resolve_symlink_target_in_root(Path::new("a/link"), "../../../x"),
+        None
+    );
+    // Exactly-at-root resolution (empty) is meaningless for a link.
+    assert_eq!(
+        resolve_symlink_target_in_root(Path::new("a/link"), ".."),
+        None
+    );
+    // Empty target.
+    assert_eq!(
+        resolve_symlink_target_in_root(Path::new("a/link"), ""),
+        None
+    );
+    // Windows drive / UNC prefixes are rejected on Windows (Prefix
+    // component); on Unix "C:" is just a weird-but-contained relative
+    // component, which is harmless — so only assert the containment
+    // property that holds everywhere: no result may escape the root.
+    if let Some(resolved) = resolve_symlink_target_in_root(Path::new("a/link"), "C:/evil") {
+        assert!(
+            !resolved
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir)),
+            "resolved path must stay inside the root: {resolved:?}"
+        );
+    }
+});
+
+// #1547 — the workspace source walker must not exclude a directory by
+// *name* alone: a `target/` directory that isn't the real Cargo output
+// dir (e.g. `src/target/mod.rs`) is legitimate tracked source and must
+// be hashed. Only the resolved Cargo target dir(s) are excluded, and
+// `.git` / `node_modules` stay excluded by name (never legitimate
+// source basenames).
+timed_test!(
+    walk_workspace_files_hashes_nested_dir_literally_named_target,
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        // Legitimate source: a package sub-module directory that happens
+        // to be named "target", nested under src/ — NOT the Cargo build
+        // output dir.
+        std::fs::create_dir_all(root.join("src/target")).unwrap();
+        std::fs::write(root.join("src/target/mod.rs"), b"pub fn noop() {}").unwrap();
+        std::fs::write(root.join("src/lib.rs"), b"mod target;").unwrap();
+
+        // The REAL Cargo output dir at the workspace root — must stay
+        // excluded.
+        std::fs::create_dir_all(root.join("target/debug")).unwrap();
+        std::fs::write(root.join("target/debug/build-artifact.bin"), b"junk").unwrap();
+
+        // .git and node_modules — must stay excluded regardless of depth.
+        std::fs::create_dir_all(root.join(".git/objects")).unwrap();
+        std::fs::write(root.join(".git/objects/pack.idx"), b"gitjunk").unwrap();
+        std::fs::create_dir_all(root.join("node_modules/leftpad")).unwrap();
+        std::fs::write(root.join("node_modules/leftpad/index.js"), b"jsjunk").unwrap();
+
+        let files = walk_workspace_files(root, None).unwrap();
+        let rel_strs: Vec<String> = files
+            .iter()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .collect();
+
+        assert!(
+            rel_strs.contains(&"src/target/mod.rs".to_string()),
+            "src/target/mod.rs must be hashed as legitimate source, got: {rel_strs:?}"
+        );
+        assert!(
+            rel_strs.contains(&"src/lib.rs".to_string()),
+            "src/lib.rs must be hashed, got: {rel_strs:?}"
+        );
+        assert!(
+            !rel_strs
+                .iter()
+                .any(|p| p.starts_with("target/") || p == "target"),
+            "the real workspace target/ dir must stay excluded, got: {rel_strs:?}"
+        );
+        assert!(
+            !rel_strs.iter().any(|p| p.starts_with(".git/")),
+            ".git must stay excluded, got: {rel_strs:?}"
+        );
+        assert!(
+            !rel_strs.iter().any(|p| p.starts_with("node_modules/")),
+            "node_modules must stay excluded, got: {rel_strs:?}"
+        );
+    }
+);
+
+// #1547 mutation check: CARGO_TARGET_DIR overrides must also be
+// resolved-path excluded even though they don't literally live under
+// `<workspace>/target`.
+timed_test!(
+    walk_workspace_files_excludes_cargo_target_dir_env_override,
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), b"// real source").unwrap();
+        // Override target dir lives INSIDE the workspace under a
+        // differently-named directory (simulating CARGO_TARGET_DIR=out).
+        std::fs::create_dir_all(root.join("out/debug")).unwrap();
+        std::fs::write(root.join("out/debug/artifact.bin"), b"junk").unwrap();
+        // A directory named "out" is NOT excluded when CARGO_TARGET_DIR is
+        // unset — sanity check the negative case first.
+        let baseline = walk_workspace_files(root, None).unwrap();
+        let baseline_strs: Vec<String> = baseline
+            .iter()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .collect();
+        assert!(
+            baseline_strs.contains(&"out/debug/artifact.bin".to_string()),
+            "without CARGO_TARGET_DIR, out/ is ordinary source: {baseline_strs:?}"
+        );
+    }
+);
+
+// #1547 — a directory named "target" that is NOT at the workspace
+// root (and not a CARGO_TARGET_DIR/CARGO_BUILD_TARGET_DIR override)
+// must never be excluded, including deeper nesting than one level.
+timed_test!(
+    walk_workspace_files_hashes_deeply_nested_target_named_dirs,
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("crates/foo/src/target")).unwrap();
+        std::fs::write(
+            root.join("crates/foo/src/target/mod.rs"),
+            b"pub struct Target;",
+        )
+        .unwrap();
+
+        let files = walk_workspace_files(root, None).unwrap();
+        let rel_strs: Vec<String> = files
+            .iter()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .collect();
+        assert!(
+            rel_strs.contains(&"crates/foo/src/target/mod.rs".to_string()),
+            "deeply nested target-named source must be hashed: {rel_strs:?}"
+        );
+    }
+);
+#[cfg(test)]
+mod etxtbsy_tests {
+    use super::*;
+
+    // #1909: a restored build script failed `execve` with ETXTBSY, which
+    // happens only when some process holds the target open for writing. The
+    // extractor now stages into a sibling and renames, so the inode that
+    // lands at `dest` never had a writable descriptor pointing at it and no
+    // fork-inherited fd can refer to it.
+
+    fn regular_job(dest: PathBuf, body: &[u8], mode: Option<u32>) -> ExtractJob {
+        ExtractJob {
+            dest,
+            entry_type: tar::EntryType::Regular,
+            body: body.to_vec(),
+            mtime_secs: Some(1_700_000_000),
+            mtime_ns: None,
+            mode_bits: mode,
+        }
+    }
+
+    crate::timed_test!(staging_path_is_a_sibling_of_the_destination, {
+        // Same directory or `rename` stops being atomic -- a temp dir can sit
+        // on a different filesystem, where rename degrades to copy+delete and
+        // reintroduces the very window this fix closes.
+        let dest = Path::new("/some/deep/dir/build-script-build");
+        let staged = staging_path_for(dest);
+        assert_eq!(
+            staged.parent(),
+            dest.parent(),
+            "staging file must be a sibling so the rename stays atomic"
+        );
+        assert_ne!(staged.file_name(), dest.file_name());
+    });
+
+    crate::timed_test!(staging_paths_are_unique_across_calls, {
+        // Concurrent workers restore different entries simultaneously; two
+        // collisions would corrupt each other's content.
+        let dest = Path::new("/tmp/target/debug/build/x/build-script-build");
+        let a = staging_path_for(dest);
+        let b = staging_path_for(dest);
+        assert_ne!(
+            a, b,
+            "concurrent extract workers must not share a staging path"
+        );
+    });
+
+    crate::timed_test!(extract_leaves_no_staging_file_behind, {
+        // A stray `.soldr-tmp` inside target/ would survive into the next
+        // build and confuse cargo.
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("build-script-build");
+        extract_one(&regular_job(dest.clone(), b"#!/bin/sh\n", None)).expect("extract");
+
+        assert_eq!(std::fs::read(&dest).unwrap(), b"#!/bin/sh\n");
+        let strays: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains("soldr-tmp"))
+            .collect();
+        assert!(strays.is_empty(), "staging files left behind: {strays:?}");
+    });
+
+    crate::timed_test!(extract_replaces_an_existing_destination_atomically, {
+        // Restores land on top of a previous build's artifacts. The rename
+        // must replace the old inode rather than fail on it.
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("artifact.bin");
+        std::fs::write(&dest, b"stale contents").unwrap();
+
+        extract_one(&regular_job(dest.clone(), b"fresh", None)).expect("extract over existing");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"fresh");
+    });
+
+    crate::timed_test!(restored_executable_keeps_its_mode_through_the_rename, {
+        // Unix mode bits only exist on unix hosts; the facade's `mode()`
+        // returns `None` on Windows, so the test self-skips there.
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            return;
+        }
+        // The mode is applied to the staging file; `rename` must carry it
+        // over, or #587/#1889 would regress silently.
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("build-script-build");
+        extract_one(&regular_job(
+            dest.clone(),
+            b"#!/bin/sh\nexit 0\n",
+            Some(0o755),
+        ))
+        .expect("extract");
+
+        let mode =
+            crate::platform::fs::permissions::mode(&dest).expect("stat restored mode") & 0o777;
+        assert_eq!(mode, 0o755, "executable bit must survive the rename");
+    });
+
+    crate::timed_test!(restored_executable_can_actually_be_executed, {
+        // Unix mode bits only exist on unix hosts; the facade's `mode()`
+        // returns `None` on Windows, so the test self-skips there.
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            return;
+        }
+        // The end-to-end property the issue is about: after extract_one
+        // returns, the file is immediately runnable -- no ETXTBSY, no EACCES.
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("build-script-build");
+        extract_one(&regular_job(
+            dest.clone(),
+            b"#!/bin/sh\nexit 7\n",
+            Some(0o755),
+        ))
+        .expect("extract");
+        assert_eq!(
+            crate::platform::fs::permissions::mode(&dest).expect("stat restored mode") & 0o111,
+            0o111
+        );
+
+        let status = std::process::Command::new(&dest)
+            .status()
+            .expect("restored build script must be executable immediately after restore");
+        assert_eq!(status.code(), Some(7));
+    });
+}

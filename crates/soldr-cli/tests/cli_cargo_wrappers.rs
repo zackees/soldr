@@ -14,8 +14,10 @@ use std::{
 };
 
 fn fake_cargo_doc_script(log_path: &Path, source_path: &Path, rustdoc: &Path) -> String {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         format!(
             "@echo off\n\
              set \"rustdoc=%RUSTDOC%\"\n\
@@ -49,9 +51,7 @@ fn fake_cargo_doc_script(log_path: &Path, source_path: &Path, rustdoc: &Path) ->
             source_path.display(),
             rustdoc.display()
         )
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         format!(
             "#!/bin/sh\n\
              rustdoc=\"${{RUSTDOC:-{2}}}\"\n\
@@ -83,8 +83,10 @@ fn fake_cargo_doc_script(log_path: &Path, source_path: &Path, rustdoc: &Path) ->
 }
 
 fn fake_cargo_miri_script(log_path: &Path) -> String {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         format!(
             "@echo off\n\
              echo cargo miri wrapper=%RUSTC_WRAPPER% rustc=%RUSTC% cache=%SOLDR_CACHE_ENABLED% session=%ZCCACHE_SESSION_ID%>>\"{0}\"\n\
@@ -100,9 +102,7 @@ fn fake_cargo_miri_script(log_path: &Path) -> String {
              exit /b 1\n",
             log_path.display()
         )
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         format!(
             "#!/bin/sh\n\
              echo \"cargo miri wrapper=${{RUSTC_WRAPPER:-}} rustc=${{RUSTC:-}} cache=${{SOLDR_CACHE_ENABLED:-}} session=${{ZCCACHE_SESSION_ID:-}}\" >> \"{0}\"\n\
@@ -1223,9 +1223,14 @@ fn cargo_fmt_no_cache_leaves_rustfmt_direct() {
     );
 }
 
-#[cfg(not(windows))]
 #[test]
 fn cargo_front_door_preserves_jobserver_fds_into_managed_zccache_wrapper() {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
     let cache_root = unique_temp_dir("cargo-jobserver-fds");
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, zccache) = install_fake_jobserver_toolchain(&log_path);

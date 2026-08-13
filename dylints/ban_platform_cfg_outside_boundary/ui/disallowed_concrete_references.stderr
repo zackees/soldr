@@ -1,0 +1,12 @@
+error: host-platform selection outside the soldr-platform boundary: direct concrete-tree reference `platform_imp`; the only allowed selection sites are soldr-platform/src/lib.rs and the platform_win/platform_linux/platform_macos trees
+  --> $DIR/disallowed_concrete_references.rs:4:1
+   |
+LL | / fn uses_imp_tree() {
+LL | |     let platform_imp = ();
+LL | | }
+   | |_^
+   |
+   = note: `#[deny(ban_platform_cfg_outside_boundary)]` on by default
+
+error: aborting due to 1 previous error
+

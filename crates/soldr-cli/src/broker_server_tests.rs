@@ -1,0 +1,221 @@
+//! Unit coverage split from `broker_server.rs` for the soldr#2493 1,000-line
+//! production-source ceiling.
+
+use super::*;
+
+crate::timed_test!(
+    direct_handoff_eligibility_requires_platform_capability_and_token,
+    {
+        use running_process::broker::capabilities::CAP_HANDLE_PASSING;
+
+        assert_eq!(
+            direct_handoff_eligible(CAP_HANDLE_PASSING, &[1]),
+            crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows
+        );
+        assert!(!direct_handoff_eligible(0, &[1]));
+        assert!(!direct_handoff_eligible(CAP_HANDLE_PASSING, &[]));
+    }
+);
+
+crate::timed_test!(windows_handoff_ready_uses_async_original_pipe, {
+    if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
+        return;
+    }
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(async {
+            use interprocess::local_socket::traits::tokio::Stream as _;
+
+            let endpoint = format!(
+                "soldr-handoff-ready-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("clock")
+                    .as_nanos()
+            );
+            let listener = create_listener(&endpoint).expect("named-pipe listener");
+            let client_name =
+                running_process::broker::server::singleton_bind::wrap_socket_name(&endpoint)
+                    .expect("named-pipe name");
+
+            let server = async {
+                let mut stream = listener.accept().await.expect("accept client");
+                let duplicated = duplicate_handoff_stream(&stream)
+                    .expect("duplicate overlapped named-pipe handle for handoff");
+                drop(duplicated);
+
+                let ack = running_process::broker::protocol::HandoffAck {
+                    token: vec![1, 2, 3, 4],
+                    accepted: true,
+                    error_detail: String::new(),
+                    correlation_id: 42,
+                };
+                write_handoff_ready_async(&mut stream, &ack)
+                    .await
+                    .expect("write ready event asynchronously on original pipe");
+            };
+            let client = async {
+                let mut stream = interprocess::local_socket::tokio::Stream::connect(client_name)
+                    .await
+                    .expect("connect client");
+                let body = read_frame_async(&mut stream)
+                    .await
+                    .expect("read ready event");
+                let frame = Frame::decode(body.as_slice()).expect("decode ready frame");
+                let ack =
+                    running_process::broker::protocol::HandoffAck::decode(frame.payload.as_slice())
+                        .expect("decode handoff acknowledgement");
+                assert!(ack.accepted);
+                assert_eq!(ack.correlation_id, 42);
+                assert_eq!(ack.token, vec![1, 2, 3, 4]);
+            };
+
+            tokio::join!(server, client);
+        });
+});
+
+crate::timed_test!(
+    broker_instance_identity_includes_the_complete_image_digest,
+    {
+        let first = format_broker_instance_id("0.9.0", &"a".repeat(64));
+        let second = format_broker_instance_id("0.9.0", &"b".repeat(64));
+        assert_ne!(first, second, "same-version images must not alias");
+        assert!(first.ends_with(&"a".repeat(64)));
+    }
+);
+
+crate::timed_test!(route_heartbeat_stays_inside_the_client_silence_budget, {
+    assert_eq!(
+        route_progress_heartbeat_interval(Duration::from_secs(5)),
+        Duration::from_secs(1)
+    );
+    assert_eq!(
+        route_progress_heartbeat_interval(Duration::from_millis(30)),
+        Duration::from_millis(10)
+    );
+    assert!(
+        route_progress_heartbeat_interval(Duration::from_millis(30)) < Duration::from_millis(30)
+    );
+});
+
+crate::timed_test!(progress_and_attestation_are_protobuf_roundtrips, {
+    let progress = RouteProgress {
+        stage: "spawn".into(),
+        attempt: 3,
+        elapsed_ms: 42,
+        latest_result: "waiting".into(),
+        retry_after_ms: 7,
+    };
+    assert_eq!(
+        RouteProgress::decode(progress.encode_to_vec().as_slice()).unwrap(),
+        progress
+    );
+    let bytes = client_host_attestation();
+    let attestation = ClientHostAttestation::decode(bytes.as_slice()).unwrap();
+    assert!(!attestation.machine_id.is_empty());
+    assert!(!attestation.boot_id.is_empty());
+});
+
+crate::timed_test!(
+    deadline_env_values_are_positive_and_have_contract_defaults,
+    {
+        let deadlines = BrokerDeadlines::from_env();
+        assert!(!deadlines.first_response.is_zero());
+        assert!(!deadlines.progress_silence.is_zero());
+        assert!(!deadlines.route_ceiling.is_zero());
+    }
+);
+
+crate::timed_test!(mismatched_machine_attestation_is_refused_as_shared_home, {
+    let hello = Hello {
+        client_lib_name: "soldr".into(),
+        peer_attestation_nonce: ClientHostAttestation {
+            machine_id: "another-machine".into(),
+            boot_id: "another-boot".into(),
+        }
+        .encode_to_vec(),
+        ..Default::default()
+    };
+    let request = Frame::request(CONTROL_PAYLOAD_PROTOCOL, hello.encode_to_vec());
+    let reply = validate_client_host(&request).expect("foreign machine must be refused");
+    let Some(hello_reply::Result::Refused(refused)) = reply.result else {
+        panic!("expected refusal");
+    };
+    assert_eq!(
+        ErrorCode::try_from(refused.code),
+        Ok(ErrorCode::ErrorPeerRejected)
+    );
+    assert!(refused.reason.contains("shared Soldr home"));
+    assert!(refused.details.contains_key("client_machine_id"));
+    assert!(refused.details.contains_key("broker_machine_id"));
+});
+
+crate::timed_test!(stale_socket_n_way_bind_has_exactly_one_winner, {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+        return;
+    }
+    use std::sync::{mpsc, Barrier};
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let socket = temp.path().join("soldr-broker.sock");
+    crate::platform::ipc::broker::seed_stale_endpoint(&socket).expect("seed stale socket");
+    let endpoint = crate::broker_identity::ResolvedBrokerEndpoint {
+        executable_path: temp.path().join("soldr-broker"),
+        logical_socket_path: socket.display().to_string(),
+        bind_endpoint: socket.display().to_string(),
+        windows_pipe_leaf: None,
+        oversized_windows_pipe_leaf: None,
+        fallback: None,
+        lease_database_path: temp.path().join("lease.sqlite3"),
+    };
+    let contenders = 16;
+    let release = Arc::new(Barrier::new(contenders + 1));
+    let (send, receive) = mpsc::channel();
+    let threads: Vec<_> = (0..contenders)
+        .map(|_| {
+            let endpoint = endpoint.clone();
+            let release = Arc::clone(&release);
+            let send = send.clone();
+            std::thread::spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("runtime");
+                let _context = runtime.enter();
+                let listener = bind_listener(&endpoint);
+                send.send(listener.is_ok()).expect("send result");
+                release.wait();
+                drop(listener);
+            })
+        })
+        .collect();
+    drop(send);
+    let results: Vec<_> = receive.iter().take(contenders).collect();
+    assert_eq!(results.iter().filter(|won| **won).count(), 1, "{results:?}");
+    release.wait();
+    for thread in threads {
+        thread.join().expect("bind contender");
+    }
+});
+
+crate::timed_test!(macos_listener_restricts_socket_permissions_after_bind, {
+    if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::MacOs {
+        return;
+    }
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let socket = temp.path().join("soldr-broker.sock");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let _context = runtime.enter();
+    let listener = create_listener(socket.to_str().expect("UTF-8 socket path"))
+        .expect("macOS broker listener");
+    let mode = crate::platform::fs::permissions::mode(&socket).expect("socket mode") & 0o777;
+    assert_eq!(mode, 0o600);
+    drop(listener);
+});

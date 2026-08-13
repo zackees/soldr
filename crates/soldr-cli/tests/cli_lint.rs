@@ -11,12 +11,12 @@ use std::{
 };
 
 fn successful_tool_script() -> &'static str {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         "@echo off\nexit /b 0\n"
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         "#!/bin/sh\nexit 0\n"
     }
 }
@@ -46,13 +46,13 @@ const SIBLING_CANCEL_BUDGET_SECS: u64 = 15;
 
 fn dependency_failure_script() -> &'static str {
     // `ping -n <N>` waits N-1 intervals, so N = SIBLING_SLEEP_SECS + 1.
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         const _: () = assert!(SIBLING_SLEEP_SECS == 30);
         "@echo off\nif \"%~1\"==\"metadata\" exit /b 0\nif \"%~1\"==\"audit\" exit /b 9\nping -n 31 127.0.0.1 > nul\nexit /b 0\n"
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         const _: () = assert!(SIBLING_SLEEP_SECS == 30);
         "#!/bin/sh\nif [ \"$1\" = metadata ]; then exit 0; fi\nif [ \"$1\" = audit ]; then exit 9; fi\nsleep 30\n"
     }
@@ -123,10 +123,14 @@ timed_test!(
         let driver = fake_script_path(&driver_root.join(&dylint_channel), "dylint-driver");
         fs::create_dir_all(driver.parent().expect("driver parent"))
             .expect("create prebuilt driver dir");
-        #[cfg(windows)]
-        let driver_script = "@echo off\necho dylint-driver 6.0.3\nexit /b 0\n";
-        #[cfg(not(windows))]
-        let driver_script = "#!/bin/sh\nprintf 'dylint-driver 6.0.3\\n'\n";
+        let driver_script = if matches!(
+            soldr_platform::host::facts::os(),
+            soldr_platform::host::facts::HostOs::Windows
+        ) {
+            "@echo off\necho dylint-driver 6.0.3\nexit /b 0\n"
+        } else {
+            "#!/bin/sh\nprintf 'dylint-driver 6.0.3\\n'\n"
+        };
         write_fake_script(&driver, driver_script);
         let rustc = install_versioned_fake_rustc(
             "rustc 1.89.0-nightly (0123456789abcdef0123456789abcdef01234567 2026-05-26)",

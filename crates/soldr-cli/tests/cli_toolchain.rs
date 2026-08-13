@@ -13,7 +13,6 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-#[cfg(not(windows))]
 fn fake_toolchain_plugin_cargo_script(log_path: &Path) -> String {
     format!(
         "#!/bin/sh\n\
@@ -22,7 +21,6 @@ fn fake_toolchain_plugin_cargo_script(log_path: &Path) -> String {
     )
 }
 
-#[cfg(not(windows))]
 fn install_fake_toolchain_plugin_cargo(log_path: &Path) -> PathBuf {
     let dir = unique_temp_dir("fake-toolchain-plugin-cargo");
     let cargo = fake_script_path(&dir, "cargo");
@@ -361,10 +359,15 @@ fn toolchain_prepare_host_cargo_keeps_managed_install_home_without_managed_rustu
     );
 }
 
-#[cfg(not(windows))]
 timed_test!(
     toolchain_prepare_plugin_install_clears_inherited_rustc_wrappers,
     {
+        if matches!(
+            soldr_platform::host::facts::os(),
+            soldr_platform::host::facts::HostOs::Windows
+        ) {
+            return;
+        }
         let workspace = unique_temp_dir("toolchain-prepare-plugin-wrapper-policy");
         seed_rust_toolchain_toml(
             &workspace,

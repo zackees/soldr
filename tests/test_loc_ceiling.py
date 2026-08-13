@@ -29,7 +29,14 @@ def test_ceiling_is_one_thousand() -> None:
 
 def test_violations_are_sorted_and_measured() -> None:
     over = _ceiling.violations()
-    assert over, "the current tree must still contain over-ceiling files"
     counts = [count for _, count in over]
     assert counts == sorted(counts, reverse=True)
     assert all(count > 1000 for count in counts)
+
+
+def test_ci_enforces_the_thousand_line_ceiling() -> None:
+    workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "1000-line production ceiling" in workflow
+    assert "python3 .github/scripts/loc_ceiling.py" in workflow

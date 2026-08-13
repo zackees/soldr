@@ -227,15 +227,15 @@ fn find_daemon_pid(root: &std::path::Path) -> Option<u32> {
 }
 
 fn kill_pid(pid: u32) -> std::io::Result<()> {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         Command::new("taskkill")
             .args(["/F", "/PID", &pid.to_string()])
             .output()
             .map(|_| ())
-    }
-    #[cfg(unix)]
-    {
+    } else {
         Command::new("kill")
             .args(["-TERM", &pid.to_string()])
             .output()

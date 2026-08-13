@@ -37,7 +37,7 @@
 //! flag and emit a terminal record — is asserted below too.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 mod common;
 
@@ -95,6 +95,29 @@ const FALLIBLE_PRE_SPAWN_STEPS: &[(&str, &str)] = &[
 ///
 /// The lint still enforces everywhere it can: the `Lint` lane and any
 /// local `cargo test`, both of which build and run in the checkout.
+fn expand_local_includes(path: &Path) -> std::io::Result<String> {
+    let text = fs::read_to_string(path)?;
+    let mut expanded = String::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if let Some(relative) = trimmed
+            .strip_prefix("include!(\"")
+            .and_then(|rest| rest.strip_suffix("\");"))
+        {
+            expanded.push_str(&expand_local_includes(
+                &path
+                    .parent()
+                    .expect("source file has a parent")
+                    .join(relative),
+            )?);
+        } else {
+            expanded.push_str(line);
+            expanded.push('\n');
+        }
+    }
+    Ok(expanded)
+}
+
 fn front_door_source() -> Option<(PathBuf, String)> {
     let path = common::workspace_root()
         .join("crates")
@@ -102,7 +125,7 @@ fn front_door_source() -> Option<(PathBuf, String)> {
         .join("src")
         .join("cargo_front_door")
         .join("mod.rs");
-    match fs::read_to_string(&path) {
+    match expand_local_includes(&path) {
         Ok(text) => Some((path, text)),
         Err(_) => {
             eprintln!(

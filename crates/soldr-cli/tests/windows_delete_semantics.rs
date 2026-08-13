@@ -1,5 +1,3 @@
-#![cfg(windows)]
-
 //! What actually blocks a recursive delete on Windows (soldr#2199 / soldr#2200).
 //!
 //! `gc target --purge` and every other reclaim path in soldr depend on these
@@ -43,6 +41,12 @@ fn make_read_only(path: &Path) {
 // The shape soldr#2199 reported: a cache-restored artifact under `deps/`
 // carrying the read-only attribute it shares with the CAS object.
 timed_test!(read_only_files_do_not_block_a_recursive_delete, {
+    if !matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
     let temp = tempfile::tempdir().expect("tempdir");
     let target = temp.path().join("target");
     let deps = target
@@ -66,6 +70,12 @@ timed_test!(read_only_files_do_not_block_a_recursive_delete, {
 // soldr#2200 extends the proposed ban to `remove_file` on the same grounds,
 // so the same claim is checked for it.
 timed_test!(read_only_files_do_not_block_a_single_file_delete, {
+    if !matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
     let temp = tempfile::tempdir().expect("tempdir");
     let file = temp.path().join("libfoo.rlib");
     fs::write(&file, b"x").expect("write");
@@ -82,6 +92,12 @@ timed_test!(read_only_files_do_not_block_a_single_file_delete, {
 // that would still surprise: the attribute means something different on a
 // directory, so the answer is not implied by the file cases above.
 timed_test!(a_read_only_directory_does_not_block_its_parents_delete, {
+    if !matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
     let temp = tempfile::tempdir().expect("tempdir");
     let target = temp.path().join("target");
     let nested = target.join("debug").join("incremental");

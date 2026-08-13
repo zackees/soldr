@@ -2933,6 +2933,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tar",
+ "tempfile",
  "tokio",
  "widestring",
  "windows-sys 0.61.2",

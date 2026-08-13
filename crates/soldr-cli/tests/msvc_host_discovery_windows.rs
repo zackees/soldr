@@ -25,8 +25,6 @@
 //!   workload (rare but possible) shouldn't fail this gate; the
 //!   per-PR perf-matrix runners that DO have the workload will.
 
-#![cfg(target_os = "windows")]
-
 use soldr_cli::msvc_host::{
     discover_msvc_layout, ensure_msvc_env_for_native, vswhere_path, which_on_path,
     MsvcDetectionError, SOLDR_MSVC_DISCOVERY_ENV_VAR,
@@ -38,6 +36,12 @@ timed_test!(
     ensure_msvc_env_for_native_makes_link_exe_findable_on_plain_powershell,
     Duration::from_secs(30),
     {
+        if !matches!(
+            soldr_platform::host::facts::os(),
+            soldr_platform::host::facts::HostOs::Windows
+        ) {
+            return;
+        }
         // ----- Skip gracefully on hosts without VS C++ tooling. -----
         if !vswhere_path().is_file() {
             eprintln!(

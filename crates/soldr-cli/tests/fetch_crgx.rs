@@ -18,7 +18,16 @@ async fn fetch_crgx_and_run() {
     // ARM64 (aarch64-pc-windows-msvc) asset. The failing run logs the
     // full asset list. Skip on Windows ARM64 until upstream ships one;
     // the rest of the matrix still exercises the fetch chain.
-    if cfg!(all(target_os = "windows", target_arch = "aarch64")) {
+    if matches!(
+        (
+            soldr_platform::host::facts::os(),
+            soldr_platform::host::facts::arch()
+        ),
+        (
+            soldr_platform::host::facts::HostOs::Windows,
+            soldr_platform::host::facts::HostArch::Aarch64
+        )
+    ) {
         eprintln!(
             "skipping fetch_crgx_and_run on aarch64-pc-windows-msvc: \
              upstream crgx {CRGX_VERSION} has no Windows ARM64 asset (see #692)"

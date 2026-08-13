@@ -5,8 +5,10 @@ use soldr_cli::timed_test;
 use std::path::Path;
 
 fn fake_global_soldr(log: &Path) -> String {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         format!(
             "@echo off\n\
              if \"%~1\"==\"--version\" (\n\
@@ -17,9 +19,7 @@ fn fake_global_soldr(log: &Path) -> String {
              exit /b 73\n",
             log.display()
         )
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         format!(
             "#!/bin/sh\n\
              if [ \"$1\" = \"--version\" ]; then\n\
@@ -103,10 +103,15 @@ timed_test!(wrapper_invocations_never_delegate_to_newer_global_soldr, {
     // non-cacheable probe, so it passes straight through to this stub
     // without involving the daemon.
     let fake_rustc = fake_script_path(&fixture, "rustc");
-    #[cfg(windows)]
-    write_fake_script(&fake_rustc, "@echo off\necho fake-sysroot\nexit /b 0\n");
-    #[cfg(not(windows))]
-    write_fake_script(&fake_rustc, "#!/bin/sh\necho fake-sysroot\nexit 0\n");
+    let body = if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        "@echo off\necho fake-sysroot\nexit /b 0\n"
+    } else {
+        "#!/bin/sh\necho fake-sysroot\nexit 0\n"
+    };
+    write_fake_script(&fake_rustc, body);
 
     let output = isolated_soldr_command()
         .arg(&fake_rustc)

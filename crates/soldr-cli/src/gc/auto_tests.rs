@@ -1,0 +1,122 @@
+//! Unit coverage split from `auto.rs` for the soldr#2493
+//! 1,000-line production-source ceiling.
+
+use super::*;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Backdate `path` so the sweep sees it as stale without sleeping.
+fn age(path: &std::path::Path, older_than_ttl_by: Duration) {
+    let when = SystemTime::now() - Duration::from_millis(SCRATCH_TTL_MS as u64) - older_than_ttl_by;
+    filetime::set_file_mtime(path, filetime::FileTime::from_system_time(when))
+        .expect("backdate scratch entry");
+}
+
+crate::timed_test!(aggressive_cargo_gc_uses_cargo_accepted_duration_syntax, {
+    let ages = crate::cache_lib::auto_gc::CargoGcAgeSeconds {
+        max_src: 604_800,
+        max_crate: 1_209_600,
+        max_index: 0,
+        max_git_co: 604_800,
+        max_git_db: 0,
+        max_download: 0,
+    };
+    let args = aggressive_cargo_gc_args(&ages);
+    assert_eq!(args.max_src_age.as_deref(), Some("604800 seconds"));
+    assert_eq!(args.max_crate_age.as_deref(), Some("1209600 seconds"));
+    assert_eq!(args.max_git_co_age.as_deref(), Some("604800 seconds"));
+});
+
+crate::timed_test!(sweep_reclaims_stale_entries_and_keeps_fresh_ones, {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let paths = SoldrPaths::with_root(temp.path().to_path_buf());
+    let scratch = crate::core::ensure_temp_root_for(&paths);
+
+    let stale_dir = scratch.join("stale-dir");
+    std::fs::create_dir_all(&stale_dir).expect("stale dir");
+    let stale_file = scratch.join("stale-file");
+    std::fs::write(&stale_file, b"x").expect("stale file");
+    let fresh = scratch.join("fresh-file");
+    std::fs::write(&fresh, b"x").expect("fresh file");
+
+    age(&stale_dir, Duration::from_secs(60));
+    age(&stale_file, Duration::from_secs(60));
+
+    let removed = sweep_stale_scratch(&paths, now_ms());
+
+    assert_eq!(removed, 2, "both backdated entries must be reclaimed");
+    assert!(!stale_dir.exists(), "stale directory must be removed");
+    assert!(!stale_file.exists(), "stale file must be removed");
+    assert!(
+        fresh.exists(),
+        "an entry inside the TTL must survive -- the sweep must never race \
+             an in-flight download or a running test"
+    );
+});
+
+crate::timed_test!(sweep_is_a_no_op_when_scratch_does_not_exist, {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let paths = SoldrPaths::with_root(temp.path().join("never-created"));
+    assert_eq!(sweep_stale_scratch(&paths, now_ms()), 0);
+});
+
+crate::timed_test!(scratch_root_tracks_the_cache_volume, {
+    // The reason scratch is pinned at all: temp -> cache renames are only
+    // atomic while both live on one filesystem. It sits *beside* the cache
+    // rather than inside it, which is precisely why this sweep has to
+    // exist -- nothing that walks `<cache>/**` will ever reclaim it.
+    let temp = tempfile::tempdir().expect("tempdir");
+    let paths = SoldrPaths::with_root(temp.path().to_path_buf());
+    let scratch = crate::core::temp_root_for(&paths);
+    assert!(scratch.starts_with(&paths.root), "same volume as the cache");
+    assert!(!scratch.starts_with(&paths.cache), "but outside the cache");
+});
+
+crate::timed_test!(offline_cook_gc_requires_and_releases_root_ownership, {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let paths = SoldrPaths::with_root(temp.path().join("owned"));
+    let config = crate::core::CookConfig {
+        max_total_gb: 1,
+        ..crate::core::CookConfig::default()
+    };
+
+    let owner = crate::daemon::lifecycle::RootOwnershipGuard::try_acquire(&paths)
+        .expect("acquire owner")
+        .expect("root is initially unowned");
+    assert!(
+        run_offline_cook_gc(&paths, &config)
+            .expect("offline cook probe")
+            .is_none(),
+        "the offline pass must not become a second state.redb owner"
+    );
+    drop(owner);
+    assert!(
+        run_offline_cook_gc(&paths, &config)
+            .expect("offline cook pass")
+            .is_some(),
+        "the pass must resume after daemon ownership is released"
+    );
+});
+
+crate::timed_test!(offline_event_prune_requires_and_releases_root_ownership, {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let paths = SoldrPaths::with_root(temp.path().join("owned"));
+    let owner = crate::daemon::lifecycle::RootOwnershipGuard::try_acquire(&paths)
+        .expect("acquire owner")
+        .expect("root is initially unowned");
+    assert_eq!(
+        run_offline_daemon_event_prune(&paths, 0).expect("offline event probe"),
+        None
+    );
+    drop(owner);
+    assert_eq!(
+        run_offline_daemon_event_prune(&paths, 0).expect("offline event prune"),
+        Some(0)
+    );
+});

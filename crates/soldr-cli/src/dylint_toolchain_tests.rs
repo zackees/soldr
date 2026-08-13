@@ -1,0 +1,385 @@
+//! Unit coverage split from `dylint_toolchain.rs` for the soldr#2493 1,000-line
+//! production-source ceiling.
+
+use super::*;
+
+const COMMIT: &str = "31a9463c6e2794a59ce57a8f37abc6966afc2a58";
+
+crate::timed_test!(parses_prebuilt_dylint_driver_version, {
+    assert_eq!(
+        dylint_driver_version("dylint-driver 6.0.3\n"),
+        Some("6.0.3")
+    );
+    assert_eq!(dylint_driver_version(""), None);
+});
+
+fn sample_map(selected: &str) -> Vec<u8> {
+    format!(
+        r#"{{
+              "schema_version": 1,
+              "nightlies": {{
+                "nightly-2026-01-18": {{
+                  "rust_version": "1.94",
+                  "rustc_release": "1.94.0-nightly",
+                  "rustc_commit_hash": "{COMMIT}"
+                }},
+                "nightly-2026-01-17": {{
+                  "rust_version": "1.94",
+                  "rustc_release": "1.94.0-nightly",
+                  "rustc_commit_hash": "1111111111111111111111111111111111111111"
+                }}
+              }},
+              "versions": {{
+                "1.94": {{
+                  "nightlies": ["nightly-2026-01-18", "nightly-2026-01-17"],
+                  "selected": "{selected}"
+                }}
+              }}
+            }}"#
+    )
+    .into_bytes()
+}
+
+crate::timed_test!(selects_first_newest_nightly_and_full_identity, {
+    let plan =
+        select_from_map(&sample_map("nightly-2026-01-18"), "1.94").expect("select map entry");
+    assert_eq!(plan.channel, "nightly-2026-01-18");
+    assert_eq!(
+        plan.cache_identity(),
+        format!("nightly-2026-01-18|1.94.0-nightly|{COMMIT}")
+    );
+});
+
+crate::timed_test!(rejects_selected_nightly_that_is_not_first, {
+    let error = select_from_map(&sample_map("nightly-2026-01-17"), "1.94")
+        .expect_err("must reject a non-first selection");
+    assert!(error.to_string().contains("newest-first contract"));
+});
+
+crate::timed_test!(explicit_nightly_uses_mapped_identity_without_installing, {
+    let plan = select_explicit_from_map(&sample_map("nightly-2026-01-18"), "nightly-2026-01-18")
+        .expect("explicit map entry");
+    assert_eq!(plan.channel, "nightly-2026-01-18");
+    assert_eq!(plan.compiler_commit, COMMIT);
+});
+
+crate::timed_test!(extracts_major_minor_versions, {
+    assert_eq!(major_minor("1.94.1").as_deref(), Some("1.94"));
+    assert_eq!(major_minor("1.94.0-nightly").as_deref(), Some("1.94"));
+    assert_eq!(major_minor("stable"), None);
+});
+
+crate::timed_test!(recognizes_only_explicit_dated_nightlies, {
+    assert!(is_dated_nightly("nightly-2026-04-16"));
+    assert!(is_dated_nightly(
+        "nightly-2026-04-16-x86_64-unknown-linux-gnu"
+    ));
+    assert!(!is_dated_nightly("nightly"));
+    assert!(!is_dated_nightly("nightly-latest"));
+    assert!(!is_dated_nightly("nightly-2026-04-16junk"));
+    assert!(!is_dated_nightly("nightly-2026-04-16-"));
+    assert!(!is_dated_nightly("nightly-2026-04"));
+    assert!(!is_dated_nightly("1.97.0"));
+});
+
+crate::timed_test!(qualifies_nightly_names_with_the_compiler_host, {
+    assert!(!is_fully_qualified_nightly("nightly-2026-01-18"));
+    assert!(is_fully_qualified_nightly(
+        "nightly-2026-01-18-x86_64-unknown-linux-gnu"
+    ));
+    let host = parse_compiler_host(
+        "rustc 1.94.0-nightly\nrelease: 1.94.0-nightly\nhost: x86_64-unknown-linux-gnu\n",
+    )
+    .expect("parse host");
+    assert_eq!(host, "x86_64-unknown-linux-gnu");
+});
+
+// -----------------------------------------------------------------
+// Warm-run prepared-plan marker (issue: dylint warm-run fast path).
+// -----------------------------------------------------------------
+
+use std::ffi::{OsStr, OsString};
+use std::sync::Mutex;
+
+/// Guards mutation of process-global env vars so these tests never
+/// race other tests in this binary that read the same keys. Mirrors
+/// the pattern in `toolchain.rs`'s test module.
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<OsString>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+        let previous = std::env::var_os(key);
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        unsafe {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+}
+
+fn sample_plan() -> DylintToolchainPlan {
+    DylintToolchainPlan {
+        channel: "nightly-2026-01-18".to_string(),
+        compiler_release: "1.94.0-nightly".to_string(),
+        compiler_commit: COMMIT.to_string(),
+    }
+}
+
+/// Creates `rustup_home/toolchains/<channel>-<anything>` so
+/// `is_toolchain_installed_at`'s prefix-scan fallback matches
+/// regardless of the actual host triple compiled into the test
+/// binary.
+fn stub_installed_toolchain(rustup_home: &Path, channel: &str) {
+    let dir = rustup_home
+        .join("toolchains")
+        .join(format!("{channel}-stub-triple"));
+    std::fs::create_dir_all(dir).expect("create stub toolchain dir");
+}
+
+crate::timed_test!(prepared_marker_roundtrip_hits_when_fresh_and_installed, {
+    let soldr_root = tempfile::tempdir().expect("soldr root tempdir");
+    let rustup_home = tempfile::tempdir().expect("rustup home tempdir");
+    let plan = sample_plan();
+    stub_installed_toolchain(rustup_home.path(), &plan.channel);
+
+    write_prepared_marker_at(soldr_root.path(), "1.94", &plan).expect("write marker");
+
+    let loaded = load_prepared_marker_from(
+        soldr_root.path(),
+        rustup_home.path(),
+        "1.94",
+        Duration::from_secs(60 * 60),
+        SystemTime::now(),
+    );
+    assert_eq!(loaded, Some(plan));
+});
+
+crate::timed_test!(
+    prepared_marker_accepts_fully_qualified_toolchain_directory,
+    {
+        let soldr_root = tempfile::tempdir().expect("soldr root tempdir");
+        let rustup_home = tempfile::tempdir().expect("rustup home tempdir");
+        let mut plan = sample_plan();
+        plan.channel.push_str("-x86_64-unknown-linux-gnu");
+        std::fs::create_dir_all(rustup_home.path().join("toolchains").join(&plan.channel))
+            .expect("create fully-qualified toolchain dir");
+
+        write_prepared_marker_at(soldr_root.path(), "1.94", &plan).expect("write marker");
+
+        let loaded = load_prepared_marker_from(
+            soldr_root.path(),
+            rustup_home.path(),
+            "1.94",
+            Duration::from_secs(60 * 60),
+            SystemTime::now(),
+        );
+        assert_eq!(loaded, Some(plan));
+    }
+);
+
+crate::timed_test!(prepared_marker_rejected_when_ttl_expired, {
+    let soldr_root = tempfile::tempdir().expect("soldr root tempdir");
+    let rustup_home = tempfile::tempdir().expect("rustup home tempdir");
+    let plan = sample_plan();
+    stub_installed_toolchain(rustup_home.path(), &plan.channel);
+
+    write_prepared_marker_at(soldr_root.path(), "1.94", &plan).expect("write marker");
+
+    // "now" far in the future relative to the just-written marker's
+    // mtime, well past a 1-second TTL.
+    let far_future = SystemTime::now() + Duration::from_secs(3600);
+    let loaded = load_prepared_marker_from(
+        soldr_root.path(),
+        rustup_home.path(),
+        "1.94",
+        Duration::from_secs(1),
+        far_future,
+    );
+    assert_eq!(loaded, None);
+});
+
+crate::timed_test!(prepared_marker_ttl_zero_never_trusts_marker, {
+    let soldr_root = tempfile::tempdir().expect("soldr root tempdir");
+    let rustup_home = tempfile::tempdir().expect("rustup home tempdir");
+    let plan = sample_plan();
+    stub_installed_toolchain(rustup_home.path(), &plan.channel);
+
+    write_prepared_marker_at(soldr_root.path(), "1.94", &plan).expect("write marker");
+
+    let loaded = load_prepared_marker_from(
+        soldr_root.path(),
+        rustup_home.path(),
+        "1.94",
+        Duration::ZERO,
+        SystemTime::now(),
+    );
+    assert_eq!(loaded, None);
+});
+
+crate::timed_test!(prepared_marker_rejected_when_malformed, {
+    let soldr_root = tempfile::tempdir().expect("soldr root tempdir");
+    let rustup_home = tempfile::tempdir().expect("rustup home tempdir");
+    stub_installed_toolchain(rustup_home.path(), "nightly-2026-01-18");
+
+    let path = prepared_marker_path(soldr_root.path(), "1.94");
+    std::fs::create_dir_all(path.parent().unwrap()).expect("create marker dir");
+    std::fs::write(&path, "not-a-valid-identity-line\n").expect("write malformed marker");
+
+    let loaded = load_prepared_marker_from(
+        soldr_root.path(),
+        rustup_home.path(),
+        "1.94",
+        Duration::from_secs(60 * 60),
+        SystemTime::now(),
+    );
+    assert_eq!(loaded, None);
+});
+
+crate::timed_test!(prepared_marker_rejected_when_toolchain_dir_missing, {
+    let soldr_root = tempfile::tempdir().expect("soldr root tempdir");
+    // No stubbed toolchain directory under this rustup_home.
+    let rustup_home = tempfile::tempdir().expect("rustup home tempdir");
+    let plan = sample_plan();
+
+    write_prepared_marker_at(soldr_root.path(), "1.94", &plan).expect("write marker");
+
+    let loaded = load_prepared_marker_from(
+        soldr_root.path(),
+        rustup_home.path(),
+        "1.94",
+        Duration::from_secs(60 * 60),
+        SystemTime::now(),
+    );
+    assert_eq!(loaded, None);
+});
+
+crate::timed_test!(parse_marker_identity_roundtrips_cache_identity_format, {
+    let plan = sample_plan();
+    let parsed = parse_marker_identity(&plan.cache_identity()).expect("parse identity line");
+    assert_eq!(parsed, plan);
+});
+
+crate::timed_test!(parse_marker_identity_rejects_malformed_lines, {
+    assert!(parse_marker_identity("garbage").is_none());
+    assert!(parse_marker_identity("nightly-2026-01-18|1.94.0-nightly|short").is_none());
+    assert!(parse_marker_identity("not-nightly|1.94.0-nightly|").is_none());
+});
+
+crate::timed_test!(sanitize_marker_key_strips_path_hostile_characters, {
+    assert_eq!(sanitize_marker_key("1.94"), "1.94");
+    assert_eq!(
+        sanitize_marker_key("nightly-2026-01-18"),
+        "nightly-2026-01-18"
+    );
+    assert_eq!(sanitize_marker_key("a/b\\c:d"), "a_b_c_d");
+});
+
+crate::timed_test!(truthy_env_bypasses_marker_lookup, {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+    {
+        let _env = EnvVarGuard::set(REVERIFY_ENV_VAR, "1");
+        assert!(truthy_env(REVERIFY_ENV_VAR));
+    }
+    {
+        let _env = EnvVarGuard::set(REVERIFY_ENV_VAR, "true");
+        assert!(truthy_env(REVERIFY_ENV_VAR));
+    }
+    {
+        let _env = EnvVarGuard::set(REVERIFY_ENV_VAR, "0");
+        assert!(!truthy_env(REVERIFY_ENV_VAR));
+    }
+    assert!(!truthy_env(REVERIFY_ENV_VAR));
+});
+
+crate::timed_test!(prepare_ttl_parses_env_override_and_falls_back_to_default, {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+    {
+        let _env = EnvVarGuard::set(PREPARE_TTL_ENV_VAR, "60");
+        assert_eq!(prepare_ttl(), Duration::from_secs(60));
+    }
+    {
+        let _env = EnvVarGuard::set(PREPARE_TTL_ENV_VAR, "0");
+        assert_eq!(prepare_ttl(), Duration::ZERO);
+    }
+    {
+        let _env = EnvVarGuard::set(PREPARE_TTL_ENV_VAR, "not-a-number");
+        assert_eq!(prepare_ttl(), DEFAULT_PREPARE_TTL);
+    }
+    assert_eq!(prepare_ttl(), DEFAULT_PREPARE_TTL);
+});
+
+// -----------------------------------------------------------------
+// Regression guard: DylintToolchainPlan::apply_to_command must only
+// stamp the dylint-scoped identity env vars (plus the best-effort
+// DYLINT_DRIVER_PATH) and must NEVER switch the analyzed
+// workspace's cargo build profile. A sibling repo shipped exactly
+// this bug once — soldr injected a profile override inside a
+// dylint run and silently changed what got built/analyzed.
+// -----------------------------------------------------------------
+crate::timed_test!(
+    apply_to_command_never_touches_build_profile_or_injects_args,
+    {
+        let plan = sample_plan();
+        let mut command = std::process::Command::new("does-not-matter");
+        plan.apply_to_command(&mut command);
+
+        let envs: std::collections::HashMap<&OsStr, Option<&OsStr>> = command.get_envs().collect();
+
+        let expected_keys = [
+            "RUSTUP_TOOLCHAIN",
+            TOOLCHAIN_ENV_VAR,
+            COMPILER_RELEASE_ENV_VAR,
+            COMPILER_COMMIT_ENV_VAR,
+            CACHE_IDENTITY_ENV_VAR,
+            PREPARED_IDENTITY_ENV_VAR,
+        ];
+        for key in expected_keys {
+            assert!(
+                envs.contains_key(OsStr::new(key)),
+                "apply_to_command must set {key}"
+            );
+        }
+
+        for key in envs.keys() {
+            let key_str = key.to_string_lossy();
+            assert!(
+                !key_str.starts_with("CARGO_PROFILE_RELEASE_")
+                    && !key_str.starts_with("CARGO_BUILD_")
+                    && key_str != "PROFILE",
+                "dylint scope stamping must never switch the analyzed workspace's \
+                 build profile, but set: {key_str}"
+            );
+            // DYLINT_DRIVER_PATH is the one soldr-owned addition beyond
+            // the identity env vars (best-effort; may be absent if
+            // SoldrPaths::new() can't resolve in this environment).
+            assert!(
+                expected_keys.contains(&key_str.as_ref()) || key_str == "DYLINT_DRIVER_PATH",
+                "unexpected env var set by DylintToolchainPlan::apply_to_command: {key_str}"
+            );
+        }
+
+        // A profile switch could also arrive as an injected CLI arg
+        // (`--release` / `--profile <name>`); apply_to_command must
+        // never add args to the command at all.
+        assert_eq!(
+            command.get_args().count(),
+            0,
+            "apply_to_command must not inject any CLI args (e.g. --release/--profile)"
+        );
+    }
+);

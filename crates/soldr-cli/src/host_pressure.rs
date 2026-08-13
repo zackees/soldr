@@ -172,7 +172,7 @@ fn resolve_jobs() -> Option<usize> {
 ///
 /// Only the Windows probe consumes it in production, so a non-Windows,
 /// non-test build sees it as unused -- that is expected, not dead code.
-#[cfg_attr(not(windows), allow(dead_code))]
+#[allow(dead_code)]
 fn is_compiler_image(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     const EXACT: &[&str] = &["rustc.exe", "link.exe", "soldr.exe", "soldr-daemon.exe"];

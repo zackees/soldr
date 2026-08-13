@@ -246,7 +246,16 @@ timed_test!(
         let shim_dir = root.join("shims");
         let log_path = root.join("cargo.log");
         fs::create_dir_all(&shim_dir).expect("create shim dir");
-        let cargo_shim = shim_dir.join(if cfg!(windows) { "cargo.exe" } else { "cargo" });
+        let cargo_shim = shim_dir.join(
+            if matches!(
+                soldr_platform::host::facts::os(),
+                soldr_platform::host::facts::HostOs::Windows
+            ) {
+                "cargo.exe"
+            } else {
+                "cargo"
+            },
+        );
         let soldr = common::soldr_bin();
         fs::copy(&soldr, &cargo_shim).expect("copy soldr as cargo multicall shim");
         let cargo = install_logging_fake_cargo(&log_path);
@@ -296,8 +305,10 @@ timed_test!(
 );
 
 fn fake_cargo_toolchain_recorder_script(log_path: &Path) -> String {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         format!(
             "@echo off\n\
              setlocal enabledelayedexpansion\n\
@@ -312,9 +323,7 @@ fn fake_cargo_toolchain_recorder_script(log_path: &Path) -> String {
              exit /b 0\n",
             log_path.display()
         )
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         format!(
             "#!/bin/sh\n\
              sep=$(printf '\\037')\n\
@@ -336,8 +345,10 @@ fn fake_cargo_toolchain_recorder_script(log_path: &Path) -> String {
 }
 
 fn fake_zthreads_retry_cargo_script(log_path: &Path) -> String {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         format!(
             "@echo off\n\
              set \"attempt=\"\n\
@@ -356,9 +367,7 @@ fn fake_zthreads_retry_cargo_script(log_path: &Path) -> String {
              exit /b 0\n",
             log_path.display()
         )
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         format!(
             "#!/bin/sh\n\
              attempt=''\n\
@@ -407,8 +416,10 @@ fn zthreads_retry_command(cargo: &Path, cache_root: &Path) -> Command {
 }
 
 fn fake_timeout_then_success_cargo_script(marker: &Path, log_path: &Path) -> String {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         format!(
             "@echo off\n\
              echo cargo %*>>\"{1}\"\n\
@@ -428,9 +439,7 @@ fn fake_timeout_then_success_cargo_script(marker: &Path, log_path: &Path) -> Str
             marker.display(),
             log_path.display()
         )
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         format!(
             "#!/bin/sh\n\
              echo \"cargo $*\" >> \"{1}\"\n\
@@ -454,8 +463,10 @@ fn fake_timeout_then_success_cargo_script(marker: &Path, log_path: &Path) -> Str
 }
 
 fn fake_long_running_cargo_script(mode: &str, log_path: &Path, lock_path: &Path) -> String {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         let body = match mode {
             "progress" => String::from(
                 "for /L %%i in (1,1,3) do (\n  echo cargo progress %%i\n  ping -n 2 127.0.0.1 >nul\n)\n",
@@ -474,9 +485,7 @@ fn fake_long_running_cargo_script(mode: &str, log_path: &Path, lock_path: &Path)
             log_path.display(),
             body
         )
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         let body = match mode {
             "progress" => String::from(
                 "i=1\nwhile [ \"$i\" -le 3 ]; do\n  echo \"cargo progress $i\"\n  sleep 1\n  i=$((i + 1))\ndone\n",
@@ -499,15 +508,15 @@ fn fake_long_running_cargo_script(mode: &str, log_path: &Path, lock_path: &Path)
 }
 
 fn fake_always_slow_cargo_script(log_path: &Path) -> String {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         format!(
             "@echo off\necho cargo %*>>\"{}\"\nif \"%~1\"==\"metadata\" exit /b 0\nping -n 6 127.0.0.1 >nul\nexit /b 0\n",
             log_path.display()
         )
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         format!(
             "#!/bin/sh\necho \"cargo $*\" >> \"{}\"\n[ \"${{1:-}}\" = metadata ] && exit 0\nsleep 5\nexit 0\n",
             log_path.display()
@@ -516,16 +525,16 @@ fn fake_always_slow_cargo_script(log_path: &Path) -> String {
 }
 
 fn fake_cargo_with_descendant_script(log_path: &Path, survived_path: &Path) -> String {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         format!(
             "@echo off\necho cargo %*>>\"{0}\"\nif \"%~1\"==\"metadata\" exit /b 0\nstart /B \"\" cmd /C \"ping -n 4 127.0.0.1 ^>nul ^& type nul ^> ^\"{1}^\"\"\nping -n 11 127.0.0.1 >nul\nexit /b 0\n",
             log_path.display(),
             survived_path.display()
         )
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         format!(
             "#!/bin/sh\necho \"cargo $*\" >> \"{0}\"\n[ \"${{1:-}}\" = metadata ] && exit 0\n(sleep 3; : > '{1}') &\nsleep 10\nexit 0\n",
             log_path.display(),
@@ -534,8 +543,13 @@ fn fake_cargo_with_descendant_script(log_path: &Path, survived_path: &Path) -> S
     }
 }
 
-#[cfg(not(windows))]
 timed_test!(fake_long_running_cargo_script_propagates_failures, {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
     let root = unique_temp_dir("fake-long-running-cargo-failures");
     let tool_dir = root.join("tool");
     let cargo = fake_script_path(&tool_dir, "cargo");
@@ -1125,9 +1139,14 @@ fn cargo_subcommand_rejects_no_cache_flag() {
         "expected cargo-subcommand form to fail mentioning --no-cache: {stderr}"
     );
 }
-#[cfg(windows)]
 #[test]
 fn windows_worktree_copy_relocates_wrapper_and_original_dir_can_be_removed() {
+    if !matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
     let cache_root = unique_temp_dir("windows-self-relocate-cache");
     let worktree = unique_temp_dir("windows-self-relocate-worktree");
     let source_dir = worktree.join("target").join("debug");

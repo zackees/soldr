@@ -20,7 +20,16 @@ fn standalone_cc_compiles_direct_and_cmake_projects() {
         eprintln!("skipping: SOLDR_TEST_NETWORK not set");
         return;
     }
-    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+    if !matches!(
+        (
+            soldr_platform::host::facts::os(),
+            soldr_platform::host::facts::arch()
+        ),
+        (
+            soldr_platform::host::facts::HostOs::Linux,
+            soldr_platform::host::facts::HostArch::X86_64
+        )
+    ) {
         eprintln!("skipping standalone compiler acceptance test outside x86_64 Linux");
         return;
     }

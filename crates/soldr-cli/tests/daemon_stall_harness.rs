@@ -39,109 +39,39 @@ const STALL_BUDGET_SECS: &str = "3";
 /// different error entirely.
 const WEDGE_HOLD: Duration = Duration::from_secs(30);
 
-/// A short process-unique suffix for unix socket paths, which are length
-/// limited (see `spawn_wedged_daemon`). Keeps enough entropy to avoid a
-/// collision with a leftover directory from an earlier run.
-#[cfg(unix)]
-fn terse_suffix() -> String {
-    format!(
-        "{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .subsec_nanos()
-            % 100_000
-    )
-}
-
-/// A process-unique endpoint name, so concurrent test binaries never collide.
-#[cfg(windows)]
-fn unique_suffix() -> String {
-    format!(
-        "{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos()
-    )
-}
-
 /// Stand up a daemon that accepts a connection and then answers nothing.
 ///
 /// Returns the endpoint the client should dial, plus a guard that keeps the
-/// server alive (and, on Unix, cleans up the socket directory).
-#[cfg(windows)]
+/// server alive and retires its host endpoint.
 fn spawn_wedged_daemon() -> (std::path::PathBuf, WedgeGuard) {
-    let pipe_name = format!(r"\\.\pipe\soldr-stall-harness-{}", unique_suffix());
+    let endpoint = soldr_platform::ipc::endpoint::ephemeral("soldr-stall-harness");
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
-    let server_pipe = pipe_name.clone();
+    let server_endpoint = endpoint.clone();
     let handle = std::thread::spawn(move || {
-        // Own the pipe inside one runtime on one thread, so the tokio
+        // Own the listener inside one runtime on one thread, so the tokio
         // resource stays on the reactor that created it.
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("server runtime");
         runtime.block_on(async move {
-            let server = tokio::net::windows::named_pipe::ServerOptions::new()
-                .first_pipe_instance(true)
-                .create(&server_pipe)
-                .expect("create wedged-daemon pipe");
-            // Signal only once the pipe exists, so the client cannot race
-            // ahead and see "no such pipe" instead of the stall.
+            use interprocess::local_socket::traits::tokio::Listener as _;
+            let listener = soldr_platform::ipc::broker::bind_listener(&server_endpoint, 1)
+                .expect("create wedged-daemon listener");
             ready_tx.send(()).expect("signal ready");
-            server.connect().await.expect("accept client");
+            let stream = listener.accept().await.expect("accept client");
             tokio::time::sleep(WEDGE_HOLD).await;
+            drop(stream);
         });
     });
     ready_rx
         .recv_timeout(Duration::from_secs(10))
         .expect("wedged daemon pipe never became ready");
     (
-        std::path::PathBuf::from(pipe_name),
+        std::path::PathBuf::from(&endpoint),
         WedgeGuard {
             handle: Some(handle),
-            dir: None,
-        },
-    )
-}
-
-#[cfg(unix)]
-fn spawn_wedged_daemon() -> (std::path::PathBuf, WedgeGuard) {
-    use std::os::unix::net::UnixListener;
-
-    // A unix socket path must fit `sun_path`, which is ~104 bytes on macOS.
-    // `env::temp_dir()` there is `$TMPDIR` -- a long `/var/folders/../T/`
-    // path -- so a descriptive directory name under it overflows and `bind`
-    // fails with "path must be shorter than SUN_LEN". Bind under `/tmp` with
-    // a terse name instead; it is short and writable on every unix CI image.
-    let dir = std::path::PathBuf::from("/tmp").join(format!("sldr-st-{}", terse_suffix()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create wedge dir");
-    let sock = dir.join("d.sock");
-    assert!(
-        sock.as_os_str().len() < 100,
-        "socket path must fit sun_path on every unix, got {} bytes: {sock:?}",
-        sock.as_os_str().len()
-    );
-    // Bind on this thread so the socket exists before the client dials; the
-    // listener's backlog then holds the connection until the thread accepts.
-    let listener = UnixListener::bind(&sock).expect("bind wedged-daemon socket");
-    let handle = std::thread::spawn(move || {
-        if let Ok((stream, _)) = listener.accept() {
-            // Deliberately answer nothing: this is the wedge. Holding the
-            // stream keeps the peer connected rather than seeing EOF.
-            std::thread::sleep(WEDGE_HOLD);
-            drop(stream);
-        }
-    });
-    (
-        sock,
-        WedgeGuard {
-            handle: Some(handle),
-            dir: Some(dir),
+            endpoint: Some(endpoint),
         },
     )
 }
@@ -152,14 +82,14 @@ fn spawn_wedged_daemon() -> (std::path::PathBuf, WedgeGuard) {
 /// `WEDGE_HOLD` for no benefit.
 struct WedgeGuard {
     handle: Option<std::thread::JoinHandle<()>>,
-    dir: Option<std::path::PathBuf>,
+    endpoint: Option<String>,
 }
 
 impl Drop for WedgeGuard {
     fn drop(&mut self) {
         self.handle.take();
-        if let Some(dir) = self.dir.take() {
-            let _ = std::fs::remove_dir_all(dir);
+        if let Some(endpoint) = self.endpoint.take() {
+            soldr_platform::ipc::broker::retire_endpoint(&endpoint);
         }
     }
 }

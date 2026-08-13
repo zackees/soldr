@@ -1,8 +1,6 @@
 //! Unix broker-endpoint resolution tests. This is a non-production test
 //! target, so the whole file is cfg-gated to Unix hosts.
 
-#![cfg(unix)]
-
 use soldr_cli::broker_identity::{
     authoritative_broker_executable, daemon_session_endpoint_from_executable,
     resolve_unix_for_executable, resolve_unix_for_home, BrokerEndpointFallback,
@@ -10,6 +8,12 @@ use soldr_cli::broker_identity::{
 
 #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
 fn linux_contract_mapping_is_exact() {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
     let endpoint = resolve_unix_for_home(
         std::path::Path::new("/home/niteris"),
         std::path::Path::new("/run/user/1000"),
@@ -31,6 +35,12 @@ fn linux_contract_mapping_is_exact() {
 
 #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
 fn detached_broker_keeps_endpoint_beside_its_staged_executable() {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
     let endpoint = resolve_unix_for_executable(
         std::path::Path::new("/mounted/home/.soldr/broker/soldr-broker"),
         std::path::Path::new("/run/user/1000"),
@@ -47,6 +57,12 @@ fn detached_broker_keeps_endpoint_beside_its_staged_executable() {
 
 #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
 fn unix_daemon_session_mapping_is_executable_sibling() {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
     let temp = tempfile::tempdir().expect("tempdir");
     let executable = temp.path().join("soldr-daemon");
     std::fs::write(&executable, b"daemon").expect("daemon image");
@@ -64,6 +80,12 @@ fn unix_daemon_session_mapping_is_executable_sibling() {
 
 #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
 fn unix_daemon_session_mapping_distinguishes_executable_leaves() {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
     let temp = tempfile::tempdir().expect("tempdir");
     let first_executable = temp.path().join("soldr-daemon-a");
     let second_executable = temp.path().join("soldr-daemon-b");
@@ -79,13 +101,25 @@ fn unix_daemon_session_mapping_distinguishes_executable_leaves() {
 
 #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
 fn canonical_existing_ancestor_collapses_symlinked_home_spelling() {
-    use std::os::unix::fs::symlink;
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
 
     let temp = tempfile::tempdir().expect("tempdir");
     let real = temp.path().join("real-home");
     let alias = temp.path().join("alias-home");
     std::fs::create_dir_all(&real).expect("real home");
-    symlink(&real, &alias).expect("home symlink");
+    soldr_platform::fs::links::create(real.to_str().expect("UTF-8 real home"), &alias, true)
+        .expect("home symlink");
     let resolved = authoritative_broker_executable(&alias, "soldr-broker");
     assert_eq!(
         resolved,
@@ -97,6 +131,12 @@ fn canonical_existing_ancestor_collapses_symlinked_home_spelling() {
 
 #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
 fn unix_daemon_session_overflow_uses_a_short_path_derived_name() {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
     let temp = tempfile::tempdir().expect("tempdir");
     let directory = temp.path().join("long-route-segment".repeat(8));
     std::fs::create_dir_all(&directory).expect("long route directory");
@@ -116,6 +156,12 @@ fn unix_daemon_session_overflow_uses_a_short_path_derived_name() {
 
 #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
 fn unix_fallback_order_is_overflow_then_filesystem() {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
     let home = std::path::Path::new(
         "/very/long/home/profile/whose/logical/broker/socket/cannot/fit/in/sun_path",
     );
@@ -154,6 +200,12 @@ fn unix_fallback_order_is_overflow_then_filesystem() {
 
 #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
 fn unix_overflow_fallback_retries_under_tmp_when_runtime_dir_is_too_long() {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
     let home = std::path::Path::new(
         "/very/long/home/profile/whose/logical/broker/socket/cannot/fit/in/sun_path",
     );

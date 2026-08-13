@@ -8,7 +8,6 @@
 //!
 //! Same `cfg(not(windows))` gate as `cli_maturin.rs`: the fixture is a `sh`
 //! script.
-#![cfg(not(windows))]
 
 mod common;
 
@@ -94,6 +93,12 @@ fn expected_compatibility(_triple: &str) -> &'static str {
 }
 
 timed_test!(soldr_wheel_resolves_the_alias_and_tags_the_wheel, {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
     let cache_root = unique_temp_dir("soldr-wheel-argv");
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
@@ -141,6 +146,12 @@ timed_test!(soldr_wheel_resolves_the_alias_and_tags_the_wheel, {
 });
 
 timed_test!(soldr_wheel_forwards_extra_arguments_to_maturin, {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
     let cache_root = unique_temp_dir("soldr-wheel-passthrough");
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
@@ -183,6 +194,12 @@ timed_test!(soldr_wheel_forwards_extra_arguments_to_maturin, {
 timed_test!(
     soldr_wheel_defaults_to_a_dev_host_wheel_with_no_floor_claim,
     {
+        if matches!(
+            soldr_platform::host::facts::os(),
+            soldr_platform::host::facts::HostOs::Windows
+        ) {
+            return;
+        }
         let cache_root = unique_temp_dir("soldr-wheel-default");
         let log_path = cache_root.join("tool.log");
         let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
@@ -233,6 +250,12 @@ stderr:
 );
 
 timed_test!(soldr_wheel_rejects_an_unknown_target_with_a_suggestion, {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
     let cache_root = unique_temp_dir("soldr-wheel-unknown-target");
     let log_path = cache_root.join("tool.log");
     seed_cached_fake_maturin(&cache_root, &log_path);

@@ -1,8 +1,10 @@
+#![allow(missing_docs)]
+
 use std::io::{self, Read, Write};
 use std::sync::mpsc;
 use std::time::Duration;
 
-struct DeadlineStream {
+pub struct ControlStream {
     commands: mpsc::Sender<IoCommand>,
     recv_timeout: Duration,
     send_timeout: Duration,
@@ -25,7 +27,7 @@ enum IoCommand {
     },
 }
 
-impl DeadlineStream {
+impl ControlStream {
     fn spawn(
         endpoint: String,
         connect_timeout: Duration,
@@ -151,7 +153,7 @@ fn control_reply<T>(
     }
 }
 
-impl Read for DeadlineStream {
+impl Read for ControlStream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if buf.is_empty() {
             return Ok(0);
@@ -174,7 +176,7 @@ impl Read for DeadlineStream {
     }
 }
 
-impl Write for DeadlineStream {
+impl Write for ControlStream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if buf.is_empty() {
             return Ok(0);
@@ -209,23 +211,24 @@ impl Write for DeadlineStream {
     }
 }
 
-pub(super) fn connect(
-    endpoint: String,
-    route_timeout: Duration,
-    request_timeout: Duration,
-    service_name: String,
-) -> io::Result<crate::daemon::client::BoxedControlStream> {
+pub fn connect(endpoint: String, route_timeout: Duration) -> io::Result<ControlStream> {
     // Interprocess 2.4.3's high-level Windows local-socket adapters discard
     // ConnectWaitMode, so the worker uses its low-level named-pipe Tokio API
     // directly. That API preserves the bounded connect and supports
     // cancellation of each overlapped I/O future at its deadline. Keeping the
     // runtime on the worker also remains safe when synchronous daemon control
     // is called from inside Soldr's existing Tokio runtime.
-    let stream = DeadlineStream::spawn(endpoint, route_timeout, route_timeout, route_timeout)?;
-    let mut stream = super::negotiate_control_tunnel(stream, route_timeout, service_name)?;
-    stream.recv_timeout = request_timeout.max(Duration::from_millis(200));
-    stream.send_timeout = request_timeout;
-    Ok(Box::new(stream))
+    ControlStream::spawn(endpoint, route_timeout, route_timeout, route_timeout)
+}
+
+pub fn configure_timeouts(
+    stream: &mut ControlStream,
+    recv_timeout: Duration,
+    send_timeout: Duration,
+) -> io::Result<()> {
+    stream.recv_timeout = recv_timeout;
+    stream.send_timeout = send_timeout;
+    Ok(())
 }
 
 fn control_timeout(operation: &str, timeout: Duration) -> io::Error {
@@ -242,7 +245,8 @@ fn control_timeout(operation: &str, timeout: Duration) -> io::Error {
 mod tests {
     use super::*;
 
-    crate::timed_test!(missing_pipe_is_bounded_inside_tokio_runtime, {
+    #[test] // allow-bare-test: soldr-platform cannot depend on soldr-core's watchdog
+    fn missing_pipe_is_bounded_inside_tokio_runtime() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -251,11 +255,14 @@ mod tests {
             let endpoint = format!(
                 r"\\.\pipe\soldr-missing-control-test-{}-{}",
                 std::process::id(),
-                crate::broker_control_transport::next_request_id()
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("clock")
+                    .as_nanos()
             );
             let timeout = Duration::from_millis(100);
             let started = std::time::Instant::now();
-            let result = DeadlineStream::spawn(endpoint, timeout, timeout, timeout);
+            let result = ControlStream::spawn(endpoint, timeout, timeout, timeout);
             assert!(result.is_err());
             assert!(
                 started.elapsed() < Duration::from_secs(2),
@@ -263,5 +270,5 @@ mod tests {
                 started.elapsed()
             );
         });
-    });
+    }
 }

@@ -8,16 +8,16 @@ use soldr_cli::timed_test;
 use std::fs;
 
 fn broken_rust_objcopy_cargo_script() -> String {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         "@echo off\n\
          echo warning: stripping debug info with `rust-objcopy` failed: exit status: 127 1>&2\n\
          echo = note: rust-objcopy: error while loading shared libraries: libLLVM.so.21.1-rust-1.94.1-stable: cannot open shared object file 1>&2\n\
          exit /b 0\n"
             .to_owned()
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         "#!/bin/sh\n\
          printf '%s\\n' 'warning: stripping debug info with `rust-objcopy` failed: exit status: 127' >&2\n\
          printf '%s\\n' '= note: rust-objcopy: error while loading shared libraries: libLLVM.so.21.1-rust-1.94.1-stable: cannot open shared object file' >&2\n\

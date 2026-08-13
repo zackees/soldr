@@ -1,5 +1,3 @@
-#![cfg(not(windows))]
-
 mod common;
 
 use common::*;
@@ -44,6 +42,12 @@ fn install_fake_build_from_source_cargo(log_path: &Path) -> PathBuf {
 }
 
 timed_test!(build_from_source_replaces_inherited_rustc_wrappers, {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
     let cache_root = unique_temp_dir("build-from-source-wrapper-policy");
     let log_path = cache_root.join("cargo.log");
     let cargo = install_fake_build_from_source_cargo(&log_path);
@@ -106,6 +110,12 @@ timed_test!(build_from_source_replaces_inherited_rustc_wrappers, {
 // to the historical fully-uncached spawn, so pin it: without this, a
 // regression that ignores the kill switch would go unnoticed.
 timed_test!(build_from_source_cache_kill_switch_scrubs_every_wrapper, {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
     let cache_root = unique_temp_dir("build-from-source-wrapper-killswitch");
     let log_path = cache_root.join("cargo.log");
     let cargo = install_fake_build_from_source_cargo(&log_path);

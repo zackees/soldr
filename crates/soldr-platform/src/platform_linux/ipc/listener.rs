@@ -104,6 +104,48 @@ impl ControlListener for UnixControlListener {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test] // allow-bare-test: soldr-platform is a dependency leaf (#2493)
+    fn session_listener_creates_missing_parent() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let _context = runtime.enter();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let parent = temp.path().join("missing").join("runtime");
+        let socket = parent.join("daemon.session");
+        let listener = bind_owner_only_listener(&socket.display().to_string())
+            .expect("bind owner-only listener");
+        assert!(parent.is_dir());
+        drop(listener);
+    }
+
+    #[test] // allow-bare-test: soldr-platform is a dependency leaf (#2493)
+    fn endpoint_retirement_is_identity_fenced() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let _context = runtime.enter();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let socket = temp.path().join("control.sock");
+        let (old_listener, old_identity) = claim_control_endpoint_at(&socket).expect("old endpoint");
+        std::fs::remove_file(&socket).expect("unlink old endpoint name");
+        let (replacement_listener, replacement_identity) =
+            claim_control_endpoint_at(&socket).expect("replacement endpoint");
+        assert_ne!(old_identity, replacement_identity);
+        assert!(!remove_unix_socket_if_matches(&socket, old_identity).unwrap());
+        assert!(socket.exists());
+        assert!(remove_unix_socket_if_matches(&socket, replacement_identity).unwrap());
+        drop(replacement_listener);
+        drop(old_listener);
+    }
+}
+
 /// Bind an owner-only SESSION listener at `socket_path` (a filesystem
 /// path on Linux). Creates the parent directory when the broker's
 /// runtime namespace does not exist yet, binds with mode 0o600, and

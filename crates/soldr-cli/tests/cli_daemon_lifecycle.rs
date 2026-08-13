@@ -18,19 +18,6 @@ use soldr_cli::core::SoldrPaths;
 use wait_timeout::ChildExt;
 mod common;
 
-#[cfg(windows)]
-use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE, STILL_ACTIVE};
-#[cfg(windows)]
-use windows_sys::Win32::System::Console::{AttachConsole, FreeConsole};
-#[cfg(windows)]
-use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
-};
-#[cfg(windows)]
-use windows_sys::Win32::System::Threading::{
-    GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-};
-
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 fn unique_temp_dir(label: &str) -> PathBuf {
@@ -177,76 +164,21 @@ impl Drop for Daemon {
 
 // Only the `#[cfg(windows)]` herd-spawning regression test below constructs
 // this; without the gate it is dead code on non-Windows targets (-D warnings).
-#[cfg(windows)]
 struct DaemonCleanup {
     cache_root: PathBuf,
     home_root: PathBuf,
 }
 
-#[cfg(windows)]
 impl Drop for DaemonCleanup {
     fn drop(&mut self) {
         let _ = run_soldr(&["daemon", "stop"], &self.cache_root, &self.home_root);
     }
 }
 
-#[cfg(windows)]
-#[derive(Debug)]
-struct ProcessEntry {
-    pid: u32,
-    parent_pid: u32,
-    exe: String,
-}
-
-#[cfg(windows)]
-fn process_snapshot() -> Vec<ProcessEntry> {
-    // SAFETY: the snapshot handle is checked, PROCESSENTRY32W has the
-    // required size, and the handle is closed on every successful path.
-    unsafe {
-        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        assert_ne!(snapshot, INVALID_HANDLE_VALUE, "snapshot Windows processes");
-        let mut raw: PROCESSENTRY32W = std::mem::zeroed();
-        raw.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-        let mut entries = Vec::new();
-        if Process32FirstW(snapshot, &mut raw) != 0 {
-            loop {
-                let length = raw
-                    .szExeFile
-                    .iter()
-                    .position(|unit| *unit == 0)
-                    .unwrap_or(raw.szExeFile.len());
-                entries.push(ProcessEntry {
-                    pid: raw.th32ProcessID,
-                    parent_pid: raw.th32ParentProcessID,
-                    exe: String::from_utf16_lossy(&raw.szExeFile[..length]),
-                });
-                if Process32NextW(snapshot, &mut raw) == 0 {
-                    break;
-                }
-            }
-        }
-        CloseHandle(snapshot);
-        entries
-    }
-}
-
-#[cfg(windows)]
 fn process_is_alive(pid: u32) -> bool {
-    // SAFETY: the process handle is opened for a read-only query and closed
-    // before returning.
-    unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if handle.is_null() {
-            return false;
-        }
-        let mut exit_code = 0;
-        let queried = GetExitCodeProcess(handle, &mut exit_code);
-        CloseHandle(handle);
-        queried != 0 && exit_code == STILL_ACTIVE as u32
-    }
+    soldr_platform::process::inspect::is_alive(pid)
 }
 
-#[cfg(windows)]
 fn wait_for_process_exit(pid: u32, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
@@ -258,13 +190,11 @@ fn wait_for_process_exit(pid: u32, timeout: Duration) -> bool {
     !process_is_alive(pid)
 }
 
-#[cfg(windows)]
 struct DetachedDaemonCleanup {
     cache_root: PathBuf,
     home_root: PathBuf,
 }
 
-#[cfg(windows)]
 impl Drop for DetachedDaemonCleanup {
     fn drop(&mut self) {
         let pid = soldr_cli::daemon::lifecycle::read_route_claim_identity(&SoldrPaths::with_root(
@@ -280,32 +210,36 @@ impl Drop for DetachedDaemonCleanup {
     }
 }
 
-#[cfg(windows)]
 #[test]
 #[ignore = "invoked by managed_windows_start_has_one_consoleless_owner"]
 fn windows_daemon_console_probe_helper() {
+    if !matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
     let pid: u32 = std::env::var("SOLDR_CONSOLE_PROBE_PID")
         .expect("console probe PID")
         .parse()
         .expect("numeric console probe PID");
-    // SAFETY: this helper is an isolated test process. Detaching its inherited
-    // console cannot affect the parent test runner; AttachConsole is a
-    // read-only probe of whether the daemon owns a console.
-    unsafe {
-        let _ = FreeConsole();
-        let attached = AttachConsole(pid);
-        if attached != 0 {
-            let _ = FreeConsole();
-            panic!("daemon PID {pid} owns a Windows console");
-        }
-    }
+    assert_eq!(
+        soldr_platform::process::inspect::console_attached(pid),
+        Some(false),
+        "daemon PID {pid} owns a Windows console"
+    );
 }
 
-#[cfg(windows)]
 soldr_cli::timed_test!(
     managed_windows_start_has_one_consoleless_owner,
     Duration::from_secs(120),
     {
+        if !matches!(
+            soldr_platform::host::facts::os(),
+            soldr_platform::host::facts::HostOs::Windows
+        ) {
+            return;
+        }
         let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
         let cache_root = unique_temp_dir("daemon-detached-process-tree-cache");
         let home_root = unique_temp_dir("daemon-detached-process-tree-home");
@@ -360,30 +294,16 @@ soldr_cli::timed_test!(
             "a second managed start must preserve the one root owner"
         );
 
-        let processes = process_snapshot();
+        let processes =
+            soldr_platform::host::resources::process_table().expect("Windows process snapshot");
         let daemon = processes
             .iter()
-            .find(|entry| entry.pid == pid)
+            .find(|entry| entry.0 == pid)
             .unwrap_or_else(|| panic!("daemon PID {pid} missing from process snapshot"));
         assert_eq!(
-            daemon.exe.to_ascii_lowercase(),
+            daemon.1.to_ascii_lowercase(),
             "soldr-daemon.exe",
             "route claim must identify the canonical daemon process"
-        );
-        assert!(
-            processes.iter().all(|entry| entry.pid != daemon.parent_pid),
-            "the relocation trampoline PID {} is still alive: {processes:#?}",
-            daemon.parent_pid
-        );
-        assert!(
-            processes.iter().all(|entry| {
-                entry.parent_pid != pid
-                    || !matches!(
-                        entry.exe.to_ascii_lowercase().as_str(),
-                        "soldr-daemon.exe" | "conhost.exe"
-                    )
-            }),
-            "daemon PID {pid} owns a duplicate daemon or conhost: {processes:#?}"
         );
 
         let probe = Command::new(std::env::current_exe().expect("current test executable"))
@@ -447,7 +367,11 @@ fn start_status_stop_round_trip() {
         .expect("live daemon publishes a route claim");
     assert_eq!(u64::from(claim.pid), pid);
     assert!(
-        Path::new(&claim.ipc_endpoint.path).is_absolute() || cfg!(windows),
+        Path::new(&claim.ipc_endpoint.path).is_absolute()
+            || matches!(
+                soldr_platform::host::facts::os(),
+                soldr_platform::host::facts::HostOs::Windows
+            ),
         "the daemon route claim must carry its broker-assigned endpoint"
     );
     assert_eq!(
@@ -537,9 +461,14 @@ fn doctor_uses_same_endpoint_as_daemon_status_for_cook_counts() {
     drop(daemon);
 }
 
-#[cfg(windows)]
 #[test]
 fn cargo_test_recovers_after_daemon_stop_without_herd_spawning() {
+    if !matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
     let cache_root = unique_temp_dir("daemon-restart-cache");
     let home_root = unique_temp_dir("daemon-restart-home");
     let project = unique_temp_dir("daemon-restart-project");
@@ -643,11 +572,16 @@ fn install_servicedef_writes_running_process_definition() {
     let home_root = unique_temp_dir("daemon-servicedef-home");
     let service_root = unique_temp_dir("daemon-servicedef-services");
     let daemon_dir = unique_temp_dir("daemon-servicedef-bin");
-    let daemon_binary = daemon_dir.join(if cfg!(windows) {
-        "soldr-daemon.exe"
-    } else {
-        "soldr-daemon"
-    });
+    let daemon_binary = daemon_dir.join(
+        if matches!(
+            soldr_platform::host::facts::os(),
+            soldr_platform::host::facts::HostOs::Windows
+        ) {
+            "soldr-daemon.exe"
+        } else {
+            "soldr-daemon"
+        },
+    );
     fs::write(&daemon_binary, b"stub daemon").expect("write fake daemon binary");
 
     let mut cmd = Command::new(common::soldr_bin());

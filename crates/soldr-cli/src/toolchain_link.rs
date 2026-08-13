@@ -186,7 +186,6 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    #[cfg(windows)]
     fn system_cmd_exe() -> PathBuf {
         let system_root = std::env::var_os("SystemRoot")
             .unwrap_or_else(|| std::ffi::OsString::from("C:\\Windows"));
@@ -225,16 +224,10 @@ mod tests {
     fn shim_path_appends_exe_on_windows_only() {
         let dir = PathBuf::from("/tmp/shims");
         let p = shim_path(&dir, "cargo");
-        #[cfg(windows)]
+        let expected = crate::platform::executable::name::native("cargo");
         assert!(
-            p.to_string_lossy().ends_with("cargo.exe"),
-            "windows shim path should end with .exe: {}",
-            p.display()
-        );
-        #[cfg(not(windows))]
-        assert!(
-            p.to_string_lossy().ends_with("cargo"),
-            "unix shim path should not have an extension: {}",
+            p.ends_with(&expected),
+            "shim path should use the host-native name {expected}: {}",
             p.display()
         );
     }
@@ -257,8 +250,10 @@ mod tests {
         }
     }
 
-    #[cfg(windows)]
     crate::timed_test!(windows_link_shims_are_visible_to_rust_command_lookup, {
+        if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
+            return;
+        }
         let dir = tempdir("windows-command-lookup");
         let cmd = system_cmd_exe();
         assert!(cmd.is_file(), "missing {}", cmd.display());

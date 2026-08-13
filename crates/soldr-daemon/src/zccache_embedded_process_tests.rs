@@ -26,7 +26,6 @@ pub(super) fn bounded_output(command: Command) -> io::Result<running_process::Ru
         .map_err(|error| io::Error::other(error.to_string()))
 }
 
-#[cfg(windows)]
 pub(super) fn contained_status(command: Command) -> io::Result<i32> {
     bounded_output(command).map(|output| output.exit_code)
 }

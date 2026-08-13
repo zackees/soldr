@@ -46,11 +46,12 @@ pub struct InstalledServiceDefinition {
 }
 
 pub(crate) fn sibling_daemon_binary(current: &Path) -> PathBuf {
-    let stem = if cfg!(windows) {
-        "soldr-daemon.exe"
-    } else {
-        "soldr-daemon"
-    };
+    let stem =
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            "soldr-daemon.exe"
+        } else {
+            "soldr-daemon"
+        };
     current
         .parent()
         .map(|p| p.join(stem))
@@ -212,11 +213,13 @@ mod tests {
     use tempfile::TempDir;
 
     fn fake_daemon_binary(root: &Path) -> PathBuf {
-        let binary = root.join(if cfg!(windows) {
-            "soldr-daemon.exe"
-        } else {
-            "soldr-daemon"
-        });
+        let binary = root.join(
+            if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+                "soldr-daemon.exe"
+            } else {
+                "soldr-daemon"
+            },
+        );
         std::fs::write(&binary, b"stub").expect("fake daemon binary");
         binary
     }

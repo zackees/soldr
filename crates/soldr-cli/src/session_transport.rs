@@ -376,7 +376,9 @@ fn broker_connect_is_busy(error: &io::Error, elapsed: Duration) -> bool {
     // replaces one accepted instance with the next. One short retry window
     // absorbs that instance gap without turning a genuinely absent endpoint
     // into the full one-second busy wait.
-    if cfg!(windows) && error.raw_os_error() == Some(2) {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows
+        && error.raw_os_error() == Some(2)
+    {
         return elapsed < Duration::from_millis(50);
     }
     matches!(
@@ -713,7 +715,7 @@ mod tests {
             &io::Error::new(io::ErrorKind::NotFound, "absent"),
             Duration::ZERO
         ));
-        if cfg!(windows) {
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
             assert!(broker_connect_is_busy(
                 &io::Error::from_raw_os_error(2),
                 Duration::from_millis(1)

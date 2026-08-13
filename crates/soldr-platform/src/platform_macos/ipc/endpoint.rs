@@ -2,6 +2,22 @@
 
 use std::path::{Path, PathBuf};
 
+/// Return a short process-unique local-socket endpoint.
+pub fn ephemeral(prefix: &str) -> String {
+    format!(
+        "/tmp/{prefix}-{}-{}.sock",
+        std::process::id(),
+        ephemeral_nonce() % 100_000
+    )
+}
+
+fn ephemeral_nonce() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock before epoch")
+        .as_nanos()
+}
+
 /// The macOS `sockaddr_un.sun_path` capacity in bytes.
 pub fn sun_path_capacity() -> usize {
     104
