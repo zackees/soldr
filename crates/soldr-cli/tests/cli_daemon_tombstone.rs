@@ -141,13 +141,21 @@ timed_test!(
         let out = drain(broker.child.stdout.take().expect("broker stdout"));
         let err = drain(broker.child.stderr.take().expect("broker stderr"));
 
+        let broker_ready = wait_for(
+            &out,
+            "stable endpoint bound at",
+            Instant::now() + Duration::from_secs(10),
+        );
+        let child_state = match broker.child.try_wait() {
+            Ok(Some(status)) => format!("exited {status}"),
+            Ok(None) => "still alive".to_string(),
+            Err(error) => format!("wait error {error}"),
+        };
         assert!(
-            wait_for(
-                &out,
-                "stable endpoint bound at",
-                Instant::now() + Duration::from_secs(10)
-            ),
-            "broker did not become ready"
+            broker_ready,
+            "broker did not become ready (child {child_state})\nstdout:\n{}\nstderr:\n{}",
+            out.lock().unwrap().join("\n"),
+            err.lock().unwrap().join("\n")
         );
         let rustc = Path::new(&std::env::var_os("CARGO").expect("CARGO set by cargo test"))
             .with_file_name(format!("rustc{}", std::env::consts::EXE_SUFFIX));

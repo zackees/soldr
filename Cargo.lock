@@ -2925,8 +2925,16 @@ dependencies = [
 name = "soldr-platform"
 version = "0.9.1"
 dependencies = [
+ "blake3",
+ "fs2",
+ "interprocess",
  "libc",
  "running-process",
+ "serde",
+ "serde_json",
+ "tar",
+ "tokio",
+ "widestring",
  "windows-sys 0.61.2",
 ]
 
