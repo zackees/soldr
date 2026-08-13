@@ -5,7 +5,7 @@ use std::io;
 use std::path::Path;
 use std::time::Duration;
 
-use crate::platform::ipc::connect::{BoxedAsyncStream, BoxedSyncStream, PipeOpen};
+use crate::platform::ipc::connect::{BoxedSyncStream, PipeOpen};
 
 /// Connect an AF_UNIX socket to `path` with the given socket timeouts.
 /// The write timeout is the caller's deadline; the read timeout is at
@@ -28,14 +28,6 @@ pub async fn open_pipe_with_retry(path: &Path) -> io::Result<PipeOpen> {
         stream: Box::new(stream),
         busy_retries: 0,
     })
-}
-
-/// Whether a Unix-domain stream can connect to `endpoint` (the
-/// socket's filesystem path). A broker admits new peers the moment a
-/// listening socket exists at the path, so a plain connect probe is a
-/// faithful readiness check.
-pub fn probe_accepts_connections(endpoint: &str) -> bool {
-    std::os::unix::net::UnixStream::connect(endpoint).is_ok()
 }
 
 /// Whether a Unix-domain stream can connect to `endpoint` (the
