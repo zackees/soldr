@@ -684,6 +684,36 @@ def test_release_target_prepare_retries_transient_setup_failure() -> None:
     assert "wheel_hook='python -m build --wheel'" in wheel
 
 
+def test_release_supports_isolated_npm_recovery_from_an_immutable_ref() -> None:
+    release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
+    prepare = _job_block(release, "prepare", "build")
+    publish_npm = _job_block(release, "publish-npm")
+
+    assert "      npm_release_ref:\n" in release
+    assert '        type: string\n        default: ""\n' in release
+    assert (
+        "if: github.event_name != 'workflow_dispatch' || "
+        "inputs.npm_release_ref == ''" in prepare
+    )
+    assert "github.event_name == 'workflow_dispatch'" in publish_npm
+    assert "inputs.npm_release_ref != ''" in publish_npm
+    assert "needs.prepare.outputs.should_publish_npm == 'true'" in publish_npm
+    assert "needs.verify_github_release.result == 'success'" in publish_npm
+    assert (
+        "ref: ${{ inputs.npm_release_ref != '' && "
+        "format('refs/tags/{0}', inputs.npm_release_ref) || "
+        "needs.prepare.outputs.commit_sha }}" in publish_npm
+    )
+    assert "name: Checkout release controls" in publish_npm
+    assert "path: release-control" in publish_npm
+    assert "path: release-source" in publish_npm
+    assert "working-directory: release-source" in publish_npm
+    assert ".github/scripts/validate_npm_release_recovery.py" in publish_npm
+    assert ".github/scripts/publish_npm_package.py" in publish_npm
+    assert "environment: release" in publish_npm
+    assert "id-token: write" in publish_npm
+
+
 def test_windows_wheel_does_not_reuse_archive_executable_output() -> None:
     """PEP 517 must not rebuild the archive lane's still-open soldr.exe."""
 
