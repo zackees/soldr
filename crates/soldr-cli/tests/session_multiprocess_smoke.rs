@@ -253,6 +253,7 @@ timed_test!(
     }
 );
 
+#[cfg(not(windows))]
 timed_test!(
     issue_2476_handed_off_compile_survives_broker_death_and_daemon_is_readopted,
     Duration::from_secs(120),

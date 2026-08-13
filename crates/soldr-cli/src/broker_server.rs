@@ -792,15 +792,15 @@ async fn try_direct_handoff(
     negotiated: &running_process::broker::protocol::Negotiated,
     reply: &HelloReply,
 ) -> io::Result<bool> {
-    use running_process::broker::capabilities::CAP_HANDLE_PASSING;
+    if !direct_handoff_eligible(
+        negotiated.server_capabilities,
+        &negotiated.handle_passed_token,
+    ) {
+        return Ok(false);
+    }
 
     #[cfg(debug_assertions)]
     if std::env::var_os("SOLDR_TEST_BROKER_DISABLE_HANDOFF").is_some() {
-        return Ok(false);
-    }
-    if negotiated.server_capabilities & CAP_HANDLE_PASSING == 0
-        || negotiated.handle_passed_token.is_empty()
-    {
         return Ok(false);
     }
     let Some(instance) = state.instance_for_route(
@@ -851,6 +851,17 @@ async fn try_direct_handoff(
         )
     })?;
     Ok(true)
+}
+
+fn direct_handoff_eligible(server_capabilities: u64, token: &[u8]) -> bool {
+    use running_process::broker::capabilities::CAP_HANDLE_PASSING;
+
+    // A duplicated Windows named-pipe handle can be converted and ACKed by
+    // the daemon, yet the adopted SESSION receives ERROR_BROKEN_PIPE as soon
+    // as the broker drops its original accepted handle. Keep Windows on the
+    // same-connection relay, which preserves the protocol and ownership
+    // contract without exposing a client-visible false-positive handoff.
+    !cfg!(windows) && server_capabilities & CAP_HANDLE_PASSING != 0 && !token.is_empty()
 }
 
 async fn write_handoff_ready_async(
@@ -1179,6 +1190,20 @@ impl Drop for UnixBindGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    crate::timed_test!(
+        direct_handoff_eligibility_requires_platform_capability_and_token,
+        {
+            use running_process::broker::capabilities::CAP_HANDLE_PASSING;
+
+            assert_eq!(
+                direct_handoff_eligible(CAP_HANDLE_PASSING, &[1]),
+                !cfg!(windows)
+            );
+            assert!(!direct_handoff_eligible(0, &[1]));
+            assert!(!direct_handoff_eligible(CAP_HANDLE_PASSING, &[]));
+        }
+    );
 
     #[cfg(windows)]
     crate::timed_test!(windows_handoff_ready_uses_async_original_pipe, {
