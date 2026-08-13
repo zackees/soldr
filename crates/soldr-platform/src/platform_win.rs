@@ -7,3 +7,4 @@ pub(crate) mod executable;
 pub(crate) mod fs;
 pub(crate) mod host;
 pub(crate) mod process;
+pub(crate) mod ipc;

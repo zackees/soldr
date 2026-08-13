@@ -83,17 +83,17 @@ const STAGED_ARTIFACT_NAME_BUDGET: usize = 60;
 /// Returns the message rather than printing it, so the caller decides the
 /// channel and tests do not have to capture stderr.
 pub(crate) fn maxpath_headroom_warning(cache_root: &std::path::Path) -> Option<String> {
-    if !cfg!(windows) {
-        return None;
-    }
+    // The MAX_PATH ceiling is a Windows fact; hosts without one skip the
+    // projection entirely.
+    let limit = crate::platform::host::facts::max_path()?;
     let root_len = cache_root.as_os_str().len();
     let projected = root_len + STAGING_PREFIX_BUDGET + STAGED_ARTIFACT_NAME_BUDGET;
-    if projected <= LEGACY_MAX_PATH {
+    if projected <= limit {
         return None;
     }
     Some(format!(
         "soldr warning: soldr's cache directory path is {root_len} characters, which \
-         leaves no room for staged compile paths under Windows' {LEGACY_MAX_PATH}-character MAX_PATH \
+         leaves no room for staged compile paths under Windows' {limit}-character MAX_PATH \
          limit (projected {projected}). Linking can fail with LNK1104 naming a file \
          inside soldr's cache -- see soldr#2188. Point SOLDR_CACHE_DIR at a shorter \
          root, or run `soldr --no-cache cargo ...`."
@@ -550,7 +550,7 @@ mod tests {
 
         let deep = std::path::PathBuf::from(format!("C:/{}", "d".repeat(150)));
         let warning = maxpath_headroom_warning(&deep);
-        if cfg!(windows) {
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
             let warning = warning.expect("a 150-char root must warn");
             assert!(warning.contains("MAX_PATH"), "{warning}");
             assert!(

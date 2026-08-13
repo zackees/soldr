@@ -68,7 +68,10 @@ pub fn ensure_clang_cl_shim_for_real_clang(
 }
 
 fn write_clang_cl_shim(dir: &Path, real_clang: &Path) -> Result<PathBuf, SoldrError> {
-    let shim_path = dir.join(if cfg!(windows) { "clang.cmd" } else { "clang" });
+    let shim_path = dir.join(format!(
+        "clang{}",
+        crate::platform::executable::name::script_suffix()
+    ));
     let shim_body = render_shim_body(real_clang);
 
     let existing = std::fs::read_to_string(&shim_path).ok();
@@ -79,12 +82,12 @@ fn write_clang_cl_shim(dir: &Path, real_clang: &Path) -> Result<PathBuf, SoldrEr
     // this comparison site.
     if existing.as_deref() != Some(shim_body.as_str()) {
         std::fs::write(&shim_path, &shim_body)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&shim_path)?.permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&shim_path, perms)?;
+        if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
+            // The published shim must be runnable regardless of the
+            // umask; the facade applies a fixed 0o755 on Unix and is a
+            // no-op on Windows (the .cmd extension decides executability).
+            let perms = std::fs::metadata(&shim_path)?.permissions();
+            crate::platform::fs::permissions::make_executable_from(&shim_path, &perms)?;
         }
     }
 
@@ -92,7 +95,7 @@ fn write_clang_cl_shim(dir: &Path, real_clang: &Path) -> Result<PathBuf, SoldrEr
 }
 
 fn render_shim_body(real_clang: &Path) -> String {
-    if cfg!(windows) {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         // Windows .cmd shim. `%*` forwards all args.
         format!(
             "@echo off\r\n\"{}\" --driver-mode=cl %*\r\n",
@@ -111,7 +114,7 @@ fn render_shim_body(real_clang: &Path) -> String {
 /// it's already on PATH). Returns the first hit.
 fn discover_real_clang(skip_dir: &Path) -> Result<PathBuf, SoldrError> {
     let path = std::env::var_os("PATH").unwrap_or_default();
-    let exe_name = if cfg!(windows) { "clang.exe" } else { "clang" };
+    let exe_name = crate::platform::executable::name::native("clang");
     let skip_dir_canon = std::fs::canonicalize(skip_dir).unwrap_or_else(|_| skip_dir.to_path_buf());
     for dir in std::env::split_paths(&path) {
         // Skip our own shim dir + Windows `PATHEXT` resolution quirks.
@@ -119,7 +122,7 @@ fn discover_real_clang(skip_dir: &Path) -> Result<PathBuf, SoldrError> {
         if dir_canon == skip_dir_canon {
             continue;
         }
-        let candidate = dir.join(exe_name);
+        let candidate = dir.join(&exe_name);
         if candidate.is_file() {
             return Ok(candidate);
         }
@@ -136,7 +139,9 @@ mod tests {
 
     #[test]
     fn shim_body_unix_uses_real_clang_path_with_driver_mode_cl() {
-        let body = if cfg!(windows) {
+        let body = if crate::platform::host::facts::os()
+            == crate::platform::host::facts::HostOs::Windows
+        {
             // On Windows the format differs; just verify both helpers
             // produce non-empty output. The body verified below.
             return;
@@ -151,7 +156,7 @@ mod tests {
 
     #[test]
     fn shim_body_windows_quotes_path_and_forwards_args() {
-        if !cfg!(windows) {
+        if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
             return;
         }
         let body = render_shim_body(Path::new(r"C:\Program Files\LLVM\bin\clang.exe"));

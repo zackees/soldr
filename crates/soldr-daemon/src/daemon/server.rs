@@ -720,12 +720,21 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     if let Some(existing) = existing_daemon_pid(&paths) {
         return Err(ServerError::AlreadyRunning(existing));
     }
-    // Claim the Unix endpoint immediately after the version-blind occupancy
-    // check. Delaying bind until a detached accept task used to leave a large
-    // initialization window in which an older daemon could bind and then have
-    // its live socket unlinked by this process.
-    #[cfg(unix)]
-    let (unix_listener, _unix_socket_identity) = claim_unix_endpoint(&paths)?;
+    // Claim the control endpoint immediately after the version-blind
+    // occupancy check. Delaying bind until a detached accept task used to
+    // leave a large initialization window in which an older daemon could bind
+    // and then have its live socket unlinked by this process. Unix hosts
+    // claim a filesystem socket (with the identity fencing the retirement
+    // fence); Windows hosts serve a named-pipe pool and take the None branch.
+    let control_listener =
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            None
+        } else {
+            let sock = crate::daemon::session_endpoint::resolved_control_endpoint_path(&paths)?;
+            Some(crate::platform::ipc::listener::claim_control_endpoint_at(
+                &sock,
+            )?)
+        };
 
     let db_path = data_db_path(&paths);
     let start_instant = Instant::now();
@@ -852,16 +861,16 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     });
 
     let accept_state = state.clone();
-    #[cfg(unix)]
-    let accept_handle = tokio::spawn(async move {
-        let _ = run_accept_loop(unix_listener, accept_state).await;
-    });
-    #[cfg(windows)]
-    let accept_handle = {
-        let paths_for_accept = paths.clone();
-        tokio::spawn(async move {
-            let _ = run_accept_loop(paths_for_accept, accept_state).await;
-        })
+    let accept_handle = match control_listener {
+        Some((listener, _identity)) => tokio::spawn(async move {
+            let _ = run_accept_loop_unix(listener, accept_state).await;
+        }),
+        None => {
+            let paths_for_accept = paths.clone();
+            tokio::spawn(async move {
+                let _ = run_accept_loop_windows(paths_for_accept, accept_state).await;
+            })
+        }
     };
 
     let idle_handle = (opts.idle_timeout != Duration::MAX).then(|| {
@@ -892,21 +901,15 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     // the graceful-drain path below, silently discarding the embedded
     // zccache's in-memory artifact index + depgraph — a full cold
     // cache on the next daemon start. `pkill soldr-daemon`, container
-    // stop, and service managers all send TERM, not INT.
-    #[cfg(unix)]
-    {
-        let term_state = state.clone();
-        tokio::spawn(async move {
-            let Ok(mut term) =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            else {
-                return;
-            };
-            if term.recv().await.is_some() {
-                term_state.shutdown.request();
-            }
-        });
-    }
+    // stop, and service managers all send TERM, not INT. The signal
+    // wait lives in the platform process facade (Windows parks the
+    // hook — there is no POSIX SIGTERM to wait for).
+    let term_state = state.clone();
+    tokio::spawn(async move {
+        if crate::platform::process::signal::wait_for_terminate_signal().await {
+            term_state.shutdown.request();
+        }
+    });
 
     state.shutdown.wait().await;
     arm_shutdown_watchdog();
@@ -1030,23 +1033,11 @@ mod endpoint_occupancy_tests {
         assert_eq!(select_existing_daemon_pid(None, Some(42)), Some(42));
         assert_eq!(select_existing_daemon_pid(None, None), None);
     });
-
-    #[cfg(unix)]
-    crate::timed_test!(claimed_unix_endpoint_cannot_be_bound_by_a_second_daemon, {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(async {
-                let temp = tempfile::tempdir().unwrap();
-                let socket = temp.path().join("soldr-daemon.control.sock");
-                let (listener, _) = super::claim_unix_endpoint_at(&socket).unwrap();
-                let second = tokio::net::UnixListener::bind(&socket);
-                assert!(second.is_err(), "the endpoint claim must be exclusive");
-                drop(listener);
-            });
-    });
 }
+
+// The Unix endpoint exclusivity and retirement-fence tests live in
+// `tests/daemon_unix_endpoint.rs` (`#![cfg(unix)]`) — they exercise
+// the platform listener leaf now that server.rs is host-neutral.
 
 /// The embedded zccache service runs in-process, so its `tracing::warn!`
 /// events otherwise have no durable destination in the normal daemon mode.
@@ -1074,134 +1065,34 @@ fn embedded_service_log_dir(paths: &SoldrPaths) -> PathBuf {
     soldr_daemon_dir(paths).join("logs")
 }
 
-#[cfg(unix)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct UnixSocketIdentity {
-    device: u64,
-    inode: u64,
-}
-
-#[cfg(unix)]
-fn unix_socket_identity(path: &Path) -> std::io::Result<UnixSocketIdentity> {
-    use std::os::unix::fs::MetadataExt;
-    let metadata = std::fs::symlink_metadata(path)?;
-    Ok(UnixSocketIdentity {
-        device: metadata.dev(),
-        inode: metadata.ino(),
-    })
-}
-
-#[cfg(unix)]
-fn remove_unix_socket_if_matches(
-    path: &Path,
-    expected: UnixSocketIdentity,
-) -> std::io::Result<bool> {
-    let actual = match unix_socket_identity(path) {
-        Ok(actual) => actual,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(error),
-    };
-    if actual != expected {
-        return Ok(false);
-    }
-    std::fs::remove_file(path)?;
-    Ok(true)
-}
-
-#[cfg(unix)]
-fn claim_unix_endpoint(
-    paths: &SoldrPaths,
-) -> std::io::Result<(tokio::net::UnixListener, UnixSocketIdentity)> {
-    let sock = crate::daemon::session_endpoint::resolved_control_endpoint_path(paths)?;
-    claim_unix_endpoint_at(&sock)
-}
-
-#[cfg(unix)]
-fn claim_unix_endpoint_at(
-    sock: &Path,
-) -> std::io::Result<(tokio::net::UnixListener, UnixSocketIdentity)> {
-    if let Some(parent) = sock.parent() {
-        running_process::broker::secure_dir::ensure_private_dir(parent)?;
-    }
-    match std::fs::remove_file(sock) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
-    let listener = tokio::net::UnixListener::bind(sock)?;
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(sock, std::fs::Permissions::from_mode(0o600))?;
-    }
-    let identity = match unix_socket_identity(sock) {
-        Ok(identity) => identity,
-        Err(error) => {
-            drop(listener);
-            let _ = std::fs::remove_file(sock);
-            return Err(error);
-        }
-    };
-    Ok((listener, identity))
-}
-
-#[cfg(unix)]
-async fn run_accept_loop(
-    listener: tokio::net::UnixListener,
+/// Accept loop for the Unix control endpoint. `listener` is the claimed
+/// filesystem socket from the platform listener leaf, which already
+/// resolved each peer's identity and current-user admission during
+/// accept.
+async fn run_accept_loop_unix(
+    listener: crate::platform::ipc::listener::BoxedControlListener,
     state: Arc<State>,
 ) -> std::io::Result<()> {
     loop {
-        let (stream, _addr) = match listener.accept().await {
-            Ok(s) => s,
+        let accepted = match listener.accept().await {
+            Ok(accepted) => accepted,
             Err(_) => continue,
         };
-        if !crate::daemon::ipc_peer::unix_peer_is_current_user(&stream) {
+        if !accepted.peer.is_current_user {
             tracing::warn!(target: "soldr::daemon", "rejected foreign daemon-control peer");
             continue;
         }
-        let peer = crate::daemon::ipc_peer::PeerIdentity::from_unix_stream(&stream);
+        let peer = crate::daemon::ipc_peer::PeerIdentity::from_accepted_peer(&accepted.peer);
         let state = state.clone();
         tokio::spawn(async move {
-            let _ = handle_connection(stream, state, peer).await;
+            let _ = handle_connection(accepted.stream, state, peer).await;
         });
     }
 }
 
-#[cfg(all(test, unix))]
-mod unix_endpoint_ownership_tests {
-    use super::*;
-
-    crate::timed_test!(retiring_daemon_does_not_unlink_replacement_socket, {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let socket_path = temp.path().join("soldr.sock");
-
-        let old_listener =
-            std::os::unix::net::UnixListener::bind(&socket_path).expect("bind old socket");
-        let old_identity = unix_socket_identity(&socket_path).expect("old identity");
-
-        std::fs::remove_file(&socket_path).expect("unlink old socket name");
-        let replacement_listener =
-            std::os::unix::net::UnixListener::bind(&socket_path).expect("bind replacement");
-        let replacement_identity =
-            unix_socket_identity(&socket_path).expect("replacement identity");
-        assert_ne!(old_identity, replacement_identity);
-
-        assert!(
-            !remove_unix_socket_if_matches(&socket_path, old_identity).expect("fenced old cleanup"),
-            "old daemon must not remove the replacement socket"
-        );
-        assert!(socket_path.exists());
-        assert!(
-            remove_unix_socket_if_matches(&socket_path, replacement_identity)
-                .expect("replacement cleanup")
-        );
-
-        drop(replacement_listener);
-        drop(old_listener);
-    });
-}
-
-#[cfg(windows)]
-async fn run_accept_loop(paths: SoldrPaths, state: Arc<State>) -> std::io::Result<()> {
+/// Accept loop for the Windows control endpoint: a self-replenishing
+/// named-pipe instance pool (see [`accept_windows_pipe_instance`]).
+async fn run_accept_loop_windows(paths: SoldrPaths, state: Arc<State>) -> std::io::Result<()> {
     // soldr#1808: identity failure is fatal here — this loop *is* the
     // endpoint. Propagating beats a fallback name no client would dial.
     let pipe_name = crate::daemon::session_endpoint::resolved_control_endpoint_path(&paths)?
@@ -1225,7 +1116,6 @@ async fn run_accept_loop(paths: SoldrPaths, state: Arc<State>) -> std::io::Resul
     Ok(())
 }
 
-#[cfg(windows)]
 fn spawn_windows_pipe_instance(pipe_name: String, state: Arc<State>, first_pipe_instance: bool) {
     // Keep this launcher synchronous. Calling `tokio::spawn` directly from
     // `accept_windows_pipe_instance` would make the async function's opaque
@@ -1240,7 +1130,6 @@ fn spawn_windows_pipe_instance(pipe_name: String, state: Arc<State>, first_pipe_
     });
 }
 
-#[cfg(windows)]
 async fn accept_windows_pipe_instance(
     pipe_name: String,
     state: Arc<State>,
@@ -1251,14 +1140,16 @@ async fn accept_windows_pipe_instance(
     if state.shutdown.is_requested() {
         return Ok(());
     }
-    let server =
-        crate::daemon::ipc_peer::create_owner_only_windows_pipe(&pipe_name, first_pipe_instance)?;
+    let mut server = crate::platform::ipc::peer::create_owner_only_windows_pipe(
+        &pipe_name,
+        first_pipe_instance,
+    )?;
 
     // Drop the instance as soon as shutdown starts. Otherwise a wrapper can
     // connect after the compile service has latched shut. Unix drops its
     // listener with the accept task; this gives Windows the same fallback.
     let connected = tokio::select! {
-        result = server.connect() => result.is_ok(),
+        result = crate::platform::ipc::peer::pipe_server_connect(&mut server) => result.is_ok(),
         _ = state.shutdown.wait() => return Ok(()),
     };
 
@@ -1269,7 +1160,7 @@ async fn accept_windows_pipe_instance(
         // Replenish before parsing the connected request, keeping the pool
         // admission capacity independent from compile execution throughput.
         spawn_windows_pipe_instance(pipe_name, state.clone(), false);
-        let peer = PeerIdentity::from_windows_named_pipe(&server);
+        let peer = PeerIdentity::from_windows_pipe_server(&mut server);
         let _ = handle_connection(server, state, peer).await;
     } else {
         spawn_windows_pipe_instance(pipe_name, state, false);
@@ -1323,11 +1214,16 @@ where
 /// SOCK_STREAM behavior; Windows named pipes have no RST concept, so there is
 /// nothing to prevent there — and paying a shutdown/drain round trip on every
 /// rejected connection measurably slows the Windows hot path.
-#[cfg(unix)]
 async fn drain_then_close<S>(stream: &mut S)
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+        // No-op on Windows: named pipes cannot raise `ECONNRESET`, so
+        // dropping the handle already yields the clean end-of-stream the
+        // Unix path has to work for.
+        return;
+    }
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::time::timeout;
     // Half-close first so a peer still streaming a large body sees EOF and
@@ -1349,15 +1245,6 @@ where
             Ok(Ok(n)) => drained += n as u64,
         }
     }
-}
-
-/// No-op on Windows: named pipes cannot raise `ECONNRESET`, so dropping the
-/// handle already yields the clean end-of-stream the Unix path has to work for.
-#[cfg(windows)]
-async fn drain_then_close<S>(_stream: &mut S)
-where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
-{
 }
 
 async fn handle_connection<S>(

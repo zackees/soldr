@@ -22,17 +22,7 @@ pub struct CargoLockGuard {
 /// (32) or ERROR_LOCK_VIOLATION (33), rather than letting fs2 return
 /// WouldBlock from try_lock_exclusive as Unix does.
 pub fn lock_is_held(error: &io::Error) -> bool {
-    if error.kind() == io::ErrorKind::WouldBlock {
-        return true;
-    }
-    #[cfg(windows)]
-    {
-        matches!(error.raw_os_error(), Some(32 | 33))
-    }
-    #[cfg(not(windows))]
-    {
-        false
-    }
+    crate::platform::fs::contention::is_lock_contention(error)
 }
 
 impl Drop for CargoLockGuard {

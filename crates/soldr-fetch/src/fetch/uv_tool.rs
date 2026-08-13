@@ -70,7 +70,12 @@ pub async fn ensure_uv_bundle(
 
 /// Path to the uv executable inside a materialized bundle root.
 pub fn uv_exe(bundle_root: &Path) -> PathBuf {
-    let name = if cfg!(windows) { "uv.exe" } else { "uv" };
+    let name =
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            "uv.exe"
+        } else {
+            "uv"
+        };
     bundle_root.join("bin").join(name)
 }
 
@@ -110,7 +115,7 @@ mod tests {
 
     crate::timed_test!(uv_exe_path_is_platform_correct, {
         let exe = uv_exe(Path::new("root"));
-        if cfg!(windows) {
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
             assert!(exe.ends_with("bin/uv.exe") || exe.ends_with("bin\\uv.exe"));
         } else {
             assert!(exe.ends_with("bin/uv"));

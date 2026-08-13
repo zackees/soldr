@@ -267,7 +267,7 @@ fn sdk_from_env_var() -> Option<PathBuf> {
 /// the SDK path Apple's tooling expects. Use it when present so we do
 /// not redundantly fetch our own copy on developer macs.
 fn sdk_from_xcrun() -> Option<PathBuf> {
-    if !cfg!(target_os = "macos") {
+    if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::MacOs {
         return None;
     }
     let out = Command::new("xcrun")

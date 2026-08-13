@@ -75,29 +75,17 @@ impl HostInfo {
     }
 }
 
-#[cfg(target_os = "linux")]
 fn detect_libc() -> String {
     // We can't introspect glibc-vs-musl at compile-time without a build
     // script; default to "gnu" for the standard linux-gnu host triple
     // and leave the musl-cc probe to determine whether musl tooling is
     // available.
-    "gnu".to_string()
-}
-
-#[cfg(target_os = "windows")]
-fn detect_libc() -> String {
-    // CLAUDE.md mandates MSVC on Windows; the GNU host is opt-in.
-    "msvc".to_string()
-}
-
-#[cfg(target_os = "macos")]
-fn detect_libc() -> String {
-    "darwin".to_string()
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-fn detect_libc() -> String {
-    "unknown".to_string()
+    match crate::platform::host::facts::os() {
+        crate::platform::host::facts::HostOs::Linux => "gnu".to_string(),
+        // CLAUDE.md mandates MSVC on Windows; the GNU host is opt-in.
+        crate::platform::host::facts::HostOs::Windows => "msvc".to_string(),
+        crate::platform::host::facts::HostOs::MacOs => "darwin".to_string(),
+    }
 }
 
 #[derive(Serialize, Debug)]
@@ -460,7 +448,12 @@ fn rustup_installed_targets_active() -> Result<Vec<String>, SoldrError> {
 
 fn find_on_path(cmd: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
-    let exts: &[&str] = if cfg!(windows) { &["", ".exe"] } else { &[""] };
+    let exts: &[&str] =
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            &["", ".exe"]
+        } else {
+            &[""]
+        };
     for dir in std::env::split_paths(&path) {
         if dir.as_os_str().is_empty() {
             continue;

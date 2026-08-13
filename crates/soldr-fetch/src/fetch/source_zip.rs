@@ -128,11 +128,9 @@ fn extract_zip_tree<R: std::io::Read + std::io::Seek>(
         let mut out = std::fs::File::create(&out_path)?;
         std::io::copy(&mut entry, &mut out)?;
 
-        #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
             if let Some(mode) = entry.unix_mode() {
-                std::fs::set_permissions(&out_path, std::fs::Permissions::from_mode(mode))?;
+                crate::platform::fs::permissions::restore_mode(&out_path, Some(mode))?;
             }
         }
     }

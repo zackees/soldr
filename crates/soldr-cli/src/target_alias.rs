@@ -471,34 +471,21 @@ fn host_triple() -> &'static str {
     // soldr ships a host-triple constant baked at build time via
     // env! in `core::target_triple` for the actual targeting logic.
     // For the alias resolver we just want the canonical form.
-    // CFG-based resolution covers the supported host set; anything
-    // else falls back to a sensible default + lets cargo error.
-    if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        "x86_64-pc-windows-msvc"
-    } else if cfg!(all(target_os = "windows", target_arch = "aarch64")) {
-        "aarch64-pc-windows-msvc"
-    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
-        "x86_64-apple-darwin"
-    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        "aarch64-apple-darwin"
-    } else if cfg!(all(
-        target_os = "linux",
-        target_arch = "x86_64",
-        target_env = "musl"
-    )) {
-        "x86_64-unknown-linux-musl"
-    } else if cfg!(all(
-        target_os = "linux",
-        target_arch = "aarch64",
-        target_env = "musl"
-    )) {
-        "aarch64-unknown-linux-musl"
-    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        "x86_64-unknown-linux-gnu"
-    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
-        "aarch64-unknown-linux-gnu"
-    } else {
-        "x86_64-unknown-linux-gnu"
+    // Runtime facts-based resolution covers the supported host set;
+    // anything else falls back to a sensible default + lets cargo
+    // error. The musl cases use the runtime libc probe (glibc/musl).
+    use crate::platform::host::facts::{HostArch, HostLibc, HostOs};
+    let info = crate::platform::host::facts::info();
+    match (info.os, info.arch, info.libc) {
+        (HostOs::Windows, HostArch::X86_64, _) => "x86_64-pc-windows-msvc",
+        (HostOs::Windows, HostArch::Aarch64, _) => "aarch64-pc-windows-msvc",
+        (HostOs::MacOs, HostArch::X86_64, _) => "x86_64-apple-darwin",
+        (HostOs::MacOs, HostArch::Aarch64, _) => "aarch64-apple-darwin",
+        (HostOs::Linux, HostArch::X86_64, HostLibc::Musl) => "x86_64-unknown-linux-musl",
+        (HostOs::Linux, HostArch::Aarch64, HostLibc::Musl) => "aarch64-unknown-linux-musl",
+        (HostOs::Linux, HostArch::X86_64, _) => "x86_64-unknown-linux-gnu",
+        (HostOs::Linux, HostArch::Aarch64, _) => "aarch64-unknown-linux-gnu",
+        _ => "x86_64-unknown-linux-gnu",
     }
 }
 

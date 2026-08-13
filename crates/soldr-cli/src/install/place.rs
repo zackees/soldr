@@ -120,10 +120,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let src = tmp.path().join("mytool");
         std::fs::write(&src, b"#!/bin/sh\necho hi\n").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
+            // The source must be executable before placement; the facade
+            // applies a fixed 0o755 on Unix and is a no-op on Windows.
+            let perms = std::fs::metadata(&src).unwrap().permissions();
+            crate::platform::fs::permissions::make_executable_from(&src, &perms).unwrap();
         }
         let root = tmp.path().join("installed");
         let placement =

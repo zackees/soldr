@@ -12,6 +12,11 @@ pub fn sibling(exe_dir: &Path, name: &str) -> PathBuf {
     exe_dir.join(name)
 }
 
+/// The suffix for wrapper scripts (`.cmd` on Windows, none elsewhere).
+pub fn script_suffix() -> &'static str {
+    ""
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

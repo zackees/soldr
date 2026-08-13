@@ -179,47 +179,26 @@ fn dylint_toolchain_dirs(plan: &DylintToolchainPlan) -> Result<(PathBuf, PathBuf
     Ok((bin_dir, toolchain_root))
 }
 
-#[cfg(target_os = "windows")]
 fn apply_driver_runtime_environment_impl(
     command: &mut std::process::Command,
     plan: &DylintToolchainPlan,
 ) -> Result<(), SoldrError> {
-    let (bin_dir, _) = dylint_toolchain_dirs(plan)?;
-    prepend_command_path(command, "PATH", &bin_dir)
-}
-
-#[cfg(target_os = "linux")]
-fn apply_driver_runtime_environment_impl(
-    command: &mut std::process::Command,
-    plan: &DylintToolchainPlan,
-) -> Result<(), SoldrError> {
-    let (_, toolchain_root) = dylint_toolchain_dirs(plan)?;
-    prepend_command_path(command, "LD_LIBRARY_PATH", &toolchain_root.join("lib"))?;
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn apply_driver_runtime_environment_impl(
-    command: &mut std::process::Command,
-    plan: &DylintToolchainPlan,
-) -> Result<(), SoldrError> {
-    let (_, toolchain_root) = dylint_toolchain_dirs(plan)?;
-    prepend_command_path(command, "DYLD_LIBRARY_PATH", &toolchain_root.join("lib"))?;
-    Ok(())
-}
-
-#[cfg(all(
-    not(target_os = "windows"),
-    not(target_os = "linux"),
-    not(target_os = "macos")
-))]
-fn apply_driver_runtime_environment_impl(
-    _command: &mut std::process::Command,
-    _plan: &DylintToolchainPlan,
-) -> Result<(), SoldrError> {
-    Err(SoldrError::UnsupportedPlatform(
-        "Dylint drivers are supported only on Windows, Linux, and macOS".into(),
-    ))
+    match crate::platform::host::facts::os() {
+        crate::platform::host::facts::HostOs::Windows => {
+            let (bin_dir, _) = dylint_toolchain_dirs(plan)?;
+            prepend_command_path(command, "PATH", &bin_dir)
+        }
+        crate::platform::host::facts::HostOs::Linux => {
+            let (_, toolchain_root) = dylint_toolchain_dirs(plan)?;
+            prepend_command_path(command, "LD_LIBRARY_PATH", &toolchain_root.join("lib"))?;
+            Ok(())
+        }
+        crate::platform::host::facts::HostOs::MacOs => {
+            let (_, toolchain_root) = dylint_toolchain_dirs(plan)?;
+            prepend_command_path(command, "DYLD_LIBRARY_PATH", &toolchain_root.join("lib"))?;
+            Ok(())
+        }
+    }
 }
 
 fn prepend_command_path(

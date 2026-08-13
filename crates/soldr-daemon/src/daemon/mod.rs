@@ -51,7 +51,7 @@ pub mod event_batcher;
 pub mod history_gc;
 pub mod image_hash;
 pub mod ipc;
-pub(crate) mod ipc_peer;
+pub mod ipc_peer;
 pub mod lifecycle;
 pub mod maintenance;
 pub mod protocol;

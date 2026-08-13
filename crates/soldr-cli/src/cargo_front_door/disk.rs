@@ -64,7 +64,7 @@ pub(crate) fn available_space(path: &std::path::Path) -> std::io::Result<u64> {
             )
         });
     }
-    fs2::available_space(path)
+    crate::platform::fs::volume::free_bytes(path)
 }
 
 pub(crate) fn existing_filesystem_probe_path(path: &std::path::Path) -> std::path::PathBuf {

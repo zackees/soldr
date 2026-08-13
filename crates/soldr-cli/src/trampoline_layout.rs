@@ -46,11 +46,7 @@ pub(crate) fn compute_layout(parsed: &ParsedRunArgs, bin: &str) -> Layout {
     };
     leaf.push(&profile_dir);
 
-    let bin_filename = if cfg!(windows) {
-        format!("{bin}.exe")
-    } else {
-        bin.to_string()
-    };
+    let bin_filename = crate::platform::executable::name::native(bin);
     let binary_path = leaf.join(&bin_filename);
     let sidecar_path = leaf.join(".soldr-trampoline").join(format!("{bin}.toml"));
     let dep_info_path = leaf.join(format!("{bin}.d"));
@@ -93,7 +89,7 @@ pub(crate) fn effective_target_triple(parsed: &ParsedRunArgs) -> Option<String> 
             }
         }
     }
-    if cfg!(windows) {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         crate::core::TargetTriple::detect().ok().map(|t| t.triple())
     } else {
         None

@@ -332,11 +332,12 @@ fn resolve_local_single_binary(
             local_dir.display(),
         )));
     }
-    let binary_name = if cfg!(windows) {
-        format!("{binary_stem}.exe")
-    } else {
-        binary_stem.to_string()
-    };
+    let binary_name =
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            format!("{binary_stem}.exe")
+        } else {
+            binary_stem.to_string()
+        };
     let binary = local_dir.join(binary_name);
     if !binary.is_file() {
         return Err(SoldrError::Other(format!(
@@ -1204,7 +1205,7 @@ mod tests {
     // `local-<version>` label.
 
     fn platform_binary_name(binary_stem: &str) -> String {
-        if cfg!(windows) {
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
             format!("{binary_stem}.exe")
         } else {
             binary_stem.to_string()
@@ -1445,13 +1446,8 @@ mod tests {
             "#!/bin/sh\nsomething_that_will_definitely_fail_to_exec_or_be_a_command\nexit 1\n",
         )
         .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut p = std::fs::metadata(&bogus_bin).unwrap().permissions();
-            p.set_mode(0o755);
-            std::fs::set_permissions(&bogus_bin, p).unwrap();
-        }
+        let source = std::fs::metadata(&bogus_bin).unwrap().permissions();
+        crate::platform::fs::permissions::make_executable_from(&bogus_bin, &source).unwrap();
 
         let result =
             smoke_test_or_evict(&bogus_bin, "cargo-zigbuild", &TargetTriple::host().unwrap());

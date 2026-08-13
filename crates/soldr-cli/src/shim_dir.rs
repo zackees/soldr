@@ -280,17 +280,9 @@ pub(crate) fn trampoline_shim_body(soldr_bin: &Path) -> String {
 /// Cost here is one `sh` fork per nested tool call, on wheel installs only.
 pub(crate) fn write_trampoline_shim(path: &Path, soldr_bin: &Path) -> Result<(), SoldrError> {
     std::fs::write(path, trampoline_shim_body(soldr_bin)).map_err(SoldrError::Io)?;
-    // Only the exec bit is genuinely platform-specific; the rest of this
-    // function compiles and is tested everywhere (soldr CLAUDE.md:156).
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(path)
-            .map_err(SoldrError::Io)?
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(path, perms).map_err(SoldrError::Io)?;
-    }
+    // Only the exec bit is genuinely platform-specific; the platform
+    // crate owns it (no-op where the filesystem has no exec bits).
+    crate::platform::fs::permissions::make_executable(path).map_err(SoldrError::Io)?;
     Ok(())
 }
 
@@ -305,10 +297,7 @@ pub(crate) fn apply_to_command(command: &mut std::process::Command, shim_dir: &P
     let mut new_path = std::ffi::OsString::new();
     new_path.push(shim_dir.as_os_str());
     if !existing.is_empty() {
-        #[cfg(windows)]
-        new_path.push(";");
-        #[cfg(not(windows))]
-        new_path.push(":");
+        new_path.push(crate::platform::host::facts::path_list_separator());
         new_path.push(&existing);
     }
     command.env("PATH", new_path);
@@ -385,13 +374,7 @@ mod tests {
 
         let written = std::fs::read_to_string(shim_tool_path(&dir, "cargo")).unwrap();
         assert_eq!(written, trampoline_shim_body(&exe));
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(shim_tool_path(&dir, "cargo"))
-                .unwrap()
-                .permissions()
-                .mode();
+        if let Some(mode) = crate::platform::fs::permissions::mode(&shim_tool_path(&dir, "cargo")) {
             assert_eq!(mode & 0o777, 0o755, "trampoline must be executable");
         }
     }
@@ -416,7 +399,6 @@ mod tests {
         );
     }
 
-    #[cfg(windows)]
     fn system_cmd_exe() -> PathBuf {
         let system_root = std::env::var_os("SystemRoot")
             .unwrap_or_else(|| std::ffi::OsString::from("C:\\Windows"));
@@ -435,22 +417,25 @@ mod tests {
     crate::timed_test!(shim_tool_path_uses_native_executable_suffix, {
         let dir = PathBuf::from("/tmp/shims");
         let path = shim_tool_path(&dir, "cargo");
-        #[cfg(windows)]
-        assert!(
-            path.to_string_lossy().ends_with("cargo.exe"),
-            "windows shims must be native executable files: {}",
-            path.display()
-        );
-        #[cfg(not(windows))]
-        assert!(
-            path.to_string_lossy().ends_with("cargo"),
-            "unix shims keep extensionless tool names: {}",
-            path.display()
-        );
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            assert!(
+                path.to_string_lossy().ends_with("cargo.exe"),
+                "windows shims must be native executable files: {}",
+                path.display()
+            );
+        } else {
+            assert!(
+                path.to_string_lossy().ends_with("cargo"),
+                "unix shims keep extensionless tool names: {}",
+                path.display()
+            );
+        }
     });
 
-    #[cfg(windows)]
     crate::timed_test!(windows_shims_are_visible_to_rust_command_lookup, {
+        if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
+            return;
+        }
         let temp = tempfile::tempdir().expect("tempdir");
         let cmd = system_cmd_exe();
         assert!(cmd.is_file(), "missing {}", cmd.display());

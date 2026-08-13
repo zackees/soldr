@@ -25,13 +25,13 @@ pub(crate) async fn prepare(
     let zig_target = rust_target_to_zig_target(triple)?;
     let zig_target = zig_target.as_str();
     let zig_dir = crate::fetch::ensure_zig(paths).await?;
-    let zig = zig_dir.join(if cfg!(windows) { "zig.exe" } else { "zig" });
+    let zig = zig_dir.join(crate::platform::executable::name::native("zig"));
     // The musl triple is part of the directory so the two architectures never
     // share wrapper scripts.
     let wrapper_dir = paths.bin.join("linux-cross").join(triple);
     std::fs::create_dir_all(&wrapper_dir)?;
 
-    let ext = if cfg!(windows) { ".cmd" } else { "" };
+    let ext = crate::platform::executable::name::script_suffix();
     let cc = wrapper_dir.join(format!("cc{ext}"));
     let cxx = wrapper_dir.join(format!("cxx{ext}"));
     let ar = wrapper_dir.join(format!("ar{ext}"));
@@ -74,9 +74,10 @@ fn write_compiler_wrapper(
     subcommand: &str,
     zig_target: &str,
 ) -> Result<(), SoldrError> {
-    let body = if cfg!(windows) {
-        format!(
-            "@echo off\r\n\
+    let body =
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            format!(
+                "@echo off\r\n\
              setlocal EnableDelayedExpansion\r\n\
              set \"filtered=\"\r\n\
              :next_arg\r\n\
@@ -89,32 +90,33 @@ fn write_compiler_wrapper(
              goto next_arg\r\n\
              :run\r\n\
              \"{}\" {subcommand} -target {zig_target} !filtered!\r\n",
-            zig.display()
-        )
-    } else {
-        format!(
-            "#!/usr/bin/env bash\n\
+                zig.display()
+            )
+        } else {
+            format!(
+                "#!/usr/bin/env bash\n\
              # cc-rs may pass the Rust triple; Zig needs its own target spelling.\n\
              filtered=()\n\
              for arg in \"$@\"; do\n\
              \tcase \"$arg\" in --target=*) ;; *) filtered+=(\"$arg\") ;; esac\n\
              done\n\
              exec '{}' {subcommand} -target {zig_target} \"${{filtered[@]}}\"\n",
-            shell_single_quote(zig)
-        )
-    };
+                shell_single_quote(zig)
+            )
+        };
     write_executable(path, &body)
 }
 
 fn write_tool_wrapper(path: &Path, zig: &Path, subcommand: &str) -> Result<(), SoldrError> {
-    let body = if cfg!(windows) {
-        format!("@echo off\r\n\"{}\" {subcommand} %*\r\n", zig.display())
-    } else {
-        format!(
-            "#!/bin/sh\nexec '{}' {subcommand} \"$@\"\n",
-            shell_single_quote(zig)
-        )
-    };
+    let body =
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            format!("@echo off\r\n\"{}\" {subcommand} %*\r\n", zig.display())
+        } else {
+            format!(
+                "#!/bin/sh\nexec '{}' {subcommand} \"$@\"\n",
+                shell_single_quote(zig)
+            )
+        };
     write_executable(path, &body)
 }
 
@@ -124,12 +126,12 @@ fn shell_single_quote(path: &Path) -> String {
 
 fn write_executable(path: &Path, body: &str) -> Result<(), SoldrError> {
     std::fs::write(path, body)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut permissions = std::fs::metadata(path)?.permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(path, permissions)?;
+    if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
+        // The wrapper must be runnable; the facade applies a fixed
+        // 0o755 on Unix and is a no-op on Windows (the .cmd extension
+        // decides executability).
+        let permissions = std::fs::metadata(path)?.permissions();
+        crate::platform::fs::permissions::make_executable_from(path, &permissions)?;
     }
     Ok(())
 }
@@ -159,7 +161,7 @@ mod tests {
     });
 
     crate::timed_test!(unix_wrapper_uses_managed_zig_directly, {
-        if cfg!(windows) {
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
             return;
         }
         let temp = tempfile::tempdir().unwrap();
@@ -182,7 +184,7 @@ mod tests {
     });
 
     crate::timed_test!(windows_wrapper_filters_rust_target_spelling, {
-        if !cfg!(windows) {
+        if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
             return;
         }
         let temp = tempfile::tempdir().unwrap();

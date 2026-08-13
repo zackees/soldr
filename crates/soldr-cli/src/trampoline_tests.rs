@@ -146,9 +146,11 @@ fn dep_info_joins_line_continuations() {
     assert!(strs.contains(&"/tmp/c.rs".to_string()));
 }
 
-#[cfg(windows)]
 #[test]
 fn dep_info_handles_windows_drive_letters() {
+    if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
+        return;
+    }
     let text = "C:\\target\\debug\\foo.exe: C:\\src\\main.rs C:\\src\\lib.rs\n";
     let sources =
         parse_dep_info_for_output(text, Path::new("C:\\target\\debug\\foo.exe")).expect("parsed");

@@ -594,19 +594,7 @@ mod tests {
     /// cannot make one. Windows needs Developer Mode or elevation, so the
     /// symlink tests self-skip rather than failing on an unprivileged box.
     fn try_symlink_dir(src: &std::path::Path, dst: &std::path::Path) -> bool {
-        #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink(src, dst).is_ok()
-        }
-        #[cfg(windows)]
-        {
-            std::os::windows::fs::symlink_dir(src, dst).is_ok()
-        }
-        #[cfg(not(any(unix, windows)))]
-        {
-            let _ = (src, dst);
-            false
-        }
+        crate::platform::fs::links::create(&src.to_string_lossy(), dst, true).is_ok()
     }
 
     crate::timed_test!(directory_size_does_not_follow_a_symlink_cycle, {

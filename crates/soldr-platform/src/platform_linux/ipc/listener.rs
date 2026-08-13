@@ -1,0 +1,143 @@
+//! Linux listener: AF_UNIX control-endpoint claim and accept with
+//! peer-credential admission, plus the owner-only SESSION listener
+//! bind (interprocess `mode(0o600)` + stale-socket reclaim).
+
+use std::future::Future;
+use std::io;
+use std::path::Path;
+use std::pin::Pin;
+
+use crate::platform::ipc::listener::{
+    AcceptedControlConnection, AcceptedPeer, BoxedControlListener, ControlListener, SocketIdentity,
+};
+
+/// Claim the private control endpoint at `sock`, mirroring the
+/// historical daemon behavior exactly: private parent directory,
+/// stale-socket unlink, bind, 0o600, then capture the socket identity
+/// used to fence retiring-daemon cleanup. On identity-capture failure
+/// the freshly bound socket is removed so a successor can claim the
+/// endpoint cleanly.
+pub fn claim_control_endpoint_at(sock: &Path) -> io::Result<(BoxedControlListener, SocketIdentity)> {
+    if let Some(parent) = sock.parent() {
+        running_process::broker::secure_dir::ensure_private_dir(parent)?;
+    }
+    match std::fs::remove_file(sock) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let listener = tokio::net::UnixListener::bind(sock)?;
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(sock, std::fs::Permissions::from_mode(0o600))?;
+    }
+    let identity = match unix_socket_identity(sock) {
+        Ok(identity) => identity,
+        Err(error) => {
+            drop(listener);
+            let _ = std::fs::remove_file(sock);
+            return Err(error);
+        }
+    };
+    Ok((Box::new(UnixControlListener { listener }), identity))
+}
+
+/// File identity of the socket node at `path` (device + inode). The
+/// identity is captured right after bind and later used to fence
+/// cleanup: a stale daemon unlinks only when the identity still
+/// matches, so it can never remove a successor's live socket.
+pub fn unix_socket_identity(path: &Path) -> io::Result<SocketIdentity> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::symlink_metadata(path)?;
+    Ok(SocketIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    })
+}
+
+/// Remove `path` only when it still carries `expected`'s identity.
+/// A `NotFound` is success (nothing to unlink); a mismatched identity
+/// leaves the path untouched and reports `Ok(false)`.
+pub fn remove_unix_socket_if_matches(path: &Path, expected: SocketIdentity) -> io::Result<bool> {
+    let actual = match unix_socket_identity(path) {
+        Ok(actual) => actual,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    if actual != expected {
+        return Ok(false);
+    }
+    std::fs::remove_file(path)?;
+    Ok(true)
+}
+
+struct UnixControlListener {
+    listener: tokio::net::UnixListener,
+}
+
+impl ControlListener for UnixControlListener {
+    fn accept(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = io::Result<AcceptedControlConnection>> + Send + '_>> {
+        Box::pin(async move {
+            let (stream, _addr) = self.listener.accept().await?;
+            // Transport-observed identity: pid from SO_PEERCRED, and the
+            // same credentials gate current-user admission. Computed
+            // before boxing because only the concrete type exposes them.
+            let credentials = stream.peer_cred().ok();
+            let pid = credentials
+                .as_ref()
+                .and_then(|credentials| credentials.pid())
+                .and_then(|pid| u32::try_from(pid).ok());
+            let is_current_user = credentials
+                .as_ref()
+                .is_some_and(|credentials| credentials.uid() == unsafe { libc::geteuid() });
+            Ok(AcceptedControlConnection {
+                stream: Box::new(stream),
+                peer: AcceptedPeer {
+                    pid,
+                    exe: None,
+                    is_current_user,
+                },
+            })
+        })
+    }
+}
+
+/// Bind an owner-only SESSION listener at `socket_path` (a filesystem
+/// path on Linux). Creates the parent directory when the broker's
+/// runtime namespace does not exist yet, binds with mode 0o600, and
+/// reclaims a stale socket exactly like the broker's own SESSION bind.
+pub fn bind_owner_only_listener(
+    socket_path: &str,
+) -> io::Result<interprocess::local_socket::tokio::Listener> {
+    use interprocess::local_socket::ListenerOptions;
+    use interprocess::os::unix::local_socket::ListenerOptionsExt as _;
+    use running_process::broker::server::singleton_bind::{
+        is_already_bound_error, unix_socket_path_is_stale, wrap_socket_name,
+    };
+
+    if let Some(parent) = std::path::Path::new(socket_path).parent() {
+        running_process::broker::secure_dir::ensure_private_dir(parent)?;
+    }
+
+    let name = wrap_socket_name(socket_path).map_err(io::Error::other)?;
+    let options = ListenerOptions::new()
+        .name(name)
+        .reclaim_name(false)
+        .mode(0o600);
+    let first = options.create_tokio();
+    match first {
+        Ok(listener) => Ok(listener),
+        Err(err) if is_already_bound_error(&err) && unix_socket_path_is_stale(socket_path) => {
+            let _ = std::fs::remove_file(socket_path);
+            let retry_name = wrap_socket_name(socket_path).map_err(io::Error::other)?;
+            ListenerOptions::new()
+                .name(retry_name)
+                .reclaim_name(false)
+                .mode(0o600)
+                .create_tokio()
+        }
+        Err(err) => Err(err),
+    }
+}

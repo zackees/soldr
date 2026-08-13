@@ -195,14 +195,16 @@ impl ProcessTreeCpuProbe {
     fn new(root_pid: u32) -> Self {
         Self {
             root_pid,
-            previous_ticks: process_tree_cpu_ticks(root_pid),
+            previous_ticks: crate::platform::process::cpu_ticks::process_tree_cpu_ticks(root_pid),
         }
     }
 }
 
 impl ProgressProbe for ProcessTreeCpuProbe {
     fn made_progress(&mut self) -> bool {
-        let Some(current_ticks) = process_tree_cpu_ticks(self.root_pid) else {
+        let Some(current_ticks) =
+            crate::platform::process::cpu_ticks::process_tree_cpu_ticks(self.root_pid)
+        else {
             return false;
         };
         let progressed = self
@@ -211,72 +213,6 @@ impl ProgressProbe for ProcessTreeCpuProbe {
         self.previous_ticks = Some(current_ticks);
         progressed
     }
-}
-
-/// Linux exposes CPU ticks for a process and its descendants without adding a
-/// heavyweight process-inspection dependency. Other platforms still use live
-/// output, which rustup and cargo emit throughout normal work.
-#[cfg(target_os = "linux")]
-fn process_tree_cpu_ticks(root_pid: u32) -> Option<u64> {
-    #[derive(Clone, Copy)]
-    struct ProcessTicks {
-        pid: u32,
-        parent_pid: u32,
-        ticks: u64,
-    }
-
-    let mut processes = Vec::new();
-    for entry in std::fs::read_dir("/proc").ok()?.flatten() {
-        let Some(pid) = entry
-            .file_name()
-            .to_str()
-            .and_then(|name| name.parse::<u32>().ok())
-        else {
-            continue;
-        };
-        let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
-            // A process can vanish while `/proc` is being enumerated.
-            continue;
-        };
-        let Some((_, fields)) = stat.rsplit_once(") ") else {
-            continue;
-        };
-        let fields: Vec<_> = fields.split_ascii_whitespace().collect();
-        // Fields after `comm`: state=0, ppid=1, ... utime=11, stime=12.
-        let (Some(parent_pid), Some(user_ticks), Some(system_ticks)) = (
-            fields.get(1).and_then(|field| field.parse().ok()),
-            fields.get(11).and_then(|field| field.parse::<u64>().ok()),
-            fields.get(12).and_then(|field| field.parse::<u64>().ok()),
-        ) else {
-            continue;
-        };
-        processes.push(ProcessTicks {
-            pid,
-            parent_pid,
-            ticks: user_ticks.saturating_add(system_ticks),
-        });
-    }
-
-    let mut pending = vec![root_pid];
-    let mut total = 0_u64;
-    while let Some(pid) = pending.pop() {
-        let Some(process) = processes.iter().find(|process| process.pid == pid) else {
-            continue;
-        };
-        total = total.saturating_add(process.ticks);
-        pending.extend(
-            processes
-                .iter()
-                .filter(|process| process.parent_pid == pid)
-                .map(|process| process.pid),
-        );
-    }
-    Some(total)
-}
-
-#[cfg(not(target_os = "linux"))]
-fn process_tree_cpu_ticks(_root_pid: u32) -> Option<u64> {
-    None
 }
 
 fn wait_for_child_with_watchdog<P: ProgressProbe>(
@@ -399,75 +335,68 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
+    fn is_windows_test_host() -> bool {
+        crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows
+    }
+
     fn unix_shell(script: &str) -> Command {
         let mut command = Command::new("sh");
         command.args(["-c", script]);
         command
     }
 
-    #[cfg(unix)]
     fn steady_progress_command() -> Command {
-        unix_shell("i=0; while [ $i -lt 8 ]; do echo progress; sleep 0.10; i=$((i + 1)); done")
+        if is_windows_test_host() {
+            let mut command = Command::new("powershell.exe");
+            command.args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "1..3 | ForEach-Object { Write-Output progress; Start-Sleep -Seconds 1 }",
+            ]);
+            command
+        } else {
+            unix_shell("i=0; while [ $i -lt 8 ]; do echo progress; sleep 0.10; i=$((i + 1)); done")
+        }
     }
 
-    #[cfg(unix)]
     fn quiet_wait_command() -> Command {
-        unix_shell("sleep 0.3")
+        if is_windows_test_host() {
+            let mut command = Command::new("powershell.exe");
+            command.args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Seconds 2",
+            ]);
+            command
+        } else {
+            unix_shell("sleep 0.3")
+        }
     }
 
-    #[cfg(windows)]
-    fn steady_progress_command() -> Command {
-        let mut command = Command::new("powershell.exe");
-        command.args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "1..3 | ForEach-Object { Write-Output progress; Start-Sleep -Seconds 1 }",
-        ]);
-        command
-    }
-
-    #[cfg(windows)]
-    fn quiet_wait_command() -> Command {
-        let mut command = Command::new("powershell.exe");
-        command.args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "Start-Sleep -Seconds 2",
-        ]);
-        command
-    }
-
-    #[cfg(unix)]
     fn test_stall_timeout() -> Duration {
-        Duration::from_millis(250)
+        if is_windows_test_host() {
+            Duration::from_millis(1500)
+        } else {
+            Duration::from_millis(250)
+        }
     }
 
-    #[cfg(windows)]
-    fn test_stall_timeout() -> Duration {
-        Duration::from_millis(1500)
-    }
-
-    #[cfg(unix)]
     fn test_safety_timeout() -> Duration {
-        Duration::from_secs(2)
+        if is_windows_test_host() {
+            Duration::from_secs(5)
+        } else {
+            Duration::from_secs(2)
+        }
     }
 
-    #[cfg(windows)]
-    fn test_safety_timeout() -> Duration {
-        Duration::from_secs(5)
-    }
-
-    #[cfg(unix)]
     fn test_short_safety_timeout() -> Duration {
-        Duration::from_millis(45)
-    }
-
-    #[cfg(windows)]
-    fn test_short_safety_timeout() -> Duration {
-        Duration::from_millis(500)
+        if is_windows_test_host() {
+            Duration::from_millis(500)
+        } else {
+            Duration::from_millis(45)
+        }
     }
 
     fn wait_for_test_child<P: ProgressProbe>(
@@ -523,8 +452,13 @@ mod tests {
         assert!(result.unwrap().success());
     });
 
-    #[cfg(target_os = "linux")]
     timed_test!(quiet_cpu_active_work_resets_the_watchdog, {
+        // The CPU-ticks probe is Linux-only (procfs); other hosts have no
+        // progress source beyond output, so the quiet-but-active scenario
+        // does not exist there.
+        if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Linux {
+            return;
+        }
         let mut command = unix_shell(
             "yes >/dev/null & worker=$!; sleep 0.2; kill \"$worker\"; wait \"$worker\" 2>/dev/null || true",
         );
@@ -537,8 +471,11 @@ mod tests {
         assert!(result.unwrap().success());
     });
 
-    #[cfg(unix)]
     timed_test!(watchdog_terminates_the_installer_process_group, {
+        // Asserts against /proc, which only exists on Linux.
+        if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Linux {
+            return;
+        }
         let temp = tempfile::tempdir().unwrap();
         let descendant_pid_file = temp.path().join("descendant.pid");
         let mut command = Command::new("sh");

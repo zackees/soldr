@@ -37,26 +37,10 @@ use crate::zccache_embedded::SoldrZccacheService;
 /// (`endpoint_probe_request_from_frame` requires exactly 32 bytes).
 const PROBE_NONCE_BYTES: usize = 32;
 
-#[cfg(target_os = "macos")]
-crate::timed_test!(macos_session_listener_restricts_socket_after_bind, {
-    use std::os::unix::fs::PermissionsExt as _;
-
-    let temp = tempfile::tempdir().expect("tempdir");
-    let path = temp.path().join("soldr-daemon.session.sock");
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime");
-    let _context = runtime.enter();
-    let listener = bind_session_listener(&path.display().to_string()).expect("bind listener");
-    let mode = std::fs::metadata(&path)
-        .expect("socket metadata")
-        .permissions()
-        .mode()
-        & 0o777;
-    assert_eq!(mode, 0o600);
-    drop(listener);
-});
+// The macOS bind-then-tighten permission test and the Unix
+// missing-parent bind test live in `tests/daemon_session_endpoint.rs`
+// (`#![cfg(unix)]` / `#![cfg(target_os = "macos")]`) — they exercise
+// host-specific bind mechanics now owned by the platform listener leaf.
 
 crate::timed_test!(
     private_endpoints_are_sibling_names_of_the_daemon_session_path,
@@ -281,18 +265,15 @@ crate::timed_test!(session_endpoint_answers_backend_handle_probe, {
 /// A unique local-socket name for a test: a filesystem path under `temp` on
 /// Unix, a namespaced pipe name on Windows.
 fn unique_session_socket(temp: &tempfile::TempDir) -> String {
-    #[cfg(unix)]
-    {
-        temp.path().join("session.sock").display().to_string()
-    }
-    #[cfg(windows)]
-    {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock")
             .as_nanos();
         let _ = temp;
         format!("soldr-session-6d-{}-{}", std::process::id(), nanos)
+    } else {
+        temp.path().join("session.sock").display().to_string()
     }
 }
 
@@ -353,27 +334,5 @@ crate::timed_test!(session_endpoint_accept_loop_binds_and_dispatches_probe, {
             assert_eq!(reply.request_id, request_id, "probe response echoes id");
 
             server.abort();
-        });
-});
-
-#[cfg(unix)]
-crate::timed_test!(session_listener_creates_missing_socket_parent, {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime")
-        .block_on(async {
-            let temp = tempfile::tempdir().expect("tempdir");
-            let parent = temp.path().join("missing").join("runtime");
-            let socket = parent.join("daemon.session");
-            assert!(!parent.exists(), "test requires a missing socket parent");
-
-            let listener = bind_session_listener(&socket.display().to_string())
-                .expect("bind creates the missing socket parent");
-            assert!(
-                parent.is_dir(),
-                "SESSION bind must create its socket parent"
-            );
-            drop(listener);
         });
 });

@@ -7,17 +7,7 @@ use std::path::{Component, Path};
 /// True for Unix/Windows symbolic links and Windows reparse points such as
 /// directory junctions.  Destructive collectors must not follow any of them.
 pub fn is_link_or_reparse(metadata: &Metadata) -> bool {
-    if metadata.file_type().is_symlink() {
-        return true;
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
-        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-    }
-    #[cfg(not(windows))]
-    false
+    crate::platform::fs::links::is_link_or_reparse(metadata)
 }
 
 /// Validate that `directory` is a real directory beneath the exact selected
@@ -85,10 +75,9 @@ mod tests {
         std::fs::create_dir_all(&boundary).unwrap();
         std::fs::create_dir_all(&external).unwrap();
         let linked = boundary.join("linked");
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&external, &linked).unwrap();
-        #[cfg(windows)]
-        {
+        // Unix: a plain symlink. Windows: a directory junction via
+        // `cmd mklink /J` (junctions need no Developer Mode).
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
             let status = std::process::Command::new("cmd")
                 .args(["/c", "mklink", "/J"])
                 .arg(&linked)
@@ -96,6 +85,8 @@ mod tests {
                 .status()
                 .unwrap();
             assert!(status.success(), "create test junction");
+        } else {
+            crate::platform::fs::links::create(&external.to_string_lossy(), &linked, true).unwrap();
         }
         assert!(validate_owned_directory(&boundary, &linked).is_err());
     });

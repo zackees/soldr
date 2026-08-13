@@ -394,7 +394,11 @@ fn run_periodic_gc_in(runtime_root: &Path, current_exe: Option<&Path>) {
 }
 
 fn relocation_requested() -> bool {
-    cfg!(windows) || truthy_env(FORCE_RELOCATION_ENV_VAR)
+    // Windows relocates by default: the running executable is locked while
+    // the daemon writes to it, so self-update must copy first. Unix can
+    // replace the in-place binary and relocates only on explicit request.
+    crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows
+        || truthy_env(FORCE_RELOCATION_ENV_VAR)
 }
 
 fn relocation_guard_active() -> bool {

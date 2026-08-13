@@ -1063,20 +1063,11 @@ mod legacy_gc_tests {
         assert!(malformed.join("artifact").is_file());
         assert!(sibling_sentinel.is_file());
     });
-
-    #[cfg(unix)]
-    crate::timed_test!(legacy_sweep_retains_version_with_unreadable_linked_tree, {
-        let temp = tempfile::tempdir().unwrap();
-        let paths = SoldrPaths::with_root(temp.path().join("owned"));
-        let candidate = paths.cache.join("zccache/v0.0.1");
-        std::fs::create_dir_all(&candidate).unwrap();
-        std::os::unix::fs::symlink(candidate.join("missing"), candidate.join("broken")).unwrap();
-        let report = sweep_legacy_cache_roots(&paths, SystemTime::now(), std::time::Duration::ZERO);
-        assert_eq!(report.removed, 0);
-        assert_eq!(report.failed, 1);
-        assert!(candidate.is_dir());
-    });
 }
+
+// The broken-symlink retention test moved to `tests/daemon_zccache_embedded.rs`
+// (`#![cfg(unix)]`) — creating a dangling link is inherently host-specific
+// (#2493).
 
 fn private_zccache_cache_root(paths: &SoldrPaths, identity: &HostIdentity) -> std::path::PathBuf {
     paths
@@ -1100,8 +1091,6 @@ mod zccache_embedded_process_tests;
 
 #[cfg(test)]
 mod private_root_tests {
-    #[cfg(windows)]
-    use super::zccache_embedded_process_tests::contained_status;
     use super::zccache_embedded_process_tests::{bounded_output, CompilerProbeOutput};
     use super::*;
 
@@ -1225,16 +1214,19 @@ mod private_root_tests {
         std::fs::create_dir_all(&external).unwrap();
         let sentinel = external.join("sentinel");
         std::fs::write(&sentinel, b"keep").unwrap();
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&external, &stable).unwrap();
-        #[cfg(windows)]
-        {
+        // A cross-product link at the stable root: junction on Windows
+        // (privilege-free), symlink on Unix.
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
             let mut command = std::process::Command::new("cmd");
             command
                 .args(["/c", "mklink", "/J"])
                 .arg(&stable)
                 .arg(&external);
-            assert_eq!(contained_status(command).unwrap(), 0);
+            let status = command.status().unwrap();
+            assert!(status.success(), "mklink /J must create the junction");
+        } else {
+            crate::platform::fs::links::create(&external.display().to_string(), &stable, true)
+                .expect("create directory symlink");
         }
         assert!(prepare_embedded_cache_root(&paths, &daemon, &stable).is_err());
         assert_eq!(std::fs::read(&sentinel).unwrap(), b"keep");
@@ -1250,16 +1242,21 @@ mod private_root_tests {
         let version_root = stable.join(zccache::core::config::versioned_subdir());
         let external = temp.path().join("other-product-version");
         std::fs::create_dir_all(&external).unwrap();
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&external, &version_root).unwrap();
-        #[cfg(windows)]
-        {
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
             let mut command = std::process::Command::new("cmd");
             command
                 .args(["/c", "mklink", "/J"])
                 .arg(&version_root)
                 .arg(&external);
-            assert_eq!(contained_status(command).unwrap(), 0);
+            let status = command.status().unwrap();
+            assert!(status.success(), "mklink /J must create the junction");
+        } else {
+            crate::platform::fs::links::create(
+                &external.display().to_string(),
+                &version_root,
+                true,
+            )
+            .expect("create directory symlink");
         }
         assert!(prepare_embedded_cache_root(&paths, &daemon, &stable).is_err());
         assert!(!external.join("logs").exists());
@@ -1382,26 +1379,9 @@ mod private_root_tests {
         );
     });
 
-    #[cfg(unix)]
-    crate::timed_test!(working_fake_compiler_probe_is_accepted, {
-        use std::os::unix::fs::PermissionsExt;
-
-        let temp = tempfile::tempdir().expect("tempdir");
-        let compiler = temp.path().join("fake-compiler");
-        std::fs::write(
-            &compiler,
-            "#!/bin/sh\nprintf 'rustc 1.94.1 (fake)\\nhost: fake-target\\n'\n",
-        )
-        .expect("write fake compiler");
-        let mut permissions = std::fs::metadata(&compiler)
-            .expect("fake compiler metadata")
-            .permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&compiler, permissions).expect("make fake compiler executable");
-
-        let version = probe_working_compiler(&compiler).expect("working compiler probe");
-        assert!(version.contains("rustc 1.94.1 (fake)"));
-    });
+    // The executable fake-compiler probe moved to
+    // `tests/daemon_zccache_embedded.rs` (`#![cfg(unix)]`) — it needs a
+    // Unix shebang and 0o755 (#2493).
 
     crate::timed_test!(unusable_proxy_probe_reports_complete_diagnostics, {
         let compiler = std::path::Path::new("rustc-proxy");

@@ -365,13 +365,7 @@ pub fn execute_plan(plan: &BuildPlan) -> Result<BuildReport, SoldrError> {
         ))
     })?;
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&plan.final_binary)?.permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&plan.final_binary, perms)?;
-    }
+    crate::platform::fs::permissions::make_executable(&plan.final_binary)?;
 
     let sha256 = sha256_of_file(&plan.final_binary)?;
     let sidecar = plan.final_binary.with_extension("sha256");

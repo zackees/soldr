@@ -673,8 +673,10 @@ fn cargo_builtin_shorthand_does_not_capture_other_verbs() {
 // dispatch tests.
 
 #[test]
-#[cfg(target_os = "linux")]
 fn pick_cross_subcommand_msvc_uses_blessed_when_cache_ready() {
+    if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Linux {
+        return;
+    }
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     std::env::remove_var(crate::blessed_build::USE_LEGACY_XWIN_ENV_VAR);
     assert_eq!(pick_cross_subcommand("x86_64-pc-windows-msvc", true), None);
@@ -682,8 +684,10 @@ fn pick_cross_subcommand_msvc_uses_blessed_when_cache_ready() {
 }
 
 #[test]
-#[cfg(target_os = "linux")]
 fn pick_cross_subcommand_msvc_never_implicitly_falls_back_to_xwin() {
+    if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Linux {
+        return;
+    }
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     std::env::remove_var(crate::blessed_build::USE_LEGACY_XWIN_ENV_VAR);
     assert_eq!(pick_cross_subcommand("x86_64-pc-windows-msvc", false), None);
@@ -694,8 +698,10 @@ fn pick_cross_subcommand_msvc_never_implicitly_falls_back_to_xwin() {
 }
 
 #[test]
-#[cfg(target_os = "linux")]
 fn pick_cross_subcommand_darwin_returns_none_by_default() {
+    if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Linux {
+        return;
+    }
     // soldr#1081 follow-up: *-apple-darwin no longer routes through
     // cargo-zigbuild. The blessed-build apple-darwin arm in
     // blessed_build.rs exports the COMPLETE Apple SDK to cc-rs +
@@ -720,8 +726,10 @@ fn pick_cross_subcommand_darwin_returns_none_by_default() {
 }
 
 #[test]
-#[cfg(target_os = "linux")]
 fn pick_cross_subcommand_linux_uses_blessed_path_by_default() {
+    if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Linux {
+        return;
+    }
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     std::env::remove_var(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR);
     for target in [
@@ -752,8 +760,10 @@ fn pick_cross_subcommand_linux_uses_blessed_path_by_default() {
 }
 
 #[test]
-#[cfg(target_os = "linux")]
 fn pick_cross_subcommand_windows_gnu_stays_on_blessed_path() {
+    if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Linux {
+        return;
+    }
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     std::env::remove_var(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR);
     assert_eq!(pick_cross_subcommand("x86_64-pc-windows-gnu", false), None);
@@ -764,8 +774,10 @@ fn pick_cross_subcommand_windows_gnu_stays_on_blessed_path() {
 }
 
 #[test]
-#[cfg(target_os = "linux")]
 fn pick_cross_subcommand_legacy_xwin_forces_xwin() {
+    if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Linux {
+        return;
+    }
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     std::env::set_var(crate::blessed_build::USE_LEGACY_XWIN_ENV_VAR, "1");
     assert_eq!(
@@ -776,8 +788,10 @@ fn pick_cross_subcommand_legacy_xwin_forces_xwin() {
 }
 
 #[test]
-#[cfg(target_os = "linux")]
 fn pick_cross_subcommand_legacy_zigbuild_routes_darwin_to_zigbuild() {
+    if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Linux {
+        return;
+    }
     // Inverse of the default path covered by
     // pick_cross_subcommand_darwin_returns_none_by_default: with the
     // env var set, darwin opts INTO the legacy zigbuild dispatch.
@@ -793,8 +807,10 @@ fn pick_cross_subcommand_legacy_zigbuild_routes_darwin_to_zigbuild() {
 }
 
 #[test]
-#[cfg(not(target_os = "linux"))]
 fn pick_cross_subcommand_non_linux_host_returns_none() {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Linux {
+        return;
+    }
     // On macos / windows hosts the auto-dispatch is suppressed; the
     // host's native cargo build chain handles the local target.
     assert_eq!(pick_cross_subcommand("x86_64-pc-windows-msvc", true), None);

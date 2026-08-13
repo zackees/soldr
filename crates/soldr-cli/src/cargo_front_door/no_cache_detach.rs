@@ -618,39 +618,13 @@ fn open_cap_file_no_follow(parent: &Dir, name: &Path, write: bool) -> std::io::R
     parent.open_with(name, &options).map(|file| file.into_std())
 }
 
-#[cfg(unix)]
 fn open_source_for_detach(parent: &Dir, name: &Path) -> std::io::Result<File> {
-    open_cap_file_no_follow(parent, name, false)
-}
-
-#[cfg(windows)]
-fn open_source_for_detach(parent: &Dir, name: &Path) -> std::io::Result<File> {
-    use std::os::windows::io::{AsRawHandle, FromRawHandle};
-    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
-    use windows_sys::Win32::Storage::FileSystem::{
-        ReOpenFile, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ,
-        FILE_SHARE_WRITE,
-    };
-
-    const DELETE_ACCESS: u32 = 0x0001_0000;
-    const GENERIC_READ: u32 = 0x8000_0000;
-    const FILE_WRITE_ATTRIBUTES: u32 = 0x0000_0100;
     let initial = open_cap_file_no_follow(parent, name, false)?;
-    // ReOpenFile upgrades the already-resolved capability handle rather than
-    // resolving an ambient path again, preserving the beneath-root guarantee.
-    let handle = unsafe {
-        ReOpenFile(
-            initial.as_raw_handle() as _,
-            GENERIC_READ | DELETE_ACCESS | FILE_WRITE_ATTRIBUTES,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            FILE_FLAG_OPEN_REPARSE_POINT,
-        )
-    };
-    if handle == INVALID_HANDLE_VALUE {
-        return Err(std::io::Error::last_os_error());
-    }
-    // SAFETY: ReOpenFile returned a new owned handle on success.
-    Ok(unsafe { File::from_raw_handle(handle as _) })
+    // The platform crate upgrades the already-resolved handle (Windows
+    // ReOpenFile with delete access + share-delete; a no-op elsewhere)
+    // rather than resolving an ambient path again, preserving the
+    // beneath-root guarantee.
+    crate::platform::fs::replace::open_for_retire(initial)
 }
 
 fn open_lock_no_follow(parent: &Dir, name: &Path) -> std::io::Result<File> {
@@ -664,103 +638,28 @@ fn open_lock_no_follow(parent: &Dir, name: &Path) -> std::io::Result<File> {
     Ok(file)
 }
 
-#[cfg(unix)]
 fn is_reparse_or_symlink(metadata: &std::fs::Metadata) -> bool {
-    metadata.file_type().is_symlink()
+    crate::platform::fs::links::is_link_or_reparse(metadata)
 }
 
-#[cfg(windows)]
-fn is_reparse_or_symlink(metadata: &std::fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
-
-    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-}
-
-#[cfg(unix)]
-fn hard_link_count(_source: &File, metadata: &std::fs::Metadata) -> std::io::Result<u64> {
-    use std::os::unix::fs::MetadataExt;
-    Ok(metadata.nlink())
-}
-
-#[cfg(windows)]
 fn hard_link_count(source: &File, _metadata: &std::fs::Metadata) -> std::io::Result<u64> {
-    use std::mem::MaybeUninit;
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::{
-        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
-    };
-
-    let mut info = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
-    // SAFETY: `source` owns a valid file handle, and `info` points to enough
-    // writable storage for BY_HANDLE_FILE_INFORMATION.
-    if unsafe { GetFileInformationByHandle(source.as_raw_handle() as _, info.as_mut_ptr()) } == 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    // SAFETY: the successful call initialized the full structure.
-    Ok(u64::from(unsafe { info.assume_init() }.nNumberOfLinks))
+    crate::platform::fs::links::hard_link_count(source)
 }
 
-#[cfg(unix)]
 fn set_private_permissions(file: &File, source: &std::fs::Metadata) -> std::io::Result<()> {
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
-    file.set_permissions(std::fs::Permissions::from_mode(source.mode() | 0o200))
-}
-
-#[cfg(windows)]
-#[allow(clippy::permissions_set_readonly_false)] // Windows clears only FILE_ATTRIBUTE_READONLY.
-fn set_private_permissions(file: &File, source: &std::fs::Metadata) -> std::io::Result<()> {
-    let mut permissions = source.permissions();
-    permissions.set_readonly(false);
-    file.set_permissions(permissions)
+    crate::platform::fs::permissions::make_writable_like(file, &source.permissions())
 }
 
 fn make_file_writable(file: &File, metadata: &std::fs::Metadata) -> std::io::Result<()> {
     set_private_permissions(file, metadata)
 }
 
-#[cfg(unix)]
 fn remove_shared_alias(parent: &Dir, name: &OsStr, source: File) -> std::io::Result<()> {
-    drop(source);
-    parent.remove_file(name)
-}
-
-#[cfg(windows)]
-fn remove_shared_alias(_parent: &Dir, _name: &OsStr, source: File) -> std::io::Result<()> {
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::{
-        FileDispositionInfoEx, SetFileInformationByHandle, FILE_DISPOSITION_FLAG_DELETE,
-        FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
-        FILE_DISPOSITION_INFO_EX,
-    };
-
-    let mut disposition = FILE_DISPOSITION_INFO_EX {
-        Flags: FILE_DISPOSITION_FLAG_DELETE
-            | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS
-            | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
-    };
-    // SAFETY: `source` was opened with DELETE access and remains alive for
-    // the call. `disposition` has the exact layout required by
-    // FileDispositionInfoEx.
-    let success = unsafe {
-        SetFileInformationByHandle(
-            source.as_raw_handle() as _,
-            FileDispositionInfoEx,
-            std::ptr::from_mut(&mut disposition).cast(),
-            std::mem::size_of::<FILE_DISPOSITION_INFO_EX>() as u32,
-        )
-    };
-    if success == 0 {
-        let error = std::io::Error::last_os_error();
-        return Err(std::io::Error::new(
-            error.kind(),
-            format!(
-                "safe read-only hardlink detachment requires FileDispositionInfoEx; refusing an unsafe attribute-clearing fallback: {error}"
-            ),
-        ));
-    }
-    drop(source);
-    Ok(())
+    // The platform crate retires the file through its own handle on
+    // Windows (FileDispositionInfoEx POSIX-delete — the only mechanism
+    // that removes a still-mapped image); elsewhere it drops the handle
+    // and runs this capability-safe plain remove.
+    crate::platform::fs::replace::retire_open_file(source, || parent.remove_file(name))
 }
 
 #[cfg(test)]

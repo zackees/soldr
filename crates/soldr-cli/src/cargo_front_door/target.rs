@@ -47,7 +47,9 @@ pub(super) fn default_cargo_build_target(
     args: &[String],
     dylint_requested: bool,
 ) -> Result<Option<String>, SoldrError> {
-    if !cfg!(windows) || !should_inject_windows_target(args, dylint_requested) {
+    if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows
+        || !should_inject_windows_target(args, dylint_requested)
+    {
         return Ok(None);
     }
 

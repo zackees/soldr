@@ -217,7 +217,7 @@ mod tests {
         {
             // Pure-function form — no env mutation, no race with sibling
             // tests under parallel `cargo test`.
-            let sep = if cfg!(windows) { ";" } else { ":" };
+            let sep = crate::platform::host::facts::path_list_separator();
             let base: std::ffi::OsString = format!("/a/b{sep}/c/d").into();
             let prepended = path_with_prepend_using(Path::new("/x/y"), base.as_os_str());
             let entries: Vec<PathBuf> = std::env::split_paths(&prepended).collect();
@@ -240,7 +240,7 @@ mod tests {
         path_with_prepend_deduplicates_existing,
         Duration::from_secs(5),
         {
-            let sep = if cfg!(windows) { ";" } else { ":" };
+            let sep = crate::platform::host::facts::path_list_separator();
             let base: std::ffi::OsString = format!("/x/y{sep}/a/b").into();
             let prepended = path_with_prepend_using(Path::new("/x/y"), base.as_os_str());
             let entries: Vec<PathBuf> = std::env::split_paths(&prepended).collect();
@@ -258,14 +258,14 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let exe = tmp
             .path()
-            .join(if cfg!(windows) { "myexe.exe" } else { "myexe" });
+            .join(crate::platform::executable::name::native("myexe"));
         std::fs::write(&exe, b"x").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&exe).unwrap().permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&exe, perms).unwrap();
+        if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
+            // The find_on_path probe requires an executable bit; the
+            // facade applies a fixed 0o755 on Unix and is a no-op on
+            // Windows (where the .exe extension decides executability).
+            let perms = std::fs::metadata(&exe).unwrap().permissions();
+            crate::platform::fs::permissions::make_executable_from(&exe, &perms).unwrap();
         }
         let path_value: std::ffi::OsString =
             std::env::join_paths(std::iter::once(tmp.path())).unwrap();

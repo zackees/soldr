@@ -473,33 +473,9 @@ fn normalize_target(target: &str) -> String {
 }
 
 pub fn host_triple() -> &'static str {
-    if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        "x86_64-pc-windows-msvc"
-    } else if cfg!(all(target_os = "windows", target_arch = "aarch64")) {
-        "aarch64-pc-windows-msvc"
-    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
-        "x86_64-apple-darwin"
-    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        "aarch64-apple-darwin"
-    } else if cfg!(all(
-        target_os = "linux",
-        target_arch = "x86_64",
-        target_env = "musl"
-    )) {
-        "x86_64-unknown-linux-musl"
-    } else if cfg!(all(
-        target_os = "linux",
-        target_arch = "aarch64",
-        target_env = "musl"
-    )) {
-        "aarch64-unknown-linux-musl"
-    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        "x86_64-unknown-linux-gnu"
-    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
-        "aarch64-unknown-linux-gnu"
-    } else {
-        ""
-    }
+    // The platform crate owns the compile-time host triple (the target
+    // this binary was built for); an unsupported host yields "".
+    crate::platform::host::facts::triple()
 }
 
 pub fn workspace_uses_pyo3(cwd: &Path) -> bool {
@@ -819,23 +795,18 @@ impl PolicyInput {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
 
     // soldr#1663: the crate-wide barrier, not a private one. These tests
     // mutate PYO3_* variables that `env_cmd`'s tests read through
     // `caller_pyo3_env()`, and a module-local mutex cannot serialise against
     // another module.
-    #[cfg(unix)]
     use crate::TEST_PROCESS_ENV_LOCK as ENV_LOCK;
 
-    #[cfg(unix)]
     struct EnvVarGuard {
         key: &'static str,
         previous: Option<std::ffi::OsString>,
     }
 
-    #[cfg(unix)]
     impl EnvVarGuard {
         fn set(key: &'static str, value: &Path) -> Self {
             let previous = std::env::var_os(key);
@@ -844,7 +815,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     impl Drop for EnvVarGuard {
         fn drop(&mut self) {
             if let Some(previous) = self.previous.take() {
@@ -1061,8 +1031,12 @@ mod tests {
         assert!(detected.abi3());
     });
 
-    #[cfg(unix)]
     crate::timed_test!(cargo_metadata_probe_captures_child_stdout, {
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            // The probe fake is a POSIX shell script; Windows hosts
+            // cannot execute it and there is no .cmd fixture for it.
+            return;
+        }
         let _lock = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         let workspace = tempfile::tempdir().expect("workspace tempdir");
         let cargo = workspace.path().join("fake-cargo");
@@ -1098,11 +1072,11 @@ mod tests {
             format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", metadata),
         )
         .expect("write fake cargo");
-        let mut permissions = std::fs::metadata(&cargo)
+        let permissions = std::fs::metadata(&cargo)
             .expect("stat fake cargo")
             .permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&cargo, permissions).expect("chmod fake cargo");
+        crate::platform::fs::permissions::make_executable_from(&cargo, &permissions)
+            .expect("chmod fake cargo");
         let _cargo_guard = EnvVarGuard::set(crate::TEST_CARGO_BIN_ENV_VAR, &cargo);
 
         let detected = detect_workspace_pyo3(workspace.path(), &[], host_triple())

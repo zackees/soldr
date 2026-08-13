@@ -6,7 +6,9 @@
 //! descriptor/handle handoff, and endpoint existence and retirement.
 //! Callers retain framing, request/reply semantics, broker routing,
 //! lifecycle state, and product retry policy.
-//!
-//! Filled by the #2493 migration; the concrete implementations live in the
-//! `platform_win` / `platform_linux` / `platform_macos` trees and are
-//! re-exported here through [`crate::platform_imp`].
+
+pub mod connect;
+pub mod endpoint;
+pub mod handoff;
+pub mod listener;
+pub mod peer;

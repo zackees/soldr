@@ -78,8 +78,9 @@ fn discovers_configs_walking_up_three_levels() {
     env.set("CARGO_HOME", &cargo_home);
     // Point HOME at the tempdir too so the walker can't escape.
     env.set("HOME", _tmp.path());
-    #[cfg(windows)]
-    env.set("USERPROFILE", _tmp.path());
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+        env.set("USERPROFILE", _tmp.path());
+    }
 
     // Layout: tmp/a/b/c/proj/Cargo.toml — `proj` is the manifest dir.
     // Place .cargo/config.toml at depths 1, 2, and 3 above it.
@@ -126,8 +127,9 @@ fn discovers_cargo_home_config() {
     let mut env = EnvGuard::new();
     env.set("CARGO_HOME", &cargo_home);
     env.set("HOME", _tmp.path());
-    #[cfg(windows)]
-    env.set("USERPROFILE", _tmp.path());
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+        env.set("USERPROFILE", _tmp.path());
+    }
 
     let home_config = write_config(&cargo_home, "[build]\nrustflags = []\n");
     let files = discover_cargo_config_files(&manifest_dir);
@@ -152,8 +154,9 @@ fn discovers_legacy_config_file_without_extension() {
     let mut env = EnvGuard::new();
     env.set("CARGO_HOME", &cargo_home);
     env.set("HOME", _tmp.path());
-    #[cfg(windows)]
-    env.set("USERPROFILE", _tmp.path());
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+        env.set("USERPROFILE", _tmp.path());
+    }
 
     // Use the legacy bare-`config` name.
     let cargo_dir = manifest_dir.join(".cargo");
@@ -183,8 +186,9 @@ fn digest_changes_when_config_content_changes() {
     let mut env = EnvGuard::new();
     env.set("CARGO_HOME", &cargo_home);
     env.set("HOME", _tmp.path());
-    #[cfg(windows)]
-    env.set("USERPROFILE", _tmp.path());
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+        env.set("USERPROFILE", _tmp.path());
+    }
 
     let cfg_path = write_config(
         &manifest_dir,
@@ -209,8 +213,9 @@ fn digest_changes_when_config_appears() {
     let mut env = EnvGuard::new();
     env.set("CARGO_HOME", &cargo_home);
     env.set("HOME", _tmp.path());
-    #[cfg(windows)]
-    env.set("USERPROFILE", _tmp.path());
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+        env.set("USERPROFILE", _tmp.path());
+    }
 
     let before = cargo_config_digest(&manifest_dir);
     write_config(&manifest_dir, "[build]\nrustflags = []\n");
@@ -225,8 +230,9 @@ fn digest_stable_for_unchanged_inputs() {
     let mut env = EnvGuard::new();
     env.set("CARGO_HOME", &cargo_home);
     env.set("HOME", _tmp.path());
-    #[cfg(windows)]
-    env.set("USERPROFILE", _tmp.path());
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+        env.set("USERPROFILE", _tmp.path());
+    }
 
     write_config(
         &manifest_dir,
@@ -245,8 +251,9 @@ fn digest_with_no_configs_is_well_defined() {
     let mut env = EnvGuard::new();
     env.set("CARGO_HOME", &cargo_home);
     env.set("HOME", _tmp.path());
-    #[cfg(windows)]
-    env.set("USERPROFILE", _tmp.path());
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+        env.set("USERPROFILE", _tmp.path());
+    }
 
     let d = cargo_config_digest(&manifest_dir);
     assert!(d.starts_with("blake3:"));

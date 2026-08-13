@@ -8,19 +8,7 @@ use super::*;
 /// Create a directory symlink, or return false when the platform/session
 /// cannot make one (Windows needs Developer Mode or elevation).
 fn try_symlink_dir(src: &Path, dst: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        std::os::unix::fs::symlink(src, dst).is_ok()
-    }
-    #[cfg(windows)]
-    {
-        std::os::windows::fs::symlink_dir(src, dst).is_ok()
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = (src, dst);
-        false
-    }
+    crate::platform::fs::links::create(&src.to_string_lossy(), dst, true).is_ok()
 }
 
 crate::timed_test!(closure_walk_terminates_on_a_symlink_cycle, {
@@ -549,18 +537,16 @@ crate::timed_test!(cargo_wait_heartbeat_distinguishes_deadline_configuration, {
 });
 
 fn spawn_slow_wait_test_child() -> std::process::Child {
-    #[cfg(windows)]
-    let mut command = {
-        let mut command = std::process::Command::new("cmd");
-        command.args(["/C", "ping -n 2 127.0.0.1 >nul"]);
-        command
-    };
-    #[cfg(unix)]
-    let mut command = {
-        let mut command = std::process::Command::new("sh");
-        command.args(["-c", "sleep 0.25"]);
-        command
-    };
+    let mut command =
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            let mut command = std::process::Command::new("cmd");
+            command.args(["/C", "ping -n 2 127.0.0.1 >nul"]);
+            command
+        } else {
+            let mut command = std::process::Command::new("sh");
+            command.args(["-c", "sleep 0.25"]);
+            command
+        };
     configure_cargo_child_for_timeout(&mut command);
     command.spawn().expect("spawn slow fake Cargo child")
 }
@@ -958,11 +944,9 @@ crate::timed_test!(
 
 crate::timed_test!(cached_dylint_link_is_revalidated_and_evicted, {
     let temp = tempfile::tempdir().unwrap();
-    let binary = temp.path().join(if cfg!(windows) {
-        "dylint-link.exe"
-    } else {
-        "dylint-link"
-    });
+    let binary = temp
+        .path()
+        .join(crate::platform::executable::name::native("dylint-link"));
     std::fs::write(&binary, b"not an executable").unwrap();
     let result = crate::fetch::FetchResult {
         binary_path: binary.clone(),
@@ -1423,25 +1407,16 @@ fn cargo_json_closure_rejects_unknown_messages_for_walker_fallback() {
 fn find_on_path_locates_executable_in_a_path_dir() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
-    let exe_name = if cfg!(windows) {
-        "soldr-test-find-on-path-fixture.exe"
-    } else {
-        "soldr-test-find-on-path-fixture"
-    };
+    let exe_name = crate::platform::executable::name::native("soldr-test-find-on-path-fixture");
     let exe_path = dir.path().join(exe_name);
     std::fs::write(&exe_path, b"#!/bin/sh\nexit 0\n").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&exe_path).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&exe_path, perms).unwrap();
-    }
+    let source = std::fs::metadata(&exe_path).unwrap().permissions();
+    crate::platform::fs::permissions::make_executable_from(&exe_path, &source).unwrap();
 
     let prev_path = std::env::var_os("PATH").unwrap_or_default();
     let mut new_path = std::ffi::OsString::from(dir.path());
     if !prev_path.is_empty() {
-        let sep = if cfg!(windows) { ";" } else { ":" };
+        let sep = crate::platform::host::facts::path_list_separator();
         new_path.push(sep);
         new_path.push(&prev_path);
     }
@@ -1575,7 +1550,7 @@ crate::timed_test!(
         let tmp = tempfile::tempdir().unwrap();
         let zig = tmp
             .path()
-            .join(if cfg!(windows) { "zig.exe" } else { "zig" });
+            .join(crate::platform::executable::name::native("zig"));
         std::fs::write(&zig, b"fake zig").unwrap();
         let _zig = EnvVarGuard::set("ZIG", &zig);
 
@@ -1680,11 +1655,7 @@ crate::timed_test!(nextest_archive_darwin_bootstrap_reuses_blessed_env, {
     let tmp = tempfile::tempdir().unwrap();
     let sdk = tmp.path().join("MacOSX.fake.sdk");
     let llvm_bin = tmp.path().join("llvm-bin");
-    let fake_dsymutil = llvm_bin.join(if cfg!(windows) {
-        "dsymutil.exe"
-    } else {
-        "dsymutil"
-    });
+    let fake_dsymutil = llvm_bin.join(crate::platform::executable::name::native("dsymutil"));
     std::fs::create_dir_all(&sdk).unwrap();
     std::fs::create_dir_all(&llvm_bin).unwrap();
     std::fs::write(&fake_dsymutil, b"fake dsymutil").unwrap();

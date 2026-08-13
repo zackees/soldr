@@ -187,7 +187,12 @@ fn strip_self_from_path(argv0: &str) {
     let Some(existing) = env::var_os("PATH") else {
         return;
     };
-    let separator = if cfg!(windows) { ';' } else { ':' };
+    let separator =
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            ';'
+        } else {
+            ':'
+        };
     let existing = existing.to_string_lossy();
     let new_path = filter_path(&existing, &shim_dir, separator);
     env::set_var("PATH", new_path);
@@ -226,7 +231,9 @@ fn filter_path(existing: &str, shim_dir: &Path, separator: char) -> String {
         if entry.is_empty() {
             continue;
         }
-        let matches = if cfg!(windows) {
+        let matches = if crate::platform::host::facts::os()
+            == crate::platform::host::facts::HostOs::Windows
+        {
             entry.eq_ignore_ascii_case(&shim_str)
         } else {
             entry == shim_str
@@ -506,17 +513,27 @@ mod tests {
         // somewhere else entirely; argv[0] is the only source that names the
         // directory actually on PATH (soldr#1934).
         let guard = PathEnvGuard::capture();
-        let shim_dir = if cfg!(windows) {
+        let shim_dir = if crate::platform::host::facts::os()
+            == crate::platform::host::facts::HostOs::Windows
+        {
             "C:\\wheel\\shims"
         } else {
             "/wheel/shims"
         };
-        let other = if cfg!(windows) {
+        let other = if crate::platform::host::facts::os()
+            == crate::platform::host::facts::HostOs::Windows
+        {
             "C:\\usr\\bin"
         } else {
             "/usr/bin"
         };
-        let separator = if cfg!(windows) { ';' } else { ':' };
+        let separator = if crate::platform::host::facts::os()
+            == crate::platform::host::facts::HostOs::Windows
+        {
+            ';'
+        } else {
+            ':'
+        };
         env::set_var("PATH", format!("{shim_dir}{separator}{other}"));
 
         strip_self_from_path(&format!("{shim_dir}{}rustc", std::path::MAIN_SEPARATOR));

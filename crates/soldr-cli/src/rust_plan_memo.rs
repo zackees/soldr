@@ -164,8 +164,7 @@ fn which_like_resolve(path: &std::path::Path) -> std::path::PathBuf {
         if candidate.is_file() {
             return candidate;
         }
-        #[cfg(windows)]
-        {
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
             let with_exe = dir.join(format!("{}.exe", path.display()));
             if with_exe.is_file() {
                 return with_exe;

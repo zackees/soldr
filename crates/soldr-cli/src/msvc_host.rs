@@ -394,7 +394,7 @@ pub async fn ensure_msvc_env_for_native_in(
     target_triple: &str,
     project_dir: &Path,
 ) -> Result<bool, MsvcDetectionError> {
-    if !cfg!(target_os = "windows") {
+    if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
         return Ok(false);
     }
     if !target_triple.ends_with("-pc-windows-msvc") {
@@ -811,9 +811,9 @@ mod tests {
     //!
     //! Pure-function tests (no real VS / SDK install required) run on
     //! every platform. The `discover_msvc_layout` end-to-end probe is
-    //! gated to `cfg(target_os = "windows")` and skips gracefully when
-    //! vswhere isn't present (CI without VS), so the same source
-    //! compiles + tests on Linux CI lanes too.
+    //! runtime-gated to Windows hosts and skips gracefully when vswhere
+    //! isn't present (CI without VS), so the same source compiles +
+    //! tests on Linux CI lanes too.
     //!
     //! The acceptance test for the issue is in
     //! `tests/msvc_host_discovery_windows.rs` (separate integration
@@ -823,8 +823,9 @@ mod tests {
     use crate::timed_test;
     use std::time::Duration;
 
-    // cfg-gated to Windows: the assertions look for backslash-joined
-    // path segments (`VC\Tools\MSVC\...`) which only appear when
+    // Runtime-gated to Windows hosts: the assertions look for
+    // backslash-joined path segments (`VC\Tools\MSVC\...`) which only
+    // appear when
     // `PathBuf::display()` runs on Windows. The function under test
     // (`synthesize_env_x64`) uses `PathBuf::display()` and so produces
     // platform-native separators — on Linux that's forward slashes.
@@ -833,11 +834,13 @@ mod tests {
     // always emit backslashes is a separate concern; for now we keep
     // the existing Windows-only coverage and ensure the test no longer
     // panics on Linux CI / Linux Docker runs.
-    #[cfg(target_os = "windows")]
     timed_test!(
         synthesize_env_x64_builds_canonical_paths,
         Duration::from_secs(5),
         {
+            if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
+                return;
+            }
             let layout = MsvcHostLayout {
                 vs_install: PathBuf::from(
                     r"C:\Program Files (x86)\Microsoft Visual Studio\2019\Community",
@@ -876,11 +879,13 @@ mod tests {
 
     // soldr#2292: a ManagedBundle-sourced layout treats `vs_install` as
     // the tools dir directly — no `VC\Tools\MSVC\<version>` nesting.
-    #[cfg(target_os = "windows")]
     timed_test!(
         synthesize_env_x64_managed_bundle_uses_root_directly,
         Duration::from_secs(5),
         {
+            if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
+                return;
+            }
             let layout = MsvcHostLayout {
                 vs_install: PathBuf::from(
                     r"C:\Users\me\.soldr-dev\bin\syslib\msvc\14.44.35207\windows-x64\package",
@@ -1316,11 +1321,13 @@ linker = "rust-lld.exe"
         }
     );
 
-    #[cfg(not(target_os = "windows"))]
     timed_test!(
         ensure_msvc_env_for_native_is_noop_on_non_windows_host,
         Duration::from_secs(5),
         {
+            if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+                return;
+            }
             let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
             let applied = rt
                 .block_on(ensure_msvc_env_for_native("x86_64-pc-windows-msvc"))
@@ -1333,11 +1340,13 @@ linker = "rust-lld.exe"
     // Windows-only end-to-end probe. Skips gracefully on hosts without
     // a VS install (CI lanes without VC++ workload).
     // -------------------------------------------------------------------
-    #[cfg(target_os = "windows")]
     timed_test!(
         discover_msvc_layout_on_developer_machine_finds_real_link_exe,
         Duration::from_secs(30),
         {
+            if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
+                return;
+            }
             let v = vswhere_path();
             if !v.is_file() {
                 eprintln!(

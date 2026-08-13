@@ -37,14 +37,16 @@ pub const MINGW_W64_CROSS_HOST_SLUG: &str = "linux-x64-gnu";
 pub const MINGW_W64_CROSS_PREFIX: &str = "x86_64-w64-mingw32";
 
 pub fn current_host_supports_mingw_w64_gcc() -> bool {
-    cfg!(all(target_os = "windows", target_arch = "x86_64"))
+    crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows
+        && crate::platform::host::facts::arch() == crate::platform::host::facts::HostArch::X86_64
 }
 
 /// The Linux-hosted mingw cross toolchain is published for the
 /// `linux-x64-gnu` host only (Phase 2). Other non-Windows hosts (macOS,
 /// linux-arm) have no cross bundle yet.
 pub fn current_host_supports_mingw_w64_cross() -> bool {
-    cfg!(all(target_os = "linux", target_arch = "x86_64"))
+    crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Linux
+        && crate::platform::host::facts::arch() == crate::platform::host::facts::HostArch::X86_64
 }
 
 /// Catalogue URL for the managed MinGW bundle.
@@ -226,7 +228,7 @@ pub fn managed_restore_present(bundle_dir: &Path, package: &Path) -> bool {
 }
 
 pub fn exe_name(base: &str) -> String {
-    if cfg!(windows) {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         format!("{base}.exe")
     } else {
         base.to_string()
@@ -300,10 +302,11 @@ mod tests {
     });
 
     crate::timed_test!(host_scope_is_windows_x64_only, {
-        assert_eq!(
-            current_host_supports_mingw_w64_gcc(),
-            cfg!(all(target_os = "windows", target_arch = "x86_64"))
-        );
+        let expected = crate::platform::host::facts::os()
+            == crate::platform::host::facts::HostOs::Windows
+            && crate::platform::host::facts::arch()
+                == crate::platform::host::facts::HostArch::X86_64;
+        assert_eq!(current_host_supports_mingw_w64_gcc(), expected);
     });
 
     crate::timed_test!(env_for_target_sets_cargo_and_cc_rs_vars, {

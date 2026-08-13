@@ -400,14 +400,10 @@ fn collect_cook_stats() -> Option<DoctorCookStats> {
 /// replacement for the deleted count_debug_info_sidecars helper). On
 /// Windows soldr ships a `.pdb`; elsewhere there is no separate sidecar.
 fn count_soldr_debug_sidecars(binary: &Path) -> (usize, usize) {
-    #[cfg(windows)]
-    {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         let pdb = binary.with_extension("pdb");
         (usize::from(pdb.is_file()), 1)
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = binary;
+    } else {
         (0, 0)
     }
 }
@@ -501,7 +497,7 @@ fn collect_defender_probe(refresh: bool) -> Option<DefenderProbeOutcome> {
             // on every Linux/macOS doctor invocation would just be
             // noise. Returning None makes the human/JSON printer
             // omit the section.
-            if !cfg!(target_os = "windows") {
+            if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
                 return None;
             }
             let fresh = defender_probe::run_probe(&target_dir, soldr_version).ok()?;
@@ -673,30 +669,28 @@ fn scan_standalone_daemon_processes() -> Vec<String> {
     real_process_scan().unwrap_or_default()
 }
 
-#[cfg(windows)]
 fn real_process_scan() -> Option<Vec<String>> {
-    let mut command = std::process::Command::new("tasklist");
-    command.args(["/FO", "CSV", "/NH"]);
-    suppress_windows_console_window(&mut command);
-    let output = command_output_with_timeout(&mut command, "tasklist /FO CSV /NH").ok()?;
-    if !output.status.success() {
-        return None;
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+        let mut command = std::process::Command::new("tasklist");
+        command.args(["/FO", "CSV", "/NH"]);
+        suppress_windows_console_window(&mut command);
+        let output = command_output_with_timeout(&mut command, "tasklist /FO CSV /NH").ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        Some(parse_tasklist_csv(&String::from_utf8_lossy(&output.stdout)))
+    } else {
+        let mut command = std::process::Command::new("ps");
+        command.args(["-eo", "pid=,comm="]);
+        suppress_windows_console_window(&mut command);
+        let output = command_output_with_timeout(&mut command, "ps -eo pid=,comm=").ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        Some(parse_pid_name_lines(&String::from_utf8_lossy(
+            &output.stdout,
+        )))
     }
-    Some(parse_tasklist_csv(&String::from_utf8_lossy(&output.stdout)))
-}
-
-#[cfg(not(windows))]
-fn real_process_scan() -> Option<Vec<String>> {
-    let mut command = std::process::Command::new("ps");
-    command.args(["-eo", "pid=,comm="]);
-    suppress_windows_console_window(&mut command);
-    let output = command_output_with_timeout(&mut command, "ps -eo pid=,comm=").ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    Some(parse_pid_name_lines(&String::from_utf8_lossy(
-        &output.stdout,
-    )))
 }
 
 /// Format one matching process row; `None` when the image name is not
@@ -722,7 +716,6 @@ fn parse_pid_name_lines(text: &str) -> Vec<String> {
 
 /// Parse `tasklist /FO CSV /NH` output (Windows): quoted CSV rows with
 /// the image name first and the PID second.
-#[cfg_attr(not(windows), allow(dead_code))]
 fn parse_tasklist_csv(text: &str) -> Vec<String> {
     text.lines()
         .filter_map(|line| {

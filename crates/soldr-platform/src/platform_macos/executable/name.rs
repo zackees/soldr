@@ -25,3 +25,8 @@ mod tests {
         );
     }
 }
+
+/// The suffix for wrapper scripts (`.cmd` on Windows, none elsewhere).
+pub fn script_suffix() -> &'static str {
+    ""
+}

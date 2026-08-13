@@ -213,13 +213,7 @@ pub async fn bootstrap_rustup(paths: &SoldrPaths) -> Result<BootstrapReport, Sol
         ))
     })?;
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&rustup_path)?.permissions();
-        perms.set_mode(perms.mode() | 0o111);
-        std::fs::set_permissions(&rustup_path, perms)?;
-    }
+    crate::platform::fs::permissions::make_executable(&rustup_path)?;
 
     Ok(BootstrapReport {
         rustup_path,
@@ -253,7 +247,7 @@ pub fn managed_rustup_home(paths: &SoldrPaths) -> PathBuf {
 }
 
 fn rustup_filename() -> &'static str {
-    if cfg!(windows) {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         "rustup.exe"
     } else {
         "rustup"
@@ -261,7 +255,7 @@ fn rustup_filename() -> &'static str {
 }
 
 fn rustup_init_filename() -> &'static str {
-    if cfg!(windows) {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         "rustup-init.exe"
     } else {
         "rustup-init"
@@ -303,16 +297,18 @@ pub fn rustup_init_host_triple() -> Result<String, SoldrError> {
     }
     let arch = std::env::consts::ARCH;
     let os = std::env::consts::OS;
+    // The libc of this build: compile-time on Linux (mirrors the
+    // target_env the binary was built for), always None elsewhere.
+    let is_musl =
+        crate::platform::host::facts::libc() == crate::platform::host::facts::HostLibc::Musl;
     Ok(match (os, arch) {
         ("windows", "x86_64") => "x86_64-pc-windows-msvc".to_string(),
         ("windows", "aarch64") => "aarch64-pc-windows-msvc".to_string(),
         ("windows", "x86") => "i686-pc-windows-msvc".to_string(),
         ("macos", "x86_64") => "x86_64-apple-darwin".to_string(),
         ("macos", "aarch64") => "aarch64-apple-darwin".to_string(),
-        ("linux", "x86_64") if cfg!(target_env = "musl") => "x86_64-unknown-linux-musl".to_string(),
-        ("linux", "aarch64") if cfg!(target_env = "musl") => {
-            "aarch64-unknown-linux-musl".to_string()
-        }
+        ("linux", "x86_64") if is_musl => "x86_64-unknown-linux-musl".to_string(),
+        ("linux", "aarch64") if is_musl => "aarch64-unknown-linux-musl".to_string(),
         ("linux", "x86_64") => "x86_64-unknown-linux-gnu".to_string(),
         ("linux", "aarch64") => "aarch64-unknown-linux-gnu".to_string(),
         ("linux", "x86") => "i686-unknown-linux-gnu".to_string(),
@@ -371,13 +367,9 @@ async fn download_rustup_init(cache_dir: &Path, url: &str) -> Result<PathBuf, So
     let tmp = destination.with_extension("tmp");
     std::fs::copy(downloaded.path(), &tmp)?;
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&tmp)?.permissions();
-        perms.set_mode(perms.mode() | 0o111);
-        std::fs::set_permissions(&tmp, perms)?;
-    }
+    // Add execute bits (no-op on Windows, where Unix mode bits are
+    // meaningless) before the tmp file becomes the destination.
+    crate::platform::fs::permissions::make_executable(&tmp)?;
 
     if destination.exists() {
         let _ = std::fs::remove_file(&destination);
@@ -388,21 +380,22 @@ async fn download_rustup_init(cache_dir: &Path, url: &str) -> Result<PathBuf, So
 
 fn which_on_path(tool: &str) -> Option<PathBuf> {
     let paths = std::env::var_os("PATH")?;
-    let exe_names: Vec<String> = if cfg!(windows) {
-        // PATHEXT controls which extensions PATH lookups try.
-        let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
-        std::iter::once(tool.to_string())
-            .chain(
-                pathext
-                    .split(';')
-                    .map(str::trim)
-                    .filter(|e| !e.is_empty())
-                    .map(|ext| format!("{tool}{ext}")),
-            )
-            .collect()
-    } else {
-        vec![tool.to_string()]
-    };
+    let exe_names: Vec<String> =
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            // PATHEXT controls which extensions PATH lookups try.
+            let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+            std::iter::once(tool.to_string())
+                .chain(
+                    pathext
+                        .split(';')
+                        .map(str::trim)
+                        .filter(|e| !e.is_empty())
+                        .map(|ext| format!("{tool}{ext}")),
+                )
+                .collect()
+        } else {
+            vec![tool.to_string()]
+        };
     for dir in std::env::split_paths(&paths) {
         for name in &exe_names {
             let candidate = dir.join(name);
@@ -473,7 +466,9 @@ mod tests {
         let _env_lock = test_env_lock();
         let _guard = EnvVarGuard::remove(RUSTUP_INIT_TRIPLE_ENV_VAR);
         if std::env::consts::OS == "linux" && std::env::consts::ARCH == "x86_64" {
-            let expected = if cfg!(target_env = "musl") {
+            let expected = if crate::platform::host::facts::libc()
+                == crate::platform::host::facts::HostLibc::Musl
+            {
                 "x86_64-unknown-linux-musl"
             } else {
                 "x86_64-unknown-linux-gnu"

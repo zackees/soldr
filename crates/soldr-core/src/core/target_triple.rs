@@ -69,7 +69,7 @@ impl TargetTriple {
             return Self::from_triple(&triple);
         }
 
-        if cfg!(target_os = "windows") {
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
             return Ok(Self {
                 arch: compile_time_arch()?,
                 os: Os::Windows,
@@ -153,30 +153,24 @@ impl std::fmt::Display for TargetTriple {
 }
 
 pub(super) fn compile_time_arch() -> Result<Arch, SoldrError> {
-    if cfg!(target_arch = "x86_64") {
-        Ok(Arch::X86_64)
-    } else if cfg!(target_arch = "aarch64") {
-        Ok(Arch::Aarch64)
-    } else {
-        Err(SoldrError::UnsupportedPlatform(format!(
-            "unsupported arch: {}",
-            std::env::consts::ARCH
-        )))
+    use crate::platform::host::facts::HostArch;
+    match crate::platform::host::facts::arch() {
+        HostArch::X86_64 => Ok(Arch::X86_64),
+        HostArch::Aarch64 => Ok(Arch::Aarch64),
+        HostArch::Unknown(other) => Err(SoldrError::UnsupportedPlatform(format!(
+            "unsupported arch: {other}"
+        ))),
     }
 }
 
 pub(super) fn compile_time_host_os() -> Result<Os, SoldrError> {
-    if cfg!(target_os = "windows") {
-        Ok(Os::Windows)
-    } else if cfg!(target_os = "macos") {
-        Ok(Os::MacOs)
-    } else if cfg!(target_os = "linux") {
-        Ok(Os::Linux)
-    } else {
-        Err(SoldrError::UnsupportedPlatform(format!(
-            "unsupported OS: {}",
-            std::env::consts::OS
-        )))
+    use crate::platform::host::facts::HostOs;
+    // Only the three supported OS trees compile at all (the crate's
+    // cfg_select has no fallback), so this can never be anything else.
+    match crate::platform::host::facts::os() {
+        HostOs::Windows => Ok(Os::Windows),
+        HostOs::MacOs => Ok(Os::MacOs),
+        HostOs::Linux => Ok(Os::Linux),
     }
 }
 
@@ -188,8 +182,8 @@ fn compile_time_fallback_triple() -> Result<String, SoldrError> {
     let triple = match compile_time_host_os()? {
         Os::Windows => format!("{arch}-pc-windows-msvc"),
         Os::MacOs => format!("{arch}-apple-darwin"),
-        Os::Linux => match detect_linux_libc() {
-            Env::Musl => format!("{arch}-unknown-linux-musl"),
+        Os::Linux => match crate::platform::host::facts::info().libc {
+            crate::platform::host::facts::HostLibc::Musl => format!("{arch}-unknown-linux-musl"),
             _ => format!("{arch}-unknown-linux-gnu"),
         },
     };
@@ -205,10 +199,9 @@ fn compile_time_host_triple() -> Result<String, SoldrError> {
         Os::Windows => format!("{arch}-pc-windows-msvc"),
         Os::MacOs => format!("{arch}-apple-darwin"),
         Os::Linux => {
-            let env = if cfg!(target_env = "musl") {
-                "musl"
-            } else {
-                "gnu"
+            let env = match crate::platform::host::facts::libc() {
+                crate::platform::host::facts::HostLibc::Musl => "musl",
+                _ => "gnu",
             };
             format!("{arch}-unknown-linux-{env}")
         }
@@ -237,66 +230,13 @@ fn compile_time_host_triple() -> Result<String, SoldrError> {
 /// 4. **Default**: glibc. Most Linux distributions ship glibc — only
 ///    musl distros need the override.
 pub(crate) fn detect_linux_libc() -> Env {
-    classify_linux_libc(
-        cfg!(target_env = "musl"),
-        probe_ldd_reports_musl(),
-        probe_musl_dynamic_linker_present(),
-        probe_glibc_dynamic_linker_present(),
-    )
-}
-
-fn classify_linux_libc(
-    compile_time_musl: bool,
-    ldd_reports_musl: bool,
-    musl_dynamic_linker_present: bool,
-    glibc_dynamic_linker_present: bool,
-) -> Env {
-    if compile_time_musl {
-        return Env::Musl;
+    // The ldd/linker probes and the classification table live in the
+    // platform crate's Linux facts (where the host cfg belongs); this
+    // keeps the soldr-core `Env` mapping for the triple construction.
+    match crate::platform::host::facts::info().libc {
+        crate::platform::host::facts::HostLibc::Musl => Env::Musl,
+        _ => Env::Gnu,
     }
-    if ldd_reports_musl {
-        return Env::Musl;
-    }
-    if musl_dynamic_linker_present && !glibc_dynamic_linker_present {
-        return Env::Musl;
-    }
-    Env::Gnu
-}
-
-fn probe_ldd_reports_musl() -> bool {
-    let Ok(output) = std::process::Command::new("ldd").arg("--version").output() else {
-        return false;
-    };
-    // glibc writes its version banner to stdout; musl writes to stderr
-    // and exits non-zero. Check both, ignore the exit status.
-    ldd_output_mentions_musl(&output.stdout) || ldd_output_mentions_musl(&output.stderr)
-}
-
-fn ldd_output_mentions_musl(bytes: &[u8]) -> bool {
-    std::str::from_utf8(bytes)
-        .ok()
-        .is_some_and(|s| s.to_ascii_lowercase().contains("musl"))
-}
-
-fn probe_musl_dynamic_linker_present() -> bool {
-    const CANDIDATES: &[&str] = &[
-        "/lib/ld-musl-x86_64.so.1",
-        "/lib/ld-musl-aarch64.so.1",
-        "/lib/ld-musl-armhf.so.1",
-        "/lib/ld-musl-arm.so.1",
-        "/lib/ld-musl-i386.so.1",
-    ];
-    CANDIDATES.iter().any(|p| Path::new(p).exists())
-}
-
-fn probe_glibc_dynamic_linker_present() -> bool {
-    const CANDIDATES: &[&str] = &[
-        "/lib64/ld-linux-x86-64.so.2",
-        "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
-        "/lib/ld-linux-aarch64.so.1",
-        "/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1",
-    ];
-    CANDIDATES.iter().any(|p| Path::new(p).exists())
 }
 
 #[cfg(test)]
@@ -305,18 +245,21 @@ mod tests {
 
     #[test]
     fn test_detect_target() {
+        use crate::platform::host::facts::{arch, os, HostArch, HostOs};
+
         let t = TargetTriple::detect().unwrap();
-        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-        {
-            assert_eq!(t.os, Os::Windows);
-            assert_eq!(t.env, Env::Msvc);
-            assert_eq!(t.arch, Arch::X86_64);
-            assert_eq!(t.triple(), "x86_64-pc-windows-msvc");
+        match os() {
+            HostOs::Windows => {
+                if arch() == HostArch::X86_64 {
+                    assert_eq!(t.os, Os::Windows);
+                    assert_eq!(t.env, Env::Msvc);
+                    assert_eq!(t.arch, Arch::X86_64);
+                    assert_eq!(t.triple(), "x86_64-pc-windows-msvc");
+                }
+            }
+            HostOs::MacOs => assert_eq!(t.os, Os::MacOs),
+            HostOs::Linux => assert_eq!(t.os, Os::Linux),
         }
-        #[cfg(target_os = "macos")]
-        assert_eq!(t.os, Os::MacOs);
-        #[cfg(target_os = "linux")]
-        assert_eq!(t.os, Os::Linux);
         let _ = t.triple();
     }
 
@@ -346,7 +289,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cargo_dir = dir.path().join(".cargo");
         std::fs::create_dir_all(&cargo_dir).unwrap();
-        let override_triple = if cfg!(target_os = "windows") {
+        let override_triple = if crate::platform::host::facts::os()
+            == crate::platform::host::facts::HostOs::Windows
+        {
             "aarch64-unknown-linux-musl"
         } else {
             "x86_64-pc-windows-msvc"
@@ -366,25 +311,28 @@ mod tests {
 
     #[test]
     fn host_triple_uses_compile_time_target_env() {
-        #[cfg(target_os = "linux")]
-        {
+        use crate::platform::host::facts::{libc, os, HostLibc, HostOs};
+
+        if os() == HostOs::Linux {
             let host = TargetTriple::host().unwrap();
-            #[cfg(target_env = "gnu")]
-            assert_eq!(host.env, Env::Gnu);
-            #[cfg(target_env = "musl")]
-            assert_eq!(host.env, Env::Musl);
+            match libc() {
+                HostLibc::Musl => assert_eq!(host.env, Env::Musl),
+                _ => assert_eq!(host.env, Env::Gnu),
+            }
         }
     }
 
-    #[cfg(target_os = "windows")]
     #[test]
     fn defaults_to_msvc_without_explicit_override() {
+        if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let target = TargetTriple::detect_in_dir(dir.path()).unwrap();
         // Runtime arch: Windows runners come in x86_64 AND aarch64 on
         // GitHub Actions. Both are valid host triples — the test must
         // expect the runner's actual arch, not a hardcoded x86_64.
-        let expected_arch = if cfg!(target_arch = "x86_64") {
+        let expected_arch = if std::env::consts::ARCH == "x86_64" {
             "x86_64"
         } else {
             "aarch64"
@@ -406,42 +354,9 @@ mod tests {
     // downloaded as musl ELFs.
     // -----------------------------------------------------------------
 
-    #[test]
-    fn ldd_output_recognizes_musl_banner_from_alpine() {
-        // Alpine 3.20 / musl 1.2.5 stderr banner, captured verbatim.
-        let stderr = b"musl libc (x86_64)\nVersion 1.2.5\nDynamic Program Loader\nUsage: ldd [options] [--] pathname\n";
-        assert!(ldd_output_mentions_musl(stderr));
-    }
-
-    #[test]
-    fn ldd_output_recognizes_glibc_banner_as_not_musl() {
-        // Ubuntu 24.04 glibc stdout banner, captured verbatim.
-        let stdout = b"ldd (Ubuntu GLIBC 2.39-0ubuntu8.3) 2.39\nCopyright (C) 2024 Free Software Foundation, Inc.\n";
-        assert!(!ldd_output_mentions_musl(stdout));
-    }
-
-    #[test]
-    fn ldd_output_handles_non_utf8_safely() {
-        // Defensive: a corrupted ldd output must not panic or report musl.
-        let garbled = b"\xff\xfe\xfd not valid utf-8 \xff";
-        assert!(!ldd_output_mentions_musl(garbled));
-    }
-
-    #[test]
-    fn musl_linker_does_not_override_glibc_host() {
-        assert_eq!(
-            classify_linux_libc(
-                false, false, true, // musl-tools installed for cross-compilation
-                true, // but the runner itself is still glibc
-            ),
-            Env::Gnu
-        );
-    }
-
-    #[test]
-    fn musl_linker_without_glibc_linker_identifies_minimal_musl_host() {
-        assert_eq!(classify_linux_libc(false, false, true, false), Env::Musl);
-    }
+    // The ldd banner helpers and the classification table moved to
+    // soldr-platform's Linux facts, where their tests now live beside
+    // the implementation.
 
     /// linux-musl only: when soldr itself is built for musl, the
     /// fallback target triple MUST resolve to `*-unknown-linux-musl`
@@ -449,9 +364,15 @@ mod tests {
     /// picks the musl variant of cargo-nextest et al. Without this
     /// the Alpine docker harness from `zackees/running-process#514`
     /// hits the `os error 2` execve failure described in #806.
-    #[cfg(all(target_os = "linux", target_env = "musl"))]
     #[test]
     fn musl_host_resolves_to_musl_target_triple() {
+        use crate::platform::host::facts::{libc, os, HostLibc, HostOs};
+
+        // The original assertion is gated on the binary being built for
+        // linux-musl; any other host cannot promise a musl answer.
+        if os() != HostOs::Linux || libc() != HostLibc::Musl {
+            return;
+        }
         // Pure helper: compile-time short-circuit must kick in.
         assert_eq!(detect_linux_libc(), Env::Musl);
 

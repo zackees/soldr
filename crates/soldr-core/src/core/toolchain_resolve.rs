@@ -203,7 +203,8 @@ fn executable_exists(path: &Path) -> bool {
     path.is_file()
 }
 
-#[cfg(windows)]
+/// PATHEXT-driven executable suffixes. Only meaningful on Windows, where
+/// the bare `tool` name is resolved by appending each extension in order.
 fn windows_pathexts() -> Vec<String> {
     let pathext = std::env::var_os("PATHEXT")
         .and_then(|value| value.into_string().ok())
@@ -222,8 +223,7 @@ fn find_executable_in_dir(dir: &Path, tool: &str) -> Option<PathBuf> {
         return Some(candidate);
     }
 
-    #[cfg(windows)]
-    {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         let ext = candidate
             .extension()
             .and_then(OsStr::to_str)
@@ -367,75 +367,74 @@ mod tests {
         }
     }
 
+    fn is_windows_test_host() -> bool {
+        crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows
+    }
+
     fn fake_script_path(dir: &Path, name: &str) -> PathBuf {
-        #[cfg(windows)]
-        {
+        if is_windows_test_host() {
             dir.join(format!("{name}.bat"))
-        }
-        #[cfg(not(windows))]
-        {
+        } else {
             dir.join(name)
         }
     }
 
     fn write_fake_script(path: &Path, script: &str) {
         fs::write(path, script).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-
-            let mut permissions = fs::metadata(path).unwrap().permissions();
-            permissions.set_mode(0o755);
-            fs::set_permissions(path, permissions).unwrap();
+        if !is_windows_test_host() {
+            // `PermissionsExt::set_mode` is unix-only, so go through the
+            // shell instead of a cfg'd import.
+            let status = std::process::Command::new("chmod")
+                .args(["755"])
+                .arg(path)
+                .status()
+                .unwrap();
+            assert!(status.success(), "chmod 755 failed for {}", path.display());
         }
     }
 
-    #[cfg(windows)]
     fn fake_rustc_script(triple: &str) -> String {
-        format!(
-            "@echo off\r\n\
-             if \"%~1\"==\"--print\" if \"%~2\"==\"target-triple\" (\r\n\
-             echo {triple}\r\n\
-             exit /b 0\r\n\
-             )\r\n\
-             echo unexpected rustc args %* 1>&2\r\n\
-             exit /b 1\r\n"
-        )
+        if is_windows_test_host() {
+            format!(
+                "@echo off\r\n\
+                 if \"%~1\"==\"--print\" if \"%~2\"==\"target-triple\" (\r\n\
+                 echo {triple}\r\n\
+                 exit /b 0\r\n\
+                 )\r\n\
+                 echo unexpected rustc args %* 1>&2\r\n\
+                 exit /b 1\r\n"
+            )
+        } else {
+            format!(
+                "#!/bin/sh\n\
+                 if [ \"$1\" = \"--print\" ] && [ \"$2\" = \"target-triple\" ]; then\n\
+                     printf '%s\\n' '{triple}'\n\
+                     exit 0\n\
+                 fi\n\
+                 echo \"unexpected rustc args: $*\" >&2\n\
+                 exit 1\n"
+            )
+        }
     }
 
-    #[cfg(not(windows))]
-    fn fake_rustc_script(triple: &str) -> String {
-        format!(
-            "#!/bin/sh\n\
-             if [ \"$1\" = \"--print\" ] && [ \"$2\" = \"target-triple\" ]; then\n\
-                 printf '%s\\n' '{triple}'\n\
-                 exit 0\n\
-             fi\n\
-             echo \"unexpected rustc args: $*\" >&2\n\
-             exit 1\n"
-        )
-    }
-
-    #[cfg(windows)]
     fn fake_failing_rustup_script(log_path: &Path) -> String {
-        format!(
-            "@echo off\r\n\
-             echo rustup %*>>\"{}\"\r\n\
-             echo rustup should not have been invoked 1>&2\r\n\
-             exit /b 1\r\n",
-            log_path.display()
-        )
-    }
-
-    #[cfg(not(windows))]
-    fn fake_failing_rustup_script(log_path: &Path) -> String {
-        format!(
-            "#!/bin/sh\n\
-             echo \"rustup $*\" >> \"{}\"\n\
-             echo \"rustup should not have been invoked\" >&2\n\
-             exit 1\n",
-            log_path.display()
-        )
+        if is_windows_test_host() {
+            format!(
+                "@echo off\r\n\
+                 echo rustup %*>>\"{}\"\r\n\
+                 echo rustup should not have been invoked 1>&2\r\n\
+                 exit /b 1\r\n",
+                log_path.display()
+            )
+        } else {
+            format!(
+                "#!/bin/sh\n\
+                 echo \"rustup $*\" >> \"{}\"\n\
+                 echo \"rustup should not have been invoked\" >&2\n\
+                 exit 1\n",
+                log_path.display()
+            )
+        }
     }
 
     fn assert_rustup_not_invoked(log_path: &Path) {
@@ -532,9 +531,8 @@ mod tests {
 
         let _target = TargetTriple::detect_in_dir(dir.path()).unwrap();
         // Ambiguous list → fall back to the host arch on Windows.
-        #[cfg(target_os = "windows")]
-        {
-            let expected_arch = if cfg!(target_arch = "x86_64") {
+        if is_windows_test_host() {
+            let expected_arch = if std::env::consts::ARCH == "x86_64" {
                 "x86_64"
             } else {
                 "aarch64"
@@ -625,17 +623,13 @@ mod tests {
         // fails with `NotFound` because the shell isn't on the
         // synthetic PATH). Surfaced as an intermittent Linux CI
         // failure on PR #431.
-        #[cfg(windows)]
-        let mut command = {
+        let mut command = if is_windows_test_host() {
             let comspec = std::env::var_os("ComSpec")
                 .unwrap_or_else(|| std::ffi::OsString::from(r"C:\Windows\System32\cmd.exe"));
             let mut command = Command::new(comspec);
             command.args(["/C", "echo soldr-no-window"]);
             command
-        };
-
-        #[cfg(not(windows))]
-        let mut command = {
+        } else {
             let mut command = Command::new("/bin/sh");
             command.args(["-c", "printf soldr-no-window"]);
             command

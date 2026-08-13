@@ -407,9 +407,10 @@ crate::timed_test!(prep_memo_wire_roundtrip_preserves_fields, {
     assert_eq!(decoded, memo);
 });
 
-/// End-to-end (unix): a memo hit must skip all three prep subprocesses;
-/// mutating a workspace manifest must re-run them.
-#[cfg(unix)]
+/// End-to-end (unix-gated at runtime): a memo hit must skip all three
+/// prep subprocesses; mutating a workspace manifest must re-run them.
+/// The fake `cargo`/`rustc` are `#!/bin/sh` scripts, so the test
+/// self-skips on Windows where they cannot execute.
 mod end_to_end {
     use super::*;
     use crate::rust_plan::maybe_prepare_rust_artifact_plan;
@@ -423,11 +424,9 @@ mod end_to_end {
     static MODE_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn write_script(path: &Path, body: &str) {
-        use std::os::unix::fs::PermissionsExt;
         std::fs::write(path, body).unwrap();
-        let mut perms = std::fs::metadata(path).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(path, perms).unwrap();
+        let source = std::fs::metadata(path).unwrap().permissions();
+        crate::platform::fs::permissions::make_executable_from(path, &source).unwrap();
     }
 
     fn call_count(path: &Path) -> usize {
@@ -439,6 +438,9 @@ mod end_to_end {
     crate::timed_test!(
         prep_memo_hit_skips_prep_subprocesses_until_manifest_changes,
         {
+            if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+                return;
+            }
             let _lock = MODE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
             let previous_mode = std::env::var_os(TARGET_CACHE_MODE_ENV_VAR);
             let previous_memo = std::env::var_os(RUST_PLAN_MEMO_ENV_VAR);

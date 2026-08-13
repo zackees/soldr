@@ -137,8 +137,9 @@ pub fn resolved_control_endpoint_path(_paths: &SoldrPaths) -> io::Result<std::pa
 }
 
 fn runtime_control_endpoint_path(logical: std::path::PathBuf) -> std::path::PathBuf {
-    #[cfg(windows)]
-    {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+        // The broker assigns a filesystem-looking logical path; the
+        // Windows transport dials it under the named-pipe namespace.
         const PREFIX: &str = r"\\.\pipe\";
         let rendered = logical.to_string_lossy();
         if rendered.starts_with(PREFIX) {
@@ -146,9 +147,7 @@ fn runtime_control_endpoint_path(logical: std::path::PathBuf) -> std::path::Path
         } else {
             std::path::PathBuf::from(format!("{PREFIX}{rendered}"))
         }
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         logical
     }
 }
@@ -342,107 +341,11 @@ pub type SessionListener = interprocess::local_socket::tokio::Listener;
 /// SESSION bind does (Unix filesystem path, Windows namespaced pipe), so the
 /// daemon endpoint and the broker's relay dial name the same path identically.
 pub fn bind_session_listener(socket_path: &str) -> io::Result<SessionListener> {
-    bind_session_listener_impl(socket_path)
-}
-
-#[cfg(target_os = "linux")]
-fn bind_session_listener_impl(socket_path: &str) -> io::Result<SessionListener> {
-    use interprocess::local_socket::ListenerOptions;
-    use interprocess::os::unix::local_socket::ListenerOptionsExt as _;
-
-    // Linux local sockets are filesystem entries. The broker's runtime namespace
-    // may not exist in a clean container, so create its parent before binding.
-    if let Some(parent) = std::path::Path::new(socket_path).parent() {
-        running_process::broker::secure_dir::ensure_private_dir(parent)?;
-    }
-
-    let name = local_session_name(socket_path)?;
-    let options = ListenerOptions::new()
-        .name(name)
-        .reclaim_name(false)
-        .mode(0o600);
-    let first = options.create_tokio();
-    match first {
-        Ok(listener) => Ok(listener),
-        Err(err)
-            if running_process::broker::server::singleton_bind::is_already_bound_error(&err)
-                && running_process::broker::server::singleton_bind::unix_socket_path_is_stale(
-                    socket_path,
-                ) =>
-        {
-            let _ = std::fs::remove_file(socket_path);
-            let retry_name = local_session_name(socket_path)?;
-            ListenerOptions::new()
-                .name(retry_name)
-                .reclaim_name(false)
-                .mode(0o600)
-                .create_tokio()
-        }
-        Err(err) => Err(err),
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn bind_session_listener_impl(socket_path: &str) -> io::Result<SessionListener> {
-    use interprocess::local_socket::ListenerOptions;
-    use std::os::unix::fs::PermissionsExt as _;
-
-    if let Some(parent) = std::path::Path::new(socket_path).parent() {
-        running_process::broker::secure_dir::ensure_private_dir(parent)?;
-    }
-
-    // interprocess implements `mode()` with fchmod before bind, which returns
-    // Unsupported on macOS. Bind first, then tighten the filesystem entry.
-    let bind = |path: &str| {
-        ListenerOptions::new()
-            .name(local_session_name(path)?)
-            .reclaim_name(false)
-            .create_tokio()
-    };
-    let listener = match bind(socket_path) {
-        Ok(listener) => listener,
-        Err(err)
-            if running_process::broker::server::singleton_bind::is_already_bound_error(&err)
-                && running_process::broker::server::singleton_bind::unix_socket_path_is_stale(
-                    socket_path,
-                ) =>
-        {
-            let _ = std::fs::remove_file(socket_path);
-            bind(socket_path)?
-        }
-        Err(err) => return Err(err),
-    };
-    std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))?;
-    Ok(listener)
-}
-
-#[cfg(target_os = "windows")]
-fn bind_session_listener_impl(socket_path: &str) -> io::Result<SessionListener> {
-    use interprocess::local_socket::ListenerOptions;
-    use interprocess::os::windows::local_socket::ListenerOptionsExt as _;
-    use interprocess::os::windows::security_descriptor::SecurityDescriptor;
-
-    let name = local_session_name(socket_path)?;
-    let sddl = widestring::U16CString::from_str("D:P(A;;GA;;;OW)(A;;GA;;;SY)")
-        .map_err(io::Error::other)?;
-    let descriptor = SecurityDescriptor::deserialize(&sddl).map_err(io::Error::other)?;
-    ListenerOptions::new()
-        .name(name)
-        .reclaim_name(false)
-        .security_descriptor(descriptor)
-        .create_tokio()
-}
-
-#[cfg(all(
-    not(target_os = "windows"),
-    not(target_os = "linux"),
-    not(target_os = "macos")
-))]
-fn bind_session_listener_impl(_socket_path: &str) -> io::Result<SessionListener> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "Soldr SESSION IPC is unsupported on this platform",
-    ))
+    // The platform ipc listener leaf owns the host mechanics: Linux
+    // filesystem sockets bound with mode 0o600 (+ stale-socket reclaim),
+    // macOS bind-then-tighten, Windows namespaced pipes with an
+    // owner+SYSTEM SDDL.
+    crate::platform::ipc::listener::bind_owner_only_listener(socket_path)
 }
 
 fn local_session_name(socket_path: &str) -> io::Result<interprocess::local_socket::Name<'_>> {
@@ -674,122 +577,60 @@ async fn read_envelope_body(
     Ok(body)
 }
 
-#[cfg(unix)]
 async fn receive_handed_off_session(
     control: interprocess::local_socket::tokio::Stream,
     expected_service_name: &str,
 ) -> io::Result<interprocess::local_socket::tokio::Stream> {
-    let (mut control, client_fd, transport_token) =
-        tokio::task::spawn_blocking(move || receive_unix_descriptor(control))
-            .await
-            .map_err(|error| io::Error::other(format!("handoff receive task failed: {error}")))??;
-    let offer = read_handoff_offer_async(&mut control, expected_service_name).await?;
-    if offer.token.as_slice() != transport_token {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "SCM_RIGHTS token did not match the framed handoff offer",
-        ));
-    }
-    let stream = interprocess::os::unix::uds_local_socket::tokio::Stream::try_from(client_fd)?;
-    // A positive ACK transfers ownership. Do not send it until the received
-    // descriptor is a usable Tokio SESSION stream.
-    accept_handoff_offer_async(&mut control, &offer).await?;
-    Ok(stream.into())
-}
-
-#[cfg(unix)]
-fn receive_unix_descriptor(
-    control: interprocess::local_socket::tokio::Stream,
-) -> io::Result<(
-    interprocess::local_socket::tokio::Stream,
-    std::os::fd::OwnedFd,
-    [u8; running_process::broker::server::HANDOFF_TOKEN_BYTES],
-)> {
-    use std::os::fd::{AsFd as _, AsRawFd as _, FromRawFd as _};
-
-    let interprocess::local_socket::tokio::Stream::UdSocket(socket) = &control;
-    let socket_fd = socket.as_fd().as_raw_fd();
-    let mut token = [0_u8; running_process::broker::server::HANDOFF_TOKEN_BYTES];
-    let mut iov = libc::iovec {
-        iov_base: token.as_mut_ptr().cast(),
-        iov_len: token.len(),
-    };
-    let mut ancillary =
-        vec![0_u8; unsafe { libc::CMSG_SPACE(std::mem::size_of::<libc::c_int>() as _) as usize }];
-    let deadline =
-        std::time::Instant::now() + running_process::broker::server::DEFAULT_HANDOFF_ACK_DEADLINE;
-    loop {
-        let mut message = unsafe { std::mem::zeroed::<libc::msghdr>() };
-        message.msg_iov = &mut iov;
-        message.msg_iovlen = 1;
-        message.msg_control = ancillary.as_mut_ptr().cast();
-        message.msg_controllen = ancillary.len() as _;
-        let received = unsafe { libc::recvmsg(socket_fd, &mut message, libc::MSG_DONTWAIT) };
-        if received < 0 {
-            let error = io::Error::last_os_error();
-            if error.kind() == io::ErrorKind::WouldBlock && std::time::Instant::now() < deadline {
-                std::thread::sleep(std::time::Duration::from_millis(1));
-                continue;
-            }
-            return Err(error);
-        }
-        if received as usize != token.len() {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+        // DuplicateHandle transport: the offer carries the duplicated
+        // pipe handle directly.
+        let mut control = control;
+        let offer = read_handoff_offer_async(&mut control, expected_service_name).await?;
+        if offer.handle_value == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "short SCM_RIGHTS token prelude",
+                "DuplicateHandle offer carried a null handle",
             ));
         }
-        let header = unsafe { libc::CMSG_FIRSTHDR(&message) };
-        if header.is_null()
-            || unsafe {
-                (*header).cmsg_level != libc::SOL_SOCKET || (*header).cmsg_type != libc::SCM_RIGHTS
+        let stream =
+            crate::platform::ipc::handoff::named_pipe_stream_from_handle_value(offer.handle_value)?;
+        // A positive ACK transfers ownership. Do not send it until the
+        // duplicated handle is a usable Tokio SESSION stream.
+        accept_handoff_offer_async(&mut control, &offer).await?;
+        Ok(stream)
+    } else {
+        // SCM_RIGHTS transport: receive the descriptor (with its token
+        // prelude) on the blocking pool, then verify the token against
+        // the framed offer before trusting the descriptor.
+        let (mut control, received_fd, transport_token) = tokio::task::spawn_blocking(move || {
+            crate::platform::ipc::handoff::receive_unix_descriptor(control)
+        })
+        .await
+        .map_err(|error| io::Error::other(format!("handoff receive task failed: {error}")))??;
+        let offer = match read_handoff_offer_async(&mut control, expected_service_name).await {
+            Ok(offer) => offer,
+            Err(error) => {
+                crate::platform::ipc::handoff::close_received_fd(received_fd);
+                return Err(error);
             }
-        {
+        };
+        if offer.token.as_slice() != transport_token {
+            crate::platform::ipc::handoff::close_received_fd(received_fd);
             return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "handoff prelude omitted SCM_RIGHTS",
+                io::ErrorKind::PermissionDenied,
+                "SCM_RIGHTS token did not match the framed handoff offer",
             ));
         }
-        let received_fd = unsafe { *libc::CMSG_DATA(header).cast::<libc::c_int>() };
-        let owned = unsafe { std::os::fd::OwnedFd::from_raw_fd(received_fd) };
-        let descriptor_flags = unsafe { libc::fcntl(received_fd, libc::F_GETFD) };
-        if descriptor_flags < 0
-            || unsafe {
-                libc::fcntl(
-                    received_fd,
-                    libc::F_SETFD,
-                    descriptor_flags | libc::FD_CLOEXEC,
-                )
-            } < 0
-        {
-            return Err(io::Error::last_os_error());
-        }
-        return Ok((control, owned, token));
+        let stream =
+            match crate::platform::ipc::handoff::session_stream_from_received_fd(received_fd) {
+                Ok(stream) => stream,
+                Err(error) => return Err(error),
+            };
+        // A positive ACK transfers ownership. Do not send it until the
+        // received descriptor is a usable Tokio SESSION stream.
+        accept_handoff_offer_async(&mut control, &offer).await?;
+        Ok(stream)
     }
-}
-
-#[cfg(windows)]
-async fn receive_handed_off_session(
-    mut control: interprocess::local_socket::tokio::Stream,
-    expected_service_name: &str,
-) -> io::Result<interprocess::local_socket::tokio::Stream> {
-    use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
-
-    let offer = read_handoff_offer_async(&mut control, expected_service_name).await?;
-    if offer.handle_value == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "DuplicateHandle offer carried a null handle",
-        ));
-    }
-    let owned = unsafe { OwnedHandle::from_raw_handle(offer.handle_value as *mut _) };
-    let stream =
-        interprocess::os::windows::named_pipe::local_socket::tokio::Stream::try_from(owned)
-            .map_err(|error| error.to_io_error())?;
-    // A positive ACK transfers ownership. Do not send it until the duplicated
-    // handle is a usable Tokio SESSION stream.
-    accept_handoff_offer_async(&mut control, &offer).await?;
-    Ok(stream.into())
 }
 
 #[cfg(test)]

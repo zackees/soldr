@@ -25,25 +25,20 @@ use crate::blessed_build::BlessedPrep;
 use crate::prepare_cmd::apply_blessed_prep_env;
 use crate::{EnvVarGuard, TEST_PROCESS_ENV_LOCK};
 
-#[cfg(target_os = "linux")]
 fn write_executable(path: &std::path::Path, body: &str) {
-    use std::os::unix::fs::PermissionsExt;
-
     std::fs::write(path, body).expect("write fake executable");
-    let mut permissions = std::fs::metadata(path)
+    let source = std::fs::metadata(path)
         .expect("stat fake executable")
         .permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(path, permissions).expect("chmod fake executable");
+    crate::platform::fs::permissions::make_executable_from(path, &source)
+        .expect("chmod fake executable");
 }
 
-#[cfg(target_os = "linux")]
 struct DynamicEnvVarGuard {
     key: String,
     previous: Option<std::ffi::OsString>,
 }
 
-#[cfg(target_os = "linux")]
 impl DynamicEnvVarGuard {
     fn remove(key: String) -> Self {
         let previous = std::env::var_os(&key);
@@ -52,7 +47,6 @@ impl DynamicEnvVarGuard {
     }
 }
 
-#[cfg(target_os = "linux")]
 impl Drop for DynamicEnvVarGuard {
     fn drop(&mut self) {
         match &self.previous {
@@ -62,13 +56,17 @@ impl Drop for DynamicEnvVarGuard {
     }
 }
 
-#[cfg(target_os = "linux")]
 crate::timed_test!(managed_gnu_toolchain_is_exported_for_later_github_steps, {
+    if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Linux {
+        return;
+    }
     let _lock = TEST_PROCESS_ENV_LOCK
         .lock()
         .unwrap_or_else(|error| error.into_inner());
 
-    let (target, target_prefix, slug) = if cfg!(target_arch = "aarch64") {
+    let (target, target_prefix, slug) = if crate::platform::host::facts::arch()
+        == crate::platform::host::facts::HostArch::Aarch64
+    {
         (
             "x86_64-unknown-linux-gnu",
             "x86_64-conda-linux-gnu",
@@ -249,15 +247,19 @@ crate::timed_test!(managed_gnu_toolchain_is_exported_for_later_github_steps, {
     }
 });
 
-#[cfg(target_os = "linux")]
 crate::timed_test!(
     managed_musl_toolchain_is_exported_without_zig_or_host_tools,
     {
+        if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Linux {
+            return;
+        }
         let _lock = TEST_PROCESS_ENV_LOCK
             .lock()
             .unwrap_or_else(|error| error.into_inner());
 
-        let (target, target_prefix, slug) = if cfg!(target_arch = "aarch64") {
+        let (target, target_prefix, slug) = if crate::platform::host::facts::arch()
+            == crate::platform::host::facts::HostArch::Aarch64
+        {
             (
                 "x86_64-unknown-linux-musl",
                 "x86_64-linux-musl",

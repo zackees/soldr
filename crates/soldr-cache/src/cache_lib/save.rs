@@ -841,12 +841,9 @@ fn resolve_symlink_target_in_root(link_rel: &Path, target: &str) -> Option<PathB
 /// skipped — they can't round-trip through the protobuf string field).
 fn symlink_target_to_posix(raw: &Path) -> Option<String> {
     let s = raw.to_str()?;
-    #[cfg(windows)]
-    {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         Some(s.replace('\\', "/"))
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         Some(s.to_string())
     }
 }
@@ -2137,11 +2134,9 @@ fn extract_one(job: &ExtractJob) -> Result<()> {
             // binaries restored from cache fail execve with EACCES.
             // Windows ignores the mode — NTFS uses ACLs, and the tar
             // header's Unix mode isn't meaningful there.
-            #[cfg(unix)]
             if let Some(mode) = job.mode_bits {
-                use std::os::unix::fs::PermissionsExt;
-                let perms = std::fs::Permissions::from_mode(mode);
-                if let Err(e) = std::fs::set_permissions(&staged, perms) {
+                if let Err(e) = crate::platform::fs::permissions::restore_mode(&staged, Some(mode))
+                {
                     let _ = std::fs::remove_file(&staged);
                     return Err(io(&staged, e));
                 }
@@ -2336,12 +2331,10 @@ impl Drop for DefenderExclusionGuard {
 }
 
 fn defender_exclusion_guard_for(cache_dir: &Path) -> DefenderExclusionGuard {
-    #[cfg(not(target_os = "windows"))]
-    {
+    if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
         let _ = cache_dir;
-        DefenderExclusionGuard::default()
+        return DefenderExclusionGuard::default();
     }
-    #[cfg(target_os = "windows")]
     {
         let Some(powershell) = crate::defender::find_powershell() else {
             eprintln!(
@@ -2466,13 +2459,7 @@ fn apply_cache_tombstones(cache_dir: &Path, manifest: &Manifest) -> Result<()> {
 /// symlink must be removed with `remove_dir`; try file-removal first and
 /// fall back so both flavors are covered.
 fn remove_symlink(path: &Path) -> std::io::Result<()> {
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        #[cfg(windows)]
-        Err(_) => std::fs::remove_dir(path),
-        #[cfg(not(windows))]
-        Err(err) => Err(err),
-    }
+    crate::platform::fs::links::remove(path)
 }
 
 /// Recreate manifest symlink entries below `cache_dir` (#1548). Returns
@@ -2533,27 +2520,7 @@ fn restore_one_symlink(cache_dir: &Path, entry: &SymlinkEntry) -> std::result::R
 /// Platform symlink creation. `target` is the manifest's forward-slashed
 /// relative string; converted to the native separator on Windows.
 fn create_symlink_at(target: &str, dest: &Path, is_dir: bool) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        let _ = is_dir;
-        std::os::unix::fs::symlink(target, dest)
-    }
-    #[cfg(windows)]
-    {
-        let native = target.replace('/', "\\");
-        if is_dir {
-            std::os::windows::fs::symlink_dir(native, dest)
-        } else {
-            std::os::windows::fs::symlink_file(native, dest)
-        }
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = (target, dest, is_dir);
-        Err(std::io::Error::other(
-            "symlinks unsupported on this platform",
-        ))
-    }
+    crate::platform::fs::links::create(target, dest, is_dir)
 }
 
 /// Per-manifest-entry slot tracking whether the extract workers already
@@ -3303,11 +3270,14 @@ mod etxtbsy_tests {
         assert_eq!(std::fs::read(&dest).unwrap(), b"fresh");
     });
 
-    #[cfg(unix)]
     crate::timed_test!(restored_executable_keeps_its_mode_through_the_rename, {
+        // Unix mode bits only exist on unix hosts; the facade's `mode()`
+        // returns `None` on Windows, so the test self-skips there.
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            return;
+        }
         // The mode is applied to the staging file; `rename` must carry it
         // over, or #587/#1889 would regress silently.
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         let dest = tmp.path().join("build-script-build");
         extract_one(&regular_job(
@@ -3317,19 +3287,19 @@ mod etxtbsy_tests {
         ))
         .expect("extract");
 
-        let mode = std::fs::metadata(&dest).unwrap().permissions().mode();
-        assert_eq!(
-            mode & 0o777,
-            0o755,
-            "executable bit must survive the rename"
-        );
+        let mode =
+            crate::platform::fs::permissions::mode(&dest).expect("stat restored mode") & 0o777;
+        assert_eq!(mode, 0o755, "executable bit must survive the rename");
     });
 
-    #[cfg(unix)]
     crate::timed_test!(restored_executable_can_actually_be_executed, {
+        // Unix mode bits only exist on unix hosts; the facade's `mode()`
+        // returns `None` on Windows, so the test self-skips there.
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            return;
+        }
         // The end-to-end property the issue is about: after extract_one
         // returns, the file is immediately runnable -- no ETXTBSY, no EACCES.
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         let dest = tmp.path().join("build-script-build");
         extract_one(&regular_job(
@@ -3339,7 +3309,7 @@ mod etxtbsy_tests {
         ))
         .expect("extract");
         assert_eq!(
-            std::fs::metadata(&dest).unwrap().permissions().mode() & 0o111,
+            crate::platform::fs::permissions::mode(&dest).expect("stat restored mode") & 0o111,
             0o111
         );
 

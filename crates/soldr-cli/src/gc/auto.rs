@@ -998,26 +998,8 @@ impl crate::cache_lib::auto_gc::VolumeProbe for SystemVolumeProbe {
     }
 }
 
-#[cfg(windows)]
 fn volume_key_for_path(path: &std::path::Path) -> Option<String> {
-    // On Windows: prefer the canonical path's drive letter (e.g. "C").
-    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let s = canonical.to_string_lossy().to_string();
-    // Strip UNC prefix \\?\ if present.
-    let trimmed = s.trim_start_matches(r"\\?\");
-    let bytes = trimmed.as_bytes();
-    if bytes.len() >= 2 && bytes[1] == b':' && (bytes[0].is_ascii_alphabetic()) {
-        return Some((bytes[0] as char).to_ascii_uppercase().to_string());
-    }
-    None
-}
-
-#[cfg(unix)]
-fn volume_key_for_path(path: &std::path::Path) -> Option<String> {
-    use std::os::unix::fs::MetadataExt;
-    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let meta = std::fs::metadata(&canonical).ok()?;
-    Some(meta.dev().to_string())
+    crate::platform::fs::volume::identity(path)
 }
 
 fn append_auto_gc_log_line(log_path: &std::path::Path, line: &str) -> std::io::Result<()> {

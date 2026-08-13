@@ -437,9 +437,6 @@ mod tests {
             None,
             None,
         );
-        assert_eq!(
-            plan,
-            Some(args(&["fetch", "--target", TARGET]))
-        );
+        assert_eq!(plan, Some(args(&["fetch", "--target", TARGET])));
     });
 }

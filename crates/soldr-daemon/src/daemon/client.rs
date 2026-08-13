@@ -5,13 +5,10 @@
 
 use crate::cache_lib::target_registry::current_unix_seconds;
 use crate::core::SoldrPaths;
-#[cfg(windows)]
 use crate::daemon::ipc::{
-    read_frame_async, read_frame_async_for_version, write_frame_async,
-    write_frame_async_for_version,
-};
-use crate::daemon::ipc::{
-    read_frame_sync, read_frame_sync_for_version, write_frame_sync, write_frame_sync_for_version,
+    read_frame_async, read_frame_async_for_version, read_frame_sync, read_frame_sync_for_version,
+    write_frame_async, write_frame_async_for_version, write_frame_sync,
+    write_frame_sync_for_version,
 };
 use crate::daemon::protocol::{
     BuildRecord, CacheFlushInfo, CompileRequest, CompileStatsInfo, Request, Response, ShutdownAck,
@@ -99,57 +96,18 @@ pub const DEFAULT_REPLY_TIMEOUT_SECS: u64 = 30 * 60;
 /// unparseable value falls back to [`DEFAULT_REPLY_TIMEOUT_SECS`].
 pub const REPLY_TIMEOUT_ENV: &str = "SOLDR_COMPILE_REPLY_TIMEOUT_SECS";
 
-#[cfg(windows)]
-const ERROR_PIPE_BUSY: i32 = 231;
-#[cfg(windows)]
-const PIPE_BUSY_RETRY_LIMIT: u32 = 8;
-
 /// How many times a client re-dials after the daemon replies
 /// `Response::Backpressure`. Shared by both transports since soldr#1853 —
 /// compile admission is no longer Windows-only, so the AF_UNIX path needs
 /// the same bounded back-off.
 const BACKPRESSURE_RETRY_LIMIT: u32 = 8;
 
-#[cfg(windows)]
-struct WindowsPipeOpen {
-    stream: tokio::net::windows::named_pipe::NamedPipeClient,
-    busy_retries: u32,
-}
-
-#[cfg(windows)]
-fn busy_pipe_retry_delay(attempt: u32) -> Duration {
-    let base_ms = (2_u64.saturating_mul(1_u64 << attempt.min(5))).min(64);
-    // A tiny deterministic jitter avoids synchronized cargo workers while
-    // keeping this retry policy testable and dependency-free.
-    let jitter_ms = (u64::from(attempt) * 17 + u64::from(std::process::id())) % 4;
-    Duration::from_millis(base_ms + jitter_ms)
-}
-
-#[cfg(windows)]
-async fn open_windows_pipe_with_retry(path: &Path) -> std::io::Result<WindowsPipeOpen> {
-    use tokio::net::windows::named_pipe::ClientOptions;
-    for attempt in 0..PIPE_BUSY_RETRY_LIMIT {
-        match ClientOptions::new().open(path) {
-            Ok(stream) => {
-                return Ok(WindowsPipeOpen {
-                    stream,
-                    busy_retries: attempt,
-                })
-            }
-            Err(error)
-                if error.raw_os_error() == Some(ERROR_PIPE_BUSY)
-                    && attempt + 1 < PIPE_BUSY_RETRY_LIMIT =>
-            {
-                // A busy pipe is listener-pool backpressure, not evidence that the
-                // daemon died. Keep retrying inside this client call so callers do
-                // not start recovery or bypass the cache.
-                tokio::time::sleep(busy_pipe_retry_delay(attempt)).await;
-            }
-            Err(error) => return Err(error),
-        }
-    }
-    unreachable!("retry loop either returned a client or its last IO error")
-}
+// The Windows named-pipe open policy (`ERROR_PIPE_BUSY` classification,
+// `PIPE_BUSY_RETRY_LIMIT`, exponential busy backoff with jitter, and the
+// time-bounded worker executor) lives in the platform ipc connect facade
+// (crate::platform::ipc::connect), which owns the concrete open/connect
+// implementations for every host. The daemon keeps the retry orchestration
+// and surfaces `busy_retries` as `ipc_busy_retries` telemetry.
 
 /// Compile-dispatch timeout, resolved once from the environment.
 pub fn compile_reply_timeout() -> Duration {
@@ -211,8 +169,9 @@ pub enum ClientError {
 
 impl From<std::io::Error> for ClientError {
     fn from(e: std::io::Error) -> Self {
-        #[cfg(windows)]
-        if e.raw_os_error() == Some(ERROR_PIPE_BUSY) {
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows
+            && e.raw_os_error() == Some(crate::platform::ipc::connect::ERROR_PIPE_BUSY)
+        {
             // The retry cap only bounds a single client call; it does not
             // change daemon liveness. Keep this out of the caller's generic
             // I/O-recovery branch, which is allowed to spawn a missing daemon.
@@ -249,12 +208,9 @@ pub fn submit_fire_and_forget(sock_path: &Path, req: &Request) -> Result<(), Cli
         write_frame_sync(&mut stream, req)?;
         return Ok(());
     }
-    #[cfg(windows)]
-    {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         submit_fire_and_forget_windows(sock_path, req)
-    }
-    #[cfg(unix)]
-    {
+    } else {
         let mut stream = connect(sock_path, HOT_PATH_TIMEOUT)?;
         write_frame_sync(&mut stream, req)?;
         Ok(())
@@ -267,12 +223,9 @@ pub fn submit_request(sock_path: &Path, req: &Request) -> Result<Response, Clien
         write_frame_sync(&mut stream, req)?;
         return read_frame_sync(&mut stream).map_err(ClientError::from);
     }
-    #[cfg(windows)]
-    {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         submit_request_windows(sock_path, req)
-    }
-    #[cfg(unix)]
-    {
+    } else {
         let mut stream = connect(sock_path, REPLY_TIMEOUT)?;
         write_frame_sync(&mut stream, req)?;
         let resp: Response = read_frame_sync(&mut stream)?;
@@ -290,17 +243,14 @@ fn submit_request_for_version(
         return read_frame_sync_for_version(&mut stream, protocol_version)
             .map_err(ClientError::from);
     }
-    #[cfg(windows)]
-    {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         submit_request_windows_with_timeout_and_version(
             sock_path,
             req,
             REPLY_TIMEOUT,
             protocol_version,
         )
-    }
-    #[cfg(unix)]
-    {
+    } else {
         let mut stream = connect(sock_path, REPLY_TIMEOUT)?;
         write_frame_sync_for_version(&mut stream, req, protocol_version)?;
         let resp: Response = read_frame_sync_for_version(&mut stream, protocol_version)?;
@@ -316,17 +266,14 @@ fn submit_direct_request_for_version(
     req: &Request,
     protocol_version: u32,
 ) -> Result<Response, ClientError> {
-    #[cfg(windows)]
-    {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         submit_request_windows_with_timeout_and_version(
             sock_path,
             req,
             REPLY_TIMEOUT,
             protocol_version,
         )
-    }
-    #[cfg(unix)]
-    {
+    } else {
         let mut stream = connect(sock_path, REPLY_TIMEOUT)?;
         write_frame_sync_for_version(&mut stream, req, protocol_version)?;
         let response: Response = read_frame_sync_for_version(&mut stream, protocol_version)?;
@@ -839,12 +786,9 @@ where
     O: Write,
     E: Write,
 {
-    #[cfg(windows)]
-    {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         compile_streaming_windows(sock_path, req, &mut stdout, &mut stderr)
-    }
-    #[cfg(unix)]
-    {
+    } else {
         // Honour `Response::Backpressure` (soldr#1853). Compile admission
         // used to be `#[cfg(windows)]`-only, so this transport accepted every
         // connection unconditionally and shed load by resetting sockets —
@@ -1034,12 +978,9 @@ pub fn submit_request_with_timeout(
         write_frame_sync(&mut stream, req)?;
         return read_frame_sync(&mut stream).map_err(ClientError::from);
     }
-    #[cfg(windows)]
-    {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         submit_request_windows_with_timeout(sock_path, req, timeout)
-    }
-    #[cfg(unix)]
-    {
+    } else {
         let mut stream = connect(sock_path, timeout)?;
         write_frame_sync(&mut stream, req)?;
         let resp: Response = read_frame_sync(&mut stream)?;
@@ -1069,25 +1010,22 @@ pub fn record_target_touch_or_fallback(paths: &SoldrPaths, target: &Path) {
     }
 }
 
-#[cfg(unix)]
 fn connect(sock_path: &Path, timeout: Duration) -> Result<UnixOrPipe, ClientError> {
-    let stream = std::os::unix::net::UnixStream::connect(sock_path)?;
-    stream.set_write_timeout(Some(timeout))?;
-    stream.set_read_timeout(Some(timeout.max(Duration::from_millis(200))))?;
+    // AF_UNIX socket with the caller's deadline as the write timeout and a
+    // read timeout of at least 200ms so a short reply deadline never starves
+    // a frame read (see platform::ipc::connect::connect_unix).
+    let stream = crate::platform::ipc::connect::connect_unix(sock_path, timeout, timeout)?;
     Ok(UnixOrPipe(stream))
 }
 
-#[cfg(unix)]
-pub struct UnixOrPipe(std::os::unix::net::UnixStream);
+pub struct UnixOrPipe(crate::platform::ipc::connect::BoxedSyncStream);
 
-#[cfg(unix)]
 impl std::io::Read for UnixOrPipe {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.0.read(buf)
     }
 }
 
-#[cfg(unix)]
 impl std::io::Write for UnixOrPipe {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         self.0.write(buf)
@@ -1097,15 +1035,6 @@ impl std::io::Write for UnixOrPipe {
     }
 }
 
-#[cfg(windows)]
-fn windows_timeout_error(operation: &str, timeout: Duration) -> std::io::Error {
-    std::io::Error::new(
-        std::io::ErrorKind::TimedOut,
-        format!("{operation} timed out after {}ms", timeout.as_millis()),
-    )
-}
-
-#[cfg(windows)]
 fn windows_runtime() -> std::io::Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_current_thread()
         .enable_io()
@@ -1113,13 +1042,12 @@ fn windows_runtime() -> std::io::Result<tokio::runtime::Runtime> {
         .build()
 }
 
-#[cfg(windows)]
 async fn open_compile_pipe_with_backpressure(
     sock_path: &Path,
     req: &CompileRequest,
-) -> std::io::Result<(tokio::net::windows::named_pipe::NamedPipeClient, Response)> {
+) -> std::io::Result<(crate::platform::ipc::connect::BoxedAsyncStream, Response)> {
     for attempt in 0..BACKPRESSURE_RETRY_LIMIT {
-        let opened = open_windows_pipe_with_retry(sock_path).await?;
+        let opened = crate::platform::ipc::connect::open_pipe_with_retry(sock_path).await?;
         let mut stream = opened.stream;
         let mut compile_req = req.clone();
         compile_req.ipc_busy_retries = compile_req
@@ -1131,7 +1059,10 @@ async fn open_compile_pipe_with_backpressure(
         })
         .await
         .map_err(|_| {
-            windows_timeout_error("daemon IPC compile admission", compile_reply_timeout())
+            crate::platform::ipc::connect::pipe_timeout_error(
+                "daemon IPC compile admission",
+                compile_reply_timeout(),
+            )
         })??;
         match first {
             Response::Backpressure { retry_after_ms } if attempt + 1 < BACKPRESSURE_RETRY_LIMIT => {
@@ -1145,32 +1076,15 @@ async fn open_compile_pipe_with_backpressure(
     unreachable!("backpressure loop returns on the final response")
 }
 
-#[cfg(windows)]
 fn run_windows_ipc<T, F>(operation: &'static str, timeout: Duration, f: F) -> Result<T, ClientError>
 where
     T: Send + 'static,
     F: FnOnce() -> std::io::Result<T> + Send + 'static,
 {
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::Builder::new()
-        .name("soldr-daemon-client".to_string())
-        .spawn(move || {
-            let _ = tx.send(f());
-        })
-        .map_err(ClientError::Io)?;
-
-    match rx.recv_timeout(timeout) {
-        Ok(result) => result.map_err(ClientError::from),
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            Err(ClientError::Io(windows_timeout_error(operation, timeout)))
-        }
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(ClientError::Io(
-            std::io::Error::other(format!("{operation} worker exited without a result")),
-        )),
-    }
+    crate::platform::ipc::connect::run_in_pipe_worker(operation, timeout, f)
+        .map_err(ClientError::from)
 }
 
-#[cfg(windows)]
 fn submit_fire_and_forget_windows(sock_path: &Path, req: &Request) -> Result<(), ClientError> {
     use tokio::time::timeout;
 
@@ -1179,23 +1093,26 @@ fn submit_fire_and_forget_windows(sock_path: &Path, req: &Request) -> Result<(),
     run_windows_ipc("daemon IPC hot-path write", HOT_PATH_TIMEOUT, move || {
         let runtime = windows_runtime()?;
         runtime.block_on(async move {
-            let mut stream = open_windows_pipe_with_retry(&sock_path).await?.stream;
+            let mut stream = crate::platform::ipc::connect::open_pipe_with_retry(&sock_path)
+                .await?
+                .stream;
             timeout(HOT_PATH_TIMEOUT, write_frame_async(&mut stream, &req))
                 .await
                 .map_err(|_| {
-                    windows_timeout_error("daemon IPC hot-path write", HOT_PATH_TIMEOUT)
+                    crate::platform::ipc::connect::pipe_timeout_error(
+                        "daemon IPC hot-path write",
+                        HOT_PATH_TIMEOUT,
+                    )
                 })??;
             Ok::<(), std::io::Error>(())
         })
     })
 }
 
-#[cfg(windows)]
 fn submit_request_windows(sock_path: &Path, req: &Request) -> Result<Response, ClientError> {
     submit_request_windows_with_timeout(sock_path, req, REPLY_TIMEOUT)
 }
 
-#[cfg(windows)]
 fn submit_request_windows_with_timeout(
     sock_path: &Path,
     req: &Request,
@@ -1209,7 +1126,6 @@ fn submit_request_windows_with_timeout(
     )
 }
 
-#[cfg(windows)]
 fn submit_request_windows_with_timeout_and_version(
     sock_path: &Path,
     req: &Request,
@@ -1223,13 +1139,17 @@ fn submit_request_windows_with_timeout_and_version(
     run_windows_ipc("daemon IPC request", deadline, move || {
         let runtime = windows_runtime()?;
         runtime.block_on(async move {
-            let mut stream = open_windows_pipe_with_retry(&sock_path).await?.stream;
+            let mut stream = crate::platform::ipc::connect::open_pipe_with_retry(&sock_path)
+                .await?
+                .stream;
             timeout(deadline, async {
                 write_frame_async_for_version(&mut stream, &req, protocol_version).await?;
                 read_frame_async_for_version(&mut stream, protocol_version).await
             })
             .await
-            .map_err(|_| windows_timeout_error("daemon IPC request", deadline))?
+            .map_err(|_| {
+                crate::platform::ipc::connect::pipe_timeout_error("daemon IPC request", deadline)
+            })?
         })
     })
 }
@@ -1242,7 +1162,6 @@ fn submit_request_windows_with_timeout_and_version(
 /// wrapper). Keeping the user writers off the tokio thread sidesteps
 /// Windows's blocking-IO-on-stdout quirks and matches the sync shape
 /// the Unix branch uses.
-#[cfg(windows)]
 fn compile_streaming_windows<O, E>(
     sock_path: &Path,
     req: CompileRequest,
@@ -1307,7 +1226,7 @@ where
                             }
                             Err(_) => {
                                 let _ = tx.send(StreamMsg::Err(ClientError::Io(
-                                    windows_timeout_error(
+                                    crate::platform::ipc::connect::pipe_timeout_error(
                                         "daemon IPC compile read",
                                         compile_reply_timeout(),
                                     ),

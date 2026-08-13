@@ -38,14 +38,24 @@ def test_raw_ipc_transport_dylint_is_wired_and_documents_blessed_adapters() -> N
 
 
 def test_session_listener_uses_one_facade_and_explicit_platform_delegates() -> None:
+    # soldr#2493 moved the per-platform delegate bodies into the
+    # soldr-platform concrete trees: the daemon keeps a single facade
+    # call and each concrete tree owns one host implementation with no
+    # cfg duplication.
     source = (
         ROOT / "crates" / "soldr-daemon" / "src" / "daemon" / "session_endpoint.rs"
     ).read_text(encoding="utf-8")
     assert source.count("fn bind_session_listener(") == 1
-    assert source.count("fn bind_session_listener_impl(") == 4
-    for platform in ("windows", "linux", "macos"):
-        assert f'#[cfg(target_os = "{platform}")]' in source
-    assert "#[cfg(any(" not in source
-    assert 'not(target_os = "windows")' in source
-    assert 'not(target_os = "linux")' in source
-    assert 'not(target_os = "macos")' in source
+    assert "bind_owner_only_listener(socket_path)" in source
+    assert source.count("#[cfg(") == source.count("#[cfg(test)]")
+    for tree_name in ("platform_win", "platform_linux", "platform_macos"):
+        tree = (
+            ROOT
+            / "crates"
+            / "soldr-platform"
+            / "src"
+            / tree_name
+            / "ipc"
+            / "listener.rs"
+        ).read_text(encoding="utf-8")
+        assert tree.count("fn bind_owner_only_listener(") == 1, tree_name
