@@ -134,14 +134,22 @@ path = "src/main.rs"
     )
 
 
-def print_soldr_logs(cache_dir: Path) -> None:
-    print(f"=== soldr smoke cache dir: {cache_dir} ===", flush=True)
+def print_soldr_logs(cache_dir: Path, *, stream: object = sys.stdout) -> None:
+    print(f"[pep517-smoke:logs] cache directory: {cache_dir}", file=stream, flush=True)
     try:
         if not cache_dir.exists():
-            print("cache dir does not exist", flush=True)
+            print(
+                "[pep517-smoke:logs] cache directory does not exist",
+                file=stream,
+                flush=True,
+            )
             return
     except OSError as exc:
-        print(f"cache dir unreadable: {exc}", flush=True)
+        print(
+            f"[pep517-smoke:logs] cache directory unreadable: {exc}",
+            file=stream,
+            flush=True,
+        )
         return
     wanted_suffixes = {".log", ".jsonl", ".txt"}
     wanted_names = {"compile-daemon-unavailable", "daemon.pid"}
@@ -173,7 +181,11 @@ def print_soldr_logs(cache_dir: Path) -> None:
                     seen.add(resolved)
                     candidates.append(path)
         except OSError as exc:
-            print(f"--- {root}: unreadable: {exc}", flush=True)
+            print(
+                f"[pep517-smoke:logs] {root}: unreadable: {exc}",
+                file=stream,
+                flush=True,
+            )
             continue
     for path in sorted(candidates):
         try:
@@ -188,22 +200,55 @@ def print_soldr_logs(cache_dir: Path) -> None:
             text = path.read_text(encoding="utf-8", errors="replace")
             size = path.stat().st_size
         except OSError as exc:
-            print(f"--- {path}: unreadable: {exc}", flush=True)
+            print(
+                f"[pep517-smoke:logs] {path}: unreadable: {exc}",
+                file=stream,
+                flush=True,
+            )
             continue
-        print(f"--- {rel} ({size} bytes) ---", flush=True)
-        print(text[-16_000:], flush=True)
+        print(
+            f"[pep517-smoke:daemon-log] {rel} ({size} bytes)",
+            file=stream,
+            flush=True,
+        )
+        print(text[-16_000:], file=stream, flush=True)
 
 
-def print_broker_spawn_log() -> None:
+def print_broker_spawn_log(*, stream: object = sys.stdout) -> None:
     """Expose detached broker startup errors alongside smoke diagnostics."""
     path = Path.home() / ".soldr" / "broker" / "broker-spawn.log"
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
-        print(f"--- broker spawn log unavailable ({path}): {exc}", flush=True)
+        print(
+            f"[pep517-smoke:broker-log] unavailable ({path}): {exc}",
+            file=stream,
+            flush=True,
+        )
         return
-    print(f"--- broker spawn log ({path}, {path.stat().st_size} bytes) ---", flush=True)
-    print(text[-16_000:], flush=True)
+    print(
+        f"[pep517-smoke:broker-log] {path} ({path.stat().st_size} bytes)",
+        file=stream,
+        flush=True,
+    )
+    print(text[-16_000:], file=stream, flush=True)
+
+
+def failure_summary(error: BaseException, log_dir: Path | None) -> str:
+    """Return one stable stderr line that points to the actionable diagnostics."""
+    if isinstance(error, subprocess.CalledProcessError):
+        command = " ".join(str(part) for part in error.cmd)
+        detail = f"downstream pip wheel exited {error.returncode}: {command}"
+    elif isinstance(error, subprocess.TimeoutExpired):
+        detail = f"downstream pip wheel timed out after {error.timeout}s: {error.cmd}"
+    else:
+        detail = str(error)
+    artifact = f" artifact directory: {log_dir}" if log_dir else ""
+    return (
+        f"[pep517-smoke:failure] {detail}. "
+        "Search [pep517-smoke:daemon-log] and [pep517-smoke:broker-log]."
+        f"{artifact}"
+    )
 
 
 def archive_soldr_logs(cache_dir: Path, log_dir: Path | None) -> None:
@@ -213,7 +258,11 @@ def archive_soldr_logs(cache_dir: Path, log_dir: Path | None) -> None:
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
         for path in cache_dir.rglob("*"):
-            if not path.is_file() or path.suffix.lower() not in {".log", ".jsonl", ".txt"}:
+            if not path.is_file() or path.suffix.lower() not in {
+                ".log",
+                ".jsonl",
+                ".txt",
+            }:
                 continue
             destination = log_dir / "cache" / path.relative_to(cache_dir)
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -226,7 +275,11 @@ def archive_soldr_logs(cache_dir: Path, log_dir: Path | None) -> None:
             shutil.copy2(broker_log, destination)
     except OSError as exc:
         # Artifact collection must never mask the smoke result.
-        print(f"warning: could not preserve Soldr logs: {exc}", flush=True)
+        print(
+            f"[pep517-smoke:logs] could not preserve Soldr logs: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 def stop_soldr_daemon(soldr: Path, env: dict[str, str]) -> None:
@@ -303,10 +356,11 @@ def main() -> int:
                 env=env,
                 timeout=args.timeout,
             )
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
             stop_soldr_daemon(soldr, env)
-            print_soldr_logs(cache_dir)
-            print_broker_spawn_log()
+            print(failure_summary(exc, args.log_dir), file=sys.stderr, flush=True)
+            print_soldr_logs(cache_dir, stream=sys.stderr)
+            print_broker_spawn_log(stream=sys.stderr)
             raise
         else:
             stop_soldr_daemon(soldr, env)
