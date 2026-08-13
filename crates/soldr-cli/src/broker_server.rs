@@ -792,8 +792,6 @@ async fn try_direct_handoff(
     negotiated: &running_process::broker::protocol::Negotiated,
     reply: &HelloReply,
 ) -> io::Result<bool> {
-    use running_process::broker::capabilities::CAP_HANDLE_PASSING;
-
     if !direct_handoff_eligible(
         negotiated.server_capabilities,
         &negotiated.handle_passed_token,
@@ -803,11 +801,6 @@ async fn try_direct_handoff(
 
     #[cfg(debug_assertions)]
     if std::env::var_os("SOLDR_TEST_BROKER_DISABLE_HANDOFF").is_some() {
-        return Ok(false);
-    }
-    if negotiated.server_capabilities & CAP_HANDLE_PASSING == 0
-        || negotiated.handle_passed_token.is_empty()
-    {
         return Ok(false);
     }
     let Some(instance) = state.instance_for_route(
