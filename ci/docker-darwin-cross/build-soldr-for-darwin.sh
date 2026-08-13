@@ -148,7 +148,7 @@ env | grep -E "^(SDKROOT|CC_|CXX_|AR_|RANLIB_|CFLAGS_|CXXFLAGS_|CARGO_TARGET_)" 
     | sort
 echo "============================="
 
-cargo build --package soldr-cli --release --locked --target "$TARGET" "$@"
+cargo build --package soldr-cli --release --target "$TARGET" "$@"
 
 OUT="target/$TARGET/release/soldr"
 echo "===== post-build ====="

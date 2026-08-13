@@ -281,7 +281,7 @@ jobs:
           # binary keeps profile.release; this only affects the bootstrap
           # binary that lives inside the same lane and is deleted at
           # post-step cleanup.
-          soldr --no-cache cargo build --profile ci-bootstrap --locked --package soldr-cli \
+          soldr --no-cache cargo build --profile ci-bootstrap --package soldr-cli \
             --bin soldr \
             --target x86_64-unknown-linux-gnu
           mkdir -p "$RUNNER_TEMP/soldr-bin"
@@ -373,7 +373,7 @@ jobs:
 
       # Host clippy is not duplicated here. It is covered by
       # the top-level `Lint` job in ci.yml (`soldr cargo clippy --workspace
-      # --all-targets --locked -- -D warnings` — a strict superset of what
+      # --all-targets -- -D warnings` — a strict superset of what
       # this file used to run). Duplicating clippy on every cross-build
       # lane cost ~90 s × 6 lanes for no additional safety. soldr#1164.
       # The target-scoped lifecycle probe below is narrower and verifies
@@ -436,7 +436,7 @@ jobs:
           RUSTC_WRAPPER: ""
         run: |
           set -euo pipefail
-          ZCCACHE_DISABLE=1 soldr cargo build --locked --profile ci-bootstrap \
+          ZCCACHE_DISABLE=1 soldr cargo build --profile ci-bootstrap \
             --package soldr-cli --bin soldr --target x86_64-unknown-linux-gnu
 
       # soldr#2236: prove the GNU lifecycle with a separate consumer, not
@@ -549,7 +549,7 @@ jobs:
             --package soldr-cli \
             --lib \
             --no-deps \
-            --locked \
+            \
             -- -D warnings
 
       - name: Validate warm Windows cache restoration (ci-nextest binary)

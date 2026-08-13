@@ -158,7 +158,7 @@ def test_setup_soldr_smoke_tests_disable_nested_cache() -> None:
     assert ".soldr_version" in workflow
     assert "Get-Content package.json -Raw" in workflow
     assert (
-        "& $soldrUnderTest --no-cache cargo test -p soldr-cli --tests --locked"
+        "& $soldrUnderTest --no-cache cargo test -p soldr-cli --tests"
         in workflow
     )
     assert "id: dogfood-build-cache" in workflow

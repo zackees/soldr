@@ -70,8 +70,8 @@ The current GitHub Actions entry point is the public `setup-soldr` action:
   with:
     cache: true
 
-- run: soldr cargo build --locked --release
-- run: soldr cargo test --locked
+- run: soldr cargo build --release
+- run: soldr cargo test
 ```
 
 That action:
@@ -91,8 +91,8 @@ For existing workflows where rewriting every `cargo ...` command is high-frictio
   with:
     tool-shims: cargo
 
-- run: cargo build --locked --release
-- run: cargo test --locked
+- run: cargo build --release
+- run: cargo test
 ```
 
 The shim mode is off by default. When enabled, the action resolves the real Cargo binary before prepending its shim directory, then exports that real path for Soldr so `cargo ...` can safely trampoline into `soldr cargo ...` without recursive PATH lookup.

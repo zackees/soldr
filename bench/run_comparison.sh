@@ -150,9 +150,9 @@ tool_label() {
 
 command_text() {
     case "$1" in
-        bare) echo "cargo build --release --locked" ;;
-        sccache) echo "RUSTC_WRAPPER=sccache cargo build --release --locked" ;;
-        soldr) echo "soldr cargo build --release --locked" ;;
+        bare) echo "cargo build --release" ;;
+        sccache) echo "RUSTC_WRAPPER=sccache cargo build --release" ;;
+        soldr) echo "soldr cargo build --release" ;;
         *) echo "$1" ;;
     esac
 }
@@ -174,15 +174,15 @@ run_build() {
     local target_dir="$4"
     case "${tool}" in
         bare)
-            (cd "${project}" && CARGO_TARGET_DIR="${target_dir}" run_with_timeout "${COMPARISON_BUILD_TIMEOUT_SECONDS}" cargo build --release --locked)
+            (cd "${project}" && CARGO_TARGET_DIR="${target_dir}" run_with_timeout "${COMPARISON_BUILD_TIMEOUT_SECONDS}" cargo build --release)
             ;;
         sccache)
             mkdir -p "${cache_dir}"
-            (cd "${project}" && SCCACHE_DIR="${cache_dir}" RUSTC_WRAPPER=sccache CARGO_TARGET_DIR="${target_dir}" run_with_timeout "${COMPARISON_BUILD_TIMEOUT_SECONDS}" cargo build --release --locked)
+            (cd "${project}" && SCCACHE_DIR="${cache_dir}" RUSTC_WRAPPER=sccache CARGO_TARGET_DIR="${target_dir}" run_with_timeout "${COMPARISON_BUILD_TIMEOUT_SECONDS}" cargo build --release)
             ;;
         soldr)
             mkdir -p "${cache_dir}"
-            (cd "${project}" && SOLDR_CACHE_DIR="${cache_dir}" CARGO_TARGET_DIR="${target_dir}" run_with_timeout "${COMPARISON_BUILD_TIMEOUT_SECONDS}" soldr cargo build --release --locked)
+            (cd "${project}" && SOLDR_CACHE_DIR="${cache_dir}" CARGO_TARGET_DIR="${target_dir}" run_with_timeout "${COMPARISON_BUILD_TIMEOUT_SECONDS}" soldr cargo build --release)
             ;;
         *)
             echo "unknown tool: ${tool}" >&2

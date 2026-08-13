@@ -42,7 +42,7 @@ unset RUSTC_WRAPPER
 unset RUSTC_WORKSPACE_WRAPPER
 
 cd "$fixture"
-"$soldr_exe" --no-cache cargo build --locked
+"$soldr_exe" --no-cache cargo build
 
 artifact="$target_dir_unix/x86_64-pc-windows-msvc/debug/windows-msvc-default.exe"
 if [[ ! -f "$artifact" ]]; then

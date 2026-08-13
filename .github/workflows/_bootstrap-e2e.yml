@@ -192,7 +192,7 @@ jobs:
         working-directory: soldr
         run: |
           $timer = [Diagnostics.Stopwatch]::StartNew()
-          soldr cargo build --package soldr-cli --locked --target "${{ inputs.target }}"
+          soldr cargo build --package soldr-cli --target "${{ inputs.target }}"
           $exitCode = $LASTEXITCODE
           $timer.Stop()
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ([string]::Format(
@@ -256,7 +256,7 @@ jobs:
           Write-Host "Using isolated bootstrap SOLDR_CACHE_DIR=$env:SOLDR_CACHE_DIR"
           Write-Host "Using isolated bootstrap ZCCACHE_CACHE_DIR=$env:ZCCACHE_CACHE_DIR"
           $timer = [Diagnostics.Stopwatch]::StartNew()
-          & "${{ steps.soldr_binary.outputs.path }}" cargo build --locked --target "${{ inputs.target }}"
+          & "${{ steps.soldr_binary.outputs.path }}" cargo build --target "${{ inputs.target }}"
           $exitCode = $LASTEXITCODE
           $timer.Stop()
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ([string]::Format(

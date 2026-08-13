@@ -2673,7 +2673,7 @@ async fn ensure_known_subcommand_tool(
     //      #816 / #810 cargo-zigbuild bug, now fixed by xz2 extraction —
     //      but PATH-first is a structural belt-and-suspenders).
     //   2. Bypassing a user who deliberately installed a specific version
-    //      via `cargo install <name> --locked` or their distro package
+    //      via `cargo install <name>` or their distro package
     //      manager. cargo's own external-subcommand dispatch will find the
     //      PATH binary; soldr returning Ok(empty) here leaves that path
     //      open without prepending its own bin dir.

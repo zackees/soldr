@@ -3,7 +3,7 @@
   "fixture": {
     "repository": "zackees/zccache",
     "revision": "2601a927f5cd29672a9e1649e47efc271eb4ebbd",
-    "command": "cargo build -p zccache --locked",
+    "command": "cargo build -p zccache",
     "host": "x86_64-pc-windows-msvc",
     "soldr_revision": "49e7ca41",
     "notes": [

@@ -10,7 +10,7 @@ cacheable compiles.
 ## Validation command
 
 ```bash
-soldr cargo build --release --locked --target x86_64-unknown-linux-musl
+soldr cargo build --release --target x86_64-unknown-linux-musl
 ```
 
 Run the same toolchain, target, features, and release profile as production.
@@ -20,7 +20,7 @@ per-unit no-response backstop, not a whole-build deadline.
 For an unusually long but healthy LTO unit, raise the positive backstop:
 
 ```bash
-SOLDR_COMPILE_REPLY_TIMEOUT_SECS=3600 soldr cargo build --release --locked --target x86_64-unknown-linux-musl
+SOLDR_COMPILE_REPLY_TIMEOUT_SECS=3600 soldr cargo build --release --target x86_64-unknown-linux-musl
 ```
 
 For a suspected wedge, shorten the backstop on a diagnostic run so it fails

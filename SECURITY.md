@@ -22,7 +22,7 @@ Related documentation:
 The repository currently enforces several baseline controls:
 
 - Rust dependencies are locked in `Cargo.lock`.
-- CI and release builds use `cargo ... --locked`.
+- CI and release builds use `cargo ...`.
 - CI now enforces `cargo fmt --check` and `cargo clippy -D warnings`.
 - No Cargo `git` dependencies are currently used; dependencies resolve from crates.io.
 - Third-party GitHub Actions in the repository workflows are pinned to full commit SHAs.

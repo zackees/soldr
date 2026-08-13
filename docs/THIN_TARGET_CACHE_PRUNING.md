@@ -317,13 +317,13 @@ Add a workflow `.github/workflows/cache-thin-verify.yml`:
     target-cache-mode: thin
 
 - name: First build (warm slice)
-  run: soldr cargo build --locked --workspace
+  run: soldr cargo build --workspace
 
 - name: Second build (must be a no-op)
   env:
     CARGO_LOG: cargo::core::compiler::fingerprint=info
   run: |
-    soldr cargo build --locked --workspace --timings=json -Z unstable-options \
+    soldr cargo build --workspace --timings=json -Z unstable-options \
       > timings.json
     python .github/scripts/assert_thin_noop.py timings.json
 ```
@@ -347,7 +347,7 @@ Run it locally to spot-check a `thin-v2` change without spinning up CI:
 
 ```bash
 # Build soldr-cli so SOLDR_TARGET_CACHE_PROFILE=thin-v2 is honored.
-soldr cargo build -p soldr-cli --locked
+soldr cargo build -p soldr-cli
 
 # Use any small workspace; a fresh `soldr cargo init` works.
 mkdir -p /tmp/verify-noop && cd /tmp/verify-noop
@@ -364,8 +364,8 @@ mkdir -p "$SOLDR_TARGET_CACHE_BUNDLE_DIR"
 # Capture both passes. (If you have a real warm thin-v2 slice from a
 # previous CI run, drop it into target/ between the two builds.)
 set -o pipefail
-soldr cargo build --locked -v 2>&1 | tee first.log
-soldr cargo build --locked -v 2>&1 | tee second.log
+soldr cargo build -v 2>&1 | tee first.log
+soldr cargo build -v 2>&1 | tee second.log
 
 uv run --no-project python /path/to/soldr/.github/scripts/assert_thin_noop.py \
   first.log second.log --allow-empty-second

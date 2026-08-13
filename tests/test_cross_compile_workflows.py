@@ -245,7 +245,7 @@ def test_native_linux_runs_the_complete_workspace_suite() -> None:
     assert "x86_64 GNU is the canonical native exception" in ci
     assert "other seven" in ci
     assert (
-        "soldr cargo test --workspace --lib --tests --locked --target ${{ inputs.target }}"
+        "soldr cargo test --workspace --lib --tests --target ${{ inputs.target }}"
     ) in build_and_test
     assert "soldr cargo test -p soldr-cli" not in build_and_test
 

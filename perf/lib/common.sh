@@ -255,7 +255,7 @@ measure::median_and_mad() {
 # Acquire dependencies outside measured intervals. Timed commands are offline.
 measure::prefetch_locked() {
     local fixture_dir="$1"
-    (cd "${fixture_dir}" && soldr cargo metadata --locked \
+    (cd "${fixture_dir}" && soldr cargo metadata \
         --format-version=1 >/dev/null)
 }
 
