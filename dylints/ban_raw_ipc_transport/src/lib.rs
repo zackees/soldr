@@ -91,6 +91,7 @@ fn filename_is_in_scope(filename: &str) -> bool {
 
 fn filename_is_blessed_adapter(filename: &str) -> bool {
     let filename = filename.replace('\\', "/");
+    let filename = format!("/{}", filename.trim_start_matches('/'));
     [
         "/crates/soldr-daemon/src/daemon/client.rs",
         "/crates/soldr-daemon/src/daemon/server.rs",
@@ -163,7 +164,13 @@ fn blessed_adapter_scope_is_exact() {
         "/repo/crates/soldr-daemon/src/daemon/session_endpoint.rs"
     ));
     assert!(filename_is_blessed_adapter(
+        "crates/soldr-daemon/src/daemon/session_endpoint.rs"
+    ));
+    assert!(filename_is_blessed_adapter(
         "/repo/crates/soldr-cli/src/broker_control_transport_windows.rs"
+    ));
+    assert!(filename_is_blessed_adapter(
+        r"crates\soldr-cli\src\broker_control_transport_windows.rs"
     ));
     assert!(!filename_is_blessed_adapter(
         "/repo/crates/soldr-cli/src/random_feature.rs"
