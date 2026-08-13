@@ -794,7 +794,10 @@ async fn try_direct_handoff(
 ) -> io::Result<bool> {
     use running_process::broker::capabilities::CAP_HANDLE_PASSING;
 
-    if !platform_allows_direct_handoff() {
+    if !direct_handoff_eligible(
+        negotiated.server_capabilities,
+        &negotiated.handle_passed_token,
+    ) {
         return Ok(false);
     }
 
@@ -857,13 +860,15 @@ async fn try_direct_handoff(
     Ok(true)
 }
 
-fn platform_allows_direct_handoff() -> bool {
+fn direct_handoff_eligible(server_capabilities: u64, token: &[u8]) -> bool {
+    use running_process::broker::capabilities::CAP_HANDLE_PASSING;
+
     // A duplicated Windows named-pipe handle can be converted and ACKed by
     // the daemon, yet the adopted SESSION receives ERROR_BROKEN_PIPE as soon
     // as the broker drops its original accepted handle. Keep Windows on the
     // same-connection relay, which preserves the protocol and ownership
     // contract without exposing a client-visible false-positive handoff.
-    !cfg!(windows)
+    !cfg!(windows) && server_capabilities & CAP_HANDLE_PASSING != 0 && !token.is_empty()
 }
 
 async fn write_handoff_ready_async(
@@ -1193,9 +1198,19 @@ impl Drop for UnixBindGuard {
 mod tests {
     use super::*;
 
-    crate::timed_test!(direct_handoff_policy_matches_supported_transports, {
-        assert_eq!(platform_allows_direct_handoff(), !cfg!(windows));
-    });
+    crate::timed_test!(
+        direct_handoff_eligibility_requires_platform_capability_and_token,
+        {
+            use running_process::broker::capabilities::CAP_HANDLE_PASSING;
+
+            assert_eq!(
+                direct_handoff_eligible(CAP_HANDLE_PASSING, &[1]),
+                !cfg!(windows)
+            );
+            assert!(!direct_handoff_eligible(0, &[1]));
+            assert!(!direct_handoff_eligible(CAP_HANDLE_PASSING, &[]));
+        }
+    );
 
     #[cfg(windows)]
     crate::timed_test!(windows_handoff_ready_uses_async_original_pipe, {
