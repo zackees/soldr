@@ -95,13 +95,15 @@ def test_process_boundary_has_required_ui_fixtures() -> None:
 
 
 def test_dylint_runtime_environment_uses_one_platform_facade() -> None:
+    # soldr#2493 replaced the four cfg-duplicated impls with a single
+    # runtime match on the host facts facade; no host cfg remains in
+    # the cli source.
     source = (ROOT / "crates" / "soldr-cli" / "src" / "dylint_toolchain.rs").read_text(
         encoding="utf-8"
     )
     assert source.count("fn apply_driver_runtime_environment(") == 1
-    assert source.count("fn apply_driver_runtime_environment_impl(") == 4
-    for platform in ("windows", "macos", "linux"):
-        assert f'#[cfg(target_os = "{platform}")]' in source
-    assert "#[cfg(any(" not in source
-    assert 'not(target_os = "windows")' in source
-    assert "Dylint drivers are supported only" in source
+    assert source.count("fn apply_driver_runtime_environment_impl(") == 1
+    assert source.count("#[cfg(") == source.count("#[cfg(test)]")
+    for host in ("HostOs::Windows", "HostOs::Linux", "HostOs::MacOs"):
+        assert host in source
+    assert "match crate::platform::host::facts::os()" in source
