@@ -306,7 +306,9 @@ the 1,500-line ceiling as a **ratchet**, not a threshold:
 
 - a file at or under the ceiling must stay at or under it;
 - a file already over it may not get **bigger**;
-- shrinking, and deleting (i.e. splitting), are always allowed.
+- shrinking, and deleting (i.e. splitting), are always allowed;
+- Rust `mod.rs` files are exempt because they are module aggregation surfaces,
+  not standalone implementation units.
 
 There is no grandfather list to maintain — the baseline is the file's size at
 the merge base. Thirteen files are already over the ceiling, and blocking every
