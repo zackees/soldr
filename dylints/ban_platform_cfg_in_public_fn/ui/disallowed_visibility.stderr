@@ -1,5 +1,5 @@
 error: `$DIR::public_platform_selection` selects a platform inside a non-private function; keep the outer body platform-neutral and delegate to cfg-selected private implementations
-  --> $DIR/disallowed_visibility.rs:1:1
+  --> $DIR/disallowed_visibility.rs:2:1
    |
 LL | / pub fn public_platform_selection() -> u8 {
 LL | |     if cfg!(windows) { 2 } else { 1 }
@@ -9,7 +9,7 @@ LL | | }
    = note: `#[deny(ban_platform_cfg_in_public_fn)]` on by default
 
 error: `$DIR::outer_attribute_selection@cfg(unix)` selects a platform inside a non-private function; keep the outer body platform-neutral and delegate to cfg-selected private implementations
-  --> $DIR/disallowed_visibility.rs:6:1
+  --> $DIR/disallowed_visibility.rs:7:1
    |
 LL | / pub fn outer_attribute_selection() -> u8 {
 LL | |     1
@@ -17,7 +17,7 @@ LL | | }
    | |_^
 
 error: `$DIR::crate_platform_selection` selects a platform inside a non-private function; keep the outer body platform-neutral and delegate to cfg-selected private implementations
-  --> $DIR/disallowed_visibility.rs:10:1
+  --> $DIR/disallowed_visibility.rs:11:1
    |
 LL | / pub(crate) fn crate_platform_selection() -> u8 {
 LL | |     #[cfg(unix)]
@@ -28,7 +28,7 @@ LL | | }
    | |_^
 
 error: `$DIR::nested::parent_platform_selection` selects a platform inside a non-private function; keep the outer body platform-neutral and delegate to cfg-selected private implementations
-  --> $DIR/disallowed_visibility.rs:18:5
+  --> $DIR/disallowed_visibility.rs:19:5
    |
 LL | /     pub(super) fn parent_platform_selection() -> u8 {
 LL | |         if cfg!(target_os = "linux") { 1 } else { 2 }
@@ -36,7 +36,7 @@ LL | |     }
    | |_____^
 
 error: `$DIR::nested::path_platform_selection` selects a platform inside a non-private function; keep the outer body platform-neutral and delegate to cfg-selected private implementations
-  --> $DIR/disallowed_visibility.rs:22:5
+  --> $DIR/disallowed_visibility.rs:23:5
    |
 LL | /     pub(in crate) fn path_platform_selection() -> u8 {
 LL | |         #[cfg_attr(windows, allow(dead_code))]

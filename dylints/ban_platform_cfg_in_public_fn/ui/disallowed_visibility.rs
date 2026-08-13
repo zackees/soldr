@@ -1,3 +1,4 @@
+// normalize-stderr-test: "\nerror: aborting due to 5 previous errors\n\n" -> ""
 pub fn public_platform_selection() -> u8 {
     if cfg!(windows) { 2 } else { 1 }
 }
