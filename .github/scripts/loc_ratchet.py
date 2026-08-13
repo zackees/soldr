@@ -20,6 +20,8 @@ So this is a **ratchet** rather than a threshold:
 * a file at or under the ceiling must stay at or under it;
 * a file already over may not get *bigger*;
 * shrinking is always allowed.
+* Rust `mod.rs` files are exempt because they are module aggregation surfaces
+  whose size does not reliably describe a monolithic implementation.
 
 That needs no hand-maintained grandfather list -- the baseline is simply the
 file's size at the merge base, which is always correct and never goes stale.
@@ -42,6 +44,7 @@ DEFAULT_CEILING = 1500
 # generated files are not something a PR author can reasonably split.
 DEFAULT_ROOTS = ("crates",)
 SUFFIX = ".rs"
+EXEMPT_NAMES = {"mod.rs"}
 
 
 @dataclass(frozen=True)
@@ -114,6 +117,8 @@ def changed_files(base: str, roots: tuple[str, ...]) -> list[str]:
     for line in raw.splitlines():
         path = line.strip()
         if not path.endswith(SUFFIX):
+            continue
+        if path.rsplit("/", 1)[-1] in EXEMPT_NAMES:
             continue
         if not any(path == r or path.startswith(f"{r}/") for r in roots):
             continue
