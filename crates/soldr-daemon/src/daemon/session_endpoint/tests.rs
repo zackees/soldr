@@ -43,6 +43,11 @@ crate::timed_test!(macos_session_listener_restricts_socket_after_bind, {
 
     let temp = tempfile::tempdir().expect("tempdir");
     let path = temp.path().join("soldr-daemon.session.sock");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let _context = runtime.enter();
     let listener = bind_session_listener(&path.display().to_string()).expect("bind listener");
     let mode = std::fs::metadata(&path)
         .expect("socket metadata")
