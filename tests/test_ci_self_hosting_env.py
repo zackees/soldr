@@ -71,6 +71,9 @@ def test_pep517_smoke_preserves_root_daemon_spawn_log() -> None:
         cache_dir = tmp / "cache"
         cache_dir.mkdir()
         (cache_dir / "daemon-spawn.log").write_text("daemon startup failed")
+        fetched = cache_dir / "bin" / "syslib"
+        fetched.mkdir(parents=True)
+        (fetched / "license.txt").write_text("not a Soldr log")
         log_dir = tmp / "artifacts"
 
         module.archive_soldr_logs(cache_dir, log_dir)
@@ -78,6 +81,7 @@ def test_pep517_smoke_preserves_root_daemon_spawn_log() -> None:
         assert (
             log_dir / "cache" / "daemon-spawn.log"
         ).read_text() == "daemon startup failed"
+        assert not (log_dir / "cache" / "bin" / "syslib" / "license.txt").exists()
 
 
 def test_pep517_failure_summary_has_searchable_log_markers() -> None:

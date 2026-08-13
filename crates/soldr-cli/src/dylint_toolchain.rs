@@ -110,6 +110,7 @@ pub(crate) fn require_prebuilt_driver(
         .arg("-V")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    apply_driver_runtime_environment(&mut command, plan)?;
     suppress_windows_console_window(&mut command);
     let mut child = command.spawn().map_err(|error| {
         unavailable_driver_error(plan, &format!("version probe could not start: {error}"))
@@ -156,6 +157,108 @@ pub(crate) fn require_prebuilt_driver(
         ));
     }
     Ok(driver)
+}
+
+fn apply_driver_runtime_environment(
+    command: &mut std::process::Command,
+    plan: &DylintToolchainPlan,
+) -> Result<(), SoldrError> {
+    apply_driver_runtime_environment_impl(command, plan)
+}
+
+fn dylint_toolchain_dirs(plan: &DylintToolchainPlan) -> Result<(PathBuf, PathBuf), SoldrError> {
+    let rustc = resolve_toolchain_binary_for_channel("rustc", Some(&plan.channel))?;
+    let bin_dir = rustc
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| SoldrError::Other("Dylint rustc has no parent directory".into()))?;
+    let toolchain_root = bin_dir
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| SoldrError::Other("Dylint rustc has no toolchain root".into()))?;
+    Ok((bin_dir, toolchain_root))
+}
+
+#[cfg(target_os = "windows")]
+fn apply_driver_runtime_environment_impl(
+    command: &mut std::process::Command,
+    plan: &DylintToolchainPlan,
+) -> Result<(), SoldrError> {
+    let (bin_dir, _) = dylint_toolchain_dirs(plan)?;
+    prepend_command_path(command, "PATH", &bin_dir)
+}
+
+#[cfg(target_os = "linux")]
+fn apply_driver_runtime_environment_impl(
+    command: &mut std::process::Command,
+    plan: &DylintToolchainPlan,
+) -> Result<(), SoldrError> {
+    let (_, toolchain_root) = dylint_toolchain_dirs(plan)?;
+    prepend_command_path(command, "LD_LIBRARY_PATH", &toolchain_root.join("lib"))?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn apply_driver_runtime_environment_impl(
+    command: &mut std::process::Command,
+    plan: &DylintToolchainPlan,
+) -> Result<(), SoldrError> {
+    let (_, toolchain_root) = dylint_toolchain_dirs(plan)?;
+    prepend_command_path(command, "DYLD_LIBRARY_PATH", &toolchain_root.join("lib"))?;
+    Ok(())
+}
+
+#[cfg(all(
+    not(target_os = "windows"),
+    not(target_os = "linux"),
+    not(target_os = "macos")
+))]
+fn apply_driver_runtime_environment_impl(
+    _command: &mut std::process::Command,
+    _plan: &DylintToolchainPlan,
+) -> Result<(), SoldrError> {
+    Err(SoldrError::UnsupportedPlatform(
+        "Dylint drivers are supported only on Windows, Linux, and macOS".into(),
+    ))
+}
+
+fn prepend_command_path(
+    command: &mut std::process::Command,
+    key: &str,
+    directory: &Path,
+) -> Result<(), SoldrError> {
+    let existing = std::env::var_os(key);
+    let paths = std::iter::once(directory.to_path_buf()).chain(
+        existing
+            .as_deref()
+            .map(std::env::split_paths)
+            .into_iter()
+            .flatten(),
+    );
+    let joined = std::env::join_paths(paths)
+        .map_err(|error| SoldrError::Other(format!("failed to construct Dylint {key}: {error}")))?;
+    command.env(key, joined);
+    Ok(())
+}
+
+/// Resolve a missing driver from soldr-toolchain before cargo-dylint can
+/// trigger its implicit source-build fallback.
+pub(crate) async fn ensure_prebuilt_driver(
+    plan: &DylintToolchainPlan,
+    paths: &SoldrPaths,
+) -> Result<PathBuf, SoldrError> {
+    if let Ok(driver) = require_prebuilt_driver(plan, paths) {
+        return Ok(driver);
+    }
+    let version = crate::fetch::known_tools::lookup_by_crate("cargo-dylint")
+        .and_then(|spec| spec.pinned_version)
+        .ok_or_else(|| SoldrError::Other("cargo-dylint must have a registry pin".into()))?;
+    let driver_root = std::env::var_os("DYLINT_DRIVER_PATH")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| paths.root.join("dylint").join("drivers"));
+    crate::fetch::ensure_dylint_driver(paths, version, &plan.channel, &driver_root).await?;
+    require_prebuilt_driver(plan, paths)
 }
 
 fn dylint_driver_version(stdout: &str) -> Option<&str> {

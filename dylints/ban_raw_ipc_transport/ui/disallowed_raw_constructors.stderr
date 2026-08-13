@@ -1,0 +1,22 @@
+error: raw IPC constructor `interprocess::local_socket::ListenerOptions::new` bypasses Soldr's blessed transport boundary; call the platform-neutral internal IPC facade
+  --> $DIR/disallowed_raw_constructors.rs:9:21
+   |
+LL |     let _listener = ListenerOptions::new();
+   |                     ^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[deny(ban_raw_ipc_transport)]` on by default
+
+error: raw IPC constructor `interprocess::local_socket::ConnectOptions::new` bypasses Soldr's blessed transport boundary; call the platform-neutral internal IPC facade
+  --> $DIR/disallowed_raw_constructors.rs:10:22
+   |
+LL |     let _connector = ConnectOptions::new();
+   |                      ^^^^^^^^^^^^^^^^^^^
+
+error: raw IPC constructor `interprocess::os::windows::named_pipe::DuplexPipeStream::connect_by_path_with_wait_mode` bypasses Soldr's blessed transport boundary; call the platform-neutral internal IPC facade
+  --> $DIR/disallowed_raw_constructors.rs:11:5
+   |
+LL |     DuplexPipeStream::connect_by_path_with_wait_mode();
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: aborting due to 3 previous errors
+

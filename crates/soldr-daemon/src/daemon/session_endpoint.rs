@@ -342,57 +342,107 @@ pub type SessionListener = interprocess::local_socket::tokio::Listener;
 /// SESSION bind does (Unix filesystem path, Windows namespaced pipe), so the
 /// daemon endpoint and the broker's relay dial name the same path identically.
 pub fn bind_session_listener(socket_path: &str) -> io::Result<SessionListener> {
-    use interprocess::local_socket::ListenerOptions;
+    bind_session_listener_impl(socket_path)
+}
 
-    // Unix local sockets are filesystem entries. The broker's runtime namespace
+#[cfg(target_os = "linux")]
+fn bind_session_listener_impl(socket_path: &str) -> io::Result<SessionListener> {
+    use interprocess::local_socket::ListenerOptions;
+    use interprocess::os::unix::local_socket::ListenerOptionsExt as _;
+
+    // Linux local sockets are filesystem entries. The broker's runtime namespace
     // may not exist in a clean container, so create its parent before binding.
-    // Windows named pipes do not have a filesystem parent.
-    #[cfg(unix)]
     if let Some(parent) = std::path::Path::new(socket_path).parent() {
         running_process::broker::secure_dir::ensure_private_dir(parent)?;
     }
 
     let name = local_session_name(socket_path)?;
-    let options = ListenerOptions::new().name(name).reclaim_name(false);
-    #[cfg(unix)]
-    let options = {
-        use interprocess::os::unix::local_socket::ListenerOptionsExt as _;
-        options.mode(0o600)
-    };
-    #[cfg(windows)]
-    let options = {
-        use interprocess::os::windows::local_socket::ListenerOptionsExt as _;
-        use interprocess::os::windows::security_descriptor::SecurityDescriptor;
-        let sddl = widestring::U16CString::from_str("D:P(A;;GA;;;OW)(A;;GA;;;SY)")
-            .map_err(io::Error::other)?;
-        let descriptor = SecurityDescriptor::deserialize(&sddl).map_err(io::Error::other)?;
-        options.security_descriptor(descriptor)
-    };
+    let options = ListenerOptions::new()
+        .name(name)
+        .reclaim_name(false)
+        .mode(0o600);
     let first = options.create_tokio();
-    #[cfg(unix)]
-    {
-        match first {
-            Ok(listener) => Ok(listener),
-            Err(err)
-                if running_process::broker::server::singleton_bind::is_already_bound_error(&err)
-                    && running_process::broker::server::singleton_bind::unix_socket_path_is_stale(
-                        socket_path,
-                    ) =>
-            {
-                let _ = std::fs::remove_file(socket_path);
-                let retry_name = local_session_name(socket_path)?;
-                let options = ListenerOptions::new()
-                    .name(retry_name)
-                    .reclaim_name(false);
-                use interprocess::os::unix::local_socket::ListenerOptionsExt as _;
-                options.mode(0o600).create_tokio()
-            }
-            Err(err) => Err(err),
+    match first {
+        Ok(listener) => Ok(listener),
+        Err(err)
+            if running_process::broker::server::singleton_bind::is_already_bound_error(&err)
+                && running_process::broker::server::singleton_bind::unix_socket_path_is_stale(
+                    socket_path,
+                ) =>
+        {
+            let _ = std::fs::remove_file(socket_path);
+            let retry_name = local_session_name(socket_path)?;
+            ListenerOptions::new()
+                .name(retry_name)
+                .reclaim_name(false)
+                .mode(0o600)
+                .create_tokio()
         }
+        Err(err) => Err(err),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn bind_session_listener_impl(socket_path: &str) -> io::Result<SessionListener> {
+    use interprocess::local_socket::ListenerOptions;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    if let Some(parent) = std::path::Path::new(socket_path).parent() {
+        running_process::broker::secure_dir::ensure_private_dir(parent)?;
     }
 
-    #[cfg(not(unix))]
-    first
+    // interprocess implements `mode()` with fchmod before bind, which returns
+    // Unsupported on macOS. Bind first, then tighten the filesystem entry.
+    let bind = |path: &str| {
+        ListenerOptions::new()
+            .name(local_session_name(path)?)
+            .reclaim_name(false)
+            .create_tokio()
+    };
+    let listener = match bind(socket_path) {
+        Ok(listener) => listener,
+        Err(err)
+            if running_process::broker::server::singleton_bind::is_already_bound_error(&err)
+                && running_process::broker::server::singleton_bind::unix_socket_path_is_stale(
+                    socket_path,
+                ) =>
+        {
+            let _ = std::fs::remove_file(socket_path);
+            bind(socket_path)?
+        }
+        Err(err) => return Err(err),
+    };
+    std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(listener)
+}
+
+#[cfg(target_os = "windows")]
+fn bind_session_listener_impl(socket_path: &str) -> io::Result<SessionListener> {
+    use interprocess::local_socket::ListenerOptions;
+    use interprocess::os::windows::local_socket::ListenerOptionsExt as _;
+    use interprocess::os::windows::security_descriptor::SecurityDescriptor;
+
+    let name = local_session_name(socket_path)?;
+    let sddl = widestring::U16CString::from_str("D:P(A;;GA;;;OW)(A;;GA;;;SY)")
+        .map_err(io::Error::other)?;
+    let descriptor = SecurityDescriptor::deserialize(&sddl).map_err(io::Error::other)?;
+    ListenerOptions::new()
+        .name(name)
+        .reclaim_name(false)
+        .security_descriptor(descriptor)
+        .create_tokio()
+}
+
+#[cfg(all(
+    not(target_os = "windows"),
+    not(target_os = "linux"),
+    not(target_os = "macos")
+))]
+fn bind_session_listener_impl(_socket_path: &str) -> io::Result<SessionListener> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "Soldr SESSION IPC is unsupported on this platform",
+    ))
 }
 
 fn local_session_name(socket_path: &str) -> io::Result<interprocess::local_socket::Name<'_>> {
