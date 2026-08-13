@@ -390,7 +390,8 @@ fn darwin_should_use_lld(managed_llvm_available: bool) -> bool {
 
 const SOLDR_DSYMUTIL_ENV_VAR: &str = "SOLDR_DSYMUTIL";
 
-/// The dsymutil search names for the host (`.exe`-suffixed on Windows).
+/// The dsymutil search names for the host (`.exe`-suffixed on
+/// Windows).
 fn dsymutil_names() -> &'static [&'static str] {
     if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         &["dsymutil.exe", "llvm-dsymutil.exe"]
