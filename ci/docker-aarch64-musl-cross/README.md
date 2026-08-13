@@ -32,7 +32,7 @@ gate that proves the cross-compile actually worked.
 * `CC_aarch64_unknown_linux_musl` env var is honored by cc-rs
 * `tikv-jemalloc-sys`'s build script can compile its bundled C source
   for the musl target (the v0.7.60+ release blocker)
-* The pinned rustup toolchain (1.94.1) builds the soldr binary clean
+* The pinned rustup toolchain (1.95.0) builds the soldr binary clean
 * The output is a real arm64 ELF, not silently a host-arch binary
 
 ## When to invoke this

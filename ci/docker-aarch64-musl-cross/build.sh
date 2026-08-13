@@ -16,8 +16,8 @@ STAGING="${STAGING:-$PWD/staging}"
 mkdir -p "$STAGING"
 
 echo "::group::rustup + target install"
-rustup toolchain install 1.94.1 --profile minimal --no-self-update
-rustup default 1.94.1
+rustup toolchain install 1.95.0 --profile minimal --no-self-update
+rustup default 1.95.0
 rustup target add "$TARGET"
 echo "::endgroup::"
 

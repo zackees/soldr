@@ -27,7 +27,7 @@ file (always, via try/finally).
 
 ## Toolchain
 
-`rust-toolchain.toml` at this root pins stable `1.94.1`, matching the soldr
+`rust-toolchain.toml` at this root pins stable `1.95.0`, matching the soldr
 repo root — it does **not** pin a nightly. cargo-dylint 6.0.1 resolves the
 driver toolchain for each `lints/*` library independently of this file, so
 the app/dep_user/macros crates never need to touch nightly.

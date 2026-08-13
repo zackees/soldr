@@ -519,7 +519,7 @@ fn slow_compile_events(events: &[Event], limit: usize) -> Vec<LogCompileEvent> {
             })
         })
         .collect::<Vec<_>>();
-    rows.sort_by(|a, b| b.duration_us.unwrap_or(0).cmp(&a.duration_us.unwrap_or(0)));
+    rows.sort_by_key(|row| std::cmp::Reverse(row.duration_us.unwrap_or(0)));
     rows.truncate(limit);
     rows
 }

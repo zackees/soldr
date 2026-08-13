@@ -60,7 +60,7 @@ jobs:
           submodules: recursive
 
       # soldr#1178 — dropped the dtolnay/rust-toolchain step: setup-soldr
-      # below installs the same 1.94.1 toolchain, so running dtolnay
+      # below installs the same 1.95.0 toolchain, so running dtolnay
       # first duplicated ~8 s of install work per CI run. The host target
       # (x86_64-unknown-linux-gnu) is rustup's default so no explicit
       # `rustup target add` is required. Components are installed further
@@ -70,21 +70,21 @@ jobs:
       # this general build/test template while target/profile-shaped
       # cook restore is reintroduced in the cross/release lanes first.
       # Swatinem/rust-cache remains the authoritative target/ restore.
-      # soldr#1340 — pre-cache the 1.94.1 toolchain in ~/.rustup so
+      # soldr#1340 — pre-cache the 1.95.0 toolchain in ~/.rustup so
       # setup-soldr finds it via its "Runner rustup home already
       # contains toolchain X" check and skips its own 9 s rustup
       # install. On cache miss (first run at a new key) the install
       # step runs locally and populates ~/.rustup for the save.
-      - name: Cache rustup 1.94.1 in ~/.rustup
+      - name: Cache rustup 1.95.0 in ~/.rustup
         id: rustup_cache
         uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
-          path: ~/.rustup/toolchains/1.94.1-x86_64-unknown-linux-gnu
-          key: rustup-1.94.1-linux-x64-v1
+          path: ~/.rustup/toolchains/1.95.0-x86_64-unknown-linux-gnu
+          key: rustup-1.95.0-linux-x64-v1
 
-      - name: Install rustup 1.94.1 to ~/.rustup (if not cached)
+      - name: Install rustup 1.95.0 to ~/.rustup (if not cached)
         if: steps.rustup_cache.outputs.cache-hit != 'true'
-        run: rustup toolchain install 1.94.1 --profile minimal --no-self-update
+        run: rustup toolchain install 1.95.0 --profile minimal --no-self-update
 
       # soldr#1799: pin the soldr that builds us. The action's `version`
       # input still defaults to 0.8.23, which predates #1820 ("retire
@@ -99,7 +99,7 @@ jobs:
         uses: zackees/setup-soldr@40320d277ba4946e38d4b3c02e6c7a15a29c3f3f
         with:
           version: 0.8.29
-          toolchain: 1.94.1
+          toolchain: 1.95.0
           # soldr#2451: disable every setup-soldr reuse layer, not just the
           # `cache` umbrella (soldr-mini / solo-toolchain / build-cache each
           # ignore it). This lane builds + tests the soldr under test, so it

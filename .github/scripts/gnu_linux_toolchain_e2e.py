@@ -202,7 +202,7 @@ pkg-config = "0.3"
         encoding="utf-8",
     )
     (root / "rust-toolchain.toml").write_text(
-        '[toolchain]\nchannel = "1.94.1"\n', encoding="utf-8"
+        '[toolchain]\nchannel = "1.95.0"\n', encoding="utf-8"
     )
     (root / "src" / "main.rs").write_text(
         'extern "C" { fn cc_probe() -> i32; }\nfn main() { assert_eq!(unsafe { cc_probe() }, 7); }\n',

@@ -54,10 +54,10 @@ export RUSTUP_HOME=/tmp/rustup-home
 export CARGO_TARGET_DIR=/tmp/soldr-target
 export RUSTFLAGS="-C force-frame-pointers=yes -C debuginfo=2"
 
-log "==> installing rust toolchain 1.94.1 ..."
-rustup toolchain install 1.94.1 --profile minimal --no-self-update 2>&1 \
+log "==> installing rust toolchain 1.95.0 ..."
+rustup toolchain install 1.95.0 --profile minimal --no-self-update 2>&1 \
     | tee -a "${OUT_DIR}/build.log" | tail -3
-rustup default 1.94.1 2>&1 | tee -a "${OUT_DIR}/build.log" | tail -3
+rustup default 1.95.0 2>&1 | tee -a "${OUT_DIR}/build.log" | tail -3
 
 log "==> building soldr multicall binary (release + frame-pointers + debuginfo) ..."
 # Release mode matters: the embedded zccache compile service runs

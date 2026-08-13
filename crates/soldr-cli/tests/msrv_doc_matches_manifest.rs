@@ -80,15 +80,15 @@ timed_test!(the_msrv_parsers_read_what_they_claim_to, {
     // A guard whose parsers silently find nothing would pass forever. Pin
     // both against fixtures, including the shapes that previously drifted.
     assert_eq!(
-        manifest_rust_version("[workspace.package]\nrust-version = \"1.94.1\"\n"),
-        "1.94.1"
+        manifest_rust_version("[workspace.package]\nrust-version = \"1.95.0\"\n"),
+        "1.95.0"
     );
     assert_eq!(manifest_rust_version("rust-version = \"1.75\"\n"), "1.75");
 
     assert_eq!(documented_msrvs("edition 2021, MSRV 1.75\n"), vec!["1.75"]);
     assert_eq!(
-        documented_msrvs("MSRV 1.94.1 (`rust-version`)."),
-        vec!["1.94.1"]
+        documented_msrvs("MSRV 1.95.0 (`rust-version`)."),
+        vec!["1.95.0"]
     );
     // Prose mentioning the term without a number is not a claim.
     assert!(documented_msrvs("The MSRV and the toolchain agree.").is_empty());

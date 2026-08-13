@@ -172,9 +172,9 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf # 1.94.1
+      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf # 1.95.0
         with:
-          toolchain: 1.94.1
+          toolchain: 1.95.0
 
       - name: Install latest soldr release
         shell: bash
@@ -216,9 +216,9 @@ jobs:
           ref: main
           path: soldr
 
-      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf # 1.94.1
+      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf # 1.95.0
         with:
-          toolchain: 1.94.1
+          toolchain: 1.95.0
 
       - name: Build soldr from source
         working-directory: soldr

@@ -27,7 +27,7 @@ def test_cargo_command_routes_through_pinned_soldr_rustup() -> None:
         str(driver),
         "rustup",
         "run",
-        "1.94.1",
+        "1.95.0",
         "cargo",
         "build",
         "--release",
@@ -69,6 +69,6 @@ def test_wheel_environment_points_maturin_at_soldr_cargo_bridge() -> None:
     assert env == {
         "KEEP": "yes",
         "SOLDR_RELEASE_DRIVER": str(driver),
-        "SOLDR_RELEASE_TOOLCHAIN": "1.94.1",
+        "SOLDR_RELEASE_TOOLCHAIN": "1.95.0",
         "CARGO": str(cargo_bridge),
     }

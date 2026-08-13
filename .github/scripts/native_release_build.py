@@ -18,7 +18,7 @@ import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-TOOLCHAIN = "1.94.1"
+TOOLCHAIN = "1.95.0"
 ARM64_MUSL = "aarch64-unknown-linux-musl"
 MUSL_TARGETS = ("x86_64-unknown-linux-musl", ARM64_MUSL)
 

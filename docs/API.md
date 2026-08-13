@@ -1050,14 +1050,14 @@ existing field names and types will not change without a schema bump:
 ```json
 {
   "schema_version": 1,
-  "channel": "1.94.1",
+  "channel": "1.95.0",
   "rustup_bootstrapped": false,
   "components_added": ["rustfmt", "clippy"],
   "targets_added": ["aarch64-apple-darwin"],
   "plugins_installed": ["cargo-zigbuild@0.18"],
   "smoke_verify": {
-    "cargo_version": "cargo 1.94.1 (abc1234 2026-04-15)",
-    "rustc_version": "rustc 1.94.1 (def5678 2026-04-15)",
+    "cargo_version": "cargo 1.95.0 (abc1234 2026-04-15)",
+    "rustc_version": "rustc 1.95.0 (def5678 2026-04-15)",
     "ok": true
   },
   "elapsed_ms": 12345
@@ -1213,7 +1213,7 @@ either a bare version requirement or a detailed table.
 
 ```toml
 [toolchain]
-channel = "1.94.1"
+channel = "1.95.0"
 
 [soldr.plugins]
 cargo-nextest = "0.9"
@@ -1265,7 +1265,7 @@ Example human output (drift detected):
 
 ```text
 manifest: /home/user/project/rust-toolchain.toml
-toolchain: 1.94.1
+toolchain: 1.95.0
   status: installed
 
 components (declared 2):
@@ -1286,7 +1286,7 @@ Example JSON output (`schema_version: 1`):
   "schema_version": 1,
   "command": "doctor",
   "manifest_path": "/home/user/project/rust-toolchain.toml",
-  "toolchain": {"channel": "1.94.1", "installed": true},
+  "toolchain": {"channel": "1.95.0", "installed": true},
   "components": [
     {"name": "rustfmt", "installed": true},
     {"name": "clippy", "installed": false}

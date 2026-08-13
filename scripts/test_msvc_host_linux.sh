@@ -17,11 +17,11 @@ set -euo pipefail
 
 here=$(cd "$(dirname "$0")/.." && pwd)
 
-# Use the rust:1.94 base + install soldr's native build deps inline.
+# Use the rust:1.95 base + install soldr's native build deps inline.
 # Keep the image build cached so reruns are fast.
-img="soldr-msvc-host-test:1.94"
+img="soldr-msvc-host-test:1.95"
 docker build -t "$img" - <<'DOCKER_EOF'
-FROM rust:1.94
+FROM rust:1.95
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake perl pkg-config build-essential clang lld llvm \
  && rm -rf /var/lib/apt/lists/*

@@ -35,7 +35,7 @@
 # its CI checkout path, so soldr rejects it as non-relocatable and builds
 # cargo-dylint from source. Trixie keeps the runner compatible with both
 # that upstream probe and the resulting host-local binary.
-FROM rust:1.94.1-trixie
+FROM rust:1.95.0-trixie
 
 # Build tools needed by the soldr-cli workspace and the integration
 # tests (linker, pkg-config, git for origin-URL probes in PRs 2/3).
@@ -56,8 +56,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # soldr's `cargo test` jobs check the system rustc version; pin it here
-# to match `rust-toolchain.toml` (Rust 1.94.1).
-RUN rustup default 1.94.1 \
+# to match `rust-toolchain.toml` (Rust 1.95.0).
+RUN rustup default 1.95.0 \
     && rustup component add rustfmt clippy
 
 # CARGO_HOME explicit so the `soldr-perf-cargo-home` named volume mount

@@ -72,7 +72,7 @@ the live bug.
 
 | File | Role |
 |------|------|
-| `Dockerfile` | Single-stage `rust:1.94.1-alpine` image. Copies `Cargo.toml`/`Cargo.lock`/`rust-toolchain.toml` + `crates/` from the build context (the repo root), builds `soldr-cli --release`, installs the binary to `/usr/local/bin/soldr`, and `cargo clean`s to shrink the image. |
+| `Dockerfile` | Single-stage `rust:1.95.0-alpine` image. Copies `Cargo.toml`/`Cargo.lock`/`rust-toolchain.toml` + `crates/` from the build context (the repo root), builds `soldr-cli --release`, installs the binary to `/usr/local/bin/soldr`, and `cargo clean`s to shrink the image. |
 | `repro.sh` | In-container script. Stages fake binaries, registers the pin, asserts pin status, runs `soldr cargo build`, grep's stderr for the source diagnostic, and prints a verdict. |
 | `run.sh` | Host-side convenience wrapper — `docker build` + `docker run` in one step. Forwards anything after `--` to `docker run`. |
 | `README.md` | This file. |

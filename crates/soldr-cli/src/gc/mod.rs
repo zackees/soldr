@@ -738,7 +738,7 @@ pub(crate) fn run_gc_target_command(args: crate::cli_args::GcTargetArgs) -> Resu
 
     let root = resolve_gc_target_root(args.root.as_deref())?;
     let mut entries: Vec<TargetEntry> = target_walker::walk(&root, args.max_depth);
-    entries.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+    entries.sort_by_key(|entry| std::cmp::Reverse(entry.size_bytes));
 
     let total_bytes: u64 = entries.iter().map(|e| e.size_bytes).sum();
     let mode = if args.purge { "purge" } else { "report" };

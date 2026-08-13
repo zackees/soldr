@@ -359,7 +359,7 @@ pub fn drift_recipe_hashes(
         }
         out.push((stored_key.recipe_hash, stored_entry.last_used_unix_ms));
     }
-    out.sort_by(|a, b| b.1.cmp(&a.1));
+    out.sort_by_key(|entry| std::cmp::Reverse(entry.1));
     out.truncate(limit);
     Ok(out.into_iter().map(|(h, _)| h).collect())
 }

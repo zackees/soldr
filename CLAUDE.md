@@ -113,7 +113,7 @@ Two categories, surfaced as first-class subcommands or via the generic fetch pat
   - Manifest example:
     ```toml
     [toolchain]
-    channel = "1.94.1"
+    channel = "1.95.0"
 
     [soldr.plugins]
     cargo-nextest = "0.9"
@@ -205,7 +205,7 @@ branch, not a second working tree.
 
 ## Toolchain
 
-- Rust 1.94.1 (rust-toolchain.toml), edition 2021, MSRV 1.94.1
+- Rust 1.95.0 (rust-toolchain.toml), edition 2021, MSRV 1.95.0
   (`[workspace.package].rust-version`). The MSRV and the pinned toolchain are
   the same version — soldr does not support building on an older compiler, so
   "will this still build on the MSRV?" is never a reason to avoid a newer std

@@ -458,7 +458,7 @@ pub fn list_builds(
         }
         rows.push(record);
     }
-    rows.sort_by(|a, b| b.started_at_ms.cmp(&a.started_at_ms));
+    rows.sort_by_key(|row| std::cmp::Reverse(row.started_at_ms));
     rows.truncate(limit as usize);
     Ok(rows)
 }
@@ -515,7 +515,7 @@ pub fn list_events_for_session_in(
             rows.push(event);
         }
     }
-    rows.sort_by(|a, b| a.ts_ms.cmp(&b.ts_ms));
+    rows.sort_by_key(|row| row.ts_ms);
     Ok(rows)
 }
 

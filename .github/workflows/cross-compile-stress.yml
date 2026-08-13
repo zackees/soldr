@@ -89,7 +89,7 @@ jobs:
       - name: Install Rust toolchain + cross target
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
-          toolchain: 1.94.1
+          toolchain: 1.95.0
           targets: ${{ matrix.target }}
 
       # The pinned soldr that drives the cross-build (self-provisions the
@@ -99,7 +99,7 @@ jobs:
         uses: zackees/setup-soldr@40320d277ba4946e38d4b3c02e6c7a15a29c3f3f
         with:
           version: 0.8.29
-          toolchain: 1.94.1
+          toolchain: 1.95.0
           cache: false
 
       # continue-on-error: a red cross-build is a finding here, not an abort.

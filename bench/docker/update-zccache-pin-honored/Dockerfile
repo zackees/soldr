@@ -22,7 +22,7 @@
 # Single-stage on purpose: the repro needs cargo at runtime because the
 # bug only triggers during `soldr cargo build`. Multi-stage with a
 # slim runtime would force us to also install a rust toolchain there.
-FROM rust:1.94.1-alpine
+FROM rust:1.95.0-alpine
 
 # bash + jq for the repro script; coreutils so `comm` / `sort` / `sha256sum`
 # behave like GNU coreutils (busybox versions differ in some flags); git

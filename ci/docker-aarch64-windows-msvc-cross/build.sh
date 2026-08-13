@@ -24,8 +24,8 @@ mkdir -p "$STAGING"
 WRAPPER="${WRAPPER:-python3 /src/.github/scripts/run_with_ts.py}"
 
 echo "::group::rustup + target install"
-$WRAPPER rustup toolchain install 1.94.1 --profile minimal --no-self-update
-$WRAPPER rustup default 1.94.1
+$WRAPPER rustup toolchain install 1.95.0 --profile minimal --no-self-update
+$WRAPPER rustup default 1.95.0
 $WRAPPER rustup target add "$TARGET"
 echo "::endgroup::"
 

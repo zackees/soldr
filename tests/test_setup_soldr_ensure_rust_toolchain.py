@@ -36,7 +36,7 @@ def test_main_bootstraps_rustup_when_missing_and_exports_rustup_toolchain(
     monkeypatch.setenv("CARGO_HOME", str(tmp_path / "cargo"))
     monkeypatch.setenv("RUSTUP_HOME", str(tmp_path / "rustup"))
     monkeypatch.setenv("SOLDR_CACHE_DIR", str(tmp_path / "soldr"))
-    monkeypatch.setenv("SETUP_SOLDR_TOOLCHAIN_CHANNEL", "1.94.1")
+    monkeypatch.setenv("SETUP_SOLDR_TOOLCHAIN_CHANNEL", "1.95.0")
     monkeypatch.setenv("SETUP_SOLDR_TOOLCHAIN_PROFILE", "minimal")
     monkeypatch.setenv("SETUP_SOLDR_TOOLCHAIN_COMPONENTS", '["rustfmt", "clippy"]')
     monkeypatch.setenv("SETUP_SOLDR_TOOLCHAIN_TARGETS", '["x86_64-unknown-linux-musl"]')
@@ -81,7 +81,7 @@ def test_main_bootstraps_rustup_when_missing_and_exports_rustup_toolchain(
             "C:/tools/rustup.exe",
             "toolchain",
             "install",
-            "1.94.1",
+            "1.95.0",
             "--profile",
             "minimal",
             "--component",
@@ -91,9 +91,9 @@ def test_main_bootstraps_rustup_when_missing_and_exports_rustup_toolchain(
             "--target",
             "x86_64-unknown-linux-musl",
         ],
-        ["C:/tools/rustup.exe", "default", "1.94.1"],
+        ["C:/tools/rustup.exe", "default", "1.95.0"],
         ["C:/tools/cargo.exe", "--version"],
         ["C:/tools/rustc.exe", "--version"],
     ]
-    assert github_env.read_text(encoding="utf-8") == "RUSTUP_TOOLCHAIN=1.94.1\n"
-    assert github_output.read_text(encoding="utf-8") == "toolchain=1.94.1\n"
+    assert github_env.read_text(encoding="utf-8") == "RUSTUP_TOOLCHAIN=1.95.0\n"
+    assert github_output.read_text(encoding="utf-8") == "toolchain=1.95.0\n"

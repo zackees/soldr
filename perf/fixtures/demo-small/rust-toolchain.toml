@@ -9,4 +9,4 @@
 # Deliberately channel-only: no profile/components, so entering the fixture
 # cannot trigger a component install and add download time to a measured run.
 [toolchain]
-channel = "1.94.1"
+channel = "1.95.0"
