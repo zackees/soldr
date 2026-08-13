@@ -34,6 +34,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,6 +49,10 @@ VOLUME_PREFIX = "soldr-perf"
 RUNNER_SCHEMA = "2"
 LABEL_PREFIX = "io.soldr.perf-local"
 PTRACE_ENV = "SOLDR_PERF_LOCAL_PTRACE"
+BUILDER_NAME = "soldr-perf-local"
+GC_MAX_AGE_SECS = 48 * 60 * 60
+GC_STATE_DIR = Path.home() / ".soldr" / "perf-local-gc"
+RUNNER_VOLUME_BUDGET_BYTES = 50 * (1 << 30)
 
 # The global names this script used before per-root isolation. These are NOT
 # dead: `bench/cook_in_docker.sh` mounts soldr-perf-target and
@@ -116,6 +121,207 @@ def runner_for(source_root: Path) -> Runner:
     )
 
 
+def _canonical_root(path: Path) -> str:
+    return str(path.resolve()).casefold()
+
+
+def incremental_gc_candidate(
+    candidates: list[dict[str, object]],
+    *,
+    current_root: Path,
+    now_epoch: float,
+    max_age_secs: float = GC_MAX_AGE_SECS,
+) -> dict[str, object] | None:
+    """Choose at most one stale runner, always protecting the current root."""
+    current = _canonical_root(current_root)
+    eligible = []
+    for candidate in candidates:
+        source_root = Path(candidate["source_root"])
+        if _canonical_root(source_root) == current:
+            continue
+        missing = not source_root.exists()
+        last_used = float(candidate.get("last_used_epoch", now_epoch))
+        if missing or now_epoch - last_used >= max_age_secs:
+            eligible.append(
+                (0 if missing else 1, last_used, str(source_root).casefold(), candidate)
+            )
+    if not eligible:
+        return None
+    eligible.sort(key=lambda item: (item[0], item[1]))
+    return eligible[0][3]
+
+
+def activity_marker(source_root: Path) -> Path:
+    return GC_STATE_DIR / f"{root_tag(source_root)}.last-used"
+
+
+def mark_runner_used(source_root: Path) -> float:
+    """Persist host-side activity because Docker volumes expose no last-use time."""
+    marker = activity_marker(source_root)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.touch()
+    return marker.stat().st_mtime
+
+
+def _managed_runner_roots() -> list[Path]:
+    result = subprocess.run(
+        [
+            "docker",
+            "ps",
+            "-a",
+            "--filter",
+            f"label={LABEL_PREFIX}.source-root",
+            "--format",
+            f'{{{{.Names}}}}\t{{{{.Label "{LABEL_PREFIX}.source-root"}}}}',
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    roots = set()
+    for line in result.stdout.splitlines():
+        name, separator, raw_root = line.partition("\t")
+        if not separator or not raw_root.strip():
+            continue
+        source_root = Path(raw_root.strip())
+        if name.strip() == runner_for(source_root).container:
+            roots.add(source_root)
+    return sorted(roots, key=lambda path: str(path).casefold())
+
+
+def incremental_gc(current_root: Path) -> None:
+    """Best-effort bounded GC: remove no more than one stale runner group."""
+    now = time.time()
+    candidates = []
+    for source_root in _managed_runner_roots():
+        marker = activity_marker(source_root)
+        if source_root.exists() and not marker.exists():
+            # Migration grace for runners created before activity tracking.
+            last_used = mark_runner_used(source_root)
+        else:
+            try:
+                last_used = marker.stat().st_mtime
+            except OSError:
+                last_used = now
+        candidates.append({"source_root": source_root, "last_used_epoch": last_used})
+    selected = incremental_gc_candidate(candidates, current_root=current_root, now_epoch=now)
+    if selected is None:
+        return
+    stale_root = Path(selected["source_root"])
+    if not stale_root.exists():
+        _remove_runner_group(runner_for(stale_root))
+        return
+    # Serialize against the candidate's command and re-check activity after
+    # acquiring its lock. A long-running build can never be reaped mid-command.
+    with runner_lock(stale_root):
+        marker = activity_marker(stale_root)
+        try:
+            last_used = marker.stat().st_mtime
+        except OSError:
+            last_used = now
+        if stale_root.exists() and time.time() - last_used < GC_MAX_AGE_SECS:
+            return
+        _remove_runner_group(runner_for(stale_root))
+
+
+def _remove_runner_group(stale: Runner) -> None:
+    removed = subprocess.run(["docker", "rm", "-f", stale.container], check=False)
+    volumes = subprocess.run(["docker", "volume", "rm", "--force", *stale.volumes], check=False)
+    if removed.returncode == 0 and volumes.returncode == 0:
+        print(f"incremental gc: removed stale runner {stale.container}")
+    else:
+        print(
+            f"warning: incremental gc could not fully remove {stale.container}",
+            file=sys.stderr,
+        )
+
+
+def buildkit_prune_command() -> list[str]:
+    return [
+        "docker",
+        "buildx",
+        "prune",
+        "--builder",
+        BUILDER_NAME,
+        "--filter",
+        "until=48h",
+        "--force",
+    ]
+
+
+def _builder_exists() -> bool:
+    return (
+        subprocess.run(
+            ["docker", "buildx", "inspect", BUILDER_NAME],
+            capture_output=True,
+            check=False,
+        ).returncode
+        == 0
+    )
+
+
+def _ensure_builder() -> bool:
+    version = subprocess.run(["docker", "buildx", "version"], capture_output=True, check=False)
+    if version.returncode != 0:
+        return False
+    if _builder_exists():
+        return True
+    return (
+        subprocess.run(
+            ["docker", "buildx", "create", "--name", BUILDER_NAME],
+            capture_output=True,
+            check=False,
+        ).returncode
+        == 0
+    )
+
+
+def incremental_buildkit_gc() -> None:
+    """Prune only soldr's BuildKit records; never touch Docker's default builder."""
+    if _builder_exists():
+        result = subprocess.run(buildkit_prune_command(), capture_output=True, check=False)
+        if result.returncode != 0:
+            print("warning: soldr BuildKit GC failed", file=sys.stderr)
+
+
+def runner_over_budget(usage_bytes: int) -> bool:
+    return usage_bytes > RUNNER_VOLUME_BUDGET_BYTES
+
+
+def runner_volume_usage_bytes(runner: Runner) -> int | None:
+    result = subprocess.run(
+        [
+            "docker",
+            "exec",
+            runner.container,
+            "du",
+            "-sb",
+            "/target",
+            "/root/.cargo",
+            "/root/.soldr",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        return sum(int(line.split()[0]) for line in result.stdout.splitlines())
+    except (IndexError, ValueError):
+        return None
+
+
+def enforce_runner_budget(runner: Runner, image_id: str) -> None:
+    usage = runner_volume_usage_bytes(runner)
+    if usage is None or not runner_over_budget(usage):
+        return
+    print(f"incremental gc: {runner.container} exceeds 50 GiB; rotating warm volumes")
+    if wipe(runner) != 0:
+        raise RuntimeError(f"unable to rotate over-budget runner {runner.container}")
+    ensure_runner(runner, image_id)
+
+
 def main(argv: list[str]) -> int:
     repo_root = Path(__file__).resolve().parent.parent
     source_root = shared_source_root(repo_root)
@@ -151,6 +357,9 @@ def main(argv: list[str]) -> int:
     # parallel LTO builds make every sample slower and invalidate perf data.
     # The lock is per-root, which is only safe because the runner and volumes
     # it guards are per-root too.
+    mark_runner_used(source_root)
+    incremental_gc(source_root)
+    incremental_buildkit_gc()
     with runner_lock(source_root):
         try:
             image_id = ensure_image(repo_root)
@@ -158,11 +367,15 @@ def main(argv: list[str]) -> int:
             print(f"error: {error}", file=sys.stderr)
             return 1
         ensure_runner(runner, image_id)
+        enforce_runner_budget(runner, image_id)
         workdir = container_workdir(source_root, repo_root)
-        completed = subprocess.run(
-            exec_command(runner, argv, workdir, tty=tty_enabled()), check=False
-        )
-        return completed.returncode
+        try:
+            completed = subprocess.run(
+                exec_command(runner, argv, workdir, tty=tty_enabled()), check=False
+            )
+            return completed.returncode
+        finally:
+            mark_runner_used(source_root)
 
 
 def shared_source_root(repo_root: Path) -> Path:
@@ -193,6 +406,7 @@ def tty_enabled() -> bool:
 
 def expected_labels(source_root: Path, image_id: str) -> dict[str, str]:
     return {
+        f"{LABEL_PREFIX}.managed": "true",
         f"{LABEL_PREFIX}.schema": RUNNER_SCHEMA,
         f"{LABEL_PREFIX}.image-id": image_id,
         f"{LABEL_PREFIX}.source-root": str(source_root.resolve()),
@@ -228,11 +442,16 @@ def ensure_image(repo_root: Path) -> str:
         if isinstance(labels, dict) and labels.get(digest_label) == digest and image_id:
             return str(image_id)
 
+    if _ensure_builder():
+        build_command = ["docker", "buildx", "build", "--builder", BUILDER_NAME, "--load"]
+    else:
+        build_command = ["docker", "build"]
     build = subprocess.run(
         [
-            "docker",
-            "build",
+            *build_command,
             "--provenance=false",
+            "--label",
+            f"{LABEL_PREFIX}.managed=true",
             "--label",
             f"{digest_label}={digest}",
             "-f",
@@ -295,9 +514,7 @@ def ptrace_enabled() -> bool:
     return os.environ.get(PTRACE_ENV, "").strip().lower() in ("1", "true", "yes")
 
 
-def exec_command(
-    runner: Runner, argv: list[str], workdir: str, *, tty: bool
-) -> list[str]:
+def exec_command(runner: Runner, argv: list[str], workdir: str, *, tty: bool) -> list[str]:
     command = ["docker", "exec"]
     if tty:
         command.append("-it")
@@ -323,12 +540,22 @@ def ensure_runner(runner: Runner, image_id: str) -> None:
             exists = False
     if not exists:
         for volume in runner.volumes:
-            subprocess.run(["docker", "volume", "create", volume], check=True)
+            subprocess.run(
+                [
+                    "docker",
+                    "volume",
+                    "create",
+                    "--label",
+                    f"{LABEL_PREFIX}.managed=true",
+                    "--label",
+                    f"{LABEL_PREFIX}.source-root={runner.source_root.resolve()}",
+                    volume,
+                ],
+                check=True,
+            )
         subprocess.run(create_command(runner, image_id), check=True)
 
-    running = docker_output(
-        ["inspect", "--format", "{{.State.Running}}", runner.container]
-    )
+    running = docker_output(["inspect", "--format", "{{.State.Running}}", runner.container])
     if running != "true":
         subprocess.run(["docker", "start", runner.container], check=True)
 
@@ -416,9 +643,7 @@ def runner_lock(source_root: Path) -> Iterator[None]:
 def reset_runner(runner: Runner) -> int:
     if not docker_output(["inspect", "--format", "{{.Id}}", runner.container]):
         return 0
-    return subprocess.run(
-        ["docker", "rm", "-f", runner.container], check=False
-    ).returncode
+    return subprocess.run(["docker", "rm", "-f", runner.container], check=False).returncode
 
 
 def stop_runner(runner: Runner) -> int:
@@ -438,16 +663,13 @@ def wipe(runner: Runner) -> int:
 
 def status(runner: Runner) -> int:
     state = (
-        docker_output(["inspect", "--format", "{{.State.Status}}", runner.container])
-        or "(absent)"
+        docker_output(["inspect", "--format", "{{.State.Status}}", runner.container]) or "(absent)"
     )
     print(f"root: {runner.source_root}")
     print(f"{runner.container}  {state}")
     rows: list[tuple[str, str]] = []
     for name in runner.volumes:
-        mountpoint = docker_output(
-            ["volume", "inspect", "--format", "{{.Mountpoint}}", name]
-        )
+        mountpoint = docker_output(["volume", "inspect", "--format", "{{.Mountpoint}}", name])
         rows.append((name, mountpoint or "(absent)"))
     width = max(len(name) for name, _ in rows)
     for name, info in rows:
