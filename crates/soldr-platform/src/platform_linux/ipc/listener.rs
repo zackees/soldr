@@ -104,6 +104,44 @@ impl ControlListener for UnixControlListener {
     }
 }
 
+/// Bind an owner-only SESSION listener at `socket_path` (a filesystem
+/// path on Linux). Creates the parent directory when the broker's
+/// runtime namespace does not exist yet, binds with mode 0o600, and
+/// reclaims a stale socket exactly like the broker's own SESSION bind.
+pub fn bind_owner_only_listener(
+    socket_path: &str,
+) -> io::Result<interprocess::local_socket::tokio::Listener> {
+    use interprocess::local_socket::ListenerOptions;
+    use interprocess::os::unix::local_socket::ListenerOptionsExt as _;
+    use running_process::broker::server::singleton_bind::{
+        is_already_bound_error, unix_socket_path_is_stale, wrap_socket_name,
+    };
+
+    if let Some(parent) = std::path::Path::new(socket_path).parent() {
+        running_process::broker::secure_dir::ensure_private_dir(parent)?;
+    }
+
+    let name = wrap_socket_name(socket_path).map_err(io::Error::other)?;
+    let options = ListenerOptions::new()
+        .name(name)
+        .reclaim_name(false)
+        .mode(0o600);
+    let first = options.create_tokio();
+    match first {
+        Ok(listener) => Ok(listener),
+        Err(err) if is_already_bound_error(&err) && unix_socket_path_is_stale(socket_path) => {
+            let _ = std::fs::remove_file(socket_path);
+            let retry_name = wrap_socket_name(socket_path).map_err(io::Error::other)?;
+            ListenerOptions::new()
+                .name(retry_name)
+                .reclaim_name(false)
+                .mode(0o600)
+                .create_tokio()
+        }
+        Err(err) => Err(err),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,43 +181,5 @@ mod tests {
         assert!(remove_unix_socket_if_matches(&socket, replacement_identity).unwrap());
         drop(replacement_listener);
         drop(old_listener);
-    }
-}
-
-/// Bind an owner-only SESSION listener at `socket_path` (a filesystem
-/// path on Linux). Creates the parent directory when the broker's
-/// runtime namespace does not exist yet, binds with mode 0o600, and
-/// reclaims a stale socket exactly like the broker's own SESSION bind.
-pub fn bind_owner_only_listener(
-    socket_path: &str,
-) -> io::Result<interprocess::local_socket::tokio::Listener> {
-    use interprocess::local_socket::ListenerOptions;
-    use interprocess::os::unix::local_socket::ListenerOptionsExt as _;
-    use running_process::broker::server::singleton_bind::{
-        is_already_bound_error, unix_socket_path_is_stale, wrap_socket_name,
-    };
-
-    if let Some(parent) = std::path::Path::new(socket_path).parent() {
-        running_process::broker::secure_dir::ensure_private_dir(parent)?;
-    }
-
-    let name = wrap_socket_name(socket_path).map_err(io::Error::other)?;
-    let options = ListenerOptions::new()
-        .name(name)
-        .reclaim_name(false)
-        .mode(0o600);
-    let first = options.create_tokio();
-    match first {
-        Ok(listener) => Ok(listener),
-        Err(err) if is_already_bound_error(&err) && unix_socket_path_is_stale(socket_path) => {
-            let _ = std::fs::remove_file(socket_path);
-            let retry_name = wrap_socket_name(socket_path).map_err(io::Error::other)?;
-            ListenerOptions::new()
-                .name(retry_name)
-                .reclaim_name(false)
-                .mode(0o600)
-                .create_tokio()
-        }
-        Err(err) => Err(err),
     }
 }

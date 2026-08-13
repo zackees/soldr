@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
+/// macOS does not use the Windows console-attachment policy probe.
 pub fn console_attached(_pid: u32) -> Option<bool> {
     None
 }
