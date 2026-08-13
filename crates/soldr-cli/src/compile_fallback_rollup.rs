@@ -66,7 +66,7 @@ pub(crate) fn summarize(jsonl: &str, max_recent: usize) -> FallbackRollup {
     let total = entries.len();
     // Newest first. A stable sort keeps journal order among equal
     // timestamps, so the "recent" window is deterministic.
-    entries.sort_by(|a, b| b.ts_ms.cmp(&a.ts_ms));
+    entries.sort_by_key(|entry| std::cmp::Reverse(entry.ts_ms));
     entries.truncate(max_recent);
     FallbackRollup {
         total,

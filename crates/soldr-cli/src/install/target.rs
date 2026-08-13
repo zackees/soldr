@@ -111,20 +111,16 @@ fn parse_remote(url: &str) -> Result<InstallTarget, SoldrError> {
                 url_ref = Some(super::refs::Ref::Rev((*sha).to_string()));
             }
         }
-        Some("releases") => {
-            // `/releases/tag/<t>`
-            if segments.get(3).copied() == Some("tag") {
-                if let Some(t) = segments.get(4) {
-                    url_release = Some(ReleaseSel::Tag((*t).to_string()));
-                }
+        // `/releases/tag/<t>`
+        Some("releases") if segments.get(3).copied() == Some("tag") => {
+            if let Some(t) = segments.get(4) {
+                url_release = Some(ReleaseSel::Tag((*t).to_string()));
             }
         }
-        Some("actions") => {
-            // `/actions/runs/<id>`
-            if segments.get(3).copied() == Some("runs") {
-                if let Some(id) = segments.get(4) {
-                    run_id = id.parse::<u64>().ok();
-                }
+        // `/actions/runs/<id>`
+        Some("actions") if segments.get(3).copied() == Some("runs") => {
+            if let Some(id) = segments.get(4) {
+                run_id = id.parse::<u64>().ok();
             }
         }
         _ => {}
