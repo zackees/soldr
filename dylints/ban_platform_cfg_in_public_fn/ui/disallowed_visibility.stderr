@@ -44,5 +44,3 @@ LL | |         let value = 1;
 LL | |         value
 LL | |     }
    | |_____^
-
-error: aborting due to 5 previous errors

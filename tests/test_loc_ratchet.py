@@ -157,6 +157,34 @@ def test_non_rust_and_out_of_scope_paths_are_ignored(mod, repo):
     assert checked == 0, "only .rs under the configured roots is checked"
 
 
+def test_mod_rs_files_are_exempt(mod, repo):
+    _write(repo, "crates/component/mod.rs", 300)
+    _write(repo, "crates/component/implementation.rs", 300)
+    _commit(repo, "base")
+    _git(repo, "checkout", "-q", "-b", "topic")
+    _write(repo, "crates/component/mod.rs", 400)
+    _write(repo, "crates/component/implementation.rs", 301)
+    _commit(repo, "grow module surface and implementation")
+
+    violations, checked = _evaluate(mod, repo)
+    assert [violation.path for violation in violations] == [
+        "crates/component/implementation.rs"
+    ]
+    assert checked == 1, "mod.rs files must be excluded from the ratchet"
+
+
+def test_new_oversized_mod_rs_is_exempt(mod, repo):
+    _write(repo, "crates/a.rs", 10)
+    _commit(repo, "base")
+    _git(repo, "checkout", "-q", "-b", "topic")
+    _write(repo, "crates/new_component/mod.rs", 400)
+    _commit(repo, "add module surface")
+
+    violations, checked = _evaluate(mod, repo)
+    assert violations == []
+    assert checked == 0
+
+
 def test_untouched_offenders_are_not_reported(mod, repo):
     """The cost lands on the change that causes it, not on every PR."""
     _write(repo, "crates/big.rs", 300)
