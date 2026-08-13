@@ -794,6 +794,10 @@ async fn try_direct_handoff(
 ) -> io::Result<bool> {
     use running_process::broker::capabilities::CAP_HANDLE_PASSING;
 
+    if !platform_allows_direct_handoff() {
+        return Ok(false);
+    }
+
     #[cfg(debug_assertions)]
     if std::env::var_os("SOLDR_TEST_BROKER_DISABLE_HANDOFF").is_some() {
         return Ok(false);
@@ -851,6 +855,15 @@ async fn try_direct_handoff(
         )
     })?;
     Ok(true)
+}
+
+fn platform_allows_direct_handoff() -> bool {
+    // A duplicated Windows named-pipe handle can be converted and ACKed by
+    // the daemon, yet the adopted SESSION receives ERROR_BROKEN_PIPE as soon
+    // as the broker drops its original accepted handle. Keep Windows on the
+    // same-connection relay, which preserves the protocol and ownership
+    // contract without exposing a client-visible false-positive handoff.
+    !cfg!(windows)
 }
 
 async fn write_handoff_ready_async(
@@ -1179,6 +1192,10 @@ impl Drop for UnixBindGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    crate::timed_test!(direct_handoff_policy_matches_supported_transports, {
+        assert_eq!(platform_allows_direct_handoff(), !cfg!(windows));
+    });
 
     #[cfg(windows)]
     crate::timed_test!(windows_handoff_ready_uses_async_original_pipe, {
