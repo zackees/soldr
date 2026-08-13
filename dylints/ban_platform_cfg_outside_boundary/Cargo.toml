@@ -1,7 +1,7 @@
 [package]
-name = "ban_platform_cfg_in_public_fn"
+name = "ban_platform_cfg_outside_boundary"
 version = "0.1.0"
-description = "Require platform-neutral public and crate-visible function facades"
+description = "Keep host-platform selection inside soldr-platform's cfg_select boundary"
 edition = "2021"
 publish = false
 

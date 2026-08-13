@@ -1,1 +1,0 @@
-# The per-function ratchet reached zero with the #2493 platform migration.
