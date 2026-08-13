@@ -76,7 +76,7 @@ mod tests {
         drop(file);
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         let _ = std::fs::remove_file(&path);
-        assert_eq!(mode, 0o755);
+        assert_eq!(mode & 0o7777, 0o755);
     }
 
     #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
@@ -94,6 +94,6 @@ mod tests {
         drop(file);
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         let _ = std::fs::remove_file(&path);
-        assert_eq!(mode, 0o600);
+        assert_eq!(mode & 0o7777, 0o600);
     }
 }
