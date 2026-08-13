@@ -79,6 +79,23 @@ def test_incremental_gc_never_selects_the_current_runner(tmp_path: Path) -> None
     )
 
 
+def test_incremental_gc_fast_triggers_above_group_limit(tmp_path: Path) -> None:
+    current = tmp_path / "current"
+    current.mkdir()
+    candidates = [{"source_root": current, "last_used_epoch": 99.0}]
+    for index in range(perf_local.MAX_RUNNER_GROUPS):
+        root = tmp_path / f"runner-{index}"
+        root.mkdir()
+        candidates.append({"source_root": root, "last_used_epoch": float(index + 1)})
+    selected = perf_local.incremental_gc_candidate(
+        candidates,
+        current_root=current,
+        now_epoch=100.0,
+        max_age_secs=perf_local.GC_MAX_AGE_SECS,
+    )
+    assert selected == candidates[1]
+
+
 def test_buildkit_prune_is_scoped_to_soldr_builder() -> None:
     assert perf_local.buildkit_prune_command() == [
         "docker",
@@ -87,7 +104,7 @@ def test_buildkit_prune_is_scoped_to_soldr_builder() -> None:
         "--builder",
         perf_local.BUILDER_NAME,
         "--filter",
-        "until=48h",
+        "until=24h",
         "--force",
     ]
 

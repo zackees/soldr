@@ -38,7 +38,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, TypedDict
 
 IMAGE = "soldr-cook-dev"
 DOCKERFILE = "docker/cook-shared-cache/Dockerfile"
@@ -50,7 +50,8 @@ RUNNER_SCHEMA = "2"
 LABEL_PREFIX = "io.soldr.perf-local"
 PTRACE_ENV = "SOLDR_PERF_LOCAL_PTRACE"
 BUILDER_NAME = "soldr-perf-local"
-GC_MAX_AGE_SECS = 48 * 60 * 60
+GC_MAX_AGE_SECS = 24 * 60 * 60
+MAX_RUNNER_GROUPS = 3
 GC_STATE_DIR = Path.home() / ".soldr" / "perf-local-gc"
 RUNNER_VOLUME_BUDGET_BYTES = 50 * (1 << 30)
 
@@ -93,6 +94,11 @@ class Runner:
         return (self.target, self.cargo_home, self.soldr_home)
 
 
+class GcCandidate(TypedDict):
+    source_root: Path
+    last_used_epoch: float
+
+
 def root_slug(source_root: Path) -> str:
     """Readable, docker-safe fragment of the root's directory name."""
     raw = source_root.resolve().name.lower()
@@ -126,22 +132,23 @@ def _canonical_root(path: Path) -> str:
 
 
 def incremental_gc_candidate(
-    candidates: list[dict[str, object]],
+    candidates: list[GcCandidate],
     *,
     current_root: Path,
     now_epoch: float,
     max_age_secs: float = GC_MAX_AGE_SECS,
-) -> dict[str, object] | None:
+) -> GcCandidate | None:
     """Choose at most one stale runner, always protecting the current root."""
     current = _canonical_root(current_root)
+    count_pressure = len(candidates) > MAX_RUNNER_GROUPS
     eligible = []
     for candidate in candidates:
-        source_root = Path(candidate["source_root"])
+        source_root = candidate["source_root"]
         if _canonical_root(source_root) == current:
             continue
         missing = not source_root.exists()
-        last_used = float(candidate.get("last_used_epoch", now_epoch))
-        if missing or now_epoch - last_used >= max_age_secs:
+        last_used = candidate["last_used_epoch"]
+        if missing or count_pressure or now_epoch - last_used >= max_age_secs:
             eligible.append(
                 (0 if missing else 1, last_used, str(source_root).casefold(), candidate)
             )
@@ -192,7 +199,7 @@ def _managed_runner_roots() -> list[Path]:
 def incremental_gc(current_root: Path) -> None:
     """Best-effort bounded GC: remove no more than one stale runner group."""
     now = time.time()
-    candidates = []
+    candidates: list[GcCandidate] = []
     for source_root in _managed_runner_roots():
         marker = activity_marker(source_root)
         if source_root.exists() and not marker.exists():
@@ -207,7 +214,7 @@ def incremental_gc(current_root: Path) -> None:
     selected = incremental_gc_candidate(candidates, current_root=current_root, now_epoch=now)
     if selected is None:
         return
-    stale_root = Path(selected["source_root"])
+    stale_root = selected["source_root"]
     if not stale_root.exists():
         _remove_runner_group(runner_for(stale_root))
         return
@@ -219,7 +226,12 @@ def incremental_gc(current_root: Path) -> None:
             last_used = marker.stat().st_mtime
         except OSError:
             last_used = now
-        if stale_root.exists() and time.time() - last_used < GC_MAX_AGE_SECS:
+        # If this runner was used after planning, leave it alone and let the
+        # next invocation select a genuinely older group.
+        if last_used > selected["last_used_epoch"]:
+            return
+        count_pressure = len(candidates) > MAX_RUNNER_GROUPS
+        if stale_root.exists() and not count_pressure and time.time() - last_used < GC_MAX_AGE_SECS:
             return
         _remove_runner_group(runner_for(stale_root))
 
@@ -244,7 +256,7 @@ def buildkit_prune_command() -> list[str]:
         "--builder",
         BUILDER_NAME,
         "--filter",
-        "until=48h",
+        "until=24h",
         "--force",
     ]
 
