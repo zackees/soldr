@@ -280,17 +280,9 @@ pub(crate) fn trampoline_shim_body(soldr_bin: &Path) -> String {
 /// Cost here is one `sh` fork per nested tool call, on wheel installs only.
 pub(crate) fn write_trampoline_shim(path: &Path, soldr_bin: &Path) -> Result<(), SoldrError> {
     std::fs::write(path, trampoline_shim_body(soldr_bin)).map_err(SoldrError::Io)?;
-    // Only the exec bit is genuinely platform-specific; the rest of this
-    // function compiles and is tested everywhere (soldr CLAUDE.md:156).
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(path)
-            .map_err(SoldrError::Io)?
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(path, perms).map_err(SoldrError::Io)?;
-    }
+    // Only the exec bit is genuinely platform-specific; the platform
+    // crate owns it (no-op where the filesystem has no exec bits).
+    crate::platform::fs::permissions::make_executable(path).map_err(SoldrError::Io)?;
     Ok(())
 }
 

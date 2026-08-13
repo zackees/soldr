@@ -7,17 +7,7 @@ use std::path::{Component, Path};
 /// True for Unix/Windows symbolic links and Windows reparse points such as
 /// directory junctions.  Destructive collectors must not follow any of them.
 pub fn is_link_or_reparse(metadata: &Metadata) -> bool {
-    if metadata.file_type().is_symlink() {
-        return true;
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
-        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-    }
-    #[cfg(not(windows))]
-    false
+    crate::platform::fs::links::is_link_or_reparse(metadata)
 }
 
 /// Validate that `directory` is a real directory beneath the exact selected

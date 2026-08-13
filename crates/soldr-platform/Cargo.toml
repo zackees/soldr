@@ -18,6 +18,9 @@ publish = false
 
 [dependencies]
 running-process = { version = "4.10.1", git = "https://github.com/zackees/running-process.git", rev = "d45c90d278318e667652e1f16711dc79573e5ee8", default-features = false, features = ["client"] }
+fs2 = { workspace = true }
+serde = { workspace = true }
+tar = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -25,6 +28,7 @@ libc = "0.2"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Storage_FileSystem",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Threading",
 ] }

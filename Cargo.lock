@@ -2925,8 +2925,11 @@ dependencies = [
 name = "soldr-platform"
 version = "0.9.0"
 dependencies = [
+ "fs2",
  "libc",
  "running-process",
+ "serde",
+ "tar",
  "windows-sys 0.61.2",
 ]
 

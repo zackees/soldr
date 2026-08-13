@@ -1,7 +1,6 @@
 crates/soldr-cli/src/broker_identity.rs::create_owner_only_directories
 crates/soldr-cli/src/broker_identity.rs::daemon_session_endpoint_from_executable
 crates/soldr-cli/src/broker_identity.rs::resolve
-crates/soldr-cli/src/broker_spawn.rs::daemon_stdio
 crates/soldr-cli/src/build_from_source_cmd.rs::execute_plan
 crates/soldr-cli/src/cargo_front_door/target.rs::default_cargo_build_target
 crates/soldr-cli/src/cargo_front_door/zig_shim.rs::ensure_zig_wrappers
@@ -15,8 +14,6 @@ crates/soldr-cli/src/native_cc.rs::native_cache_decision
 crates/soldr-cli/src/optimize_windows.rs::relaunch_elevated@cfg(target_os="windows")
 crates/soldr-cli/src/pyo3_detect.rs::host_triple
 crates/soldr-cli/src/shim_dir.rs::apply_to_command
-crates/soldr-cli/src/shim_dir.rs::write_trampoline_shim
-crates/soldr-cli/src/shim_materialize.rs::executable_matches
 crates/soldr-cli/src/shim_materialize.rs::materialize_executable
 crates/soldr-cli/src/target_lifecycle.rs::prepare_target
 crates/soldr-cli/src/trampoline_layout.rs::compute_layout

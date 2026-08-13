@@ -420,31 +420,8 @@ pub fn publish_broker_route_claim(paths: &SoldrPaths, daemon: &DaemonProcess) ->
     })
 }
 
-#[cfg(unix)]
 fn replace_route_claim(source: &Path, target: &Path) -> io::Result<()> {
-    std::fs::rename(source, target)
-}
-
-#[cfg(windows)]
-fn replace_route_claim(source: &Path, target: &Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt as _;
-    use windows_sys::Win32::Storage::FileSystem::{
-        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-    };
-    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
-    let target: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
-    if unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            target.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    } == 0
-    {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
+    crate::platform::fs::replace::atomic_replace(source, target)
 }
 
 pub fn read_broker_route_claim(paths: &SoldrPaths) -> io::Result<Option<DaemonProcess>> {

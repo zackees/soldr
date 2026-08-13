@@ -148,25 +148,8 @@ fn tier2_rename_to_trash(
 /// `stat()`. Fall back to `default` when neither is available so we
 /// don't accidentally cross-volume rename — the rename will fail and
 /// we'll return `Failed`, which is the correct visible behavior.
-#[cfg(windows)]
 fn volume_tag_for_path(path: &Path) -> String {
-    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let s = canonical.to_string_lossy().to_string();
-    let trimmed = s.trim_start_matches(r"\\?\");
-    let bytes = trimmed.as_bytes();
-    if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
-        return (bytes[0] as char).to_ascii_uppercase().to_string();
-    }
-    "default".to_string()
-}
-
-#[cfg(unix)]
-fn volume_tag_for_path(path: &Path) -> String {
-    use std::os::unix::fs::MetadataExt;
-    std::fs::metadata(path)
-        .ok()
-        .map(|m| m.dev().to_string())
-        .unwrap_or_else(|| "default".to_string())
+    crate::platform::fs::volume::identity(path).unwrap_or_else(|| "default".to_string())
 }
 
 /// `<unix_nanos>-<pid>` — sortable, unique enough across processes,

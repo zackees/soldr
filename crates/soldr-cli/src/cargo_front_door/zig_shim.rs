@@ -143,13 +143,7 @@ fn write_wrapper(path: &Path, body: &str) -> Result<(), SoldrError> {
     let existing = std::fs::read_to_string(path).ok();
     if existing.as_deref() != Some(body) {
         std::fs::write(path, body)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(path)?.permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(path, perms)?;
-        }
+        crate::platform::fs::permissions::make_executable(path).map_err(SoldrError::Io)?;
     }
     Ok(())
 }

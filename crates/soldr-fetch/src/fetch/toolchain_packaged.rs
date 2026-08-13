@@ -143,13 +143,7 @@ fn install_extensionless_driver(
     let destination = driver_dir.join("dylint-driver");
     let temporary = driver_dir.join(format!(".dylint-driver.part-{}", std::process::id()));
     std::fs::copy(source, &temporary)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut permissions = std::fs::metadata(&temporary)?.permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(&temporary, permissions)?;
-    }
+    crate::platform::fs::permissions::make_executable(&temporary)?;
     if destination.is_file() {
         std::fs::remove_file(&destination)?;
     }

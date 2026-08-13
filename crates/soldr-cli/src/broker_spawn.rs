@@ -682,9 +682,8 @@ fn stage_nonce() -> u64 {
     u64::from_le_bytes(bytes)
 }
 
-#[cfg(unix)]
 fn replace_staged_image(source: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
-    std::fs::rename(source, target)
+    crate::platform::fs::replace::atomic_replace(source, target)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -768,22 +767,7 @@ pub(crate) fn open_append(path: &std::path::Path) -> Option<std::fs::File> {
 }
 
 pub(crate) fn daemon_stdio(log: &std::fs::File) -> DaemonStdio<'_> {
-    #[cfg(unix)]
-    {
-        use std::os::fd::AsFd;
-        DaemonStdio {
-            stdout: DaemonStdioSource::Fd(log.as_fd()),
-            stderr: DaemonStdioSource::Fd(log.as_fd()),
-        }
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::io::AsHandle;
-        DaemonStdio {
-            stdout: DaemonStdioSource::Handle(log.as_handle()),
-            stderr: DaemonStdioSource::Handle(log.as_handle()),
-        }
-    }
+    crate::platform::process::spawn::daemon_stdio(Some(log))
 }
 
 #[cfg(test)]
