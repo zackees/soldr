@@ -78,3 +78,17 @@ def test_pep517_smoke_preserves_root_daemon_spawn_log() -> None:
         assert (
             log_dir / "cache" / "daemon-spawn.log"
         ).read_text() == "daemon startup failed"
+
+
+def test_pep517_failure_summary_has_searchable_log_markers() -> None:
+    module = load_script_module(
+        SCRIPTS / "pep517_daemon_smoke.py", "pep517_daemon_smoke_failure_summary"
+    )
+    error = module.subprocess.CalledProcessError(1, ["python", "-m", "pip", "wheel"])
+
+    summary = module.failure_summary(error, Path("/tmp/pep517-soldr-logs"))
+
+    assert "[pep517-smoke:failure]" in summary
+    assert "[pep517-smoke:daemon-log]" in summary
+    assert "[pep517-smoke:broker-log]" in summary
+    assert "exited 1" in summary
