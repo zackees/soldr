@@ -18,7 +18,7 @@
 #
 # What it DOES contain (native host tooling only, for the one-time seed
 # build of the soldr driver — the allowed bootstrap):
-#   - rustup 1.94.1 + the cross targets
+#   - rustup 1.95.0 + the cross targets
 #   - gcc / cmake / make               (native libz-ng-sys etc. for the
 #                                        seed's own host build)
 #   - curl / zstd / git / ca-certs
@@ -55,7 +55,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV CARGO_HOME=/root/.cargo \
     RUSTUP_HOME=/root/.rustup \
     PATH=/root/.cargo/bin:$PATH
-RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.94.1 --profile minimal \
+RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.95.0 --profile minimal \
  && rustup target add \
         x86_64-unknown-linux-gnu \
         aarch64-unknown-linux-gnu \

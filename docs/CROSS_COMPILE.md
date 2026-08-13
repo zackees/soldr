@@ -258,7 +258,7 @@ legacy passthrough for projects that need the historical cargo-xwin behavior.
 
 ```toml
 [toolchain]
-channel = "1.94.1"
+channel = "1.95.0"
 targets = ["x86_64-pc-windows-msvc"]
 
 [soldr.plugins]

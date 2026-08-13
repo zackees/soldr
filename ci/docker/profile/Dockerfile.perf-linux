@@ -15,7 +15,7 @@
 #           -v "$(pwd)/.codex-artifacts/soldr-wider-perf-2026-06-26":/out \
 #           soldr-profile-linux
 
-FROM rust:1.94.1-bookworm
+FROM rust:1.95.0-bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive
 

@@ -8,7 +8,7 @@
 # darwin Linux-host branch of the build step).
 #
 # Image contents:
-#   - rustup 1.94.1 + cross-compile targets x86_64-apple-darwin + aarch64-apple-darwin
+#   - rustup 1.95.0 + cross-compile targets x86_64-apple-darwin + aarch64-apple-darwin
 #   - clang-18 / clang++-18 + lld-18 (Mach-O linker)
 #   - llvm-18 (llvm-ar / llvm-ranlib)
 #   - MacOSX11.3.sdk extracted under /opt/apple-sdk/MacOSX*.sdk — same
@@ -81,11 +81,11 @@ RUN mkdir -p /opt/apple-sdk \
  && echo "  has sys/syscall.h: $(test -f $SDK_DIR/usr/include/sys/syscall.h && echo YES || echo NO)" \
  && echo "  has os/lock.h:     $(test -f $SDK_DIR/usr/include/os/lock.h && echo YES || echo NO)"
 
-# --- rustup + rust 1.94.1 + cross targets ---
+# --- rustup + rust 1.95.0 + cross targets ---
 ENV CARGO_HOME=/root/.cargo \
     RUSTUP_HOME=/root/.rustup \
     PATH=/root/.cargo/bin:$PATH
-RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.94.1 --profile minimal \
+RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.95.0 --profile minimal \
  && rustup target add x86_64-apple-darwin aarch64-apple-darwin \
  && rustc --version
 

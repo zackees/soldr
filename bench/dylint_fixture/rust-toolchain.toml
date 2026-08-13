@@ -6,5 +6,5 @@
 # `cargo dylint` front door auto-selects the nightly the driver needs.
 # Pinning a nightly at the workspace root would be redundant and would
 # force every non-lint crate in this fixture onto nightly too.
-channel = "1.94.1"
+channel = "1.95.0"
 profile = "minimal"

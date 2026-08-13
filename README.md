@@ -115,7 +115,7 @@ Two equivalent ways to declare a cross target: declaratively via `rust-toolchain
 ```toml
 # rust-toolchain.toml — declarative (preferred)
 [toolchain]
-channel = "1.94.1"
+channel = "1.95.0"
 targets = ["aarch64-pc-windows-msvc"]
 ```
 

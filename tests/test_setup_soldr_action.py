@@ -47,7 +47,7 @@ def test_load_toolchain_spec_reads_rust_toolchain_toml() -> None:
 
     spec = module.load_toolchain_spec(REPO_ROOT, "rust-toolchain.toml", "")
 
-    assert spec["channel"] == "1.94.1"
+    assert spec["channel"] == "1.95.0"
     assert spec["profile"] == "minimal"
     assert "rustfmt" in spec["components"]
     assert "clippy" in spec["components"]
@@ -104,7 +104,7 @@ def test_toolchain_signature_payload_is_json_serializable() -> None:
         "soldr_version": "0.7.4",
     }
 
-    assert json.loads(json.dumps(payload))["channel"] == "1.94.1"
+    assert json.loads(json.dumps(payload))["channel"] == "1.95.0"
 
 
 def test_action_python_helpers_have_entrypoints() -> None:

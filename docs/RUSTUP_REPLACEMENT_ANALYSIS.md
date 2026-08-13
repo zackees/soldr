@@ -46,10 +46,10 @@ soldr's actual users need each one.
 ### 1.1 Core (any replacement must handle)
 
 - **Channel resolution**: `stable`, `beta`, `nightly`,
-  date-pinned `nightly-YYYY-MM-DD`, and exact versions `1.94.1`.
+  date-pinned `nightly-YYYY-MM-DD`, and exact versions `1.95.0`.
   Mechanism: HTTP GET on
   `https://static.rust-lang.org/dist/channel-rust-<channel>.toml`
-  (for fixed versions, `channel-rust-1.94.1.toml`).
+  (for fixed versions, `channel-rust-1.95.0.toml`).
 - **Component selection**: `rustc`, `cargo`, `rust-std`, `rustfmt`,
   `clippy`, `rust-src`, `llvm-tools-preview`, `rust-analyzer`,
   `rust-docs`, `rustc-dev`, `miri` (nightly only), `rust-mingw`
@@ -92,7 +92,7 @@ soldr's actual users need each one.
 - **Multi-toolchain coexistence**: rustup supports many toolchains
   installed side-by-side and switches by env var / shim. soldr would
   need at minimum `~/.soldr/toolchains/<triple>-<channel>/...`
-  layout to keep a `nightly-2025-12-01` and a `1.94.1` installed
+  layout to keep a `nightly-2025-12-01` and a `1.95.0` installed
   simultaneously without re-downloading.
 
 ### 1.3 Things rustup does that we explicitly should NOT do
@@ -129,7 +129,7 @@ historical-channel-name fallbacks, partial install recovery).
 - URL pattern:
   `https://static.rust-lang.org/dist/channel-rust-<channel>.toml`
   where `<channel>` is `stable`, `beta`, `nightly`, an exact
-  version `1.94.1`, or a dated nightly `nightly-2025-12-01`.
+  version `1.95.0`, or a dated nightly `nightly-2025-12-01`.
 - Format: TOML, `manifest-version = "2"`, `date = "YYYY-MM-DD"`.
 - Top-level keys we care about:
   - `[pkg.<component>]` blocks with `version` and a nested
@@ -147,10 +147,10 @@ historical-channel-name fallbacks, partial install recovery).
 ### 2.2 Artifact layout
 
 Each component on each target is shipped as a single archive
-(e.g. `rust-std-1.94.1-x86_64-unknown-linux-gnu.tar.xz`). Inside:
+(e.g. `rust-std-1.95.0-x86_64-unknown-linux-gnu.tar.xz`). Inside:
 
 ```
-rust-std-1.94.1-x86_64-unknown-linux-gnu/
+rust-std-1.95.0-x86_64-unknown-linux-gnu/
   components            # plain text list
   install.sh            # rustup historically used this
   rust-installer-version
@@ -203,7 +203,7 @@ Schema:
 
 ```toml
 [toolchain]
-channel    = "1.94.1"           # required if no `path`
+channel    = "1.95.0"           # required if no `path`
 profile    = "minimal"          # optional, default "default"
 components = ["rustfmt", "clippy"]
 targets    = ["wasm32-unknown-unknown", "x86_64-unknown-linux-musl"]
@@ -264,7 +264,7 @@ the request involves something the native fetcher does not handle
 `rustup` if it exists, else fail with a clear message.
 
 Pros:
-- Single HTTP fetch + extract for the 95% case (`channel = "1.94.1"`,
+- Single HTTP fetch + extract for the 95% case (`channel = "1.95.0"`,
   profile minimal, no extras).
 - No `rustup-init` step in CI; one fewer subprocess generation.
 - Toolchain bytes get the same `SOLDR_TRUST_MODE` treatment as
@@ -331,7 +331,7 @@ PR sequence, rough complexity per step (S = ~1 day, M = a few days, L = a week+)
    through the same `SOLDR_CHECKSUMS_FILE` mechanism as ecosystem
    tools. Document the new keys.
 8. **Cross-platform validation matrix** (M). CI job that installs
-   stable, nightly, `1.94.1`, and a dated nightly on linux-gnu,
+   stable, nightly, `1.95.0`, and a dated nightly on linux-gnu,
    linux-musl, macos-arm64, windows-msvc. Confirm `cargo build`
    works in each.
 9. **Docs + DESIGN.md update** (S). Amend "Not a Rust toolchain

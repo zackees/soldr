@@ -27,7 +27,7 @@ or later — soldr already fetches this via `apple_sdk.rs`) and keep zig
 ## What this harness does
 
 1. Builds an `ubuntu-24.04` image with:
-   - `rustup` 1.94.1 + the `x86_64-apple-darwin` rust target
+   - `rustup` 1.95.0 + the `x86_64-apple-darwin` rust target
    - System `clang-18` (Ubuntu's; has darwin codegen built in)
    - System `llvm-18` (for `llvm-ar`, `llvm-ranlib`)
    - `zig` 0.14.1 (used only as the linker, via `-fuse-ld=lld` or `zig cc`)

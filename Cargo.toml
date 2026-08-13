@@ -33,7 +33,7 @@ exclude = [
 [workspace.package]
 version = "0.9.0"
 edition = "2021"
-rust-version = "1.94.1"
+rust-version = "1.95.0"
 license = "BSD-3-Clause"
 repository = "https://github.com/zackees/soldr"
 homepage = "https://github.com/zackees/soldr"

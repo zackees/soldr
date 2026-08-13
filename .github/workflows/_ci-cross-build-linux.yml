@@ -119,7 +119,7 @@ jobs:
       # soldr#1061 phase A: replaced the bare dtolnay/rust-toolchain
       # + Swatinem cargo-cache pair with setup-soldr's integrated
       # `prebuild-deps: soldr-cook` flow. setup-soldr handles:
-      #   1. Rust toolchain install (1.94.1 per rust-toolchain.toml)
+      #   1. Rust toolchain install (1.95.0 per rust-toolchain.toml)
       #   2. cargo registry + target cache (actions/cache@v4 keyed on
       #      Cargo.lock + rustc + target)
       #   3. `soldr cook` hydration — restores prebuilt
@@ -143,7 +143,7 @@ jobs:
           # build, so the next build recompiles the world. See
           # tests/test_setup_soldr_version_pins.py.
           version: 0.8.29
-          toolchain: 1.94.1
+          toolchain: 1.95.0
           # soldr#2451: `cache: false` alone does NOT stop setup-soldr's
           # soldr-mini / solo-toolchain / build-cache layers (each is gated on
           # its own input, not the umbrella), so the failing lanes still logged

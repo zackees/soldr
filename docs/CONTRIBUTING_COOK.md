@@ -170,7 +170,7 @@ test` runs are no-ops for these tests, and only `bench/cook_in_docker.sh`
 
 ## What lives where
 
-- `docker/cook-shared-cache/Dockerfile` — Rust 1.94.1 base image with
+- `docker/cook-shared-cache/Dockerfile` — Rust 1.95.0 base image with
   `pkg-config`, `libssl-dev`, `git`. Marker env var
   `SOLDR_COOK_DOCKER_HARNESS=1`. `CARGO_HOME=/root/.cargo` pinned so
   the named volume mount point is unambiguous.
