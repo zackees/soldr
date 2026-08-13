@@ -3,17 +3,11 @@ crates/soldr-cli/src/broker_identity.rs::daemon_session_endpoint_from_executable
 crates/soldr-cli/src/broker_identity.rs::resolve
 crates/soldr-cli/src/broker_spawn.rs::daemon_stdio
 crates/soldr-cli/src/build_from_source_cmd.rs::execute_plan
-crates/soldr-cli/src/cargo_front_door/mod.rs::configure_cargo_child_for_timeout
-crates/soldr-cli/src/cargo_front_door/mod.rs::kill_cargo_process_tree@cfg(all(not(windows),not(unix)))
-crates/soldr-cli/src/cargo_front_door/mod.rs::kill_cargo_process_tree@cfg(unix)
-crates/soldr-cli/src/cargo_front_door/mod.rs::kill_cargo_process_tree@cfg(windows)
 crates/soldr-cli/src/cargo_front_door/target.rs::default_cargo_build_target
 crates/soldr-cli/src/cargo_front_door/zig_shim.rs::ensure_zig_wrappers
 crates/soldr-cli/src/cli_dispatch.rs::ensure_msvc_host_env_for_native
 crates/soldr-cli/src/cli_dispatch.rs::pick_cross_subcommand
 crates/soldr-cli/src/compile_diagnostics.rs::maxpath_headroom_warning
-crates/soldr-cli/src/gc/auto.rs::maybe_spawn_auto_gc_sweeper
-crates/soldr-cli/src/gc/holding_process.rs::holders_under
 crates/soldr-cli/src/install_shims.rs::tool_file_name
 crates/soldr-cli/src/linux_cross.rs::prepare
 crates/soldr-cli/src/msvc_host.rs::ensure_msvc_env_for_native_in
@@ -27,4 +21,3 @@ crates/soldr-cli/src/shim_materialize.rs::materialize_executable
 crates/soldr-cli/src/target_lifecycle.rs::prepare_target
 crates/soldr-cli/src/trampoline_layout.rs::compute_layout
 crates/soldr-cli/src/trampoline_layout.rs::effective_target_triple
-crates/soldr-cli/src/version_trampoline.rs::run

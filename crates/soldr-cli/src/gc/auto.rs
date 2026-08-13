@@ -87,15 +87,9 @@ pub(crate) fn maybe_spawn_auto_gc_sweeper(paths: &SoldrPaths) {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        // CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_NO_WINDOW —
-        // same detach semantics as daemon::lifecycle::spawn_detached_inner.
-        const FLAGS: u32 = 0x0000_0200 | 0x0000_0008 | 0x0800_0000;
-        cmd.creation_flags(FLAGS);
-    }
-    let _ = cmd.spawn();
+    // Detached background spawn: own process group, no console window —
+    // the platform crate owns the flag mapping.
+    let _ = crate::platform::process::spawn::spawn_detached(&mut cmd);
 }
 
 /// Issue #1286 (F5): synchronous entry point behind the hidden

@@ -340,32 +340,20 @@ fn locate_in_path(binary: &str, strip_self: bool) -> Option<PathBuf> {
     None
 }
 
-#[cfg(windows)]
 fn exe_filename(binary: &str) -> String {
-    format!("{binary}.exe")
+    crate::platform::executable::name::native(binary)
 }
 
-#[cfg(not(windows))]
-fn exe_filename(binary: &str) -> String {
-    binary.to_string()
-}
-
+/// Run `binary` as the current process: Unix execs (replacing this image),
+/// Windows spawns and waits. Only the failure path returns here on Unix.
 fn exec_with_argv(binary: &Path, args: &[OsString]) -> i32 {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        let err = std::process::Command::new(binary).args(args).exec();
-        eprintln!("clang shim: exec({binary:?}) failed: {err}");
-        126
-    }
-    #[cfg(windows)]
-    {
-        match std::process::Command::new(binary).args(args).status() {
-            Ok(status) => status.code().map(normalize_exit_code).unwrap_or(1),
-            Err(err) => {
-                eprintln!("clang shim: spawn({binary:?}) failed: {err}");
-                126
-            }
+    let mut command = std::process::Command::new(binary);
+    command.args(args);
+    match crate::platform::process::spawn::exec_or_status(&mut command) {
+        Ok(status) => status.code().map(normalize_exit_code).unwrap_or(1),
+        Err(err) => {
+            eprintln!("clang shim: exec({binary:?}) failed: {err}");
+            126
         }
     }
 }

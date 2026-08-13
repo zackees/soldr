@@ -26,12 +26,11 @@ pub(crate) fn spawn_detached_self_inner(
 fn spawn_detached(program: &Path, via_self: bool, args: &[String]) -> Result<(), std::io::Error> {
     let mut command = Command::new(program);
     command.envs(daemon_spawn_env());
-    #[cfg(unix)]
+    // arg0 replacement is a Unix primitive; on Windows the image decides
+    // the identity and the platform facade is a no-op.
     if via_self {
         force_daemon_via_self_cli_identity(&mut command);
     }
-    #[cfg(windows)]
-    let _ = via_self;
     command.args(args);
 
     let log_file = open_spawn_log();
@@ -44,10 +43,8 @@ fn spawn_detached(program: &Path, via_self: bool, args: &[String]) -> Result<(),
     Ok(())
 }
 
-#[cfg(unix)]
 pub(crate) fn force_daemon_via_self_cli_identity(command: &mut Command) {
-    use std::os::unix::process::CommandExt;
-    command.arg0("soldr");
+    crate::platform::process::command::arg0(command, "soldr");
 }
 
 /// Open `daemon-spawn.log` for append.
@@ -70,24 +67,5 @@ pub(crate) fn open_spawn_log_at(path: &Path) -> Option<std::fs::File> {
 }
 
 pub(crate) fn daemon_stdio(log: Option<&std::fs::File>) -> running_process::DaemonStdio<'_> {
-    let Some(log) = log else {
-        return running_process::DaemonStdio::default();
-    };
-
-    #[cfg(unix)]
-    {
-        use std::os::fd::AsFd;
-        running_process::DaemonStdio {
-            stdout: running_process::DaemonStdioSource::Fd(log.as_fd()),
-            stderr: running_process::DaemonStdioSource::Fd(log.as_fd()),
-        }
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::io::AsHandle;
-        running_process::DaemonStdio {
-            stdout: running_process::DaemonStdioSource::Handle(log.as_handle()),
-            stderr: running_process::DaemonStdioSource::Handle(log.as_handle()),
-        }
-    }
+    crate::platform::process::spawn::daemon_stdio(log)
 }

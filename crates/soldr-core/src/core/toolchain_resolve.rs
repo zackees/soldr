@@ -261,15 +261,7 @@ pub fn apply_implicit_toolchain_homes(command: &mut Command, start_dir: Option<&
 }
 
 pub fn suppress_windows_console_window(command: &mut Command) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-
-    #[cfg(not(windows))]
-    let _ = command;
+    crate::platform::process::command::suppress_console(command);
 }
 
 pub fn probe_toolchain_binary(tool: &str, start_dir: Option<&Path>) -> Option<PathBuf> {

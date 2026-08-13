@@ -364,67 +364,16 @@ fn kill_for_watchdog(
     SoldrError::Other(message)
 }
 
-#[cfg(windows)]
 fn kill_installer_process_tree(child: &mut Child) -> std::io::Result<&'static str> {
-    let pid = child.id().to_string();
-    let taskkill = Command::new("taskkill")
-        .args(["/PID", &pid, "/T", "/F"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    match taskkill {
-        Ok(status) if status.success() => Ok("killed installer process tree"),
-        _ => {
-            child.kill()?;
-            Ok("killed installer process")
-        }
+    use crate::platform::process::terminate::TreeKill;
+    match crate::platform::process::terminate::terminate_tree(child)? {
+        TreeKill::TreeKilled => Ok("killed installer process tree"),
+        TreeKill::ProcessKilled => Ok("killed installer process"),
     }
-}
-
-#[cfg(unix)]
-fn kill_installer_process_tree(child: &mut Child) -> std::io::Result<&'static str> {
-    let process_group = child.id() as libc::pid_t;
-    let term_result = signal_process_group(process_group, libc::SIGTERM);
-    thread::sleep(Duration::from_millis(100));
-    let kill_result = signal_process_group(process_group, libc::SIGKILL);
-    if term_result.is_ok() || kill_result.is_ok() {
-        return Ok("signaled installer process group");
-    }
-    child.kill()?;
-    Ok("killed installer process")
-}
-
-#[cfg(unix)]
-fn signal_process_group(process_group: libc::pid_t, signal: libc::c_int) -> std::io::Result<()> {
-    // SAFETY: `process_group` is the spawned child's PID after
-    // `process_group(0)`. Negating it asks the kernel to signal every member.
-    let result = unsafe { libc::kill(-process_group, signal) };
-    if result == 0 {
-        return Ok(());
-    }
-    let error = std::io::Error::last_os_error();
-    if error.raw_os_error() == Some(libc::ESRCH) {
-        return Ok(());
-    }
-    Err(error)
-}
-
-#[cfg(all(not(windows), not(unix)))]
-fn kill_installer_process_tree(child: &mut Child) -> std::io::Result<&'static str> {
-    child.kill()?;
-    Ok("killed installer process")
 }
 
 fn configure_installer_process_tree(command: &mut Command) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = command;
-    }
+    crate::platform::process::command::configure_process_group(command);
 }
 
 #[cfg(test)]

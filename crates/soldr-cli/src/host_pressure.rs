@@ -30,14 +30,14 @@ use std::io::Write;
 /// it to `i32`, so the comparison is against the sign-reinterpreted value
 /// (`-1073741502`) rather than the literal.
 ///
-/// Not gated to `cfg(windows)`: a Unix `ExitStatus::code` is a 0-255 wait
-/// status and can never collide with this value, so the check is harmless
-/// there and the tests run on every platform.
+/// The platform crate owns the classification: a Unix `ExitStatus::code`
+/// is a 0-255 wait status and can never collide with this value, so the
+/// check is harmless there and the tests run on every platform.
 pub(crate) const STATUS_DLL_INIT_FAILED: i32 = 0xC000_0142_u32 as i32;
 
 /// True when `exit_code` is the process-initialization failure above.
 pub(crate) fn is_process_init_failure(exit_code: i32) -> bool {
-    exit_code == STATUS_DLL_INIT_FAILED
+    crate::platform::process::exit::is_init_failure(exit_code)
 }
 
 /// The advisory printed when a compiler dies at process init.
