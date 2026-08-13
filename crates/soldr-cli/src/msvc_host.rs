@@ -394,7 +394,7 @@ pub async fn ensure_msvc_env_for_native_in(
     target_triple: &str,
     project_dir: &Path,
 ) -> Result<bool, MsvcDetectionError> {
-    if !cfg!(target_os = "windows") {
+    if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
         return Ok(false);
     }
     if !target_triple.ends_with("-pc-windows-msvc") {

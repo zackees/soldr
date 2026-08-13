@@ -77,7 +77,7 @@ pub(crate) async fn prepare_target(
 
     let legacy_xwin = std::env::var_os(crate::blessed_build::USE_LEGACY_XWIN_ENV_VAR)
         .is_some_and(|value| !value.is_empty() && value != "0");
-    if cfg!(target_os = "linux")
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Linux
         && attrs.os == TargetOs::Windows
         && attrs.abi == Some(TargetAbi::Msvc)
         && prep.xwin_cache_dir.is_none()
@@ -134,7 +134,7 @@ pub(crate) async fn prepare_target(
         // CMAKE injection precedent.
         env.extend(crate::fetch::gnu_linux_toolchain::cxx_stdlib_pin_env(
             base,
-            cfg!(target_os = "linux"),
+            crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Linux,
             |key| std::env::var_os(key).is_some(),
         ));
         let sysroot = toolchain.sysroot.to_string_lossy().into_owned();

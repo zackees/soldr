@@ -297,10 +297,7 @@ pub(crate) fn apply_to_command(command: &mut std::process::Command, shim_dir: &P
     let mut new_path = std::ffi::OsString::new();
     new_path.push(shim_dir.as_os_str());
     if !existing.is_empty() {
-        #[cfg(windows)]
-        new_path.push(";");
-        #[cfg(not(windows))]
-        new_path.push(":");
+        new_path.push(crate::platform::host::facts::path_list_separator());
         new_path.push(&existing);
     }
     command.env("PATH", new_path);

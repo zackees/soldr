@@ -1,11 +1,3 @@
 crates/soldr-cli/src/broker_identity.rs::create_owner_only_directories
 crates/soldr-cli/src/broker_identity.rs::daemon_session_endpoint_from_executable
 crates/soldr-cli/src/broker_identity.rs::resolve
-crates/soldr-cli/src/cargo_front_door/target.rs::default_cargo_build_target
-crates/soldr-cli/src/cli_dispatch.rs::ensure_msvc_host_env_for_native
-crates/soldr-cli/src/cli_dispatch.rs::pick_cross_subcommand
-crates/soldr-cli/src/msvc_host.rs::ensure_msvc_env_for_native_in
-crates/soldr-cli/src/shim_dir.rs::apply_to_command
-crates/soldr-cli/src/target_lifecycle.rs::prepare_target
-crates/soldr-cli/src/trampoline_layout.rs::compute_layout
-crates/soldr-cli/src/trampoline_layout.rs::effective_target_triple

@@ -94,6 +94,11 @@ pub fn max_path() -> Option<usize> {
     None
 }
 
+/// The PATH list separator for this host.
+pub fn path_list_separator() -> &'static str {
+    ":"
+}
+
 /// All host facts in one probe (with the runtime musl/glibc detection).
 pub fn info() -> HostInfo {
     HostInfo {

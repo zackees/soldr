@@ -97,8 +97,8 @@ pub(crate) fn pick_cross_subcommand(
     pick_cross_subcommand_for_host(
         target_triple,
         msvc_blessed_cache_ready,
-        cfg!(target_os = "linux"),
-        cfg!(target_arch = "x86_64"),
+        crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Linux,
+        crate::platform::host::facts::arch() == crate::platform::host::facts::HostArch::X86_64,
     )
 }
 
@@ -254,7 +254,7 @@ fn nextest_inner_command_index(args: &[String]) -> Option<usize> {
 /// install — the underlying cargo invocation still runs and emits
 /// its own (better) error if it actually needs the env.
 pub(crate) async fn ensure_msvc_host_env_for_native(args: &[String]) {
-    if !cfg!(target_os = "windows") {
+    if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
         return;
     }
     let target = match extract_target_from_args(args) {
