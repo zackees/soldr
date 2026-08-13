@@ -2923,7 +2923,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-platform"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "libc",
  "running-process",
