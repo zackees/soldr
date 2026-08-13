@@ -3,6 +3,21 @@
 
 use super::*;
 
+crate::timed_test!(shutdown_signal_survives_before_accept_loop_waits, {
+    let shutdown = tokio::sync::Notify::new();
+    request_shutdown(&shutdown);
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(async {
+            tokio::time::timeout(std::time::Duration::from_millis(100), shutdown.notified())
+                .await
+                .expect("an early shutdown signal must retain a permit");
+        });
+});
+
 crate::timed_test!(
     direct_handoff_eligibility_requires_platform_capability_and_token,
     {

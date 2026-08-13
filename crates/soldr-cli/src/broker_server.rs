@@ -489,7 +489,7 @@ async fn handle_connection(
                 .map_err(io::Error::other)?;
         write_frame_async(&mut stream, &response).await?;
         if AdminVerb::try_from(admin.verb) == Ok(AdminVerb::Shutdown) {
-            shutdown.notify_waiters();
+            request_shutdown(&shutdown);
         }
         return Ok(());
     }
@@ -651,6 +651,14 @@ async fn handle_connection(
     // Portable fallback: no reconnect. The exact accepted stream that carried
     // Hello now carries SessionStart and the complete compile exchange.
     running_process::broker::session_relay::relay_session(stream, &negotiated.backend_pipe).await
+}
+
+/// Wake the broker's single accept-loop shutdown waiter. `notify_one` retains
+/// a permit when the handler wins the scheduling race and signals before the
+/// accept loop begins polling `notified()`; `notify_waiters` would lose that
+/// early notification and leave `broker stop` waiting for its kill deadline.
+fn request_shutdown(shutdown: &tokio::sync::Notify) {
+    shutdown.notify_one();
 }
 
 async fn handle_daemon_control_tunnel(

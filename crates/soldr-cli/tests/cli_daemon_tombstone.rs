@@ -5,37 +5,12 @@
 
 mod common;
 
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use soldr_cli::core::SoldrPaths;
 use soldr_cli::timed_test;
-
-fn drain<R: std::io::Read + Send + 'static>(reader: R) -> Arc<Mutex<Vec<String>>> {
-    let lines = Arc::new(Mutex::new(Vec::new()));
-    let sink = Arc::clone(&lines);
-    std::thread::spawn(move || {
-        for line in BufReader::new(reader).lines().map_while(Result::ok) {
-            sink.lock().unwrap().push(line);
-        }
-    });
-    lines
-}
-
-fn wait_for(lines: &Arc<Mutex<Vec<String>>>, needle: &str, deadline: Instant) -> bool {
-    loop {
-        if lines.lock().unwrap().iter().any(|l| l.contains(needle)) {
-            return true;
-        }
-        if Instant::now() >= deadline {
-            return false;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
 
 struct ServiceDefinitionGuard(PathBuf);
 
@@ -46,14 +21,21 @@ impl Drop for ServiceDefinitionGuard {
 }
 
 struct BrokerGuard {
-    child: Child,
+    home: PathBuf,
     root: PathBuf,
 }
 
 impl Drop for BrokerGuard {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let mut stop = Command::new(common::soldr_bin());
+        common::scrub_outer_soldr_env(&mut stop);
+        let _ = stop
+            .args(["broker", "stop"])
+            .env("HOME", &self.home)
+            .env("USERPROFILE", &self.home)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
         if let Some(pid) = find_daemon_pid(&self.root) {
             let _ = kill_pid(pid);
         }
@@ -72,6 +54,42 @@ timed_test!(
         std::fs::write(project.join("src/lib.rs"), "pub fn tombstone() {}\n")
             .expect("write source");
 
+        // Register the isolated route before the front door establishes its
+        // broker. The service-definition override is part of the detached
+        // broker's explicit environment contract.
+        let paths = SoldrPaths::with_root(root.clone());
+        let installed =
+            soldr_cli::daemon::service_definition::install_service_definition_to_dir_for_paths(
+                &service_root,
+                &paths,
+                &common::soldr_daemon_bin(),
+            )
+            .expect("install isolated daemon service definition");
+        let _service_definition = ServiceDefinitionGuard(installed.path.clone());
+
+        // Establish the detached broker through an ordinary front-door command.
+        // This also proves the test-only service-definition root survives the
+        // broker spawn's sanitized environment boundary.
+        let mut version = Command::new(common::soldr_bin());
+        common::scrub_outer_soldr_env(&mut version);
+        let version_out = version
+            .arg("version")
+            .env("SOLDR_CACHE_DIR", &root)
+            .env("HOME", &home)
+            .env("USERPROFILE", &home)
+            .env("RUNNING_PROCESS_SERVICE_DEF_DIR", &service_root)
+            .output()
+            .expect("establish isolated broker");
+        assert!(
+            version_out.status.success(),
+            "broker-establishing version command failed: {}",
+            String::from_utf8_lossy(&version_out.stderr)
+        );
+        let _broker = BrokerGuard {
+            home: home.clone(),
+            root: root.clone(),
+        };
+
         // 1) `soldr daemon stop` on a clean root: the daemon isn't running, but
         //    the tombstone is planted regardless (the suppression window starts
         //    the moment a stop is requested).
@@ -82,6 +100,7 @@ timed_test!(
             .env("SOLDR_CACHE_DIR", &root)
             .env("HOME", &home)
             .env("USERPROFILE", &home)
+            .env("RUNNING_PROCESS_SERVICE_DEF_DIR", &service_root)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -92,71 +111,9 @@ timed_test!(
             "daemon stop failed: {}",
             String::from_utf8_lossy(&stop_out.stderr)
         );
-        // `daemon stop` is an eligible top-level front door, so it first
-        // confirms/resurrects the stable broker before planting the route
-        // tombstone. Stop that broker explicitly before starting the
-        // instrumented foreground broker below; the tombstone itself remains.
-        let broker_stop = Command::new(common::soldr_bin())
-            .args(["broker", "stop"])
-            .env("HOME", &home)
-            .env("USERPROFILE", &home)
-            .output()
-            .expect("stop broker created by daemon stop front door");
-        assert!(
-            broker_stop.status.success(),
-            "broker stop failed: {}",
-            String::from_utf8_lossy(&broker_stop.stderr)
-        );
-
-        // 2) Register this root's route and start a broker. Since #2441 the
-        //    broker is passive until a client requests a registered route; that
-        //    requested launch must observe the live tombstone and leave no
-        //    daemon behind.
-        let paths = SoldrPaths::with_root(root.clone());
-        let installed =
-            soldr_cli::daemon::service_definition::install_service_definition_to_dir_for_paths(
-                &service_root,
-                &paths,
-                &common::soldr_daemon_bin(),
-            )
-            .expect("install isolated daemon service definition");
-        let _service_definition = ServiceDefinitionGuard(installed.path.clone());
-        let mut broker_command = Command::new(common::soldr_bin());
-        common::scrub_outer_soldr_env(&mut broker_command);
-        let child = broker_command
-            .args(["broker", "serve"])
-            .env("SOLDR_CACHE_DIR", &root)
-            .env("HOME", &home)
-            .env("USERPROFILE", &home)
-            .env("RUNNING_PROCESS_SERVICE_DEF_DIR", &service_root)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn broker");
-        let mut broker = BrokerGuard {
-            child,
-            root: root.clone(),
-        };
-        let out = drain(broker.child.stdout.take().expect("broker stdout"));
-        let err = drain(broker.child.stderr.take().expect("broker stderr"));
-
-        let broker_ready = wait_for(
-            &out,
-            "stable endpoint bound at",
-            Instant::now() + Duration::from_secs(10),
-        );
-        let child_state = match broker.child.try_wait() {
-            Ok(Some(status)) => format!("exited {status}"),
-            Ok(None) => "still alive".to_string(),
-            Err(error) => format!("wait error {error}"),
-        };
-        assert!(
-            broker_ready,
-            "broker did not become ready (child {child_state})\nstdout:\n{}\nstderr:\n{}",
-            out.lock().unwrap().join("\n"),
-            err.lock().unwrap().join("\n")
-        );
+        // 2) Since #2441 the broker is passive until a client requests a
+        // registered route. It must observe the live tombstone and leave no
+        // daemon behind.
         let rustc = Path::new(&std::env::var_os("CARGO").expect("CARGO set by cargo test"))
             .with_file_name(format!("rustc{}", std::env::consts::EXE_SUFFIX));
         let mut request = Command::new(common::soldr_bin());
@@ -179,6 +136,7 @@ timed_test!(
             .env("SOLDR_CACHE_DIR", &root)
             .env("HOME", &home)
             .env("USERPROFILE", &home)
+            .env("RUNNING_PROCESS_SERVICE_DEF_DIR", &service_root)
             .output()
             .expect("request tombstoned route through compiler wrapper");
         assert!(
@@ -196,13 +154,7 @@ timed_test!(
         std::thread::sleep(Duration::from_secs(2));
         let daemon_launched = find_daemon_pid(&root);
 
-        drop(broker);
-
-        let log = format!(
-            "broker request: {request_message}\nbroker stdout:\n  {}\nbroker stderr:\n  {}",
-            out.lock().unwrap().join("\n  "),
-            err.lock().unwrap().join("\n  ")
-        );
+        let log = format!("broker request: {request_message}");
         assert!(
             request_message.contains("tombstone active"),
             "broker must report that it skipped the requested launch under a live \
