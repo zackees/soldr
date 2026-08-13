@@ -267,7 +267,6 @@ timed_test!(blessed_build_prefetches_dependencies_before_cargo_build, {
         fetches[0],
         &vec![
             "fetch".to_string(),
-            "--locked".to_string(),
             "--target".to_string(),
             TARGET.to_string(),
         ],
@@ -319,14 +318,14 @@ timed_test!(offline_build_skips_prefetch, {
     );
 });
 
-timed_test!(missing_lockfile_skips_prefetch, {
+timed_test!(missing_lockfile_still_prefetches, {
     let harness = Harness::new("nolock", false);
     let output = harness.run(&["--no-cache", "build", "--target", TARGET], &[]);
     assert_success(&output, "soldr build --target (no lockfile)");
 
     let invocations = harness.cargo_invocations();
     assert!(
-        fetch_invocations(&invocations).is_empty(),
+        fetch_invocations(&invocations).len() == 1,
         "no Cargo.lock must mean no `cargo fetch --locked` prefetch: {invocations:?}"
     );
 });

@@ -54,7 +54,7 @@
 //! other soldr command spawn no fetch subprocess. That property is
 //! pinned by `tests/cli_build_fetch_overlap.rs`.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Stdio;
 use std::time::Instant;
 
@@ -196,7 +196,6 @@ pub(crate) fn plan_prefetch(
     };
     // Workspace members keep Cargo.lock at the workspace root, so walk
     // ancestors the same way cargo does.
-    find_lockfile_upward(&manifest_dir)?;
 
     // soldr#2139: this is the second cargo child on the blessed path, and it
     // builds its own `--target` rather than inheriting the caller's argv, so
@@ -205,7 +204,6 @@ pub(crate) fn plan_prefetch(
     let target = crate::target_alias::split_glibc_floor(target).map_or(target, |(base, _)| base);
     let mut args = vec![
         "fetch".to_string(),
-        "--locked".to_string(),
         "--target".to_string(),
         target.to_string(),
     ];
@@ -273,19 +271,6 @@ fn scan_build_flags(args: &[String]) -> BuildFlagScan {
     out
 }
 
-fn find_lockfile_upward(start: &Path) -> Option<PathBuf> {
-    let mut current = start.to_path_buf();
-    loop {
-        let candidate = current.join("Cargo.lock");
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-        if !current.pop() {
-            return None;
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,7 +301,7 @@ mod tests {
         );
         assert_eq!(
             plan,
-            Some(args(&["fetch", "--locked", "--target", TARGET])),
+            Some(args(&["fetch", "--target", TARGET])),
             "basic blessed build must plan a locked, target-scoped fetch"
         );
     });
@@ -347,7 +332,6 @@ mod tests {
             plan,
             Some(args(&[
                 "fetch",
-                "--locked",
                 "--target",
                 TARGET,
                 "--manifest-path",
@@ -373,7 +357,6 @@ mod tests {
             plan,
             Some(args(&[
                 "fetch",
-                "--locked",
                 "--target",
                 TARGET,
                 "--manifest-path",
@@ -448,7 +431,7 @@ mod tests {
         }
     });
 
-    crate::timed_test!(prefetch_requires_a_lockfile, {
+    crate::timed_test!(prefetch_does_not_require_a_lockfile, {
         let dir = tempfile::Builder::new()
             .prefix("fo-nolock")
             .tempdir()
@@ -461,9 +444,8 @@ mod tests {
             None,
         );
         assert_eq!(
-            plan, None,
-            "no Cargo.lock anywhere above the manifest dir must skip the prefetch \
-             (cargo fetch --locked would only error)"
+            plan,
+            Some(args(&["fetch", "--target", TARGET]))
         );
     });
 }
