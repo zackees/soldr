@@ -71,23 +71,16 @@ pub struct PathAction {
 }
 
 /// Check whether the current process holds an administrator token.
-/// On Windows we try a registry read of `HKLM\SECURITY` — only admin
-/// processes can open this key. A read failure means non-admin.
-#[cfg(target_os = "windows")]
+///
+/// The platform crate owns the probe: on Windows a registry read of
+/// `HKLM\SECURITY` (only admin processes can open this key); other
+/// hosts answer `false` because the callers gate the Windows-only
+/// optimize path. The test seam stays here, in the caller.
 pub fn is_admin() -> bool {
     if std::env::var_os(SOLDR_TEST_ASSUME_ADMIN_ENV).is_some() {
         return true;
     }
-    Command::new("reg")
-        .args(["query", r"HKLM\SECURITY"])
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn is_admin() -> bool {
-    false
+    crate::platform::host::user::is_elevated()
 }
 
 /// Resolve a usable PowerShell binary by checking `pwsh` then
@@ -102,26 +95,10 @@ pub fn find_powershell() -> Option<PathBuf> {
 }
 
 fn which_on_path(tool: &str) -> Option<PathBuf> {
+    // The platform owns PATH/PATHEXT candidate generation; this
+    // resolves the same way on every host.
     let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        #[cfg(windows)]
-        {
-            for ext in [".exe", ".cmd", ".bat", ""] {
-                let candidate = dir.join(format!("{tool}{ext}"));
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
-            }
-        }
-        #[cfg(not(windows))]
-        {
-            let candidate = dir.join(tool);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
+    crate::platform::executable::search::find_on_path(tool, &path)
 }
 
 /// Apply the given exclusion plan via PowerShell. Returns the per-path

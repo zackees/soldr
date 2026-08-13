@@ -219,35 +219,33 @@ fn format_snapshot(snap: &HostPressureSnapshot, tool: &str) -> String {
     out
 }
 
-/// Capture the live host-pressure snapshot (non-Windows stub).
+/// Capture the live host-pressure snapshot.
 ///
-/// The Win32 process/commit counters have no portable analogue, so only build
-/// parallelism is populated here. This keeps the module compiling and
-/// unit-testing on the Linux dev harness (CLAUDE.md #1105).
-#[cfg(not(windows))]
+/// The platform crate owns the probes (a ToolHelp process-table walk and
+/// the `GlobalMemoryStatusEx` commit charge on Windows; `None` on hosts
+/// without a Win32 analogue). Best-effort: each probe is isolated so a
+/// failure yields `None` for that field only. No retries, sleeps, or
+/// network -- the walk is bounded and fast, which matters because this
+/// runs on an already-failing build path and must never hang or change
+/// the exit code.
 fn capture_snapshot() -> HostPressureSnapshot {
-    HostPressureSnapshot {
-        jobs: resolve_jobs(),
-        ..HostPressureSnapshot::default()
-    }
-}
-
-/// Capture the live host-pressure snapshot on Windows.
-///
-/// Best-effort: each probe is isolated so a failure yields `None` for that
-/// field only. No retries, sleeps, or network -- the ToolHelp walk is bounded
-/// and fast, which matters because this runs on an already-failing build path
-/// and must never hang or change the exit code.
-#[cfg(windows)]
-fn capture_snapshot() -> HostPressureSnapshot {
-    let (total_processes, compiler_processes) = match count_processes() {
-        Some((t, c)) => (Some(t), Some(c)),
-        None => (None, None),
-    };
-    let (commit_used_mb, commit_limit_mb) = match commit_charge_mb() {
-        Some((used, limit)) => (Some(used), Some(limit)),
-        None => (None, None),
-    };
+    let (total_processes, compiler_processes) =
+        match crate::platform::host::resources::process_table() {
+            Some(rows) => {
+                let total = rows.len() as u32;
+                let compilerish = rows
+                    .iter()
+                    .filter(|(_, name)| is_compiler_image(name))
+                    .count() as u32;
+                (Some(total), Some(compilerish))
+            }
+            None => (None, None),
+        };
+    let (commit_used_mb, commit_limit_mb) =
+        match crate::platform::host::resources::commit_charge_mb() {
+            Some((used, limit)) => (Some(used), Some(limit)),
+            None => (None, None),
+        };
     HostPressureSnapshot {
         jobs: resolve_jobs(),
         total_processes,
@@ -255,83 +253,6 @@ fn capture_snapshot() -> HostPressureSnapshot {
         commit_used_mb,
         commit_limit_mb,
     }
-}
-
-/// Walk the live process table once via ToolHelp, returning
-/// `(total, compiler-ish)` counts. `None` if the snapshot could not be taken.
-#[cfg(windows)]
-fn count_processes() -> Option<(u32, u32)> {
-    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
-    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
-        TH32CS_SNAPPROCESS,
-    };
-
-    // SAFETY: FFI call with documented args; returns a handle we validate
-    // against INVALID_HANDLE_VALUE before use and CloseHandle on every path.
-    let handle = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
-    if handle == INVALID_HANDLE_VALUE || handle.is_null() {
-        return None;
-    }
-
-    let mut total: u32 = 0;
-    let mut compilerish: u32 = 0;
-    let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
-    entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-
-    // SAFETY: `entry` is a fully-owned, correctly-sized PROCESSENTRY32W; the
-    // API fills `szExeFile` in-place. `handle` is valid (checked above).
-    let mut ok = unsafe { Process32FirstW(handle, &mut entry) };
-    while ok != 0 {
-        total += 1;
-        let name = image_name_from_entry(&entry.szExeFile);
-        if is_compiler_image(&name) {
-            compilerish += 1;
-        }
-        // SAFETY: same invariants as Process32FirstW; iterates the snapshot.
-        ok = unsafe { Process32NextW(handle, &mut entry) };
-    }
-
-    // SAFETY: `handle` came from CreateToolhelp32Snapshot and is closed exactly
-    // once here, including when iteration stopped early.
-    unsafe {
-        CloseHandle(handle);
-    }
-
-    Some((total, compilerish))
-}
-
-/// Decode a NUL-terminated UTF-16 `szExeFile` field into a Rust `String`.
-#[cfg(windows)]
-fn image_name_from_entry(buf: &[u16]) -> String {
-    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-    String::from_utf16_lossy(&buf[..len])
-}
-
-/// Read the system commit charge via `GlobalMemoryStatusEx`, returning
-/// `(used_mb, limit_mb)`. `None` if the call failed.
-#[cfg(windows)]
-fn commit_charge_mb() -> Option<(u64, u64)> {
-    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
-
-    let mut status: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
-    status.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
-
-    // SAFETY: `status` is a correctly-sized, dwLength-initialized MEMORYSTATUSEX
-    // that the API fills in-place; no handles or allocations are involved.
-    let ok = unsafe { GlobalMemoryStatusEx(&mut status) };
-    if ok == 0 {
-        return None;
-    }
-
-    const MB: u64 = 1024 * 1024;
-    // ullTotalPageFile is the commit limit; ullAvailPageFile what remains.
-    let limit = status.ullTotalPageFile / MB;
-    let used = status
-        .ullTotalPageFile
-        .saturating_sub(status.ullAvailPageFile)
-        / MB;
-    Some((used, limit))
 }
 
 #[cfg(test)]

@@ -1,0 +1,173 @@
+//! Linux host facts, including libc detection.
+
+/// The host operating system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostOs {
+    /// Microsoft Windows.
+    Windows,
+    /// Apple macOS.
+    MacOs,
+    /// Linux.
+    Linux,
+}
+
+/// The host CPU architecture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostArch {
+    /// x86-64.
+    X86_64,
+    /// 64-bit ARM.
+    Aarch64,
+    /// Anything else; carries the `std::env::consts::ARCH` string.
+    Unknown(&'static str),
+}
+
+/// The host's C library environment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostLibc {
+    /// Not applicable (Windows, macOS).
+    None,
+    /// GNU libc.
+    Gnu,
+    /// musl.
+    Musl,
+}
+
+/// The raw compile-host facts `TargetTriple::host()` consumes. The
+/// triple construction itself is the caller's policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostInfo {
+    /// Host operating system.
+    pub os: HostOs,
+    /// Host architecture.
+    pub arch: HostArch,
+    /// Host libc environment.
+    pub libc: HostLibc,
+}
+
+/// The host operating system (this tree compiles only on Linux).
+pub fn os() -> HostOs {
+    HostOs::Linux
+}
+
+/// The host architecture.
+pub fn arch() -> HostArch {
+    if cfg!(target_arch = "x86_64") {
+        HostArch::X86_64
+    } else if cfg!(target_arch = "aarch64") {
+        HostArch::Aarch64
+    } else {
+        HostArch::Unknown(std::env::consts::ARCH)
+    }
+}
+
+/// The compile-time libc environment (the `target_env` of this build).
+/// The runtime probes in [`detect_linux_libc`] exist for hosts where
+/// the binary's own env differs from the OS's dominant libc.
+pub fn libc() -> HostLibc {
+    if cfg!(target_env = "musl") {
+        HostLibc::Musl
+    } else {
+        HostLibc::Gnu
+    }
+}
+
+/// All host facts in one probe (with the runtime musl/glibc detection).
+pub fn info() -> HostInfo {
+    HostInfo {
+        os: os(),
+        arch: arch(),
+        libc: detect_linux_libc(),
+    }
+}
+
+/// Detect musl vs glibc. Order matters:
+///
+/// 1. **Compile-time musl**: the build itself is musl (also covers
+///    Android-style unknown envs).
+/// 2. **ldd reports musl**: glibc writes its version banner to stdout;
+///    musl writes to stderr and exits non-zero — check both.
+/// 3. **musl dynamic linker present without a glibc linker**: e.g. CI
+///    runners install `musl-tools` for cross-compile lanes, and that
+///    drops a musl linker onto an otherwise glibc host.
+/// 4. **Default**: glibc. Most Linux distributions ship glibc — only
+///    musl distros need the override.
+pub(crate) fn detect_linux_libc() -> HostLibc {
+    classify_linux_libc(
+        cfg!(target_env = "musl"),
+        probe_ldd_reports_musl(),
+        probe_musl_dynamic_linker_present(),
+        probe_glibc_dynamic_linker_present(),
+    )
+}
+
+fn classify_linux_libc(
+    compile_time_musl: bool,
+    ldd_reports_musl: bool,
+    musl_dynamic_linker_present: bool,
+    glibc_dynamic_linker_present: bool,
+) -> HostLibc {
+    if compile_time_musl {
+        return HostLibc::Musl;
+    }
+    if ldd_reports_musl {
+        return HostLibc::Musl;
+    }
+    if musl_dynamic_linker_present && !glibc_dynamic_linker_present {
+        return HostLibc::Musl;
+    }
+    HostLibc::Gnu
+}
+
+fn probe_ldd_reports_musl() -> bool {
+    let Ok(output) = std::process::Command::new("ldd").arg("--version").output() else {
+        return false;
+    };
+    ldd_output_mentions_musl(&output.stdout) || ldd_output_mentions_musl(&output.stderr)
+}
+
+fn ldd_output_mentions_musl(bytes: &[u8]) -> bool {
+    std::str::from_utf8(bytes)
+        .ok()
+        .is_some_and(|s| s.to_ascii_lowercase().contains("musl"))
+}
+
+fn probe_musl_dynamic_linker_present() -> bool {
+    const CANDIDATES: &[&str] = &[
+        "/lib/ld-musl-x86_64.so.1",
+        "/lib/ld-musl-aarch64.so.1",
+        "/lib/ld-musl-armhf.so.1",
+        "/lib/ld-musl-arm.so.1",
+        "/lib/ld-musl-i386.so.1",
+    ];
+    CANDIDATES.iter().any(|p| std::path::Path::new(p).exists())
+}
+
+fn probe_glibc_dynamic_linker_present() -> bool {
+    const CANDIDATES: &[&str] = &[
+        "/lib64/ld-linux-x86-64.so.2",
+        "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+        "/lib/ld-linux-aarch64.so.1",
+        "/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1",
+    ];
+    CANDIDATES.iter().any(|p| std::path::Path::new(p).exists())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+    fn libc_classification_prefers_compile_time_then_probes() {
+        assert_eq!(classify_linux_libc(true, false, false, false), HostLibc::Musl);
+        assert_eq!(classify_linux_libc(false, true, false, false), HostLibc::Musl);
+        assert_eq!(classify_linux_libc(false, false, true, false), HostLibc::Musl);
+        assert_eq!(classify_linux_libc(false, false, true, true), HostLibc::Gnu);
+        assert_eq!(classify_linux_libc(false, false, false, false), HostLibc::Gnu);
+    }
+
+    #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+    fn linux_facts_report_linux() {
+        assert_eq!(os(), HostOs::Linux);
+    }
+}

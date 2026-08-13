@@ -8,3 +8,6 @@
 //! this crate never constructs or depends on `TargetTriple`.
 
 pub mod dirs;
+pub mod facts;
+pub mod resources;
+pub mod user;
