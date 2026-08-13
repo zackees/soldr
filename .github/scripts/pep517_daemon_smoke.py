@@ -185,6 +185,18 @@ def print_soldr_logs(cache_dir: Path) -> None:
         print(text[-16_000:], flush=True)
 
 
+def print_broker_spawn_log() -> None:
+    """Expose detached broker startup errors alongside smoke diagnostics."""
+    path = Path.home() / ".soldr" / "broker" / "broker-spawn.log"
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        print(f"--- broker spawn log unavailable ({path}): {exc}", flush=True)
+        return
+    print(f"--- broker spawn log ({path}, {path.stat().st_size} bytes) ---", flush=True)
+    print(text[-16_000:], flush=True)
+
+
 def stop_soldr_daemon(soldr: Path, env: dict[str, str]) -> None:
     try:
         subprocess.run(
@@ -262,6 +274,7 @@ def main() -> int:
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
             stop_soldr_daemon(soldr, env)
             print_soldr_logs(cache_dir)
+            print_broker_spawn_log()
             raise
         else:
             stop_soldr_daemon(soldr, env)
