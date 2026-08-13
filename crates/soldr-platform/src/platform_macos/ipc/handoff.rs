@@ -17,7 +17,7 @@ pub fn receive_unix_descriptor(
     ReceivedFd,
     [u8; running_process::broker::server::HANDOFF_TOKEN_BYTES],
 )> {
-    use std::os::fd::{AsFd as _, AsRawFd as _, FromRawFd as _};
+    use std::os::fd::{AsFd as _, AsRawFd as _};
 
     let interprocess::local_socket::tokio::Stream::UdSocket(socket) = &control;
     let socket_fd = socket.as_fd().as_raw_fd();
@@ -63,7 +63,6 @@ pub fn receive_unix_descriptor(
             ));
         }
         let received_fd = unsafe { *libc::CMSG_DATA(header).cast::<libc::c_int>() };
-        let owned = unsafe { std::os::fd::OwnedFd::from_raw_fd(received_fd) };
         let descriptor_flags = unsafe { libc::fcntl(received_fd, libc::F_GETFD) };
         if descriptor_flags < 0
             || unsafe {
@@ -76,12 +75,12 @@ pub fn receive_unix_descriptor(
         {
             return Err(io::Error::last_os_error());
         }
-        // The fd is now owned by `owned`, which is dropped at the end of
-        // this branch — but only after the raw number is stashed in the
-        // neutral wrapper; `owned` keeps it alive until then.
-        let fd = ReceivedFd::from_raw(owned.as_raw_fd() as u64);
-        drop(owned);
-        return Ok((control, fd, token));
+        // The descriptor stays process-owned from `recvmsg` until the
+        // caller converts it into a stream (which takes ownership and
+        // closes it on drop) or closes it via `close_received_fd`.
+        // Wrapping it in a temporary `OwnedFd` here would close it on
+        // scope exit and hand the caller a dead number.
+        return Ok((control, ReceivedFd::from_raw(received_fd as u64), token));
     }
 }
 
@@ -106,4 +105,12 @@ pub fn named_pipe_stream_from_handle_value(
         io::ErrorKind::Unsupported,
         "DuplicateHandle handoff does not exist on macOS",
     ))
+}
+
+/// Close a received descriptor that will never be converted into a
+/// stream (the handoff failed after receipt). Restores the original
+/// RAII semantics: the daemon closes the descriptor on every error
+/// path instead of leaking it.
+pub fn close_received_fd(fd: ReceivedFd) {
+    unsafe { libc::close(fd.raw() as libc::c_int) };
 }

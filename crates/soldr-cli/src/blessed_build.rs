@@ -390,13 +390,17 @@ fn darwin_should_use_lld(managed_llvm_available: bool) -> bool {
 
 const SOLDR_DSYMUTIL_ENV_VAR: &str = "SOLDR_DSYMUTIL";
 
+/// The dsymutil search names for the host (`.exe`-suffixed on Windows).
+fn dsymutil_names() -> &'static [&'static str] {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+        &["dsymutil.exe", "llvm-dsymutil.exe"]
+    } else {
+        &["dsymutil", "llvm-dsymutil"]
+    }
+}
+
 fn ensure_dsymutil_on_path(prep: &mut BlessedPrep) -> Result<(), SoldrError> {
-    let names: &[&str] =
-        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
-            &["dsymutil.exe", "llvm-dsymutil.exe"]
-        } else {
-            &["dsymutil", "llvm-dsymutil"]
-        };
+    let names: &[&str] = dsymutil_names();
     if let Some(path) = std::env::var_os(SOLDR_DSYMUTIL_ENV_VAR)
         .map(PathBuf::from)
         .filter(|path| path.is_file())
@@ -472,12 +476,7 @@ fn ensure_dsymutil_on_path(prep: &mut BlessedPrep) -> Result<(), SoldrError> {
 }
 
 fn find_dsymutil_in_rustup() -> Option<PathBuf> {
-    let names: &[&str] =
-        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
-            &["dsymutil.exe", "llvm-dsymutil.exe"]
-        } else {
-            &["dsymutil", "llvm-dsymutil"]
-        };
+    let names: &[&str] = dsymutil_names();
     let rustc = crate::binaries::resolve_toolchain_binary("rustc").ok()?;
     let toolchain_root = rustc.parent()?.parent()?;
     let host_bin = toolchain_root.join("lib").join("rustlib");

@@ -44,3 +44,7 @@ pub fn named_pipe_stream_from_handle_value(
             .map_err(|error| error.to_io_error())?;
     Ok(stream.into())
 }
+
+/// No-op on Windows: the broker hands over a duplicated handle, never
+/// a descriptor, so there is never a descriptor to close.
+pub fn close_received_fd(_fd: ReceivedFd) {}

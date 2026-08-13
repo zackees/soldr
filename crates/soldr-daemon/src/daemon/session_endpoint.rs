@@ -607,14 +607,25 @@ async fn receive_handed_off_session(
         })
         .await
         .map_err(|error| io::Error::other(format!("handoff receive task failed: {error}")))??;
-        let offer = read_handoff_offer_async(&mut control, expected_service_name).await?;
+        let offer = match read_handoff_offer_async(&mut control, expected_service_name).await {
+            Ok(offer) => offer,
+            Err(error) => {
+                crate::platform::ipc::handoff::close_received_fd(received_fd);
+                return Err(error);
+            }
+        };
         if offer.token.as_slice() != transport_token {
+            crate::platform::ipc::handoff::close_received_fd(received_fd);
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "SCM_RIGHTS token did not match the framed handoff offer",
             ));
         }
-        let stream = crate::platform::ipc::handoff::session_stream_from_received_fd(received_fd)?;
+        let stream =
+            match crate::platform::ipc::handoff::session_stream_from_received_fd(received_fd) {
+                Ok(stream) => stream,
+                Err(error) => return Err(error),
+            };
         // A positive ACK transfers ownership. Do not send it until the
         // received descriptor is a usable Tokio SESSION stream.
         accept_handoff_offer_async(&mut control, &offer).await?;
