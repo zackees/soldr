@@ -295,7 +295,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             // forward otherwise unchanged.
             if let Some(target_triple) = extract_target_from_args(&full_args) {
                 let paths = crate::core::SoldrPaths::new()?;
-                // soldr#1543: start a bounded `cargo fetch --locked
+                // soldr#1543: start a bounded `cargo fetch
                 // --target <T>` NOW so dependency acquisition overlaps
                 // the catalogue/SDK materialization below. Joined
                 // right after prep (before the front door spawns

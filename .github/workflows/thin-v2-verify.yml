@@ -108,7 +108,7 @@ jobs:
           zccache-seed-strict: true
 
       - name: Build soldr CLI
-        run: soldr cargo build -p soldr-cli --locked
+        run: soldr cargo build -p soldr-cli
 
       - name: Use soldr under test
         run: echo "${{ github.workspace }}/target/debug" >> "$GITHUB_PATH"
@@ -146,7 +146,7 @@ jobs:
           SOLDR_TARGET_CACHE_BUNDLE_DIR: ${{ runner.temp }}/thin-v2-bundle
         run: |
           set -o pipefail
-          soldr cargo build --locked -v 2>&1 | tee first.log
+          soldr cargo build -v 2>&1 | tee first.log
 
       - name: Delete target before restore
         run: rm -rf "${{ runner.temp }}/verify-noop/target"
@@ -171,7 +171,7 @@ jobs:
           SOLDR_TARGET_CACHE_BUNDLE_DIR: ${{ runner.temp }}/thin-v2-bundle
         run: |
           set -o pipefail
-          soldr cargo build --locked -v 2>&1 | tee second.log
+          soldr cargo build -v 2>&1 | tee second.log
 
       - name: Assert incomplete restore remained Cargo-dirty
         run: |

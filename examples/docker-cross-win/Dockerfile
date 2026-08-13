@@ -38,7 +38,7 @@ RUN apt-get \
 # 1.85-compatible release. If you bump the Rust base image, recompute
 # the matching cargo-xwin version with `cargo install cargo-xwin
 # --version <X>` — its readme calls out the rust version it needs.
-RUN CARGO_NET_RETRY=5 CARGO_HTTP_TIMEOUT=30 cargo install --locked cargo-xwin@0.19.2
+RUN CARGO_NET_RETRY=5 CARGO_HTTP_TIMEOUT=30 cargo install cargo-xwin@0.19.2
 
 WORKDIR /work
 

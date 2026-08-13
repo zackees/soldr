@@ -459,7 +459,7 @@ fn toolchain_prepare_installs_plugin_with_locked_flag() {
     );
     assert!(
         invocation.iter().any(|arg| arg == "--locked"),
-        "expected --locked in argv: {invocation:?}"
+        "expected in argv: {invocation:?}"
     );
 }
 

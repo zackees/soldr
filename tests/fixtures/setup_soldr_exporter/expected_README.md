@@ -23,8 +23,8 @@ jobs:
       - uses: zackees/setup-soldr@v0
         with:
           cache: true
-      - run: soldr cargo build --locked --release
-      - run: soldr cargo test --locked
+      - run: soldr cargo build --release
+      - run: soldr cargo test
 ```
 
 ### macOS
@@ -44,8 +44,8 @@ jobs:
       - uses: zackees/setup-soldr@v0
         with:
           cache: true
-      - run: soldr cargo build --locked --release
-      - run: soldr cargo test --locked
+      - run: soldr cargo build --release
+      - run: soldr cargo test
 ```
 
 ### Windows
@@ -65,8 +65,8 @@ jobs:
       - uses: zackees/setup-soldr@v0
         with:
           cache: true
-      - run: soldr cargo build --locked --release
-      - run: soldr cargo test --locked
+      - run: soldr cargo build --release
+      - run: soldr cargo test
 ```
 
 ## Inputs

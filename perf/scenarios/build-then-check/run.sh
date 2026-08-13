@@ -47,7 +47,7 @@ trap 'measure::stop_rss_poller' EXIT
 cold_start_ms="$(measure::now_ms)"
 (
     cd "${FIXTURE_DIR}"
-    SOLDR_CACHE_DIR="${CACHE}" soldr cargo build --release --locked --offline
+    SOLDR_CACHE_DIR="${CACHE}" soldr cargo build --release --offline
 )
 cold_elapsed_ms="$(measure::elapsed_ms "${cold_start_ms}")"
 
@@ -61,7 +61,7 @@ warm_start_ms="$(measure::now_ms)"
 (
     cd "${FIXTURE_DIR}"
     SOLDR_CACHE_DIR="${CACHE}" soldr cargo check --release \
-        --locked --offline --message-format=json \
+        --offline --message-format=json \
         >"${WORKDIR}/cargo-warm-1.jsonl"
 )
 warm_elapsed_ms="$(measure::elapsed_ms "${warm_start_ms}")"

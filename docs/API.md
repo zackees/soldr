@@ -2019,7 +2019,7 @@ Commands:
 | `SOLDR_LOG` | Log level | `warn` |
 | `SOLDR_OFFLINE` | Disable network access for tool fetches | `false` |
 | `SOLDR_RUST_PLAN_MEMO` | Default-on: memoize the target-cache preparation subprocess outputs (`cargo metadata --format-version 1`, `rustc -Vv`, `cargo --version`) in a versioned protobuf memo under `<zccache cache dir>/plans/`, keyed by a content-identity hash over the workspace manifests, `Cargo.lock`, hierarchical `.cargo/config*`, metadata passthrough args, toolchain binary identity (path + size + mtime), rust-toolchain pins, rustup `settings.toml`, and the steering env vars (issue #1540). Any key mismatch, decode error, or discovery error falls back to the authoritative subprocesses. Set to a falsy value (`0` / `false` / `no` / `off`) to disable. | unset (on) |
-| `SOLDR_FETCH_OVERLAP` | Kill switch for the `soldr build --target <T>` dependency-prefetch overlap (issue #1543). By default the blessed build spawns a best-effort `cargo fetch --locked --target <T>` concurrently with catalogue/SDK preparation so fresh-build time approaches max(fetch, prepare) instead of their sum; the prefetch is joined before the main cargo build spawns and any prefetch failure is logged and ignored. The overlap is automatically skipped for `--offline` / `--frozen` builds, truthy `CARGO_NET_OFFLINE`, or when no `Cargo.lock` exists. Set to `0` / `false` / `no` / `off` (case-insensitive) to disable. | unset (on) |
+| `SOLDR_FETCH_OVERLAP` | Kill switch for the `soldr build --target <T>` dependency-prefetch overlap (issue #1543). By default the blessed build spawns a best-effort `cargo fetch --target <T>` concurrently with catalogue/SDK preparation so fresh-build time approaches max(fetch, prepare) instead of their sum; the prefetch is joined before the main cargo build spawns and any prefetch failure is logged and ignored. The overlap is automatically skipped for `--offline` / `--frozen` builds, truthy `CARGO_NET_OFFLINE`, or when no `Cargo.lock` exists. Set to `0` / `false` / `no` / `off` (case-insensitive) to disable. | unset (on) |
 | `SOLDR_RUST_PLAN_SKIP_WARM_RESTORE` | Default-on: skip `rust-plan restore` when `target/` is already warm from a prior step in the same GitHub Actions job + attempt (issue #229). Set to a falsy value (`0` / `false` / `no` / `off`) to opt out. | unset (on) |
 | `SOLDR_DYLINT_PREPARE_TTL_SECS` | Freshness window (seconds) for the dylint prepared-toolchain marker under `<soldr root>/dylint/prepared/v1/`. A fresh, valid marker lets a warm top-level `soldr cargo dylint` skip the nightly-map HTTP fetch and the `rustup component list` / `rustc -vV` probes entirely. `0` means never trust the marker (every run pays the full cold path). | `86400` (24 h) |
 | `SOLDR_DYLINT_REVERIFY` | Truthy (`1`/`true`) bypasses the dylint prepared-toolchain marker and always re-runs the full catalogue-fetch + rustup verification path. Use after manually mutating the nightly toolchain or when diagnosing identity mismatches. | unset |
@@ -2269,7 +2269,7 @@ For bootstrap verification of another Rust project:
 
 ```yaml
 - name: Build third-party project through soldr
-  run: soldr cargo build --locked --target ${{ matrix.target }}
+  run: soldr cargo build --target ${{ matrix.target }}
 ```
 
 ---

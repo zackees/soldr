@@ -80,7 +80,7 @@ def test_release_before_a_line_continuation_is_caught(mod, tmp_path):
     _write(
         tmp_path,
         "wrapped.yml",
-        "jobs:\n  a:\n    run: |\n      cargo build \\\n        --release \\\n        --locked\n",
+        "jobs:\n  a:\n    run: |\n      cargo build \\\n        --release \\\n       \n",
     )
     findings = mod.scan(tmp_path)
     assert len(findings) == 1, f"a wrapped invocation must still be caught: {findings}"
@@ -130,7 +130,7 @@ def test_an_allow_marker_on_the_preceding_line_excuses_it(mod, tmp_path):
         "wrapped-marked.yml",
         "jobs:\n  a:\n    run: |\n"
         "      # allow-release: the release profile is the thing under test here\n"
-        "      cargo build \\\n        --release \\\n        --locked\n",
+        "      cargo build \\\n        --release \\\n       \n",
     )
     assert mod.scan(tmp_path) == []
 

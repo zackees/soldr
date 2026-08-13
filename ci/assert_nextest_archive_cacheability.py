@@ -37,7 +37,7 @@ cargo --version
 
 echo "## bootstrap soldr"
 export CARGO_TARGET_DIR=/root/.soldr/bootstrap-target
-cargo build -p soldr-cli --bin soldr --locked
+cargo build -p soldr-cli --bin soldr
 SOLDR_BIN=/root/.soldr/bootstrap-target/debug/soldr
 "$SOLDR_BIN" --version
 
@@ -142,7 +142,7 @@ ensure_soldr_daemon
 echo "## cold nextest archive build"
 cold_start=$(date +%s%3N)
 CARGO_PROFILE_TEST_DEBUG=line-tables-only \
-  "$SOLDR_BIN" cargo nextest archive --workspace --locked \
+  "$SOLDR_BIN" cargo nextest archive --workspace \
   --cargo-profile ci-nextest \
   --archive-file "$ARCHIVE_DIR/cold-tests.tar.zst" \
   --archive-format tar-zst
@@ -158,7 +158,7 @@ clean_target
 ensure_soldr_daemon
 warm_start=$(date +%s%3N)
 CARGO_PROFILE_TEST_DEBUG=line-tables-only \
-  "$SOLDR_BIN" cargo nextest archive --workspace --locked \
+  "$SOLDR_BIN" cargo nextest archive --workspace \
   --cargo-profile ci-nextest \
   --archive-file "$ARCHIVE_DIR/warm-tests.tar.zst" \
   --archive-format tar-zst

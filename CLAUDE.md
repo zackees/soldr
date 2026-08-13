@@ -216,7 +216,7 @@ branch, not a second working tree.
 
 ## Bumping soldr's own version (release PRs)
 
-When opening a release PR, **three files must be bumped in lockstep** or every CI lane fails immediately with `error: cannot update the lock file because --locked was passed to prevent this` (the v0.7.65 trap from #1024 / #1025):
+When opening a release PR, **three files must be bumped in lockstep** or every CI lane fails immediately with `error: cannot update the lock file because was passed to prevent this` (the v0.7.65 trap from #1024 / #1025):
 
 1. `Cargo.toml` — `[workspace.package].version`.
 2. `package.json` — top-level `"version"`.

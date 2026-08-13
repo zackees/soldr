@@ -329,7 +329,7 @@ def time_build(
     (MsMpEng.exe = Defender, zccache.exe = daemon, etc.). Set to 0 to
     disable.
     """
-    cmd = ["soldr", "cargo", "build", "--workspace", "--locked", "--release"]
+    cmd = ["soldr", "cargo", "build", "--workspace", "--release"]
     start = time.monotonic()
     stop_event = threading.Event()
     profiler: threading.Thread | None = None

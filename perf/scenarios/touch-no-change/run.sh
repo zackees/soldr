@@ -29,7 +29,7 @@ REPETITIONS="${PERF_REPETITIONS:-3}"
 mkdir -p "${CACHE}"
 measure::prefetch_locked "${FIXTURE_DIR}"
 root_package_id="$(cd "${FIXTURE_DIR}" && soldr cargo metadata \
-    --locked --offline --no-deps --format-version=1 | \
+    --offline --no-deps --format-version=1 | \
     jq -r --arg manifest "${FIXTURE_DIR}/Cargo.toml" \
         '.packages[] | select(.manifest_path == $manifest) | .id')"
 
@@ -42,7 +42,7 @@ cold_start_ms="$(measure::now_ms)"
 (
     cd "${FIXTURE_DIR}"
     SOLDR_CACHE_DIR="${CACHE}" soldr cargo build --release \
-        --locked --offline --message-format=json \
+        --offline --message-format=json \
         >"${WORKDIR}/cargo-cold.jsonl"
 )
 cold_elapsed_ms="$(measure::elapsed_ms "${cold_start_ms}")"
@@ -80,7 +80,7 @@ for ((rep = 1; rep <= REPETITIONS; rep++)); do
     (
         cd "${FIXTURE_DIR}"
         SOLDR_CACHE_DIR="${CACHE}" soldr cargo build --release \
-            --locked --offline --message-format=json \
+            --offline --message-format=json \
             >"${WORKDIR}/cargo-warm-${rep}.jsonl"
     )
     warm_samples+=("$(measure::elapsed_ms "${warm_start_ms}")")

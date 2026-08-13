@@ -92,7 +92,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          "$CARGO_HOME/bin/cargo" build             --package soldr-cli             --release             --locked             --target x86_64-unknown-linux-gnu
+          "$CARGO_HOME/bin/cargo" build             --package soldr-cli             --release                         --target x86_64-unknown-linux-gnu
           mkdir -p "$RUNNER_TEMP/soldr-bin"
           cp target/x86_64-unknown-linux-gnu/release/soldr "$RUNNER_TEMP/soldr-bin/soldr"
           chmod +x "$RUNNER_TEMP/soldr-bin/soldr"

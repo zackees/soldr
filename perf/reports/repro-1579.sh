@@ -45,7 +45,7 @@ export CARGO_TARGET_DIR="$TARGET_DIR"
 echo "=== profile: $SOLDR_TARGET_CACHE_PROFILE ==="
 
 echo "--- cold build (populates target + saves bundle) ---"
-( cd "$SRC" && "$SOLDR_BIN" cargo build --locked ) > "$ROOT/cold.out" 2> "$ROOT/cold.err" || {
+( cd "$SRC" && "$SOLDR_BIN" cargo build ) > "$ROOT/cold.out" 2> "$ROOT/cold.err" || {
     echo "cold build FAILED"; tail -60 "$ROOT/cold.err"; exit 1;
 }
 
@@ -57,7 +57,7 @@ rm -rf "$TARGET_DIR"
 
 echo "--- restore + build (measured) ---"
 ( cd "$SRC" && CARGO_LOG=cargo::core::compiler::fingerprint=info \
-  "$SOLDR_BIN" cargo build --locked -v ) > "$ROOT/warm.out" 2> "$ROOT/warm.err" || {
+  "$SOLDR_BIN" cargo build -v ) > "$ROOT/warm.out" 2> "$ROOT/warm.err" || {
     echo "warm build FAILED"; tail -60 "$ROOT/warm.err"; exit 1;
 }
 

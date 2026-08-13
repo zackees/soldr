@@ -11,8 +11,8 @@ This file is for an AI or human wiring `soldr` into a project build.
 3. After `soldr` is installed, the build change is usually one line:
 
 ```diff
-- cargo build --locked --release
-+ soldr cargo build --locked --release
+- cargo build --release
++ soldr cargo build --release
 ```
 
 The same pattern applies to `cargo test`, `cargo check`, and similar Cargo invocations.
@@ -37,8 +37,8 @@ steps:
     with:
       cache: true
 
-  - run: soldr cargo build --locked --release
-  - run: soldr cargo test --locked
+  - run: soldr cargo build --release
+  - run: soldr cargo test
 ```
 
 The public action repository is [`zackees/setup-soldr`](https://github.com/zackees/setup-soldr). This repository remains the source of truth for the action implementation and exports the standalone action bundle from the root `action.yml` plus helper scripts. The extraction plan and `@v0` beta contract live in [docs/SETUP_SOLDR_PUBLIC_ACTION.md](./docs/SETUP_SOLDR_PUBLIC_ACTION.md).
@@ -86,8 +86,8 @@ jobs:
         with:
           cache: true
 
-      - run: soldr cargo build --locked --release
-      - run: soldr cargo test --locked
+      - run: soldr cargo build --release
+      - run: soldr cargo test
 ```
 
 For local same-repository action development before exporting a new public release, use:
@@ -117,8 +117,8 @@ Cross-target CI must provision the target's Rust standard library before invokin
 The preferred explicit integration is still:
 
 ```yaml
-- run: soldr cargo build --locked --release
-- run: soldr cargo test --locked
+- run: soldr cargo build --release
+- run: soldr cargo test
 ```
 
 For dependent repositories that cannot easily rewrite every Cargo invocation, enable the opt-in shim mode:
@@ -128,8 +128,8 @@ For dependent repositories that cannot easily rewrite every Cargo invocation, en
   with:
     tool-shims: cargo
 
-- run: cargo build --locked --release
-- run: cargo test --locked
+- run: cargo build --release
+- run: cargo test
 ```
 
 `tool-shims: cargo` installs a generated `cargo` shim into a dedicated setup-soldr shim directory and prepends it to `PATH` for later steps. The action resolves the real Cargo binary before installing the shim and exports `SOLDR_REAL_CARGO`, so Soldr can bypass the shim when it needs to run the active toolchain.
@@ -184,11 +184,11 @@ jobs:
 
       - name: Build through soldr
         shell: bash
-        run: soldr cargo build --locked --release
+        run: soldr cargo build --release
 
       - name: Test through soldr
         shell: bash
-        run: soldr cargo test --locked
+        run: soldr cargo test
 ```
 
 Use this when Linux CI is enough and you want the shortest setup.
@@ -223,21 +223,21 @@ jobs:
       - name: Build soldr from source
         working-directory: soldr
         shell: pwsh
-        run: cargo build --package soldr-cli --release --locked
+        run: cargo build --package soldr-cli --release
 
       - name: Build project through local soldr
         shell: pwsh
         run: |
           $ext = if ($env:RUNNER_OS -eq "Windows") { ".exe" } else { "" }
           $soldr = Join-Path $env:GITHUB_WORKSPACE "soldr/target/release/soldr$ext"
-          & $soldr cargo build --locked --release
+          & $soldr cargo build --release
 
       - name: Test project through local soldr
         shell: pwsh
         run: |
           $ext = if ($env:RUNNER_OS -eq "Windows") { ".exe" } else { "" }
           $soldr = Join-Path $env:GITHUB_WORKSPACE "soldr/target/release/soldr$ext"
-          & $soldr cargo test --locked
+          & $soldr cargo test
 ```
 
 If your workflow already installs Rust and already has a build step, the real behavioral change is still just prefixing Cargo with `soldr`.
@@ -249,8 +249,8 @@ If your workflow already installs Rust and already has a build step, the real be
 If `soldr` is already on `PATH`, use:
 
 ```bash
-soldr cargo build --locked --release
-soldr cargo test --locked
+soldr cargo build --release
+soldr cargo test
 ```
 
 ### Local source build of soldr
@@ -260,7 +260,7 @@ This is the safest fallback because it uses the local checkout directly.
 Build soldr:
 
 ```bash
-cargo build --package soldr-cli --release --locked
+cargo build --package soldr-cli --release
 ```
 
 Then run your build through the locally built binary.
@@ -268,15 +268,15 @@ Then run your build through the locally built binary.
 On macOS/Linux:
 
 ```bash
-./target/release/soldr cargo build --locked --release
-./target/release/soldr cargo test --locked
+./target/release/soldr cargo build --release
+./target/release/soldr cargo test
 ```
 
 On Windows PowerShell:
 
 ```powershell
-.\target\release\soldr.exe cargo build --locked --release
-.\target\release\soldr.exe cargo test --locked
+.\target\release\soldr.exe cargo build --release
+.\target\release\soldr.exe cargo test
 ```
 
 ## AI Checklist

@@ -265,7 +265,7 @@ jobs:
         run: |
           set -o pipefail
           start_ms=$(date +%s%3N)
-          soldr cargo build --release --locked
+          soldr cargo build --release
           end_ms=$(date +%s%3N)
           elapsed_ms=$((end_ms - start_ms))
           echo "elapsed_ms=${elapsed_ms}" >> "$GITHUB_OUTPUT"
@@ -376,7 +376,7 @@ jobs:
         run: |
           set -o pipefail
           start_ms=$(date +%s%3N)
-          soldr cargo build --release --locked
+          soldr cargo build --release
           end_ms=$(date +%s%3N)
           elapsed_ms=$((end_ms - start_ms))
           echo "elapsed_ms=${elapsed_ms}" >> "$GITHUB_OUTPUT"

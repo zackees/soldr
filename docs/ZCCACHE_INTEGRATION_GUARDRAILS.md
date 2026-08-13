@@ -29,16 +29,16 @@ new work.
 Run these hard gates for zccache integration refactor waves:
 
 ```powershell
-soldr --no-cache cargo test -p soldr-cli --test no_standalone_spawn_lint --locked
-soldr --no-cache cargo test -p soldr-cli --test zccache_trampoline_gate --locked
-soldr --no-cache cargo test -p soldr-cli --test cli_cargo_wrappers --locked
-soldr --no-cache cargo test -p soldr-cli --test cli_rust_plan --locked
-soldr --no-cache cargo test -p soldr-cli --test cli_cache --locked
-soldr --no-cache cargo test -p soldr-cli --lib --locked cache::session::tests
-soldr --no-cache cargo test -p soldr-cli --lib --locked native_cc::tests
-soldr --no-cache cargo test -p soldr-cli --test cli_cargo_native_cc --locked
-soldr --no-cache cargo test -p soldr-cli --test cli_wrapper_perf --locked
-soldr --no-cache cargo test -p soldr-cli --test timed_test_lint --locked
+soldr --no-cache cargo test -p soldr-cli --test no_standalone_spawn_lint
+soldr --no-cache cargo test -p soldr-cli --test zccache_trampoline_gate
+soldr --no-cache cargo test -p soldr-cli --test cli_cargo_wrappers
+soldr --no-cache cargo test -p soldr-cli --test cli_rust_plan
+soldr --no-cache cargo test -p soldr-cli --test cli_cache
+soldr --no-cache cargo test -p soldr-cli --lib cache::session::tests
+soldr --no-cache cargo test -p soldr-cli --lib native_cc::tests
+soldr --no-cache cargo test -p soldr-cli --test cli_cargo_native_cc
+soldr --no-cache cargo test -p soldr-cli --test cli_wrapper_perf
+soldr --no-cache cargo test -p soldr-cli --test timed_test_lint
 uv run --no-sync pytest tests/test_zccache_integration_guardrails.py tests/test_zccache_runtime_contract.py tests/test_setup_soldr_action.py tests/test_setup_soldr_exporter.py tests/test_setup_soldr_ensure_soldr.py -q
 node scripts/test-npm-package.js
 ```

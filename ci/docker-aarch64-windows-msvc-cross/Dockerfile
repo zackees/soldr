@@ -96,7 +96,7 @@ ENV PATH=/opt/soldr:$PATH
 # `soldr build --target *-pc-windows-msvc` will resolve cargo-xwin via
 # the catalogue; this baked-in copy avoids a per-build fetch.
 RUN /root/.cargo/bin/rustup toolchain install stable --profile minimal --no-self-update \
- && /root/.cargo/bin/cargo +stable install cargo-xwin --version 0.18.6 --locked \
+ && /root/.cargo/bin/cargo +stable install cargo-xwin --version 0.18.6 \
  && cargo-xwin --version
 
 # soldr#1036: pre-stage an xwin SDK splat at image-build time so the

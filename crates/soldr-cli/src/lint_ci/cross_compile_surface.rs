@@ -372,7 +372,7 @@ mod tests {
     });
 
     crate::timed_test!(flags_cargo_install_xwin, {
-        let e = errors("        run: cargo install cargo-xwin --locked");
+        let e = errors("        run: cargo install cargo-xwin");
         assert_eq!(e.len(), 1);
         assert_eq!(e[0].target, "*-pc-windows-msvc");
     });
