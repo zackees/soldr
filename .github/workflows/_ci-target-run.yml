@@ -135,7 +135,6 @@ jobs:
             echo "CARGO=$cargo_bin"
             echo "RUSTC=$rustc_bin"
           } >> "$GITHUB_ENV"
-          echo "$TOOLCHAIN_SHIM_DIR" >> "$GITHUB_PATH"
 
       - name: Verify pinned Rust toolchain
         shell: bash

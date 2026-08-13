@@ -59,6 +59,20 @@ def run(
     return completed.stdout
 
 
+def stop_soldr_broker(soldr: str, env: dict[str, str]) -> None:
+    # Routes are path-derived (soldr#2479), so this checkout-built binary's
+    # broker is the isolated one; no program name is needed to reach it.
+    try:
+        subprocess.run(
+            [soldr, "broker", "stop"],
+            env=env,
+            timeout=20,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"warning: best-effort isolated broker stop failed: {exc}", flush=True)
+
+
 def read_github_env(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
     for raw in path.read_text(encoding="utf-8").splitlines():
@@ -319,41 +333,44 @@ def main() -> int:
     args = parser.parse_args()
     soldr = str(Path(args.soldr).resolve())
     checkout_env = fresh_checkout_env()
-    assert_plan(soldr, args.target, checkout_env)
-    with tempfile.TemporaryDirectory(
-        prefix=f"soldr-gnu-e2e-{TARGETS[args.target][0]}-"
-    ) as raw:
-        work = Path(raw)
-        archive = work / "prepared.tar.zst"
-        source_env = prepare(
-            soldr,
-            args.target,
-            work / "source-github.env",
-            env=checkout_env,
-            save=archive,
-        )
-        source_root, _ = assert_managed_environment(source_env, args.target)
-        # Warm Cargo's fixture dependencies before proving that the restored
-        # toolchain itself is enough when Soldr is forbidden from networking.
-        build_fixture(soldr, args.target, source_env, work / "source-build")
-
-        restored_env = fresh_checkout_env()
-        restored_env["SOLDR_CACHE_DIR"] = str(work / "restored-soldr")
-        restored_env["SOLDR_TEST_NO_NETWORK"] = "1"
-        env = prepare(
-            soldr,
-            args.target,
-            work / "restored-github.env",
-            env=restored_env,
-            restore=archive,
-        )
-        root, _ = assert_managed_environment(env, args.target)
-        if root == source_root:
-            raise RuntimeError(
-                "prepare archive did not restore into the clean Soldr root"
+    try:
+        assert_plan(soldr, args.target, checkout_env)
+        with tempfile.TemporaryDirectory(
+            prefix=f"soldr-gnu-e2e-{TARGETS[args.target][0]}-"
+        ) as raw:
+            work = Path(raw)
+            archive = work / "prepared.tar.zst"
+            source_env = prepare(
+                soldr,
+                args.target,
+                work / "source-github.env",
+                env=checkout_env,
+                save=archive,
             )
-        binary = build_fixture(soldr, args.target, env, work / "restored-build")
-        verify_artifact(args.repo, args.target, root, binary, env)
+            source_root, _ = assert_managed_environment(source_env, args.target)
+            # Warm Cargo's fixture dependencies before proving that the restored
+            # toolchain itself is enough when Soldr is forbidden from networking.
+            build_fixture(soldr, args.target, source_env, work / "source-build")
+
+            restored_env = fresh_checkout_env()
+            restored_env["SOLDR_CACHE_DIR"] = str(work / "restored-soldr")
+            restored_env["SOLDR_TEST_NO_NETWORK"] = "1"
+            env = prepare(
+                soldr,
+                args.target,
+                work / "restored-github.env",
+                env=restored_env,
+                restore=archive,
+            )
+            root, _ = assert_managed_environment(env, args.target)
+            if root == source_root:
+                raise RuntimeError(
+                    "prepare archive did not restore into the clean Soldr root"
+                )
+            binary = build_fixture(soldr, args.target, env, work / "restored-build")
+            verify_artifact(args.repo, args.target, root, binary, env)
+    finally:
+        stop_soldr_broker(soldr, checkout_env)
     return 0
 
 

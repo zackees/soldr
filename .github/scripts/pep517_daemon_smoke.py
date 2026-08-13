@@ -197,6 +197,20 @@ def stop_soldr_daemon(soldr: Path, env: dict[str, str]) -> None:
         print(f"warning: best-effort `soldr daemon stop` failed: {exc}", flush=True)
 
 
+def stop_soldr_broker(soldr: Path, env: dict[str, str]) -> None:
+    # Routes are path-derived (soldr#2479), so the wheel-installed binary's
+    # broker is the isolated one; no program name is needed to reach it.
+    try:
+        subprocess.run(
+            [str(soldr), "broker", "stop"],
+            env=env,
+            timeout=20,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"warning: best-effort isolated broker stop failed: {exc}", flush=True)
+
+
 def main() -> int:
     args = parse_args()
     wheel = resolve_wheel(args.wheel)
@@ -249,7 +263,10 @@ def main() -> int:
             stop_soldr_daemon(soldr, env)
             print_soldr_logs(cache_dir)
             raise
-        stop_soldr_daemon(soldr, env)
+        else:
+            stop_soldr_daemon(soldr, env)
+        finally:
+            stop_soldr_broker(soldr, env)
 
         built = sorted(wheelhouse.glob("soldr_pep517_daemon_smoke-*.whl"))
         if len(built) != 1:

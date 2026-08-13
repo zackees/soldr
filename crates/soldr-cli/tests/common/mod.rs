@@ -255,7 +255,7 @@ pub(crate) fn scrub_outer_soldr_env(command: &mut Command) -> &mut Command {
 }
 
 pub(crate) fn rustup_which(tool: &str) -> String {
-    let output = Command::new(soldr_bin())
+    let output = isolated_soldr_command()
         .args(["rustup", "which", tool])
         .output()
         .expect("failed to resolve tool through soldr rustup");

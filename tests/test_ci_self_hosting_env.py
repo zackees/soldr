@@ -1,6 +1,7 @@
 """Regression locks for checkout-built Soldr isolation in CI smokes."""
 
 from pathlib import Path
+from unittest import mock
 
 from conftest import load_script_module
 
@@ -29,6 +30,17 @@ def test_gnu_proof_uses_checkout_owned_wrapper_and_daemon() -> None:
     source = _outer_env()
     _assert_isolated(module.fresh_checkout_env(source))
     assert source["SOLDR_BROKER_SERVICE"] == "old-route"
+    env = _outer_env()
+    with mock.patch.object(module.subprocess, "run") as run:
+        module.stop_soldr_broker("soldr", env)
+    # Routes are path-derived (soldr#2479); the checkout-built binary's
+    # broker is the isolated one, so no program name is passed.
+    run.assert_called_once_with(
+        ["soldr", "broker", "stop"],
+        env=env,
+        timeout=20,
+        check=False,
+    )
 
 
 def test_pep517_smoke_uses_wheel_owned_wrapper_and_daemon() -> None:
@@ -38,3 +50,12 @@ def test_pep517_smoke_uses_wheel_owned_wrapper_and_daemon() -> None:
     source = _outer_env()
     _assert_isolated(module.isolated_smoke_env(source))
     assert source["SOLDR_BROKER_SERVICE"] == "old-route"
+    env = _outer_env()
+    with mock.patch.object(module.subprocess, "run") as run:
+        module.stop_soldr_broker(Path("soldr"), env)
+    run.assert_called_once_with(
+        ["soldr", "broker", "stop"],
+        env=env,
+        timeout=20,
+        check=False,
+    )
