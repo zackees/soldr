@@ -181,6 +181,7 @@ fn validate_source(path: &str, source: &str) -> Result<(), Vec<String>> {
                 .iter()
                 .find(|function| function.start <= offset && offset < function.end);
             let in_test_source = path.ends_with("/tests.rs")
+                || path.ends_with("_tests.rs")
                 || test_modules
                     .iter()
                     .any(|(start, end)| *start <= offset && offset < *end);
@@ -267,6 +268,15 @@ timed_test!(guard_permits_only_a_cfg_test_module, {
     let source = "#[cfg(test)]\nmod tests {\nfn seed() { \
                   crate::daemon::db::upsert_build(&db_path, &record).unwrap();\n}\n}";
     assert!(validate_source("src/feature/tests.rs", source).is_ok());
+});
+
+timed_test!(guard_permits_split_test_leaves, {
+    let source = "fn seed() { crate::daemon::db::upsert_build(&db_path, &record).unwrap(); }";
+    assert!(validate_source("src/logs_cmd_tests.rs", source).is_ok());
+    assert!(
+        validate_source("src/logs_cmd.rs", source).is_err(),
+        "the same opener must remain forbidden in a production leaf"
+    );
 });
 
 timed_test!(guard_preserves_offsets_with_crlf_source, {
