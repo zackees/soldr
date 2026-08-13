@@ -286,7 +286,7 @@ jobs:
         # else's release date.
         run: >-
           uv run --no-project --with 'ruff>=0.12,<0.13'
-          ruff check src tests .github/scripts .github/actions ci tools .claude/hooks
+          ruff check --fix src tests .github/scripts .github/actions ci tools .claude/hooks
 
       - name: Python lint (flake8)
         # Pinned, not floating. An unpinned `--with flake8` means a future
@@ -316,11 +316,14 @@ jobs:
       # isort 6.0.1) and at whatever `>=25.1,<26` / `>=6.0,<7` resolve to today
       # produced byte-identical output -- compared as patches, not by eyeballing
       # a diffstat.
-      - name: Python format (black, isort)
+      # Formatting changes are deterministic and safe to apply in CI. Do not
+      # make a PR red solely because Black or isort can correct it; the
+      # remaining lint/type checks still reject defects that need judgment.
+      - name: Auto-format Python (black, isort)
         run: |
           set -euo pipefail
-          uv run --no-project --with 'black>=25.1,<26' python -m black --check src tests .github/scripts .github/actions ci tools .claude/hooks
-          uv run --no-project --with 'isort>=6.0,<7' python -m isort --profile black --check-only src tests .github/scripts .github/actions ci tools .claude/hooks
+          uv run --no-project --with 'black>=25.1,<26' python -m black src tests .github/scripts .github/actions ci tools .claude/hooks
+          uv run --no-project --with 'isort>=6.0,<7' python -m isort --profile black src tests .github/scripts .github/actions ci tools .claude/hooks
 
       # mypy over both the shipped package and the tests. `src/` was cleaned
       # in #2107 (four annotation defects, none behavioural); `tests/` is

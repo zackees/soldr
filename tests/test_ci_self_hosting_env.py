@@ -75,4 +75,6 @@ def test_pep517_smoke_preserves_root_daemon_spawn_log() -> None:
 
         module.archive_soldr_logs(cache_dir, log_dir)
 
-        assert (log_dir / "cache" / "daemon-spawn.log").read_text() == "daemon startup failed"
+        assert (
+            log_dir / "cache" / "daemon-spawn.log"
+        ).read_text() == "daemon startup failed"
