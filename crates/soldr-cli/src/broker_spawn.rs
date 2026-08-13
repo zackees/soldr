@@ -77,7 +77,6 @@ fn filter_broker_spawn_env(
                         | "XDG_CONFIG_HOME"
                         | "XDG_RUNTIME_DIR"
                         | "TMPDIR"
-                        | "RUNNING_PROCESS_SERVICE_DEF_DIR"
                 )
         })
         .collect()
@@ -767,10 +766,6 @@ mod tests {
                     OsString::from("XDG_RUNTIME_DIR"),
                     OsString::from("/run/user/123"),
                 ),
-                (
-                    OsString::from("RUNNING_PROCESS_SERVICE_DEF_DIR"),
-                    OsString::from("/tmp/services"),
-                ),
                 (OsString::from("PATH"), OsString::from("/usr/bin")),
             ]);
             assert_eq!(
@@ -788,10 +783,6 @@ mod tests {
                     (
                         OsString::from("XDG_RUNTIME_DIR"),
                         OsString::from("/run/user/123")
-                    ),
-                    (
-                        OsString::from("RUNNING_PROCESS_SERVICE_DEF_DIR"),
-                        OsString::from("/tmp/services")
                     ),
                 ],
             );
