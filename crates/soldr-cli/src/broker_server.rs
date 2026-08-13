@@ -1064,7 +1064,11 @@ fn create_listener(endpoint: &str) -> io::Result<interprocess::local_socket::tok
     let name = running_process::broker::server::singleton_bind::wrap_socket_name(endpoint)
         .map_err(io::Error::other)?;
     let options = ListenerOptions::new().name(name);
-    #[cfg(unix)]
+    // interprocess can atomically apply a Unix socket mode on Linux, but its
+    // fchmod-before-bind implementation is unsupported on macOS. The broker
+    // process is single-purpose at this point; macOS creates under its normal
+    // umask and we tighten the finished socket below before accepting peers.
+    #[cfg(all(unix, not(target_os = "macos")))]
     let options = {
         use interprocess::os::unix::local_socket::ListenerOptionsExt as _;
         options.mode(0o600)
@@ -1081,9 +1085,14 @@ fn create_listener(endpoint: &str) -> io::Result<interprocess::local_socket::tok
     }
     #[cfg(all(unix, not(target_os = "linux")))]
     {
-        options
-            .create_tokio_as::<interprocess::os::unix::uds_local_socket::tokio::Listener>()
-            .map(Into::into)
+        let listener = options
+            .create_tokio_as::<interprocess::os::unix::uds_local_socket::tokio::Listener>()?;
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(endpoint, std::fs::Permissions::from_mode(0o600))?;
+        }
+        Ok(listener.into())
     }
     #[cfg(windows)]
     {
@@ -1269,5 +1278,22 @@ mod tests {
         for thread in threads {
             thread.join().expect("bind contender");
         }
+    });
+
+    #[cfg(target_os = "macos")]
+    crate::timed_test!(macos_listener_restricts_socket_permissions_after_bind, {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let socket = temp.path().join("soldr-broker.sock");
+        let listener = create_listener(socket.to_str().expect("UTF-8 socket path"))
+            .expect("macOS broker listener");
+        let mode = std::fs::metadata(&socket)
+            .expect("socket metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+        drop(listener);
     });
 }
