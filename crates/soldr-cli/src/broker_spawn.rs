@@ -397,7 +397,6 @@ fn broker_instance_at(runtime: &tokio::runtime::Runtime, endpoint: &str) -> Opti
 
 fn broker_snapshot_at(runtime: &tokio::runtime::Runtime, endpoint: &str) -> Option<(String, u32)> {
     runtime.block_on(async {
-        use interprocess::local_socket::tokio::prelude::*;
         use prost::Message as _;
         use running_process::broker::protocol::{
             validate_frame_envelope, AdminReply, AdminRequest, AdminVerb, Frame, FrameKind,
@@ -407,7 +406,7 @@ fn broker_snapshot_at(runtime: &tokio::runtime::Runtime, endpoint: &str) -> Opti
 
         let probe = async {
             let name = crate::session_transport::local_session_name(endpoint)?;
-            let mut stream = interprocess::local_socket::tokio::Stream::connect(name).await?;
+            let mut stream = crate::platform::ipc::connect::connect_local_socket(name).await?;
             let request = AdminRequest {
                 verb: AdminVerb::Status as i32,
                 json: true,

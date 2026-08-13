@@ -7,6 +7,14 @@ use std::time::Duration;
 
 use crate::platform::ipc::connect::{BoxedSyncStream, PipeOpen};
 
+/// Connect an interprocess local socket through the platform boundary.
+pub async fn connect_local_socket(
+    name: interprocess::local_socket::Name<'_>,
+) -> io::Result<interprocess::local_socket::tokio::Stream> {
+    use interprocess::local_socket::tokio::prelude::*;
+    interprocess::local_socket::tokio::Stream::connect(name).await
+}
+
 /// Connect an AF_UNIX socket to `path` with the given socket timeouts.
 /// The write timeout is the caller's deadline; the read timeout is at
 /// least 200ms so a short reply deadline never starves a frame read.

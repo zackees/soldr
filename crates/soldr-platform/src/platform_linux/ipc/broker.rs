@@ -59,8 +59,7 @@ impl UnixBindGuard {
 
 impl Drop for UnixBindGuard {
     fn drop(&mut self) {
-        use fs2::FileExt as _;
-        let _ = self.0.unlock();
+        let _ = fs2::FileExt::unlock(&self.0);
     }
 }
 

@@ -10,7 +10,7 @@ use std::io::{self, Read, Write};
 use std::time::Duration;
 
 pub use crate::platform_imp::ipc::connect::{
-    connect_unix, open_pipe_with_retry, probe_accepts_connections,
+    connect_local_socket, connect_unix, open_pipe_with_retry, probe_accepts_connections,
 };
 
 /// Combined synchronous transport surface (read + write + send).

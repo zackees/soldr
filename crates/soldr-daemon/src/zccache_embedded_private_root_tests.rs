@@ -134,8 +134,13 @@ crate::timed_test!(embedded_root_rejects_a_cross_product_link, {
             .args(["/c", "mklink", "/J"])
             .arg(&stable)
             .arg(&external);
-        let status = command.status().unwrap();
-        assert!(status.success(), "mklink /J must create the junction");
+        let output = running_process::run_std_command_bounded(
+            command,
+            Some(std::time::Duration::from_secs(30)),
+            64 * 1024,
+        )
+        .unwrap();
+        assert_eq!(output.exit_code, 0, "mklink /J must create the junction");
     } else {
         crate::platform::fs::links::create(&external.display().to_string(), &stable, true)
             .expect("create directory symlink");
@@ -160,8 +165,13 @@ crate::timed_test!(embedded_version_root_rejects_a_cross_product_link, {
             .args(["/c", "mklink", "/J"])
             .arg(&version_root)
             .arg(&external);
-        let status = command.status().unwrap();
-        assert!(status.success(), "mklink /J must create the junction");
+        let output = running_process::run_std_command_bounded(
+            command,
+            Some(std::time::Duration::from_secs(30)),
+            64 * 1024,
+        )
+        .unwrap();
+        assert_eq!(output.exit_code, 0, "mklink /J must create the junction");
     } else {
         crate::platform::fs::links::create(&external.display().to_string(), &version_root, true)
             .expect("create directory symlink");

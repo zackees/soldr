@@ -9,6 +9,14 @@ use crate::platform::ipc::connect::{
     busy_pipe_retry_delay, BoxedSyncStream, PipeOpen, ERROR_PIPE_BUSY, PIPE_BUSY_RETRY_LIMIT,
 };
 
+/// Connect an interprocess local socket through the platform boundary.
+pub async fn connect_local_socket(
+    name: interprocess::local_socket::Name<'_>,
+) -> io::Result<interprocess::local_socket::tokio::Stream> {
+    use interprocess::local_socket::tokio::prelude::*;
+    interprocess::local_socket::tokio::Stream::connect(name).await
+}
+
 /// Open the named-pipe client at `path`, retrying `ERROR_PIPE_BUSY`
 /// with the shared exponential backoff. A busy pipe is listener-pool
 /// backpressure, not evidence that the daemon died, so the retry loop

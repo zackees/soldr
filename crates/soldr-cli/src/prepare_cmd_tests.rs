@@ -675,6 +675,7 @@ crate::timed_test!(fuzzy_case_insensitive_classify, {
 });
 
 crate::timed_test!(soldr_workspace_metadata_dogfood, {
+    let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Regression guard: soldr's own workspace `Cargo.toml`
     // declares `[workspace.metadata.soldr].targets` (RFC #914).
     // Every entry must classify cleanly via the fuzzy classifier
@@ -694,14 +695,7 @@ crate::timed_test!(soldr_workspace_metadata_dogfood, {
                     .map(std::path::Path::to_path_buf)
             })
         })
-        .unwrap_or_else(|| {
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .expect("workspace parent of crate dir")
-                .parent()
-                .expect("workspace root")
-                .to_path_buf()
-        })
+        .expect("run from the soldr workspace or set SOLDR_TEST_WORKSPACE_ROOT")
         .join("Cargo.toml");
     assert!(manifest.is_file(), "workspace manifest at {manifest:?}");
     let meta = crate::cargo_metadata_soldr::read_soldr_metadata(&manifest)

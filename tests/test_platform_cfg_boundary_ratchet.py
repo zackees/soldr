@@ -2,6 +2,7 @@
 
 import importlib.util
 from pathlib import Path
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = REPO_ROOT / ".github" / "scripts" / "platform_cfg_boundary_ratchet.py"
@@ -10,6 +11,7 @@ assert _spec is not None
 assert _spec.loader is not None
 _ratchet = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_ratchet)
+_ratchet_dynamic: Any = _ratchet
 
 
 def test_workspace_has_zero_boundary_violations() -> None:
@@ -18,16 +20,17 @@ def test_workspace_has_zero_boundary_violations() -> None:
 
 def test_test_examples_and_benches_are_scanned(tmp_path: Path) -> None:
     roots = ["tests", "examples", "benches"]
-    original_root = _ratchet.SOURCE_ROOT
+    original_root = _ratchet_dynamic.SOURCE_ROOT
+    test_root = tmp_path / "crates"
     try:
-        _ratchet.SOURCE_ROOT = tmp_path / "crates"
+        _ratchet_dynamic.SOURCE_ROOT = test_root
         for root in roots:
-            path = _ratchet.SOURCE_ROOT / "demo" / root / "host.rs"
+            path = test_root / "demo" / root / "host.rs"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("#[cfg(windows)] fn host_only() {}", encoding="utf-8")
         assert len(_ratchet.violations()) == 3
     finally:
-        _ratchet.SOURCE_ROOT = original_root
+        _ratchet_dynamic.SOURCE_ROOT = original_root
 
 
 def test_detector_flags_private_cfg_and_statements() -> None:

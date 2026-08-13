@@ -93,17 +93,12 @@ fn filename_is_blessed_adapter(filename: &str) -> bool {
     let filename = filename.replace('\\', "/");
     let filename = format!("/{}", filename.trim_start_matches('/'));
     [
-        "/crates/soldr-daemon/src/daemon/client.rs",
-        "/crates/soldr-daemon/src/daemon/server.rs",
-        "/crates/soldr-daemon/src/daemon/ipc_peer.rs",
-        "/crates/soldr-daemon/src/daemon/session_endpoint.rs",
-        "/crates/soldr-cli/src/broker_spawn.rs",
-        "/crates/soldr-cli/src/broker_control_transport_unix.rs",
-        "/crates/soldr-cli/src/broker_control_transport_windows.rs",
-        "/crates/soldr-cli/src/session_transport.rs",
+        "/crates/soldr-platform/src/platform_win/ipc/",
+        "/crates/soldr-platform/src/platform_linux/ipc/",
+        "/crates/soldr-platform/src/platform_macos/ipc/",
     ]
     .iter()
-    .any(|suffix| filename.ends_with(suffix))
+    .any(|directory| filename.contains(directory))
 }
 
 fn source_filename(cx: &LateContext<'_>, span: rustc_span::Span) -> String {
@@ -160,21 +155,21 @@ fn blessed_adapter_scope_is_exact() {
         "/repo/crates/soldr-cache/src/future_ipc.rs"
     ));
     assert!(filename_is_blessed_adapter(
+        "/repo/crates/soldr-platform/src/platform_linux/ipc/connect.rs"
+    ));
+    assert!(filename_is_blessed_adapter(
+        "crates/soldr-platform/src/platform_macos/ipc/listener.rs"
+    ));
+    assert!(filename_is_blessed_adapter(
+        "/repo/crates/soldr-platform/src/platform_win/ipc/control.rs"
+    ));
+    assert!(filename_is_blessed_adapter(
+        r"crates\soldr-platform\src\platform_win\ipc\broker.rs"
+    ));
+    assert!(!filename_is_blessed_adapter(
+        "/repo/crates/soldr-platform/src/platform_linux/process/inspect.rs"
+    ));
+    assert!(!filename_is_blessed_adapter(
         "/repo/crates/soldr-daemon/src/daemon/session_endpoint.rs"
-    ));
-    assert!(filename_is_blessed_adapter(
-        "crates/soldr-daemon/src/daemon/session_endpoint.rs"
-    ));
-    assert!(filename_is_blessed_adapter(
-        "/repo/crates/soldr-cli/src/broker_control_transport_windows.rs"
-    ));
-    assert!(filename_is_blessed_adapter(
-        r"crates\soldr-cli\src\broker_control_transport_windows.rs"
-    ));
-    assert!(!filename_is_blessed_adapter(
-        "/repo/crates/soldr-cli/src/random_feature.rs"
-    ));
-    assert!(!filename_is_blessed_adapter(
-        "/repo/crates/soldr-cache/src/daemon/session_endpoint.rs"
     ));
 }
