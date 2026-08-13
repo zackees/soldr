@@ -1,6 +1,7 @@
 """Regression locks for checkout-built Soldr isolation in CI smokes."""
 
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest import mock
 
 from conftest import load_script_module
@@ -59,3 +60,19 @@ def test_pep517_smoke_uses_wheel_owned_wrapper_and_daemon() -> None:
         timeout=20,
         check=False,
     )
+
+
+def test_pep517_smoke_preserves_root_daemon_spawn_log() -> None:
+    module = load_script_module(
+        SCRIPTS / "pep517_daemon_smoke.py", "pep517_daemon_smoke_logs"
+    )
+    with TemporaryDirectory() as tmp_str:
+        tmp = Path(tmp_str)
+        cache_dir = tmp / "cache"
+        cache_dir.mkdir()
+        (cache_dir / "daemon-spawn.log").write_text("daemon startup failed")
+        log_dir = tmp / "artifacts"
+
+        module.archive_soldr_logs(cache_dir, log_dir)
+
+        assert (log_dir / "cache" / "daemon-spawn.log").read_text() == "daemon startup failed"

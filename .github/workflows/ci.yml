@@ -680,7 +680,20 @@ jobs:
         env:
           SOLDR_DAEMON_REQUIRED: "1"
           SOLDR_DAEMON_SPAWN_RETRY_BUDGET_MS: "5000"
-        run: python .github/scripts/pep517_daemon_smoke.py --wheel "dist/*.whl" --timeout 180
+        run: >-
+          python .github/scripts/pep517_daemon_smoke.py
+          --wheel "dist/*.whl"
+          --timeout 180
+          --log-dir "${{ runner.temp }}/pep517-soldr-logs"
+
+      - name: Upload PEP 517 Soldr logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: pep517-soldr-logs-${{ matrix.name }}
+          path: ${{ runner.temp }}/pep517-soldr-logs
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Build source wheel with installed shims first on PATH
         if: runner.os == 'Windows'

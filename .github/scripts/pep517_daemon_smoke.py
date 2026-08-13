@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import glob
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -45,6 +46,11 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=180,
         help="Timeout in seconds for the downstream pip wheel smoke.",
+    )
+    parser.add_argument(
+        "--log-dir",
+        type=Path,
+        help="Directory to preserve Soldr and daemon logs for CI artifacts.",
     )
     return parser.parse_args()
 
@@ -141,6 +147,9 @@ def print_soldr_logs(cache_dir: Path) -> None:
     wanted_names = {"compile-daemon-unavailable", "daemon.pid"}
     binary_suffixes = {".exe", ".dll", ".dylib", ".so", ".pdb", ".dwp"}
     log_roots = [
+        # broker_launcher writes the detached daemon's stdout/stderr directly
+        # under SOLDR_CACHE_DIR, rather than beneath its runtime subdirectory.
+        cache_dir,
         cache_dir / "cache" / "soldr-daemon",
         cache_dir / "cache" / "zccache" / "logs",
         cache_dir / "logs",
@@ -195,6 +204,29 @@ def print_broker_spawn_log() -> None:
         return
     print(f"--- broker spawn log ({path}, {path.stat().st_size} bytes) ---", flush=True)
     print(text[-16_000:], flush=True)
+
+
+def archive_soldr_logs(cache_dir: Path, log_dir: Path | None) -> None:
+    """Copy the smoke's textual diagnostics before its temporary dir is removed."""
+    if log_dir is None:
+        return
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        for path in cache_dir.rglob("*"):
+            if not path.is_file() or path.suffix.lower() not in {".log", ".jsonl", ".txt"}:
+                continue
+            destination = log_dir / "cache" / path.relative_to(cache_dir)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, destination)
+
+        broker_log = Path.home() / ".soldr" / "broker" / "broker-spawn.log"
+        if broker_log.is_file():
+            destination = log_dir / "broker" / broker_log.name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(broker_log, destination)
+    except OSError as exc:
+        # Artifact collection must never mask the smoke result.
+        print(f"warning: could not preserve Soldr logs: {exc}", flush=True)
 
 
 def stop_soldr_daemon(soldr: Path, env: dict[str, str]) -> None:
@@ -280,6 +312,7 @@ def main() -> int:
             stop_soldr_daemon(soldr, env)
         finally:
             stop_soldr_broker(soldr, env)
+            archive_soldr_logs(cache_dir, args.log_dir)
 
         built = sorted(wheelhouse.glob("soldr_pep517_daemon_smoke-*.whl"))
         if len(built) != 1:
