@@ -4,7 +4,7 @@ Run-by-run iteration on the layered cook/delta cache prototype (see
 `action.yml` for the design and `cache-delta-experiment-cleanup/` for
 the save half). Numbers below come from the `Side-by-side comparison`
 job's step-summary on `soldr cook --tests` + `soldr cargo build
---package soldr-cli --locked` against a single-`actions/cache@v4`
+--package soldr-cli` against a single-`actions/cache@v4`
 baseline running the same commands.
 
 ## Measured

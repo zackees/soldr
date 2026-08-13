@@ -399,7 +399,7 @@ jobs:
           soldr_build_args=(--no-cache)
           "$driver" \
             "${soldr_build_args[@]}" \
-            build --release --locked --target "$target" \
+            build --release --target "$target" \
             --package soldr-cli \
             --bin soldr
 

@@ -136,7 +136,7 @@ jobs:
           # but soldr cook rejects unknown flags pre-`--`; not
           # worth threading through for the experiment.)
           cook-cmd: soldr cook
-          build-cmd: soldr cargo build --package soldr-cli --locked
+          build-cmd: soldr cargo build --package soldr-cli
 
       - name: Save layers (cleanup)
         # Runs regardless of build outcome so a failed build still
@@ -255,7 +255,7 @@ jobs:
         run: |
           set -euo pipefail
           soldr cook
-          soldr cargo build --package soldr-cli --locked
+          soldr cargo build --package soldr-cli
 
       - name: Flush + shutdown baseline cache
         if: always()

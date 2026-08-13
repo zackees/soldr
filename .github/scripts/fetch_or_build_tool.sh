@@ -165,7 +165,7 @@ case "$build_tool" in
       --release \
       --manifest-path "$work_dir/Cargo.toml" \
       --target "$target" \
-      --locked $cargo_extra_args
+      $cargo_extra_args
     ;;
   *)
     echo "fetch_or_build_tool.sh: unknown build-tool '$build_tool'" >&2

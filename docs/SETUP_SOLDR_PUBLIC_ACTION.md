@@ -72,8 +72,8 @@ steps:
     with:
       cache: true
 
-  - run: soldr cargo build --locked --release
-  - run: soldr cargo test --locked
+  - run: soldr cargo build --release
+  - run: soldr cargo test
 ```
 
 ### Supported Inputs

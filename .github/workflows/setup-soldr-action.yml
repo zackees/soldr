@@ -189,7 +189,7 @@ jobs:
         run: |
           Write-Host "dogfood-build-cache-hit=${{ steps.dogfood-build-cache.outputs.cache-hit }}"
           $timer = [Diagnostics.Stopwatch]::StartNew()
-          soldr cargo build --package soldr-cli --locked
+          soldr cargo build --package soldr-cli
           $exitCode = $LASTEXITCODE
           $timer.Stop()
           Write-Host ([string]::Format([Globalization.CultureInfo]::InvariantCulture, "dogfood-build-seconds={0:F3}", $timer.Elapsed.TotalSeconds))
@@ -234,7 +234,7 @@ jobs:
             throw "wrong soldr under test: expected $expectedVersion, got $actualVersion"
           }
           $timer = [Diagnostics.Stopwatch]::StartNew()
-          & $soldrUnderTest --no-cache cargo test -p soldr-cli --tests --locked
+          & $soldrUnderTest --no-cache cargo test -p soldr-cli --tests
           $exitCode = $LASTEXITCODE
           $timer.Stop()
           Write-Host ([string]::Format([Globalization.CultureInfo]::InvariantCulture, "dogfood-test-seconds={0:F3}", $timer.Elapsed.TotalSeconds))

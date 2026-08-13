@@ -11,7 +11,7 @@ Add `zackees/setup-soldr@v0` to a normal `push`-triggered workflow:
 ```yaml
 - uses: actions/checkout@v4
 - uses: zackees/setup-soldr@v0
-- run: soldr cargo build --locked
+- run: soldr cargo build
 ```
 
 You get, for free:
@@ -78,8 +78,8 @@ jobs:
         with:
           cache: true
 
-      - run: soldr cargo build --locked
-      - run: soldr cargo test --locked
+      - run: soldr cargo build
+      - run: soldr cargo test
 ```
 
 That is enough. No separate `actions/cache` step, no `Swatinem/rust-cache`, no manual `save-if` gating. The action handles the cache internally with the key shapes described above.
@@ -159,7 +159,7 @@ Use Cargo's fingerprint diagnostics to confirm this failure mode:
 - name: Build with Cargo fingerprint diagnostics
   env:
     CARGO_LOG: cargo::core::compiler::fingerprint=info
-  run: soldr cargo build --locked
+  run: soldr cargo build
 ```
 
 Look for lines like:

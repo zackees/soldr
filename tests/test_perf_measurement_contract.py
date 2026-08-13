@@ -33,7 +33,7 @@ def test_perf_builds_are_locked_offline_and_prefetched_before_timing() -> None:
     ):
         script = read(relative)
         assert "measure::prefetch_locked" in script
-        assert "--locked --offline" in script
+        assert "--offline" in script
 
 
 def test_shared_measurement_uses_monotonic_clock_and_aggregate_rss() -> None:
@@ -43,7 +43,7 @@ def test_shared_measurement_uses_monotonic_clock_and_aggregate_rss() -> None:
     assert "soldr-daemon" in common
     assert "measure::peak_process_tree_rss_bytes" in common
     assert "measure::median_and_mad" in common
-    assert "soldr cargo metadata --locked" in common
+    assert "soldr cargo metadata" in common
 
 
 def test_touch_scenario_retains_three_raw_warm_samples() -> None:

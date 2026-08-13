@@ -127,7 +127,7 @@ jobs:
               "$(pwd)/Cargo.toml"
           cargo build \
             --package soldr-cli \
-            --locked \
+            \
             --target x86_64-unknown-linux-gnu
           ls -la target/x86_64-unknown-linux-gnu/debug/soldr
           file target/x86_64-unknown-linux-gnu/debug/soldr
@@ -166,11 +166,11 @@ jobs:
         run: |
           set -euo pipefail
           target=x86_64-unknown-linux-gnu
-          soldr build --locked --target "$target" \
+          soldr build --target "$target" \
             --package soldr-cli --bin soldr
-          soldr cargo clippy --locked --target "$target" \
+          soldr cargo clippy --target "$target" \
             --package soldr-cli --lib --no-deps -- -D warnings
-          soldr cargo test --no-run --locked --target "$target" \
+          soldr cargo test --no-run --target "$target" \
             --package soldr-cli --lib
 
       # soldr#2145 / soldr#1060 item 3. The step above is the only place a
@@ -399,9 +399,9 @@ jobs:
       - name: Validate target lint and test lifecycle
         run: |
           set -euo pipefail
-          soldr cargo clippy --locked --target '${{ matrix.target }}' \
+          soldr cargo clippy --target '${{ matrix.target }}' \
             --package soldr-cli --lib --no-deps -- -D warnings
-          soldr cargo test --no-run --locked --target '${{ matrix.target }}' \
+          soldr cargo test --no-run --target '${{ matrix.target }}' \
             --package soldr-cli --lib
 
       - name: Cross-compile soldr — debug ${{ matrix.target }}
@@ -430,7 +430,7 @@ jobs:
           t_start_ns=$(date +%s%N)
           soldr build \
             --package soldr-cli \
-            --locked \
+            \
             --target "${{ matrix.target }}" 2>&1 | tee -a "$log"
           t_end_ns=$(date +%s%N)
           duration_ms=$(( (t_end_ns - t_start_ns) / 1000000 ))

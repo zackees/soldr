@@ -5,7 +5,7 @@
 //! live network is ever touched):
 //!
 //! * `soldr build --target <T>` with a `Cargo.lock` spawns exactly one
-//!   `cargo fetch --locked --target <T>` prefetch, and it completes
+//!   `cargo fetch --target <T>` prefetch, and it completes
 //!   before the main `cargo build` spawns.
 //! * `--offline`, a missing lockfile, and the `SOLDR_FETCH_OVERLAP`
 //!   kill switch each suppress the prefetch.
@@ -326,7 +326,7 @@ timed_test!(missing_lockfile_still_prefetches, {
     let invocations = harness.cargo_invocations();
     assert!(
         fetch_invocations(&invocations).len() == 1,
-        "no Cargo.lock must mean no `cargo fetch --locked` prefetch: {invocations:?}"
+        "no Cargo.lock must mean no `cargo fetch` prefetch: {invocations:?}"
     );
 });
 

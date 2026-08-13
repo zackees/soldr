@@ -155,7 +155,7 @@ jobs:
         shell: pwsh
         run: |
           $timer = [Diagnostics.Stopwatch]::StartNew()
-          soldr cargo build --workspace --tests --bins --locked --target ${{ inputs.target }}
+          soldr cargo build --workspace --tests --bins --target ${{ inputs.target }}
           $exitCode = $LASTEXITCODE
           $timer.Stop()
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ([string]::Format(
@@ -176,7 +176,7 @@ jobs:
         continue-on-error: ${{ !contains(inputs.target, 'linux-gnu') }}
         shell: pwsh
         run: |
-          soldr cargo build --workspace --tests --bins --locked --target ${{ inputs.target }} `
+          soldr cargo build --workspace --tests --bins --target ${{ inputs.target }} `
             *> warm-rebuild.log
           Get-Content warm-rebuild.log | Select-Object -Last 20
           python3 .github/scripts/check_warm_rebuild.py warm-rebuild.log
@@ -254,7 +254,7 @@ jobs:
           Write-Host "Using isolated test SOLDR_CACHE_DIR=$env:SOLDR_CACHE_DIR"
           Write-Host "Using isolated test ZCCACHE_CACHE_DIR=$env:ZCCACHE_CACHE_DIR"
           $timer = [Diagnostics.Stopwatch]::StartNew()
-          soldr cargo test --workspace --lib --tests --locked --target ${{ inputs.target }}
+          soldr cargo test --workspace --lib --tests --target ${{ inputs.target }}
           $exitCode = $LASTEXITCODE
           $timer.Stop()
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ([string]::Format(

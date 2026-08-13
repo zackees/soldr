@@ -210,9 +210,9 @@ The README uses `benchmark-rust-only.jpg` and `benchmark-rust-c.jpg` for an at-a
 
 | Tool | Command layer | Cache layer |
 |---|---|---|
-| `bare` | `cargo build --release --locked` | None. Universal baseline. |
-| `sccache` | `RUSTC_WRAPPER=sccache cargo build --release --locked` | The common Rust `RUSTC_WRAPPER` alternative. The workflow pins the Ubuntu package and records `sccache --version` in `latest.json#metadata.sccache_version`. |
-| `soldr` | `soldr cargo build --release --locked` | soldr-managed zccache with soldr's wrapper and path-remap defaults. |
+| `bare` | `cargo build --release` | None. Universal baseline. |
+| `sccache` | `RUSTC_WRAPPER=sccache cargo build --release` | The common Rust `RUSTC_WRAPPER` alternative. The workflow pins the Ubuntu package and records `sccache --version` in `latest.json#metadata.sccache_version`. |
+| `soldr` | `soldr cargo build --release` | soldr-managed zccache with soldr's wrapper and path-remap defaults. |
 
 `swatinem/rust-cache` is intentionally not a bar. It caches `target/` between GitHub Actions jobs, which is a different layer from a compiler wrapper. `cargo-chef` and linker choices such as `mold` are also different layers, so they are not included in the wrapper comparison.
 
