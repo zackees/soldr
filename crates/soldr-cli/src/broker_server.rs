@@ -844,14 +844,21 @@ async fn try_direct_handoff(
         error_detail: String::new(),
         correlation_id: negotiated.connection_id,
     };
-    let frame = running_process::broker::server::handoff_ready_frame(&ack);
-    write_frame_async(stream, &frame).await.map_err(|error| {
+    write_handoff_ready_async(stream, &ack).await.map_err(|error| {
         io::Error::new(
             error.kind(),
             format!("backend accepted broker handoff but the ready event could not be delivered: {error}"),
         )
     })?;
     Ok(true)
+}
+
+async fn write_handoff_ready_async(
+    stream: &mut interprocess::local_socket::tokio::Stream,
+    ack: &running_process::broker::protocol::HandoffAck,
+) -> io::Result<()> {
+    let frame = running_process::broker::server::handoff_ready_frame(ack);
+    write_frame_async(stream, &frame).await
 }
 
 #[cfg(unix)]
@@ -1173,6 +1180,66 @@ impl Drop for UnixBindGuard {
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
+    crate::timed_test!(windows_handoff_ready_uses_async_original_pipe, {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                use interprocess::local_socket::traits::tokio::Stream as _;
+
+                let endpoint = format!(
+                    "soldr-handoff-ready-{}-{}",
+                    std::process::id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .expect("clock")
+                        .as_nanos()
+                );
+                let listener = create_listener(&endpoint).expect("named-pipe listener");
+                let client_name =
+                    running_process::broker::server::singleton_bind::wrap_socket_name(&endpoint)
+                        .expect("named-pipe name");
+
+                let server = async {
+                    let mut stream = listener.accept().await.expect("accept client");
+                    let duplicated = duplicate_handoff_stream(&stream)
+                        .expect("duplicate overlapped named-pipe handle for handoff");
+                    drop(duplicated);
+
+                    let ack = running_process::broker::protocol::HandoffAck {
+                        token: vec![1, 2, 3, 4],
+                        accepted: true,
+                        error_detail: String::new(),
+                        correlation_id: 42,
+                    };
+                    write_handoff_ready_async(&mut stream, &ack)
+                        .await
+                        .expect("write ready event asynchronously on original pipe");
+                };
+                let client = async {
+                    let mut stream =
+                        interprocess::local_socket::tokio::Stream::connect(client_name)
+                            .await
+                            .expect("connect client");
+                    let body = read_frame_async(&mut stream)
+                        .await
+                        .expect("read ready event");
+                    let frame = Frame::decode(body.as_slice()).expect("decode ready frame");
+                    let ack = running_process::broker::protocol::HandoffAck::decode(
+                        frame.payload.as_slice(),
+                    )
+                    .expect("decode handoff acknowledgement");
+                    assert!(ack.accepted);
+                    assert_eq!(ack.correlation_id, 42);
+                    assert_eq!(ack.token, vec![1, 2, 3, 4]);
+                };
+
+                tokio::join!(server, client);
+            });
+    });
+
     crate::timed_test!(
         broker_instance_identity_includes_the_complete_image_digest,
         {
@@ -1303,6 +1370,11 @@ mod tests {
 
         let temp = tempfile::tempdir().expect("tempdir");
         let socket = temp.path().join("soldr-broker.sock");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let _context = runtime.enter();
         let listener = create_listener(socket.to_str().expect("UTF-8 socket path"))
             .expect("macOS broker listener");
         let mode = std::fs::metadata(&socket)
