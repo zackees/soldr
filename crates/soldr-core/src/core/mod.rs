@@ -137,19 +137,7 @@ pub(crate) fn non_empty_env_path(value: Option<&OsStr>) -> Option<PathBuf> {
 }
 
 pub fn home_dir() -> Result<PathBuf, SoldrError> {
-    #[cfg(windows)]
-    {
-        if let Ok(p) = std::env::var("USERPROFILE") {
-            return Ok(PathBuf::from(p));
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        if let Ok(p) = std::env::var("HOME") {
-            return Ok(PathBuf::from(p));
-        }
-    }
-    Err(SoldrError::NoHomeDir)
+    crate::platform::host::dirs::home().ok_or(SoldrError::NoHomeDir)
 }
 
 pub fn command_output_with_timeout(

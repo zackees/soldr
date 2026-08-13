@@ -11,6 +11,7 @@ members = [
     "crates/soldr-cache",
     "crates/soldr-core",
     "crates/soldr-fetch",
+    "crates/soldr-platform",
 ]
 # The zccache submodule has its own [workspace] declaration and its
 # own `[workspace.dependencies]` (arc-swap, etc.). Excluding it here

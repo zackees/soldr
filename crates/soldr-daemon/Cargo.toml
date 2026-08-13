@@ -12,6 +12,7 @@ publish = false
 [dependencies]
 soldr-core = { path = "../soldr-core" }
 soldr-cache = { path = "../soldr-cache" }
+soldr-platform = { path = "../soldr-platform" }
 
 fs2 = { workspace = true }
 hex = { workspace = true }

@@ -396,28 +396,14 @@ fn executable_in_dir(dir: &std::path::Path, tool: &str) -> Option<std::path::Pat
     if candidate.is_file() {
         return Some(candidate);
     }
-    #[cfg(windows)]
-    {
-        for suffix in windows_path_exts() {
-            let candidate = dir.join(format!("{tool}{suffix}"));
-            if candidate.is_file() {
-                return Some(candidate);
-            }
+    // Windows: also try the PATHEXT suffixes (no-op list on other hosts).
+    for suffix in crate::platform::executable::search::candidate_extensions() {
+        let candidate = dir.join(format!("{tool}{suffix}"));
+        if candidate.is_file() {
+            return Some(candidate);
         }
     }
     None
-}
-
-#[cfg(windows)]
-fn windows_path_exts() -> Vec<String> {
-    std::env::var_os("PATHEXT")
-        .and_then(|value| value.into_string().ok())
-        .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".to_string())
-        .split(';')
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_ascii_lowercase())
-        .collect()
 }
 
 pub(crate) fn apply_implicit_toolchain_homes(command: &mut std::process::Command) {
@@ -796,13 +782,9 @@ pub(crate) fn ensure_daemon_executable_handoff() -> Result<std::path::PathBuf, S
     }
 
     let current = std::env::current_exe().map_err(SoldrError::from)?;
-    let sibling = current.parent().map(|parent| {
-        parent.join(if cfg!(windows) {
-            "soldr-daemon.exe"
-        } else {
-            "soldr-daemon"
-        })
-    });
+    let sibling = current
+        .parent()
+        .map(|parent| crate::platform::executable::name::sibling(parent, "soldr-daemon"));
     let daemon = sibling
         .filter(|path| path.is_file())
         .map(Ok)
@@ -814,11 +796,7 @@ pub(crate) fn ensure_daemon_executable_handoff() -> Result<std::path::PathBuf, S
 fn materialize_runtime_alias(stem: &str) -> Result<std::path::PathBuf, SoldrError> {
     let source = crate::shim_materialize::soldr_binary_source()?;
     let current = std::env::current_exe().map_err(SoldrError::from)?;
-    let file = if cfg!(windows) {
-        format!("{stem}.exe")
-    } else {
-        stem.to_string()
-    };
+    let file = crate::platform::executable::name::native(stem);
     let (current_target, source_target) = runtime_alias_targets(&source, &current, &file)?;
     crate::shim_materialize::materialize_executable(&source, &current_target)?;
 
@@ -859,11 +837,7 @@ fn runtime_alias_targets(
 pub(crate) fn zccache_soldr_shim_binary() -> Result<std::path::PathBuf, SoldrError> {
     let paths = SoldrPaths::new()?;
     paths.ensure_dirs()?;
-    let file = if cfg!(windows) {
-        "zccache-soldr.exe"
-    } else {
-        "zccache-soldr"
-    };
+    let file = crate::platform::executable::name::native("zccache-soldr");
     let target = paths.bin.join(file);
     let source = crate::shim_materialize::soldr_binary_source()?;
     crate::shim_materialize::materialize_executable(&source, &target)?;
@@ -874,11 +848,7 @@ pub(crate) fn zccache_soldr_shim_binary() -> Result<std::path::PathBuf, SoldrErr
 /// `.exe` on Windows), falling back to the bare stem when the sibling
 /// is absent so a PATH lookup can still find it.
 fn sibling_binary(stem: &str) -> std::path::PathBuf {
-    let file = if cfg!(windows) {
-        format!("{stem}.exe")
-    } else {
-        stem.to_string()
-    };
+    let file = crate::platform::executable::name::native(stem);
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             let sibling = dir.join(&file);

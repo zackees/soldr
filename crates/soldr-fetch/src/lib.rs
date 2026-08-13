@@ -13,6 +13,10 @@
 
 #![allow(dead_code)]
 
+/// Neutral host-platform facade (#2493): the single selection site lives
+/// in `soldr-platform`; this crate calls only `crate::platform::…`.
+pub(crate) use soldr_platform as platform;
+
 pub use soldr_core::core;
 pub use soldr_core::timed_test;
 

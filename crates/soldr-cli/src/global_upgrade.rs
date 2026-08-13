@@ -61,28 +61,14 @@ fn executable_in_dir(directory: &Path, name: &str) -> Option<PathBuf> {
         return Some(candidate);
     }
 
-    #[cfg(windows)]
-    {
-        for extension in windows_path_extensions() {
-            let candidate = directory.join(format!("{name}{extension}"));
-            if candidate.is_file() {
-                return Some(candidate);
-            }
+    // Windows: also try the PATHEXT suffixes (no-op list on other hosts).
+    for extension in crate::platform::executable::search::candidate_extensions() {
+        let candidate = directory.join(format!("{name}{extension}"));
+        if candidate.is_file() {
+            return Some(candidate);
         }
     }
     None
-}
-
-#[cfg(windows)]
-fn windows_path_extensions() -> Vec<String> {
-    std::env::var_os("PATHEXT")
-        .and_then(|value| value.into_string().ok())
-        .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".to_string())
-        .split(';')
-        .map(str::trim)
-        .filter(|extension| !extension.is_empty())
-        .map(|extension| extension.to_ascii_lowercase())
-        .collect()
 }
 
 fn probe_version(binary: &Path) -> Option<Version> {
