@@ -646,7 +646,7 @@ async fn handle_connection(
         return Err(io::Error::other("negotiated route has no daemon endpoint"));
     }
 
-    if try_direct_handoff(&stream, &state, &hello.service_name, negotiated, &reply).await {
+    if try_direct_handoff(&mut stream, &state, &hello.service_name, negotiated, &reply).await? {
         return Ok(());
     }
 
@@ -786,32 +786,32 @@ async fn write_handoff_fallback(
 }
 
 async fn try_direct_handoff(
-    stream: &interprocess::local_socket::tokio::Stream,
+    stream: &mut interprocess::local_socket::tokio::Stream,
     state: &Arc<BrokerState>,
     service_name: &str,
     negotiated: &running_process::broker::protocol::Negotiated,
     reply: &HelloReply,
-) -> bool {
+) -> io::Result<bool> {
     use running_process::broker::capabilities::CAP_HANDLE_PASSING;
 
     #[cfg(debug_assertions)]
     if std::env::var_os("SOLDR_TEST_BROKER_DISABLE_HANDOFF").is_some() {
-        return false;
+        return Ok(false);
     }
     if negotiated.server_capabilities & CAP_HANDLE_PASSING == 0
         || negotiated.handle_passed_token.is_empty()
     {
-        return false;
+        return Ok(false);
     }
     let Some(instance) = state.instance_for_route(
         service_name,
         &negotiated.daemon_version,
         &negotiated.backend_pipe,
     ) else {
-        return false;
+        return Ok(false);
     };
     let Ok(mut handoff_client) = duplicate_handoff_stream(stream) else {
-        return false;
+        return Ok(false);
     };
     let state = Arc::clone(state);
     let service_name = service_name.to_string();
@@ -819,7 +819,7 @@ async fn try_direct_handoff(
     let handoff_endpoint =
         crate::daemon::session_endpoint::handoff_endpoint_path(&negotiated.backend_pipe);
     let reply = reply.clone();
-    tokio::task::spawn_blocking(move || {
+    let transferred = tokio::task::spawn_blocking(move || {
         let context = ServeHandoffContext {
             handoff_endpoint: &handoff_endpoint,
             service_name: &service_name,
@@ -827,14 +827,31 @@ async fn try_direct_handoff(
             instance: &instance,
             registry: &state.registry,
         };
-        running_process::broker::server::try_complete_negotiated_handoff(
+        running_process::broker::server::try_transfer_negotiated_handoff(
             &context,
             &mut handoff_client,
             &reply,
         )
     })
     .await
-    .unwrap_or(false)
+    .map_err(|error| io::Error::other(format!("broker handoff worker failed: {error}")))?;
+    if !transferred {
+        return Ok(false);
+    }
+    let ack = running_process::broker::protocol::HandoffAck {
+        token: negotiated.handle_passed_token.clone(),
+        accepted: true,
+        error_detail: String::new(),
+        correlation_id: negotiated.connection_id,
+    };
+    let frame = running_process::broker::server::handoff_ready_frame(&ack);
+    write_frame_async(stream, &frame).await.map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("backend accepted broker handoff but the ready event could not be delivered: {error}"),
+        )
+    })?;
+    Ok(true)
 }
 
 #[cfg(unix)]
