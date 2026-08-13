@@ -21,25 +21,11 @@ pub(crate) const LINK_MODE_HARDLINK_OR_COPY: &str = "hardlink-or-copy";
 pub(crate) const LINK_MODE_TRAMPOLINE: &str = "trampoline";
 const MATERIALIZATION_MEMO_VERSION: u32 = 1;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct FileStamp {
-    len: u64,
-    modified_ns: u128,
-    #[cfg(unix)]
-    dev: u64,
-    #[cfg(unix)]
-    ino: u64,
-    #[cfg(unix)]
-    ctime: i64,
-    #[cfg(unix)]
-    ctime_nsec: i64,
-    #[cfg(windows)]
-    volume_serial_number: u32,
-    #[cfg(windows)]
-    file_index: u64,
-    #[cfg(windows)]
-    creation_time: u64,
-}
+/// Stable file identity for the materialization memo. Owned by the
+/// platform crate: Unix fills the dev/ino/ctime members, Windows the
+/// volume-serial/file-index/creation-time members, so this type is
+/// neutral and serializable.
+type FileStamp = crate::platform::fs::identity::FileIdentity;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct MaterializationMemo {
@@ -410,60 +396,7 @@ fn materialization_memo_path(target: &Path) -> PathBuf {
 }
 
 fn file_stamp(path: &Path) -> Option<FileStamp> {
-    let metadata = std::fs::metadata(path).ok()?;
-    let modified_ns = metadata
-        .modified()
-        .ok()?
-        .duration_since(UNIX_EPOCH)
-        .ok()?
-        .as_nanos();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        Some(FileStamp {
-            len: metadata.len(),
-            modified_ns,
-            dev: metadata.dev(),
-            ino: metadata.ino(),
-            ctime: metadata.ctime(),
-            ctime_nsec: metadata.ctime_nsec(),
-        })
-    }
-    #[cfg(windows)]
-    {
-        use std::mem::MaybeUninit;
-        use std::os::windows::io::AsRawHandle;
-        use windows_sys::Win32::Storage::FileSystem::{
-            GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
-        };
-        let file = std::fs::File::open(path).ok()?;
-        let mut info = MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
-        // SAFETY: `file` owns a valid handle and `info` has the exact storage
-        // required by GetFileInformationByHandle.
-        if unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, info.as_mut_ptr()) } == 0
-        {
-            // Do not create a weak size+mtime memo when stable file identity
-            // is unavailable. The caller falls back to the content hash.
-            return None;
-        }
-        // SAFETY: the successful call initialized the full structure.
-        let info = unsafe { info.assume_init() };
-        Some(FileStamp {
-            len: metadata.len(),
-            modified_ns,
-            volume_serial_number: info.dwVolumeSerialNumber,
-            file_index: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
-            creation_time: (u64::from(info.ftCreationTime.dwHighDateTime) << 32)
-                | u64::from(info.ftCreationTime.dwLowDateTime),
-        })
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        Some(FileStamp {
-            len: metadata.len(),
-            modified_ns,
-        })
-    }
+    crate::platform::fs::identity::file_identity(path)
 }
 
 fn materialization_memo(source: &Path, target: &Path) -> Option<MaterializationMemo> {
@@ -520,12 +453,8 @@ pub(crate) fn executable_matches(target: &Path, source: &Path) -> Result<bool, S
     if target_meta.len() != source_meta.len() {
         return Ok(false);
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if target_meta.dev() == source_meta.dev() && target_meta.ino() == source_meta.ino() {
-            return Ok(true);
-        }
+    if crate::platform::fs::identity::same_file(target, source) {
+        return Ok(true);
     }
     Ok(blake3_file(target)? == blake3_file(source)?)
 }

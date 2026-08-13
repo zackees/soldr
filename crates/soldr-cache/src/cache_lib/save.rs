@@ -2137,11 +2137,9 @@ fn extract_one(job: &ExtractJob) -> Result<()> {
             // binaries restored from cache fail execve with EACCES.
             // Windows ignores the mode — NTFS uses ACLs, and the tar
             // header's Unix mode isn't meaningful there.
-            #[cfg(unix)]
             if let Some(mode) = job.mode_bits {
-                use std::os::unix::fs::PermissionsExt;
-                let perms = std::fs::Permissions::from_mode(mode);
-                if let Err(e) = std::fs::set_permissions(&staged, perms) {
+                if let Err(e) = crate::platform::fs::permissions::restore_mode(&staged, Some(mode))
+                {
                     let _ = std::fs::remove_file(&staged);
                     return Err(io(&staged, e));
                 }
@@ -2466,13 +2464,7 @@ fn apply_cache_tombstones(cache_dir: &Path, manifest: &Manifest) -> Result<()> {
 /// symlink must be removed with `remove_dir`; try file-removal first and
 /// fall back so both flavors are covered.
 fn remove_symlink(path: &Path) -> std::io::Result<()> {
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        #[cfg(windows)]
-        Err(_) => std::fs::remove_dir(path),
-        #[cfg(not(windows))]
-        Err(err) => Err(err),
-    }
+    crate::platform::fs::links::remove(path)
 }
 
 /// Recreate manifest symlink entries below `cache_dir` (#1548). Returns
@@ -2533,27 +2525,7 @@ fn restore_one_symlink(cache_dir: &Path, entry: &SymlinkEntry) -> std::result::R
 /// Platform symlink creation. `target` is the manifest's forward-slashed
 /// relative string; converted to the native separator on Windows.
 fn create_symlink_at(target: &str, dest: &Path, is_dir: bool) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        let _ = is_dir;
-        std::os::unix::fs::symlink(target, dest)
-    }
-    #[cfg(windows)]
-    {
-        let native = target.replace('/', "\\");
-        if is_dir {
-            std::os::windows::fs::symlink_dir(native, dest)
-        } else {
-            std::os::windows::fs::symlink_file(native, dest)
-        }
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = (target, dest, is_dir);
-        Err(std::io::Error::other(
-            "symlinks unsupported on this platform",
-        ))
-    }
+    crate::platform::fs::links::create(target, dest, is_dir)
 }
 
 /// Per-manifest-entry slot tracking whether the extract workers already

@@ -139,16 +139,10 @@ pub(super) async fn download_and_extract_with_pin(
         std::fs::copy(downloaded.path(), &binary_path)?;
     }
 
-    // Make executable on Unix.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        for binary_name in &desired_binaries {
-            let binary_path = tool_dir.join(binary_name);
-            let mut perms = std::fs::metadata(&binary_path)?.permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&binary_path, perms)?;
-        }
+    // Make executable (no-op where the filesystem has no exec bits).
+    for binary_name in &desired_binaries {
+        let binary_path = tool_dir.join(binary_name);
+        crate::platform::fs::permissions::make_executable(&binary_path)?;
     }
 
     Ok(binary_path)

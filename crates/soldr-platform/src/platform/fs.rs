@@ -9,5 +9,9 @@
 //! to delete or replace data.
 
 pub mod contention;
+pub mod identity;
+pub mod links;
 pub mod permissions;
 pub mod positioned_io;
+pub mod replace;
+pub mod volume;

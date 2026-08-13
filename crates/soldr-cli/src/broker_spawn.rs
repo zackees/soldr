@@ -682,9 +682,8 @@ fn stage_nonce() -> u64 {
     u64::from_le_bytes(bytes)
 }
 
-#[cfg(unix)]
 fn replace_staged_image(source: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
-    std::fs::rename(source, target)
+    crate::platform::fs::replace::atomic_replace(source, target)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -734,28 +733,6 @@ fn emit_ci_endpoint_diagnostics() {
     }
 }
 
-#[cfg(windows)]
-fn replace_staged_image(source: &std::path::Path, target: &std::path::Path) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt as _;
-    use windows_sys::Win32::Storage::FileSystem::{
-        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-    };
-    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
-    let target: Vec<u16> = target.as_os_str().encode_wide().chain(Some(0)).collect();
-    if unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            target.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    } == 0
-    {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
 pub(crate) fn open_append(path: &std::path::Path) -> Option<std::fs::File> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok()?;
@@ -768,22 +745,7 @@ pub(crate) fn open_append(path: &std::path::Path) -> Option<std::fs::File> {
 }
 
 pub(crate) fn daemon_stdio(log: &std::fs::File) -> DaemonStdio<'_> {
-    #[cfg(unix)]
-    {
-        use std::os::fd::AsFd;
-        DaemonStdio {
-            stdout: DaemonStdioSource::Fd(log.as_fd()),
-            stderr: DaemonStdioSource::Fd(log.as_fd()),
-        }
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::io::AsHandle;
-        DaemonStdio {
-            stdout: DaemonStdioSource::Handle(log.as_handle()),
-            stderr: DaemonStdioSource::Handle(log.as_handle()),
-        }
-    }
+    crate::platform::process::spawn::daemon_stdio(Some(log))
 }
 
 #[cfg(test)]

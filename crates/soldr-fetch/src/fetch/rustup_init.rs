@@ -213,13 +213,7 @@ pub async fn bootstrap_rustup(paths: &SoldrPaths) -> Result<BootstrapReport, Sol
         ))
     })?;
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&rustup_path)?.permissions();
-        perms.set_mode(perms.mode() | 0o111);
-        std::fs::set_permissions(&rustup_path, perms)?;
-    }
+    crate::platform::fs::permissions::make_executable(&rustup_path)?;
 
     Ok(BootstrapReport {
         rustup_path,
