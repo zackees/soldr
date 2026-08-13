@@ -18,7 +18,10 @@ pub fn is_alive(pid: u32) -> bool {
     type DWORD = u32;
     #[allow(clippy::upper_case_acronyms)]
     type BOOL = i32;
-    const SYNCHRONIZE: DWORD = 0x0010_0000;
+    // PROCESS_QUERY_LIMITED_INFORMATION (not SYNCHRONIZE): restricted
+    // tokens (job-object sandboxes) strip SYNCHRONIZE from process DACLs,
+    // which would make every visible process read as dead.
+    const PROCESS_QUERY_LIMITED_INFORMATION: DWORD = 0x0000_1000;
     const STILL_ACTIVE: DWORD = 259;
     extern "system" {
         fn OpenProcess(desired_access: DWORD, inherit: BOOL, pid: DWORD) -> HANDLE;
@@ -27,7 +30,7 @@ pub fn is_alive(pid: u32) -> bool {
     }
     // SAFETY: OpenProcess on a pid the caller captured; GetExitCodeProcess
     // reads one DWORD into `code`. A null handle means the process is gone.
-    let handle = unsafe { OpenProcess(SYNCHRONIZE, 0, pid) };
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     if handle.is_null() {
         return false;
     }

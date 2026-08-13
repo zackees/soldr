@@ -1,9 +1,21 @@
-// The boundary's inside: the selection site and the concrete trees are
-// allowed host cfg and concrete-tree references.
+// The boundary's inside: host cfg in a file named like a concrete-tree
+// member is allowed, and feature/test cfg without a host selector is
+// allowed anywhere.
 
 #[cfg(target_os = "linux")]
-mod selected { pub fn f() {} }
+mod selected {
+    pub fn f() -> u8 {
+        1
+    }
+}
 
-fn neutral() -> u8 {
-    crate::platform_imp::fs::identity::file_identity(std::path::Path::new("x")).map(|_| 1).unwrap_or(0)
+#[cfg(feature = "tokio-console")]
+fn feature_gated() {}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn neutral() {
+        assert_eq!(super::selected::f(), 1);
+    }
 }

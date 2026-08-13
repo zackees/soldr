@@ -374,13 +374,7 @@ mod tests {
 
         let written = std::fs::read_to_string(shim_tool_path(&dir, "cargo")).unwrap();
         assert_eq!(written, trampoline_shim_body(&exe));
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(shim_tool_path(&dir, "cargo"))
-                .unwrap()
-                .permissions()
-                .mode();
+        if let Some(mode) = crate::platform::fs::permissions::mode(&shim_tool_path(&dir, "cargo")) {
             assert_eq!(mode & 0o777, 0o755, "trampoline must be executable");
         }
     }
@@ -405,7 +399,6 @@ mod tests {
         );
     }
 
-    #[cfg(windows)]
     fn system_cmd_exe() -> PathBuf {
         let system_root = std::env::var_os("SystemRoot")
             .unwrap_or_else(|| std::ffi::OsString::from("C:\\Windows"));
@@ -424,22 +417,25 @@ mod tests {
     crate::timed_test!(shim_tool_path_uses_native_executable_suffix, {
         let dir = PathBuf::from("/tmp/shims");
         let path = shim_tool_path(&dir, "cargo");
-        #[cfg(windows)]
-        assert!(
-            path.to_string_lossy().ends_with("cargo.exe"),
-            "windows shims must be native executable files: {}",
-            path.display()
-        );
-        #[cfg(not(windows))]
-        assert!(
-            path.to_string_lossy().ends_with("cargo"),
-            "unix shims keep extensionless tool names: {}",
-            path.display()
-        );
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            assert!(
+                path.to_string_lossy().ends_with("cargo.exe"),
+                "windows shims must be native executable files: {}",
+                path.display()
+            );
+        } else {
+            assert!(
+                path.to_string_lossy().ends_with("cargo"),
+                "unix shims keep extensionless tool names: {}",
+                path.display()
+            );
+        }
     });
 
-    #[cfg(windows)]
     crate::timed_test!(windows_shims_are_visible_to_rust_command_lookup, {
+        if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
+            return;
+        }
         let temp = tempfile::tempdir().expect("tempdir");
         let cmd = system_cmd_exe();
         assert!(cmd.is_file(), "missing {}", cmd.display());

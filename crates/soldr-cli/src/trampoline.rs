@@ -800,10 +800,21 @@ fn exec_binary(binary: &Path, args: &[String]) -> Result<i32, SoldrError> {
     command.args(args);
     match crate::platform::process::spawn::exec_or_status(&mut command) {
         Ok(status) => Ok(status.code().unwrap_or(1)),
-        Err(err) => Err(SoldrError::Other(format!(
-            "failed to exec {}: {err}",
-            binary.display()
-        ))),
+        Err(err) => {
+            let detail = match fs::metadata(binary) {
+                Ok(meta) => format!(
+                    " (regular {}, readonly {}, len {})",
+                    meta.is_file(),
+                    meta.permissions().readonly(),
+                    meta.len()
+                ),
+                Err(meta_err) => format!(" (metadata unavailable: {meta_err})"),
+            };
+            Err(SoldrError::Other(format!(
+                "failed to exec {}: {err}{detail}",
+                binary.display()
+            )))
+        }
     }
 }
 

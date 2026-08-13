@@ -11,7 +11,6 @@ use rustc_span::{FileName, RemapPathScopeComponents, Span};
 #[derive(Default)]
 struct BanPlatformCfgOutsideBoundary {
     current_file: String,
-    modules: Vec<String>,
 }
 
 dylint_linting::impl_pre_expansion_lint! {

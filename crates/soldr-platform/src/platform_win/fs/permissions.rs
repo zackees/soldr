@@ -8,10 +8,15 @@ pub fn restore_mode(_path: &Path, _mode: Option<u32>) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Make an open file writable by clearing FILE_ATTRIBUTE_READONLY.
+/// Adopt the source's permission set onto `file` with
+/// FILE_ATTRIBUTE_READONLY cleared. The temp copy must carry the
+/// original's flags (read-only travels) rather than its own defaults.
 #[allow(clippy::permissions_set_readonly_false)] // Windows clears only FILE_ATTRIBUTE_READONLY.
-pub fn make_writable(file: &std::fs::File) -> std::io::Result<()> {
-    let mut permissions = file.metadata()?.permissions();
+pub fn make_writable_like(
+    file: &std::fs::File,
+    source: &std::fs::Permissions,
+) -> std::io::Result<()> {
+    let mut permissions = source.clone();
     permissions.set_readonly(false);
     file.set_permissions(permissions)
 }
@@ -33,4 +38,10 @@ pub fn make_executable_from(path: &Path, source: &std::fs::Permissions) -> std::
 /// carry no meaning, so nothing to apply.
 pub fn make_private(_path: &Path) -> std::io::Result<()> {
     Ok(())
+}
+
+/// Windows has no Unix mode bits; always `None` so callers can branch
+/// at runtime instead of by cfg.
+pub fn mode(_path: &Path) -> Option<u32> {
+    None
 }

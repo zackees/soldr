@@ -646,8 +646,8 @@ fn hard_link_count(source: &File, _metadata: &std::fs::Metadata) -> std::io::Res
     crate::platform::fs::links::hard_link_count(source)
 }
 
-fn set_private_permissions(file: &File, _source: &std::fs::Metadata) -> std::io::Result<()> {
-    crate::platform::fs::permissions::make_writable(file)
+fn set_private_permissions(file: &File, source: &std::fs::Metadata) -> std::io::Result<()> {
+    crate::platform::fs::permissions::make_writable_like(file, &source.permissions())
 }
 
 fn make_file_writable(file: &File, metadata: &std::fs::Metadata) -> std::io::Result<()> {

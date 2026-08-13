@@ -12,11 +12,16 @@ pub fn restore_mode(path: &Path, mode: Option<u32>) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Add the owner-write bit to an open file (keeping every other bit).
-pub fn make_writable(file: &std::fs::File) -> std::io::Result<()> {
+/// Adopt the source's full mode onto `file` with the owner-write bit
+/// added. A freshly created private copy lands at the umask default
+/// (0o644) and must carry the original's permission set — including the
+/// execute bits — instead of its own.
+pub fn make_writable_like(
+    file: &std::fs::File,
+    source: &std::fs::Permissions,
+) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    let mode = file.metadata()?.permissions().mode();
-    file.set_permissions(std::fs::Permissions::from_mode(mode | 0o200))
+    file.set_permissions(std::fs::Permissions::from_mode(source.mode() | 0o200))
 }
 
 /// Add the execute bits to `path` (keeping every other bit): a freshly
@@ -40,4 +45,55 @@ pub fn make_executable_from(path: &Path, _source: &std::fs::Permissions) -> std:
 pub fn make_private(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+}
+
+/// Read the file's Unix permission bits (e.g. `0o755`). `None` when the
+/// metadata read fails; on hosts without mode semantics (Windows) the
+/// concrete tree always returns `None`, letting callers branch at
+/// runtime instead of by cfg.
+pub fn mode(path: &Path) -> Option<u32> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).ok().map(|m| m.permissions().mode())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+    fn make_writable_like_adopts_source_exec_bits() {
+        // A freshly created private copy lands at the umask default
+        // (0o644); the source's exec bits must survive the adoption.
+        let path = std::env::temp_dir().join(format!(
+            "soldr-platform-make-writable-like-{}-{}",
+            std::process::id(),
+            "exec"
+        ));
+        let file = std::fs::File::create(&path).unwrap();
+        let source = std::fs::Permissions::from_mode(0o755);
+        make_writable_like(&file, &source).unwrap();
+        drop(file);
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(mode, 0o755);
+    }
+
+    #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+    fn make_writable_like_keeps_private_modes_private() {
+        // A 0o600 source stays 0o600: only the owner-write bit is added,
+        // group/other bits are not invented.
+        let path = std::env::temp_dir().join(format!(
+            "soldr-platform-make-writable-like-{}-{}",
+            std::process::id(),
+            "private"
+        ));
+        let file = std::fs::File::create(&path).unwrap();
+        let source = std::fs::Permissions::from_mode(0o600);
+        make_writable_like(&file, &source).unwrap();
+        drop(file);
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(mode, 0o600);
+    }
 }

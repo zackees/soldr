@@ -12,6 +12,11 @@ pub fn sibling(exe_dir: &Path, name: &str) -> PathBuf {
     exe_dir.join(native(name))
 }
 
+/// The suffix for wrapper scripts (`.cmd` on Windows, none elsewhere).
+pub fn script_suffix() -> &'static str {
+    ".cmd"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -24,9 +29,4 @@ mod tests {
             std::path::PathBuf::from("/soldr/bin/soldr-daemon.exe")
         );
     }
-}
-
-/// The suffix for wrapper scripts (`.cmd` on Windows, none elsewhere).
-pub fn script_suffix() -> &'static str {
-    ".cmd"
 }

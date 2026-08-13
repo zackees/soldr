@@ -2,7 +2,7 @@
 //! deferred archive-symlink materialization Windows requires.
 
 use std::io::Read;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 /// True for symlinks and any NTFS reparse point (junctions included).
 /// Destructive collectors must not follow any of them.
