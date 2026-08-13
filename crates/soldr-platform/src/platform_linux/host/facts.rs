@@ -72,6 +72,28 @@ pub fn libc() -> HostLibc {
     }
 }
 
+/// The compile-time host triple (the target this binary was built for).
+pub fn triple() -> &'static str {
+    let arch = if cfg!(target_arch = "aarch64") {
+        "aarch64"
+    } else {
+        "x86_64"
+    };
+    let env = if cfg!(target_env = "musl") { "musl" } else { "gnu" };
+    // Only the four canonical triples are in scope here.
+    match (arch, env) {
+        ("aarch64", "musl") => "aarch64-unknown-linux-musl",
+        ("x86_64", "musl") => "x86_64-unknown-linux-musl",
+        ("aarch64", _) => "aarch64-unknown-linux-gnu",
+        _ => "x86_64-unknown-linux-gnu",
+    }
+}
+
+/// Linux has no MAX_PATH-style ceiling worth projecting against.
+pub fn max_path() -> Option<usize> {
+    None
+}
+
 /// All host facts in one probe (with the runtime musl/glibc detection).
 pub fn info() -> HostInfo {
     HostInfo {

@@ -25,13 +25,13 @@ pub(crate) async fn prepare(
     let zig_target = rust_target_to_zig_target(triple)?;
     let zig_target = zig_target.as_str();
     let zig_dir = crate::fetch::ensure_zig(paths).await?;
-    let zig = zig_dir.join(if cfg!(windows) { "zig.exe" } else { "zig" });
+    let zig = zig_dir.join(crate::platform::executable::name::native("zig"));
     // The musl triple is part of the directory so the two architectures never
     // share wrapper scripts.
     let wrapper_dir = paths.bin.join("linux-cross").join(triple);
     std::fs::create_dir_all(&wrapper_dir)?;
 
-    let ext = if cfg!(windows) { ".cmd" } else { "" };
+    let ext = crate::platform::executable::name::script_suffix();
     let cc = wrapper_dir.join(format!("cc{ext}"));
     let cxx = wrapper_dir.join(format!("cxx{ext}"));
     let ar = wrapper_dir.join(format!("ar{ext}"));

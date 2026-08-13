@@ -99,11 +99,7 @@ pub fn run_shims(paths: &SoldrPaths, json: bool) -> Result<i32, SoldrError> {
 
 /// Per-OS shim file name for `tool` (appends `.exe` on Windows).
 pub(crate) fn tool_file_name(tool: &str) -> String {
-    if cfg!(windows) {
-        format!("{tool}.exe")
-    } else {
-        tool.to_string()
-    }
+    crate::platform::executable::name::native(tool)
 }
 
 /// Install (or re-install if stale) a single shim file. Atomic and

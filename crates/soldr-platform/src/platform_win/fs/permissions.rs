@@ -21,3 +21,10 @@ pub fn make_writable(file: &std::fs::File) -> std::io::Result<()> {
 pub fn make_executable(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
+
+/// Publish permissions for a materialized executable: Windows preserves
+/// the source's permissions (read-only flags travel), since there are no
+/// exec bits to apply.
+pub fn make_executable_from(path: &Path, source: &std::fs::Permissions) -> std::io::Result<()> {
+    std::fs::set_permissions(path, source.clone())
+}

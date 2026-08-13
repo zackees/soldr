@@ -25,7 +25,7 @@ pub(super) fn ensure_zig_wrappers(
     let dir = paths.bin.join(SHIM_DIR_BASENAME).join(triple);
     std::fs::create_dir_all(&dir)?;
 
-    let ext = if cfg!(windows) { ".cmd" } else { "" };
+    let ext = crate::platform::executable::name::script_suffix();
     let cc = dir.join(format!("cc{ext}"));
     let cxx = dir.join(format!("cxx{ext}"));
     let ar = dir.join(format!("ar{ext}"));

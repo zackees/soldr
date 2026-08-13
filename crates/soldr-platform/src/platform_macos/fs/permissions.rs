@@ -27,3 +27,11 @@ pub fn make_executable(path: &Path) -> std::io::Result<()> {
     let mode = std::fs::metadata(path)?.permissions().mode();
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode | 0o111))
 }
+
+/// Publish permissions for a materialized executable: the published
+/// shim must be runnable regardless of the source's own mode, so apply
+/// a fixed 0o755.
+pub fn make_executable_from(path: &Path, _source: &std::fs::Permissions) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+}

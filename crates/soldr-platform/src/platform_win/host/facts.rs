@@ -66,6 +66,21 @@ pub fn libc() -> HostLibc {
     HostLibc::None
 }
 
+/// The compile-time host triple (the target this binary was built for).
+pub fn triple() -> &'static str {
+    if cfg!(target_arch = "aarch64") {
+        "aarch64-pc-windows-msvc"
+    } else {
+        "x86_64-pc-windows-msvc"
+    }
+}
+
+/// The legacy Windows MAX_PATH ceiling in characters, when the caller
+/// needs to project path budgets against it.
+pub fn max_path() -> Option<usize> {
+    Some(260)
+}
+
 /// All host facts in one probe (the Linux probe also performs the
 /// runtime musl/glibc detection).
 pub fn info() -> HostInfo {

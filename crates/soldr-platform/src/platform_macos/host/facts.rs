@@ -66,6 +66,20 @@ pub fn libc() -> HostLibc {
     HostLibc::None
 }
 
+/// The compile-time host triple (the target this binary was built for).
+pub fn triple() -> &'static str {
+    if cfg!(target_arch = "aarch64") {
+        "aarch64-apple-darwin"
+    } else {
+        "x86_64-apple-darwin"
+    }
+}
+
+/// macOS has no MAX_PATH-style ceiling worth projecting against.
+pub fn max_path() -> Option<usize> {
+    None
+}
+
 /// All host facts in one probe.
 pub fn info() -> HostInfo {
     HostInfo {

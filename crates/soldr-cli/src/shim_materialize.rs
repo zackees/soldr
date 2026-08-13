@@ -158,18 +158,10 @@ pub(crate) fn materialize_executable(
     };
 
     let source_meta = std::fs::metadata(source).map_err(SoldrError::Io)?;
-    let perms = source_meta.permissions();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = perms;
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&tmp, perms).map_err(SoldrError::Io)?;
-    }
-    #[cfg(not(unix))]
-    {
-        std::fs::set_permissions(&tmp, perms).map_err(SoldrError::Io)?;
-    }
+    // The platform applies publish permissions: fixed 0o755 where exec
+    // bits exist, the source's permissions where they don't.
+    crate::platform::fs::permissions::make_executable_from(&tmp, &source_meta.permissions())
+        .map_err(SoldrError::Io)?;
 
     if link_mode == LINK_MODE_COPY {
         if let Ok(mtime) = source_meta.modified() {
