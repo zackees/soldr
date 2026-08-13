@@ -375,6 +375,16 @@ def test_native_linux_integration_backstop_runs_on_pull_requests() -> None:
     assert "canonical native exception" in block
 
 
+def test_pep517_platform_smokes_run_on_pull_requests() -> None:
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    block = _job_block(ci, "pep517-daemon-smoke", "e2e-linux-x64")
+
+    assert '"name":"macos-arm64"' in block
+    assert '"name":"windows-x64"' in block
+    assert "github.event.pull_request.labels" in block
+    assert "fromJSON('[" in block
+
+
 def test_manual_cross_compile_workflows_use_blessed_supported_targets() -> None:
     build_all = (WORKFLOWS / "build-all-from-linux.yml").read_text(encoding="utf-8")
     cross_all = (WORKFLOWS / "cross-compile-all-targets.yml").read_text(

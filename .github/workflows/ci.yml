@@ -613,24 +613,11 @@ jobs:
     timeout-minutes: 35
     strategy:
       fail-fast: false
-      # soldr#1978 item 1: the macOS leg runs on main only.
-      #
-      # macOS is the scarcest pool -- target-runs were observed waiting 39-84
-      # minutes for 2-minute jobs, and the v0.8.28 release sat queued over an
-      # hour behind a single `macos-15` slot. This job and `e2e-macos-arm64`
-      # each allocate their own `macos-15` VM per PR, on the same image.
-      #
-      # Gating rather than merging the two jobs: they do genuinely different
-      # work (native wheel build vs nextest archive replay), so sharing one
-      # allocation is a restructure, not a trigger edit. That is still the
-      # better end state -- soldr#1978 tracks it.
-      #
-      # The matrix is selected rather than filtered per-leg so the runner is
-      # never allocated at all; a step-level `if` would still take the slot.
+      # PEP 517 is a public wheel boundary, so both native platform smokes run
+      # on pull requests as well as main. The matrix remains selected rather
+      # than filtered per-leg so a `fast-build` PR allocates neither runner.
       matrix:
-        include: ${{ fromJSON(github.ref_name == 'main'
-          && '[{"name":"macos-arm64","runner":"macos-15","python":"3.13"},{"name":"windows-x64","runner":"windows-2025","python":"3.13t"}]'
-          || '[{"name":"windows-x64","runner":"windows-2025","python":"3.13t"}]') }}
+        include: ${{ fromJSON('[{"name":"macos-arm64","runner":"macos-15","python":"3.13"},{"name":"windows-x64","runner":"windows-2025","python":"3.13t"}]') }}
     env:
       RUST_BACKTRACE: "1"
       CARGO_TERM_COLOR: always
