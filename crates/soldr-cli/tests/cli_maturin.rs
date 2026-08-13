@@ -1,5 +1,3 @@
-#![cfg(not(windows))]
-
 mod common;
 
 use common::*;
@@ -38,6 +36,12 @@ fn line_contains_path(line: &str, prefix: &str, path: &Path) -> bool {
 }
 
 timed_test!(direct_maturin_build_routes_nested_cargo_through_zccache, {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
     let cache_root = unique_temp_dir("direct-maturin-zccache");
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
@@ -94,6 +98,12 @@ timed_test!(direct_maturin_build_routes_nested_cargo_through_zccache, {
 });
 
 timed_test!(direct_maturin_preserves_explicit_cargo_rustc_and_wrapper, {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
     let cache_root = unique_temp_dir("direct-maturin-explicit-env");
     let log_path = cache_root.join("tool.log");
     let (caller_cargo, caller_rustc, _) = install_fake_toolchain(&log_path);

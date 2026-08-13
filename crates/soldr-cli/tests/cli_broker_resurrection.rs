@@ -189,11 +189,16 @@ soldr_cli::timed_test!(
     }
 );
 
-#[cfg(unix)]
 soldr_cli::timed_test!(
     issue_2476_sigstop_owner_is_fenced_after_lease_expiry,
     Duration::from_secs(90),
     {
+        if matches!(
+            soldr_platform::host::facts::os(),
+            soldr_platform::host::facts::HostOs::Windows
+        ) {
+            return;
+        }
         let home = common::unique_temp_dir("broker-sigstop-takeover");
         let ready = home.join("lease-acquired");
         let stopped_owner_stderr = home.join("stopped-owner.stderr");

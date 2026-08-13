@@ -73,10 +73,14 @@ path = "src/main.rs"
 /// fast path.
 fn broken_cargo_stub(dir: &Path) -> PathBuf {
     let path = fake_script_path(dir, "broken-cargo");
-    #[cfg(windows)]
-    let body = "@echo off\necho broken cargo should not have been spawned 1>&2\nexit /b 99\n";
-    #[cfg(not(windows))]
-    let body = "#!/bin/sh\necho 'broken cargo should not have been spawned' >&2\nexit 99\n";
+    let body = if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        "@echo off\necho broken cargo should not have been spawned 1>&2\nexit /b 99\n"
+    } else {
+        "#!/bin/sh\necho 'broken cargo should not have been spawned' >&2\nexit 99\n"
+    };
     write_fake_script(&path, body);
     path
 }
@@ -113,7 +117,10 @@ fn run_cold(project: &Path, extra_args: &[&str]) -> std::process::Output {
 /// left implicit and artifacts live at `target/<profile>/`.
 fn profile_root(project: &Path, profile: &str) -> PathBuf {
     let mut root = project.join("target");
-    if cfg!(windows) {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         let target_root = project.join("target");
         if let Ok(entries) = fs::read_dir(&target_root) {
             for entry in entries.flatten() {
@@ -139,7 +146,10 @@ fn project_sidecar(project: &Path, bin: &str, profile: &str) -> PathBuf {
 
 fn project_binary(project: &Path, bin: &str, profile: &str) -> PathBuf {
     let mut p = profile_root(project, profile).join(bin);
-    if cfg!(windows) {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         p.set_extension("exe");
     }
     p

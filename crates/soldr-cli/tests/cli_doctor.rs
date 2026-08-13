@@ -41,10 +41,14 @@ fn install_doctor_fake_rustup(log_path: &Path, behavior: &DoctorFakeRustupBehavi
     fs::write(&targets_path, behavior.targets_installed.join("\n"))
         .expect("failed to write fake targets list");
 
-    #[cfg(windows)]
-    let rustup = dir.join("rustup.bat");
-    #[cfg(not(windows))]
-    let rustup = fake_script_path(&dir, "rustup");
+    let rustup = if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        dir.join("rustup.bat")
+    } else {
+        fake_script_path(&dir, "rustup")
+    };
 
     let script = doctor_fake_rustup_script(
         log_path,
@@ -62,8 +66,10 @@ fn doctor_fake_rustup_script(
     components_path: &Path,
     targets_path: &Path,
 ) -> String {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         format!(
             "@echo off\n\
              setlocal enabledelayedexpansion\n\
@@ -102,9 +108,7 @@ fn doctor_fake_rustup_script(
             components = components_path.display(),
             targets = targets_path.display(),
         )
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         format!(
             "#!/bin/sh\n\
              sep=$(printf '\\037')\n\

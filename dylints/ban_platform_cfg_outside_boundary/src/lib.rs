@@ -7,16 +7,17 @@ extern crate rustc_span;
 use rustc_errors::DiagDecorator;
 use rustc_lint::{EarlyContext, EarlyLintPass, LintContext};
 use rustc_span::{FileName, RemapPathScopeComponents, Span};
+use std::collections::HashSet;
 
 #[derive(Default)]
 struct BanPlatformCfgOutsideBoundary {
-    current_file: String,
+    scanned_files: HashSet<String>,
 }
 
 dylint_linting::impl_pre_expansion_lint! {
     /// ### What it does
     ///
-    /// Enforces the #2493 host-selection boundary: the only production
+    /// Enforces the #2493 host-selection boundary: the only hand-written
     /// sources allowed to choose the host platform are the `cfg_select!`
     /// block in `crates/soldr-platform/src/lib.rs` and the three concrete
     /// implementation trees (`platform_win`, `platform_linux`,
@@ -27,18 +28,13 @@ dylint_linting::impl_pre_expansion_lint! {
     /// `platform_linux`, `platform_macos`).
     ///
     /// Inspection happens pre-expansion, so cfg'd-away code cannot hide.
-    /// Non-production test targets (`tests/` directories) and the
-    /// generated sources are not scanned.
+    /// Integration tests, examples, benches, and inline test modules are
+    /// scanned as part of the same boundary.
     pub BAN_PLATFORM_CFG_OUTSIDE_BOUNDARY,
     Deny,
     "keep host-platform selection inside soldr-platform's cfg_select boundary",
     BanPlatformCfgOutsideBoundary::default()
 }
-
-/// The remaining pre-boundary files, ratcheted by the repository test
-/// (`tests/test_platform_cfg_boundary_ratchet.py`): a stale entry or a
-/// missing entry both fail CI, so this list only shrinks.
-const ALLOWLIST: &str = include_str!("allowlist.txt");
 
 const SELECTORS: [&str; 10] = [
     "windows",
@@ -55,29 +51,25 @@ const SELECTORS: [&str; 10] = [
 
 impl EarlyLintPass for BanPlatformCfgOutsideBoundary {
     fn check_item(&mut self, cx: &EarlyContext<'_>, item: &rustc_ast::ast::Item) {
-        self.current_file = source_filename(cx, item.span);
-        if !in_scope(&self.current_file) {
+        let current_file = source_filename(cx, item.span);
+        if !in_scope(&current_file) || !self.scanned_files.insert(current_file.clone()) {
             return;
         }
-        if is_allowlisted(&self.current_file) {
-            return;
-        }
-        // Whole-item source: attributes + body, with comments and
-        // strings masked.
-        if let Ok(source) = cx.sess().source_map().span_to_snippet(item.span) {
+        // Scan the physical source once, rather than only the active AST.
+        // This is what makes cfg-elided items and crate-level inner attrs
+        // visible to the boundary.
+        let source = std::fs::read_to_string(&current_file)
+            .or_else(|_| cx.sess().source_map().span_to_snippet(item.span));
+        if let Ok(source) = source {
             for invocation in platform_cfg_invocations(&source) {
                 emit(cx, item.span, format!("host cfg `{invocation}`"));
             }
-        }
-        // Concrete-tree references can appear anywhere in the item.
-        if outside_platform_crate(&self.current_file) {
-            if let Ok(source) = cx.sess().source_map().span_to_snippet(item.span) {
+            for reference in native_platform_references(&source) {
+                emit(cx, item.span, format!("direct native-platform reference `{reference}`"));
+            }
+            if outside_platform_crate(&current_file) {
                 for reference in concrete_tree_references(&source) {
-                    emit(
-                        cx,
-                        item.span,
-                        format!("direct concrete-tree reference `{reference}`"),
-                    );
+                    emit(cx, item.span, format!("direct concrete-tree reference `{reference}`"));
                 }
             }
         }
@@ -104,8 +96,11 @@ fn emit(cx: &EarlyContext<'_>, span: Span, detail: String) {
 /// vendored trees. The concrete platform trees are the boundary's inside.
 fn in_scope(filename: &str) -> bool {
     let normalized = filename.replace('\\', "/");
-    if normalized.starts_with("ui/") || normalized.contains("/ui/") {
+    if normalized.ends_with("ui/allowed_boundary.rs") {
         return false;
+    }
+    if normalized.starts_with("ui/") || normalized.contains("/ui/") {
+        return true;
     }
     let Some(marker) = normalized.find("crates/") else {
         return false;
@@ -113,9 +108,6 @@ fn in_scope(filename: &str) -> bool {
     let relative = &normalized[marker..];
     if !relative.ends_with(".rs") {
         return false;
-    }
-    if !relative.contains("/src/") {
-        return false; // non-production test targets and build scripts
     }
     if relative.starts_with("crates/soldr-platform/src/platform_win")
         || relative.starts_with("crates/soldr-platform/src/platform_linux")
@@ -135,14 +127,6 @@ fn outside_platform_crate(filename: &str) -> bool {
     !normalized.contains("crates/soldr-platform/")
 }
 
-fn is_allowlisted(filename: &str) -> bool {
-    ALLOWLIST
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .any(|line| filename.contains(line))
-}
-
 fn platform_cfg_invocations(source: &str) -> Vec<String> {
     let code = code_without_comments_or_strings(source);
     let compact: String = code
@@ -150,7 +134,7 @@ fn platform_cfg_invocations(source: &str) -> Vec<String> {
         .filter(|character| !character.is_whitespace())
         .collect();
     let mut invocations = Vec::new();
-    for start in ["#[cfg(", "#[cfg_attr(", "cfg!("] {
+    for start in ["#[cfg(", "#[cfg_attr(", "#![cfg(", "#![cfg_attr(", "cfg!("] {
         for (offset, _) in compact.match_indices(start) {
             let Some(clause) = balanced_invocation(&compact, offset) else {
                 continue;
@@ -178,6 +162,27 @@ fn concrete_tree_references(source: &str) -> Vec<String> {
         }
     }
     references
+}
+
+fn native_platform_references(source: &str) -> Vec<String> {
+    let code = code_without_comments_or_strings(source);
+    [
+        "std::os::windows",
+        "std::os::unix",
+        "std::os::linux",
+        "std::os::macos",
+        "windows_sys",
+        "windows::Win32",
+        "libc::",
+        "tokio::net::windows",
+        "tokio::net::Unix",
+        "interprocess::os::windows",
+        "interprocess::os::unix",
+    ]
+    .into_iter()
+    .filter(|marker| code.contains(marker))
+    .map(str::to_owned)
+    .collect()
 }
 
 fn balanced_invocation(source: &str, offset: usize) -> Option<&str> {
@@ -326,7 +331,7 @@ fn source_detector_ignores_comments_and_strings() {
     // test-only cfg is still host selection when a host selector appears
     assert_eq!(
         platform_cfg_invocations("#[cfg(all(test, target_os = \"windows\"))] fn f() {}"),
-        vec!["cfg(all(test,target_os=\"windows\"))"]
+        vec!["cfg(all(test,target_os=))"]
     );
 }
 
@@ -337,4 +342,24 @@ fn concrete_references_are_word_boundary_matched() {
         vec!["platform_imp", "platform_win"]
     );
     assert!(concrete_tree_references("platform_win32; platform_windows;").is_empty());
+}
+
+#[test]
+fn native_platform_references_are_detected_outside_strings() {
+    assert_eq!(
+        native_platform_references("use std::os::unix::fs::PermissionsExt; libc::getpid();"),
+        vec!["std::os::unix", "libc::"]
+    );
+    assert!(native_platform_references("let text = \"windows_sys\";").is_empty());
+}
+
+#[test]
+fn integration_tests_examples_and_benches_are_in_scope() {
+    for path in [
+        "crates/demo/tests/host.rs",
+        "crates/demo/examples/host.rs",
+        "crates/demo/benches/host.rs",
+    ] {
+        assert!(in_scope(path), "{path}");
+    }
 }

@@ -1,5 +1,3 @@
-#![cfg(not(windows))]
-
 mod common;
 
 use common::*;
@@ -38,6 +36,12 @@ fn install_fake_rust_analyzer(log_path: &Path) -> PathBuf {
 timed_test!(
     rust_analyzer_spawned_cargo_routes_through_child_shims_and_zccache,
     {
+        if matches!(
+            soldr_platform::host::facts::os(),
+            soldr_platform::host::facts::HostOs::Windows
+        ) {
+            return;
+        }
         let cache_root = unique_temp_dir("rust-analyzer-zccache-shims");
         let log_path = cache_root.join("tool.log");
         let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);

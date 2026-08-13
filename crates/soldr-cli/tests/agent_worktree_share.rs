@@ -1,5 +1,3 @@
-#![cfg(windows)]
-
 //! Windows regression for durable staged publication and parent-cache reuse.
 //!
 //! The embedded zccache store used to pass raw paths to `MoveFileExW` when it
@@ -19,13 +17,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
-
-#[cfg(windows)]
-use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
-#[cfg(windows)]
-use windows_sys::Win32::System::Threading::{
-    GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-};
 
 /// Panic-safe ownership of every process and file created by this fixture.
 ///
@@ -103,26 +94,20 @@ impl Drop for FixtureGuard {
     }
 }
 
-#[cfg(windows)]
 fn pid_is_alive(pid: u32) -> bool {
-    // SAFETY: the handle is opened only for a read-only liveness query and is
-    // closed on every successful OpenProcess path.
-    unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if handle.is_null() {
-            return false;
-        }
-        let mut exit_code = 0;
-        let queried = GetExitCodeProcess(handle, &mut exit_code);
-        CloseHandle(handle);
-        queried != 0 && exit_code == STILL_ACTIVE as u32
-    }
+    soldr_platform::process::inspect::is_alive(pid)
 }
 
 soldr_cli::timed_test!(
     windows_long_path_publication_survives_fresh_worktree_reuse,
     Duration::from_secs(300),
     {
+        if !matches!(
+            soldr_platform::host::facts::os(),
+            soldr_platform::host::facts::HostOs::Windows
+        ) {
+            return;
+        }
         let workdir = unique_temp_dir("windows-cache-publication");
         let cache_dir = workdir.join("shared-cache");
         let guard = FixtureGuard::new(workdir.clone(), cache_dir.clone());

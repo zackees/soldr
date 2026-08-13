@@ -40,14 +40,7 @@ fn stop_daemons_in_root(root: &Path) {
     .flatten()
     .map(|claim| claim.pid);
     if let Some(pid) = pid {
-        #[cfg(windows)]
-        let _ = Command::new("taskkill")
-            .args(["/F", "/PID", &pid.to_string()])
-            .output();
-        #[cfg(unix)]
-        let _ = Command::new("kill")
-            .args(["-TERM", &pid.to_string()])
-            .output();
+        soldr_platform::process::terminate::terminate_pid(pid);
     }
 }
 

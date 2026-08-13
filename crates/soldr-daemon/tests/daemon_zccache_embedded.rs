@@ -1,5 +1,4 @@
-#![cfg(unix)]
-//! Unix-only embedded zccache tests: the broken-symlink legacy-sweep
+//! Embedded zccache tests: the broken-symlink legacy-sweep
 //! retention check and the executable fake-compiler probe. Moved out of
 //! `zccache_embedded.rs` when that file became host-neutral (#2493);
 //! both depend on Unix link/permission semantics.
@@ -11,11 +10,17 @@ use soldr_daemon::timed_test;
 use soldr_daemon::zccache_embedded::sweep_legacy_cache_roots;
 
 timed_test!(legacy_sweep_retains_version_with_unreadable_linked_tree, {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
     let temp = tempfile::tempdir().unwrap();
     let paths = SoldrPaths::with_root(temp.path().join("owned"));
     let candidate = paths.cache.join("zccache/v0.0.1");
     std::fs::create_dir_all(&candidate).unwrap();
-    std::os::unix::fs::symlink(candidate.join("missing"), candidate.join("broken")).unwrap();
+    soldr_platform::fs::links::create("missing", &candidate.join("broken"), false).unwrap();
     let report = sweep_legacy_cache_roots(&paths, std::time::SystemTime::now(), Duration::ZERO);
     assert_eq!(report.removed, 0);
     assert_eq!(report.failed, 1);
@@ -23,8 +28,12 @@ timed_test!(legacy_sweep_retains_version_with_unreadable_linked_tree, {
 });
 
 timed_test!(working_fake_compiler_probe_is_accepted, {
-    use std::os::unix::fs::PermissionsExt;
-
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
     let temp = tempfile::tempdir().expect("tempdir");
     let compiler = temp.path().join("fake-compiler");
     std::fs::write(
@@ -32,11 +41,8 @@ timed_test!(working_fake_compiler_probe_is_accepted, {
         "#!/bin/sh\nprintf 'rustc 1.94.1 (fake)\\nhost: fake-target\\n'\n",
     )
     .expect("write fake compiler");
-    let mut permissions = std::fs::metadata(&compiler)
-        .expect("fake compiler metadata")
-        .permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(&compiler, permissions).expect("make fake compiler executable");
+    soldr_platform::fs::permissions::make_executable(&compiler)
+        .expect("make fake compiler executable");
 
     let version = probe_working_compiler(&compiler).expect("working compiler probe");
     assert!(version.contains("rustc 1.94.1 (fake)"));

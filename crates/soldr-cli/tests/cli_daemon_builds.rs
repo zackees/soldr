@@ -32,7 +32,10 @@ fn unique_temp_dir(label: &str) -> PathBuf {
 fn soldr_daemon_bin() -> PathBuf {
     let soldr = common::soldr_bin();
     let parent = soldr.parent().expect("parent");
-    let stem = if cfg!(windows) {
+    let stem = if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         "soldr-daemon.exe"
     } else {
         "soldr-daemon"
@@ -381,16 +384,20 @@ fn logs_unavailable_daemon_never_waits_for_its_database_lock() {
     let home_root = unique_temp_dir("logs-unavailable-home");
     seed_build(&cache_root, 77, 1_000, 500, 0);
 
-    #[cfg(unix)]
-    let _endpoint_owner = {
+    let _endpoint_owner: Box<dyn std::any::Any> = if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        Box::new(
+            db::open_handle(&cache_root.join("state.redb"))
+                .expect("hold the daemon-owned database lock without a named-pipe endpoint"),
+        )
+    } else {
         let daemon = DaemonProc::spawn(&cache_root, &home_root);
         let socket = direct_sock(&cache_root);
         std::fs::remove_file(&socket).expect("hide daemon socket while it retains the lock");
-        daemon
+        Box::new(daemon)
     };
-    #[cfg(windows)]
-    let _endpoint_owner = db::open_handle(&cache_root.join("state.redb"))
-        .expect("hold the daemon-owned database lock without a named-pipe endpoint");
 
     let mut command = Command::new(common::soldr_bin());
     common::isolated_daemon::configure_isolated_daemon_client(

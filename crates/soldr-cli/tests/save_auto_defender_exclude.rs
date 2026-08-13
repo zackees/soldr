@@ -8,8 +8,6 @@
 //! `crate::defender` so the real PowerShell never runs. Windows-only:
 //! the guard short-circuits on non-Windows.
 
-#![cfg(target_os = "windows")]
-
 use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
@@ -53,6 +51,12 @@ fn write(path: &Path, content: &[u8]) {
 }
 
 timed_test!(load_auto_defender_exclude_adds_then_removes_on_drop, {
+    if !matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
     let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
 
     let dir = tempfile::tempdir().expect("tempdir");

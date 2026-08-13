@@ -19,3 +19,5 @@ mod tests {
         assert_eq!(super::selected::f(), 1);
     }
 }
+
+fn main() {}

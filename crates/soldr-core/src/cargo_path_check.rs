@@ -110,7 +110,12 @@ impl CargoClassification {
 /// `None` when no `cargo` is anywhere on PATH.
 pub fn detect_cargo_on_path() -> Option<CargoOnPathFinding> {
     let path = std::env::var_os("PATH")?;
-    let exts: &[&str] = if cfg!(windows) { &["", ".exe"] } else { &[""] };
+    let exts: &[&str] =
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            &["", ".exe"]
+        } else {
+            &[""]
+        };
     for dir in std::env::split_paths(&path) {
         if dir.as_os_str().is_empty() {
             continue;
@@ -293,16 +298,16 @@ mod tests {
             let tmp = tempfile::tempdir().expect("tmpdir");
             let bin = tmp.path().join("scoop").join("shims");
             std::fs::create_dir_all(&bin).unwrap();
-            let exe_name = if cfg!(windows) { "cargo.exe" } else { "cargo" };
+            let exe_name = if crate::platform::host::facts::os()
+                == crate::platform::host::facts::HostOs::Windows
+            {
+                "cargo.exe"
+            } else {
+                "cargo"
+            };
             let exe = bin.join(exe_name);
             std::fs::write(&exe, b"#!/bin/sh\n").unwrap();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mut perms = std::fs::metadata(&exe).unwrap().permissions();
-                perms.set_mode(0o755);
-                std::fs::set_permissions(&exe, perms).unwrap();
-            }
+            crate::platform::fs::permissions::make_executable(&exe).unwrap();
             // soldr#1994: PATH is mutated here and in soldr-cli. Two barriers
             // over one variable are no barrier, and this test previously had
             // none at all -- so take the one process-wide lock, which lives in

@@ -7,7 +7,9 @@
 //! Callers retain framing, request/reply semantics, broker routing,
 //! lifecycle state, and product retry policy.
 
+pub mod broker;
 pub mod connect;
+pub mod control;
 pub mod endpoint;
 pub mod handoff;
 pub mod listener;

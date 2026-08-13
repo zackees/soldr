@@ -7,15 +7,17 @@ mod lifecycle_event_tests {
     use tempfile::TempDir;
 
     pub(super) fn write_route_claim(paths: &SoldrPaths, pid: u32, exe_path: &std::path::Path) {
-        #[cfg(unix)]
-        let endpoint = Endpoint::unix_socket(
-            exe_path.display().to_string(),
-            paths.root.join("test.session.sock").display().to_string(),
-        )
+        let endpoint = if crate::platform::host::facts::os()
+            == crate::platform::host::facts::HostOs::Windows
+        {
+            Endpoint::windows_pipe(exe_path.display().to_string(), "soldr-test")
+        } else {
+            Endpoint::unix_socket(
+                exe_path.display().to_string(),
+                paths.root.join("test.session.sock").display().to_string(),
+            )
+        }
         .expect("test endpoint");
-        #[cfg(windows)]
-        let endpoint = Endpoint::windows_pipe(exe_path.display().to_string(), "soldr-test")
-            .expect("test endpoint");
         let claim = DaemonProcess {
             pid,
             exe_sha256: [0; 32],
@@ -366,7 +368,9 @@ mod root_ownership_diagnostic_tests {
         );
         // The core regression: no longer a dead end. It must carry a concrete
         // kill command the operator can run.
-        let hint = if cfg!(windows) {
+        let hint = if crate::platform::host::facts::os()
+            == crate::platform::host::facts::HostOs::Windows
+        {
             "Stop-Process"
         } else {
             "pkill"

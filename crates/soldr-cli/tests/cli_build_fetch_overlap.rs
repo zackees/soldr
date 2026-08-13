@@ -34,8 +34,10 @@ const TARGET: &str = "x86_64-unknown-linux-gnu";
 /// `fetch` invocations when set (used by the best-effort test) and 0
 /// otherwise.
 fn fake_recording_cargo_script(log_path: &Path) -> String {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         format!(
             "@echo off\n\
              if \"%~1\"==\"metadata\" (\n\
@@ -57,9 +59,7 @@ fn fake_recording_cargo_script(log_path: &Path) -> String {
              exit /b 0\n",
             log_path.display()
         )
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         format!(
             "#!/bin/sh\n\
              if [ \"$1\" = \"metadata\" ]; then\n\

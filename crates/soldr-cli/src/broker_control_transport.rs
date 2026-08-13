@@ -20,13 +20,6 @@ use crate::broker_server::{
     DaemonControlTunnelReply, DaemonControlTunnelRequest, DAEMON_CONTROL_PAYLOAD_PROTOCOL,
 };
 
-#[cfg(unix)]
-#[path = "broker_control_transport_unix.rs"]
-mod platform;
-#[cfg(windows)]
-#[path = "broker_control_transport_windows.rs"]
-mod platform;
-
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) fn install() -> Result<(), &'static str> {
@@ -53,7 +46,14 @@ impl crate::daemon::client::ControlConnector for BrokerControlConnector {
         // for a large debug image. The route handshake gets a separate bounded
         // allowance; once accepted, restore the caller's request timeout.
         let route_timeout = route_handshake_timeout(timeout);
-        platform::connect(endpoint.bind_endpoint, route_timeout, timeout, service_name)
+        let stream = crate::platform::ipc::control::connect(endpoint.bind_endpoint, route_timeout)?;
+        let mut stream = negotiate_control_tunnel(stream, route_timeout, service_name)?;
+        crate::platform::ipc::control::configure_timeouts(
+            &mut stream,
+            timeout.max(Duration::from_millis(200)),
+            timeout,
+        )?;
+        Ok(Box::new(stream))
     }
 }
 

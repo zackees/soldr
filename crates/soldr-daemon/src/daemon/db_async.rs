@@ -181,7 +181,14 @@ mod tests {
     // reaches for, and that is exactly what the reviewer would check.
     crate::timed_test!(no_state_db_opens_on_tokio_workers, {
         let handler_sources = [
-            ("server.rs", include_str!("server.rs")),
+            (
+                "server handlers",
+                concat!(
+                    include_str!("server_runtime.rs"),
+                    include_str!("server_dispatch.rs"),
+                    include_str!("server_compile.rs")
+                ),
+            ),
             ("build_session_ops.rs", include_str!("build_session_ops.rs")),
         ];
         for (name, source) in handler_sources {

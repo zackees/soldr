@@ -13,14 +13,16 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 fn daemon_bin() -> PathBuf {
-    common::soldr_bin()
-        .parent()
-        .unwrap()
-        .join(if cfg!(windows) {
+    common::soldr_bin().parent().unwrap().join(
+        if matches!(
+            soldr_platform::host::facts::os(),
+            soldr_platform::host::facts::HostOs::Windows
+        ) {
             "soldr-daemon.exe"
         } else {
             "soldr-daemon"
-        })
+        },
+    )
 }
 
 fn command_env(command: &mut Command, root: &Path, home: &Path) {
@@ -196,13 +198,20 @@ soldr_cli::timed_test!(
         assert!(dev.join("sentinel").is_file());
         assert!(standalone.join("sentinel").is_file());
 
-        #[cfg(unix)]
-        {
+        if !matches!(
+            soldr_platform::host::facts::os(),
+            soldr_platform::host::facts::HostOs::Windows
+        ) {
             let external = temp.path().join("external");
             let linked = temp.path().join("linked-root");
             std::fs::create_dir_all(external.join("trash-X/old")).unwrap();
             std::fs::write(external.join("trash-X/old/sentinel"), b"keep").unwrap();
-            std::os::unix::fs::symlink(&external, &linked).unwrap();
+            soldr_platform::fs::links::create(
+                external.to_str().expect("UTF-8 external path"),
+                &linked,
+                true,
+            )
+            .unwrap();
             let linked_arg = linked.to_str().unwrap();
             let refused = run_soldr(
                 &prod,

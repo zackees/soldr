@@ -1,6 +1,10 @@
 //! macOS PID inspection: liveness, zombie state, and image lookup.
 
 use std::path::{Path, PathBuf};
+
+pub fn console_attached(_pid: u32) -> Option<bool> {
+    None
+}
 use std::time::Duration;
 
 /// A process observed running from inside a directory tree.

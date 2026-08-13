@@ -5,8 +5,10 @@ use soldr_cli::timed_test;
 use std::path::Path;
 
 fn fake_exec_nested_cargo_script(log_path: &Path) -> String {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         format!(
             "@echo off\n\
              echo cargo wrapper=%RUSTC_WRAPPER% rustc=%RUSTC% cache=%SOLDR_CACHE_ENABLED% child_shims=%SOLDR_CHILD_SHIMS_ACTIVE%>>\"{0}\"\n\
@@ -18,9 +20,7 @@ fn fake_exec_nested_cargo_script(log_path: &Path) -> String {
              exit /b %ERRORLEVEL%\n",
             log_path.display()
         )
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         format!(
             "#!/bin/sh\n\
              echo \"cargo wrapper=${{RUSTC_WRAPPER:-}} rustc=${{RUSTC:-}} cache=${{SOLDR_CACHE_ENABLED:-}} child_shims=${{SOLDR_CHILD_SHIMS_ACTIVE:-}}\" >> \"{0}\"\n\
@@ -35,17 +35,17 @@ fn fake_exec_nested_cargo_script(log_path: &Path) -> String {
 }
 
 fn fake_direct_rustup_cargo_script(log_path: &Path) -> String {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         format!(
             "@echo off\n\
              echo direct rustup cargo %*>>\"{0}\"\n\
              exit /b 66\n",
             log_path.display()
         )
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         format!(
             "#!/bin/sh\n\
              echo \"direct rustup cargo $*\" >> \"{0}\"\n\

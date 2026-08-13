@@ -7,10 +7,33 @@
 
 mod common;
 
+fn read_source_with_includes(path: &std::path::Path) -> String {
+    let text = std::fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+    let mut expanded = String::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if let Some(relative) = trimmed
+            .strip_prefix("include!(\"")
+            .and_then(|rest| rest.strip_suffix("\");"))
+        {
+            expanded.push_str(&read_source_with_includes(
+                &path
+                    .parent()
+                    .expect("source file has a parent")
+                    .join(relative),
+            ));
+        } else {
+            expanded.push_str(line);
+            expanded.push('\n');
+        }
+    }
+    expanded
+}
+
 fn read_crate_src(rel: &str) -> String {
     let path = common::crate_root().join(rel);
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()))
+    read_source_with_includes(&path)
 }
 
 soldr_cli::timed_test!(only_broker_launcher_places_and_spawns_daemon, {

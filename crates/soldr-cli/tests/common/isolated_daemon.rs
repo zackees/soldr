@@ -27,11 +27,16 @@ pub(crate) fn isolated_daemon_control_endpoint(source: &Path, root: &Path) -> Pa
 fn isolated_daemon_executable(source: &Path, root: &Path) -> PathBuf {
     let runtime = root.join("test-daemon-runtime");
     std::fs::create_dir_all(&runtime).expect("create test daemon runtime");
-    let executable = runtime.join(if cfg!(windows) {
-        "soldr-daemon.exe"
-    } else {
-        "soldr-daemon"
-    });
+    let executable = runtime.join(
+        if matches!(
+            soldr_platform::host::facts::os(),
+            soldr_platform::host::facts::HostOs::Windows
+        ) {
+            "soldr-daemon.exe"
+        } else {
+            "soldr-daemon"
+        },
+    );
     if !super::files_equal(source, &executable) {
         let _ = std::fs::remove_file(&executable);
         if std::fs::hard_link(source, &executable).is_err() {

@@ -98,9 +98,14 @@ fn optimize_ci_auto_skip_emits_skip_message() {
 // Windows-only: on macOS/Linux `optimize` short-circuits with a no-op
 // note before resolving the project scope (see optimize.rs:336), so
 // the `no Rust project detected` error never fires off-Windows.
-#[cfg(target_os = "windows")]
 #[test]
 fn optimize_project_scope_errors_when_no_cargo_toml() {
+    if !matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
     let workspace = unique_temp_dir("soldr-optimize-no-cargo");
     let output = Command::new(common::soldr_bin())
         .args(["optimize", "--scope", "project", "--dry-run", "--json"])
@@ -127,9 +132,14 @@ fn optimize_project_scope_errors_when_no_cargo_toml() {
     );
 }
 
-#[cfg(target_os = "windows")]
 #[test]
 fn optimize_invokes_add_mppreference_with_admin_seam() {
+    if !matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
     let soldr_home = unique_temp_dir("soldr-optimize-admin");
     let defender_log = soldr_home.join("defender.log");
     let existing_excl = soldr_home.join("existing.txt");
@@ -201,9 +211,14 @@ fn optimize_invokes_add_mppreference_with_admin_seam() {
     );
 }
 
-#[cfg(target_os = "windows")]
 #[test]
 fn optimize_undo_only_removes_managed_paths() {
+    if !matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
     let soldr_home = unique_temp_dir("soldr-optimize-undo");
     let workspace = soldr_home.join("ws");
     fs::create_dir_all(&workspace).expect("workspace dir");

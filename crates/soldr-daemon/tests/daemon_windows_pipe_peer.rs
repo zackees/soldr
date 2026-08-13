@@ -1,4 +1,3 @@
-#![cfg(windows)]
 //! Windows-only integration tests for named-pipe peer identity and
 //! shutdown-request attribution. Moved out of `daemon/ipc_peer.rs`
 //! when that file became host-neutral (#2493): the pipe machinery this
@@ -7,11 +6,16 @@
 use soldr_daemon::timed_test;
 
 timed_test!(accepted_pipe_reports_the_os_observed_client, {
+    if !matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
     use soldr_daemon::cache_lib::daemon_lifecycle_log_path;
     use soldr_daemon::core::SoldrPaths;
     use soldr_daemon::daemon::ipc_peer::PeerIdentity;
     use soldr_daemon::daemon::lifecycle::LifecycleSource;
-    use tokio::net::windows::named_pipe::{ClientOptions, ServerOptions};
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -26,14 +30,16 @@ timed_test!(accepted_pipe_reports_the_os_observed_client, {
                 .expect("clock")
                 .as_nanos()
         );
-        let server = ServerOptions::new()
-            .first_pipe_instance(true)
-            .create(&pipe_name)
-            .expect("server");
-        let _client = ClientOptions::new().open(&pipe_name).expect("client");
-        server.connect().await.expect("connect");
+        let mut server =
+            soldr_platform::ipc::peer::create_owner_only_windows_pipe(&pipe_name, true)
+                .expect("server");
+        let (connected, client) = tokio::join!(
+            soldr_platform::ipc::peer::pipe_server_connect(&mut server),
+            soldr_platform::ipc::connect::open_pipe_with_retry(std::path::Path::new(&pipe_name)),
+        );
+        connected.expect("connect");
+        let _client = client.expect("client");
 
-        let mut server = server;
         let peer = PeerIdentity::from_windows_pipe_server(&mut server);
         assert_eq!(peer.pid, Some(std::process::id()));
         assert_eq!(peer.exe, None, "the hot accept path must not resolve exe");

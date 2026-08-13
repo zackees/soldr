@@ -1,18 +1,15 @@
 #!/usr/bin/env python3
-"""Enforce the exact allowlist for host-platform selection outside the
-soldr-platform boundary (issue #2493).
+"""Enforce zero host-platform selection outside soldr-platform (#2493).
 
-A production source file violates the boundary when it contains a
+A hand-written production, test, example, or bench source file violates the boundary when it contains a
 host-platform `#[cfg]` / `#[cfg_attr]` / `cfg!()` invocation outside the
 concrete platform trees, or (outside crates/soldr-platform entirely) a
 direct reference to `platform_imp` / `platform_win` / `platform_linux` /
-`platform_macos`. The allowlist records the remaining pre-boundary files
-and is a ratchet: both missing and stale entries fail.
+`platform_macos`.
 """
 
 from __future__ import annotations
 
-import argparse
 import re
 from pathlib import Path
 
@@ -28,8 +25,21 @@ PLATFORM_SELECTORS = (
     "target_endian",
     "target_pointer_width",
 )
-CFG_STARTS = ("#[cfg(", "#[cfg_attr(", "cfg!(")
+CFG_STARTS = ("#[cfg(", "#[cfg_attr(", "#![cfg(", "#![cfg_attr(", "cfg!(")
 CONCRETE_TREES = ("platform_imp", "platform_win", "platform_linux", "platform_macos")
+NATIVE_MARKERS = (
+    "std::os::windows",
+    "std::os::unix",
+    "std::os::linux",
+    "std::os::macos",
+    "windows_sys",
+    "windows::Win32",
+    "libc::",
+    "tokio::net::windows",
+    "tokio::net::Unix",
+    "interprocess::os::windows",
+    "interprocess::os::unix",
+)
 BOUNDARY_PREFIXES = (
     "crates/soldr-platform/src/platform_win",
     "crates/soldr-platform/src/platform_linux",
@@ -145,10 +155,15 @@ def concrete_tree_references(masked_source: str) -> list[str]:
     return references
 
 
-def production_sources() -> list[Path]:
-    """Every workspace production source file, repo-relative."""
+def native_platform_references(masked_source: str) -> list[str]:
+    """Native OS APIs and extension traits forbidden outside concrete trees."""
+    return [marker for marker in NATIVE_MARKERS if marker in masked_source]
+
+
+def boundary_sources() -> list[Path]:
+    """Every hand-written workspace Rust source file, repo-relative."""
     files: list[Path] = []
-    for path in SOURCE_ROOT.glob("*/src/**/*.rs"):
+    for path in SOURCE_ROOT.glob("**/*.rs"):
         if path.is_file():
             files.append(path)
     files.sort()
@@ -165,7 +180,7 @@ def is_boundary(path: Path) -> bool:
 def violations() -> set[str]:
     """Repo-relative paths of production files that still select the host."""
     found: set[str] = set()
-    for path in production_sources():
+    for path in boundary_sources():
         if is_boundary(path):
             continue
         try:
@@ -173,7 +188,7 @@ def violations() -> set[str]:
         except OSError:
             continue
         masked = mask_comments_and_strings(source)
-        if platform_cfg_invocations(masked):
+        if platform_cfg_invocations(masked) or native_platform_references(masked):
             found.add(path.as_posix())
             continue
         if not path.as_posix().startswith("crates/soldr-platform/"):
@@ -182,43 +197,14 @@ def violations() -> set[str]:
     return found
 
 
-def read_allowlist(path: Path) -> set[str]:
-    lines = path.read_text(encoding="utf-8").splitlines()
-    return {
-        line.strip()
-        for line in lines
-        if line.strip() and not line.strip().startswith("#")
-    }
-
-
-def verify(allowlist_path: Path) -> list[str]:
-    """Report stale and missing allowlist entries."""
-    allowlisted = read_allowlist(allowlist_path)
-    actual = violations()
-    problems: list[str] = []
-    for stale in sorted(allowlisted - actual):
-        problems.append(f"stale allowlist entry: {stale}")
-    for missing in sorted(actual - allowlisted):
-        problems.append(f"new boundary violation: {missing}")
-    return problems
-
-
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--allowlist",
-        type=Path,
-        default=Path("dylints/ban_platform_cfg_outside_boundary/src/allowlist.txt"),
-    )
-    args = parser.parse_args()
-
-    problems = verify(args.allowlist)
-    if problems:
-        print("platform-cfg boundary ratchet failed:")
-        for problem in problems:
-            print(f"  {problem}")
+    found = violations()
+    if found:
+        print("platform-cfg boundary failed:")
+        for path in sorted(found):
+            print(f"  host selection outside boundary: {path}")
         return 1
-    print(f"platform-cfg boundary ratchet: {len(read_allowlist(args.allowlist))} allowed")
+    print("platform-cfg boundary: zero violations")
     return 0
 
 

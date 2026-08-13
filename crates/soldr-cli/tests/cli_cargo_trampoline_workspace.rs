@@ -46,10 +46,14 @@ path = "src/main.rs"
 
 fn broken_cargo_stub(dir: &Path) -> PathBuf {
     let path = fake_script_path(dir, "broken-cargo");
-    #[cfg(windows)]
-    let body = "@echo off\necho broken cargo invoked 1>&2\nexit /b 99\n";
-    #[cfg(not(windows))]
-    let body = "#!/bin/sh\necho 'broken cargo invoked' >&2\nexit 99\n";
+    let body = if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        "@echo off\necho broken cargo invoked 1>&2\nexit /b 99\n"
+    } else {
+        "#!/bin/sh\necho 'broken cargo invoked' >&2\nexit 99\n"
+    };
     write_fake_script(&path, body);
     path
 }

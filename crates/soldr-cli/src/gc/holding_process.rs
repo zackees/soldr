@@ -110,7 +110,7 @@ mod tests {
     });
 }
 
-#[cfg(all(test, windows))]
+#[cfg(test)]
 mod windows_live {
     use super::*;
 
@@ -124,6 +124,9 @@ mod windows_live {
     // is that the *image* is mapped from inside the tree, and any real
     // executable demonstrates that.
     crate::timed_test!(a_process_running_from_the_tree_is_found_and_named, {
+        if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
+            return;
+        }
         let dir = tempfile::tempdir().expect("tempdir");
         let deps = dir.path().join("debug").join("deps");
         std::fs::create_dir_all(&deps).expect("mkdir");

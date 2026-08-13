@@ -73,14 +73,7 @@ fn find_daemon_pids(root: &Path) -> Vec<u32> {
 fn stop_daemon_in_root(root: &Path) {
     let pids = find_daemon_pids(root);
     for pid in pids {
-        #[cfg(windows)]
-        let _ = Command::new("taskkill")
-            .args(["/F", "/PID", &pid.to_string()])
-            .output();
-        #[cfg(unix)]
-        let _ = Command::new("kill")
-            .args(["-TERM", &pid.to_string()])
-            .output();
+        soldr_platform::process::terminate::terminate_pid(pid);
     }
 }
 
@@ -253,11 +246,16 @@ timed_test!(
     }
 );
 
-#[cfg(not(windows))]
 timed_test!(
     issue_2476_handed_off_compile_survives_broker_death_and_daemon_is_readopted,
     Duration::from_secs(120),
     {
+        if matches!(
+            soldr_platform::host::facts::os(),
+            soldr_platform::host::facts::HostOs::Windows
+        ) {
+            return;
+        }
         let rustc = sibling_rustc();
         if !rustc.is_file() {
             eprintln!("skip: no sibling rustc at {rustc:?}");

@@ -2,6 +2,18 @@
 
 use std::path::{Path, PathBuf};
 
+/// Return a process-unique owner-only named-pipe endpoint.
+pub fn ephemeral(prefix: &str) -> String {
+    format!(
+        r"\\.\pipe\{prefix}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before epoch")
+            .as_nanos()
+    )
+}
+
 /// The `sun_path` capacity concept does not apply to named pipes; the
 /// caller only consults this on the Unix branch.
 pub fn sun_path_capacity() -> usize {

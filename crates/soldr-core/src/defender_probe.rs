@@ -192,11 +192,11 @@ pub fn write_probe_state(paths: &SoldrPaths, state: &DefenderProbeState) -> Resu
 
 /// Current platform tag baked into the state file.
 pub fn platform_tag() -> &'static str {
-    if cfg!(target_os = "windows") {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         "win32"
-    } else if cfg!(target_os = "macos") {
+    } else if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::MacOs {
         "darwin"
-    } else if cfg!(target_os = "linux") {
+    } else if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Linux {
         "linux"
     } else {
         "unknown"
@@ -215,7 +215,7 @@ pub fn run_probe(target_dir: &Path, soldr_version: &str) -> Result<DefenderProbe
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    if !cfg!(target_os = "windows") {
+    if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
         return Ok(DefenderProbeState {
             schema_version: PROBE_SCHEMA_VERSION,
             probed_at_unix: now_unix,
@@ -447,7 +447,7 @@ mod tests {
         assert_eq!(state.schema_version, PROBE_SCHEMA_VERSION);
         assert_eq!(state.probed_path, tmp.path());
         assert_eq!(state.soldr_version, "0.7.31");
-        if cfg!(target_os = "windows") {
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
             // We don't assert the verdict because the test runner's
             // exclusion state is environmental, but the median must
             // be a real number.

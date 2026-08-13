@@ -1209,16 +1209,20 @@ timed_test!(truncated_archive_load_fails_loudly, {
 /// still be executable. Without the per-worker chmod that fix
 /// landed, cargo build-script-build files lose +x and fail execve
 /// with EACCES on the next warm build.
-#[cfg(unix)]
 #[test]
 fn load_restores_executable_bit_for_cache_files() {
-    use std::os::unix::fs::PermissionsExt;
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
     let tmp = tempfile::tempdir().unwrap();
     let cache = tmp.path().join("cache");
     fs::create_dir_all(&cache).unwrap();
     let exe = cache.join("build-script-build");
     fs::write(&exe, b"#!/bin/sh\necho run\n").unwrap();
-    fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+    soldr_platform::fs::permissions::make_executable(&exe).unwrap();
 
     let archive = tmp.path().join("a.tar.zst");
     let _ = save(&SaveOptions {
@@ -1245,8 +1249,7 @@ fn load_restores_executable_bit_for_cache_files() {
     .unwrap();
 
     let restored = restore.join("build-script-build");
-    let perms = fs::metadata(&restored).unwrap().permissions();
-    let mode = perms.mode() & 0o777;
+    let mode = soldr_platform::fs::permissions::mode(&restored).expect("restored mode") & 0o777;
     assert_eq!(
         mode, 0o755,
         "restored mode {:o} != 0o755 — +x bit not preserved (regression of #587)",
@@ -1267,12 +1270,18 @@ fn load_restores_executable_bit_for_cache_files() {
 // Developer Mode, so CI Windows lanes can't exercise creation reliably. The
 // pure validation logic has cross-platform unit tests inside save.rs.
 // ---------------------------------------------------------------------------
-#[cfg(unix)]
 mod symlinks {
     use super::*;
     use prost::Message as _;
     use soldr_cli::cache_lib::save::{Manifest, SymlinkEntry, MANIFEST_NAME};
-    use std::os::unix::fs::symlink;
+
+    fn symlink(target: impl AsRef<Path>, destination: impl AsRef<Path>) -> std::io::Result<()> {
+        soldr_platform::fs::links::create(
+            target.as_ref().to_string_lossy().as_ref(),
+            destination.as_ref(),
+            false,
+        )
+    }
 
     fn read_link_str(path: &Path) -> String {
         fs::read_link(path).unwrap().to_string_lossy().into_owned()
@@ -1311,6 +1320,12 @@ mod symlinks {
     }
 
     timed_test!(cache_symlinks_roundtrip_into_fresh_root, {
+        if matches!(
+            soldr_platform::host::facts::os(),
+            soldr_platform::host::facts::HostOs::Windows
+        ) {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let cache = dir.path().join("cache");
         write(&cache.join("deps/libfoo.rlib"), b"rlib-bytes");
@@ -1368,6 +1383,12 @@ mod symlinks {
     });
 
     timed_test!(load_restores_retargeted_symlink_to_archived_target, {
+        if matches!(
+            soldr_platform::host::facts::os(),
+            soldr_platform::host::facts::HostOs::Windows
+        ) {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let cache = dir.path().join("cache");
         write(&cache.join("a.bin"), b"content-a");
@@ -1391,6 +1412,12 @@ mod symlinks {
     });
 
     timed_test!(save_skips_absolute_escaping_and_broken_symlinks_loudly, {
+        if matches!(
+            soldr_platform::host::facts::os(),
+            soldr_platform::host::facts::HostOs::Windows
+        ) {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let cache = dir.path().join("cache");
         let outside = dir.path().join("outside.txt");
@@ -1428,6 +1455,12 @@ mod symlinks {
     });
 
     timed_test!(load_refuses_crafted_escaping_symlink_manifest, {
+        if matches!(
+            soldr_platform::host::facts::os(),
+            soldr_platform::host::facts::HostOs::Windows
+        ) {
+            return;
+        }
         // Adversarial archive: manifest symlink entries that point outside
         // the restore root. `load` must re-validate and refuse them even
         // though save-side validation never produced them.
@@ -1516,6 +1549,12 @@ mod symlinks {
     });
 
     timed_test!(workspace_symlinked_source_surfaced_via_target_content, {
+        if matches!(
+            soldr_platform::host::facts::os(),
+            soldr_platform::host::facts::HostOs::Windows
+        ) {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let ws = dir.path().join("ws");
         let outside = dir.path().join("outside.rs");
@@ -1564,6 +1603,12 @@ mod symlinks {
     });
 
     timed_test!(delta_load_tombstones_removed_symlink, {
+        if matches!(
+            soldr_platform::host::facts::os(),
+            soldr_platform::host::facts::HostOs::Windows
+        ) {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let cache = dir.path().join("cache");
         write(&cache.join("keep.bin"), b"kept");

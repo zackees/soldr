@@ -2,10 +2,7 @@
 //! executable bit on `build-script-build` binaries. Unix-only — the
 //! mode bits the archive records only carry meaning there.
 
-#![cfg(unix)]
-
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use soldr_cache::cache_lib::cook_archive::{extract_skip_existing, pack_cook_archive};
@@ -32,6 +29,12 @@ fn write_file(p: &Path, bytes: &[u8]) {
 // it happened to reach first, so the failure looks like a flaky
 // problem with an unrelated third-party crate.
 timed_test!(extract_preserves_executable_bit, {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
     let dir = TempDir::new().expect("tempdir");
     let source = dir.path().join("debug");
     let script = source
@@ -39,8 +42,7 @@ timed_test!(extract_preserves_executable_bit, {
         .join("foo-abc")
         .join("build-script-build");
     write_file(&script, b"#!/bin/sh\nexit 0\n");
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
-        .expect("chmod source");
+    soldr_platform::fs::permissions::make_executable(&script).expect("chmod source");
     // A non-executable sibling proves we restore the recorded mode
     // rather than blanket-chmod'ing everything.
     write_file(&source.join("deps").join("libfoo-abc.rlib"), b"foo\n");
@@ -57,10 +59,7 @@ timed_test!(extract_preserves_executable_bit, {
         .join("build")
         .join("foo-abc")
         .join("build-script-build");
-    let mode = std::fs::metadata(&restored)
-        .expect("stat")
-        .permissions()
-        .mode();
+    let mode = soldr_platform::fs::permissions::mode(&restored).expect("stat mode");
     assert_ne!(
         mode & 0o111,
         0,
@@ -69,7 +68,7 @@ timed_test!(extract_preserves_executable_bit, {
     );
 
     let rlib = dest.join("debug").join("deps").join("libfoo-abc.rlib");
-    let rlib_mode = std::fs::metadata(&rlib).expect("stat").permissions().mode();
+    let rlib_mode = soldr_platform::fs::permissions::mode(&rlib).expect("stat mode");
     assert_eq!(
         rlib_mode & 0o111,
         0,

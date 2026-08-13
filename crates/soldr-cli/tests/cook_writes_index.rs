@@ -70,7 +70,10 @@ fn write_file(p: &Path, bytes: &[u8]) {
 fn soldr_daemon_bin() -> PathBuf {
     let soldr = common::soldr_bin();
     let parent = soldr.parent().expect("CARGO_BIN_EXE_soldr has a parent");
-    let stem = if cfg!(windows) {
+    let stem = if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         "soldr-daemon.exe"
     } else {
         "soldr-daemon"

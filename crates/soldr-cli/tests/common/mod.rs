@@ -74,7 +74,10 @@ pub(crate) fn soldr_daemon_bin() -> PathBuf {
 }
 
 fn runtime_alias_path(soldr: &Path, stem: &str) -> PathBuf {
-    let file = if cfg!(windows) {
+    let file = if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         format!("{stem}.exe")
     } else {
         stem.to_string()
@@ -351,8 +354,10 @@ pub(crate) fn log_contains_owned_soldr_wrapper(log: &str, cache_root: &Path) -> 
         return true;
     }
 
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         let Some(wrapper) = logged_cargo_wrapper(log) else {
             return false;
         };
@@ -360,9 +365,7 @@ pub(crate) fn log_contains_owned_soldr_wrapper(log: &str, cache_root: &Path) -> 
         path_display_variants(&runtime_root)
             .iter()
             .any(|path| wrapper.contains(path))
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         let _ = cache_root;
         false
     }
@@ -387,37 +390,34 @@ pub(crate) fn log_contains_toolchain_homes(
 }
 
 pub(crate) fn fake_script_path(dir: &Path, name: &str) -> PathBuf {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         dir.join(format!("{name}.cmd"))
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         dir.join(name)
     }
 }
 
 pub(crate) fn write_fake_script(path: &Path, body: &str) {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         fs::write(path, body.replace('\n', "\r\n")).expect("failed to write fake script");
-    }
-    #[cfg(not(windows))]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
+    } else {
         fs::write(path, body).expect("failed to write fake script");
-        let mut perms = fs::metadata(path)
-            .expect("failed to stat fake script")
-            .permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(path, perms).expect("failed to chmod fake script");
+        soldr_platform::fs::permissions::make_executable(path)
+            .expect("failed to chmod fake script");
     }
 }
 
 pub(crate) fn fake_cargo_script(log_path: &Path) -> String {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         format!(
             "@echo off\n\
              if \"%~1\"==\"metadata\" (\n\
@@ -447,9 +447,7 @@ pub(crate) fn fake_cargo_script(log_path: &Path) -> String {
              exit /b %ERRORLEVEL%\n",
             log_path.display()
         )
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         format!(
             "#!/bin/sh\n\
              log_cargo_target_envs() {{\n\
@@ -492,8 +490,10 @@ pub(crate) fn fake_cargo_script(log_path: &Path) -> String {
 }
 
 pub(crate) fn fake_cargo_clippy_script(log_path: &Path, clippy_driver: &Path) -> String {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         format!(
             "@echo off\n\
              echo cargo wrapper=%RUSTC_WRAPPER% workspace_wrapper={1} rustc=%RUSTC% cache=%SOLDR_CACHE_ENABLED% session=%ZCCACHE_SESSION_ID% zccache_dir=%ZCCACHE_CACHE_DIR%>>\"{0}\"\n\
@@ -510,9 +510,7 @@ pub(crate) fn fake_cargo_clippy_script(log_path: &Path, clippy_driver: &Path) ->
             log_path.display(),
             clippy_driver.display()
         )
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         format!(
             "#!/bin/sh\n\
              echo \"cargo wrapper=${{RUSTC_WRAPPER:-}} workspace_wrapper={1} rustc=${{RUSTC:-}} cache=${{SOLDR_CACHE_ENABLED:-}} session=${{ZCCACHE_SESSION_ID:-}} zccache_dir=${{ZCCACHE_CACHE_DIR:-}}\" >> \"{0}\"\n\
@@ -532,7 +530,6 @@ pub(crate) fn fake_cargo_clippy_script(log_path: &Path, clippy_driver: &Path) ->
     }
 }
 
-#[cfg(not(windows))]
 pub(crate) fn fake_cargo_with_jobserver_script(log_path: &Path) -> String {
     format!(
         "#!/bin/sh\n\
@@ -548,8 +545,10 @@ pub(crate) fn fake_cargo_with_jobserver_script(log_path: &Path) -> String {
 }
 
 pub(crate) fn fake_rustc_script(log_path: &Path) -> String {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         format!(
             "@echo off\n\
              if \"%~1\"==\"-Vv\" (\n\
@@ -561,9 +560,7 @@ pub(crate) fn fake_rustc_script(log_path: &Path) -> String {
              echo rustc %*>>\"{}\"\n",
             log_path.display()
         )
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         format!(
             "#!/bin/sh\n\
              if [ \"$1\" = \"-Vv\" ]; then\n\
@@ -579,8 +576,10 @@ pub(crate) fn fake_rustc_script(log_path: &Path) -> String {
 }
 
 pub(crate) fn fake_clippy_driver_script(log_path: &Path) -> String {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         format!(
             "@echo off\n\
              set \"rustc=%~1\"\n\
@@ -598,9 +597,7 @@ pub(crate) fn fake_clippy_driver_script(log_path: &Path) -> String {
              exit /b %ERRORLEVEL%\n",
             log_path.display()
         )
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         format!(
             "#!/bin/sh\n\
              rustc=\"$1\"\n\
@@ -617,8 +614,10 @@ pub(crate) fn fake_clippy_driver_script(log_path: &Path) -> String {
 }
 
 pub(crate) fn fake_version_tool_script(log_path: &Path, tool_name: &str) -> String {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         format!(
             "@echo off\n\
              echo {0} cargo_home=%CARGO_HOME% rustup_home=%RUSTUP_HOME% args=%*>>\"{1}\"\n\
@@ -631,9 +630,7 @@ pub(crate) fn fake_version_tool_script(log_path: &Path, tool_name: &str) -> Stri
             tool_name,
             log_path.display()
         )
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         format!(
             "#!/bin/sh\n\
              echo \"{0} cargo_home=${{CARGO_HOME:-}} rustup_home=${{RUSTUP_HOME:-}} args=$*\" >> \"{1}\"\n\
@@ -647,8 +644,10 @@ pub(crate) fn fake_version_tool_script(log_path: &Path, tool_name: &str) -> Stri
 }
 
 pub(crate) fn fake_cargo_fmt_script(log_path: &Path, source_path: &Path, rustfmt: &Path) -> String {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         format!(
             "@echo off\n\
              set \"fmt=%RUSTFMT%\"\n\
@@ -664,9 +663,7 @@ pub(crate) fn fake_cargo_fmt_script(log_path: &Path, source_path: &Path, rustfmt
             source_path.display(),
             rustfmt.display()
         )
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         format!(
             "#!/bin/sh\n\
              fmt=\"${{RUSTFMT:-{2}}}\"\n\
@@ -685,8 +682,10 @@ pub(crate) fn fake_cargo_fmt_script(log_path: &Path, source_path: &Path, rustfmt
 }
 
 pub(crate) fn fake_rustup_script(log_path: &Path, tool_dir: &Path) -> String {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         format!(
             "@echo off\n\
              echo rustup %* cargo_home=%CARGO_HOME% rustup_home=%RUSTUP_HOME%>>\"{0}\"\n\
@@ -716,9 +715,7 @@ pub(crate) fn fake_rustup_script(log_path: &Path, tool_dir: &Path) -> String {
             tool_dir.join("rustfmt.cmd").display(),
             tool_dir.join("rustdoc.cmd").display()
         )
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         format!(
             "#!/bin/sh\n\
              echo \"rustup $* cargo_home=${{CARGO_HOME:-}} rustup_home=${{RUSTUP_HOME:-}}\" >> \"{0}\"\n\
@@ -754,8 +751,10 @@ pub(crate) fn fake_rustup_script(log_path: &Path, tool_dir: &Path) -> String {
 }
 
 pub(crate) fn fake_failing_rustup_script(log_path: &Path) -> String {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         format!(
             "@echo off\n\
              echo rustup %* cargo_home=%CARGO_HOME% rustup_home=%RUSTUP_HOME%>>\"{}\"\n\
@@ -763,9 +762,7 @@ pub(crate) fn fake_failing_rustup_script(log_path: &Path) -> String {
              exit /b 1\n",
             log_path.display()
         )
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         format!(
             "#!/bin/sh\n\
              echo \"rustup $* cargo_home=${{CARGO_HOME:-}} rustup_home=${{RUSTUP_HOME:-}}\" >> \"{}\"\n\
@@ -777,8 +774,10 @@ pub(crate) fn fake_failing_rustup_script(log_path: &Path) -> String {
 }
 
 pub(crate) fn fake_zccache_script(log_path: &Path) -> String {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         format!(
             "@echo off\n\
              if \"%~1\"==\"start\" goto soldr_zccache_start\n\
@@ -894,9 +893,7 @@ pub(crate) fn fake_zccache_script(log_path: &Path) -> String {
              exit /b 66\n",
             log_path.display()
         )
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         format!(
             "#!/bin/sh\n\
              case \"$1\" in\n\
@@ -1031,8 +1028,10 @@ pub(crate) fn fake_zccache_script(log_path: &Path) -> String {
 }
 
 pub(crate) fn fake_custom_wrapper_script(log_path: &Path, wrapper_name: &str) -> String {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         format!(
             "@echo off\n\
              set \"rustc=%~1\"\n\
@@ -1043,9 +1042,7 @@ pub(crate) fn fake_custom_wrapper_script(log_path: &Path, wrapper_name: &str) ->
             log_path.display(),
             wrapper_name
         )
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         format!(
             "#!/bin/sh\n\
              rustc=\"$1\"\n\
@@ -1084,7 +1081,6 @@ pub(crate) fn install_fake_clippy_toolchain(
     (cargo, rustc, zccache, clippy_driver)
 }
 
-#[cfg(not(windows))]
 pub(crate) fn install_fake_jobserver_toolchain(log_path: &Path) -> (PathBuf, PathBuf, PathBuf) {
     let dir = unique_temp_dir("fake-jobserver-toolchain");
     let cargo = fake_script_path(&dir, "cargo");
@@ -1154,10 +1150,14 @@ pub(crate) fn install_fake_rustup_toolchain(
     let rustc = fake_script_path(&dir, "rustc");
     let rustfmt = fake_script_path(&dir, "rustfmt");
     let rustdoc = fake_script_path(&dir, "rustdoc");
-    #[cfg(windows)]
-    let rustup = dir.join("rustup.bat");
-    #[cfg(not(windows))]
-    let rustup = fake_script_path(&dir, "rustup");
+    let rustup = if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        dir.join("rustup.bat")
+    } else {
+        fake_script_path(&dir, "rustup")
+    };
     write_fake_script(&cargo, &fake_version_tool_script(log_path, "cargo"));
     write_fake_script(&rustc, &fake_version_tool_script(log_path, "rustc"));
     write_fake_script(&rustfmt, &fake_version_tool_script(log_path, "rustfmt"));
@@ -1168,10 +1168,14 @@ pub(crate) fn install_fake_rustup_toolchain(
 
 pub(crate) fn install_failing_fake_rustup(log_path: &Path) -> PathBuf {
     let dir = unique_temp_dir("fake-rustup-failure");
-    #[cfg(windows)]
-    let rustup = dir.join("rustup.bat");
-    #[cfg(not(windows))]
-    let rustup = fake_script_path(&dir, "rustup");
+    let rustup = if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        dir.join("rustup.bat")
+    } else {
+        fake_script_path(&dir, "rustup")
+    };
     write_fake_script(&rustup, &fake_failing_rustup_script(log_path));
     rustup
 }
@@ -1181,8 +1185,10 @@ pub(crate) fn install_failing_fake_rustup(log_path: &Path) -> PathBuf {
 /// reason about the exact argv even when individual arguments contain
 /// spaces. Always exits 0.
 pub(crate) fn fake_logging_rustup_script(log_path: &Path) -> String {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         format!(
             "@echo off\n\
              setlocal enabledelayedexpansion\n\
@@ -1197,9 +1203,7 @@ pub(crate) fn fake_logging_rustup_script(log_path: &Path) -> String {
              exit /b 0\n",
             log_path.display()
         )
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         // Use ASCII Unit Separator (\037) between argv elements so assertions
         // can split deterministically even if an individual arg contains
         // spaces. Hand-roll the join in /bin/sh.
@@ -1227,10 +1231,14 @@ pub(crate) fn fake_logging_rustup_script(log_path: &Path) -> String {
 /// to the fake binary, ready to hand to `SOLDR_TEST_RUSTUP_BIN`.
 pub(crate) fn install_logging_fake_rustup(log_path: &Path) -> PathBuf {
     let dir = unique_temp_dir("fake-rustup-logging");
-    #[cfg(windows)]
-    let rustup = dir.join("rustup.bat");
-    #[cfg(not(windows))]
-    let rustup = fake_script_path(&dir, "rustup");
+    let rustup = if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        dir.join("rustup.bat")
+    } else {
+        fake_script_path(&dir, "rustup")
+    };
     write_fake_script(&rustup, &fake_logging_rustup_script(log_path));
     rustup
 }
@@ -1259,8 +1267,10 @@ pub(crate) fn seed_rust_toolchain_toml(dir: &Path, contents: &str) {
 /// writes to a separate log file so concurrent rustup + cargo
 /// invocations under `toolchain prepare` don't interleave.
 pub(crate) fn fake_logging_cargo_script(log_path: &Path) -> String {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         format!(
             "@echo off\n\
              setlocal enabledelayedexpansion\n\
@@ -1275,9 +1285,7 @@ pub(crate) fn fake_logging_cargo_script(log_path: &Path) -> String {
              exit /b 0\n",
             log_path.display()
         )
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         format!(
             "#!/bin/sh\n\
              sep=$(printf '\\037')\n\
@@ -1317,8 +1325,10 @@ pub(crate) fn install_logging_fake_cargo(log_path: &Path) -> PathBuf {
 /// `echo` treats those as block delimiters — we substitute them through the
 /// caret-escape `^(` / `^)` form on Windows automatically.
 pub(crate) fn fake_logging_versioned_cargo_script(log_path: &Path, version: &str) -> String {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         let escaped = escape_for_cmd_echo(version);
         format!(
             "@echo off\n\
@@ -1339,9 +1349,7 @@ pub(crate) fn fake_logging_versioned_cargo_script(log_path: &Path, version: &str
             log_path.display(),
             escaped
         )
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         format!(
             "#!/bin/sh\n\
              if [ \"$1\" = \"--version\" ]; then\n\
@@ -1370,7 +1378,6 @@ pub(crate) fn fake_logging_versioned_cargo_script(log_path: &Path, version: &str
 /// Escape `(` and `)` for inclusion in a cmd.exe `echo` line inside an
 /// `if (...) ( ... )` block (where the un-escaped parens close the block
 /// prematurely). The standard escape is `^(` / `^)`.
-#[cfg(windows)]
 fn escape_for_cmd_echo(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 4);
     for ch in s.chars() {
@@ -1398,8 +1405,10 @@ pub(crate) fn install_logging_versioned_fake_cargo(log_path: &Path, version: &st
 /// Fake `rustc` that responds to `--version` (deterministic) and
 /// otherwise exits 0. Used by the ensure JSON smoke-verify test.
 pub(crate) fn fake_versioned_rustc_script(version: &str) -> String {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         let escaped = escape_for_cmd_echo(version);
         format!(
             "@echo off\n\
@@ -1410,9 +1419,7 @@ pub(crate) fn fake_versioned_rustc_script(version: &str) -> String {
              exit /b 0\n",
             escaped
         )
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         format!(
             "#!/bin/sh\n\
              if [ \"$1\" = \"--version\" ]; then\n\
@@ -1437,15 +1444,15 @@ pub(crate) fn install_versioned_fake_rustc(version: &str) -> PathBuf {
 /// Fake `rustc` that always exits non-zero on `--version`. Used to
 /// exercise the `smoke_verify.ok == false` branch.
 pub(crate) fn fake_failing_rustc_script() -> String {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         "@echo off\n\
          echo simulated rustc failure 1>&2\n\
          exit /b 1\n"
             .to_string()
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         "#!/bin/sh\n\
          echo 'simulated rustc failure' >&2\n\
          exit 1\n"
@@ -1485,16 +1492,16 @@ pub(crate) fn prepend_to_path(dir: &Path) -> std::ffi::OsString {
 /// On Windows we keep `System32` so `Command::new` can still spawn `.cmd`
 /// shims via `cmd.exe`.
 pub(crate) fn isolated_test_path() -> std::ffi::OsString {
-    #[cfg(windows)]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         let system_root = std::env::var_os("SystemRoot")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"));
         let dirs = [system_root.join("System32"), system_root];
         std::env::join_paths(dirs).expect("failed to join isolated PATH")
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         std::ffi::OsString::from("/usr/bin:/bin")
     }
 }

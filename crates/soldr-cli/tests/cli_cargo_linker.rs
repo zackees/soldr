@@ -99,8 +99,10 @@ fn cargo_front_door_rust_lld_injects_target_linker_env() {
 
     let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
 
-    #[cfg(target_os = "windows")]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         let linker_value = extract_linker_env_value(&log).unwrap_or_else(|| {
             panic!("expected CARGO_TARGET_<triple>_LINKER in fake cargo log: {log}")
         });
@@ -113,18 +115,17 @@ fn cargo_front_door_rust_lld_injects_target_linker_env() {
             rustflags_value.is_none(),
             "windows-msvc rust-lld should not inject rustflags: {log}"
         );
-    }
-    #[cfg(target_os = "macos")]
-    {
+    } else if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::MacOs
+    ) {
         // Issue #509: `SOLDR_LINKER=rust-lld` must not inject anything on
         // macOS — Apple clang rejects `-fuse-ld=lld`.
         assert!(
             !log_has_any_cargo_target_env(&log),
             "macOS rust-lld should not inject any CARGO_TARGET_* env (issue #509): {log}"
         );
-    }
-    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
-    {
+    } else {
         let linker_value = extract_linker_env_value(&log).unwrap_or_else(|| {
             panic!("expected CARGO_TARGET_<triple>_LINKER in fake cargo log: {log}")
         });
@@ -141,9 +142,14 @@ fn cargo_front_door_rust_lld_injects_target_linker_env() {
     }
 }
 
-#[cfg(any(windows, target_os = "macos"))]
 #[test]
 fn cargo_front_door_mold_on_non_linux_returns_clear_error() {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Linux
+    ) {
+        return;
+    }
     let cache_root = unique_temp_dir("cargo-mold-non-linux");
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
@@ -184,9 +190,14 @@ fn cargo_front_door_mold_on_non_linux_returns_clear_error() {
 /// out for testability there). Gating to non-Linux here keeps the
 /// integration test from depending on whether mold happens to be on
 /// `PATH` on the CI runner.
-#[cfg(not(target_os = "linux"))]
 #[test]
 fn cargo_front_door_fast_picks_rust_lld_when_mold_absent() {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Linux
+    ) {
+        return;
+    }
     let cache_root = unique_temp_dir("cargo-fast-linker");
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
@@ -210,8 +221,10 @@ fn cargo_front_door_fast_picks_rust_lld_when_mold_absent() {
     );
     let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
 
-    #[cfg(target_os = "windows")]
-    {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
         let linker_value = extract_linker_env_value(&log).unwrap_or_else(|| {
             panic!("expected CARGO_TARGET_<triple>_LINKER in fake cargo log: {log}")
         });
@@ -219,9 +232,10 @@ fn cargo_front_door_fast_picks_rust_lld_when_mold_absent() {
             linker_value, "rust-lld",
             "windows-msvc fast should inject rust-lld directly: {log}"
         );
-    }
-    #[cfg(target_os = "macos")]
-    {
+    } else if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::MacOs
+    ) {
         // Issue #509: `SOLDR_LINKER=fast` must be a no-op on macOS so
         // Apple-clang-driven build scripts keep working.
         assert!(

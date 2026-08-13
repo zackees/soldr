@@ -269,18 +269,12 @@ timed_test!(cook_gc_rejects_a_linked_cross_product_root, {
     if cook_dir.exists() {
         std::fs::remove_dir_all(&cook_dir).unwrap();
     }
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(&external, &cook_dir).unwrap();
-    #[cfg(windows)]
-    {
-        let status = std::process::Command::new("cmd")
-            .args(["/c", "mklink", "/J"])
-            .arg(&cook_dir)
-            .arg(&external)
-            .status()
-            .unwrap();
-        assert!(status.success());
-    }
+    soldr_platform::fs::links::create(
+        external.to_str().expect("UTF-8 external path"),
+        &cook_dir,
+        true,
+    )
+    .expect("create cook cache link");
     let report = cook_evict_pass(&paths, &CookConfig::default());
     assert_eq!(report.errors, 1);
     assert_eq!(std::fs::read(&sentinel).unwrap(), b"keep");

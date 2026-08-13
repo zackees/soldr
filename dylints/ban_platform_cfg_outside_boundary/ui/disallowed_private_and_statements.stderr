@@ -1,0 +1,12 @@
+error: host-platform selection outside the soldr-platform boundary: host cfg `cfg!(unix)`; the only allowed selection sites are soldr-platform/src/lib.rs and the platform_win/platform_linux/platform_macos trees
+  --> $DIR/disallowed_private_and_statements.rs:2:1
+   |
+LL | / fn cfg_macro_in_private_body() -> u8 {
+LL | |     if cfg!(unix) { 1 } else { 2 }
+LL | | }
+   | |_^
+   |
+   = note: `#[deny(ban_platform_cfg_outside_boundary)]` on by default
+
+error: aborting due to 1 previous error
+

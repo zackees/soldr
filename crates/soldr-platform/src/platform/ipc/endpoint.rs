@@ -1,7 +1,7 @@
 //! Endpoint representation and OS-safe name/path derivation.
 
 pub use crate::platform_imp::ipc::endpoint::{
-    legacy_daemon_endpoint, machine_runtime_dir, path_is_on_non_bindable_filesystem,
+    ephemeral, legacy_daemon_endpoint, machine_runtime_dir, path_is_on_non_bindable_filesystem,
     socket_path_bytes, socket_path_fits, sun_path_capacity,
 };
 

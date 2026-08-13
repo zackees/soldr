@@ -27,19 +27,16 @@ fn resolve(cache_root: &Path) -> Option<NormalizedPath> {
     platform_default(cache_root)
 }
 
-#[cfg(windows)]
 fn platform_default(cache_root: &Path) -> Option<NormalizedPath> {
+    if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
+        return None;
+    }
     let root = windows_private_staging_root(cache_root, &std::env::temp_dir());
     tracing::debug!(
         path = %root.display(),
         "using short Windows compiler-staging root"
     );
     Some(root.into())
-}
-
-#[cfg(not(windows))]
-fn platform_default(_cache_root: &Path) -> Option<NormalizedPath> {
-    None
 }
 
 fn windows_private_staging_root(cache_root: &Path, temp: &Path) -> PathBuf {

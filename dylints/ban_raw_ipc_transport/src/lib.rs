@@ -97,7 +97,6 @@ fn filename_is_blessed_adapter(filename: &str) -> bool {
         "/crates/soldr-daemon/src/daemon/server.rs",
         "/crates/soldr-daemon/src/daemon/ipc_peer.rs",
         "/crates/soldr-daemon/src/daemon/session_endpoint.rs",
-        "/crates/soldr-cli/src/broker_server.rs",
         "/crates/soldr-cli/src/broker_spawn.rs",
         "/crates/soldr-cli/src/broker_control_transport_unix.rs",
         "/crates/soldr-cli/src/broker_control_transport_windows.rs",

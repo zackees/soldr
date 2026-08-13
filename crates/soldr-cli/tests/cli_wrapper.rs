@@ -53,9 +53,14 @@ fn rustup_resolution_failure_reports_raw_error_and_ci_guidance() {
         "expected setup-soldr guidance in stderr: {stderr}"
     );
 }
-#[cfg(windows)]
 #[test]
 fn cargo_front_door_forces_msvc_target_even_with_polluted_path() {
+    if !matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
     let fake_tools = unique_temp_dir("fake-tools");
     fs::write(
         fake_tools.join("cargo.cmd"),
@@ -102,7 +107,10 @@ fn cargo_front_door_forces_msvc_target_even_with_polluted_path() {
     // `aarch64-pc-windows-msvc`, so we have to look in the matching
     // sub-directory under target/. Hardcoding `x86_64-pc-windows-msvc`
     // broke ci.yml on the Windows ARM64 job.
-    let host_msvc_triple = if cfg!(target_arch = "aarch64") {
+    let host_msvc_triple = if matches!(
+        soldr_platform::host::facts::arch(),
+        soldr_platform::host::facts::HostArch::Aarch64
+    ) {
         "aarch64-pc-windows-msvc"
     } else {
         "x86_64-pc-windows-msvc"
