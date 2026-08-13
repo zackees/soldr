@@ -16,7 +16,9 @@ def test_required_ci_runs_root_dylint_policy() -> None:
     assert "Build Soldr Dylint front door" in workflow
     assert "Prepare catalogued Dylint components through Soldr" in workflow
     assert "Install catalogued Dylint command binaries" in workflow
-    assert "DYLINT_DRIVER_PATH: ${{ runner.temp }}/dylint-drivers" in workflow
+    assert (
+        "DYLINT_DRIVER_PATH: ${{ github.workspace }}/target/dylint/drivers" in workflow
+    )
     assert (
         '"${GITHUB_WORKSPACE}/target/x86_64-unknown-linux-gnu/debug/soldr"' in workflow
     )

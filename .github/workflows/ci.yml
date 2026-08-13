@@ -90,7 +90,7 @@ jobs:
       # One version drives the generic catalogue installer and the
       # Soldr-owned driver resolver exercised below.
       DYLINT_VERSION: 6.0.3
-      DYLINT_DRIVER_PATH: ${{ runner.temp }}/dylint-drivers
+      DYLINT_DRIVER_PATH: ${{ github.workspace }}/target/dylint/drivers
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
