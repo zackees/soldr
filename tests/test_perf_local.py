@@ -27,6 +27,102 @@ def test_dockerfile_digest_changes_with_content(tmp_path: Path) -> None:
     assert first != second
 
 
+def test_incremental_gc_selects_only_the_oldest_stale_runner(tmp_path: Path) -> None:
+    current = tmp_path / "current"
+    current.mkdir()
+    old = tmp_path / "old"
+    old.mkdir()
+    oldest = tmp_path / "oldest"
+    oldest.mkdir()
+    candidates = [
+        {"source_root": current, "last_used_epoch": 0.0},
+        {"source_root": old, "last_used_epoch": 20.0},
+        {"source_root": oldest, "last_used_epoch": 10.0},
+    ]
+
+    selected = perf_local.incremental_gc_candidate(
+        candidates, current_root=current, now_epoch=100.0, max_age_secs=50.0
+    )
+
+    assert selected == candidates[2]
+
+
+def test_incremental_gc_prioritizes_a_missing_checkout(tmp_path: Path) -> None:
+    current = tmp_path / "current"
+    current.mkdir()
+    present = tmp_path / "present"
+    present.mkdir()
+    missing = tmp_path / "missing"
+    candidates = [
+        {"source_root": present, "last_used_epoch": 1.0},
+        {"source_root": missing, "last_used_epoch": 99.0},
+    ]
+
+    selected = perf_local.incremental_gc_candidate(
+        candidates, current_root=current, now_epoch=100.0, max_age_secs=50.0
+    )
+
+    assert selected == candidates[1]
+
+
+def test_incremental_gc_never_selects_the_current_runner(tmp_path: Path) -> None:
+    current = tmp_path / "current"
+    current.mkdir()
+    assert (
+        perf_local.incremental_gc_candidate(
+            [{"source_root": current, "last_used_epoch": 0.0}],
+            current_root=current,
+            now_epoch=100.0,
+            max_age_secs=1.0,
+        )
+        is None
+    )
+
+
+def test_incremental_gc_fast_triggers_above_group_limit(tmp_path: Path) -> None:
+    current = tmp_path / "current"
+    current.mkdir()
+    candidates = [{"source_root": current, "last_used_epoch": 99.0}]
+    for index in range(perf_local.MAX_RUNNER_GROUPS):
+        root = tmp_path / f"runner-{index}"
+        root.mkdir()
+        candidates.append({"source_root": root, "last_used_epoch": float(index + 1)})
+    selected = perf_local.incremental_gc_candidate(
+        candidates,
+        current_root=current,
+        now_epoch=100.0,
+        max_age_secs=perf_local.GC_MAX_AGE_SECS,
+    )
+    assert selected == candidates[1]
+
+
+def test_buildkit_prune_is_scoped_to_soldr_builder() -> None:
+    assert perf_local.buildkit_prune_command() == [
+        "docker",
+        "buildx",
+        "prune",
+        "--builder",
+        perf_local.BUILDER_NAME,
+        "--filter",
+        "until=24h",
+        "--force",
+    ]
+
+
+def test_runner_storage_budget_is_a_hard_ceiling() -> None:
+    assert not perf_local.runner_over_budget(perf_local.RUNNER_VOLUME_BUDGET_BYTES)
+    assert perf_local.runner_over_budget(perf_local.RUNNER_VOLUME_BUDGET_BYTES + 1)
+
+
+def test_activity_marker_lives_in_soldr_state_not_the_checkout(tmp_path: Path, monkeypatch) -> None:
+    state = tmp_path / "state"
+    checkout = tmp_path / "checkout"
+    monkeypatch.setattr(perf_local, "GC_STATE_DIR", state)
+    marker = perf_local.activity_marker(checkout)
+    assert marker.parent == state
+    assert checkout not in marker.parents
+
+
 def test_container_workdir_supports_shared_root_and_nested_worktree(
     tmp_path: Path,
 ) -> None:
@@ -54,9 +150,7 @@ def test_create_command_uses_one_named_runner_and_persistent_volumes(
     assert command[-3:] == ["tail", "-f", "/dev/null"]
 
 
-def test_create_command_enables_ptrace_only_when_requested(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_create_command_enables_ptrace_only_when_requested(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv(perf_local.PTRACE_ENV, "1")
     runner = perf_local.runner_for(tmp_path)
     command = perf_local.create_command(runner, "sha256:image")
@@ -127,9 +221,7 @@ def test_runner_match_requires_schema_image_and_source_root(tmp_path: Path) -> N
     info = {"Config": {"Labels": dict(labels)}}
     assert perf_local.runner_matches(info, labels)
 
-    stale = {
-        "Config": {"Labels": {**labels, f"{perf_local.LABEL_PREFIX}.image-id": "old"}}
-    }
+    stale = {"Config": {"Labels": {**labels, f"{perf_local.LABEL_PREFIX}.image-id": "old"}}}
     assert not perf_local.runner_matches(stale, labels)
     assert not perf_local.runner_matches({"Config": {"Labels": None}}, labels)
 
@@ -148,9 +240,7 @@ def test_exec_command_reuses_runner_and_changes_only_workdir(tmp_path: Path) -> 
         "test",
         "--workspace",
     ]
-    assert perf_local.exec_command(runner, ["cargo", "check"], "/repo", tty=True)[
-        :3
-    ] == [
+    assert perf_local.exec_command(runner, ["cargo", "check"], "/repo", tty=True)[:3] == [
         "docker",
         "exec",
         "-it",
