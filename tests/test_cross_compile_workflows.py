@@ -49,7 +49,8 @@ def test_windows_behavior_contract_reaches_native_target_runners() -> None:
         "read_only_files_do_not_block_a_single_file_delete",
         "a_read_only_directory_does_not_block_its_parents_delete",
     ]
-    assert behavioral_test.startswith("#![cfg(windows)]\n")
+    assert not behavioral_test.startswith("#![cfg(windows)]\n")
+    assert behavioral_test.count("HostOs::Windows") == len(expected_tests)
     assert "#[test]" not in behavioral_test
     for test_name in expected_tests:
         declaration = rf"(?m)^timed_test!\(\s*{re.escape(test_name)}\s*,"
@@ -477,6 +478,9 @@ def test_normal_gnu_lifecycle_has_no_zig_fallback() -> None:
     prepare = (REPO_ROOT / "crates" / "soldr-cli" / "src" / "prepare_cmd.rs").read_text(
         encoding="utf-8"
     )
+    prepare_tests = (
+        REPO_ROOT / "crates" / "soldr-cli" / "src" / "prepare_cmd_tests.rs"
+    ).read_text(encoding="utf-8")
     cross = (WORKFLOWS / "_ci-cross-build-linux.yml").read_text(encoding="utf-8")
 
     assert "no catalogue-backed GNU/Linux toolchain is available" in lifecycle
@@ -486,7 +490,7 @@ def test_normal_gnu_lifecycle_has_no_zig_fallback() -> None:
         "GNU Linux uses the catalogue-backed compiler/sysroot lifecycle" in legacy_musl
     )
     assert "GNU/Linux toolchain" in prepare
-    assert "GNU uses the catalogue-backed toolchain" in prepare
+    assert "GNU uses the catalogue-backed toolchain" in prepare_tests
 
     executable = "\n".join(
         line for line in cross.splitlines() if not line.lstrip().startswith("#")
