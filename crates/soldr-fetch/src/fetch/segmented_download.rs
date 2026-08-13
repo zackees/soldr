@@ -874,16 +874,8 @@ fn sha256_of_file(file: &std::fs::File) -> std::io::Result<String> {
 // ---- positional (pwrite/seek_write) file I/O so N concurrent segment
 // ---- tasks can share one file handle without a shared cursor. ----
 
-#[cfg(unix)]
 fn write_at(file: &std::fs::File, buf: &[u8], offset: u64) -> std::io::Result<usize> {
-    use std::os::unix::fs::FileExt;
-    file.write_at(buf, offset)
-}
-
-#[cfg(windows)]
-fn write_at(file: &std::fs::File, buf: &[u8], offset: u64) -> std::io::Result<usize> {
-    use std::os::windows::fs::FileExt;
-    file.seek_write(buf, offset)
+    crate::platform::fs::positioned_io::write_at(file, buf, offset)
 }
 
 fn write_at_all(file: &std::fs::File, mut buf: &[u8], mut offset: u64) -> std::io::Result<()> {

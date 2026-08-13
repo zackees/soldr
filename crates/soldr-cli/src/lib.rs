@@ -14,6 +14,10 @@
 
 #![allow(dead_code, unused_imports)]
 
+/// Neutral host-platform facade (#2493): the single selection site lives
+/// in `soldr-platform`; this crate calls only `crate::platform::…`.
+pub(crate) use soldr_platform as platform;
+
 /// Process-wide barrier for unit tests that mutate environment variables.
 ///
 /// Rust runs a crate's unit tests in one process, so module-local mutexes do

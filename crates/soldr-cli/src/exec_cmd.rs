@@ -125,33 +125,12 @@ pub fn path_with_prepend_using(prepend_dir: &Path, base: &std::ffi::OsStr) -> st
 /// Look up `name` against a PATH-shape value (NOT the process env).
 /// Used so `soldr exec` resolves the command against its own
 /// PATH-prepended view rather than the unmodified process PATH.
+///
+/// Delegates to the host-platform facade: the candidate suffix list is
+/// the Windows PATHEXT (no-op on other hosts), and path-like arguments
+/// are trusted as explicit paths by the shared walker.
 pub fn find_on_path(name: &str, path_value: &std::ffi::OsStr) -> Option<PathBuf> {
-    let exts: &[&str] = if cfg!(windows) {
-        &["", ".exe", ".cmd", ".bat"]
-    } else {
-        &[""]
-    };
-    // If the user gave a path-like argument (contains a separator), no
-    // PATH lookup — just trust it.
-    if name.contains('/') || name.contains('\\') {
-        return Some(PathBuf::from(name));
-    }
-    for dir in std::env::split_paths(path_value) {
-        if dir.as_os_str().is_empty() {
-            continue;
-        }
-        for ext in exts {
-            let candidate: PathBuf = if ext.is_empty() {
-                dir.join(name)
-            } else {
-                dir.join(format!("{name}{ext}"))
-            };
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
+    crate::platform::executable::search::find_on_path(name, path_value)
 }
 
 /// Resolve the path of rustup's `cargo` binary. soldr#1059's escape
@@ -169,29 +148,24 @@ pub fn find_on_path(name: &str, path_value: &std::ffi::OsStr) -> Option<PathBuf>
 /// knows whether to install rustup or set `RUSTUP_HOME`.
 fn resolve_rustup_cargo() -> Result<PathBuf, SoldrError> {
     if let Some(home) = std::env::var_os("CARGO_HOME") {
-        let candidate =
-            PathBuf::from(home)
-                .join("bin")
-                .join(if cfg!(windows) { "cargo.exe" } else { "cargo" });
+        let candidate = PathBuf::from(home)
+            .join("bin")
+            .join(crate::platform::executable::name::native("cargo"));
         if candidate.is_file() {
             return Ok(candidate);
         }
     }
     if let Some(home) = dirs_home_dir() {
-        let candidate =
-            home.join(".cargo")
-                .join("bin")
-                .join(if cfg!(windows) { "cargo.exe" } else { "cargo" });
+        let candidate = home
+            .join(".cargo")
+            .join("bin")
+            .join(crate::platform::executable::name::native("cargo"));
         if candidate.is_file() {
             return Ok(candidate);
         }
     }
     // Fallback to `rustup which cargo`.
-    let rustup = if cfg!(windows) {
-        "rustup.exe"
-    } else {
-        "rustup"
-    };
+    let rustup = crate::platform::executable::name::native("rustup");
     let mut command = Command::new(rustup);
     command.args(["which", "cargo"]);
     suppress_windows_console_window(&mut command);
@@ -215,14 +189,7 @@ fn resolve_rustup_cargo() -> Result<PathBuf, SoldrError> {
 }
 
 fn dirs_home_dir() -> Option<PathBuf> {
-    #[cfg(windows)]
-    {
-        std::env::var_os("USERPROFILE").map(PathBuf::from)
-    }
-    #[cfg(not(windows))]
-    {
-        std::env::var_os("HOME").map(PathBuf::from)
-    }
+    crate::platform::host::dirs::home()
 }
 
 fn shell_quote(args: &[String]) -> String {

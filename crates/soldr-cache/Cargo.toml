@@ -11,6 +11,7 @@ publish = false
 
 [dependencies]
 soldr-core = { path = "../soldr-core" }
+soldr-platform = { path = "../soldr-platform" }
 
 filetime = { workspace = true }
 fs2 = { workspace = true }

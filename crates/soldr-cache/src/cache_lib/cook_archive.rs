@@ -511,10 +511,6 @@ pub fn extract_skip_existing(
         }
         // Capture the mode before consuming the entry body: after the
         // copy, `entry` is drained and the header borrow is awkward.
-        // Only the Unix arm below consumes it, so binding it on Windows
-        // is an unused variable — and `-D warnings` makes that a hard
-        // error, which blocked `cargo clippy` for Windows developers.
-        #[cfg(unix)]
         let mode_bits = entry.header().mode().ok();
         // tar's `unpack_in` would overwrite; we manually copy bytes
         // so the skip-existing invariant cannot be violated.
@@ -529,17 +525,13 @@ pub fn extract_skip_existing(
         // path (`save.rs` extract_one); the cook extractor predates
         // that fix and never inherited it.
         //
-        // Windows ignores the mode: NTFS uses ACLs and the tar
-        // header's Unix mode carries no meaning there.
-        #[cfg(unix)]
-        if let Some(mode) = mode_bits {
-            use std::os::unix::fs::PermissionsExt;
-            // Drop the handle first so the chmod applies to a settled
-            // file rather than racing our own open descriptor.
-            drop(out);
-            let perms = std::fs::Permissions::from_mode(mode);
-            std::fs::set_permissions(&dest, perms)?;
-        }
+        // The platform crate owns the mode application: Unix restores
+        // the archived bits, Windows ignores them (NTFS uses ACLs and
+        // the tar header's Unix mode carries no meaning there).
+        // Drop the handle first so the chmod applies to a settled
+        // file rather than racing our own open descriptor.
+        drop(out);
+        crate::platform::fs::permissions::restore_mode(&dest, mode_bits)?;
         report.files_written = report.files_written.saturating_add(1);
     }
     Ok(report)

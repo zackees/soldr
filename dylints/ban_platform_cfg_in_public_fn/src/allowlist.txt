@@ -1,5 +1,3 @@
-crates/soldr-cli/src/binaries.rs::ensure_daemon_executable_handoff
-crates/soldr-cli/src/binaries.rs::zccache_soldr_shim_binary
 crates/soldr-cli/src/broker_identity.rs::create_owner_only_directories
 crates/soldr-cli/src/broker_identity.rs::daemon_session_endpoint_from_executable
 crates/soldr-cli/src/broker_identity.rs::resolve
@@ -14,7 +12,6 @@ crates/soldr-cli/src/cargo_front_door/zig_shim.rs::ensure_zig_wrappers
 crates/soldr-cli/src/cli_dispatch.rs::ensure_msvc_host_env_for_native
 crates/soldr-cli/src/cli_dispatch.rs::pick_cross_subcommand
 crates/soldr-cli/src/compile_diagnostics.rs::maxpath_headroom_warning
-crates/soldr-cli/src/exec_cmd.rs::find_on_path
 crates/soldr-cli/src/gc/auto.rs::maybe_spawn_auto_gc_sweeper
 crates/soldr-cli/src/gc/holding_process.rs::holders_under
 crates/soldr-cli/src/install_shims.rs::tool_file_name

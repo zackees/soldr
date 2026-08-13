@@ -121,10 +121,10 @@ pub fn cached_blake3_hex_with_progress(
 }
 
 fn lock_is_contended(error: &io::Error) -> bool {
-    error.kind() == io::ErrorKind::WouldBlock
-        // LockFileEx reports ERROR_LOCK_VIOLATION for a nonblocking collision;
-        // std does not normalize it to WouldBlock on Windows.
-        || (cfg!(windows) && error.raw_os_error() == Some(33))
+    // Windows LockFileEx reports raw ERROR_LOCK_VIOLATION / ERROR_SHARING_VIOLATION
+    // for nonblocking collisions; std does not normalize them to WouldBlock.
+    // The platform crate owns that normalization.
+    crate::platform::fs::contention::is_lock_contention(error)
 }
 
 fn compute_blake3_hex_with_progress(
@@ -197,12 +197,12 @@ mod tests {
     use super::*;
 
     crate::timed_test!(platform_lock_contention_is_retryable, {
+        // WouldBlock is the normalized form on every platform; the raw
+        // Windows error codes are covered beside the Windows implementation
+        // in soldr-platform.
         assert!(lock_is_contended(&io::Error::from(
             io::ErrorKind::WouldBlock
         )));
-        if cfg!(windows) {
-            assert!(lock_is_contended(&io::Error::from_raw_os_error(33)));
-        }
     });
 
     crate::timed_test!(blake3_hex_matches_zccache_reference, {

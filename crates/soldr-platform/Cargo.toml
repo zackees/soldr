@@ -1,0 +1,23 @@
+[package]
+name = "soldr-platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "soldr host-platform leaf: the one crate that selects Windows/Linux/macOS mechanics"
+publish = false
+
+# Dependency-leaf crate (issue #2493): soldr-platform must NOT depend on
+# soldr-core, soldr-fetch, soldr-cache, soldr-daemon, soldr-cli, or zccache.
+# Only external libraries needed for host primitives may appear here.
+
+[dependencies]
+
+[target.'cfg(unix)'.dependencies]
+
+[target.'cfg(windows)'.dependencies]
+
+[lints]
+workspace = true
