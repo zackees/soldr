@@ -6,7 +6,9 @@
 //! interpretation, and Unix exec replacement versus Windows spawn-and-wait.
 //! Callers retain timeout/retry policy, which program to launch, lifecycle
 //! state, and diagnostic wording.
-//!
-//! Filled by the #2493 migration; the concrete implementations live in the
-//! `platform_win` / `platform_linux` / `platform_macos` trees and are
-//! re-exported here through [`crate::platform_imp`].
+
+pub mod command;
+pub mod exit;
+pub mod inspect;
+pub mod spawn;
+pub mod terminate;

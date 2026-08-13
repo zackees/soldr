@@ -8,39 +8,40 @@ const SIGNAL_DIAGNOSTIC: &[u8] = b"soldr: compiler process was terminated by a U
 /// an internal SESSION transport fault. Preserve the compiler's stderr and add
 /// the actionable distinction at the soldr/zccache response boundary.
 pub(crate) fn annotate_signal_termination(exit_code: i32, stderr: Vec<u8>) -> Vec<u8> {
-    #[cfg(unix)]
-    {
-        let mut stderr = stderr;
-        if exit_code == -1 {
-            if !stderr.is_empty() && !stderr.ends_with(b"\n") {
-                stderr.push(b'\n');
-            }
-            stderr.extend_from_slice(SIGNAL_DIAGNOSTIC);
+    let mut stderr = stderr;
+    if crate::platform::process::exit::is_signal_termination(exit_code) {
+        if !stderr.is_empty() && !stderr.ends_with(b"\n") {
+            stderr.push(b'\n');
         }
-        stderr
+        stderr.extend_from_slice(SIGNAL_DIAGNOSTIC);
     }
-    #[cfg(not(unix))]
-    {
-        let _ = exit_code;
-        stderr
-    }
+    stderr
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
+    // Host-neutral: the per-host classification of `-1` lives in the
+    // platform crate's exit tests; here the assertion is conditional on the
+    // platform's own answer so the diagnostic path is covered on Unix hosts
+    // and the no-op path is covered on Windows hosts.
     crate::timed_test!(signal_termination_gets_an_actionable_diagnostic, {
         let stderr = annotate_signal_termination(-1, Vec::new());
-        assert_eq!(stderr, SIGNAL_DIAGNOSTIC);
+        if crate::platform::process::exit::is_signal_termination(-1) {
+            assert_eq!(stderr, SIGNAL_DIAGNOSTIC);
+        }
     });
 
-    #[cfg(unix)]
     crate::timed_test!(compiler_stderr_is_preserved_before_the_diagnostic, {
-        let stderr = annotate_signal_termination(-1, b"rustc said why".to_vec());
-        assert!(stderr.starts_with(b"rustc said why\n"));
-        assert!(stderr.ends_with(SIGNAL_DIAGNOSTIC));
+        let original = b"rustc said why".to_vec();
+        let stderr = annotate_signal_termination(-1, original.clone());
+        if crate::platform::process::exit::is_signal_termination(-1) {
+            assert!(stderr.starts_with(b"rustc said why\n"));
+            assert!(stderr.ends_with(SIGNAL_DIAGNOSTIC));
+        } else {
+            assert_eq!(stderr, original);
+        }
     });
 
     crate::timed_test!(ordinary_exit_codes_are_byte_identical, {

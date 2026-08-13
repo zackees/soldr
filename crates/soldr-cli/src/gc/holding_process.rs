@@ -15,14 +15,12 @@
 //! every step degrades to "found nothing" rather than erroring — a diagnostic
 //! that can itself fail is worse than no diagnostic.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// A process whose executable image lives under the surveyed directory.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct HoldingProcess {
-    pub(super) pid: u32,
-    pub(super) exe: PathBuf,
-}
+/// The platform crate owns the enumeration (a Windows Toolhelp snapshot);
+/// on hosts without a process-image walker the list is simply empty.
+pub(super) use crate::platform::process::inspect::ProcessHolder as HoldingProcess;
 
 /// Processes whose executable image lives under `dir`.
 ///
@@ -31,19 +29,11 @@ pub(super) struct HoldingProcess {
 /// enumerating handles rather than processes, which is a different and far
 /// heavier operation. Callers should treat an empty result as "no *process*
 /// is obviously holding it", not as proof that nothing is.
+///
+/// The failure this diagnoses is Windows-specific: elsewhere an unlink
+/// succeeds against a running image, so there is nothing to report.
 pub(super) fn holders_under(dir: &Path) -> Vec<HoldingProcess> {
-    #[cfg(windows)]
-    {
-        windows_impl::holders_under(dir)
-    }
-    #[cfg(not(windows))]
-    {
-        // The failure this diagnoses is Windows-specific: elsewhere an
-        // unlink succeeds against a running image, so there is nothing to
-        // report.
-        let _ = dir;
-        Vec::new()
-    }
+    crate::platform::process::inspect::holders_under(dir)
 }
 
 /// One clause for the failure log, or `None` when nothing was found.
@@ -70,93 +60,10 @@ pub(super) fn summarize(holders: &[HoldingProcess]) -> Option<String> {
     })
 }
 
-#[cfg(windows)]
-mod windows_impl {
-    use super::{HoldingProcess, Path, PathBuf};
-    use std::os::windows::ffi::OsStringExt as _;
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, MAX_PATH};
-    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
-    };
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
-
-    pub(super) fn holders_under(dir: &Path) -> Vec<HoldingProcess> {
-        // Compare against the canonical form: the process list reports
-        // fully-resolved paths, so an un-normalized `dir` (a relative path, a
-        // path through a junction) would never match and the diagnosis would
-        // silently report nothing.
-        let Ok(root) = std::fs::canonicalize(dir) else {
-            return Vec::new();
-        };
-
-        let mut found = Vec::new();
-        // SAFETY: TH32CS_SNAPPROCESS with pid 0 snapshots all processes; the
-        // handle is closed on every path out.
-        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
-        if snapshot == INVALID_HANDLE_VALUE {
-            return found;
-        }
-
-        let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
-        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-
-        // SAFETY: `entry` is zeroed with dwSize set as the API requires.
-        // Process32FirstW is skipped deliberately: entry 0 is the idle
-        // process, which has no image path worth querying, and Process32NextW
-        // walks the rest from a fresh snapshot regardless.
-        while unsafe { Process32NextW(snapshot, &mut entry) } != 0 {
-            if let Some(exe) = image_path(entry.th32ProcessID) {
-                if exe.starts_with(&root) {
-                    found.push(HoldingProcess {
-                        pid: entry.th32ProcessID,
-                        exe,
-                    });
-                }
-            }
-        }
-
-        // SAFETY: `snapshot` is a valid handle from CreateToolhelp32Snapshot.
-        unsafe { CloseHandle(snapshot) };
-        found
-    }
-
-    /// Full image path for a pid, or `None` when it cannot be read.
-    ///
-    /// Most failures here are ordinary and expected: system processes refuse
-    /// `OpenProcess` for an unelevated caller, and a process can exit between
-    /// the snapshot and the query. Both mean "not a holder we can name".
-    fn image_path(pid: u32) -> Option<PathBuf> {
-        // SAFETY: QUERY_LIMITED_INFORMATION is the least-privilege right that
-        // still permits QueryFullProcessImageNameW; a null return is checked.
-        let handle: HANDLE = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-        if handle.is_null() {
-            return None;
-        }
-
-        let mut buf = [0u16; MAX_PATH as usize];
-        let mut len = buf.len() as u32;
-        // SAFETY: `handle` is open, `buf`/`len` describe the same buffer, and
-        // `len` is updated to the written length on success.
-        let ok = unsafe { QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut len) };
-        // SAFETY: `handle` came from OpenProcess above and is not used after.
-        unsafe { CloseHandle(handle) };
-
-        if ok == 0 {
-            return None;
-        }
-        let wide = &buf[..len as usize];
-        let path = PathBuf::from(std::ffi::OsString::from_wide(wide));
-        // Canonicalize so the prefix test compares like with like; if the
-        // image is already gone, fall back to the raw path.
-        Some(std::fs::canonicalize(&path).unwrap_or(path))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     crate::timed_test!(no_holders_summarizes_to_nothing, {
         assert_eq!(summarize(&[]), None);

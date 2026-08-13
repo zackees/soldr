@@ -93,29 +93,16 @@ fn delegate(binary: &Path, args: &[String]) -> i32 {
     command.args(args).env(GLOBAL_DELEGATION_ENV_VAR, "1");
     crate::core::suppress_windows_console_window(&mut command);
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-
-        let error = command.exec();
-        eprintln!(
-            "soldr: failed to exec newer global soldr at {}: {error}",
-            binary.display()
-        );
-        1
-    }
-
-    #[cfg(not(unix))]
-    {
-        match command.status() {
-            Ok(status) => status.code().unwrap_or(1),
-            Err(error) => {
-                eprintln!(
-                    "soldr: failed to run newer global soldr at {}: {error}",
-                    binary.display()
-                );
-                1
-            }
+    // Unix execs (replacing this image); Windows spawns and waits. Only
+    // the failure path returns here on Unix.
+    match crate::platform::process::spawn::exec_or_status(&mut command) {
+        Ok(status) => status.code().unwrap_or(1),
+        Err(error) => {
+            eprintln!(
+                "soldr: failed to exec newer global soldr at {}: {error}",
+                binary.display()
+            );
+            1
         }
     }
 }

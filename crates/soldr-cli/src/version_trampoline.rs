@@ -53,28 +53,14 @@ pub(crate) async fn run(version: &str, args: &[String]) -> Result<i32, SoldrErro
     // outcome; this process only relays its exit code.
     crate::exit_guard::mark_spoke();
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-
-        let err = command.exec();
-        Err(SoldrError::Other(format!(
+    // Unix execs (replacing this image); Windows spawns and waits. Only
+    // the failure path returns here on Unix.
+    match crate::platform::process::spawn::exec_or_status(&mut command) {
+        Ok(status) => Ok(status.code().unwrap_or(1)),
+        Err(err) => Err(SoldrError::Other(format!(
             "failed to exec soldr v{} at {}: {err}",
             result.version,
             result.binary_path.display()
-        )))
-    }
-
-    #[cfg(not(unix))]
-    {
-        let status = command.status().map_err(|e| {
-            SoldrError::Other(format!(
-                "failed to exec soldr v{} at {}: {e}",
-                result.version,
-                result.binary_path.display()
-            ))
-        })?;
-
-        Ok(status.code().unwrap_or(1))
+        ))),
     }
 }

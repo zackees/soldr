@@ -935,76 +935,21 @@ fn cargo_timeout_error(
     SoldrError::Other(message)
 }
 
-#[cfg(windows)]
 pub(crate) fn kill_cargo_process_tree(
     child: &mut std::process::Child,
 ) -> std::io::Result<&'static str> {
-    let pid = child.id().to_string();
-    let taskkill = std::process::Command::new("taskkill")
-        .args(["/PID", &pid, "/T", "/F"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-    match taskkill {
-        Ok(status) if status.success() => Ok("killed child process tree"),
-        _ => {
-            child.kill()?;
-            Ok("killed child process")
-        }
+    use crate::platform::process::terminate::TreeKill;
+    match crate::platform::process::terminate::terminate_tree(child)? {
+        TreeKill::TreeKilled => Ok("killed child process tree"),
+        TreeKill::ProcessKilled => Ok("killed child process"),
     }
-}
-
-#[cfg(unix)]
-pub(crate) fn kill_cargo_process_tree(
-    child: &mut std::process::Child,
-) -> std::io::Result<&'static str> {
-    let pgid = child.id() as libc::pid_t;
-    let term_result = signal_process_group(pgid, libc::SIGTERM);
-    std::thread::sleep(Duration::from_millis(100));
-    let kill_result = signal_process_group(pgid, libc::SIGKILL);
-    if term_result.is_ok() || kill_result.is_ok() {
-        return Ok("signaled cargo process group");
-    }
-    child.kill()?;
-    Ok("killed child process")
-}
-
-#[cfg(unix)]
-fn signal_process_group(pgid: libc::pid_t, signal: libc::c_int) -> std::io::Result<()> {
-    // SAFETY: `pgid` is the spawned cargo child's PID after `process_group(0)`;
-    // negating it asks the kernel to signal that process group.
-    let rc = unsafe { libc::kill(-pgid, signal) };
-    if rc == 0 {
-        return Ok(());
-    }
-    let err = std::io::Error::last_os_error();
-    if err.raw_os_error() == Some(libc::ESRCH) {
-        return Ok(());
-    }
-    Err(err)
-}
-
-#[cfg(all(not(windows), not(unix)))]
-pub(crate) fn kill_cargo_process_tree(
-    child: &mut std::process::Child,
-) -> std::io::Result<&'static str> {
-    child.kill()?;
-    Ok("killed child process")
 }
 
 pub(crate) fn configure_cargo_child_for_timeout(command: &mut std::process::Command) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        if std::env::var_os(INHERIT_PARENT_PROCESS_GROUP_ENV).is_none() {
-            command.process_group(0);
-        } else {
-            command.env_remove(INHERIT_PARENT_PROCESS_GROUP_ENV);
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = command;
+    if std::env::var_os(INHERIT_PARENT_PROCESS_GROUP_ENV).is_none() {
+        crate::platform::process::command::configure_process_group(command);
+    } else {
+        command.env_remove(INHERIT_PARENT_PROCESS_GROUP_ENV);
     }
 }
 

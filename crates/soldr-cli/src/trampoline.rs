@@ -793,23 +793,18 @@ pub(crate) use config::cargo_config_digest;
 // Exec / stat / logging helpers
 // ---------------------------------------------------------------------------
 
-#[cfg(unix)]
+/// Run `binary` as the current process: Unix execs (replacing this image),
+/// Windows spawns and waits. Only the failure path returns here on Unix.
 fn exec_binary(binary: &Path, args: &[String]) -> Result<i32, SoldrError> {
-    use std::os::unix::process::CommandExt;
-    let err = std::process::Command::new(binary).args(args).exec();
-    Err(SoldrError::Other(format!(
-        "failed to exec {}: {err}",
-        binary.display()
-    )))
-}
-
-#[cfg(not(unix))]
-fn exec_binary(binary: &Path, args: &[String]) -> Result<i32, SoldrError> {
-    let status = std::process::Command::new(binary)
-        .args(args)
-        .status()
-        .map_err(|err| SoldrError::Other(format!("failed to spawn {}: {err}", binary.display())))?;
-    Ok(status.code().unwrap_or(1))
+    let mut command = std::process::Command::new(binary);
+    command.args(args);
+    match crate::platform::process::spawn::exec_or_status(&mut command) {
+        Ok(status) => Ok(status.code().unwrap_or(1)),
+        Err(err) => Err(SoldrError::Other(format!(
+            "failed to exec {}: {err}",
+            binary.display()
+        ))),
+    }
 }
 
 pub(crate) fn mtime_nanos(meta: &fs::Metadata) -> Option<i64> {
