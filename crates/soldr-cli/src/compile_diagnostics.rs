@@ -550,7 +550,7 @@ mod tests {
 
         let deep = std::path::PathBuf::from(format!("C:/{}", "d".repeat(150)));
         let warning = maxpath_headroom_warning(&deep);
-        if cfg!(windows) {
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
             let warning = warning.expect("a 150-char root must warn");
             assert!(warning.contains("MAX_PATH"), "{warning}");
             assert!(

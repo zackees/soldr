@@ -108,13 +108,10 @@ pub async fn ensure_zig(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
         )));
     }
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&resolved)?.permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&resolved, perms)?;
-    }
+    // Publish the extracted binary with a fixed 0o755 (no-op on
+    // Windows, where Unix mode bits are meaningless).
+    let source = std::fs::metadata(&resolved)?.permissions();
+    crate::platform::fs::permissions::make_executable_from(&resolved, &source)?;
 
     std::fs::write(&stamp, MANAGED_ZIG_VERSION)?;
     eprintln!("soldr: downloaded zig v{MANAGED_ZIG_VERSION}");
@@ -172,7 +169,7 @@ fn zig_dir_from_path() -> Option<PathBuf> {
 }
 
 fn zig_binary_filename() -> &'static str {
-    if cfg!(windows) {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         "zig.exe"
     } else {
         "zig"
@@ -237,23 +234,17 @@ fn scan_for_zig_binary(install_dir: &Path) -> Option<PathBuf> {
 }
 
 fn host_zig_os_arch() -> Option<(&'static str, &'static str)> {
-    let arch = if cfg!(target_arch = "x86_64") {
-        "x86_64"
-    } else if cfg!(target_arch = "aarch64") {
-        "aarch64"
-    } else {
-        return None;
-    };
-    let os = if cfg!(target_os = "linux") {
-        "linux"
-    } else if cfg!(target_os = "macos") {
-        "macos"
-    } else if cfg!(target_os = "windows") {
-        "windows"
-    } else {
-        return None;
-    };
-    Some((os, arch))
+    use crate::platform::host::facts::{arch, os, HostArch, HostOs};
+
+    match (os(), arch()) {
+        (HostOs::Linux, HostArch::X86_64) => Some(("linux", "x86_64")),
+        (HostOs::Linux, HostArch::Aarch64) => Some(("linux", "aarch64")),
+        (HostOs::MacOs, HostArch::X86_64) => Some(("macos", "x86_64")),
+        (HostOs::MacOs, HostArch::Aarch64) => Some(("macos", "aarch64")),
+        (HostOs::Windows, HostArch::X86_64) => Some(("windows", "x86_64")),
+        (HostOs::Windows, HostArch::Aarch64) => Some(("windows", "aarch64")),
+        _ => None,
+    }
 }
 
 fn zig_download_url(version: &str) -> Result<(String, String), SoldrError> {

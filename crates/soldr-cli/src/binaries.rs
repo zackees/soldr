@@ -552,33 +552,27 @@ fn apply_managed_toolchain_library_path_if_available(
     binary: &std::path::Path,
     paths: &SoldrPaths,
 ) {
-    #[cfg(target_os = "linux")]
-    const LOADER_LIBRARY_PATH: &str = "LD_LIBRARY_PATH";
-    #[cfg(target_os = "macos")]
-    const LOADER_LIBRARY_PATH: &str = "DYLD_FALLBACK_LIBRARY_PATH";
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    {
-        let Some(library_dir) = managed_toolchain_library_dir(binary, paths) else {
-            return;
-        };
-        let existing = command
-            .get_envs()
-            .find(|(key, _)| *key == LOADER_LIBRARY_PATH)
-            .map(|(_, value)| value.map(std::ffi::OsStr::to_os_string))
-            .unwrap_or_else(|| std::env::var_os(LOADER_LIBRARY_PATH));
-        let mut entries = vec![library_dir];
-        if let Some(existing) = existing {
-            entries.extend(std::env::split_paths(&existing));
-        }
-        entries.dedup();
-        if let Ok(value) = std::env::join_paths(entries) {
-            command.env(LOADER_LIBRARY_PATH, value);
-        }
+    let loader_library_path = match crate::platform::host::facts::os() {
+        crate::platform::host::facts::HostOs::Linux => "LD_LIBRARY_PATH",
+        crate::platform::host::facts::HostOs::MacOs => "DYLD_FALLBACK_LIBRARY_PATH",
+        crate::platform::host::facts::HostOs::Windows => return,
+    };
+    let Some(library_dir) = managed_toolchain_library_dir(binary, paths) else {
+        return;
+    };
+    let existing = command
+        .get_envs()
+        .find(|(key, _)| *key == loader_library_path)
+        .map(|(_, value)| value.map(std::ffi::OsStr::to_os_string))
+        .unwrap_or_else(|| std::env::var_os(loader_library_path));
+    let mut entries = vec![library_dir];
+    if let Some(existing) = existing {
+        entries.extend(std::env::split_paths(&existing));
     }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    let _ = (command, binary, paths);
+    entries.dedup();
+    if let Ok(value) = std::env::join_paths(entries) {
+        command.env(loader_library_path, value);
+    }
 }
 
 /// Locate `<managed-rustup>/toolchains/<channel>/lib` for a binary inside
@@ -1294,10 +1288,12 @@ mod tests {
         assert_ne!(HomeOrigin::RepoLocal, HomeOrigin::Managed);
     });
 
-    #[cfg(target_os = "linux")]
     crate::timed_test!(
         managed_toolchain_keeps_its_library_path_and_the_callers_entries,
         {
+            if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Linux {
+                return;
+            }
             let temp = tempfile::tempdir().expect("tempdir");
             let paths = SoldrPaths::with_root(temp.path().join("soldr-root"));
             let toolchain = crate::fetch::managed_rustup_home(&paths)
@@ -1329,8 +1325,10 @@ mod tests {
         }
     );
 
-    #[cfg(target_os = "linux")]
     crate::timed_test!(caller_toolchain_does_not_receive_managed_library_path, {
+        if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Linux {
+            return;
+        }
         let temp = tempfile::tempdir().expect("tempdir");
         let paths = SoldrPaths::with_root(temp.path().join("soldr-root"));
         let binary = temp.path().join("caller").join("bin").join("cargo");

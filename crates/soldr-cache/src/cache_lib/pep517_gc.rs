@@ -289,7 +289,6 @@ mod tests {
             .is_file());
     });
 
-    #[cfg(unix)]
     crate::timed_test!(
         timestamp_failure_retains_candidate_instead_of_failing_old,
         {
@@ -297,8 +296,17 @@ mod tests {
             let paths = SoldrPaths::with_root(temp.path().join("owned"));
             let candidate = target_root(&paths).join("candidate");
             std::fs::create_dir_all(&candidate).unwrap();
-            std::os::unix::fs::symlink(candidate.join("missing"), candidate.join("broken"))
-                .unwrap();
+            // A dangling symlink makes the timestamp probe fail. Skip on
+            // hosts that cannot create one (Windows without Developer Mode).
+            if crate::platform::fs::links::create(
+                &candidate.join("missing").to_string_lossy(),
+                &candidate.join("broken"),
+                false,
+            )
+            .is_err()
+            {
+                return;
+            }
             let report = sweep(&paths, SystemTime::now(), Duration::ZERO);
             assert_eq!(report.removed, 0);
             assert_eq!(report.failed, 1);

@@ -129,7 +129,7 @@ async fn prepare_native_toolchain(
     target: &str,
 ) -> Result<NativeToolchain, SoldrError> {
     if target.ends_with("-unknown-linux-gnu") {
-        if !cfg!(target_os = "linux") {
+        if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Linux {
             return Err(unsupported_host(target));
         }
         let toolchain = crate::fetch::gnu_linux_toolchain::ensure(paths, target).await?;
@@ -144,7 +144,7 @@ async fn prepare_native_toolchain(
     }
 
     if target.ends_with("-unknown-linux-musl") {
-        if !cfg!(target_os = "linux") {
+        if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Linux {
             return Err(unsupported_host(target));
         }
         let toolchain = crate::fetch::musl_linux_toolchain::ensure(paths, target).await?;
@@ -305,7 +305,9 @@ mod tests {
         let _env = crate::TEST_PROCESS_ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let (managed, host, other) = if cfg!(windows) {
+        let (managed, host, other) = if crate::platform::host::facts::os()
+            == crate::platform::host::facts::HostOs::Windows
+        {
             (r"C:\managed\bin", r"C:\host\bin", r"C:\other")
         } else {
             ("/managed/bin", "/host/bin", "/other")

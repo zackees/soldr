@@ -151,9 +151,11 @@ fn current_unix_seconds() -> Result<u64, StateDbError> {
 fn path_key(path: &Path) -> String {
     let normalized: PathBuf = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let key = normalized.to_string_lossy().replace('\\', "/");
-    #[cfg(windows)]
-    let key = key.to_ascii_lowercase();
-    key
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+        key.to_ascii_lowercase()
+    } else {
+        key
+    }
 }
 
 #[cfg(test)]

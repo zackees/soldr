@@ -698,8 +698,12 @@ mod tests {
     // aside succeeds where deleting it cannot.
     //
     // This test fails against the pre-fix implementation.
-    #[cfg(windows)]
     crate::timed_test!(replaces_a_shim_whose_image_is_currently_running, {
+        if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
+            // Only Windows refuses to delete or overwrite a running
+            // image; the test fixtures are Windows-only.
+            return;
+        }
         let tmp = tempfile::tempdir().unwrap();
         let target = tmp.path().join("running-shim.exe");
         // A real executable is required: the point is a mapped image, which no

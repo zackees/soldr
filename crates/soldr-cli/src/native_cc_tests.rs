@@ -239,7 +239,7 @@ fn decision_default_on_for_non_windows_when_env_unset() {
     let _lock = ENV_LOCK.lock().unwrap();
     let _g = EnvGuard::remove(NATIVE_CACHE_ENV_VAR);
     let decision = native_cache_decision();
-    if cfg!(target_os = "windows") {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         assert_eq!(decision, NativeCacheDecision::InjectExistingOnly);
     } else {
         assert_eq!(decision, NativeCacheDecision::Inject);
@@ -251,7 +251,7 @@ fn decision_truthy_env_value_keeps_default_on() {
     let _lock = ENV_LOCK.lock().unwrap();
     let _g = EnvGuard::set(NATIVE_CACHE_ENV_VAR, "1");
     let decision = native_cache_decision();
-    if cfg!(target_os = "windows") {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         assert_eq!(decision, NativeCacheDecision::InjectExistingOnly);
     } else {
         assert_eq!(decision, NativeCacheDecision::Inject);
@@ -262,9 +262,11 @@ fn decision_truthy_env_value_keeps_default_on() {
 // inject_native_cache_env — top-level command env application
 // -------------------------------------------------------------------------
 
-#[cfg(not(target_os = "windows"))]
 #[test]
 fn inject_sets_cc_cxx_and_known_wrapper_when_default_on() {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+        return;
+    }
     let _lock = ENV_LOCK.lock().unwrap();
     let _gn = EnvGuard::remove(NATIVE_CACHE_ENV_VAR);
     let _gcc = EnvGuard::remove("CC");
@@ -284,9 +286,11 @@ fn inject_sets_cc_cxx_and_known_wrapper_when_default_on() {
     // the integration test under tests/cli_cargo_native_cc.rs.
 }
 
-#[cfg(not(target_os = "windows"))]
 #[test]
 fn inject_no_op_when_user_disabled() {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+        return;
+    }
     let _lock = ENV_LOCK.lock().unwrap();
     let _g = EnvGuard::set(NATIVE_CACHE_ENV_VAR, "0");
 
@@ -297,9 +301,11 @@ fn inject_no_op_when_user_disabled() {
     assert_eq!(native_cache_decision(), NativeCacheDecision::UserDisabled);
 }
 
-#[cfg(not(target_os = "windows"))]
 #[test]
 fn inject_wraps_target_specific_when_user_set_them() {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+        return;
+    }
     let _lock = ENV_LOCK.lock().unwrap();
     let _gn = EnvGuard::remove(NATIVE_CACHE_ENV_VAR);
     let triple = "x86_64-unknown-linux-gnu";
@@ -369,9 +375,11 @@ fn target_wrapper_honors_command_level_snake_override() {
 // soldr#1368 — inject uses the zccache-soldr shim + an absolute compiler
 // -------------------------------------------------------------------------
 
-#[cfg(not(target_os = "windows"))]
 #[test]
 fn inject_uses_shim_wrapper_and_absolute_compiler() {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+        return;
+    }
     use std::ffi::OsStr;
     let _lock = ENV_LOCK.lock().unwrap();
     let _gn = EnvGuard::remove(NATIVE_CACHE_ENV_VAR);

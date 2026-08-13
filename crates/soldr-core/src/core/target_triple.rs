@@ -69,7 +69,7 @@ impl TargetTriple {
             return Self::from_triple(&triple);
         }
 
-        if cfg!(target_os = "windows") {
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
             return Ok(Self {
                 arch: compile_time_arch()?,
                 os: Os::Windows,
@@ -245,18 +245,21 @@ mod tests {
 
     #[test]
     fn test_detect_target() {
+        use crate::platform::host::facts::{arch, os, HostArch, HostOs};
+
         let t = TargetTriple::detect().unwrap();
-        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-        {
-            assert_eq!(t.os, Os::Windows);
-            assert_eq!(t.env, Env::Msvc);
-            assert_eq!(t.arch, Arch::X86_64);
-            assert_eq!(t.triple(), "x86_64-pc-windows-msvc");
+        match os() {
+            HostOs::Windows => {
+                if arch() == HostArch::X86_64 {
+                    assert_eq!(t.os, Os::Windows);
+                    assert_eq!(t.env, Env::Msvc);
+                    assert_eq!(t.arch, Arch::X86_64);
+                    assert_eq!(t.triple(), "x86_64-pc-windows-msvc");
+                }
+            }
+            HostOs::MacOs => assert_eq!(t.os, Os::MacOs),
+            HostOs::Linux => assert_eq!(t.os, Os::Linux),
         }
-        #[cfg(target_os = "macos")]
-        assert_eq!(t.os, Os::MacOs);
-        #[cfg(target_os = "linux")]
-        assert_eq!(t.os, Os::Linux);
         let _ = t.triple();
     }
 
@@ -286,7 +289,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cargo_dir = dir.path().join(".cargo");
         std::fs::create_dir_all(&cargo_dir).unwrap();
-        let override_triple = if cfg!(target_os = "windows") {
+        let override_triple = if crate::platform::host::facts::os()
+            == crate::platform::host::facts::HostOs::Windows
+        {
             "aarch64-unknown-linux-musl"
         } else {
             "x86_64-pc-windows-msvc"
@@ -306,25 +311,28 @@ mod tests {
 
     #[test]
     fn host_triple_uses_compile_time_target_env() {
-        #[cfg(target_os = "linux")]
-        {
+        use crate::platform::host::facts::{libc, os, HostLibc, HostOs};
+
+        if os() == HostOs::Linux {
             let host = TargetTriple::host().unwrap();
-            #[cfg(target_env = "gnu")]
-            assert_eq!(host.env, Env::Gnu);
-            #[cfg(target_env = "musl")]
-            assert_eq!(host.env, Env::Musl);
+            match libc() {
+                HostLibc::Musl => assert_eq!(host.env, Env::Musl),
+                _ => assert_eq!(host.env, Env::Gnu),
+            }
         }
     }
 
-    #[cfg(target_os = "windows")]
     #[test]
     fn defaults_to_msvc_without_explicit_override() {
+        if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let target = TargetTriple::detect_in_dir(dir.path()).unwrap();
         // Runtime arch: Windows runners come in x86_64 AND aarch64 on
         // GitHub Actions. Both are valid host triples — the test must
         // expect the runner's actual arch, not a hardcoded x86_64.
-        let expected_arch = if cfg!(target_arch = "x86_64") {
+        let expected_arch = if std::env::consts::ARCH == "x86_64" {
             "x86_64"
         } else {
             "aarch64"
@@ -356,9 +364,15 @@ mod tests {
     /// picks the musl variant of cargo-nextest et al. Without this
     /// the Alpine docker harness from `zackees/running-process#514`
     /// hits the `os error 2` execve failure described in #806.
-    #[cfg(all(target_os = "linux", target_env = "musl"))]
     #[test]
     fn musl_host_resolves_to_musl_target_triple() {
+        use crate::platform::host::facts::{libc, os, HostLibc, HostOs};
+
+        // The original assertion is gated on the binary being built for
+        // linux-musl; any other host cannot promise a musl answer.
+        if os() != HostOs::Linux || libc() != HostLibc::Musl {
+            return;
+        }
         // Pure helper: compile-time short-circuit must kick in.
         assert_eq!(detect_linux_libc(), Env::Musl);
 

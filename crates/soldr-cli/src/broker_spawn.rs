@@ -379,24 +379,16 @@ fn wait_for_existing_broker(runtime: &tokio::runtime::Runtime, endpoint: &str) -
     }
 }
 
-#[cfg(unix)]
 fn admission_endpoint_exists(endpoint: &str) -> bool {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+        // Named-pipe endpoints are names, not paths; nothing to stat.
+        return false;
+    }
     std::path::Path::new(endpoint).exists()
 }
 
-#[cfg(windows)]
-fn admission_endpoint_exists(_endpoint: &str) -> bool {
-    false
-}
-
-#[cfg(unix)]
 fn admission_endpoint_accepts_connections(endpoint: &str) -> bool {
-    std::os::unix::net::UnixStream::connect(endpoint).is_ok()
-}
-
-#[cfg(windows)]
-fn admission_endpoint_accepts_connections(_endpoint: &str) -> bool {
-    false
+    crate::platform::ipc::connect::probe_accepts_connections(endpoint)
 }
 
 fn broker_instance_at(runtime: &tokio::runtime::Runtime, endpoint: &str) -> Option<String> {
@@ -558,8 +550,13 @@ fn stop_incompatible_broker(
     Ok(())
 }
 
-#[cfg(unix)]
 fn retire_incompatible_admission_endpoint(endpoint: &str, instance: &str) -> Result<(), String> {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+        // Named-pipe listeners have no filesystem entry to unlink. Once shutdown
+        // is acknowledged, the old broker has stopped admission and a new pipe
+        // instance can take the stable name while established sessions drain.
+        return Ok(());
+    }
     match std::fs::remove_file(endpoint) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -567,14 +564,6 @@ fn retire_incompatible_admission_endpoint(endpoint: &str, instance: &str) -> Res
             "could not retire incompatible broker instance {instance} at {endpoint}: {error}"
         )),
     }
-}
-
-#[cfg(windows)]
-fn retire_incompatible_admission_endpoint(_endpoint: &str, _instance: &str) -> Result<(), String> {
-    // Named-pipe listeners have no filesystem entry to unlink. Once shutdown
-    // is acknowledged, the old broker has stopped admission and a new pipe
-    // instance can take the stable name while established sessions drain.
-    Ok(())
 }
 
 fn stage_broker_image(
@@ -604,7 +593,12 @@ fn stage_broker_image(
         .parent()
         .ok_or_else(|| "stable broker path has no parent".to_string())?;
     std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    let suffix = if cfg!(windows) { ".exe" } else { "" };
+    let suffix =
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            ".exe"
+        } else {
+            ""
+        };
     let temporary = parent.join(format!(
         ".soldr-broker.stage-{}-{:016x}{suffix}",
         std::process::id(),
@@ -631,12 +625,8 @@ fn stage_broker_image(
         checkpoint()?;
     }
     output.flush().map_err(|error| error.to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o700))
-            .map_err(|error| error.to_string())?;
-    }
+    crate::platform::fs::permissions::make_private(&temporary)
+        .map_err(|error| error.to_string())?;
     output.sync_all().map_err(|error| error.to_string())?;
     drop(output);
     drop(input);

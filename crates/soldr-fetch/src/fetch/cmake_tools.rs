@@ -67,37 +67,24 @@ pub fn host_slug_for(host_triple: &str) -> Option<&'static str> {
         .map(|(_, slug)| *slug)
 }
 
-/// The running binary's host triple, cfg-resolved. Mirrors the
-/// supported-host set of [`CMAKE_TOOL_HOSTS`] plus musl (which then
-/// misses the slug lookup and falls through — the miss is the
-/// mechanism, not an error path we need to special-case).
+/// The running binary's host triple, resolved at runtime from the
+/// host-facts facade. Mirrors the supported-host set of
+/// [`CMAKE_TOOL_HOSTS`] plus musl (which then misses the slug lookup
+/// and falls through — the miss is the mechanism, not an error path
+/// we need to special-case).
 pub fn current_host_triple() -> &'static str {
-    if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        "x86_64-pc-windows-msvc"
-    } else if cfg!(all(target_os = "windows", target_arch = "aarch64")) {
-        "aarch64-pc-windows-msvc"
-    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
-        "x86_64-apple-darwin"
-    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        "aarch64-apple-darwin"
-    } else if cfg!(all(
-        target_os = "linux",
-        target_arch = "x86_64",
-        target_env = "musl"
-    )) {
-        "x86_64-unknown-linux-musl"
-    } else if cfg!(all(
-        target_os = "linux",
-        target_arch = "aarch64",
-        target_env = "musl"
-    )) {
-        "aarch64-unknown-linux-musl"
-    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        "x86_64-unknown-linux-gnu"
-    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
-        "aarch64-unknown-linux-gnu"
-    } else {
-        "unsupported-host"
+    use crate::platform::host::facts::{arch, libc, os, HostArch, HostLibc, HostOs};
+
+    match (os(), arch(), libc()) {
+        (HostOs::Windows, HostArch::X86_64, _) => "x86_64-pc-windows-msvc",
+        (HostOs::Windows, HostArch::Aarch64, _) => "aarch64-pc-windows-msvc",
+        (HostOs::MacOs, HostArch::X86_64, _) => "x86_64-apple-darwin",
+        (HostOs::MacOs, HostArch::Aarch64, _) => "aarch64-apple-darwin",
+        (HostOs::Linux, HostArch::X86_64, HostLibc::Musl) => "x86_64-unknown-linux-musl",
+        (HostOs::Linux, HostArch::Aarch64, HostLibc::Musl) => "aarch64-unknown-linux-musl",
+        (HostOs::Linux, HostArch::X86_64, _) => "x86_64-unknown-linux-gnu",
+        (HostOs::Linux, HostArch::Aarch64, _) => "aarch64-unknown-linux-gnu",
+        _ => "unsupported-host",
     }
 }
 
@@ -151,7 +138,7 @@ pub fn ninja_exe(bundle_root: &Path) -> PathBuf {
 }
 
 fn exe_name(base: &str) -> String {
-    if cfg!(windows) {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         format!("{base}.exe")
     } else {
         base.to_string()
@@ -210,7 +197,7 @@ mod tests {
         let root = Path::new("root");
         let cmake = cmake_exe(root);
         let ninja = ninja_exe(root);
-        if cfg!(windows) {
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
             assert!(cmake.ends_with("bin/cmake.exe") || cmake.ends_with("bin\\cmake.exe"));
             assert!(ninja.ends_with("bin/ninja.exe") || ninja.ends_with("bin\\ninja.exe"));
         } else {

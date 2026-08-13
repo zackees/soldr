@@ -223,10 +223,21 @@ mod tests {
             "hello"
         );
 
-        // Linux behavior stays byte-identical to `tar::Archive::unpack`:
-        // real symlinks with the stored targets, not copies.
-        #[cfg(unix)]
-        {
+        // Unix behavior stays byte-identical to `tar::Archive::unpack`:
+        // real symlinks with the stored targets, not copies. On Windows
+        // the entry is either a correctly-flavored NTFS symlink or a
+        // copied directory — both must satisfy is_dir() (asserted above)
+        // and support enumeration.
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            let names: Vec<_> = std::fs::read_dir(&usr_lib)
+                .expect("read_dir through link")
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            assert!(
+                names.iter().any(|n| n == "libc-2.17.so"),
+                "dir link must enumerate its target's children: {names:?}"
+            );
+        } else {
             let meta = std::fs::symlink_metadata(&usr_lib).expect("lstat");
             assert!(meta.file_type().is_symlink(), "usr/lib must stay a symlink");
             assert_eq!(
@@ -236,20 +247,6 @@ mod tests {
             assert_eq!(
                 std::fs::read_link(dest.join("usr/lib64/libc.so")).unwrap(),
                 PathBuf::from("libc.so.6")
-            );
-        }
-        // On Windows the entry is either a correctly-flavored NTFS
-        // symlink or a copied directory — both must satisfy is_dir()
-        // (asserted above) and support enumeration.
-        #[cfg(windows)]
-        {
-            let names: Vec<_> = std::fs::read_dir(&usr_lib)
-                .expect("read_dir through link")
-                .map(|e| e.unwrap().file_name())
-                .collect();
-            assert!(
-                names.iter().any(|n| n == "libc-2.17.so"),
-                "dir link must enumerate its target's children: {names:?}"
             );
         }
     });
@@ -273,11 +270,12 @@ mod tests {
                 .expect("read through chained framework links"),
             "header!"
         );
-        #[cfg(windows)]
-        assert!(
-            std::fs::read_dir(&headers).is_ok(),
-            "framework Headers must support directory enumeration on Windows"
-        );
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            assert!(
+                std::fs::read_dir(&headers).is_ok(),
+                "framework Headers must support directory enumeration on Windows"
+            );
+        }
     });
 
     crate::timed_test!(unpack_tar_ignores_escaping_symlink_copy, {

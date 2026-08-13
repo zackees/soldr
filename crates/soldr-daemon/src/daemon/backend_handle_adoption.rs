@@ -80,8 +80,15 @@ pub fn broker_route_identity(
         }
     });
     let identity = normalized.to_string_lossy().into_owned();
-    #[cfg(windows)]
-    let identity = identity.replace('\\', "/").to_ascii_lowercase();
+    // Windows canonicalization yields `C:\...` forms; fold them to the
+    // same slash/letter casing the broker-side identity uses so the hash
+    // matches across the wire.
+    let identity =
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            identity.replace('\\', "/").to_ascii_lowercase()
+        } else {
+            identity
+        };
     // soldr#2442 / 0.9.0: blake3 (via zccache's shared hasher) with a
     // (path,size,mtime) cache, replacing the whole-file SHA-256 read that made
     // cold daemon-image placement slow. The digest is a hex string on both this
@@ -114,11 +121,15 @@ pub fn broker_service_name() -> io::Result<String> {
     let daemon = current
         .parent()
         .map(|parent| {
-            parent.join(if cfg!(windows) {
-                "soldr-daemon.exe"
-            } else {
-                "soldr-daemon"
-            })
+            parent.join(
+                if crate::platform::host::facts::os()
+                    == crate::platform::host::facts::HostOs::Windows
+                {
+                    "soldr-daemon.exe"
+                } else {
+                    "soldr-daemon"
+                },
+            )
         })
         .unwrap_or_else(|| PathBuf::from("soldr-daemon"));
     broker_service_name_for(&paths, &daemon)
@@ -480,17 +491,14 @@ fn soldr_daemon_endpoint(paths: &SoldrPaths) -> Endpoint {
     // address the wrong pipe. `default_sock_path` is soldr-controlled, so
     // the smart-constructor errors only fire on a programming bug
     // — `expect` is correct.
-    #[cfg(windows)]
-    {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         let full = client::default_sock_path(paths)
             .to_string_lossy()
             .into_owned();
         let pipe_name = full.strip_prefix(r"\\.\pipe\").unwrap_or(&full);
         Endpoint::windows_pipe(namespace_id, pipe_name)
             .expect("resolved control endpoint returns a bare, non-empty pipe name")
-    }
-    #[cfg(unix)]
-    {
+    } else {
         Endpoint::unix_socket(
             namespace_id,
             client::default_sock_path(paths)

@@ -16,6 +16,13 @@ fn opened_root(path: &Path) -> OpenDirectory {
     open_target_root(path).unwrap().unwrap()
 }
 
+/// Create a file or directory symlink, or return false when the
+/// platform/session cannot make one (Windows needs Developer Mode or
+/// elevation — the symlink tests self-skip rather than failing).
+fn try_link(target: &Path, link: &Path, is_dir: bool) -> bool {
+    crate::platform::fs::links::create(&target.to_string_lossy(), link, is_dir).is_ok()
+}
+
 crate::timed_test!(
     readonly_shared_file_is_detached_without_unprotecting_blob,
     {
@@ -138,13 +145,8 @@ crate::timed_test!(symlinks_are_not_followed, {
     std::fs::write(&outside_file, b"outside").unwrap();
     mark_readonly(&outside_file);
 
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(&outside_file, target.join("link")).unwrap();
-    #[cfg(windows)]
-    {
-        if std::os::windows::fs::symlink_file(&outside_file, target.join("link")).is_err() {
-            return;
-        }
+    if !try_link(&outside_file, &target.join("link"), false) {
+        return;
     }
 
     let report = detach_target_tree(&target).unwrap();
@@ -266,13 +268,8 @@ crate::timed_test!(direct_no_follow_open_rejects_a_file_symlink, {
     std::fs::write(&outside, b"outside").unwrap();
     mark_readonly(&outside);
 
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(&outside, &link).unwrap();
-    #[cfg(windows)]
-    {
-        if std::os::windows::fs::symlink_file(&outside, &link).is_err() {
-            return;
-        }
+    if !try_link(&outside, &link, false) {
+        return;
     }
 
     let root = opened_root(root.path());
@@ -295,13 +292,8 @@ crate::timed_test!(symlinked_target_root_is_resolved_and_prepared, {
     std::fs::write(&artifact, b"private bytes").unwrap();
     mark_readonly(&artifact);
 
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(&physical, &target_link).unwrap();
-    #[cfg(windows)]
-    {
-        if std::os::windows::fs::symlink_dir(&physical, &target_link).is_err() {
-            return;
-        }
+    if !try_link(&physical, &target_link, true) {
+        return;
     }
 
     let report = detach_target_tree(&target_link).unwrap();
@@ -336,13 +328,10 @@ crate::timed_test!(opened_directory_capability_survives_ancestor_swap, {
         attempted = true;
         match std::fs::rename(&child, &displaced) {
             Ok(()) => {
-                #[cfg(unix)]
-                std::os::unix::fs::symlink(&outside, &child).unwrap();
-                #[cfg(windows)]
-                {
-                    if std::os::windows::fs::symlink_dir(&outside, &child).is_err() {
-                        std::fs::rename(&displaced, &child).unwrap();
-                    }
+                // A failed symlink (e.g. no Developer Mode) restores the
+                // displaced child so the detach proceeds on the real tree.
+                if !try_link(&outside, &child, true) {
+                    std::fs::rename(&displaced, &child).unwrap();
                 }
             }
             Err(_) => {

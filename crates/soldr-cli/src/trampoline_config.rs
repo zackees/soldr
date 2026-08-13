@@ -133,8 +133,7 @@ fn home_dir() -> Option<PathBuf> {
             return Some(PathBuf::from(v));
         }
     }
-    #[cfg(windows)]
-    {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         if let Some(v) = std::env::var_os("USERPROFILE") {
             if !v.is_empty() {
                 return Some(PathBuf::from(v));

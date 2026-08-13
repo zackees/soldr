@@ -64,7 +64,7 @@ fn render_cc_wrapper(subcommand: &str, zig_target: &str, is_darwin: bool) -> Str
     if is_darwin {
         return render_darwin_cc_wrapper(subcommand, zig_target);
     }
-    if cfg!(windows) {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         format!("@echo off\r\ncargo-zigbuild zig {subcommand} -- -target {zig_target} %*\r\n",)
     } else {
         format!("#!/bin/sh\nexec cargo-zigbuild zig {subcommand} -- -target {zig_target} \"$@\"\n",)
@@ -92,7 +92,7 @@ fn render_cc_wrapper(subcommand: &str, zig_target: &str, is_darwin: bool) -> Str
 /// paths explicitly — the exact arg shape cargo-zigbuild's zig >= 0.15
 /// branch would produce. Non-darwin targets keep the plain wrapper.
 fn render_darwin_cc_wrapper(subcommand: &str, zig_target: &str) -> String {
-    if cfg!(windows) {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         format!(
             "@echo off\r\n\
              setlocal\r\n\
@@ -132,7 +132,7 @@ fn render_darwin_cc_wrapper(subcommand: &str, zig_target: &str) -> String {
 }
 
 fn render_tool_wrapper(subcommand: &str) -> String {
-    if cfg!(windows) {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         format!("@echo off\r\ncargo-zigbuild zig {subcommand} -- %*\r\n")
     } else {
         format!("#!/bin/sh\nexec cargo-zigbuild zig {subcommand} -- \"$@\"\n")
@@ -179,7 +179,7 @@ mod tests {
     });
 
     crate::timed_test!(cc_wrapper_routes_through_zig_with_target, {
-        if cfg!(windows) {
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
             return;
         }
         let body = render_cc_wrapper("cc", "aarch64-linux-musl", false);
@@ -193,7 +193,7 @@ mod tests {
     crate::timed_test!(
         darwin_cc_wrapper_clears_sdkroot_and_adds_explicit_sdk_paths,
         {
-            if cfg!(windows) {
+            if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
                 return;
             }
             // Run 28574600982: with SDKROOT set, cargo-zigbuild (zig < 0.15)
@@ -217,7 +217,7 @@ mod tests {
     );
 
     crate::timed_test!(tool_wrapper_routes_through_cargo_zigbuild, {
-        if cfg!(windows) {
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
             return;
         }
         let body = render_tool_wrapper("ranlib");

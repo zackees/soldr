@@ -86,7 +86,7 @@ pub fn env_dir_for(paths: &SoldrPaths, package: &str, version: &str) -> PathBuf 
 
 /// Path of a tool executable inside an isolated env dir.
 pub fn tool_exe_in_env(env_dir: &Path, exe_base: &str) -> PathBuf {
-    if cfg!(windows) {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         env_dir.join("Scripts").join(format!("{exe_base}.exe"))
     } else {
         env_dir.join("bin").join(exe_base)
@@ -102,7 +102,7 @@ pub fn env_is_complete(env_dir: &Path, exe_base: &str) -> bool {
 }
 
 fn python_exe_in_env(env_dir: &Path) -> PathBuf {
-    if cfg!(windows) {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         env_dir.join("Scripts").join("python.exe")
     } else {
         env_dir.join("bin").join("python")
@@ -273,7 +273,7 @@ mod tests {
         assert!(ninja_dir.ends_with("ninja-uv-1.13.0"));
 
         let exe = tool_exe_in_env(&dir, "maturin");
-        if cfg!(windows) {
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
             assert!(exe.ends_with("Scripts/maturin.exe") || exe.ends_with("Scripts\\maturin.exe"));
         } else {
             assert!(exe.ends_with("bin/maturin"));

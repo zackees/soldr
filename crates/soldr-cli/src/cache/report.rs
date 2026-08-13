@@ -249,7 +249,7 @@ fn select_workspace_session_from_records(
 fn same_workspace_path(left: &Path, right: &Path) -> bool {
     let left = std::fs::canonicalize(left).unwrap_or_else(|_| left.to_path_buf());
     let right = std::fs::canonicalize(right).unwrap_or_else(|_| right.to_path_buf());
-    if cfg!(windows) {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         left.to_string_lossy()
             .eq_ignore_ascii_case(&right.to_string_lossy())
     } else {

@@ -317,8 +317,10 @@ mod tests {
         assert!(decoy.join("keep.txt").exists());
     });
 
-    #[cfg(windows)]
     crate::timed_test!(volume_tag_for_windows_drive_letter_uppercases, {
+        if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
+            return;
+        }
         let p = Path::new(r"c:\Users\someone");
         let tag = volume_tag_for_path(p);
         // canonicalize will fail for a non-existent path; we fall back
@@ -326,8 +328,10 @@ mod tests {
         assert_eq!(tag, "C", "tag={tag}");
     });
 
-    #[cfg(unix)]
     crate::timed_test!(volume_tag_for_unix_returns_device_id_string, {
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            return;
+        }
         let scratch = tempdir().unwrap();
         let tag = volume_tag_for_path(scratch.path());
         assert!(

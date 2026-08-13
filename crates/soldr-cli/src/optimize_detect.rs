@@ -44,96 +44,41 @@ pub(crate) fn parse_windows_build(major: u32, _minor: u32, build: u32) -> Platfo
 }
 
 /// Detect the running platform. On Windows, queries the OS build via
-/// `RtlGetVersion` (preferred) so we get the real build number even
-/// under compatibility mode. Falls back to broad bucketing from
-/// `std::env::consts::OS` on every other platform.
+/// the host-facts `os_version()` probe (registry preferred, PowerShell
+/// fallback) so we get the real build number even under compatibility
+/// mode. Broad bucketing from the facade's `os()` on every other
+/// platform.
 pub(crate) fn detect_platform() -> Platform {
-    match std::env::consts::OS {
-        "windows" => {
+    match crate::platform::host::facts::os() {
+        crate::platform::host::facts::HostOs::Windows => {
             let (major, minor, build) = current_windows_version();
             parse_windows_build(major, minor, build)
         }
-        "macos" => Platform::MacOS,
-        "linux" => Platform::Linux,
-        _ => Platform::Other,
+        crate::platform::host::facts::HostOs::MacOs => Platform::MacOS,
+        crate::platform::host::facts::HostOs::Linux => Platform::Linux,
     }
 }
 
-#[cfg(target_os = "windows")]
 fn current_windows_version() -> (u32, u32, u32) {
-    // Try the registry first — it always reflects the host OS, never
-    // the compatibility-mode lie.
-    if let Some(triple) = registry_windows_version() {
-        return triple;
-    }
-    // Fall back to PowerShell. Slow but correct.
-    if let Some(triple) = powershell_windows_version() {
-        return triple;
+    // The host-facts probe tries the registry first — it always
+    // reflects the host OS, never the compatibility-mode lie — then
+    // falls back to PowerShell.
+    if let Some(version) = crate::platform::host::facts::os_version() {
+        if let Some(triple) = parse_version_triple(&version) {
+            return triple;
+        }
     }
     // Last-resort fallback: assume modern Windows 10 22H2 baseline so
     // the action layer at least attempts Defender exclusions.
     (10, 0, 19045)
 }
 
-#[cfg(not(target_os = "windows"))]
-fn current_windows_version() -> (u32, u32, u32) {
-    (0, 0, 0)
-}
-
-#[cfg(target_os = "windows")]
-fn registry_windows_version() -> Option<(u32, u32, u32)> {
-    use std::process::Command;
-    let output = Command::new("reg")
-        .args([
-            "query",
-            r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion",
-            "/v",
-            "CurrentBuildNumber",
-        ])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let build: u32 = stdout
-        .lines()
-        .find_map(|line| line.split_whitespace().last())
-        .and_then(|tok| tok.parse().ok())?;
-    Some((10, 0, build))
-}
-
-#[cfg(target_os = "windows")]
-fn powershell_windows_version() -> Option<(u32, u32, u32)> {
-    let output = std::process::Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-Command",
-            "[System.Environment]::OSVersion.Version | Select-Object -Property Major,Minor,Build | ConvertTo-Json -Compress",
-        ])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    parse_powershell_version_json(&stdout)
-}
-
-#[cfg(target_os = "windows")]
-fn parse_powershell_version_json(stdout: &str) -> Option<(u32, u32, u32)> {
-    #[derive(serde::Deserialize)]
-    struct Version {
-        #[serde(rename = "Major")]
-        major: u32,
-        #[serde(rename = "Minor")]
-        minor: u32,
-        #[serde(rename = "Build")]
-        build: u32,
-    }
-    let trimmed = stdout.trim();
-    let parsed: Version = serde_json::from_str(trimmed).ok()?;
-    Some((parsed.major, parsed.minor, parsed.build))
+fn parse_version_triple(version: &str) -> Option<(u32, u32, u32)> {
+    let mut parts = version.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let build = parts.next()?.parse().ok()?;
+    Some((major, minor, build))
 }
 
 /// Detect installed tooling relevant to the optimize subcommand.
@@ -313,10 +258,11 @@ mod tests {
         assert!(!parsed.active);
     }
 
-    #[cfg(target_os = "windows")]
     #[test]
-    fn parse_windows_version_json_basic_shape() {
-        let json = r#"{"Major":10,"Minor":0,"Build":19045}"#;
-        assert_eq!(parse_powershell_version_json(json), Some((10, 0, 19045)));
+    fn parse_version_triple_parses_dotted_build() {
+        assert_eq!(parse_version_triple("10.0.19045"), Some((10, 0, 19045)));
+        assert_eq!(parse_version_triple("10.0.22621"), Some((10, 0, 22621)));
+        assert_eq!(parse_version_triple("not-a-version"), None);
+        assert_eq!(parse_version_triple("10.0"), None);
     }
 }

@@ -75,10 +75,9 @@ mod tests {
         std::fs::create_dir_all(&boundary).unwrap();
         std::fs::create_dir_all(&external).unwrap();
         let linked = boundary.join("linked");
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&external, &linked).unwrap();
-        #[cfg(windows)]
-        {
+        // Unix: a plain symlink. Windows: a directory junction via
+        // `cmd mklink /J` (junctions need no Developer Mode).
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
             let status = std::process::Command::new("cmd")
                 .args(["/c", "mklink", "/J"])
                 .arg(&linked)
@@ -86,6 +85,8 @@ mod tests {
                 .status()
                 .unwrap();
             assert!(status.success(), "create test junction");
+        } else {
+            crate::platform::fs::links::create(&external.to_string_lossy(), &linked, true).unwrap();
         }
         assert!(validate_owned_directory(&boundary, &linked).is_err());
     });

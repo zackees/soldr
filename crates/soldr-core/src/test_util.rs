@@ -167,17 +167,14 @@ pub fn hang_banner(name: &str, elapsed: Duration, timeout: Duration) -> String {
 /// `None` off Windows, where `abort()` reports a plain SIGABRT that nobody
 /// misreads.
 pub fn hang_exit_code_note() -> Option<&'static str> {
-    #[cfg(windows)]
-    {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         Some(concat!(
             "watchdog: the exit code that follows will be 0xC0000409 ",
             "(STATUS_STACK_BUFFER_OVERRUN). That is how Windows reports ",
             "abort() via __fastfail -- it is THIS timeout, not memory ",
             "corruption. See soldr#1999."
         ))
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         None
     }
 }
@@ -310,8 +307,10 @@ pub fn parse_tasklist_csv(stdout: &str) -> Vec<LeakedDaemonInfo> {
 /// out to `tasklist`. Returns an empty Vec on non-Windows so callers
 /// can write platform-independent diagnostic code that only fires
 /// when actually relevant.
-#[cfg(target_os = "windows")]
 pub fn tasklist_snapshot_soldr_daemons() -> Vec<LeakedDaemonInfo> {
+    if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
+        return Vec::new();
+    }
     let mut all = Vec::new();
     for name in SOLDR_DAEMON_IMAGE_NAMES {
         let output = std::process::Command::new("tasklist")
@@ -322,11 +321,6 @@ pub fn tasklist_snapshot_soldr_daemons() -> Vec<LeakedDaemonInfo> {
         all.extend(parse_tasklist_csv(&stdout));
     }
     all
-}
-
-#[cfg(not(target_os = "windows"))]
-pub fn tasklist_snapshot_soldr_daemons() -> Vec<LeakedDaemonInfo> {
-    Vec::new()
 }
 
 /// Render a list of leaked daemons in a CI-friendly multi-line block
@@ -553,17 +547,14 @@ mod tests {
     #[test] // allow-bare-test: pure string check on the watchdog's own output
     fn windows_is_told_the_exit_code_is_this_timeout() {
         let note = hang_exit_code_note();
-        #[cfg(windows)]
-        {
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
             let note = note.expect("Windows must pre-empt the misleading code");
             assert!(note.contains("0xC0000409"), "must name the code: {note}");
             assert!(
                 note.contains("not memory"),
                 "must deny the wrong cause outright rather than hint at it: {note}"
             );
-        }
-        #[cfg(not(windows))]
-        {
+        } else {
             // abort() reports a plain SIGABRT here, which nobody misreads, so
             // there is no wrong cause to pre-empt.
             assert!(note.is_none(), "only Windows needs the note");

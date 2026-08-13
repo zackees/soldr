@@ -85,6 +85,13 @@ pub fn path_list_separator() -> &'static str {
     ":"
 }
 
+/// The OS version string. Soldr's macOS host facts have no version
+/// probe — the Windows-specific registry/PowerShell queries live in the
+/// Windows tree — so this is always `None` on macOS.
+pub fn os_version() -> Option<String> {
+    None
+}
+
 /// All host facts in one probe.
 pub fn info() -> HostInfo {
     HostInfo {

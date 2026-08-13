@@ -2611,8 +2611,7 @@ fn find_on_path(tool: &str) -> Option<std::path::PathBuf> {
         if candidate.is_file() {
             return Some(candidate);
         }
-        #[cfg(windows)]
-        {
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
             if std::path::Path::new(tool).extension().is_some() {
                 continue;
             }

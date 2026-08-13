@@ -289,18 +289,14 @@ fn open_database(path: &Path) -> rusqlite::Result<Connection> {
 
 fn open_database_with_timeout(path: &Path, busy_timeout: Duration) -> rusqlite::Result<Connection> {
     let connection = Connection::open(path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(
-            |error| {
-                rusqlite::Error::SqliteFailure(
-                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_PERM),
-                    Some(error.to_string()),
-                )
-            },
-        )?;
-    }
+    // Owner-only lease file. Windows ignores mode bits, so the facade
+    // applies them only where they carry meaning.
+    crate::platform::fs::permissions::restore_mode(path, Some(0o600)).map_err(|error| {
+        rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_PERM),
+            Some(error.to_string()),
+        )
+    })?;
     connection.busy_timeout(busy_timeout)?;
     connection.pragma_update(None, "journal_mode", "DELETE")?;
     connection.pragma_update(None, "synchronous", "OFF")?;

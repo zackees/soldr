@@ -86,6 +86,66 @@ pub fn path_list_separator() -> &'static str {
     ";"
 }
 
+/// The Windows version as a dotted `major.minor.build` string (e.g.
+/// `10.0.22621`). Probes the registry first — it always reflects the
+/// host OS, never the compatibility-mode lie — then falls back to
+/// PowerShell. `None` when neither probe succeeds.
+pub fn os_version() -> Option<String> {
+    registry_os_version().or_else(powershell_os_version)
+}
+
+fn registry_os_version() -> Option<String> {
+    let output = std::process::Command::new("reg")
+        .args([
+            "query",
+            r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion",
+            "/v",
+            "CurrentBuildNumber",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let build: u32 = stdout
+        .lines()
+        .find_map(|line| line.split_whitespace().last())
+        .and_then(|tok| tok.parse().ok())?;
+    Some(format!("10.0.{build}"))
+}
+
+fn powershell_os_version() -> Option<String> {
+    let output = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "[System.Environment]::OSVersion.Version | Select-Object -Property Major,Minor,Build | ConvertTo-Json -Compress",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_powershell_version_json(&stdout)
+}
+
+fn parse_powershell_version_json(stdout: &str) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct Version {
+        #[serde(rename = "Major")]
+        major: u32,
+        #[serde(rename = "Minor")]
+        minor: u32,
+        #[serde(rename = "Build")]
+        build: u32,
+    }
+    let trimmed = stdout.trim();
+    let parsed: Version = serde_json::from_str(trimmed).ok()?;
+    Some(format!("{}.{}.{}", parsed.major, parsed.minor, parsed.build))
+}
+
 /// All host facts in one probe (the Linux probe also performs the
 /// runtime musl/glibc detection).
 pub fn info() -> HostInfo {
@@ -104,5 +164,12 @@ mod tests {
     fn windows_facts_report_windows() {
         assert_eq!(os(), HostOs::Windows);
         assert_eq!(info().libc, HostLibc::None);
+    }
+
+    #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+    fn powershell_version_json_parses_the_dotted_triple() {
+        let json = r#"{"Major":10,"Minor":0,"Build":19045}"#;
+        assert_eq!(parse_powershell_version_json(json), Some("10.0.19045".into()));
+        assert_eq!(parse_powershell_version_json("{}"), None);
     }
 }

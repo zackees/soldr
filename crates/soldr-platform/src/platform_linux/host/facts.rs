@@ -99,6 +99,13 @@ pub fn path_list_separator() -> &'static str {
     ":"
 }
 
+/// The OS version string. Soldr's Linux host facts have no version
+/// probe — the Windows-specific registry/PowerShell queries live in the
+/// Windows tree — so this is always `None` on Linux.
+pub fn os_version() -> Option<String> {
+    None
+}
+
 /// All host facts in one probe (with the runtime musl/glibc detection).
 pub fn info() -> HostInfo {
     HostInfo {

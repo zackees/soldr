@@ -249,7 +249,7 @@ mod tests {
 
     crate::timed_test!(tool_file_name_appends_exe_on_windows_only, {
         let cargo = tool_file_name("cargo");
-        if cfg!(windows) {
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
             assert_eq!(cargo, "cargo.exe");
         } else {
             assert_eq!(cargo, "cargo");

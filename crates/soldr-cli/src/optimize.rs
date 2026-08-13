@@ -18,7 +18,6 @@ use crate::cache::print_json;
 use crate::JSON_SCHEMA_VERSION;
 
 use crate::defender::{apply_exclusions, current_exclusion_list, is_admin};
-#[cfg(target_os = "windows")]
 use crate::optimize_windows::{relaunch_elevated, ELEVATED_HELPER_FLAG};
 
 use crate::defender::find_powershell;
@@ -598,14 +597,13 @@ fn print_human(output: &OptimizeOutput) {
 /// failure (or non-Windows targets that somehow reach this branch),
 /// emit instructions and exit non-zero.
 fn elevate_or_explain(
-    #[cfg_attr(not(target_os = "windows"), allow(unused_variables))] powershell: &Path,
-    #[cfg_attr(not(target_os = "windows"), allow(unused_variables))] soldr_root: &Path,
+    powershell: &Path,
+    soldr_root: &Path,
     json: bool,
     mut output: OptimizeOutput,
     undo: bool,
 ) -> Result<i32, SoldrError> {
-    #[cfg(target_os = "windows")]
-    {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         let helper_output_path =
             soldr_root.join(format!(".soldr-optimize-helper-{}.json", now_unix()));
         let argv = rebuild_argv_for_helper(&output, undo);
@@ -642,10 +640,7 @@ fn elevate_or_explain(
                 Ok(1)
             }
         }
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = (powershell, soldr_root, undo);
+    } else {
         output.note = Some(
             "Administrator privileges required, but UAC self-relaunch is only available on Windows. \
              On macOS/Linux this code path is unreachable in normal flow -- file an issue if you hit it."
@@ -656,7 +651,6 @@ fn elevate_or_explain(
     }
 }
 
-#[cfg(target_os = "windows")]
 fn rebuild_argv_for_helper(output: &OptimizeOutput, undo: bool) -> Vec<String> {
     let mut argv = vec![
         "optimize".into(),

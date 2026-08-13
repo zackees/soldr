@@ -384,17 +384,19 @@ fn add_msvc_tool_env(prep: &mut BlessedPrep, target_u: &str, target_u_upper: &st
 }
 
 fn darwin_should_use_lld(managed_llvm_available: bool) -> bool {
-    managed_llvm_available || cfg!(target_os = "linux")
+    managed_llvm_available
+        || crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Linux
 }
 
 const SOLDR_DSYMUTIL_ENV_VAR: &str = "SOLDR_DSYMUTIL";
 
 fn ensure_dsymutil_on_path(prep: &mut BlessedPrep) -> Result<(), SoldrError> {
-    let names: &[&str] = if cfg!(windows) {
-        &["dsymutil.exe", "llvm-dsymutil.exe"]
-    } else {
-        &["dsymutil", "llvm-dsymutil"]
-    };
+    let names: &[&str] =
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            &["dsymutil.exe", "llvm-dsymutil.exe"]
+        } else {
+            &["dsymutil", "llvm-dsymutil"]
+        };
     if let Some(path) = std::env::var_os(SOLDR_DSYMUTIL_ENV_VAR)
         .map(PathBuf::from)
         .filter(|path| path.is_file())
@@ -470,11 +472,12 @@ fn ensure_dsymutil_on_path(prep: &mut BlessedPrep) -> Result<(), SoldrError> {
 }
 
 fn find_dsymutil_in_rustup() -> Option<PathBuf> {
-    let names: &[&str] = if cfg!(windows) {
-        &["dsymutil.exe", "llvm-dsymutil.exe"]
-    } else {
-        &["dsymutil", "llvm-dsymutil"]
-    };
+    let names: &[&str] =
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            &["dsymutil.exe", "llvm-dsymutil.exe"]
+        } else {
+            &["dsymutil", "llvm-dsymutil"]
+        };
     let rustc = crate::binaries::resolve_toolchain_binary("rustc").ok()?;
     let toolchain_root = rustc.parent()?.parent()?;
     let host_bin = toolchain_root.join("lib").join("rustlib");
@@ -803,7 +806,7 @@ fn prepend_pkg_config_path_for_target(
     let pkgconfig_dir = sysroot.join("lib").join("pkgconfig");
     let new_entry = pkgconfig_dir.to_string_lossy().into_owned();
     if let Some(existing) = prep.env.iter_mut().find(|(name, _)| name == &var_name) {
-        let sep = if cfg!(windows) { ';' } else { ':' };
+        let sep = crate::platform::host::facts::path_list_separator();
         existing.1 = format!("{new_entry}{sep}{}", existing.1);
     } else {
         prep.env.push((var_name, new_entry));
@@ -848,7 +851,7 @@ fn should_prepare_xwin_for_target(target_triple: &str) -> bool {
     target_triple
         .to_ascii_lowercase()
         .ends_with("-pc-windows-msvc")
-        && cfg!(target_os = "linux")
+        && crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Linux
         && !legacy_xwin_opt_out()
 }
 
@@ -929,20 +932,16 @@ fn install_clang_shim(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
     Ok(shim_dir)
 }
 
-#[cfg(windows)]
 fn clang_shim_names() -> Vec<String> {
     // Only `clang` + `clang++`. DO NOT add `clang-cl` here: the shim
     // invokes `clang-cl` as its downstream, and if `clang-cl` is also a
     // multicall name then PATH resolution can find the shim's own
     // clang-cl first and recurse. See
     // ci/docker-aarch64-windows-msvc-cross/ + soldr#1033 followup.
-    vec!["clang.exe".to_string(), "clang++.exe".to_string()]
-}
-
-#[cfg(not(windows))]
-fn clang_shim_names() -> Vec<String> {
-    // See the Windows branch for why clang-cl is NOT here.
-    vec!["clang".to_string(), "clang++".to_string()]
+    vec![
+        crate::platform::executable::name::native("clang"),
+        crate::platform::executable::name::native("clang++"),
+    ]
 }
 
 /// Build the MSVC-style include-flag string that cargo-xwin would
@@ -1066,15 +1065,17 @@ mod tests {
     crate::timed_test!(xwin_prep_is_linux_host_only, {
         let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let prev = std::env::var_os(USE_LEGACY_XWIN_ENV_VAR);
+        let host_is_linux =
+            crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Linux;
 
         std::env::remove_var(USE_LEGACY_XWIN_ENV_VAR);
         assert_eq!(
             should_prepare_xwin_for_target("x86_64-pc-windows-msvc"),
-            cfg!(target_os = "linux")
+            host_is_linux
         );
         assert_eq!(
             should_prepare_xwin_for_target("X86_64-PC-Windows-MSVC"),
-            cfg!(target_os = "linux"),
+            host_is_linux,
             "target classification is case-insensitive before canonicalization"
         );
         assert!(!should_prepare_xwin_for_target("x86_64-unknown-linux-musl"));
@@ -1088,8 +1089,10 @@ mod tests {
         }
     });
 
-    #[cfg(target_os = "windows")]
     crate::timed_test!(native_windows_msvc_gets_no_xwin_prep, {
+        if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
+            return;
+        }
         let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let prev_xwin = std::env::var_os(USE_LEGACY_XWIN_ENV_VAR);
         let prev_sys = std::env::var_os(USE_LEGACY_VENDORED_SYS_ENV_VAR);
@@ -1101,7 +1104,9 @@ mod tests {
 
         let tmp = tempfile::tempdir().expect("tmpdir");
         let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
-        let target = if cfg!(target_arch = "aarch64") {
+        let target = if crate::platform::host::facts::arch()
+            == crate::platform::host::facts::HostArch::Aarch64
+        {
             "aarch64-pc-windows-msvc"
         } else {
             "x86_64-pc-windows-msvc"
@@ -1214,7 +1219,7 @@ mod tests {
             "managed LLVM should always enable LLD for Darwin cross-links",
         );
 
-        if cfg!(target_os = "linux") {
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Linux {
             assert!(
                 darwin_should_use_lld(false),
                 "Linux Darwin fallback must prefer LLD over GNU ld for Mach-O links",
@@ -1254,11 +1259,14 @@ mod tests {
         }
     });
 
-    #[cfg(not(any(
-        all(target_os = "windows", target_arch = "x86_64"),
-        all(target_os = "linux", target_arch = "x86_64")
-    )))]
     crate::timed_test!(windows_gnu_requires_supported_mingw_host, {
+        let host = crate::platform::host::facts::info();
+        let supported = (host.os == crate::platform::host::facts::HostOs::Windows
+            || host.os == crate::platform::host::facts::HostOs::Linux)
+            && host.arch == crate::platform::host::facts::HostArch::X86_64;
+        if supported {
+            return;
+        }
         let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let prev_sys = std::env::var_os(USE_LEGACY_VENDORED_SYS_ENV_VAR);
         let prev_cmake = std::env::var_os(USE_SYSTEM_CMAKE_ENV_VAR);

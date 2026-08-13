@@ -170,27 +170,18 @@ fn host_llvm_asset() -> Option<&'static LlvmAsset> {
 }
 
 /// Map (arch, os) to the rustc-style triple keys used in `LLVM_ASSETS`.
-/// Kept separate from `core::TargetTriple` because (a) we want a
-/// compile-time-resolvable host check, (b) we don't need rustc's
+/// Kept separate from `core::TargetTriple` because (a) we resolve the
+/// host through the facts facade, (b) we don't need rustc's
 /// MSVC-vs-GNU env discrimination on Windows (only x86_64-msvc is
 /// supported today).
 fn host_triple_for_llvm() -> Option<&'static str> {
-    if cfg!(all(
-        target_os = "linux",
-        target_arch = "x86_64",
-        target_env = "gnu"
-    )) {
-        Some("x86_64-unknown-linux-gnu")
-    } else if cfg!(all(
-        target_os = "linux",
-        target_arch = "aarch64",
-        target_env = "gnu"
-    )) {
-        Some("aarch64-unknown-linux-gnu")
-    } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        Some("x86_64-pc-windows-msvc")
-    } else {
-        None
+    use crate::platform::host::facts::{arch, libc, os, HostArch, HostLibc, HostOs};
+
+    match (os(), arch(), libc()) {
+        (HostOs::Linux, HostArch::X86_64, HostLibc::Gnu) => Some("x86_64-unknown-linux-gnu"),
+        (HostOs::Linux, HostArch::Aarch64, HostLibc::Gnu) => Some("aarch64-unknown-linux-gnu"),
+        (HostOs::Windows, HostArch::X86_64, _) => Some("x86_64-pc-windows-msvc"),
+        _ => None,
     }
 }
 
@@ -392,8 +383,12 @@ mod tests {
         }
     });
 
-    #[cfg(all(target_os = "linux", target_env = "musl"))]
     crate::timed_test!(musl_host_does_not_select_glibc_llvm_asset, {
+        if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Linux
+            || crate::platform::host::facts::libc() != crate::platform::host::facts::HostLibc::Musl
+        {
+            return;
+        }
         assert!(
             host_triple_for_llvm().is_none(),
             "musl hosts must not select the glibc LLVM archive",

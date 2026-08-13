@@ -1094,7 +1094,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                             // resolver when there is no sibling.
                             if std::env::var_os("RUSTC").is_none() {
                                 let sibling = cargo.parent().map(|dir| {
-                                    dir.join(if cfg!(windows) { "rustc.exe" } else { "rustc" })
+                                    dir.join(crate::platform::executable::name::native("rustc"))
                                 });
                                 match sibling.filter(|p| p.is_file()) {
                                     Some(rustc) => {
@@ -1143,7 +1143,9 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                     crate::pyo3_detect::resolve_build_target(tool_args, &workspace_root);
                 if maturin_build
                     && std::env::var_os("CARGO_BUILD_TARGET").is_none()
-                    && (cfg!(windows) || maturin_target != crate::pyo3_detect::host_triple())
+                    && (crate::platform::host::facts::os()
+                        == crate::platform::host::facts::HostOs::Windows
+                        || maturin_target != crate::pyo3_detect::host_triple())
                 {
                     command.env("CARGO_BUILD_TARGET", &maturin_target);
                 }

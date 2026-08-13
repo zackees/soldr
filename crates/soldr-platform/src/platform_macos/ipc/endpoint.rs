@@ -62,3 +62,10 @@ pub fn socket_path_fits(path: &Path, capacity: usize) -> bool {
     use std::os::unix::ffi::OsStrExt as _;
     path.as_os_str().as_bytes().len().saturating_add(1) <= capacity
 }
+
+/// Historical root-local daemon endpoint: only Windows derives a
+/// user-scoped pipe name — Unix uses the filesystem path the caller
+/// computes.
+pub fn legacy_daemon_endpoint(_cache_root: &Path) -> Result<String, String> {
+    Err("legacy daemon endpoint derivation is Windows-only".into())
+}

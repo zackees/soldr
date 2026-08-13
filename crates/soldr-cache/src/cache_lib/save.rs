@@ -841,12 +841,9 @@ fn resolve_symlink_target_in_root(link_rel: &Path, target: &str) -> Option<PathB
 /// skipped — they can't round-trip through the protobuf string field).
 fn symlink_target_to_posix(raw: &Path) -> Option<String> {
     let s = raw.to_str()?;
-    #[cfg(windows)]
-    {
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         Some(s.replace('\\', "/"))
-    }
-    #[cfg(not(windows))]
-    {
+    } else {
         Some(s.to_string())
     }
 }
@@ -2334,12 +2331,10 @@ impl Drop for DefenderExclusionGuard {
 }
 
 fn defender_exclusion_guard_for(cache_dir: &Path) -> DefenderExclusionGuard {
-    #[cfg(not(target_os = "windows"))]
-    {
+    if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
         let _ = cache_dir;
-        DefenderExclusionGuard::default()
+        return DefenderExclusionGuard::default();
     }
-    #[cfg(target_os = "windows")]
     {
         let Some(powershell) = crate::defender::find_powershell() else {
             eprintln!(
@@ -3275,11 +3270,14 @@ mod etxtbsy_tests {
         assert_eq!(std::fs::read(&dest).unwrap(), b"fresh");
     });
 
-    #[cfg(unix)]
     crate::timed_test!(restored_executable_keeps_its_mode_through_the_rename, {
+        // Unix mode bits only exist on unix hosts; the facade's `mode()`
+        // returns `None` on Windows, so the test self-skips there.
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            return;
+        }
         // The mode is applied to the staging file; `rename` must carry it
         // over, or #587/#1889 would regress silently.
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         let dest = tmp.path().join("build-script-build");
         extract_one(&regular_job(
@@ -3289,19 +3287,19 @@ mod etxtbsy_tests {
         ))
         .expect("extract");
 
-        let mode = std::fs::metadata(&dest).unwrap().permissions().mode();
-        assert_eq!(
-            mode & 0o777,
-            0o755,
-            "executable bit must survive the rename"
-        );
+        let mode =
+            crate::platform::fs::permissions::mode(&dest).expect("stat restored mode") & 0o777;
+        assert_eq!(mode, 0o755, "executable bit must survive the rename");
     });
 
-    #[cfg(unix)]
     crate::timed_test!(restored_executable_can_actually_be_executed, {
+        // Unix mode bits only exist on unix hosts; the facade's `mode()`
+        // returns `None` on Windows, so the test self-skips there.
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            return;
+        }
         // The end-to-end property the issue is about: after extract_one
         // returns, the file is immediately runnable -- no ETXTBSY, no EACCES.
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         let dest = tmp.path().join("build-script-build");
         extract_one(&regular_job(
@@ -3311,7 +3309,7 @@ mod etxtbsy_tests {
         ))
         .expect("extract");
         assert_eq!(
-            std::fs::metadata(&dest).unwrap().permissions().mode() & 0o111,
+            crate::platform::fs::permissions::mode(&dest).expect("stat restored mode") & 0o111,
             0o111
         );
 

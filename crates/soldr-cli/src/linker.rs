@@ -122,7 +122,7 @@ impl LinkerInjection {
         // Native macOS uses the platform's Mach-O ld64. Linux-hosted Apple
         // cross-builds use LLVM lld, which selects its Mach-O driver from the
         // target triple.
-        if cfg!(target_os = "macos") {
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::MacOs {
             Self::none()
         } else {
             Self::clang_with_fuse("lld")
@@ -714,7 +714,7 @@ mod tests {
     }
 
     fn assert_apple_fast_linker(injection: &LinkerInjection, triple: &str) {
-        if cfg!(target_os = "macos") {
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::MacOs {
             assert!(injection.linker.is_none(), "{triple}");
             assert!(injection.rustflags.is_none(), "{triple}");
         } else {

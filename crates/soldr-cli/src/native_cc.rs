@@ -285,11 +285,12 @@ fn resolve_compiler_to_abs(name: &str) -> OsString {
     if candidate.is_absolute() {
         return OsString::from(name);
     }
-    let exts: &[&str] = if cfg!(windows) {
-        &["", ".exe", ".bat", ".cmd"]
-    } else {
-        &[""]
-    };
+    let exts: &[&str] =
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            &["", ".exe", ".bat", ".cmd"]
+        } else {
+            &[""]
+        };
     if let Some(path) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&path) {
             for ext in exts {
