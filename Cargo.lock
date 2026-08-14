@@ -2451,7 +2451,9 @@ name = "running-process-platform-internal"
 version = "4.10.1"
 dependencies = [
  "libc",
+ "sysinfo",
  "tokio",
+ "winapi",
  "windows-sys 0.61.2",
 ]
 
