@@ -77,3 +77,9 @@ def test_the_guards_run_the_scripts_they_claim_to() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     assert "check_toolchain_homes.py" in _step_body(workflow, GUARD_1799)
     assert "check_compile_fallbacks.py" in _step_body(workflow, GUARD_1838)
+
+
+def test_hosted_runner_compile_concurrency_is_memory_bounded() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert 'CARGO_BUILD_JOBS: "2"' in workflow
+    assert 'SOLDR_JOBS: "2"' in workflow
