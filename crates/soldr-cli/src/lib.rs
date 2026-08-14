@@ -170,6 +170,7 @@ pub mod binaries;
 /// xwin-cache materialization + clang-shim install + env var setup.
 pub mod blessed_build;
 pub mod bootstrap;
+pub(crate) mod broker_bringup;
 pub mod broker_cmd;
 mod broker_control_transport;
 /// soldr#2388: container-safe broker/session socket identity (graceful fallback

@@ -269,6 +269,15 @@ fn collect_log_path_entries(paths: &SoldrPaths) -> Vec<LogPathEntry> {
     let runtime_daemon = runtime.join("soldr-daemon");
     let runtime_self = runtime.join("soldr-self");
     let daemon_spawn_log = root.join("daemon-spawn.log");
+    // The broker's directory is derived from the *installed* broker image, not
+    // from `paths.root` — under `SOLDR_CACHE_DIR` the two differ. Resolve it
+    // for real, and fall back to the conventional location if the broker image
+    // cannot be resolved (nothing has spawned one yet), so the inventory names
+    // a path either way.
+    let broker_dir = crate::broker_identity::ResolvedBrokerEndpoint::resolve()
+        .ok()
+        .and_then(|endpoint| endpoint.executable_path.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| root.join("broker"));
     let cargo_abort_log = paths.cargo_abort_log();
     let compile_daemon_fallback_log = paths
         .root
@@ -356,6 +365,20 @@ fn collect_log_path_entries(paths: &SoldrPaths) -> Vec<LogPathEntry> {
             "soldr-daemon-spawn-log",
             daemon_spawn_log,
             "Fallback diagnostics recorded when detached soldr-daemon spawn or readiness fails.",
+        ),
+        (
+            "soldr-broker-spawn-log",
+            broker_dir.join("broker-spawn.log"),
+            "Stdout and stderr of every detached broker this machine has spawned, appended \
+             across runs. The first place to look when a build stalls waiting for a broker.",
+        ),
+        (
+            "soldr-broker-bringup-log",
+            broker_dir.join("broker-bringup.jsonl"),
+            "Per-phase broker cold-start timings (JSONL). One record per completed bringup \
+             phase — securing directories, Tokio runtime, peer policy, instance id, broker \
+             state, bind. A broker that stalled during startup is identified by the phase \
+             that has no record.",
         ),
         (
             "soldr-self-trampoline-dir",

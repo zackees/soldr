@@ -286,40 +286,26 @@ jobs:
 
       # soldr#1799 — surface the per-build XML logs and the JSONL compile
       # journals from CI compiles so toolchain-home leakage and warm-run
-      # recompile storms are diagnosable straight from the Actions UI.
-      # Printed as two separate steps (XML vs JSONL/JSON) and uploaded as
-      # a downloadable artifact. Roots covered: the default soldr homes
-      # (~/.soldr, ~/.soldr-dev) used by the build step, and the isolated
-      # SOLDR_CACHE_DIR tree used by the test steps.
-      - name: Print build XML logs
+      # recompile storms are diagnosable. Roots covered: the default soldr
+      # homes (~/.soldr, ~/.soldr-dev) used by the build step, and the
+      # isolated SOLDR_CACHE_DIR tree used by the test steps.
+      #
+      # These used to `Get-Content` every matching file into the job console.
+      # A compile journal is one JSON object per compile unit, so a full
+      # workspace build buried the actual test failure under megabytes of
+      # scrollback — the exact opposite of diagnosable. The inventory below
+      # prints names and sizes only; the contents are downloadable from the
+      # `build-logs-<target>` artifact.
+      - name: Index build logs
         if: always()
         continue-on-error: true
         shell: pwsh
         run: |
-          $roots = @("$HOME/.soldr", "$HOME/.soldr-dev", "${{ runner.temp }}/soldr-self-tests")
-          $files = @($roots | Where-Object { Test-Path $_ } | ForEach-Object {
-            Get-ChildItem -Path $_ -Recurse -Filter *.xml -ErrorAction SilentlyContinue
-          } | Where-Object { $_.DirectoryName -match 'logs' })
-          if ($files.Count -eq 0) { Write-Host 'No build XML logs found.' }
-          foreach ($f in $files) {
-            Write-Host "===== $($f.FullName) ====="
-            Get-Content $f.FullName
-          }
-
-      - name: Print JSONL compile journals
-        if: always()
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          $roots = @("$HOME/.soldr", "$HOME/.soldr-dev", "${{ runner.temp }}/soldr-self-tests")
-          $files = @($roots | Where-Object { Test-Path $_ } | ForEach-Object {
-            Get-ChildItem -Path $_ -Recurse -Include *.jsonl, *.stats.json -ErrorAction SilentlyContinue
-          } | Where-Object { $_.DirectoryName -match 'logs' })
-          if ($files.Count -eq 0) { Write-Host 'No JSONL compile journals found.' }
-          foreach ($f in $files) {
-            Write-Host "===== $($f.FullName) ====="
-            Get-Content $f.FullName
-          }
+          python3 .github/scripts/index_build_logs.py `
+            --root "$HOME/.soldr" `
+            --root "$HOME/.soldr-dev" `
+            --root "${{ runner.temp }}/soldr-self-tests" `
+            --artifact-name "build-logs-${{ inputs.target }}"
 
       - name: Upload build log artifacts
         if: always()
@@ -328,9 +314,30 @@ jobs:
         with:
           name: build-logs-${{ inputs.target }}
           if-no-files-found: ignore
+          # Keep in sync with `.github/scripts/index_build_logs.py`, which
+          # prints the index of what lands here. The non-`logs/` entries are
+          # deliberate: the archived compile journals live under
+          # `history/<id>/`, and the broker/daemon spawn logs sit at the state
+          # root — all three were silently missing from this artifact, which
+          # is why a broker that failed to come up left no downloadable trace.
           path: |
             ~/.soldr/logs/
             ~/.soldr-dev/logs/
             ~/.soldr/cache/zccache/logs/
             ~/.soldr-dev/cache/zccache/logs/
+            ~/.soldr/cache/zccache/history/**/*.json
+            ~/.soldr/cache/zccache/history/**/*.jsonl
+            ~/.soldr-dev/cache/zccache/history/**/*.json
+            ~/.soldr-dev/cache/zccache/history/**/*.jsonl
+            ~/.soldr/*-spawn.log
+            ~/.soldr-dev/*-spawn.log
+            ~/.soldr/broker/*.log
+            ~/.soldr-dev/broker/*.log
+            ~/.soldr/broker/*.jsonl
+            ~/.soldr-dev/broker/*.jsonl
             ${{ runner.temp }}/soldr-self-tests/**/logs/
+            ${{ runner.temp }}/soldr-self-tests/**/history/**/*.json
+            ${{ runner.temp }}/soldr-self-tests/**/history/**/*.jsonl
+            ${{ runner.temp }}/soldr-self-tests/**/*-spawn.log
+            ${{ runner.temp }}/soldr-self-tests/**/broker/*.log
+            ${{ runner.temp }}/soldr-self-tests/**/broker/*.jsonl
