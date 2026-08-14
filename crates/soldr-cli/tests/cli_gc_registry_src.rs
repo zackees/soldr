@@ -48,7 +48,7 @@ fn gc_list_json_walks_cargo_registry_src_under_cargo_home() {
     let serde_dir = seed_registry_src_crate(&cargo_home, "serde-1.0.213");
     let chrono_tz_dir = seed_registry_src_crate(&cargo_home, "chrono-tz-0.8.1");
 
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args(["gc", "list", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("CARGO_HOME", &cargo_home)
@@ -135,7 +135,7 @@ fn gc_list_json_kind_filter_narrows_to_cargo_target() {
     let cargo_home = fresh_cargo_home("gc-list-kind-target-cargo");
     let serde_dir = seed_registry_src_crate(&cargo_home, "serde-1.0.213");
 
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args(["gc", "list", "--json", "--kind", "cargo_target"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("CARGO_HOME", &cargo_home)
@@ -170,7 +170,7 @@ fn gc_list_json_kind_filter_narrows_to_cargo_registry_src() {
     let cargo_home = fresh_cargo_home("gc-list-kind-regsrc-cargo");
     let _serde_dir = seed_registry_src_crate(&cargo_home, "serde-1.0.213");
 
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args(["gc", "list", "--json", "--kind", "cargo_registry_src"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("CARGO_HOME", &cargo_home)
@@ -202,7 +202,7 @@ fn gc_list_json_kind_filter_narrows_to_cargo_registry_src() {
 #[test]
 fn gc_list_unknown_kind_value_is_rejected() {
     let cache_root = unique_temp_dir("gc-list-bogus-kind");
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args(["gc", "list", "--json", "--kind", "bogus"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .output()
@@ -226,7 +226,7 @@ fn gc_purge_registry_src_all_deletes_walked_dirs() {
     let serde_dir = seed_registry_src_crate(&cargo_home, "serde-1.0.213");
     assert!(serde_dir.exists(), "precondition: seeded dir must exist");
 
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args(["gc", "purge", "--registry-src", "--all", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("CARGO_HOME", &cargo_home)
@@ -256,7 +256,7 @@ fn gc_purge_without_kind_does_not_touch_registry_src() {
     assert!(serde_dir.exists());
     assert!(target.exists());
 
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args([
             "gc",
             "purge",

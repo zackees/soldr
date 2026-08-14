@@ -163,8 +163,11 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
     assert 'run-wrapper = "timeout-diagnostics"' in config
     assert 'platform = { target = "cfg(unix)" }' in config
     assert 'platform = { host = "cfg(unix)" }' not in config
-    assert "[test-groups.daemon-lifecycle]" in config
+    assert "[test-groups.soldr-runtime]" in config
     assert "filter = 'binary(cli_daemon_lifecycle)'" in config
-    assert "[test-groups.daemon-builds]" in config
     assert "filter = 'binary(cli_daemon_builds)'" in config
-    assert config.count('grace-period = "30s"') == 4
+    assert "filter = 'binary(cli_daemon_flush_caches)'" in config
+    assert "binary(cli_broker_resurrection) + binary(cli_broker_routes)" in config
+    assert config.count("test-group = 'soldr-runtime'") == 4
+    assert 'threads-required = "num-cpus"' in config
+    assert config.count('grace-period = "30s"') == 5
