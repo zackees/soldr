@@ -132,7 +132,7 @@ one blessed build surface:
   `aarch64-unknown-linux-musl`. The compiler, linker, CMake, and pkg-config
   environment all resolve under the verified managed root; normal musl
   builds never download or execute Zig, `cargo-zigbuild`, or `ziglang`.
-  `SOLDR_USE_LEGACY_ZIGBUILD=1` retains the old Zig route only for diagnostics
+  `SOLDR_USE_LEGACY_ZIGBUILD` is removed (soldr#2519); there is no Zig route to fall back to
   and will be removed in soldr 0.9.0.
 - macOS targets use `soldr build --target <apple-triple>`. That path resolves
   the target-aware Apple SDK row and injects clang/SDK env internally. Direct

@@ -103,29 +103,11 @@ fn linux_musl_plan_uses_catalogue_toolchain_without_zig() {
     assert!(!json.contains("cargo-zigbuild"));
 }
 
-#[test]
-fn legacy_linux_override_does_not_mix_blessed_wrappers() {
-    assert!(!should_prepare_managed_linux(
-        TargetOs::Linux,
-        Some(TargetAbi::Gnu),
-        "aarch64-unknown-linux-gnu",
-        "x86_64-unknown-linux-gnu",
-        true,
-    ));
-}
-
-#[test]
-fn host_native_gnu_uses_catalogue_toolchain() {
-    // GNU target dispatch occurs before the Zig fallback, including
-    // host-native x64, so the ABI cannot inherit the runner's linker.
-    assert!(!should_prepare_managed_linux(
-        TargetOs::Linux,
-        Some(TargetAbi::Gnu),
-        "x86_64-unknown-linux-gnu",
-        "x86_64-unknown-linux-gnu",
-        false,
-    ));
-}
+// soldr#2519 deleted `host_native_gnu_uses_catalogue_toolchain` with the
+// helper it called. Its point -- that a GNU target never inherits the
+// runner's linker via the Zig fallback -- is now structural rather than
+// conditional: there is no Zig fallback to reach. The catalogue assertions
+// below cover what a GNU target actually gets.
 
 #[test]
 fn the_reported_linux_plans_match_the_catalogue_lifecycle() {
@@ -140,34 +122,11 @@ fn the_reported_linux_plans_match_the_catalogue_lifecycle() {
     assert_eq!(musl.platform.kind, "musl-linux-sysroot");
 }
 
-#[test]
-fn normal_musl_never_reaches_legacy_zig() {
-    assert!(!should_prepare_managed_linux(
-        TargetOs::Linux,
-        Some(TargetAbi::Musl),
-        "x86_64-unknown-linux-musl",
-        "x86_64-unknown-linux-musl",
-        false,
-    ));
-}
-
-#[test]
-fn only_explicit_legacy_musl_can_reach_zig_fallback() {
-    assert!(should_prepare_managed_linux(
-        TargetOs::Linux,
-        Some(TargetAbi::Musl),
-        "aarch64-unknown-linux-musl",
-        "x86_64-unknown-linux-gnu",
-        true,
-    ));
-    assert!(!should_prepare_managed_linux(
-        TargetOs::Linux,
-        Some(TargetAbi::Gnu),
-        "aarch64-unknown-linux-gnu",
-        "x86_64-unknown-linux-gnu",
-        false,
-    ));
-}
+// soldr#2519 deleted `only_explicit_legacy_musl_can_reach_zig_fallback` and
+// `normal_musl_never_reaches_legacy_zig` with the helper they called. There
+// is no longer an explicit-legacy branch for them to distinguish: the Zig
+// musl fallback and its `SOLDR_USE_LEGACY_ZIGBUILD` gate are both gone, so
+// every musl target takes the catalogue path asserted just above.
 
 #[test]
 fn noncanonical_targets_do_not_advertise_blessed_operations() {

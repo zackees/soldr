@@ -75,31 +75,23 @@ pub(crate) async fn prepare_target(
     crate::prepare_cmd::rustup_add_target(base)?;
     let mut prep = crate::blessed_build::prepare(paths, base).await?;
 
-    let legacy_xwin = std::env::var_os(crate::blessed_build::USE_LEGACY_XWIN_ENV_VAR)
-        .is_some_and(|value| !value.is_empty() && value != "0");
     if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Linux
         && attrs.os == TargetOs::Windows
         && attrs.abi == Some(TargetAbi::Msvc)
         && prep.xwin_cache_dir.is_none()
-        && !legacy_xwin
     {
+        // soldr#2519: the blessed cache is the only MSVC path now, so
+        // failing to materialize it is terminal rather than a nudge toward
+        // cargo-xwin's unpinned live download.
         return Err(SoldrError::Other(format!(
-            "blessed MSVC SDK preparation did not produce a cache for {target}; \
-             cargo-xwin is available only through the diagnostic \
-             {}=1 override",
-            crate::blessed_build::USE_LEGACY_XWIN_ENV_VAR
+            "blessed MSVC SDK preparation did not produce an xwin cache for {target}"
         )));
     }
 
-    let legacy_zigbuild = std::env::var_os(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR)
-        .is_some_and(|value| !value.is_empty() && value != "0");
-    if attrs.os == TargetOs::Darwin && target != host && prep.sdkroot.is_none() && !legacy_zigbuild
-    {
+    if attrs.os == TargetOs::Darwin && target != host && prep.sdkroot.is_none() {
+        // soldr#2519: no cargo-zigbuild fallback remains to point at.
         return Err(SoldrError::Other(format!(
-            "blessed Apple SDK preparation did not produce an SDK for {target}; \
-             the legacy wrapper is available only through the diagnostic \
-             {}=1 override",
-            crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR
+            "blessed Apple SDK preparation did not produce an SDK for {target}"
         )));
     }
 
@@ -144,8 +136,7 @@ pub(crate) async fn prepare_target(
         ));
         prep.env.extend(env);
         add_link_self_contained_flag(&mut prep, base, &upper);
-    } else if attrs.os == TargetOs::Linux && attrs.abi == Some(TargetAbi::Musl) && !legacy_zigbuild
-    {
+    } else if attrs.os == TargetOs::Linux && attrs.abi == Some(TargetAbi::Musl) {
         let suffix = base.replace('-', "_");
         let upper = suffix.to_ascii_uppercase();
         let bundle = crate::fetch::musl_linux_toolchain::MuslLinuxToolchainTarget::for_triple(base)
@@ -164,38 +155,6 @@ pub(crate) async fn prepare_target(
             format!("-C link-arg=--sysroot={sysroot}"),
         ));
         prep.env.extend(env);
-    } else if should_prepare_managed_linux(attrs.os, attrs.abi, base, host, legacy_zigbuild) {
-        eprintln!(
-            "soldr: {}=1 selects the legacy Zig musl diagnostic path; it is unsupported for normal builds and will be removed in soldr 0.9.0",
-            crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR
-        );
-        let suffix = base.replace('-', "_");
-        let upper = suffix.to_ascii_uppercase();
-        let tools = crate::linux_cross::prepare(paths, target).await?;
-        prep.path_dirs.push(tools.bin_dir);
-        prep.env.extend([
-            (
-                format!("CC_{suffix}"),
-                tools.cc.to_string_lossy().into_owned(),
-            ),
-            (
-                format!("CXX_{suffix}"),
-                tools.cxx.to_string_lossy().into_owned(),
-            ),
-            (
-                format!("AR_{suffix}"),
-                tools.ar.to_string_lossy().into_owned(),
-            ),
-            (
-                format!("RANLIB_{suffix}"),
-                tools.ranlib.to_string_lossy().into_owned(),
-            ),
-            (
-                format!("CARGO_TARGET_{upper}_LINKER"),
-                tools.linker.to_string_lossy().into_owned(),
-            ),
-        ]);
-        add_link_self_contained_flag(&mut prep, base, &upper);
     }
     Ok(prep)
 }
@@ -245,19 +204,9 @@ fn supports_link_self_contained(base_triple: &str) -> bool {
     base_triple == "x86_64-unknown-linux-gnu"
 }
 
-/// Whether this target still needs the Zig-backed Linux preparation path.
-///
-/// This is deliberately only the explicit legacy diagnostic override. Normal
-/// GNU and musl targets are both catalogue-backed above.
-fn should_prepare_managed_linux(
-    os: TargetOs,
-    abi: Option<TargetAbi>,
-    target: &str,
-    host: &str,
-    legacy_zigbuild: bool,
-) -> bool {
-    os == TargetOs::Linux && abi == Some(TargetAbi::Musl) && legacy_zigbuild && target != host
-}
+// soldr#2519 removed `should_prepare_managed_linux`. It gated the Zig-backed
+// musl path on the legacy diagnostic override, so with that override gone it
+// was unreachable. GNU and musl are both catalogue-backed above.
 
 /// Preserve Cargo's custom target-spec passthrough while using the unified
 /// lifecycle for every target family soldr recognizes.

@@ -111,7 +111,6 @@ fn managed_gnu_toolchain_is_exported_for_later_github_steps() {
     let _legacy_sys = EnvVarGuard::set(crate::blessed_build::USE_LEGACY_VENDORED_SYS_ENV_VAR, "1");
     let _system_cmake = EnvVarGuard::set(crate::blessed_build::USE_SYSTEM_CMAKE_ENV_VAR, "1");
     let _manifest = EnvVarGuard::set("SOLDR_MANIFEST_DISABLE", "1");
-    let _legacy_zigbuild = EnvVarGuard::remove(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR);
     let _path = EnvVarGuard::set("PATH", "/usr/bin:/bin");
     let _ambient_cc = EnvVarGuard::set("CC", "ambient-cc");
     let _ambient_cxx = EnvVarGuard::set("CXX", "ambient-cxx");
@@ -301,7 +300,6 @@ fn managed_musl_toolchain_is_exported_without_zig_or_host_tools() {
     let _legacy_sys = EnvVarGuard::set(crate::blessed_build::USE_LEGACY_VENDORED_SYS_ENV_VAR, "1");
     let _system_cmake = EnvVarGuard::set(crate::blessed_build::USE_SYSTEM_CMAKE_ENV_VAR, "1");
     let _manifest = EnvVarGuard::set("SOLDR_MANIFEST_DISABLE", "1");
-    let _legacy_zigbuild = EnvVarGuard::remove(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR);
     let _path = EnvVarGuard::set("PATH", "/usr/bin:/bin");
     let _output_guards: Vec<_> = output_keys
         .iter()

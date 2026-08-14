@@ -7,8 +7,6 @@ async fn run_blessed_build(
     // through the blessed catalogue before entering the cargo front
     // door. This materializes the required SDK/sysroot and compiler
     // shims, then applies their target-scoped environment.
-    // `SOLDR_USE_LEGACY_XWIN=1` opts out of the blessed path
-    // and falls through to the explicit cargo-xwin flow.
     let mut full_args = Vec::with_capacity(args.len() + 1);
     full_args.push("build".to_string());
     full_args.extend(args);
@@ -35,22 +33,14 @@ async fn run_blessed_build(
         let cargo_args = prep.cargo_args.clone();
         crate::target_lifecycle::apply_to_process(&prep);
 
-        // soldr#882/#1081/#1248: auto-dispatch cargo subcommand
-        // based on target. Windows MSVC stays on plain cargo
-        // build when blessed_build materialized the xwin-cache
-        // and injected clang/lld/MSVC SDK env. Linux GNU/musl use the
-        // managed-Zig env from target_lifecycle. Darwin stays on plain
-        // cargo build after blessed_build injects the target-
-        // shaped Apple SDK/clang env, unless
-        // SOLDR_USE_LEGACY_ZIGBUILD=1 is set for diagnostic
-        // comparison. cfg-gated to linux hosts — native
-        // msvc/darwin host builds keep using plain cargo build.
-        let msvc_blessed_cache_ready = prep.xwin_cache_dir.is_some();
-        if let Some(subcmd) =
-            pick_cross_subcommand(&target_triple, msvc_blessed_cache_ready)
-        {
-            full_args = rewrite_build_args_for_subcommand(full_args, subcmd);
-        }
+        // soldr#2519: every cross target now builds with plain `cargo build`
+        // against the blessed sysroot. The old soldr#882 hop that rewrote argv
+        // into `cargo xwin build` / `cargo zigbuild` only ever fired when
+        // `SOLDR_USE_LEGACY_{XWIN,ZIGBUILD}` was set, and those toggles are
+        // gone -- they routed around soldr's pinned, sha256-verified SDK to an
+        // unpinned third-party download. `target_lifecycle::prepare_for_invocation`
+        // above already failed loudly if the blessed SDK could not be
+        // materialized, so there is nothing left to fall back to.
         full_args = insert_cargo_config_args(full_args, &cargo_args);
 
         // Join the overlapped dependency prefetch before the

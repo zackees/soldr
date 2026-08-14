@@ -1675,7 +1675,6 @@ fn nextest_archive_darwin_bootstrap_reuses_blessed_env() {
     let _sdkroot = EnvVarGuard::set("SDKROOT", &sdk);
     let _llvm = EnvVarGuard::set("SOLDR_LLVM_DIR", &llvm_bin);
     let _dsymutil = EnvVarGuard::set("SOLDR_DSYMUTIL", &fake_dsymutil);
-    let _legacy_zig = EnvVarGuard::remove(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR);
     let _legacy_sys = EnvVarGuard::set(crate::blessed_build::USE_LEGACY_VENDORED_SYS_ENV_VAR, "1");
     let _system_cmake = EnvVarGuard::set(crate::blessed_build::USE_SYSTEM_CMAKE_ENV_VAR, "1");
 

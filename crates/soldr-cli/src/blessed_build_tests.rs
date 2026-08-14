@@ -9,34 +9,11 @@ use crate::TEST_PROCESS_ENV_LOCK as ENV_MUTEX;
 // / `remove_var` mutate global state, and cargo runs tests in
 // parallel within a single process — without a barrier the tests
 // race and intermittently fail (soldr#1267).
+// soldr#2519 deleted `opt_out_env_var_recognized`: the opt-out it covered
+// (`SOLDR_USE_LEGACY_XWIN`) no longer exists. What still needs proving is
+// that MSVC prep is decided by host+target alone, with no escape hatch.
 #[test]
-fn opt_out_env_var_recognized() {
-    let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    let prev = std::env::var_os(USE_LEGACY_XWIN_ENV_VAR);
-
-    std::env::remove_var(USE_LEGACY_XWIN_ENV_VAR);
-    assert!(!legacy_xwin_opt_out());
-
-    std::env::set_var(USE_LEGACY_XWIN_ENV_VAR, "1");
-    assert!(legacy_xwin_opt_out());
-
-    std::env::set_var(USE_LEGACY_XWIN_ENV_VAR, "0");
-    assert!(!legacy_xwin_opt_out(), "literal '0' must not opt in");
-
-    std::env::set_var(USE_LEGACY_XWIN_ENV_VAR, "");
-    assert!(!legacy_xwin_opt_out(), "empty value must not opt in");
-
-    match prev {
-        Some(v) => std::env::set_var(USE_LEGACY_XWIN_ENV_VAR, v),
-        None => std::env::remove_var(USE_LEGACY_XWIN_ENV_VAR),
-    }
-}
-
-#[test]
-fn xwin_prep_is_linux_host_only() {
-    let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    let prev = std::env::var_os(USE_LEGACY_XWIN_ENV_VAR);
-    std::env::remove_var(USE_LEGACY_XWIN_ENV_VAR);
+fn xwin_prep_is_linux_host_only_and_has_no_opt_out() {
     assert_eq!(
         should_prepare_xwin_for_target("x86_64-pc-windows-msvc"),
         crate::platform::host::facts::os() == HostOs::Linux
@@ -48,12 +25,18 @@ fn xwin_prep_is_linux_host_only() {
     );
     assert!(!should_prepare_xwin_for_target("x86_64-unknown-linux-musl"));
 
-    std::env::set_var(USE_LEGACY_XWIN_ENV_VAR, "1");
-    assert!(!should_prepare_xwin_for_target("x86_64-pc-windows-msvc"));
-
+    // The removed toggle must stay removed: setting it changes nothing.
+    let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let prev = std::env::var_os("SOLDR_USE_LEGACY_XWIN");
+    std::env::set_var("SOLDR_USE_LEGACY_XWIN", "1");
+    assert_eq!(
+        should_prepare_xwin_for_target("x86_64-pc-windows-msvc"),
+        crate::platform::host::facts::os() == HostOs::Linux,
+        "SOLDR_USE_LEGACY_XWIN must no longer suppress blessed MSVC prep"
+    );
     match prev {
-        Some(v) => std::env::set_var(USE_LEGACY_XWIN_ENV_VAR, v),
-        None => std::env::remove_var(USE_LEGACY_XWIN_ENV_VAR),
+        Some(v) => std::env::set_var("SOLDR_USE_LEGACY_XWIN", v),
+        None => std::env::remove_var("SOLDR_USE_LEGACY_XWIN"),
     }
 }
 
@@ -63,11 +46,9 @@ fn native_windows_msvc_gets_no_xwin_prep() {
         return;
     }
     let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    let prev_xwin = std::env::var_os(USE_LEGACY_XWIN_ENV_VAR);
     let prev_sys = std::env::var_os(USE_LEGACY_VENDORED_SYS_ENV_VAR);
     let prev_cmake = std::env::var_os(USE_SYSTEM_CMAKE_ENV_VAR);
 
-    std::env::remove_var(USE_LEGACY_XWIN_ENV_VAR);
     std::env::set_var(USE_LEGACY_VENDORED_SYS_ENV_VAR, "1");
     std::env::set_var(USE_SYSTEM_CMAKE_ENV_VAR, "1");
 
@@ -82,10 +63,6 @@ fn native_windows_msvc_gets_no_xwin_prep() {
         .unwrap()
         .block_on(prepare(&paths, target));
 
-    match prev_xwin {
-        Some(v) => std::env::set_var(USE_LEGACY_XWIN_ENV_VAR, v),
-        None => std::env::remove_var(USE_LEGACY_XWIN_ENV_VAR),
-    }
     match prev_sys {
         Some(v) => std::env::set_var(USE_LEGACY_VENDORED_SYS_ENV_VAR, v),
         None => std::env::remove_var(USE_LEGACY_VENDORED_SYS_ENV_VAR),

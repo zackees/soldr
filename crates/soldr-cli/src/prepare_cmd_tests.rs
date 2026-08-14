@@ -249,7 +249,6 @@ fn darwin_prepare_exports_blessed_env_for_deferred_cook() {
     let _sdkroot = EnvVarGuard::set("SDKROOT", &sdk);
     let _llvm = EnvVarGuard::set("SOLDR_LLVM_DIR", &llvm_bin);
     let _dsymutil = EnvVarGuard::set("SOLDR_DSYMUTIL", &fake_dsymutil);
-    let _legacy_zig = EnvVarGuard::remove(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR);
     let _legacy_sys = EnvVarGuard::set(crate::blessed_build::USE_LEGACY_VENDORED_SYS_ENV_VAR, "1");
     let _system_cmake = EnvVarGuard::set(crate::blessed_build::USE_SYSTEM_CMAKE_ENV_VAR, "1");
 
