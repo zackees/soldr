@@ -1,3 +1,5 @@
+experimental = ["wrapper-scripts"]
+
 # Per-test timeouts live here now (soldr#2493 follow-up).
 #
 # They used to live in `timed_test!`, a macro that ran each body on a worker
@@ -15,11 +17,13 @@
 #      120s test that was only 60s in and had done nothing wrong.
 #
 # nextest runs each test in its own process, so a timeout kills exactly one
-# test, its captured output survives, and the run summary names it. Note what
-# nextest does NOT do: there is no thread-stack dump on timeout. On Unix it
-# sends SIGTERM, waits `grace-period`, then SIGKILL; on Windows it kills the
-# job object with no grace window. The SIGTERM window is the blessed hook if
-# stack dumps are wanted later.
+# test and the run summary names it. On Unix, the wrapper below catches
+# nextest's SIGTERM, terminates its child process group, and drains both
+# captured pipes to EOF before returning. Linux also dumps the test's threads;
+# other Unix hosts currently perform termination and draining only. The
+# explicit grace period bounds that diagnostic work before nextest escalates
+# to SIGKILL. Windows nextest timeouts kill the job object immediately and
+# cannot run a graceful diagnostic hook.
 #
 # `period` x `terminate-after` is the budget: 60s x 2 = 120s, which is exactly
 # the old `DEFAULT_TEST_TIMEOUT`. Tests that declared a *shorter* budget are
@@ -27,25 +31,34 @@
 # limits, and 162 per-test entries would be noise. Only the 12 tests that
 # declared MORE than the default get one, below.
 [profile.default]
-slow-timeout = { period = "60s", terminate-after = 2 }
+slow-timeout = { period = "60s", terminate-after = 2, grace-period = "30s" }
+
+[scripts.wrapper.timeout-diagnostics]
+command = { command-line = ".github/scripts/nextest_timeout_wrapper.py", relative-to = "workspace-root" }
+target-runner = "within-wrapper"
+
+[[profile.default.scripts]]
+filter = "all()"
+platform = { host = "cfg(unix)" }
+run-wrapper = "timeout-diagnostics"
 
 # 300s: real-rustc end-to-end compiles through the session bridge, plus the
 # Windows long-path publication cases.
 [[profile.default.overrides]]
 filter = 'test(=session_endpoint_serves_real_compile_via_mux) + test(=session_compile_e2e_real_rustc_through_the_bridge) + test(=session_client_disconnect_mid_compile_aborts_without_reply) + test(=windows_long_path_publication_survives_fresh_worktree_reuse) + test(=windows_deep_cache_root_keeps_staged_linker_path_short) + test(=env_dedup_micro_benchmark)'
-slow-timeout = { period = "60s", terminate-after = 5 }
+slow-timeout = { period = "60s", terminate-after = 5, grace-period = "30s" }
 
 # 240s: daemon single-instance races, which spin up two daemons and wait for
 # one to lose.
 [[profile.default.overrides]]
 filter = 'test(=two_daemons_against_one_root_never_coexist) + test(=losing_daemon_leaves_the_state_db_openable) + test(=no_spawn_guard_leaves_no_daemon_runtime_copy)'
-slow-timeout = { period = "60s", terminate-after = 4 }
+slow-timeout = { period = "60s", terminate-after = 4, grace-period = "30s" }
 
 # 180s: toolchain-preparation memo invalidation and rustup passthrough, both
 # of which shell out to a real toolchain.
 [[profile.default.overrides]]
 filter = 'test(=cargo_front_door_invalidates_toolchain_preparation_memo) + test(=rustup_passthrough_forwards_args_unchanged_for_unscoped_subcommands) + test(=prod_dev_daemons_and_manual_orphan_maintenance_are_isolated)'
-slow-timeout = { period = "60s", terminate-after = 3 }
+slow-timeout = { period = "60s", terminate-after = 3, grace-period = "30s" }
 
 # Inherits `[profile.default]`, so the timeouts above apply here too. That is
 # required, not incidental: with `timed_test!` gone, this profile would
