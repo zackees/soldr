@@ -13,7 +13,21 @@ WRAPPER = REPO_ROOT / ".github" / "scripts" / "nextest_timeout_wrapper.py"
 CONFIG = REPO_ROOT / ".config" / "nextest.toml"
 
 
-@pytest.mark.skipif(os.name != "posix", reason="Nextest has no Windows timeout grace hook")
+def _start_wrapper(child: str, env: dict[str, str]) -> subprocess.Popen[str]:
+    """Return a live wrapper so the test can inject SIGTERM before waiting."""
+
+    return subprocess.Popen(  # pylint: disable=consider-using-with
+        [sys.executable, str(WRAPPER), sys.executable, "-c", child],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason="Nextest has no Windows timeout grace hook"
+)
 def test_sigterm_dumps_threads_and_drains_child_output() -> None:
     child = """
 import signal
@@ -33,13 +47,7 @@ while True:
     env = os.environ.copy()
     env["SOLDR_NEXTEST_DISABLE_DEBUGGER"] = "1"
     env["SOLDR_NEXTEST_CHILD_EXIT_GRACE_SECS"] = "0.5"
-    process = subprocess.Popen(
-        [sys.executable, str(WRAPPER), sys.executable, "-c", child],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        env=env,
-    )
+    process = _start_wrapper(child, env)
     assert process.stdout is not None
     before_timeout = process.stdout.readline()
     process.send_signal(signal.SIGTERM)
@@ -58,7 +66,9 @@ while True:
         assert "no platform thread dumper is available" in stderr
 
 
-@pytest.mark.skipif(os.name != "posix", reason="Nextest has no Windows timeout grace hook")
+@pytest.mark.skipif(
+    os.name != "posix", reason="Nextest has no Windows timeout grace hook"
+)
 def test_timeout_kills_descendant_that_retains_output_pipes() -> None:
     child = """
 import signal
@@ -88,13 +98,7 @@ while True:
 """
     env = os.environ.copy()
     env["SOLDR_NEXTEST_DISABLE_DEBUGGER"] = "1"
-    process = subprocess.Popen(
-        [sys.executable, str(WRAPPER), sys.executable, "-c", child],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        env=env,
-    )
+    process = _start_wrapper(child, env)
     assert process.stdout is not None
     ready_lines = [process.stdout.readline(), process.stdout.readline()]
     assert any("direct child ready" in line for line in ready_lines)
@@ -111,7 +115,9 @@ while True:
     assert "nextest timeout: stdout/stderr drained" in stderr
 
 
-@pytest.mark.skipif(os.name != "posix", reason="Nextest has no Windows timeout grace hook")
+@pytest.mark.skipif(
+    os.name != "posix", reason="Nextest has no Windows timeout grace hook"
+)
 def test_signal_during_drain_kills_descendant_after_leader_already_exited() -> None:
     child = """
 import signal
@@ -133,17 +139,13 @@ print("direct child exiting normally", flush=True)
     env = os.environ.copy()
     env["SOLDR_NEXTEST_DISABLE_DEBUGGER"] = "1"
     env["SOLDR_NEXTEST_CHILD_EXIT_GRACE_SECS"] = "0.5"
-    process = subprocess.Popen(
-        [sys.executable, str(WRAPPER), sys.executable, "-c", child],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        env=env,
-    )
+    process = _start_wrapper(child, env)
     assert process.stdout is not None
     ready_lines = [process.stdout.readline(), process.stdout.readline()]
     assert any("direct child exiting normally" in line for line in ready_lines)
-    assert any("orphan grandchild retained output pipes" in line for line in ready_lines)
+    assert any(
+        "orphan grandchild retained output pipes" in line for line in ready_lines
+    )
     process.send_signal(signal.SIGTERM)
     stdout_tail, stderr = process.communicate(timeout=10)
     stdout = "".join(ready_lines) + stdout_tail
