@@ -99,7 +99,11 @@ async fn provisioned_maturin_fetch_result(
 ) -> Result<crate::fetch::FetchResult, SoldrError> {
     let paths = SoldrPaths::new()?;
     let cached = crate::fetch::uv_env::env_is_complete(
-        &crate::fetch::uv_env::env_dir_for(&paths, "maturin", version),
+        &crate::fetch::uv_env::env_dir_for(
+            &paths,
+            crate::fetch::uv_env::MATURIN_PYPI_PACKAGE,
+            version,
+        ),
         "maturin",
     );
     let binary_path = crate::fetch::uv_env::provision_maturin_via_uv(&paths, version).await?;
@@ -108,6 +112,22 @@ async fn provisioned_maturin_fetch_result(
         version: version.to_string(),
         cached,
     })
+}
+
+const MATURIN_USE_XWIN_ENV_VAR: &str = "MATURIN_USE_XWIN";
+
+fn maturin_xwin_policy(
+    target: &str,
+    explicit_maturin: Option<&str>,
+) -> Option<&'static str> {
+    if explicit_maturin.is_some()
+        || !target
+            .to_ascii_lowercase()
+            .ends_with("-pc-windows-msvc")
+    {
+        return None;
+    }
+    Some("0")
 }
 
 fn report_and_exit(error: SoldrError) -> i32 {

@@ -37,7 +37,9 @@
     "manifest_block": "cargo_chef"
   },
   "maturin": {
-    "managed_version": "1.14.1",
+    "managed_version": "1.14.1.post1",
+    "pypi_package": "soldr-maturin",
+    "repository": "zackees/soldr-maturin",
     "required_binaries": [
       "maturin"
     ],

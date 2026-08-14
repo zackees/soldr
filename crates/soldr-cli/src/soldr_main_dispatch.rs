@@ -780,6 +780,13 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 _maturin_build_lease = acquire_maturin_build_lease(&paths, tool_args)?;
                 let maturin_target =
                     crate::pyo3_detect::resolve_build_target(tool_args, &workspace_root);
+                if maturin_build {
+                    let explicit_maturin =
+                        std::env::var_os(MATURIN_USE_XWIN_ENV_VAR).map(|_| "set");
+                    if let Some(policy) = maturin_xwin_policy(&maturin_target, explicit_maturin) {
+                        command.env(MATURIN_USE_XWIN_ENV_VAR, policy);
+                    }
+                }
                 let is_windows_host = crate::platform::host::facts::os()
                     == crate::platform::host::facts::HostOs::Windows;
                 if maturin_build

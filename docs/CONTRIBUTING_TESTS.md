@@ -41,6 +41,17 @@ timeouts come from cargo-nextest (`.config/nextest.toml`), and the workspace
 guard in `crates/soldr-cli/tests/no_timed_test_guard.rs` keeps the removed
 `timed_test!` watchdog from returning (soldr#2493).
 
+On Unix hosts, Nextest runs each test through
+`.github/scripts/nextest_timeout_wrapper.py`. When Nextest's per-test timeout
+sends SIGTERM, the wrapper terminates the isolated child process group and
+drains stdout and stderr to EOF before returning. On Linux it first dumps the
+child thread stacks (or `/proc` thread state when a debugger is unavailable).
+The configured 30-second Nextest grace period bounds that diagnostic shutdown.
+Other Unix hosts still get termination and output draining but currently lack
+a thread dumper. Windows Nextest timeouts kill their job object immediately,
+so the graceful hook cannot run there; output captured before termination is
+still retained by Nextest.
+
 ## How native tests reach CI
 
 Native behavioral tests do not run in the Ubuntu lint job. The existing target
