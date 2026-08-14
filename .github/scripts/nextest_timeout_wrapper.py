@@ -81,7 +81,9 @@ def _proc_thread_dump(pid: int) -> None:
 
     task_root = Path("/proc") / str(pid) / "task"
     if not task_root.is_dir():
-        _write_stderr(f"nextest timeout: /proc thread state unavailable for pid {pid}\n")
+        _write_stderr(
+            f"nextest timeout: /proc thread state unavailable for pid {pid}\n"
+        )
         return
     for task in sorted(task_root.iterdir(), key=lambda path: int(path.name)):
         tid = task.name
@@ -108,7 +110,11 @@ def dump_threads(pid: int) -> None:
     """Dump userspace stacks when possible, then fall back to thread state."""
 
     _write_stderr(f"\n=== nextest timeout: thread dump for pid {pid} ===\n")
-    debugger = None if os.environ.get("SOLDR_NEXTEST_DISABLE_DEBUGGER") else shutil.which("gdb")
+    debugger = (
+        None
+        if os.environ.get("SOLDR_NEXTEST_DISABLE_DEBUGGER")
+        else shutil.which("gdb")
+    )
     if debugger and sys.platform.startswith("linux"):
         try:
             completed = subprocess.run(
@@ -130,13 +136,17 @@ def dump_threads(pid: int) -> None:
                 timeout=DIAGNOSTIC_TIMEOUT_SECS,
             )
             if completed.returncode == 0:
-                _write_stderr("=== nextest timeout: debugger thread dump complete ===\n")
+                _write_stderr(
+                    "=== nextest timeout: debugger thread dump complete ===\n"
+                )
                 return
             _write_stderr(
                 f"nextest timeout: gdb exited {completed.returncode}; using /proc fallback\n"
             )
         except (OSError, subprocess.TimeoutExpired) as error:
-            _write_stderr(f"nextest timeout: gdb failed ({error}); using /proc fallback\n")
+            _write_stderr(
+                f"nextest timeout: gdb failed ({error}); using /proc fallback\n"
+            )
     if sys.platform.startswith("linux"):
         _proc_thread_dump(pid)
     else:
@@ -172,6 +182,12 @@ def run(command: list[str]) -> int:
     elif os.name == "nt":
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
 
+    # This dedicated wrapper is single-threaded when Popen runs; pump threads
+    # start only after the child exists, avoiding preexec_fn's thread deadlock
+    # hazard. Linux needs that hook to install setsid/PDEATHSIG/ptrace policy.
+    # Waiting and pipe closure are explicitly supervised below, so ownership
+    # intentionally spans the whole run instead of a Popen context block.
+    # pylint: disable-next=consider-using-with,subprocess-popen-preexec-fn
     child = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
@@ -181,8 +197,12 @@ def run(command: list[str]) -> int:
     )
     assert child.stdout is not None and child.stderr is not None
     pumps = [
-        threading.Thread(target=_pump, args=(child.stdout, sys.stdout.buffer), daemon=True),
-        threading.Thread(target=_pump, args=(child.stderr, sys.stderr.buffer), daemon=True),
+        threading.Thread(
+            target=_pump, args=(child.stdout, sys.stdout.buffer), daemon=True
+        ),
+        threading.Thread(
+            target=_pump, args=(child.stderr, sys.stderr.buffer), daemon=True
+        ),
     ]
     for pump in pumps:
         pump.start()
@@ -237,7 +257,9 @@ def run(command: list[str]) -> int:
         if any(pump.is_alive() for pump in pumps):
             child.stdout.close()
             child.stderr.close()
-            _write_stderr("=== nextest timeout: output drain incomplete after SIGKILL ===\n")
+            _write_stderr(
+                "=== nextest timeout: output drain incomplete after SIGKILL ===\n"
+            )
         else:
             _write_stderr("=== nextest timeout: stdout/stderr drained ===\n")
     return returncode
