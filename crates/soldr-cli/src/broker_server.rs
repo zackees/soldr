@@ -29,11 +29,22 @@ pub(crate) fn broker_image_instance_id() -> io::Result<String> {
     let cache = crate::daemon::service_definition::broker_owned_paths()
         .cache
         .join("broker-image-hash");
-    let digest = crate::daemon::image_hash::cached_blake3_hex(&cache, &executable)?;
+    let digest = broker_image_digest(&cache, &executable)?;
     Ok(format_broker_instance_id(
         env!("CARGO_PKG_VERSION"),
         &digest,
     ))
+}
+
+fn broker_image_digest(cache: &std::path::Path, executable: &std::path::Path) -> io::Result<String> {
+    #[cfg(target_os = "linux")]
+    if let Some(build_id) = running_process::current_executable_build_id() {
+        // GNU build IDs identify the linked image and are already mapped into
+        // this process. Hash the short note to retain the existing 64-hex
+        // instance-id shape without reading a 100+ MiB no-opt executable.
+        return Ok(zccache::hash::hash_bytes(&build_id).to_hex().to_string());
+    }
+    crate::daemon::image_hash::cached_blake3_hex(cache, executable)
 }
 
 fn broker_server_instance_id() -> io::Result<String> {
