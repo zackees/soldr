@@ -77,6 +77,27 @@ fn maturin_build_lease_defers_gc_and_survives_abrupt_exit() {
 use crate::EnvVarGuard;
 
 #[test]
+fn maturin_xwin_policy_prefers_blessed_toolchain_unless_overridden() {
+    assert_eq!(
+        maturin_xwin_policy("x86_64-pc-windows-msvc", None, None),
+        Some("0")
+    );
+    assert_eq!(
+        maturin_xwin_policy("aarch64-pc-windows-msvc", None, Some("1")),
+        Some("1")
+    );
+    assert_eq!(
+        maturin_xwin_policy("x86_64-pc-windows-msvc", Some("1"), None),
+        None,
+        "an explicit MATURIN_USE_XWIN value must remain caller-owned"
+    );
+    assert_eq!(
+        maturin_xwin_policy("x86_64-unknown-linux-gnu", None, None),
+        None
+    );
+}
+
+#[test]
 fn prepend_path_dirs_preserves_declared_priority() {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("tempdir");

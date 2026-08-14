@@ -29,6 +29,7 @@ members = [
 exclude = [
     "_vender/zccache",
     "_vender/running-process",
+    ".extern-repos/soldr-maturin",
 ]
 
 [workspace.package]
@@ -196,9 +197,10 @@ debug = false
 # profile anyway; the managed-zccache debug-symbol path is a
 # separate sibling file (`.pdb` / `.dwp` / `.dSYM`).
 strip = "symbols"
-# Cross-crate inlining + dead-code elimination. `thin` is the
-# sweet spot — meaningful size win with manageable compile-time
-# cost (~10–30% slower clean release builds; incremental is fine).
+# Cross-crate inlining + dead-code elimination. Soldr is a large product,
+# and full/fat LTO has excessive peak-memory requirements for our CI builders.
+# Thin LTO is the practical release-quality compromise: it preserves most of
+# the optimization and size benefit while keeping CI compilation feasible.
 lto = "thin"
 # Single codegen unit unlocks the last bit of optimization. Slows
 # clean builds further; release-only, so acceptable.

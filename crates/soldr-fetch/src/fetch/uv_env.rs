@@ -35,6 +35,9 @@ use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
 /// Selects how `soldr maturin` acquires the maturin executable.
 pub const MATURIN_PROVISIONER_ENV_VAR: &str = "SOLDR_MATURIN_PROVISIONER";
 
+/// PyPI distribution that provides Soldr's managed `maturin` executable.
+pub const MATURIN_PYPI_PACKAGE: &str = super::MANAGED_MATURIN_PYPI_PACKAGE;
+
 /// Python version the isolated envs are created with. uv downloads
 /// its managed CPython on demand when the host has none — pinned so
 /// the envs are reproducible across machines.
@@ -115,7 +118,7 @@ pub async fn provision_maturin_via_uv(
     paths: &SoldrPaths,
     version: &str,
 ) -> Result<PathBuf, SoldrError> {
-    provision_pypi_tool_via_uv(paths, "maturin", version, "maturin").await
+    provision_pypi_tool_via_uv(paths, MATURIN_PYPI_PACKAGE, version, "maturin").await
 }
 
 /// Provision the PyPI `ninja` wheel (pinned
@@ -269,8 +272,9 @@ mod tests {
     fn env_layout_is_versioned_and_platform_correct() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
-        let dir = env_dir_for(&paths, "maturin", "1.14.1");
-        assert!(dir.ends_with("maturin-uv-1.14.1"));
+        assert_eq!(MATURIN_PYPI_PACKAGE, "soldr-maturin");
+        let dir = env_dir_for(&paths, MATURIN_PYPI_PACKAGE, "1.14.1.post1");
+        assert!(dir.ends_with("soldr-maturin-uv-1.14.1.post1"));
         let ninja_dir = env_dir_for(&paths, "ninja", NINJA_PYPI_FALLBACK_VERSION);
         assert!(ninja_dir.ends_with("ninja-uv-1.13.0"));
 

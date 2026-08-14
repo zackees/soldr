@@ -22,9 +22,7 @@ def _step_block(workflow: str, step_name: str) -> str:
     marker = f"      - name: {step_name}\n"
     assert workflow.count(marker) == 1, f"expected exactly one {step_name!r} step"
     start = workflow.index(marker)
-    end_match = re.search(
-        r"(?m)^      - (?:name: |uses: |run: )", workflow[start + len(marker) :]
-    )
+    end_match = re.search(r"(?m)^      - (?:name: |uses: |run: )", workflow[start + len(marker) :])
     end = start + len(marker) + end_match.start() if end_match else len(workflow)
     return workflow[start:end]
 
@@ -72,9 +70,7 @@ def test_windows_behavior_contract_reaches_native_target_runners() -> None:
         assert required in archive
     command_marker = "\n          soldr cargo nextest archive \\\n"
     archive_command = archive[archive.index(command_marker) + 1 :]
-    archive_command = archive_command[
-        : archive_command.index('\n          ls -la "$archive"')
-    ]
+    archive_command = archive_command[: archive_command.index('\n          ls -la "$archive"')]
     _assert_no_narrowing(archive_command)
 
     upload = _step_block(cross, "Upload artifact")
@@ -148,9 +144,7 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
     cache_roundtrip = (
         REPO_ROOT / ".github" / "scripts" / "windows_msvc_cache_roundtrip.py"
     ).read_text(encoding="utf-8")
-    nextest_config = (REPO_ROOT / ".config" / "nextest.toml").read_text(
-        encoding="utf-8"
-    )
+    nextest_config = (REPO_ROOT / ".config" / "nextest.toml").read_text(encoding="utf-8")
     baseline = (WORKFLOWS / "baseline-zero-deps.yml").read_text(encoding="utf-8")
     arm_build = _job_block(ci, "e2e-windows-arm64-build", "e2e-windows-arm64")
     arm_run = _job_block(ci, "e2e-windows-arm64")
@@ -167,8 +161,7 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
     assert "--phase build" in cross
     assert "--phase archive" in cross
     assert (
-        "--no-cache"
-        not in cross[cross.index("- name: Cross-build soldr (ci-nextest profile)") :]
+        "--no-cache" not in cross[cross.index("- name: Cross-build soldr (ci-nextest profile)") :]
     )
     assert "cache: ${{ (contains(inputs.target, 'pc-windows-msvc')" in cross
     assert "expected binary missing: $binary; searching target tree" in cross
@@ -179,8 +172,7 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
     assert (
         "              soldr --no-cache cargo xwin build "
         "--target x86_64-pc-windows-msvc\n"
-        "              ls -l target/x86_64-pc-windows-msvc/debug/hellowin.exe"
-        in baseline
+        "              ls -l target/x86_64-pc-windows-msvc/debug/hellowin.exe" in baseline
     )
     for first_party_package in WORKSPACE_CRATES:
         assert f"-p {first_party_package}" in cross
@@ -189,10 +181,7 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
     assert '"$SOLDR_BIN" --version' not in target_run
     assert '"$NEXTEST_BIN" nextest run' in target_run
     assert 'echo "SOLDR_BIN=$soldr_bin"' in target_run
-    assert (
-        "case '${{ inputs.target }}' in *-pc-windows-msvc) suffix=\".exe\""
-        in target_run
-    )
+    assert "case '${{ inputs.target }}' in *-pc-windows-msvc) suffix=\".exe\"" in target_run
     assert "artifact/package/soldr$suffix" in target_run
     assert "artifact/package/soldr-daemon$suffix" in target_run
     assert 'echo "SOLDR_INTERNAL_DAEMON_EXE=$daemon_bin"' in target_run
@@ -284,9 +273,7 @@ def test_archived_source_tests_use_only_runtime_workspace_resolution() -> None:
         body = path.read_text(encoding="utf-8")
         if any(pattern in body for pattern in forbidden):
             offenders.append(path.relative_to(REPO_ROOT).as_posix())
-    assert not offenders, "workflows must not hardcode these patterns: " + ", ".join(
-        offenders
-    )
+    assert not offenders, "workflows must not hardcode these patterns: " + ", ".join(offenders)
 
 
 def test_fast_build_only_skips_windows_e2e_for_low_risk_changes() -> None:
@@ -313,10 +300,7 @@ def test_cross_workflow_bootstraps_toolchain_dependencies_through_soldr() -> Non
     cross = (WORKFLOWS / "_ci-cross-build-linux.yml").read_text(encoding="utf-8")
 
     assert "cross-targets:" not in cross
-    assert (
-        'soldr prepare --target "${{ inputs.target }}" --github-env "$GITHUB_ENV"'
-        in cross
-    )
+    assert 'soldr prepare --target "${{ inputs.target }}" --github-env "$GITHUB_ENV"' in cross
     assert "soldr --no-cache cargo build --profile ci-bootstrap" in cross
     for unmanaged_installer in [
         "sudo apt-get",
@@ -337,9 +321,9 @@ def test_catalogue_download_consumers_require_sha256_metadata() -> None:
     fetch = (REPO_ROOT / ".github" / "scripts" / "fetch_or_build_tool.sh").read_text(
         encoding="utf-8"
     )
-    downloader = (
-        REPO_ROOT / ".github" / "scripts" / "download_catalogued_asset.py"
-    ).read_text(encoding="utf-8")
+    downloader = (REPO_ROOT / ".github" / "scripts" / "download_catalogued_asset.py").read_text(
+        encoding="utf-8"
+    )
 
     assert cross.count("--json") >= 2
     assert cross.count("download_large_asset.sh") >= 2
@@ -369,9 +353,7 @@ def test_linux_zig_cross_lanes_use_current_checkout_soldr_bootstrap() -> None:
         assert "needs: e2e-cross-bootstrap-soldr" in block
         assert "bootstrap_artifact_name: soldr-ci-bootstrap-linux-gnu" in block
 
-    download = cross[
-        cross.index("      - name: Download shared bootstrap soldr artifact") :
-    ]
+    download = cross[cross.index("      - name: Download shared bootstrap soldr artifact") :]
     download = download[: download.index("      - name:", 10)]
     assert "inputs.bootstrap_artifact_name != ''" in download
     assert "contains(inputs.target" not in download
@@ -401,9 +383,7 @@ def test_pep517_platform_smokes_run_on_pull_requests() -> None:
 
 def test_manual_cross_compile_workflows_use_blessed_supported_targets() -> None:
     build_all = (WORKFLOWS / "build-all-from-linux.yml").read_text(encoding="utf-8")
-    cross_all = (WORKFLOWS / "cross-compile-all-targets.yml").read_text(
-        encoding="utf-8"
-    )
+    cross_all = (WORKFLOWS / "cross-compile-all-targets.yml").read_text(encoding="utf-8")
 
     for target in [
         "x86_64-pc-windows-msvc",
@@ -450,9 +430,7 @@ def test_production_cross_workflows_do_not_select_legacy_backends() -> None:
             line for line in body.splitlines() if not line.lstrip().startswith("#")
         )
         for token in forbidden:
-            assert (
-                token not in executable
-            ), f"{path.relative_to(REPO_ROOT)} selects {token!r}"
+            assert token not in executable, f"{path.relative_to(REPO_ROOT)} selects {token!r}"
 
     cross_all_executable = "\n".join(
         line
@@ -482,35 +460,29 @@ def test_production_cross_workflows_do_not_select_legacy_backends() -> None:
 
 def test_normal_gnu_lifecycle_has_no_zig_fallback() -> None:
     """#2237: GNU must stay catalogue-backed even while musl retains #2244's fallback."""
-    lifecycle = (
-        REPO_ROOT / "crates" / "soldr-cli" / "src" / "target_lifecycle.rs"
-    ).read_text(encoding="utf-8")
-    legacy_musl = (
-        REPO_ROOT / "crates" / "soldr-cli" / "src" / "linux_cross.rs"
-    ).read_text(encoding="utf-8")
+    lifecycle = (REPO_ROOT / "crates" / "soldr-cli" / "src" / "target_lifecycle.rs").read_text(
+        encoding="utf-8"
+    )
+    legacy_musl = (REPO_ROOT / "crates" / "soldr-cli" / "src" / "linux_cross.rs").read_text(
+        encoding="utf-8"
+    )
     prepare = (REPO_ROOT / "crates" / "soldr-cli" / "src" / "prepare_cmd.rs").read_text(
         encoding="utf-8"
     )
-    prepare_tests = (
-        REPO_ROOT / "crates" / "soldr-cli" / "src" / "prepare_cmd_tests.rs"
-    ).read_text(encoding="utf-8")
+    prepare_tests = (REPO_ROOT / "crates" / "soldr-cli" / "src" / "prepare_cmd_tests.rs").read_text(
+        encoding="utf-8"
+    )
     cross = (WORKFLOWS / "_ci-cross-build-linux.yml").read_text(encoding="utf-8")
 
     assert "no catalogue-backed GNU/Linux toolchain is available" in lifecycle
     assert "abi == Some(TargetAbi::Musl)" in lifecycle
     assert not re.search(r'"(?:x86_64|aarch64)-unknown-linux-gnu"\s*=>', legacy_musl)
-    assert (
-        "GNU Linux uses the catalogue-backed compiler/sysroot lifecycle" in legacy_musl
-    )
+    assert "GNU Linux uses the catalogue-backed compiler/sysroot lifecycle" in legacy_musl
     assert "GNU/Linux toolchain" in prepare
     assert "GNU uses the catalogue-backed toolchain" in prepare_tests
 
-    executable = "\n".join(
-        line for line in cross.splitlines() if not line.lstrip().startswith("#")
-    )
-    assert not re.search(
-        r"(?:soldr\s+)?cargo\s+zigbuild\b.*unknown-linux-gnu", executable
-    )
+    executable = "\n".join(line for line in cross.splitlines() if not line.lstrip().startswith("#"))
+    assert not re.search(r"(?:soldr\s+)?cargo\s+zigbuild\b.*unknown-linux-gnu", executable)
     assert "soldr build + catalogue-backed GCC" in cross
 
 
@@ -532,9 +504,7 @@ def test_all_miss_cross_builds_bound_compile_concurrency() -> None:
 def test_gnu_catalogue_fixture_is_part_of_both_gnu_ci_lanes() -> None:
     """#2236: CI must execute the mixed-language catalogue proof, not just compile Soldr."""
     cross = (WORKFLOWS / "_ci-cross-build-linux.yml").read_text(encoding="utf-8")
-    proof = (REPO_ROOT / ".github/scripts/gnu_linux_toolchain_e2e.py").read_text(
-        encoding="utf-8"
-    )
+    proof = (REPO_ROOT / ".github/scripts/gnu_linux_toolchain_e2e.py").read_text(encoding="utf-8")
 
     assert "Prove catalogue GNU lifecycle without Zig" in cross
     assert "contains(inputs.target, 'unknown-linux-gnu')" in cross
@@ -564,9 +534,7 @@ def test_mac_x64_distribution_uses_pinned_setup_soldr_on_intel() -> None:
     release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
     install = (REPO_ROOT / "scripts" / "install.js").read_text(encoding="utf-8")
     npm_docs = (REPO_ROOT / "docs" / "NPM_PUBLISHING.md").read_text(encoding="utf-8")
-    verification_docs = (REPO_ROOT / "docs" / "RELEASE_VERIFICATION.md").read_text(
-        encoding="utf-8"
-    )
+    verification_docs = (REPO_ROOT / "docs" / "RELEASE_VERIFICATION.md").read_text(encoding="utf-8")
 
     mac_build = _job_block(ci, "e2e-macos-x64-build", "e2e-macos-x64")
     assert "if: false" not in mac_build
@@ -581,9 +549,7 @@ def test_mac_x64_distribution_uses_pinned_setup_soldr_on_intel() -> None:
     )
     assert '"x86_64-apple-darwin": {"os": "darwin", "arch": "x86_64"}' in release
     assert 'prepare --target "$target" --github-env "$GITHUB_ENV"' in release
-    assert (
-        "uses: zackees/setup-soldr@40320d277ba4946e38d4b3c02e6c7a15a29c3f3f" in release
-    )
+    assert "uses: zackees/setup-soldr@40320d277ba4946e38d4b3c02e6c7a15a29c3f3f" in release
     assert "version: 0.8.44" in release
     assert "cross-targets: ${{ matrix.setup_target }}" in release
     assert "target-wheel-hook" in release
@@ -594,9 +560,7 @@ def test_mac_x64_distribution_uses_pinned_setup_soldr_on_intel() -> None:
 
     sdk_step = _step_block(release, "Restore the native macOS SDK root")
     assert "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" in sdk_step
-    native_build = _step_block(
-        release, "Build native macOS release binary through pinned Soldr"
-    )
+    native_build = _step_block(release, "Build native macOS release binary through pinned Soldr")
     assert "if: contains(matrix.target, 'apple-darwin')" in native_build
     assert ".github/scripts/native_release_build.py binary" in native_build
     blessed_build = _step_block(release, "Build release binary (soldr-driven)")
@@ -627,9 +591,7 @@ def test_release_wheels_use_setup_soldr_target_hooks_without_zig_or_xwin() -> No
     release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
 
     assert '"$driver" prepare --target "$target" --github-env "$GITHUB_ENV"' in release
-    assert (
-        "uses: zackees/setup-soldr@40320d277ba4946e38d4b3c02e6c7a15a29c3f3f" in release
-    )
+    assert "uses: zackees/setup-soldr@40320d277ba4946e38d4b3c02e6c7a15a29c3f3f" in release
     assert "version: 0.8.44" in release
     assert "cross-targets: ${{ matrix.setup_target }}" in release
     assert "wheel_hook='${{ steps.setup_soldr.outputs.target-wheel-hook }}'" in release
@@ -651,28 +613,27 @@ def test_release_wheels_use_setup_soldr_target_hooks_without_zig_or_xwin() -> No
     assert "CC_aarch64_unknown_linux_musl: musl-gcc" in native_arm_musl
     assert ".github/scripts/native_release_build.py binary" in native_arm_musl
 
-    target_hook_wheel = _step_block(
-        release, "Build wheel through setup-soldr target environment"
-    )
-    assert (
-        "if: ${{ !contains(matrix.target, 'unknown-linux-musl') }}" in target_hook_wheel
-    )
+    target_hook_wheel = _step_block(release, "Build wheel through setup-soldr target environment")
+    assert "if: ${{ !contains(matrix.target, 'unknown-linux-musl') }}" in target_hook_wheel
 
     native_arm_wheel = _step_block(release, "Build musl wheel in an explicit uv venv")
     assert "CC_aarch64_unknown_linux_musl: musl-gcc" in native_arm_wheel
     assert ".github/scripts/native_release_build.py musl-wheel" in native_arm_wheel
     assert '--target "${{ matrix.target }}"' in native_arm_wheel
 
-    native_helper = (
-        REPO_ROOT / ".github" / "scripts" / "native_release_build.py"
-    ).read_text(encoding="utf-8")
-    assert '["uv", "venv", "--python", "3.13", str(venv)]' in native_helper
+    native_helper = (REPO_ROOT / ".github" / "scripts" / "native_release_build.py").read_text(
+        encoding="utf-8"
+    )
+    assert '["uv", "venv", "--python", "3.13", "--clear", str(venv)]' in native_helper
+    assert 'MATURIN_CONTRACT["pypi_package"]' in native_helper
+    assert "MATURIN_CONTRACT['managed_version']" in native_helper
+    assert '"--no-binary",' in native_helper
     assert "cargo_via_soldr_rustup.sh" in native_helper
     assert '"musllinux_1_2"' in native_helper
 
-    cargo_bridge = (
-        REPO_ROOT / ".github" / "scripts" / "cargo_via_soldr_rustup.sh"
-    ).read_text(encoding="utf-8")
+    cargo_bridge = (REPO_ROOT / ".github" / "scripts" / "cargo_via_soldr_rustup.sh").read_text(
+        encoding="utf-8"
+    )
     assert (
         'exec "$SOLDR_RELEASE_DRIVER" rustup run "$SOLDR_RELEASE_TOOLCHAIN" cargo "$@"'
         in cargo_bridge
@@ -682,19 +643,12 @@ def test_release_wheels_use_setup_soldr_target_hooks_without_zig_or_xwin() -> No
 def test_release_target_prepare_retries_transient_setup_failure() -> None:
     release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
     setup = _step_block(release, "Install pinned Soldr and prepare target environment")
-    retry = _step_block(
-        release, "Retry target preparation after setup transport failure"
-    )
-    materialize = _step_block(
-        release, "Materialize installed Soldr as release build driver"
-    )
+    retry = _step_block(release, "Retry target preparation after setup transport failure")
+    materialize = _step_block(release, "Materialize installed Soldr as release build driver")
     wheel = _step_block(release, "Build wheel through setup-soldr target environment")
 
     assert "continue-on-error: ${{ matrix.setup_target != '' }}" in setup
-    assert (
-        "if: steps.setup_soldr.outcome == 'failure' && matrix.setup_target != ''"
-        in retry
-    )
+    assert "if: steps.setup_soldr.outcome == 'failure' && matrix.setup_target != ''" in retry
     assert ".github/scripts/prepare_release_target.py" in retry
     assert '--github-env "$GITHUB_ENV"' in retry
     assert "Get-Command soldr -ErrorAction Stop" in materialize
@@ -708,10 +662,7 @@ def test_release_supports_isolated_npm_recovery_from_an_immutable_ref() -> None:
 
     assert "      npm_release_ref:\n" in release
     assert '        type: string\n        default: ""\n' in release
-    assert (
-        "if: github.event_name != 'workflow_dispatch' || "
-        "inputs.npm_release_ref == ''" in prepare
-    )
+    assert "if: github.event_name != 'workflow_dispatch' || inputs.npm_release_ref == ''" in prepare
     assert "github.event_name == 'workflow_dispatch'" in publish_npm
     assert "inputs.npm_release_ref != ''" in publish_npm
     assert "needs.prepare.outputs.should_publish_npm == 'true'" in publish_npm
@@ -736,9 +687,7 @@ def test_windows_wheel_does_not_reuse_archive_executable_output() -> None:
 
     release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
     matrix = release.split("      matrix:\n", 1)[1].split("\n    steps:\n", 1)[0]
-    wheel_step = _step_block(
-        release, "Build wheel through setup-soldr target environment"
-    )
+    wheel_step = _step_block(release, "Build wheel through setup-soldr target environment")
     wheel_smoke = _step_block(release, "Smoke test wheel")
 
     assert "build_driver:" not in matrix

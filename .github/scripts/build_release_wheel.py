@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
-"""Run setup-soldr's PEP 517 hook for one explicit release target.
+"""Build one release wheel with Soldr's source-built Maturin downstream.
 
 setup-soldr prepares the compiler, linker, SDK, and sysroot and advertises a
-generic ``python -m build --wheel`` hook.  The target must be passed as a PEP
-517 config setting so the pinned Soldr backend forwards it to Maturin before
-Maturin's Cargo metadata probe; environment-only linker settings are too late
-and can make a Windows cross-build probe the Linux host with ``lld-link``.
+generic ``python -m build --wheel`` hook. We validate that contract, then
+source-build the pinned ``soldr-maturin`` sdist and invoke its ``maturin``
+executable directly. This bootstraps the downstream even while the release
+driver is an older Soldr that predates the managed-package integration.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
@@ -30,6 +32,14 @@ RELEASE_TARGETS = frozenset(
         "aarch64-pc-windows-msvc",
     }
 )
+CONTRACT_PATH = Path(__file__).resolve().parents[2] / "contracts" / "zccache-runtime.v1.json"
+MATURIN_CONTRACT = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))["maturin"]
+SOLDR_MATURIN_PACKAGE = str(MATURIN_CONTRACT["pypi_package"])
+SOLDR_MATURIN_VERSION = str(MATURIN_CONTRACT["managed_version"])
+SOLDR_MATURIN_REQUIREMENT = f"{SOLDR_MATURIN_PACKAGE}=={SOLDR_MATURIN_VERSION}"
+SOLDR_TOOLCHAIN = "1.95.0"
+SOLDR_MATURIN_VENV = Path("target/soldr-maturin-release-env")
+SOLDR_TOOLCHAIN_SHIMS = Path("target/soldr-maturin-release-shims")
 
 
 def validate_target(target: str) -> None:
@@ -51,7 +61,151 @@ def build_environment(target: str, base: Mapping[str, str]) -> dict[str, str]:
         )
     env["SOLDR_PEP517_PROFILE"] = "release"
     env["SOLDR_RELEASE_CI"] = "1"
+    env.setdefault("CARGO_BUILD_JOBS", "2")
+    env.setdefault("SOLDR_JOBS", "2")
+    if target.endswith("-pc-windows-msvc"):
+        env["MATURIN_USE_XWIN"] = "0"
     return env
+
+
+def soldr_maturin_install_command(python: Path) -> list[str]:
+    """Install the pinned downstream from its sdist without build caching."""
+
+    return [
+        "uv",
+        "pip",
+        "install",
+        "--python",
+        str(python),
+        "--no-cache",
+        "--no-binary",
+        SOLDR_MATURIN_PACKAGE,
+        SOLDR_MATURIN_REQUIREMENT,
+        "patchelf; platform_system == 'Linux'",
+    ]
+
+
+def compatibility_for_target(target: str) -> str:
+    """Return Maturin's release-wheel compatibility policy for *target*."""
+
+    validate_target(target)
+    if target.endswith("-unknown-linux-gnu"):
+        return "manylinux_2_17"
+    if target.endswith("-unknown-linux-musl"):
+        return "musllinux_1_2"
+    return "pypi"
+
+
+def maturin_build_command(maturin: Path, target: str) -> list[str]:
+    """Return the locked direct build command for the release target."""
+
+    return [
+        str(maturin),
+        "build",
+        "--release",
+        "--locked",
+        "--target",
+        target,
+        "--target-dir",
+        "target",
+        "--out",
+        "dist",
+        "--compatibility",
+        compatibility_for_target(target),
+    ]
+
+
+def venv_executable(venv: Path, name: str) -> Path:
+    """Return an executable path inside a platform-native virtualenv."""
+
+    scripts = "Scripts" if os.name == "nt" else "bin"
+    suffix = ".exe" if os.name == "nt" else ""
+    return venv / scripts / f"{name}{suffix}"
+
+
+def resolve_soldr_driver(env: Mapping[str, str]) -> Path:
+    """Resolve the pinned host Soldr that owns source-build toolchain shims."""
+
+    configured = env.get("SOLDR_RELEASE_DRIVER", "").strip()
+    candidate = configured or shutil.which("soldr", path=env.get("PATH"))
+    if not candidate:
+        raise RuntimeError("could not resolve the pinned Soldr release driver")
+    return Path(candidate)
+
+
+def source_build_environment(base: Mapping[str, str]) -> dict[str, str]:
+    """Strip cross-target state before compiling the host Maturin executable."""
+
+    env = dict(base)
+    exact = {
+        "AR",
+        "CARGO_BUILD_TARGET",
+        "CARGO_ENCODED_RUSTFLAGS",
+        "CC",
+        "CFLAGS",
+        "CXX",
+        "CXXFLAGS",
+        "LDFLAGS",
+        "MATURIN_USE_XWIN",
+        "PYO3_CONFIG_FILE",
+        "PYO3_CROSS",
+        "PYO3_CROSS_LIB_DIR",
+        "PYO3_CROSS_PYTHON_VERSION",
+        "RANLIB",
+        "RUSTC",
+        "RUSTC_WRAPPER",
+        "RUSTFLAGS",
+        "_PYTHON_SYSCONFIGDATA_NAME",
+    }
+    for key in list(env):
+        if key in exact or key.startswith(("AR_", "CC_", "CXX_", "RANLIB_")):
+            env.pop(key, None)
+        elif key.startswith("CARGO_TARGET_"):
+            env.pop(key, None)
+    env.update(
+        {
+            "CARGO_BUILD_JOBS": "2",
+            "RUSTUP_TOOLCHAIN": SOLDR_TOOLCHAIN,
+            "SOLDR_JOBS": "2",
+        }
+    )
+    return env
+
+
+def resolve_toolchain_rustc(driver: Path, env: Mapping[str, str]) -> Path:
+    """Resolve rustc through the pinned Soldr without exposing its shim to probes."""
+
+    completed = subprocess.run(
+        [str(driver), "rustup", "which", "rustc"],
+        check=True,
+        env=dict(env),
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    rustc = Path(completed.stdout.strip())
+    if not rustc.is_file():
+        raise RuntimeError(f"Soldr resolved a missing rustc: {rustc}")
+    return rustc
+
+
+def with_toolchain_shims(base: Mapping[str, str], shim_dir: Path, rustc: Path) -> dict[str, str]:
+    """Route Cargo through Soldr while exposing its pinned real rustc to probes."""
+
+    env = dict(base)
+    shim_dir = shim_dir.resolve()
+    rustc = rustc.resolve()
+    env["PATH"] = f"{rustc.parent}{os.pathsep}{shim_dir}{os.pathsep}{env.get('PATH', '')}"
+    suffix = ".exe" if os.name == "nt" else ""
+    env["CARGO"] = str(shim_dir / f"cargo{suffix}")
+    env["RUSTC"] = str(rustc)
+    return env
+
+
+def run(command: Sequence[str], *, env: Mapping[str, str]) -> None:
+    """Run one visible release helper command."""
+
+    print(f"release wheel helper: $ {shlex.join(command)}", flush=True)
+    subprocess.run(command, check=True, env=dict(env))
 
 
 def read_github_env(path: Path) -> dict[str, str]:
@@ -72,17 +226,53 @@ def run_hook(*, target: str, hook: str, base_env: Mapping[str, str]) -> None:
     command = shlex.split(hook)
     if command != ["python", "-m", "build", "--wheel"]:
         raise ValueError(f"unexpected setup-soldr target wheel hook: {hook!r}")
-    # The hook spells the PEP 517 interpreter generically as ``python``.
-    # Resolve it to the uv-provisioned interpreter before the prepared target
-    # PATH is applied; target preparation intentionally owns PATH and may not
-    # retain the frontend environment's shim directory.
-    command[0] = sys.executable
-    command.extend(("--config-setting", f"target={target}"))
-    env = build_environment(target, base_env)
+    target_env = build_environment(target, base_env)
+    driver = resolve_soldr_driver(target_env)
+    host_env = source_build_environment(target_env)
+    run(
+        [
+            str(driver),
+            "toolchain",
+            "link",
+            "--shim-dir",
+            str(SOLDR_TOOLCHAIN_SHIMS),
+            "--force",
+        ],
+        env=host_env,
+    )
+    rustc = resolve_toolchain_rustc(driver, host_env)
+    host_env = with_toolchain_shims(host_env, SOLDR_TOOLCHAIN_SHIMS, rustc)
+    run(
+        [
+            "uv",
+            "venv",
+            "--python",
+            sys.executable,
+            "--clear",
+            str(SOLDR_MATURIN_VENV),
+        ],
+        env=host_env,
+    )
+    python = venv_executable(SOLDR_MATURIN_VENV, "python")
+    run(soldr_maturin_install_command(python), env=host_env)
+    run(
+        [
+            str(python),
+            "-c",
+            (
+                "from importlib.metadata import version; "
+                f"assert version('{SOLDR_MATURIN_PACKAGE}') == "
+                f"'{SOLDR_MATURIN_VERSION}'"
+            ),
+        ],
+        env=host_env,
+    )
+    maturin = venv_executable(SOLDR_MATURIN_VENV, "maturin")
+    target_env = with_toolchain_shims(target_env, SOLDR_TOOLCHAIN_SHIMS, rustc)
     print(f"setup-soldr wheel target: {target}", flush=True)
     print("Soldr PEP 517 profile: release", flush=True)
-    print(f"PEP 517 config setting: target={target}", flush=True)
-    subprocess.run(command, check=True, env=env)
+    print(f"Maturin distribution: {SOLDR_MATURIN_REQUIREMENT} (source-built)", flush=True)
+    run(maturin_build_command(maturin, target), env=target_env)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

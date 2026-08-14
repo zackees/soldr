@@ -21,6 +21,10 @@ from pathlib import Path
 TOOLCHAIN = "1.95.0"
 ARM64_MUSL = "aarch64-unknown-linux-musl"
 MUSL_TARGETS = ("x86_64-unknown-linux-musl", ARM64_MUSL)
+CONTRACT_PATH = Path(__file__).resolve().parents[2] / "contracts" / "zccache-runtime.v1.json"
+MATURIN_CONTRACT = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))["maturin"]
+SOLDR_MATURIN_NO_BINARY = str(MATURIN_CONTRACT["pypi_package"])
+SOLDR_MATURIN_REQUIREMENT = f"{SOLDR_MATURIN_NO_BINARY}=={MATURIN_CONTRACT['managed_version']}"
 
 
 def cargo_command(driver: Path, *args: str) -> list[str]:
@@ -64,9 +68,7 @@ def release_build_environment(base: Mapping[str, str]) -> dict[str, str]:
 
 def build_binary(driver: Path, target: str) -> None:
     env = release_build_environment(os.environ)
-    clean = cargo_command(
-        driver, "clean", "-p", "soldr-cli", "--target", target, "--release"
-    )
+    clean = cargo_command(driver, "clean", "-p", "soldr-cli", "--target", target, "--release")
     print(f"release helper: $ {shlex.join(clean)}", flush=True)
     subprocess.run(
         clean,
@@ -107,6 +109,55 @@ def wheel_environment(
     return env
 
 
+def resolve_toolchain_rustc(driver: Path, base: Mapping[str, str]) -> Path:
+    """Resolve the pinned real rustc for host build-backend probes."""
+
+    completed = subprocess.run(
+        [str(driver), "rustup", "which", "rustc", "--toolchain", TOOLCHAIN],
+        check=True,
+        env=dict(base),
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    rustc = Path(completed.stdout.strip())
+    if not rustc.is_file():
+        raise RuntimeError(f"Soldr resolved a missing rustc: {rustc}")
+    return rustc
+
+
+def host_tool_environment(
+    base: Mapping[str, str], *, driver: Path, cargo_bridge: Path, rustc: Path
+) -> dict[str, str]:
+    """Remove wheel-target state while source-building the host Maturin tool."""
+
+    env = wheel_environment(base, driver=driver, cargo_bridge=cargo_bridge)
+    exact = {
+        "AR",
+        "CARGO_BUILD_TARGET",
+        "CARGO_ENCODED_RUSTFLAGS",
+        "CC",
+        "CFLAGS",
+        "CXX",
+        "CXXFLAGS",
+        "LDFLAGS",
+        "RANLIB",
+        "RUSTC",
+        "RUSTFLAGS",
+    }
+    for key in list(env):
+        if key in exact or key.startswith(("AR_", "CC_", "CXX_", "RANLIB_")):
+            env.pop(key, None)
+        elif key.startswith("CARGO_TARGET_"):
+            env.pop(key, None)
+    rustc = rustc.resolve()
+    env["PATH"] = f"{rustc.parent}{os.pathsep}{env.get('PATH', '')}"
+    env["RUSTC"] = str(rustc)
+    env["RUSTUP_TOOLCHAIN"] = TOOLCHAIN
+    env["CARGO_BUILD_JOBS"] = "2"
+    env["SOLDR_JOBS"] = "2"
+    return env
+
+
 def build_musl_wheel(driver: Path, target: str, expected_version: str) -> None:
     if target not in MUSL_TARGETS:
         raise ValueError(f"not a release musl target: {target}")
@@ -127,8 +178,7 @@ def build_musl_wheel(driver: Path, target: str, expected_version: str) -> None:
     actual_version = soldr_cli_version(metadata)
     if actual_version != expected_version:
         raise RuntimeError(
-            f"soldr-cli version {actual_version!r} does not match release "
-            f"{expected_version!r}"
+            f"soldr-cli version {actual_version!r} does not match release {expected_version!r}"
         )
 
     dist = Path("dist")
@@ -138,12 +188,33 @@ def build_musl_wheel(driver: Path, target: str, expected_version: str) -> None:
 
     venv = Path(".venv-release-wheel")
     run(["uv", "python", "install", "3.13"])
-    run(["uv", "venv", "--python", "3.13", str(venv)])
+    run(["uv", "venv", "--python", "3.13", "--clear", str(venv)])
     python = venv / "bin" / "python"
-    run(["uv", "pip", "install", "--python", str(python), "maturin>=1.7,<2"])
 
     cargo_bridge = Path(".github/scripts/cargo_via_soldr_rustup.sh").resolve()
     cargo_bridge.chmod(cargo_bridge.stat().st_mode | stat.S_IXUSR)
+    rustc = resolve_toolchain_rustc(driver, os.environ)
+    host_env = host_tool_environment(
+        os.environ,
+        driver=driver,
+        cargo_bridge=cargo_bridge,
+        rustc=rustc,
+    )
+    run(
+        [
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            str(python),
+            "--no-cache",
+            "--no-binary",
+            SOLDR_MATURIN_NO_BINARY,
+            SOLDR_MATURIN_REQUIREMENT,
+            "patchelf; platform_system == 'Linux'",
+        ],
+        env=host_env,
+    )
     env = wheel_environment(os.environ, driver=driver, cargo_bridge=cargo_bridge)
     run(
         [

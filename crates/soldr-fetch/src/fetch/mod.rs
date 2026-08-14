@@ -175,7 +175,8 @@ pub const MANAGED_CRGX_VERSION: &str = "0.1.0";
 /// `maturin.managed_version`; the
 /// `zccache_runtime_contract_matches_rust_constants` test asserts they
 /// match and panics with a directive message if they drift.
-pub const MANAGED_MATURIN_VERSION: &str = "1.14.1";
+pub const MANAGED_MATURIN_VERSION: &str = "1.14.1.post1";
+pub const MANAGED_MATURIN_PYPI_PACKAGE: &str = "soldr-maturin";
 
 /// Override the runtime crgx resolution: when set, soldr uses the
 /// `crgx` (or `crgx.exe`) binary in this directory ahead of any

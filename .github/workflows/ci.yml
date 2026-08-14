@@ -692,11 +692,10 @@ jobs:
           solo-toolchain-cache: false
           zccache-seed-strict: true
 
-      # soldr#1438: the PEP 517 smoke builds the current wheel with
-      # plain maturin, so setup-soldr's compiler cache is not in the
-      # build path. Reuse Cargo's target/registry cache here just like
-      # the Lint job does; keep a separate key because this job builds
-      # native ci-release wheels on macOS/Windows. soldr#1479 lowered
+      # soldr#1438: the PEP 517 smoke source-builds soldr-maturin before
+      # building the current wheel. Reuse Cargo's target/registry cache here
+      # just like the Lint job does; keep a separate key because this job
+      # builds native ci-release wheels on macOS/Windows. soldr#1479 lowered
       # ci-release opt-levels; v2 avoids restoring stale opt-level-3
       # target trees under rust-cache's profile-blind meta-hash.
       - name: Restore cargo + target caches for wheel build
@@ -708,7 +707,7 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          python -m pip install "maturin>=1.7,<2"
+          python .github/scripts/install_soldr_maturin.py
           maturin build --profile ci-release --out dist
 
       - name: Run downstream PEP 517 daemon smoke

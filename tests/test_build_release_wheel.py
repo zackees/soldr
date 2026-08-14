@@ -37,13 +37,79 @@ def test_environment_preserves_unrelated_caller_arguments() -> None:
     assert env["MATURIN_PEP517_ARGS"] == "--features tokio-console"
     assert env["SOLDR_PEP517_PROFILE"] == "release"
     assert env["SOLDR_RELEASE_CI"] == "1"
+    assert env["CARGO_BUILD_JOBS"] == "2"
+    assert env["SOLDR_JOBS"] == "2"
+
+
+def test_release_environment_forces_soldr_maturin_off_xwin() -> None:
+    env = wheel.build_environment("x86_64-pc-windows-msvc", {"MATURIN_USE_XWIN": "1"})
+    assert env["MATURIN_USE_XWIN"] == "0"
+
+
+def test_source_install_is_pinned_and_forces_a_local_build() -> None:
+    command = wheel.soldr_maturin_install_command(Path("venv-python"))
+    assert command == [
+        "uv",
+        "pip",
+        "install",
+        "--python",
+        "venv-python",
+        "--no-cache",
+        "--no-binary",
+        "soldr-maturin",
+        "soldr-maturin==1.14.1.post1",
+        "patchelf; platform_system == 'Linux'",
+    ]
+
+
+def test_source_build_environment_removes_cross_target_state() -> None:
+    env = wheel.source_build_environment(
+        {
+            "KEEP": "yes",
+            "CARGO_BUILD_TARGET": "x86_64-pc-windows-msvc",
+            "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER": "lld-link",
+            "CC_x86_64_pc_windows_msvc": "clang-cl",
+            "RUSTC_WRAPPER": "soldr",
+            "MATURIN_USE_XWIN": "0",
+        }
+    )
+    assert env == {
+        "KEEP": "yes",
+        "CARGO_BUILD_JOBS": "2",
+        "RUSTUP_TOOLCHAIN": "1.95.0",
+        "SOLDR_JOBS": "2",
+    }
+
+
+@pytest.mark.parametrize(
+    ("target", "compatibility"),
+    [
+        ("x86_64-pc-windows-msvc", "pypi"),
+        ("aarch64-apple-darwin", "pypi"),
+        ("x86_64-unknown-linux-gnu", "manylinux_2_17"),
+    ],
+)
+def test_direct_maturin_command_is_release_locked(target: str, compatibility: str) -> None:
+    command = wheel.maturin_build_command(Path("maturin"), target)
+    assert command == [
+        "maturin",
+        "build",
+        "--release",
+        "--locked",
+        "--target",
+        target,
+        "--target-dir",
+        "target",
+        "--out",
+        "dist",
+        "--compatibility",
+        compatibility,
+    ]
 
 
 def test_environment_rejects_non_release_pep517_profile() -> None:
     with pytest.raises(ValueError, match="requires SOLDR_PEP517_PROFILE=release"):
-        wheel.build_environment(
-            "x86_64-unknown-linux-gnu", {"SOLDR_PEP517_PROFILE": "dev"}
-        )
+        wheel.build_environment("x86_64-unknown-linux-gnu", {"SOLDR_PEP517_PROFILE": "dev"})
 
 
 def test_unknown_target_is_rejected() -> None:
@@ -51,28 +117,42 @@ def test_unknown_target_is_rejected() -> None:
         wheel.validate_target("riscv64gc-unknown-linux-gnu")
 
 
-def test_hook_forwards_target_as_pep517_config_setting(monkeypatch) -> None:
-    observed = {}
+def test_hook_source_builds_downstream_then_runs_it_with_target_env(monkeypatch) -> None:
+    observed = []
 
-    def fake_run(command, *, check, env):
-        observed["command"] = command
-        observed["check"] = check
-        observed["env"] = env
+    def fake_run(command, *, env):
+        observed.append((command, env))
 
-    monkeypatch.setattr(wheel.subprocess, "run", fake_run)
+    monkeypatch.setattr(wheel, "run", fake_run)
+    monkeypatch.setattr(wheel, "resolve_soldr_driver", lambda _env: Path("release-driver"))
+    monkeypatch.setattr(
+        wheel,
+        "resolve_toolchain_rustc",
+        lambda _driver, _env: Path("toolchain/bin/rustc"),
+    )
     wheel.run_hook(
         target="x86_64-pc-windows-msvc",
         hook="python -m build --wheel",
         base_env={"PATH": "/managed"},
     )
 
-    assert observed["command"][0] == wheel.sys.executable
-    assert observed["command"][-2:] == [
-        "--config-setting",
-        "target=x86_64-pc-windows-msvc",
+    assert observed[0][0] == [
+        "release-driver",
+        "toolchain",
+        "link",
+        "--shim-dir",
+        str(wheel.SOLDR_TOOLCHAIN_SHIMS),
+        "--force",
     ]
-    assert observed["check"] is True
-    assert observed["env"]["PATH"] == "/managed"
+    assert observed[2][0] == wheel.soldr_maturin_install_command(
+        wheel.venv_executable(wheel.SOLDR_MATURIN_VENV, "python")
+    )
+    assert observed[-1][0] == wheel.maturin_build_command(
+        wheel.venv_executable(wheel.SOLDR_MATURIN_VENV, "maturin"),
+        "x86_64-pc-windows-msvc",
+    )
+    assert observed[-1][1]["MATURIN_USE_XWIN"] == "0"
+    assert Path(observed[-1][1]["CARGO"]).name in {"cargo", "cargo.exe"}
 
 
 def test_github_env_loader_preserves_non_shell_identifier(tmp_path: Path) -> None:

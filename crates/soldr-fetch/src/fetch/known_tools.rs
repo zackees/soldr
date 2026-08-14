@@ -311,7 +311,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         crate_name: "maturin",
         cargo_subcommand: None,
         binary_name: "maturin",
-        repo: Some(("PyO3", "maturin")),
+        repo: Some(("zackees", "soldr-maturin")),
         tag_prefix: None,
         pinned_version: Some(super::MANAGED_MATURIN_VERSION),
         wraps_inner_cargo_build: false,
@@ -614,7 +614,7 @@ mod tests {
         let spec = lookup_by_crate("maturin").expect("maturin must be registered");
         assert_eq!(spec.cargo_subcommand, None);
         assert_eq!(spec.binary_name, "maturin");
-        assert_eq!(spec.repo, Some(("PyO3", "maturin")));
+        assert_eq!(spec.repo, Some(("zackees", "soldr-maturin")));
         assert_eq!(
             spec.pinned_version,
             Some(super::super::MANAGED_MATURIN_VERSION)
