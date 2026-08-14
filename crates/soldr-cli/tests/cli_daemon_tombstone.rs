@@ -141,10 +141,25 @@ timed_test!(
         let out = drain(broker.child.stdout.take().expect("broker stdout"));
         let err = drain(broker.child.stderr.take().expect("broker stderr"));
 
+        // soldr#2493: 10s was not enough and the reason is now measured rather
+        // than guessed. Bringup instrumentation on the failing Linux lane shows
+        // secure_directories/tokio_runtime/peer_policy each at 0ms and then no
+        // further phase inside the window — the broker spends the whole time in
+        // `instance_id`, blake3-hashing its own executable. It is not waiting on
+        // the hash lock (no contention line is emitted); the cold hash itself is
+        // that slow on a loaded runner. A local probe measured 3.8s for a 60MB
+        // image on a warm dev box.
+        //
+        // This test launches `broker serve` directly, which is the expensive
+        // case: a front-door-spawned broker is handed its instance id via
+        // `SOLDR_INTERNAL_BROKER_INSTANCE_ID` and never hashes at all. So the
+        // window has to cover work production does not do. 60s clears the
+        // observed cost with margin and stays well inside the 90s watchdog,
+        // which is what actually guards against a real hang.
         let broker_ready = wait_for(
             &out,
             "stable endpoint bound at",
-            Instant::now() + Duration::from_secs(10),
+            Instant::now() + Duration::from_secs(60),
         );
         let child_state = match broker.child.try_wait() {
             Ok(Some(status)) => format!("exited {status}"),
@@ -153,7 +168,9 @@ timed_test!(
         };
         assert!(
             broker_ready,
-            "broker did not become ready (child {child_state})\nstdout:\n{}\nstderr:\n{}",
+            "broker did not become ready (child {child_state}).\nThe last `bringup phase=` line \
+             on stderr names the last phase that COMPLETED; the stall is in the phase after it.\
+             \nstdout:\n{}\nstderr:\n{}",
             out.lock().unwrap().join("\n"),
             err.lock().unwrap().join("\n")
         );
