@@ -216,17 +216,29 @@ pub async fn provision_pypi_tool_via_uv(
 
 /// Run one uv command with soldr-scoped uv state dirs. Inherits
 /// stdout/stderr so download progress is visible to the user.
+fn uv_command(uv: &Path, paths: &SoldrPaths) -> std::process::Command {
+    let mut command = std::process::Command::new(uv);
+    command.env("UV_CACHE_DIR", paths.root.join("uv-cache"));
+    command.env("UV_PYTHON_INSTALL_DIR", paths.root.join("uv-python"));
+    // Provisioning may source-build the PyPI package. Never inherit a wrapper
+    // tied to the caller's already-finished Cargo session: its broker route is
+    // no longer valid by the time uv invokes rustc. An explicit CARGO command
+    // still controls the source build and can enter Soldr through a fresh
+    // front door of its own.
+    command.env_remove("RUSTC_WRAPPER");
+    command.env_remove("RUSTC_WORKSPACE_WRAPPER");
+    suppress_windows_console_window(&mut command);
+    command
+}
+
 fn run_uv(
     uv: &Path,
     paths: &SoldrPaths,
     args: &[&std::ffi::OsStr],
     label: &str,
 ) -> Result<(), SoldrError> {
-    let mut command = std::process::Command::new(uv);
+    let mut command = uv_command(uv, paths);
     command.args(args);
-    command.env("UV_CACHE_DIR", paths.root.join("uv-cache"));
-    command.env("UV_PYTHON_INSTALL_DIR", paths.root.join("uv-python"));
-    suppress_windows_console_window(&mut command);
     let status = command.status().map_err(|e| {
         SoldrError::Other(format!("{label}: failed to spawn {}: {e}", uv.display()))
     })?;
@@ -336,5 +348,24 @@ mod tests {
         for p in parts {
             assert!(p.chars().all(|c| c.is_ascii_digit()));
         }
+    }
+
+    #[test]
+    fn uv_source_build_does_not_inherit_a_stale_rustc_wrapper() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
+        let command = uv_command(Path::new("uv"), &paths);
+
+        let env = command
+            .get_envs()
+            .map(|(name, value)| (name.to_owned(), value.map(ToOwned::to_owned)))
+            .collect::<std::collections::HashMap<_, _>>();
+        for name in ["RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"] {
+            assert_eq!(env.get(std::ffi::OsStr::new(name)), Some(&None));
+        }
+        assert!(
+            !env.contains_key(std::ffi::OsStr::new("SOLDR_RUSTC_WRAPPER")),
+            "the persistent caller override must remain inherited by a fresh Soldr front door"
+        );
     }
 }

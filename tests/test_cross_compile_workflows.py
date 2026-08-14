@@ -92,13 +92,14 @@ def test_windows_behavior_contract_reaches_native_target_runners() -> None:
         list_command,
         run_command,
         '--archive-file "$archive"',
-        "--no-fail-fast",
+        "--max-fail 3:immediate",
     ]:
         assert required in replay
     assert replay.index(archive_assignment) < replay.index(archive_check)
     assert replay.index(archive_check) < replay.index(list_command)
     assert replay.index(list_command) < replay.index(run_command)
     assert replay.count('--archive-file "$archive"') == 2
+    assert "--no-fail-fast" not in replay
     list_invocation = replay[replay.index(list_command) : replay.index(run_command)]
     run_invocation = replay[replay.index(run_command) :]
     _assert_no_narrowing(list_invocation)
