@@ -53,37 +53,12 @@ slow-timeout = { period = "60s", terminate-after = 3 }
 [profile.target-run]
 fail-fast = false
 
-# soldr#2159 / soldr#2168 pattern. These lanes replay a pre-built archive
-# on shared Windows and macOS runners, and a steady trickle of *different*
-# wall-clock-bounded tests aborts there while passing everywhere else.
-# Observed across unrelated PRs in a single session:
-#
-#   builds_slow_filters_by_threshold                  2000ms daemon IPC
-#   embed_lookup_is_fast                              250ms  (fixed, #2171)
-#   cargo_timeout_cleans_incremental_and_next_run_... 1s     configured wait
-#   cargo_without_timeout_allows_progress_cpu_and_... 60s    timed_test!
-#   legacy_and_non_build_commands_spawn_no_prefetch   120s   (fixed, #2169)
-#
-# The give-away is that it is a *different* test each time. A real
-# regression fails the same test deterministically; contention takes
-# whichever test happened to sit nearest its bound. Measured locally on
-# Windows, `cargo_without_timeout_...` runs in 9.5s against its 60s
-# budget -- roughly 6x headroom -- and still hit the wall on CI.
-#
-# Retrying is the right lever here *because nextest reports it*: a test
-# that fails then passes is surfaced as FLAKY in the run summary and in
-# the JUnit output below, so the signal survives. That is the difference
-# between this and raising a budget, which CLAUDE.md rightly warns
-# against -- a raised budget silently absorbs the evidence, a retry
-# publishes it.
-#
-# Scoped to `target-run` on purpose. The default profile keeps zero
-# retries, so local runs and the `Linux x64` lane still fail fast: a test
-# that is flaky *there* is a bug, not contention.
-retries = { backoff = "fixed", count = 2, delay = "2s" }
+# Target-run intentionally inherits the default profile's zero-retry policy.
+# A failed attempt is evidence, not a reason to spend another target-run slot
+# rerunning a deterministic failure. The workflow bounds the lane to three
+# distinct failures so it still reports a small useful cluster before exiting.
 
 [profile.target-run.junit]
 path = "junit.xml"
 report-name = "soldr-target-run"
 store-failure-output = true
-
