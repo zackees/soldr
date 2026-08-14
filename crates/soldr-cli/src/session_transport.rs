@@ -327,13 +327,7 @@ async fn establish_session(
     };
 
     // From here the connection is a transparent SESSION relay to the daemon.
-    let start = SessionStart {
-        program: rustc_argv.first().cloned().unwrap_or_default(),
-        args: rustc_argv.get(1..).unwrap_or_default().to_vec(),
-        cwd,
-        env,
-        clear_inherited_env: false,
-    };
+    let start = compile_session_start(rustc_argv, cwd, env);
     let start_frame = encode_session_frame(
         &SessionFrame {
             kind: Some(session_frame::Kind::Start(start)),
@@ -349,6 +343,21 @@ async fn establish_session(
 
     // Output phase — a failure after the first byte is printed is a hard error.
     Ok(stream)
+}
+
+fn compile_session_start(
+    rustc_argv: &[String],
+    cwd: String,
+    env: Vec<running_process::broker::protocol_v2::SessionEnvVar>,
+) -> SessionStart {
+    SessionStart {
+        program: rustc_argv.first().cloned().unwrap_or_default(),
+        args: rustc_argv.get(1..).unwrap_or_default().to_vec(),
+        cwd,
+        env,
+        clear_inherited_env: true,
+        environment_policy: running_process::broker::protocol_v2::EnvironmentPolicy::Clear as i32,
+    }
 }
 
 async fn connect_broker_with_busy_retry(
@@ -704,6 +713,26 @@ mod tests {
             !err.output_started,
             "a setup failure must be identified as pre-output"
         );
+    }
+
+    #[test]
+    fn compile_session_uses_only_the_serialized_client_environment() {
+        let start = compile_session_start(
+            &["rustc".into(), "--version".into()],
+            "/workspace".into(),
+            vec![running_process::broker::protocol_v2::SessionEnvVar {
+                key: "CLIENT_ONLY".into(),
+                value: "present".into(),
+            }],
+        );
+
+        assert!(start.clear_inherited_env);
+        assert_eq!(
+            start.environment_policy,
+            running_process::broker::protocol_v2::EnvironmentPolicy::Clear as i32
+        );
+        assert_eq!(start.env.len(), 1);
+        assert_eq!(start.env[0].key, "CLIENT_ONLY");
     }
 
     #[test]
