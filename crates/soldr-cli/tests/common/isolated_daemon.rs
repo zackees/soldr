@@ -6,12 +6,14 @@ use std::process::Command;
 pub(crate) fn isolated_daemon_command(source: &Path, root: &Path) -> Command {
     let executable = isolated_daemon_executable(source, root);
     let mut command = Command::new(&executable);
+    super::scrub_outer_soldr_env(&mut command);
     configure_direct_daemon_endpoints(&mut command, &executable);
     command
 }
 
 pub(crate) fn configure_isolated_daemon_client(command: &mut Command, source: &Path, root: &Path) {
     let executable = isolated_daemon_executable(source, root);
+    super::scrub_outer_soldr_env(command);
     configure_direct_daemon_endpoints(command, &executable);
 }
 
@@ -24,7 +26,7 @@ pub(crate) fn isolated_daemon_control_endpoint(source: &Path, root: &Path) -> Pa
     )
 }
 
-fn isolated_daemon_executable(source: &Path, root: &Path) -> PathBuf {
+pub(crate) fn isolated_daemon_executable(source: &Path, root: &Path) -> PathBuf {
     let runtime = root.join("test-daemon-runtime");
     std::fs::create_dir_all(&runtime).expect("create test daemon runtime");
     let executable = runtime.join(

@@ -33,13 +33,25 @@ experimental = ["wrapper-scripts"]
 [profile.default]
 slow-timeout = { period = "60s", terminate-after = 2, grace-period = "30s" }
 
+# These tests each cold-start the embedded daemon. Running them concurrently
+# can exhaust the broker's bounded route-start window on shared runners.
+[test-groups.daemon-lifecycle]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = 'binary(cli_daemon_lifecycle)'
+test-group = 'daemon-lifecycle'
+
 [scripts.wrapper.timeout-diagnostics]
 command = { command-line = ".github/scripts/nextest_timeout_wrapper.py", relative-to = "workspace-root" }
 target-runner = "within-wrapper"
 
 [[profile.default.scripts]]
 filter = "all()"
-platform = { host = "cfg(unix)" }
+# Select by the executable's target, not the build host. Cross-built Windows
+# archives are assembled on Linux, and must retain their PE test executables
+# instead of recording this Unix Python wrapper as the program to launch.
+platform = { target = "cfg(unix)" }
 run-wrapper = "timeout-diagnostics"
 
 # 300s: real-rustc end-to-end compiles through the session bridge, plus the

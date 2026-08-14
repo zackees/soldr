@@ -55,7 +55,9 @@ fn broker_status(home: &Path) -> String {
 }
 
 fn stop_broker(home: &Path) {
-    let _ = Command::new(common::soldr_bin())
+    let mut command = Command::new(common::soldr_bin());
+    common::scrub_outer_soldr_env(&mut command);
+    let _ = command
         .args(["broker", "stop"])
         .env("HOME", home)
         .env("USERPROFILE", home)
@@ -206,7 +208,9 @@ fn issue_2476_sigstop_owner_is_fenced_after_lease_expiry() {
         .spawn()
         .expect("spawn lease owner");
 
-    let ready_deadline = Instant::now() + Duration::from_secs(20);
+    // Cold target-run hosts may spend tens of seconds hashing the first
+    // broker image before the lease-ready test seam is reached.
+    let ready_deadline = Instant::now() + Duration::from_secs(60);
     while !ready.exists() && Instant::now() < ready_deadline {
         std::thread::sleep(POLL);
     }
