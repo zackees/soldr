@@ -43,7 +43,7 @@ pub fn is_init_failure(code: i32) -> bool {
 mod tests {
     use super::*;
 
-    #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+    #[test]
     fn linux_exit_classification() {
         assert!(is_signal_termination(-1));
         assert!(!is_signal_termination(1));

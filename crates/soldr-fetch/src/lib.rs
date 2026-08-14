@@ -18,6 +18,5 @@
 pub(crate) use soldr_platform as platform;
 
 pub use soldr_core::core;
-pub use soldr_core::timed_test;
 
 pub mod fetch;

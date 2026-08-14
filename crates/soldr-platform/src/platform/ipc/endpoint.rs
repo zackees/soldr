@@ -148,7 +148,7 @@ fn percent_encode_pipe_leaf(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
-    #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+    #[test]
     fn windows_pipe_sanitizer_normalizes_supported_spellings() {
         let expected = windows_pipe_from_executable_with_suffix(
             r"C:\Users\Me\soldr-broker.exe",
@@ -173,7 +173,7 @@ mod tests {
         assert!(!expected.overflowed);
     }
 
-    #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+    #[test]
     fn windows_pipe_sanitizer_rejects_relative_and_parent_paths() {
         assert!(windows_pipe_from_executable_with_suffix(
             r"Users\me\soldr-broker.exe",
@@ -189,7 +189,7 @@ mod tests {
         .is_err());
     }
 
-    #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+    #[test]
     fn windows_pipe_overflow_falls_back_to_deterministic_hash() {
         let path = format!(r"C:\Users\{}\soldr-broker.exe", "long-profile-".repeat(30));
         let first = windows_pipe_from_executable_with_suffix(&path, ".sock", "soldr-broker")
@@ -202,7 +202,7 @@ mod tests {
         assert_eq!(first.pipe_leaf.len(), "soldr-broker-ovf-".len() + 16);
     }
 
-    #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+    #[test]
     fn distinct_windows_paths_produce_distinct_leaves() {
         let cases = [
             r"C:\Users\a\soldr-broker.exe",

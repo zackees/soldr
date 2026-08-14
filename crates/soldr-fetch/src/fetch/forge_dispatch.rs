@@ -421,7 +421,8 @@ mod tests {
         }
     }
 
-    crate::timed_test!(read_token_refuses_when_unset, {
+    #[test]
+    fn read_token_refuses_when_unset() {
         // Avoid env-races with other tests by setting + removing
         // inside the test body.
         std::env::remove_var(FORGE_TOKEN_ENV_VAR);
@@ -434,24 +435,28 @@ mod tests {
             }
             other => panic!("expected MissingToken, got {other:?}"),
         }
-    });
+    }
 
-    crate::timed_test!(read_dispatch_repo_defaults_to_soldr_toolchain, {
+    #[test]
+    fn read_dispatch_repo_defaults_to_soldr_toolchain() {
         std::env::remove_var(FORGE_DISPATCH_REPO_ENV_VAR);
         assert_eq!(read_dispatch_repo(), DEFAULT_FORGE_DISPATCH_REPO);
-    });
+    }
 
-    crate::timed_test!(read_dispatch_workflow_defaults_to_forge_build, {
+    #[test]
+    fn read_dispatch_workflow_defaults_to_forge_build() {
         std::env::remove_var(FORGE_DISPATCH_WORKFLOW_ENV_VAR);
         assert_eq!(read_dispatch_workflow(), DEFAULT_FORGE_DISPATCH_WORKFLOW);
-    });
+    }
 
-    crate::timed_test!(read_dispatch_ref_defaults_to_main, {
+    #[test]
+    fn read_dispatch_ref_defaults_to_main() {
         std::env::remove_var(FORGE_DISPATCH_REF_ENV_VAR);
         assert_eq!(read_dispatch_ref(), "main");
-    });
+    }
 
-    crate::timed_test!(read_timeout_secs_defaults_and_rejects_zero, {
+    #[test]
+    fn read_timeout_secs_defaults_and_rejects_zero() {
         std::env::remove_var(FORGE_TIMEOUT_ENV_VAR);
         assert_eq!(read_timeout_secs(), DEFAULT_FORGE_TIMEOUT_SECS);
         std::env::set_var(FORGE_TIMEOUT_ENV_VAR, "0");
@@ -465,9 +470,10 @@ mod tests {
         std::env::set_var(FORGE_TIMEOUT_ENV_VAR, "300");
         assert_eq!(read_timeout_secs(), 300);
         std::env::remove_var(FORGE_TIMEOUT_ENV_VAR);
-    });
+    }
 
-    crate::timed_test!(forge_request_joins_targets_with_comma, {
+    #[test]
+    fn forge_request_joins_targets_with_comma() {
         let req = ForgeRequest {
             recipe: "foo".into(),
             version: "1.2.3".into(),
@@ -480,17 +486,19 @@ mod tests {
             req.targets_joined(),
             "x86_64-pc-windows-msvc,aarch64-apple-darwin"
         );
-    });
+    }
 
-    crate::timed_test!(missing_token_error_message_names_env_var, {
+    #[test]
+    fn missing_token_error_message_names_env_var() {
         clear_env();
         let err = read_token().expect_err("expected MissingToken");
         let msg = err.to_string();
         assert!(msg.contains(FORGE_TOKEN_ENV_VAR));
         assert!(msg.contains("soldr#988"));
-    });
+    }
 
-    crate::timed_test!(recipe_not_found_error_includes_recipe_url, {
+    #[test]
+    fn recipe_not_found_error_includes_recipe_url() {
         let err = ForgeError::RecipeNotFound {
             recipe: "foo".into(),
             version: "1.2.3".into(),
@@ -500,9 +508,10 @@ mod tests {
         assert!(msg.contains("https://github.com/zackees/forge"));
         assert!(msg.contains("foo@1.2.3"));
         assert!(msg.contains("x86_64-pc-windows-msvc"));
-    });
+    }
 
-    crate::timed_test!(timeout_error_carries_ceiling_and_url, {
+    #[test]
+    fn timeout_error_carries_ceiling_and_url() {
         let err = ForgeError::Timeout {
             recipe: "bar".into(),
             version: "0.1".into(),
@@ -514,12 +523,13 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("1800"));
         assert!(msg.contains("/runs/42"));
-    });
+    }
 
-    crate::timed_test!(iso_timestamp_round_trip_for_known_epoch, {
+    #[test]
+    fn iso_timestamp_round_trip_for_known_epoch() {
         // 2026-01-01T00:00:00Z is 1_767_225_600.
         // Spot-check the YMD conversion at a known fence-post.
         let (y, m, d) = days_to_ymd(1_767_225_600 / 86_400);
         assert_eq!((y, m, d), (2026, 1, 1));
-    });
+    }
 }

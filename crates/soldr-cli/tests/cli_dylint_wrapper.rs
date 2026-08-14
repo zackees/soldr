@@ -1,10 +1,8 @@
 mod common;
 
 use common::{fake_script_path, isolated_soldr_command, prepend_to_path, unique_temp_dir};
-use soldr_cli::timed_test;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 fn write_script(path: &Path, body: String) {
     fs::write(path, body).expect("write fake tool");
@@ -149,134 +147,125 @@ fn dylint_command(root: &Path) -> std::process::Command {
     command
 }
 
-timed_test!(
-    dylint_front_door_preserves_direct_and_nested_compiler_chains,
-    Duration::from_secs(60),
-    {
-        if matches!(
-            soldr_platform::host::facts::os(),
-            soldr_platform::host::facts::HostOs::Windows
-        ) {
-            return;
-        }
-        let root = unique_temp_dir("dylint-wrapper-success");
-        let output = dylint_command(&root)
-            .args(["cargo", "dylint", "--all"])
-            .output()
-            .expect("run soldr cargo dylint");
-
-        assert!(
-            output.status.success(),
-            "soldr cargo dylint failed\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let log = fs::read_to_string(root.join("tool.log")).expect("read fake tool log");
-        assert!(
-            log.contains("cargo-dylint argv=dylint --all"),
-            "logical cargo-dylint argv was not preserved: {log}"
-        );
-        assert!(
-            log.lines().any(|line| line.contains("cargo-dylint")
-                && line.contains("wrapper=/")
-                && line.contains("/soldr-dylint")),
-            "cargo-dylint did not receive an absolute dedicated wrapper: {log}"
-        );
-        assert!(
-            log.lines().any(|line| line.contains("zccache compiler=")
-                && line.contains("/rustc")
-                && line.contains("dylint_direct")),
-            "direct Dylint rustc compile did not reach zccache: {log}"
-        );
-        assert!(
-            log.lines().any(|line| line.contains("zccache compiler=")
-                && line.contains("/dylint-driver")
-                && line.contains("/rustc")
-                && line.contains("dylint_nested")),
-            "nested Dylint driver chain did not reach zccache intact: {log}"
-        );
-        assert!(
-            log.contains("dylint-driver argv=") && log.contains("dylint_nested"),
-            "Dylint driver was not executed with the nested rustc invocation: {log}"
-        );
-        assert!(
-            String::from_utf8_lossy(&output.stdout).contains("dylint compile diagnostic on stdout")
-                && String::from_utf8_lossy(&output.stderr)
-                    .contains("dylint compile diagnostic on stderr"),
-            "successful compiler diagnostics were not replayed"
-        );
+#[test]
+fn dylint_front_door_preserves_direct_and_nested_compiler_chains() {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
     }
-);
+    let root = unique_temp_dir("dylint-wrapper-success");
+    let output = dylint_command(&root)
+        .args(["cargo", "dylint", "--all"])
+        .output()
+        .expect("run soldr cargo dylint");
 
-timed_test!(
-    dylint_front_door_preserves_failing_nested_diagnostics_and_exit,
-    Duration::from_secs(60),
-    {
-        if matches!(
-            soldr_platform::host::facts::os(),
-            soldr_platform::host::facts::HostOs::Windows
-        ) {
-            return;
-        }
-        let root = unique_temp_dir("dylint-wrapper-failure");
-        let output = dylint_command(&root)
-            .args(["dylint", "--all"])
-            .env("DYLINT_TEST_FAIL", "1")
-            .output()
-            .expect("run failing soldr dylint");
+    assert!(
+        output.status.success(),
+        "soldr cargo dylint failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let log = fs::read_to_string(root.join("tool.log")).expect("read fake tool log");
+    assert!(
+        log.contains("cargo-dylint argv=dylint --all"),
+        "logical cargo-dylint argv was not preserved: {log}"
+    );
+    assert!(
+        log.lines().any(|line| line.contains("cargo-dylint")
+            && line.contains("wrapper=/")
+            && line.contains("/soldr-dylint")),
+        "cargo-dylint did not receive an absolute dedicated wrapper: {log}"
+    );
+    assert!(
+        log.lines().any(|line| line.contains("zccache compiler=")
+            && line.contains("/rustc")
+            && line.contains("dylint_direct")),
+        "direct Dylint rustc compile did not reach zccache: {log}"
+    );
+    assert!(
+        log.lines().any(|line| line.contains("zccache compiler=")
+            && line.contains("/dylint-driver")
+            && line.contains("/rustc")
+            && line.contains("dylint_nested")),
+        "nested Dylint driver chain did not reach zccache intact: {log}"
+    );
+    assert!(
+        log.contains("dylint-driver argv=") && log.contains("dylint_nested"),
+        "Dylint driver was not executed with the nested rustc invocation: {log}"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("dylint compile diagnostic on stdout")
+            && String::from_utf8_lossy(&output.stderr)
+                .contains("dylint compile diagnostic on stderr"),
+        "successful compiler diagnostics were not replayed"
+    );
+}
 
-        assert_eq!(output.status.code(), Some(7));
-        assert!(
-            String::from_utf8_lossy(&output.stdout).contains("dylint nested diagnostic on stdout"),
-            "failing stdout diagnostic was not replayed"
-        );
-        assert!(
-            String::from_utf8_lossy(&output.stderr).contains("dylint nested diagnostic on stderr"),
-            "failing stderr diagnostic was not replayed"
-        );
-        let log = fs::read_to_string(root.join("tool.log")).expect("read fake tool log");
-        assert!(
-            log.contains("cargo-dylint argv=dylint --all")
-                && log.contains("dylint-driver argv=")
-                && log.contains("dylint_nested"),
-            "top-level soldr dylint did not preserve the nested failure chain: {log}"
-        );
+#[test]
+fn dylint_front_door_preserves_failing_nested_diagnostics_and_exit() {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
     }
-);
+    let root = unique_temp_dir("dylint-wrapper-failure");
+    let output = dylint_command(&root)
+        .args(["dylint", "--all"])
+        .env("DYLINT_TEST_FAIL", "1")
+        .output()
+        .expect("run failing soldr dylint");
 
-timed_test!(
-    missing_prebuilt_driver_fails_before_cargo_dylint_launch,
-    Duration::from_secs(60),
-    {
-        if matches!(
-            soldr_platform::host::facts::os(),
-            soldr_platform::host::facts::HostOs::Windows
-        ) {
-            return;
-        }
-        let root = unique_temp_dir("dylint-missing-prebuilt");
-        let mut command = dylint_command(&root);
-        fs::remove_dir_all(root.join("drivers")).expect("remove prebuilt driver fixture");
+    assert_eq!(output.status.code(), Some(7));
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("dylint nested diagnostic on stdout"),
+        "failing stdout diagnostic was not replayed"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("dylint nested diagnostic on stderr"),
+        "failing stderr diagnostic was not replayed"
+    );
+    let log = fs::read_to_string(root.join("tool.log")).expect("read fake tool log");
+    assert!(
+        log.contains("cargo-dylint argv=dylint --all")
+            && log.contains("dylint-driver argv=")
+            && log.contains("dylint_nested"),
+        "top-level soldr dylint did not preserve the nested failure chain: {log}"
+    );
+}
 
-        let output = command
-            .args(["dylint", "--all"])
-            .output()
-            .expect("run soldr dylint without a prebuilt driver");
-
-        assert_eq!(output.status.code(), Some(1));
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains("Dylint v6.0.3 is not built for this machine"),
-            "unexpected stderr: {stderr}"
-        );
-        assert!(
-            stderr.contains("Corrective action:"),
-            "unexpected stderr: {stderr}"
-        );
-        let log = fs::read_to_string(root.join("tool.log")).unwrap_or_default();
-        assert!(
-            !log.contains("cargo-dylint argv=dylint"),
-            "cargo-dylint lint execution must not launch when its driver is absent: {log}"
-        );
+#[test]
+fn missing_prebuilt_driver_fails_before_cargo_dylint_launch() {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
     }
-);
+    let root = unique_temp_dir("dylint-missing-prebuilt");
+    let mut command = dylint_command(&root);
+    fs::remove_dir_all(root.join("drivers")).expect("remove prebuilt driver fixture");
+
+    let output = command
+        .args(["dylint", "--all"])
+        .output()
+        .expect("run soldr dylint without a prebuilt driver");
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Dylint v6.0.3 is not built for this machine"),
+        "unexpected stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("Corrective action:"),
+        "unexpected stderr: {stderr}"
+    );
+    let log = fs::read_to_string(root.join("tool.log")).unwrap_or_default();
+    assert!(
+        !log.contains("cargo-dylint argv=dylint"),
+        "cargo-dylint lint execution must not launch when its driver is absent: {log}"
+    );
+}

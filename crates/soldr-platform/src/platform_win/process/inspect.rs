@@ -176,7 +176,7 @@ fn image_path(pid: u32) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
-    #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+    #[test]
     fn windows_liveness_reports_current_process_alive() {
         assert!(is_alive(std::process::id()));
     }

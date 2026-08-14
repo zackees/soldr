@@ -146,7 +146,7 @@ pub fn bind_owner_only_listener(
 mod tests {
     use super::*;
 
-    #[test] // allow-bare-test: soldr-platform is a dependency leaf (#2493)
+    #[test]
     fn session_listener_creates_missing_parent() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -162,7 +162,7 @@ mod tests {
         drop(listener);
     }
 
-    #[test] // allow-bare-test: soldr-platform is a dependency leaf (#2493)
+    #[test]
     fn endpoint_retirement_is_identity_fenced() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()

@@ -12,7 +12,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use soldr_cli::core::SoldrPaths;
-use soldr_cli::timed_test;
 
 fn drain<R: std::io::Read + Send + 'static>(reader: R) -> Arc<Mutex<Vec<String>>> {
     let lines = Arc::new(Mutex::new(Vec::new()));
@@ -60,178 +59,174 @@ impl Drop for BrokerGuard {
     }
 }
 
-timed_test!(
-    daemon_stop_tombstone_suppresses_broker_proactive_launch,
-    Duration::from_secs(90),
-    {
-        let root = common::unique_temp_dir("tombstone-root");
-        let home = common::unique_temp_dir("tombstone-home");
-        let service_root = home.join("service-definitions");
-        let project = root.join("workspace");
-        std::fs::create_dir_all(project.join("src")).expect("create source directory");
-        std::fs::write(project.join("src/lib.rs"), "pub fn tombstone() {}\n")
-            .expect("write source");
+#[test]
+fn daemon_stop_tombstone_suppresses_broker_proactive_launch() {
+    let root = common::unique_temp_dir("tombstone-root");
+    let home = common::unique_temp_dir("tombstone-home");
+    let service_root = home.join("service-definitions");
+    let project = root.join("workspace");
+    std::fs::create_dir_all(project.join("src")).expect("create source directory");
+    std::fs::write(project.join("src/lib.rs"), "pub fn tombstone() {}\n").expect("write source");
 
-        // 1) `soldr daemon stop` on a clean root: the daemon isn't running, but
-        //    the tombstone is planted regardless (the suppression window starts
-        //    the moment a stop is requested).
-        let mut stop = Command::new(common::soldr_bin());
-        common::scrub_outer_soldr_env(&mut stop);
-        let stop_out = stop
-            .args(["daemon", "stop"])
-            .env("SOLDR_CACHE_DIR", &root)
-            .env("HOME", &home)
-            .env("USERPROFILE", &home)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .expect("run soldr daemon stop");
-        assert!(
-            stop_out.status.success(),
-            "daemon stop failed: {}",
-            String::from_utf8_lossy(&stop_out.stderr)
-        );
-        // `daemon stop` is an eligible top-level front door, so it first
-        // confirms/resurrects the stable broker before planting the route
-        // tombstone. Stop that broker explicitly before starting the
-        // instrumented foreground broker below; the tombstone itself remains.
-        let broker_stop = Command::new(common::soldr_bin())
-            .args(["broker", "stop"])
-            .env("HOME", &home)
-            .env("USERPROFILE", &home)
-            .output()
-            .expect("stop broker created by daemon stop front door");
-        assert!(
-            broker_stop.status.success(),
-            "broker stop failed: {}",
-            String::from_utf8_lossy(&broker_stop.stderr)
-        );
+    // 1) `soldr daemon stop` on a clean root: the daemon isn't running, but
+    //    the tombstone is planted regardless (the suppression window starts
+    //    the moment a stop is requested).
+    let mut stop = Command::new(common::soldr_bin());
+    common::scrub_outer_soldr_env(&mut stop);
+    let stop_out = stop
+        .args(["daemon", "stop"])
+        .env("SOLDR_CACHE_DIR", &root)
+        .env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run soldr daemon stop");
+    assert!(
+        stop_out.status.success(),
+        "daemon stop failed: {}",
+        String::from_utf8_lossy(&stop_out.stderr)
+    );
+    // `daemon stop` is an eligible top-level front door, so it first
+    // confirms/resurrects the stable broker before planting the route
+    // tombstone. Stop that broker explicitly before starting the
+    // instrumented foreground broker below; the tombstone itself remains.
+    let broker_stop = Command::new(common::soldr_bin())
+        .args(["broker", "stop"])
+        .env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .output()
+        .expect("stop broker created by daemon stop front door");
+    assert!(
+        broker_stop.status.success(),
+        "broker stop failed: {}",
+        String::from_utf8_lossy(&broker_stop.stderr)
+    );
 
-        // 2) Register this root's route and start a broker. Since #2441 the
-        //    broker is passive until a client requests a registered route; that
-        //    requested launch must observe the live tombstone and leave no
-        //    daemon behind.
-        let paths = SoldrPaths::with_root(root.clone());
-        let installed =
-            soldr_cli::daemon::service_definition::install_service_definition_to_dir_for_paths(
-                &service_root,
-                &paths,
-                &common::soldr_daemon_bin(),
-            )
-            .expect("install isolated daemon service definition");
-        let _service_definition = ServiceDefinitionGuard(installed.path.clone());
-        let mut broker_command = Command::new(common::soldr_bin());
-        common::scrub_outer_soldr_env(&mut broker_command);
-        let child = broker_command
-            .args(["broker", "serve"])
-            .env("SOLDR_CACHE_DIR", &root)
-            .env("HOME", &home)
-            .env("USERPROFILE", &home)
-            .env("RUNNING_PROCESS_SERVICE_DEF_DIR", &service_root)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn broker");
-        let mut broker = BrokerGuard {
-            child,
-            root: root.clone(),
-        };
-        let out = drain(broker.child.stdout.take().expect("broker stdout"));
-        let err = drain(broker.child.stderr.take().expect("broker stderr"));
+    // 2) Register this root's route and start a broker. Since #2441 the
+    //    broker is passive until a client requests a registered route; that
+    //    requested launch must observe the live tombstone and leave no
+    //    daemon behind.
+    let paths = SoldrPaths::with_root(root.clone());
+    let installed =
+        soldr_cli::daemon::service_definition::install_service_definition_to_dir_for_paths(
+            &service_root,
+            &paths,
+            &common::soldr_daemon_bin(),
+        )
+        .expect("install isolated daemon service definition");
+    let _service_definition = ServiceDefinitionGuard(installed.path.clone());
+    let mut broker_command = Command::new(common::soldr_bin());
+    common::scrub_outer_soldr_env(&mut broker_command);
+    let child = broker_command
+        .args(["broker", "serve"])
+        .env("SOLDR_CACHE_DIR", &root)
+        .env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .env("RUNNING_PROCESS_SERVICE_DEF_DIR", &service_root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn broker");
+    let mut broker = BrokerGuard {
+        child,
+        root: root.clone(),
+    };
+    let out = drain(broker.child.stdout.take().expect("broker stdout"));
+    let err = drain(broker.child.stderr.take().expect("broker stderr"));
 
-        // soldr#2493: 10s was not enough and the reason is now measured rather
-        // than guessed. Bringup instrumentation on the failing Linux lane shows
-        // secure_directories/tokio_runtime/peer_policy each at 0ms and then no
-        // further phase inside the window — the broker spends the whole time in
-        // `instance_id`, blake3-hashing its own executable. It is not waiting on
-        // the hash lock (no contention line is emitted); the cold hash itself is
-        // that slow on a loaded runner. A local probe measured 3.8s for a 60MB
-        // image on a warm dev box.
-        //
-        // This test launches `broker serve` directly, which is the expensive
-        // case: a front-door-spawned broker is handed its instance id via
-        // `SOLDR_INTERNAL_BROKER_INSTANCE_ID` and never hashes at all. So the
-        // window has to cover work production does not do. 60s clears the
-        // observed cost with margin and stays well inside the 90s watchdog,
-        // which is what actually guards against a real hang.
-        let broker_ready = wait_for(
-            &out,
-            "stable endpoint bound at",
-            Instant::now() + Duration::from_secs(60),
-        );
-        let child_state = match broker.child.try_wait() {
-            Ok(Some(status)) => format!("exited {status}"),
-            Ok(None) => "still alive".to_string(),
-            Err(error) => format!("wait error {error}"),
-        };
-        assert!(
-            broker_ready,
-            "broker did not become ready (child {child_state}).\nThe last `bringup phase=` line \
+    // soldr#2493: 10s was not enough and the reason is now measured rather
+    // than guessed. Bringup instrumentation on the failing Linux lane shows
+    // secure_directories/tokio_runtime/peer_policy each at 0ms and then no
+    // further phase inside the window — the broker spends the whole time in
+    // `instance_id`, blake3-hashing its own executable. It is not waiting on
+    // the hash lock (no contention line is emitted); the cold hash itself is
+    // that slow on a loaded runner. A local probe measured 3.8s for a 60MB
+    // image on a warm dev box.
+    //
+    // This test launches `broker serve` directly, which is the expensive
+    // case: a front-door-spawned broker is handed its instance id via
+    // `SOLDR_INTERNAL_BROKER_INSTANCE_ID` and never hashes at all. So the
+    // window has to cover work production does not do. 60s clears the
+    // observed cost with margin and stays well inside the 90s watchdog,
+    // which is what actually guards against a real hang.
+    let broker_ready = wait_for(
+        &out,
+        "stable endpoint bound at",
+        Instant::now() + Duration::from_secs(60),
+    );
+    let child_state = match broker.child.try_wait() {
+        Ok(Some(status)) => format!("exited {status}"),
+        Ok(None) => "still alive".to_string(),
+        Err(error) => format!("wait error {error}"),
+    };
+    assert!(
+        broker_ready,
+        "broker did not become ready (child {child_state}).\nThe last `bringup phase=` line \
              on stderr names the last phase that COMPLETED; the stall is in the phase after it.\
              \nstdout:\n{}\nstderr:\n{}",
-            out.lock().unwrap().join("\n"),
-            err.lock().unwrap().join("\n")
-        );
-        let rustc = Path::new(&std::env::var_os("CARGO").expect("CARGO set by cargo test"))
-            .with_file_name(format!("rustc{}", std::env::consts::EXE_SUFFIX));
-        let mut request = Command::new(common::soldr_bin());
-        common::scrub_outer_soldr_env(&mut request);
-        let request_output = request
-            .arg(&rustc)
-            .args([
-                "--edition",
-                "2021",
-                "--crate-type",
-                "lib",
-                "--crate-name",
-                "soldr_tombstone_probe",
-                "--emit=metadata",
-                "--out-dir",
-                "target",
-                "src/lib.rs",
-            ])
-            .current_dir(&project)
-            .env("SOLDR_CACHE_DIR", &root)
-            .env("HOME", &home)
-            .env("USERPROFILE", &home)
-            .output()
-            .expect("request tombstoned route through compiler wrapper");
-        assert!(
-            !request_output.status.success(),
-            "the broker request must fail while the tombstone is live"
-        );
-        let request_message = format!(
-            "{}{}",
-            String::from_utf8_lossy(&request_output.stdout),
-            String::from_utf8_lossy(&request_output.stderr)
-        );
+        out.lock().unwrap().join("\n"),
+        err.lock().unwrap().join("\n")
+    );
+    let rustc = Path::new(&std::env::var_os("CARGO").expect("CARGO set by cargo test"))
+        .with_file_name(format!("rustc{}", std::env::consts::EXE_SUFFIX));
+    let mut request = Command::new(common::soldr_bin());
+    common::scrub_outer_soldr_env(&mut request);
+    let request_output = request
+        .arg(&rustc)
+        .args([
+            "--edition",
+            "2021",
+            "--crate-type",
+            "lib",
+            "--crate-name",
+            "soldr_tombstone_probe",
+            "--emit=metadata",
+            "--out-dir",
+            "target",
+            "src/lib.rs",
+        ])
+        .current_dir(&project)
+        .env("SOLDR_CACHE_DIR", &root)
+        .env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .output()
+        .expect("request tombstoned route through compiler wrapper");
+    assert!(
+        !request_output.status.success(),
+        "the broker request must fail while the tombstone is live"
+    );
+    let request_message = format!(
+        "{}{}",
+        String::from_utf8_lossy(&request_output.stdout),
+        String::from_utf8_lossy(&request_output.stderr)
+    );
 
-        // Give any (erroneous) launch a moment to publish its route claim before we
-        // assert none exists.
-        std::thread::sleep(Duration::from_secs(2));
-        let daemon_launched = find_daemon_pid(&root);
+    // Give any (erroneous) launch a moment to publish its route claim before we
+    // assert none exists.
+    std::thread::sleep(Duration::from_secs(2));
+    let daemon_launched = find_daemon_pid(&root);
 
-        drop(broker);
+    drop(broker);
 
-        let log = format!(
-            "broker request: {request_message}\nbroker stdout:\n  {}\nbroker stderr:\n  {}",
-            out.lock().unwrap().join("\n  "),
-            err.lock().unwrap().join("\n  ")
-        );
-        assert!(
-            request_message.contains("tombstone active"),
-            "broker must report that it skipped the requested launch under a live \
+    let log = format!(
+        "broker request: {request_message}\nbroker stdout:\n  {}\nbroker stderr:\n  {}",
+        out.lock().unwrap().join("\n  "),
+        err.lock().unwrap().join("\n  ")
+    );
+    assert!(
+        request_message.contains("tombstone active"),
+        "broker must report that it skipped the requested launch under a live \
              tombstone\n{log}"
-        );
-        assert!(
-            daemon_launched.is_none(),
-            "no daemon may be launched while the tombstone is live (found pid \
+    );
+    assert!(
+        daemon_launched.is_none(),
+        "no daemon may be launched while the tombstone is live (found pid \
              {daemon_launched:?})\n{log}"
-        );
-    }
-);
+    );
+}
 
 /// Read the daemon PID from the route's protobuf ownership claim, if any.
 fn find_daemon_pid(root: &std::path::Path) -> Option<u32> {

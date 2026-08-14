@@ -149,7 +149,8 @@ fn exe_name(base: &str) -> String {
 mod tests {
     use super::*;
 
-    crate::timed_test!(host_slug_for_supported_triples, {
+    #[test]
+    fn host_slug_for_supported_triples() {
         assert_eq!(host_slug_for("x86_64-pc-windows-msvc"), Some("windows-x64"));
         assert_eq!(host_slug_for("aarch64-apple-darwin"), Some("darwin-arm64"));
         assert_eq!(
@@ -160,9 +161,10 @@ mod tests {
         // binaries. The miss routes callers to system cmake.
         assert_eq!(host_slug_for("x86_64-unknown-linux-musl"), None);
         assert_eq!(host_slug_for("wasm32-unknown-unknown"), None);
-    });
+    }
 
-    crate::timed_test!(asset_url_layout_matches_catalogue, {
+    #[test]
+    fn asset_url_layout_matches_catalogue() {
         let c = cmake_asset_url_for(MANAGED_CMAKE_VERSION, "windows-x64");
         assert!(c.starts_with("https://media.githubusercontent.com/media/"));
         assert!(c.contains("/cmake/4.3.4/windows-x64/"));
@@ -171,9 +173,10 @@ mod tests {
         let n = ninja_asset_url_for(MANAGED_NINJA_VERSION, "linux-arm64-gnu");
         assert!(n.contains("/ninja/1.13.2/linux-arm64-gnu/"));
         assert!(n.ends_with("/bundle.tar.zst"));
-    });
+    }
 
-    crate::timed_test!(version_constants_well_formed, {
+    #[test]
+    fn version_constants_well_formed() {
         for v in [MANAGED_CMAKE_VERSION, MANAGED_NINJA_VERSION] {
             let parts: Vec<&str> = v.split('.').collect();
             assert_eq!(parts.len(), 3, "expected MAJOR.MINOR.PATCH, got {v}");
@@ -181,9 +184,10 @@ mod tests {
                 assert!(p.chars().all(|c| c.is_ascii_digit()), "non-digit in {v}");
             }
         }
-    });
+    }
 
-    crate::timed_test!(current_host_triple_is_in_known_set_or_musl, {
+    #[test]
+    fn current_host_triple_is_in_known_set_or_musl() {
         let host = current_host_triple();
         let known = CMAKE_TOOL_HOSTS.iter().any(|(t, _)| *t == host);
         let musl = host.ends_with("-unknown-linux-musl");
@@ -191,9 +195,10 @@ mod tests {
             known || musl,
             "host {host} neither a supported cmake host nor musl"
         );
-    });
+    }
 
-    crate::timed_test!(exe_paths_are_platform_correct, {
+    #[test]
+    fn exe_paths_are_platform_correct() {
         let root = Path::new("root");
         let cmake = cmake_exe(root);
         let ninja = ninja_exe(root);
@@ -204,9 +209,10 @@ mod tests {
             assert!(cmake.ends_with("bin/cmake"));
             assert!(ninja.ends_with("bin/ninja"));
         }
-    });
+    }
 
-    crate::timed_test!(ensure_bundles_reject_unsupported_host, {
+    #[test]
+    fn ensure_bundles_reject_unsupported_host() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -218,5 +224,5 @@ mod tests {
             .block_on(ensure_ninja_bundle(&paths, "x86_64-unknown-linux-musl"))
             .expect_err("musl host must error");
         assert!(matches!(err, SoldrError::UnsupportedPlatform(_)));
-    });
+    }
 }

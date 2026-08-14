@@ -144,7 +144,8 @@ pub async fn ensure_python_sysroot(
 mod tests {
     use super::*;
 
-    crate::timed_test!(catalogue_covers_all_canonical_targets, {
+    #[test]
+    fn catalogue_covers_all_canonical_targets() {
         for (triple, _slug) in PYTHON_SYSROOT_TARGETS {
             assert!(
                 crate::core::canonical_targets::is_canonical(triple),
@@ -157,17 +158,19 @@ mod tests {
                 "canonical target {canonical} has no python sysroot row"
             );
         }
-    });
+    }
 
-    crate::timed_test!(asset_url_layout_matches_catalogue, {
+    #[test]
+    fn asset_url_layout_matches_catalogue() {
         let u = asset_url_for("3.13.0", "windows-x64");
         assert!(u.starts_with("https://media.githubusercontent.com/media/"));
         assert!(u.contains("/zackees/soldr-toolchain/assets/"));
         assert!(u.contains("/python/3.13.0/windows-x64/"));
         assert!(u.ends_with("/bundle.tar.zst"));
-    });
+    }
 
-    crate::timed_test!(catalogue_slug_for_known_triples, {
+    #[test]
+    fn catalogue_slug_for_known_triples() {
         assert_eq!(
             catalogue_slug_for("x86_64-pc-windows-msvc"),
             Some("windows-x64")
@@ -189,9 +192,10 @@ mod tests {
             Some("linux-x64-musl")
         );
         assert_eq!(catalogue_slug_for("wasm32-unknown-unknown"), None);
-    });
+    }
 
-    crate::timed_test!(requested_python_version_accepts_exact_override_serial, {
+    #[test]
+    fn requested_python_version_accepts_exact_override_serial() {
         let prev = std::env::var_os(PYTHON_VERSION_ENV_VAR);
 
         std::env::remove_var(PYTHON_VERSION_ENV_VAR);
@@ -204,17 +208,19 @@ mod tests {
             Some(v) => std::env::set_var(PYTHON_VERSION_ENV_VAR, v),
             None => std::env::remove_var(PYTHON_VERSION_ENV_VAR),
         }
-    });
+    }
 
-    crate::timed_test!(lib_dir_matches_published_bundle_layout, {
+    #[test]
+    fn lib_dir_matches_published_bundle_layout() {
         let sysroot = PythonSysroot {
             root: PathBuf::from("sdk").join("package"),
             version: "3.13.14".into(),
         };
         assert_eq!(sysroot.lib_dir(), PathBuf::from("sdk/package/lib"));
-    });
+    }
 
-    crate::timed_test!(newest_version_is_selected_from_target_catalogue_rows, {
+    #[test]
+    fn newest_version_is_selected_from_target_catalogue_rows() {
         let index = super::super::manifest_lookup::ManifestIndex::from_json(
             r#"{"entries":[
                 {"owner":"zackees","repo":"soldr-toolchain","tag":"3.12.7","asset":"bundle.tar.zst","url":"https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets/python/3.12.7/windows-x64/bundle.tar.zst","sha256":"aa"},
@@ -227,5 +233,5 @@ mod tests {
             newest_catalogue_version_for_slug(&index, "windows-x64").as_deref(),
             Some("3.13.14")
         );
-    });
+    }
 }

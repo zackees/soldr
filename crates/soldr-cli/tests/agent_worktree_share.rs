@@ -98,189 +98,181 @@ fn pid_is_alive(pid: u32) -> bool {
     soldr_platform::process::inspect::is_alive(pid)
 }
 
-soldr_cli::timed_test!(
-    windows_long_path_publication_survives_fresh_worktree_reuse,
-    Duration::from_secs(300),
-    {
-        if !matches!(
-            soldr_platform::host::facts::os(),
-            soldr_platform::host::facts::HostOs::Windows
-        ) {
-            return;
-        }
-        let workdir = unique_temp_dir("windows-cache-publication");
-        let cache_dir = workdir.join("shared-cache");
-        let guard = FixtureGuard::new(workdir.clone(), cache_dir.clone());
-        let crate_dir = workdir.join("test-crate");
-
-        fs::create_dir_all(&cache_dir).expect("create cache dir");
-        assert!(
-            embedded_artifact_dir(&cache_dir).as_os_str().len() >= 81,
-            "test cache root must be at least as deep as the production embedded store: {}",
-            embedded_artifact_dir(&cache_dir).display(),
-        );
-        assert!(
-            durable_digest_temp_path(&cache_dir).as_os_str().len() > 260,
-            "test durable-digest sidecar must exceed MAX_PATH: {}",
-            durable_digest_temp_path(&cache_dir).display(),
-        );
-        create_test_crate(&crate_dir);
-
-        // A real `.git/` checkout makes this match the user-facing fresh
-        // worktree case, and makes zccache's path-remap auto mode use the
-        // common checkout root.
-        git(&["init", "-q"], &crate_dir);
-        git(&["add", "."], &crate_dir);
-        git(
-            &[
-                "-c",
-                "user.email=test@soldr.invalid",
-                "-c",
-                "user.name=test",
-                "commit",
-                "-q",
-                "-m",
-                "initial",
-            ],
-            &crate_dir,
-        );
-
-        let first_worktree = crate_dir.join(".claude/worktrees/cold");
-        let second_worktree = crate_dir.join(".codex/worktrees/warm");
-        git(
-            &[
-                "worktree",
-                "add",
-                "-q",
-                first_worktree
-                    .to_str()
-                    .expect("worktree path must be utf-8"),
-                "HEAD",
-            ],
-            &crate_dir,
-        );
-        git(
-            &[
-                "worktree",
-                "add",
-                "-q",
-                second_worktree
-                    .to_str()
-                    .expect("worktree path must be utf-8"),
-                "HEAD",
-            ],
-            &crate_dir,
-        );
-
-        let cold_output =
-            soldr_cargo_check(&first_worktree, &cache_dir, &workdir.join("cold-target"));
-        let cold = read_json(&latest_archived_session_stats(&cache_dir, &cold_output));
-        let first_session_stats = archived_session_stats(&cache_dir);
-
-        let cold_hits = u64_field(&cold, "hits");
-        let cold_misses = u64_field(&cold, "misses");
-        assert_eq!(cold_hits, 0, "cold build unexpectedly hit cache: {cold:#?}");
-        assert!(
-            cold_misses > 0,
-            "cold build must contain cacheable misses: {cold:#?}"
-        );
-        assert_eq!(
-            staged_counter(&cold, "publication_success"),
-            cold_misses,
-            "every cacheable cold miss must be durably published: {cold:#?}",
-        );
-        assert_eq!(
-            staged_failure(&cold, "durable_digest"),
-            0,
-            "long-path durable digest publication must not fail: {cold:#?}",
-        );
-
-        let warm_output =
-            soldr_cargo_check(&second_worktree, &cache_dir, &workdir.join("warm-target"));
-        let warm = read_json(&new_archived_session_stats(
-            &cache_dir,
-            &first_session_stats,
-            &warm_output,
-        ));
-        let warm_hits = u64_field(&warm, "hits");
-        let warm_misses = u64_field(&warm, "misses");
-
-        assert!(
-            warm_hits > 0,
-            "fresh worktree and target must reuse the cold build: {warm:#?}",
-        );
-        let warm_published = staged_counter(&warm, "publication_success");
-        let warm_conflicts = staged_counter(&warm, "publication_conflict");
-        // A few compiler outputs legitimately encode their target directory.
-        // Those cannot be reused across fresh targets, but the staged store
-        // must safely quarantine the candidate rather than replacing the
-        // durable generation from the first worktree. Every other miss must
-        // still publish successfully.
-        assert_eq!(
-            warm_published + warm_conflicts,
-            warm_misses,
-            "every fresh-target miss must publish or be safely quarantined as a conflict: {warm:#?}",
-        );
-        assert_eq!(
-            staged_failure(&warm, "publication_conflict"),
-            warm_conflicts,
-            "each quarantined fresh-target miss must report its conflict: {warm:#?}",
-        );
-        assert_eq!(
-            staged_failure(&warm, "durable_digest"),
-            0,
-            "fresh-target publication must not fail durable digest creation: {warm:#?}",
-        );
-        guard.stop_and_assert_exited();
+#[test]
+fn windows_long_path_publication_survives_fresh_worktree_reuse() {
+    if !matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
     }
-);
+    let workdir = unique_temp_dir("windows-cache-publication");
+    let cache_dir = workdir.join("shared-cache");
+    let guard = FixtureGuard::new(workdir.clone(), cache_dir.clone());
+    let crate_dir = workdir.join("test-crate");
 
-soldr_cli::timed_test!(
-    windows_deep_cache_root_keeps_staged_linker_path_short,
-    Duration::from_secs(300),
-    {
-        let workdir = unique_temp_dir("windows-deep-cache-staging");
-        let mut cache_dir = workdir.join("cache-root");
-        // Keep the durable root deep enough to make the legacy compiler
-        // staging path exceed MAX_PATH, while leaving the cache metadata
-        // paths themselves usable on Windows. The regression is specifically
-        // about compiler staging, which now lives under the short private
-        // staging root.
-        while cache_dir.as_os_str().len() < 140 {
-            cache_dir = cache_dir.join("deep-cache-segment");
-        }
-        let guard = FixtureGuard::new(workdir.clone(), cache_dir.clone());
-        let crate_dir = workdir.join("test-crate");
-        fs::create_dir_all(&cache_dir).expect("create deep cache dir");
-        create_test_crate(&crate_dir);
+    fs::create_dir_all(&cache_dir).expect("create cache dir");
+    assert!(
+        embedded_artifact_dir(&cache_dir).as_os_str().len() >= 81,
+        "test cache root must be at least as deep as the production embedded store: {}",
+        embedded_artifact_dir(&cache_dir).display(),
+    );
+    assert!(
+        durable_digest_temp_path(&cache_dir).as_os_str().len() > 260,
+        "test durable-digest sidecar must exceed MAX_PATH: {}",
+        durable_digest_temp_path(&cache_dir).display(),
+    );
+    create_test_crate(&crate_dir);
 
-        let legacy_staging_probe = cache_dir
-            .join("cache/zccache/daemon-state/embedded-v1/v1.13.1/staging")
-            .join("12345-0-1785588800636122100")
-            .join(".compile-12345-1")
-            .join("build_script_build-52378a44826b4cb2.exe");
-        assert!(
-            legacy_staging_probe.as_os_str().len() > 260,
-            "fixture must exceed MAX_PATH on the former linker path: {}",
-            legacy_staging_probe.display()
-        );
+    // A real `.git/` checkout makes this match the user-facing fresh
+    // worktree case, and makes zccache's path-remap auto mode use the
+    // common checkout root.
+    git(&["init", "-q"], &crate_dir);
+    git(&["add", "."], &crate_dir);
+    git(
+        &[
+            "-c",
+            "user.email=test@soldr.invalid",
+            "-c",
+            "user.name=test",
+            "commit",
+            "-q",
+            "-m",
+            "initial",
+        ],
+        &crate_dir,
+    );
 
-        let _output = soldr_cargo_check(&crate_dir, &cache_dir, &workdir.join("target"));
-        // `soldr`'s explanatory deep-cache warning names LNK1104 even when
-        // the compile succeeds, so command success is the authoritative
-        // assertion that the linker did not receive an unusable path.
-        assert!(
-            !cache_dir
-                .join("cache/zccache/daemon-state/embedded-v1")
-                .join(zccache::core::config::versioned_subdir())
-                .join("staging")
-                .exists(),
-            "Windows compiler staging must be outside the deep durable cache root"
-        );
+    let first_worktree = crate_dir.join(".claude/worktrees/cold");
+    let second_worktree = crate_dir.join(".codex/worktrees/warm");
+    git(
+        &[
+            "worktree",
+            "add",
+            "-q",
+            first_worktree
+                .to_str()
+                .expect("worktree path must be utf-8"),
+            "HEAD",
+        ],
+        &crate_dir,
+    );
+    git(
+        &[
+            "worktree",
+            "add",
+            "-q",
+            second_worktree
+                .to_str()
+                .expect("worktree path must be utf-8"),
+            "HEAD",
+        ],
+        &crate_dir,
+    );
 
-        guard.stop_and_assert_exited();
+    let cold_output = soldr_cargo_check(&first_worktree, &cache_dir, &workdir.join("cold-target"));
+    let cold = read_json(&latest_archived_session_stats(&cache_dir, &cold_output));
+    let first_session_stats = archived_session_stats(&cache_dir);
+
+    let cold_hits = u64_field(&cold, "hits");
+    let cold_misses = u64_field(&cold, "misses");
+    assert_eq!(cold_hits, 0, "cold build unexpectedly hit cache: {cold:#?}");
+    assert!(
+        cold_misses > 0,
+        "cold build must contain cacheable misses: {cold:#?}"
+    );
+    assert_eq!(
+        staged_counter(&cold, "publication_success"),
+        cold_misses,
+        "every cacheable cold miss must be durably published: {cold:#?}",
+    );
+    assert_eq!(
+        staged_failure(&cold, "durable_digest"),
+        0,
+        "long-path durable digest publication must not fail: {cold:#?}",
+    );
+
+    let warm_output = soldr_cargo_check(&second_worktree, &cache_dir, &workdir.join("warm-target"));
+    let warm = read_json(&new_archived_session_stats(
+        &cache_dir,
+        &first_session_stats,
+        &warm_output,
+    ));
+    let warm_hits = u64_field(&warm, "hits");
+    let warm_misses = u64_field(&warm, "misses");
+
+    assert!(
+        warm_hits > 0,
+        "fresh worktree and target must reuse the cold build: {warm:#?}",
+    );
+    let warm_published = staged_counter(&warm, "publication_success");
+    let warm_conflicts = staged_counter(&warm, "publication_conflict");
+    // A few compiler outputs legitimately encode their target directory.
+    // Those cannot be reused across fresh targets, but the staged store
+    // must safely quarantine the candidate rather than replacing the
+    // durable generation from the first worktree. Every other miss must
+    // still publish successfully.
+    assert_eq!(
+        warm_published + warm_conflicts,
+        warm_misses,
+        "every fresh-target miss must publish or be safely quarantined as a conflict: {warm:#?}",
+    );
+    assert_eq!(
+        staged_failure(&warm, "publication_conflict"),
+        warm_conflicts,
+        "each quarantined fresh-target miss must report its conflict: {warm:#?}",
+    );
+    assert_eq!(
+        staged_failure(&warm, "durable_digest"),
+        0,
+        "fresh-target publication must not fail durable digest creation: {warm:#?}",
+    );
+    guard.stop_and_assert_exited();
+}
+
+#[test]
+fn windows_deep_cache_root_keeps_staged_linker_path_short() {
+    let workdir = unique_temp_dir("windows-deep-cache-staging");
+    let mut cache_dir = workdir.join("cache-root");
+    // Keep the durable root deep enough to make the legacy compiler
+    // staging path exceed MAX_PATH, while leaving the cache metadata
+    // paths themselves usable on Windows. The regression is specifically
+    // about compiler staging, which now lives under the short private
+    // staging root.
+    while cache_dir.as_os_str().len() < 140 {
+        cache_dir = cache_dir.join("deep-cache-segment");
     }
-);
+    let guard = FixtureGuard::new(workdir.clone(), cache_dir.clone());
+    let crate_dir = workdir.join("test-crate");
+    fs::create_dir_all(&cache_dir).expect("create deep cache dir");
+    create_test_crate(&crate_dir);
+
+    let legacy_staging_probe = cache_dir
+        .join("cache/zccache/daemon-state/embedded-v1/v1.13.1/staging")
+        .join("12345-0-1785588800636122100")
+        .join(".compile-12345-1")
+        .join("build_script_build-52378a44826b4cb2.exe");
+    assert!(
+        legacy_staging_probe.as_os_str().len() > 260,
+        "fixture must exceed MAX_PATH on the former linker path: {}",
+        legacy_staging_probe.display()
+    );
+
+    let _output = soldr_cargo_check(&crate_dir, &cache_dir, &workdir.join("target"));
+    // `soldr`'s explanatory deep-cache warning names LNK1104 even when
+    // the compile succeeds, so command success is the authoritative
+    // assertion that the linker did not receive an unusable path.
+    assert!(
+        !cache_dir
+            .join("cache/zccache/daemon-state/embedded-v1")
+            .join(zccache::core::config::versioned_subdir())
+            .join("staging")
+            .exists(),
+        "Windows compiler staging must be outside the deep durable cache root"
+    );
+
+    guard.stop_and_assert_exited();
+}
 
 fn embedded_artifact_dir(cache_dir: &Path) -> PathBuf {
     cache_dir

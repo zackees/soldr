@@ -6,7 +6,6 @@ use std::io::Write;
 use std::path::Path;
 
 use soldr_cache::cache_lib::cook_archive::{extract_skip_existing, pack_cook_archive};
-use soldr_cache::timed_test;
 use tempfile::TempDir;
 
 fn write_file(p: &Path, bytes: &[u8]) {
@@ -28,7 +27,8 @@ fn write_file(p: &Path, bytes: &[u8]) {
 // `Permission denied (os error 13)` naming whichever build script
 // it happened to reach first, so the failure looks like a flaky
 // problem with an unrelated third-party crate.
-timed_test!(extract_preserves_executable_bit, {
+#[test]
+fn extract_preserves_executable_bit() {
     if matches!(
         soldr_platform::host::facts::os(),
         soldr_platform::host::facts::HostOs::Windows
@@ -74,4 +74,4 @@ timed_test!(extract_preserves_executable_bit, {
         0,
         "a non-executable input must stay non-executable"
     );
-});
+}

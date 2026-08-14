@@ -19,7 +19,6 @@
 mod common;
 
 use common::*;
-use soldr_cli::timed_test;
 use std::path::{Path, PathBuf};
 use std::{fs, process::Command};
 
@@ -184,7 +183,7 @@ impl Harness {
             // The GNU catalogue bundle is pre-seeded below so the build stays
             // hermetic while exercising only Cargo prefetch ordering.
             .env("SOLDR_MANIFEST_DISABLE", "1")
-            // soldr#2159: these tests abort at the 120s `timed_test!` watchdog
+            // soldr#2159: these tests hit the 120s nextest budget
             // on CI while finishing in ~1.4s locally, and the child produces no
             // output at all, so three rounds of hypotheses have been guesswork.
             // Every `command_output_with_timeout` call defaults to 60s, so two
@@ -251,7 +250,8 @@ fn fetch_invocations(invocations: &[Vec<String>]) -> Vec<&Vec<String>> {
         .collect()
 }
 
-timed_test!(blessed_build_prefetches_dependencies_before_cargo_build, {
+#[test]
+fn blessed_build_prefetches_dependencies_before_cargo_build() {
     let harness = Harness::new("basic", true);
     let output = harness.run(&["--no-cache", "build", "--target", TARGET], &[]);
     assert_success(&output, "soldr build --target");
@@ -295,9 +295,10 @@ timed_test!(blessed_build_prefetches_dependencies_before_cargo_build, {
         stderr.contains("dependency prefetch completed"),
         "expected the prefetch completion line on stderr:\n{stderr}"
     );
-});
+}
 
-timed_test!(offline_build_skips_prefetch, {
+#[test]
+fn offline_build_skips_prefetch() {
     let harness = Harness::new("offline", true);
     let output = harness.run(
         &["--no-cache", "build", "--target", TARGET, "--offline"],
@@ -316,9 +317,10 @@ timed_test!(offline_build_skips_prefetch, {
             .any(|argv| argv.first().map(String::as_str) == Some("build")),
         "the main cargo build must still run: {invocations:?}"
     );
-});
+}
 
-timed_test!(missing_lockfile_still_prefetches, {
+#[test]
+fn missing_lockfile_still_prefetches() {
     let harness = Harness::new("nolock", false);
     let output = harness.run(&["--no-cache", "build", "--target", TARGET], &[]);
     assert_success(&output, "soldr build --target (no lockfile)");
@@ -328,9 +330,10 @@ timed_test!(missing_lockfile_still_prefetches, {
         fetch_invocations(&invocations).len() == 1,
         "no Cargo.lock must mean no `cargo fetch` prefetch: {invocations:?}"
     );
-});
+}
 
-timed_test!(kill_switch_skips_prefetch, {
+#[test]
+fn kill_switch_skips_prefetch() {
     let harness = Harness::new("killswitch", true);
     let output = harness.run(
         &["--no-cache", "build", "--target", TARGET],
@@ -343,9 +346,10 @@ timed_test!(kill_switch_skips_prefetch, {
         fetch_invocations(&invocations).is_empty(),
         "SOLDR_FETCH_OVERLAP=0 must suppress the prefetch: {invocations:?}"
     );
-});
+}
 
-timed_test!(failing_prefetch_does_not_fail_the_build, {
+#[test]
+fn failing_prefetch_does_not_fail_the_build() {
     let harness = Harness::new("besteffort", true);
     let output = harness.run(
         &["--no-cache", "build", "--target", TARGET],
@@ -373,9 +377,10 @@ timed_test!(failing_prefetch_does_not_fail_the_build, {
         stderr.contains("dependency prefetch exited with"),
         "expected the best-effort failure log line on stderr:\n{stderr}"
     );
-});
+}
 
-timed_test!(legacy_and_non_build_commands_spawn_no_prefetch, {
+#[test]
+fn legacy_and_non_build_commands_spawn_no_prefetch() {
     // The explicit legacy passthrough surface: `soldr cargo build`.
     let harness = Harness::new("legacy", true);
     let output = harness.run(&["--no-cache", "cargo", "build", "--target", TARGET], &[]);
@@ -395,4 +400,4 @@ timed_test!(legacy_and_non_build_commands_spawn_no_prefetch, {
         fetch_invocations(&invocations).is_empty(),
         "`soldr cargo check` must spawn no prefetch: {invocations:?}"
     );
-});
+}

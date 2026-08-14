@@ -5,14 +5,14 @@
 //! harness too — this integration target is deliberately NOT cfg-gated.
 //!
 //! Test declaration note: this is a non-production test target, so bare
-//! `#[test]` is used with the same allow-bare-test convention as the
+//! `#[test]` is used with the same bare-`#\[test\]` convention as the
 //! workspace lint expects.
 
 use soldr_cli::broker_identity::{
     broker_windows_error, identity_key, windows_broker_pipe_from_executable, BrokerIdentityError,
 };
 
-#[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+#[test]
 fn windows_contract_mapping_is_exact() {
     let endpoint =
         windows_broker_pipe_from_executable(r"C:\Users\niteris\.soldr\broker\soldr-broker.exe")
@@ -28,7 +28,7 @@ fn windows_contract_mapping_is_exact() {
     assert!(!endpoint.overflowed);
 }
 
-#[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+#[test]
 fn windows_sanitizer_normalizes_supported_spellings() {
     let expected =
         windows_broker_pipe_from_executable(r"C:\Users\Me\soldr-broker.exe").expect("baseline");
@@ -45,7 +45,7 @@ fn windows_sanitizer_normalizes_supported_spellings() {
     }
 }
 
-#[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+#[test]
 fn windows_sanitizer_normalizes_extended_unc() {
     let ordinary =
         windows_broker_pipe_from_executable(r"\\server\profiles\Me\.soldr\broker\soldr-broker.exe")
@@ -60,7 +60,7 @@ fn windows_sanitizer_normalizes_extended_unc() {
         .starts_with(r"\\server\profiles"));
 }
 
-#[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+#[test]
 fn windows_sanitizer_encodes_space_percent_and_non_ascii_bytes() {
     let endpoint = windows_broker_pipe_from_executable("C:\\Users\\Jöhn 100%\\soldr-broker.exe")
         .expect("endpoint");
@@ -73,7 +73,7 @@ fn windows_sanitizer_encodes_space_percent_and_non_ascii_bytes() {
     );
 }
 
-#[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+#[test]
 fn windows_sanitizer_rejects_relative_and_parent_paths() {
     assert!(matches!(
         windows_broker_pipe_from_executable(r"Users\me\soldr-broker.exe"),
@@ -85,7 +85,7 @@ fn windows_sanitizer_rejects_relative_and_parent_paths() {
     ));
 }
 
-#[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+#[test]
 fn windows_overflow_fallback_is_deterministic_and_diagnostic() {
     let path = format!(r"C:\Users\{}\soldr-broker.exe", "long-profile-".repeat(30));
     let first = windows_broker_pipe_from_executable(&path).expect("first");
@@ -100,7 +100,7 @@ fn windows_overflow_fallback_is_deterministic_and_diagnostic() {
     }));
 }
 
-#[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+#[test]
 fn distinct_canonical_windows_paths_have_distinct_regular_leaves() {
     let cases = [
         r"C:\Users\a\soldr-broker.exe",
@@ -123,7 +123,7 @@ fn distinct_canonical_windows_paths_have_distinct_regular_leaves() {
     }
 }
 
-#[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+#[test]
 fn different_profiles_produce_different_endpoints_without_sid_suffixes() {
     let a = windows_broker_pipe_from_executable(r"C:\Users\alice\.soldr\broker\soldr-broker.exe")
         .unwrap();
@@ -134,7 +134,7 @@ fn different_profiles_produce_different_endpoints_without_sid_suffixes() {
     assert!(!b.pipe_leaf.contains("sid"));
 }
 
-#[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+#[test]
 fn resurrection_leases_are_partitioned_by_broker_executable_path() {
     let a = format!(
         "broker-lease-{}.sqlite3",
@@ -149,7 +149,7 @@ fn resurrection_leases_are_partitioned_by_broker_executable_path() {
     assert!(a.ends_with(".sqlite3"));
 }
 
-#[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+#[test]
 fn endpoint_identity_contains_no_route_or_version_inputs() {
     let first =
         windows_broker_pipe_from_executable(r"C:\Users\same\.soldr\broker\soldr-broker.exe")
@@ -163,7 +163,7 @@ fn endpoint_identity_contains_no_route_or_version_inputs() {
     }
 }
 
-#[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+#[test]
 fn error_mapper_keeps_the_broker_vocabulary() {
     assert!(matches!(
         broker_windows_error("windows executable path must be absolute: x".to_string()),

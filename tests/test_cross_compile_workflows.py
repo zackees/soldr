@@ -51,10 +51,12 @@ def test_windows_behavior_contract_reaches_native_target_runners() -> None:
     ]
     assert not behavioral_test.startswith("#![cfg(windows)]\n")
     assert behavioral_test.count("HostOs::Windows") == len(expected_tests)
-    assert "#[test]" not in behavioral_test
+    # soldr#2493: plain `#[test]` is the declaration form now; nextest owns
+    # the budgets. What still matters is that every expected test is declared
+    # here and that the file is not `#![cfg(windows)]`-gated away.
     for test_name in expected_tests:
-        declaration = rf"(?m)^timed_test!\(\s*{re.escape(test_name)}\s*,"
-        assert re.search(declaration, behavioral_test)
+        declaration = rf"(?m)^#\[test\]\s*\nfn {re.escape(test_name)}\("
+        assert re.search(declaration, behavioral_test), test_name
 
     cross = (WORKFLOWS / "_ci-cross-build-linux.yml").read_text(encoding="utf-8")
     archive = _step_block(cross, "Build nextest archive")
@@ -245,10 +247,21 @@ def test_native_linux_runs_the_complete_workspace_suite() -> None:
     build_and_test = (WORKFLOWS / "_build-and-test.yml").read_text(encoding="utf-8")
     assert "x86_64 GNU is the canonical native exception" in ci
     assert "other seven" in ci
-    assert (
-        "soldr cargo test --workspace --lib --tests --target ${{ inputs.target }}"
-    ) in build_and_test
-    assert "soldr cargo test -p soldr-cli" not in build_and_test
+    # soldr#2493: the suite runs under nextest, which owns per-test timeouts
+    # now that the `timed_test!` watchdog is gone. Plain `cargo test` here
+    # would leave a hung test unbounded.
+    #
+    # Driven by the just-built soldr, not the pinned release: 0.8.29 misplaces
+    # soldr's injected `--config` for every nextest verb, and 0.8.44 (which
+    # places it correctly) breaks other lanes' daemon root ownership, while the
+    # pin-agreement guard forbids running different versions per lane.
+    flattened = " ".join(build_and_test.split())
+    assert 'soldr_under_test="target/${{ inputs.target }}/debug/soldr"' in flattened
+    assert '"$soldr_under_test" cargo nextest run --workspace --lib --tests' in flattened
+    assert "soldr cargo test" not in build_and_test
+    # The lane must stay on bash; PowerShell steps were removed so the logic
+    # lives in `.github/scripts/*.py` where it is testable.
+    assert "shell: pwsh" not in build_and_test
 
 
 def test_archived_source_tests_use_only_runtime_workspace_resolution() -> None:

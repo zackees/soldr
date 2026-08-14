@@ -6,7 +6,7 @@
 //! never spawn. The in-process `soldr zccache` entrypoint
 //! (`src/zccache_entry.rs`) is the single gated entry into the
 //! vendored zccache CLI. This lint walks every `.rs` file under
-//! `crates/soldr-cli/src/` (like `tests/timed_test_lint.rs`) and
+//! `crates/soldr-cli/src/` (like `tests/no_timed_test_guard.rs`) and
 //! asserts the source-level invariants that keep the contract:
 //!
 //! 1. Only `src/zccache_entry.rs` may call
@@ -24,8 +24,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-
-use soldr_cli::timed_test;
 
 mod common;
 
@@ -46,7 +44,7 @@ fn crate_root() -> PathBuf {
 }
 
 /// Recursively collect `.rs` files under `dir`, skipping build output
-/// and hidden directories (same shape as `tests/timed_test_lint.rs`).
+/// and hidden directories (same shape as `tests/no_timed_test_guard.rs`).
 fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
@@ -76,7 +74,7 @@ fn relative_unix_path(abs: &Path, root: &Path) -> Option<String> {
 
 /// Code lines only: strip `//`-style comment lines so documentation may
 /// mention the forbidden entry points without tripping the lint. A
-/// textual scan (no parser) matches the sibling `timed_test_lint.rs`
+/// textual scan (no parser) matches the sibling `no_timed_test_guard.rs`
 /// approach — zero extra dev-dependencies.
 fn code_lines(body: &str) -> impl Iterator<Item = (usize, &str)> {
     body.lines()
@@ -84,82 +82,80 @@ fn code_lines(body: &str) -> impl Iterator<Item = (usize, &str)> {
         .filter(|(_, line)| !line.trim_start().starts_with("//"))
 }
 
-timed_test!(
-    zccache_cli_run_is_only_referenced_by_the_gated_trampoline,
-    {
-        let root = crate_root();
-        let mut files = Vec::new();
-        collect_rs_files(&root.join("src"), &mut files);
-        assert!(
-            !files.is_empty(),
-            "lint found no source files under {}",
-            root.join("src").display()
-        );
+#[test]
+fn zccache_cli_run_is_only_referenced_by_the_gated_trampoline() {
+    let root = crate_root();
+    let mut files = Vec::new();
+    collect_rs_files(&root.join("src"), &mut files);
+    assert!(
+        !files.is_empty(),
+        "lint found no source files under {}",
+        root.join("src").display()
+    );
 
-        let mut offenders: Vec<String> = Vec::new();
-        let mut trampoline_seen = false;
+    let mut offenders: Vec<String> = Vec::new();
+    let mut trampoline_seen = false;
 
-        for file in &files {
-            let Some(rel) = relative_unix_path(file, &root) else {
-                continue;
-            };
-            let Ok(body) = fs::read_to_string(file) else {
-                continue;
-            };
+    for file in &files {
+        let Some(rel) = relative_unix_path(file, &root) else {
+            continue;
+        };
+        let Ok(body) = fs::read_to_string(file) else {
+            continue;
+        };
 
-            if rel == ENTRYPOINT {
-                trampoline_seen = true;
-                // Invariant 2: the gate must stay in place.
-                assert!(
-                    body.contains("ZCCACHE_NO_SPAWN"),
-                    "{ENTRYPOINT} must export the ZCCACHE_NO_SPAWN guard (zccache#982, soldr#1467)"
-                );
-                assert!(
-                    body.contains("ALLOWED_SUBCOMMANDS"),
-                    "{ENTRYPOINT} must gate on ALLOWED_SUBCOMMANDS (soldr#1467)"
-                );
+        if rel == ENTRYPOINT {
+            trampoline_seen = true;
+            // Invariant 2: the gate must stay in place.
+            assert!(
+                body.contains("ZCCACHE_NO_SPAWN"),
+                "{ENTRYPOINT} must export the ZCCACHE_NO_SPAWN guard (zccache#982, soldr#1467)"
+            );
+            assert!(
+                body.contains("ALLOWED_SUBCOMMANDS"),
+                "{ENTRYPOINT} must gate on ALLOWED_SUBCOMMANDS (soldr#1467)"
+            );
+        }
+
+        for (idx, line) in code_lines(&body) {
+            // Invariant 1: only the trampoline calls the CLI entry point.
+            let calls_cli_entrypoint = line.contains("zccache::cli::commands::run(")
+                || line.contains("zccache::cli::commands::run_with_args(");
+            if calls_cli_entrypoint && rel != ENTRYPOINT {
+                offenders.push(format!(
+                    "{rel}:{}: references a zccache CLI entrypoint (only {ENTRYPOINT} may)",
+                    idx + 1
+                ));
             }
-
-            for (idx, line) in code_lines(&body) {
-                // Invariant 1: only the trampoline calls the CLI entry point.
-                let calls_cli_entrypoint = line.contains("zccache::cli::commands::run(")
-                    || line.contains("zccache::cli::commands::run_with_args(");
-                if calls_cli_entrypoint && rel != ENTRYPOINT {
+            if line.contains("embedded_zccache_binary") {
+                offenders.push(format!(
+                    "{rel}:{}: references removed standalone zccache binary resolution",
+                    idx + 1
+                ));
+            }
+            // Invariant 3: the legacy spawn entry points stay dead.
+            for pattern in FORBIDDEN_SPAWN_ENTRY_POINTS {
+                if line.contains(pattern) {
                     offenders.push(format!(
-                        "{rel}:{}: references a zccache CLI entrypoint (only {ENTRYPOINT} may)",
-                        idx + 1
-                    ));
-                }
-                if line.contains("embedded_zccache_binary") {
-                    offenders.push(format!(
-                        "{rel}:{}: references removed standalone zccache binary resolution",
-                        idx + 1
-                    ));
-                }
-                // Invariant 3: the legacy spawn entry points stay dead.
-                for pattern in FORBIDDEN_SPAWN_ENTRY_POINTS {
-                    if line.contains(pattern) {
-                        offenders.push(format!(
-                            "{rel}:{}: references {pattern} (standalone-daemon spawn path, \
+                        "{rel}:{}: references {pattern} (standalone-daemon spawn path, \
                          removed by soldr#1467)",
-                            idx + 1
-                        ));
-                    }
+                        idx + 1
+                    ));
                 }
             }
         }
+    }
 
-        assert!(
-            trampoline_seen,
-            "{ENTRYPOINT} not found: the gated in-process zccache entrypoint must exist"
-        );
+    assert!(
+        trampoline_seen,
+        "{ENTRYPOINT} not found: the gated in-process zccache entrypoint must exist"
+    );
 
-        assert!(
-            offenders.is_empty(),
-            "no-standalone-spawn contract violations (soldr#1467) — the build cache is an \
+    assert!(
+        offenders.is_empty(),
+        "no-standalone-spawn contract violations (soldr#1467) — the build cache is an \
          embedded service inside soldr-daemon and nothing outside the gated trampoline \
          may reach the zccache CLI / daemon-spawn surface:\n  {}",
-            offenders.join("\n  ")
-        );
-    }
-);
+        offenders.join("\n  ")
+    );
+}

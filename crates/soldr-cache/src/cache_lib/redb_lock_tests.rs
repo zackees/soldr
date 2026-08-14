@@ -37,7 +37,8 @@ fn test_policy(timeout: Duration) -> RetryPolicy {
     }
 }
 
-crate::timed_test!(subprocess_lock_holder, {
+#[test]
+fn subprocess_lock_holder() {
     let Some(dir) = std::env::var_os(LOCK_HOLDER_DIR_ENV).map(PathBuf::from) else {
         return;
     };
@@ -56,9 +57,10 @@ crate::timed_test!(subprocess_lock_holder, {
         std::thread::sleep(Duration::from_millis(5));
     }
     drop(db);
-});
+}
 
-crate::timed_test!(retries_actual_subprocess_contention_until_release, {
+#[test]
+fn retries_actual_subprocess_contention_until_release() {
     let _test_guard = serial_test_guard();
     let dir = tempfile::tempdir().expect("tempdir");
     let test_name = "cache_lib::redb_lock::tests::subprocess_lock_holder";
@@ -104,9 +106,10 @@ crate::timed_test!(retries_actual_subprocess_contention_until_release, {
         child.wait().expect("wait for lock-holder child").success(),
         "lock-holder subprocess failed"
     );
-});
+}
 
-crate::timed_test!(retries_cross_process_style_open_contention_until_release, {
+#[test]
+fn retries_cross_process_style_open_contention_until_release() {
     let _test_guard = serial_test_guard();
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("state.redb");
@@ -153,9 +156,10 @@ crate::timed_test!(retries_cross_process_style_open_contention_until_release, {
         .join()
         .expect("worker joined")
         .expect("open succeeded after release");
-});
+}
 
-crate::timed_test!(stops_retrying_after_injected_budget, {
+#[test]
+fn stops_retrying_after_injected_budget() {
     let _test_guard = serial_test_guard();
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("state.redb");
@@ -177,12 +181,13 @@ crate::timed_test!(stops_retrying_after_injected_budget, {
     assert!(attempts.load(Ordering::Relaxed) >= 2);
     assert!(started.elapsed() >= budget);
     assert!(started.elapsed() < Duration::from_secs(3));
-});
+}
 
 // Issue #1814: a contended open must leave a durable record even when
 // nobody is watching stderr. This is the forensic half of the loud-plus-
 // durable pair; the tracing half is not capturable here.
-crate::timed_test!(contention_appends_a_durable_forensic_record, {
+#[test]
+fn contention_appends_a_durable_forensic_record() {
     let _test_guard = serial_test_guard();
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("state.redb");
@@ -207,12 +212,13 @@ crate::timed_test!(contention_appends_a_durable_forensic_record, {
         line.contains(&format!(r#""pid":{}"#, std::process::id())),
         "{line}"
     );
-});
+}
 
 // Issue #1814 acceptance: no 5 s stalls on the wrapper hot path. The
 // best-effort budget must give up in tens of milliseconds while the
 // required budget keeps waiting out the full window.
-crate::timed_test!(best_effort_open_gives_up_far_sooner_than_required, {
+#[test]
+fn best_effort_open_gives_up_far_sooner_than_required() {
     let _test_guard = serial_test_guard();
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("state.redb");
@@ -235,14 +241,15 @@ crate::timed_test!(best_effort_open_gives_up_far_sooner_than_required, {
         "best-effort open must not inherit the {OPEN_RETRY_TIMEOUT:?} \
          required budget; took {elapsed:?} (issue #1814)"
     );
-});
+}
 
 // A wait that RESOLVED must not touch the filesystem. `report_contention`
 // runs inside the `state_db_open_lock` critical section, so an append here
 // serializes every contended opener behind a `create_dir_all` + write —
 // which blew `build_log`'s 10 s test budget (two 5 s `Required` opens back
 // to back) on the musl lane. The loud half still fires via tracing.
-crate::timed_test!(resolved_contention_stays_io_free, {
+#[test]
+fn resolved_contention_stays_io_free() {
     let _test_guard = serial_test_guard();
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("state.redb");
@@ -274,13 +281,14 @@ crate::timed_test!(resolved_contention_stays_io_free, {
         "a resolved wait must not write a durable record from inside the \
          open critical section"
     );
-});
+}
 
 // soldr#2224: the open counter is the mechanism two other tests use to
 // assert "this path opens state.redb exactly once", so it has to count
 // opens rather than calls, and it has to be immune to whatever else the
 // suite is doing in parallel.
-crate::timed_test!(the_open_counter_counts_this_threads_opens, {
+#[test]
+fn the_open_counter_counts_this_threads_opens() {
     let _test_guard = serial_test_guard();
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("state.redb");
@@ -296,13 +304,14 @@ crate::timed_test!(the_open_counter_counts_this_threads_opens, {
         .join()
         .expect("other thread");
     assert_eq!(state_db_open_count() - before, 2);
-});
+}
 
 // Issue #2230: an opener that passed the breaker before another opener
 // exhausts its budget must still fail fast after waiting on the in-process
 // mutex. Otherwise a contention burst burns one full retry budget per
 // already-queued caller.
-crate::timed_test!(queued_opener_rechecks_a_newly_open_breaker, {
+#[test]
+fn queued_opener_rechecks_a_newly_open_breaker() {
     let _test_guard = serial_test_guard();
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("state.redb");
@@ -352,12 +361,13 @@ crate::timed_test!(queued_opener_rechecks_a_newly_open_breaker, {
         0,
         "a queued opener must re-check the breaker after acquiring the mutex"
     );
-});
+}
 
 // Issue #2230: a fully contended open must make O(log) attempts, not
 // O(budget / fixed_delay). With the old fixed 10 ms sleep a 1 s budget was
 // ~100 attempts; exponential backoff from 10 ms makes it ~7.
-crate::timed_test!(contended_open_backs_off_exponentially, {
+#[test]
+fn contended_open_backs_off_exponentially() {
     let _test_guard = serial_test_guard();
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("state.redb");
@@ -397,12 +407,13 @@ crate::timed_test!(contended_open_backs_off_exponentially, {
         "a {budget:?} budget must cost O(log) attempts, not O(500); got {attempts} \
          (issue #2230)"
     );
-});
+}
 
 // Issue #2230: consecutive exhaustions on one path must trip a breaker so
 // the next caller fails fast instead of paying the budget again, and the
 // breaker must reopen the path once the cooloff elapses.
-crate::timed_test!(breaker_opens_after_repeated_exhaustion_then_closes, {
+#[test]
+fn breaker_opens_after_repeated_exhaustion_then_closes() {
     let _test_guard = serial_test_guard();
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("state.redb");
@@ -470,12 +481,13 @@ crate::timed_test!(breaker_opens_after_repeated_exhaustion_then_closes, {
         1,
         "exactly one breaker-close lifecycle event:\n{log}"
     );
-});
+}
 
 // Issue #2230: the field evidence was 1,347 near-identical exhaustion
 // records. Inside the summary window the failures are counted, not
 // written, and the next emitted record carries the roll-up.
-crate::timed_test!(repeated_exhaustions_are_aggregated_not_one_line_each, {
+#[test]
+fn repeated_exhaustions_are_aggregated_not_one_line_each() {
     let _test_guard = serial_test_guard();
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("state.redb");
@@ -515,11 +527,12 @@ crate::timed_test!(repeated_exhaustions_are_aggregated_not_one_line_each, {
     assert!(last.contains(r#""suppressed":4"#), "{last}");
     assert!(last.contains(r#""worst_attempts":"#), "{last}");
     assert!(last.contains(r#""worst_elapsed_ms":"#), "{last}");
-});
+}
 
 // A clean open must not write a contention record - otherwise the log
 // becomes noise and stops being evidence of a real problem.
-crate::timed_test!(uncontended_open_writes_no_forensic_record, {
+#[test]
+fn uncontended_open_writes_no_forensic_record() {
     let _test_guard = serial_test_guard();
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("state.redb");
@@ -531,4 +544,4 @@ crate::timed_test!(uncontended_open_writes_no_forensic_record, {
         !dir.path().join("logs").join(CONTENTION_LOG_FILE).exists(),
         "an uncontended open must leave no contention record"
     );
-});
+}

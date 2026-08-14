@@ -579,7 +579,8 @@ mod tests {
         }
     }
 
-    crate::timed_test!(age_size_active_and_database_contract, {
+    #[test]
+    fn age_size_active_and_database_contract() {
         let temp = tempfile::tempdir().unwrap();
         let paths = SoldrPaths::with_root(temp.path().join("owned"));
         let sibling = SoldrPaths::with_root(temp.path().join("sibling"));
@@ -632,9 +633,10 @@ mod tests {
             pruned.log_paths.unwrap().archived_compile_journal_path,
             None
         );
-    });
+    }
 
-    crate::timed_test!(pre_redaction_migration_removes_only_completed_legacy, {
+    #[test]
+    fn pre_redaction_migration_removes_only_completed_legacy() {
         let temp = tempfile::tempdir().unwrap();
         let paths = SoldrPaths::with_root(temp.path().join("owned"));
         let db_path = paths.root.join("state.redb");
@@ -664,118 +666,113 @@ mod tests {
         assert!(history_root(&paths)
             .join(SANITIZED_MIGRATION_MARKER)
             .is_file());
-    });
+    }
 
-    crate::timed_test!(
-        legacy_session_file_migration_preserves_build_scoped_history,
-        {
-            // Regression for #1827: migrate only completed archives and keep
-            // their build-scoped stats and sanitized compile journal.
-            let temp = tempfile::tempdir().unwrap();
-            let paths = SoldrPaths::with_root(temp.path().join("owned"));
-            let db_path = paths.root.join("state.redb");
-            let completed = history_root(&paths).join("31");
-            let active = history_root(&paths).join("32");
-            for archive in [&completed, &active] {
-                std::fs::create_dir_all(archive).unwrap();
-                std::fs::write(archive.join("last-session.log"), b"stale-secret").unwrap();
-                std::fs::write(archive.join("last-session.jsonl"), b"stale-secret").unwrap();
-                std::fs::write(archive.join("last-session-stats.json"), b"stats").unwrap();
-                std::fs::write(archive.join("compile_journal.jsonl"), b"build-scoped").unwrap();
-            }
-            mark_history_complete(&completed).unwrap();
-            mark_history_publishing(&active).unwrap();
-            db::upsert_build(&db_path, &record(31, Some(1), &completed)).unwrap();
-            db::upsert_build(&db_path, &record(32, Some(2), &active)).unwrap();
-
-            let options = HistoryGcOptions {
-                now: UNIX_EPOCH + Duration::from_millis(3),
-                max_age: Duration::MAX,
-                max_bytes: u64::MAX,
-                migrate_pre_redaction: true,
-            };
-            let report = sweep(&paths, &db_path, &options);
-            assert_eq!(report.legacy_files_removed, 2);
-            assert_eq!(report.legacy_bytes_reclaimed, 24);
-            assert!(!completed.join("last-session.log").exists());
-            assert!(!completed.join("last-session.jsonl").exists());
-            assert!(completed.join("last-session-stats.json").is_file());
-            assert!(completed.join("compile_journal.jsonl").is_file());
-            assert!(active.join("last-session.log").is_file());
-            assert!(active.join("last-session.jsonl").is_file());
-            assert!(!history_root(&paths)
-                .join(LEGACY_SESSION_FILES_MIGRATION_MARKER)
-                .exists());
-
-            let completed_record = db::get_build(&db_path, 31).unwrap().unwrap();
-            let completed_paths = completed_record.log_paths.unwrap();
-            assert!(completed_paths.archived_session_log_path.is_none());
-            assert!(completed_paths.archived_journal_path.is_none());
-            assert!(completed_paths.archived_session_stats_path.is_some());
-            assert!(completed_paths.archived_compile_journal_path.is_some());
-
-            mark_history_complete(&active).unwrap();
-            let report = sweep(&paths, &db_path, &options);
-            assert_eq!(report.legacy_files_removed, 2);
-            assert!(!active.join("last-session.log").exists());
-            assert!(!active.join("last-session.jsonl").exists());
-            assert!(history_root(&paths)
-                .join(LEGACY_SESSION_FILES_MIGRATION_MARKER)
-                .is_file());
+    #[test]
+    fn legacy_session_file_migration_preserves_build_scoped_history() {
+        // Regression for #1827: migrate only completed archives and keep
+        // their build-scoped stats and sanitized compile journal.
+        let temp = tempfile::tempdir().unwrap();
+        let paths = SoldrPaths::with_root(temp.path().join("owned"));
+        let db_path = paths.root.join("state.redb");
+        let completed = history_root(&paths).join("31");
+        let active = history_root(&paths).join("32");
+        for archive in [&completed, &active] {
+            std::fs::create_dir_all(archive).unwrap();
+            std::fs::write(archive.join("last-session.log"), b"stale-secret").unwrap();
+            std::fs::write(archive.join("last-session.jsonl"), b"stale-secret").unwrap();
+            std::fs::write(archive.join("last-session-stats.json"), b"stats").unwrap();
+            std::fs::write(archive.join("compile_journal.jsonl"), b"build-scoped").unwrap();
         }
-    );
+        mark_history_complete(&completed).unwrap();
+        mark_history_publishing(&active).unwrap();
+        db::upsert_build(&db_path, &record(31, Some(1), &completed)).unwrap();
+        db::upsert_build(&db_path, &record(32, Some(2), &active)).unwrap();
 
-    crate::timed_test!(
-        legacy_session_file_migration_rejects_swapped_archive_link,
-        {
-            if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
-                return;
-            }
-            let temp = tempfile::tempdir().unwrap();
-            let paths = SoldrPaths::with_root(temp.path().join("owned"));
-            let archive = history_root(&paths).join("41");
-            let external = temp.path().join("external");
-            std::fs::create_dir_all(&archive).unwrap();
-            std::fs::create_dir_all(&external).unwrap();
-            std::fs::write(archive.join("last-session.log"), b"owned").unwrap();
-            std::fs::write(external.join("last-session.log"), b"external").unwrap();
+        let options = HistoryGcOptions {
+            now: UNIX_EPOCH + Duration::from_millis(3),
+            max_age: Duration::MAX,
+            max_bytes: u64::MAX,
+            migrate_pre_redaction: true,
+        };
+        let report = sweep(&paths, &db_path, &options);
+        assert_eq!(report.legacy_files_removed, 2);
+        assert_eq!(report.legacy_bytes_reclaimed, 24);
+        assert!(!completed.join("last-session.log").exists());
+        assert!(!completed.join("last-session.jsonl").exists());
+        assert!(completed.join("last-session-stats.json").is_file());
+        assert!(completed.join("compile_journal.jsonl").is_file());
+        assert!(active.join("last-session.log").is_file());
+        assert!(active.join("last-session.jsonl").is_file());
+        assert!(!history_root(&paths)
+            .join(LEGACY_SESSION_FILES_MIGRATION_MARKER)
+            .exists());
 
-            // Simulate a replacement after enumeration but before the
-            // migration unlinks a child artifact.
-            std::fs::remove_dir_all(&archive).unwrap();
-            crate::platform::fs::links::create(
-                external.to_str().expect("UTF-8 test path"),
-                &archive,
-                true,
-            )
-            .unwrap();
+        let completed_record = db::get_build(&db_path, 31).unwrap().unwrap();
+        let completed_paths = completed_record.log_paths.unwrap();
+        assert!(completed_paths.archived_session_log_path.is_none());
+        assert!(completed_paths.archived_journal_path.is_none());
+        assert!(completed_paths.archived_session_stats_path.is_some());
+        assert!(completed_paths.archived_compile_journal_path.is_some());
 
-            assert!(remove_legacy_session_file(&paths.root, &archive, "last-session.log").is_err());
-            assert_eq!(
-                std::fs::read(external.join("last-session.log")).unwrap(),
-                b"external"
-            );
+        mark_history_complete(&active).unwrap();
+        let report = sweep(&paths, &db_path, &options);
+        assert_eq!(report.legacy_files_removed, 2);
+        assert!(!active.join("last-session.log").exists());
+        assert!(!active.join("last-session.jsonl").exists());
+        assert!(history_root(&paths)
+            .join(LEGACY_SESSION_FILES_MIGRATION_MARKER)
+            .is_file());
+    }
+
+    #[test]
+    fn legacy_session_file_migration_rejects_swapped_archive_link() {
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            return;
         }
-    );
+        let temp = tempfile::tempdir().unwrap();
+        let paths = SoldrPaths::with_root(temp.path().join("owned"));
+        let archive = history_root(&paths).join("41");
+        let external = temp.path().join("external");
+        std::fs::create_dir_all(&archive).unwrap();
+        std::fs::create_dir_all(&external).unwrap();
+        std::fs::write(archive.join("last-session.log"), b"owned").unwrap();
+        std::fs::write(external.join("last-session.log"), b"external").unwrap();
 
-    crate::timed_test!(
-        abandoned_unfinished_database_row_does_not_block_retention,
-        {
-            let temp = tempfile::tempdir().unwrap();
-            let paths = SoldrPaths::with_root(temp.path().join("owned"));
-            let db_path = paths.root.join("state.redb");
-            let archive = history_root(&paths).join("23");
-            std::fs::create_dir_all(&archive).unwrap();
-            std::fs::write(archive.join("pre-redaction"), b"secret").unwrap();
-            db::upsert_build(&db_path, &record(23, None, &archive)).unwrap();
+        // Simulate a replacement after enumeration but before the
+        // migration unlinks a child artifact.
+        std::fs::remove_dir_all(&archive).unwrap();
+        crate::platform::fs::links::create(
+            external.to_str().expect("UTF-8 test path"),
+            &archive,
+            true,
+        )
+        .unwrap();
 
-            let report = sweep(&paths, &db_path, &HistoryGcOptions::default());
-            assert_eq!(report.migration_removed, 1);
-            assert!(!archive.exists());
-        }
-    );
+        assert!(remove_legacy_session_file(&paths.root, &archive, "last-session.log").is_err());
+        assert_eq!(
+            std::fs::read(external.join("last-session.log")).unwrap(),
+            b"external"
+        );
+    }
 
-    crate::timed_test!(ended_database_row_does_not_expose_partial_publication, {
+    #[test]
+    fn abandoned_unfinished_database_row_does_not_block_retention() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = SoldrPaths::with_root(temp.path().join("owned"));
+        let db_path = paths.root.join("state.redb");
+        let archive = history_root(&paths).join("23");
+        std::fs::create_dir_all(&archive).unwrap();
+        std::fs::write(archive.join("pre-redaction"), b"secret").unwrap();
+        db::upsert_build(&db_path, &record(23, None, &archive)).unwrap();
+
+        let report = sweep(&paths, &db_path, &HistoryGcOptions::default());
+        assert_eq!(report.migration_removed, 1);
+        assert!(!archive.exists());
+    }
+
+    #[test]
+    fn ended_database_row_does_not_expose_partial_publication() {
         let temp = tempfile::tempdir().unwrap();
         let paths = SoldrPaths::with_root(temp.path().join("owned"));
         let db_path = paths.root.join("state.redb");
@@ -795,9 +792,10 @@ mod tests {
         mark_history_complete(&archive).unwrap();
         assert!(!archive.join(PUBLISHING_MARKER).exists());
         assert!(archive.join(COMPLETE_MARKER).is_file());
-    });
+    }
 
-    crate::timed_test!(publish_or_discard_drops_an_archive_with_no_payload, {
+    #[test]
+    fn publish_or_discard_drops_an_archive_with_no_payload() {
         let temp = tempfile::tempdir().unwrap();
         let archive = temp.path().join("42");
 
@@ -814,9 +812,10 @@ mod tests {
         // Withholding the marker instead would leak the directory, because
         // `sweep` reads a marker-less session as still-active.
         assert!(!archive.join(COMPLETE_MARKER).exists());
-    });
+    }
 
-    crate::timed_test!(publish_or_discard_publishes_an_archive_with_payload, {
+    #[test]
+    fn publish_or_discard_publishes_an_archive_with_payload() {
         let temp = tempfile::tempdir().unwrap();
         let archive = temp.path().join("43");
 
@@ -826,16 +825,18 @@ mod tests {
         assert!(archive.join(COMPLETE_MARKER).is_file());
         assert!(!archive.join(PUBLISHING_MARKER).exists());
         assert!(archive.join("last-session-stats.json").is_file());
-    });
+    }
 
-    crate::timed_test!(publish_or_discard_tolerates_a_missing_archive, {
+    #[test]
+    fn publish_or_discard_tolerates_a_missing_archive() {
         let temp = tempfile::tempdir().unwrap();
         // Never created — a discarded archive must not become a hard error if
         // something else already removed it.
         assert!(!publish_or_discard(&temp.path().join("absent")).unwrap());
-    });
+    }
 
-    crate::timed_test!(database_failures_block_success_markers, {
+    #[test]
+    fn database_failures_block_success_markers() {
         let temp = tempfile::tempdir().unwrap();
         let paths = SoldrPaths::with_root(temp.path().join("owned"));
         let db_path = paths.root.join("state.redb");
@@ -871,9 +872,10 @@ mod tests {
         assert!(!history_root(&paths)
             .join(SANITIZED_MIGRATION_MARKER)
             .exists());
-    });
+    }
 
-    crate::timed_test!(delete_failure_restores_archive_paths_for_retry, {
+    #[test]
+    fn delete_failure_restores_archive_paths_for_retry() {
         let temp = tempfile::tempdir().unwrap();
         let paths = SoldrPaths::with_root(temp.path().join("owned"));
         let db_path = paths.root.join("state.redb");
@@ -907,9 +909,10 @@ mod tests {
             .unwrap()
             .archived_compile_journal_path
             .is_some());
-    });
+    }
 
-    crate::timed_test!(linked_history_collection_is_retained, {
+    #[test]
+    fn linked_history_collection_is_retained() {
         if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
             return;
         }
@@ -935,5 +938,5 @@ mod tests {
         );
         assert_eq!(report.failed, 1);
         assert!(external.join("1").is_dir());
-    });
+    }
 }

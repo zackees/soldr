@@ -13,7 +13,6 @@ mod common;
 
 use common::*;
 use soldr_cli::fetch::MANAGED_MATURIN_VERSION;
-use soldr_cli::timed_test;
 use std::path::{Path, PathBuf};
 
 /// Logs argv and exits — no nested cargo, because this test is about the
@@ -92,7 +91,8 @@ fn expected_compatibility(_triple: &str) -> &'static str {
     "pypi"
 }
 
-timed_test!(soldr_wheel_resolves_the_alias_and_tags_the_wheel, {
+#[test]
+fn soldr_wheel_resolves_the_alias_and_tags_the_wheel() {
     if matches!(
         soldr_platform::host::facts::os(),
         soldr_platform::host::facts::HostOs::Windows
@@ -143,9 +143,10 @@ timed_test!(soldr_wheel_resolves_the_alias_and_tags_the_wheel, {
         Some(expected_compatibility(&triple)),
         "wheel tag must follow the target family: {log}"
     );
-});
+}
 
-timed_test!(soldr_wheel_forwards_extra_arguments_to_maturin, {
+#[test]
+fn soldr_wheel_forwards_extra_arguments_to_maturin() {
     if matches!(
         soldr_platform::host::facts::os(),
         soldr_platform::host::facts::HostOs::Windows
@@ -184,72 +185,71 @@ timed_test!(soldr_wheel_forwards_extra_arguments_to_maturin, {
         Some("dist"),
         "passthrough arguments must reach maturin: {log}"
     );
-});
+}
 
 // soldr#2139 follow-up. Two properties in one run, because they share the
 // same fixture: a bare `soldr wheel` is legal (host target, dev profile), and
 // it must not claim a manylinux floor that no target preparation enforced.
 // (Plain comment, not `///`: a doc comment on a macro invocation attaches to
 // nothing and `-D unused-doc-comments` rejects it.)
-timed_test!(
-    soldr_wheel_defaults_to_a_dev_host_wheel_with_no_floor_claim,
-    {
-        if matches!(
-            soldr_platform::host::facts::os(),
-            soldr_platform::host::facts::HostOs::Windows
-        ) {
-            return;
-        }
-        let cache_root = unique_temp_dir("soldr-wheel-default");
-        let log_path = cache_root.join("tool.log");
-        let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
-        seed_cached_fake_maturin(&cache_root, &log_path);
+#[test]
+fn soldr_wheel_defaults_to_a_dev_host_wheel_with_no_floor_claim() {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
+    let cache_root = unique_temp_dir("soldr-wheel-default");
+    let log_path = cache_root.join("tool.log");
+    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    seed_cached_fake_maturin(&cache_root, &log_path);
 
-        let output = isolated_soldr_command()
-            .args(["wheel"])
-            .env("SOLDR_CACHE_DIR", &cache_root)
-            .env("SOLDR_TEST_CARGO_BIN", &cargo)
-            .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-            .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
-            .env_remove("CARGO")
-            .env_remove("RUSTC")
-            .env_remove("RUSTC_WRAPPER")
-            .env_remove("SOLDR_RUSTC_WRAPPER")
-            .env_remove("ZCCACHE_DISABLE")
-            .output()
-            .expect("failed to run soldr wheel");
+    let output = isolated_soldr_command()
+        .args(["wheel"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .env_remove("CARGO")
+        .env_remove("RUSTC")
+        .env_remove("RUSTC_WRAPPER")
+        .env_remove("SOLDR_RUSTC_WRAPPER")
+        .env_remove("ZCCACHE_DISABLE")
+        .output()
+        .expect("failed to run soldr wheel");
 
-        assert!(
-            output.status.success(),
-            "bare `soldr wheel` must build a host wheel
+    assert!(
+        output.status.success(),
+        "bare `soldr wheel` must build a host wheel
 stdout:
 {}
 stderr:
 {}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 
-        let log = std::fs::read_to_string(&log_path).expect("read fake tool log");
-        let argv = maturin_argv(&log);
-        assert!(
-            !argv.iter().any(|arg| arg == "--release"),
-            "the default wheel is a quick dev build: {log}"
-        );
-        assert_eq!(
-            flag_value(&argv, "--target").as_deref(),
-            Some(soldr_cli::pyo3_detect::host_triple()),
-            "--target defaults to the host: {log}"
-        );
-        assert_eq!(
-            flag_value(&argv, "--compatibility").as_deref(),
-            Some("pypi"),
-            "a dev host wheel must not claim a manylinux floor: {log}"
-        );
-    }
-);
+    let log = std::fs::read_to_string(&log_path).expect("read fake tool log");
+    let argv = maturin_argv(&log);
+    assert!(
+        !argv.iter().any(|arg| arg == "--release"),
+        "the default wheel is a quick dev build: {log}"
+    );
+    assert_eq!(
+        flag_value(&argv, "--target").as_deref(),
+        Some(soldr_cli::pyo3_detect::host_triple()),
+        "--target defaults to the host: {log}"
+    );
+    assert_eq!(
+        flag_value(&argv, "--compatibility").as_deref(),
+        Some("pypi"),
+        "a dev host wheel must not claim a manylinux floor: {log}"
+    );
+}
 
-timed_test!(soldr_wheel_rejects_an_unknown_target_with_a_suggestion, {
+#[test]
+fn soldr_wheel_rejects_an_unknown_target_with_a_suggestion() {
     if matches!(
         soldr_platform::host::facts::os(),
         soldr_platform::host::facts::HostOs::Windows
@@ -274,4 +274,4 @@ timed_test!(soldr_wheel_rejects_an_unknown_target_with_a_suggestion, {
         !log_path.exists(),
         "maturin must not be spawned for an unresolvable target"
     );
-});
+}

@@ -51,7 +51,7 @@ pub fn resolve_link_target(dest: &Path, link_path: &Path, target: &Path) -> Opti
 mod tests {
     use super::*;
 
-    #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+    #[test]
     fn relative_targets_resolve_inside_the_root() {
         let dest = Path::new("/sdk");
         let link = Path::new("/sdk/usr/lib");
@@ -67,7 +67,7 @@ mod tests {
         );
     }
 
-    #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+    #[test]
     fn absolute_and_escaping_targets_never_resolve() {
         let dest = Path::new("/sdk");
         let link = Path::new("/sdk/usr/lib");

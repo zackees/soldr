@@ -152,18 +152,11 @@ jobs:
       # test-mode compile that used to happen twice (once here in non-
       # test mode, once again in each test step in test mode).
       - name: Build workspace + tests
-        shell: pwsh
+        shell: bash
         run: |
-          $timer = [Diagnostics.Stopwatch]::StartNew()
-          soldr cargo build --workspace --tests --bins --target ${{ inputs.target }}
-          $exitCode = $LASTEXITCODE
-          $timer.Stop()
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ([string]::Format(
-            [Globalization.CultureInfo]::InvariantCulture,
-            "- **${{ inputs.target }} / Build workspace + tests**: {0:F3}s",
-            $timer.Elapsed.TotalSeconds
-          ))
-          exit $exitCode
+          python3 .github/scripts/step_duration.py \
+            --label "${{ inputs.target }} / Build workspace + tests" \
+            -- soldr cargo build --workspace --tests --bins --target ${{ inputs.target }}
 
       # soldr#1799: an immediately-repeated build must recompile nothing.
       # Nothing changed in between, so any crate rebuilding means something
@@ -174,11 +167,11 @@ jobs:
       - name: Assert a repeated build recompiles nothing (soldr#1799)
         if: success()
         continue-on-error: ${{ !contains(inputs.target, 'linux-gnu') }}
-        shell: pwsh
+        shell: bash
         run: |
-          soldr cargo build --workspace --tests --bins --target ${{ inputs.target }} `
-            *> warm-rebuild.log
-          Get-Content warm-rebuild.log | Select-Object -Last 20
+          soldr cargo build --workspace --tests --bins \
+            --target ${{ inputs.target }} > warm-rebuild.log 2>&1
+          tail -n 20 warm-rebuild.log
           python3 .github/scripts/check_warm_rebuild.py warm-rebuild.log
 
       # soldr#1838 Phase 4: fail the lane when the build silently ran uncached
@@ -192,7 +185,7 @@ jobs:
       - name: Assert the build did not silently run uncached (soldr#1838)
         if: success()
         continue-on-error: ${{ !contains(inputs.target, 'linux-gnu') }}
-        shell: pwsh
+        shell: bash
         run: |
           soldr status --json > soldr-status.json
           python3 .github/scripts/check_compile_fallbacks.py soldr-status.json
@@ -220,9 +213,9 @@ jobs:
       # already.
       - name: Assert managed toolchain homes did not leak (soldr#1799)
         if: success()
-        shell: pwsh
+        shell: bash
         run: |
-          python3 .github/scripts/check_toolchain_homes.py "$HOME/.soldr/logs/builds" `
+          python3 .github/scripts/check_toolchain_homes.py "$HOME/.soldr/logs/builds" \
             --managed-root "$HOME/.soldr" --managed-root "$HOME/.soldr-dev"
 
       - name: Stop setup-soldr builder cache before tests
@@ -232,57 +225,66 @@ jobs:
       # in one invocation. This includes the internal crates extracted after
       # the original single-crate optimization was written.
       #
-      # NOTE: this step uses setup-soldr's `soldr` (from PATH), the
-      # same wrapper as `Build workspace + tests` above. Historically
-      # it invoked the just-built `target/<triple>/debug/soldr` binary
-      # to dogfood the fresh build, but that swapped `RUSTC_WRAPPER` to
-      # a different path than step 1 used. cargo hashes the wrapper
-      # path into per-crate fingerprints, so the swap invalidated every
-      # rlib and forced a full recompile (~1m 27s on the linux-x64
-      # lane, main run 28760796620). Keeping the wrapper stable lets
-      # cargo's freshness check hit and skip rustc entirely. The
-      # isolated SOLDR_CACHE_DIR / ZCCACHE_CACHE_DIR still land via
-      # the env block, so tests stay isolated from the shared CI seed.
+      # soldr#2493 — the suite runs under nextest, which owns the per-test
+      # timeouts in `.config/nextest.toml` now that the watchdog macro is gone.
+      #
+      # This step drives the suite with the soldr THIS lane just built, not the
+      # pinned setup-soldr release on PATH, because no released soldr can do the
+      # job:
+      #
+      #   0.8.29 (the pin) injects syslib `--config` overrides *before* the
+      #     `nextest` verb, and cargo-nextest rejects that at its top-level
+      #     parser -- `unexpected argument '--config' found` -- for `run` and
+      #     `archive` alike.
+      #   0.8.44 places `--config` correctly but its daemon fails the
+      #     cook-size-gate and thin-v2 lanes with `soldr root ownership is
+      #     busy`, and `test_setup_soldr_version_pins.py` (correctly) forbids
+      #     lanes running different versions.
+      #
+      # The `--config` placement fix is in this branch, so the binary built a
+      # few steps up is the first soldr that can run this suite. This costs a
+      # rebuild -- cargo hashes the RUSTC_WRAPPER path into per-crate
+      # fingerprints, so changing the wrapper invalidates the tree that `Build
+      # workspace + tests` just warmed (~1m 27s, main run 28760796620). That
+      # cost is accepted deliberately: a correct suite that recompiles beats a
+      # warm one that cannot start. Once a release carries the fix, this step
+      # goes back to plain `soldr cargo nextest run` and the pin moves instead.
       - name: Run library + CLI smoke tests
-        shell: pwsh
+        shell: bash
         env:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-self-tests/${{ inputs.target }}
           SOLDR_CACHE_LIFECYCLE: command
           SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
           ZCCACHE_CACHE_DIR: ${{ runner.temp }}/soldr-self-tests/${{ inputs.target }}/cache/zccache
         run: |
-          Write-Host "Using isolated test SOLDR_CACHE_DIR=$env:SOLDR_CACHE_DIR"
-          Write-Host "Using isolated test ZCCACHE_CACHE_DIR=$env:ZCCACHE_CACHE_DIR"
-          $timer = [Diagnostics.Stopwatch]::StartNew()
-          soldr cargo test --workspace --lib --tests --target ${{ inputs.target }}
-          $exitCode = $LASTEXITCODE
-          $timer.Stop()
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ([string]::Format(
-            [Globalization.CultureInfo]::InvariantCulture,
-            "- **${{ inputs.target }} / Library + smoke tests**: {0:F3}s",
-            $timer.Elapsed.TotalSeconds
-          ))
-          exit $exitCode
-
+          set -euo pipefail
+          echo "Using isolated test SOLDR_CACHE_DIR=$SOLDR_CACHE_DIR"
+          soldr_under_test="target/${{ inputs.target }}/debug/soldr"
+          test -x "$soldr_under_test" || {
+            echo "expected the freshly built soldr at $soldr_under_test" >&2
+            exit 1
+          }
+          echo "Driving the suite with $soldr_under_test ($("$soldr_under_test" version))"
+          python3 .github/scripts/step_duration.py \
+            --label "${{ inputs.target }} / Library + smoke tests" \
+            -- "$soldr_under_test" cargo nextest run --workspace --lib --tests \
+            --target ${{ inputs.target }}
       # soldr#1218 — the standalone `Run fetch integration test` step
       # was removed; the same `tests/fetch_crgx.rs` binary already runs
-      # inside `Run CLI smoke tests` above (which invokes `cargo test
-      # -p soldr-cli --tests` — `--tests` selects every integration test
+      # inside `Run CLI smoke tests` above (which invokes `cargo nextest
+      # run -p soldr-cli --tests` — `--tests` selects every integration test
       # target). Running it twice wasted ~40 s per CI run for zero
       # additional coverage.
 
       - name: Stop isolated test cache
         if: always()
         continue-on-error: true
-        shell: pwsh
+        shell: bash
         env:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-self-tests/${{ inputs.target }}
           ZCCACHE_CACHE_DIR: ${{ runner.temp }}/soldr-self-tests/${{ inputs.target }}/cache/zccache
         run: |
-          soldr cache shutdown --shutdown-timeout-seconds 30
-          if ($LASTEXITCODE -ne 0) {
-            soldr zccache stop
-          }
+          soldr cache shutdown --shutdown-timeout-seconds 30 || soldr zccache stop
 
       # soldr#1799 — surface the per-build XML logs and the JSONL compile
       # journals from CI compiles so toolchain-home leakage and warm-run
@@ -299,12 +301,12 @@ jobs:
       - name: Index build logs
         if: always()
         continue-on-error: true
-        shell: pwsh
+        shell: bash
         run: |
-          python3 .github/scripts/index_build_logs.py `
-            --root "$HOME/.soldr" `
-            --root "$HOME/.soldr-dev" `
-            --root "${{ runner.temp }}/soldr-self-tests" `
+          python3 .github/scripts/index_build_logs.py \
+            --root "$HOME/.soldr" \
+            --root "$HOME/.soldr-dev" \
+            --root "${{ runner.temp }}/soldr-self-tests" \
             --artifact-name "build-logs-${{ inputs.target }}"
 
       - name: Upload build log artifacts

@@ -68,7 +68,8 @@ fn validate_real_directory(path: &Path) -> io::Result<()> {
 mod tests {
     use super::*;
 
-    crate::timed_test!(owned_directory_rejects_linked_collection_root, {
+    #[test]
+    fn owned_directory_rejects_linked_collection_root() {
         let temp = tempfile::tempdir().unwrap();
         let boundary = temp.path().join("owned");
         let external = temp.path().join("external");
@@ -89,5 +90,5 @@ mod tests {
             crate::platform::fs::links::create(&external.to_string_lossy(), &linked, true).unwrap();
         }
         assert!(validate_owned_directory(&boundary, &linked).is_err());
-    });
+    }
 }

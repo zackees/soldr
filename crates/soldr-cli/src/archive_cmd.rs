@@ -659,7 +659,8 @@ mod tests {
         None
     }
 
-    crate::timed_test!(archive_writes_to_output_path, {
+    #[test]
+    fn archive_writes_to_output_path() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let stage = tmp.path().join("stage");
         std::fs::create_dir_all(&stage).unwrap();
@@ -677,9 +678,10 @@ mod tests {
                 .all(|e| e.sha256.as_deref().is_some_and(|s| s.len() == 64)),
             "every entry must carry a 64-char sha256"
         );
-    });
+    }
 
-    crate::timed_test!(archive_errors_when_binary_missing, {
+    #[test]
+    fn archive_errors_when_binary_missing() {
         let tmp = tempfile::tempdir().expect("tempdir");
         // SoldrPaths::with_root is the test-construction path used by
         // integration tests — it produces a synthetic-root layout
@@ -710,54 +712,53 @@ mod tests {
             msg.contains("soldr cargo build --release --target"),
             "error must name the directive command, got: {msg}",
         );
-    });
+    }
 
-    crate::timed_test!(
-        archive_includes_expected_runtime_entries_without_shim_sidecars,
-        {
-            let tmp = tempfile::tempdir().expect("tempdir");
-            let stage = tmp.path().join("stage");
-            std::fs::create_dir_all(&stage).unwrap();
-            let sources = synthesize_sources(&stage, "x86_64-unknown-linux-gnu");
-            let out = tmp.path().join("out.tar.zst");
-            build_archive(&sources, &out).expect("build_archive");
-            let entries = list_archive_entries(&out);
-            for expected in [
-                "soldr",
-                "soldr-daemon",
-                "crgx",
-                "cargo-chef",
-                "manifest.json",
-            ] {
-                assert!(
-                    entries.iter().any(|e| e == expected),
-                    "archive must contain `{expected}`, got: {entries:?}",
-                );
-            }
-            for removed in ["soldr-shim", "soldr-clang-shim", "zccache-soldr"] {
-                assert!(
-                    !entries.iter().any(|e| e == removed),
-                    "archive must not contain removed shim sidecar `{removed}`, got: {entries:?}",
-                );
-            }
-            let manifest = read_archive_file(&out, "manifest.json").expect("manifest in archive");
-            let manifest = String::from_utf8(manifest).expect("manifest is utf8");
+    #[test]
+    fn archive_includes_expected_runtime_entries_without_shim_sidecars() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let stage = tmp.path().join("stage");
+        std::fs::create_dir_all(&stage).unwrap();
+        let sources = synthesize_sources(&stage, "x86_64-unknown-linux-gnu");
+        let out = tmp.path().join("out.tar.zst");
+        build_archive(&sources, &out).expect("build_archive");
+        let entries = list_archive_entries(&out);
+        for expected in [
+            "soldr",
+            "soldr-daemon",
+            "crgx",
+            "cargo-chef",
+            "manifest.json",
+        ] {
             assert!(
-                manifest.contains("\"schema_version\": 1"),
-                "manifest: {manifest}"
-            );
-            assert!(
-                manifest.contains("x86_64-unknown-linux-gnu"),
-                "manifest: {manifest}"
-            );
-            assert!(
-                manifest.contains("\"zccache_version\""),
-                "manifest: {manifest}"
+                entries.iter().any(|e| e == expected),
+                "archive must contain `{expected}`, got: {entries:?}",
             );
         }
-    );
+        for removed in ["soldr-shim", "soldr-clang-shim", "zccache-soldr"] {
+            assert!(
+                !entries.iter().any(|e| e == removed),
+                "archive must not contain removed shim sidecar `{removed}`, got: {entries:?}",
+            );
+        }
+        let manifest = read_archive_file(&out, "manifest.json").expect("manifest in archive");
+        let manifest = String::from_utf8(manifest).expect("manifest is utf8");
+        assert!(
+            manifest.contains("\"schema_version\": 1"),
+            "manifest: {manifest}"
+        );
+        assert!(
+            manifest.contains("x86_64-unknown-linux-gnu"),
+            "manifest: {manifest}"
+        );
+        assert!(
+            manifest.contains("\"zccache_version\""),
+            "manifest: {manifest}"
+        );
+    }
 
-    crate::timed_test!(archive_windows_target_uses_exe_suffix, {
+    #[test]
+    fn archive_windows_target_uses_exe_suffix() {
         // When the target triple is windows-msvc the soldr entry name
         // in the archive gets `.exe`. Required/optional entries already
         // include their own suffix in ArchiveEntry::archive_name; the
@@ -790,9 +791,10 @@ mod tests {
             entries.iter().any(|e| e == "soldr.exe"),
             "windows archive must contain soldr.exe, got: {entries:?}",
         );
-    });
+    }
 
-    crate::timed_test!(stage_dir_archive_preserves_existing_manifest, {
+    #[test]
+    fn stage_dir_archive_preserves_existing_manifest() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let stage = tmp.path().join("stage");
         std::fs::create_dir_all(&stage).unwrap();
@@ -809,9 +811,10 @@ mod tests {
         );
         let manifest = read_archive_file(&out, "manifest.json").expect("manifest");
         assert_eq!(manifest, br#"{"schema_version":3}"#);
-    });
+    }
 
-    crate::timed_test!(stage_dir_archive_includes_nested_sidecar_files, {
+    #[test]
+    fn stage_dir_archive_includes_nested_sidecar_files() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let stage = tmp.path().join("stage");
         let nested = stage
@@ -832,9 +835,10 @@ mod tests {
                 .any(|e| e == "soldr.dSYM/Contents/Resources/DWARF/soldr"),
             "archive must contain nested dSYM payload, got: {entries:?}",
         );
-    });
+    }
 
-    crate::timed_test!(extract_archive_round_trips_stage_dir_archive, {
+    #[test]
+    fn extract_archive_round_trips_stage_dir_archive() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let stage = tmp.path().join("stage");
         std::fs::create_dir_all(&stage).unwrap();
@@ -854,5 +858,5 @@ mod tests {
             std::fs::read(extract.join("manifest.json")).expect("manifest"),
             br#"{"schema_version":3}"#,
         );
-    });
+    }
 }

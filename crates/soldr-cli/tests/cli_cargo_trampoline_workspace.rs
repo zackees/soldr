@@ -6,7 +6,6 @@
 mod common;
 
 use common::*;
-use soldr_cli::timed_test;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -131,7 +130,8 @@ fn assert_invokes_cargo(project: &Path, args: &[&str], context: &str) {
     );
 }
 
-timed_test!(same_size_same_mtime_source_mutation_invokes_cargo, {
+#[test]
+fn same_size_same_mtime_source_mutation_invokes_cargo() {
     let project = make_project("ws-authority-source");
     assert!(seed(&project, "build"));
     rewrite_preserving_stat(&project.join("src/lib.rs"), |bytes| {
@@ -145,9 +145,10 @@ timed_test!(same_size_same_mtime_source_mutation_invokes_cargo, {
         &["--no-cache", "cargo", "build"],
         "same-stat source mutation",
     );
-});
+}
 
-timed_test!(same_size_same_mtime_output_mutation_invokes_cargo, {
+#[test]
+fn same_size_same_mtime_output_mutation_invokes_cargo() {
     let project = make_project("ws-authority-output");
     assert!(seed(&project, "build"));
     let output = built_binary(&project);
@@ -160,9 +161,10 @@ timed_test!(same_size_same_mtime_output_mutation_invokes_cargo, {
         &["--no-cache", "cargo", "build"],
         "same-stat output mutation",
     );
-});
+}
 
-timed_test!(same_size_same_mtime_manifest_mutation_invokes_cargo, {
+#[test]
+fn same_size_same_mtime_manifest_mutation_invokes_cargo() {
     let project = make_project("ws-authority-manifest");
     assert!(seed(&project, "build"));
     rewrite_preserving_stat(&project.join("Cargo.toml"), |bytes| {
@@ -176,9 +178,10 @@ timed_test!(same_size_same_mtime_manifest_mutation_invokes_cargo, {
         &["--no-cache", "cargo", "build"],
         "same-stat manifest mutation",
     );
-});
+}
 
-timed_test!(same_size_same_mtime_lockfile_mutation_invokes_cargo, {
+#[test]
+fn same_size_same_mtime_lockfile_mutation_invokes_cargo() {
     let project = make_project("ws-authority-lockfile");
     assert!(seed(&project, "build"));
     rewrite_preserving_stat(&project.join("Cargo.lock"), |bytes| {
@@ -192,9 +195,10 @@ timed_test!(same_size_same_mtime_lockfile_mutation_invokes_cargo, {
         &["--no-cache", "cargo", "build"],
         "same-stat lockfile mutation",
     );
-});
+}
 
-timed_test!(changed_clippy_policy_invokes_cargo, {
+#[test]
+fn changed_clippy_policy_invokes_cargo() {
     let project = make_project("ws-authority-clippy-policy");
     if !seed(&project, "clippy") {
         return;
@@ -204,9 +208,10 @@ timed_test!(changed_clippy_policy_invokes_cargo, {
         &["--no-cache", "cargo", "clippy", "--", "-D", "warnings"],
         "changed clippy trailing policy",
     );
-});
+}
 
-timed_test!(legacy_no_trampoline_flag_is_not_forwarded_to_cargo, {
+#[test]
+fn legacy_no_trampoline_flag_is_not_forwarded_to_cargo() {
     let project = make_project("ws-authority-legacy-flag");
     assert!(seed(&project, "build"));
     assert_invokes_cargo(
@@ -214,4 +219,4 @@ timed_test!(legacy_no_trampoline_flag_is_not_forwarded_to_cargo, {
         &["--no-cache", "cargo", "build", "--no-trampoline"],
         "legacy opt-out cleanup",
     );
-});
+}

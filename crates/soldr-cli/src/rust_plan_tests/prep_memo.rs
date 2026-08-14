@@ -158,7 +158,8 @@ impl MemoFixture {
     }
 }
 
-crate::timed_test!(prep_memo_roundtrips_metadata_and_probe_on_hit, {
+#[test]
+fn prep_memo_roundtrips_metadata_and_probe_on_hit() {
     let fixture = MemoFixture::new();
     fixture.store_and_verify_hit();
 
@@ -186,9 +187,10 @@ crate::timed_test!(prep_memo_roundtrips_metadata_and_probe_on_hit, {
     assert_eq!(hashes.lockfile_hash, fresh.lockfile_hash);
     assert_eq!(hashes.cargo_config_hash, fresh.cargo_config_hash);
     assert_eq!(hashes.manifest_hashes, fresh.manifest_hashes);
-});
+}
 
-crate::timed_test!(prep_memo_invalidated_by_workspace_membership_change, {
+#[test]
+fn prep_memo_invalidated_by_workspace_membership_change() {
     let fixture = MemoFixture::new();
     fixture.assert_invalidated_by(|f| {
         std::fs::write(
@@ -197,9 +199,10 @@ crate::timed_test!(prep_memo_invalidated_by_workspace_membership_change, {
         )
         .unwrap();
     });
-});
+}
 
-crate::timed_test!(prep_memo_invalidated_by_new_member_manifest, {
+#[test]
+fn prep_memo_invalidated_by_new_member_manifest() {
     let fixture = MemoFixture::new();
     fixture.assert_invalidated_by(|f| {
         std::fs::create_dir_all(f.root.join("newcrate")).unwrap();
@@ -209,9 +212,10 @@ crate::timed_test!(prep_memo_invalidated_by_new_member_manifest, {
         )
         .unwrap();
     });
-});
+}
 
-crate::timed_test!(prep_memo_invalidated_by_in_workspace_path_dep_edit, {
+#[test]
+fn prep_memo_invalidated_by_in_workspace_path_dep_edit() {
     let fixture = MemoFixture::new();
     fixture.assert_invalidated_by(|f| {
         std::fs::write(
@@ -220,9 +224,10 @@ crate::timed_test!(prep_memo_invalidated_by_in_workspace_path_dep_edit, {
         )
         .unwrap();
     });
-});
+}
 
-crate::timed_test!(prep_memo_invalidated_by_external_path_dep_manifest_edit, {
+#[test]
+fn prep_memo_invalidated_by_external_path_dep_manifest_edit() {
     let fixture = MemoFixture::new();
     fixture.assert_invalidated_by(|f| {
         std::fs::write(
@@ -231,23 +236,26 @@ crate::timed_test!(prep_memo_invalidated_by_external_path_dep_manifest_edit, {
         )
         .unwrap();
     });
-});
+}
 
-crate::timed_test!(prep_memo_invalidated_by_lockfile_change, {
+#[test]
+fn prep_memo_invalidated_by_lockfile_change() {
     let fixture = MemoFixture::new();
     fixture.assert_invalidated_by(|f| {
         std::fs::write(f.root.join("Cargo.lock"), "# lock v2\n").unwrap();
     });
-});
+}
 
-crate::timed_test!(prep_memo_invalidated_by_cargo_config_change, {
+#[test]
+fn prep_memo_invalidated_by_cargo_config_change() {
     let fixture = MemoFixture::new();
     fixture.assert_invalidated_by(|f| {
         std::fs::write(f.root.join(".cargo/config.toml"), "[build]\njobs = 8\n").unwrap();
     });
-});
+}
 
-crate::timed_test!(prep_memo_invalidated_by_explicit_config_arg, {
+#[test]
+fn prep_memo_invalidated_by_explicit_config_arg() {
     let fixture = MemoFixture::new();
     fixture.store_and_verify_hit();
     let args = vec![
@@ -260,9 +268,10 @@ crate::timed_test!(prep_memo_invalidated_by_explicit_config_arg, {
         context.try_load(&fixture.plan_dir).is_none(),
         "an explicit --config passthrough must not reuse the plain memo"
     );
-});
+}
 
-crate::timed_test!(prep_memo_invalidated_by_feature_selection_args, {
+#[test]
+fn prep_memo_invalidated_by_feature_selection_args() {
     let fixture = MemoFixture::new();
     fixture.store_and_verify_hit();
     let args = vec!["build".to_string(), "--all-features".to_string()];
@@ -271,16 +280,18 @@ crate::timed_test!(prep_memo_invalidated_by_feature_selection_args, {
         context.try_load(&fixture.plan_dir).is_none(),
         "feature-selection passthrough args must not reuse the plain memo"
     );
-});
+}
 
-crate::timed_test!(prep_memo_invalidated_by_toolchain_binary_content_change, {
+#[test]
+fn prep_memo_invalidated_by_toolchain_binary_content_change() {
     let fixture = MemoFixture::new();
     fixture.assert_invalidated_by(|f| {
         std::fs::write(&f.cargo_bin, "cargo binary v2 - definitely different").unwrap();
     });
-});
+}
 
-crate::timed_test!(prep_memo_invalidated_by_toolchain_binary_path_change, {
+#[test]
+fn prep_memo_invalidated_by_toolchain_binary_path_change() {
     let fixture = MemoFixture::new();
     fixture.store_and_verify_hit();
     let other_rustc = fixture.rustc_bin.with_file_name("rustc-other");
@@ -296,9 +307,10 @@ crate::timed_test!(prep_memo_invalidated_by_toolchain_binary_path_change, {
         context.try_load(&fixture.plan_dir).is_none(),
         "a different resolved rustc path must invalidate the memo"
     );
-});
+}
 
-crate::timed_test!(prep_memo_invalidated_by_env_change, {
+#[test]
+fn prep_memo_invalidated_by_env_change() {
     let fixture = MemoFixture::new();
     fixture.store_and_verify_hit();
     let mutations: [fn(&mut MemoEnvSnapshot); 3] = [
@@ -315,9 +327,10 @@ crate::timed_test!(prep_memo_invalidated_by_env_change, {
             "environment mutations must invalidate the memo"
         );
     }
-});
+}
 
-crate::timed_test!(prep_memo_invalidated_by_rust_toolchain_pin_change, {
+#[test]
+fn prep_memo_invalidated_by_rust_toolchain_pin_change() {
     let fixture = MemoFixture::new();
     fixture.assert_invalidated_by(|f| {
         std::fs::write(
@@ -326,9 +339,10 @@ crate::timed_test!(prep_memo_invalidated_by_rust_toolchain_pin_change, {
         )
         .unwrap();
     });
-});
+}
 
-crate::timed_test!(prep_memo_invalidated_by_parent_workspace_injection, {
+#[test]
+fn prep_memo_invalidated_by_parent_workspace_injection() {
     let fixture = MemoFixture::new();
     fixture.assert_invalidated_by(|f| {
         // A new Cargo.toml in a strict ancestor of the discovered manifest
@@ -340,9 +354,10 @@ crate::timed_test!(prep_memo_invalidated_by_parent_workspace_injection, {
         )
         .unwrap();
     });
-});
+}
 
-crate::timed_test!(prep_memo_rejects_corrupt_file, {
+#[test]
+fn prep_memo_rejects_corrupt_file() {
     let fixture = MemoFixture::new();
     fixture.store_and_verify_hit();
     let context = fixture.context();
@@ -355,9 +370,10 @@ crate::timed_test!(prep_memo_rejects_corrupt_file, {
         context.try_load(&fixture.plan_dir).is_none(),
         "a corrupt memo must fall back to the authoritative subprocesses"
     );
-});
+}
 
-crate::timed_test!(prep_memo_rejects_unknown_schema_version, {
+#[test]
+fn prep_memo_rejects_unknown_schema_version() {
     let fixture = MemoFixture::new();
     fixture.store_and_verify_hit();
     let context = fixture.context();
@@ -373,11 +389,12 @@ crate::timed_test!(prep_memo_rejects_unknown_schema_version, {
         context.try_load(&fixture.plan_dir).is_none(),
         "an unknown schema version must fall back to the authoritative subprocesses"
     );
-});
+}
 
 // Schema drift guard for `rust_plan_memo.proto`: encode/decode round trip
 // preserves every field.
-crate::timed_test!(prep_memo_wire_roundtrip_preserves_fields, {
+#[test]
+fn prep_memo_wire_roundtrip_preserves_fields() {
     let memo = wire::RustPlanPrepMemoV1 {
         schema_version: PREP_MEMO_SCHEMA_VERSION,
         key_hash: "abc123".to_string(),
@@ -405,7 +422,7 @@ crate::timed_test!(prep_memo_wire_roundtrip_preserves_fields, {
     memo.encode(&mut bytes).unwrap();
     let decoded = wire::RustPlanPrepMemoV1::decode(bytes.as_slice()).unwrap();
     assert_eq!(decoded, memo);
-});
+}
 
 /// End-to-end (unix-gated at runtime): a memo hit must skip all three
 /// prep subprocesses; mutating a workspace manifest must re-run them.
@@ -435,50 +452,48 @@ mod end_to_end {
             .unwrap_or(0)
     }
 
-    crate::timed_test!(
-        prep_memo_hit_skips_prep_subprocesses_until_manifest_changes,
-        {
-            if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
-                return;
-            }
-            let _lock = MODE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-            let previous_mode = std::env::var_os(TARGET_CACHE_MODE_ENV_VAR);
-            let previous_memo = std::env::var_os(RUST_PLAN_MEMO_ENV_VAR);
-            std::env::set_var(TARGET_CACHE_MODE_ENV_VAR, "thin");
-            std::env::remove_var(RUST_PLAN_MEMO_ENV_VAR);
+    #[test]
+    fn prep_memo_hit_skips_prep_subprocesses_until_manifest_changes() {
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            return;
+        }
+        let _lock = MODE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let previous_mode = std::env::var_os(TARGET_CACHE_MODE_ENV_VAR);
+        let previous_memo = std::env::var_os(RUST_PLAN_MEMO_ENV_VAR);
+        std::env::set_var(TARGET_CACHE_MODE_ENV_VAR, "thin");
+        std::env::remove_var(RUST_PLAN_MEMO_ENV_VAR);
 
-            let result = std::panic::catch_unwind(|| {
-                let tmp = tempfile::tempdir().expect("tmpdir");
-                let base = tmp.path();
-                let ws = base.join("ws");
-                std::fs::create_dir_all(ws.join("app/src")).unwrap();
-                std::fs::write(ws.join("Cargo.toml"), "[workspace]\nmembers=[\"app\"]\n").unwrap();
-                std::fs::write(
-                    ws.join("app/Cargo.toml"),
-                    "[package]\nname=\"app\"\nversion=\"0.1.0\"\n",
-                )
-                .unwrap();
-                std::fs::write(ws.join("Cargo.lock"), "# lock\n").unwrap();
+        let result = std::panic::catch_unwind(|| {
+            let tmp = tempfile::tempdir().expect("tmpdir");
+            let base = tmp.path();
+            let ws = base.join("ws");
+            std::fs::create_dir_all(ws.join("app/src")).unwrap();
+            std::fs::write(ws.join("Cargo.toml"), "[workspace]\nmembers=[\"app\"]\n").unwrap();
+            std::fs::write(
+                ws.join("app/Cargo.toml"),
+                "[package]\nname=\"app\"\nversion=\"0.1.0\"\n",
+            )
+            .unwrap();
+            std::fs::write(ws.join("Cargo.lock"), "# lock\n").unwrap();
 
-                let metadata_json = serde_json::json!({
-                    "packages": [{
-                        "id": "path+file:///ws/app#app@0.1.0",
-                        "source": null,
-                        "manifest_path": ws.join("app/Cargo.toml").display().to_string(),
-                    }],
-                    "workspace_members": ["path+file:///ws/app#app@0.1.0"],
-                    "workspace_root": ws.display().to_string(),
-                    "target_directory": ws.join("target").display().to_string(),
-                });
-                let metadata_file = base.join("metadata.json");
-                std::fs::write(&metadata_file, serde_json::to_vec(&metadata_json).unwrap())
-                    .unwrap();
+            let metadata_json = serde_json::json!({
+                "packages": [{
+                    "id": "path+file:///ws/app#app@0.1.0",
+                    "source": null,
+                    "manifest_path": ws.join("app/Cargo.toml").display().to_string(),
+                }],
+                "workspace_members": ["path+file:///ws/app#app@0.1.0"],
+                "workspace_root": ws.display().to_string(),
+                "target_directory": ws.join("target").display().to_string(),
+            });
+            let metadata_file = base.join("metadata.json");
+            std::fs::write(&metadata_file, serde_json::to_vec(&metadata_json).unwrap()).unwrap();
 
-                let cargo_calls = base.join("cargo-calls.log");
-                let rustc_calls = base.join("rustc-calls.log");
-                let cargo_bin = base.join("cargo-fake");
-                let rustc_bin = base.join("rustc-fake");
-                write_script(
+            let cargo_calls = base.join("cargo-calls.log");
+            let rustc_calls = base.join("rustc-calls.log");
+            let cargo_bin = base.join("cargo-fake");
+            let rustc_bin = base.join("rustc-fake");
+            write_script(
                 &cargo_bin,
                 &format!(
                     "#!/bin/sh\necho \"$@\" >> {}\nif [ \"$1\" = metadata ]; then cat {}; else echo 'cargo 1.94.1-fake'; fi\n",
@@ -486,7 +501,7 @@ mod end_to_end {
                     metadata_file.display(),
                 ),
             );
-                write_script(
+            write_script(
                 &rustc_bin,
                 &format!(
                     "#!/bin/sh\necho \"$@\" >> {}\nprintf 'rustc 1.94.1-fake\\nhost: x86_64-unknown-fake\\nrelease: 1.94.1\\n'\n",
@@ -494,86 +509,85 @@ mod end_to_end {
                 ),
             );
 
-                let cache_dir = base.join("cache");
-                std::fs::create_dir_all(cache_dir.join("logs")).unwrap();
-                let session = ZccacheBuildSession {
-                    cache_dir: cache_dir.clone(),
-                    cache_dir_env: true,
-                    session_id: "session-memo-e2e".to_string(),
-                    session_log_path: cache_dir.join("logs/last-session.log"),
-                    journal_path: cache_dir.join("logs/last-session.jsonl"),
-                    session_stats_path: cache_dir.join("logs/last-session-stats.json"),
-                };
-                let args = vec!["build".to_string()];
+            let cache_dir = base.join("cache");
+            std::fs::create_dir_all(cache_dir.join("logs")).unwrap();
+            let session = ZccacheBuildSession {
+                cache_dir: cache_dir.clone(),
+                cache_dir_env: true,
+                session_id: "session-memo-e2e".to_string(),
+                session_log_path: cache_dir.join("logs/last-session.log"),
+                journal_path: cache_dir.join("logs/last-session.jsonl"),
+                session_stats_path: cache_dir.join("logs/last-session-stats.json"),
+            };
+            let args = vec!["build".to_string()];
 
-                let plan_one = maybe_prepare_rust_artifact_plan(
-                    &cargo_bin, &rustc_bin, &args, &session, None, None,
-                )
-                .expect("first prepare")
-                .expect("plan context");
-                assert_eq!(
-                    call_count(&cargo_calls),
-                    2,
-                    "metadata + --version on first run"
-                );
-                assert_eq!(call_count(&rustc_calls), 1, "-Vv on first run");
+            let plan_one = maybe_prepare_rust_artifact_plan(
+                &cargo_bin, &rustc_bin, &args, &session, None, None,
+            )
+            .expect("first prepare")
+            .expect("plan context");
+            assert_eq!(
+                call_count(&cargo_calls),
+                2,
+                "metadata + --version on first run"
+            );
+            assert_eq!(call_count(&rustc_calls), 1, "-Vv on first run");
 
-                let plan_two = maybe_prepare_rust_artifact_plan(
-                    &cargo_bin, &rustc_bin, &args, &session, None, None,
-                )
-                .expect("second prepare")
-                .expect("plan context");
-                assert_eq!(
-                    call_count(&cargo_calls),
-                    2,
-                    "memo hit must not re-run cargo metadata / cargo --version"
-                );
-                assert_eq!(
-                    call_count(&rustc_calls),
-                    1,
-                    "memo hit must not re-run rustc -Vv"
-                );
-                assert_eq!(
-                    plan_one.plan_inputs_hash, plan_two.plan_inputs_hash,
-                    "a memo hit must produce the identical plan identity"
-                );
+            let plan_two = maybe_prepare_rust_artifact_plan(
+                &cargo_bin, &rustc_bin, &args, &session, None, None,
+            )
+            .expect("second prepare")
+            .expect("plan context");
+            assert_eq!(
+                call_count(&cargo_calls),
+                2,
+                "memo hit must not re-run cargo metadata / cargo --version"
+            );
+            assert_eq!(
+                call_count(&rustc_calls),
+                1,
+                "memo hit must not re-run rustc -Vv"
+            );
+            assert_eq!(
+                plan_one.plan_inputs_hash, plan_two.plan_inputs_hash,
+                "a memo hit must produce the identical plan identity"
+            );
 
-                std::fs::write(
-                    ws.join("Cargo.toml"),
-                    "[workspace]\nmembers=[\"app\",\"other\"]\n",
-                )
-                .unwrap();
-                std::fs::create_dir_all(ws.join("other")).unwrap();
-                std::fs::write(
-                    ws.join("other/Cargo.toml"),
-                    "[package]\nname=\"other\"\nversion=\"0.1.0\"\n",
-                )
-                .unwrap();
+            std::fs::write(
+                ws.join("Cargo.toml"),
+                "[workspace]\nmembers=[\"app\",\"other\"]\n",
+            )
+            .unwrap();
+            std::fs::create_dir_all(ws.join("other")).unwrap();
+            std::fs::write(
+                ws.join("other/Cargo.toml"),
+                "[package]\nname=\"other\"\nversion=\"0.1.0\"\n",
+            )
+            .unwrap();
 
-                let _plan_three = maybe_prepare_rust_artifact_plan(
-                    &cargo_bin, &rustc_bin, &args, &session, None, None,
-                )
-                .expect("third prepare")
-                .expect("plan context");
-                assert_eq!(
-                    call_count(&cargo_calls),
-                    4,
-                    "a manifest mutation must re-run the authoritative subprocesses"
-                );
-                assert_eq!(call_count(&rustc_calls), 2);
-            });
+            let _plan_three = maybe_prepare_rust_artifact_plan(
+                &cargo_bin, &rustc_bin, &args, &session, None, None,
+            )
+            .expect("third prepare")
+            .expect("plan context");
+            assert_eq!(
+                call_count(&cargo_calls),
+                4,
+                "a manifest mutation must re-run the authoritative subprocesses"
+            );
+            assert_eq!(call_count(&rustc_calls), 2);
+        });
 
-            match previous_mode {
-                Some(value) => std::env::set_var(TARGET_CACHE_MODE_ENV_VAR, value),
-                None => std::env::remove_var(TARGET_CACHE_MODE_ENV_VAR),
-            }
-            match previous_memo {
-                Some(value) => std::env::set_var(RUST_PLAN_MEMO_ENV_VAR, value),
-                None => std::env::remove_var(RUST_PLAN_MEMO_ENV_VAR),
-            }
-            if let Err(panic) = result {
-                std::panic::resume_unwind(panic);
-            }
+        match previous_mode {
+            Some(value) => std::env::set_var(TARGET_CACHE_MODE_ENV_VAR, value),
+            None => std::env::remove_var(TARGET_CACHE_MODE_ENV_VAR),
         }
-    );
+        match previous_memo {
+            Some(value) => std::env::set_var(RUST_PLAN_MEMO_ENV_VAR, value),
+            None => std::env::remove_var(RUST_PLAN_MEMO_ENV_VAR),
+        }
+        if let Err(panic) = result {
+            std::panic::resume_unwind(panic);
+        }
+    }
 }

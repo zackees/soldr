@@ -237,7 +237,8 @@ mod tests {
         set_file_mtime(path, FileTime::from_system_time(when)).unwrap();
     }
 
-    crate::timed_test!(pressure_and_absolute_boundaries_are_root_local, {
+    #[test]
+    fn pressure_and_absolute_boundaries_are_root_local() {
         let temp = tempfile::tempdir().unwrap();
         let owned = SoldrPaths::with_root(temp.path().join("owned"));
         let sibling = SoldrPaths::with_root(temp.path().join("sibling"));
@@ -261,9 +262,10 @@ mod tests {
         assert_eq!(pressure.removed, 1);
         assert!(target_root(&owned).join("fresh").exists());
         assert!(target_root(&sibling).join("sentinel/artifact").exists());
-    });
+    }
 
-    crate::timed_test!(wheel_cache_uses_the_same_root_local_age_policy, {
+    #[test]
+    fn wheel_cache_uses_the_same_root_local_age_policy() {
         let temp = tempfile::tempdir().unwrap();
         let owned = SoldrPaths::with_root(temp.path().join("owned"));
         let sibling = SoldrPaths::with_root(temp.path().join("sibling"));
@@ -287,32 +289,30 @@ mod tests {
         assert!(wheel_root(&sibling)
             .join("sentinel/wheel/artifact.whl")
             .is_file());
-    });
+    }
 
-    crate::timed_test!(
-        timestamp_failure_retains_candidate_instead_of_failing_old,
+    #[test]
+    fn timestamp_failure_retains_candidate_instead_of_failing_old() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = SoldrPaths::with_root(temp.path().join("owned"));
+        let candidate = target_root(&paths).join("candidate");
+        std::fs::create_dir_all(&candidate).unwrap();
+        // A dangling symlink makes the timestamp probe fail. Skip on
+        // hosts that cannot create one (Windows without Developer Mode).
+        if crate::platform::fs::links::create(
+            &candidate.join("missing").to_string_lossy(),
+            &candidate.join("broken"),
+            false,
+        )
+        .is_err()
         {
-            let temp = tempfile::tempdir().unwrap();
-            let paths = SoldrPaths::with_root(temp.path().join("owned"));
-            let candidate = target_root(&paths).join("candidate");
-            std::fs::create_dir_all(&candidate).unwrap();
-            // A dangling symlink makes the timestamp probe fail. Skip on
-            // hosts that cannot create one (Windows without Developer Mode).
-            if crate::platform::fs::links::create(
-                &candidate.join("missing").to_string_lossy(),
-                &candidate.join("broken"),
-                false,
-            )
-            .is_err()
-            {
-                return;
-            }
-            let report = sweep(&paths, SystemTime::now(), Duration::ZERO);
-            assert_eq!(report.removed, 0);
-            assert_eq!(report.failed, 1);
-            assert!(candidate.is_dir());
+            return;
         }
-    );
+        let report = sweep(&paths, SystemTime::now(), Duration::ZERO);
+        assert_eq!(report.removed, 0);
+        assert_eq!(report.failed, 1);
+        assert!(candidate.is_dir());
+    }
 }
 
 #[cfg(test)]
@@ -339,7 +339,8 @@ mod retention_cap_tests {
     // enough for the 30-day absolute sweep, and the 4-day pressure sweep
     // never reached because free space was still above the trigger. The cap
     // is what bounds this.
-    crate::timed_test!(namespaces_beyond_the_cap_are_reclaimed_regardless_of_age, {
+    #[test]
+    fn namespaces_beyond_the_cap_are_reclaimed_regardless_of_age() {
         let temp = tempfile::tempdir().expect("tempdir");
         let paths = SoldrPaths::with_root(temp.path().to_path_buf());
         // All young: an age-only sweep would keep every one of them.
@@ -357,9 +358,10 @@ mod retention_cap_tests {
             .expect("read")
             .count();
         assert_eq!(left, RETAINED_TARGETS);
-    });
+    }
 
-    crate::timed_test!(at_or_under_the_cap_nothing_is_removed, {
+    #[test]
+    fn at_or_under_the_cap_nothing_is_removed() {
         let temp = tempfile::tempdir().expect("tempdir");
         let paths = SoldrPaths::with_root(temp.path().to_path_buf());
         for i in 0..RETAINED_TARGETS as u64 {
@@ -368,11 +370,12 @@ mod retention_cap_tests {
 
         let report = sweep(&paths, SystemTime::now(), ABSOLUTE_MAX_AGE);
         assert_eq!(report.removed, 0, "{report:?}");
-    });
+    }
 
     // The newest namespace is the one a reinstall reuses; reclaiming it
     // would make every install cold.
-    crate::timed_test!(the_newest_namespace_always_survives, {
+    #[test]
+    fn the_newest_namespace_always_survives() {
         let temp = tempfile::tempdir().expect("tempdir");
         let paths = SoldrPaths::with_root(temp.path().to_path_buf());
         for i in 0..6u64 {
@@ -382,10 +385,11 @@ mod retention_cap_tests {
 
         sweep(&paths, SystemTime::now(), ABSOLUTE_MAX_AGE);
         assert!(newest.exists(), "the newest namespace must survive");
-    });
+    }
 
     // Age and cap must not both claim the same directory and double-count.
-    crate::timed_test!(age_and_cap_do_not_double_count, {
+    #[test]
+    fn age_and_cap_do_not_double_count() {
         let temp = tempfile::tempdir().expect("tempdir");
         let paths = SoldrPaths::with_root(temp.path().to_path_buf());
         for i in 0..6u64 {
@@ -402,5 +406,5 @@ mod retention_cap_tests {
             report.failed, 0,
             "a double-claim shows up as a failed delete"
         );
-    });
+    }
 }

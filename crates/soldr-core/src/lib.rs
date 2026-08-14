@@ -3,7 +3,7 @@
 //! Owns the shared types every other soldr crate reaches for: target
 //! triple resolution, `~/.soldr/` layout (`SoldrPaths` / `SoldrConfig`),
 //! `SoldrError`, the daemon wire schema (`core::wire`), the shared
-//! Windows Defender exclusion plumbing, and the `timed_test!` per-test
+//! Windows Defender exclusion plumbing, and shared per-test
 //! watchdog. No I/O beyond config files.
 //!
 //! The `core` tree stays nested as `pub mod core;` (not flattened) so
@@ -26,10 +26,10 @@ pub mod defender_probe;
 pub mod fuzzy_match;
 pub mod self_relocate;
 pub mod startup_profile;
-/// Per-test watchdog (`timed_test!` macro + `run_with_watchdog`).
+/// Shared test-support helpers (leaked-daemon diagnostic, process-env lock).
 /// Not cfg-gated: cargo compiles the library *without* `cfg(test)`
 /// when linking it into integration tests, so a `cfg(test)` gate
-/// would hide the module from `tests/`. The module is tiny and never
-/// invoked outside `#[test]` paths.
+/// would hide the module from `tests/`. Per-test timeouts live in
+/// `.config/nextest.toml`, not here (soldr#2493).
 pub mod test_util;
 pub mod warning_log;

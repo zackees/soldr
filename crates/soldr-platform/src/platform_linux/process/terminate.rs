@@ -69,13 +69,13 @@ mod tests {
     use super::*;
     use std::process::{Command, Stdio};
 
-    #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+    #[test]
     fn signal_an_unallocated_pid_is_success_not_error() {
         // PID 999999 is effectively unallocated; ESRCH must map to Ok.
         signal_pid(999_999, false).expect("esrch is success");
     }
 
-    #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+    #[test]
     fn terminate_tree_reports_esrch_group_as_killed() {
         // A child that already exited: the group is gone, so killpg fails
         // with ESRCH which signal_process_group treats as success.

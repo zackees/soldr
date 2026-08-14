@@ -224,7 +224,8 @@ mod tests {
         binary
     }
 
-    crate::timed_test!(service_definition_declares_soldr_daemon_shared_broker, {
+    #[test]
+    fn service_definition_declares_soldr_daemon_shared_broker() {
         let temp = TempDir::new().expect("tempdir");
         let daemon = fake_daemon_binary(temp.path());
 
@@ -239,9 +240,10 @@ mod tests {
             Some("soldr"),
         );
         assert!(definition.labels.contains_key(SOLDR_ROOT_SERVICE_LABEL));
-    });
+    }
 
-    crate::timed_test!(daemon_environment_is_owned_by_each_route_registration, {
+    #[test]
+    fn daemon_environment_is_owned_by_each_route_registration() {
         let mut definition = ServiceDefinitionBuilder::shared_broker("svc", "/bin/svc").build();
         add_daemon_env_labels(
             &mut definition,
@@ -255,9 +257,10 @@ mod tests {
         let decoded = daemon_env_from_service_definition(&definition).expect("decode daemon env");
         assert!(decoded.contains(&("SOLDR_JOBS".into(), "2".into())));
         assert!(decoded.contains(&("ZCCACHE_STAGING_DIR".into(), "/tmp/staging".into())));
-    });
+    }
 
-    crate::timed_test!(daemon_environment_labels_reject_unapproved_names, {
+    #[test]
+    fn daemon_environment_labels_reject_unapproved_names() {
         let mut definition = ServiceDefinitionBuilder::shared_broker("svc", "/bin/svc").build();
         definition.labels.insert(
             format!("{SOLDR_DAEMON_ENV_LABEL_PREFIX}PATH"),
@@ -266,34 +269,33 @@ mod tests {
         let err = daemon_env_from_service_definition(&definition)
             .expect_err("PATH must not cross the broker registration boundary");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
-    });
+    }
 
-    crate::timed_test!(
-        install_service_definition_writes_v2_loader_compatible_protobuf,
-        {
-            let temp = TempDir::new().expect("tempdir");
-            let service_root = temp.path().join("services");
-            let daemon = fake_daemon_binary(temp.path());
+    #[test]
+    fn install_service_definition_writes_v2_loader_compatible_protobuf() {
+        let temp = TempDir::new().expect("tempdir");
+        let service_root = temp.path().join("services");
+        let daemon = fake_daemon_binary(temp.path());
 
-            let installed = install_service_definition_to_dir(&service_root, &daemon)
-                .expect("install service definition");
+        let installed = install_service_definition_to_dir(&service_root, &daemon)
+            .expect("install service definition");
 
-            // v2 files carry the `.servicedef.v2` extension.
-            assert_eq!(
-                installed.path,
-                service_root.join(format!(
-                    "{}.servicedef.v2",
-                    installed.definition.service_name
-                ))
-            );
-            let loaded = ServiceDefinitionLoader::new(&service_root)
-                .load(&installed.definition.service_name)
-                .expect("load service definition");
-            assert_eq!(loaded, installed.definition);
-        }
-    );
+        // v2 files carry the `.servicedef.v2` extension.
+        assert_eq!(
+            installed.path,
+            service_root.join(format!(
+                "{}.servicedef.v2",
+                installed.definition.service_name
+            ))
+        );
+        let loaded = ServiceDefinitionLoader::new(&service_root)
+            .load(&installed.definition.service_name)
+            .expect("load service definition");
+        assert_eq!(loaded, installed.definition);
+    }
 
-    crate::timed_test!(deferred_items_document_upstream_gated_boundary, {
+    #[test]
+    fn deferred_items_document_upstream_gated_boundary() {
         // The v2 discovery + servicedef wiring is DONE (this slice); what
         // remains deferred is the upstream-gated broker-owned handoff.
         assert!(SOLDR_DAEMON_SERVICE_DEF_DEFERRED
@@ -302,5 +304,5 @@ mod tests {
         assert!(!SOLDR_DAEMON_SERVICE_DEF_DEFERRED
             .iter()
             .any(|item| item.contains("connect_to_backend wiring")));
-    });
+    }
 }

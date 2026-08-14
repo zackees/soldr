@@ -587,7 +587,8 @@ mod tests {
         v
     }
 
-    crate::timed_test!(nested_workspace_wrapper_drops_real_compiler_path, {
+    #[test]
+    fn nested_workspace_wrapper_drops_real_compiler_path() {
         let workspace_tool = format!("{}-{}", "clippy", "driver");
         let argv = vec![
             "soldr".into(),
@@ -610,9 +611,10 @@ mod tests {
                 "src/lib.rs",
             ]
         );
-    });
+    }
 
-    crate::timed_test!(wrapper_normalization_preserves_other_argument_shapes, {
+    #[test]
+    fn wrapper_normalization_preserves_other_argument_shapes() {
         let workspace_tool = format!("{}-{}", "clippy", "driver");
         let direct_workspace_argv = vec![
             "soldr".into(),
@@ -642,40 +644,45 @@ mod tests {
             normalize_nested_workspace_wrapper_args(&compiler_named_source_argv, &workspace_tool),
             std::borrow::Cow::Borrowed(_)
         ));
-    });
+    }
 
-    crate::timed_test!(non_cacheable_print_mode_detected, {
+    #[test]
+    fn non_cacheable_print_mode_detected() {
         // `--print=cfg` is a metadata probe — never compiles, never
         // benefits from zccache.
         let argv = wrapper_argv(&["--print=cfg"]);
         assert!(is_non_cacheable_rustc(&argv));
-    });
+    }
 
-    crate::timed_test!(non_cacheable_emit_dep_info_only_detected, {
+    #[test]
+    fn non_cacheable_emit_dep_info_only_detected() {
         // Cargo's dep-graph refresh: `--emit=dep-info` produces no
         // object code, so wrapper round-trip is wasted.
         let argv = wrapper_argv(&["--emit=dep-info", "--crate-name=foo"]);
         assert!(is_non_cacheable_rustc(&argv));
-    });
+    }
 
-    crate::timed_test!(cacheable_emit_link_metadata_not_flagged, {
+    #[test]
+    fn cacheable_emit_link_metadata_not_flagged() {
         // A normal compile that emits link + metadata MUST still flow
         // through zccache.
         let argv = wrapper_argv(&["--emit=link,metadata"]);
         assert!(!is_non_cacheable_rustc(&argv));
-    });
+    }
 
-    crate::timed_test!(cacheable_no_emit_no_print_not_flagged, {
+    #[test]
+    fn cacheable_no_emit_no_print_not_flagged() {
         // No `--emit`, no `--print` → normal compile, must remain
         // cacheable.
         let argv = wrapper_argv(&["src/lib.rs"]);
         assert!(!is_non_cacheable_rustc(&argv));
-    });
+    }
 
-    crate::timed_test!(clippy_driver_routes_through_embedded_zccache, {
+    #[test]
+    fn clippy_driver_routes_through_embedded_zccache() {
         assert!(routes_through_embedded_zccache("rustc"));
         assert!(routes_through_embedded_zccache("clippy-driver"));
         assert!(!routes_through_embedded_zccache("rustfmt"));
         assert!(!routes_through_embedded_zccache("rustdoc"));
-    });
+    }
 }

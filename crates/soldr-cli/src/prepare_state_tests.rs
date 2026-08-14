@@ -6,7 +6,8 @@ use crate::prepare_cmd::{
     restore_prepare_state, save_prepare_state,
 };
 
-crate::timed_test!(expected_state_paths_uses_blessed_msvc_xwin_cache, {
+#[test]
+fn expected_state_paths_uses_blessed_msvc_xwin_cache() {
     let tmp = tempfile::tempdir().expect("tmpdir");
     let paths = SoldrPaths::with_root(tmp.path().join("soldr"));
     let attrs = classify_target("x86_64-pc-windows-msvc").expect("classify");
@@ -30,18 +31,20 @@ crate::timed_test!(expected_state_paths_uses_blessed_msvc_xwin_cache, {
     assert!(entries
         .iter()
         .any(|entry| entry.label == "xwin MSVC CRT + Windows SDK" && entry.present));
-});
+}
 
-crate::timed_test!(prepare_state_roots_includes_blessed_sdk_root, {
+#[test]
+fn prepare_state_roots_includes_blessed_sdk_root() {
     let tmp = tempfile::tempdir().expect("tmpdir");
     let paths = SoldrPaths::with_root(tmp.path().join("soldr"));
     let sdk_root = paths.root.join("sdk");
     std::fs::create_dir_all(&sdk_root).expect("mkdir sdk root");
     let roots = prepare_state_roots(&paths).expect("prepare roots");
     assert!(roots.iter().any(|root| root == &sdk_root));
-});
+}
 
-crate::timed_test!(gnu_restore_state_uses_the_catalogue_bundle_not_zig, {
+#[test]
+fn gnu_restore_state_uses_the_catalogue_bundle_not_zig() {
     let tmp = tempfile::tempdir().expect("tmpdir");
     let paths = SoldrPaths::with_root(tmp.path().join("soldr"));
     let attrs = classify_target("aarch64-unknown-linux-gnu").expect("classify GNU");
@@ -59,9 +62,10 @@ crate::timed_test!(gnu_restore_state_uses_the_catalogue_bundle_not_zig, {
     std::fs::create_dir_all(&root).expect("mkdir GNU root");
     let roots = prepare_state_roots(&paths).expect("prepare roots");
     assert!(roots.iter().any(|candidate| candidate == &root));
-});
+}
 
-crate::timed_test!(prepare_state_archive_restores_to_a_different_soldr_root, {
+#[test]
+fn prepare_state_archive_restores_to_a_different_soldr_root() {
     let tmp = tempfile::tempdir().expect("tmpdir");
     let source = SoldrPaths::with_root(tmp.path().join("source-soldr"));
     let gnu_marker = source
@@ -102,4 +106,4 @@ crate::timed_test!(prepare_state_archive_restores_to_a_different_soldr_root, {
         !restored.bin.join("zig-0.14.1/ready").exists(),
         "GNU archive must not capture unrelated Zig state"
     );
-});
+}

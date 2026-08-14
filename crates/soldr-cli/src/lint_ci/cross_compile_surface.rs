@@ -302,7 +302,8 @@ mod tests {
 
     // ---- Negative fixtures: must FLAG (error) ----
 
-    crate::timed_test!(flags_cargo_xwin_windows_msvc, {
+    #[test]
+    fn flags_cargo_xwin_windows_msvc() {
         for target in ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"] {
             let e = errors(&format!("        run: cargo xwin build --target {target}"));
             assert_eq!(e.len(), 1, "target {target}");
@@ -310,18 +311,20 @@ mod tests {
             assert_eq!(e[0].target, target);
             assert!(e[0].recommendation.contains("soldr build --target"));
         }
-    });
+    }
 
-    crate::timed_test!(flags_cargo_zigbuild_apple_darwin, {
+    #[test]
+    fn flags_cargo_zigbuild_apple_darwin() {
         for target in ["x86_64-apple-darwin", "aarch64-apple-darwin"] {
             let e = errors(&format!("        run: cargo zigbuild --target {target}"));
             assert_eq!(e.len(), 1, "target {target}");
             assert_eq!(e[0].tool, "cargo zigbuild");
             assert_eq!(e[0].target, target);
         }
-    });
+    }
 
-    crate::timed_test!(flags_raw_zig_cc_for_apple_and_windows, {
+    #[test]
+    fn flags_raw_zig_cc_for_apple_and_windows() {
         for target in [
             "aarch64-apple-darwin",
             "x86_64-apple-darwin",
@@ -334,9 +337,10 @@ mod tests {
             assert_eq!(e.len(), 1, "target {target}");
             assert_eq!(e[0].tool, "zig");
         }
-    });
+    }
 
-    crate::timed_test!(flags_alternate_compiler_with_apple_or_windows_target, {
+    #[test]
+    fn flags_alternate_compiler_with_apple_or_windows_target() {
         for target in [
             "aarch64-apple-darwin",
             "x86_64-apple-darwin",
@@ -346,46 +350,52 @@ mod tests {
             let e = errors(&format!("        run: clang --target={target} -c main.c"));
             assert_eq!(e.len(), 1, "target {target}");
         }
-    });
+    }
 
-    crate::timed_test!(flags_env_prefix_form, {
+    #[test]
+    fn flags_env_prefix_form() {
         let e = errors(
             "        run: CC_x86_64_pc_windows_msvc=zig-cc cargo xwin build --target x86_64-pc-windows-msvc",
         );
         assert_eq!(e.len(), 1);
         assert_eq!(e[0].tool, "cargo xwin");
-    });
+    }
 
-    crate::timed_test!(flags_multiline_run_block, {
+    #[test]
+    fn flags_multiline_run_block() {
         // Each physical line of a `run: |` block is scanned independently.
         let text = "        run: |\n          set -e\n          FOO=bar cargo zigbuild --target aarch64-apple-darwin\n          echo done";
         let e = errors(text);
         assert_eq!(e.len(), 1);
         assert_eq!(e[0].line, 3);
-    });
+    }
 
-    crate::timed_test!(flags_backslash_continuation_split_command, {
+    #[test]
+    fn flags_backslash_continuation_split_command() {
         let text = "        run: |\n          cargo zigbuild \\\n            --target aarch64-apple-darwin";
         let e = errors(text);
         assert_eq!(e.len(), 1);
         assert_eq!(e[0].line, 2);
-    });
+    }
 
-    crate::timed_test!(flags_cargo_install_xwin, {
+    #[test]
+    fn flags_cargo_install_xwin() {
         let e = errors("        run: cargo install cargo-xwin");
         assert_eq!(e.len(), 1);
         assert_eq!(e[0].target, "*-pc-windows-msvc");
-    });
+    }
 
     // ---- Positive fixtures: must PASS ----
 
-    crate::timed_test!(passes_soldr_build_and_prepare_for_apple_windows, {
+    #[test]
+    fn passes_soldr_build_and_prepare_for_apple_windows() {
         assert!(errors("        run: soldr build --target aarch64-apple-darwin").is_empty());
         assert!(errors("        run: soldr build --target x86_64-pc-windows-msvc").is_empty());
         assert!(errors("        run: soldr prepare --target aarch64-apple-darwin").is_empty());
-    });
+    }
 
-    crate::timed_test!(passes_zig_for_linux_and_manylinux, {
+    #[test]
+    fn passes_zig_for_linux_and_manylinux() {
         assert!(errors("        run: cargo zigbuild --target x86_64-unknown-linux-gnu").is_empty());
         assert!(
             errors("        run: cargo zigbuild --target aarch64-unknown-linux-musl").is_empty()
@@ -398,9 +408,10 @@ mod tests {
         assert!(
             errors("        run: maturin build --zig --target x86_64-unknown-linux-gnu").is_empty()
         );
-    });
+    }
 
-    crate::timed_test!(mixed_matrix_flags_apple_row_only, {
+    #[test]
+    fn mixed_matrix_flags_apple_row_only() {
         let text = "\
     strategy:
       matrix:
@@ -412,9 +423,10 @@ mod tests {
         let e = errors(text);
         assert_eq!(e.len(), 1, "only the apple row is a violation");
         assert_eq!(e[0].target, "aarch64-apple-darwin");
-    });
+    }
 
-    crate::timed_test!(all_linux_matrix_zigbuild_passes, {
+    #[test]
+    fn all_linux_matrix_zigbuild_passes() {
         let text = "\
     strategy:
       matrix:
@@ -425,38 +437,43 @@ mod tests {
       - run: cargo zigbuild --target ${{ matrix.target }}";
         assert!(errors(text).is_empty());
         assert!(findings(text).is_empty());
-    });
+    }
 
-    crate::timed_test!(echoed_command_in_summary_is_not_flagged, {
+    #[test]
+    fn echoed_command_in_summary_is_not_flagged() {
         // Balanced-quote stripping means a documentation echo is not an
         // invocation.
         let text = "        run: echo \"soldr cargo zigbuild --target aarch64-apple-darwin\"";
         assert!(findings(text).is_empty());
-    });
+    }
 
-    crate::timed_test!(comment_mentioning_legacy_tool_is_not_flagged, {
+    #[test]
+    fn comment_mentioning_legacy_tool_is_not_flagged() {
         let text = "        # legacy: cargo xwin build --target x86_64-pc-windows-msvc";
         assert!(findings(text).is_empty());
-    });
+    }
 
-    crate::timed_test!(prose_yaml_keys_are_not_flagged, {
+    #[test]
+    fn prose_yaml_keys_are_not_flagged() {
         // Step names and cache keys mention tools as prose/identifiers, not
         // as invocations — they are not `run:` command surfaces.
         let name = "      - name: Exercise 4 — cargo xwin build for x86_64-pc-windows-msvc";
         assert!(findings(name).is_empty());
         let key = "          key: soldr-zigbuild-cargo-zigbuild-0.23.0-aarch64-apple-darwin";
         assert!(findings(key).is_empty());
-    });
+    }
 
-    crate::timed_test!(tool_name_as_argument_is_not_flagged, {
+    #[test]
+    fn tool_name_as_argument_is_not_flagged() {
         // A tool name passed as an argument to another command is data.
         let json_arg = "        run: python3 query.py --json cargo-zigbuild aarch64-apple-darwin";
         assert!(findings(json_arg).is_empty());
         let find_arg = "        run: find . -type f -name cargo-zigbuild -print";
         assert!(findings(find_arg).is_empty());
-    });
+    }
 
-    crate::timed_test!(helper_script_indirection_is_flagged, {
+    #[test]
+    fn helper_script_indirection_is_flagged() {
         // A referenced `.sh` helper is scanned in full (every non-comment
         // line is a command surface).
         let file = scan_text(
@@ -471,9 +488,10 @@ mod tests {
         assert_eq!(e.len(), 1);
         assert_eq!(e[0].file, "ci/build.sh");
         assert_eq!(e[0].line, 3);
-    });
+    }
 
-    crate::timed_test!(unresolved_target_on_capable_surface_warns, {
+    #[test]
+    fn unresolved_target_on_capable_surface_warns() {
         // A zigbuild whose target is a bare placeholder with no matrix
         // declaration, on a file that mentions apple/windows, warns.
         let text = "\
@@ -487,5 +505,5 @@ mod tests {
         assert_eq!(all[0].target, "<unresolved>");
         // Warning-only does not produce an error.
         assert!(errors(text).is_empty());
-    });
+    }
 }

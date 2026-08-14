@@ -230,118 +230,115 @@ fn windows_daemon_console_probe_helper() {
     );
 }
 
-soldr_cli::timed_test!(
-    managed_windows_start_has_one_consoleless_owner,
-    Duration::from_secs(120),
-    {
-        if !matches!(
-            soldr_platform::host::facts::os(),
-            soldr_platform::host::facts::HostOs::Windows
-        ) {
-            return;
-        }
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
-        let cache_root = unique_temp_dir("daemon-detached-process-tree-cache");
-        let home_root = unique_temp_dir("daemon-detached-process-tree-home");
-        let _cleanup = DetachedDaemonCleanup {
-            cache_root: cache_root.clone(),
-            home_root: home_root.clone(),
-        };
+#[test]
+fn managed_windows_start_has_one_consoleless_owner() {
+    if !matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+    let cache_root = unique_temp_dir("daemon-detached-process-tree-cache");
+    let home_root = unique_temp_dir("daemon-detached-process-tree-home");
+    let _cleanup = DetachedDaemonCleanup {
+        cache_root: cache_root.clone(),
+        home_root: home_root.clone(),
+    };
 
-        let first = run_soldr(&["daemon", "start"], &cache_root, &home_root);
-        assert!(
-            first.status.success(),
-            "first detached start failed: stdout={}; stderr={}",
-            String::from_utf8_lossy(&first.stdout),
-            String::from_utf8_lossy(&first.stderr),
-        );
-        assert!(
-            wait_for_ready(
-                &cache_root,
-                &home_root,
-                Instant::now() + Duration::from_secs(40)
-            ),
-            "managed daemon never became ready"
-        );
-
-        let paths = SoldrPaths::with_root(cache_root.clone());
-        let (pid, exe) = soldr_cli::daemon::lifecycle::read_route_claim_identity(&paths)
-            .expect("daemon route claim publication");
-        assert!(
-            exe.starts_with(soldr_cli::self_relocate::daemon_runtime_root(&paths)),
-            "the PID owner must be the canonical runtime image: {}",
-            exe.display()
-        );
-        assert!(
-            soldr_cli::daemon::lifecycle::RootOwnershipGuard::try_acquire(&paths)
-                .expect("probe root owner lock")
-                .is_none(),
-            "the live PID owner must hold the root lock"
-        );
-
-        let second = run_soldr(
-            &["daemon", "start", "--idle-timeout", "60"],
+    let first = run_soldr(&["daemon", "start"], &cache_root, &home_root);
+    assert!(
+        first.status.success(),
+        "first detached start failed: stdout={}; stderr={}",
+        String::from_utf8_lossy(&first.stdout),
+        String::from_utf8_lossy(&first.stderr),
+    );
+    assert!(
+        wait_for_ready(
             &cache_root,
             &home_root,
-        );
-        assert!(
-            second.status.success(),
-            "second detached start failed: {second:?}"
-        );
-        assert_eq!(
-            soldr_cli::daemon::lifecycle::read_route_claim_identity(&paths).map(|(pid, _)| pid),
-            Some(pid),
-            "a second managed start must preserve the one root owner"
-        );
+            Instant::now() + Duration::from_secs(40)
+        ),
+        "managed daemon never became ready"
+    );
 
-        let processes =
-            soldr_platform::host::resources::process_table().expect("Windows process snapshot");
-        let daemon = processes
-            .iter()
-            .find(|entry| entry.0 == pid)
-            .unwrap_or_else(|| panic!("daemon PID {pid} missing from process snapshot"));
-        assert_eq!(
-            daemon.1.to_ascii_lowercase(),
-            "soldr-daemon.exe",
-            "route claim must identify the canonical daemon process"
-        );
+    let paths = SoldrPaths::with_root(cache_root.clone());
+    let (pid, exe) = soldr_cli::daemon::lifecycle::read_route_claim_identity(&paths)
+        .expect("daemon route claim publication");
+    assert!(
+        exe.starts_with(soldr_cli::self_relocate::daemon_runtime_root(&paths)),
+        "the PID owner must be the canonical runtime image: {}",
+        exe.display()
+    );
+    assert!(
+        soldr_cli::daemon::lifecycle::RootOwnershipGuard::try_acquire(&paths)
+            .expect("probe root owner lock")
+            .is_none(),
+        "the live PID owner must hold the root lock"
+    );
 
-        let probe = Command::new(std::env::current_exe().expect("current test executable"))
-            .args([
-                "--ignored",
-                "--exact",
-                "windows_daemon_console_probe_helper",
-                "--nocapture",
-            ])
-            .env("SOLDR_CONSOLE_PROBE_PID", pid.to_string())
-            .output()
-            .expect("spawn isolated console probe");
-        assert!(
-            probe.status.success(),
-            "daemon console probe failed: stdout={}; stderr={}",
-            String::from_utf8_lossy(&probe.stdout),
-            String::from_utf8_lossy(&probe.stderr),
-        );
+    let second = run_soldr(
+        &["daemon", "start", "--idle-timeout", "60"],
+        &cache_root,
+        &home_root,
+    );
+    assert!(
+        second.status.success(),
+        "second detached start failed: {second:?}"
+    );
+    assert_eq!(
+        soldr_cli::daemon::lifecycle::read_route_claim_identity(&paths).map(|(pid, _)| pid),
+        Some(pid),
+        "a second managed start must preserve the one root owner"
+    );
 
-        let stop = run_soldr(&["daemon", "stop"], &cache_root, &home_root);
-        assert!(
-            stop.status.success(),
-            "daemon stop failed: stdout={}; stderr={}",
-            String::from_utf8_lossy(&stop.stdout),
-            String::from_utf8_lossy(&stop.stderr),
-        );
-        assert!(
-            wait_for_process_exit(pid, Duration::from_secs(5)),
-            "daemon PID {pid} survived stop"
-        );
-        assert!(
-            soldr_cli::daemon::lifecycle::RootOwnershipGuard::try_acquire(&paths)
-                .expect("probe released root owner lock")
-                .is_some(),
-            "daemon stop must release the root lock"
-        );
-    }
-);
+    let processes =
+        soldr_platform::host::resources::process_table().expect("Windows process snapshot");
+    let daemon = processes
+        .iter()
+        .find(|entry| entry.0 == pid)
+        .unwrap_or_else(|| panic!("daemon PID {pid} missing from process snapshot"));
+    assert_eq!(
+        daemon.1.to_ascii_lowercase(),
+        "soldr-daemon.exe",
+        "route claim must identify the canonical daemon process"
+    );
+
+    let probe = Command::new(std::env::current_exe().expect("current test executable"))
+        .args([
+            "--ignored",
+            "--exact",
+            "windows_daemon_console_probe_helper",
+            "--nocapture",
+        ])
+        .env("SOLDR_CONSOLE_PROBE_PID", pid.to_string())
+        .output()
+        .expect("spawn isolated console probe");
+    assert!(
+        probe.status.success(),
+        "daemon console probe failed: stdout={}; stderr={}",
+        String::from_utf8_lossy(&probe.stdout),
+        String::from_utf8_lossy(&probe.stderr),
+    );
+
+    let stop = run_soldr(&["daemon", "stop"], &cache_root, &home_root);
+    assert!(
+        stop.status.success(),
+        "daemon stop failed: stdout={}; stderr={}",
+        String::from_utf8_lossy(&stop.stdout),
+        String::from_utf8_lossy(&stop.stderr),
+    );
+    assert!(
+        wait_for_process_exit(pid, Duration::from_secs(5)),
+        "daemon PID {pid} survived stop"
+    );
+    assert!(
+        soldr_cli::daemon::lifecycle::RootOwnershipGuard::try_acquire(&paths)
+            .expect("probe released root owner lock")
+            .is_some(),
+        "daemon stop must release the root lock"
+    );
+}
 
 #[test]
 fn start_status_stop_round_trip() {

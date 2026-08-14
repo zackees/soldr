@@ -440,7 +440,8 @@ fn extract_tar_zst_tree<R: std::io::Read>(reader: R, dest: &Path) -> Result<(), 
 mod tests {
     use super::*;
 
-    crate::timed_test!(constants_well_formed, {
+    #[test]
+    fn constants_well_formed() {
         // Bare smoke: catch typos in the URLs / hex sha256s during refactor.
         for url in [XWIN_CACHE_X86_64_URL, XWIN_CACHE_AARCH64_URL] {
             assert!(url.starts_with("https://"), "URL must be HTTPS: {url}");
@@ -457,17 +458,19 @@ mod tests {
             assert_eq!(sha256.len(), 64);
             assert!(sha256.chars().all(|c| c.is_ascii_hexdigit()));
         }
-    });
+    }
 
-    crate::timed_test!(aarch64_asset_pin_matches_catalogue, {
+    #[test]
+    fn aarch64_asset_pin_matches_catalogue() {
         assert!(XWIN_CACHE_AARCH64_URL.contains("windows-aarch64-msvc"));
         assert_eq!(
             XWIN_CACHE_AARCH64_SHA256,
             "cb7fa0e68ce173a54f0dbc116d3e8f04c7013953529ada8284b0ac149139b9da"
         );
-    });
+    }
 
-    crate::timed_test!(cache_root_accepts_legacy_forge_and_flat_layouts, {
+    #[test]
+    fn cache_root_accepts_legacy_forge_and_flat_layouts() {
         for relative in [Some("xwin"), Some("package"), None] {
             let tmp = tempfile::tempdir().expect("tmpdir");
             let root =
@@ -476,7 +479,7 @@ mod tests {
             std::fs::create_dir_all(root.join("sdk")).expect("sdk");
             assert_eq!(resolve_xwin_cache_dir(tmp.path()), Some(root));
         }
-    });
+    }
 
     /// Probe whether `dir`'s filesystem resolves names case-insensitively
     /// (macOS APFS default, Windows NTFS). On such filesystems no aliases
@@ -489,7 +492,8 @@ mod tests {
         insensitive
     }
 
-    crate::timed_test!(include_referenced_case_alias_materializes_driverspecs, {
+    #[test]
+    fn include_referenced_case_alias_materializes_driverspecs() {
         // cross-run 28574600982 regression fixture: the catalogue xwin bundle ships
         // `driverspecs.h` (lowercase) while `kernelspecs.h` references
         // `#include "DriverSpecs.h"` — every `windows.h` compile on a
@@ -515,9 +519,10 @@ mod tests {
         // Idempotent on re-run.
         let again = ensure_xwin_case_aliases(&xwin).expect("aliases again");
         assert_eq!(again, 0);
-    });
+    }
 
-    crate::timed_test!(include_scan_handles_angle_subdir_and_whitespace, {
+    #[test]
+    fn include_scan_handles_angle_subdir_and_whitespace() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let xwin = tmp.path().join("xwin");
         let um = xwin.join("sdk").join("include").join("um");
@@ -538,9 +543,10 @@ mod tests {
         assert_eq!(created, expected);
         assert!(um.join("BarBaz.h").is_file());
         assert!(um.join("QuuxThing.h").is_file());
-    });
+    }
 
-    crate::timed_test!(scan_include_directives_parses_directive_shapes, {
+    #[test]
+    fn scan_include_directives_parses_directive_shapes() {
         let mut refs = HashSet::new();
         scan_include_directives(
             b"#include <a/b/Name.h>\n\
@@ -562,9 +568,10 @@ mod tests {
             !refs.iter().any(|r| r.contains("unclosed")),
             "unclosed directives must be ignored: {refs:?}"
         );
-    });
+    }
 
-    crate::timed_test!(unsupported_target_yields_unsupported_platform, {
+    #[test]
+    fn unsupported_target_yields_unsupported_platform() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
         let result = tokio::runtime::Runtime::new()
@@ -575,5 +582,5 @@ mod tests {
             matches!(err, SoldrError::UnsupportedPlatform(_)),
             "expected UnsupportedPlatform, got: {err:?}"
         );
-    });
+    }
 }

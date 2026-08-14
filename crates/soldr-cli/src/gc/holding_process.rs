@@ -65,11 +65,13 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    crate::timed_test!(no_holders_summarizes_to_nothing, {
+    #[test]
+    fn no_holders_summarizes_to_nothing() {
         assert_eq!(summarize(&[]), None);
-    });
+    }
 
-    crate::timed_test!(a_single_holder_names_the_pid_and_the_binary, {
+    #[test]
+    fn a_single_holder_names_the_pid_and_the_binary() {
         let holders = vec![HoldingProcess {
             pid: 4321,
             exe: PathBuf::from("C:/repo/target/debug/deps/held.exe"),
@@ -78,9 +80,10 @@ mod tests {
         assert!(line.contains("pid 4321"), "{line}");
         assert!(line.contains("held.exe"), "{line}");
         assert!(line.contains("must exit"), "{line}");
-    });
+    }
 
-    crate::timed_test!(several_holders_report_the_count_and_one_example, {
+    #[test]
+    fn several_holders_report_the_count_and_one_example() {
         let holders = vec![
             HoldingProcess {
                 pid: 1,
@@ -94,20 +97,22 @@ mod tests {
         let line = summarize(&holders).expect("holders must summarize");
         assert!(line.contains('2'), "{line}");
         assert!(line.contains("pid 1"), "{line}");
-    });
+    }
 
     // An empty directory can have no holders, on any platform. This also
     // pins that the enumeration never panics or hangs on a real filesystem
     // path, which matters because it runs on an already-failed purge.
-    crate::timed_test!(an_empty_tree_has_no_holders, {
+    #[test]
+    fn an_empty_tree_has_no_holders() {
         let dir = tempfile::tempdir().expect("tempdir");
         assert!(holders_under(dir.path()).is_empty());
-    });
+    }
 
-    crate::timed_test!(a_missing_directory_yields_no_holders, {
+    #[test]
+    fn a_missing_directory_yields_no_holders() {
         let dir = tempfile::tempdir().expect("tempdir");
         assert!(holders_under(&dir.path().join("gone")).is_empty());
-    });
+    }
 }
 
 #[cfg(test)]
@@ -123,7 +128,8 @@ mod windows_live {
     // Uses a copy of `cmd.exe` rather than a purpose-built fixture: the point
     // is that the *image* is mapped from inside the tree, and any real
     // executable demonstrates that.
-    crate::timed_test!(a_process_running_from_the_tree_is_found_and_named, {
+    #[test]
+    fn a_process_running_from_the_tree_is_found_and_named() {
         if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
             return;
         }
@@ -165,5 +171,5 @@ mod windows_live {
         let line = summary.expect("a holder must summarize");
         assert!(line.contains("held.exe"), "{line}");
         assert!(line.contains("must exit"), "{line}");
-    });
+    }
 }

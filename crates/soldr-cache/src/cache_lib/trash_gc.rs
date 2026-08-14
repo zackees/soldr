@@ -99,7 +99,8 @@ pub fn sweep_trash(paths: &SoldrPaths) -> std::io::Result<SweepReport> {
 mod tests {
     use super::*;
 
-    crate::timed_test!(sweep_is_exact_root_local_and_ignores_links, {
+    #[test]
+    fn sweep_is_exact_root_local_and_ignores_links() {
         let temp = tempfile::tempdir().unwrap();
         let owned = temp.path().join("owned");
         let sibling = temp.path().join("sibling");
@@ -111,7 +112,7 @@ mod tests {
         let report = sweep_trash(&SoldrPaths::with_root(owned)).unwrap();
         assert_eq!(report.removed, 1);
         assert!(sibling.join("trash-C/keep/sentinel").is_file());
-    });
+    }
 }
 
 #[cfg(test)]
@@ -124,7 +125,8 @@ mod sweep_reporting_tests {
 
     // soldr#2199: a drained bucket is residue. Leaving it reads as "trash
     // still pending" to anyone inspecting the root.
-    crate::timed_test!(an_emptied_bucket_is_removed, {
+    #[test]
+    fn an_emptied_bucket_is_removed() {
         let temp = tempfile::tempdir().expect("tempdir");
         let bucket = temp.path().join("trash-C");
         std::fs::create_dir_all(&bucket).expect("mkdir");
@@ -137,11 +139,12 @@ mod sweep_reporting_tests {
             !bucket.exists(),
             "a fully drained bucket must not survive the sweep",
         );
-    });
+    }
 
     // One poisoned bucket must not keep the others on disk -- the drain
     // check is per-bucket, not global.
-    crate::timed_test!(a_retained_bucket_does_not_block_draining_others, {
+    #[test]
+    fn a_retained_bucket_does_not_block_draining_others() {
         let temp = tempfile::tempdir().expect("tempdir");
         let drained = temp.path().join("trash-C");
         std::fs::create_dir_all(&drained).expect("mkdir");
@@ -158,14 +161,15 @@ mod sweep_reporting_tests {
             "the drained bucket must go even though another bucket remains",
         );
         assert!(report.removed >= 1);
-    });
+    }
 
-    crate::timed_test!(reported_reasons_are_capped, {
+    #[test]
+    fn reported_reasons_are_capped() {
         assert_eq!(MAX_REPORTED_REASONS, 5);
         let report = SweepReport::default();
         assert!(
             report.reasons.is_empty(),
             "a clean sweep reports no reasons"
         );
-    });
+    }
 }

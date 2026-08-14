@@ -252,8 +252,9 @@ pub fn current_exclusion_list(powershell: &Path) -> Vec<String> {
 mod tests {
     use super::*;
 
-    crate::timed_test!(exclusion_list_contains_normalizes_separators_and_case, {
+    #[test]
+    fn exclusion_list_contains_normalizes_separators_and_case() {
         let list = vec!["C:\\Users\\You\\.soldr\\Cache".to_string()];
         assert!(exclusion_list_contains(&list, "c:/users/you/.soldr/cache"));
-    });
+    }
 }

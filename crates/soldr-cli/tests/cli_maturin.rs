@@ -2,7 +2,6 @@ mod common;
 
 use common::*;
 use soldr_cli::fetch::MANAGED_MATURIN_VERSION;
-use soldr_cli::timed_test;
 use std::path::{Path, PathBuf};
 
 fn fake_maturin_script(log_path: &Path) -> String {
@@ -35,7 +34,8 @@ fn line_contains_path(line: &str, prefix: &str, path: &Path) -> bool {
         .any(|candidate| line.contains(&format!("{prefix}{candidate}")))
 }
 
-timed_test!(direct_maturin_build_routes_nested_cargo_through_zccache, {
+#[test]
+fn direct_maturin_build_routes_nested_cargo_through_zccache() {
     if matches!(
         soldr_platform::host::facts::os(),
         soldr_platform::host::facts::HostOs::Windows
@@ -95,9 +95,10 @@ timed_test!(direct_maturin_build_routes_nested_cargo_through_zccache, {
             .any(|line| line.contains("zccache wrapper") && line.contains("demo")),
         "nested maturin cargo rustc call should route through zccache: {log}"
     );
-});
+}
 
-timed_test!(direct_maturin_preserves_explicit_cargo_rustc_and_wrapper, {
+#[test]
+fn direct_maturin_preserves_explicit_cargo_rustc_and_wrapper() {
     if matches!(
         soldr_platform::host::facts::os(),
         soldr_platform::host::facts::HostOs::Windows
@@ -161,4 +162,4 @@ timed_test!(direct_maturin_preserves_explicit_cargo_rustc_and_wrapper, {
         !log.contains("zccache wrapper"),
         "soldr must not replace a caller-provided RUSTC_WRAPPER with zccache: {log}"
     );
-});
+}

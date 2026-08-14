@@ -67,7 +67,8 @@ pub async fn ensure_lzma_sysroot(
 mod tests {
     use super::*;
 
-    crate::timed_test!(slug_for_supported_triples, {
+    #[test]
+    fn slug_for_supported_triples() {
         assert_eq!(
             catalogue_slug_for("x86_64-pc-windows-msvc"),
             Some("windows-x64")
@@ -81,15 +82,17 @@ mod tests {
             Some("darwin-arm64")
         );
         assert_eq!(catalogue_slug_for("wasm32-unknown-unknown"), None);
-    });
+    }
 
-    crate::timed_test!(asset_url_layout_matches_catalogue, {
+    #[test]
+    fn asset_url_layout_matches_catalogue() {
         let u = asset_url_for(MANAGED_LZMA_VERSION, "darwin-arm64");
         assert!(u.contains("/lzma/5.6.3/darwin-arm64/"));
         assert!(u.ends_with("/bundle.tar.zst"));
-    });
+    }
 
-    crate::timed_test!(ensure_lzma_sysroot_rejects_unknown_target, {
+    #[test]
+    fn ensure_lzma_sysroot_rejects_unknown_target() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
         let result = tokio::runtime::Runtime::new()
@@ -97,5 +100,5 @@ mod tests {
             .block_on(ensure_lzma_sysroot(&paths, "wasm32-unknown-unknown"));
         let err = result.expect_err("unsupported target must error");
         assert!(matches!(err, SoldrError::UnsupportedPlatform(_)));
-    });
+    }
 }

@@ -186,19 +186,22 @@ mod tests {
     // soldr#1761's final acceptance criterion, stated as its own
     // numbers: "on an 8C/16T host the interactive default lands in the
     // 9-12 range rather than 15."
-    crate::timed_test!(an_8c_16t_host_no_longer_defaults_to_15, {
+    #[test]
+    fn an_8c_16t_host_no_longer_defaults_to_15() {
         let jobs = default_compile_jobs_from(16, Some(8));
         assert_eq!(jobs, 10, "8C/16T must land in the 9-12 range, not 15");
-    });
+    }
 
-    crate::timed_test!(a_non_smt_host_keeps_every_slot, {
+    #[test]
+    fn a_non_smt_host_keeps_every_slot() {
         // The objection that deferred this change: a 16-core machine
         // with no SMT must not be capped at 10 for an SMT discount it
         // does not need.
         assert_eq!(default_compile_jobs_from(16, Some(16)), 15);
-    });
+    }
 
-    crate::timed_test!(unknown_topology_behaves_exactly_as_before, {
+    #[test]
+    fn unknown_topology_behaves_exactly_as_before() {
         for logical in [1usize, 2, 4, 16, 64] {
             assert_eq!(
                 default_compile_jobs_from(logical, None),
@@ -206,9 +209,10 @@ mod tests {
                 "an unreadable topology must not change the limit"
             );
         }
-    });
+    }
 
-    crate::timed_test!(the_default_is_always_at_least_one, {
+    #[test]
+    fn the_default_is_always_at_least_one() {
         for logical in [0usize, 1, 2] {
             for physical in [None, Some(0), Some(1), Some(usize::MAX)] {
                 assert!(
@@ -218,72 +222,78 @@ mod tests {
                 );
             }
         }
-    });
+    }
 
-    crate::timed_test!(smaller_hosts_scale_down_too, {
+    #[test]
+    fn smaller_hosts_scale_down_too() {
         assert_eq!(default_compile_jobs_from(8, Some(4)), 6);
         assert_eq!(default_compile_jobs_from(4, Some(2)), 3);
         // physical + 2 exceeds the headroom here, so the headroom wins
         // and the two rules never fight.
         assert_eq!(default_compile_jobs_from(2, Some(1)), 1);
-    });
+    }
 
-    crate::timed_test!(soldr_jobs_env_wins_over_everything, {
+    #[test]
+    fn soldr_jobs_env_wins_over_everything() {
         let resolved = resolve_compile_jobs_from(Some("3"), Some(9), Some("11"), 16);
         assert_eq!(resolved.jobs, 3);
         assert_eq!(resolved.source, JobsSource::SoldrJobsEnv);
-    });
+    }
 
-    crate::timed_test!(config_wins_over_the_zccache_compat_var, {
+    #[test]
+    fn config_wins_over_the_zccache_compat_var() {
         let resolved = resolve_compile_jobs_from(None, Some(9), Some("11"), 16);
         assert_eq!(resolved.jobs, 9);
         assert_eq!(resolved.source, JobsSource::Config);
-    });
+    }
 
-    crate::timed_test!(zccache_var_still_works_for_existing_setups, {
+    #[test]
+    fn zccache_var_still_works_for_existing_setups() {
         // The pre-#1761 knob must keep working, or upgrading soldr
         // silently changes the concurrency on machines already tuned.
         let resolved = resolve_compile_jobs_from(None, None, Some("11"), 16);
         assert_eq!(resolved.jobs, 11);
         assert_eq!(resolved.source, JobsSource::ZccacheCompatEnv);
-    });
+    }
 
-    crate::timed_test!(falls_back_to_the_default_when_nothing_is_set, {
+    #[test]
+    fn falls_back_to_the_default_when_nothing_is_set() {
         let resolved = resolve_compile_jobs_from(None, None, None, 16);
         assert_eq!(resolved.jobs, 16);
         assert_eq!(resolved.source, JobsSource::Default);
-    });
+    }
 
-    crate::timed_test!(
-        unparseable_and_zero_values_fall_through_rather_than_wedging,
-        {
-            // A limit of 0 admits nothing, so every compile would block
-            // forever. Falling through beats deadlocking the build.
-            for bad in ["", "   ", "0", "-1", "many", "3.5"] {
-                let resolved = resolve_compile_jobs_from(Some(bad), None, None, 16);
-                assert_eq!(
-                    resolved.source,
-                    JobsSource::Default,
-                    "SOLDR_JOBS={bad:?} must fall through",
-                );
-                assert_eq!(resolved.jobs, 16);
-            }
-            let zero_config = resolve_compile_jobs_from(None, Some(0), None, 16);
-            assert_eq!(zero_config.source, JobsSource::Default);
+    #[test]
+    fn unparseable_and_zero_values_fall_through_rather_than_wedging() {
+        // A limit of 0 admits nothing, so every compile would block
+        // forever. Falling through beats deadlocking the build.
+        for bad in ["", "   ", "0", "-1", "many", "3.5"] {
+            let resolved = resolve_compile_jobs_from(Some(bad), None, None, 16);
+            assert_eq!(
+                resolved.source,
+                JobsSource::Default,
+                "SOLDR_JOBS={bad:?} must fall through",
+            );
+            assert_eq!(resolved.jobs, 16);
         }
-    );
+        let zero_config = resolve_compile_jobs_from(None, Some(0), None, 16);
+        assert_eq!(zero_config.source, JobsSource::Default);
+    }
 
-    crate::timed_test!(whitespace_is_tolerated, {
+    #[test]
+    fn whitespace_is_tolerated() {
         let resolved = resolve_compile_jobs_from(Some(" 6 "), None, None, 16);
         assert_eq!(resolved.jobs, 6);
-    });
+    }
 
-    crate::timed_test!(resolved_limit_is_never_zero, {
+    #[test]
+    fn resolved_limit_is_never_zero() {
         let resolved = resolve_compile_jobs_from(None, None, None, 0);
         assert_eq!(resolved.jobs, 1);
-    });
+    }
 
-    crate::timed_test!(default_is_at_least_one_and_below_logical_parallelism, {
+    #[test]
+    fn default_is_at_least_one_and_below_logical_parallelism() {
         let jobs = default_compile_jobs();
         assert!(jobs >= 1);
         if let Ok(logical) = std::thread::available_parallelism() {
@@ -292,5 +302,5 @@ mod tests {
                 "default {jobs} must not exceed logical parallelism {logical:?}",
             );
         }
-    });
+    }
 }

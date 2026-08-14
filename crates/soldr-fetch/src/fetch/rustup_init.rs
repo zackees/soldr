@@ -533,7 +533,8 @@ mod tests {
         }
     }
 
-    crate::timed_test!(rustup_init_timeout_is_an_explicit_safety_ceiling, {
+    #[test]
+    fn rustup_init_timeout_is_an_explicit_safety_ceiling() {
         let _env_lock = test_env_lock();
 
         {
@@ -557,7 +558,7 @@ mod tests {
             InstallerWatchdogConfig::from_env(RUSTUP_INIT_TIMEOUT_ENV_VAR).safety_timeout,
             Duration::from_secs(crate::core::DEFAULT_INSTALLER_SAFETY_TIMEOUT_SECS)
         );
-    });
+    }
 
     #[test]
     fn auto_bootstrap_reports_opted_out_when_env_var_set() {

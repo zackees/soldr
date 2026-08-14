@@ -683,18 +683,21 @@ mod tests {
     // conscious act, because peers at different versions reject each other.
     // soldr#2023 renamed this from the v20 spelling when the daemon began
     // publishing its applied compile limit.
-    crate::timed_test!(protocol_version_is_v22_after_adding_target_registry_ipc, {
+    #[test]
+    fn protocol_version_is_v22_after_adding_target_registry_ipc() {
         assert_eq!(PROTOCOL_VERSION, 22);
-    });
+    }
 
-    crate::timed_test!(chunk_bytes_is_64_kib, {
+    #[test]
+    fn chunk_bytes_is_64_kib() {
         // #983 Phase 5b — declared in the protocol so the daemon and
         // wrapper agree on the frame-size budget without re-importing
         // an opaque constant from each other's modules.
         assert_eq!(CHUNK_BYTES, 64 * 1024);
-    });
+    }
 
-    crate::timed_test!(cache_flush_completeness_is_derived_not_blindly_trusted, {
+    #[test]
+    fn cache_flush_completeness_is_derived_not_blindly_trusted() {
         let mut report = CacheFlushInfo {
             complete: true,
             pending_writes_drained: true,
@@ -709,9 +712,10 @@ mod tests {
         assert!(report.is_complete());
         report.steps[0].status = "failed".into();
         assert!(!report.is_complete());
-    });
+    }
 
-    crate::timed_test!(cook_stats_or_zero_defaults_to_zero, {
+    #[test]
+    fn cook_stats_or_zero_defaults_to_zero() {
         let info = StatusInfo {
             version: PROTOCOL_VERSION,
             pid: 1,
@@ -725,5 +729,5 @@ mod tests {
             compile_jobs_source: "default".to_string(),
         };
         assert_eq!(info.cook_stats_or_zero(), CookStats::default());
-    });
+    }
 }

@@ -500,7 +500,8 @@ mod private_session_default_tests {
         Ok(PathBuf::from("/fake/cwd"))
     }
 
-    crate::timed_test!(cache_snapshot_quiescence_is_scoped_to_archived_tree, {
+    #[test]
+    fn cache_snapshot_quiescence_is_scoped_to_archived_tree() {
         let temp = tempfile::tempdir().expect("tempdir");
         let managed = temp.path().join("managed");
         let embedded = managed.join("zccache/daemon-state/stable");
@@ -514,7 +515,7 @@ mod private_session_default_tests {
             !archive_contains_embedded_cache(&unrelated, &embedded).expect("unrelated containment"),
             "an unrelated --cache-dir must not require an ambient daemon flush"
         );
-    });
+    }
 
     fn base_save_args() -> SaveArgs {
         SaveArgs {
@@ -544,25 +545,28 @@ mod private_session_default_tests {
         }
     }
 
-    crate::timed_test!(save_default_routes_to_cwd_dot_zccache_when_private, {
+    #[test]
+    fn save_default_routes_to_cwd_dot_zccache_when_private() {
         let args = apply_private_session_cache_dir_default(base_save_args(), true, fake_cwd)
             .expect("apply default");
         assert_eq!(
             args.cache_dir.as_deref(),
             Some(std::path::Path::new("/fake/cwd/.zccache")),
         );
-    });
+    }
 
-    crate::timed_test!(save_default_no_op_when_private_off, {
+    #[test]
+    fn save_default_no_op_when_private_off() {
         let args = apply_private_session_cache_dir_default(base_save_args(), false, fake_cwd)
             .expect("apply default");
         assert!(
             args.cache_dir.is_none(),
             "without the env var, --cache-dir must remain user-controlled",
         );
-    });
+    }
 
-    crate::timed_test!(save_default_preserves_explicit_cache_dir, {
+    #[test]
+    fn save_default_preserves_explicit_cache_dir() {
         let mut args = base_save_args();
         args.cache_dir = Some(PathBuf::from("/user/explicit"));
         let args =
@@ -572,9 +576,10 @@ mod private_session_default_tests {
             Some(std::path::Path::new("/user/explicit")),
             "explicit --cache-dir always wins over the private-session default",
         );
-    });
+    }
 
-    crate::timed_test!(save_default_no_op_in_mtimes_only_mode, {
+    #[test]
+    fn save_default_no_op_in_mtimes_only_mode() {
         let mut args = base_save_args();
         args.mtimes_only = true;
         let args =
@@ -583,18 +588,20 @@ mod private_session_default_tests {
             args.cache_dir.is_none(),
             "mtimes-only forbids --cache-dir; default must not inject one",
         );
-    });
+    }
 
-    crate::timed_test!(load_default_routes_to_cwd_dot_zccache_when_private, {
+    #[test]
+    fn load_default_routes_to_cwd_dot_zccache_when_private() {
         let args = apply_private_session_cache_dir_default_load(base_load_args(), true, fake_cwd)
             .expect("apply default");
         assert_eq!(
             args.cache_dir.as_deref(),
             Some(std::path::Path::new("/fake/cwd/.zccache")),
         );
-    });
+    }
 
-    crate::timed_test!(load_default_preserves_explicit_cache_dir, {
+    #[test]
+    fn load_default_preserves_explicit_cache_dir() {
         let mut args = base_load_args();
         args.cache_dir = Some(PathBuf::from("/user/explicit"));
         let args = apply_private_session_cache_dir_default_load(args, true, fake_cwd)
@@ -603,32 +610,36 @@ mod private_session_default_tests {
             args.cache_dir.as_deref(),
             Some(std::path::Path::new("/user/explicit")),
         );
-    });
+    }
 
-    crate::timed_test!(load_default_no_op_in_mtimes_only_mode, {
+    #[test]
+    fn load_default_no_op_in_mtimes_only_mode() {
         let mut args = base_load_args();
         args.mtimes_only = true;
         let args = apply_private_session_cache_dir_default_load(args, true, fake_cwd)
             .expect("apply default");
         assert!(args.cache_dir.is_none());
-    });
+    }
 
-    crate::timed_test!(save_profile_defaults_to_full_when_env_unset, {
+    #[test]
+    fn save_profile_defaults_to_full_when_env_unset() {
         with_save_profile_env(None, || {
             assert_eq!(resolve_save_profile(false).unwrap(), SaveProfile::Full);
         });
-    });
+    }
 
-    crate::timed_test!(save_profile_env_accepts_ci_and_minimal_alias, {
+    #[test]
+    fn save_profile_env_accepts_ci_and_minimal_alias() {
         with_save_profile_env(Some("ci"), || {
             assert_eq!(resolve_save_profile(false).unwrap(), SaveProfile::Ci);
         });
         with_save_profile_env(Some("minimal"), || {
             assert_eq!(resolve_save_profile(false).unwrap(), SaveProfile::Ci);
         });
-    });
+    }
 
-    crate::timed_test!(save_profile_invalid_env_errors_unless_cli_flag_wins, {
+    #[test]
+    fn save_profile_invalid_env_errors_unless_cli_flag_wins() {
         with_save_profile_env(Some("tiny"), || {
             let err = resolve_save_profile(false).expect_err("invalid env must error");
             assert!(
@@ -637,5 +648,5 @@ mod private_session_default_tests {
             );
             assert_eq!(resolve_save_profile(true).unwrap(), SaveProfile::Ci);
         });
-    });
+    }
 }

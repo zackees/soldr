@@ -209,18 +209,21 @@ mod tests {
         .unwrap();
     }
 
-    crate::timed_test!(returns_none_when_db_missing, {
+    #[test]
+    fn returns_none_when_db_missing() {
         let tmp = tempdir().unwrap();
         assert!(read_registry_src_last_used(tmp.path()).is_none());
-    });
+    }
 
-    crate::timed_test!(returns_none_when_file_is_not_a_sqlite_database, {
+    #[test]
+    fn returns_none_when_file_is_not_a_sqlite_database() {
         let tmp = tempdir().unwrap();
         std::fs::write(global_cache_db_path(tmp.path()), b"not a database").unwrap();
         assert!(read_registry_src_last_used(tmp.path()).is_none());
-    });
+    }
 
-    crate::timed_test!(returns_none_when_schema_is_unrelated, {
+    #[test]
+    fn returns_none_when_schema_is_unrelated() {
         let tmp = tempdir().unwrap();
         let path = global_cache_db_path(tmp.path());
         let conn = Connection::open(&path).unwrap();
@@ -230,9 +233,10 @@ mod tests {
         conn.execute("CREATE TABLE unrelated (id INTEGER)", [])
             .unwrap();
         assert!(read_registry_src_last_used(tmp.path()).is_none());
-    });
+    }
 
-    crate::timed_test!(returns_joined_map_for_well_formed_db, {
+    #[test]
+    fn returns_joined_map_for_well_formed_db() {
         let tmp = tempdir().unwrap();
         let db_path = make_global_cache_db(tmp.path());
         let conn = Connection::open(&db_path).unwrap();
@@ -266,9 +270,10 @@ mod tests {
             Some(&3000)
         );
         assert_eq!(map.len(), 3);
-    });
+    }
 
-    crate::timed_test!(registry_src_read_never_mutates_db_bytes, {
+    #[test]
+    fn registry_src_read_never_mutates_db_bytes() {
         // Same read-only guarantee as the git reader: compare the raw
         // file bytes before and after a successful read.
         let tmp = tempdir().unwrap();
@@ -283,7 +288,7 @@ mod tests {
         assert_eq!(map.len(), 1);
         let after = std::fs::read(&db_path).unwrap();
         assert_eq!(before, after, "read-only reader mutated the DB bytes");
-    });
+    }
 
     // ---------------------------------------------------------------
     // git_checkout reader (issue #1544).
@@ -333,18 +338,21 @@ mod tests {
         .unwrap();
     }
 
-    crate::timed_test!(git_checkout_returns_none_when_db_missing, {
+    #[test]
+    fn git_checkout_returns_none_when_db_missing() {
         let tmp = tempdir().unwrap();
         assert!(read_git_checkout_last_used(tmp.path()).is_none());
-    });
+    }
 
-    crate::timed_test!(git_checkout_returns_none_when_file_is_not_sqlite, {
+    #[test]
+    fn git_checkout_returns_none_when_file_is_not_sqlite() {
         let tmp = tempdir().unwrap();
         std::fs::write(global_cache_db_path(tmp.path()), b"not a database").unwrap();
         assert!(read_git_checkout_last_used(tmp.path()).is_none());
-    });
+    }
 
-    crate::timed_test!(git_checkout_returns_none_when_schema_is_unrelated, {
+    #[test]
+    fn git_checkout_returns_none_when_schema_is_unrelated() {
         let tmp = tempdir().unwrap();
         let path = global_cache_db_path(tmp.path());
         let conn = Connection::open(&path).unwrap();
@@ -353,9 +361,10 @@ mod tests {
         conn.execute("CREATE TABLE unrelated (id INTEGER)", [])
             .unwrap();
         assert!(read_git_checkout_last_used(tmp.path()).is_none());
-    });
+    }
 
-    crate::timed_test!(git_checkout_returns_joined_map_for_well_formed_db, {
+    #[test]
+    fn git_checkout_returns_joined_map_for_well_formed_db() {
         let tmp = tempdir().unwrap();
         let db_path = make_git_global_cache_db(tmp.path());
         let conn = Connection::open(&db_path).unwrap();
@@ -375,16 +384,18 @@ mod tests {
             Some(&3000)
         );
         assert_eq!(map.len(), 2);
-    });
+    }
 
-    crate::timed_test!(git_checkout_empty_tables_yield_empty_map_not_none, {
+    #[test]
+    fn git_checkout_empty_tables_yield_empty_map_not_none() {
         let tmp = tempdir().unwrap();
         make_git_global_cache_db(tmp.path());
         let map = read_git_checkout_last_used(tmp.path()).unwrap();
         assert!(map.is_empty());
-    });
+    }
 
-    crate::timed_test!(git_checkout_read_never_mutates_db_bytes, {
+    #[test]
+    fn git_checkout_read_never_mutates_db_bytes() {
         // Gate (b) of #1544: the reader must never mutate cargo's
         // database. Compare the raw file bytes before and after a
         // successful read.
@@ -400,9 +411,10 @@ mod tests {
         assert_eq!(map.len(), 1);
         let after = std::fs::read(&db_path).unwrap();
         assert_eq!(before, after, "read-only reader mutated the DB bytes");
-    });
+    }
 
-    crate::timed_test!(registry_src_query_does_not_error_on_real_cargo_schema, {
+    #[test]
+    fn registry_src_query_does_not_error_on_real_cargo_schema() {
         // Canary distinguishing "row absent" from "query invalid"
         // (#1569): the raw SqlResult must be Ok against the REAL cargo
         // schema. Before the fix the query referenced a nonexistent
@@ -431,9 +443,10 @@ mod tests {
             )),
             Some(&1_783_723_771)
         );
-    });
+    }
 
-    crate::timed_test!(empty_tables_yield_empty_map_not_none, {
+    #[test]
+    fn empty_tables_yield_empty_map_not_none() {
         // The DB exists, schema matches, but there are no rows yet —
         // an empty map (Some) tells the caller "consult me, I have
         // no data on this crate" rather than the "missing/locked DB"
@@ -442,5 +455,5 @@ mod tests {
         make_global_cache_db(tmp.path());
         let map = read_registry_src_last_used(tmp.path()).unwrap();
         assert!(map.is_empty());
-    });
+    }
 }

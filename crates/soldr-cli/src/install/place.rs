@@ -99,7 +99,7 @@ fn paths_equal(a: &Path, b: &Path) -> bool {
 mod tests {
     use super::*;
 
-    #[test] // allow-bare-test: soldr#2310 install unit test (sync+fast); timed_test! migration is a follow-up
+    #[test]
     fn install_root_defaults_to_bin_installed() {
         let paths = SoldrPaths::with_root(PathBuf::from("/home/x/.soldr"));
         assert_eq!(
@@ -110,13 +110,14 @@ mod tests {
         assert_eq!(install_root(&paths, Some(&custom)), custom);
     }
 
-    #[test] // allow-bare-test: soldr#2310 install unit test (sync+fast); timed_test! migration is a follow-up
+    #[test]
     fn binary_ext_matches_triple() {
         assert_eq!(binary_ext_for_triple("x86_64-pc-windows-msvc"), ".exe");
         assert_eq!(binary_ext_for_triple("x86_64-unknown-linux-gnu"), "");
     }
 
-    crate::timed_test!(place_binary_lands_executable_and_respects_force, {
+    #[test]
+    fn place_binary_lands_executable_and_respects_force() {
         let tmp = tempfile::tempdir().unwrap();
         let src = tmp.path().join("mytool");
         std::fs::write(&src, b"#!/bin/sh\necho hi\n").unwrap();
@@ -136,5 +137,5 @@ mod tests {
         assert!(format!("{err}").contains("--force"), "{err}");
         // With --force it succeeds.
         place_binary("mytool", &src, &root, "x86_64-unknown-linux-gnu", true).unwrap();
-    });
+    }
 }

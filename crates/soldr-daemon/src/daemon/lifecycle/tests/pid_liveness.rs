@@ -10,7 +10,8 @@ mod pid_liveness_tests {
     // `Exited` and burns its whole timeout. This regression is silent on Linux
     // (which has `/proc/<pid>/stat`) and fatal on macOS, which is exactly how
     // it reached CI.
-    crate::timed_test!(exited_unreaped_child_is_not_alive, {
+    #[test]
+    fn exited_unreaped_child_is_not_alive() {
         if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
             return;
         }
@@ -45,5 +46,5 @@ mod pid_liveness_tests {
             "an exited, unreaped child must not report as alive; \
              pid {pid} still looked live after 10s"
         );
-    });
+    }
 }

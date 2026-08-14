@@ -63,7 +63,8 @@ pub async fn ensure_zlib_ng_sysroot(
 mod tests {
     use super::*;
 
-    crate::timed_test!(slug_for_supported_triples, {
+    #[test]
+    fn slug_for_supported_triples() {
         assert_eq!(
             catalogue_slug_for("x86_64-pc-windows-msvc"),
             Some("windows-x64")
@@ -77,15 +78,17 @@ mod tests {
             Some("linux-arm64-musl")
         );
         assert_eq!(catalogue_slug_for("wasm32-unknown-unknown"), None);
-    });
+    }
 
-    crate::timed_test!(asset_url_layout_matches_catalogue, {
+    #[test]
+    fn asset_url_layout_matches_catalogue() {
         let u = asset_url_for(MANAGED_ZLIB_NG_VERSION, "linux-x64-gnu");
         assert!(u.contains("/zlib-ng/2.2.5/linux-x64-gnu/"));
         assert!(u.ends_with("/bundle.tar.zst"));
-    });
+    }
 
-    crate::timed_test!(ensure_zlib_ng_sysroot_rejects_unknown_target, {
+    #[test]
+    fn ensure_zlib_ng_sysroot_rejects_unknown_target() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
         let result = tokio::runtime::Runtime::new()
@@ -93,5 +96,5 @@ mod tests {
             .block_on(ensure_zlib_ng_sysroot(&paths, "wasm32-unknown-unknown"));
         let err = result.expect_err("unsupported target must error");
         assert!(matches!(err, SoldrError::UnsupportedPlatform(_)));
-    });
+    }
 }

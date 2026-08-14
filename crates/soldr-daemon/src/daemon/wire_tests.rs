@@ -7,7 +7,8 @@ use crate::daemon::protocol::{
     Response, ShutdownAck, StatusInfo,
 };
 
-crate::timed_test!(record_target_touch_round_trips, {
+#[test]
+fn record_target_touch_round_trips() {
     let req = Request::RecordTargetTouch {
         path: "/tmp/target".into(),
         unix_seconds: 1_700_000_000,
@@ -19,9 +20,10 @@ crate::timed_test!(record_target_touch_round_trips, {
         Request::RecordTargetTouch { ref path, unix_seconds }
             if path == "/tmp/target" && unix_seconds == 1_700_000_000
     ));
-});
+}
 
-crate::timed_test!(target_registry_verbs_round_trip, {
+#[test]
+fn target_registry_verbs_round_trip() {
     use crate::daemon::protocol::TargetRegistryRow;
 
     assert!(matches!(
@@ -53,25 +55,28 @@ crate::timed_test!(target_registry_verbs_round_trip, {
         .expect("decode"),
         Response::TargetRegistryRemoved { removed: 2 }
     ));
-});
+}
 
-crate::timed_test!(status_request_round_trips, {
+#[test]
+fn status_request_round_trips() {
     let bytes = encode_request(&Request::Status);
     assert!(matches!(
         decode_request(&bytes).expect("decode"),
         Request::Status
     ));
-});
+}
 
-crate::timed_test!(flush_caches_request_round_trips, {
+#[test]
+fn flush_caches_request_round_trips() {
     let bytes = encode_request(&Request::FlushCaches);
     assert!(matches!(
         decode_request(&bytes).expect("decode"),
         Request::FlushCaches
     ));
-});
+}
 
-crate::timed_test!(cache_flush_response_preserves_incomplete_step_details, {
+#[test]
+fn cache_flush_response_preserves_incomplete_step_details() {
     let info = CacheFlushInfo {
         complete: false,
         pending_writes_drained: true,
@@ -97,9 +102,10 @@ crate::timed_test!(cache_flush_response_preserves_incomplete_step_details, {
         Response::CacheFlushed(decoded) => assert_eq!(decoded, info),
         other => panic!("expected CacheFlushed, got {other:?}"),
     }
-});
+}
 
-crate::timed_test!(build_log_inputs_verb_round_trips, {
+#[test]
+fn build_log_inputs_verb_round_trips() {
     // soldr#1814 slice 2a. Every `Event` field must survive, because the
     // build log's compile timeline is derived entirely from them — a field
     // lost on the wire silently produces an incomplete log rather than an
@@ -146,9 +152,10 @@ crate::timed_test!(build_log_inputs_verb_round_trips, {
         }
         other => panic!("expected BuildLogInputs, got {other:?}"),
     }
-});
+}
 
-crate::timed_test!(attach_build_log_history_round_trips, {
+#[test]
+fn attach_build_log_history_round_trips() {
     // soldr#1814 slice 2d. Every field must survive: the daemon reconstructs
     // the build record from this payload alone, so anything dropped on the
     // wire silently degrades `soldr logs` rather than erroring.
@@ -198,9 +205,10 @@ crate::timed_test!(attach_build_log_history_round_trips, {
         Request::AttachBuildLogHistory(decoded) => assert_eq!(*decoded, update),
         other => panic!("expected AttachBuildLogHistory, got {other:?}"),
     }
-});
+}
 
-crate::timed_test!(cargo_debug_warning_verb_round_trips, {
+#[test]
+fn cargo_debug_warning_verb_round_trips() {
     // soldr#1814 slice 2c. Both boolean outcomes must survive: `false` is the
     // throttled answer, and a decode that collapsed it to the default would
     // re-emit a warning the daemon already suppressed.
@@ -220,9 +228,10 @@ crate::timed_test!(cargo_debug_warning_verb_round_trips, {
             other => panic!("expected CargoDebugWarning, got {other:?}"),
         }
     }
-});
+}
 
-crate::timed_test!(compile_stats_verb_round_trips, {
+#[test]
+fn compile_stats_verb_round_trips() {
     use crate::daemon::protocol::{CompileStatsInfo, StagedProfileInfo};
     assert!(matches!(
         decode_request(&encode_request(&Request::CompileStats)).expect("decode"),
@@ -245,9 +254,10 @@ crate::timed_test!(compile_stats_verb_round_trips, {
         Response::CompileStats(decoded) => assert_eq!(decoded, info),
         other => panic!("expected CompileStats, got {other:?}"),
     }
-});
+}
 
-crate::timed_test!(cook_lookup_round_trips_with_all_fields, {
+#[test]
+fn cook_lookup_round_trips_with_all_fields() {
     let req = Request::CookLookup {
         recipe_hash: [0x42; 32],
         target_triple: "x86_64-pc-windows-msvc".into(),
@@ -282,9 +292,10 @@ crate::timed_test!(cook_lookup_round_trips_with_all_fields, {
         }
         other => panic!("unexpected variant: {other:?}"),
     }
-});
+}
 
-crate::timed_test!(cook_record_round_trips_with_sha_validation, {
+#[test]
+fn cook_record_round_trips_with_sha_validation() {
     let req = Request::CookRecord {
         recipe_hash: [0x11; 32],
         target_triple: "x86_64-unknown-linux-gnu".into(),
@@ -312,9 +323,10 @@ crate::timed_test!(cook_record_round_trips_with_sha_validation, {
     assert_eq!(sha256, [0xAA; 32]);
     assert_eq!(size_bytes, 4_096);
     assert_eq!(branch_name.as_deref(), Some("main"));
-});
+}
 
-crate::timed_test!(status_response_round_trips_with_cook_stats, {
+#[test]
+fn status_response_round_trips_with_cook_stats() {
     let info = StatusInfo {
         version: 7,
         pid: 4242,
@@ -344,37 +356,36 @@ crate::timed_test!(status_response_round_trips_with_cook_stats, {
         Response::Status(decoded_info) => assert_eq!(decoded_info, info),
         other => panic!("unexpected variant: {other:?}"),
     }
-});
+}
 
-crate::timed_test!(
-    build_session_started_round_trips_the_daemons_applied_limit,
-    {
-        // soldr#2023. The limit has to survive the wire intact: the client's
-        // only job with it is an equality check against its own resolution, so
-        // a value mangled in transit becomes a warning on every build (or,
-        // worse, silence on a build that genuinely drifted).
-        let response = Response::BuildSessionStarted {
-            compile_jobs: 6,
-            compile_jobs_source: "config.toml [jobs].max_parallel_compiles".to_string(),
-        };
-        let bytes = encode_response(&response);
-        match decode_response(&bytes).expect("decode") {
-            Response::BuildSessionStarted {
-                compile_jobs,
+#[test]
+fn build_session_started_round_trips_the_daemons_applied_limit() {
+    // soldr#2023. The limit has to survive the wire intact: the client's
+    // only job with it is an equality check against its own resolution, so
+    // a value mangled in transit becomes a warning on every build (or,
+    // worse, silence on a build that genuinely drifted).
+    let response = Response::BuildSessionStarted {
+        compile_jobs: 6,
+        compile_jobs_source: "config.toml [jobs].max_parallel_compiles".to_string(),
+    };
+    let bytes = encode_response(&response);
+    match decode_response(&bytes).expect("decode") {
+        Response::BuildSessionStarted {
+            compile_jobs,
+            compile_jobs_source,
+        } => {
+            assert_eq!(compile_jobs, 6);
+            assert_eq!(
                 compile_jobs_source,
-            } => {
-                assert_eq!(compile_jobs, 6);
-                assert_eq!(
-                    compile_jobs_source,
-                    "config.toml [jobs].max_parallel_compiles"
-                );
-            }
-            other => panic!("unexpected variant: {other:?}"),
+                "config.toml [jobs].max_parallel_compiles"
+            );
         }
+        other => panic!("unexpected variant: {other:?}"),
     }
-);
+}
 
-crate::timed_test!(shutdown_ack_round_trips_responder_generation, {
+#[test]
+fn shutdown_ack_round_trips_responder_generation() {
     let response = Response::ShuttingDown(ShutdownAck {
         pid: 4242,
         generation: 1_700_000_000_123,
@@ -387,9 +398,10 @@ crate::timed_test!(shutdown_ack_round_trips_responder_generation, {
             generation: 1_700_000_000_123,
         })
     ));
-});
+}
 
-crate::timed_test!(legacy_empty_shutdown_ack_decodes_with_zero_identity, {
+#[test]
+fn legacy_empty_shutdown_ack_decodes_with_zero_identity() {
     // v17 encoded WireResponse.shutting_down as an empty nested message.
     // v18 must continue to decode that shape so the client can pair it with
     // the immediately preceding v17 Status response.
@@ -401,9 +413,10 @@ crate::timed_test!(legacy_empty_shutdown_ack_decodes_with_zero_identity, {
             generation: 0,
         })
     ));
-});
+}
 
-crate::timed_test!(cook_hit_response_round_trips, {
+#[test]
+fn cook_hit_response_round_trips() {
     let resp = Response::CookHit {
         sha256: [0xCC; 32],
         path: "/home/runner/.soldr/cache/cook/abcd.tar.zst".into(),
@@ -437,9 +450,10 @@ crate::timed_test!(cook_hit_response_round_trips, {
         }
         other => panic!("unexpected variant: {other:?}"),
     }
-});
+}
 
-crate::timed_test!(cook_miss_response_round_trips_with_multiple_hashes, {
+#[test]
+fn cook_miss_response_round_trips_with_multiple_hashes() {
     let resp = Response::CookMiss {
         previous_origin_recipe_hashes: vec![[1u8; 32], [2u8; 32], [3u8; 32]],
     };
@@ -455,29 +469,32 @@ crate::timed_test!(cook_miss_response_round_trips_with_multiple_hashes, {
         }
         other => panic!("unexpected variant: {other:?}"),
     }
-});
+}
 
-crate::timed_test!(backpressure_response_round_trips_with_retry_delay, {
+#[test]
+fn backpressure_response_round_trips_with_retry_delay() {
     let bytes = encode_response(&Response::Backpressure { retry_after_ms: 25 });
     assert!(matches!(
         decode_response(&bytes).expect("decode"),
         Response::Backpressure { retry_after_ms: 25 }
     ));
-});
+}
 
-crate::timed_test!(retiring_response_round_trips, {
+#[test]
+fn retiring_response_round_trips() {
     let bytes = encode_response(&Response::Retiring);
     assert!(matches!(
         decode_response(&bytes).expect("decode"),
         Response::Retiring
     ));
-});
+}
 
 // soldr#1838: `Retiring` must not be confusable with `Error` on the wire.
 // Their whole purpose is that the client treats them oppositely -- degrade to
 // direct rustc vs. hard-fail the build -- so a decode that blurred them would
 // reintroduce #1837 silently.
-crate::timed_test!(retiring_and_error_do_not_decode_to_each_other, {
+#[test]
+fn retiring_and_error_do_not_decode_to_each_other() {
     let retiring = encode_response(&Response::Retiring);
     let error = encode_response(&Response::Error("boom".into()));
     assert_ne!(
@@ -492,9 +509,10 @@ crate::timed_test!(retiring_and_error_do_not_decode_to_each_other, {
         decode_response(&error).expect("decode"),
         Response::Retiring
     ));
-});
+}
 
-crate::timed_test!(builds_response_round_trips_with_all_optional_fields, {
+#[test]
+fn builds_response_round_trips_with_all_optional_fields() {
     let record = BuildRecord {
         session_id: 42,
         repo_root: "/r".into(),
@@ -544,9 +562,10 @@ crate::timed_test!(builds_response_round_trips_with_all_optional_fields, {
         }
         other => panic!("unexpected variant: {other:?}"),
     }
-});
+}
 
-crate::timed_test!(invalid_sha_length_is_a_decode_error, {
+#[test]
+fn invalid_sha_length_is_a_decode_error() {
     // Build a WireCookTouch by hand with a bogus 16-byte sha.
     let bad = proto::WireRequest {
         kind: Some(proto::WireRequestKind::CookTouch(proto::WireCookTouch {
@@ -557,15 +576,17 @@ crate::timed_test!(invalid_sha_length_is_a_decode_error, {
     prost::Message::encode(&bad, &mut bytes).expect("encode");
     let err = decode_request(&bytes).expect_err("must error");
     assert!(matches!(err, WireDecodeError::InvalidShaLength(16)));
-});
+}
 
-crate::timed_test!(empty_request_oneof_is_a_decode_error, {
+#[test]
+fn empty_request_oneof_is_a_decode_error() {
     let bytes = Vec::new(); // empty WireRequest with no oneof
     let err = decode_request(&bytes).expect_err("must error");
     assert!(matches!(err, WireDecodeError::EmptyOneof("Request")));
-});
+}
 
-crate::timed_test!(event_kind_round_trips_through_u32, {
+#[test]
+fn event_kind_round_trips_through_u32() {
     for kind in [
         EventKind::SessionStart,
         EventKind::SessionEnd,
@@ -579,15 +600,17 @@ crate::timed_test!(event_kind_round_trips_through_u32, {
         u32_to_event_kind(99).unwrap_err(),
         WireDecodeError::UnknownEventKind(99)
     ));
-});
+}
 
-crate::timed_test!(prost_tagged_bytes_prepends_the_tag, {
+#[test]
+fn prost_tagged_bytes_prepends_the_tag() {
     let payload = proto::WireUnit {};
     let bytes = prost_tagged_bytes(&payload);
     assert_eq!(bytes.first().copied(), Some(REDB_TAG_PROST));
-});
+}
 
-crate::timed_test!(compile_request_round_trips_with_env_and_cwd, {
+#[test]
+fn compile_request_round_trips_with_env_and_cwd() {
     let req = Request::Compile(crate::daemon::protocol::CompileRequest {
         args: vec![
             "/usr/bin/rustc".into(),
@@ -625,9 +648,10 @@ crate::timed_test!(compile_request_round_trips_with_env_and_cwd, {
         }
         other => panic!("unexpected variant: {other:?}"),
     }
-});
+}
 
-crate::timed_test!(compile_response_round_trips, {
+#[test]
+fn compile_response_round_trips() {
     let body = crate::daemon::protocol::CompileResponseBody {
         exit_code: 0,
         stdout: b"compiling\n".to_vec(),
@@ -647,9 +671,10 @@ crate::timed_test!(compile_response_round_trips, {
         }
         other => panic!("unexpected variant: {other:?}"),
     }
-});
+}
 
-crate::timed_test!(compile_stdout_chunk_round_trips, {
+#[test]
+fn compile_stdout_chunk_round_trips() {
     // #983 Phase 5b — streaming chunk variant. Exercises the
     // happy path including zero-byte chunks (which the daemon
     // never emits, but the decode side must still accept).
@@ -669,9 +694,10 @@ crate::timed_test!(compile_stdout_chunk_round_trips, {
         Response::CompileStdoutChunk(decoded) => assert!(decoded.is_empty()),
         other => panic!("unexpected variant: {other:?}"),
     }
-});
+}
 
-crate::timed_test!(compile_stderr_chunk_round_trips, {
+#[test]
+fn compile_stderr_chunk_round_trips() {
     // #983 Phase 5b — the stderr counterpart. Same shape, separate
     // discriminant so the wrapper-side reader can fan out to the
     // correct sink without inspecting the payload.
@@ -684,9 +710,10 @@ crate::timed_test!(compile_stderr_chunk_round_trips, {
         }
         other => panic!("unexpected variant: {other:?}"),
     }
-});
+}
 
-crate::timed_test!(compile_done_round_trips_with_all_fields, {
+#[test]
+fn compile_done_round_trips_with_all_fields() {
     // #983 Phase 5b — terminal frame in the streaming reply. All
     // four metadata fields are load-bearing for the wrapper's
     // exit-code + cache-outcome reporting.
@@ -735,4 +762,4 @@ crate::timed_test!(compile_done_round_trips_with_all_fields, {
         }
         other => panic!("unexpected variant: {other:?}"),
     }
-});
+}

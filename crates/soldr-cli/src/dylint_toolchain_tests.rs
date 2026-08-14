@@ -5,13 +5,14 @@ use super::*;
 
 const COMMIT: &str = "31a9463c6e2794a59ce57a8f37abc6966afc2a58";
 
-crate::timed_test!(parses_prebuilt_dylint_driver_version, {
+#[test]
+fn parses_prebuilt_dylint_driver_version() {
     assert_eq!(
         dylint_driver_version("dylint-driver 6.0.3\n"),
         Some("6.0.3")
     );
     assert_eq!(dylint_driver_version(""), None);
-});
+}
 
 fn sample_map(selected: &str) -> Vec<u8> {
     format!(
@@ -40,7 +41,8 @@ fn sample_map(selected: &str) -> Vec<u8> {
     .into_bytes()
 }
 
-crate::timed_test!(selects_first_newest_nightly_and_full_identity, {
+#[test]
+fn selects_first_newest_nightly_and_full_identity() {
     let plan =
         select_from_map(&sample_map("nightly-2026-01-18"), "1.94").expect("select map entry");
     assert_eq!(plan.channel, "nightly-2026-01-18");
@@ -48,28 +50,32 @@ crate::timed_test!(selects_first_newest_nightly_and_full_identity, {
         plan.cache_identity(),
         format!("nightly-2026-01-18|1.94.0-nightly|{COMMIT}")
     );
-});
+}
 
-crate::timed_test!(rejects_selected_nightly_that_is_not_first, {
+#[test]
+fn rejects_selected_nightly_that_is_not_first() {
     let error = select_from_map(&sample_map("nightly-2026-01-17"), "1.94")
         .expect_err("must reject a non-first selection");
     assert!(error.to_string().contains("newest-first contract"));
-});
+}
 
-crate::timed_test!(explicit_nightly_uses_mapped_identity_without_installing, {
+#[test]
+fn explicit_nightly_uses_mapped_identity_without_installing() {
     let plan = select_explicit_from_map(&sample_map("nightly-2026-01-18"), "nightly-2026-01-18")
         .expect("explicit map entry");
     assert_eq!(plan.channel, "nightly-2026-01-18");
     assert_eq!(plan.compiler_commit, COMMIT);
-});
+}
 
-crate::timed_test!(extracts_major_minor_versions, {
+#[test]
+fn extracts_major_minor_versions() {
     assert_eq!(major_minor("1.94.1").as_deref(), Some("1.94"));
     assert_eq!(major_minor("1.94.0-nightly").as_deref(), Some("1.94"));
     assert_eq!(major_minor("stable"), None);
-});
+}
 
-crate::timed_test!(recognizes_only_explicit_dated_nightlies, {
+#[test]
+fn recognizes_only_explicit_dated_nightlies() {
     assert!(is_dated_nightly("nightly-2026-04-16"));
     assert!(is_dated_nightly(
         "nightly-2026-04-16-x86_64-unknown-linux-gnu"
@@ -80,9 +86,10 @@ crate::timed_test!(recognizes_only_explicit_dated_nightlies, {
     assert!(!is_dated_nightly("nightly-2026-04-16-"));
     assert!(!is_dated_nightly("nightly-2026-04"));
     assert!(!is_dated_nightly("1.97.0"));
-});
+}
 
-crate::timed_test!(qualifies_nightly_names_with_the_compiler_host, {
+#[test]
+fn qualifies_nightly_names_with_the_compiler_host() {
     assert!(!is_fully_qualified_nightly("nightly-2026-01-18"));
     assert!(is_fully_qualified_nightly(
         "nightly-2026-01-18-x86_64-unknown-linux-gnu"
@@ -92,7 +99,7 @@ crate::timed_test!(qualifies_nightly_names_with_the_compiler_host, {
     )
     .expect("parse host");
     assert_eq!(host, "x86_64-unknown-linux-gnu");
-});
+}
 
 // -----------------------------------------------------------------
 // Warm-run prepared-plan marker (issue: dylint warm-run fast path).
@@ -151,7 +158,8 @@ fn stub_installed_toolchain(rustup_home: &Path, channel: &str) {
     std::fs::create_dir_all(dir).expect("create stub toolchain dir");
 }
 
-crate::timed_test!(prepared_marker_roundtrip_hits_when_fresh_and_installed, {
+#[test]
+fn prepared_marker_roundtrip_hits_when_fresh_and_installed() {
     let soldr_root = tempfile::tempdir().expect("soldr root tempdir");
     let rustup_home = tempfile::tempdir().expect("rustup home tempdir");
     let plan = sample_plan();
@@ -167,32 +175,31 @@ crate::timed_test!(prepared_marker_roundtrip_hits_when_fresh_and_installed, {
         SystemTime::now(),
     );
     assert_eq!(loaded, Some(plan));
-});
+}
 
-crate::timed_test!(
-    prepared_marker_accepts_fully_qualified_toolchain_directory,
-    {
-        let soldr_root = tempfile::tempdir().expect("soldr root tempdir");
-        let rustup_home = tempfile::tempdir().expect("rustup home tempdir");
-        let mut plan = sample_plan();
-        plan.channel.push_str("-x86_64-unknown-linux-gnu");
-        std::fs::create_dir_all(rustup_home.path().join("toolchains").join(&plan.channel))
-            .expect("create fully-qualified toolchain dir");
+#[test]
+fn prepared_marker_accepts_fully_qualified_toolchain_directory() {
+    let soldr_root = tempfile::tempdir().expect("soldr root tempdir");
+    let rustup_home = tempfile::tempdir().expect("rustup home tempdir");
+    let mut plan = sample_plan();
+    plan.channel.push_str("-x86_64-unknown-linux-gnu");
+    std::fs::create_dir_all(rustup_home.path().join("toolchains").join(&plan.channel))
+        .expect("create fully-qualified toolchain dir");
 
-        write_prepared_marker_at(soldr_root.path(), "1.94", &plan).expect("write marker");
+    write_prepared_marker_at(soldr_root.path(), "1.94", &plan).expect("write marker");
 
-        let loaded = load_prepared_marker_from(
-            soldr_root.path(),
-            rustup_home.path(),
-            "1.94",
-            Duration::from_secs(60 * 60),
-            SystemTime::now(),
-        );
-        assert_eq!(loaded, Some(plan));
-    }
-);
+    let loaded = load_prepared_marker_from(
+        soldr_root.path(),
+        rustup_home.path(),
+        "1.94",
+        Duration::from_secs(60 * 60),
+        SystemTime::now(),
+    );
+    assert_eq!(loaded, Some(plan));
+}
 
-crate::timed_test!(prepared_marker_rejected_when_ttl_expired, {
+#[test]
+fn prepared_marker_rejected_when_ttl_expired() {
     let soldr_root = tempfile::tempdir().expect("soldr root tempdir");
     let rustup_home = tempfile::tempdir().expect("rustup home tempdir");
     let plan = sample_plan();
@@ -211,9 +218,10 @@ crate::timed_test!(prepared_marker_rejected_when_ttl_expired, {
         far_future,
     );
     assert_eq!(loaded, None);
-});
+}
 
-crate::timed_test!(prepared_marker_ttl_zero_never_trusts_marker, {
+#[test]
+fn prepared_marker_ttl_zero_never_trusts_marker() {
     let soldr_root = tempfile::tempdir().expect("soldr root tempdir");
     let rustup_home = tempfile::tempdir().expect("rustup home tempdir");
     let plan = sample_plan();
@@ -229,9 +237,10 @@ crate::timed_test!(prepared_marker_ttl_zero_never_trusts_marker, {
         SystemTime::now(),
     );
     assert_eq!(loaded, None);
-});
+}
 
-crate::timed_test!(prepared_marker_rejected_when_malformed, {
+#[test]
+fn prepared_marker_rejected_when_malformed() {
     let soldr_root = tempfile::tempdir().expect("soldr root tempdir");
     let rustup_home = tempfile::tempdir().expect("rustup home tempdir");
     stub_installed_toolchain(rustup_home.path(), "nightly-2026-01-18");
@@ -248,9 +257,10 @@ crate::timed_test!(prepared_marker_rejected_when_malformed, {
         SystemTime::now(),
     );
     assert_eq!(loaded, None);
-});
+}
 
-crate::timed_test!(prepared_marker_rejected_when_toolchain_dir_missing, {
+#[test]
+fn prepared_marker_rejected_when_toolchain_dir_missing() {
     let soldr_root = tempfile::tempdir().expect("soldr root tempdir");
     // No stubbed toolchain directory under this rustup_home.
     let rustup_home = tempfile::tempdir().expect("rustup home tempdir");
@@ -266,30 +276,34 @@ crate::timed_test!(prepared_marker_rejected_when_toolchain_dir_missing, {
         SystemTime::now(),
     );
     assert_eq!(loaded, None);
-});
+}
 
-crate::timed_test!(parse_marker_identity_roundtrips_cache_identity_format, {
+#[test]
+fn parse_marker_identity_roundtrips_cache_identity_format() {
     let plan = sample_plan();
     let parsed = parse_marker_identity(&plan.cache_identity()).expect("parse identity line");
     assert_eq!(parsed, plan);
-});
+}
 
-crate::timed_test!(parse_marker_identity_rejects_malformed_lines, {
+#[test]
+fn parse_marker_identity_rejects_malformed_lines() {
     assert!(parse_marker_identity("garbage").is_none());
     assert!(parse_marker_identity("nightly-2026-01-18|1.94.0-nightly|short").is_none());
     assert!(parse_marker_identity("not-nightly|1.94.0-nightly|").is_none());
-});
+}
 
-crate::timed_test!(sanitize_marker_key_strips_path_hostile_characters, {
+#[test]
+fn sanitize_marker_key_strips_path_hostile_characters() {
     assert_eq!(sanitize_marker_key("1.94"), "1.94");
     assert_eq!(
         sanitize_marker_key("nightly-2026-01-18"),
         "nightly-2026-01-18"
     );
     assert_eq!(sanitize_marker_key("a/b\\c:d"), "a_b_c_d");
-});
+}
 
-crate::timed_test!(truthy_env_bypasses_marker_lookup, {
+#[test]
+fn truthy_env_bypasses_marker_lookup() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
     {
         let _env = EnvVarGuard::set(REVERIFY_ENV_VAR, "1");
@@ -304,9 +318,10 @@ crate::timed_test!(truthy_env_bypasses_marker_lookup, {
         assert!(!truthy_env(REVERIFY_ENV_VAR));
     }
     assert!(!truthy_env(REVERIFY_ENV_VAR));
-});
+}
 
-crate::timed_test!(prepare_ttl_parses_env_override_and_falls_back_to_default, {
+#[test]
+fn prepare_ttl_parses_env_override_and_falls_back_to_default() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
     {
         let _env = EnvVarGuard::set(PREPARE_TTL_ENV_VAR, "60");
@@ -321,7 +336,7 @@ crate::timed_test!(prepare_ttl_parses_env_override_and_falls_back_to_default, {
         assert_eq!(prepare_ttl(), DEFAULT_PREPARE_TTL);
     }
     assert_eq!(prepare_ttl(), DEFAULT_PREPARE_TTL);
-});
+}
 
 // -----------------------------------------------------------------
 // Regression guard: DylintToolchainPlan::apply_to_command must only
@@ -331,55 +346,53 @@ crate::timed_test!(prepare_ttl_parses_env_override_and_falls_back_to_default, {
 // this bug once — soldr injected a profile override inside a
 // dylint run and silently changed what got built/analyzed.
 // -----------------------------------------------------------------
-crate::timed_test!(
-    apply_to_command_never_touches_build_profile_or_injects_args,
-    {
-        let plan = sample_plan();
-        let mut command = std::process::Command::new("does-not-matter");
-        plan.apply_to_command(&mut command);
+#[test]
+fn apply_to_command_never_touches_build_profile_or_injects_args() {
+    let plan = sample_plan();
+    let mut command = std::process::Command::new("does-not-matter");
+    plan.apply_to_command(&mut command);
 
-        let envs: std::collections::HashMap<&OsStr, Option<&OsStr>> = command.get_envs().collect();
+    let envs: std::collections::HashMap<&OsStr, Option<&OsStr>> = command.get_envs().collect();
 
-        let expected_keys = [
-            "RUSTUP_TOOLCHAIN",
-            TOOLCHAIN_ENV_VAR,
-            COMPILER_RELEASE_ENV_VAR,
-            COMPILER_COMMIT_ENV_VAR,
-            CACHE_IDENTITY_ENV_VAR,
-            PREPARED_IDENTITY_ENV_VAR,
-        ];
-        for key in expected_keys {
-            assert!(
-                envs.contains_key(OsStr::new(key)),
-                "apply_to_command must set {key}"
-            );
-        }
-
-        for key in envs.keys() {
-            let key_str = key.to_string_lossy();
-            assert!(
-                !key_str.starts_with("CARGO_PROFILE_RELEASE_")
-                    && !key_str.starts_with("CARGO_BUILD_")
-                    && key_str != "PROFILE",
-                "dylint scope stamping must never switch the analyzed workspace's \
-                 build profile, but set: {key_str}"
-            );
-            // DYLINT_DRIVER_PATH is the one soldr-owned addition beyond
-            // the identity env vars (best-effort; may be absent if
-            // SoldrPaths::new() can't resolve in this environment).
-            assert!(
-                expected_keys.contains(&key_str.as_ref()) || key_str == "DYLINT_DRIVER_PATH",
-                "unexpected env var set by DylintToolchainPlan::apply_to_command: {key_str}"
-            );
-        }
-
-        // A profile switch could also arrive as an injected CLI arg
-        // (`--release` / `--profile <name>`); apply_to_command must
-        // never add args to the command at all.
-        assert_eq!(
-            command.get_args().count(),
-            0,
-            "apply_to_command must not inject any CLI args (e.g. --release/--profile)"
+    let expected_keys = [
+        "RUSTUP_TOOLCHAIN",
+        TOOLCHAIN_ENV_VAR,
+        COMPILER_RELEASE_ENV_VAR,
+        COMPILER_COMMIT_ENV_VAR,
+        CACHE_IDENTITY_ENV_VAR,
+        PREPARED_IDENTITY_ENV_VAR,
+    ];
+    for key in expected_keys {
+        assert!(
+            envs.contains_key(OsStr::new(key)),
+            "apply_to_command must set {key}"
         );
     }
-);
+
+    for key in envs.keys() {
+        let key_str = key.to_string_lossy();
+        assert!(
+            !key_str.starts_with("CARGO_PROFILE_RELEASE_")
+                && !key_str.starts_with("CARGO_BUILD_")
+                && key_str != "PROFILE",
+            "dylint scope stamping must never switch the analyzed workspace's \
+                 build profile, but set: {key_str}"
+        );
+        // DYLINT_DRIVER_PATH is the one soldr-owned addition beyond
+        // the identity env vars (best-effort; may be absent if
+        // SoldrPaths::new() can't resolve in this environment).
+        assert!(
+            expected_keys.contains(&key_str.as_ref()) || key_str == "DYLINT_DRIVER_PATH",
+            "unexpected env var set by DylintToolchainPlan::apply_to_command: {key_str}"
+        );
+    }
+
+    // A profile switch could also arrive as an injected CLI arg
+    // (`--release` / `--profile <name>`); apply_to_command must
+    // never add args to the command at all.
+    assert_eq!(
+        command.get_args().count(),
+        0,
+        "apply_to_command must not inject any CLI args (e.g. --release/--profile)"
+    );
+}

@@ -4,7 +4,6 @@ mod common;
 
 use common::*;
 use serde_json::Value;
-use soldr_cli::timed_test;
 use std::io::Write;
 use std::process::Command;
 use std::{
@@ -284,181 +283,176 @@ fn gc_purge_all_json_reports_error_log_path_and_keeps_failed_row() {
     );
 }
 
-timed_test!(
-    gc_list_json_reports_built_project_target_dir,
-    Duration::from_secs(120),
-    {
-        let cache_root = unique_temp_dir("gc-list-build");
-        let project_dir = unique_temp_dir("gc-list-project");
-        // #323 slice 2: sandbox CARGO_HOME so the registry_src walker
-        // doesn't see the developer's real `~/.cargo` and inject
-        // cargo_registry_src entries into this test's assertions. Also
-        // sandbox RUSTUP_HOME now that `gc list` reports rustup toolchains.
-        let sandbox_cargo_home = unique_temp_dir("gc-list-build-cargo-home");
-        let sandbox_rustup_home = unique_temp_dir("gc-list-build-rustup-home");
+#[test]
+fn gc_list_json_reports_built_project_target_dir() {
+    let cache_root = unique_temp_dir("gc-list-build");
+    let project_dir = unique_temp_dir("gc-list-project");
+    // #323 slice 2: sandbox CARGO_HOME so the registry_src walker
+    // doesn't see the developer's real `~/.cargo` and inject
+    // cargo_registry_src entries into this test's assertions. Also
+    // sandbox RUSTUP_HOME now that `gc list` reports rustup toolchains.
+    let sandbox_cargo_home = unique_temp_dir("gc-list-build-cargo-home");
+    let sandbox_rustup_home = unique_temp_dir("gc-list-build-rustup-home");
 
-        fs::write(
+    fs::write(
         project_dir.join("Cargo.toml"),
         "[package]\nname = \"gc_list_demo\"\nversion = \"0.0.1\"\nedition = \"2021\"\n\n[workspace]\n",
     )
     .expect("failed to write Cargo.toml");
-        fs::create_dir_all(project_dir.join("src")).expect("failed to create src dir");
-        fs::write(project_dir.join("src/main.rs"), "fn main() {}\n")
-            .expect("failed to write main.rs");
+    fs::create_dir_all(project_dir.join("src")).expect("failed to create src dir");
+    fs::write(project_dir.join("src/main.rs"), "fn main() {}\n").expect("failed to write main.rs");
 
-        let soldr_bin = common::soldr_bin();
-        let cargo = rustup_which("cargo");
+    let soldr_bin = common::soldr_bin();
+    let cargo = rustup_which("cargo");
 
-        let start = Command::new(&soldr_bin)
-            .args(["daemon", "start"])
-            .env("SOLDR_CACHE_DIR", &cache_root)
-            // A dogfooded outer `soldr cargo test` exports its installed
-            // daemon image. This fixture must start the daemon built beside
-            // CARGO_BIN_EXE_soldr so its IPC protocol matches the test binary.
-            .env_remove(soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR)
-            .output()
-            .expect("start daemon for wrapper target registry");
-        assert!(
-            start.status.success(),
-            "daemon start failed: {}",
-            String::from_utf8_lossy(&start.stderr)
-        );
-        wait_for_daemon_ready(&soldr_bin, &cache_root, Duration::from_secs(45));
+    let start = Command::new(&soldr_bin)
+        .args(["daemon", "start"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        // A dogfooded outer `soldr cargo test` exports its installed
+        // daemon image. This fixture must start the daemon built beside
+        // CARGO_BIN_EXE_soldr so its IPC protocol matches the test binary.
+        .env_remove(soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR)
+        .output()
+        .expect("start daemon for wrapper target registry");
+    assert!(
+        start.status.success(),
+        "daemon start failed: {}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+    wait_for_daemon_ready(&soldr_bin, &cache_root, Duration::from_secs(45));
 
-        let build = Command::new(&cargo)
-            .args(["build", "--quiet"])
-            .current_dir(&project_dir)
-            .env("RUSTC_WRAPPER", &soldr_bin)
-            .env("SOLDR_CACHE_DIR", &cache_root)
-            .env_remove(soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR)
-            .env("ZCCACHE_DISABLE", "1")
-            .env("SOLDR_CACHE_ENABLED", "0")
-            .env_remove("CARGO_TARGET_DIR")
-            // This fixture intentionally exercises soldr as a plain
-            // RUSTC_WRAPPER, not as a child of the outer `soldr cargo test`
-            // session that may be running this integration test.
-            .env_remove(soldr_cli::cache_lib::SOLDR_BUILD_SESSION_ID_ENV_VAR)
-            .env_remove(soldr_cli::wrapper_target::TARGET_REGISTRY_RECORDED_ENV_VAR)
-            // Cache-disable keeps this registry fixture on direct rustc after the
-            // wrapper records its target directory.
-            .env_remove("SOLDR_TEST_ZCCACHE_BIN")
-            .env_remove("ZCCACHE_BINARY")
-            .output()
-            .expect("failed to run cargo build through soldr wrapper");
+    let build = Command::new(&cargo)
+        .args(["build", "--quiet"])
+        .current_dir(&project_dir)
+        .env("RUSTC_WRAPPER", &soldr_bin)
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env_remove(soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR)
+        .env("ZCCACHE_DISABLE", "1")
+        .env("SOLDR_CACHE_ENABLED", "0")
+        .env_remove("CARGO_TARGET_DIR")
+        // This fixture intentionally exercises soldr as a plain
+        // RUSTC_WRAPPER, not as a child of the outer `soldr cargo test`
+        // session that may be running this integration test.
+        .env_remove(soldr_cli::cache_lib::SOLDR_BUILD_SESSION_ID_ENV_VAR)
+        .env_remove(soldr_cli::wrapper_target::TARGET_REGISTRY_RECORDED_ENV_VAR)
+        // Cache-disable keeps this registry fixture on direct rustc after the
+        // wrapper records its target directory.
+        .env_remove("SOLDR_TEST_ZCCACHE_BIN")
+        .env_remove("ZCCACHE_BINARY")
+        .output()
+        .expect("failed to run cargo build through soldr wrapper");
 
-        assert!(
-            build.status.success(),
-            "cargo build failed\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&build.stdout),
-            String::from_utf8_lossy(&build.stderr)
-        );
-        let target_dir = project_dir.join("target");
-        assert!(target_dir.exists(), "target/ should exist after build");
+    assert!(
+        build.status.success(),
+        "cargo build failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let target_dir = project_dir.join("target");
+    assert!(target_dir.exists(), "target/ should exist after build");
 
-        let canonical_target = fs::canonicalize(&target_dir).unwrap_or_else(|_| target_dir.clone());
+    let canonical_target = fs::canonicalize(&target_dir).unwrap_or_else(|_| target_dir.clone());
 
-        let output = Command::new(&soldr_bin)
-            .args(["gc", "list", "--json"])
-            .env("SOLDR_CACHE_DIR", &cache_root)
-            .env_remove(soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR)
-            .env("CARGO_HOME", &sandbox_cargo_home)
-            .env("RUSTUP_HOME", &sandbox_rustup_home)
-            .output()
-            .expect("failed to run soldr gc list --json");
+    let output = Command::new(&soldr_bin)
+        .args(["gc", "list", "--json"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env_remove(soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR)
+        .env("CARGO_HOME", &sandbox_cargo_home)
+        .env("RUSTUP_HOME", &sandbox_rustup_home)
+        .output()
+        .expect("failed to run soldr gc list --json");
 
-        assert!(
-            output.status.success(),
-            "gc list --json failed\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+    assert!(
+        output.status.success(),
+        "gc list --json failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 
-        let json: Value =
-            serde_json::from_slice(&output.stdout).expect("gc list --json must be JSON");
-        assert_eq!(json["schema_version"], 3);
-        assert_eq!(json["command"], "gc");
-        assert_eq!(json["mode"], "list");
-        let entry_count = json["entry_count"].as_u64().expect("entry_count");
-        assert!(entry_count >= 1, "expected at least one tracked target dir");
+    let json: Value = serde_json::from_slice(&output.stdout).expect("gc list --json must be JSON");
+    assert_eq!(json["schema_version"], 3);
+    assert_eq!(json["command"], "gc");
+    assert_eq!(json["mode"], "list");
+    let entry_count = json["entry_count"].as_u64().expect("entry_count");
+    assert!(entry_count >= 1, "expected at least one tracked target dir");
 
-        let entries = json["entries"].as_array().expect("entries array");
-        let canonical_str = canonical_target.display().to_string();
-        let target_str = target_dir.display().to_string();
-        let matched = entries.iter().find(|e| {
-            let p = e["path"].as_str().unwrap_or("");
-            let pb = PathBuf::from(p);
-            if p == canonical_str || p == target_str || pb == canonical_target || pb == target_dir {
-                return true;
-            }
-            if let Ok(canon_p) = fs::canonicalize(&pb) {
-                return canon_p == canonical_target;
-            }
-            false
-        });
-        let entry = matched.unwrap_or_else(|| {
-            panic!(
-                "target dir {} not found in gc list entries: {}",
-                canonical_target.display(),
-                serde_json::to_string_pretty(entries).unwrap()
-            )
-        });
-
-        let path_str = entry["path"].as_str().expect("entry path");
-        assert_eq!(entry["kind"].as_str(), Some("cargo_target"));
-        assert_eq!(entry["purge_safety"].as_str(), Some("derived"));
-        assert!(
-            PathBuf::from(path_str).is_absolute(),
-            "gc list entries must use absolute paths: {path_str}"
-        );
-        let size_bytes = entry["size_bytes"].as_u64().expect("size_bytes");
-        assert!(size_bytes > 0, "built target/ should have non-zero size");
-        let file_count = entry["file_count"].as_u64().expect("file_count");
-        assert!(file_count > 0, "built target/ should contain files");
-
-        for entry in entries {
-            assert!(
-                entry["path"].is_string(),
-                "every entry must have a path string"
-            );
-            assert!(
-                entry["size_bytes"].is_u64(),
-                "every entry must have size_bytes"
-            );
-            assert!(
-                entry["file_count"].is_u64(),
-                "every entry must have file_count"
-            );
-            assert!(
-                entry.get("exists").is_none(),
-                "missing rows are pruned, so `exists` should not appear on listed entries"
-            );
-            let kind = entry["kind"].as_str().expect("every entry must have kind");
-            assert!(
-                matches!(
-                    kind,
-                    "cargo_target"
-                        | "cargo_target_incremental"
-                        | "cargo_target_build_script_binaries"
-                        | "cargo_target_doc"
-                        | "cargo_target_subcommand_caches"
-                ),
-                "unexpected gc list kind: {kind}"
-            );
-            assert_eq!(entry["purge_safety"].as_str(), Some("derived"));
+    let entries = json["entries"].as_array().expect("entries array");
+    let canonical_str = canonical_target.display().to_string();
+    let target_str = target_dir.display().to_string();
+    let matched = entries.iter().find(|e| {
+        let p = e["path"].as_str().unwrap_or("");
+        let pb = PathBuf::from(p);
+        if p == canonical_str || p == target_str || pb == canonical_target || pb == target_dir {
+            return true;
         }
+        if let Ok(canon_p) = fs::canonicalize(&pb) {
+            return canon_p == canonical_target;
+        }
+        false
+    });
+    let entry = matched.unwrap_or_else(|| {
+        panic!(
+            "target dir {} not found in gc list entries: {}",
+            canonical_target.display(),
+            serde_json::to_string_pretty(entries).unwrap()
+        )
+    });
 
-        let stop = Command::new(&soldr_bin)
-            .args(["daemon", "stop"])
-            .env("SOLDR_CACHE_DIR", &cache_root)
-            .output()
-            .expect("stop explicit daemon");
+    let path_str = entry["path"].as_str().expect("entry path");
+    assert_eq!(entry["kind"].as_str(), Some("cargo_target"));
+    assert_eq!(entry["purge_safety"].as_str(), Some("derived"));
+    assert!(
+        PathBuf::from(path_str).is_absolute(),
+        "gc list entries must use absolute paths: {path_str}"
+    );
+    let size_bytes = entry["size_bytes"].as_u64().expect("size_bytes");
+    assert!(size_bytes > 0, "built target/ should have non-zero size");
+    let file_count = entry["file_count"].as_u64().expect("file_count");
+    assert!(file_count > 0, "built target/ should contain files");
+
+    for entry in entries {
         assert!(
-            stop.status.success(),
-            "daemon stop failed: {}",
-            String::from_utf8_lossy(&stop.stderr)
+            entry["path"].is_string(),
+            "every entry must have a path string"
         );
+        assert!(
+            entry["size_bytes"].is_u64(),
+            "every entry must have size_bytes"
+        );
+        assert!(
+            entry["file_count"].is_u64(),
+            "every entry must have file_count"
+        );
+        assert!(
+            entry.get("exists").is_none(),
+            "missing rows are pruned, so `exists` should not appear on listed entries"
+        );
+        let kind = entry["kind"].as_str().expect("every entry must have kind");
+        assert!(
+            matches!(
+                kind,
+                "cargo_target"
+                    | "cargo_target_incremental"
+                    | "cargo_target_build_script_binaries"
+                    | "cargo_target_doc"
+                    | "cargo_target_subcommand_caches"
+            ),
+            "unexpected gc list kind: {kind}"
+        );
+        assert_eq!(entry["purge_safety"].as_str(), Some("derived"));
     }
-);
+
+    let stop = Command::new(&soldr_bin)
+        .args(["daemon", "stop"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .output()
+        .expect("stop explicit daemon");
+    assert!(
+        stop.status.success(),
+        "daemon stop failed: {}",
+        String::from_utf8_lossy(&stop.stderr)
+    );
+}
 
 #[test]
 fn gc_list_json_entries_include_kind_and_purge_safety_defaults() {

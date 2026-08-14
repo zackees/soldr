@@ -11,7 +11,8 @@ fn try_symlink_dir(src: &Path, dst: &Path) -> bool {
     crate::platform::fs::links::create(&src.to_string_lossy(), dst, true).is_ok()
 }
 
-crate::timed_test!(closure_walk_terminates_on_a_symlink_cycle, {
+#[test]
+fn closure_walk_terminates_on_a_symlink_cycle() {
     // #1662. `collect_closure_files` and `add_cargo_closure_path` are
     // mutually recursive and used `Path::is_dir()`, which FOLLOWS symlinks
     // (unlike `DirEntry::metadata()`, which does not). A directory symlink
@@ -38,9 +39,10 @@ crate::timed_test!(closure_walk_terminates_on_a_symlink_cycle, {
         !paths.keys().any(|k| k.contains("cycle")),
         "a symlink must not contribute paths: {paths:?}"
     );
-});
+}
 
-crate::timed_test!(closure_walk_does_not_escape_the_target_dir, {
+#[test]
+fn closure_walk_does_not_escape_the_target_dir() {
     // The walk must not wander outside `target_dir` via a symlink: files
     // found out there were already refused by `add_cargo_closure_path`'s
     // `strip_prefix` guard, but nothing stopped the *directory* recursion.
@@ -62,7 +64,7 @@ crate::timed_test!(closure_walk_does_not_escape_the_target_dir, {
         !paths.keys().any(|k| k.contains("secret")),
         "walk escaped the target dir: {paths:?}"
     );
-});
+}
 use crate::LOW_DISK_WARNING_THRESHOLD_BYTES;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -114,7 +116,8 @@ fn command_env_override(
         .map(|(_, value)| value.map(OsString::from))
 }
 
-crate::timed_test!(target_registry_memo_is_not_exported_without_daemon_ack, {
+#[test]
+fn target_registry_memo_is_not_exported_without_daemon_ack() {
     let root = tempfile::tempdir().expect("temp root");
     let paths = SoldrPaths::with_root(root.path().join("soldr"));
     paths.ensure_dirs().expect("soldr dirs");
@@ -136,9 +139,10 @@ crate::timed_test!(target_registry_memo_is_not_exported_without_daemon_ack, {
         !target.exists(),
         "memoization must not create target/ as a side effect"
     );
-});
+}
 
-crate::timed_test!(zthreads_fallback_removes_plain_rustflags_token, {
+#[test]
+fn zthreads_fallback_removes_plain_rustflags_token() {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _guards = remove_env_vars(&[
         "RUSTFLAGS",
@@ -155,9 +159,10 @@ crate::timed_test!(zthreads_fallback_removes_plain_rustflags_token, {
         plan.env.get("RUSTFLAGS"),
         Some(&Some(String::from("-C debuginfo=1")))
     );
-});
+}
 
-crate::timed_test!(zthreads_fallback_removes_encoded_and_target_tokens, {
+#[test]
+fn zthreads_fallback_removes_encoded_and_target_tokens() {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _guards = remove_env_vars(&[
         "RUSTFLAGS",
@@ -186,9 +191,10 @@ crate::timed_test!(zthreads_fallback_removes_encoded_and_target_tokens, {
             .get("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS"),
         Some(&Some(String::from("-C target-cpu=native")))
     );
-});
+}
 
-crate::timed_test!(zthreads_fallback_rejects_other_z_flags_and_bootstrap, {
+#[test]
+fn zthreads_fallback_rejects_other_z_flags_and_bootstrap() {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _guards = remove_env_vars(&[
         "RUSTFLAGS",
@@ -203,9 +209,10 @@ crate::timed_test!(zthreads_fallback_rejects_other_z_flags_and_bootstrap, {
     std::env::set_var("RUSTFLAGS", "-Zthreads=8");
     std::env::set_var("RUSTC_BOOTSTRAP", "1");
     assert!(zthreads_fallback::plan_from_environment().is_none());
-});
+}
 
-crate::timed_test!(zthreads_fallback_warning_has_ci_and_local_forms, {
+#[test]
+fn zthreads_fallback_warning_has_ci_and_local_forms() {
     assert_eq!(
         zthreads_fallback::render_warning("8", true, false),
         "::warning::soldr: stable Rust rejected -Zthreads=8; retrying once without it. Build output is unchanged, but compilation may be slower."
@@ -223,9 +230,10 @@ crate::timed_test!(zthreads_fallback_warning_has_ci_and_local_forms, {
     assert!(zthreads_fallback::render_config_hint().contains("Cargo config"));
     assert!(resolved_toolchain_is_nightly(Some("nightly-2026-07-22")));
     assert!(!resolved_toolchain_is_nightly(Some("1.94.1")));
-});
+}
 
-crate::timed_test!(zthreads_retry_replays_original_front_door_contract, {
+#[test]
+fn zthreads_retry_replays_original_front_door_contract() {
     let args = argv(&["run", "--no-gc-target", "--no-trampoline", "--", "payload"]);
     let uncached = ZthreadsRetryContext::new(&args, false, true);
 
@@ -250,9 +258,10 @@ crate::timed_test!(zthreads_retry_replays_original_front_door_contract, {
         vec!["cargo", "build", "--release"],
         "a managed retry should continue through the normal cached front door",
     );
-});
+}
 
-crate::timed_test!(target_registry_memo_does_not_export_a_client_side_marker, {
+#[test]
+fn target_registry_memo_does_not_export_a_client_side_marker() {
     let root = tempfile::tempdir().expect("temp root");
     let paths = SoldrPaths::with_root(root.path().join("soldr"));
     paths.ensure_dirs().expect("soldr dirs");
@@ -274,9 +283,10 @@ crate::timed_test!(target_registry_memo_does_not_export_a_client_side_marker, {
         ),
         None,
     );
-});
+}
 
-crate::timed_test!(cargo_wait_timeout_is_disabled_when_unset_or_zero, {
+#[test]
+fn cargo_wait_timeout_is_disabled_when_unset_or_zero() {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
     let _guard = EnvVarGuard::remove(CARGO_WAIT_TIMEOUT_ENV_VAR);
@@ -285,9 +295,10 @@ crate::timed_test!(cargo_wait_timeout_is_disabled_when_unset_or_zero, {
 
     let _guard = EnvVarGuard::set(CARGO_WAIT_TIMEOUT_ENV_VAR, "0");
     assert_eq!(cargo_wait_timeout().expect("zero timeout"), None);
-});
+}
 
-crate::timed_test!(cargo_wait_timeout_accepts_positive_seconds, {
+#[test]
+fn cargo_wait_timeout_accepts_positive_seconds() {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _guard = EnvVarGuard::set(CARGO_WAIT_TIMEOUT_ENV_VAR, "7");
 
@@ -295,9 +306,10 @@ crate::timed_test!(cargo_wait_timeout_accepts_positive_seconds, {
         cargo_wait_timeout().expect("positive timeout"),
         Some(Duration::from_secs(7))
     );
-});
+}
 
-crate::timed_test!(cargo_wait_timeout_rejects_invalid_values, {
+#[test]
+fn cargo_wait_timeout_rejects_invalid_values() {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
     for value in ["", "-1", "not-a-number", "18446744073709551616"] {
@@ -310,69 +322,66 @@ crate::timed_test!(cargo_wait_timeout_rejects_invalid_values, {
             "diagnostic must name the variable for {value:?}: {message}"
         );
     }
-});
+}
 
-crate::timed_test!(
-    diagnostic_capture_returns_when_a_leaked_handle_holds_the_pipe_open,
-    {
-        // The regression this guards (#422 / the bounded drain): when a cargo
-        // grandchild inherits the stderr write handle, the pipe never reaches
-        // EOF, and the drain must give up after CAPTURE_PIPE_EOF_GRACE rather
-        // than block forever.
-        //
-        // Driven through the channel rather than a real `cmd /C ... start /B
-        // ping` fixture. The old version asserted `elapsed >= 1750ms`, which
-        // asserted that the *fixture* had worked — that `ping` really did leak
-        // the handle — not anything about the code. On a fast host the leak did
-        // not materialise, the drain returned in 466ms, and the test failed
-        // while the actual contract was being honoured. Holding the sender open
-        // reproduces "nobody will ever close this pipe" exactly and
-        // deterministically, on every platform.
-        let (tx, rx) = std::sync::mpsc::channel();
-        tx.send(CapturePipeMessage::Chunk(b"leaked diagnostic".to_vec()))
-            .expect("send chunk");
+#[test]
+fn diagnostic_capture_returns_when_a_leaked_handle_holds_the_pipe_open() {
+    // The regression this guards (#422 / the bounded drain): when a cargo
+    // grandchild inherits the stderr write handle, the pipe never reaches
+    // EOF, and the drain must give up after CAPTURE_PIPE_EOF_GRACE rather
+    // than block forever.
+    //
+    // Driven through the channel rather than a real `cmd /C ... start /B
+    // ping` fixture. The old version asserted `elapsed >= 1750ms`, which
+    // asserted that the *fixture* had worked — that `ping` really did leak
+    // the handle — not anything about the code. On a fast host the leak did
+    // not materialise, the drain returned in 466ms, and the test failed
+    // while the actual contract was being honoured. Holding the sender open
+    // reproduces "nobody will ever close this pipe" exactly and
+    // deterministically, on every platform.
+    let (tx, rx) = std::sync::mpsc::channel();
+    tx.send(CapturePipeMessage::Chunk(b"leaked diagnostic".to_vec()))
+        .expect("send chunk");
 
-        let start = Instant::now();
-        let drained = drain_capture_pipe_after_child_exit(&rx, "test capture");
-        let elapsed = start.elapsed();
+    let start = Instant::now();
+    let drained = drain_capture_pipe_after_child_exit(&rx, "test capture");
+    let elapsed = start.elapsed();
 
-        // Sender still alive => no Eof, no Disconnected: the grace bounds it.
-        drop(tx);
+    // Sender still alive => no Eof, no Disconnected: the grace bounds it.
+    drop(tx);
 
-        assert_eq!(
-            String::from_utf8_lossy(&drained),
-            "leaked diagnostic",
-            "bytes already in the pipe must survive the bounded drain"
-        );
-        assert!(
-            elapsed < CAPTURE_PIPE_EOF_GRACE + Duration::from_secs(2),
-            "drain must be bounded by the grace window; elapsed={elapsed:?}"
-        );
-    }
-);
+    assert_eq!(
+        String::from_utf8_lossy(&drained),
+        "leaked diagnostic",
+        "bytes already in the pipe must survive the bounded drain"
+    );
+    assert!(
+        elapsed < CAPTURE_PIPE_EOF_GRACE + Duration::from_secs(2),
+        "drain must be bounded by the grace window; elapsed={elapsed:?}"
+    );
+}
 
-crate::timed_test!(
-    diagnostic_capture_returns_immediately_once_the_pipe_closes,
-    {
-        // The common case: the writer goes away, so the drain must return at once
-        // rather than sitting out the full grace window.
-        let (tx, rx) = std::sync::mpsc::channel();
-        tx.send(CapturePipeMessage::Chunk(b"all output".to_vec()))
-            .expect("send chunk");
-        drop(tx);
+#[test]
+fn diagnostic_capture_returns_immediately_once_the_pipe_closes() {
+    // The common case: the writer goes away, so the drain must return at once
+    // rather than sitting out the full grace window.
+    let (tx, rx) = std::sync::mpsc::channel();
+    tx.send(CapturePipeMessage::Chunk(b"all output".to_vec()))
+        .expect("send chunk");
+    drop(tx);
 
-        let start = Instant::now();
-        let drained = drain_capture_pipe_after_child_exit(&rx, "test capture");
-        let elapsed = start.elapsed();
+    let start = Instant::now();
+    let drained = drain_capture_pipe_after_child_exit(&rx, "test capture");
+    let elapsed = start.elapsed();
 
-        assert_eq!(String::from_utf8_lossy(&drained), "all output");
-        assert!(
-            elapsed < CAPTURE_PIPE_EOF_GRACE,
-            "a closed pipe must not wait out the grace window; elapsed={elapsed:?}"
-        );
-    }
-);
-crate::timed_test!(timeout_error_mentions_cleanup_and_recovery, {
+    assert_eq!(String::from_utf8_lossy(&drained), "all output");
+    assert!(
+        elapsed < CAPTURE_PIPE_EOF_GRACE,
+        "a closed pipe must not wait out the grace window; elapsed={elapsed:?}"
+    );
+}
+#[test]
+fn timeout_error_mentions_cleanup_and_recovery() {
     let err = SoldrError::Other(format!(
         "cargo diagnostic capture timed out after 1 seconds (set {CARGO_WAIT_TIMEOUT_ENV_VAR} to override); killed child process tree"
     ));
@@ -406,9 +415,10 @@ crate::timed_test!(timeout_error_mentions_cleanup_and_recovery, {
         msg.contains("soldr logs paths"),
         "timeout message should point at durable log discovery: {msg}"
     );
-});
+}
 
-crate::timed_test!(cargo_abort_log_records_timeout_cleanup_and_recovery, {
+#[test]
+fn cargo_abort_log_records_timeout_cleanup_and_recovery() {
     let root = tempfile::tempdir().expect("temp root");
     let paths = SoldrPaths::with_root(root.path().to_path_buf());
     let cleanup = CargoAbortCleanupReport {
@@ -474,36 +484,35 @@ crate::timed_test!(cargo_abort_log_records_timeout_cleanup_and_recovery, {
         record["recovery"]["inspect_logs"],
         serde_json::json!(["soldr", "logs", "paths"])
     );
-});
+}
 
-crate::timed_test!(
-    cargo_timeout_retry_policy_is_compile_like_and_cache_enabled,
-    {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let _guard = EnvVarGuard::remove(CARGO_TIMEOUT_RETRY_DISABLE_ENV_VAR);
+#[test]
+fn cargo_timeout_retry_policy_is_compile_like_and_cache_enabled() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = EnvVarGuard::remove(CARGO_TIMEOUT_RETRY_DISABLE_ENV_VAR);
 
-        for verb in [
-            "build", "b", "check", "c", "test", "t", "clippy", "doc", "d",
-        ] {
-            assert!(
-                cargo_timeout_retry_allowed(true, &[String::from(verb)]),
-                "{verb} should be eligible for a no-cache timeout retry"
-            );
-        }
-        for verb in ["run", "r", "bench", "install", "metadata", "clean"] {
-            assert!(
-                !cargo_timeout_retry_allowed(true, &[String::from(verb)]),
-                "{verb} should not be retried automatically"
-            );
-        }
+    for verb in [
+        "build", "b", "check", "c", "test", "t", "clippy", "doc", "d",
+    ] {
         assert!(
-            !cargo_timeout_retry_allowed(false, &[String::from("build")]),
-            "already no-cache cargo runs should not recurse into another retry"
+            cargo_timeout_retry_allowed(true, &[String::from(verb)]),
+            "{verb} should be eligible for a no-cache timeout retry"
         );
     }
-);
+    for verb in ["run", "r", "bench", "install", "metadata", "clean"] {
+        assert!(
+            !cargo_timeout_retry_allowed(true, &[String::from(verb)]),
+            "{verb} should not be retried automatically"
+        );
+    }
+    assert!(
+        !cargo_timeout_retry_allowed(false, &[String::from("build")]),
+        "already no-cache cargo runs should not recurse into another retry"
+    );
+}
 
-crate::timed_test!(cargo_timeout_retry_policy_honors_disable_env, {
+#[test]
+fn cargo_timeout_retry_policy_honors_disable_env() {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _guard = EnvVarGuard::set(CARGO_TIMEOUT_RETRY_DISABLE_ENV_VAR, "1");
 
@@ -511,9 +520,10 @@ crate::timed_test!(cargo_timeout_retry_policy_honors_disable_env, {
         !cargo_timeout_retry_allowed(true, &[String::from("build")]),
         "{CARGO_TIMEOUT_RETRY_DISABLE_ENV_VAR}=1 should disable automatic retry"
     );
-});
+}
 
-crate::timed_test!(cargo_wait_heartbeat_distinguishes_deadline_configuration, {
+#[test]
+fn cargo_wait_heartbeat_distinguishes_deadline_configuration() {
     let no_deadline =
         cargo_wait_heartbeat_message("cargo diagnostic capture", Duration::from_secs(120), None);
     assert_eq!(
@@ -534,7 +544,7 @@ crate::timed_test!(cargo_wait_heartbeat_distinguishes_deadline_configuration, {
             "soldr: cargo diagnostic capture still running after 120s (explicit timeout 1800s from {CARGO_WAIT_TIMEOUT_ENV_VAR})"
         )
     );
-});
+}
 
 fn spawn_slow_wait_test_child() -> std::process::Child {
     let mut command =
@@ -551,7 +561,8 @@ fn spawn_slow_wait_test_child() -> std::process::Child {
     command.spawn().expect("spawn slow fake Cargo child")
 }
 
-crate::timed_test!(cargo_wait_none_outlives_simulated_former_default, {
+#[test]
+fn cargo_wait_none_outlives_simulated_former_default() {
     let simulated_former_default = Duration::from_millis(50);
 
     let mut no_deadline_child = spawn_slow_wait_test_child();
@@ -581,9 +592,10 @@ crate::timed_test!(cargo_wait_none_outlives_simulated_former_default, {
         error.to_string().contains("timed out after"),
         "explicit timeout should retain kill/reap behavior: {error}"
     );
-});
+}
 
-crate::timed_test!(aborted_build_cleanup_removes_incremental_dirs, {
+#[test]
+fn aborted_build_cleanup_removes_incremental_dirs() {
     let target = tempfile::tempdir().expect("temp target");
     let host_incremental = target.path().join("debug").join("incremental");
     let target_incremental = target
@@ -603,9 +615,10 @@ crate::timed_test!(aborted_build_cleanup_removes_incremental_dirs, {
     assert!(!host_incremental.exists());
     assert!(!target_incremental.exists());
     assert!(deps.join("libkeep.rlib").exists());
-});
+}
 
-crate::timed_test!(aborted_build_cleanup_prunes_rmetas_and_incremental_dirs, {
+#[test]
+fn aborted_build_cleanup_prunes_rmetas_and_incremental_dirs() {
     let root = tempfile::tempdir().expect("temp root");
     let target = root.path().join("target");
     let deps = target.join("debug").join("deps");
@@ -636,7 +649,7 @@ crate::timed_test!(aborted_build_cleanup_prunes_rmetas_and_incremental_dirs, {
     assert_eq!(cleanup.incremental_dirs_removed, 1);
     assert!(!orphan_rmeta.exists());
     assert!(!incremental.exists());
-});
+}
 
 #[test]
 fn child_cargo_scrubs_soldr_cache_lifecycle_controls() {
@@ -847,7 +860,8 @@ fn cargo_args_are_not_cacheable_for_direct_miri_driver_hooks() {
     assert!(!cargo_args_are_cacheable(&argv(&["miri"])));
 }
 
-crate::timed_test!(no_cache_preflight_covers_every_compiler_capable_surface, {
+#[test]
+fn no_cache_preflight_covers_every_compiler_capable_surface() {
     for subcommand in [
         "build",
         "test",
@@ -863,9 +877,10 @@ crate::timed_test!(no_cache_preflight_covers_every_compiler_capable_surface, {
             "{subcommand} may compile without the managed wrapper"
         );
     }
-});
+}
 
-crate::timed_test!(no_cache_preflight_skips_known_non_compiling_surfaces, {
+#[test]
+fn no_cache_preflight_skips_known_non_compiling_surfaces() {
     for subcommand in [
         "clean", "fetch", "fmt", "metadata", "search", "tree", "update", "audit", "deny", "machete",
     ] {
@@ -874,9 +889,10 @@ crate::timed_test!(no_cache_preflight_skips_known_non_compiling_surfaces, {
             "{subcommand} is known not to compile"
         );
     }
-});
+}
 
-crate::timed_test!(no_cache_preflight_treats_every_watch_shape_as_compiling, {
+#[test]
+fn no_cache_preflight_treats_every_watch_shape_as_compiling() {
     for args in [
         argv(&["watch"]),
         argv(&["watch", "-x", "miri"]),
@@ -888,7 +904,7 @@ crate::timed_test!(no_cache_preflight_treats_every_watch_shape_as_compiling, {
             "cargo watch may launch an unmediated compiler: {args:?}"
         );
     }
-});
+}
 
 #[test]
 fn cargo_args_are_cacheable_for_every_registry_inner_build_subcommand() {
@@ -925,24 +941,23 @@ fn cargo_args_are_cacheable_for_every_registry_inner_build_subcommand() {
     }
 }
 
-crate::timed_test!(
-    dylint_unavailable_diagnostic_names_host_component_and_remediation,
-    {
-        let error = dylint_unavailable_error(
-            "dylint-link",
-            "6.0.3",
-            &SoldrError::UnsupportedPlatform("no matching asset".into()),
-        );
-        let message = error.to_string();
-        assert!(message.contains(&crate::core::TargetTriple::host().unwrap().triple()));
-        assert!(message.contains("dylint-link"));
-        assert!(message.contains("Dylint v6.0.3 is not built for this machine"));
-        assert!(message.contains("Soldr will not build Dylint from source"));
-        assert!(message.contains("Corrective action:"));
-    }
-);
+#[test]
+fn dylint_unavailable_diagnostic_names_host_component_and_remediation() {
+    let error = dylint_unavailable_error(
+        "dylint-link",
+        "6.0.3",
+        &SoldrError::UnsupportedPlatform("no matching asset".into()),
+    );
+    let message = error.to_string();
+    assert!(message.contains(&crate::core::TargetTriple::host().unwrap().triple()));
+    assert!(message.contains("dylint-link"));
+    assert!(message.contains("Dylint v6.0.3 is not built for this machine"));
+    assert!(message.contains("Soldr will not build Dylint from source"));
+    assert!(message.contains("Corrective action:"));
+}
 
-crate::timed_test!(cached_dylint_link_is_revalidated_and_evicted, {
+#[test]
+fn cached_dylint_link_is_revalidated_and_evicted() {
     let temp = tempfile::tempdir().unwrap();
     let binary = temp
         .path()
@@ -960,9 +975,10 @@ crate::timed_test!(cached_dylint_link_is_revalidated_and_evicted, {
         !binary.exists(),
         "incompatible cached prebuilt must be evicted before returning an error"
     );
-});
+}
 
-crate::timed_test!(managed_dylint_missing_prebuilt_is_binary_or_error, {
+#[test]
+fn managed_dylint_missing_prebuilt_is_binary_or_error() {
     let mut source_build_ran = false;
     let result = resolve_dylint_binary(
         "cargo-dylint",
@@ -974,9 +990,10 @@ crate::timed_test!(managed_dylint_missing_prebuilt_is_binary_or_error, {
     );
     assert!(result.is_err());
     assert!(!source_build_ran);
-});
+}
 
-crate::timed_test!(dylint_dependency_cook_marker_is_private_to_front_door, {
+#[test]
+fn dylint_dependency_cook_marker_is_private_to_front_door() {
     let args = vec![
         "+nightly-2026-04-16".to_string(),
         DYLINT_DEPENDENCY_COOK_FLAG.to_string(),
@@ -995,7 +1012,7 @@ crate::timed_test!(dylint_dependency_cook_marker_is_private_to_front_door, {
             DYLINT_DEPENDENCY_COOK_FLAG
         ]
     );
-});
+}
 
 #[test]
 fn cargo_args_are_not_cacheable_for_static_analysis_tools() {
@@ -1472,7 +1489,8 @@ fn argvec(s: &str) -> Vec<String> {
     s.split_whitespace().map(String::from).collect()
 }
 
-crate::timed_test!(nextest_archive_blessed_target_detects_archive_only, {
+#[test]
+fn nextest_archive_blessed_target_detects_archive_only() {
     assert_eq!(
         nextest_archive_blessed_target(&argvec(
             "nextest archive --target aarch64-apple-darwin --workspace"
@@ -1513,109 +1531,102 @@ crate::timed_test!(nextest_archive_blessed_target_detects_archive_only, {
         nextest_archive_blessed_target(&argvec("nextest archive --target aarch64-pc-windows-msvc")),
         Some("aarch64-pc-windows-msvc"),
     );
-});
+}
 
-crate::timed_test!(
-    nextest_archive_zig_target_detects_linux_archive_targets_only,
-    {
-        for target in [
-            "aarch64-unknown-linux-gnu",
-            "aarch64-unknown-linux-musl",
-            "x86_64-unknown-linux-musl",
-        ] {
-            assert_eq!(
-                nextest_archive_zig_target(&argvec(&format!(
-                    "nextest archive --target {target} --workspace"
-                ))),
-                Some(target),
-            );
-        }
+#[test]
+fn nextest_archive_zig_target_detects_linux_archive_targets_only() {
+    for target in [
+        "aarch64-unknown-linux-gnu",
+        "aarch64-unknown-linux-musl",
+        "x86_64-unknown-linux-musl",
+    ] {
         assert_eq!(
-            nextest_archive_zig_target(&argvec("nextest run --target aarch64-unknown-linux-gnu")),
-            None,
-        );
-        assert_eq!(
-            nextest_archive_zig_target(&argvec(
-                "nextest archive --target x86_64-unknown-linux-gnu"
-            )),
-            None,
+            nextest_archive_zig_target(&argvec(&format!(
+                "nextest archive --target {target} --workspace"
+            ))),
+            Some(target),
         );
     }
-);
+    assert_eq!(
+        nextest_archive_zig_target(&argvec("nextest run --target aarch64-unknown-linux-gnu")),
+        None,
+    );
+    assert_eq!(
+        nextest_archive_zig_target(&argvec("nextest archive --target x86_64-unknown-linux-gnu")),
+        None,
+    );
+}
 
-crate::timed_test!(
-    nextest_archive_linux_bootstrap_reconstructs_zig_linker_env,
-    {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let tmp = tempfile::tempdir().unwrap();
-        let zig = tmp
-            .path()
-            .join(crate::platform::executable::name::native("zig"));
-        std::fs::write(&zig, b"fake zig").unwrap();
-        let _zig = EnvVarGuard::set("ZIG", &zig);
+#[test]
+fn nextest_archive_linux_bootstrap_reconstructs_zig_linker_env() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = tempfile::tempdir().unwrap();
+    let zig = tmp
+        .path()
+        .join(crate::platform::executable::name::native("zig"));
+    std::fs::write(&zig, b"fake zig").unwrap();
+    let _zig = EnvVarGuard::set("ZIG", &zig);
 
-        let targets = [
-            (
-                "aarch64-unknown-linux-gnu",
-                "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER",
-            ),
-            (
-                "aarch64-unknown-linux-musl",
-                "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER",
-            ),
-        ];
-        let _linkers = remove_env_vars(&targets.map(|(_, key)| key));
-        for (target, linker_key) in targets {
-            let paths = SoldrPaths::with_root(tmp.path().join(target));
-            let mut bin_dirs = Vec::new();
-            let mut env = Vec::new();
-            let mut cargo_args = Vec::new();
+    let targets = [
+        (
+            "aarch64-unknown-linux-gnu",
+            "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER",
+        ),
+        (
+            "aarch64-unknown-linux-musl",
+            "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER",
+        ),
+    ];
+    let _linkers = remove_env_vars(&targets.map(|(_, key)| key));
+    for (target, linker_key) in targets {
+        let paths = SoldrPaths::with_root(tmp.path().join(target));
+        let mut bin_dirs = Vec::new();
+        let mut env = Vec::new();
+        let mut cargo_args = Vec::new();
 
-            tokio::runtime::Runtime::new()
-                .unwrap()
-                .block_on(append_subcommand_transitive_bin_dirs(
-                    "nextest",
-                    &argvec(&format!("nextest archive --target {target} --workspace")),
-                    &paths,
-                    &mut bin_dirs,
-                    &mut env,
-                    &mut cargo_args,
-                ))
-                .unwrap();
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(append_subcommand_transitive_bin_dirs(
+                "nextest",
+                &argvec(&format!("nextest archive --target {target} --workspace")),
+                &paths,
+                &mut bin_dirs,
+                &mut env,
+                &mut cargo_args,
+            ))
+            .unwrap();
 
-            let map: std::collections::HashMap<_, _> = env.into_iter().collect();
-            assert!(bin_dirs.iter().any(|dir| dir == zig.parent().unwrap()));
-            assert!(
+        let map: std::collections::HashMap<_, _> = env.into_iter().collect();
+        assert!(bin_dirs.iter().any(|dir| dir == zig.parent().unwrap()));
+        assert!(
             map.get(linker_key)
                 .is_some_and(|value| value.contains("zigbuild-shims") && value.contains(target)),
             "{target} archive must reconstruct its target linker: {map:?}"
         );
-        }
     }
-);
+}
 
-crate::timed_test!(
-    arm_cross_linker_preflight_rejects_missing_or_host_fallback,
-    {
-        let target = "aarch64-unknown-linux-gnu";
-        assert!(validate_zig_cross_linker(target, None).is_err());
-        for linker in ["clang", "clang-18", "cc", "gcc", "ld"] {
-            assert!(
-                validate_zig_cross_linker(target, Some(std::ffi::OsStr::new(linker))).is_err(),
-                "bare host linker {linker} must fail before ARM objects are built"
-            );
-        }
-        assert!(validate_zig_cross_linker(
-            target,
-            Some(std::ffi::OsStr::new(
-                "/tmp/zigbuild-shims/aarch64-unknown-linux-gnu/cc"
-            ))
-        )
-        .is_ok());
+#[test]
+fn arm_cross_linker_preflight_rejects_missing_or_host_fallback() {
+    let target = "aarch64-unknown-linux-gnu";
+    assert!(validate_zig_cross_linker(target, None).is_err());
+    for linker in ["clang", "clang-18", "cc", "gcc", "ld"] {
+        assert!(
+            validate_zig_cross_linker(target, Some(std::ffi::OsStr::new(linker))).is_err(),
+            "bare host linker {linker} must fail before ARM objects are built"
+        );
     }
-);
+    assert!(validate_zig_cross_linker(
+        target,
+        Some(std::ffi::OsStr::new(
+            "/tmp/zigbuild-shims/aarch64-unknown-linux-gnu/cc"
+        ))
+    )
+    .is_ok());
+}
 
-crate::timed_test!(build_env_cache_inputs_include_cross_toolchain_identity, {
+#[test]
+fn build_env_cache_inputs_include_cross_toolchain_identity() {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _linker = EnvVarGuard::set(
         "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER",
@@ -1648,9 +1659,10 @@ crate::timed_test!(build_env_cache_inputs_include_cross_toolchain_identity, {
         first_hash, second_hash,
         "changing target linker identity must invalidate restored build metadata"
     );
-});
+}
 
-crate::timed_test!(nextest_archive_darwin_bootstrap_reuses_blessed_env, {
+#[test]
+fn nextest_archive_darwin_bootstrap_reuses_blessed_env() {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().unwrap();
     let sdk = tmp.path().join("MacOSX.fake.sdk");
@@ -1715,9 +1727,10 @@ crate::timed_test!(nextest_archive_darwin_bootstrap_reuses_blessed_env, {
                 && value.contains("-mmacosx-version-min=10.12")),
         "x86_64 darwin rustflags: clang/lld + SDK at the 10.12 floor: {map:?}"
     );
-});
+}
 
-crate::timed_test!(explicit_cross_linker_and_rustflags_override_soldr_fast, {
+#[test]
+fn explicit_cross_linker_and_rustflags_override_soldr_fast() {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _soldr_linker = EnvVarGuard::set("SOLDR_LINKER", "fast");
     let root = tempfile::tempdir().unwrap();
@@ -1757,9 +1770,10 @@ crate::timed_test!(explicit_cross_linker_and_rustflags_override_soldr_fast, {
             "SOLDR_LINKER=fast must not replace the explicit {target} rustflags",
         );
     }
-});
+}
 
-crate::timed_test!(command_target_linker_overrides_parent_environment, {
+#[test]
+fn command_target_linker_overrides_parent_environment() {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _parent = EnvVarGuard::set(
         "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER",
@@ -1786,7 +1800,7 @@ crate::timed_test!(command_target_linker_overrides_parent_environment, {
         command_env_override(&command, "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER"),
         Some(Some("/tmp/command-linker".into())),
     );
-});
+}
 
 #[test]
 fn known_cargo_build_target_uses_explicit_target_arg() {
@@ -1966,7 +1980,8 @@ fn non_xwin_subcommand_does_not_inject_anything() {
     );
 }
 
-crate::timed_test!(zlib_ng_arm_wrapper_written_only_for_aarch64_msvc, {
+#[test]
+fn zlib_ng_arm_wrapper_written_only_for_aarch64_msvc() {
     let dir = tempfile::tempdir().unwrap();
     let paths = SoldrPaths::with_root(dir.path().join("soldr"));
 
@@ -2002,9 +2017,10 @@ crate::timed_test!(zlib_ng_arm_wrapper_written_only_for_aarch64_msvc, {
         .unwrap()
         .expect("second call still yields the wrapper");
     assert_eq!((key, value), (key2, value2));
-});
+}
 
-crate::timed_test!(journal_miss_reasons_parse_build_scoped_jsonl, {
+#[test]
+fn journal_miss_reasons_parse_build_scoped_jsonl() {
     let body = [
         r#"{"outcome":"hit","miss_reason":"ignored"}"#,
         r#"{"outcome":"miss","miss_reason":"context_not_found"}"#,
@@ -2024,9 +2040,10 @@ crate::timed_test!(journal_miss_reasons_parse_build_scoped_jsonl, {
     assert_eq!(reasons[1].count, 1);
     assert_eq!(reasons[2].reason, "unknown");
     assert_eq!(reasons[2].count, 1);
-});
+}
 
-crate::timed_test!(embedded_compile_journal_path_matches_service_layout, {
+#[test]
+fn embedded_compile_journal_path_matches_service_layout() {
     let root = tempfile::tempdir().expect("temp root");
     let paths = SoldrPaths::with_root(root.path().join("soldr"));
 
@@ -2041,9 +2058,10 @@ crate::timed_test!(embedded_compile_journal_path_matches_service_layout, {
             .join("logs")
             .join("compile_journal.jsonl")
     );
-});
+}
 
-crate::timed_test!(miss_reasons_do_not_fall_back_to_full_global_journal, {
+#[test]
+fn miss_reasons_do_not_fall_back_to_full_global_journal() {
     let root = tempfile::tempdir().expect("temp root");
     let global_journal = root.path().join("compile_journal.jsonl");
     std::fs::write(
@@ -2057,9 +2075,10 @@ crate::timed_test!(miss_reasons_do_not_fall_back_to_full_global_journal, {
         reasons.is_empty(),
         "missing archived tail must not parse unrelated global journal entries"
     );
-});
+}
 
-crate::timed_test!(compile_journal_tail_archive_keeps_current_build_only, {
+#[test]
+fn compile_journal_tail_archive_keeps_current_build_only() {
     let root = tempfile::tempdir().expect("temp root");
     let source = root.path().join("compile_journal.jsonl");
     std::fs::write(&source, "{\"record\":\"old-build\"}\n").expect("write old journal");
@@ -2083,104 +2102,98 @@ crate::timed_test!(compile_journal_tail_archive_keeps_current_build_only, {
         body,
         "{\"record\":\"new-build-1\"}\n{\"record\":\"new-build-2\"}\n"
     );
-});
+}
 
-crate::timed_test!(
-    compile_journal_tail_waits_for_expected_entries,
-    Duration::from_secs(5),
-    {
-        let root = tempfile::tempdir().expect("temp root");
-        let source = root.path().join("compile_journal.jsonl");
-        std::fs::write(&source, "old-build\n").expect("write old journal");
-        let start_offset = std::fs::metadata(&source).expect("metadata").len();
-        let writer_source = source.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(50));
-            std::fs::write(&writer_source, "old-build\nnew-build-1\n").expect("write first tail");
-            std::thread::sleep(Duration::from_millis(100));
-            std::fs::write(&writer_source, "old-build\nnew-build-1\nnew-build-2\n")
-                .expect("write second tail");
-        });
+#[test]
+fn compile_journal_tail_waits_for_expected_entries() {
+    let root = tempfile::tempdir().expect("temp root");
+    let source = root.path().join("compile_journal.jsonl");
+    std::fs::write(&source, "old-build\n").expect("write old journal");
+    let start_offset = std::fs::metadata(&source).expect("metadata").len();
+    let writer_source = source.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(50));
+        std::fs::write(&writer_source, "old-build\nnew-build-1\n").expect("write first tail");
+        std::thread::sleep(Duration::from_millis(100));
+        std::fs::write(&writer_source, "old-build\nnew-build-1\nnew-build-2\n")
+            .expect("write second tail");
+    });
 
-        assert!(wait_for_compile_journal_tail(&source, start_offset, 2));
-        assert_eq!(
-            count_complete_compile_journal_tail_entries(&source, start_offset),
-            Some(2)
-        );
-    }
-);
+    assert!(wait_for_compile_journal_tail(&source, start_offset, 2));
+    assert_eq!(
+        count_complete_compile_journal_tail_entries(&source, start_offset),
+        Some(2)
+    );
+}
 
-crate::timed_test!(
-    compile_journal_tail_ready_journal_returns_without_sleeping,
-    {
-        // soldr#1536: the pre-#1536 wait demanded three consecutive 25 ms
-        // "stable" polls (a fixed ~75 ms floor per build) even when the
-        // journal already held every expected entry. A complete journal
-        // must now return on the first check with ZERO sleeps.
-        let root = tempfile::tempdir().expect("temp root");
-        let source = root.path().join("compile_journal.jsonl");
-        std::fs::write(&source, "old-build\n").expect("write old journal");
-        let start_offset = std::fs::metadata(&source).expect("metadata").len();
-        std::fs::write(&source, "old-build\nnew-build-1\nnew-build-2\n").expect("append tail");
+#[test]
+fn compile_journal_tail_ready_journal_returns_without_sleeping() {
+    // soldr#1536: the pre-#1536 wait demanded three consecutive 25 ms
+    // "stable" polls (a fixed ~75 ms floor per build) even when the
+    // journal already held every expected entry. A complete journal
+    // must now return on the first check with ZERO sleeps.
+    let root = tempfile::tempdir().expect("temp root");
+    let source = root.path().join("compile_journal.jsonl");
+    std::fs::write(&source, "old-build\n").expect("write old journal");
+    let start_offset = std::fs::metadata(&source).expect("metadata").len();
+    std::fs::write(&source, "old-build\nnew-build-1\nnew-build-2\n").expect("append tail");
 
-        let mut sleeps = 0usize;
-        let ready = wait_for_compile_journal_tail_with(
-            &source,
-            start_offset,
-            2,
-            Duration::from_secs(2),
-            || sleeps += 1,
-        );
-        assert!(ready);
-        assert_eq!(
-            sleeps, 0,
-            "a complete journal must not pay any polling floor"
-        );
-    }
-);
+    let mut sleeps = 0usize;
+    let ready = wait_for_compile_journal_tail_with(
+        &source,
+        start_offset,
+        2,
+        Duration::from_secs(2),
+        || sleeps += 1,
+    );
+    assert!(ready);
+    assert_eq!(
+        sleeps, 0,
+        "a complete journal must not pay any polling floor"
+    );
+}
 
-crate::timed_test!(
-    compile_journal_tail_partial_trailing_line_is_not_complete,
-    {
-        // A trailing line without its newline is still being written (by
-        // the journal thread or a concurrent build) — it must not count as
-        // a complete entry. Completion of the line on the next poll ends
-        // the wait.
-        let root = tempfile::tempdir().expect("temp root");
-        let source = root.path().join("compile_journal.jsonl");
-        std::fs::write(&source, "old-build\n").expect("write old journal");
-        let start_offset = std::fs::metadata(&source).expect("metadata").len();
-        std::fs::write(&source, "old-build\nnew-build-1\nnew-build-2").expect("partial tail");
+#[test]
+fn compile_journal_tail_partial_trailing_line_is_not_complete() {
+    // A trailing line without its newline is still being written (by
+    // the journal thread or a concurrent build) — it must not count as
+    // a complete entry. Completion of the line on the next poll ends
+    // the wait.
+    let root = tempfile::tempdir().expect("temp root");
+    let source = root.path().join("compile_journal.jsonl");
+    std::fs::write(&source, "old-build\n").expect("write old journal");
+    let start_offset = std::fs::metadata(&source).expect("metadata").len();
+    std::fs::write(&source, "old-build\nnew-build-1\nnew-build-2").expect("partial tail");
 
-        assert_eq!(
-            count_complete_compile_journal_tail_entries(&source, start_offset),
-            Some(1)
-        );
+    assert_eq!(
+        count_complete_compile_journal_tail_entries(&source, start_offset),
+        Some(1)
+    );
 
-        // The injected "sleep" completes the trailing line — the wait must
-        // only return after that completion (i.e. the partial line alone
-        // did not satisfy it).
-        let finisher = source.clone();
-        let ready = wait_for_compile_journal_tail_with(
-            &source,
-            start_offset,
-            2,
-            Duration::from_secs(2),
-            move || {
-                std::fs::write(&finisher, "old-build\nnew-build-1\nnew-build-2\n")
-                    .expect("finish tail");
-            },
-        );
-        assert!(ready);
-        assert_eq!(
-            count_complete_compile_journal_tail_entries(&source, start_offset),
-            Some(2),
-            "wait must have returned only after the line was completed"
-        );
-    }
-);
+    // The injected "sleep" completes the trailing line — the wait must
+    // only return after that completion (i.e. the partial line alone
+    // did not satisfy it).
+    let finisher = source.clone();
+    let ready = wait_for_compile_journal_tail_with(
+        &source,
+        start_offset,
+        2,
+        Duration::from_secs(2),
+        move || {
+            std::fs::write(&finisher, "old-build\nnew-build-1\nnew-build-2\n")
+                .expect("finish tail");
+        },
+    );
+    assert!(ready);
+    assert_eq!(
+        count_complete_compile_journal_tail_entries(&source, start_offset),
+        Some(2),
+        "wait must have returned only after the line was completed"
+    );
+}
 
-crate::timed_test!(compile_journal_tail_archive_drops_partial_trailing_line, {
+#[test]
+fn compile_journal_tail_archive_drops_partial_trailing_line() {
     let root = tempfile::tempdir().expect("temp root");
     let source = root.path().join("compile_journal.jsonl");
     std::fs::write(&source, "{\"record\":\"old-build\"}\n").expect("write old journal");
@@ -2204,9 +2217,10 @@ crate::timed_test!(compile_journal_tail_archive_drops_partial_trailing_line, {
         body, "{\"record\":\"complete-1\"}\n{\"record\":\"complete-2\"}\n",
         "an in-flight partial trailing line must not land in the archive"
     );
-});
+}
 
-crate::timed_test!(compile_journal_history_reuses_upstream_secret_fixture, {
+#[test]
+fn compile_journal_history_reuses_upstream_secret_fixture() {
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
         "../../../../_vender/zccache/crates/zccache-daemon-core/src/daemon/compile_journal/tests/compile_journal_env_security_v1.json"
     ))
@@ -2247,176 +2261,169 @@ crate::timed_test!(compile_journal_history_reuses_upstream_secret_fixture, {
     }
     assert!(archived.contains("CARGO_CRATE_NAME"));
     assert!(archived.contains("safe_crate"));
-});
+}
 
-crate::timed_test!(
-    persist_build_log_history_trusts_daemon_finalized_aggregate,
-    {
-        // soldr#1536: when the daemon acknowledged BuildSessionEnd the
-        // persisted record already carries the finalized aggregate. The
-        // wrapper must keep it verbatim instead of re-deriving it with a
-        // full `daemon_events` scan (which here would zero it out —
-        // there are no events in this fresh redb).
-        let root = tempfile::tempdir().expect("temp root");
-        let paths = SoldrPaths::with_root(root.path().join("soldr"));
-        let db_path = crate::cache_lib::data_db_path(&paths);
-        let mut record = new_build_record(4242, "/repo".to_string(), 1_000);
-        record.crate_count = 7;
-        record.slowest_crate_us = Some(9_000);
-        record.slowest_crate_name = Some("daemon-said-so".to_string());
-        record.ended_at_ms = Some(2_000);
-        record.exit_code = Some(0);
-        crate::daemon::db::upsert_build(&db_path, &record).expect("seed record");
+#[test]
+fn persist_build_log_history_trusts_daemon_finalized_aggregate() {
+    // soldr#1536: when the daemon acknowledged BuildSessionEnd the
+    // persisted record already carries the finalized aggregate. The
+    // wrapper must keep it verbatim instead of re-deriving it with a
+    // full `daemon_events` scan (which here would zero it out —
+    // there are no events in this fresh redb).
+    let root = tempfile::tempdir().expect("temp root");
+    let paths = SoldrPaths::with_root(root.path().join("soldr"));
+    let db_path = crate::cache_lib::data_db_path(&paths);
+    let mut record = new_build_record(4242, "/repo".to_string(), 1_000);
+    record.crate_count = 7;
+    record.slowest_crate_us = Some(9_000);
+    record.slowest_crate_name = Some("daemon-said-so".to_string());
+    record.ended_at_ms = Some(2_000);
+    record.exit_code = Some(0);
+    crate::daemon::db::upsert_build(&db_path, &record).expect("seed record");
 
-        let session_dir = root.path().join("zc");
-        std::fs::create_dir_all(&session_dir).expect("session dir");
-        let session = crate::zccache_lifecycle::ZccacheBuildSession {
-            cache_dir: session_dir.clone(),
-            cache_dir_env: false,
-            session_id: "test-session".to_string(),
-            session_log_path: session_dir.join("last-session.log"),
-            journal_path: session_dir.join("last-session.jsonl"),
-            session_stats_path: session_dir.join("last-session-stats.json"),
-        };
+    let session_dir = root.path().join("zc");
+    std::fs::create_dir_all(&session_dir).expect("session dir");
+    let session = crate::zccache_lifecycle::ZccacheBuildSession {
+        cache_dir: session_dir.clone(),
+        cache_dir_env: false,
+        session_id: "test-session".to_string(),
+        session_log_path: session_dir.join("last-session.log"),
+        journal_path: session_dir.join("last-session.jsonl"),
+        session_stats_path: session_dir.join("last-session-stats.json"),
+    };
 
-        for daemon_finalized in [true, false] {
-            persist_build_log_history_inner(&BuildLogHistoryRequest {
-                paths: &paths,
-                build_session_id: 4242,
-                repo_root: Path::new("/repo"),
-                started_at_ms: 1_000,
-                session: &session,
-                compile_journal_start_len: 0,
-                exit_code: 0,
-                ended_at_ms: 2_000,
-                daemon_finalized,
-            })
-            .expect("persist history");
-            let stored = crate::daemon::db::get_build(&db_path, 4242)
-                .expect("read")
-                .expect("record");
-            if daemon_finalized {
-                assert_eq!(stored.crate_count, 7, "daemon aggregate must be kept");
-                assert_eq!(stored.slowest_crate_us, Some(9_000));
-                assert_eq!(stored.slowest_crate_name.as_deref(), Some("daemon-said-so"));
-            } else {
-                assert_eq!(
-                    stored.crate_count, 0,
-                    "fallback path re-derives the aggregate from (empty) events"
-                );
-            }
-        }
-    }
-);
-
-crate::timed_test!(
-    persist_build_log_history_excludes_stale_legacy_session_files,
-    {
-        // Regression for #1827: fixed-name legacy files belong to no current
-        // embedded-service build and must never enter per-build history.
-        let root = tempfile::tempdir().expect("temp root");
-        let paths = SoldrPaths::with_root(root.path().join("soldr"));
-        let session_dir = root.path().join("zc");
-        std::fs::create_dir_all(&session_dir).expect("session dir");
-        let session = crate::zccache_lifecycle::ZccacheBuildSession {
-            cache_dir: session_dir.clone(),
-            cache_dir_env: false,
-            session_id: "stale-global-session".to_string(),
-            session_log_path: session_dir.join("last-session.log"),
-            journal_path: session_dir.join("last-session.jsonl"),
-            session_stats_path: session_dir.join("last-session-stats.json"),
-        };
-        let sentinel = "DO_NOT_ARCHIVE_THIS_LEGACY_SECRET";
-        std::fs::write(&session.session_log_path, sentinel).expect("legacy log");
-        std::fs::write(
-            &session.journal_path,
-            format!(r#"{{"env":[["TOKEN","{sentinel}"]]}}"#),
-        )
-        .expect("legacy journal");
-        std::fs::write(
-            &session.session_stats_path,
-            r#"{"status":"ok","hits":1,"misses":0,"compilations":1}"#,
-        )
-        .expect("stats");
-
-        let compile_journal = embedded_compile_journal_path(&paths);
-        std::fs::create_dir_all(compile_journal.parent().unwrap()).expect("journal parent");
-        let mut compile_journal_start_len = 0;
-        for (build_session_id, crate_name) in [(5150, "first"), (5151, "second")] {
-            use std::io::Write as _;
-            let mut journal = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&compile_journal)
-                .expect("open compile journal");
-            writeln!(
-                journal,
-                "{{\"outcome\":\"hit\",\"crate_name\":\"{crate_name}\"}}"
-            )
-            .expect("append compile journal");
-            drop(journal);
-
-            persist_build_log_history_inner(&BuildLogHistoryRequest {
-                paths: &paths,
-                build_session_id,
-                repo_root: Path::new("/repo"),
-                started_at_ms: 1_000,
-                session: &session,
-                compile_journal_start_len,
-                exit_code: 0,
-                ended_at_ms: 2_000,
-                daemon_finalized: true,
-            })
-            .expect("persist history");
-            compile_journal_start_len = std::fs::metadata(&compile_journal)
-                .expect("journal metadata")
-                .len();
-
-            let archive = build_log_history_dir(&paths, build_session_id);
-            assert!(!archive.join("last-session.log").exists());
-            assert!(!archive.join("last-session.jsonl").exists());
-            let archive_body = std::fs::read_to_string(archive.join("compile_journal.jsonl"))
-                .expect("build-scoped journal");
-            assert!(archive_body.contains(crate_name));
-            assert!(!archive_body.contains(sentinel));
-
-            let record = crate::daemon::db::get_build(
-                &crate::cache_lib::data_db_path(&paths),
-                build_session_id,
-            )
-            .expect("read build")
+    for daemon_finalized in [true, false] {
+        persist_build_log_history_inner(&BuildLogHistoryRequest {
+            paths: &paths,
+            build_session_id: 4242,
+            repo_root: Path::new("/repo"),
+            started_at_ms: 1_000,
+            session: &session,
+            compile_journal_start_len: 0,
+            exit_code: 0,
+            ended_at_ms: 2_000,
+            daemon_finalized,
+        })
+        .expect("persist history");
+        let stored = crate::daemon::db::get_build(&db_path, 4242)
+            .expect("read")
             .expect("record");
-            let log_paths = record.log_paths.expect("log paths");
-            assert!(log_paths.session_log_path.is_none());
-            assert!(log_paths.journal_path.is_none());
-            assert!(log_paths.archived_session_log_path.is_none());
-            assert!(log_paths.archived_journal_path.is_none());
-            assert!(log_paths.archived_session_stats_path.is_some());
-            assert!(log_paths.archived_compile_journal_path.is_some());
+        if daemon_finalized {
+            assert_eq!(stored.crate_count, 7, "daemon aggregate must be kept");
+            assert_eq!(stored.slowest_crate_us, Some(9_000));
+            assert_eq!(stored.slowest_crate_name.as_deref(), Some("daemon-said-so"));
+        } else {
+            assert_eq!(
+                stored.crate_count, 0,
+                "fallback path re-derives the aggregate from (empty) events"
+            );
         }
     }
-);
+}
 
-crate::timed_test!(
-    build_session_bookkeeping_never_falls_back_to_direct_state_db,
-    {
-        let root = tempfile::tempdir().expect("temp root");
-        let paths = SoldrPaths::with_root(root.path().join("soldr"));
-        let repo = root.path().join("repo");
-        std::fs::create_dir_all(&repo).expect("repo dir");
+#[test]
+fn persist_build_log_history_excludes_stale_legacy_session_files() {
+    // Regression for #1827: fixed-name legacy files belong to no current
+    // embedded-service build and must never enter per-build history.
+    let root = tempfile::tempdir().expect("temp root");
+    let paths = SoldrPaths::with_root(root.path().join("soldr"));
+    let session_dir = root.path().join("zc");
+    std::fs::create_dir_all(&session_dir).expect("session dir");
+    let session = crate::zccache_lifecycle::ZccacheBuildSession {
+        cache_dir: session_dir.clone(),
+        cache_dir_env: false,
+        session_id: "stale-global-session".to_string(),
+        session_log_path: session_dir.join("last-session.log"),
+        journal_path: session_dir.join("last-session.jsonl"),
+        session_stats_path: session_dir.join("last-session-stats.json"),
+    };
+    let sentinel = "DO_NOT_ARCHIVE_THIS_LEGACY_SECRET";
+    std::fs::write(&session.session_log_path, sentinel).expect("legacy log");
+    std::fs::write(
+        &session.journal_path,
+        format!(r#"{{"env":[["TOKEN","{sentinel}"]]}}"#),
+    )
+    .expect("legacy journal");
+    std::fs::write(
+        &session.session_stats_path,
+        r#"{"status":"ok","hits":1,"misses":0,"compilations":1}"#,
+    )
+    .expect("stats");
 
-        let db_path = crate::cache_lib::data_db_path(&paths);
-        super::build_session::start_and_warn_on_jobs_drift(&paths, 99, &repo, 1_000);
-        super::build_session::persist_build_session_end_fallback(&paths, 99, 0, 1_250);
+    let compile_journal = embedded_compile_journal_path(&paths);
+    std::fs::create_dir_all(compile_journal.parent().unwrap()).expect("journal parent");
+    let mut compile_journal_start_len = 0;
+    for (build_session_id, crate_name) in [(5150, "first"), (5151, "second")] {
+        use std::io::Write as _;
+        let mut journal = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&compile_journal)
+            .expect("open compile journal");
+        writeln!(
+            journal,
+            "{{\"outcome\":\"hit\",\"crate_name\":\"{crate_name}\"}}"
+        )
+        .expect("append compile journal");
+        drop(journal);
 
-        assert!(
-            !db_path.exists(),
-            "unavailable-daemon session bookkeeping must not open state.redb directly"
-        );
+        persist_build_log_history_inner(&BuildLogHistoryRequest {
+            paths: &paths,
+            build_session_id,
+            repo_root: Path::new("/repo"),
+            started_at_ms: 1_000,
+            session: &session,
+            compile_journal_start_len,
+            exit_code: 0,
+            ended_at_ms: 2_000,
+            daemon_finalized: true,
+        })
+        .expect("persist history");
+        compile_journal_start_len = std::fs::metadata(&compile_journal)
+            .expect("journal metadata")
+            .len();
+
+        let archive = build_log_history_dir(&paths, build_session_id);
+        assert!(!archive.join("last-session.log").exists());
+        assert!(!archive.join("last-session.jsonl").exists());
+        let archive_body = std::fs::read_to_string(archive.join("compile_journal.jsonl"))
+            .expect("build-scoped journal");
+        assert!(archive_body.contains(crate_name));
+        assert!(!archive_body.contains(sentinel));
+
+        let record =
+            crate::daemon::db::get_build(&crate::cache_lib::data_db_path(&paths), build_session_id)
+                .expect("read build")
+                .expect("record");
+        let log_paths = record.log_paths.expect("log paths");
+        assert!(log_paths.session_log_path.is_none());
+        assert!(log_paths.journal_path.is_none());
+        assert!(log_paths.archived_session_log_path.is_none());
+        assert!(log_paths.archived_journal_path.is_none());
+        assert!(log_paths.archived_session_stats_path.is_some());
+        assert!(log_paths.archived_compile_journal_path.is_some());
     }
-);
+}
 
-crate::timed_test!(build_session_waits_for_root_lease, {
+#[test]
+fn build_session_bookkeeping_never_falls_back_to_direct_state_db() {
+    let root = tempfile::tempdir().expect("temp root");
+    let paths = SoldrPaths::with_root(root.path().join("soldr"));
+    let repo = root.path().join("repo");
+    std::fs::create_dir_all(&repo).expect("repo dir");
+
+    let db_path = crate::cache_lib::data_db_path(&paths);
+    super::build_session::start_and_warn_on_jobs_drift(&paths, 99, &repo, 1_000);
+    super::build_session::persist_build_session_end_fallback(&paths, 99, 0, 1_250);
+
+    assert!(
+        !db_path.exists(),
+        "unavailable-daemon session bookkeeping must not open state.redb directly"
+    );
+}
+
+#[test]
+fn build_session_waits_for_root_lease() {
     let root = tempfile::tempdir().unwrap();
     let paths = SoldrPaths::with_root(root.path().join("soldr"));
     let maintenance = crate::cache_lib::build_active::MaintenanceLease::try_acquire(&paths)
@@ -2446,30 +2453,29 @@ crate::timed_test!(build_session_waits_for_root_lease, {
         .recv_timeout(std::time::Duration::from_secs(5))
         .unwrap());
     worker.join().unwrap();
-});
+}
 
-crate::timed_test!(
-    compile_journal_history_uses_effective_embedded_version_root,
-    {
-        let root = tempfile::tempdir().unwrap();
-        let paths = SoldrPaths::with_root(root.path().join("soldr"));
-        let journal = embedded_compile_journal_path(&paths);
-        assert_eq!(
-            journal,
-            paths
-                .cache
-                .join("zccache/daemon-state/embedded-v1")
-                .join(zccache::core::config::versioned_subdir())
-                .join("logs/compile_journal.jsonl")
-        );
-    }
-);
+#[test]
+fn compile_journal_history_uses_effective_embedded_version_root() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = SoldrPaths::with_root(root.path().join("soldr"));
+    let journal = embedded_compile_journal_path(&paths);
+    assert_eq!(
+        journal,
+        paths
+            .cache
+            .join("zccache/daemon-state/embedded-v1")
+            .join(zccache::core::config::versioned_subdir())
+            .join("logs/compile_journal.jsonl")
+    );
+}
 
 // soldr#1790: rendering-level RED->GREEN evidence for the build-log writer.
 // Since soldr#1814/#2257, daemon-owned history reaches production exclusively
 // over IPC; this fixture injects the response payload rather than reopening
 // state.redb from the CLI process.
-crate::timed_test!(write_build_log_reflects_seeded_compile_session_events, {
+#[test]
+fn write_build_log_reflects_seeded_compile_session_events() {
     let root = tempfile::tempdir().expect("temp root");
     let paths = SoldrPaths::with_root(root.path().join("soldr"));
     let cwd_dir = root.path().join("project");
@@ -2594,21 +2600,20 @@ crate::timed_test!(write_build_log_reflects_seeded_compile_session_events, {
     assert!(raw.contains("wall_ms=\"600\""), "{raw}");
     assert!(raw.contains("cpu_ms=\"600\""), "{raw}");
     assert!(raw.contains("crate_count=\"2\""), "{raw}");
-});
+}
 
-crate::timed_test!(
-    compile_fallback_summary_is_concise_and_prints_full_log_path,
-    {
-        let path = PathBuf::from(r"C:\state\logs\compile-daemon-fallbacks.jsonl");
-        let summary = compile_fallback_summary_message(137, &path);
-        assert_eq!(summary.lines().count(), 1);
-        assert!(summary.contains("137 compiler invocation(s)"));
-        assert!(summary.contains("used direct compiler"));
-        assert!(summary.contains(&path.display().to_string()));
-    }
-);
+#[test]
+fn compile_fallback_summary_is_concise_and_prints_full_log_path() {
+    let path = PathBuf::from(r"C:\state\logs\compile-daemon-fallbacks.jsonl");
+    let summary = compile_fallback_summary_message(137, &path);
+    assert_eq!(summary.lines().count(), 1);
+    assert!(summary.contains("137 compiler invocation(s)"));
+    assert!(summary.contains("used direct compiler"));
+    assert!(summary.contains(&path.display().to_string()));
+}
 
-crate::timed_test!(stale_fallback_scrub_is_hardlink_safe_and_marker_gated, {
+#[test]
+fn stale_fallback_scrub_is_hardlink_safe_and_marker_gated() {
     let temp = tempfile::tempdir().expect("tempdir");
     let target = temp.path().join("target");
     let fingerprint = target.join("debug/.fingerprint/demo-123");
@@ -2679,14 +2684,15 @@ reason=daemon unavailable\n";
         FallbackOutputScrub::AlreadyDone
     );
     assert_eq!(std::fs::read(&later).unwrap(), notice);
-});
+}
 
 // soldr#1788: cargo-dylint prebuilt fallback. An unusable downloaded
 // asset is linked against GLIBC_2.39, so it downloads cleanly on Debian 12
 // and then fails `smoke_test_or_evict`'s `--version` probe. These cover the
 // policy in `resolve_dylint_binary` without touching the network.
 
-crate::timed_test!(dylint_uses_prebuilt_when_fetch_succeeds, {
+#[test]
+fn dylint_uses_prebuilt_when_fetch_succeeds() {
     let mut source_build_ran = false;
     let fetched = Ok(crate::fetch::FetchResult {
         binary_path: PathBuf::from("/managed/bin/cargo-dylint"),
@@ -2705,9 +2711,10 @@ crate::timed_test!(dylint_uses_prebuilt_when_fetch_succeeds, {
         !source_build_ran,
         "a usable prebuilt must not trigger the source build"
     );
-});
+}
 
-crate::timed_test!(dylint_smoke_failure_never_calls_source_build, {
+#[test]
+fn dylint_smoke_failure_never_calls_source_build() {
     let mut source_build_ran = false;
     // Shaped like the real `smoke_test_or_evict` error: the download
     // succeeded, the `--version` probe did not.
@@ -2745,9 +2752,10 @@ crate::timed_test!(dylint_smoke_failure_never_calls_source_build, {
         message.contains("Corrective action:"),
         "unexpected error: {message}"
     );
-});
+}
 
-crate::timed_test!(missing_dylint_driver_fails_before_tool_launch, {
+#[test]
+fn missing_dylint_driver_fails_before_tool_launch() {
     let temp = tempfile::tempdir().unwrap();
     let paths = SoldrPaths::with_root(temp.path().join("soldr"));
     let plan = crate::dylint_toolchain::DylintToolchainPlan {
@@ -2776,122 +2784,8 @@ crate::timed_test!(missing_dylint_driver_fails_before_tool_launch, {
         message.contains("Corrective action:"),
         "unexpected error: {message}"
     );
-});
-
-// ---------------------------------------------------------------------------
-// soldr#1813 — end-of-build log-path summary
-// ---------------------------------------------------------------------------
-
-/// Every path-bearing field of `BuildLogPaths` populated, so a test can assert
-/// the summary omits none of them.
-fn all_log_paths() -> crate::daemon::protocol::BuildLogPaths {
-    crate::daemon::protocol::BuildLogPaths {
-        zccache_session_id: Some("session-abc".to_string()),
-        cache_dir: Some(r"C:\state\zccache".to_string()),
-        session_log_path: Some(r"C:\state\zccache\logs\last-session.log".to_string()),
-        journal_path: Some(r"C:\state\zccache\logs\last-session.jsonl".to_string()),
-        session_stats_path: Some(r"C:\state\zccache\logs\last-session-stats.json".to_string()),
-        compile_journal_path: Some(r"C:\state\zccache\logs\compile_journal.jsonl".to_string()),
-        archived_session_log_path: Some(r"C:\state\hist\7\last-session.log".to_string()),
-        archived_journal_path: Some(r"C:\state\hist\7\last-session.jsonl".to_string()),
-        archived_session_stats_path: Some(r"C:\state\hist\7\last-session-stats.json".to_string()),
-        archived_compile_journal_path: Some(r"C:\state\hist\7\compile_journal.jsonl".to_string()),
-        private_daemon_name: Some("legacy-name".to_string()),
-    }
 }
 
-crate::timed_test!(log_summary_lists_exactly_the_recorded_build_log_paths, {
-    let log_paths = all_log_paths();
-    let logs = log_summary::SessionLogs {
-        build_log: Some(PathBuf::from(r"C:\state\logs\builds\build-7.xml")),
-        build_log_paths: Some(log_paths.clone()),
-        compile_fallback_log: Some(PathBuf::from(
-            r"C:\state\logs\compile-daemon-fallbacks.jsonl",
-        )),
-    };
-    let summary = log_summary::summary_message(&logs, false).expect("summary for a logged build");
-
-    // Every recorded log path appears.
-    for path in [
-        log_paths.session_log_path.as_deref(),
-        log_paths.journal_path.as_deref(),
-        log_paths.session_stats_path.as_deref(),
-        log_paths.compile_journal_path.as_deref(),
-        log_paths.archived_session_log_path.as_deref(),
-        log_paths.archived_journal_path.as_deref(),
-        log_paths.archived_session_stats_path.as_deref(),
-        log_paths.archived_compile_journal_path.as_deref(),
-    ] {
-        let path = path.expect("fixture populates every path field");
-        assert!(summary.contains(path), "summary omitted {path}:\n{summary}");
-    }
-    assert!(summary.contains(r"C:\state\logs\builds\build-7.xml"));
-    assert!(summary.contains(r"C:\state\logs\compile-daemon-fallbacks.jsonl"));
-
-    // ...and nothing that isn't a log file does. The session id and cache dir
-    // are correlation data, not paths the user should be pointed at, and
-    // private_daemon_name is a retired field kept only for old records.
-    assert!(!summary.contains("session-abc"), "summary:\n{summary}");
-    assert!(!summary.contains("legacy-name"), "summary:\n{summary}");
-
-    // One line per entry, plus the header and the closing hint.
-    assert_eq!(summary.lines().count(), 10 + 2, "summary:\n{summary}");
-    assert!(summary.contains("soldr logs paths"));
-});
-
-crate::timed_test!(log_summary_omits_paths_the_build_never_wrote, {
-    // The common case: the embedded service no longer touches zccache's fixed
-    // `last-session` files, so those fields are None and must not be printed
-    // as if they were fresh.
-    let logs = log_summary::SessionLogs {
-        build_log: Some(PathBuf::from("/state/logs/builds/build-1.xml")),
-        build_log_paths: Some(crate::daemon::protocol::BuildLogPaths {
-            session_log_path: None,
-            journal_path: None,
-            archived_session_log_path: None,
-            archived_journal_path: None,
-            ..all_log_paths()
-        }),
-        compile_fallback_log: None,
-    };
-    let summary = log_summary::summary_message(&logs, false).expect("summary");
-    assert!(!summary.contains("last-session.log"), "summary:\n{summary}");
-    assert!(
-        !summary.contains("last-session.jsonl"),
-        "summary:\n{summary}"
-    );
-    assert!(
-        !summary.contains("compile-daemon-fallbacks"),
-        "summary:\n{summary}"
-    );
-    assert!(
-        summary.contains("last-session-stats.json"),
-        "summary:\n{summary}"
-    );
-});
-
-crate::timed_test!(log_summary_is_absent_when_no_logs_were_written, {
-    // A build that wrote nothing must print nothing at all — not an empty
-    // header with a dangling hint.
-    let summary = log_summary::summary_message(&log_summary::SessionLogs::default(), false);
-    assert!(summary.is_none(), "unexpected summary: {summary:?}");
-});
-
-crate::timed_test!(log_summary_colorizes_only_when_asked, {
-    let logs = log_summary::SessionLogs {
-        build_log: Some(PathBuf::from("/state/logs/builds/build-1.xml")),
-        ..log_summary::SessionLogs::default()
-    };
-    let plain = log_summary::summary_message(&logs, false).expect("summary");
-    assert!(
-        !plain.contains('\x1b'),
-        "NO_COLOR output must be plain: {plain:?}"
-    );
-    let colored = log_summary::summary_message(&logs, true).expect("summary");
-    assert!(
-        colored.contains('\x1b'),
-        "colored output must use ANSI: {colored:?}"
-    );
-    // Color is decoration only — the path itself is unchanged.
-    assert!(colored.contains("/state/logs/builds/build-1.xml"));
-});
+// Named `log_summary_tests`, not `log_summary`: a child module of the same
+// name would shadow the real `super::log_summary` these tests exercise.
+mod log_summary_tests;

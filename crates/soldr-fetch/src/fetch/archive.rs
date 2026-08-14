@@ -300,7 +300,8 @@ mod tests {
     // `.tar.xz`; before this fix soldr fell through to the "raw binary"
     // branch and wrote the compressed bytes verbatim to the binary
     // path, producing a file the shell tried to parse as a script.
-    crate::timed_test!(extract_tar_xz_finds_binary_in_per_triple_dir_layout, {
+    #[test]
+    fn extract_tar_xz_finds_binary_in_per_triple_dir_layout() {
         let dest = tempfile::tempdir().expect("tempdir");
         let payload = b"\x7fELF\x02\x01\x01\x00 fake cargo-zigbuild binary payload";
         let tarball = build_tarball("cargo-zigbuild", payload);
@@ -325,12 +326,13 @@ mod tests {
             b"\xfd7zX",
             "regression: writing the .tar.xz magic bytes as the binary is exactly the #809 bug",
         );
-    });
+    }
 
     // The cargo-zigbuild URL convention is what soldr's
     // `download_and_extract` dispatches on. If a future URL ends in
     // `.txz` instead of `.tar.xz` the same path must trigger.
-    crate::timed_test!(tar_xz_url_suffix_recognized_for_dispatch, {
+    #[test]
+    fn tar_xz_url_suffix_recognized_for_dispatch() {
         // This is a documentation test for the dispatch table in
         // `download_and_extract` — keep the suffix list aligned with the
         // url.ends_with(...) branches above.
@@ -344,5 +346,5 @@ mod tests {
                 "tar.xz dispatch suffix coverage missed {url}",
             );
         }
-    });
+    }
 }

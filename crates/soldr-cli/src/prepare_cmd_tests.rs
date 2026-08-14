@@ -55,7 +55,8 @@ impl Drop for EnvVarGuard {
 // each site look correct while leaving the global state unprotected.
 use crate::CwdGuard;
 
-crate::timed_test!(append_env_creates_file_and_appends, {
+#[test]
+fn append_env_creates_file_and_appends() {
     let tmp = tempfile::tempdir().expect("tmpdir");
     let p = tmp.path().join("env");
     append_env(Some(&p), "FOO", "bar").expect("append");
@@ -63,13 +64,15 @@ crate::timed_test!(append_env_creates_file_and_appends, {
     let body = std::fs::read_to_string(&p).expect("read");
     assert!(body.contains("FOO=bar"));
     assert!(body.contains("BAZ=/some/path"));
-});
+}
 
-crate::timed_test!(append_env_no_op_when_none, {
+#[test]
+fn append_env_no_op_when_none() {
     append_env(None, "FOO", "bar").expect("no-op");
-});
+}
 
-crate::timed_test!(apply_blessed_prep_env_exports_mingw_and_syslib_env, {
+#[test]
+fn apply_blessed_prep_env_exports_mingw_and_syslib_env() {
     let _lock = ENV_LOCK.lock().expect("env lock");
     let _mingw = EnvVarGuard::remove("MINGW_W64_GCC_ROOT");
     let _pkg_config = EnvVarGuard::remove("PKG_CONFIG_PATH_x86_64-pc-windows-gnu");
@@ -112,9 +115,10 @@ crate::timed_test!(apply_blessed_prep_env_exports_mingw_and_syslib_env, {
     assert!(body.contains("MINGW_W64_GCC_ROOT="));
     assert!(body.contains("PKG_CONFIG_PATH_x86_64-pc-windows-gnu="));
     assert!(body.contains(&format!("PATH={}", mingw_bin.to_string_lossy())));
-});
+}
 
-crate::timed_test!(apply_blessed_prep_env_exports_msvc_target_env, {
+#[test]
+fn apply_blessed_prep_env_exports_msvc_target_env() {
     let _lock = ENV_LOCK.lock().expect("env lock");
     let _cc = EnvVarGuard::remove("CC_x86_64_pc_windows_msvc");
     let _cxx = EnvVarGuard::remove("CXX_x86_64_pc_windows_msvc");
@@ -194,9 +198,10 @@ crate::timed_test!(apply_blessed_prep_env_exports_msvc_target_env, {
     assert!(body.contains("XWIN_CACHE_DIR="));
     assert!(body.contains("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS="));
     assert!(body.contains("PATH="));
-});
+}
 
-crate::timed_test!(darwin_prepare_exports_blessed_env_for_deferred_cook, {
+#[test]
+fn darwin_prepare_exports_blessed_env_for_deferred_cook() {
     let _lock = ENV_LOCK.lock().expect("env lock");
     let tmp = tempfile::tempdir().expect("tmpdir");
     let soldr_root = tmp.path().join("soldr-root");
@@ -282,9 +287,10 @@ crate::timed_test!(darwin_prepare_exports_blessed_env_for_deferred_cook, {
         body.contains("PATH=") && body.contains(&llvm_bin.to_string_lossy().to_string()),
         "managed LLVM bin dir must be exported on PATH: {body}"
     );
-});
+}
 
-crate::timed_test!(xwin_cache_case_aliases_mixed_case_sdk_files, {
+#[test]
+fn xwin_cache_case_aliases_mixed_case_sdk_files() {
     let tmp = tempfile::tempdir().expect("tmpdir");
     let xwin = tmp.path().join("xwin");
     let lib = xwin.join("sdk").join("lib").join("um").join("x86_64");
@@ -326,9 +332,10 @@ crate::timed_test!(xwin_cache_case_aliases_mixed_case_sdk_files, {
 
     let created_again = ensure_xwin_case_aliases(&xwin).expect("aliases are idempotent");
     assert_eq!(created_again, 0);
-});
+}
 
-crate::timed_test!(rustup_add_target_uses_soldr_managed_rustup_state, {
+#[test]
+fn rustup_add_target_uses_soldr_managed_rustup_state() {
     let _lock = ENV_LOCK.lock().expect("env lock");
     let tmp = tempfile::tempdir().expect("tmpdir");
     let soldr_root = tmp.path().join("soldr-root");
@@ -396,9 +403,10 @@ crate::timed_test!(rustup_add_target_uses_soldr_managed_rustup_state, {
     let body = std::fs::read_to_string(&log).expect("read explicit toolchain log");
     assert!(body.contains(&format!("CARGO_HOME={}", explicit_cargo.display())));
     assert!(body.contains(&format!("RUSTUP_HOME={}", explicit_toolchain.display())));
-});
+}
 
-crate::timed_test!(rustup_add_target_scopes_to_pinned_toolchain_channel, {
+#[test]
+fn rustup_add_target_scopes_to_pinned_toolchain_channel() {
     let _lock = ENV_LOCK.lock().expect("env lock");
     let tmp = tempfile::tempdir().expect("tmpdir");
     let soldr_root = tmp.path().join("soldr-root");
@@ -438,9 +446,10 @@ crate::timed_test!(rustup_add_target_scopes_to_pinned_toolchain_channel, {
         body.contains("args=target add aarch64-apple-darwin --toolchain 1.94.1"),
         "fake rustup should receive pinned toolchain args, got: {body}"
     );
-});
+}
 
-crate::timed_test!(rustup_target_add_timeout_is_an_explicit_safety_ceiling, {
+#[test]
+fn rustup_target_add_timeout_is_an_explicit_safety_ceiling() {
     let _lock = ENV_LOCK.lock().expect("env lock");
     {
         let _guard = EnvVarGuard::set(RUSTUP_TARGET_ADD_TIMEOUT_ENV_VAR, "19");
@@ -462,21 +471,24 @@ crate::timed_test!(rustup_target_add_timeout_is_an_explicit_safety_ceiling, {
         InstallerWatchdogConfig::from_env(RUSTUP_TARGET_ADD_TIMEOUT_ENV_VAR).safety_timeout,
         Duration::from_secs(crate::core::DEFAULT_INSTALLER_SAFETY_TIMEOUT_SECS)
     );
-});
+}
 
-crate::timed_test!(parse_target_arg_all_is_sentinel, {
+#[test]
+fn parse_target_arg_all_is_sentinel() {
     assert_eq!(parse_target_arg("all").unwrap(), ParsedTargetArg::All);
-});
+}
 
-crate::timed_test!(parse_target_arg_single_triple, {
+#[test]
+fn parse_target_arg_single_triple() {
     let got = parse_target_arg("x86_64-unknown-linux-gnu").unwrap();
     assert_eq!(
         got,
         ParsedTargetArg::Explicit(vec!["x86_64-unknown-linux-gnu".into()])
     );
-});
+}
 
-crate::timed_test!(parse_target_arg_comma_separated, {
+#[test]
+fn parse_target_arg_comma_separated() {
     let got =
         parse_target_arg("x86_64-pc-windows-msvc,aarch64-apple-darwin,x86_64-unknown-linux-musl")
             .unwrap();
@@ -488,9 +500,10 @@ crate::timed_test!(parse_target_arg_comma_separated, {
             "x86_64-unknown-linux-musl".into(),
         ])
     );
-});
+}
 
-crate::timed_test!(parse_target_arg_trims_whitespace, {
+#[test]
+fn parse_target_arg_trims_whitespace() {
     let got = parse_target_arg(" x86_64-pc-windows-msvc , aarch64-apple-darwin ").unwrap();
     assert_eq!(
         got,
@@ -499,9 +512,10 @@ crate::timed_test!(parse_target_arg_trims_whitespace, {
             "aarch64-apple-darwin".into(),
         ])
     );
-});
+}
 
-crate::timed_test!(parse_target_arg_drops_empty_entries, {
+#[test]
+fn parse_target_arg_drops_empty_entries() {
     // Leading / trailing / consecutive commas are silently dropped
     // because they're a common copy-paste mistake. The error path
     // covers the "every entry was empty" case below.
@@ -513,17 +527,19 @@ crate::timed_test!(parse_target_arg_drops_empty_entries, {
             "aarch64-apple-darwin".into(),
         ])
     );
-});
+}
 
-crate::timed_test!(parse_target_arg_all_empty_errors, {
+#[test]
+fn parse_target_arg_all_empty_errors() {
     let err = parse_target_arg(", , ,").unwrap_err();
     assert!(
         err.to_string().contains("comma-separated list was empty"),
         "unexpected error: {err}"
     );
-});
+}
 
-crate::timed_test!(classify_target_windows_msvc, {
+#[test]
+fn classify_target_windows_msvc() {
     let attrs = classify_target("x86_64-pc-windows-msvc").expect("classify");
     assert_eq!(attrs.arch, TargetArch::X86_64);
     assert_eq!(attrs.os, TargetOs::Windows);
@@ -537,9 +553,10 @@ crate::timed_test!(classify_target_windows_msvc, {
     let arm = classify_target("aarch64-pc-windows-msvc").expect("classify arm");
     assert_eq!(arm.arch, TargetArch::Aarch64);
     assert_eq!(arm.os, TargetOs::Windows);
-});
+}
 
-crate::timed_test!(classify_target_apple_darwin, {
+#[test]
+fn classify_target_apple_darwin() {
     let attrs = classify_target("aarch64-apple-darwin").expect("classify");
     assert_eq!(attrs.arch, TargetArch::Aarch64);
     assert_eq!(attrs.os, TargetOs::Darwin);
@@ -551,9 +568,10 @@ crate::timed_test!(classify_target_apple_darwin, {
 
     let intel = classify_target("x86_64-apple-darwin").expect("classify intel");
     assert_eq!(intel.arch, TargetArch::X86_64);
-});
+}
 
-crate::timed_test!(classify_target_linux_gnu_and_musl, {
+#[test]
+fn classify_target_linux_gnu_and_musl() {
     let gnu = classify_target("x86_64-unknown-linux-gnu").expect("classify gnu");
     assert_eq!(gnu.os, TargetOs::Linux);
     assert_eq!(gnu.abi, Some(TargetAbi::Gnu));
@@ -568,17 +586,19 @@ crate::timed_test!(classify_target_linux_gnu_and_musl, {
         !musl.needs_zig,
         "#2244 makes the catalogue-backed musl lifecycle the normal path"
     );
-});
+}
 
-crate::timed_test!(classify_target_rejects_unknown_arch, {
+#[test]
+fn classify_target_rejects_unknown_arch() {
     let err = classify_target("riscv64-unknown-linux-gnu").expect_err("riscv unsupported");
     assert!(
         err.to_string().contains("did not match any known arch"),
         "msg: {err}"
     );
-});
+}
 
-crate::timed_test!(classify_target_rejects_unknown_os, {
+#[test]
+fn classify_target_rejects_unknown_os() {
     // freebsd has no abi suffix so the triple is 3 parts; the os
     // slot ("freebsd") doesn't score above threshold against any
     // KNOWN_OSES entry.
@@ -587,16 +607,18 @@ crate::timed_test!(classify_target_rejects_unknown_os, {
         err.to_string().contains("did not match any known os"),
         "msg: {err}"
     );
-});
+}
 
-crate::timed_test!(classify_target_rejects_malformed_triple, {
+#[test]
+fn classify_target_rejects_malformed_triple() {
     let err = classify_target("x86_64").expect_err("too few parts");
     assert!(err.to_string().contains("unrecognized target triple shape"));
     let err = classify_target("a-b-c-d-e").expect_err("too many parts");
     assert!(err.to_string().contains("unrecognized target triple shape"));
-});
+}
 
-crate::timed_test!(classify_target_windows_gnu_x64, {
+#[test]
+fn classify_target_windows_gnu_x64() {
     let attrs = classify_target("x86_64-pc-windows-gnu").expect("classify mingw");
     assert_eq!(attrs.arch, TargetArch::X86_64);
     assert_eq!(attrs.os, TargetOs::Windows);
@@ -606,9 +628,10 @@ crate::timed_test!(classify_target_windows_gnu_x64, {
     assert!(!attrs.needs_llvm_toolchain);
     assert!(!attrs.needs_zig);
     assert!(!attrs.needs_apple_sdk);
-});
+}
 
-crate::timed_test!(classify_target_rejects_non_x64_windows_gnu_scope, {
+#[test]
+fn classify_target_rejects_non_x64_windows_gnu_scope() {
     let err = classify_target("aarch64-pc-windows-gnu").expect_err("non-x64 gnu out of scope");
     assert!(
         err.to_string().contains("only x86_64-pc-windows-gnu"),
@@ -620,11 +643,12 @@ crate::timed_test!(classify_target_rejects_non_x64_windows_gnu_scope, {
         err.to_string().contains("did not match any known abi"),
         "msg: {err}"
     );
-});
+}
 
 // ---- Fuzzy-matching behavior ----
 
-crate::timed_test!(fuzzy_exact_match_scores_one, {
+#[test]
+fn fuzzy_exact_match_scores_one() {
     assert_eq!(fuzzy_score("x86_64", "x86_64"), 1.0);
     assert_eq!(fuzzy_score("linux", "linux"), 1.0);
     // Case-insensitive exact = 0.99 — still cleanly above threshold.
@@ -633,9 +657,10 @@ crate::timed_test!(fuzzy_exact_match_scores_one, {
         case > FUZZY_MATCH_THRESHOLD,
         "case-insensitive score={case}"
     );
-});
+}
 
-crate::timed_test!(fuzzy_best_match_prefers_exact_over_prefix, {
+#[test]
+fn fuzzy_best_match_prefers_exact_over_prefix() {
     // The user's example: input "x86_AMD"; registry has both "x86"
     // and "x86_AMD". Exact must beat prefix.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -650,9 +675,10 @@ crate::timed_test!(fuzzy_best_match_prefers_exact_over_prefix, {
     // And the inverse: input "x86" picks the short entry.
     let picked = best_match("x86", registry, "test").expect("matches");
     assert_eq!(picked, Tag::Short);
-});
+}
 
-crate::timed_test!(fuzzy_rejects_below_threshold, {
+#[test]
+fn fuzzy_rejects_below_threshold() {
     // "x86" against the real registry (only "x86_64", "aarch64")
     // scores ~0.65 against x86_64 — below 0.85, so rejected. This
     // is the safety property: typos and abbreviations don't
@@ -664,17 +690,19 @@ crate::timed_test!(fuzzy_rejects_below_threshold, {
         msg.contains("x86_64"),
         "must name closest candidate; got: {msg}"
     );
-});
+}
 
-crate::timed_test!(fuzzy_case_insensitive_classify, {
+#[test]
+fn fuzzy_case_insensitive_classify() {
     // Uppercase triple components classify the same as lowercase.
     let attrs = classify_target("X86_64-PC-Windows-MSVC").expect("case-insensitive");
     assert_eq!(attrs.arch, TargetArch::X86_64);
     assert_eq!(attrs.os, TargetOs::Windows);
     assert_eq!(attrs.abi, Some(TargetAbi::Msvc));
-});
+}
 
-crate::timed_test!(soldr_workspace_metadata_dogfood, {
+#[test]
+fn soldr_workspace_metadata_dogfood() {
     let _env_guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Regression guard: soldr's own workspace `Cargo.toml`
     // declares `[workspace.metadata.soldr].targets` (RFC #914).
@@ -708,7 +736,7 @@ crate::timed_test!(soldr_workspace_metadata_dogfood, {
         classify_target(triple)
             .unwrap_or_else(|e| panic!("triple `{triple}` in soldr Cargo.toml: {e}"));
     }
-});
+}
 
 // ---- Corpus test ----
 //
@@ -743,7 +771,8 @@ fn is_soldr_supported(triple: &str) -> bool {
     )
 }
 
-crate::timed_test!(classifier_against_rustc_target_list, {
+#[test]
+fn classifier_against_rustc_target_list() {
     let corpus = include_str!("triple_corpus.txt");
     let triples: Vec<&str> = corpus
         .lines()
@@ -824,4 +853,4 @@ crate::timed_test!(classifier_against_rustc_target_list, {
         supported_ok, 9,
         "expected all 9 soldr-supported triples to classify Ok"
     );
-});
+}

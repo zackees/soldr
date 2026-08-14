@@ -208,53 +208,47 @@ fn shell_quote(args: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::timed_test;
     use std::time::Duration;
 
-    timed_test!(
-        path_with_prepend_inserts_dir_first,
-        Duration::from_secs(5),
-        {
-            // Pure-function form — no env mutation, no race with sibling
-            // tests under parallel `cargo test`.
-            let sep = crate::platform::host::facts::path_list_separator();
-            let base: std::ffi::OsString = format!("/a/b{sep}/c/d").into();
-            let prepended = path_with_prepend_using(Path::new("/x/y"), base.as_os_str());
-            let entries: Vec<PathBuf> = std::env::split_paths(&prepended).collect();
-            assert_eq!(
-                entries.first().map(|p| p.as_path()),
-                Some(Path::new("/x/y"))
-            );
-            assert!(
-                entries.iter().any(|p| p == Path::new("/a/b")),
-                "missing /a/b in {entries:?}",
-            );
-            assert!(
-                entries.iter().any(|p| p == Path::new("/c/d")),
-                "missing /c/d in {entries:?}",
-            );
-        }
-    );
+    #[test]
+    fn path_with_prepend_inserts_dir_first() {
+        // Pure-function form — no env mutation, no race with sibling
+        // tests under parallel `cargo test`.
+        let sep = crate::platform::host::facts::path_list_separator();
+        let base: std::ffi::OsString = format!("/a/b{sep}/c/d").into();
+        let prepended = path_with_prepend_using(Path::new("/x/y"), base.as_os_str());
+        let entries: Vec<PathBuf> = std::env::split_paths(&prepended).collect();
+        assert_eq!(
+            entries.first().map(|p| p.as_path()),
+            Some(Path::new("/x/y"))
+        );
+        assert!(
+            entries.iter().any(|p| p == Path::new("/a/b")),
+            "missing /a/b in {entries:?}",
+        );
+        assert!(
+            entries.iter().any(|p| p == Path::new("/c/d")),
+            "missing /c/d in {entries:?}",
+        );
+    }
 
-    timed_test!(
-        path_with_prepend_deduplicates_existing,
-        Duration::from_secs(5),
-        {
-            let sep = crate::platform::host::facts::path_list_separator();
-            let base: std::ffi::OsString = format!("/x/y{sep}/a/b").into();
-            let prepended = path_with_prepend_using(Path::new("/x/y"), base.as_os_str());
-            let entries: Vec<PathBuf> = std::env::split_paths(&prepended).collect();
-            // `/x/y` should appear exactly once — the duplicate should have
-            // been dropped before we prepended.
-            let count = entries.iter().filter(|p| p == &Path::new("/x/y")).count();
-            assert_eq!(
-                count, 1,
-                "expected exactly one /x/y entry, got {count} in {entries:?}"
-            );
-        }
-    );
+    #[test]
+    fn path_with_prepend_deduplicates_existing() {
+        let sep = crate::platform::host::facts::path_list_separator();
+        let base: std::ffi::OsString = format!("/x/y{sep}/a/b").into();
+        let prepended = path_with_prepend_using(Path::new("/x/y"), base.as_os_str());
+        let entries: Vec<PathBuf> = std::env::split_paths(&prepended).collect();
+        // `/x/y` should appear exactly once — the duplicate should have
+        // been dropped before we prepended.
+        let count = entries.iter().filter(|p| p == &Path::new("/x/y")).count();
+        assert_eq!(
+            count, 1,
+            "expected exactly one /x/y entry, got {count} in {entries:?}"
+        );
+    }
 
-    timed_test!(find_on_path_locates_executable, Duration::from_secs(5), {
+    #[test]
+    fn find_on_path_locates_executable() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let exe = tmp
             .path()
@@ -272,20 +266,17 @@ mod tests {
         let resolved =
             find_on_path("myexe", path_value.as_os_str()).expect("should find the fake executable");
         assert_eq!(resolved, exe);
-    });
+    }
 
-    timed_test!(
-        find_on_path_passthrough_for_explicit_path,
-        Duration::from_secs(5),
-        {
-            // When the name already contains a separator, treat it as a
-            // direct path and skip PATH lookup.
-            let path_value: std::ffi::OsString = "/this/does/not/exist".into();
-            let resolved = find_on_path("/explicit/path/binary", path_value.as_os_str());
-            assert_eq!(
-                resolved.as_deref(),
-                Some(Path::new("/explicit/path/binary"))
-            );
-        }
-    );
+    #[test]
+    fn find_on_path_passthrough_for_explicit_path() {
+        // When the name already contains a separator, treat it as a
+        // direct path and skip PATH lookup.
+        let path_value: std::ffi::OsString = "/this/does/not/exist".into();
+        let resolved = find_on_path("/explicit/path/binary", path_value.as_os_str());
+        assert_eq!(
+            resolved.as_deref(),
+            Some(Path::new("/explicit/path/binary"))
+        );
+    }
 }

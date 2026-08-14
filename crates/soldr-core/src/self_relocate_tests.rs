@@ -154,7 +154,8 @@ fn daemon_relocation_reports_real_byte_progress() {
 // `@loader_path/../soldr.dylibs/`. Relocating the daemon out of
 // that directory strands the reference and dyld kills it at exec,
 // so `ensure_daemon_relocated` must run it in place.
-crate::timed_test!(daemon_in_repaired_wheel_layout_is_not_relocated, {
+#[test]
+fn daemon_in_repaired_wheel_layout_is_not_relocated() {
     let temp = TempDir::new().expect("tempdir");
     let platlib = temp.path().join("site-packages");
     let scripts = platlib.join("soldr.scripts");
@@ -178,9 +179,10 @@ crate::timed_test!(daemon_in_repaired_wheel_layout_is_not_relocated, {
                 .unwrap_or(true),
         "no runtime copy may be materialized for a repaired-wheel daemon"
     );
-});
+}
 
-crate::timed_test!(route_placement_preserves_repaired_wheel_layout, {
+#[test]
+fn route_placement_preserves_repaired_wheel_layout() {
     let temp = TempDir::new().expect("tempdir");
     let platlib = temp.path().join("site-packages");
     let scripts = platlib.join("soldr.scripts");
@@ -208,10 +210,11 @@ crate::timed_test!(route_placement_preserves_repaired_wheel_layout, {
         fs::read(placed_root.join("soldr.dylibs/libexample.dylib")).expect("read placed library"),
         b"library"
     );
-});
+}
 
 // The auditwheel spelling (`<pkg>.libs`) is covered pre-emptively.
-crate::timed_test!(repaired_wheel_detection_accepts_auditwheel_libs_dir, {
+#[test]
+fn repaired_wheel_detection_accepts_auditwheel_libs_dir() {
     let temp = TempDir::new().expect("tempdir");
     let scripts = temp.path().join("soldr.scripts");
     fs::create_dir_all(&scripts).expect("scripts dir");
@@ -220,7 +223,7 @@ crate::timed_test!(repaired_wheel_detection_accepts_auditwheel_libs_dir, {
     fs::write(&daemon, b"daemon-bin").expect("write daemon");
 
     assert!(exe_depends_on_bundled_wheel_libs(&daemon));
-});
+}
 
 /// Build a minimal 64-bit little-endian Mach-O whose load-command
 /// region contains `payload`. Enough to exercise the parser on every
@@ -240,7 +243,8 @@ fn synthetic_macho_le64(payload: &[u8]) -> Vec<u8> {
 }
 
 // #1908: ask the binary, not the directory it happens to sit in.
-crate::timed_test!(loader_path_reference_is_detected_in_load_commands, {
+#[test]
+fn loader_path_reference_is_detected_in_load_commands() {
     let temp = TempDir::new().expect("tempdir");
     let exe = temp.path().join("repaired");
     fs::write(
@@ -252,13 +256,14 @@ crate::timed_test!(loader_path_reference_is_detected_in_load_commands, {
         exe_has_loader_path_reference(&exe),
         "a load command naming @loader_path must be detected"
     );
-});
+}
 
 // The scan must stay inside the load commands. `@loader_path` is a
 // perfectly ordinary string for a binary to carry in its data --
 // soldr's own source mentions it -- and matching that would condemn
 // unrelated binaries to the slow trampoline path.
-crate::timed_test!(loader_path_in_the_body_is_not_a_reference, {
+#[test]
+fn loader_path_in_the_body_is_not_a_reference() {
     let temp = TempDir::new().expect("tempdir");
     let exe = temp.path().join("innocent");
     let mut bytes = synthetic_macho_le64(b"\x0c\x00\x00\x00/usr/lib/libSystem.dylib\x00");
@@ -268,11 +273,12 @@ crate::timed_test!(loader_path_in_the_body_is_not_a_reference, {
         !exe_has_loader_path_reference(&exe),
         "a data-section mention must not count"
     );
-});
+}
 
 // Unparseable input must fall back to today's behaviour (hardlink),
 // never panic: these run inside shim writers on every platform.
-crate::timed_test!(non_macho_inputs_are_not_position_dependent, {
+#[test]
+fn non_macho_inputs_are_not_position_dependent() {
     let temp = TempDir::new().expect("tempdir");
 
     let script = temp.path().join("script");
@@ -295,12 +301,13 @@ crate::timed_test!(non_macho_inputs_are_not_position_dependent, {
     assert!(!exe_has_loader_path_reference(&truncated));
 
     assert!(!exe_has_loader_path_reference(&temp.path().join("nope")));
-});
+}
 
 // A universal binary hides its slices behind an offset table, so the
 // parser has to follow them; a naive whole-file scan would pass this
 // test for the wrong reason, hence the offset padding.
-crate::timed_test!(fat_binary_slices_are_followed, {
+#[test]
+fn fat_binary_slices_are_followed() {
     let temp = TempDir::new().expect("tempdir");
     let exe = temp.path().join("universal");
 
@@ -322,9 +329,10 @@ crate::timed_test!(fat_binary_slices_are_followed, {
         exe_has_loader_path_reference(&exe),
         "fat slices must be followed through the offset table"
     );
-});
+}
 
-crate::timed_test!(plain_layouts_are_still_relocated, {
+#[test]
+fn plain_layouts_are_still_relocated() {
     let temp = TempDir::new().expect("tempdir");
 
     // `.scripts` dir WITHOUT a sibling bundle dir → not repaired
@@ -353,7 +361,7 @@ crate::timed_test!(plain_layouts_are_still_relocated, {
     let relocated = ensure_daemon_relocated(&paths, &plain).expect("relocate daemon");
     assert_ne!(relocated, plain, "plain layout must still relocate");
     assert!(relocated.starts_with(daemon_runtime_root(&paths)));
-});
+}
 
 #[test]
 fn runtime_gc_removes_stale_dirs_and_skips_current_and_fresh() {
@@ -550,7 +558,8 @@ mod reexec_hop_tests {
     // daemon would ever start. The marker makes that impossible regardless of
     // how the predicate behaves, so the worst case is the status quo -- running
     // from wherever we were launched.
-    crate::timed_test!(the_marker_stops_a_second_hop_whatever_the_predicate_says, {
+    #[test]
+    fn the_marker_stops_a_second_hop_whatever_the_predicate_says() {
         let _lock = HOP_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp = TempDir::new().expect("tempdir");
         let paths = SoldrPaths::with_root(temp.path().join("root"));
@@ -570,23 +579,25 @@ mod reexec_hop_tests {
             decision.is_none(),
             "a marked process must never hop again -- that is the loop guard"
         );
-    });
+    }
 
     // An image already under the runtime root is where we want it; hopping
     // would be a pointless exec of ourselves.
-    crate::timed_test!(an_already_relocated_daemon_does_not_hop, {
+    #[test]
+    fn an_already_relocated_daemon_does_not_hop() {
         let _lock = HOP_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var(DAEMON_REEXEC_MARKER_ENV_VAR);
         let temp = TempDir::new().expect("tempdir");
         let paths = SoldrPaths::with_root(temp.path().join("root"));
         let exe = fake_daemon(&daemon_runtime_root(&paths).join("abc"), "soldr-daemon.exe");
         assert!(daemon_should_reexec(&paths, &exe).is_none());
-    });
+    }
 
     // soldr#1300: a maturin-repaired wheel resolves bundled dylibs relative to
     // its own location, so relocating strands them and the daemon dies before
     // main(). It must run in place even though it is outside the runtime root.
-    crate::timed_test!(a_repaired_wheel_layout_runs_in_place, {
+    #[test]
+    fn a_repaired_wheel_layout_runs_in_place() {
         let _lock = HOP_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var(DAEMON_REEXEC_MARKER_ENV_VAR);
         let temp = TempDir::new().expect("tempdir");
@@ -598,10 +609,11 @@ mod reexec_hop_tests {
             daemon_should_reexec(&paths, &exe).is_none(),
             "relocating a repaired wheel strands its bundled dylibs (soldr#1300)"
         );
-    });
+    }
 
     // The #1987 case itself: a temp-dir image that is free to move.
-    crate::timed_test!(a_temp_dir_daemon_hops_into_the_runtime_root, {
+    #[test]
+    fn a_temp_dir_daemon_hops_into_the_runtime_root() {
         let _lock = HOP_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var(DAEMON_REEXEC_MARKER_ENV_VAR);
         let temp = TempDir::new().expect("tempdir");
@@ -621,5 +633,5 @@ mod reexec_hop_tests {
             target, exe,
             "hopping to the same path would be a no-op exec"
         );
-    });
+    }
 }

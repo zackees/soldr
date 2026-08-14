@@ -202,7 +202,8 @@ mod tests {
         builder.into_inner().unwrap()
     }
 
-    crate::timed_test!(unpack_tar_makes_dir_symlinks_traversable, {
+    #[test]
+    fn unpack_tar_makes_dir_symlinks_traversable() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let dest = tmp.path();
         let tarball = synthetic_sysroot_tar();
@@ -249,9 +250,10 @@ mod tests {
                 PathBuf::from("libc.so.6")
             );
         }
-    });
+    }
 
-    crate::timed_test!(unpack_tar_materializes_posix_apple_links, {
+    #[test]
+    fn unpack_tar_materializes_posix_apple_links() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let dest = tmp.path();
         let mut archive = tar::Archive::new(Cursor::new(synthetic_apple_sdk_tar()));
@@ -276,9 +278,10 @@ mod tests {
                 "framework Headers must support directory enumeration on Windows"
             );
         }
-    });
+    }
 
-    crate::timed_test!(unpack_tar_ignores_escaping_symlink_copy, {
+    #[test]
+    fn unpack_tar_ignores_escaping_symlink_copy() {
         // A link whose target escapes dest must not break extraction and
         // must never be materialized as a copy of a host file.
         let tmp = tempfile::tempdir().expect("tmpdir");
@@ -308,5 +311,5 @@ mod tests {
                 "escaping target must never be copied into dest"
             );
         }
-    });
+    }
 }

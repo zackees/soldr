@@ -3,7 +3,6 @@
 mod common;
 
 use common::*;
-use soldr_cli::timed_test;
 use std::{
     fs,
     path::Path,
@@ -58,7 +57,8 @@ fn dependency_failure_script() -> &'static str {
     }
 }
 
-timed_test!(lint_deps_runs_all_tools_without_compiler_cache, {
+#[test]
+fn lint_deps_runs_all_tools_without_compiler_cache() {
     let root = unique_temp_dir("lint-deps");
     let log = root.join("cargo.log");
     let cargo = install_logging_fake_cargo(&log);
@@ -98,100 +98,99 @@ timed_test!(lint_deps_runs_all_tools_without_compiler_cache, {
         !String::from_utf8_lossy(&output.stderr).contains("cache daemon"),
         "dependency-only lint must not start the compiler cache"
     );
-});
+}
 
-timed_test!(
-    lint_rust_uses_canonical_commands_without_a_redundant_check,
-    {
-        let root = unique_temp_dir("lint-rust");
-        let log = root.join("cargo.log");
-        let cargo = install_logging_fake_cargo(&log);
-        let tools = root.join("tools");
-        fs::create_dir_all(&tools).expect("create fake tool dir");
-        let dylint = fake_script_path(&tools, "cargo-dylint");
-        write_fake_script(&dylint, successful_tool_script());
-        let dylint_link = fake_script_path(&tools, "dylint-link");
-        write_fake_script(&dylint_link, successful_tool_script());
-        let dylint_channel = format!(
-            "nightly-2026-05-26-{}",
-            soldr_cli::pyo3_detect::host_triple()
-        );
-        let dylint_release = "1.89.0-nightly";
-        let dylint_commit = "0123456789abcdef0123456789abcdef01234567";
-        let dylint_identity = format!("{dylint_channel}|{dylint_release}|{dylint_commit}");
-        let driver_root = root.join("drivers");
-        let driver = fake_script_path(&driver_root.join(&dylint_channel), "dylint-driver");
-        fs::create_dir_all(driver.parent().expect("driver parent"))
-            .expect("create prebuilt driver dir");
-        let driver_script = if matches!(
-            soldr_platform::host::facts::os(),
-            soldr_platform::host::facts::HostOs::Windows
-        ) {
-            "@echo off\necho dylint-driver 6.0.3\nexit /b 0\n"
-        } else {
-            "#!/bin/sh\nprintf 'dylint-driver 6.0.3\\n'\n"
-        };
-        write_fake_script(&driver, driver_script);
-        let rustc = install_versioned_fake_rustc(
-            "rustc 1.89.0-nightly (0123456789abcdef0123456789abcdef01234567 2026-05-26)",
-        );
+#[test]
+fn lint_rust_uses_canonical_commands_without_a_redundant_check() {
+    let root = unique_temp_dir("lint-rust");
+    let log = root.join("cargo.log");
+    let cargo = install_logging_fake_cargo(&log);
+    let tools = root.join("tools");
+    fs::create_dir_all(&tools).expect("create fake tool dir");
+    let dylint = fake_script_path(&tools, "cargo-dylint");
+    write_fake_script(&dylint, successful_tool_script());
+    let dylint_link = fake_script_path(&tools, "dylint-link");
+    write_fake_script(&dylint_link, successful_tool_script());
+    let dylint_channel = format!(
+        "nightly-2026-05-26-{}",
+        soldr_cli::pyo3_detect::host_triple()
+    );
+    let dylint_release = "1.89.0-nightly";
+    let dylint_commit = "0123456789abcdef0123456789abcdef01234567";
+    let dylint_identity = format!("{dylint_channel}|{dylint_release}|{dylint_commit}");
+    let driver_root = root.join("drivers");
+    let driver = fake_script_path(&driver_root.join(&dylint_channel), "dylint-driver");
+    fs::create_dir_all(driver.parent().expect("driver parent"))
+        .expect("create prebuilt driver dir");
+    let driver_script = if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        "@echo off\necho dylint-driver 6.0.3\nexit /b 0\n"
+    } else {
+        "#!/bin/sh\nprintf 'dylint-driver 6.0.3\\n'\n"
+    };
+    write_fake_script(&driver, driver_script);
+    let rustc = install_versioned_fake_rustc(
+        "rustc 1.89.0-nightly (0123456789abcdef0123456789abcdef01234567 2026-05-26)",
+    );
 
-        let output = isolated_soldr_command()
-            .args(["--no-cache", "lint", "rust", "--package", "soldr-cli"])
-            .env("SOLDR_CACHE_DIR", root.join("cache"))
-            .env("SOLDR_TEST_CARGO_BIN", cargo)
-            .env("SOLDR_TEST_RUSTC_BIN", rustc)
-            .env("SOLDR_DYLINT_CONFIGURED_TOOLCHAIN", dylint_channel)
-            .env("SOLDR_DYLINT_CONFIGURED_RUSTC_RELEASE", dylint_release)
-            .env("SOLDR_DYLINT_CONFIGURED_RUSTC_COMMIT_HASH", dylint_commit)
-            .env("SOLDR_DYLINT_PREPARED_IDENTITY", dylint_identity)
-            .env("DYLINT_DRIVER_PATH", driver_root)
-            .env("PATH", prepend_to_path(&tools))
-            .output()
-            .expect("run soldr lint rust");
+    let output = isolated_soldr_command()
+        .args(["--no-cache", "lint", "rust", "--package", "soldr-cli"])
+        .env("SOLDR_CACHE_DIR", root.join("cache"))
+        .env("SOLDR_TEST_CARGO_BIN", cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", rustc)
+        .env("SOLDR_DYLINT_CONFIGURED_TOOLCHAIN", dylint_channel)
+        .env("SOLDR_DYLINT_CONFIGURED_RUSTC_RELEASE", dylint_release)
+        .env("SOLDR_DYLINT_CONFIGURED_RUSTC_COMMIT_HASH", dylint_commit)
+        .env("SOLDR_DYLINT_PREPARED_IDENTITY", dylint_identity)
+        .env("DYLINT_DRIVER_PATH", driver_root)
+        .env("PATH", prepend_to_path(&tools))
+        .output()
+        .expect("run soldr lint rust");
 
-        assert!(
-            output.status.success(),
-            "lint rust failed\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        );
-        assert_eq!(
-            read_logged_cargo_invocations(&log)
-                .into_iter()
-                .filter(|args| {
-                    args.first()
-                        .is_none_or(|subcommand| subcommand != "metadata")
-                })
-                .collect::<Vec<_>>(),
-            vec![
-                strings(&["fmt", "--all", "--package", "soldr-cli", "--", "--check",]),
-                strings(&[
-                    "clippy",
-                    "--workspace",
-                    "--all-targets",
-                    "--package",
-                    "soldr-cli",
-                    "--",
-                    "-D",
-                    "warnings",
-                ]),
-                strings(&[
-                    "dylint",
-                    "--all",
-                    "--",
-                    "--workspace",
-                    "--all-targets",
-                    "--package",
-                    "soldr-cli",
-                ]),
-            ],
-            "lint rust must use its canonical fmt/clippy/dylint pipeline"
-        );
-    }
-);
+    assert!(
+        output.status.success(),
+        "lint rust failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert_eq!(
+        read_logged_cargo_invocations(&log)
+            .into_iter()
+            .filter(|args| {
+                args.first()
+                    .is_none_or(|subcommand| subcommand != "metadata")
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            strings(&["fmt", "--all", "--package", "soldr-cli", "--", "--check",]),
+            strings(&[
+                "clippy",
+                "--workspace",
+                "--all-targets",
+                "--package",
+                "soldr-cli",
+                "--",
+                "-D",
+                "warnings",
+            ]),
+            strings(&[
+                "dylint",
+                "--all",
+                "--",
+                "--workspace",
+                "--all-targets",
+                "--package",
+                "soldr-cli",
+            ]),
+        ],
+        "lint rust must use its canonical fmt/clippy/dylint pipeline"
+    );
+}
 
-timed_test!(dependency_failure_cancels_sibling_lint_children, {
+#[test]
+fn dependency_failure_cancels_sibling_lint_children() {
     let root = unique_temp_dir("lint-deps-cancel");
     let tools = root.join("tools");
     fs::create_dir_all(&tools).expect("create fake tool dir");
@@ -219,4 +218,4 @@ timed_test!(dependency_failure_cancels_sibling_lint_children, {
          {elapsed:?}, and an uncancelled sibling would have slept \
          {SIBLING_SLEEP_SECS}s (soldr#1876)"
     );
-});
+}

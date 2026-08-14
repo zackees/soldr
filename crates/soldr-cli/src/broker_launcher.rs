@@ -726,7 +726,8 @@ mod tests {
         (definition, key, TraceContext::default())
     }
 
-    crate::timed_test!(active_tombstone_refuses_before_image_or_spawn_work, {
+    #[test]
+    fn active_tombstone_refuses_before_image_or_spawn_work() {
         let temp = tempfile::tempdir().expect("tempdir");
         let root = temp.path().join("root");
         let paths = crate::core::SoldrPaths::with_root(root.clone());
@@ -745,9 +746,10 @@ mod tests {
             Err(err) => err,
         };
         assert!(err.to_string().contains("tombstone active"), "{err}");
-    });
+    }
 
-    crate::timed_test!(changed_registered_image_is_rejected_before_spawn, {
+    #[test]
+    fn changed_registered_image_is_rejected_before_spawn() {
         let temp = tempfile::tempdir().expect("tempdir");
         let binary = temp.path().join("soldr-daemon");
         std::fs::write(&binary, b"changed image").expect("write image");
@@ -768,9 +770,10 @@ mod tests {
             err.to_string().contains("changed before broker launch"),
             "{err}"
         );
-    });
+    }
 
-    crate::timed_test!(daemon_launch_failure_surfaces_the_startup_log, {
+    #[test]
+    fn daemon_launch_failure_surfaces_the_startup_log() {
         let temp = tempfile::tempdir().expect("tempdir");
         let log = temp.path().join("daemon-spawn.log");
         std::fs::write(
@@ -790,9 +793,10 @@ mod tests {
             message.contains("soldr-daemon failed: Io(Kind(Unsupported))"),
             "{message}"
         );
-    });
+    }
 
-    crate::timed_test!(foreign_live_route_claim_survives_replacement_preflight, {
+    #[test]
+    fn foreign_live_route_claim_survives_replacement_preflight() {
         let temp = tempfile::tempdir().expect("tempdir");
         let root = temp.path().join("root");
         let paths = crate::core::SoldrPaths::with_root(root.clone());
@@ -835,5 +839,5 @@ mod tests {
             crate::daemon::backend_handle_adoption::broker_route_claim_path(&paths).exists(),
             "replacement preflight still needs the incumbent PID/image claim"
         );
-    });
+    }
 }

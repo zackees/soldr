@@ -23,55 +23,52 @@ fn try_link(target: &Path, link: &Path, is_dir: bool) -> bool {
     crate::platform::fs::links::create(&target.to_string_lossy(), link, is_dir).is_ok()
 }
 
-crate::timed_test!(
-    readonly_shared_file_is_detached_without_unprotecting_blob,
-    {
-        let root = tempfile::tempdir().unwrap();
-        let cache = root.path().join("cache");
-        let target = root.path().join("target");
-        std::fs::create_dir_all(&cache).unwrap();
-        std::fs::create_dir_all(target.join("debug/deps")).unwrap();
-        let blob = cache.join("blob");
-        let output = target.join("debug/deps/libdemo.rmeta");
-        std::fs::write(&blob, b"cached bytes").unwrap();
-        std::fs::hard_link(&blob, &output).unwrap();
-        mark_readonly(&blob);
+#[test]
+fn readonly_shared_file_is_detached_without_unprotecting_blob() {
+    let root = tempfile::tempdir().unwrap();
+    let cache = root.path().join("cache");
+    let target = root.path().join("target");
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::create_dir_all(target.join("debug/deps")).unwrap();
+    let blob = cache.join("blob");
+    let output = target.join("debug/deps/libdemo.rmeta");
+    std::fs::write(&blob, b"cached bytes").unwrap();
+    std::fs::hard_link(&blob, &output).unwrap();
+    mark_readonly(&blob);
 
-        let report = detach_target_tree(&target).unwrap();
+    let report = detach_target_tree(&target).unwrap();
 
-        assert_eq!(report.detached_shared, 1);
-        assert_eq!(report.made_writable, 0);
-        assert_eq!(link_count(&blob), 1);
-        assert_eq!(link_count(&output), 1);
-        assert!(std::fs::metadata(&blob).unwrap().permissions().readonly());
-        assert!(!std::fs::metadata(&output).unwrap().permissions().readonly());
-        std::fs::write(&output, b"new compiler bytes").unwrap();
-        assert_eq!(std::fs::read(&blob).unwrap(), b"cached bytes");
-    }
-);
+    assert_eq!(report.detached_shared, 1);
+    assert_eq!(report.made_writable, 0);
+    assert_eq!(link_count(&blob), 1);
+    assert_eq!(link_count(&output), 1);
+    assert!(std::fs::metadata(&blob).unwrap().permissions().readonly());
+    assert!(!std::fs::metadata(&output).unwrap().permissions().readonly());
+    std::fs::write(&output, b"new compiler bytes").unwrap();
+    assert_eq!(std::fs::read(&blob).unwrap(), b"cached bytes");
+}
 
-crate::timed_test!(
-    writable_shared_file_is_detached_to_prevent_cache_poisoning,
-    {
-        let root = tempfile::tempdir().unwrap();
-        let cache = root.path().join("cache");
-        let target = root.path().join("target");
-        std::fs::create_dir_all(&cache).unwrap();
-        std::fs::create_dir_all(&target).unwrap();
-        let blob = cache.join("blob");
-        let output = target.join("artifact");
-        std::fs::write(&blob, b"cached bytes").unwrap();
-        std::fs::hard_link(&blob, &output).unwrap();
+#[test]
+fn writable_shared_file_is_detached_to_prevent_cache_poisoning() {
+    let root = tempfile::tempdir().unwrap();
+    let cache = root.path().join("cache");
+    let target = root.path().join("target");
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::create_dir_all(&target).unwrap();
+    let blob = cache.join("blob");
+    let output = target.join("artifact");
+    std::fs::write(&blob, b"cached bytes").unwrap();
+    std::fs::hard_link(&blob, &output).unwrap();
 
-        let report = detach_target_tree(&target).unwrap();
+    let report = detach_target_tree(&target).unwrap();
 
-        assert_eq!(report.detached_shared, 1);
-        std::fs::write(&output, b"new compiler bytes").unwrap();
-        assert_eq!(std::fs::read(&blob).unwrap(), b"cached bytes");
-    }
-);
+    assert_eq!(report.detached_shared, 1);
+    std::fs::write(&output, b"new compiler bytes").unwrap();
+    assert_eq!(std::fs::read(&blob).unwrap(), b"cached bytes");
+}
 
-crate::timed_test!(final_rename_failure_preserves_the_private_copy, {
+#[test]
+fn final_rename_failure_preserves_the_private_copy() {
     let root = tempfile::tempdir().unwrap();
     let cache = root.path().join("cache");
     let target = root.path().join("target");
@@ -117,9 +114,10 @@ crate::timed_test!(final_rename_failure_preserves_the_private_copy, {
         std::fs::canonicalize(&preserved[0]).unwrap(),
         "error reported the wrong preserved-copy path: {message}"
     );
-});
+}
 
-crate::timed_test!(private_readonly_file_becomes_writable_without_copy, {
+#[test]
+fn private_readonly_file_becomes_writable_without_copy() {
     let root = tempfile::tempdir().unwrap();
     let target = root.path().join("target");
     std::fs::create_dir_all(&target).unwrap();
@@ -133,9 +131,10 @@ crate::timed_test!(private_readonly_file_becomes_writable_without_copy, {
     assert_eq!(report.made_writable, 1);
     assert!(!std::fs::metadata(&output).unwrap().permissions().readonly());
     assert_eq!(std::fs::read(&output).unwrap(), b"private bytes");
-});
+}
 
-crate::timed_test!(symlinks_are_not_followed, {
+#[test]
+fn symlinks_are_not_followed() {
     let root = tempfile::tempdir().unwrap();
     let outside = root.path().join("outside");
     let target = root.path().join("target");
@@ -155,9 +154,10 @@ crate::timed_test!(symlinks_are_not_followed, {
         .unwrap()
         .permissions()
         .readonly());
-});
+}
 
-crate::timed_test!(active_build_lock_refuses_the_preflight, {
+#[test]
+fn active_build_lock_refuses_the_preflight() {
     use fs2::FileExt;
 
     let root = tempfile::tempdir().unwrap();
@@ -174,9 +174,10 @@ crate::timed_test!(active_build_lock_refuses_the_preflight, {
 
     let error = detach_target_tree(&target).unwrap_err();
     assert!(error.to_string().contains("build lock"));
-});
+}
 
-crate::timed_test!(persistent_but_unlocked_build_lock_is_allowed, {
+#[test]
+fn persistent_but_unlocked_build_lock_is_allowed() {
     let root = tempfile::tempdir().unwrap();
     let target = root.path().join("target");
     std::fs::create_dir_all(&target).unwrap();
@@ -184,9 +185,10 @@ crate::timed_test!(persistent_but_unlocked_build_lock_is_allowed, {
 
     let report = detach_target_tree(&target).unwrap();
     assert_eq!(report.detached_shared, 0);
-});
+}
 
-crate::timed_test!(acquired_build_locks_remain_held_until_guard_drop, {
+#[test]
+fn acquired_build_locks_remain_held_until_guard_drop() {
     use fs2::FileExt;
 
     let root = tempfile::tempdir().unwrap();
@@ -207,9 +209,10 @@ crate::timed_test!(acquired_build_locks_remain_held_until_guard_drop, {
 
     drop(guards);
     contender.try_lock_exclusive().unwrap();
-});
+}
 
-crate::timed_test!(nested_cross_target_build_lock_refuses_the_preflight, {
+#[test]
+fn nested_cross_target_build_lock_refuses_the_preflight() {
     use fs2::FileExt;
 
     let root = tempfile::tempdir().unwrap();
@@ -227,9 +230,10 @@ crate::timed_test!(nested_cross_target_build_lock_refuses_the_preflight, {
 
     let error = detach_target_tree(&target).unwrap_err();
     assert!(error.to_string().contains("aarch64-pc-windows-msvc"));
-});
+}
 
-crate::timed_test!(detach_temporaries_are_not_scanned_or_mutated, {
+#[test]
+fn detach_temporaries_are_not_scanned_or_mutated() {
     let root = tempfile::tempdir().unwrap();
     let target = root.path().join("target");
     std::fs::create_dir_all(&target).unwrap();
@@ -244,9 +248,10 @@ crate::timed_test!(detach_temporaries_are_not_scanned_or_mutated, {
         .unwrap()
         .permissions()
         .readonly());
-});
+}
 
-crate::timed_test!(vanished_snapshot_entry_is_tolerated, {
+#[test]
+fn vanished_snapshot_entry_is_tolerated() {
     let root = tempfile::tempdir().unwrap();
     let target = root.path().join("target");
     std::fs::create_dir_all(&target).unwrap();
@@ -259,9 +264,10 @@ crate::timed_test!(vanished_snapshot_entry_is_tolerated, {
         prepare_file(&root, OsStr::new("vanished")).unwrap(),
         PreparedFile::Unchanged
     );
-});
+}
 
-crate::timed_test!(direct_no_follow_open_rejects_a_file_symlink, {
+#[test]
+fn direct_no_follow_open_rejects_a_file_symlink() {
     let root = tempfile::tempdir().unwrap();
     let outside = root.path().join("outside");
     let link = root.path().join("link");
@@ -281,9 +287,10 @@ crate::timed_test!(direct_no_follow_open_rejects_a_file_symlink, {
         .unwrap()
         .permissions()
         .readonly());
-});
+}
 
-crate::timed_test!(symlinked_target_root_is_resolved_and_prepared, {
+#[test]
+fn symlinked_target_root_is_resolved_and_prepared() {
     let root = tempfile::tempdir().unwrap();
     let physical = root.path().join("physical-target");
     let target_link = root.path().join("target-link");
@@ -303,9 +310,10 @@ crate::timed_test!(symlinked_target_root_is_resolved_and_prepared, {
         .unwrap()
         .permissions()
         .readonly());
-});
+}
 
-crate::timed_test!(opened_directory_capability_survives_ancestor_swap, {
+#[test]
+fn opened_directory_capability_survives_ancestor_swap() {
     let root = tempfile::tempdir().unwrap();
     let target = root.path().join("target");
     let child = target.join("child");
@@ -357,9 +365,10 @@ crate::timed_test!(opened_directory_capability_survives_ancestor_swap, {
         .unwrap()
         .permissions()
         .readonly());
-});
+}
 
-crate::timed_test!(test_cargo_override_uses_default_target_without_metadata, {
+#[test]
+fn test_cargo_override_uses_default_target_without_metadata() {
     let root = tempfile::tempdir().unwrap();
     let missing_tool = root.path().join("fake-cargo-does-not-exist");
     let child_command = std::process::Command::new(&missing_tool);
@@ -411,4 +420,4 @@ crate::timed_test!(test_cargo_override_uses_default_target_without_metadata, {
             panic!("production resolution must not use the test seam")
         });
     assert!(metadata_result.is_err());
-});
+}

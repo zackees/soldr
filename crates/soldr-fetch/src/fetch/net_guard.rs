@@ -99,13 +99,15 @@ mod tests {
     /// Serialised because these mutate process env.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    crate::timed_test!(unset_allows_the_network, {
+    #[test]
+    fn unset_allows_the_network() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var(NO_NETWORK_ENV_VAR);
         assert!(ensure_network_allowed("the catalogue").is_ok());
-    });
+    }
 
-    crate::timed_test!(a_truthy_value_refuses_and_names_the_fetch, {
+    #[test]
+    fn a_truthy_value_refuses_and_names_the_fetch() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var(NO_NETWORK_ENV_VAR, "1");
         let err = ensure_network_allowed("managed zig").expect_err("must refuse");
@@ -115,9 +117,10 @@ mod tests {
         assert!(rendered.contains("managed zig"), "{rendered}");
         assert!(rendered.contains("soldr#2159"), "{rendered}");
         std::env::remove_var(NO_NETWORK_ENV_VAR);
-    });
+    }
 
-    crate::timed_test!(the_guard_is_wired_into_a_real_client_constructor, {
+    #[test]
+    fn the_guard_is_wired_into_a_real_client_constructor() {
         // The unit tests above only prove the predicate. This proves the
         // guard is actually reached from a constructor -- otherwise the
         // module could be correct and connected to nothing, which is the
@@ -131,9 +134,10 @@ mod tests {
 
         // ...and that it is off by default, or every real fetch breaks.
         assert!(super::super::stream_download::control_http_client("test").is_ok());
-    });
+    }
 
-    crate::timed_test!(falsy_spellings_leave_the_network_alone, {
+    #[test]
+    fn falsy_spellings_leave_the_network_alone() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         for falsy in ["0", "false", "no", "off", ""] {
             std::env::set_var(NO_NETWORK_ENV_VAR, falsy);
@@ -143,5 +147,5 @@ mod tests {
             );
         }
         std::env::remove_var(NO_NETWORK_ENV_VAR);
-    });
+    }
 }

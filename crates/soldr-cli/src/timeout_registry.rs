@@ -213,15 +213,16 @@ fn entries() -> Vec<TimeoutEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::timed_test;
 
     const DEFAULT: Duration = Duration::from_secs(30);
 
-    timed_test!(an_unset_variable_is_the_default, {
+    #[test]
+    fn an_unset_variable_is_the_default() {
         assert_eq!(classify(None, DEFAULT, DEFAULT), TimeoutSource::Default);
-    });
+    }
 
-    timed_test!(a_parsed_override_in_force_is_an_override, {
+    #[test]
+    fn a_parsed_override_in_force_is_an_override() {
         assert_eq!(
             classify(Some("600"), DEFAULT, Duration::from_secs(600)),
             TimeoutSource::Override
@@ -232,18 +233,20 @@ mod tests {
             classify(Some("  600 "), DEFAULT, Duration::from_secs(600)),
             TimeoutSource::Override
         );
-    });
+    }
 
-    timed_test!(an_override_equal_to_the_default_is_still_an_override, {
+    #[test]
+    fn an_override_equal_to_the_default_is_still_an_override() {
         // The effective value alone cannot tell this from a typo; the raw
         // value can, and reporting "ignored" here would be a lie.
         assert_eq!(
             classify(Some("30"), DEFAULT, DEFAULT),
             TimeoutSource::Override
         );
-    });
+    }
 
-    timed_test!(an_unparseable_override_is_reported_as_ignored, {
+    #[test]
+    fn an_unparseable_override_is_reported_as_ignored() {
         // The whole point of the registry. Every parser swallows these by
         // design (soldr#1837: never fall back to "disabled"), which is safe
         // and silent -- the user sees a configured variable doing nothing.
@@ -254,9 +257,10 @@ mod tests {
                 "{raw:?} parses as no seconds and must be reported as ignored"
             );
         }
-    });
+    }
 
-    timed_test!(zero_means_default_not_disabled, {
+    #[test]
+    fn zero_means_default_not_disabled() {
         // Every resolver here filters `> 0`, so 0 selects the default. It
         // is a real value the user can type, not a mistake, so it must not
         // be reported as an ignored override.
@@ -264,9 +268,10 @@ mod tests {
             classify(Some("0"), DEFAULT, DEFAULT),
             TimeoutSource::Default
         );
-    });
+    }
 
-    timed_test!(the_registry_resolves_every_entry, {
+    #[test]
+    fn the_registry_resolves_every_entry() {
         let rows = resolve_all();
         assert!(!rows.is_empty());
         for row in &rows {
@@ -282,9 +287,10 @@ mod tests {
                 row.name
             );
         }
-    });
+    }
 
-    timed_test!(env_var_names_are_unique, {
+    #[test]
+    fn env_var_names_are_unique() {
         // Two entries sharing a variable would make `doctor` print
         // contradictory rows for the same knob.
         let rows = resolve_all();
@@ -293,9 +299,10 @@ mod tests {
         let before = seen.len();
         seen.dedup();
         assert_eq!(before, seen.len(), "duplicate env var in the registry");
-    });
+    }
 
-    timed_test!(each_entry_reports_the_resolver_not_a_restated_default, {
+    #[test]
+    fn each_entry_reports_the_resolver_not_a_restated_default() {
         // Guards the anti-drift property: with no override set, the value
         // the registry reports must be the value the production resolver
         // returns. If someone later hardcodes `effective`, this fails.
@@ -308,5 +315,5 @@ mod tests {
                 );
             }
         }
-    });
+    }
 }

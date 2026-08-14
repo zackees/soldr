@@ -152,7 +152,8 @@ fn write_wrapper(path: &Path, body: &str) -> Result<(), SoldrError> {
 mod tests {
     use super::*;
 
-    crate::timed_test!(maps_supported_rust_targets_to_zig_targets, {
+    #[test]
+    fn maps_supported_rust_targets_to_zig_targets() {
         assert_eq!(
             rust_target_to_zig_target("x86_64-unknown-linux-gnu").unwrap(),
             "x86_64-linux-gnu"
@@ -169,16 +170,18 @@ mod tests {
             rust_target_to_zig_target("x86_64-pc-windows-gnu").unwrap(),
             "x86_64-windows-gnu"
         );
-    });
+    }
 
-    crate::timed_test!(rejects_unknown_targets, {
+    #[test]
+    fn rejects_unknown_targets() {
         assert!(matches!(
             rust_target_to_zig_target("wasm32-unknown-unknown"),
             Err(SoldrError::UnsupportedPlatform(_))
         ));
-    });
+    }
 
-    crate::timed_test!(cc_wrapper_routes_through_zig_with_target, {
+    #[test]
+    fn cc_wrapper_routes_through_zig_with_target() {
         if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
             return;
         }
@@ -188,40 +191,37 @@ mod tests {
         assert!(body.contains("\"$@\""));
         // Non-darwin wrappers must NOT carry the SDKROOT workaround.
         assert!(!body.contains("SDKROOT"));
-    });
+    }
 
-    crate::timed_test!(
-        darwin_cc_wrapper_clears_sdkroot_and_adds_explicit_sdk_paths,
-        {
-            if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
-                return;
-            }
-            // Run 28574600982: with SDKROOT set, cargo-zigbuild (zig < 0.15)
-            // passes `--sysroot=$SDKROOT` and zig 0.14 then resolves every
-            // -L path relative to the sysroot — no system library resolves.
-            // The darwin wrapper must clear SDKROOT before exec'ing
-            // cargo-zigbuild and pass the SDK search paths explicitly.
-            let body = render_cc_wrapper("cc", "x86_64-macos-none", true);
-            assert!(body.starts_with("#!/bin/sh\n"));
-            assert!(body.contains("unset SDKROOT"));
-            assert!(body.contains("-L$SOLDR_APPLE_SDK/usr/lib"));
-            assert!(body.contains("-F$SOLDR_APPLE_SDK/System/Library/Frameworks"));
-            assert!(body.contains("-isystem \"$SOLDR_APPLE_SDK/usr/include\""));
-            assert!(body.contains("cargo-zigbuild zig cc -- -target x86_64-macos-none"));
-            assert!(body.contains("\"$@\""));
-            // Fallback branch (no SDKROOT in env) keeps the plain invocation.
-            assert!(
-                body.ends_with("exec cargo-zigbuild zig cc -- -target x86_64-macos-none \"$@\"\n")
-            );
+    #[test]
+    fn darwin_cc_wrapper_clears_sdkroot_and_adds_explicit_sdk_paths() {
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            return;
         }
-    );
+        // Run 28574600982: with SDKROOT set, cargo-zigbuild (zig < 0.15)
+        // passes `--sysroot=$SDKROOT` and zig 0.14 then resolves every
+        // -L path relative to the sysroot — no system library resolves.
+        // The darwin wrapper must clear SDKROOT before exec'ing
+        // cargo-zigbuild and pass the SDK search paths explicitly.
+        let body = render_cc_wrapper("cc", "x86_64-macos-none", true);
+        assert!(body.starts_with("#!/bin/sh\n"));
+        assert!(body.contains("unset SDKROOT"));
+        assert!(body.contains("-L$SOLDR_APPLE_SDK/usr/lib"));
+        assert!(body.contains("-F$SOLDR_APPLE_SDK/System/Library/Frameworks"));
+        assert!(body.contains("-isystem \"$SOLDR_APPLE_SDK/usr/include\""));
+        assert!(body.contains("cargo-zigbuild zig cc -- -target x86_64-macos-none"));
+        assert!(body.contains("\"$@\""));
+        // Fallback branch (no SDKROOT in env) keeps the plain invocation.
+        assert!(body.ends_with("exec cargo-zigbuild zig cc -- -target x86_64-macos-none \"$@\"\n"));
+    }
 
-    crate::timed_test!(tool_wrapper_routes_through_cargo_zigbuild, {
+    #[test]
+    fn tool_wrapper_routes_through_cargo_zigbuild() {
         if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
             return;
         }
         let body = render_tool_wrapper("ranlib");
         assert!(body.contains("cargo-zigbuild zig ranlib --"));
         assert!(body.contains("\"$@\""));
-    });
+    }
 }

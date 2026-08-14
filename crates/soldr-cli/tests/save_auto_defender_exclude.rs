@@ -18,7 +18,6 @@ use soldr_cli::cache_lib::save::{
 use soldr_cli::defender::{
     SOLDR_TEST_ASSUME_ADMIN_ENV, SOLDR_TEST_DEFENDER_EXISTING_ENV, SOLDR_TEST_DEFENDER_LOG_ENV,
 };
-use soldr_cli::timed_test;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -50,7 +49,8 @@ fn write(path: &Path, content: &[u8]) {
     fs::write(path, content).unwrap();
 }
 
-timed_test!(load_auto_defender_exclude_adds_then_removes_on_drop, {
+#[test]
+fn load_auto_defender_exclude_adds_then_removes_on_drop() {
     if !matches!(
         soldr_platform::host::facts::os(),
         soldr_platform::host::facts::HostOs::Windows
@@ -126,4 +126,4 @@ timed_test!(load_auto_defender_exclude_adds_then_removes_on_drop, {
         lines.next().is_none(),
         "exactly two cmdlet invocations expected"
     );
-});
+}

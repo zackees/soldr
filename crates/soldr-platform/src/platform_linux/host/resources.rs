@@ -82,7 +82,7 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+    #[test]
     fn cpuinfo_parser_counts_distinct_packages_and_cores() {
         let cpuinfo = "\
 processor       : 0
@@ -104,7 +104,7 @@ core id         : 0
         assert_eq!(cores_from_cpuinfo(cpuinfo), Some(3));
     }
 
-    #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+    #[test]
     fn sysfs_parser_counts_distinct_sibling_lists() {
         let temp = std::env::temp_dir().join(format!("soldr-platform-cpu-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp);

@@ -263,7 +263,8 @@ mod tests {
         }"#
     }
 
-    crate::timed_test!(v6_parser_roundtrip, {
+    #[test]
+    fn v6_parser_roundtrip() {
         let m = ManifestV6::from_json(sample_v6_json()).expect("parse ok");
         assert_eq!(m.schema_version, 6);
         let hit = m
@@ -271,18 +272,20 @@ mod tests {
             .expect("should hit");
         assert_eq!(hit.version, "1.12.9");
         assert!(hit.asset.href.contains("1.12.9"));
-    });
+    }
 
-    crate::timed_test!(v6_leaf_picks_latest_when_unpinned, {
+    #[test]
+    fn v6_leaf_picks_latest_when_unpinned() {
         let m = ManifestV6::from_json(sample_v6_json()).unwrap();
         let hit = m
             .lookup("zackees", "zccache", "x86_64-pc-windows-msvc", None)
             .unwrap();
         assert_eq!(hit.version, "1.12.9");
         assert_eq!(hit.asset.sha256.chars().next(), Some('0'));
-    });
+    }
 
-    crate::timed_test!(v6_leaf_respects_pin_override, {
+    #[test]
+    fn v6_leaf_respects_pin_override() {
         let m = ManifestV6::from_json(sample_v6_json()).unwrap();
         let hit = m
             .lookup(
@@ -294,9 +297,10 @@ mod tests {
             .unwrap();
         assert_eq!(hit.version, "1.12.8");
         assert_eq!(hit.asset.sha256.chars().next(), Some('1'));
-    });
+    }
 
-    crate::timed_test!(v6_pin_for_missing_version_returns_none, {
+    #[test]
+    fn v6_pin_for_missing_version_returns_none() {
         let m = ManifestV6::from_json(sample_v6_json()).unwrap();
         let miss = m.lookup(
             "zackees",
@@ -305,39 +309,45 @@ mod tests {
             Some("9.9.9"),
         );
         assert!(miss.is_none());
-    });
+    }
 
-    crate::timed_test!(v6_missing_triple_returns_none, {
+    #[test]
+    fn v6_missing_triple_returns_none() {
         let m = ManifestV6::from_json(sample_v6_json()).unwrap();
         assert!(m
             .lookup("zackees", "zccache", "i686-unknown-linux-gnu", None)
             .is_none());
-    });
+    }
 
-    crate::timed_test!(v6_missing_tool_returns_none, {
+    #[test]
+    fn v6_missing_tool_returns_none() {
         let m = ManifestV6::from_json(sample_v6_json()).unwrap();
         assert!(m
             .lookup("nobody", "nothing", "x86_64-pc-windows-msvc", None)
             .is_none());
-    });
+    }
 
-    crate::timed_test!(v6_rejects_wrong_schema_version, {
+    #[test]
+    fn v6_rejects_wrong_schema_version() {
         let bad = r#"{"schema_version": 5, "tools": {}}"#;
         assert!(ManifestV6::from_json(bad).is_none());
-    });
+    }
 
-    crate::timed_test!(v6_rejects_malformed_json, {
+    #[test]
+    fn v6_rejects_malformed_json() {
         assert!(ManifestV6::from_json("not-json").is_none());
         assert!(ManifestV6::from_json("").is_none());
-    });
+    }
 
-    crate::timed_test!(v6_empty_envelope_parses_and_misses_everything, {
+    #[test]
+    fn v6_empty_envelope_parses_and_misses_everything() {
         let m = ManifestV6::from_json(r#"{"schema_version": 6, "tools": {}}"#).unwrap();
         assert!(m.is_empty());
         assert!(m.lookup("a", "b", "x86_64-pc-windows-msvc", None).is_none());
-    });
+    }
 
-    crate::timed_test!(v6_prerelease_versions_are_filtered_on_publish, {
+    #[test]
+    fn v6_prerelease_versions_are_filtered_on_publish() {
         // Stable
         assert!(is_stable_version_tag("1.0.0"));
         assert!(is_stable_version_tag("v1.0.0"));
@@ -362,17 +372,19 @@ mod tests {
         assert!(!is_stable_version_tag("v1.0"));
         assert!(!is_stable_version_tag("vX.Y.Z"));
         assert!(!is_stable_version_tag("1.0.0.0"));
-    });
+    }
 
-    crate::timed_test!(embedded_blob_decompresses, {
+    #[test]
+    fn embedded_blob_decompresses() {
         let m = embedded_manifest().expect("embedded blob must parse");
         assert_eq!(m.schema_version, ManifestV6::SCHEMA_VERSION);
         // The build script compresses the checked-in snapshot, so the
         // only invariant here is "parses + matches the expected schema
         // version".
-    });
+    }
 
-    crate::timed_test!(embedded_blob_size_is_under_budget, {
+    #[test]
+    fn embedded_blob_size_is_under_budget() {
         // Sanity bound: a populated v6 mono-manifest is expected to
         // sit comfortably under 2 MiB compressed. The empty envelope
         // is single-digit bytes; the budget catches accidental
@@ -385,9 +397,10 @@ mod tests {
             embedded_manifest_bytes().len(),
             EMBED_SIZE_BUDGET_BYTES
         );
-    });
+    }
 
-    crate::timed_test!(embed_lookup_is_fast, {
+    #[test]
+    fn embed_lookup_is_fast() {
         // Cold-start path: zstd decompress + parse + first lookup
         // must amortize to sub-250ms for 10k lookups (25µs/lookup),
         // with the decompression paid exactly once via OnceLock.
@@ -432,12 +445,13 @@ mod tests {
             best < budget,
             "10k embedded-manifest lookups took {best:?} (best of 3), expected < {budget:?}"
         );
-    });
+    }
 
-    crate::timed_test!(tool_key_is_owner_slash_repo, {
+    #[test]
+    fn tool_key_is_owner_slash_repo() {
         assert_eq!(
             ManifestV6::tool_key("zackees", "zccache"),
             "zackees/zccache"
         );
-    });
+    }
 }

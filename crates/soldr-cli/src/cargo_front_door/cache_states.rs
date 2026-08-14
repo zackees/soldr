@@ -412,16 +412,18 @@ mod tests {
         }
     }
 
-    crate::timed_test!(stats_plain_lists_hits_misses_rate_saved, {
+    #[test]
+    fn stats_plain_lists_hits_misses_rate_saved() {
         let msg = cache_stats_message(&summary(42, 8), false).expect("stats present");
         assert!(msg.contains("42 HIT"), "got {msg:?}");
         assert!(msg.contains("8 MISS"), "got {msg:?}");
         assert!(msg.contains("84% hit"), "got {msg:?}");
         assert!(msg.contains("saved 12.3s"), "got {msg:?}");
         assert!(!msg.contains('\u{1b}'), "plain must carry no ANSI: {msg:?}");
-    });
+    }
 
-    crate::timed_test!(stats_colors_hit_green_miss_yellow, {
+    #[test]
+    fn stats_colors_hit_green_miss_yellow() {
         let msg = cache_stats_message(&summary(42, 8), true).expect("stats present");
         assert!(
             msg.contains("\u{1b}[32m42 HIT\u{1b}[0m"),
@@ -431,11 +433,12 @@ mod tests {
             msg.contains("\u{1b}[33m8 MISS\u{1b}[0m"),
             "miss must be yellow: {msg:?}"
         );
-    });
+    }
 
-    crate::timed_test!(stats_none_when_nothing_compiled, {
+    #[test]
+    fn stats_none_when_nothing_compiled() {
         assert!(cache_stats_message(&summary(0, 0), false).is_none());
-    });
+    }
 
     /// A journal chunk carrying: a hit with `--crate-name X`, a miss with the
     /// `--crate-name=X` spelling, a `link_hit`, an `error` (skipped), a record
@@ -455,7 +458,8 @@ mod tests {
         "\n",
     );
 
-    crate::timed_test!(journal_chunk_renders_only_hit_miss_with_a_crate_name, {
+    #[test]
+    fn journal_chunk_renders_only_hit_miss_with_a_crate_name() {
         let lines = render_journal_chunk(CHUNK, false);
         assert_eq!(
             lines,
@@ -466,15 +470,17 @@ mod tests {
             ],
             "error/no-crate-name/malformed rows must be skipped"
         );
-    });
+    }
 
-    crate::timed_test!(journal_chunk_colorizes_tags, {
+    #[test]
+    fn journal_chunk_colorizes_tags() {
         let lines = render_journal_chunk(CHUNK, true);
         assert!(lines[0].contains("\u{1b}[32m[HIT!]\u{1b}[0m"), "{lines:?}");
         assert!(lines[1].contains("\u{1b}[33m[MISS]\u{1b}[0m"), "{lines:?}");
-    });
+    }
 
-    crate::timed_test!(enabled_defaults_on_and_env_disables, {
+    #[test]
+    fn enabled_defaults_on_and_env_disables() {
         // The env var is process-global; assert both directions without
         // leaving it set for other tests in this binary.
         std::env::remove_var(NO_CACHE_STATES_ENV_VAR);
@@ -482,9 +488,10 @@ mod tests {
         std::env::set_var(NO_CACHE_STATES_ENV_VAR, "1");
         assert!(!enabled(), "disabled by SOLDR_NO_CACHE_STATES=1");
         std::env::remove_var(NO_CACHE_STATES_ENV_VAR);
-    });
+    }
 
-    crate::timed_test!(a_partial_trailing_line_is_held_until_its_newline, {
+    #[test]
+    fn a_partial_trailing_line_is_held_until_its_newline() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("compile_journal.jsonl");
         std::fs::write(
@@ -506,5 +513,5 @@ mod tests {
         let held = String::from_utf8_lossy(&pending);
         assert!(held.contains("beta"), "partial line held: {held:?}");
         assert!(!held.contains("alpha"), "complete line drained: {held:?}");
-    });
+    }
 }

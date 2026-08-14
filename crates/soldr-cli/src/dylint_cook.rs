@@ -816,7 +816,8 @@ mod tests {
         values.iter().map(|value| (*value).to_string()).collect()
     }
 
-    crate::timed_test!(parses_check_shaped_dylint_cook_scope, {
+    #[test]
+    fn parses_check_shaped_dylint_cook_scope() {
         let parsed = parse_args(&argv(&[
             "--json",
             "--plan-only",
@@ -841,9 +842,10 @@ mod tests {
         assert_eq!(parsed.packages, ["demo"]);
         assert_eq!(parsed.features, ["serde", "trace"]);
         assert_eq!(parsed.cargo_config, ["build.jobs=2"]);
-    });
+    }
 
-    crate::timed_test!(semantic_key_ignores_source_but_tracks_manifests, {
+    #[test]
+    fn semantic_key_ignores_source_but_tracks_manifests() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
         std::fs::create_dir_all(root.join("src")).unwrap();
@@ -860,9 +862,10 @@ mod tests {
         assert_eq!(first, semantic_input_hash(root, &args).unwrap());
         std::fs::write(root.join(concat!("Car", "go.lock")), "version = 4\n").unwrap();
         assert_ne!(first, semantic_input_hash(root, &args).unwrap());
-    });
+    }
 
-    crate::timed_test!(conflicting_custom_lint_toolchains_are_actionable, {
+    #[test]
+    fn conflicting_custom_lint_toolchains_are_actionable() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
         for name in ["lint-a", "lint-b"] {
@@ -884,18 +887,20 @@ mod tests {
         let error = configured_library_toolchain(root).unwrap_err().to_string();
         assert!(error.contains("conflicting"));
         assert!(error.contains("lint-a") && error.contains("lint-b"));
-    });
+    }
 
-    crate::timed_test!(warm_marker_requires_real_dependency_payload, {
+    #[test]
+    fn warm_marker_requires_real_dependency_payload() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join(MARKER_NAME), "{}").unwrap();
         assert!(!target_has_dependency_payload(temp.path()));
         std::fs::create_dir_all(temp.path().join("debug/deps")).unwrap();
         std::fs::write(temp.path().join("debug/deps/libserde-deadbeef.rmeta"), "x").unwrap();
         assert!(target_has_dependency_payload(temp.path()));
-    });
+    }
 
-    crate::timed_test!(marker_replacement_handles_windows_existing_destination, {
+    #[test]
+    fn marker_replacement_handles_windows_existing_destination() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join(MARKER_NAME);
         let temporary = temp.path().join("replacement.tmp");
@@ -919,36 +924,35 @@ mod tests {
         assert_eq!(attempts, 2);
         assert_eq!(std::fs::read(&path).unwrap(), b"new");
         assert!(!temporary.exists());
-    });
+    }
 
-    crate::timed_test!(
-        workspace_source_lock_is_shared_across_target_and_nightly_shapes,
-        {
-            let temp = tempfile::tempdir().unwrap();
-            let root = temp.path();
-            std::fs::write(root.join(concat!("Car", "go.lock")), "version = 3\n").unwrap();
-            let _nightly_a_target = root.join("target/dylint/target/nightly-2026-01-17");
-            let _nightly_b_target = root.join("other-target/dylint/target/nightly-2026-01-18");
-            let first = lock_workspace_source(root).unwrap();
-            let contender = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(workspace_source_lock_path(root))
-                .unwrap();
+    #[test]
+    fn workspace_source_lock_is_shared_across_target_and_nightly_shapes() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::write(root.join(concat!("Car", "go.lock")), "version = 3\n").unwrap();
+        let _nightly_a_target = root.join("target/dylint/target/nightly-2026-01-17");
+        let _nightly_b_target = root.join("other-target/dylint/target/nightly-2026-01-18");
+        let first = lock_workspace_source(root).unwrap();
+        let contender = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(workspace_source_lock_path(root))
+            .unwrap();
 
-            assert!(
-                contender.try_lock_exclusive().is_err(),
-                "different nightly/target shapes must contend on one workspace source lock"
-            );
-            FileExt::unlock(&first).unwrap();
-            contender
-                .try_lock_exclusive()
-                .expect("workspace lock must become available after release");
-            FileExt::unlock(&contender).unwrap();
-        }
-    );
+        assert!(
+            contender.try_lock_exclusive().is_err(),
+            "different nightly/target shapes must contend on one workspace source lock"
+        );
+        FileExt::unlock(&first).unwrap();
+        contender
+            .try_lock_exclusive()
+            .expect("workspace lock must become available after release");
+        FileExt::unlock(&contender).unwrap();
+    }
 
-    crate::timed_test!(check_shape_preserves_scope_and_private_marker, {
+    #[test]
+    fn check_shape_preserves_scope_and_private_marker() {
         let parsed = parse_args(&argv(&[
             "--profile=ci",
             "--target=aarch64-unknown-linux-gnu",
@@ -975,12 +979,13 @@ mod tests {
         assert!(built.contains(&"--workspace".to_string()));
         assert!(built.contains(&"--tests".to_string()));
         assert!(built.contains(&"--locked".to_string()));
-    });
+    }
 
-    crate::timed_test!(rejects_ambiguous_feature_scope, {
+    #[test]
+    fn rejects_ambiguous_feature_scope() {
         let error = parse_args(&argv(&["--all-features", "--no-default-features"]))
             .unwrap_err()
             .to_string();
         assert!(error.contains("conflicts"));
-    });
+    }
 }

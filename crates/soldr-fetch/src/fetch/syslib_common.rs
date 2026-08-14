@@ -251,32 +251,35 @@ fn extract_tar_zst<R: std::io::Read>(reader: R, dest: &Path) -> Result<(), Soldr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::timed_test;
     use std::time::Duration;
 
-    timed_test!(asset_url_layout, Duration::from_secs(5), {
+    #[test]
+    fn asset_url_layout() {
         let u = asset_url_for("zstd", "1.5.7", "linux-x64-gnu");
         assert!(
             u.contains("/zstd/1.5.7/linux-x64-gnu/bundle.tar.zst"),
             "{u}"
         );
         assert!(u.starts_with("https://media.githubusercontent.com/"));
-    });
+    }
 
-    timed_test!(slug_distinct_per_target, Duration::from_secs(5), {
+    #[test]
+    fn slug_distinct_per_target() {
         let a = asset_url_for("sqlite", "3.46.0", "windows-x64");
         let b = asset_url_for("sqlite", "3.46.0", "linux-arm64-musl");
         assert_ne!(a, b);
-    });
+    }
 
-    timed_test!(large_binary_download_uses_shared_idle_timeout, {
+    #[test]
+    fn large_binary_download_uses_shared_idle_timeout() {
         assert_eq!(
             super::super::stream_download::ASSET_IDLE_TIMEOUT,
             Duration::from_secs(120)
         );
-    });
+    }
 
-    timed_test!(install_lock_serializes_racing_threads, {
+    #[test]
+    fn install_lock_serializes_racing_threads() {
         // 8 threads race the same install key and each performs a
         // deliberately non-atomic read-modify-write on a shared file
         // inside the critical section. Without mutual exclusion the
@@ -316,9 +319,10 @@ mod tests {
             .parse()
             .unwrap();
         assert_eq!(final_count, 8, "install lock must serialize writers");
-    });
+    }
 
-    crate::timed_test!(missing_entry_message_names_the_real_cause, {
+    #[test]
+    fn missing_entry_message_names_the_real_cause() {
         // An index that loaded but does not list the asset: a genuine
         // ingestion gap, and the tracking issue is the right pointer.
         let ingestion_gap =
@@ -351,5 +355,5 @@ mod tests {
         for message in [&ingestion_gap, &never_loaded] {
             assert!(message.contains("zstd/1.5.6/linux-x64-gnu"), "{message}");
         }
-    });
+    }
 }

@@ -398,7 +398,7 @@ mod tests {
         assert_eq!(s.max_crate, 30 * 86_400);
     }
 
-    #[test] // allow-bare-test: soldr-cache legacy test module has not yet migrated to timed_test!
+    #[test]
     fn cargo_gc_duration_arg_uses_cargo_accepted_syntax() {
         assert_eq!(cargo_gc_duration_arg(604_800), "604800 seconds");
     }

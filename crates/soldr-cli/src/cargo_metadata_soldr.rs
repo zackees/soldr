@@ -220,7 +220,8 @@ mod tests {
         p
     }
 
-    crate::timed_test!(reads_workspace_metadata, {
+    #[test]
+    fn reads_workspace_metadata() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let p = write_fixture(
             tmp.path(),
@@ -242,9 +243,10 @@ targets = [
                 "aarch64-apple-darwin".to_string(),
             ]
         );
-    });
+    }
 
-    crate::timed_test!(reads_package_metadata_when_no_workspace, {
+    #[test]
+    fn reads_package_metadata_when_no_workspace() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let p = write_fixture(
             tmp.path(),
@@ -259,9 +261,10 @@ targets = ["x86_64-unknown-linux-gnu"]
         );
         let meta = read_soldr_metadata(&p).expect("parse");
         assert_eq!(meta.targets, vec!["x86_64-unknown-linux-gnu".to_string()]);
-    });
+    }
 
-    crate::timed_test!(workspace_metadata_wins_over_package, {
+    #[test]
+    fn workspace_metadata_wins_over_package() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let p = write_fixture(
             tmp.path(),
@@ -282,9 +285,10 @@ targets = ["x86_64-pc-windows-msvc"]
         let meta = read_soldr_metadata(&p).expect("parse");
         // workspace block wins
         assert_eq!(meta.targets, vec!["x86_64-pc-windows-msvc".to_string()]);
-    });
+    }
 
-    crate::timed_test!(no_metadata_returns_empty, {
+    #[test]
+    fn no_metadata_returns_empty() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let p = write_fixture(
             tmp.path(),
@@ -296,9 +300,10 @@ version = "0.1.0"
         );
         let meta = read_soldr_metadata(&p).expect("parse");
         assert!(meta.targets.is_empty());
-    });
+    }
 
-    crate::timed_test!(reads_prefer_newer_global, {
+    #[test]
+    fn reads_prefer_newer_global() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let root = tmp.path().join("workspace");
         let nested = root.join("member").join("src");
@@ -314,18 +319,20 @@ version = "0.1.0"
         .expect("member manifest");
 
         assert!(prefer_newer_global_from(&nested));
-    });
+    }
 
-    crate::timed_test!(malformed_toml_errors_with_path, {
+    #[test]
+    fn malformed_toml_errors_with_path() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let p = write_fixture(tmp.path(), "this is = = not valid toml");
         let err = read_soldr_metadata(&p).expect_err("malformed");
         let msg = err.to_string();
         assert!(msg.contains("parse"), "msg: {msg}");
         assert!(msg.contains("Cargo.toml"), "msg: {msg}");
-    });
+    }
 
-    crate::timed_test!(find_cargo_toml_walks_up, {
+    #[test]
+    fn find_cargo_toml_walks_up() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let p = write_fixture(tmp.path(), "[package]\nname = \"x\"\nversion = \"0\"\n");
         // create a nested subdir
@@ -333,9 +340,10 @@ version = "0.1.0"
         std::fs::create_dir_all(&nested).expect("mkdir");
         let found = find_cargo_toml(&nested).expect("walked up");
         assert_eq!(found, p);
-    });
+    }
 
-    crate::timed_test!(find_cargo_toml_returns_none_when_missing, {
+    #[test]
+    fn find_cargo_toml_returns_none_when_missing() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let nested = tmp.path().join("nothing-here");
         std::fs::create_dir_all(&nested).expect("mkdir");
@@ -346,5 +354,5 @@ version = "0.1.0"
         // We can't guarantee no Cargo.toml exists above tmpdir on
         // every host, so only assert this is a safe call (no panic).
         let _ = find_cargo_toml(&nested);
-    });
+    }
 }

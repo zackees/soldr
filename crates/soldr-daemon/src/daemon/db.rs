@@ -741,7 +741,8 @@ mod tests {
         assert_eq!(limited.len(), 2);
     }
 
-    crate::timed_test!(finalize_build_preserves_existing_fields_in_one_txn, {
+    #[test]
+    fn finalize_build_preserves_existing_fields_in_one_txn() {
         let temp = TempDir::new().expect("tempdir");
         let path = temp.path().join("state.redb");
         upsert_build(
@@ -776,7 +777,7 @@ mod tests {
         assert_eq!(minted.started_at_ms, 4_000);
         assert_eq!(minted.exit_code, Some(1));
         assert_eq!(minted.total_wall_ms, Some(0));
-    });
+    }
 
     #[test]
     fn prune_events_drops_old_rows() {
@@ -819,7 +820,8 @@ mod tests {
     // exist. On a database nobody has written yet the tables must simply
     // stay absent, and the reads must answer "empty" rather than creating
     // them.
-    crate::timed_test!(read_paths_never_create_tables, {
+    #[test]
+    fn read_paths_never_create_tables() {
         let temp = TempDir::new().expect("tempdir");
         let path = temp.path().join("state.redb");
 
@@ -849,7 +851,7 @@ mod tests {
                 "read paths must not have created `{name}` (soldr#2224)"
             );
         }
-    });
+    }
 
     /// `ensure_initialized` evicts pre-#580 (untagged) rows on first
     /// startup. Subsequent calls find nothing to drop.

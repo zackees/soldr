@@ -68,60 +68,54 @@ fn wait_until_bound(child: &mut std::process::Child, deadline: Instant) -> bool 
     }
 }
 
-soldr_cli::timed_test!(
-    broker_status_reports_not_running_when_no_broker,
-    Duration::from_secs(30),
-    {
-        // With no broker serving, status must remain a successful probe.
-        let home = common::unique_temp_dir("broker-status-absent-home");
+#[test]
+fn broker_status_reports_not_running_when_no_broker() {
+    // With no broker serving, status must remain a successful probe.
+    let home = common::unique_temp_dir("broker-status-absent-home");
+    let (output, code) = run_status(&home);
+    assert_eq!(
+        code, 0,
+        "status against no broker must exit 0; got:\n{output}"
+    );
+    assert!(
+        output.contains("not running"),
+        "status against no broker must report 'not running'; got:\n{output}"
+    );
+}
+
+#[test]
+fn broker_status_reports_snapshot_from_running_broker() {
+    let home = common::unique_temp_dir("broker-status-live-home");
+    let mut broker = spawn_broker(&home);
+    assert!(
+        wait_until_bound(&mut broker, Instant::now() + READY_TIMEOUT),
+        "broker never printed its bound-at line within {READY_TIMEOUT:?}"
+    );
+
+    // The control socket binds just after the "binding at" line, so poll the
+    // status query until the admin round-trip lands (or the budget expires).
+    let deadline = Instant::now() + STATUS_POLL_BUDGET;
+    let (ok, last) = loop {
         let (output, code) = run_status(&home);
-        assert_eq!(
-            code, 0,
-            "status against no broker must exit 0; got:\n{output}"
-        );
-        assert!(
-            output.contains("not running"),
-            "status against no broker must report 'not running'; got:\n{output}"
-        );
-    }
-);
+        if code == 0 && output.contains("broker_instance:") {
+            break (true, output);
+        }
+        if Instant::now() >= deadline {
+            break (false, output);
+        }
+        std::thread::sleep(POLL);
+    };
 
-soldr_cli::timed_test!(
-    broker_status_reports_snapshot_from_running_broker,
-    Duration::from_secs(90),
-    {
-        let home = common::unique_temp_dir("broker-status-live-home");
-        let mut broker = spawn_broker(&home);
-        assert!(
-            wait_until_bound(&mut broker, Instant::now() + READY_TIMEOUT),
-            "broker never printed its bound-at line within {READY_TIMEOUT:?}"
-        );
+    let _ = broker.kill();
+    let _ = broker.wait();
 
-        // The control socket binds just after the "binding at" line, so poll the
-        // status query until the admin round-trip lands (or the budget expires).
-        let deadline = Instant::now() + STATUS_POLL_BUDGET;
-        let (ok, last) = loop {
-            let (output, code) = run_status(&home);
-            if code == 0 && output.contains("broker_instance:") {
-                break (true, output);
-            }
-            if Instant::now() >= deadline {
-                break (false, output);
-            }
-            std::thread::sleep(POLL);
-        };
-
-        let _ = broker.kill();
-        let _ = broker.wait();
-
-        assert!(
-            ok,
-            "status never returned a live snapshot within {STATUS_POLL_BUDGET:?}; \
+    assert!(
+        ok,
+        "status never returned a live snapshot within {STATUS_POLL_BUDGET:?}; \
              last output was:\n{last}"
-        );
-        assert!(
-            last.contains("accepting_hello:"),
-            "live status snapshot missing accepting_hello; got:\n{last}"
-        );
-    }
-);
+    );
+    assert!(
+        last.contains("accepting_hello:"),
+        "live status snapshot missing accepting_hello; got:\n{last}"
+    );
+}

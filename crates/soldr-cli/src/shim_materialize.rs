@@ -492,7 +492,8 @@ mod tests {
     // -- and one of them overwrote a correct trampoline written moments
     // earlier by `soldr shims`, so the same path could look right and then
     // break.
-    crate::timed_test!(position_dependent_source_gets_a_trampoline, {
+    #[test]
+    fn position_dependent_source_gets_a_trampoline() {
         let tmp = tempfile::tempdir().unwrap();
         let source = position_dependent_source(&tmp);
         let target = tmp.path().join("shims").join("rustc");
@@ -527,12 +528,13 @@ mod tests {
             body.contains(&source.to_string_lossy().to_string()),
             "trampoline must exec the source in place: {body}"
         );
-    });
+    }
 
     // Idempotency matters here specifically: comparing a small script to a
     // Mach-O always differs, so a naive byte comparison would republish the
     // shim on every cargo invocation and undo the #1831 memo fast path.
-    crate::timed_test!(trampoline_materialization_is_idempotent, {
+    #[test]
+    fn trampoline_materialization_is_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
         let source = position_dependent_source(&tmp);
         let target = tmp.path().join("shims").join("rustc");
@@ -544,11 +546,12 @@ mod tests {
             "an unchanged trampoline must not be rewritten"
         );
         assert_eq!(second.link_mode, LINK_MODE_TRAMPOLINE);
-    });
+    }
 
     // The reverse direction of the same bug: a stale hardlinked Mach-O
     // sitting where a trampoline belongs must be replaced, not kept.
-    crate::timed_test!(trampoline_replaces_a_stale_hardlinked_shim, {
+    #[test]
+    fn trampoline_replaces_a_stale_hardlinked_shim() {
         let tmp = tempfile::tempdir().unwrap();
         let source = position_dependent_source(&tmp);
         let target = tmp.path().join("shims").join("rustc");
@@ -560,20 +563,22 @@ mod tests {
         assert!(std::fs::read_to_string(&target)
             .unwrap()
             .starts_with("#!/bin/sh"));
-    });
+    }
 
     // Ordinary binaries must keep the fast path untouched -- the startup
     // latency work in #1831/#1834 depends on it.
-    crate::timed_test!(ordinary_source_still_takes_the_hardlink_path, {
+    #[test]
+    fn ordinary_source_still_takes_the_hardlink_path() {
         let tmp = tempfile::tempdir().unwrap();
         let source = fake_source(&tmp, b"an ordinary binary mentioning nothing special");
         let target = tmp.path().join("shims").join("cargo");
         let result = materialize_executable(&source, &target).unwrap();
         assert!(result.created);
         assert_ne!(result.link_mode, LINK_MODE_TRAMPOLINE);
-    });
+    }
 
-    crate::timed_test!(materialize_executable_creates_matching_target, {
+    #[test]
+    fn materialize_executable_creates_matching_target() {
         let tmp = tempfile::tempdir().unwrap();
         let source = fake_source(&tmp, b"fake-soldr-v1");
         let target = tmp.path().join("cargo");
@@ -581,18 +586,20 @@ mod tests {
         assert!(result.created);
         assert!([LINK_MODE_HARDLINK, LINK_MODE_COPY].contains(&result.link_mode));
         assert_eq!(std::fs::read(&target).unwrap(), b"fake-soldr-v1");
-    });
+    }
 
-    crate::timed_test!(materialize_executable_is_idempotent_for_matching_bytes, {
+    #[test]
+    fn materialize_executable_is_idempotent_for_matching_bytes() {
         let tmp = tempfile::tempdir().unwrap();
         let source = fake_source(&tmp, b"fake-soldr-v1");
         let target = tmp.path().join("rustc");
         assert!(materialize_executable(&source, &target).unwrap().created);
         let second = materialize_executable(&source, &target).unwrap();
         assert!(!second.created);
-    });
+    }
 
-    crate::timed_test!(unchanged_copy_uses_validated_materialization_memo, {
+    #[test]
+    fn unchanged_copy_uses_validated_materialization_memo() {
         let tmp = tempfile::tempdir().unwrap();
         let source = fake_source(&tmp, b"fake-soldr-v1");
         let target = tmp.path().join("rustc");
@@ -626,9 +633,10 @@ mod tests {
         let replaced = materialize_executable(&source, &target).unwrap();
         assert!(replaced.created);
         assert_eq!(std::fs::read(target).unwrap(), b"fake-soldr-v2");
-    });
+    }
 
-    crate::timed_test!(memo_rejects_source_change_after_content_verification, {
+    #[test]
+    fn memo_rejects_source_change_after_content_verification() {
         let tmp = tempfile::tempdir().unwrap();
         let source = fake_source(&tmp, b"fake-soldr-v1");
         let target = tmp.path().join("rustc");
@@ -645,38 +653,37 @@ mod tests {
             Some(&verified.target),
         ));
         assert!(!materialization_memo_path(&target).exists());
-    });
+    }
 
-    crate::timed_test!(
-        materialize_executable_accepts_an_identical_concurrent_winner,
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let source = fake_source(&tmp, b"fake-soldr-v1");
-            let target = tmp.path().join("rustc");
-            let barrier = std::sync::Arc::new(std::sync::Barrier::new(16));
-            let writers = (0..16)
-                .map(|_| {
-                    let source = source.clone();
-                    let target = target.clone();
-                    let barrier = std::sync::Arc::clone(&barrier);
-                    std::thread::spawn(move || {
-                        barrier.wait();
-                        materialize_executable(&source, &target)
-                    })
+    #[test]
+    fn materialize_executable_accepts_an_identical_concurrent_winner() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = fake_source(&tmp, b"fake-soldr-v1");
+        let target = tmp.path().join("rustc");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(16));
+        let writers = (0..16)
+            .map(|_| {
+                let source = source.clone();
+                let target = target.clone();
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    materialize_executable(&source, &target)
                 })
-                .collect::<Vec<_>>();
+            })
+            .collect::<Vec<_>>();
 
-            for writer in writers {
-                writer
-                    .join()
-                    .expect("materialization writer panicked")
-                    .expect("concurrent materialization failed");
-            }
-            assert_eq!(std::fs::read(target).unwrap(), b"fake-soldr-v1");
+        for writer in writers {
+            writer
+                .join()
+                .expect("materialization writer panicked")
+                .expect("concurrent materialization failed");
         }
-    );
+        assert_eq!(std::fs::read(target).unwrap(), b"fake-soldr-v1");
+    }
 
-    crate::timed_test!(materialize_executable_replaces_different_bytes, {
+    #[test]
+    fn materialize_executable_replaces_different_bytes() {
         let tmp = tempfile::tempdir().unwrap();
         let source = fake_source(&tmp, b"fake-soldr-v1");
         let target = tmp.path().join("rustfmt");
@@ -686,7 +693,7 @@ mod tests {
         let replaced = materialize_executable(&source, &target).unwrap();
         assert!(replaced.created);
         assert_eq!(std::fs::read(&target).unwrap(), b"fake-soldr-v2");
-    });
+    }
 
     // Regression guard for the concurrent-install failure: reinstalling soldr
     // while a build was running could not replace a shim whose image was
@@ -698,7 +705,8 @@ mod tests {
     // aside succeeds where deleting it cannot.
     //
     // This test fails against the pre-fix implementation.
-    crate::timed_test!(replaces_a_shim_whose_image_is_currently_running, {
+    #[test]
+    fn replaces_a_shim_whose_image_is_currently_running() {
         if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
             // Only Windows refuses to delete or overwrite a running
             // image; the test fixtures are Windows-only.
@@ -733,9 +741,10 @@ mod tests {
         let replaced = result.expect("replacing a running shim must succeed");
         assert!(replaced.created);
         assert_eq!(std::fs::read(&target).unwrap(), b"fake-soldr-next-version");
-    });
+    }
 
-    crate::timed_test!(replacing_a_shim_keeps_the_path_readable_for_spawners, {
+    #[test]
+    fn replacing_a_shim_keeps_the_path_readable_for_spawners() {
         let tmp = tempfile::tempdir().unwrap();
         let source = fake_source(&tmp, b"fake-soldr-v1");
         let target = tmp.path().join("rustc");
@@ -771,9 +780,10 @@ mod tests {
             0,
             "shim path disappeared while it was being replaced"
         );
-    });
+    }
 
-    crate::timed_test!(swap_stale_target_restores_the_shim_when_publish_fails, {
+    #[test]
+    fn swap_stale_target_restores_the_shim_when_publish_fails() {
         let tmp = tempfile::tempdir().unwrap();
         let target = tmp.path().join("rustc");
         std::fs::write(&target, b"stale-shim").unwrap();
@@ -787,9 +797,10 @@ mod tests {
             b"stale-shim",
             "a failed publish must leave the previous shim in place"
         );
-    });
+    }
 
-    crate::timed_test!(stale_paths_are_unique_and_swept, {
+    #[test]
+    fn stale_paths_are_unique_and_swept() {
         let tmp = tempfile::tempdir().unwrap();
         let target = tmp.path().join("rustc");
         let mut paths = std::collections::HashSet::new();
@@ -805,14 +816,15 @@ mod tests {
             assert!(!path.exists(), "stale sibling was not swept: {path:?}");
         }
         assert!(target.exists(), "sweep must not remove the live shim");
-    });
+    }
 
-    crate::timed_test!(temporary_paths_are_unique_within_one_process, {
+    #[test]
+    fn temporary_paths_are_unique_within_one_process() {
         let tmp = tempfile::tempdir().unwrap();
         let target = tmp.path().join("rustc");
         let mut paths = std::collections::HashSet::new();
         for _ in 0..1_024 {
             assert!(paths.insert(tmp_path_for(&target)));
         }
-    });
+    }
 }

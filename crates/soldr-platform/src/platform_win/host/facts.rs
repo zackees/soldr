@@ -160,13 +160,13 @@ pub fn info() -> HostInfo {
 mod tests {
     use super::*;
 
-    #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+    #[test]
     fn windows_facts_report_windows() {
         assert_eq!(os(), HostOs::Windows);
         assert_eq!(info().libc, HostLibc::None);
     }
 
-    #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+    #[test]
     fn powershell_version_json_parses_the_dotted_triple() {
         let json = r#"{"Major":10,"Minor":0,"Build":19045}"#;
         assert_eq!(parse_powershell_version_json(json), Some("10.0.19045".into()));

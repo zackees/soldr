@@ -184,7 +184,8 @@ fn dump_section(input: &Path, section: &str, output: &Path) -> Result<(), SoldrE
 mod tests {
     use super::*;
 
-    crate::timed_test!(artifact_without_dsym_is_unchanged, {
+    #[test]
+    fn artifact_without_dsym_is_unchanged() {
         let tmp = tempfile::tempdir().expect("temp");
         let target = tmp.path().join("target");
         std::fs::create_dir_all(&target).expect("target");
@@ -193,9 +194,10 @@ mod tests {
         let before = std::fs::read(&artifact).expect("read");
         embed_packed_dwarf_for_artifacts(Some(&target), &["app".into()]).expect("no-op");
         assert_eq!(std::fs::read(&artifact).expect("read"), before);
-    });
+    }
 
-    crate::timed_test!(finds_both_dsym_naming_conventions, {
+    #[test]
+    fn finds_both_dsym_naming_conventions() {
         let tmp = tempfile::tempdir().expect("temp");
         let artifact = tmp.path().join("app");
         std::fs::write(&artifact, b"artifact").expect("artifact");
@@ -205,5 +207,5 @@ mod tests {
             find_dsym_bundle(&artifact),
             Some(tmp.path().join("app.dSYM"))
         );
-    });
+    }
 }

@@ -6,7 +6,7 @@ use soldr_cli::broker_identity::{
     resolve_unix_for_executable, resolve_unix_for_home, BrokerEndpointFallback,
 };
 
-#[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+#[test]
 fn linux_contract_mapping_is_exact() {
     if matches!(
         soldr_platform::host::facts::os(),
@@ -33,7 +33,7 @@ fn linux_contract_mapping_is_exact() {
     assert_eq!(endpoint.fallback, None);
 }
 
-#[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+#[test]
 fn detached_broker_keeps_endpoint_beside_its_staged_executable() {
     if matches!(
         soldr_platform::host::facts::os(),
@@ -55,7 +55,7 @@ fn detached_broker_keeps_endpoint_beside_its_staged_executable() {
     assert_eq!(endpoint.bind_endpoint, endpoint.logical_socket_path);
 }
 
-#[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+#[test]
 fn unix_daemon_session_mapping_is_executable_sibling() {
     if matches!(
         soldr_platform::host::facts::os(),
@@ -78,7 +78,7 @@ fn unix_daemon_session_mapping_is_executable_sibling() {
     assert!(!endpoint.path.contains("sid"));
 }
 
-#[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+#[test]
 fn unix_daemon_session_mapping_distinguishes_executable_leaves() {
     if matches!(
         soldr_platform::host::facts::os(),
@@ -99,7 +99,7 @@ fn unix_daemon_session_mapping_distinguishes_executable_leaves() {
     assert!(second.path.ends_with("soldr-daemon-b.session.sock"));
 }
 
-#[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+#[test]
 fn canonical_existing_ancestor_collapses_symlinked_home_spelling() {
     if matches!(
         soldr_platform::host::facts::os(),
@@ -129,7 +129,7 @@ fn canonical_existing_ancestor_collapses_symlinked_home_spelling() {
     );
 }
 
-#[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+#[test]
 fn unix_daemon_session_overflow_uses_a_short_path_derived_name() {
     if matches!(
         soldr_platform::host::facts::os(),
@@ -154,7 +154,7 @@ fn unix_daemon_session_overflow_uses_a_short_path_derived_name() {
     assert!(!first.path.contains("sid"));
 }
 
-#[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+#[test]
 fn unix_fallback_order_is_overflow_then_filesystem() {
     if matches!(
         soldr_platform::host::facts::os(),
@@ -198,7 +198,7 @@ fn unix_fallback_order_is_overflow_then_filesystem() {
     assert_ne!(overflow.bind_endpoint, other.bind_endpoint);
 }
 
-#[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+#[test]
 fn unix_overflow_fallback_retries_under_tmp_when_runtime_dir_is_too_long() {
     if matches!(
         soldr_platform::host::facts::os(),

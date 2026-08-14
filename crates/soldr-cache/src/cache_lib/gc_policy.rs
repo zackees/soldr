@@ -338,7 +338,8 @@ mod tests {
         }
     }
 
-    crate::timed_test!(plan_full_tick_matches_registry_order, {
+    #[test]
+    fn plan_full_tick_matches_registry_order() {
         let actions = plan(&registry(), &context(Driver::Daemon, TickKind::Full));
         let ids: Vec<_> = actions.iter().map(|action| action.category_id).collect();
         assert_eq!(
@@ -355,9 +356,10 @@ mod tests {
                 "legacy_zccache",
             ]
         );
-    });
+    }
 
-    crate::timed_test!(plan_encodes_current_constants_exactly, {
+    #[test]
+    fn plan_encodes_current_constants_exactly() {
         let actions = plan(&registry(), &context(Driver::Daemon, TickKind::Full));
         let by = |id| {
             actions
@@ -381,9 +383,10 @@ mod tests {
             Some(Duration::from_secs(30 * DAY))
         );
         assert_eq!(by("workspace_targets").larger_than_bytes, 256 * 1024 * 1024);
-    });
+    }
 
-    crate::timed_test!(plan_pressure_tick_uses_pressure_ages, {
+    #[test]
+    fn plan_pressure_tick_uses_pressure_ages() {
         let actions = plan(&registry(), &context(Driver::Daemon, TickKind::Pressure));
         let by = |id| {
             actions
@@ -402,17 +405,19 @@ mod tests {
         assert!(actions
             .iter()
             .all(|action| action.category_id != "daemon_events"));
-    });
+    }
 
-    crate::timed_test!(plan_gates_workspace_targets_when_auto_gc_is_disabled, {
+    #[test]
+    fn plan_gates_workspace_targets_when_auto_gc_is_disabled() {
         let mut ctx = context(Driver::Daemon, TickKind::Full);
         ctx.config.auto_gc.enabled = false;
         assert!(plan(&registry(), &ctx)
             .iter()
             .all(|action| action.category_id != "workspace_targets"));
-    });
+    }
 
-    crate::timed_test!(plan_cli_keeps_event_and_install_order, {
+    #[test]
+    fn plan_cli_keeps_event_and_install_order() {
         let actions = plan(&registry(), &context(Driver::Cli, TickKind::Pressure));
         let ids: Vec<_> = actions.iter().map(|action| action.category_id).collect();
         assert_eq!(
@@ -426,5 +431,5 @@ mod tests {
                 "workspace_targets",
             ]
         );
-    });
+    }
 }

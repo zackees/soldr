@@ -3,7 +3,8 @@
 
 use super::*;
 
-crate::timed_test!(managed_wrapper_shim_has_compiler_identity, {
+#[test]
+fn managed_wrapper_shim_has_compiler_identity() {
     let root = tempfile::tempdir().expect("tempdir");
     let paths = SoldrPaths::with_root(root.path().join("soldr"));
 
@@ -18,9 +19,10 @@ crate::timed_test!(managed_wrapper_shim_has_compiler_identity, {
         wrapper.parent(),
         Some(paths.versioned_shims_dir().as_path())
     );
-});
+}
 
-crate::timed_test!(dylint_wrapper_shim_has_dedicated_identity, {
+#[test]
+fn dylint_wrapper_shim_has_dedicated_identity() {
     let root = tempfile::tempdir().expect("tempdir");
     let paths = SoldrPaths::with_root(root.path().join("soldr"));
     let wrapper = dylint_wrapper_shim_binary(&paths).expect("materialize Dylint wrapper");
@@ -34,27 +36,26 @@ crate::timed_test!(dylint_wrapper_shim_has_dedicated_identity, {
         wrapper.parent(),
         Some(paths.versioned_shims_dir().as_path())
     );
-});
+}
 
-crate::timed_test!(
-    relocated_runtime_alias_is_materialized_beside_current_exe,
-    {
-        let source = std::path::Path::new("/opt/package/bin/soldr");
-        let current = std::path::Path::new("/tmp/runtime/hash/soldr");
-        let (current_target, source_target) =
-            runtime_alias_targets(source, current, "soldr-daemon").expect("alias targets");
-        assert_eq!(
-            current_target,
-            std::path::Path::new("/tmp/runtime/hash/soldr-daemon")
-        );
-        assert_eq!(
-            source_target.as_deref(),
-            Some(std::path::Path::new("/opt/package/bin/soldr-daemon"))
-        );
-    }
-);
+#[test]
+fn relocated_runtime_alias_is_materialized_beside_current_exe() {
+    let source = std::path::Path::new("/opt/package/bin/soldr");
+    let current = std::path::Path::new("/tmp/runtime/hash/soldr");
+    let (current_target, source_target) =
+        runtime_alias_targets(source, current, "soldr-daemon").expect("alias targets");
+    assert_eq!(
+        current_target,
+        std::path::Path::new("/tmp/runtime/hash/soldr-daemon")
+    );
+    assert_eq!(
+        source_target.as_deref(),
+        Some(std::path::Path::new("/opt/package/bin/soldr-daemon"))
+    );
+}
 
-crate::timed_test!(ancestor_search_canonicalizes_the_user_home_boundary, {
+#[test]
+fn ancestor_search_canonicalizes_the_user_home_boundary() {
     let temp = tempfile::tempdir().expect("tempdir");
     let home = temp.path().join("home");
     let nested = home.join("nested");
@@ -76,7 +77,7 @@ crate::timed_test!(ancestor_search_canonicalizes_the_user_home_boundary, {
         find_ancestor_dir_bounded(&project, ".cargo", Some(&home)).as_deref(),
         Some(canonical_project_tools.as_path()),
     );
-});
+}
 
 #[test]
 fn parse_tool_spec_defaults_to_latest_version() {
@@ -173,13 +174,15 @@ fn sanitize_toolchain_for_path_replaces_unsafe_characters() {
     );
 }
 
-crate::timed_test!(disk_cache_lookup_returns_none_when_uncached, {
+#[test]
+fn disk_cache_lookup_returns_none_when_uncached() {
     let root = tempfile::tempdir().expect("tempdir");
     let scope = test_scope(root.path(), "x86_64-unknown-linux-gnu");
     assert!(disk_cache_lookup_in(root.path(), &scope, "nightly-2026-01-18", "rustc").is_none());
-});
+}
 
-crate::timed_test!(disk_cache_round_trips_a_resolved_path, {
+#[test]
+fn disk_cache_round_trips_a_resolved_path() {
     let root = tempfile::tempdir().expect("tempdir");
     // The disk cache only trusts entries whose target file still
     // exists, so materialize a real file to point at.
@@ -202,9 +205,10 @@ crate::timed_test!(disk_cache_round_trips_a_resolved_path, {
         toolchain_bin_disk_cache_path_in(root.path(), &scope, "nightly-2026-01-18", "rustc");
     assert!(cache_file.is_file());
     assert!(cache_file.starts_with(root.path().join("toolchain-bins").join("v2")));
-});
+}
 
-crate::timed_test!(disk_cache_ignores_stale_entry_whose_target_is_gone, {
+#[test]
+fn disk_cache_ignores_stale_entry_whose_target_is_gone() {
     let root = tempfile::tempdir().expect("tempdir");
     let resolved = root.path().join("rustc-real");
     std::fs::write(&resolved, b"stub").expect("write stub binary");
@@ -223,9 +227,10 @@ crate::timed_test!(disk_cache_ignores_stale_entry_whose_target_is_gone, {
         disk_cache_lookup_in(root.path(), &scope, "nightly-2026-01-18", "rustc").is_none(),
         "a cache entry pointing at a missing file must not be trusted"
     );
-});
+}
 
-crate::timed_test!(toolchain_bin_memo_revalidates_and_evicts_stale_paths, {
+#[test]
+fn toolchain_bin_memo_revalidates_and_evicts_stale_paths() {
     let root = tempfile::tempdir().expect("tempdir");
     let scope = test_scope(root.path(), "x86_64-unknown-linux-gnu");
     let path = root.path().join("compiler");
@@ -238,9 +243,10 @@ crate::timed_test!(toolchain_bin_memo_revalidates_and_evicts_stale_paths, {
     );
     std::fs::remove_file(path).expect("remove memoized binary");
     assert!(toolchain_bin_memo_lookup(&scope, "memo-test-channel", "rustc").is_none());
-});
+}
 
-crate::timed_test!(toolchain_bin_cache_scope_separates_homes_and_hosts, {
+#[test]
+fn toolchain_bin_cache_scope_separates_homes_and_hosts() {
     let root = tempfile::tempdir().expect("tempdir");
     let home_a = root.path().join("home-a");
     let home_b = root.path().join("home-b");
@@ -249,34 +255,29 @@ crate::timed_test!(toolchain_bin_cache_scope_separates_homes_and_hosts, {
     let c = test_scope(&home_a, "aarch64-unknown-linux-gnu");
     assert_ne!(a.stable_key(), b.stable_key());
     assert_ne!(a.stable_key(), c.stable_key());
-});
+}
 
-crate::timed_test!(
-    toolchain_bin_cache_scope_absolutizes_relative_homes_per_cwd,
-    {
-        let root = tempfile::tempdir().expect("tempdir");
-        let cwd_a = root.path().join("checkout-a");
-        let cwd_b = root.path().join("checkout-b");
-        std::fs::create_dir_all(&cwd_a).expect("cwd a");
-        std::fs::create_dir_all(&cwd_b).expect("cwd b");
-        let relative = PathBuf::from(".rustup");
-        let a = ToolchainBinCacheScope::from_home(
-            relative.clone(),
-            "x86_64-unknown-linux-gnu".to_string(),
-            &cwd_a,
-        )
-        .expect("scope a");
-        let b = ToolchainBinCacheScope::from_home(
-            relative,
-            "x86_64-unknown-linux-gnu".to_string(),
-            &cwd_b,
-        )
-        .expect("scope b");
-        assert!(a.rustup_home.is_absolute());
-        assert!(b.rustup_home.is_absolute());
-        assert_ne!(a.stable_key(), b.stable_key());
-    }
-);
+#[test]
+fn toolchain_bin_cache_scope_absolutizes_relative_homes_per_cwd() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let cwd_a = root.path().join("checkout-a");
+    let cwd_b = root.path().join("checkout-b");
+    std::fs::create_dir_all(&cwd_a).expect("cwd a");
+    std::fs::create_dir_all(&cwd_b).expect("cwd b");
+    let relative = PathBuf::from(".rustup");
+    let a = ToolchainBinCacheScope::from_home(
+        relative.clone(),
+        "x86_64-unknown-linux-gnu".to_string(),
+        &cwd_a,
+    )
+    .expect("scope a");
+    let b =
+        ToolchainBinCacheScope::from_home(relative, "x86_64-unknown-linux-gnu".to_string(), &cwd_b)
+            .expect("scope b");
+    assert!(a.rustup_home.is_absolute());
+    assert!(b.rustup_home.is_absolute());
+    assert_ne!(a.stable_key(), b.stable_key());
+}
 
 #[test]
 fn toolchain_bin_cache_disabled_only_on_off_value() {
@@ -313,7 +314,8 @@ fn toolchain_bin_cache_disabled_only_on_off_value() {
 // asserts on, so its classification is pinned here rather than left to be
 // re-derived from the branch it replaced.
 
-crate::timed_test!(a_binary_inside_the_managed_cargo_home_is_managed, {
+#[test]
+fn a_binary_inside_the_managed_cargo_home_is_managed() {
     let temp = tempfile::tempdir().expect("tempdir");
     let paths = SoldrPaths::with_root(temp.path().to_path_buf());
     let managed = crate::fetch::managed_cargo_home(&paths);
@@ -322,9 +324,10 @@ crate::timed_test!(a_binary_inside_the_managed_cargo_home_is_managed, {
     std::fs::write(&binary, b"").expect("write");
 
     assert_eq!(home_origin_for_binary(&binary, &paths), HomeOrigin::Managed);
-});
+}
 
-crate::timed_test!(a_binary_inside_the_managed_rustup_home_is_managed, {
+#[test]
+fn a_binary_inside_the_managed_rustup_home_is_managed() {
     let temp = tempfile::tempdir().expect("tempdir");
     let paths = SoldrPaths::with_root(temp.path().to_path_buf());
     let managed = crate::fetch::managed_rustup_home(&paths);
@@ -337,9 +340,10 @@ crate::timed_test!(a_binary_inside_the_managed_rustup_home_is_managed, {
     std::fs::write(&binary, b"").expect("write");
 
     assert_eq!(home_origin_for_binary(&binary, &paths), HomeOrigin::Managed);
-});
+}
 
-crate::timed_test!(a_host_binary_never_reports_managed, {
+#[test]
+fn a_host_binary_never_reports_managed() {
     // The regression that made this a named concept: a host-resolved
     // cargo/rustfmt executing under soldr's default-less managed
     // RUSTUP_HOME. rustup then reports no default toolchain (#1768), and
@@ -356,18 +360,20 @@ crate::timed_test!(a_host_binary_never_reports_managed, {
         HomeOrigin::Caller,
         "a binary outside the managed homes must keep the caller's context"
     );
-});
+}
 
-crate::timed_test!(home_origin_strings_are_stable, {
+#[test]
+fn home_origin_strings_are_stable() {
     // CI assertions and log consumers key on these exact spellings.
     assert_eq!(HomeOrigin::Caller.as_str(), "caller");
     assert_eq!(HomeOrigin::Managed.as_str(), "managed");
     assert_eq!(HomeOrigin::RepoLocal.as_str(), "repo-local");
-});
+}
 
 // soldr#1799: repo-local is a third origin, not a flavour of caller.
 
-crate::timed_test!(a_repo_local_rustup_reports_repo_local_not_caller, {
+#[test]
+fn a_repo_local_rustup_reports_repo_local_not_caller() {
     let temp = tempfile::tempdir().expect("tempdir");
     let paths = SoldrPaths::with_root(temp.path().join("soldr-root"));
     let repo = temp.path().join("repo");
@@ -387,9 +393,10 @@ crate::timed_test!(a_repo_local_rustup_reports_repo_local_not_caller, {
         HomeOrigin::RepoLocal,
         "an ancestor .rustup is neither the caller's homes nor soldr's managed ones"
     );
-});
+}
 
-crate::timed_test!(a_repo_local_cargo_home_is_also_repo_local, {
+#[test]
+fn a_repo_local_cargo_home_is_also_repo_local() {
     let temp = tempfile::tempdir().expect("tempdir");
     let paths = SoldrPaths::with_root(temp.path().join("soldr-root"));
     let repo = temp.path().join("repo");
@@ -401,9 +408,10 @@ crate::timed_test!(a_repo_local_cargo_home_is_also_repo_local, {
         home_origin_for_binary_from(&binary, &paths, Some(&repo)),
         HomeOrigin::RepoLocal
     );
-});
+}
 
-crate::timed_test!(managed_still_wins_over_a_surrounding_repo_local_dir, {
+#[test]
+fn managed_still_wins_over_a_surrounding_repo_local_dir() {
     // Precedence matters: the homes-application branch keys on Managed,
     // so a managed binary that happens to sit under some ancestor
     // `.cargo` must not be reclassified out of it.
@@ -423,54 +431,54 @@ crate::timed_test!(managed_still_wins_over_a_surrounding_repo_local_dir, {
         HomeOrigin::Managed,
         "managed must keep precedence or apply_resolved_toolchain_homes changes behaviour"
     );
-});
+}
 
-crate::timed_test!(repo_local_still_runs_under_the_callers_homes, {
+#[test]
+fn repo_local_still_runs_under_the_callers_homes() {
     // The whole point of keeping this a reporting-only distinction: the
     // homes decision is `== Managed`, so RepoLocal must behave exactly
     // like Caller there. If this ever flips, a repo-local toolchain would
     // start executing under soldr's managed homes -- the #1768 regression.
     assert_ne!(HomeOrigin::RepoLocal, HomeOrigin::Managed);
-});
+}
 
-crate::timed_test!(
-    managed_toolchain_keeps_its_library_path_and_the_callers_entries,
-    {
-        if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Linux {
-            return;
-        }
-        let temp = tempfile::tempdir().expect("tempdir");
-        let paths = SoldrPaths::with_root(temp.path().join("soldr-root"));
-        let toolchain = crate::fetch::managed_rustup_home(&paths)
-            .join("toolchains")
-            .join("1.94.1");
-        let binary = toolchain.join("bin").join("cargo");
-        let library_dir = toolchain.join("lib");
-        std::fs::create_dir_all(binary.parent().expect("binary parent")).expect("bin dir");
-        std::fs::create_dir_all(&library_dir).expect("lib dir");
-        std::fs::write(&binary, b"").expect("binary");
-
-        let caller_library_dir = temp.path().join("caller-libs");
-        let mut command = std::process::Command::new("cargo");
-        command.env(
-            "LD_LIBRARY_PATH",
-            std::env::join_paths([caller_library_dir.as_path()]).expect("path"),
-        );
-        apply_managed_toolchain_library_path_if_available(&mut command, &binary, &paths);
-
-        let loader_path = command
-            .get_envs()
-            .find_map(|(key, value)| (key == "LD_LIBRARY_PATH").then_some(value))
-            .flatten()
-            .expect("managed command loader path");
-        assert_eq!(
-            std::env::split_paths(loader_path).collect::<Vec<_>>(),
-            vec![library_dir, caller_library_dir],
-        );
+#[test]
+fn managed_toolchain_keeps_its_library_path_and_the_callers_entries() {
+    if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Linux {
+        return;
     }
-);
+    let temp = tempfile::tempdir().expect("tempdir");
+    let paths = SoldrPaths::with_root(temp.path().join("soldr-root"));
+    let toolchain = crate::fetch::managed_rustup_home(&paths)
+        .join("toolchains")
+        .join("1.94.1");
+    let binary = toolchain.join("bin").join("cargo");
+    let library_dir = toolchain.join("lib");
+    std::fs::create_dir_all(binary.parent().expect("binary parent")).expect("bin dir");
+    std::fs::create_dir_all(&library_dir).expect("lib dir");
+    std::fs::write(&binary, b"").expect("binary");
 
-crate::timed_test!(caller_toolchain_does_not_receive_managed_library_path, {
+    let caller_library_dir = temp.path().join("caller-libs");
+    let mut command = std::process::Command::new("cargo");
+    command.env(
+        "LD_LIBRARY_PATH",
+        std::env::join_paths([caller_library_dir.as_path()]).expect("path"),
+    );
+    apply_managed_toolchain_library_path_if_available(&mut command, &binary, &paths);
+
+    let loader_path = command
+        .get_envs()
+        .find_map(|(key, value)| (key == "LD_LIBRARY_PATH").then_some(value))
+        .flatten()
+        .expect("managed command loader path");
+    assert_eq!(
+        std::env::split_paths(loader_path).collect::<Vec<_>>(),
+        vec![library_dir, caller_library_dir],
+    );
+}
+
+#[test]
+fn caller_toolchain_does_not_receive_managed_library_path() {
     if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Linux {
         return;
     }
@@ -487,4 +495,4 @@ crate::timed_test!(caller_toolchain_does_not_receive_managed_library_path, {
         command.get_envs().all(|(key, _)| key != "LD_LIBRARY_PATH"),
         "caller-owned toolchains must not inherit a managed loader path"
     );
-});
+}

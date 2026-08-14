@@ -475,7 +475,8 @@ pub fn classify_triple(value: &str) -> TargetKind {
 mod tests {
     use super::*;
 
-    crate::timed_test!(strips_full_line_and_inline_comments, {
+    #[test]
+    fn strips_full_line_and_inline_comments() {
         let f = scan_text(
             "x.sh".into(),
             "# cargo xwin build --target x86_64-pc-windows-msvc\nsoldr build --target x # cargo zigbuild",
@@ -483,28 +484,28 @@ mod tests {
         assert!(f.lines[0].is_comment);
         assert_eq!(f.lines[0].tool_code.trim(), "");
         assert_eq!(f.lines[1].tool_code.trim(), "soldr build --target x");
-    });
+    }
 
-    crate::timed_test!(
-        balanced_quotes_removed_for_tool_code_but_kept_in_original,
-        {
-            let f = scan_text(
-                "x.sh".into(),
-                "echo \"soldr cargo zigbuild --target aarch64-apple-darwin\"",
-            );
-            assert!(!f.lines[0].tool_code.contains("zigbuild"));
-            assert!(f.lines[0].original.contains("zigbuild"));
-        }
-    );
+    #[test]
+    fn balanced_quotes_removed_for_tool_code_but_kept_in_original() {
+        let f = scan_text(
+            "x.sh".into(),
+            "echo \"soldr cargo zigbuild --target aarch64-apple-darwin\"",
+        );
+        assert!(!f.lines[0].tool_code.contains("zigbuild"));
+        assert!(f.lines[0].original.contains("zigbuild"));
+    }
 
-    crate::timed_test!(unbalanced_quote_keeps_command_visible, {
+    #[test]
+    fn unbalanced_quote_keeps_command_visible() {
         // `bash -c '` opens a single-quote that closes on a later physical
         // line; the command line itself must stay visible.
         let f = scan_text("x.sh".into(), "soldr cargo xwin build --target x");
         assert!(f.lines[0].tool_code.contains("cargo xwin"));
-    });
+    }
 
-    crate::timed_test!(backslash_continuation_joins, {
+    #[test]
+    fn backslash_continuation_joins() {
         let f = scan_text(
             "x.sh".into(),
             "cargo zigbuild \\\n  --target aarch64-apple-darwin",
@@ -514,9 +515,10 @@ mod tests {
             .original
             .contains("--target aarch64-apple-darwin"));
         assert_eq!(f.lines[0].line, 1);
-    });
+    }
 
-    crate::timed_test!(suppression_parses_rule_and_reason, {
+    #[test]
+    fn suppression_parses_rule_and_reason() {
         let sup = parse_suppression(
             "  soldr cargo xwin # soldr-lint-ci: allow cross-compile-surface -- legacy test",
         )
@@ -525,9 +527,10 @@ mod tests {
         assert!(!sup.allows("other-rule"));
         let all = parse_suppression("# soldr-lint-ci: allow all").unwrap();
         assert!(all.allows("anything"));
-    });
+    }
 
-    crate::timed_test!(matrix_targets_collected_from_declarations_only, {
+    #[test]
+    fn matrix_targets_collected_from_declarations_only() {
         let f = scan_text(
             "wf.yml".into(),
             "    matrix:\n      target:\n        - x86_64-unknown-linux-gnu\n        - aarch64-apple-darwin\n    run: echo x86_64-pc-windows-msvc",
@@ -542,9 +545,10 @@ mod tests {
         assert!(!f
             .matrix_targets
             .contains(&"x86_64-pc-windows-msvc".to_string()));
-    });
+    }
 
-    crate::timed_test!(classify_triple_kinds, {
+    #[test]
+    fn classify_triple_kinds() {
         assert_eq!(classify_triple("aarch64-apple-darwin"), TargetKind::Apple);
         assert_eq!(
             classify_triple("x86_64-pc-windows-msvc"),
@@ -562,5 +566,5 @@ mod tests {
             classify_triple("wasm32-unknown-unknown"),
             TargetKind::Unknown
         );
-    });
+    }
 }

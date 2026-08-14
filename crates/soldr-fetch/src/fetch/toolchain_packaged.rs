@@ -172,7 +172,8 @@ fn dated_nightly_prefix(channel: &str) -> Option<&str> {
 mod tests {
     use super::*;
 
-    crate::timed_test!(dylint_packages_cover_all_supported_targets, {
+    #[test]
+    fn dylint_packages_cover_all_supported_targets() {
         let targets = [
             "x86_64-pc-windows-msvc",
             "aarch64-pc-windows-msvc",
@@ -202,17 +203,19 @@ mod tests {
         }
         let host = TargetTriple::from_triple("x86_64-unknown-linux-gnu").unwrap();
         assert_eq!(asset_name("cargo-nextest", "1", &host), None);
-    });
+    }
 
-    crate::timed_test!(dated_nightly_accepts_qualified_channel, {
+    #[test]
+    fn dated_nightly_accepts_qualified_channel() {
         assert_eq!(
             dated_nightly_prefix("nightly-2026-05-28-x86_64-pc-windows-msvc"),
             Some("nightly-2026-05-28")
         );
         assert_eq!(dated_nightly_prefix("1.94.1"), None);
-    });
+    }
 
-    crate::timed_test!(driver_installation_is_extensionless_on_every_host, {
+    #[test]
+    fn driver_installation_is_extensionless_on_every_host() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("dylint-driver.exe");
         std::fs::write(&source, b"driver").unwrap();
@@ -224,9 +227,10 @@ mod tests {
         .unwrap();
         assert_eq!(destination.file_name().unwrap(), "dylint-driver");
         assert_eq!(std::fs::read(destination).unwrap(), b"driver");
-    });
+    }
 
-    crate::timed_test!(catalogued_dylint_binary_is_smoked_and_evicted, {
+    #[test]
+    fn catalogued_dylint_binary_is_smoked_and_evicted() {
         let dir = tempfile::tempdir().unwrap();
         let bogus = dir.path().join("cargo-dylint");
         std::fs::write(&bogus, b"not an executable").unwrap();
@@ -236,5 +240,5 @@ mod tests {
 
         assert!(error.to_string().contains("smoke test failed"));
         assert!(!bogus.exists(), "failed catalogue binary must be evicted");
-    });
+    }
 }

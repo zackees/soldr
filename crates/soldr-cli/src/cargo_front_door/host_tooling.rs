@@ -31,7 +31,8 @@ mod tests {
         values.iter().map(|value| (*value).to_string()).collect()
     }
 
-    crate::timed_test!(native_compile_cmake_policy, {
+    #[test]
+    fn native_compile_cmake_policy() {
         assert!(should_inject_native_cmake(&args(&["test", "-p", "soldr"])));
         assert!(should_inject_native_cmake(&args(&["build", "--release"])));
         assert!(!should_inject_native_cmake(&args(&["metadata"])));
@@ -40,9 +41,10 @@ mod tests {
             "--target",
             "aarch64-unknown-linux-gnu",
         ])));
-    });
+    }
 
-    crate::timed_test!(native_compile_inherits_managed_cmake_and_ninja, {
+    #[test]
+    fn native_compile_inherits_managed_cmake_and_ninja() {
         let _env = crate::TEST_PROCESS_ENV_LOCK
             .lock()
             .unwrap_or_else(|error| error.into_inner());
@@ -100,5 +102,5 @@ mod tests {
             2,
             "both managed tools must reach PATH"
         );
-    });
+    }
 }

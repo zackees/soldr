@@ -414,7 +414,8 @@ mod tests {
         }
     }
 
-    crate::timed_test!(shim_tool_path_uses_native_executable_suffix, {
+    #[test]
+    fn shim_tool_path_uses_native_executable_suffix() {
         let dir = PathBuf::from("/tmp/shims");
         let path = shim_tool_path(&dir, "cargo");
         if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
@@ -430,9 +431,10 @@ mod tests {
                 path.display()
             );
         }
-    });
+    }
 
-    crate::timed_test!(windows_shims_are_visible_to_rust_command_lookup, {
+    #[test]
+    fn windows_shims_are_visible_to_rust_command_lookup() {
         if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
             return;
         }
@@ -456,7 +458,7 @@ mod tests {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
-    });
+    }
 
     #[test]
     fn apply_to_command_sets_recursion_sentinel_and_prepends_path() {
@@ -510,7 +512,8 @@ mod tests {
         path
     }
 
-    crate::timed_test!(persistent_shim_dir_reuses_existing_complete_dir, {
+    #[test]
+    fn persistent_shim_dir_reuses_existing_complete_dir() {
         let temp = tempfile::tempdir().expect("tempdir");
         let base = temp.path().join("base");
         let bin = fake_soldr_bin(temp.path(), b"stub");
@@ -529,9 +532,10 @@ mod tests {
             first.path, second.path,
             "same soldr-binary identity must resolve to the same shim dir"
         );
-    });
+    }
 
-    crate::timed_test!(persistent_shim_dir_rebuilds_when_a_shim_file_is_missing, {
+    #[test]
+    fn persistent_shim_dir_rebuilds_when_a_shim_file_is_missing() {
         let temp = tempfile::tempdir().expect("tempdir");
         let base = temp.path().join("base");
         let bin = fake_soldr_bin(temp.path(), b"stub");
@@ -552,7 +556,7 @@ mod tests {
             cargo_shim.is_file(),
             "the missing shim must be rewritten on the next call"
         );
-    });
+    }
 
     #[test]
     fn persistent_shim_dir_guard_survives_drop() {
@@ -573,7 +577,8 @@ mod tests {
         );
     }
 
-    crate::timed_test!(persistent_shim_dir_prunes_stale_sibling_keys, {
+    #[test]
+    fn persistent_shim_dir_prunes_stale_sibling_keys() {
         let temp = tempfile::tempdir().expect("tempdir");
         let base = temp.path().join("base");
         let bin_path = temp.path().join("fake-soldr-bin");
@@ -596,5 +601,5 @@ mod tests {
             "the previous key dir is now a stale sibling and must be pruned"
         );
         assert!(second.path.is_dir());
-    });
+    }
 }

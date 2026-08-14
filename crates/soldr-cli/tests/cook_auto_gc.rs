@@ -12,7 +12,6 @@ use soldr_cli::cache_lib::cook_gc::{cook_evict_pass, cook_evict_pass_with_absolu
 use soldr_cli::cache_lib::cook_index::{self, CookEntry, CookKey};
 use soldr_cli::cache_lib::state_db_path;
 use soldr_cli::core::{CookConfig, SoldrPaths};
-use soldr_cli::timed_test;
 
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -80,7 +79,8 @@ fn fresh_paths(label: &str) -> (TempDir, SoldrPaths) {
     (dir, paths)
 }
 
-timed_test!(per_origin_top_n_preserved_under_size_pressure, {
+#[test]
+fn per_origin_top_n_preserved_under_size_pressure() {
     let (_guard, paths) = fresh_paths("per-origin");
     let now = now_ms();
     let origin = Some("https://github.com/zackees/soldr");
@@ -111,38 +111,37 @@ timed_test!(per_origin_top_n_preserved_under_size_pressure, {
     assert!(artifact_path_for_sha(&cook_dir, &[0x12; 32]).exists());
     assert!(artifact_path_for_sha(&cook_dir, &[0x13; 32]).exists());
     assert!(artifact_path_for_sha(&cook_dir, &[0x14; 32]).exists());
-});
+}
 
-timed_test!(
-    full_maintenance_absolute_age_overrides_per_origin_protection,
-    {
-        let (_guard, paths) = fresh_paths("absolute-age");
-        let old = make_entry(
-            0x91,
-            100,
-            now_ms() - 31 * MS_PER_DAY,
-            Some("https://github.com/zackees/abandoned"),
-        );
-        let artifacts = seed_entries(&paths, &[(1, old)]);
-        let cfg = CookConfig {
-            max_total_gb: 200,
-            max_age_days: 365,
-            keep_per_origin: 3,
-            ..CookConfig::default()
-        };
+#[test]
+fn full_maintenance_absolute_age_overrides_per_origin_protection() {
+    let (_guard, paths) = fresh_paths("absolute-age");
+    let old = make_entry(
+        0x91,
+        100,
+        now_ms() - 31 * MS_PER_DAY,
+        Some("https://github.com/zackees/abandoned"),
+    );
+    let artifacts = seed_entries(&paths, &[(1, old)]);
+    let cfg = CookConfig {
+        max_total_gb: 200,
+        max_age_days: 365,
+        keep_per_origin: 3,
+        ..CookConfig::default()
+    };
 
-        let report = cook_evict_pass_with_absolute_age(
-            &paths,
-            &cfg,
-            Some(Duration::from_secs(30 * SECS_PER_DAY)),
-        );
-        assert_eq!(report.protected, 0);
-        assert_eq!(report.time_evicted, 1);
-        assert!(!artifacts[0].exists());
-    }
-);
+    let report = cook_evict_pass_with_absolute_age(
+        &paths,
+        &cfg,
+        Some(Duration::from_secs(30 * SECS_PER_DAY)),
+    );
+    assert_eq!(report.protected, 0);
+    assert_eq!(report.time_evicted, 1);
+    assert!(!artifacts[0].exists());
+}
 
-timed_test!(time_bound_evicts_entries_older_than_max_age, {
+#[test]
+fn time_bound_evicts_entries_older_than_max_age() {
     let (_guard, paths) = fresh_paths("time-bound");
     let now = now_ms();
     let stale_a = make_entry(0xA1, 100, now - 50 * MS_PER_DAY, None);
@@ -169,9 +168,10 @@ timed_test!(time_bound_evicts_entries_older_than_max_age, {
     let remaining = cook_index::iter_entries(&state_db_path(&paths)).expect("iter");
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0].1.sha256, [0xA3; 32]);
-});
+}
 
-timed_test!(size_cap_evicts_oldest_by_last_used, {
+#[test]
+fn size_cap_evicts_oldest_by_last_used() {
     let (_guard, paths) = fresh_paths("size-cap");
     let now = now_ms();
     let entries: Vec<(u8, CookEntry)> = (0..4u8)
@@ -195,9 +195,10 @@ timed_test!(size_cap_evicts_oldest_by_last_used, {
     let mut surviving: Vec<u8> = remaining.iter().map(|(_, e)| e.sha256[0]).collect();
     surviving.sort();
     assert_eq!(surviving, vec![0x42, 0x43]);
-});
+}
 
-timed_test!(quarantine_files_cleaned_only_on_time_bound, {
+#[test]
+fn quarantine_files_cleaned_only_on_time_bound() {
     let (_guard, paths) = fresh_paths("quarantine");
     let cook_dir = cook_cache_dir(&paths);
     std::fs::create_dir_all(&cook_dir).expect("mkdir cook");
@@ -218,9 +219,10 @@ timed_test!(quarantine_files_cleaned_only_on_time_bound, {
     assert_eq!(report.quarantine_evicted, 1);
     assert!(!old.exists());
     assert!(young.exists());
-});
+}
 
-timed_test!(mixed_origin_workload, {
+#[test]
+fn mixed_origin_workload() {
     let (_guard, paths) = fresh_paths("mixed-origin");
     let now = now_ms();
     let origin_a = Some("https://github.com/a/x");
@@ -257,9 +259,10 @@ timed_test!(mixed_origin_workload, {
         .map(|(_, e)| e.origin_url_normalized.clone())
         .collect();
     assert_eq!(groups.len(), 3);
-});
+}
 
-timed_test!(cook_gc_rejects_a_linked_cross_product_root, {
+#[test]
+fn cook_gc_rejects_a_linked_cross_product_root() {
     let (guard, paths) = fresh_paths("linked-root");
     let external = guard.path().join("other-product");
     std::fs::create_dir_all(&external).unwrap();
@@ -278,9 +281,10 @@ timed_test!(cook_gc_rejects_a_linked_cross_product_root, {
     let report = cook_evict_pass(&paths, &CookConfig::default());
     assert_eq!(report.errors, 1);
     assert_eq!(std::fs::read(&sentinel).unwrap(), b"keep");
-});
+}
 
-timed_test!(cook_unlink_failure_retains_the_index_for_retry, {
+#[test]
+fn cook_unlink_failure_retains_the_index_for_retry() {
     let (_guard, paths) = fresh_paths("unlink-failure");
     let entry = make_entry(0x77, 1, 0, None);
     let artifact = seed_entries(&paths, &[(1, entry)])[0].clone();
@@ -304,4 +308,4 @@ timed_test!(cook_unlink_failure_retains_the_index_for_retry, {
         "failed unlink must remain indexed for a future retry"
     );
     assert!(artifact.is_dir());
-});
+}

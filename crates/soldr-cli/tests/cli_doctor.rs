@@ -314,7 +314,8 @@ fn doctor_handles_missing_manifest() {
     );
 }
 
-soldr_cli::timed_test!(issue_2476_doctor_json_reports_broker_deadline_provenance, {
+#[test]
+fn issue_2476_doctor_json_reports_broker_deadline_provenance() {
     let workspace = unique_temp_dir("doctor-broker-deadlines");
     let mut command = common::isolated_soldr_command();
     let output = command
@@ -373,7 +374,7 @@ soldr_cli::timed_test!(issue_2476_doctor_json_reports_broker_deadline_provenance
         .env("HOME", &workspace)
         .env("USERPROFILE", &workspace)
         .output();
-});
+}
 
 #[test]
 fn doctor_reports_missing_target() {

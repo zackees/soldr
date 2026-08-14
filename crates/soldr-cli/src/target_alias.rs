@@ -493,41 +493,46 @@ fn host_triple() -> &'static str {
 mod tests {
     use super::*;
 
-    crate::timed_test!(canonical_alias_resolves_to_rust_triple, {
+    #[test]
+    fn canonical_alias_resolves_to_rust_triple() {
         let r = resolve_soldr_target("win-x64").unwrap();
         assert_eq!(r.rust_triple, "x86_64-pc-windows-msvc");
         assert!(r.via_alias);
         let r = resolve_soldr_target("mac-arm64").unwrap();
         assert_eq!(r.rust_triple, "aarch64-apple-darwin");
         assert!(r.via_alias);
-    });
+    }
 
-    crate::timed_test!(synonym_resolves_to_canonical_triple, {
+    #[test]
+    fn synonym_resolves_to_canonical_triple() {
         let r = resolve_soldr_target("apple-silicon").unwrap();
         assert_eq!(r.rust_triple, "aarch64-apple-darwin");
         let r = resolve_soldr_target("musl-x64").unwrap();
         assert_eq!(r.rust_triple, "x86_64-unknown-linux-musl");
         let r = resolve_soldr_target("linux-amd64-musl").unwrap();
         assert_eq!(r.rust_triple, "x86_64-unknown-linux-musl");
-    });
+    }
 
-    crate::timed_test!(rust_triple_passthrough, {
+    #[test]
+    fn rust_triple_passthrough() {
         let r = resolve_soldr_target("x86_64-pc-windows-msvc").unwrap();
         assert_eq!(r.rust_triple, "x86_64-pc-windows-msvc");
         assert!(!r.via_alias);
         let r = resolve_soldr_target("wasm32-unknown-unknown").unwrap();
         assert_eq!(r.rust_triple, "wasm32-unknown-unknown");
         assert!(!r.via_alias);
-    });
+    }
 
-    crate::timed_test!(case_insensitivity, {
+    #[test]
+    fn case_insensitivity() {
         let r = resolve_soldr_target("WIN-X64").unwrap();
         assert_eq!(r.rust_triple, "x86_64-pc-windows-msvc");
         let r = resolve_soldr_target("Apple-Silicon").unwrap();
         assert_eq!(r.rust_triple, "aarch64-apple-darwin");
-    });
+    }
 
-    crate::timed_test!(ambiguous_arm_rejected_with_suggestion, {
+    #[test]
+    fn ambiguous_arm_rejected_with_suggestion() {
         let err = resolve_soldr_target("mac-arm").unwrap_err();
         match err {
             AliasError::Ambiguous { disambiguated, .. } => {
@@ -535,9 +540,10 @@ mod tests {
             }
             other => panic!("expected Ambiguous, got {other:?}"),
         }
-    });
+    }
 
-    crate::timed_test!(thirty_two_bit_rejected, {
+    #[test]
+    fn thirty_two_bit_rejected() {
         let err = resolve_soldr_target("win-x86").unwrap_err();
         match err {
             AliasError::Thirty2Bit { suggestion, .. } => {
@@ -545,9 +551,10 @@ mod tests {
             }
             other => panic!("expected Thirty2Bit, got {other:?}"),
         }
-    });
+    }
 
-    crate::timed_test!(the_floor_suffix_is_stripped_from_both_argv_spellings, {
+    #[test]
+    fn the_floor_suffix_is_stripped_from_both_argv_spellings() {
         // The suffix must never reach a cargo child. Both spellings are
         // covered because argv carries whichever the user typed.
         let mut split = vec![
@@ -568,9 +575,10 @@ mod tests {
         ];
         strip_glibc_floor_in_args(&mut joined);
         assert_eq!(joined[1], "--target=aarch64-unknown-linux-gnu");
-    });
+    }
 
-    crate::timed_test!(stripping_leaves_ordinary_targets_alone, {
+    #[test]
+    fn stripping_leaves_ordinary_targets_alone() {
         // Including musl, which has no glibc to floor, and a bare `--target`
         // at the end of argv, which must not index past the end.
         let mut args = vec![
@@ -584,9 +592,10 @@ mod tests {
         let mut trailing = vec!["build".to_string(), "--target".to_string()];
         strip_glibc_floor_in_args(&mut trailing);
         assert_eq!(trailing, vec!["build".to_string(), "--target".to_string()]);
-    });
+    }
 
-    crate::timed_test!(the_catalogue_glibc_baseline_resolves_to_the_bare_triple, {
+    #[test]
+    fn the_catalogue_glibc_baseline_resolves_to_the_bare_triple() {
         // The GNU catalogue currently provides a glibc 2.17 sysroot. A higher
         // requested floor must not be accepted and silently mapped to 2.17.
         // `rust_triple` stays bare because rustc does not understand the
@@ -604,9 +613,10 @@ mod tests {
             assert_eq!(resolved.input, input);
         }
         assert!(resolve_soldr_target("aarch64-unknown-linux-gnu.2.28").is_err());
-    });
+    }
 
-    crate::timed_test!(a_floor_on_an_unenforceable_target_is_still_rejected, {
+    #[test]
+    fn a_floor_on_an_unenforceable_target_is_still_rejected() {
         // The floor is only meaningful where soldr links through managed zig.
         // Anywhere else soldr would have to drop the suffix and ship a binary
         // whose floor is not the one that was asked for -- silently wrong, and
@@ -631,9 +641,10 @@ mod tests {
                 && rendered.contains("aarch64-unknown-linux-gnu"),
             "the error must name the triples where a floor *is* honoured: {rendered}"
         );
-    });
+    }
 
-    crate::timed_test!(only_glibc_triples_take_the_versioned_path, {
+    #[test]
+    fn only_glibc_triples_take_the_versioned_path() {
         // The gate keys on `-linux-gnu`, so nothing else is diverted into an
         // error about a libc it does not have.
         for input in [
@@ -651,14 +662,15 @@ mod tests {
         // And the plain triple still resolves, i.e. the gate did not widen.
         let ok = resolve_soldr_target("x86_64-unknown-linux-gnu").unwrap();
         assert_eq!(ok.rust_triple, "x86_64-unknown-linux-gnu");
-    });
+    }
 
     // soldr#2139: `soldr build` never calls `resolve_soldr_target` -- it only
     // runs `normalize_target_aliases_in_args`, which passes an unrecognised
     // target straight through. So the guard is also exposed on its own and
     // called from every blessed-prep entry. These pin that the standalone
     // form agrees with the resolver in both directions.
-    crate::timed_test!(the_standalone_guard_rejects_what_the_resolver_rejects, {
+    #[test]
+    fn the_standalone_guard_rejects_what_the_resolver_rejects() {
         // soldr#2139: the guard now splits on whether the floor can be
         // *enforced*, so it must agree with the resolver in both directions.
         let err = reject_glibc_versioned("i686-unknown-linux-gnu.2.17").unwrap_err();
@@ -684,9 +696,10 @@ mod tests {
         assert!(reject_glibc_versioned("aarch64-unknown-linux-gnu.2.17").is_ok());
         assert!(resolve_soldr_target("aarch64-unknown-linux-gnu.2.17").is_ok());
         assert!(reject_glibc_versioned("aarch64-unknown-linux-gnu.2.28").is_err());
-    });
+    }
 
-    crate::timed_test!(the_standalone_guard_does_not_over_reject, {
+    #[test]
+    fn the_standalone_guard_does_not_over_reject() {
         // This one runs on *every* prepared target, so a false positive would
         // break builds that work today -- including custom triples that the
         // alias table has never heard of and must not be judged on.
@@ -704,14 +717,16 @@ mod tests {
                 "{input} must pass the guard untouched",
             );
         }
-    });
+    }
 
-    crate::timed_test!(all_alias_rejected_for_build, {
+    #[test]
+    fn all_alias_rejected_for_build() {
         let err = resolve_soldr_target("all").unwrap_err();
         assert!(matches!(err, AliasError::AllNotBuildable));
-    });
+    }
 
-    crate::timed_test!(unknown_input_carries_jaro_winkler_suggestion, {
+    #[test]
+    fn unknown_input_carries_jaro_winkler_suggestion() {
         let err = resolve_soldr_target("win-arm6").unwrap_err();
         match err {
             AliasError::Unknown { suggestion, .. } => {
@@ -719,17 +734,19 @@ mod tests {
             }
             other => panic!("expected Unknown with suggestion, got {other:?}"),
         }
-    });
+    }
 
-    crate::timed_test!(native_resolves_to_a_real_triple, {
+    #[test]
+    fn native_resolves_to_a_real_triple() {
         let r = resolve_soldr_target("native").unwrap();
         assert!(r.via_alias);
         // Resolved triple varies by host; just confirm it's non-empty
         // and looks like a triple.
         assert!(looks_like_rust_triple(&r.rust_triple));
-    });
+    }
 
-    crate::timed_test!(synonyms_table_targets_are_all_canonical, {
+    #[test]
+    fn synonyms_table_targets_are_all_canonical() {
         // Static invariant: every synonym value must appear as a key
         // in CANONICAL_ALIASES. If this fails, the resolver's
         // synonym → canonical → triple chain panics in production.
@@ -741,9 +758,10 @@ mod tests {
                 "synonym `{syn}` → `{canonical_target}` is not a canonical alias key"
             );
         }
-    });
+    }
 
-    crate::timed_test!(canonical_aliases_match_canonical_targets_const, {
+    #[test]
+    fn canonical_aliases_match_canonical_targets_const() {
         // Soldr ships TWO related canonical-list tables:
         //   - crate::core::CANONICAL_TARGETS (Rust triples)
         //   - target_alias::CANONICAL_ALIASES (alias → triple)
@@ -753,9 +771,10 @@ mod tests {
         let triples_alias: std::collections::HashSet<&str> =
             CANONICAL_ALIASES.iter().map(|(_, t)| *t).collect();
         assert_eq!(triples_const, triples_alias);
-    });
+    }
 
-    crate::timed_test!(canonical_aliases_normalize_in_cargo_arguments, {
+    #[test]
+    fn canonical_aliases_normalize_in_cargo_arguments() {
         for (alias, triple) in CANONICAL_ALIASES {
             let mut split = vec![
                 "build".to_string(),
@@ -773,5 +792,5 @@ mod tests {
                 "equals --target form drifted for {alias}"
             );
         }
-    });
+    }
 }

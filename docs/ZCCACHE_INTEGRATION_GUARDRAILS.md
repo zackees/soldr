@@ -29,16 +29,16 @@ new work.
 Run these hard gates for zccache integration refactor waves:
 
 ```powershell
-soldr --no-cache cargo test -p soldr-cli --test no_standalone_spawn_lint
-soldr --no-cache cargo test -p soldr-cli --test zccache_trampoline_gate
-soldr --no-cache cargo test -p soldr-cli --test cli_cargo_wrappers
-soldr --no-cache cargo test -p soldr-cli --test cli_rust_plan
-soldr --no-cache cargo test -p soldr-cli --test cli_cache
-soldr --no-cache cargo test -p soldr-cli --lib cache::session::tests
-soldr --no-cache cargo test -p soldr-cli --lib native_cc::tests
-soldr --no-cache cargo test -p soldr-cli --test cli_cargo_native_cc
-soldr --no-cache cargo test -p soldr-cli --test cli_wrapper_perf
-soldr --no-cache cargo test -p soldr-cli --test timed_test_lint
+soldr --no-cache cargo nextest run -p soldr-cli --test no_standalone_spawn_lint
+soldr --no-cache cargo nextest run -p soldr-cli --test zccache_trampoline_gate
+soldr --no-cache cargo nextest run -p soldr-cli --test cli_cargo_wrappers
+soldr --no-cache cargo nextest run -p soldr-cli --test cli_rust_plan
+soldr --no-cache cargo nextest run -p soldr-cli --test cli_cache
+soldr --no-cache cargo nextest run -p soldr-cli --lib cache::session::tests
+soldr --no-cache cargo nextest run -p soldr-cli --lib native_cc::tests
+soldr --no-cache cargo nextest run -p soldr-cli --test cli_cargo_native_cc
+soldr --no-cache cargo nextest run -p soldr-cli --test cli_wrapper_perf
+soldr --no-cache cargo nextest run -p soldr-cli --test no_timed_test_guard
 uv run --no-sync pytest tests/test_zccache_integration_guardrails.py tests/test_zccache_runtime_contract.py tests/test_setup_soldr_action.py tests/test_setup_soldr_exporter.py tests/test_setup_soldr_ensure_soldr.py -q
 node scripts/test-npm-package.js
 ```
@@ -89,13 +89,14 @@ gh workflow run perf-matrix.yml -f platforms=linux -f fixtures=medium -f scenari
 - `native-cc-cache`: locks native C/C++ env injection, the `zccache-soldr`
   shim, and opt-out behavior.
 - `monolith-migration-ratchet`: ensures embedded-runtime integration tests
-  remain discoverable outside monolithic source modules and use the
-  `timed_test` watchdog.
+  remain discoverable outside monolithic source modules and that the removed
+  per-test watchdog does not return (timeouts belong to nextest).
 
 ## Native Cache Guardrail
 
 Issue #551 promoted the real `cli_cargo_native_cc` embedded-wrapper integration
 test from report-only to a hard gate after the Windows build-script hang repro
-passed on current main. Those tests run under `timed_test!` so a future
-build-script wrapper hang fails with a bounded watchdog instead of leaving the
+passed on current main. They run under cargo-nextest's `slow-timeout` /
+`terminate-after` (`.config/nextest.toml`) so a future build-script wrapper
+hang is terminated and reported against that one test, instead of leaving the
 suite stuck until external cleanup.

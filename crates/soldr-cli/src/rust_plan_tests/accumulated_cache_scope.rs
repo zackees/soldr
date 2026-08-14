@@ -110,50 +110,48 @@ fn save_one_bundle(
     plan
 }
 
-crate::timed_test!(
-    thin_v2_manifest_is_scoped_to_current_bundle_not_accumulated_cache,
-    {
-        // Shared, unpinned cache dir — the default local-dev configuration
-        // this issue is about (no SOLDR_TARGET_CACHE_BUNDLE_DIR override).
-        let cache_dir = unique_dir("rustplan-accum-cache");
+#[test]
+fn thin_v2_manifest_is_scoped_to_current_bundle_not_accumulated_cache() {
+    // Shared, unpinned cache dir — the default local-dev configuration
+    // this issue is about (no SOLDR_TARGET_CACHE_BUNDLE_DIR override).
+    let cache_dir = unique_dir("rustplan-accum-cache");
 
-        // Save an unrelated bundle first ("prior build in the accumulated
-        // cache"), then save the bundle under test.
-        let _prior_plan = save_one_bundle(&cache_dir, "unrelated-pkg@1.0.0", "libunrelated.rlib");
-        let plan_under_test = save_one_bundle(&cache_dir, "demo-pkg@1.0.0", "libdemo.rlib");
+    // Save an unrelated bundle first ("prior build in the accumulated
+    // cache"), then save the bundle under test.
+    let _prior_plan = save_one_bundle(&cache_dir, "unrelated-pkg@1.0.0", "libunrelated.rlib");
+    let plan_under_test = save_one_bundle(&cache_dir, "demo-pkg@1.0.0", "libdemo.rlib");
 
-        let cache_key = rust_plan_cache_key(&plan_under_test);
-        let bundle_dir = rust_plan_bundle_dir(&cache_dir, &cache_key).into_path_buf();
-        let manifest_path = bundle_dir.join(THIN_MANIFEST_FILENAME);
-        assert!(
-            manifest_path.is_file(),
-            "expected the thin-slice manifest next to the current bundle at {}",
-            manifest_path.display()
-        );
+    let cache_key = rust_plan_cache_key(&plan_under_test);
+    let bundle_dir = rust_plan_bundle_dir(&cache_dir, &cache_key).into_path_buf();
+    let manifest_path = bundle_dir.join(THIN_MANIFEST_FILENAME);
+    assert!(
+        manifest_path.is_file(),
+        "expected the thin-slice manifest next to the current bundle at {}",
+        manifest_path.display()
+    );
 
-        let raw = std::fs::read_to_string(&manifest_path).expect("read manifest");
-        let manifest: ThinSliceManifest = serde_json::from_str(&raw).expect("parse manifest");
+    let raw = std::fs::read_to_string(&manifest_path).expect("read manifest");
+    let manifest: ThinSliceManifest = serde_json::from_str(&raw).expect("parse manifest");
 
-        let paths: Vec<&str> = manifest.files.iter().map(|f| f.path.as_str()).collect();
-        assert!(
-            paths.iter().any(|p| p.contains("libdemo.rlib")),
-            "manifest must list the current bundle's own artifact; got {paths:?}"
-        );
-        assert!(
-            !paths.iter().any(|p| p.contains("libunrelated.rlib")),
-            "manifest must NOT list a file from a different (unrelated) \
+    let paths: Vec<&str> = manifest.files.iter().map(|f| f.path.as_str()).collect();
+    assert!(
+        paths.iter().any(|p| p.contains("libdemo.rlib")),
+        "manifest must list the current bundle's own artifact; got {paths:?}"
+    );
+    assert!(
+        !paths.iter().any(|p| p.contains("libunrelated.rlib")),
+        "manifest must NOT list a file from a different (unrelated) \
              cache key's bundle — it must be scoped to the current bundle, \
              not the accumulated cache dir; got {paths:?}"
-        );
+    );
 
-        // No manifest.v2.json should have been written at the top of the
-        // shared accumulated cache root either — that was the old (buggy)
-        // location.
-        assert!(
-            !cache_dir.join(THIN_MANIFEST_FILENAME).exists(),
-            "manifest must not land at the accumulated cache root"
-        );
+    // No manifest.v2.json should have been written at the top of the
+    // shared accumulated cache root either — that was the old (buggy)
+    // location.
+    assert!(
+        !cache_dir.join(THIN_MANIFEST_FILENAME).exists(),
+        "manifest must not land at the accumulated cache root"
+    );
 
-        let _ = std::fs::remove_dir_all(&cache_dir);
-    }
-);
+    let _ = std::fs::remove_dir_all(&cache_dir);
+}

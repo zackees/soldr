@@ -57,23 +57,26 @@ fn run_cli(args: Vec<String>) -> ExitCode {
 mod tests {
     use super::*;
 
-    crate::timed_test!(subcommand_gate_finds_first_non_flag_argument, {
+    #[test]
+    fn subcommand_gate_finds_first_non_flag_argument() {
         assert_eq!(first_subcommand(&["--version".into()]), None);
         assert_eq!(
             first_subcommand(&["--json".into(), "status".into()]).map(String::as_str),
             Some("status")
         );
-    });
+    }
 
-    crate::timed_test!(refused_subcommand_preserves_usage_exit_code, {
+    #[test]
+    fn refused_subcommand_preserves_usage_exit_code() {
         assert_eq!(refuse("status"), ExitCode::from(2));
-    });
+    }
 
-    crate::timed_test!(in_process_cache_root_dispatch_succeeds, {
+    #[test]
+    fn in_process_cache_root_dispatch_succeeds() {
         assert_eq!(
             run_with_args(&["cache-root".into(), "--json".into()]),
             ExitCode::SUCCESS
         );
         assert_eq!(std::env::var("ZCCACHE_NO_SPAWN").as_deref(), Ok("1"));
-    });
+    }
 }

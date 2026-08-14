@@ -149,13 +149,13 @@ pub fn record(paths: &SoldrPaths, event: &Undelivered<'_>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::timed_test;
 
     fn paths_for(root: &std::path::Path) -> SoldrPaths {
         SoldrPaths::with_root(root.to_path_buf())
     }
 
-    timed_test!(record_appends_one_parseable_row_per_event, {
+    #[test]
+    fn record_appends_one_parseable_row_per_event() {
         let temp = tempfile::tempdir().expect("tempdir");
         let paths = paths_for(temp.path());
 
@@ -201,9 +201,10 @@ mod tests {
         // handed back. This row is what makes that case countable.
         assert_eq!(rows[1]["event"], "reply_write_failed");
         assert_eq!(rows[1]["exit_code"], 0);
-    });
+    }
 
-    timed_test!(log_path_is_under_the_daemon_state_logs_dir, {
+    #[test]
+    fn log_path_is_under_the_daemon_state_logs_dir() {
         let temp = tempfile::tempdir().expect("tempdir");
         let paths = paths_for(temp.path());
         let path = compile_delivery_log_path(&paths);
@@ -212,5 +213,5 @@ mod tests {
             path.parent().is_some_and(|p| p.ends_with("logs")),
             "{path:?}"
         );
-    });
+    }
 }

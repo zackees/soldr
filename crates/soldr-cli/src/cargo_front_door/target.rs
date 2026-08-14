@@ -177,21 +177,24 @@ mod tests {
         s.split_whitespace().map(String::from).collect()
     }
 
-    crate::timed_test!(dylint_never_injects_windows_target, {
+    #[test]
+    fn dylint_never_injects_windows_target() {
         // soldr#2350: dylint libs are host cdylibs; injecting the MSVC target
         // nests the stamped DLL where cargo-dylint can't find it. Suppressed
         // regardless of an explicit --target or a set CARGO_BUILD_TARGET.
         assert!(!inject(&args("dylint --all"), true, false));
         assert!(!inject(&args("dylint"), true, true));
-    });
+    }
 
-    crate::timed_test!(ordinary_build_injects_when_target_unspecified, {
+    #[test]
+    fn ordinary_build_injects_when_target_unspecified() {
         // The MSVC-on-Windows default still applies to ordinary builds.
         assert!(inject(&args("build --release"), false, false));
         assert!(inject(&args("test"), false, false));
-    });
+    }
 
-    crate::timed_test!(explicit_target_or_env_suppresses_injection, {
+    #[test]
+    fn explicit_target_or_env_suppresses_injection() {
         // Unchanged: an explicit --target or a caller-set CARGO_BUILD_TARGET
         // means soldr does not inject its own default.
         assert!(!inject(
@@ -200,5 +203,5 @@ mod tests {
             false,
         ));
         assert!(!inject(&args("build"), false, true));
-    });
+    }
 }

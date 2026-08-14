@@ -89,12 +89,14 @@ fn is_version_like(value: &str) -> bool {
 mod tests {
     use super::*;
 
-    crate::timed_test!(each_arch_gets_its_own_floor, {
+    #[test]
+    fn each_arch_gets_its_own_floor() {
         assert_eq!(default_for("aarch64-apple-darwin"), "11.0");
         assert_eq!(default_for("x86_64-apple-darwin"), "10.12");
-    });
+    }
 
-    crate::timed_test!(both_per_arch_values_branch_on_the_same_input, {
+    #[test]
+    fn both_per_arch_values_branch_on_the_same_input() {
         // The bug was that only one of these two branched. Asserting
         // them side by side is what makes a future divergence obvious.
         assert_eq!(clang_target("aarch64-apple-darwin"), "arm64-apple-darwin");
@@ -104,15 +106,17 @@ mod tests {
             default_for("x86_64-apple-darwin"),
             "the deployment target must differ per arch, as the clang triple does"
         );
-    });
+    }
 
-    crate::timed_test!(an_override_wins_over_the_arch_default, {
+    #[test]
+    fn an_override_wins_over_the_arch_default() {
         assert_eq!(resolve_override("10.15", "10.12"), "10.15");
         assert_eq!(resolve_override("  11.0  ", "10.12"), "11.0");
         assert_eq!(resolve_override("13", "10.12"), "13");
-    });
+    }
 
-    crate::timed_test!(a_malformed_override_falls_back_instead_of_reaching_clang, {
+    #[test]
+    fn a_malformed_override_falls_back_instead_of_reaching_clang() {
         // The failure mode this guards against is a `*-sys` configure
         // step dying on `-mmacosx-version-min=latest`, where nothing
         // points back at the env var.
@@ -121,10 +125,11 @@ mod tests {
         assert_eq!(resolve_override("10..15", "10.12"), "10.12");
         assert_eq!(resolve_override(".10", "10.12"), "10.12");
         assert_eq!(resolve_override("10.", "10.12"), "10.12");
-    });
+    }
 
-    crate::timed_test!(an_empty_override_is_treated_as_unset, {
+    #[test]
+    fn an_empty_override_is_treated_as_unset() {
         assert_eq!(resolve_override("", "11.0"), "11.0");
         assert_eq!(resolve_override("   ", "11.0"), "11.0");
-    });
+    }
 }

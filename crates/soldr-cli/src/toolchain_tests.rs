@@ -41,7 +41,8 @@ impl Drop for EnvVarGuard {
     }
 }
 
-crate::timed_test!(toolchain_command_timeout_is_an_explicit_safety_ceiling, {
+#[test]
+fn toolchain_command_timeout_is_an_explicit_safety_ceiling() {
     let _lock = ENV_LOCK.lock().expect("env lock");
     {
         let _guard = EnvVarGuard::set(TOOLCHAIN_COMMAND_TIMEOUT_ENV_VAR, "23");
@@ -63,9 +64,10 @@ crate::timed_test!(toolchain_command_timeout_is_an_explicit_safety_ceiling, {
         InstallerWatchdogConfig::from_env(TOOLCHAIN_COMMAND_TIMEOUT_ENV_VAR).safety_timeout,
         Duration::from_secs(crate::core::DEFAULT_INSTALLER_SAFETY_TIMEOUT_SECS)
     );
-});
+}
 
-crate::timed_test!(dylint_rustup_scope_replaces_every_toolchain_selector, {
+#[test]
+fn dylint_rustup_scope_replaces_every_toolchain_selector() {
     let args = vec![
         "+stable".to_string(),
         "run".to_string(),
@@ -88,7 +90,7 @@ crate::timed_test!(dylint_rustup_scope_replaces_every_toolchain_selector, {
         scope_rustup_args_to_dylint(&component, "nightly-2026-01-18"),
         vec!["component", "add", "rustc-dev"]
     );
-});
+}
 
 fn test_memo_key(root: &Path) -> CargoPrepareMemoKey {
     CargoPrepareMemoKey {
@@ -103,7 +105,8 @@ fn test_memo_key(root: &Path) -> CargoPrepareMemoKey {
     }
 }
 
-crate::timed_test!(cargo_prepare_memo_key_covers_every_requirement, {
+#[test]
+fn cargo_prepare_memo_key_covers_every_requirement() {
     let root = tempfile::tempdir().expect("temp dir");
     let base = test_memo_key(root.path());
     let variants = [
@@ -146,9 +149,10 @@ crate::timed_test!(cargo_prepare_memo_key_covers_every_requirement, {
     for variant in variants {
         assert_ne!(base, variant);
     }
-});
+}
 
-crate::timed_test!(cargo_prepare_memo_rejects_changed_or_missing_toolchain, {
+#[test]
+fn cargo_prepare_memo_rejects_changed_or_missing_toolchain() {
     let root = tempfile::tempdir().expect("temp dir");
     let key = test_memo_key(root.path());
     let toolchain = key.rustup_home.join("toolchains").join("1.94.1-test");
@@ -176,9 +180,10 @@ crate::timed_test!(cargo_prepare_memo_rejects_changed_or_missing_toolchain, {
 
     std::fs::remove_dir_all(&toolchain).expect("remove fake toolchain");
     assert!(toolchain_identity(&key, &toolchain).is_none());
-});
+}
 
-crate::timed_test!(cargo_prepare_memo_rejects_ambiguous_alias_toolchains, {
+#[test]
+fn cargo_prepare_memo_rejects_ambiguous_alias_toolchains() {
     let root = tempfile::tempdir().expect("temp dir");
     let key = test_memo_key(root.path());
     let paths = SoldrPaths::with_root(root.path().join("soldr"));
@@ -208,7 +213,7 @@ crate::timed_test!(cargo_prepare_memo_rejects_ambiguous_alias_toolchains, {
         memoized_toolchain_dir(&paths, &key).is_none(),
         "an alias with multiple installed hosts must prepare conservatively"
     );
-});
+}
 
 #[cfg(test)]
 mod pin_requirement_tests {
@@ -245,7 +250,8 @@ mod pin_requirement_tests {
         out
     }
 
-    crate::timed_test!(unpinned_workspace_is_refused, {
+    #[test]
+    fn unpinned_workspace_is_refused() {
         let temp = tempfile::tempdir().expect("tempdir");
         let err = without_opt_out(|| require_toolchain_pin(temp.path()).unwrap_err());
         let rendered = err.to_string();
@@ -257,9 +263,10 @@ mod pin_requirement_tests {
             rendered.contains("SOLDR_ALLOW_UNPINNED"),
             "error must tell the user how to opt out: {rendered}"
         );
-    });
+    }
 
-    crate::timed_test!(pin_in_an_ancestor_satisfies_a_subdirectory_build, {
+    #[test]
+    fn pin_in_an_ancestor_satisfies_a_subdirectory_build() {
         // The trap this test exists for: reading only the cwd would reject
         // every build launched from a subdirectory of a pinned repo --
         // including this workspace's own tests, whose cwd is the package dir
@@ -276,9 +283,10 @@ mod pin_requirement_tests {
         without_opt_out(|| {
             require_toolchain_pin(&nested).expect("an ancestor pin must satisfy the requirement")
         });
-    });
+    }
 
-    crate::timed_test!(opt_out_env_var_permits_an_unpinned_build, {
+    #[test]
+    fn opt_out_env_var_permits_an_unpinned_build() {
         let temp = tempfile::tempdir().expect("tempdir");
         let _lock = crate::TEST_PROCESS_ENV_LOCK
             .lock()
@@ -291,43 +299,42 @@ mod pin_requirement_tests {
             None => std::env::remove_var(ALLOW_UNPINNED_ENV_VAR),
         }
         result.expect("SOLDR_ALLOW_UNPINNED must permit an unpinned build");
-    });
+    }
 
     // soldr#1917 follow-up: RUSTUP_TOOLCHAIN is a pin, not an absence of one.
 
-    crate::timed_test!(
-        an_explicit_rustup_toolchain_satisfies_the_pin_requirement,
-        {
-            // The thin-v2 verifier builds a synthesized crate under $RUNNER_TEMP,
-            // outside any manifest, and selects the toolchain with
-            // RUSTUP_TOOLCHAIN=1.94.1. That is a pinned build, and refusing it
-            // sent the lane to the one workaround that is actively wrong:
-            // SOLDR_ALLOW_UNPINNED=1, which disables the check for a caller who
-            // *is* pinned.
-            let temp = tempfile::tempdir().expect("tempdir");
-            let _lock = crate::TEST_PROCESS_ENV_LOCK
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            let previous_opt_out = std::env::var_os(ALLOW_UNPINNED_ENV_VAR);
-            let previous_toolchain = std::env::var_os(RUSTUP_TOOLCHAIN_ENV_VAR);
-            std::env::remove_var(ALLOW_UNPINNED_ENV_VAR);
-            std::env::set_var(RUSTUP_TOOLCHAIN_ENV_VAR, "1.94.1");
+    #[test]
+    fn an_explicit_rustup_toolchain_satisfies_the_pin_requirement() {
+        // The thin-v2 verifier builds a synthesized crate under $RUNNER_TEMP,
+        // outside any manifest, and selects the toolchain with
+        // RUSTUP_TOOLCHAIN=1.94.1. That is a pinned build, and refusing it
+        // sent the lane to the one workaround that is actively wrong:
+        // SOLDR_ALLOW_UNPINNED=1, which disables the check for a caller who
+        // *is* pinned.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _lock = crate::TEST_PROCESS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let previous_opt_out = std::env::var_os(ALLOW_UNPINNED_ENV_VAR);
+        let previous_toolchain = std::env::var_os(RUSTUP_TOOLCHAIN_ENV_VAR);
+        std::env::remove_var(ALLOW_UNPINNED_ENV_VAR);
+        std::env::set_var(RUSTUP_TOOLCHAIN_ENV_VAR, "1.94.1");
 
-            let result = require_toolchain_pin(temp.path());
+        let result = require_toolchain_pin(temp.path());
 
-            match previous_opt_out {
-                Some(value) => std::env::set_var(ALLOW_UNPINNED_ENV_VAR, value),
-                None => std::env::remove_var(ALLOW_UNPINNED_ENV_VAR),
-            }
-            match previous_toolchain {
-                Some(value) => std::env::set_var(RUSTUP_TOOLCHAIN_ENV_VAR, value),
-                None => std::env::remove_var(RUSTUP_TOOLCHAIN_ENV_VAR),
-            }
-            result.expect("an explicitly selected rustup toolchain is a pin");
+        match previous_opt_out {
+            Some(value) => std::env::set_var(ALLOW_UNPINNED_ENV_VAR, value),
+            None => std::env::remove_var(ALLOW_UNPINNED_ENV_VAR),
         }
-    );
+        match previous_toolchain {
+            Some(value) => std::env::set_var(RUSTUP_TOOLCHAIN_ENV_VAR, value),
+            None => std::env::remove_var(RUSTUP_TOOLCHAIN_ENV_VAR),
+        }
+        result.expect("an explicitly selected rustup toolchain is a pin");
+    }
 
-    crate::timed_test!(a_blank_rustup_toolchain_is_not_a_pin, {
+    #[test]
+    fn a_blank_rustup_toolchain_is_not_a_pin() {
         // Exported-but-empty is how a shell leaves a variable it meant to
         // unset. It selects nothing, so it must not read as a pin -- same
         // reasoning as `explicit_falsey_opt_out_still_requires_a_pin`.
@@ -359,9 +366,10 @@ mod pin_requirement_tests {
                 "RUSTUP_TOOLCHAIN={blank:?} must not count as a pin"
             );
         }
-    });
+    }
 
-    crate::timed_test!(explicit_falsey_opt_out_still_requires_a_pin, {
+    #[test]
+    fn explicit_falsey_opt_out_still_requires_a_pin() {
         // An exported-but-disabled switch must not read as consent.
         let temp = tempfile::tempdir().expect("tempdir");
         let _lock = crate::TEST_PROCESS_ENV_LOCK
@@ -392,5 +400,5 @@ mod pin_requirement_tests {
                 "SOLDR_ALLOW_UNPINNED={disabled:?} must not count as opting out"
             );
         }
-    });
+    }
 }

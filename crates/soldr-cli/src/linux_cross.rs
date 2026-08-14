@@ -140,7 +140,8 @@ fn write_executable(path: &Path, body: &str) -> Result<(), SoldrError> {
 mod tests {
     use super::*;
 
-    crate::timed_test!(maps_only_legacy_managed_musl_targets, {
+    #[test]
+    fn maps_only_legacy_managed_musl_targets() {
         assert_eq!(
             rust_target_to_zig_target("x86_64-unknown-linux-musl").unwrap(),
             "x86_64-linux-musl"
@@ -150,17 +151,19 @@ mod tests {
             "aarch64-linux-musl"
         );
         assert!(rust_target_to_zig_target("x86_64-unknown-linux-gnu").is_err());
-    });
+    }
 
-    crate::timed_test!(a_gnu_target_is_rejected_by_the_legacy_musl_wrapper, {
+    #[test]
+    fn a_gnu_target_is_rejected_by_the_legacy_musl_wrapper() {
         let err = rust_target_to_zig_target("aarch64-unknown-linux-gnu").unwrap_err();
         assert!(
             err.to_string().contains("aarch64-unknown-linux-gnu"),
             "{err}"
         );
-    });
+    }
 
-    crate::timed_test!(unix_wrapper_uses_managed_zig_directly, {
+    #[test]
+    fn unix_wrapper_uses_managed_zig_directly() {
         if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
             return;
         }
@@ -181,9 +184,10 @@ mod tests {
             !body.contains("cargo-zigbuild"),
             "the blessed wrapper must invoke managed Zig directly"
         );
-    });
+    }
 
-    crate::timed_test!(windows_wrapper_filters_rust_target_spelling, {
+    #[test]
+    fn windows_wrapper_filters_rust_target_spelling() {
         if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
             return;
         }
@@ -200,5 +204,5 @@ mod tests {
         assert!(body.contains("\"--target\""));
         assert!(body.contains("\"--target=\""));
         assert!(body.contains("-target aarch64-linux-gnu"));
-    });
+    }
 }

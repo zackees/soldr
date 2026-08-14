@@ -122,7 +122,8 @@ pub(super) fn detect_requested_strip_failure(stderr: &str) -> Option<StripFailur
 mod tests {
     use super::*;
 
-    crate::timed_test!(identifies_rustcs_requested_strip_failure, {
+    #[test]
+    fn identifies_rustcs_requested_strip_failure() {
         let stderr = "warning: stripping debug info with `rust-objcopy` failed: exit status: 127\n\
             = note: rust-objcopy: error while loading shared libraries: libLLVM.so: cannot open shared object file\n";
 
@@ -134,9 +135,10 @@ mod tests {
                     .to_owned(),
             })
         );
-    });
+    }
 
-    crate::timed_test!(ignores_lookalike_warnings, {
+    #[test]
+    fn ignores_lookalike_warnings() {
         for warning in [
             "warning: rust-objcopy failed in a build script",
             "warning: stripping debug info was requested",
@@ -145,9 +147,10 @@ mod tests {
         ] {
             assert_eq!(detect_requested_strip_failure(warning), None, "{warning}");
         }
-    });
+    }
 
-    crate::timed_test!(finds_strip_failure_in_cargo_json_compiler_messages, {
+    #[test]
+    fn finds_strip_failure_in_cargo_json_compiler_messages() {
         let stdout = br#"{"reason":"compiler-message","message":{"rendered":"warning: stripping debug info with `rust-objcopy` failed: exit status: 127\n= note: rust-objcopy: error while loading shared libraries: libLLVM.so\n"}}
 {"reason":"compiler-artifact","filenames":[]}"#;
 
@@ -156,5 +159,5 @@ mod tests {
             detect_requested_strip_failure(&diagnostics).map(|failure| failure.utility),
             Some("rust-objcopy".to_owned()),
         );
-    });
+    }
 }

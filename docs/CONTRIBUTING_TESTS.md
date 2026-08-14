@@ -36,8 +36,10 @@ host-installed tooling.
 
 `crates/soldr-cli/tests/windows_delete_semantics.rs` is the reference example:
 it pins Windows deletion behavior that had previously been inferred from a
-different API. All executable Rust tests must use `timed_test!`; the workspace
-guard in `crates/soldr-cli/tests/timed_test_lint.rs` enforces that rule.
+different API. Executable Rust tests are plain `#[test]` functions; per-test
+timeouts come from cargo-nextest (`.config/nextest.toml`), and the workspace
+guard in `crates/soldr-cli/tests/no_timed_test_guard.rs` keeps the removed
+`timed_test!` watchdog from returning (soldr#2493).
 
 ## How native tests reach CI
 
@@ -73,7 +75,8 @@ When a change relies on host behavior:
   shell-specific reproduction;
 - keep portable decisions covered in the Linux suite;
 - gate the complete integration-test binary for the host it requires;
-- use `timed_test!` and avoid unbounded environmental waits;
+- run the suite with `soldr cargo nextest run` and avoid unbounded
+  environmental waits;
 - preserve the complete, unfiltered archive and target-run path; and
 - validate host failures by test name, comparing known runner flakes against
-  `main` before changing a watchdog budget.
+  `main` before changing a nextest budget.

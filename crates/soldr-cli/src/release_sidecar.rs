@@ -88,15 +88,17 @@ pub fn classify_sidecar(filename: &str) -> Option<DebugSidecarFormat> {
 mod tests {
     use super::*;
 
-    crate::timed_test!(pdb_is_classified_as_pdb, {
+    #[test]
+    fn pdb_is_classified_as_pdb() {
         assert_eq!(classify_sidecar("soldr.pdb"), Some(DebugSidecarFormat::Pdb));
         assert_eq!(
             classify_sidecar("soldr_cli.pdb"),
             Some(DebugSidecarFormat::Pdb),
         );
-    });
+    }
 
-    crate::timed_test!(dsym_bundle_is_classified_as_dsym, {
+    #[test]
+    fn dsym_bundle_is_classified_as_dsym() {
         // The macOS dSYM bundle is a directory; the workflow may pass
         // either form so both must classify cleanly.
         assert_eq!(
@@ -107,13 +109,15 @@ mod tests {
             classify_sidecar("soldr.dSYM/Contents/Resources/DWARF/soldr"),
             Some(DebugSidecarFormat::Dsym),
         );
-    });
+    }
 
-    crate::timed_test!(dwp_is_classified_as_dwp, {
+    #[test]
+    fn dwp_is_classified_as_dwp() {
         assert_eq!(classify_sidecar("soldr.dwp"), Some(DebugSidecarFormat::Dwp));
-    });
+    }
 
-    crate::timed_test!(dwo_is_classified_as_dwo, {
+    #[test]
+    fn dwo_is_classified_as_dwo() {
         // Unpacked split-debuginfo emits per-object .dwo files. The
         // classifier supports them so a future profile flip is a
         // workflow change, not a code change.
@@ -121,9 +125,10 @@ mod tests {
             classify_sidecar("soldr-abc123.dwo"),
             Some(DebugSidecarFormat::Dwo),
         );
-    });
+    }
 
-    crate::timed_test!(classifier_is_case_insensitive, {
+    #[test]
+    fn classifier_is_case_insensitive() {
         // Windows PDB enumeration can return uppercase; the macOS dSYM
         // bundle is conventionally upper-S. The tolerant compare keeps
         // the workflow from having to canonicalize before calling.
@@ -133,18 +138,20 @@ mod tests {
                 "expected {name:?} to classify",
             );
         }
-    });
+    }
 
-    crate::timed_test!(classifier_returns_none_for_release_binary, {
+    #[test]
+    fn classifier_returns_none_for_release_binary() {
         // The release binary itself must NOT classify as a sidecar,
         // or the manifest writer would double-list it.
         assert_eq!(classify_sidecar("soldr"), None);
         assert_eq!(classify_sidecar("soldr.exe"), None);
         assert_eq!(classify_sidecar("zccache"), None);
         assert_eq!(classify_sidecar("zccache-daemon"), None);
-    });
+    }
 
-    crate::timed_test!(classifier_returns_none_for_unrelated_files, {
+    #[test]
+    fn classifier_returns_none_for_unrelated_files() {
         // Defensive: build artifacts in the same directory must not
         // be misclassified as sidecars. `dep-info`/`.d`/`.rlib` are the
         // common confounders.
@@ -161,9 +168,10 @@ mod tests {
                 "expected {name:?} to not classify as a sidecar",
             );
         }
-    });
+    }
 
-    crate::timed_test!(manifest_strings_are_stable, {
+    #[test]
+    fn manifest_strings_are_stable() {
         // Lock the JSON-facing strings. Changing any of these is a
         // manifest schema break that needs a coordinated bump in
         // `scripts/zccache-contract.js` and
@@ -172,5 +180,5 @@ mod tests {
         assert_eq!(DebugSidecarFormat::Dsym.as_manifest_str(), "dsym");
         assert_eq!(DebugSidecarFormat::Dwp.as_manifest_str(), "dwp");
         assert_eq!(DebugSidecarFormat::Dwo.as_manifest_str(), "dwo");
-    });
+    }
 }

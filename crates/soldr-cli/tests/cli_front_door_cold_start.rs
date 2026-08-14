@@ -15,7 +15,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use soldr_cli::core::SoldrPaths;
-use soldr_cli::timed_test;
 
 /// Read the broker-spawn log under the isolated home installation.
 fn broker_spawn_log(home: &Path) -> String {
@@ -56,78 +55,75 @@ fn drain<R: std::io::Read + Send + 'static>(reader: R) -> Arc<Mutex<Vec<String>>
     lines
 }
 
-timed_test!(
-    front_door_cold_start_spawns_exactly_one_broker,
-    Duration::from_secs(90),
+#[test]
+fn front_door_cold_start_spawns_exactly_one_broker() {
+    let root = common::unique_temp_dir("coldstart-root");
+    let home = common::unique_temp_dir("coldstart-home");
+    // First front-door invocation on a clean root: it must spawn the broker.
+    let mut first = Command::new(common::soldr_bin());
+    common::scrub_outer_soldr_env(&mut first);
+    isolate_home(&mut first, &home);
+    let mut first_child = first
+        .arg("status")
+        .env("SOLDR_CACHE_DIR", &root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn first front-door soldr status");
+    let _o1 = drain(first_child.stdout.take().expect("stdout"));
+    let _e1 = drain(first_child.stderr.take().expect("stderr"));
+    let _ = first_child.wait().expect("wait first status");
+
+    // The front door waits for the broker to report a bind (or an
+    // already-bound refusal) before returning; give it a moment to flush.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while count_substr(&broker_spawn_log(&home), "stable endpoint bound at") == 0
+        && Instant::now() < deadline
     {
-        let root = common::unique_temp_dir("coldstart-root");
-        let home = common::unique_temp_dir("coldstart-home");
-        // First front-door invocation on a clean root: it must spawn the broker.
-        let mut first = Command::new(common::soldr_bin());
-        common::scrub_outer_soldr_env(&mut first);
-        isolate_home(&mut first, &home);
-        let mut first_child = first
-            .arg("status")
-            .env("SOLDR_CACHE_DIR", &root)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn first front-door soldr status");
-        let _o1 = drain(first_child.stdout.take().expect("stdout"));
-        let _e1 = drain(first_child.stderr.take().expect("stderr"));
-        let _ = first_child.wait().expect("wait first status");
-
-        // The front door waits for the broker to report a bind (or an
-        // already-bound refusal) before returning; give it a moment to flush.
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while count_substr(&broker_spawn_log(&home), "stable endpoint bound at") == 0
-            && Instant::now() < deadline
-        {
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        let binds_after_first = count_substr(&broker_spawn_log(&home), "stable endpoint bound at");
-
-        // Second front-door invocation against the same endpoint. It may reuse
-        // the live singleton without spawning a duplicate candidate.
-        let mut second = Command::new(common::soldr_bin());
-        common::scrub_outer_soldr_env(&mut second);
-        isolate_home(&mut second, &home);
-        let mut second_child = second
-            .arg("status")
-            .env("SOLDR_CACHE_DIR", &root)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn second front-door soldr status");
-        let _o2 = drain(second_child.stdout.take().expect("stdout"));
-        let _e2 = drain(second_child.stderr.take().expect("stderr"));
-        let second_status = second_child.wait().expect("wait second status");
-        std::thread::sleep(Duration::from_millis(500));
-        let log = broker_spawn_log(&home);
-        let total_binds = count_substr(&log, "stable endpoint bound at");
-
-        // Cleanup before asserting so a failure never leaks processes.
-        let mut stop = Command::new(common::soldr_bin());
-        common::scrub_outer_soldr_env(&mut stop);
-        isolate_home(&mut stop, &home);
-        let _ = stop.args(["broker", "stop"]).output();
-        stop_daemons_in_root(&root);
-
-        assert!(
-            binds_after_first >= 1,
-            "the first front-door invocation on a clean root must bring up a \
-             broker (no stable bind line in the spawn log)\n{log}"
-        );
-        assert!(
-            second_status.success(),
-            "the second front-door command must reuse the live broker\n{log}"
-        );
-        assert_eq!(
-            total_binds, 1,
-            "exactly one broker may bind the stable endpoint; the front door may reuse \
-             it without spawning a duplicate candidate\n{log}"
-        );
+        std::thread::sleep(Duration::from_millis(100));
     }
-);
+    let binds_after_first = count_substr(&broker_spawn_log(&home), "stable endpoint bound at");
+
+    // Second front-door invocation against the same endpoint. It may reuse
+    // the live singleton without spawning a duplicate candidate.
+    let mut second = Command::new(common::soldr_bin());
+    common::scrub_outer_soldr_env(&mut second);
+    isolate_home(&mut second, &home);
+    let mut second_child = second
+        .arg("status")
+        .env("SOLDR_CACHE_DIR", &root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn second front-door soldr status");
+    let _o2 = drain(second_child.stdout.take().expect("stdout"));
+    let _e2 = drain(second_child.stderr.take().expect("stderr"));
+    let second_status = second_child.wait().expect("wait second status");
+    std::thread::sleep(Duration::from_millis(500));
+    let log = broker_spawn_log(&home);
+    let total_binds = count_substr(&log, "stable endpoint bound at");
+
+    // Cleanup before asserting so a failure never leaks processes.
+    let mut stop = Command::new(common::soldr_bin());
+    common::scrub_outer_soldr_env(&mut stop);
+    isolate_home(&mut stop, &home);
+    let _ = stop.args(["broker", "stop"]).output();
+    stop_daemons_in_root(&root);
+
+    assert!(
+        binds_after_first >= 1,
+        "the first front-door invocation on a clean root must bring up a \
+             broker (no stable bind line in the spawn log)\n{log}"
+    );
+    assert!(
+        second_status.success(),
+        "the second front-door command must reuse the live broker\n{log}"
+    );
+    assert_eq!(
+        total_binds, 1,
+        "exactly one broker may bind the stable endpoint; the front door may reuse \
+             it without spawning a duplicate candidate\n{log}"
+    );
+}

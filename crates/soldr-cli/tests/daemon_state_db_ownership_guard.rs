@@ -9,8 +9,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use soldr_cli::timed_test;
-
 mod common;
 
 const OFFLINE_OWNER_MARKER: &str = "soldr-state-db: offline-root-owner";
@@ -210,7 +208,8 @@ fn validate_source(path: &str, source: &str) -> Result<(), Vec<String>> {
     }
 }
 
-timed_test!(daemon_owns_all_production_state_db_openers, {
+#[test]
+fn daemon_owns_all_production_state_db_openers() {
     let root = common::crate_root();
     let source_root = root.join("src");
     let mut files = Vec::new();
@@ -234,56 +233,58 @@ timed_test!(daemon_owns_all_production_state_db_openers, {
         "daemon-only state DB ownership violations (soldr#2252):\n  {}",
         offenders.join("\n  ")
     );
-});
+}
 
-timed_test!(guard_rejects_uncoordinated_production_open_fixture, {
+#[test]
+fn guard_rejects_uncoordinated_production_open_fixture() {
     let source = "fn direct_open() { TargetRegistry::open(&db_path).unwrap(); }";
     let error = validate_source("src/future_fallback.rs", source)
         .expect_err("uncoordinated production direct-open fixture must fail");
     assert!(error[0].contains("must use daemon IPC"));
-});
+}
 
-timed_test!(
-    guard_rejects_indirect_openers_and_does_not_leak_test_attributes,
-    {
-        for source in [
-            "fn direct_open() { crate::daemon::db::get_build(&db_path, 1).unwrap(); }",
-            "fn direct_sweep() { crate::daemon::history_gc::sweep(paths, &db_path, options); }",
-            "#[cfg(test)]\nfn prior_test() {}\nfn production() { \
+#[test]
+fn guard_rejects_indirect_openers_and_does_not_leak_test_attributes() {
+    for source in [
+        "fn direct_open() { crate::daemon::db::get_build(&db_path, 1).unwrap(); }",
+        "fn direct_sweep() { crate::daemon::history_gc::sweep(paths, &db_path, options); }",
+        "#[cfg(test)]\nfn prior_test() {}\nfn production() { \
          crate::daemon::db::get_build(&db_path, 1).unwrap(); }",
-            "#[cfg(test)]\nconst TEST_ONLY: () = ();\nfn production() { \
+        "#[cfg(test)]\nconst TEST_ONLY: () = ();\nfn production() { \
          crate::daemon::db::get_build(&db_path, 1).unwrap(); }",
-            "// #[cfg(test)]\nfn production() { \
+        "// #[cfg(test)]\nfn production() { \
          crate::daemon::db::get_build(&db_path, 1).unwrap(); }",
-        ] {
-            assert!(
-                validate_source("src/future_fallback.rs", source).is_err(),
-                "fixture must be rejected: {source}"
-            );
-        }
+    ] {
+        assert!(
+            validate_source("src/future_fallback.rs", source).is_err(),
+            "fixture must be rejected: {source}"
+        );
     }
-);
+}
 
-timed_test!(guard_permits_only_a_cfg_test_module, {
+#[test]
+fn guard_permits_only_a_cfg_test_module() {
     let source = "#[cfg(test)]\nmod tests {\nfn seed() { \
                   crate::daemon::db::upsert_build(&db_path, &record).unwrap();\n}\n}";
     assert!(validate_source("src/feature/tests.rs", source).is_ok());
-});
+}
 
-timed_test!(guard_permits_split_test_leaves, {
+#[test]
+fn guard_permits_split_test_leaves() {
     let source = "fn seed() { crate::daemon::db::upsert_build(&db_path, &record).unwrap(); }";
     assert!(validate_source("src/logs_cmd_tests.rs", source).is_ok());
     assert!(
         validate_source("src/logs_cmd.rs", source).is_err(),
         "the same opener must remain forbidden in a production leaf"
     );
-});
+}
 
-timed_test!(guard_preserves_offsets_with_crlf_source, {
+#[test]
+fn guard_preserves_offsets_with_crlf_source() {
     let source = "fn offline_registry_rows() {\r\n\
                   let _guard = RootOwnershipGuard::try_acquire();\r\n\
                   // soldr-state-db: offline-root-owner\r\n\
                   TargetRegistry::open(&db_path);\r\n\
                   }\r\n";
     assert!(validate_source("src/gc/mod.rs", source).is_ok());
-});
+}

@@ -198,14 +198,16 @@ pub fn any_active(paths: &SoldrPaths) -> io::Result<bool> {
 mod tests {
     use super::*;
 
-    crate::timed_test!(set_clear_round_trip, {
+    #[test]
+    fn set_clear_round_trip() {
         set(true);
         assert!(is_active());
         set(false);
         assert!(!is_active());
-    });
+    }
 
-    crate::timed_test!(leases_coordinate_and_cleanup_stale_files, {
+    #[test]
+    fn leases_coordinate_and_cleanup_stale_files() {
         let temp = tempfile::tempdir().unwrap();
         let paths = SoldrPaths::with_root(temp.path().to_path_buf());
         let first = BuildActivityLease::acquire(&paths, 1).unwrap();
@@ -215,9 +217,10 @@ mod tests {
         assert!(any_active(&paths).unwrap());
         drop(second);
         assert!(!any_active(&paths).unwrap());
-    });
+    }
 
-    crate::timed_test!(maintenance_defers_for_an_existing_build, {
+    #[test]
+    fn maintenance_defers_for_an_existing_build() {
         let temp = tempfile::tempdir().unwrap();
         let paths = SoldrPaths::with_root(temp.path().to_path_buf());
         let build = BuildActivityLease::acquire(&paths, 1).unwrap();
@@ -226,16 +229,17 @@ mod tests {
         MaintenanceLease::try_acquire(&paths)
             .unwrap()
             .expect("maintenance resumes after build");
-    });
+    }
 
-    crate::timed_test!(root_only_daemon_session_is_visible_to_legacy_gc, {
+    #[test]
+    fn root_only_daemon_session_is_visible_to_legacy_gc() {
         let temp = tempfile::tempdir().unwrap();
         let paths = SoldrPaths::with_root(temp.path().to_path_buf());
         let lease = BuildRootLease::acquire(&paths).unwrap();
         assert!(any_active(&paths).unwrap());
         drop(lease);
         assert!(!any_active(&paths).unwrap());
-    });
+    }
 
     #[test]
     #[ignore = "subprocess helper"]
@@ -268,7 +272,8 @@ mod tests {
         }
     }
 
-    crate::timed_test!(build_waits_for_maintenance_then_proceeds, {
+    #[test]
+    fn build_waits_for_maintenance_then_proceeds() {
         let temp = tempfile::tempdir().unwrap();
         let paths = SoldrPaths::with_root(temp.path().join("owned"));
         let ready = temp.path().join("ready");
@@ -293,9 +298,10 @@ mod tests {
         drop(maintenance);
         assert!(child.wait().unwrap().success());
         assert_eq!(std::fs::read(&ready).unwrap(), b"acquired");
-    });
+    }
 
-    crate::timed_test!(abrupt_build_process_exit_releases_root_lease, {
+    #[test]
+    fn abrupt_build_process_exit_releases_root_lease() {
         let temp = tempfile::tempdir().unwrap();
         let paths = SoldrPaths::with_root(temp.path().join("owned"));
         let ready = temp.path().join("ready");
@@ -316,5 +322,5 @@ mod tests {
         MaintenanceLease::try_acquire(&paths)
             .unwrap()
             .expect("OS releases the crashed client's build lease");
-    });
+    }
 }

@@ -107,22 +107,25 @@ pub fn cl_exe(bundle_root: &Path) -> PathBuf {
 mod tests {
     use super::*;
 
-    crate::timed_test!(host_slug_for_windows_x64_only, {
+    #[test]
+    fn host_slug_for_windows_x64_only() {
         assert_eq!(host_slug_for("x86_64-pc-windows-msvc"), Some("windows-x64"));
         // aarch64 host: not yet published, must miss cleanly rather
         // than pointing at a nonexistent bundle.
         assert_eq!(host_slug_for("aarch64-pc-windows-msvc"), None);
         assert_eq!(host_slug_for("x86_64-unknown-linux-gnu"), None);
-    });
+    }
 
-    crate::timed_test!(asset_url_matches_catalogue_layout, {
+    #[test]
+    fn asset_url_matches_catalogue_layout() {
         let u = msvc_asset_url_for(MANAGED_MSVC_VERSION, "windows-x64");
         assert!(u.starts_with("https://media.githubusercontent.com/media/"));
         assert!(u.contains("/msvc/14.44.35207/windows-x64/"));
         assert!(u.ends_with("/bundle.tar.zst"));
-    });
+    }
 
-    crate::timed_test!(version_constant_well_formed, {
+    #[test]
+    fn version_constant_well_formed() {
         let parts: Vec<&str> = MANAGED_MSVC_VERSION.split('.').collect();
         assert_eq!(
             parts.len(),
@@ -135,9 +138,10 @@ mod tests {
                 "non-digit in {MANAGED_MSVC_VERSION}"
             );
         }
-    });
+    }
 
-    crate::timed_test!(cl_exe_path_layout, {
+    #[test]
+    fn cl_exe_path_layout() {
         let root = Path::new("root");
         let cl = cl_exe(root);
         assert!(
@@ -145,9 +149,10 @@ mod tests {
             "{}",
             cl.display()
         );
-    });
+    }
 
-    crate::timed_test!(ensure_bundle_rejects_unsupported_host, {
+    #[test]
+    fn ensure_bundle_rejects_unsupported_host() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -155,5 +160,5 @@ mod tests {
             .block_on(ensure_msvc_bundle(&paths, "aarch64-pc-windows-msvc"))
             .expect_err("aarch64 host must error until that shape is published");
         assert!(matches!(err, SoldrError::UnsupportedPlatform(_)));
-    });
+    }
 }

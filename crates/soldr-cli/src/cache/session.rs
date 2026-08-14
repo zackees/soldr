@@ -800,7 +800,8 @@ mod tests {
         }
     }
 
-    crate::timed_test!(session_ids_cannot_escape_baseline_or_archive_directories, {
+    #[test]
+    fn session_ids_cannot_escape_baseline_or_archive_directories() {
         for invalid in [
             "",
             ".",
@@ -820,31 +821,31 @@ mod tests {
             session_baseline_path(root, "build-1.main_ok").expect("valid id"),
             root.join("logs/session-build-1.main_ok.baseline.json")
         );
-    });
+    }
 
-    crate::timed_test!(
-        compilation_delta_accepts_monotonic_zero_and_nonzero_counts,
-        {
-            assert_eq!(
-                compilation_delta(&compile_stats(41), &compile_stats(41)),
-                Some(0)
-            );
-            assert_eq!(
-                compilation_delta(&compile_stats(41), &compile_stats(44)),
-                Some(3)
-            );
-        }
-    );
+    #[test]
+    fn compilation_delta_accepts_monotonic_zero_and_nonzero_counts() {
+        assert_eq!(
+            compilation_delta(&compile_stats(41), &compile_stats(41)),
+            Some(0)
+        );
+        assert_eq!(
+            compilation_delta(&compile_stats(41), &compile_stats(44)),
+            Some(3)
+        );
+    }
 
-    crate::timed_test!(compilation_delta_rejects_daemon_counter_reset, {
+    #[test]
+    fn compilation_delta_rejects_daemon_counter_reset() {
         assert_eq!(
             compilation_delta(&compile_stats(41), &compile_stats(0)),
             None,
             "a daemon restart must be unproven, never misreported as zero compiles"
         );
-    });
+    }
 
-    crate::timed_test!(session_stats_diff_phase_profile_counters, {
+    #[test]
+    fn session_stats_diff_phase_profile_counters() {
         let mut baseline = compile_stats(10);
         baseline.staged_profile = Some(crate::daemon::protocol::StagedProfileInfo {
             counters: [("published".to_string(), 3)].into(),
@@ -869,9 +870,10 @@ mod tests {
         );
         assert_eq!(stats["phase_profile"]["staged"]["bytes"]["copied"], 25);
         assert_eq!(stats["phase_profile"]["staged"]["failures"]["copy"], 1);
-    });
+    }
 
-    crate::timed_test!(clear_session_artifacts_removes_existing_files_only, {
+    #[test]
+    fn clear_session_artifacts_removes_existing_files_only() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let zccache_dir = tmp.path();
         std::fs::create_dir_all(zccache_dir.join("logs")).expect("logs dir");
@@ -888,28 +890,32 @@ mod tests {
         // removed (idempotency contract for `session-end --clear`).
         let removed_again = clear_session_artifacts(zccache_dir).expect("clear-twice");
         assert!(!removed_again, "second clear should be a no-op");
-    });
+    }
 
-    crate::timed_test!(zccache_output_snippet_omits_empty_output, {
+    #[test]
+    fn zccache_output_snippet_omits_empty_output() {
         assert_eq!(zccache_output_snippet(b""), None);
         assert_eq!(zccache_output_snippet(b" \n\t "), None);
-    });
+    }
 
-    crate::timed_test!(zccache_output_snippet_compacts_whitespace, {
+    #[test]
+    fn zccache_output_snippet_compacts_whitespace() {
         assert_eq!(
             zccache_output_snippet(b"  first line\n\nsecond\tline  ").as_deref(),
             Some("first line second line")
         );
-    });
+    }
 
-    crate::timed_test!(zccache_output_snippet_truncates_long_output, {
+    #[test]
+    fn zccache_output_snippet_truncates_long_output() {
         let output = "x".repeat(ZCCACHE_ANALYZE_NOTE_LIMIT + 10);
         let snippet = zccache_output_snippet(output.as_bytes()).unwrap();
         assert_eq!(snippet.chars().count(), ZCCACHE_ANALYZE_NOTE_LIMIT + 3);
         assert!(snippet.ends_with("..."));
-    });
+    }
 
-    crate::timed_test!(zccache_analyze_failure_note_includes_stdout_and_stderr, {
+    #[test]
+    fn zccache_analyze_failure_note_includes_stdout_and_stderr() {
         let note = zccache_analyze_failure_note(
             Some(1),
             br#"{"status":"error","error":"bad input"}"#,
@@ -918,5 +924,5 @@ mod tests {
         assert!(note.contains("rollups: zccache analyze exited with status Some(1)"));
         assert!(note.contains("stderr: expected compile journal JSONL"));
         assert!(note.contains(r#"stdout: {"status":"error","error":"bad input"}"#));
-    });
+    }
 }

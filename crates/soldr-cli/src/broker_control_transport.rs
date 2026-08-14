@@ -164,7 +164,8 @@ fn unix_deadline_ms(timeout: Duration) -> u64 {
 mod tests {
     use super::*;
 
-    crate::timed_test!(control_tunnel_deadline_is_future_and_bounded, {
+    #[test]
+    fn control_tunnel_deadline_is_future_and_bounded() {
         let before = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -172,9 +173,10 @@ mod tests {
         let deadline = unix_deadline_ms(Duration::from_secs(2));
         assert!(deadline >= before + 1_900);
         assert!(deadline <= before + 2_100);
-    });
+    }
 
-    crate::timed_test!(hot_path_timeout_is_not_inflated_by_route_handshake, {
+    #[test]
+    fn hot_path_timeout_is_not_inflated_by_route_handshake() {
         assert_eq!(
             route_handshake_timeout(Duration::from_millis(40)),
             Duration::from_millis(40)
@@ -187,5 +189,5 @@ mod tests {
             route_handshake_timeout(Duration::from_secs(45)),
             Duration::from_secs(45)
         );
-    });
+    }
 }

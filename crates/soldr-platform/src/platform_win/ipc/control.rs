@@ -245,7 +245,7 @@ fn control_timeout(operation: &str, timeout: Duration) -> io::Error {
 mod tests {
     use super::*;
 
-    #[test] // allow-bare-test: soldr-platform cannot depend on soldr-core's watchdog
+    #[test]
     fn missing_pipe_is_bounded_inside_tokio_runtime() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()

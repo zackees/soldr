@@ -333,7 +333,8 @@ mod tests {
         values.iter().map(|value| (*value).into()).collect()
     }
 
-    crate::timed_test!(default_suite_has_one_clippy_scope_without_check, {
+    #[test]
+    fn default_suite_has_one_clippy_scope_without_check() {
         let plan = LintPlan::parse(&[]).unwrap();
         assert_eq!(plan.mode, LintMode::Rust);
         assert_eq!(
@@ -351,9 +352,10 @@ mod tests {
                 strings(&["dylint", "--all", "--", "--workspace", "--all-targets"]),
             ]
         );
-    });
+    }
 
-    crate::timed_test!(all_suite_uses_all_features_for_compiler_steps, {
+    #[test]
+    fn all_suite_uses_all_features_for_compiler_steps() {
         let plan = LintPlan::parse(&strings(&["all", "--package", "soldr-cli"])).unwrap();
         let rust = plan.rust_steps(true).unwrap();
         assert!(rust[1].contains(&"--all-features".into()));
@@ -362,9 +364,10 @@ mod tests {
         assert_eq!(exhaustive[0][0], "udeps");
         assert!(exhaustive[0].contains(&"--all-features".into()));
         assert_eq!(exhaustive[1], strings(&["semver-checks"]));
-    });
+    }
 
-    crate::timed_test!(dependency_suite_is_limited_to_shared_manifest_scope, {
+    #[test]
+    fn dependency_suite_is_limited_to_shared_manifest_scope() {
         let plan = LintPlan::parse(&strings(&["deps", "--manifest-path", "Cargo.toml"])).unwrap();
         assert_eq!(
             plan.dependency_steps().unwrap(),
@@ -376,40 +379,45 @@ mod tests {
         );
         let invalid = LintPlan::parse(&strings(&["deps", "--all-features"])).unwrap();
         assert!(invalid.dependency_steps().is_err());
-    });
+    }
 
-    crate::timed_test!(unknown_suite_is_rejected, {
+    #[test]
+    fn unknown_suite_is_rejected() {
         let error = LintPlan::parse(&strings(&["everything"])).unwrap_err();
         assert!(error.to_string().contains("unknown suite"));
-    });
+    }
 
-    crate::timed_test!(ci_suite_is_parsed_with_default_human_format, {
+    #[test]
+    fn ci_suite_is_parsed_with_default_human_format() {
         let plan = LintPlan::parse(&strings(&["ci"])).unwrap();
         assert_eq!(plan.mode, LintMode::Ci);
         assert_eq!(plan.ci_format, OutputFormat::Human);
         assert!(plan.scope.is_empty());
-    });
+    }
 
-    crate::timed_test!(ci_suite_parses_format_flag_both_spellings, {
+    #[test]
+    fn ci_suite_parses_format_flag_both_spellings() {
         let split = LintPlan::parse(&strings(&["ci", "--format", "json"])).unwrap();
         assert_eq!(split.mode, LintMode::Ci);
         assert_eq!(split.ci_format, OutputFormat::Json);
         let joined = LintPlan::parse(&strings(&["ci", "--format=json"])).unwrap();
         assert_eq!(joined.ci_format, OutputFormat::Json);
-    });
+    }
 
-    crate::timed_test!(ci_suite_rejects_cargo_scope_flags, {
+    #[test]
+    fn ci_suite_rejects_cargo_scope_flags() {
         // `--package` is a cargo scope flag; the ci suite must not accept it.
         let error = LintPlan::parse(&strings(&["ci", "--package", "soldr-cli"])).unwrap_err();
         assert!(error.to_string().contains("unexpected argument"));
         let bad_format = LintPlan::parse(&strings(&["ci", "--format", "yaml"])).unwrap_err();
         assert!(bad_format.to_string().contains("unknown --format"));
-    });
+    }
 
-    crate::timed_test!(all_suite_mode_is_all, {
+    #[test]
+    fn all_suite_mode_is_all() {
         // `lint all` must reach LintMode::All, which now also runs the CI
         // suite before the compile/dep steps.
         let plan = LintPlan::parse(&strings(&["all"])).unwrap();
         assert_eq!(plan.mode, LintMode::All);
-    });
+    }
 }

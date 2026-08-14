@@ -4,7 +4,6 @@ mod common;
 
 use common::*;
 use serde_json::Value;
-use soldr_cli::timed_test;
 use std::io::Write;
 use std::process::Command;
 use std::{
@@ -28,36 +27,33 @@ fn install_fake_toolchain_plugin_cargo(log_path: &Path) -> PathBuf {
     cargo
 }
 
-// Retrofitted to use `timed_test!` (180s budget) as a smoke proof that
+// Given a 180s nextest budget (see `.config/nextest.toml`) as a smoke proof that
 // the watchdog macro composes cleanly with an existing integration
 // test that spawns the soldr binary as a subprocess.
-timed_test!(
-    rustup_passthrough_forwards_args_unchanged_for_unscoped_subcommands,
-    Duration::from_secs(180),
-    {
-        let workspace = unique_temp_dir("rustup-passthrough-show");
-        let log_path = workspace.join("rustup.log");
-        let rustup = install_logging_fake_rustup(&log_path);
+#[test]
+fn rustup_passthrough_forwards_args_unchanged_for_unscoped_subcommands() {
+    let workspace = unique_temp_dir("rustup-passthrough-show");
+    let log_path = workspace.join("rustup.log");
+    let rustup = install_logging_fake_rustup(&log_path);
 
-        let output = isolated_soldr_command()
-            .args(["rustup", "show"])
-            .current_dir(&workspace)
-            .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
-            .output()
-            .expect("failed to run soldr rustup show");
+    let output = isolated_soldr_command()
+        .args(["rustup", "show"])
+        .current_dir(&workspace)
+        .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        .output()
+        .expect("failed to run soldr rustup show");
 
-        assert!(
-            output.status.success(),
-            "soldr rustup show failed\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+    assert!(
+        output.status.success(),
+        "soldr rustup show failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 
-        let invocations = read_logged_rustup_invocations(&log_path);
-        assert_eq!(invocations.len(), 1, "expected one rustup invocation");
-        assert_eq!(invocations[0], vec!["show".to_string()]);
-    }
-);
+    let invocations = read_logged_rustup_invocations(&log_path);
+    assert_eq!(invocations.len(), 1, "expected one rustup invocation");
+    assert_eq!(invocations[0], vec!["show".to_string()]);
+}
 
 #[test]
 fn rustup_passthrough_injects_toolchain_for_target_add() {
@@ -359,55 +355,51 @@ fn toolchain_prepare_host_cargo_keeps_managed_install_home_without_managed_rustu
     );
 }
 
-timed_test!(
-    toolchain_prepare_plugin_install_clears_inherited_rustc_wrappers,
-    {
-        if matches!(
-            soldr_platform::host::facts::os(),
-            soldr_platform::host::facts::HostOs::Windows
-        ) {
-            return;
-        }
-        let workspace = unique_temp_dir("toolchain-prepare-plugin-wrapper-policy");
-        seed_rust_toolchain_toml(
-            &workspace,
-            "[toolchain]\n\
+#[test]
+fn toolchain_prepare_plugin_install_clears_inherited_rustc_wrappers() {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
+    let workspace = unique_temp_dir("toolchain-prepare-plugin-wrapper-policy");
+    seed_rust_toolchain_toml(
+        &workspace,
+        "[toolchain]\n\
          channel = \"1.94.1\"\n\
          \n\
          [soldr.plugins]\n\
          cargo-nextest = \"0.9\"\n",
-        );
-        let rustup_log = workspace.join("rustup.log");
-        let cargo_log = workspace.join("cargo.log");
-        let rustup = install_logging_fake_rustup(&rustup_log);
-        let cargo = install_fake_toolchain_plugin_cargo(&cargo_log);
+    );
+    let rustup_log = workspace.join("rustup.log");
+    let cargo_log = workspace.join("cargo.log");
+    let rustup = install_logging_fake_rustup(&rustup_log);
+    let cargo = install_fake_toolchain_plugin_cargo(&cargo_log);
 
-        let output = isolated_soldr_command()
-            .args(["toolchain", "prepare"])
-            .current_dir(&workspace)
-            .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
-            .env("SOLDR_TEST_CARGO_BIN", &cargo)
-            .env("RUSTC_WRAPPER", "/tmp/outer-wrapper")
-            .env("RUSTC_WORKSPACE_WRAPPER", "/tmp/outer-workspace-wrapper")
-            .output()
-            .expect("failed to run soldr toolchain prepare");
+    let output = isolated_soldr_command()
+        .args(["toolchain", "prepare"])
+        .current_dir(&workspace)
+        .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("RUSTC_WRAPPER", "/tmp/outer-wrapper")
+        .env("RUSTC_WORKSPACE_WRAPPER", "/tmp/outer-workspace-wrapper")
+        .output()
+        .expect("failed to run soldr toolchain prepare");
 
-        assert!(
-            output.status.success(),
-            "soldr toolchain prepare failed\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+    assert!(
+        output.status.success(),
+        "soldr toolchain prepare failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 
-        let log = fs::read_to_string(&cargo_log).expect("read fake cargo log");
-        assert!(
-            log.contains(
-                "cargo wrapper= workspace_wrapper= args=install cargo-nextest --version 0.9"
-            ),
-            "toolchain prepare plugin install should scrub rustc wrapper env: {log}"
-        );
-    }
-);
+    let log = fs::read_to_string(&cargo_log).expect("read fake cargo log");
+    assert!(
+        log.contains("cargo wrapper= workspace_wrapper= args=install cargo-nextest --version 0.9"),
+        "toolchain prepare plugin install should scrub rustc wrapper env: {log}"
+    );
+}
 
 #[test]
 fn toolchain_prepare_installs_plugin_with_locked_flag() {

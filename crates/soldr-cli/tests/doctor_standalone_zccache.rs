@@ -15,8 +15,6 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
 
-use soldr_cli::timed_test;
-
 /// Run `soldr doctor` in an isolated workspace (no rust-toolchain.toml,
 /// hermetic HOME / cache dir) with the two soldr#1467 probe seams set.
 fn run_doctor(workspace: &Path, scan_root: &Path, process_list: &Path, json: bool) -> Output {
@@ -47,7 +45,8 @@ fn seed_stale_copy(scan_root: &Path) -> String {
     stale.display().to_string()
 }
 
-timed_test!(doctor_json_reports_stale_copies_and_daemon_processes, {
+#[test]
+fn doctor_json_reports_stale_copies_and_daemon_processes() {
     let workspace = common::unique_temp_dir("doctor-standalone-dirty");
     let scan_root = workspace.join("zccache-root");
     let stale = seed_stale_copy(&scan_root);
@@ -74,9 +73,10 @@ timed_test!(doctor_json_reports_stale_copies_and_daemon_processes, {
         json["zccache"]["standalone_daemon_processes"],
         serde_json::json!(["zccache-daemon.99 (pid 4242)"])
     );
-});
+}
 
-timed_test!(doctor_human_output_warns_on_standalone_leftovers, {
+#[test]
+fn doctor_human_output_warns_on_standalone_leftovers() {
     let workspace = common::unique_temp_dir("doctor-standalone-human");
     let scan_root = workspace.join("zccache-root");
     seed_stale_copy(&scan_root);
@@ -102,9 +102,10 @@ timed_test!(doctor_human_output_warns_on_standalone_leftovers, {
         stdout.contains("zccache-daemon.772359644.exe"),
         "warning must list the stale copy:\n{stdout}"
     );
-});
+}
 
-timed_test!(doctor_reports_clean_baseline_when_no_leftovers, {
+#[test]
+fn doctor_reports_clean_baseline_when_no_leftovers() {
     let workspace = common::unique_temp_dir("doctor-standalone-clean");
     let scan_root = workspace.join("zccache-root");
     fs::create_dir_all(scan_root.join("v1.12.15").join("runtime-binaries"))
@@ -137,4 +138,4 @@ timed_test!(doctor_reports_clean_baseline_when_no_leftovers, {
         stdout.contains("standalone zccache: none detected"),
         "clean box gets the quiet one-liner:\n{stdout}"
     );
-});
+}

@@ -87,7 +87,8 @@ fn add_static_links_override(
 mod tests {
     use super::*;
 
-    crate::timed_test!(uses_static_target_config, {
+    #[test]
+    fn uses_static_target_config() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let sysroot = tmp.path().join("lzma sysroot");
         let mut prep = BlessedPrep::default();
@@ -120,5 +121,5 @@ mod tests {
                 ),
             )]
         );
-    });
+    }
 }

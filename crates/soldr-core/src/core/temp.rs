@@ -126,7 +126,8 @@ mod tests {
     // Two properties that pull against each other, so one test each.
     //
     // Same volume as the cache, or temp->cache renames stop being atomic.
-    crate::timed_test!(scratch_shares_the_soldr_root_with_the_cache, {
+    #[test]
+    fn scratch_shares_the_soldr_root_with_the_cache() {
         let paths = SoldrPaths::with_root(PathBuf::from("/synthetic/root"));
         let root = temp_root_for(&paths);
         assert!(
@@ -136,13 +137,14 @@ mod tests {
             root.display(),
             paths.root.display()
         );
-    });
+    }
 
     // ...but NOT inside the cache, or the cache's own maintenance walks into it.
     // Regression guard: `<cache>/tmp` nested every test's synthetic
     // SOLDR_CACHE_DIR inside the real cache root, exposing it to ambient
     // auto-GC and purge tiers.
-    crate::timed_test!(scratch_is_a_sibling_of_the_cache_not_a_child, {
+    #[test]
+    fn scratch_is_a_sibling_of_the_cache_not_a_child() {
         let paths = SoldrPaths::with_root(PathBuf::from("/synthetic/root"));
         let root = temp_root_for(&paths);
         assert!(
@@ -154,9 +156,10 @@ mod tests {
             root.display(),
             paths.cache.display()
         );
-    });
+    }
 
-    crate::timed_test!(scratch_is_not_the_os_temp_dir_by_default, {
+    #[test]
+    fn scratch_is_not_the_os_temp_dir_by_default() {
         let paths = SoldrPaths::with_root(PathBuf::from("/synthetic/root"));
         assert_ne!(
             temp_root_for(&paths),
@@ -164,5 +167,5 @@ mod tests {
             "the OS temp dir is tmpfs on most Linux hosts; that is what this \
              module exists to avoid"
         );
-    });
+    }
 }

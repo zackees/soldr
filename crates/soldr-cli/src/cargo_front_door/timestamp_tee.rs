@@ -188,31 +188,36 @@ mod tests {
         Some(i + 1)
     }
 
-    crate::timed_test!(each_line_gets_one_prefix, {
+    #[test]
+    fn each_line_gets_one_prefix() {
         let text = stamped(&[b"alpha\nbeta\n"]);
         assert_eq!(shape(&text), "<T> alpha\n<T> beta\n");
-    });
+    }
 
-    crate::timed_test!(a_chunk_split_mid_line_does_not_double_stamp, {
+    #[test]
+    fn a_chunk_split_mid_line_does_not_double_stamp() {
         // The pipe reader hands over arbitrary 8 KB slices, so a line
         // routinely spans two writes. Only a real line start counts.
         let text = stamped(&[b"al", b"pha\nbe", b"ta\n"]);
         assert_eq!(shape(&text), "<T> alpha\n<T> beta\n");
-    });
+    }
 
-    crate::timed_test!(carriage_return_starts_a_line_so_redraws_are_stamped, {
+    #[test]
+    fn carriage_return_starts_a_line_so_redraws_are_stamped() {
         let text = stamped(&[b"Downloading 1\rDownloading 2\r"]);
         assert_eq!(shape(&text), "<T> Downloading 1\r<T> Downloading 2\r");
-    });
+    }
 
-    crate::timed_test!(crlf_stamps_once_not_twice, {
+    #[test]
+    fn crlf_stamps_once_not_twice() {
         // Windows cargo emits CRLF. Treating both bytes as line starts
         // would put an empty stamped line between every real one.
         let text = stamped(&[b"alpha\r\nbeta\r\n"]);
         assert_eq!(shape(&text), "<T> alpha\r\n<T> beta\r\n");
-    });
+    }
 
-    crate::timed_test!(ansi_escapes_pass_through_untouched, {
+    #[test]
+    fn ansi_escapes_pass_through_untouched() {
         // Colour must survive: the prefix is only ever inserted at
         // column 0, so escapes inside the line are copied verbatim.
         let text = stamped(&[b"\x1b[32mgreen\x1b[0m\n"]);
@@ -221,19 +226,22 @@ mod tests {
             "escape sequence must survive verbatim, got {text:?}",
         );
         assert_eq!(shape(&text), "<T> \u{1b}[32mgreen\u{1b}[0m\n");
-    });
+    }
 
-    crate::timed_test!(trailing_partial_line_is_stamped_once, {
+    #[test]
+    fn trailing_partial_line_is_stamped_once() {
         let text = stamped(&[b"partial"]);
         assert_eq!(shape(&text), "<T> partial");
-    });
+    }
 
-    crate::timed_test!(timestamping_defaults_on_for_ci_and_off_for_a_terminal, {
+    #[test]
+    fn timestamping_defaults_on_for_ci_and_off_for_a_terminal() {
         assert!(should_timestamp(None, false), "non-TTY (CI) defaults on");
         assert!(!should_timestamp(None, true), "TTY defaults off");
-    });
+    }
 
-    crate::timed_test!(env_override_wins_in_both_directions, {
+    #[test]
+    fn env_override_wins_in_both_directions() {
         for on in ["1", "true", "on", "ON", " true "] {
             assert!(should_timestamp(Some(on), true), "{on:?} must force on");
         }
@@ -243,20 +251,22 @@ mod tests {
                 "{off:?} must force off"
             );
         }
-    });
+    }
 
-    crate::timed_test!(unrecognised_env_value_falls_back_to_the_default, {
+    #[test]
+    fn unrecognised_env_value_falls_back_to_the_default() {
         // Garbage must not silently mean "off" on CI, where the default
         // is the useful one.
         assert!(should_timestamp(Some("yes-please"), false));
         assert!(should_timestamp(Some(""), false));
-    });
+    }
 
-    crate::timed_test!(anchor_line_carries_the_absolute_epoch, {
+    #[test]
+    fn anchor_line_carries_the_absolute_epoch() {
         assert_eq!(
             epoch_anchor_line(1_784_950_000_123),
             "# t0=1784950000.123\n"
         );
         assert_eq!(epoch_anchor_line(1_000), "# t0=1.000\n");
-    });
+    }
 }

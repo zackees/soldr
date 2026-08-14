@@ -146,20 +146,23 @@ mod tests {
         std::fs::write(path, contents).unwrap();
     }
 
-    crate::timed_test!(a_missing_directory_produces_no_diagnosis, {
+    #[test]
+    fn a_missing_directory_produces_no_diagnosis() {
         let dir = tempfile::tempdir().unwrap();
         let gone = dir.path().join("never-existed");
         assert!(describe(&gone).is_none());
-    });
+    }
 
-    crate::timed_test!(an_empty_directory_produces_no_diagnosis, {
+    #[test]
+    fn an_empty_directory_produces_no_diagnosis() {
         // The delete finished after reporting an error. Saying "0 entries
         // remain" would read as a finding; saying nothing is the finding.
         let dir = tempfile::tempdir().unwrap();
         assert!(describe(dir.path()).is_none());
-    });
+    }
 
-    crate::timed_test!(survivors_are_counted_through_subdirectories, {
+    #[test]
+    fn survivors_are_counted_through_subdirectories() {
         let dir = tempfile::tempdir().unwrap();
         write(&dir.path().join("a.rlib"), "x");
         write(&dir.path().join("deps/b.rlib"), "y");
@@ -169,9 +172,10 @@ mod tests {
         // 3 files + 2 directories.
         assert_eq!(survivors.entries, 5, "{survivors:?}");
         assert_eq!(survivors.links, 0);
-    });
+    }
 
-    crate::timed_test!(the_read_only_count_is_reported, {
+    #[test]
+    fn the_read_only_count_is_reported() {
         // The number that settles the disproven theory on a real failing
         // tree, rather than requiring it be argued again.
         let dir = tempfile::tempdir().unwrap();
@@ -190,9 +194,10 @@ mod tests {
         // read-only file on Windows and on Unix alike. If that ever stops
         // being true this test leaks a directory -- which is the loudest
         // available signal that the premise behind #2200 came back.
-    });
+    }
 
-    crate::timed_test!(the_longest_path_is_named, {
+    #[test]
+    fn the_longest_path_is_named() {
         let dir = tempfile::tempdir().unwrap();
         write(&dir.path().join("short"), "x");
         let deep = dir.path().join("a/bb/ccc/a-considerably-longer-name.rlib");
@@ -204,9 +209,10 @@ mod tests {
         assert_eq!(len, deep.as_os_str().len());
         let summary = survivors.summarize().unwrap();
         assert!(summary.contains("longest path"), "{summary}");
-    });
+    }
 
-    crate::timed_test!(the_count_leads_and_agrees_with_itself, {
+    #[test]
+    fn the_count_leads_and_agrees_with_itself() {
         // The line goes in front of a user at the moment a purge failed, so
         // it should not also be ungrammatical.
         let one = Survivors {
@@ -224,5 +230,5 @@ mod tests {
             many.summarize().unwrap(),
             "12483 entries remain, 6 read-only"
         );
-    });
+    }
 }

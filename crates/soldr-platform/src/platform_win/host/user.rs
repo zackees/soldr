@@ -74,12 +74,12 @@ fn ps_quote(value: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+    #[test]
     fn ps_quote_doubles_single_quotes() {
         assert_eq!(ps_quote("a'b"), "'a''b'");
     }
 
-    #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+    #[test]
     fn build_powershell_arg_list_emits_array_literal() {
         assert_eq!(
             build_powershell_arg_list(&["a".to_string(), "b c".to_string()]),

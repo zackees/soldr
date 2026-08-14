@@ -89,7 +89,8 @@ pub fn probe(target_dir: &Path) -> io::Result<CargoLockProbe> {
 mod tests {
     use super::*;
 
-    crate::timed_test!(persistent_unlocked_lock_is_idle, {
+    #[test]
+    fn persistent_unlocked_lock_is_idle() {
         let temp = tempfile::tempdir().unwrap();
         let lock = temp.path().join(".cargo-lock");
         File::create(&lock).unwrap();
@@ -97,9 +98,10 @@ mod tests {
             probe(temp.path()).unwrap(),
             CargoLockProbe::Idle(_)
         ));
-    });
+    }
 
-    crate::timed_test!(held_lock_is_active, {
+    #[test]
+    fn held_lock_is_active() {
         let temp = tempfile::tempdir().unwrap();
         let lock = temp.path().join(".cargo-lock");
         let holder = File::create(&lock).unwrap();
@@ -109,5 +111,5 @@ mod tests {
             CargoLockProbe::Active(_)
         ));
         holder.unlock().unwrap();
-    });
+    }
 }

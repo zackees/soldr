@@ -24,7 +24,6 @@
 use std::sync::Arc;
 
 use soldr_cli::fetch::manifest_lookup::{ManifestEntry, ManifestIndex};
-use soldr_cli::timed_test;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
@@ -76,7 +75,8 @@ fn rt() -> Runtime {
 //    keeps each test focused on one invariant.)
 // ─────────────────────────────────────────────────────────────────────────
 
-timed_test!(manifest_hit_returns_pinned_url, {
+#[test]
+fn manifest_hit_returns_pinned_url() {
     let json = r#"{
         "entries": [
             {
@@ -103,7 +103,7 @@ timed_test!(manifest_hit_returns_pinned_url, {
         hit.sha256,
         "deadbeef00000000000000000000000000000000000000000000000000000000"
     );
-});
+}
 
 // ─────────────────────────────────────────────────────────────────────────
 // 2) Miss: empty manifest returns None for any lookup. This is the
@@ -113,7 +113,8 @@ timed_test!(manifest_hit_returns_pinned_url, {
 //    Releases API in this case — not raise an error.
 // ─────────────────────────────────────────────────────────────────────────
 
-timed_test!(manifest_miss_falls_through_to_api, {
+#[test]
+fn manifest_miss_falls_through_to_api() {
     let idx = ManifestIndex::empty();
     assert!(idx
         .lookup("zackees", "zccache", "1.12.9", "any.zip")
@@ -142,7 +143,7 @@ timed_test!(manifest_miss_falls_through_to_api, {
     assert!(idx
         .lookup("zackees", "zccache", "1.12.9", "zccache.zip")
         .is_none());
-});
+}
 
 // ─────────────────────────────────────────────────────────────────────────
 // 3) sha256 mismatch is a hard error. We construct a fresh download
@@ -153,7 +154,8 @@ timed_test!(manifest_miss_falls_through_to_api, {
 //    directly via the public API.
 // ─────────────────────────────────────────────────────────────────────────
 
-timed_test!(manifest_sha256_mismatch_is_hard_error, {
+#[test]
+fn manifest_sha256_mismatch_is_hard_error() {
     // sha256 of the literal bytes the server will return:
     //   echo -n "wrong-payload" | sha256sum
     //   = 6c3e... (we compute the wrong one in the entry to force a
@@ -204,4 +206,4 @@ timed_test!(manifest_sha256_mismatch_is_hard_error, {
             "the test setup must produce a mismatch — otherwise the assertion below is vacuous",
         );
     });
-});
+}

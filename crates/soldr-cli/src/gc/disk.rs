@@ -324,7 +324,6 @@ fn format_bytes(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::timed_test;
     use std::sync::Mutex;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -358,16 +357,18 @@ mod tests {
         }
     }
 
-    timed_test!(threshold_classifier_returns_ok_above_warn, {
+    #[test]
+    fn threshold_classifier_returns_ok_above_warn() {
         let outcome = classify_outcome(
             20 * BYTES_PER_GIB,
             DEFAULT_WARN_FREE_GB,
             DEFAULT_BLOCK_FREE_GB,
         );
         assert!(matches!(outcome, DiskCheckOutcome::Ok { .. }));
-    });
+    }
 
-    timed_test!(threshold_classifier_returns_warn_between_thresholds, {
+    #[test]
+    fn threshold_classifier_returns_warn_between_thresholds() {
         let outcome = classify_outcome(
             7 * BYTES_PER_GIB,
             DEFAULT_WARN_FREE_GB,
@@ -383,9 +384,10 @@ mod tests {
             }
             other => panic!("expected Warn, got {other:?}"),
         }
-    });
+    }
 
-    timed_test!(threshold_classifier_returns_block_below_block, {
+    #[test]
+    fn threshold_classifier_returns_block_below_block() {
         let outcome = classify_outcome(
             2 * BYTES_PER_GIB,
             DEFAULT_WARN_FREE_GB,
@@ -401,22 +403,25 @@ mod tests {
             }
             other => panic!("expected Block, got {other:?}"),
         }
-    });
+    }
 
-    timed_test!(threshold_classifier_block_wins_at_block_boundary, {
+    #[test]
+    fn threshold_classifier_block_wins_at_block_boundary() {
         let outcome = classify_outcome(DEFAULT_BLOCK_FREE_GB * BYTES_PER_GIB - 1, 10, 5);
         assert!(matches!(outcome, DiskCheckOutcome::Block { .. }));
-    });
+    }
 
-    timed_test!(check_disk_disabled_via_env_var, {
+    #[test]
+    fn check_disk_disabled_via_env_var() {
         let _lock = ENV_LOCK.lock().unwrap();
         let _disabled = EnvVarGuard::set(AUTO_PRUNE_ENABLED_ENV_VAR, "0");
         let _free = EnvVarGuard::set(TEST_DISK_FREE_BYTES_ENV_VAR, "0");
         let outcome = check_disk_or_warn_or_block(std::path::Path::new("."));
         assert!(matches!(outcome, DiskCheckOutcome::Disabled));
-    });
+    }
 
-    timed_test!(check_disk_warns_with_custom_threshold, {
+    #[test]
+    fn check_disk_warns_with_custom_threshold() {
         let _lock = ENV_LOCK.lock().unwrap();
         let _enabled = EnvVarGuard::remove(AUTO_PRUNE_ENABLED_ENV_VAR);
         let _warn = EnvVarGuard::set(WARN_FREE_GB_ENV_VAR, "20");
@@ -430,9 +435,10 @@ mod tests {
             DiskCheckOutcome::Warn { threshold_gib, .. } => assert_eq!(threshold_gib, 20),
             other => panic!("expected Warn, got {other:?}"),
         }
-    });
+    }
 
-    timed_test!(check_disk_blocks_with_custom_threshold, {
+    #[test]
+    fn check_disk_blocks_with_custom_threshold() {
         let _lock = ENV_LOCK.lock().unwrap();
         let _enabled = EnvVarGuard::remove(AUTO_PRUNE_ENABLED_ENV_VAR);
         let _warn = EnvVarGuard::set(WARN_FREE_GB_ENV_VAR, "20");
@@ -446,17 +452,19 @@ mod tests {
             DiskCheckOutcome::Block { threshold_gib, .. } => assert_eq!(threshold_gib, 10),
             other => panic!("expected Block, got {other:?}"),
         }
-    });
+    }
 
-    timed_test!(check_disk_disabled_when_probe_errors, {
+    #[test]
+    fn check_disk_disabled_when_probe_errors() {
         let _lock = ENV_LOCK.lock().unwrap();
         let _enabled = EnvVarGuard::remove(AUTO_PRUNE_ENABLED_ENV_VAR);
         let _free = EnvVarGuard::set(TEST_DISK_FREE_BYTES_ENV_VAR, "error");
         let outcome = check_disk_or_warn_or_block(std::path::Path::new("."));
         assert!(matches!(outcome, DiskCheckOutcome::Disabled));
-    });
+    }
 
-    timed_test!(inverted_thresholds_collapse_to_block_value, {
+    #[test]
+    fn inverted_thresholds_collapse_to_block_value() {
         let _lock = ENV_LOCK.lock().unwrap();
         let _enabled = EnvVarGuard::remove(AUTO_PRUNE_ENABLED_ENV_VAR);
         // warn=5, block=10 (inverted) — should collapse to a single
@@ -469,33 +477,37 @@ mod tests {
         );
         let outcome = check_disk_or_warn_or_block(std::path::Path::new("."));
         assert!(matches!(outcome, DiskCheckOutcome::Block { .. }));
-    });
+    }
 
-    timed_test!(build_volume_path_prefers_target_when_present, {
+    #[test]
+    fn build_volume_path_prefers_target_when_present() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let cwd = tmp.path();
         let target = cwd.join("target");
         std::fs::create_dir_all(&target).expect("create target");
         let resolved = build_volume_path(cwd, Some(&target));
         assert_eq!(resolved, target);
-    });
+    }
 
-    timed_test!(build_volume_path_falls_back_to_cwd_when_target_missing, {
+    #[test]
+    fn build_volume_path_falls_back_to_cwd_when_target_missing() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let cwd = tmp.path();
         let target = cwd.join("target");
         let resolved = build_volume_path(cwd, Some(&target));
         assert_eq!(resolved, cwd);
-    });
+    }
 
-    timed_test!(warn_line_includes_threshold_and_command, {
+    #[test]
+    fn warn_line_includes_threshold_and_command() {
         let line = render_warn_line(7 * BYTES_PER_GIB, 10);
         assert!(line.contains("7.00 GiB"));
         assert!(line.contains("10 GiB"));
         assert!(line.contains("soldr gc target"));
-    });
+    }
 
-    timed_test!(block_line_directs_user_at_purge, {
+    #[test]
+    fn block_line_directs_user_at_purge() {
         let msg = render_block_message(2 * BYTES_PER_GIB, 5);
         assert!(msg.contains("2.00 GiB"));
         assert!(msg.contains("5 GiB"));
@@ -504,7 +516,7 @@ mod tests {
         // Why: `report_and_exit` already prepends "soldr: " — the
         // rendered message must not double it.
         assert!(!msg.starts_with("soldr:"));
-    });
+    }
 
     // soldr#2134. The reclaim mechanism was never broken — it ran on the
     // wrong side of the failure. These cover the three ways the new
@@ -531,7 +543,8 @@ mod tests {
         }
     }
 
-    timed_test!(a_reclaim_that_frees_enough_lets_the_build_proceed, {
+    #[test]
+    fn a_reclaim_that_frees_enough_lets_the_build_proceed() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // 3 GiB free at the block, 40 GiB once 37 GiB is reclaimed.
         let outcome = block_then_reclaim(
@@ -542,9 +555,10 @@ mod tests {
             outcome, None,
             "the build must not fail for a condition soldr just resolved"
         );
-    });
+    }
 
-    timed_test!(a_reclaim_that_frees_nothing_still_blocks, {
+    #[test]
+    fn a_reclaim_that_frees_nothing_still_blocks() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let msg = block_then_reclaim(&(3 * BYTES_PER_GIB).to_string(), 0).expect("must block");
         assert!(msg.contains("soldr gc target --purge"));
@@ -552,9 +566,10 @@ mod tests {
             !msg.contains("already reclaimed"),
             "nothing was reclaimed, so the message must not claim otherwise: {msg}"
         );
-    });
+    }
 
-    timed_test!(a_partial_reclaim_blocks_but_says_it_tried, {
+    #[test]
+    fn a_partial_reclaim_blocks_but_says_it_tried() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Freed 1 GiB, leaving 4 GiB -- still under the 5 GiB bar.
         let msg = block_then_reclaim(
@@ -568,9 +583,10 @@ mod tests {
         );
         // The re-probed figure, not the stale pre-reclaim one.
         assert!(msg.contains("4.00 GiB"), "{msg}");
-    });
+    }
 
-    timed_test!(a_single_probe_value_still_repeats_for_every_call, {
+    #[test]
+    fn a_single_probe_value_still_repeats_for_every_call() {
         // Regression guard for the sequence seam: every pre-existing
         // test passes one value and expects it on every probe.
         let _lock = ENV_LOCK.lock().unwrap();
@@ -583,5 +599,5 @@ mod tests {
         for _ in 0..4 {
             assert_eq!(free_bytes_for(path).unwrap(), 7 * BYTES_PER_GIB);
         }
-    });
+    }
 }

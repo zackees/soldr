@@ -252,7 +252,8 @@ mod tests {
         SoldrPaths::with_root(root.to_path_buf())
     }
 
-    crate::timed_test!(unique_trash_subdir_names_differ_across_consecutive_calls, {
+    #[test]
+    fn unique_trash_subdir_names_differ_across_consecutive_calls() {
         let a = unique_trash_subdir_name();
         // Sleep 1ns of busy work to defeat same-nanosecond collisions
         // on low-res clocks (Windows often resolves to 100ns).
@@ -261,9 +262,10 @@ mod tests {
         }
         let b = unique_trash_subdir_name();
         assert_ne!(a, b, "expected unique names: a={a} b={b}");
-    });
+    }
 
-    crate::timed_test!(release_worktree_tier1_removes_empty_dir, {
+    #[test]
+    fn release_worktree_tier1_removes_empty_dir() {
         let scratch = tempdir().unwrap();
         let soldr_root = tempdir().unwrap();
         let target = scratch.path().join("doomed");
@@ -274,9 +276,10 @@ mod tests {
         let outcome = release_worktree(&paths, &target).unwrap();
         assert!(matches!(outcome, ReleaseOutcome::Removed { .. }));
         assert!(!target.exists());
-    });
+    }
 
-    crate::timed_test!(release_worktree_tier1_treats_missing_path_as_success, {
+    #[test]
+    fn release_worktree_tier1_treats_missing_path_as_success() {
         let scratch = tempdir().unwrap();
         let soldr_root = tempdir().unwrap();
         let target = scratch.path().join("never-existed");
@@ -284,17 +287,19 @@ mod tests {
 
         let outcome = release_worktree(&paths, &target).unwrap();
         assert!(matches!(outcome, ReleaseOutcome::Removed { .. }));
-    });
+    }
 
-    crate::timed_test!(sweep_trash_returns_zero_on_empty_root, {
+    #[test]
+    fn sweep_trash_returns_zero_on_empty_root() {
         let soldr_root = tempdir().unwrap();
         let paths = paths_for_root(soldr_root.path());
         let report = sweep_trash(&paths).unwrap();
         assert_eq!(report.removed, 0);
         assert_eq!(report.retained, 0);
-    });
+    }
 
-    crate::timed_test!(sweep_trash_removes_per_volume_bucket_entries, {
+    #[test]
+    fn sweep_trash_removes_per_volume_bucket_entries() {
         let soldr_root = tempdir().unwrap();
         let bucket = soldr_root.path().join("trash-X");
         let entry_a = bucket.join("100-1");
@@ -315,9 +320,10 @@ mod tests {
         assert!(!entry_a.exists());
         assert!(!entry_b.exists());
         assert!(decoy.join("keep.txt").exists());
-    });
+    }
 
-    crate::timed_test!(volume_tag_for_windows_drive_letter_uppercases, {
+    #[test]
+    fn volume_tag_for_windows_drive_letter_uppercases() {
         if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
             return;
         }
@@ -326,9 +332,10 @@ mod tests {
         // canonicalize will fail for a non-existent path; we fall back
         // to the input, so tag should still pick up "C".
         assert_eq!(tag, "C", "tag={tag}");
-    });
+    }
 
-    crate::timed_test!(volume_tag_for_unix_returns_device_id_string, {
+    #[test]
+    fn volume_tag_for_unix_returns_device_id_string() {
         if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
             return;
         }
@@ -338,9 +345,10 @@ mod tests {
             tag.parse::<u64>().is_ok(),
             "expected numeric device id, got {tag}"
         );
-    });
+    }
 
-    crate::timed_test!(release_outcome_is_success_for_removed_and_moved, {
+    #[test]
+    fn release_outcome_is_success_for_removed_and_moved() {
         assert!(ReleaseOutcome::Removed {
             path: PathBuf::from("/x"),
         }
@@ -357,5 +365,5 @@ mod tests {
             tier2_error: "busy".to_string(),
         }
         .is_success());
-    });
+    }
 }

@@ -11,7 +11,8 @@ mod spawn_log_tests {
 
     // Append, not truncate: successive spawns must not erase the evidence
     // from the crash that is being investigated.
-    crate::timed_test!(the_spawn_log_appends_across_reopens, {
+    #[test]
+    fn the_spawn_log_appends_across_reopens() {
         let tmp = TempDir::new().expect("tempdir");
         let path = tmp.path().join("daemon-spawn.log");
         std::fs::write(&path, b"earlier crash\n").expect("seed");
@@ -21,12 +22,13 @@ mod spawn_log_tests {
             body.contains("earlier crash"),
             "reopening must not truncate prior output, got: {body:?}"
         );
-    });
+    }
 
     // Missing parent directories are created rather than failing the spawn --
     // the log lives under the soldr root, which may not exist yet on a first
     // run.
-    crate::timed_test!(a_missing_parent_directory_is_created, {
+    #[test]
+    fn a_missing_parent_directory_is_created() {
         let tmp = TempDir::new().expect("tempdir");
         let path = tmp
             .path()
@@ -35,12 +37,13 @@ mod spawn_log_tests {
             .join("daemon-spawn.log");
         assert!(open_spawn_log_at(&path).is_some());
         assert!(path.is_file());
-    });
+    }
 
     // An unopenable log must degrade to today's no-redirect spawn, never fail
     // it: losing the diagnostic is bad, losing the daemon is worse. A path
     // whose "parent" is an existing *file* cannot be created as a directory.
-    crate::timed_test!(an_unopenable_log_degrades_instead_of_failing, {
+    #[test]
+    fn an_unopenable_log_degrades_instead_of_failing() {
         let tmp = TempDir::new().expect("tempdir");
         let blocker = tmp.path().join("not-a-dir");
         std::fs::write(&blocker, b"x").expect("write blocker");
@@ -49,5 +52,5 @@ mod spawn_log_tests {
             open_spawn_log_at(&path).is_none(),
             "an unopenable log must yield None so the caller spawns unredirected"
         );
-    });
+    }
 }

@@ -178,7 +178,6 @@ mod finalize_build_session_tests {
     use super::finalize_build_session;
     use crate::daemon::db::{self, Event, EventKind};
     use crate::daemon::event_batcher::{write_batch, EventBatcher};
-    use crate::timed_test;
     use std::time::Instant;
     use tempfile::TempDir;
 
@@ -229,7 +228,8 @@ mod finalize_build_session_tests {
         write_batch(db_path, &rows).expect("seed history");
     }
 
-    timed_test!(finalize_uses_daemon_owned_aggregate_not_history_scan, {
+    #[test]
+    fn finalize_uses_daemon_owned_aggregate_not_history_scan() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -295,109 +295,102 @@ mod finalize_build_session_tests {
                 .any(|event| event.crate_name.as_deref() == Some("real-b")));
             batcher.shutdown().await;
         });
-    });
+    }
 
-    timed_test!(
-        finalize_falls_back_to_scan_when_daemon_missed_session_start,
-        {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("tokio rt");
-            rt.block_on(async {
-                let temp = TempDir::new().expect("tempdir");
-                let db_path = temp.path().join("state.redb");
-                db::ensure_initialized(&db_path).expect("init");
+    #[test]
+    fn finalize_falls_back_to_scan_when_daemon_missed_session_start() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let temp = TempDir::new().expect("tempdir");
+            let db_path = temp.path().join("state.redb");
+            db::ensure_initialized(&db_path).expect("init");
 
-                // Events written by a previous daemon lifetime.
-                let mut rows = vec![session_start(888, 1_700_000_000_000)];
-                rows.extend(compile_pair(888, "old-a", 5_000, 1_700_000_000_100));
-                rows.extend(compile_pair(888, "old-b", 7_000, 1_700_000_000_200));
-                write_batch(&db_path, &rows).expect("seed prior-lifetime events");
+            // Events written by a previous daemon lifetime.
+            let mut rows = vec![session_start(888, 1_700_000_000_000)];
+            rows.extend(compile_pair(888, "old-a", 5_000, 1_700_000_000_100));
+            rows.extend(compile_pair(888, "old-b", 7_000, 1_700_000_000_200));
+            write_batch(&db_path, &rows).expect("seed prior-lifetime events");
 
-                // Fresh batcher = restarted daemon with no in-memory state
-                // for 888: finalization must fall back to the historical
-                // scan and still produce exact stats.
-                let batcher = EventBatcher::start(db_path.clone());
-                finalize_build_session(&db_path, &batcher, 888, 1, 1_700_000_001_000).await;
+            // Fresh batcher = restarted daemon with no in-memory state
+            // for 888: finalization must fall back to the historical
+            // scan and still produce exact stats.
+            let batcher = EventBatcher::start(db_path.clone());
+            finalize_build_session(&db_path, &batcher, 888, 1, 1_700_000_001_000).await;
 
-                let record = db::get_build(&db_path, 888)
-                    .expect("read build")
-                    .expect("record");
-                assert_eq!(record.crate_count, 2);
-                assert_eq!(record.slowest_crate_us, Some(7_000));
-                assert_eq!(record.slowest_crate_name.as_deref(), Some("old-b"));
-                assert_eq!(record.exit_code, Some(1));
-                batcher.shutdown().await;
-            });
-        }
-    );
+            let record = db::get_build(&db_path, 888)
+                .expect("read build")
+                .expect("record");
+            assert_eq!(record.crate_count, 2);
+            assert_eq!(record.slowest_crate_us, Some(7_000));
+            assert_eq!(record.slowest_crate_name.as_deref(), Some("old-b"));
+            assert_eq!(record.exit_code, Some(1));
+            batcher.shutdown().await;
+        });
+    }
 
     // Scaling evidence for soldr#1536: the aggregate path stays flat
     // while the historical scan grows with retained history. Printed
     // timings (run with `--nocapture`) back the before/after claim;
     // only exactness is asserted so shared-CPU noise cannot flake CI.
-    timed_test!(
-        finalize_scaling_evidence_across_history_sizes,
-        std::time::Duration::from_secs(300),
-        {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("tokio rt");
-            rt.block_on(async {
-                for history in [0usize, 10_000, 100_000] {
-                    let temp = TempDir::new().expect("tempdir");
-                    let db_path = temp.path().join("state.redb");
-                    db::ensure_initialized(&db_path).expect("init");
-                    seed_unrelated_history(&db_path, history);
+    #[test]
+    fn finalize_scaling_evidence_across_history_sizes() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            for history in [0usize, 10_000, 100_000] {
+                let temp = TempDir::new().expect("tempdir");
+                let db_path = temp.path().join("state.redb");
+                db::ensure_initialized(&db_path).expect("init");
+                seed_unrelated_history(&db_path, history);
 
-                    let batcher = EventBatcher::start(db_path.clone());
-                    batcher
-                        .record(session_start(9_999, 1_700_000_000_000))
-                        .await;
-                    for i in 0..30u64 {
-                        for event in
-                            compile_pair(9_999, &format!("c{i}"), 100 + i, 1_700_000_000_000)
-                        {
-                            batcher.record(event).await;
-                        }
+                let batcher = EventBatcher::start(db_path.clone());
+                batcher
+                    .record(session_start(9_999, 1_700_000_000_000))
+                    .await;
+                for i in 0..30u64 {
+                    for event in compile_pair(9_999, &format!("c{i}"), 100 + i, 1_700_000_000_000) {
+                        batcher.record(event).await;
                     }
-
-                    batcher.flush().await;
-                    let scan_started = Instant::now();
-                    let scan = db::aggregate_session(&db_path, 9_999).expect("scan");
-                    let scan_elapsed = scan_started.elapsed();
-
-                    // Baseline for a constant-work redb round-trip at
-                    // this table size (open + point read), so the
-                    // finalize timing below can be read against the
-                    // per-open cost rather than attributed to scanning.
-                    let point_started = Instant::now();
-                    let _ = db::get_build(&db_path, 9_999);
-                    let point_elapsed = point_started.elapsed();
-
-                    let fin_started = Instant::now();
-                    finalize_build_session(&db_path, &batcher, 9_999, 0, 1_700_000_002_000).await;
-                    let fin_elapsed = fin_started.elapsed();
-
-                    let record = db::get_build(&db_path, 9_999)
-                        .expect("read build")
-                        .expect("record");
-                    assert_eq!(record.crate_count, 30, "history={history}");
-                    assert_eq!(record.slowest_crate_us, Some(129));
-                    assert_eq!(
-                        (record.crate_count, record.slowest_crate_us.unwrap()),
-                        (scan.0, scan.1.unwrap()),
-                        "aggregate and scan must agree (history={history})"
-                    );
-                    eprintln!(
-                        "history={history:>6} rows: scan={scan_elapsed:?} \
-                         point-read={point_elapsed:?} finalize(aggregate)={fin_elapsed:?}"
-                    );
-                    batcher.shutdown().await;
                 }
-            });
-        }
-    );
+
+                batcher.flush().await;
+                let scan_started = Instant::now();
+                let scan = db::aggregate_session(&db_path, 9_999).expect("scan");
+                let scan_elapsed = scan_started.elapsed();
+
+                // Baseline for a constant-work redb round-trip at
+                // this table size (open + point read), so the
+                // finalize timing below can be read against the
+                // per-open cost rather than attributed to scanning.
+                let point_started = Instant::now();
+                let _ = db::get_build(&db_path, 9_999);
+                let point_elapsed = point_started.elapsed();
+
+                let fin_started = Instant::now();
+                finalize_build_session(&db_path, &batcher, 9_999, 0, 1_700_000_002_000).await;
+                let fin_elapsed = fin_started.elapsed();
+
+                let record = db::get_build(&db_path, 9_999)
+                    .expect("read build")
+                    .expect("record");
+                assert_eq!(record.crate_count, 30, "history={history}");
+                assert_eq!(record.slowest_crate_us, Some(129));
+                assert_eq!(
+                    (record.crate_count, record.slowest_crate_us.unwrap()),
+                    (scan.0, scan.1.unwrap()),
+                    "aggregate and scan must agree (history={history})"
+                );
+                eprintln!(
+                    "history={history:>6} rows: scan={scan_elapsed:?} \
+                         point-read={point_elapsed:?} finalize(aggregate)={fin_elapsed:?}"
+                );
+                batcher.shutdown().await;
+            }
+        });
+    }
 }

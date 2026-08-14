@@ -305,7 +305,8 @@ pub(crate) fn heartbeat_message(
 mod tests {
     use super::*;
 
-    crate::timed_test!(heartbeats_do_not_claim_unreached_thresholds, {
+    #[test]
+    fn heartbeats_do_not_claim_unreached_thresholds() {
         let mut schedule = HeartbeatSchedule::new(Duration::from_secs(60));
 
         assert_eq!(schedule.take_due(Duration::from_secs(59)), None);
@@ -337,9 +338,10 @@ mod tests {
             delayed.take_due(Duration::from_secs(241)),
             Some(Duration::from_secs(241))
         );
-    });
+    }
 
-    crate::timed_test!(message_names_operation_elapsed_deadline_and_override, {
+    #[test]
+    fn message_names_operation_elapsed_deadline_and_override() {
         let msg = heartbeat_message(
             "daemon compile reply",
             Duration::from_secs(120),
@@ -350,9 +352,10 @@ mod tests {
         assert!(msg.contains("after 120s"), "{msg}");
         assert!(msg.contains("deadline 1800s"), "{msg}");
         assert!(msg.contains("SOLDR_COMPILE_REPLY_TIMEOUT_SECS"), "{msg}");
-    });
+    }
 
-    crate::timed_test!(message_carries_the_corrective_action_inline, {
+    #[test]
+    fn message_carries_the_corrective_action_inline() {
         // #1838 Phase 2: the remedy belongs in the message, not only in
         // CLAUDE.md, because the person reading a stalled build is not
         // reading the repo docs.
@@ -364,9 +367,10 @@ mod tests {
         );
         assert!(msg.contains("--no-cache"), "{msg}");
         assert!(msg.contains("ZCCACHE_DISABLE=1"), "{msg}");
-    });
+    }
 
-    crate::timed_test!(a_fast_operation_prints_nothing, {
+    #[test]
+    fn a_fast_operation_prints_nothing() {
         // The common case. A warm compile returns in milliseconds and must
         // not emit a heartbeat, or every build grows noise.
         let guard = WaitHeartbeat::start_with_interval(
@@ -377,9 +381,10 @@ mod tests {
         );
         std::thread::sleep(Duration::from_millis(50));
         drop(guard);
-    });
+    }
 
-    crate::timed_test!(a_slow_operation_fires_repeated_heartbeats, {
+    #[test]
+    fn a_slow_operation_fires_repeated_heartbeats() {
         // #1838 Phase 1 box 5: assert the heartbeat actually EMITS once the
         // interval elapses — the message tests above only cover wording. A
         // sink captures the emissions so the assertion never touches process
@@ -408,18 +413,20 @@ mod tests {
             "{}",
             hits[0]
         );
-    });
+    }
 
-    crate::timed_test!(activity_classification_separates_wedged_from_slow, {
+    #[test]
+    fn activity_classification_separates_wedged_from_slow() {
         // The whole point of #1838 Phase 1's last box: nothing-ever vs
         // stopped vs still-coming need different advice.
         assert_eq!(classify_activity(0, 0), StreamActivity::NoOutputYet);
         assert_eq!(classify_activity(0, 3), StreamActivity::Active);
         assert_eq!(classify_activity(3, 7), StreamActivity::Active);
         assert_eq!(classify_activity(7, 7), StreamActivity::Idle);
-    });
+    }
 
-    crate::timed_test!(each_activity_states_what_it_implies, {
+    #[test]
+    fn each_activity_states_what_it_implies() {
         // A reader must be able to act on the line without knowing the
         // internals, so each suffix names the observation *and* the verdict.
         assert!(activity_suffix(StreamActivity::Unknown).is_empty());
@@ -430,9 +437,10 @@ mod tests {
         assert!(idle.contains("none since the last beat"), "{idle}");
         let active = activity_suffix(StreamActivity::Active);
         assert!(active.contains("progressing"), "{active}");
-    });
+    }
 
-    crate::timed_test!(a_streaming_beat_reports_no_output_then_progress, {
+    #[test]
+    fn a_streaming_beat_reports_no_output_then_progress() {
         // End-to-end through the real thread: with no chunks the beat says
         // wedged/queued; once chunks arrive it says progressing.
         let emitted: Arc<std::sync::Mutex<Vec<String>>> =
@@ -467,9 +475,10 @@ mod tests {
             hits.iter().any(|m| m.contains("progressing")),
             "a beat after the chunk should report progress: {hits:?}"
         );
-    });
+    }
 
-    crate::timed_test!(the_guard_joins_its_thread_on_drop, {
+    #[test]
+    fn the_guard_joins_its_thread_on_drop() {
         // A heartbeat that outlived its operation would report on a compile
         // that already finished, which is worse than silence.
         let guard = WaitHeartbeat::start_with_interval(
@@ -485,5 +494,5 @@ mod tests {
             stop.load(Ordering::Relaxed),
             "drop must signal the heartbeat thread to stop",
         );
-    });
+    }
 }

@@ -311,7 +311,6 @@ pub(crate) fn maturin_invocation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::timed_test;
 
     /// A host that is deliberately not a legal target spelling, so every
     /// `build()` below is unambiguously a *cross* build regardless of which
@@ -338,7 +337,8 @@ mod tests {
             .map(String::as_str)
     }
 
-    timed_test!(gnu_target_is_tagged_manylinux_2_17, {
+    #[test]
+    fn gnu_target_is_tagged_manylinux_2_17() {
         let argv = build("x86_64-unknown-linux-gnu", &[]);
         assert_eq!(argv[0], "maturin");
         assert_eq!(argv[1], "build");
@@ -348,18 +348,20 @@ mod tests {
             flag_value(&argv, "--target"),
             Some("x86_64-unknown-linux-gnu")
         );
-    });
+    }
 
-    timed_test!(musl_target_is_tagged_musllinux_1_2, {
+    #[test]
+    fn musl_target_is_tagged_musllinux_1_2() {
         let argv = build("aarch64-unknown-linux-musl", &[]);
         assert_eq!(flag_value(&argv, "--compatibility"), Some("musllinux_1_2"));
         assert_eq!(
             flag_value(&argv, "--target"),
             Some("aarch64-unknown-linux-musl")
         );
-    });
+    }
 
-    timed_test!(non_linux_targets_keep_maturin_pypi_tagging, {
+    #[test]
+    fn non_linux_targets_keep_maturin_pypi_tagging() {
         for triple in [
             "aarch64-apple-darwin",
             "x86_64-apple-darwin",
@@ -372,9 +374,10 @@ mod tests {
                 "{triple}"
             );
         }
-    });
+    }
 
-    timed_test!(gnueabihf_is_still_a_gnu_target, {
+    #[test]
+    fn gnueabihf_is_still_a_gnu_target() {
         assert_eq!(
             compatibility_for_target("armv7-unknown-linux-gnueabihf", true),
             "manylinux_2_17"
@@ -383,11 +386,12 @@ mod tests {
             compatibility_for_target("armv7-unknown-linux-gnueabihf", false),
             "pypi"
         );
-    });
+    }
 
     // ---- soldr#2139 follow-up: the tag is a claim, so only make backed ones.
 
-    timed_test!(a_dev_wheel_does_not_claim_a_manylinux_floor, {
+    #[test]
+    fn a_dev_wheel_does_not_claim_a_manylinux_floor() {
         // Same target, same host, only the profile differs. `--release` is the
         // difference between "soldr prepared and verified a distributable
         // build" and "give me something quick".
@@ -405,9 +409,10 @@ mod tests {
             flag_value(&release, "--compatibility"),
             Some("manylinux_2_17")
         );
-    });
+    }
 
-    timed_test!(a_host_target_wheel_does_not_claim_a_manylinux_floor, {
+    #[test]
+    fn a_host_target_wheel_does_not_claim_a_manylinux_floor() {
         // The regression this guards: `prepare_for_invocation` is gated on
         // `maturin_target != host_triple()` in soldr_main.rs, so a host-target
         // linux-gnu build mounts no catalogue sysroot and links against the
@@ -426,17 +431,19 @@ mod tests {
             flag_value(&cross, "--compatibility"),
             Some("manylinux_2_17")
         );
-    });
+    }
 
-    timed_test!(floor_claim_needs_both_release_and_cross, {
+    #[test]
+    fn floor_claim_needs_both_release_and_cross() {
         let target = "aarch64-unknown-linux-gnu";
         assert!(floor_claim_is_backed(target, CROSS_HOST, true));
         assert!(!floor_claim_is_backed(target, CROSS_HOST, false));
         assert!(!floor_claim_is_backed(target, target, true));
         assert!(!floor_claim_is_backed(target, target, false));
-    });
+    }
 
-    timed_test!(the_default_wheel_is_a_quick_dev_build, {
+    #[test]
+    fn the_default_wheel_is_a_quick_dev_build() {
         // `soldr wheel` with no flags at all: host target, dev profile.
         let argv = maturin_build_argv_for_host(None, false, &[], "x86_64-unknown-linux-gnu")
             .expect("bare `soldr wheel` must work");
@@ -452,16 +459,18 @@ mod tests {
         let argv = maturin_build_argv_for_host(Some("  "), false, &[], "aarch64-apple-darwin")
             .expect("blank --target falls back to the host");
         assert_eq!(flag_value(&argv, "--target"), Some("aarch64-apple-darwin"));
-    });
+    }
 
-    timed_test!(release_and_a_forwarded_debug_are_refused_not_reconciled, {
+    #[test]
+    fn release_and_a_forwarded_debug_are_refused_not_reconciled() {
         let rest = vec!["--debug".to_string()];
         let err = maturin_build_argv_for_host(Some("linux-arm64"), true, &rest, CROSS_HOST)
             .expect_err("contradictory profiles must be refused");
         assert!(err.to_string().contains("different profiles"), "{err}");
-    });
+    }
 
-    timed_test!(friendly_aliases_resolve_to_rust_triples, {
+    #[test]
+    fn friendly_aliases_resolve_to_rust_triples() {
         for (alias, expected) in [
             ("linux-arm64", "aarch64-unknown-linux-gnu"),
             ("mac-arm64", "aarch64-apple-darwin"),
@@ -474,24 +483,27 @@ mod tests {
         // cargo) sees — rustc has never heard of `linux-arm64`.
         let argv = build("linux-arm64", &[]);
         assert!(!argv.iter().any(|arg| arg == "linux-arm64"), "{argv:?}");
-    });
+    }
 
-    timed_test!(alias_resolution_picks_the_musl_tag_for_musl_aliases, {
+    #[test]
+    fn alias_resolution_picks_the_musl_tag_for_musl_aliases() {
         let argv = build("linux-arm64-musl", &[]);
         assert_eq!(
             flag_value(&argv, "--target"),
             Some("aarch64-unknown-linux-musl")
         );
         assert_eq!(flag_value(&argv, "--compatibility"), Some("musllinux_1_2"));
-    });
+    }
 
-    timed_test!(passthrough_args_are_forwarded_after_soldr_defaults, {
+    #[test]
+    fn passthrough_args_are_forwarded_after_soldr_defaults() {
         let argv = build("linux-x64", &["--out", "dist", "--locked"]);
         let tail = &argv[argv.len() - 3..];
         assert_eq!(tail, ["--out", "dist", "--locked"]);
-    });
+    }
 
-    timed_test!(caller_flags_are_honoured_and_never_duplicated, {
+    #[test]
+    fn caller_flags_are_honoured_and_never_duplicated() {
         let argv = build("x86_64-unknown-linux-gnu", &["--compatibility", "linux"]);
         assert_eq!(
             argv.iter().filter(|arg| *arg == "--compatibility").count(),
@@ -522,9 +534,10 @@ mod tests {
 
         let argv = build("x86_64-unknown-linux-gnu", &["--manylinux=2014"]);
         assert!(!argv.iter().any(|arg| arg == "--compatibility"), "{argv:?}");
-    });
+    }
 
-    timed_test!(unknown_target_errors_with_a_suggestion, {
+    #[test]
+    fn unknown_target_errors_with_a_suggestion() {
         let err = maturin_build_argv_for_host(Some("linux-arm65"), true, &[], CROSS_HOST)
             .expect_err("unknown target");
         let message = err.to_string();
@@ -533,41 +546,42 @@ mod tests {
         // AliasError carries a Jaro-Winkler suggestion; it must survive the
         // wrap so the user is not left guessing.
         assert!(message.contains("linux-arm64"), "{message}");
-    });
+    }
 
-    timed_test!(ambiguous_and_32bit_targets_are_refused_not_degraded, {
+    #[test]
+    fn ambiguous_and_32bit_targets_are_refused_not_degraded() {
         let err = maturin_build_argv_for_host(Some("linux-arm"), true, &[], CROSS_HOST)
             .expect_err("ambiguous target");
         assert!(err.to_string().contains("linux-arm64"), "{err}");
         let err = maturin_build_argv_for_host(Some("win-x86"), true, &[], CROSS_HOST)
             .expect_err("32-bit target");
         assert!(err.to_string().contains("32-bit"), "{err}");
-    });
+    }
 
-    timed_test!(
-        glibc_floor_targets_are_refused_with_the_ask_not_guarantee_reason,
-        {
-            let err = maturin_build_argv_for_host(
-                Some("x86_64-unknown-linux-gnu.2.17"),
-                true,
-                &[],
-                CROSS_HOST,
-            )
-            .expect_err("glibc floor is out of scope for wheels");
-            let message = err.to_string();
-            assert!(message.contains("not a guarantee"), "{message}");
-            assert!(message.contains("soldr build --target"), "{message}");
-        }
-    );
+    #[test]
+    fn glibc_floor_targets_are_refused_with_the_ask_not_guarantee_reason() {
+        let err = maturin_build_argv_for_host(
+            Some("x86_64-unknown-linux-gnu.2.17"),
+            true,
+            &[],
+            CROSS_HOST,
+        )
+        .expect_err("glibc floor is out of scope for wheels");
+        let message = err.to_string();
+        assert!(message.contains("not a guarantee"), "{message}");
+        assert!(message.contains("soldr build --target"), "{message}");
+    }
 
-    timed_test!(a_second_target_in_the_passthrough_is_refused, {
+    #[test]
+    fn a_second_target_in_the_passthrough_is_refused() {
         let rest = vec!["--target".to_string(), "aarch64-apple-darwin".to_string()];
         let err = maturin_build_argv_for_host(Some("linux-x64"), true, &rest, CROSS_HOST)
             .expect_err("duplicate --target");
         assert!(err.to_string().contains("pass the target once"), "{err}");
-    });
+    }
 
-    timed_test!(abi3_gate_allows_only_interpreter_free_modes, {
+    #[test]
+    fn abi3_gate_allows_only_interpreter_free_modes() {
         for mode in [
             PlanMode::Native,
             PlanMode::NoPyo3,
@@ -595,9 +609,10 @@ mod tests {
                 "{mode:?}: {message}"
             );
         }
-    });
+    }
 
-    timed_test!(global_flags_precede_the_subcommand_in_the_reentry_argv, {
+    #[test]
+    fn global_flags_precede_the_subcommand_in_the_reentry_argv() {
         // Host triple on purpose: a cross target would send the abi3 gate
         // through `cargo metadata`, and this test is about argv ordering.
         let args = WheelArgs {
@@ -613,5 +628,5 @@ mod tests {
 
         let argv = maturin_invocation(&args, false, false).expect("invocation should build");
         assert_eq!(argv[0], "maturin");
-    });
+    }
 }

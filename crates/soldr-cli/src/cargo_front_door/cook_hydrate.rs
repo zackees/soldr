@@ -332,7 +332,8 @@ mod tests {
         std::env::remove_var(SOLDR_COOK_AUTO_HYDRATE_ENV);
     }
 
-    crate::timed_test!(env_var_disables_overriding_everything, {
+    #[test]
+    fn env_var_disables_overriding_everything() {
         let _g = ENV_LOCK.lock().unwrap();
         let dir = TempDir::new().unwrap();
         std::fs::write(
@@ -347,9 +348,10 @@ mod tests {
         };
         assert!(!auto_hydrate_enabled(dir.path(), &cfg));
         clear_env();
-    });
+    }
 
-    crate::timed_test!(env_var_enables_overriding_project_disable, {
+    #[test]
+    fn env_var_enables_overriding_project_disable() {
         let _g = ENV_LOCK.lock().unwrap();
         let dir = TempDir::new().unwrap();
         std::fs::write(
@@ -364,9 +366,10 @@ mod tests {
         };
         assert!(auto_hydrate_enabled(dir.path(), &cfg));
         clear_env();
-    });
+    }
 
-    crate::timed_test!(rust_toolchain_disable_beats_global_enable, {
+    #[test]
+    fn rust_toolchain_disable_beats_global_enable() {
         let _g = ENV_LOCK.lock().unwrap();
         clear_env();
         let dir = TempDir::new().unwrap();
@@ -380,18 +383,20 @@ mod tests {
             ..CookConfig::default()
         };
         assert!(!auto_hydrate_enabled(dir.path(), &cfg));
-    });
+    }
 
-    crate::timed_test!(no_overrides_means_global_default_wins, {
+    #[test]
+    fn no_overrides_means_global_default_wins() {
         let _g = ENV_LOCK.lock().unwrap();
         clear_env();
         let dir = TempDir::new().unwrap();
         let cfg = CookConfig::default();
         assert!(cfg.auto_hydrate, "global default must be ON");
         assert!(auto_hydrate_enabled(dir.path(), &cfg));
-    });
+    }
 
-    crate::timed_test!(profile_resolution_matches_cargo_semantics, {
+    #[test]
+    fn profile_resolution_matches_cargo_semantics() {
         assert_eq!(resolve_profile_name(&[]), "dev");
         assert_eq!(
             resolve_profile_name(&["build".into(), "--release".into()]),
@@ -408,5 +413,5 @@ mod tests {
         assert_eq!(profile_dir_name("dev"), "debug");
         assert_eq!(profile_dir_name("release"), "release");
         assert_eq!(profile_dir_name("ci"), "ci");
-    });
+    }
 }

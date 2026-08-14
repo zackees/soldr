@@ -418,7 +418,8 @@ mod tests {
         }
     }
 
-    crate::timed_test!(cache_report_reads_session_stats_from_shared_zccache_dir, {
+    #[test]
+    fn cache_report_reads_session_stats_from_shared_zccache_dir() {
         let temp = tempfile::tempdir().expect("tempdir");
         let paths = SoldrPaths::with_root(temp.path().join("soldr"));
         let zccache_dir = crate::zccache::managed_zccache_cache_dir(&paths).expect("zccache dir");
@@ -486,9 +487,10 @@ mod tests {
             json["stats_written_at"].as_i64().is_some(),
             "JSON report carries the archived stats file timestamp: {json:#?}"
         );
-    });
+    }
 
-    crate::timed_test!(cache_report_warns_when_cacheable_misses_do_not_publish, {
+    #[test]
+    fn cache_report_warns_when_cacheable_misses_do_not_publish() {
         let temp = tempfile::tempdir().expect("tempdir");
         let paths = SoldrPaths::with_root(temp.path().join("soldr"));
         let workspace_root = temp.path().join("workspace");
@@ -520,5 +522,5 @@ mod tests {
             diagnosis.get("kind").and_then(serde_json::Value::as_str)
                 == Some("cache_publication_failed")
         }));
-    });
+    }
 }

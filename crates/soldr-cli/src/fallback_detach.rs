@@ -174,7 +174,8 @@ mod tests {
         args.iter().map(|a| (*a).to_string()).collect()
     }
 
-    crate::timed_test!(metadata_emit_derives_the_rmeta_that_broke_builds, {
+    #[test]
+    fn metadata_emit_derives_the_rmeta_that_broke_builds() {
         // The exact shape from the #1817 report: `libindexmap-<hash>.rmeta`
         // delivered as a protected hardlink, then overwritten by a direct rustc.
         let args = argv(&[
@@ -203,9 +204,10 @@ mod tests {
             !paths.iter().any(|p| p.extension().is_none()),
             "link should not have produced an extension-less guess: {paths:?}"
         );
-    });
+    }
 
-    crate::timed_test!(explicit_emit_path_replaces_the_inferred_one, {
+    #[test]
+    fn explicit_emit_path_replaces_the_inferred_one() {
         let args = argv(&[
             "--crate-name",
             "demo",
@@ -223,75 +225,76 @@ mod tests {
             !paths.contains(&PathBuf::from("/w/target/debug/deps/demo.d")),
             "the inferred path must not linger alongside the explicit one: {paths:?}"
         );
-    });
+    }
 
-    crate::timed_test!(no_emit_flags_declares_no_overwrite_targets, {
+    #[test]
+    fn no_emit_flags_declares_no_overwrite_targets() {
         // A `--print`/version probe declares no outputs, so the fallback must
         // not invent paths and must not fail.
         let paths = declared_output_paths(&argv(&["--print", "cfg"]), Path::new("/w"));
         assert!(paths.is_empty(), "{paths:?}");
-    });
+    }
 
-    crate::timed_test!(detach_is_a_noop_for_an_empty_argv, {
+    #[test]
+    fn detach_is_a_noop_for_an_empty_argv() {
         // Guards the `split_first` early return: an empty argv must not panic
         // or error on the fallback path.
         detach_outputs_for_direct_exec(&[]).expect("empty argv must be tolerated");
-    });
+    }
 
-    crate::timed_test!(
-        protected_hardlink_output_becomes_writable_without_touching_blob,
-        {
-            // The #1817 bug end-to-end: an output delivered by zccache as a
-            // read-only hardlink must become privately writable, while the cache
-            // blob keeps both its content and its read-only protection. Before the
-            // fix, the direct compiler hit `<file> is not writeable` here.
-            let root = tempfile::tempdir().expect("tempdir");
-            let cache = root.path().join("cache");
-            let out = root.path().join("target/debug/deps");
-            std::fs::create_dir_all(&cache).expect("mkdir cache");
-            std::fs::create_dir_all(&out).expect("mkdir out");
+    #[test]
+    fn protected_hardlink_output_becomes_writable_without_touching_blob() {
+        // The #1817 bug end-to-end: an output delivered by zccache as a
+        // read-only hardlink must become privately writable, while the cache
+        // blob keeps both its content and its read-only protection. Before the
+        // fix, the direct compiler hit `<file> is not writeable` here.
+        let root = tempfile::tempdir().expect("tempdir");
+        let cache = root.path().join("cache");
+        let out = root.path().join("target/debug/deps");
+        std::fs::create_dir_all(&cache).expect("mkdir cache");
+        std::fs::create_dir_all(&out).expect("mkdir out");
 
-            let blob = cache.join("blob");
-            let delivered = out.join("libindexmap-abc123.rmeta");
-            std::fs::write(&blob, b"cached bytes").expect("write blob");
-            std::fs::hard_link(&blob, &delivered).expect("hard link");
-            let mut perms = std::fs::metadata(&blob).expect("stat blob").permissions();
-            perms.set_readonly(true);
-            std::fs::set_permissions(&blob, perms).expect("protect blob");
+        let blob = cache.join("blob");
+        let delivered = out.join("libindexmap-abc123.rmeta");
+        std::fs::write(&blob, b"cached bytes").expect("write blob");
+        std::fs::hard_link(&blob, &delivered).expect("hard link");
+        let mut perms = std::fs::metadata(&blob).expect("stat blob").permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&blob, perms).expect("protect blob");
 
-            let args = argv(&[
-                "rustc",
-                "--crate-name",
-                "indexmap",
-                "--emit=metadata",
-                "--out-dir",
-                &out.display().to_string(),
-                "-C",
-                "extra-filename=-abc123",
-            ]);
-            detach_outputs_for_direct_exec(&args).expect("detach must succeed");
+        let args = argv(&[
+            "rustc",
+            "--crate-name",
+            "indexmap",
+            "--emit=metadata",
+            "--out-dir",
+            &out.display().to_string(),
+            "-C",
+            "extra-filename=-abc123",
+        ]);
+        detach_outputs_for_direct_exec(&args).expect("detach must succeed");
 
-            // The compiler can now write its output...
-            std::fs::write(&delivered, b"new compiler bytes").expect("output must be writable");
-            // ...and the cache blob is untouched, still protected, still its own
-            // content. This is the invariant that makes the fix safe: writing
-            // through the alias, or clearing read-only in place, would corrupt it.
-            assert_eq!(
-                std::fs::read(&blob).expect("read blob"),
-                b"cached bytes",
-                "the cache blob must not have been overwritten through the alias"
-            );
-            assert!(
-                std::fs::metadata(&blob)
-                    .expect("stat blob")
-                    .permissions()
-                    .readonly(),
-                "the cache blob must remain read-only"
-            );
-        }
-    );
+        // The compiler can now write its output...
+        std::fs::write(&delivered, b"new compiler bytes").expect("output must be writable");
+        // ...and the cache blob is untouched, still protected, still its own
+        // content. This is the invariant that makes the fix safe: writing
+        // through the alias, or clearing read-only in place, would corrupt it.
+        assert_eq!(
+            std::fs::read(&blob).expect("read blob"),
+            b"cached bytes",
+            "the cache blob must not have been overwritten through the alias"
+        );
+        assert!(
+            std::fs::metadata(&blob)
+                .expect("stat blob")
+                .permissions()
+                .readonly(),
+            "the cache blob must remain read-only"
+        );
+    }
 
-    crate::timed_test!(missing_outputs_are_tolerated, {
+    #[test]
+    fn missing_outputs_are_tolerated() {
         // First compile in a fresh target: nothing is materialized yet, so
         // there is nothing protected to detach and this must succeed quietly.
         let dir = tempfile::tempdir().expect("tempdir");
@@ -305,5 +308,5 @@ mod tests {
             &out.display().to_string(),
         ]);
         detach_outputs_for_direct_exec(&args).expect("absent outputs must be tolerated");
-    });
+    }
 }

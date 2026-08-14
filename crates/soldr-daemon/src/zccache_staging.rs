@@ -50,7 +50,8 @@ fn windows_private_staging_root(cache_root: &Path, temp: &Path) -> PathBuf {
 mod tests {
     use super::*;
 
-    crate::timed_test!(windows_staging_root_is_short_and_cache_specific, {
+    #[test]
+    fn windows_staging_root_is_short_and_cache_specific() {
         let temp = Path::new(r"C:\Users\runneradmin\AppData\Local\Temp");
         let first = windows_private_staging_root(
             Path::new(r"C:\deep\cache\root\that\must\not\be\repeated\inside\the\linker\path"),
@@ -65,5 +66,5 @@ mod tests {
             "cache-root depth leaked into compiler staging: {}",
             first.display()
         );
-    });
+    }
 }

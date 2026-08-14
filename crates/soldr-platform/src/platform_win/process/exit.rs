@@ -45,7 +45,7 @@ pub fn is_init_failure(code: i32) -> bool {
 mod tests {
     use super::*;
 
-    #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+    #[test]
     fn windows_init_failure_classification() {
         assert!(is_init_failure(0xC000_0142_u32 as i32));
         assert!(!is_init_failure(1));

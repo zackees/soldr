@@ -309,7 +309,7 @@ mod tests {
         }
     }
 
-    #[test] // allow-bare-test: soldr#2310 install unit test (sync+fast); timed_test! migration is a follow-up
+    #[test]
     fn plan_local_path_is_local_lane() {
         let r = resolved_local(".");
         assert!(matches!(
@@ -318,7 +318,7 @@ mod tests {
         ));
     }
 
-    #[test] // allow-bare-test: soldr#2310 install unit test (sync+fast); timed_test! migration is a follow-up
+    #[test]
     fn plan_github_with_sha_is_codeload() {
         let mut r = resolved_local(".");
         r.target = InstallTarget::GitHub {
@@ -341,7 +341,7 @@ mod tests {
         }
     }
 
-    #[test] // allow-bare-test: soldr#2310 install unit test (sync+fast); timed_test! migration is a follow-up
+    #[test]
     fn plan_non_github_is_shallow_clone() {
         let mut r = resolved_local(".");
         r.target = InstallTarget::GitHub {

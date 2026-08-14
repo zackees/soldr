@@ -17,7 +17,7 @@ pub fn is_lock_contention(error: &io::Error) -> bool {
 mod tests {
     use super::*;
 
-    #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+    #[test]
     fn windows_lock_contention_recognizes_raw_errors() {
         assert!(is_lock_contention(&io::Error::from(
             io::ErrorKind::WouldBlock

@@ -22,9 +22,6 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use soldr_cli::timed_test;
-use std::time::Duration;
-
 mod common;
 
 /// Locate the soldr repo root from the CARGO_MANIFEST_DIR convention.
@@ -205,76 +202,68 @@ fn semver_compatibility_family(version: &str) -> Option<String> {
     }
 }
 
-timed_test!(
-    cargo_toml_cargo_lock_and_package_json_share_one_version,
-    Duration::from_secs(15),
-    {
-        let root = repo_root();
-        let cargo_toml = read_cargo_toml_version(&root);
-        let cargo_lock = read_cargo_lock_version(&root);
-        let package_json = read_package_json_version(&root);
+#[test]
+fn cargo_toml_cargo_lock_and_package_json_share_one_version() {
+    let root = repo_root();
+    let cargo_toml = read_cargo_toml_version(&root);
+    let cargo_lock = read_cargo_lock_version(&root);
+    let package_json = read_package_json_version(&root);
 
-        assert_eq!(
-            cargo_toml, cargo_lock,
-            "soldr#1026 v0.7.65 trap: Cargo.toml says {cargo_toml}, Cargo.lock says \
+    assert_eq!(
+        cargo_toml, cargo_lock,
+        "soldr#1026 v0.7.65 trap: Cargo.toml says {cargo_toml}, Cargo.lock says \
              {cargo_lock}. CI runs `cargo build --locked` and will fail with `cannot update \
              the lock file` until you refresh Cargo.lock (run `cargo build -p soldr-cli` \
              after bumping Cargo.toml and `git add Cargo.lock`). See CLAUDE.md \
              'Bumping soldr's own version (release PRs)'."
-        );
-        assert_eq!(
-            cargo_toml, package_json,
-            "soldr#1026 lockstep drift: Cargo.toml says {cargo_toml}, package.json says \
+    );
+    assert_eq!(
+        cargo_toml, package_json,
+        "soldr#1026 lockstep drift: Cargo.toml says {cargo_toml}, package.json says \
              {package_json}. The release pipeline reads BOTH — the npm-side wrapper bumps off \
              package.json and the crate bumps off Cargo.toml. Update package.json's top-level \
              \"version\" to match."
-        );
-    }
-);
+    );
+}
 
-timed_test!(
-    soldr_cli_and_embedded_zccache_shared_direct_deps_are_compatible,
-    Duration::from_secs(15),
-    {
-        let root = repo_root();
-        let soldr_cli_manifest = root.join("crates/soldr-cli/Cargo.toml");
-        let zccache_root = root.join("_vender/zccache");
-        let zccache_manifest = zccache_root.join("crates/zccache/Cargo.toml");
+#[test]
+fn soldr_cli_and_embedded_zccache_shared_direct_deps_are_compatible() {
+    let root = repo_root();
+    let soldr_cli_manifest = root.join("crates/soldr-cli/Cargo.toml");
+    let zccache_root = root.join("_vender/zccache");
+    let zccache_manifest = zccache_root.join("crates/zccache/Cargo.toml");
 
-        let soldr_deps = read_dependency_names(&soldr_cli_manifest);
-        let zccache_deps = read_dependency_names(&zccache_manifest);
-        let intentionally_split = ["redb"];
-        let mut checked = Vec::new();
+    let soldr_deps = read_dependency_names(&soldr_cli_manifest);
+    let zccache_deps = read_dependency_names(&zccache_manifest);
+    let intentionally_split = ["redb"];
+    let mut checked = Vec::new();
 
-        for dep in soldr_deps.intersection(&zccache_deps) {
-            if intentionally_split.contains(&dep.as_str()) {
-                continue;
-            }
-            let soldr_version = crate_dependency_version(&root, &soldr_cli_manifest, dep)
-                .unwrap_or_else(|| panic!("soldr-cli dependency {dep} must carry a version"));
-            let zccache_version = crate_dependency_version(&zccache_root, &zccache_manifest, dep)
-                .unwrap_or_else(|| {
-                    panic!("embedded zccache dependency {dep} must carry a version")
-                });
-            let soldr_family = semver_compatibility_family(&soldr_version).unwrap_or_else(|| {
-                panic!("soldr-cli dependency {dep} has unsupported version {soldr_version:?}")
-            });
-            let zccache_family = semver_compatibility_family(&zccache_version).unwrap_or_else(|| {
-                panic!("embedded zccache dependency {dep} has unsupported version {zccache_version:?}")
-            });
-            assert_eq!(
-                soldr_family, zccache_family,
-                "soldr#1356 dependency drift: shared direct dependency {dep} must stay \
+    for dep in soldr_deps.intersection(&zccache_deps) {
+        if intentionally_split.contains(&dep.as_str()) {
+            continue;
+        }
+        let soldr_version = crate_dependency_version(&root, &soldr_cli_manifest, dep)
+            .unwrap_or_else(|| panic!("soldr-cli dependency {dep} must carry a version"));
+        let zccache_version = crate_dependency_version(&zccache_root, &zccache_manifest, dep)
+            .unwrap_or_else(|| panic!("embedded zccache dependency {dep} must carry a version"));
+        let soldr_family = semver_compatibility_family(&soldr_version).unwrap_or_else(|| {
+            panic!("soldr-cli dependency {dep} has unsupported version {soldr_version:?}")
+        });
+        let zccache_family = semver_compatibility_family(&zccache_version).unwrap_or_else(|| {
+            panic!("embedded zccache dependency {dep} has unsupported version {zccache_version:?}")
+        });
+        assert_eq!(
+            soldr_family, zccache_family,
+            "soldr#1356 dependency drift: shared direct dependency {dep} must stay \
                  semver-compatible between soldr-cli ({soldr_version}) and embedded zccache \
                  ({zccache_version}). If a split is intentional, document it in \
                  intentionally_split in this test."
-            );
-            checked.push(dep.clone());
-        }
-
-        assert!(
-            checked.len() >= 10,
-            "dependency drift guard checked too few shared deps: {checked:?}"
         );
+        checked.push(dep.clone());
     }
-);
+
+    assert!(
+        checked.len() >= 10,
+        "dependency drift guard checked too few shared deps: {checked:?}"
+    );
+}

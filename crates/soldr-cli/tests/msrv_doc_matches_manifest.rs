@@ -17,8 +17,6 @@
 
 mod common;
 
-use soldr_cli::timed_test;
-
 /// `rust-version = "X"` from `[workspace.package]`.
 fn manifest_rust_version(manifest: &str) -> String {
     manifest
@@ -46,7 +44,8 @@ fn documented_msrvs(doc: &str) -> Vec<String> {
         .collect()
 }
 
-timed_test!(claude_md_msrv_matches_the_workspace_manifest, {
+#[test]
+fn claude_md_msrv_matches_the_workspace_manifest() {
     // `common::workspace_root()` is the sanctioned resolver. These tests also
     // run replayed from a nextest archive with no checkout beside the binary,
     // so compile-time manifest-dir resolution is banned in `crates/**` outside
@@ -74,9 +73,10 @@ timed_test!(claude_md_msrv_matches_the_workspace_manifest, {
              (soldr#298 left it wrong for ~2.5 months).",
         );
     }
-});
+}
 
-timed_test!(the_msrv_parsers_read_what_they_claim_to, {
+#[test]
+fn the_msrv_parsers_read_what_they_claim_to() {
     // A guard whose parsers silently find nothing would pass forever. Pin
     // both against fixtures, including the shapes that previously drifted.
     assert_eq!(
@@ -92,4 +92,4 @@ timed_test!(the_msrv_parsers_read_what_they_claim_to, {
     );
     // Prose mentioning the term without a number is not a claim.
     assert!(documented_msrvs("The MSRV and the toolchain agree.").is_empty());
-});
+}

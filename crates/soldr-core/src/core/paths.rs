@@ -487,7 +487,6 @@ pub fn resolve_rustup_home() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     #[test]
     fn test_paths() {
@@ -687,13 +686,12 @@ zccache = ""
     // ---------------------------------------------------------------------
     // Per-version layout helpers (zackees/soldr#743 Phase A).
     //
-    // These are NEW tests covering only the just-added accessors, so they
-    // use `crate::timed_test!` per the CLAUDE.md "Test Infrastructure"
-    // policy. The legacy bare `#[test]` cases above this block are
-    // grandfathered.
+    // Tests covering the just-added accessors. Per-test timeouts come from
+    // cargo-nextest (`.config/nextest.toml`), not from anything declared here.
     // ---------------------------------------------------------------------
 
-    crate::timed_test!(managed_shim_version_matches_cargo_pkg_version, {
+    #[test]
+    fn managed_shim_version_matches_cargo_pkg_version() {
         // The const exists so callers can refer to it without duplicating
         // the version string. If anyone changes its source away from
         // `env!("CARGO_PKG_VERSION")`, this guard fires.
@@ -702,9 +700,10 @@ zccache = ""
             env!("CARGO_PKG_VERSION"),
             "MANAGED_SHIM_VERSION must equal the workspace package version"
         );
-    });
+    }
 
-    crate::timed_test!(versioned_root_appends_v_prefix_and_pkg_version, {
+    #[test]
+    fn versioned_root_appends_v_prefix_and_pkg_version() {
         let root = PathBuf::from("/tmp/synthetic-versioned-root");
         let paths = SoldrPaths::with_root(root.clone());
         let v_root = paths.versioned_root();
@@ -726,9 +725,10 @@ zccache = ""
             Some(expected_leaf.as_str()),
             "versioned_root leaf must be `v<MANAGED_SHIM_VERSION>`"
         );
-    });
+    }
 
-    crate::timed_test!(versioned_shims_dir_is_under_versioned_root, {
+    #[test]
+    fn versioned_shims_dir_is_under_versioned_root() {
         let root = PathBuf::from("/tmp/synthetic-versioned-shims");
         let paths = SoldrPaths::with_root(root.clone());
 
@@ -749,52 +749,46 @@ zccache = ""
             shims.starts_with(&v_root),
             "versioned_shims_dir must live under versioned_root"
         );
-    });
+    }
 
-    crate::timed_test!(
-        config_load_distinguishes_missing_and_invalid,
-        Duration::from_secs(5),
-        {
-            let temp = tempfile::tempdir().unwrap();
-            let missing = temp.path().join("missing.toml");
-            assert!(SoldrConfig::load(&missing).unwrap().auto_gc.enabled);
+    #[test]
+    fn config_load_distinguishes_missing_and_invalid() {
+        let temp = tempfile::tempdir().unwrap();
+        let missing = temp.path().join("missing.toml");
+        assert!(SoldrConfig::load(&missing).unwrap().auto_gc.enabled);
 
-            let malformed = temp.path().join("malformed.toml");
-            std::fs::write(&malformed, "[auto_gc\nenabled = true").unwrap();
-            assert!(matches!(
-                SoldrConfig::load(&malformed),
-                Err(SoldrConfigLoadError::Parse { .. })
-            ));
+        let malformed = temp.path().join("malformed.toml");
+        std::fs::write(&malformed, "[auto_gc\nenabled = true").unwrap();
+        assert!(matches!(
+            SoldrConfig::load(&malformed),
+            Err(SoldrConfigLoadError::Parse { .. })
+        ));
 
-            let unreadable = temp.path().join("directory");
-            std::fs::create_dir(&unreadable).unwrap();
-            assert!(matches!(
-                SoldrConfig::load(&unreadable),
-                Err(SoldrConfigLoadError::Read { .. })
-            ));
+        let unreadable = temp.path().join("directory");
+        std::fs::create_dir(&unreadable).unwrap();
+        assert!(matches!(
+            SoldrConfig::load(&unreadable),
+            Err(SoldrConfigLoadError::Read { .. })
+        ));
+    }
+
+    #[test]
+    fn config_load_rejects_unknown_destructive_fields() {
+        let temp = tempfile::tempdir().unwrap();
+        for (name, text) in [
+            (
+                "gc.toml",
+                "[gc]\nallowlist_roots = [\"/tmp\"]\nunknown = true\n",
+            ),
+            ("auto.toml", "[auto_gc]\nenabled = true\nunknown = true\n"),
+            ("cook.toml", "[cook]\nauto_hydrate = true\nunknown = true\n"),
+        ] {
+            let path = temp.path().join(name);
+            std::fs::write(&path, text).unwrap();
+            assert!(
+                SoldrConfig::load(&path).is_err(),
+                "{name} should reject unknown fields"
+            );
         }
-    );
-
-    crate::timed_test!(
-        config_load_rejects_unknown_destructive_fields,
-        Duration::from_secs(5),
-        {
-            let temp = tempfile::tempdir().unwrap();
-            for (name, text) in [
-                (
-                    "gc.toml",
-                    "[gc]\nallowlist_roots = [\"/tmp\"]\nunknown = true\n",
-                ),
-                ("auto.toml", "[auto_gc]\nenabled = true\nunknown = true\n"),
-                ("cook.toml", "[cook]\nauto_hydrate = true\nunknown = true\n"),
-            ] {
-                let path = temp.path().join(name);
-                std::fs::write(&path, text).unwrap();
-                assert!(
-                    SoldrConfig::load(&path).is_err(),
-                    "{name} should reject unknown fields"
-                );
-            }
-        }
-    );
+    }
 }
