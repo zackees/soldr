@@ -11,11 +11,16 @@ const POLL: Duration = Duration::from_millis(50);
 fn stage_incumbent_broker(home: &Path) -> std::path::PathBuf {
     let broker_dir = home.join(".soldr").join("broker");
     std::fs::create_dir_all(&broker_dir).expect("create incumbent broker directory");
-    let broker = broker_dir.join(if cfg!(windows) {
-        "soldr-broker.exe"
-    } else {
-        "soldr-broker"
-    });
+    let broker = broker_dir.join(
+        if matches!(
+            soldr_platform::host::facts::os(),
+            soldr_platform::host::facts::HostOs::Windows
+        ) {
+            "soldr-broker.exe"
+        } else {
+            "soldr-broker"
+        },
+    );
     std::fs::copy(common::soldr_bin(), &broker).expect("stage incumbent broker image");
     broker
 }
