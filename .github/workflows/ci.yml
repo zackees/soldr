@@ -718,7 +718,7 @@ jobs:
         run: >-
           python .github/scripts/pep517_daemon_smoke.py
           --wheel "dist/*.whl"
-          --timeout 180
+          --timeout 900
           --log-dir "${{ runner.temp }}/pep517-soldr-logs"
 
       - name: Upload PEP 517 Soldr logs

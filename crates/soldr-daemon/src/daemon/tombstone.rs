@@ -1,16 +1,14 @@
-//! soldr#2388: daemon **tombstone** — a short suppression window planted by an
-//! explicit `soldr daemon stop`, during which **implicit** daemon
-//! resurrections are cancelled. Post-Step-4 the one implicit-start path is the
-//! broker's proactive daemon launch, so without this, stopping the daemon while
-//! any `soldr` activity is happening would immediately trigger a thundering
-//! herd of restarts — the exact failure this guards against.
+//! soldr#2388: daemon **tombstone** — a short stop-vs-launch fence planted by
+//! an explicit `soldr daemon stop`. A launch already in flight must not publish
+//! a replacement after stop reports success; a later client route request is
+//! new work and clears the fence before starting one replacement.
 //!
 //! Contract:
 //! * `soldr daemon stop` plants a tombstone expiring [`TOMBSTONE_DURATION`] from
 //!   now.
-//! * While it is live, [`is_active`] is true and the broker's proactive launch
-//!   (and any other implicit start that consults it) skips spawning.
-//! * `soldr daemon start` (explicit) [`clear`]s it and starts the daemon.
+//! * While it is live, [`is_active`] is true and an in-flight broker launch is
+//!   killed before it can publish readiness.
+//! * `soldr daemon start` and a later demand-driven route request [`clear`] it.
 //! * It also auto-expires — a stale/expired tombstone is removed on read, so a
 //!   forgotten stop never wedges the daemon permanently.
 //!

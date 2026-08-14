@@ -44,12 +44,11 @@ impl FixtureGuard {
     }
 
     fn stop_daemon(&self) -> std::process::Output {
-        Command::new(common::soldr_bin())
+        let mut command = common::isolated_soldr_command();
+        command
             .args(["daemon", "stop"])
-            .env("SOLDR_CACHE_DIR", &self.cache_dir)
-            .env_remove("RUSTC_WRAPPER")
-            .output()
-            .expect("run soldr daemon stop")
+            .env("SOLDR_CACHE_DIR", &self.cache_dir);
+        command.output().expect("run soldr daemon stop")
     }
 
     fn wait_for_daemon_exit(&self, pid: u32) -> bool {
@@ -353,15 +352,14 @@ fn soldr_cargo_check(worktree: &Path, cache_dir: &Path, target_dir: &Path) -> St
         .parent()
         .expect("fixture worktree parent")
         .join("staging");
-    let output = Command::new(common::soldr_bin())
+    let mut command = common::isolated_soldr_command();
+    command
         .args(["cargo", "check"])
         .current_dir(worktree)
         .env("SOLDR_CACHE_DIR", cache_dir)
         .env("CARGO_TARGET_DIR", target_dir)
-        .env("ZCCACHE_STAGING_DIR", staging_dir)
-        .env_remove("RUSTC_WRAPPER")
-        .output()
-        .expect("spawn soldr cargo check");
+        .env("ZCCACHE_STAGING_DIR", staging_dir);
+    let output = command.output().expect("spawn soldr cargo check");
     let rendered = format!(
         "stdout={}; stderr={}",
         String::from_utf8_lossy(&output.stdout),

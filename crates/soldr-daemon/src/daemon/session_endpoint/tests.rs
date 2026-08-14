@@ -144,7 +144,9 @@ fn session_endpoint_serves_real_compile_via_mux() {
                 args,
                 cwd: project.display().to_string(),
                 env,
-                clear_inherited_env: false,
+                clear_inherited_env: true,
+                environment_policy: running_process::broker::protocol_v2::EnvironmentPolicy::Clear
+                    as i32,
             };
 
             let daemon = test_daemon_identity();

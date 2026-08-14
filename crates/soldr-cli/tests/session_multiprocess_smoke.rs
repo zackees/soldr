@@ -76,6 +76,26 @@ fn stop_daemon_in_root(root: &Path) {
     }
 }
 
+fn run_control(root: &Path, home: &Path, args: &[&str]) -> std::process::Output {
+    let mut command = common::isolated_soldr_command();
+    command
+        .args(args)
+        .env("SOLDR_CACHE_DIR", root)
+        .env("HOME", home)
+        .env("USERPROFILE", home);
+    command.output().expect("run scoped Soldr control command")
+}
+
+fn wait_for_pid_exit(pid: u32, deadline: Instant) -> bool {
+    while Instant::now() < deadline {
+        if !soldr_platform::process::inspect::is_alive(pid) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    !soldr_platform::process::inspect::is_alive(pid)
+}
+
 #[test]
 fn session_compile_over_broker_multiprocess() {
     let rustc = sibling_rustc();
@@ -122,7 +142,8 @@ fn session_compile_over_broker_multiprocess() {
 
     // 1) Spawn the real broker for the isolated home. The same stable
     //    endpoint serves admin, Hello negotiation, and SESSION bytes.
-    let mut broker = Command::new(common::soldr_bin())
+    let mut broker_command = common::isolated_soldr_command();
+    broker_command
         .args(["broker", "serve"])
         .env("SOLDR_CACHE_DIR", &root_a)
         .env("SOLDR_BROKER_DEBUG", "1")
@@ -131,9 +152,8 @@ fn session_compile_over_broker_multiprocess() {
         .env("RUNNING_PROCESS_SERVICE_DEF_DIR", &service_root)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn soldr broker serve");
+        .stderr(Stdio::piped());
+    let mut broker = broker_command.spawn().expect("spawn soldr broker serve");
 
     let broker_out = drain_lines(broker.stdout.take().expect("broker stdout"));
     let broker_err = drain_lines(broker.stderr.take().expect("broker stderr"));
@@ -191,6 +211,29 @@ fn session_compile_over_broker_multiprocess() {
     let daemon_pids_a = find_daemon_pids(&root_a);
     let daemon_pids_b = find_daemon_pids(&root_b);
 
+    // Exercise the control plane while both roots are live. Flush and stop
+    // root A through the shared broker, prove root B's exact generation is
+    // untouched, then prove the next root-A compile resurrects one replacement.
+    let flush_b = run_control(&root_b, &home, &["cache", "flush", "--json"]);
+    let flush_b_json: serde_json::Value = serde_json::from_slice(&flush_b.stdout)
+        .unwrap_or_else(|error| panic!("root-B flush JSON: {error}"));
+    let flush_a = run_control(&root_a, &home, &["cache", "flush", "--json"]);
+    let flush_a_json: serde_json::Value = serde_json::from_slice(&flush_a.stdout)
+        .unwrap_or_else(|error| panic!("root-A flush JSON: {error}"));
+    let daemon_b = daemon_pids_b.first().copied().unwrap_or_default();
+    let b_alive_after_flush = soldr_platform::process::inspect::is_alive(daemon_b);
+    let stop_a = run_control(&root_a, &home, &["daemon", "stop"]);
+    let daemon_a = daemon_pids_a.first().copied().unwrap_or_default();
+    let a_exited = wait_for_pid_exit(daemon_a, Instant::now() + Duration::from_secs(10));
+    let status_b = run_control(&root_b, &home, &["daemon", "status", "--json"]);
+    let status_b_json: serde_json::Value = serde_json::from_slice(&status_b.stdout)
+        .unwrap_or_else(|error| panic!("root-B status JSON: {error}"));
+    let b_alive_after_stop = soldr_platform::process::inspect::is_alive(daemon_b);
+    let revive_a = spawn_compile(&root_a, &project_a, "soldr_session_mp_a_reborn")
+        .wait_with_output()
+        .expect("root-a resurrection compile");
+    let daemon_pids_a_after = find_daemon_pids(&root_a);
+
     // Cleanup before asserting so a failure never leaks processes.
     let _ = broker.kill();
     let _ = broker.wait();
@@ -239,6 +282,66 @@ fn session_compile_over_broker_multiprocess() {
     assert_ne!(
         daemon_pids_a, daemon_pids_b,
         "distinct roots must never share daemon ownership"
+    );
+    assert!(
+        flush_a.status.success(),
+        "root-A flush failed: stdout={}; stderr={}",
+        String::from_utf8_lossy(&flush_a.stdout),
+        String::from_utf8_lossy(&flush_a.stderr)
+    );
+    assert_eq!(flush_a_json["flushed"], true, "{flush_a_json}");
+    assert_eq!(flush_b_json["flushed"], true, "{flush_b_json}");
+    assert_eq!(
+        PathBuf::from(flush_a_json["cache_dir"].as_str().expect("flush cache_dir")),
+        root_a.join("cache").join("zccache"),
+        "flush must report root A's managed cache"
+    );
+    assert!(
+        flush_a_json["stats"]["artifact_entries"]
+            .as_u64()
+            .expect("root-A artifact count")
+            > flush_b_json["stats"]["artifact_entries"]
+                .as_u64()
+                .expect("root-B artifact count"),
+        "two root-distinguishing compiles in A must flush more artifacts than B: A={flush_a_json}, B={flush_b_json}"
+    );
+    assert!(
+        b_alive_after_flush,
+        "root-A flush changed root-B generation"
+    );
+    assert!(
+        stop_a.status.success() && a_exited,
+        "root-A stop did not reap acknowledged PID {daemon_a}: stdout={}; stderr={}",
+        String::from_utf8_lossy(&stop_a.stdout),
+        String::from_utf8_lossy(&stop_a.stderr)
+    );
+    assert!(
+        status_b.status.success() && b_alive_after_stop,
+        "root-A stop changed root-B PID {daemon_b}: stdout={}; stderr={}",
+        String::from_utf8_lossy(&status_b.stdout),
+        String::from_utf8_lossy(&status_b.stderr)
+    );
+    assert_eq!(status_b_json["running"], true, "{status_b_json}");
+    assert_eq!(status_b_json["pid"], daemon_b, "{status_b_json}");
+    assert!(
+        revive_a.status.success(),
+        "root-A did not resurrect after scoped stop: stdout={}; stderr={}",
+        String::from_utf8_lossy(&revive_a.stdout),
+        String::from_utf8_lossy(&revive_a.stderr)
+    );
+    assert_eq!(
+        daemon_pids_a_after.len(),
+        1,
+        "root A must resurrect exactly one daemon: {daemon_pids_a_after:?}"
+    );
+    assert_ne!(
+        daemon_pids_a_after, daemon_pids_a,
+        "root A reused the stopped generation"
+    );
+    assert_eq!(
+        find_daemon_pids(&root_b),
+        daemon_pids_b,
+        "root-B route claim changed during root-A lifecycle"
     );
 }
 
