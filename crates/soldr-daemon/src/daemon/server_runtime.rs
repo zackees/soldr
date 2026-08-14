@@ -6,11 +6,33 @@ pub const TOKIO_CONSOLE_ENV_VAR: &str = "SOLDR_DAEMON_TOKIO_CONSOLE";
 /// forward only `SOLDR_*`, so callers cannot rely on the upstream
 /// `TOKIO_CONSOLE_RECORD_PATH` variable crossing the spawn boundary.
 pub const TOKIO_CONSOLE_RECORD_PATH_ENV_VAR: &str = "SOLDR_DAEMON_TOKIO_CONSOLE_RECORD_PATH";
+/// Optional soldr-owned bridge for console-subscriber's publish interval.
+///
+/// The detached daemon only inherits `SOLDR_*` variables, so the upstream
+/// `TOKIO_CONSOLE_PUBLISH_INTERVAL` variable cannot configure a normally
+/// spawned daemon. Values are milliseconds; `0` and malformed values leave
+/// console-subscriber's default unchanged.
+pub const TOKIO_CONSOLE_PUBLISH_INTERVAL_MS_ENV_VAR: &str =
+    "SOLDR_DAEMON_TOKIO_CONSOLE_PUBLISH_INTERVAL_MS";
 
 fn tokio_console_requested() -> bool {
     std::env::var(TOKIO_CONSOLE_ENV_VAR)
         .map(|v| !v.is_empty() && v != "0")
         .unwrap_or(false)
+}
+
+fn parse_tokio_console_publish_interval(raw: Option<&str>) -> Option<Duration> {
+    raw.and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|millis| *millis > 0)
+        .map(Duration::from_millis)
+}
+
+fn tokio_console_publish_interval() -> Option<Duration> {
+    parse_tokio_console_publish_interval(
+        std::env::var(TOKIO_CONSOLE_PUBLISH_INTERVAL_MS_ENV_VAR)
+            .ok()
+            .as_deref(),
+    )
 }
 
 /// Install the tokio-console subscriber layer when
@@ -34,6 +56,9 @@ fn maybe_init_tokio_console() {
         let mut builder = console_subscriber::Builder::default().with_default_env();
         if let Some(path) = std::env::var_os(TOKIO_CONSOLE_RECORD_PATH_ENV_VAR) {
             builder = builder.recording_path(path);
+        }
+        if let Some(interval) = tokio_console_publish_interval() {
+            builder = builder.publish_interval(interval);
         }
         builder.spawn()
     };

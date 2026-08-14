@@ -268,6 +268,30 @@ mod shutdown_backstop_tests {
 }
 
 #[cfg(test)]
+mod tokio_console_config_tests {
+    use super::*;
+
+    #[test]
+    fn publish_interval_accepts_positive_milliseconds() {
+        assert_eq!(
+            parse_tokio_console_publish_interval(Some("20")),
+            Some(Duration::from_millis(20))
+        );
+        assert_eq!(
+            parse_tokio_console_publish_interval(Some(" 250 ")),
+            Some(Duration::from_millis(250))
+        );
+    }
+
+    #[test]
+    fn publish_interval_ignores_missing_zero_and_malformed_values() {
+        for raw in [None, Some(""), Some("0"), Some("-1"), Some("20ms")] {
+            assert_eq!(parse_tokio_console_publish_interval(raw), None);
+        }
+    }
+}
+
+#[cfg(test)]
 mod ipc_burst_tests {
     use super::*;
     use tokio::sync::{mpsc, Mutex};

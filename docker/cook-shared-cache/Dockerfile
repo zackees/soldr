@@ -37,6 +37,10 @@
 # that upstream probe and the resulting host-local binary.
 FROM rust:1.95.0-trixie
 
+# Keep the local Python half on the same pinned uv used by the native-wheel
+# Docker harness. It lives in the image rather than the persistent venv.
+COPY --from=ghcr.io/astral-sh/uv:0.9.18 /uv /uvx /usr/local/bin/
+
 # Build tools needed by the soldr-cli workspace and the integration
 # tests (linker, pkg-config, git for origin-URL probes in PRs 2/3).
 RUN apt-get update \
@@ -52,6 +56,8 @@ RUN apt-get update \
        jq \
        gdb \
        procps \
+       python3 \
+       python3-venv \
        zstd \
     && rm -rf /var/lib/apt/lists/*
 
@@ -60,12 +66,72 @@ RUN apt-get update \
 RUN rustup default 1.95.0 \
     && rustup component add rustfmt clippy
 
+# Bootstrap current source with a known, previously published Soldr. Keep
+# this isolated from the warm runner volumes as immutable image state.
+ARG SOLDR_BOOTSTRAP_VERSION=0.8.29
+RUN python3 -m venv /opt/soldr-bootstrap \
+    && /opt/soldr-bootstrap/bin/pip install --disable-pip-version-check \
+       "soldr==${SOLDR_BOOTSTRAP_VERSION}" \
+    && /opt/soldr-bootstrap/bin/soldr --version \
+    && test "$(/opt/soldr-bootstrap/bin/soldr --version)" = \
+       "soldr ${SOLDR_BOOTSTRAP_VERSION}"
+
+ENV PATH="/opt/soldr-bootstrap/bin:${PATH}"
+
 # CARGO_HOME explicit so the `soldr-perf-cargo-home` named volume mount
 # point is unambiguous. Without this the path depends on the base
 # image's $HOME inheritance — `/root/.cargo` happens to be the default
 # for the official `rust` image but pinning it makes future image
 # migrations safe.
 ENV CARGO_HOME=/root/.cargo
+# Docker Desktop exposes many host CPUs but this development VM has only
+# about 8 GiB of RAM. Two concurrent rustc processes keep large crates below
+# the cgroup limit; higher automatic fan-out repeatedly OOM-kills cold test
+# graph builds and is slower overall because Cargo must start over.
+ENV CARGO_BUILD_JOBS=2 \
+    SOLDR_JOBS=2
+# This is a development/smoke image: make the effective Cargo profiles
+# explicit so a future workspace-profile change cannot turn the local loop
+# into optimized or LTO codegen. High codegen-unit counts and incremental
+# state minimize edit-to-test latency. Debug assertions stay enabled through
+# the normal dev/test defaults, but this speed-focused image emits no DWARF.
+ENV CARGO_PROFILE_DEV_OPT_LEVEL=0 \
+    CARGO_PROFILE_DEV_LTO=false \
+    CARGO_PROFILE_DEV_CODEGEN_UNITS=256 \
+    CARGO_PROFILE_DEV_INCREMENTAL=true \
+    CARGO_PROFILE_DEV_DEBUG=0 \
+    CARGO_PROFILE_TEST_OPT_LEVEL=0 \
+    CARGO_PROFILE_TEST_LTO=false \
+    CARGO_PROFILE_TEST_CODEGEN_UNITS=256 \
+    CARGO_PROFILE_TEST_INCREMENTAL=true \
+    CARGO_PROFILE_TEST_DEBUG=0 \
+    CARGO_PROFILE_RELEASE_OPT_LEVEL=0 \
+    CARGO_PROFILE_RELEASE_LTO=false \
+    CARGO_PROFILE_RELEASE_CODEGEN_UNITS=256 \
+    CARGO_PROFILE_RELEASE_INCREMENTAL=true \
+    CARGO_PROFILE_RELEASE_DEBUG=0 \
+    CARGO_PROFILE_BENCH_OPT_LEVEL=0 \
+    CARGO_PROFILE_BENCH_LTO=false \
+    CARGO_PROFILE_BENCH_CODEGEN_UNITS=256 \
+    CARGO_PROFILE_BENCH_INCREMENTAL=true \
+    CARGO_PROFILE_BENCH_DEBUG=0 \
+    CARGO_PROFILE_CI_BOOTSTRAP_OPT_LEVEL=0 \
+    CARGO_PROFILE_CI_BOOTSTRAP_LTO=false \
+    CARGO_PROFILE_CI_BOOTSTRAP_CODEGEN_UNITS=256 \
+    CARGO_PROFILE_CI_BOOTSTRAP_INCREMENTAL=true \
+    CARGO_PROFILE_CI_BOOTSTRAP_DEBUG=0 \
+    CARGO_PROFILE_CI_RELEASE_OPT_LEVEL=0 \
+    CARGO_PROFILE_CI_RELEASE_LTO=false \
+    CARGO_PROFILE_CI_RELEASE_CODEGEN_UNITS=256 \
+    CARGO_PROFILE_CI_RELEASE_INCREMENTAL=true \
+    CARGO_PROFILE_CI_RELEASE_DEBUG=0 \
+    CARGO_PROFILE_CI_NEXTEST_OPT_LEVEL=0 \
+    CARGO_PROFILE_CI_NEXTEST_LTO=false \
+    CARGO_PROFILE_CI_NEXTEST_CODEGEN_UNITS=256 \
+    CARGO_PROFILE_CI_NEXTEST_INCREMENTAL=true \
+    CARGO_PROFILE_CI_NEXTEST_DEBUG=0
+ENV UV_CACHE_DIR=/root/.cache/uv
+ENV UV_PROJECT_ENVIRONMENT=/venv
 
 # Source tree is mounted by the runner at /repo; no COPY here so each
 # `docker exec` operates on the live worktree.

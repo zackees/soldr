@@ -4,7 +4,8 @@
 A ``soldr-perf-local-<slug>-<hash>`` container mounts the repository's shared
 git root at ``/repo``. Linked worktrees below that root reuse the same runner
 by changing only the ``docker exec`` working directory. Cargo target state,
-Cargo home, and soldr home live in named volumes and survive runner resets.
+Toolchain home, Soldr home, uv cache, and the Python environment live in named
+volumes and survive runner resets.
 
 The container and volume names are derived from the shared git root, so
 sibling checkouts (``soldr``, ``soldr2``, ``soldr3``) each get their own
@@ -17,6 +18,8 @@ Usage::
 
     uv run --no-project python ci/perf_local.py cargo build --release
     uv run --no-project python ci/perf_local.py cargo test --workspace
+    uv run --no-project python ci/perf_local.py smoke
+    uv run --no-project python ci/perf_local.py smoke-console
     uv run --no-project python ci/perf_local.py --status
     uv run --no-project python ci/perf_local.py --stop
     uv run --no-project python ci/perf_local.py --reset-runner
@@ -46,7 +49,7 @@ DOCKER_CONTEXT = "docker/cook-shared-cache"
 CONTAINER_PREFIX = "soldr-perf-local"
 VOLUME_PREFIX = "soldr-perf"
 # Bumped from "1": schema 1 runners are the pre-per-root shared containers.
-RUNNER_SCHEMA = "2"
+RUNNER_SCHEMA = "7"
 LABEL_PREFIX = "io.soldr.perf-local"
 PTRACE_ENV = "SOLDR_PERF_LOCAL_PTRACE"
 BUILDER_NAME = "soldr-perf-local"
@@ -65,6 +68,8 @@ SHARED_VOLUMES = ("soldr-perf-target", "soldr-perf-cargo-home", "soldr-perf-sold
 
 USAGE = """\
 usage: python ci/perf_local.py cargo <args...>
+       python ci/perf_local.py smoke
+       python ci/perf_local.py smoke-console
        python ci/perf_local.py --status
        python ci/perf_local.py --stop
        python ci/perf_local.py --reset-runner
@@ -88,10 +93,12 @@ class Runner:
     target: str
     cargo_home: str
     soldr_home: str
+    uv_cache: str
+    venv: str
 
     @property
-    def volumes(self) -> tuple[str, str, str]:
-        return (self.target, self.cargo_home, self.soldr_home)
+    def volumes(self) -> tuple[str, str, str, str, str]:
+        return (self.target, self.cargo_home, self.soldr_home, self.uv_cache, self.venv)
 
 
 class GcCandidate(TypedDict):
@@ -124,6 +131,8 @@ def runner_for(source_root: Path) -> Runner:
         target=f"{VOLUME_PREFIX}-target-{suffix}",
         cargo_home=f"{VOLUME_PREFIX}-cargo-home-{suffix}",
         soldr_home=f"{VOLUME_PREFIX}-soldr-home-{suffix}",
+        uv_cache=f"{VOLUME_PREFIX}-uv-cache-{suffix}",
+        venv=f"{VOLUME_PREFIX}-venv-{suffix}",
     )
 
 
@@ -358,7 +367,12 @@ def main(argv: list[str]) -> int:
             if argv[0] == "--reset-runner":
                 return reset_runner(runner)
             return wipe(runner)
-    if argv[0] != "cargo":
+    command_argv = container_argv(argv)
+    smoke_command = argv in (["smoke"], ["smoke-console"])
+    if argv[0].startswith("smoke") and not smoke_command:
+        print(f"error: smoke commands take no arguments\n\n{USAGE}", file=sys.stderr)
+        return 2
+    if not smoke_command and argv[0] != "cargo":
         print(
             f"error: expected `cargo` as the first arg, got {argv[0]!r}\n\n{USAGE}",
             file=sys.stderr,
@@ -383,7 +397,7 @@ def main(argv: list[str]) -> int:
         workdir = container_workdir(source_root, repo_root)
         try:
             completed = subprocess.run(
-                exec_command(runner, argv, workdir, tty=tty_enabled()), check=False
+                exec_command(runner, command_argv, workdir, tty=tty_enabled()), check=False
             )
             return completed.returncode
         finally:
@@ -414,6 +428,20 @@ def container_workdir(source_root: Path, repo_root: Path) -> str:
 def tty_enabled() -> bool:
     value = os.environ.get("SOLDR_PERF_LOCAL_TTY", "").strip().lower()
     return value in ("1", "true", "yes")
+
+
+def container_argv(argv: list[str]) -> list[str]:
+    """Resolve a public runner command to the process executed in Linux."""
+    if argv == ["smoke"]:
+        return ["bash", "ci/smoke_local.sh"]
+    if argv == ["smoke-console"]:
+        return [
+            "env",
+            "SOLDR_SMOKE_TOKIO_CONSOLE=1",
+            "bash",
+            "ci/smoke_local.sh",
+        ]
+    return argv
 
 
 def expected_labels(source_root: Path, image_id: str) -> dict[str, str]:
@@ -506,11 +534,34 @@ def create_command(runner: Runner, image_id: str) -> list[str]:
             "-v",
             f"{runner.soldr_home}:/root/.soldr",
             "-v",
+            f"{runner.uv_cache}:/root/.cache/uv",
+            "-v",
+            f"{runner.venv}:/venv",
+            "-v",
             f"{runner.target}:/target",
             "-v",
             f"{runner.cargo_home}:/root/.cargo",
             "-e",
             "CARGO_TARGET_DIR=/target",
+            # Keep temporary executables on the target volume. The smoke
+            # suite materializes aliases of its large unoptimized test binary;
+            # /tmp lives on the container overlay, so that otherwise degrades
+            # every hardlink into a full copy plus content verification.
+            "-e",
+            "TMPDIR=/target/tmp",
+            "-e",
+            "CARGO_BUILD_JOBS=2",
+            "-e",
+            "SOLDR_JOBS=2",
+            "-e",
+            "UV_CACHE_DIR=/root/.cache/uv",
+            "-e",
+            "UV_PROJECT_ENVIRONMENT=/venv",
+            # Docker Desktop commonly exposes host CPU count with a much
+            # smaller VM memory budget. Bound nextest so the timeout-wrapper
+            # Python process can always start under the full smoke suite.
+            "-e",
+            "NEXTEST_TEST_THREADS=2",
             "-w",
             "/repo",
             IMAGE,
@@ -570,6 +621,10 @@ def ensure_runner(runner: Runner, image_id: str) -> None:
     running = docker_output(["inspect", "--format", "{{.State.Running}}", runner.container])
     if running != "true":
         subprocess.run(["docker", "start", runner.container], check=True)
+    subprocess.run(
+        ["docker", "exec", runner.container, "mkdir", "-p", "/target/tmp"],
+        check=True,
+    )
 
 
 def docker_output(args: list[str]) -> str:

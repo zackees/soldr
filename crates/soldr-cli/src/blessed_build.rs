@@ -218,15 +218,18 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
         let managed_llvm_available = ensure_llvm_on_path(paths, &mut prep, target_triple).await;
 
         // Rust's packed Darwin debuginfo invokes `dsymutil` after linking.
-        // Fetch the selective managed LLVM-tools bundle, which includes
-        // llvm-dsymutil for Linux-hosted Darwin cross-builds.
-        if let Ok(bundle) = crate::fetch::llvm_tools_bundle::ensure_llvm_tools_bundle(
-            paths,
-            crate::fetch::cmake_tools::current_host_triple(),
-        )
-        .await
-        {
-            prep.path_dirs.push(bundle.join("bin"));
+        // Respect an explicit usable override before fetching the selective
+        // managed LLVM-tools bundle. Besides honoring the documented escape
+        // hatch, this keeps fixture-driven preparation fully offline.
+        if dsymutil_override_dir().is_none() {
+            if let Ok(bundle) = crate::fetch::llvm_tools_bundle::ensure_llvm_tools_bundle(
+                paths,
+                crate::fetch::cmake_tools::current_host_triple(),
+            )
+            .await
+            {
+                prep.path_dirs.push(bundle.join("bin"));
+            }
         }
         // llvm-tools-preview does not ship llvm-dsymutil for every Rust
         // host (notably the zero-dependency musl bootstrap image). A Darwin
@@ -383,6 +386,13 @@ fn darwin_should_use_lld(managed_llvm_available: bool) -> bool {
 
 const SOLDR_DSYMUTIL_ENV_VAR: &str = "SOLDR_DSYMUTIL";
 
+fn dsymutil_override_dir() -> Option<PathBuf> {
+    std::env::var_os(SOLDR_DSYMUTIL_ENV_VAR)
+        .map(PathBuf::from)
+        .filter(|path| path.is_file())
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+}
+
 /// The dsymutil search names for the host (`.exe`-suffixed on Windows).
 fn dsymutil_names() -> &'static [&'static str] {
     if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
@@ -394,14 +404,9 @@ fn dsymutil_names() -> &'static [&'static str] {
 
 fn ensure_dsymutil_on_path(prep: &mut BlessedPrep) -> Result<(), SoldrError> {
     let names: &[&str] = dsymutil_names();
-    if let Some(path) = std::env::var_os(SOLDR_DSYMUTIL_ENV_VAR)
-        .map(PathBuf::from)
-        .filter(|path| path.is_file())
-    {
-        if let Some(parent) = path.parent() {
-            prep.path_dirs.push(parent.to_path_buf());
-            return Ok(());
-        }
+    if let Some(parent) = dsymutil_override_dir() {
+        prep.path_dirs.push(parent);
+        return Ok(());
     }
 
     for dir in &prep.path_dirs {

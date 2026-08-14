@@ -21,6 +21,7 @@ export SOLDR_CACHE_DIR=/tmp/dylint-cook/cache
 export SOLDR_CARGO_WAIT_TIMEOUT_SECS=0
 export SOLDR_COMPILE_REPLY_TIMEOUT_SECS=3600
 export SOLDR_DAEMON_TOKIO_CONSOLE=1
+export SOLDR_DAEMON_TOKIO_CONSOLE_PUBLISH_INTERVAL_MS=20
 SOLDR=/target/debug/soldr
 REPO="$(pwd)"
 WORK=/tmp/dylint-cook/work
