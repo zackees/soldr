@@ -80,12 +80,16 @@ impl DaemonProc {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        let child = cmd.spawn().expect("spawn soldr-daemon");
-        let deadline = Instant::now() + Duration::from_secs(40);
+        let mut child = cmd.spawn().expect("spawn soldr-daemon");
+        // Cold target-run hosts may hash several large test images before
+        // this daemon can publish its route. The profile serializes this
+        // binary, and this deadline remains below the per-test backstop.
+        let deadline = Instant::now() + Duration::from_secs(90);
         let pid_file = cache_root
             .join("cache")
             .join("soldr-daemon")
             .join("broker-route-claim.pb");
+        let mut ready = false;
         while Instant::now() < deadline {
             if pid_file.exists() {
                 let status = run_soldr(&["daemon", "status", "--json"], cache_root, home_root);
@@ -95,10 +99,19 @@ impl DaemonProc {
                         .and_then(|body| body["running"].as_bool())
                         .unwrap_or(false)
                 {
+                    ready = true;
                     break;
                 }
             }
             std::thread::sleep(Duration::from_millis(50));
+        }
+        if !ready {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "isolated daemon never became ready under {}",
+                cache_root.display()
+            );
         }
         Self {
             child: Some(child),

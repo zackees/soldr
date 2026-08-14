@@ -3,7 +3,7 @@
 //! with no broker bound the command prints "not running" and exits 0.
 
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 mod common;
@@ -14,7 +14,7 @@ const STOP_EXIT_BUDGET: Duration = Duration::from_secs(20);
 const POLL: Duration = Duration::from_millis(100);
 
 fn spawn_broker(home: &Path) -> std::process::Child {
-    Command::new(common::soldr_bin())
+    common::isolated_soldr_command()
         .args(["broker", "serve"])
         .env("HOME", home)
         .env("USERPROFILE", home)
@@ -26,7 +26,7 @@ fn spawn_broker(home: &Path) -> std::process::Child {
 }
 
 fn run_broker(verb: &str, home: &Path) -> (String, i32) {
-    let out = Command::new(common::soldr_bin())
+    let out = common::isolated_soldr_command()
         .args(["broker", verb])
         .env("HOME", home)
         .env("USERPROFILE", home)

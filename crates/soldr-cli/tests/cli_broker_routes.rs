@@ -2,7 +2,7 @@
 
 mod common;
 
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 #[test]
@@ -10,7 +10,7 @@ fn issue_2476_routes_json_has_stable_schema_when_broker_is_live() {
     use std::io::{BufRead as _, BufReader};
 
     let home = common::unique_temp_dir("broker-routes-home");
-    let mut broker = Command::new(common::soldr_bin())
+    let mut broker = common::isolated_soldr_command()
         .args(["broker", "serve"])
         .env("HOME", &home)
         .env("USERPROFILE", &home)
@@ -36,7 +36,7 @@ fn issue_2476_routes_json_has_stable_schema_when_broker_is_live() {
     );
     assert!(bound.join().expect("readiness reader"));
 
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args(["broker", "routes", "--json"])
         .env("HOME", &home)
         .env("USERPROFILE", &home)
@@ -45,7 +45,7 @@ fn issue_2476_routes_json_has_stable_schema_when_broker_is_live() {
     let json: serde_json::Value = serde_json::from_slice(&output.stdout)
         .unwrap_or_else(|error| panic!("routes JSON: {error}; output={output:?}"));
 
-    let _ = Command::new(common::soldr_bin())
+    let _ = common::isolated_soldr_command()
         .args(["broker", "stop"])
         .env("HOME", &home)
         .env("USERPROFILE", &home)
@@ -64,7 +64,7 @@ fn issue_2476_routes_json_has_stable_schema_when_broker_is_live() {
 #[test]
 fn issue_2476_routes_json_is_machine_readable_when_broker_is_absent() {
     let home = common::unique_temp_dir("broker-routes-absent-home");
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args(["broker", "routes", "--json"])
         .env("HOME", &home)
         .env("USERPROFILE", &home)

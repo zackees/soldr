@@ -4,7 +4,7 @@
 //! without starting anything.
 
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 mod common;
@@ -14,7 +14,7 @@ const STATUS_POLL_BUDGET: Duration = Duration::from_secs(20);
 const POLL: Duration = Duration::from_millis(100);
 
 fn spawn_broker(home: &Path) -> std::process::Child {
-    Command::new(common::soldr_bin())
+    common::isolated_soldr_command()
         .args(["broker", "serve"])
         .env("HOME", home)
         .env("USERPROFILE", home)
@@ -27,7 +27,7 @@ fn spawn_broker(home: &Path) -> std::process::Child {
 
 /// Run `soldr broker status` once and return (stdout+stderr, exit code).
 fn run_status(home: &Path) -> (String, i32) {
-    let out = Command::new(common::soldr_bin())
+    let out = common::isolated_soldr_command()
         .args(["broker", "status"])
         .env("HOME", home)
         .env("USERPROFILE", home)

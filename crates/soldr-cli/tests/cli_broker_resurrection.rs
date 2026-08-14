@@ -210,7 +210,7 @@ fn issue_2476_sigstop_owner_is_fenced_after_lease_expiry() {
 
     // Cold target-run hosts may spend tens of seconds hashing the first
     // broker image before the lease-ready test seam is reached.
-    let ready_deadline = Instant::now() + Duration::from_secs(60);
+    let ready_deadline = Instant::now() + Duration::from_secs(90);
     while !ready.exists() && Instant::now() < ready_deadline {
         std::thread::sleep(POLL);
     }
