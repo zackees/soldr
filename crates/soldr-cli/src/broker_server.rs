@@ -36,7 +36,10 @@ pub(crate) fn broker_image_instance_id() -> io::Result<String> {
     ))
 }
 
-fn broker_image_digest(cache: &std::path::Path, executable: &std::path::Path) -> io::Result<String> {
+fn broker_image_digest(
+    cache: &std::path::Path,
+    executable: &std::path::Path,
+) -> io::Result<String> {
     if let Some(build_id) = crate::platform::executable::image::current_build_id() {
         // A linker build ID identifies the running image and is already mapped
         // into this process. Hash the short note to retain the existing 64-hex
