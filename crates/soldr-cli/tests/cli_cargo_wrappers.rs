@@ -1289,9 +1289,7 @@ fn cache_enabled_zccache_build_completes_under_60_seconds() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        // This is a hang-regression backstop, not a performance benchmark.
-        // Leave headroom for cold image hashing on contended target runners;
-        // performance gates belong to the dedicated Perf Matrix.
+        // Hang backstop; performance gates belong to the Perf Matrix.
         elapsed < Duration::from_secs(60),
         "cache-enabled zccache build took {elapsed:?}, expected under 60s"
     );
