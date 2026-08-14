@@ -37,11 +37,11 @@ pub(crate) fn broker_image_instance_id() -> io::Result<String> {
 }
 
 fn broker_image_digest(cache: &std::path::Path, executable: &std::path::Path) -> io::Result<String> {
-    #[cfg(target_os = "linux")]
-    if let Some(build_id) = running_process::current_executable_build_id() {
-        // GNU build IDs identify the linked image and are already mapped into
-        // this process. Hash the short note to retain the existing 64-hex
+    if let Some(build_id) = crate::platform::executable::image::current_build_id() {
+        // A linker build ID identifies the running image and is already mapped
+        // into this process. Hash the short note to retain the existing 64-hex
         // instance-id shape without reading a 100+ MiB no-opt executable.
+        // Hosts without one (and images linked without one) fall back below.
         return Ok(zccache::hash::hash_bytes(&build_id).to_hex().to_string());
     }
     crate::daemon::image_hash::cached_blake3_hex(cache, executable)
