@@ -5,9 +5,11 @@
 // `use rustc_lint::...` below still resolves through the macro's declaration.
 // zccache's dylints do the same — they declare rustc_ast/errors/hir/span and
 // deliberately omit rustc_lint.
+extern crate rustc_errors;
 extern crate rustc_hir;
 extern crate rustc_span;
 
+use rustc_errors::DiagDecorator;
 use rustc_hir::{Expr, ExprKind, QPath};
 use rustc_lint::{LateContext, LateLintPass, LintContext};
 
@@ -56,11 +58,19 @@ impl<'tcx> LateLintPass<'tcx> for BanForbiddenFn {
         if segment.ident.name.as_str() != "forbidden_marker_fn" {
             return;
         }
-        cx.span_lint(BAN_FORBIDDEN_FN, expr.span, |diag| {
-            diag.primary_message(
-                "call to `forbidden_marker_fn` is forbidden by the \
-                 ban_forbidden_fn dylint fixture lint (soldr#1788)",
-            );
-        });
+        // rustc's late-lint emit API changed under the pinned Dylint nightly:
+        // `LateContext::span_lint` was removed in favor of `opt_span_lint`
+        // (Option<Span> + a `DiagDecorator`-wrapped closure). Mirrors the
+        // in-repo `dylints/*` lints, which build against the same nightly.
+        cx.opt_span_lint(
+            BAN_FORBIDDEN_FN,
+            Some(expr.span),
+            DiagDecorator(move |diag| {
+                diag.primary_message(
+                    "call to `forbidden_marker_fn` is forbidden by the \
+                     ban_forbidden_fn dylint fixture lint (soldr#1788)",
+                );
+            }),
+        );
     }
 }
