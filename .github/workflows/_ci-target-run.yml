@@ -191,7 +191,8 @@ jobs:
             --archive-file "$archive" \
             --workspace-remap "$GITHUB_WORKSPACE" \
             --profile target-run \
-            --no-fail-fast
+            --no-fail-fast \
+            --max-fail 3:fail
           run_status=$?
           set -e
           summary_status=0
