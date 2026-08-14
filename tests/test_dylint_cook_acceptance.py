@@ -26,6 +26,7 @@ def test_watchdog_collects_native_and_async_diagnostics() -> None:
     assert "CARGO_PROFILE_DEV_DEBUG=2" in source
     assert r"\.(debug_info|debug_line|symtab)" in source
     assert "SOLDR_DAEMON_TOKIO_CONSOLE_RECORD_PATH" in source
+    assert "SOLDR_DAEMON_TOKIO_CONSOLE_PUBLISH_INTERVAL_MS=20" in source
     assert "dylint-cook-diagnostics" in source
     assert "dylint-cook-diagnostics" in workflow
     assert source.index('"docker",\n            "cp"') < source.index("if returncode:")

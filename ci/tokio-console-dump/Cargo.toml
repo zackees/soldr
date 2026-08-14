@@ -1,0 +1,17 @@
+[package]
+name = "soldr-tokio-console-dump"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# This is a diagnostic client, not a Soldr workspace crate.
+[workspace]
+
+[dependencies]
+console-api = { version = "0.9", features = ["transport"] }
+futures = "0.3"
+prost-types = "0.14"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tonic = { version = "0.14", features = ["transport"] }

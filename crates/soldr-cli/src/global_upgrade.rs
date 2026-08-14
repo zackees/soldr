@@ -19,7 +19,8 @@ const GLOBAL_DELEGATION_ENV_VAR: &str = "SOLDR_GLOBAL_DELEGATING";
 /// (or the exec failed); callers should continue their normal dispatch on
 /// `None`.
 pub fn maybe_delegate(raw_args: &[String]) -> Option<i32> {
-    if std::env::var_os(GLOBAL_DELEGATION_ENV_VAR).is_some()
+    if is_internal_broker_serve(raw_args)
+        || std::env::var_os(GLOBAL_DELEGATION_ENV_VAR).is_some()
         || !crate::cargo_metadata_soldr::prefer_newer_global_from_cwd()
     {
         return None;
@@ -39,6 +40,14 @@ pub fn maybe_delegate(raw_args: &[String]) -> Option<i32> {
         global.display()
     );
     Some(delegate(&global, &raw_args[1..]))
+}
+
+/// The stable broker image is selected and staged by the front door. Letting
+/// that image apply project-level global delegation would re-enter soldr to
+/// probe another image before the broker binds, and could ultimately replace
+/// the exact broker image whose identity the front door selected.
+fn is_internal_broker_serve(raw_args: &[String]) -> bool {
+    matches!(raw_args, [_, command, verb, ..] if command == "broker" && verb == "serve")
 }
 
 fn find_global_soldr(current: &Path) -> Option<PathBuf> {
@@ -127,5 +136,23 @@ mod tests {
     fn rejects_non_soldr_or_invalid_output() {
         assert_eq!(parse_soldr_version("cargo 1.2.3\n"), None);
         assert_eq!(parse_soldr_version("soldr latest\n"), None);
+    }
+
+    #[test]
+    fn broker_serve_is_internal_but_broker_admin_commands_are_not() {
+        assert!(is_internal_broker_serve(&[
+            "soldr".into(),
+            "broker".into(),
+            "serve".into(),
+        ]));
+        assert!(!is_internal_broker_serve(&[
+            "soldr".into(),
+            "broker".into(),
+            "status".into(),
+        ]));
+        assert!(!is_internal_broker_serve(&[
+            "soldr".into(),
+            "version".into(),
+        ]));
     }
 }

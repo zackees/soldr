@@ -17,6 +17,30 @@ def test_docker_context_is_small_because_image_copies_no_source() -> None:
     assert perf_local.DOCKER_CONTEXT == "docker/cook-shared-cache"
 
 
+def test_docker_image_bootstraps_with_published_soldr_0_8_29() -> None:
+    dockerfile = (Path(__file__).parents[1] / perf_local.DOCKERFILE).read_text(
+        encoding="utf-8"
+    )
+
+    assert "ARG SOLDR_BOOTSTRAP_VERSION=0.8.29" in dockerfile
+    assert '"soldr==${SOLDR_BOOTSTRAP_VERSION}"' in dockerfile
+    assert "/opt/soldr-bootstrap/bin/soldr --version" in dockerfile
+    for profile in (
+        "DEV",
+        "TEST",
+        "RELEASE",
+        "BENCH",
+        "CI_BOOTSTRAP",
+        "CI_RELEASE",
+        "CI_NEXTEST",
+    ):
+        assert f"CARGO_PROFILE_{profile}_OPT_LEVEL=0" in dockerfile
+        assert f"CARGO_PROFILE_{profile}_LTO=false" in dockerfile
+        assert f"CARGO_PROFILE_{profile}_CODEGEN_UNITS=256" in dockerfile
+        assert f"CARGO_PROFILE_{profile}_INCREMENTAL=true" in dockerfile
+        assert f"CARGO_PROFILE_{profile}_DEBUG=0" in dockerfile
+
+
 def test_dockerfile_digest_changes_with_content(tmp_path: Path) -> None:
     dockerfile = tmp_path / perf_local.DOCKERFILE
     dockerfile.parent.mkdir(parents=True)
@@ -146,7 +170,14 @@ def test_create_command_uses_one_named_runner_and_persistent_volumes(
     assert f"{runner.target}:/target" in command
     assert f"{runner.cargo_home}:/root/.cargo" in command
     assert f"{runner.soldr_home}:/root/.soldr" in command
+    assert f"{runner.uv_cache}:/root/.cache/uv" in command
+    assert f"{runner.venv}:/venv" in command
     assert "CARGO_TARGET_DIR=/target" in command
+    assert "TMPDIR=/target/tmp" in command
+    assert "UV_PROJECT_ENVIRONMENT=/venv" in command
+    assert "NEXTEST_TEST_THREADS=2" in command
+    assert "CARGO_BUILD_JOBS=2" in command
+    assert "SOLDR_JOBS=2" in command
     assert command[-3:] == ["tail", "-f", "/dev/null"]
 
 
@@ -245,3 +276,14 @@ def test_exec_command_reuses_runner_and_changes_only_workdir(tmp_path: Path) -> 
         "exec",
         "-it",
     ]
+
+
+def test_smoke_command_runs_the_complete_repository_pipeline() -> None:
+    assert perf_local.container_argv(["smoke"]) == ["bash", "ci/smoke_local.sh"]
+    assert perf_local.container_argv(["smoke-console"]) == [
+        "env",
+        "SOLDR_SMOKE_TOKIO_CONSOLE=1",
+        "bash",
+        "ci/smoke_local.sh",
+    ]
+    assert perf_local.container_argv(["cargo", "check"]) == ["cargo", "check"]

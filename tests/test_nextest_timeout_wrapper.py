@@ -166,6 +166,8 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
     assert "[test-groups.soldr-runtime]" in config
     assert "binary(cli_broker_resurrection) + binary(cli_broker_routes)" in config
     assert config.count("test-group = 'soldr-runtime'") == 2
+    assert "binary(cli_build_alias_parity)" in config
+    assert "binary(cli_build_fetch_overlap)" in config
     for binary in (
         "agent_worktree_share",
         "cli_daemon_builds",

@@ -44,7 +44,7 @@ filter = 'binary(agent_worktree_share) + binary(cli_daemon_builds) + binary(cli_
 test-group = 'soldr-runtime'
 
 [[profile.default.overrides]]
-filter = 'binary(cli_broker_resurrection) + binary(cli_broker_routes) + binary(cli_broker_single_instance) + binary(cli_broker_status) + binary(cli_broker_stop)'
+filter = 'binary(cli_broker_resurrection) + binary(cli_broker_routes) + binary(cli_broker_single_instance) + binary(cli_broker_status) + binary(cli_broker_stop) + binary(cli_build_alias_parity) + binary(cli_build_fetch_overlap)'
 test-group = 'soldr-runtime'
 
 [scripts.wrapper.timeout-diagnostics]
