@@ -98,14 +98,7 @@ jobs:
       - name: Setup soldr build cache
         uses: zackees/setup-soldr@40320d277ba4946e38d4b3c02e6c7a15a29c3f3f
         with:
-          # soldr#2493: >= 0.8.44. The suite runs under nextest now, and soldr's
-          # cargo front door injects syslib `--config` overrides that
-          # cargo-nextest only accepts after its inner verb. 0.8.29 places them
-          # before `nextest` for every verb, so any `nextest run`/`archive`
-          # fails with `unexpected argument '--config' found`. 0.8.44 places
-          # them correctly (verified in the Linux container harness), and
-          # `release-auto.yml` already pins it.
-          version: 0.8.44
+          version: 0.8.29
           toolchain: 1.95.0
           # soldr#2451: disable every setup-soldr reuse layer, not just the
           # `cache` umbrella (soldr-mini / solo-toolchain / build-cache each
@@ -232,17 +225,30 @@ jobs:
       # in one invocation. This includes the internal crates extracted after
       # the original single-crate optimization was written.
       #
-      # NOTE: this step keeps setup-soldr's `soldr` (from PATH), the same
-      # wrapper `Build workspace + tests` above used. Invoking the just-built
-      # `target/<triple>/debug/soldr` instead was tried and reverted: cargo
-      # hashes the RUSTC_WRAPPER path into per-crate fingerprints, so swapping
-      # it invalidated every rlib and forced a full recompile (~1m 27s on the
-      # linux-x64 lane, main run 28760796620).
-      #
-      # soldr#1324/#1703 — run every workspace library and integration binary
-      # in one invocation. soldr#2493 — under nextest, which owns the per-test
+      # soldr#2493 — the suite runs under nextest, which owns the per-test
       # timeouts in `.config/nextest.toml` now that the watchdog macro is gone.
-      # This needs the >= 0.8.44 pin above; see the note there.
+      #
+      # This step drives the suite with the soldr THIS lane just built, not the
+      # pinned setup-soldr release on PATH, because no released soldr can do the
+      # job:
+      #
+      #   0.8.29 (the pin) injects syslib `--config` overrides *before* the
+      #     `nextest` verb, and cargo-nextest rejects that at its top-level
+      #     parser -- `unexpected argument '--config' found` -- for `run` and
+      #     `archive` alike.
+      #   0.8.44 places `--config` correctly but its daemon fails the
+      #     cook-size-gate and thin-v2 lanes with `soldr root ownership is
+      #     busy`, and `test_setup_soldr_version_pins.py` (correctly) forbids
+      #     lanes running different versions.
+      #
+      # The `--config` placement fix is in this branch, so the binary built a
+      # few steps up is the first soldr that can run this suite. This costs a
+      # rebuild -- cargo hashes the RUSTC_WRAPPER path into per-crate
+      # fingerprints, so changing the wrapper invalidates the tree that `Build
+      # workspace + tests` just warmed (~1m 27s, main run 28760796620). That
+      # cost is accepted deliberately: a correct suite that recompiles beats a
+      # warm one that cannot start. Once a release carries the fix, this step
+      # goes back to plain `soldr cargo nextest run` and the pin moves instead.
       - name: Run library + CLI smoke tests
         shell: bash
         env:
@@ -251,12 +257,18 @@ jobs:
           SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
           ZCCACHE_CACHE_DIR: ${{ runner.temp }}/soldr-self-tests/${{ inputs.target }}/cache/zccache
         run: |
+          set -euo pipefail
           echo "Using isolated test SOLDR_CACHE_DIR=$SOLDR_CACHE_DIR"
-          echo "Using isolated test ZCCACHE_CACHE_DIR=$ZCCACHE_CACHE_DIR"
+          soldr_under_test="target/${{ inputs.target }}/debug/soldr"
+          test -x "$soldr_under_test" || {
+            echo "expected the freshly built soldr at $soldr_under_test" >&2
+            exit 1
+          }
+          echo "Driving the suite with $soldr_under_test ($("$soldr_under_test" version))"
           python3 .github/scripts/step_duration.py \
             --label "${{ inputs.target }} / Library + smoke tests" \
-            -- soldr cargo nextest run --workspace --lib --tests --target ${{ inputs.target }}
-
+            -- "$soldr_under_test" cargo nextest run --workspace --lib --tests \
+            --target ${{ inputs.target }}
       # soldr#1218 — the standalone `Run fetch integration test` step
       # was removed; the same `tests/fetch_crgx.rs` binary already runs
       # inside `Run CLI smoke tests` above (which invokes `cargo nextest

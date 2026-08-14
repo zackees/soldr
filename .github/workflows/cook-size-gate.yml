@@ -77,7 +77,7 @@ jobs:
           # (0.8.23) predates #1820 and GCs live target/ artifacts after every
           # build, so the next build recompiles the world. See
           # tests/test_setup_soldr_version_pins.py.
-          version: 0.8.44
+          version: 0.8.29
           toolchain: 1.95.0
           cache: false
           zccache-seed-strict: true

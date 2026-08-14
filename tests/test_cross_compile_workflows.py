@@ -251,13 +251,13 @@ def test_native_linux_runs_the_complete_workspace_suite() -> None:
     # now that the `timed_test!` watchdog is gone. Plain `cargo test` here
     # would leave a hung test unbounded.
     #
-    # Needs the >= 0.8.44 setup-soldr pin: 0.8.29 places soldr's injected
-    # `--config` before the `nextest` verb, which cargo-nextest rejects.
-    assert "soldr cargo nextest run --workspace --lib --tests" in " ".join(
-        build_and_test.split()
-    )
-    assert "version: 0.8.44" in build_and_test
-    assert "version: 0.8.29" not in build_and_test
+    # Driven by the just-built soldr, not the pinned release: 0.8.29 misplaces
+    # soldr's injected `--config` for every nextest verb, and 0.8.44 (which
+    # places it correctly) breaks other lanes' daemon root ownership, while the
+    # pin-agreement guard forbids running different versions per lane.
+    flattened = " ".join(build_and_test.split())
+    assert 'soldr_under_test="target/${{ inputs.target }}/debug/soldr"' in flattened
+    assert '"$soldr_under_test" cargo nextest run --workspace --lib --tests' in flattened
     assert "soldr cargo test" not in build_and_test
     # The lane must stay on bash; PowerShell steps were removed so the logic
     # lives in `.github/scripts/*.py` where it is testable.

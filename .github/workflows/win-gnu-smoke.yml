@@ -73,7 +73,7 @@ jobs:
       - name: Setup soldr
         uses: zackees/setup-soldr@40320d277ba4946e38d4b3c02e6c7a15a29c3f3f
         with:
-          version: 0.8.44
+          version: 0.8.29
           toolchain: 1.95.0
           cache: false
 

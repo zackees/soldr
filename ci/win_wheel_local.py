@@ -55,17 +55,32 @@ def checkout_suffix() -> str:
 
 def volume_names() -> dict[str, str]:
     suffix = checkout_suffix()
+    # Only two volumes are needed, and neither is `~/.cargo` / `~/.rustup`.
+    # soldr keeps its managed CARGO_HOME and RUSTUP_HOME *inside* its own home
+    # (`/root/.soldr/cargo`, `/root/.soldr/rustup`) alongside the SDK and the
+    # compiler cache, so one volume there carries every warm artifact. Mounting
+    # `/root/.cargo` instead -- which an earlier version of this script did --
+    # caches nothing and shadows nothing, because bare cargo is not on PATH in
+    # this image at all.
     return {
-        "cargo": f"{VOLUME_PREFIX}-cargo-{suffix}",
-        "rustup": f"{VOLUME_PREFIX}-rustup-{suffix}",
         "soldr": f"{VOLUME_PREFIX}-soldr-{suffix}",
         "target": f"{VOLUME_PREFIX}-target-{suffix}",
     }
 
 
-def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+def run(command: list[str], *, quiet: bool = False) -> subprocess.CompletedProcess[bytes]:
+    """Echo a command and run it, never raising on a non-zero exit.
+
+    `quiet` discards stdout for the noisy bookkeeping calls (`volume create`
+    echoes the name it just created); failures still surface via the return
+    code, which every caller checks.
+    """
     print(f"+ {' '.join(command)}", flush=True)
-    return subprocess.run(command, check=False, **kwargs)  # type: ignore[arg-type]
+    return subprocess.run(
+        command,
+        check=False,
+        stdout=subprocess.DEVNULL if quiet else None,
+    )
 
 
 def docker_available() -> bool:
@@ -77,7 +92,7 @@ def docker_available() -> bool:
 
 def ensure_volumes() -> None:
     for name in volume_names().values():
-        run(["docker", "volume", "create", name], stdout=subprocess.DEVNULL)
+        run(["docker", "volume", "create", name], quiet=True)
 
 
 def build_image(*, soldr_version: str, target: str, rebuild: bool) -> int:
@@ -112,10 +127,8 @@ def build_wheel(*, target: str, release: bool, out_dir: Path, extra: list[str]) 
         f"{out_dir}:/out",
         "-v",
         f"{volumes['target']}:/work/target",
-        "-v",
-        f"{volumes['cargo']}:/root/.cargo",
-        "-v",
-        f"{volumes['rustup']}:/root/.rustup",
+        # Seeded from the image on first mount, so the baked toolchain, SDK and
+        # sysroot survive into the volume and stay warm from then on.
         "-v",
         f"{volumes['soldr']}:/root/.soldr",
         "-w",
