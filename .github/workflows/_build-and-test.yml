@@ -54,11 +54,11 @@ jobs:
       RUST_BACKTRACE: "1"
       CARGO_TERM_COLOR: always
       # The hosted Linux runner has four logical CPUs but not enough memory
-      # for three simultaneous soldr-cli/zccache test links. A rustc killed by
-      # the kernel reaches the wrapper as an opaque exit 255, so bound both
-      # Cargo's launch rate and the embedded compile service to two processes.
-      CARGO_BUILD_JOBS: "2"
-      SOLDR_JOBS: "2"
+      # for even two simultaneous soldr-cli/zccache test links. A rustc killed
+      # by the kernel reaches the wrapper as an opaque exit 255, so serialize
+      # Cargo's launch rate and the embedded compile service in this cold lane.
+      CARGO_BUILD_JOBS: "1"
+      SOLDR_JOBS: "1"
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
