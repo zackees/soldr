@@ -663,39 +663,19 @@ jobs:
 
       # soldr#1799 — surface build XML logs + JSONL compile journals so
       # toolchain-home leakage and warm-run recompile storms are
-      # diagnosable from the Actions UI. Printed as separate steps and
-      # uploaded as a downloadable artifact.
-      - name: Print build XML logs
+      # diagnosable. Indexed in the console, downloadable as an artifact:
+      # printing the contents buried real failures under megabytes of
+      # compile-journal scrollback (soldr#2493 follow-up).
+      - name: Index build logs
         if: always()
         continue-on-error: true
         shell: bash
         run: |
-          found=0
-          for root in "$HOME/.soldr" "$HOME/.soldr-dev" "$RUNNER_TEMP"; do
-            [ -d "$root" ] || continue
-            while IFS= read -r f; do
-              found=1
-              echo "===== $f ====="
-              cat "$f"
-            done < <(find "$root" -path '*/logs/*' -name '*.xml' 2>/dev/null)
-          done
-          [ "$found" = 1 ] || echo 'No build XML logs found.'
-
-      - name: Print JSONL compile journals
-        if: always()
-        continue-on-error: true
-        shell: bash
-        run: |
-          found=0
-          for root in "$HOME/.soldr" "$HOME/.soldr-dev" "$RUNNER_TEMP"; do
-            [ -d "$root" ] || continue
-            while IFS= read -r f; do
-              found=1
-              echo "===== $f ====="
-              cat "$f"
-            done < <(find "$root" -path '*/logs/*' \( -name '*.jsonl' -o -name '*.stats.json' \) 2>/dev/null)
-          done
-          [ "$found" = 1 ] || echo 'No JSONL compile journals found.'
+          python3 .github/scripts/index_build_logs.py \
+            --root "$HOME/.soldr" \
+            --root "$HOME/.soldr-dev" \
+            --root "$RUNNER_TEMP" \
+            --artifact-name "build-logs-cross-${{ inputs.artifact_name }}"
 
       - name: Upload build log artifacts
         if: always()
@@ -704,9 +684,22 @@ jobs:
         with:
           name: build-logs-cross-${{ inputs.artifact_name }}
           if-no-files-found: ignore
+          # Keep in sync with `.github/scripts/index_build_logs.py`. The
+          # non-`logs/` entries carry the archived compile journals and the
+          # broker/daemon spawn + bringup logs.
           path: |
             ~/.soldr/logs/
             ~/.soldr-dev/logs/
             ~/.soldr/cache/zccache/logs/
             ~/.soldr-dev/cache/zccache/logs/
+            ~/.soldr/cache/zccache/history/**/*.json
+            ~/.soldr/cache/zccache/history/**/*.jsonl
+            ~/.soldr-dev/cache/zccache/history/**/*.json
+            ~/.soldr-dev/cache/zccache/history/**/*.jsonl
+            ~/.soldr/*-spawn.log
+            ~/.soldr-dev/*-spawn.log
+            ~/.soldr/broker/*.log
+            ~/.soldr-dev/broker/*.log
+            ~/.soldr/broker/*.jsonl
+            ~/.soldr-dev/broker/*.jsonl
             ${{ runner.temp }}/soldr-windows-cross-zccache-${{ inputs.target }}/logs/
