@@ -87,26 +87,11 @@ pub fn cached_blake3_hex_with_progress(
         })
         .ok();
     if let Some(lock) = lock.as_ref() {
-        use fs2::FileExt as _;
-
-        let mut next_progress = std::time::Instant::now();
-        loop {
-            match lock.try_lock_exclusive() {
-                Ok(()) => break,
-                Err(error) if lock_is_contended(&error) => {
-                    if std::time::Instant::now() >= next_progress {
-                        progress(0, initial_size);
-                        next_progress =
-                            std::time::Instant::now() + std::time::Duration::from_millis(250);
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(25));
-                }
-                // Cache locking is an optimization, not an integrity gate.
-                // An unsupported or read-only cache filesystem falls back to
-                // the existing direct hash behavior.
-                Err(_) => break,
-            }
-        }
+        // Both outcomes lead to the same next step: re-read the cache entry
+        // (the holder may have just published it), then hash if still missing.
+        // Only the lock ownership differs, and the temp+rename write is safe
+        // either way.
+        let _ = wait_for_hash_lock(lock, initial_size, &mut progress);
     }
 
     let (size, mtime) = fingerprint(target)?;
@@ -117,6 +102,159 @@ pub fn cached_blake3_hex_with_progress(
     compute_blake3_hex_with_progress(target, size, &mut progress).inspect(|hex| {
         // Best-effort store; a cache write failure must never fail the hash.
         let _ = write_cache_entry(cache_dir, &entry, size, mtime, hex);
+    })
+}
+
+/// Longest a cache miss will wait for another process to publish its digest
+/// before hashing the image itself.
+///
+/// The lock is an optimization, not an integrity gate — the `Err(_) => break`
+/// arm below already degrades to a direct hash on an unsupported or read-only
+/// cache filesystem. A *slow or wedged* holder deserves the same treatment: an
+/// unbounded wait stalls broker cold start with no ceiling at all.
+///
+/// The budget must comfortably exceed a legitimate hash, or every waiter
+/// abandons and the stampede this lock exists to prevent (soldr#2442) comes
+/// straight back — with the wasted wait added on top. The costs to clear:
+/// ~19s for the concurrent-cold-I/O Docker case in this module's header, and
+/// 3.8s measured for a cold 60MB image on a warm dev box. 30s covers both with
+/// margin while still guaranteeing forward progress.
+///
+/// Note the ceiling is no longer what keeps a stall diagnosable: the two
+/// stderr lines below do that, and they fire as soon as the wait begins.
+const HASH_LOCK_WAIT_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
+/// First backoff step. Doubles up to [`HASH_LOCK_BACKOFF_CAP`], with full
+/// jitter applied to each sleep so contenders do not poll in lockstep.
+const HASH_LOCK_BACKOFF_BASE: std::time::Duration = std::time::Duration::from_millis(5);
+const HASH_LOCK_BACKOFF_CAP: std::time::Duration = std::time::Duration::from_millis(100);
+/// Shortest sleep between polls. Keeps a zero jitter draw, or a deadline only
+/// microseconds away, from turning the last iterations into a busy-wait.
+const HASH_LOCK_MIN_SLEEP: std::time::Duration = std::time::Duration::from_micros(500);
+
+/// Why [`wait_for_hash_lock`] stopped waiting. Both outcomes are correct; they
+/// differ only in whether this process is the one publishing the cache entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HashLockOutcome {
+    /// The lock is held by this process (or locking is unsupported here).
+    Proceed,
+    /// The budget expired with the lock still held elsewhere. Hash directly.
+    Abandoned,
+}
+
+/// Wait for the cache-miss lock, bounded by [`HASH_LOCK_WAIT_BUDGET`].
+///
+/// Exclusive advisory locks give no queue and no fairness: every waiter races
+/// on release. Polling on a fixed interval therefore synchronizes the herd.
+/// Full jitter over a growing window spreads the retries out and keeps a
+/// long-waiting contender from being beaten by every new arrival.
+#[must_use]
+fn wait_for_hash_lock(
+    lock: &std::fs::File,
+    initial_size: u64,
+    progress: &mut impl FnMut(u64, u64),
+) -> HashLockOutcome {
+    wait_for_hash_lock_within(lock, initial_size, HASH_LOCK_WAIT_BUDGET, progress)
+}
+
+/// [`wait_for_hash_lock`] with an explicit budget, so the bounded-wait
+/// behavior is testable without spending the production budget in a test.
+#[must_use]
+fn wait_for_hash_lock_within(
+    lock: &std::fs::File,
+    initial_size: u64,
+    budget: std::time::Duration,
+    progress: &mut impl FnMut(u64, u64),
+) -> HashLockOutcome {
+    use fs2::FileExt as _;
+
+    let started = std::time::Instant::now();
+    let deadline = started + budget;
+    let mut next_progress = started;
+    let mut backoff = HASH_LOCK_BACKOFF_BASE;
+    let mut waited = false;
+    loop {
+        match lock.try_lock_exclusive() {
+            Ok(()) => {
+                if waited {
+                    eprintln!(
+                        "soldr image-hash: acquired contended hash lock after {}ms",
+                        started.elapsed().as_millis()
+                    );
+                }
+                return HashLockOutcome::Proceed;
+            }
+            Err(error) if lock_is_contended(&error) => {
+                let now = std::time::Instant::now();
+                if !waited {
+                    waited = true;
+                    // Never wait silently: a broker stuck here used to emit
+                    // nothing at all, which is indistinguishable from a hang.
+                    eprintln!(
+                        "soldr image-hash: another process is hashing this image; \
+                         waiting up to {}ms before hashing it directly",
+                        budget.as_millis()
+                    );
+                }
+                if now >= deadline {
+                    eprintln!(
+                        "soldr image-hash: hash lock still held after {}ms; hashing directly",
+                        started.elapsed().as_millis()
+                    );
+                    return HashLockOutcome::Abandoned;
+                }
+                if now >= next_progress {
+                    progress(0, initial_size);
+                    next_progress = now + std::time::Duration::from_millis(250);
+                }
+                let remaining = deadline.saturating_duration_since(now);
+                // Floor the draw before clamping: full jitter can return 0, and
+                // `remaining` shrinks to microseconds near the deadline, so the
+                // last iterations would otherwise become a tight spin.
+                let slept = jittered_backoff(backoff)
+                    .max(HASH_LOCK_MIN_SLEEP)
+                    .min(remaining.max(HASH_LOCK_MIN_SLEEP));
+                std::thread::sleep(slept);
+                backoff = (backoff * 2).min(HASH_LOCK_BACKOFF_CAP);
+            }
+            // Cache locking is an optimization, not an integrity gate.
+            // An unsupported or read-only cache filesystem falls back to
+            // the existing direct hash behavior.
+            Err(_) => return HashLockOutcome::Proceed,
+        }
+    }
+}
+
+/// Full jitter: a uniform draw from `[0, window]`. Cheap and dependency-free —
+/// the seed only needs to differ between contending processes, not to be
+/// cryptographically random.
+fn jittered_backoff(window: std::time::Duration) -> std::time::Duration {
+    let window_us = window.as_micros().max(1) as u64;
+    std::time::Duration::from_micros(next_jitter_source() % window_us)
+}
+
+fn next_jitter_source() -> u64 {
+    use std::cell::Cell;
+    thread_local! {
+        static STATE: Cell<u64> = const { Cell::new(0) };
+    }
+    STATE.with(|state| {
+        let mut seed = state.get();
+        if seed == 0 {
+            // Distinct per process and per waiter; the nanosecond clock keeps
+            // two processes started in the same millisecond apart.
+            seed = u64::from(std::process::id()).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                ^ std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|elapsed| elapsed.as_nanos() as u64)
+                    .unwrap_or(0x5DEE_CE66_D000_0001);
+            seed |= 1;
+        }
+        // xorshift64*: adequate for spreading retries, no dependency.
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        state.set(seed);
+        seed
     })
 }
 
@@ -203,6 +341,87 @@ mod tests {
         assert!(lock_is_contended(&io::Error::from(
             io::ErrorKind::WouldBlock
         )));
+    });
+
+    crate::timed_test!(hash_lock_wait_is_bounded_and_degrades_to_direct_hashing, {
+        use fs2::FileExt as _;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let lock_path = temp.path().join("held.lock");
+        let holder = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .expect("open holder");
+        holder.try_lock_exclusive().expect("holder takes the lock");
+
+        let waiter = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .expect("open waiter");
+        // A short injected budget: the production one is deliberately long
+        // enough to let a legitimate hash finish, which would make this test
+        // spend 30s proving a property that holds at any budget.
+        let budget = std::time::Duration::from_millis(300);
+        let started = std::time::Instant::now();
+        let outcome = wait_for_hash_lock_within(&waiter, 0, budget, &mut |_, _| {});
+        let elapsed = started.elapsed();
+
+        // The point of the fix: a held lock must never stall the caller
+        // indefinitely. It abandons the wait and hashes for itself.
+        assert_eq!(outcome, HashLockOutcome::Abandoned);
+        assert!(
+            elapsed >= budget,
+            "must actually wait its budget, waited {elapsed:?}"
+        );
+        assert!(
+            elapsed < budget * 10,
+            "must not overshoot the budget, waited {elapsed:?}"
+        );
+        fs2::FileExt::unlock(&holder).expect("release");
+    });
+
+    crate::timed_test!(production_budget_outlasts_a_legitimate_hash, {
+        // Regression guard for the trade-off this constant encodes. Too short
+        // and every waiter abandons, restoring the very stampede the lock was
+        // added to prevent (soldr#2442) plus the wasted wait. The module
+        // header documents ~19s for the concurrent-cold-I/O case.
+        assert!(
+            HASH_LOCK_WAIT_BUDGET >= std::time::Duration::from_secs(20),
+            "budget {HASH_LOCK_WAIT_BUDGET:?} is shorter than a documented cold hash"
+        );
+    });
+
+    crate::timed_test!(uncontended_hash_lock_is_acquired_without_waiting, {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(temp.path().join("free.lock"))
+            .expect("open lock");
+        let started = std::time::Instant::now();
+        assert_eq!(
+            wait_for_hash_lock(&lock, 0, &mut |_, _| {}),
+            HashLockOutcome::Proceed
+        );
+        assert!(started.elapsed() < std::time::Duration::from_millis(500));
+    });
+
+    crate::timed_test!(jittered_backoff_stays_within_its_window, {
+        let window = std::time::Duration::from_millis(40);
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..64 {
+            let drawn = jittered_backoff(window);
+            assert!(drawn < window, "{drawn:?} escaped the window");
+            seen.insert(drawn.as_micros());
+        }
+        // Full jitter must actually spread the herd, not return a constant.
+        assert!(seen.len() > 1, "backoff produced a single value");
     });
 
     crate::timed_test!(blake3_hex_matches_zccache_reference, {
