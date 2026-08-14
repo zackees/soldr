@@ -53,6 +53,38 @@ Inspect the broker spawn log reported by `soldr logs paths`. The front door
 uses active socket probes and a bounded wait; stale log lines cannot satisfy
 readiness.
 
+### Broker image or version mismatch (soldr#2549)
+
+Signal: an ordinary invocation prints
+
+```
+soldr: warning: the running broker was started from a different Soldr image
+soldr:   running broker: soldr-<version>-<digest>
+soldr:   this soldr:     soldr-<version>-<digest>
+soldr: ... to retire it deliberately, run: soldr broker remove
+```
+
+This is a diagnostic, not a failure. The broker is a stable, long-lived
+singleton for its user-home endpoint: Soldr never stops, kills, replaces, or
+stages over a live broker because the running image's package version or
+digest differs. Work continues through the running broker, and the running
+image still gets a closely aligned daemon — the route's service name is keyed
+on the daemon image hash, so the stable broker launches or adopts a matching
+daemon generation behind itself while the prior daemon drains and expires
+under daemon lifecycle policy (`displace_stale_daemon`).
+
+Recovery is explicit and operator-driven:
+
+```
+soldr broker remove
+```
+
+That stops the PID-verified broker, unlinks its admission endpoint, and
+deletes the staged broker image, so the next invocation installs a matching
+one. Daemon routes are retained and re-adopted from their verified claims.
+Use `soldr broker stop` instead when you only want to cycle the broker
+process and keep its staged image.
+
 ### Daemon route does not become ready
 
 Signal: the broker cannot provide the registered service route within the
@@ -96,7 +128,10 @@ Do not work around it by starting one broker per root.
    preferable to the normal long-build allowance.
 3. Restart the selected broker-owned route with `soldr daemon stop` followed
    by `soldr daemon start`.
-4. Re-run through a compile-capable Soldr front door.
+4. Only when the front door reports a broker image/version mismatch and you
+   want that broker gone, run `soldr broker remove`. Nothing in Soldr takes
+   this step for you.
+5. Re-run through a compile-capable Soldr front door.
 
 All broker, daemon, transport, version-skew, retirement, initialization, and
 protocol failures are hard failures for cacheable compiler work. There is no
