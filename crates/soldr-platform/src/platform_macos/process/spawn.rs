@@ -17,10 +17,9 @@ pub fn daemon_stdio(log: Option<&std::fs::File>) -> running_process::DaemonStdio
     let Some(log) = log else {
         return running_process::DaemonStdio::default();
     };
-    use std::os::fd::AsFd;
     running_process::DaemonStdio {
-        stdout: running_process::DaemonStdioSource::Fd(log.as_fd()),
-        stderr: running_process::DaemonStdioSource::Fd(log.as_fd()),
+        stdout: running_process::DaemonStdioSource::File(log),
+        stderr: running_process::DaemonStdioSource::File(log),
     }
 }
 
