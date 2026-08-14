@@ -98,7 +98,14 @@ jobs:
       - name: Setup soldr build cache
         uses: zackees/setup-soldr@40320d277ba4946e38d4b3c02e6c7a15a29c3f3f
         with:
-          version: 0.8.29
+          # soldr#2493: >= 0.8.44. The suite runs under nextest now, and soldr's
+          # cargo front door injects syslib `--config` overrides that
+          # cargo-nextest only accepts after its inner verb. 0.8.29 places them
+          # before `nextest` for every verb, so any `nextest run`/`archive`
+          # fails with `unexpected argument '--config' found`. 0.8.44 places
+          # them correctly (verified in the Linux container harness), and
+          # `release-auto.yml` already pins it.
+          version: 0.8.44
           toolchain: 1.95.0
           # soldr#2451: disable every setup-soldr reuse layer, not just the
           # `cache` umbrella (soldr-mini / solo-toolchain / build-cache each
@@ -154,7 +161,9 @@ jobs:
       - name: Build workspace + tests
         shell: bash
         run: |
-          python3 .github/scripts/step_duration.py             --label "${{ inputs.target }} / Build workspace + tests" --             soldr cargo build --workspace --tests --bins --target ${{ inputs.target }}
+          python3 .github/scripts/step_duration.py \
+            --label "${{ inputs.target }} / Build workspace + tests" \
+            -- soldr cargo build --workspace --tests --bins --target ${{ inputs.target }}
 
       # soldr#1799: an immediately-repeated build must recompile nothing.
       # Nothing changed in between, so any crate rebuilding means something
@@ -167,7 +176,8 @@ jobs:
         continue-on-error: ${{ !contains(inputs.target, 'linux-gnu') }}
         shell: bash
         run: |
-          soldr cargo build --workspace --tests --bins             --target ${{ inputs.target }} > warm-rebuild.log 2>&1
+          soldr cargo build --workspace --tests --bins \
+            --target ${{ inputs.target }} > warm-rebuild.log 2>&1
           tail -n 20 warm-rebuild.log
           python3 .github/scripts/check_warm_rebuild.py warm-rebuild.log
 
@@ -212,7 +222,8 @@ jobs:
         if: success()
         shell: bash
         run: |
-          python3 .github/scripts/check_toolchain_homes.py "$HOME/.soldr/logs/builds"             --managed-root "$HOME/.soldr" --managed-root "$HOME/.soldr-dev"
+          python3 .github/scripts/check_toolchain_homes.py "$HOME/.soldr/logs/builds" \
+            --managed-root "$HOME/.soldr" --managed-root "$HOME/.soldr-dev"
 
       - name: Stop setup-soldr builder cache before tests
         uses: zackees/setup-soldr/cleanup@40320d277ba4946e38d4b3c02e6c7a15a29c3f3f
@@ -228,40 +239,11 @@ jobs:
       # it invalidated every rlib and forced a full recompile (~1m 27s on the
       # linux-x64 lane, main run 28760796620).
       #
-      # soldr#2493 — the suite runs under nextest now that per-test timeouts
-      # live in `.config/nextest.toml`, and it gets there in two moves rather
-      # than one `nextest run`:
-      #
-      #   archive: soldr's cargo front door injects syslib `--config`
-      #     overrides, and cargo-nextest only accepts `--config` after its
-      #     inner verb. Released soldr places it correctly for `archive`
-      #     (soldr#2037) but not yet for `run` -- that fix is in this branch
-      #     and no shipped release contains it, while this lane is driven by
-      #     the pinned setup-soldr release. `archive` is the verb that works
-      #     with both, and it builds through the same wrapper, so the tree
-      #     stays warm.
-      #   run: replaying an archive compiles nothing at all, so the wrapper
-      #     never enters the picture and no fingerprint can be invalidated.
-      #     The verified nextest binary comes from the same catalogue helper
-      #     the target-run lanes use, so this lane and those seven agree on
-      #     the runner. Config (`.config/nextest.toml`, including the
-      #     `slow-timeout` budgets) is read from the remapped workspace.
-      # Same helper and same pinned version the target-run lanes use, so this
-      # lane and those seven agree on the runner rather than each resolving
-      # cargo-nextest their own way.
-      - name: Fetch verified cargo-nextest
-        shell: bash
-        run: |
-          set -euo pipefail
-          version=$(sed -n 's/.*CARGO_NEXTEST_PINNED_VERSION: &str = "\(.*\)";/\1/p' \
-            crates/soldr-fetch/src/fetch/known_tools.rs | head -n1)
-          test -n "$version"
-          python3 .github/scripts/fetch_catalogued_nextest.py             --target '${{ inputs.target }}'             --version "$version"             --output-dir "${{ runner.temp }}/nextest-bin"
-          nextest_bin="${{ runner.temp }}/nextest-bin/cargo-nextest"
-          test -x "$nextest_bin"
-          echo "NEXTEST_BIN=$nextest_bin" >> "$GITHUB_ENV"
-
-      - name: Archive library + CLI smoke tests
+      # soldr#1324/#1703 — run every workspace library and integration binary
+      # in one invocation. soldr#2493 — under nextest, which owns the per-test
+      # timeouts in `.config/nextest.toml` now that the watchdog macro is gone.
+      # This needs the >= 0.8.44 pin above; see the note there.
+      - name: Run library + CLI smoke tests
         shell: bash
         env:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-self-tests/${{ inputs.target }}
@@ -271,15 +253,9 @@ jobs:
         run: |
           echo "Using isolated test SOLDR_CACHE_DIR=$SOLDR_CACHE_DIR"
           echo "Using isolated test ZCCACHE_CACHE_DIR=$ZCCACHE_CACHE_DIR"
-          python3 .github/scripts/step_duration.py             --label "${{ inputs.target }} / Archive tests" --             soldr cargo nextest archive               --workspace               --target '${{ inputs.target }}'               --archive-file "${{ runner.temp }}/workspace-tests.tar.zst"               --archive-format tar-zst
-
-      - name: Run library + CLI smoke tests
-        shell: bash
-        env:
-          SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-self-tests/${{ inputs.target }}
-          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/soldr-self-tests/${{ inputs.target }}/cache/zccache
-        run: |
-          python3 .github/scripts/step_duration.py             --label "${{ inputs.target }} / Library + smoke tests" --             "$NEXTEST_BIN" nextest run               --archive-file "${{ runner.temp }}/workspace-tests.tar.zst"               --workspace-remap "$GITHUB_WORKSPACE"
+          python3 .github/scripts/step_duration.py \
+            --label "${{ inputs.target }} / Library + smoke tests" \
+            -- soldr cargo nextest run --workspace --lib --tests --target ${{ inputs.target }}
 
       # soldr#1218 — the standalone `Run fetch integration test` step
       # was removed; the same `tests/fetch_crgx.rs` binary already runs
@@ -315,7 +291,11 @@ jobs:
         continue-on-error: true
         shell: bash
         run: |
-          python3 .github/scripts/index_build_logs.py             --root "$HOME/.soldr"             --root "$HOME/.soldr-dev"             --root "${{ runner.temp }}/soldr-self-tests"             --artifact-name "build-logs-${{ inputs.target }}"
+          python3 .github/scripts/index_build_logs.py \
+            --root "$HOME/.soldr" \
+            --root "$HOME/.soldr-dev" \
+            --root "${{ runner.temp }}/soldr-self-tests" \
+            --artifact-name "build-logs-${{ inputs.target }}"
 
       - name: Upload build log artifacts
         if: always()
