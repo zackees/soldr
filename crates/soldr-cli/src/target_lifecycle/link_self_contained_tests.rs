@@ -1,7 +1,8 @@
 //! Unit tests for `-C link-self-contained` handling.
 //!
-//! Split out of `target_lifecycle.rs` (soldr#2493). Converting `timed_test!`
-//! call sites to plain `#[test] fn` costs one line per test, which took that
+//! Split out of `target_lifecycle.rs` (soldr#2493). Converting the retired
+//! watchdog-macro call sites to plain `#[test] fn` costs one line per test,
+//! which took that
 //! file from 992 to 1008 lines -- past the 1000-line production ceiling
 //! soldr#2493 itself introduced. The two test modules are the natural seam,
 //! and the layout matches the sibling `cargo_front_door/tests.rs`.

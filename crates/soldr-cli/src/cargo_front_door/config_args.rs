@@ -23,9 +23,10 @@ pub(super) fn insert_cargo_global_args(args: &[String], cargo_args: &[String]) -
     // its unrelated `--config-file` option (soldr#2037).
     //
     // soldr#2493 widened this from `archive` alone to every build verb.
-    // Removing `timed_test!` made `nextest run` the way the suite is executed
-    // in CI, and `run` hit exactly the #2037 failure the `archive` case was
-    // already fixed for: `error: unexpected argument '--config' found`.
+    // Retiring the per-test watchdog macro made `nextest run` the way the
+    // suite is executed in CI, and `run` hit exactly the #2037 failure the
+    // `archive` case was already fixed for:
+    // `error: unexpected argument '--config' found`.
     let insert_at = cargo_subcommand
         .filter(|&index| args.get(index).is_some_and(|arg| arg == "nextest"))
         .and_then(|index| first_nextest_verb_index(args, index))

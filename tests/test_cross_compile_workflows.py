@@ -250,10 +250,18 @@ def test_native_linux_runs_the_complete_workspace_suite() -> None:
     # soldr#2493: the suite runs under nextest, which owns per-test timeouts
     # now that the `timed_test!` watchdog is gone. Plain `cargo test` here
     # would leave a hung test unbounded.
-    assert (
-        "soldr cargo nextest run --workspace --lib --tests --target ${{ inputs.target }}"
-    ) in build_and_test
-    assert "soldr cargo test -p soldr-cli" not in build_and_test
+    #
+    # It gets there via archive-then-replay rather than a single `nextest
+    # run`: released soldr only places its injected `--config` correctly for
+    # the `archive` verb, and replaying an archive compiles nothing, so the
+    # RUSTC_WRAPPER path never changes and the tree stays warm.
+    assert "soldr cargo nextest archive" in build_and_test
+    assert '"$NEXTEST_BIN" nextest run' in build_and_test
+    assert "--archive-file" in build_and_test
+    assert "soldr cargo test" not in build_and_test
+    # The lane must stay on bash; PowerShell steps were removed so the logic
+    # lives in `.github/scripts/*.py` where it is testable.
+    assert "shell: pwsh" not in build_and_test
 
 
 def test_archived_source_tests_use_only_runtime_workspace_resolution() -> None:

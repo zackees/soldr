@@ -12,8 +12,9 @@
 //! pure validation logic has cross-platform unit tests inside save.rs.
 //! ---------------------------------------------------------------------------
 //!
-//! Split out of `save_roundtrip.rs` (soldr#2493): converting `timed_test!`
-//! call sites to plain `#[test] fn` costs a line per test, which pushed that
+//! Split out of `save_roundtrip.rs` (soldr#2493): converting the retired
+//! watchdog-macro call sites to plain `#[test] fn` costs a line per test,
+//! which pushed that
 //! already-over-ceiling file further over. This module was already a
 //! self-contained `mod symlinks { .. }` block, so it is the natural seam.
 

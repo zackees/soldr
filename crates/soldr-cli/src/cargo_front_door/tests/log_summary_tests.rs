@@ -1,7 +1,8 @@
 //! soldr#1813 end-of-build log-path summary tests.
 //!
-//! Split out of the sibling `tests.rs` (soldr#2493): converting `timed_test!`
-//! call sites to plain `#[test] fn` costs one line per test, which pushed that
+//! Split out of the sibling `tests.rs` (soldr#2493): converting the retired
+//! watchdog-macro call sites to plain `#[test] fn` costs one line per test,
+//! which pushed that
 //! already-over-ceiling file further over. This block is self-contained -- one
 //! fixture builder plus the four tests that use it -- so it is the natural
 //! seam.
