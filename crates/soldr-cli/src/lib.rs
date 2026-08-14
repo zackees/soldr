@@ -239,7 +239,6 @@ pub mod lint_ci;
 /// soldr#820 — `soldr logs` discoverable runtime-log surface.
 /// soldr#1721 - cache-aware unified validation command.
 pub mod lint_cmd;
-pub mod linux_cross;
 pub mod logs_cmd;
 /// soldr#1079 — Windows MSVC host-toolchain auto-discovery. Probes
 /// vswhere + the Windows SDK and synthesizes LIB/INCLUDE/PATH/LIBPATH

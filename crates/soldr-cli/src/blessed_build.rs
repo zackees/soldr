@@ -22,13 +22,15 @@
 //! Linux GNU/musl preparation is layered on by `target_lifecycle`; this
 //! low-level platform module remains responsible for SDK/catalogue families.
 //!
-//! ## Opt-out
+//! ## There is no opt-out
 //!
-//! `SOLDR_USE_LEGACY_XWIN=1` (or `SOLDR_USE_LEGACY_ZIGBUILD=1`)
-//! suppresses the blessed prep for that toolchain family and falls
-//! through to the cargo-xwin / cargo-zigbuild path. Mirrors the
-//! `SOLDR_USE_LEGACY_*` env-var contract documented in soldr#1010
-//! Phase 8.
+//! `SOLDR_USE_LEGACY_XWIN` / `SOLDR_USE_LEGACY_ZIGBUILD` used to suppress the
+//! blessed prep and fall through to cargo-xwin's or cargo-zigbuild's own live
+//! toolchain download. Both are removed (soldr#2519). The blessed asset is
+//! pinned and sha256-verified per `docs/TRUST_BOUNDARIES.md`; the legacy paths
+//! fetched an unpinned SDK from a third-party CDN, so "diagnostic toggle" was
+//! really "leave the trust boundary". `target_lifecycle.rs` had already
+//! scheduled the Zig half for removal in 0.9.0.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -39,15 +41,6 @@ mod darwin_arch;
 mod links_provider;
 mod lzma_override;
 mod mimalloc_override;
-
-/// Env var that opts out of the blessed xwin-cache materialization
-/// and falls through to cargo-xwin's own live download for win-msvc
-/// targets. Set to any non-empty value to trigger.
-pub const USE_LEGACY_XWIN_ENV_VAR: &str = "SOLDR_USE_LEGACY_XWIN";
-
-/// Env var that opts out of blessed Darwin prep and falls back to the
-/// explicit legacy cargo-zigbuild path.
-pub const USE_LEGACY_ZIGBUILD_ENV_VAR: &str = "SOLDR_USE_LEGACY_ZIGBUILD";
 
 /// soldr#1543 test seam: sleep this many milliseconds at the top of
 /// [`prepare`] to simulate slow catalogue/SDK materialization, so the
@@ -213,7 +206,7 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
     }
 
     // ------------------------------ Apple Darwin -----------------------------
-    if target_triple.ends_with("-apple-darwin") && !legacy_zigbuild_opt_out() {
+    if target_triple.ends_with("-apple-darwin") {
         // soldr is a bootstrapping tool: it must provision the cross
         // toolchain itself, never lean on a host `apt install clang lld
         // llvm`. The darwin arm sets AR=llvm-ar / RANLIB=llvm-ranlib /
@@ -508,8 +501,10 @@ fn add_mingw_w64_gcc_env(
 
 /// Env var that opts out of the managed cmake/ninja injection and
 /// leaves cmake resolution to the system PATH. Set to any non-empty
-/// value (other than `"0"`) to trigger. Mirrors the
-/// `SOLDR_USE_LEGACY_*` env-var contract.
+/// value (other than `"0"`) to trigger. Unlike the removed
+/// `SOLDR_USE_LEGACY_{XWIN,ZIGBUILD}` toggles, this one stays inside the
+/// trust boundary: it selects a system cmake rather than an unpinned
+/// third-party SDK download.
 pub const USE_SYSTEM_CMAKE_ENV_VAR: &str = "SOLDR_USE_SYSTEM_CMAKE";
 
 fn system_cmake_opt_out() -> bool {
@@ -718,8 +713,10 @@ fn log_cmake_unavailable(tool: &str, host: &str, err: &SoldrError) {
 
 /// Env var that opts out of the entire `*-sys` catalogue-substitution
 /// path and falls through to each crate's vendored compile. Set to any
-/// non-empty value (other than `"0"`) to trigger. Mirrors the
-/// `SOLDR_USE_LEGACY_{XWIN,ZIGBUILD}` env-var contract.
+/// non-empty value (other than `"0"`) to trigger. Unlike the removed
+/// `SOLDR_USE_LEGACY_{XWIN,ZIGBUILD}` toggles, this one stays inside the
+/// trust boundary: it falls back to each crate's own vendored source
+/// rather than to an unpinned third-party SDK download.
 pub const USE_LEGACY_VENDORED_SYS_ENV_VAR: &str = "SOLDR_USE_LEGACY_VENDORED_SYS";
 
 fn legacy_vendored_sys_opt_out() -> bool {
@@ -840,24 +837,11 @@ fn log_sys_unavailable(lib_name: &str, target_triple: &str, err: &SoldrError) {
     );
 }
 
-fn legacy_xwin_opt_out() -> bool {
-    std::env::var(USE_LEGACY_XWIN_ENV_VAR)
-        .map(|v| !v.is_empty() && v != "0")
-        .unwrap_or(false)
-}
-
 fn should_prepare_xwin_for_target(target_triple: &str) -> bool {
     target_triple
         .to_ascii_lowercase()
         .ends_with("-pc-windows-msvc")
         && crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Linux
-        && !legacy_xwin_opt_out()
-}
-
-fn legacy_zigbuild_opt_out() -> bool {
-    std::env::var(USE_LEGACY_ZIGBUILD_ENV_VAR)
-        .map(|v| !v.is_empty() && v != "0")
-        .unwrap_or(false)
 }
 
 /// Install `soldr` under the multicall clang names at

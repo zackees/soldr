@@ -110,7 +110,13 @@ def prepare(
     env: dict[str, str] | None = None,
     save: Path | None = None,
     restore: Path | None = None,
-) -> dict[str, str]:
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Run `soldr prepare`; return `(env_to_build_with, vars_soldr_wrote)`.
+
+    Deliberately two values. The first is the full environment a build needs,
+    which necessarily inherits the ambient one. The second is only what soldr
+    set, and is the only thing the no-Zig assertion may inspect.
+    """
     command = [soldr, "prepare", "--target", target, "--github-env", str(env_file)]
     if save is not None:
         command.extend(["--save", str(save)])
@@ -118,12 +124,15 @@ def prepare(
         command.extend(["--restore", str(restore)])
     output = run(command, env=env)
     require_no_zig(output, "GNU preparation")
+    managed = read_github_env(env_file)
     prepared_env = os.environ.copy() if env is None else env.copy()
-    prepared_env.update(read_github_env(env_file))
-    return prepared_env
+    prepared_env.update(managed)
+    return prepared_env, managed
 
 
-def assert_managed_environment(env: dict[str, str], target: str) -> tuple[Path, Path]:
+def assert_managed_environment(
+    env: dict[str, str], target: str, managed: dict[str, str]
+) -> tuple[Path, Path]:
     suffix = target.replace("-", "_")
     upper = suffix.upper()
     root = Path(env["SOLDR_GNU_LINUX_TOOLCHAIN_ROOT"])
@@ -180,7 +189,12 @@ def assert_managed_environment(env: dict[str, str], target: str) -> tuple[Path, 
         raise RuntimeError("pkg-config did not receive the managed sysroot")
     if "--sysroot=" + str(sysroot) not in env[f"CFLAGS_{suffix}"]:
         raise RuntimeError("C compiler flags did not carry the managed sysroot")
-    require_no_zig("\n".join(env.values()), "prepared GNU environment")
+    # Only the variables soldr wrote. Scanning the whole environment matched
+    # any ambient value containing "zig" -- including GITHUB_HEAD_REF, so a
+    # branch named `...-xwin-zig-optin` failed this lane with "prepared GNU
+    # environment unexpectedly references zig: /bin/bash", naming an
+    # unrelated value because the message prints the whole blob.
+    require_no_zig("\n".join(managed.values()), "prepared GNU environment")
     return root, sysroot
 
 
@@ -340,14 +354,16 @@ def main() -> int:
         ) as raw:
             work = Path(raw)
             archive = work / "prepared.tar.zst"
-            source_env = prepare(
+            source_env, source_managed = prepare(
                 soldr,
                 args.target,
                 work / "source-github.env",
                 env=checkout_env,
                 save=archive,
             )
-            source_root, _ = assert_managed_environment(source_env, args.target)
+            source_root, _ = assert_managed_environment(
+                source_env, args.target, source_managed
+            )
             # Warm Cargo's fixture dependencies before proving that the restored
             # toolchain itself is enough when Soldr is forbidden from networking.
             build_fixture(soldr, args.target, source_env, work / "source-build")
@@ -355,14 +371,14 @@ def main() -> int:
             restored_env = fresh_checkout_env()
             restored_env["SOLDR_CACHE_DIR"] = str(work / "restored-soldr")
             restored_env["SOLDR_TEST_NO_NETWORK"] = "1"
-            env = prepare(
+            env, managed = prepare(
                 soldr,
                 args.target,
                 work / "restored-github.env",
                 env=restored_env,
                 restore=archive,
             )
-            root, _ = assert_managed_environment(env, args.target)
+            root, _ = assert_managed_environment(env, args.target, managed)
             if root == source_root:
                 raise RuntimeError(
                     "prepare archive did not restore into the clean Soldr root"

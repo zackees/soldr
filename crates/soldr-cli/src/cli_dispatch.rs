@@ -71,121 +71,15 @@ pub(crate) fn extract_target_from_args(args: &[String]) -> Option<String> {
     None
 }
 
-/// soldr#882: pick the cargo subcommand to dispatch for a given
-/// cross-target. Only fires on Linux hosts — native macos/windows
-/// host builds keep using plain `cargo build`.
-///
-/// Returns:
-/// * `None` for `*-pc-windows-msvc` when blessed prep produced an
-///   xwin-cache, so `soldr build` uses plain `cargo build` with the
-///   prepared clang/lld/MSVC SDK env.
-/// * `Some("xwin")` for `*-pc-windows-msvc` only when
-///   `SOLDR_USE_LEGACY_XWIN` explicitly requests the diagnostic path.
-/// * `None` for `*-apple-darwin` by default; `Some("zigbuild")` only
-///   when `SOLDR_USE_LEGACY_ZIGBUILD` is set for diagnostic comparison.
-/// * `None` for `x86_64-pc-windows-gnu`; that target stays on the
-///   blessed managed MinGW/GNU path and no longer falls back to
-///   cargo-zigbuild
-/// * `None` for blessed Linux GNU/musl targets; `Some("zigbuild")` only
-///   when `SOLDR_USE_LEGACY_ZIGBUILD` explicitly requests the diagnostic
-///   fallback.
-/// * `None` for everything else
-pub(crate) fn pick_cross_subcommand(
-    target_triple: &str,
-    msvc_blessed_cache_ready: bool,
-) -> Option<&'static str> {
-    pick_cross_subcommand_for_host(
-        target_triple,
-        msvc_blessed_cache_ready,
-        crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Linux,
-        crate::platform::host::facts::arch() == crate::platform::host::facts::HostArch::X86_64,
-    )
-}
-
-pub(crate) fn pick_cross_subcommand_for_host(
-    target_triple: &str,
-    _msvc_blessed_cache_ready: bool,
-    linux_host: bool,
-    x86_64_host: bool,
-) -> Option<&'static str> {
-    if !linux_host {
-        return None;
-    }
-
-    let legacy_xwin = std::env::var_os(crate::blessed_build::USE_LEGACY_XWIN_ENV_VAR)
-        .map(|v| !v.is_empty() && v != "0")
-        .unwrap_or(false);
-    let legacy_zigbuild = std::env::var_os(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR)
-        .map(|v| !v.is_empty() && v != "0")
-        .unwrap_or(false);
-
-    if target_triple.ends_with("-pc-windows-msvc") {
-        return if legacy_xwin { Some("xwin") } else { None };
-    }
-    // soldr#1081 follow-up: `*-apple-darwin` no longer routes through
-    // cargo-zigbuild. The blessed-build apple-darwin arm in
-    // `blessed_build.rs` now exports the COMPLETE Apple SDK to cc-rs +
-    // rustc's linker, so plain `cargo build --target X` produces a
-    // Mach-O binary from a Linux host without the
-    // tikv-jemalloc-sys/zig-minimal-sysroot mismatch that broke the
-    // release lane. `SOLDR_USE_LEGACY_ZIGBUILD=1` re-routes darwin
-    // through zigbuild for diagnostic comparison.
-    if target_triple.ends_with("-apple-darwin") {
-        return if legacy_zigbuild {
-            Some("zigbuild")
-        } else {
-            None
-        };
-    }
-    if target_triple.ends_with("-unknown-linux-musl") {
-        return if legacy_zigbuild {
-            Some("zigbuild")
-        } else {
-            None
-        };
-    }
-    // Cross from x86_64 host to aarch64 linux — needs zigbuild for
-    // the bundled libc.
-    if target_triple == "aarch64-unknown-linux-gnu" && x86_64_host {
-        return if legacy_zigbuild {
-            Some("zigbuild")
-        } else {
-            None
-        };
-    }
-    None
-}
-
-/// soldr#882: rewrite the args vector for the picked cargo subcommand.
-///
-/// For `zigbuild`: cargo-zigbuild IS the build verb — replace the
-/// leading `build` with `zigbuild`. So `["build", "--target", X, ...]`
-/// becomes `["zigbuild", "--target", X, ...]`.
-///
-/// For `xwin`: cargo-xwin uses `xwin build ...` as a subcommand
-/// pair — prepend `xwin` keeping the `build` verb. So
-/// `["build", "--target", X, ...]` becomes
-/// `["xwin", "build", "--target", X, ...]`.
-pub(crate) fn rewrite_build_args_for_subcommand(
-    mut args: Vec<String>,
-    subcmd: &str,
-) -> Vec<String> {
-    match subcmd {
-        "zigbuild" => {
-            if let Some(first) = args.first_mut() {
-                if first == "build" {
-                    *first = "zigbuild".to_string();
-                }
-            }
-            args
-        }
-        "xwin" => {
-            args.insert(0, "xwin".to_string());
-            args
-        }
-        _ => args,
-    }
-}
+// soldr#2519 removed `pick_cross_subcommand` /
+// `pick_cross_subcommand_for_host` / `rewrite_build_args_for_subcommand`
+// (added by soldr#882). They existed to route a cross build through
+// `cargo xwin` or `cargo zigbuild`, which only ever happened when
+// `SOLDR_USE_LEGACY_XWIN` / `SOLDR_USE_LEGACY_ZIGBUILD` was set. With those
+// toggles gone every branch returned `None`, so the single production caller
+// in `soldr_main_build.rs` could never rewrite argv. soldr now always builds
+// cross targets with plain `cargo build` against the blessed,
+// sha256-verified sysroot.
 
 pub(crate) fn insert_cargo_config_args(
     mut args: Vec<String>,
