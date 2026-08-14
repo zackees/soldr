@@ -161,5 +161,8 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
     config = CONFIG.read_text(encoding="utf-8")
     assert 'experimental = ["wrapper-scripts"]' in config
     assert 'run-wrapper = "timeout-diagnostics"' in config
-    assert 'platform = { host = "cfg(unix)" }' in config
+    assert 'platform = { target = "cfg(unix)" }' in config
+    assert 'platform = { host = "cfg(unix)" }' not in config
+    assert "[test-groups.daemon-lifecycle]" in config
+    assert "filter = 'binary(cli_daemon_lifecycle)'" in config
     assert config.count('grace-period = "30s"') == 4

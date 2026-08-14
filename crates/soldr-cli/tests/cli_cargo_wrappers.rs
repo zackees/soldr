@@ -1264,7 +1264,7 @@ fn cargo_front_door_preserves_jobserver_fds_into_managed_zccache_wrapper() {
 }
 
 #[test]
-fn cache_enabled_zccache_build_completes_under_45_seconds() {
+fn cache_enabled_zccache_build_completes_under_60_seconds() {
     let cache_root = unique_temp_dir("cargo-zccache-timing");
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
@@ -1289,8 +1289,11 @@ fn cache_enabled_zccache_build_completes_under_45_seconds() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        elapsed < Duration::from_secs(45),
-        "cache-enabled zccache build took {elapsed:?}, expected under 45s"
+        // This is a hang-regression backstop, not a performance benchmark.
+        // Leave headroom for cold image hashing on contended target runners;
+        // performance gates belong to the dedicated Perf Matrix.
+        elapsed < Duration::from_secs(60),
+        "cache-enabled zccache build took {elapsed:?}, expected under 60s"
     );
 
     let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");

@@ -39,13 +39,7 @@ fn isolated_env(cache_root: &Path, home_root: &Path) -> Vec<(&'static str, OsStr
 }
 
 fn scrub_outer_soldr_runtime(cmd: &mut Command) {
-    cmd.env_remove("RUSTC_WRAPPER")
-        // A dogfooded outer `soldr cargo test` exports its installed daemon
-        // image for compiler-child recovery. Fixtures must exercise the
-        // binaries built for this test invocation instead.
-        .env_remove(soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR)
-        .env_remove("SOLDR_ORIGINAL_EXE")
-        .env_remove("SOLDR_RELOCATED_EXE");
+    common::scrub_outer_soldr_env(cmd);
 }
 
 fn wait_for_ready(cache_root: &Path, home_root: &Path, deadline: Instant) -> bool {
@@ -77,11 +71,18 @@ fn status_reports_running(cache_root: &Path, home_root: &Path) -> bool {
 
 fn run_soldr(args: &[&str], cache_root: &Path, home_root: &Path) -> std::process::Output {
     let mut cmd = Command::new(common::soldr_bin());
+    scrub_outer_soldr_runtime(&mut cmd);
     cmd.args(args);
     for (k, v) in isolated_env(cache_root, home_root) {
         cmd.env(k, v);
     }
-    scrub_outer_soldr_runtime(&mut cmd);
+    cmd.env(
+        soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR,
+        common::isolated_daemon::isolated_daemon_executable(
+            &common::soldr_daemon_bin(),
+            cache_root,
+        ),
+    );
     cmd.output().expect("failed to run soldr")
 }
 
@@ -93,6 +94,7 @@ fn run_soldr_with_timeout(
     timeout: Duration,
 ) -> std::process::Output {
     let mut cmd = Command::new(common::soldr_bin());
+    scrub_outer_soldr_runtime(&mut cmd);
     cmd.args(args)
         .current_dir(current_dir)
         .stdout(Stdio::piped())
@@ -100,9 +102,15 @@ fn run_soldr_with_timeout(
     for (k, v) in isolated_env(cache_root, home_root) {
         cmd.env(k, v);
     }
+    cmd.env(
+        soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR,
+        common::isolated_daemon::isolated_daemon_executable(
+            &common::soldr_daemon_bin(),
+            cache_root,
+        ),
+    );
     cmd.env("SOLDR_DAEMON_SPAWN_RETRY_BUDGET_MS", "10000");
     cmd.env("SOLDR_COMPILE_REPLY_TIMEOUT_SECS", "60");
-    scrub_outer_soldr_runtime(&mut cmd);
 
     let mut child = cmd.spawn().expect("failed to spawn soldr");
     if child
@@ -418,6 +426,7 @@ fn start_status_stop_round_trip() {
 
 #[test]
 fn doctor_uses_same_endpoint_as_daemon_status_for_cook_counts() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
     let daemon = Daemon::spawn();
     let cache_root = daemon.cache_root.clone();
     let home_root = daemon.home_root.clone();
