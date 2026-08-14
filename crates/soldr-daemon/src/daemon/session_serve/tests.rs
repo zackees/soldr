@@ -138,7 +138,9 @@ fn session_compile_e2e_real_rustc_through_the_bridge() {
                 args,
                 cwd: project.display().to_string(),
                 env,
-                clear_inherited_env: false,
+                clear_inherited_env: true,
+                environment_policy: running_process::broker::protocol_v2::EnvironmentPolicy::Clear
+                    as i32,
             };
 
             // Real embedded zccache service in an isolated temp root.
@@ -245,7 +247,9 @@ fn session_client_disconnect_mid_compile_aborts_without_reply() {
                 args,
                 cwd: project.display().to_string(),
                 env,
-                clear_inherited_env: false,
+                clear_inherited_env: true,
+                environment_policy: running_process::broker::protocol_v2::EnvironmentPolicy::Clear
+                    as i32,
             };
 
             let daemon = test_daemon_identity();

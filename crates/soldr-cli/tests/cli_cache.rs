@@ -2,6 +2,38 @@
 
 mod common;
 
+#[test]
+fn isolated_commands_scrub_every_route_selector() {
+    let command = common::isolated_soldr_command();
+    let removals = command
+        .get_envs()
+        .filter_map(|(name, value)| {
+            value
+                .is_none()
+                .then_some(name.to_string_lossy().into_owned())
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+
+    for name in common::OUTER_ROUTE_ENV_VARS {
+        assert!(
+            removals.contains(*name),
+            "isolated command must scrub route-affecting variable {name}"
+        );
+        assert!(common::is_outer_route_env(name));
+    }
+    for name in [
+        "RUNNING_PROCESS_BROKER_V1_INSTANCE",
+        "RUNNING_PROCESS_BROKER_V1_SESSION_TOKEN",
+        "RUNNING_PROCESS_BROKER_V1_BACKEND_PIPE",
+    ] {
+        assert!(
+            common::is_outer_route_env(name),
+            "broker-owned child identity must never leak into a fixture: {name}"
+        );
+    }
+    assert!(!common::is_outer_route_env("SOLDR_BROKER_DEBUG"));
+}
+
 use common::*;
 use serde_json::Value;
 use std::io::Write;

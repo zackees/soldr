@@ -196,6 +196,23 @@ pub(crate) fn isolated_soldr_command() -> Command {
     command
 }
 
+/// Ambient variables that can select a daemon route independently of the
+/// fixture's explicit HOME/root. Nested Soldr commands must start without
+/// these values; a test that needs one sets it after calling the helper.
+pub(crate) const OUTER_ROUTE_ENV_VARS: &[&str] = &[
+    soldr_cli::core::SOLDR_CACHE_DIR_ENV_VAR,
+    soldr_cli::daemon::backend_handle_adoption::SOLDR_BROKER_SERVICE_ENV_VAR,
+    soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR,
+    soldr_cli::daemon::session_endpoint::SOLDR_SESSION_ENDPOINT_PATH_ENV,
+    soldr_cli::daemon::session_endpoint::SOLDR_CONTROL_ENDPOINT_PATH_ENV,
+    "SOLDR_INTERNAL_BROKER_INSTANCE_ID",
+    "RUNNING_PROCESS_SERVICE_DEF_DIR",
+];
+
+pub(crate) fn is_outer_route_env(name: &str) -> bool {
+    OUTER_ROUTE_ENV_VARS.contains(&name) || name.starts_with("RUNNING_PROCESS_BROKER_V1_")
+}
+
 pub(crate) fn scrub_outer_soldr_env(command: &mut Command) -> &mut Command {
     command
         // soldr#1766: fixtures build in bare temp workspaces that deliberately
@@ -235,13 +252,14 @@ pub(crate) fn scrub_outer_soldr_env(command: &mut Command) -> &mut Command {
         // suppresses the child's own relocation. Scrub both so the test
         // binary behaves like a fresh top-level invocation.
         .env_remove("SOLDR_ORIGINAL_EXE")
-        .env_remove("SOLDR_RELOCATED_EXE")
-        // A parent soldr daemon handoff points at the outer process image;
-        // fixture children must resolve and materialize their own daemon.
-        .env_remove(soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR);
+        .env_remove("SOLDR_RELOCATED_EXE");
+    for name in OUTER_ROUTE_ENV_VARS {
+        command.env_remove(name);
+    }
     for (name, _) in std::env::vars_os() {
         let should_scrub = name.to_str().is_some_and(|name| {
-            name.starts_with("CARGO_TARGET_")
+            is_outer_route_env(name)
+                || name.starts_with("CARGO_TARGET_")
                 // Outer cache controls and machine-wide Cargo front-door exports
                 // are outer-process implementation details, not fixture overrides
                 // for nested Soldr. Individual tests can set an intended

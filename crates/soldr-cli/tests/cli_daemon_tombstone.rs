@@ -1,7 +1,7 @@
-//! soldr#2388 — daemon tombstone end-to-end: an explicit `soldr daemon stop`
-//! plants a suppression window during which the broker's requested daemon
-//! launch (the one implicit-start path post-Step-4) is skipped, guarding
-//! against a thundering herd of restarts. `soldr daemon start` lifts it.
+//! soldr#2388/#2531 — daemon tombstone end-to-end: an explicit stop plants a
+//! fence so an older in-flight launch cannot publish after stop succeeds. A
+//! later demand-driven route request clears the fence and starts one new
+//! generation; the launcher's post-spawn checks retain the race protection.
 
 mod common;
 
@@ -60,11 +60,12 @@ impl Drop for BrokerGuard {
 }
 
 #[test]
-fn daemon_stop_tombstone_suppresses_broker_proactive_launch() {
+fn daemon_stop_tombstone_fences_old_launch_but_allows_new_demand() {
     let root = common::unique_temp_dir("tombstone-root");
     let home = common::unique_temp_dir("tombstone-home");
     let service_root = home.join("service-definitions");
     let project = root.join("workspace");
+    let launch_ready = root.join("launch-ready");
     std::fs::create_dir_all(project.join("src")).expect("create source directory");
     std::fs::write(project.join("src/lib.rs"), "pub fn tombstone() {}\n").expect("write source");
 
@@ -106,8 +107,7 @@ fn daemon_stop_tombstone_suppresses_broker_proactive_launch() {
 
     // 2) Register this root's route and start a broker. Since #2441 the
     //    broker is passive until a client requests a registered route; that
-    //    requested launch must observe the live tombstone and leave no
-    //    daemon behind.
+    //    new demand must clear the stop fence and launch one replacement.
     let paths = SoldrPaths::with_root(root.clone());
     let installed =
         soldr_cli::daemon::service_definition::install_service_definition_to_dir_for_paths(
@@ -125,6 +125,8 @@ fn daemon_stop_tombstone_suppresses_broker_proactive_launch() {
         .env("HOME", &home)
         .env("USERPROFILE", &home)
         .env("RUNNING_PROCESS_SERVICE_DEF_DIR", &service_root)
+        .env("SOLDR_TEST_DAEMON_LAUNCH_PAUSE_MS", "3000")
+        .env("SOLDR_TEST_DAEMON_LAUNCH_READY_FILE", &launch_ready)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -172,40 +174,65 @@ fn daemon_stop_tombstone_suppresses_broker_proactive_launch() {
     );
     let rustc = Path::new(&std::env::var_os("CARGO").expect("CARGO set by cargo test"))
         .with_file_name(format!("rustc{}", std::env::consts::EXE_SUFFIX));
-    let mut request = Command::new(common::soldr_bin());
-    common::scrub_outer_soldr_env(&mut request);
-    let request_output = request
-        .arg(&rustc)
-        .args([
-            "--edition",
-            "2021",
-            "--crate-type",
-            "lib",
-            "--crate-name",
-            "soldr_tombstone_probe",
-            "--emit=metadata",
-            "--out-dir",
-            "target",
-            "src/lib.rs",
-        ])
-        .current_dir(&project)
-        .env("SOLDR_CACHE_DIR", &root)
-        .env("HOME", &home)
-        .env("USERPROFILE", &home)
-        .output()
-        .expect("request tombstoned route through compiler wrapper");
+    let request_command = || {
+        let mut request = common::isolated_soldr_command();
+        request
+            .arg(&rustc)
+            .args([
+                "--edition",
+                "2021",
+                "--crate-type",
+                "lib",
+                "--crate-name",
+                "soldr_tombstone_probe",
+                "--emit=metadata",
+                "--out-dir",
+                "target",
+                "src/lib.rs",
+            ])
+            .current_dir(&project)
+            .env("SOLDR_CACHE_DIR", &root)
+            .env("HOME", &home)
+            .env("USERPROFILE", &home)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        request
+    };
+    let first_request = request_command()
+        .spawn()
+        .expect("request route through compiler wrapper");
+    let launch_deadline = Instant::now() + Duration::from_secs(30);
+    while !launch_ready.is_file() && Instant::now() < launch_deadline {
+        std::thread::sleep(Duration::from_millis(25));
+    }
     assert!(
-        !request_output.status.success(),
-        "the broker request must fail while the tombstone is live"
+        launch_ready.is_file(),
+        "daemon launch never reached ready fence"
     );
+    // `daemon stop` plants this exact fence before it attempts control IPC.
+    // Plant it directly here because invoking the full front door would first
+    // serialize behind the launch under test and could not exercise the race.
+    soldr_cli::daemon::tombstone::plant(&paths, soldr_cli::daemon::tombstone::TOMBSTONE_DURATION);
+    let first_output = first_request
+        .wait_with_output()
+        .expect("wait for fenced launch request");
+    assert!(
+        !first_output.status.success(),
+        "the pre-stop launch unexpectedly published readiness"
+    );
+
+    let _ = std::fs::remove_file(&launch_ready);
+    let request_output = request_command()
+        .output()
+        .expect("new demand after stop tombstone");
     let request_message = format!(
         "{}{}",
         String::from_utf8_lossy(&request_output.stdout),
         String::from_utf8_lossy(&request_output.stderr)
     );
+    assert!(request_output.status.success(), "{request_message}");
 
-    // Give any (erroneous) launch a moment to publish its route claim before we
-    // assert none exists.
+    // Give the replacement a moment to publish its route claim.
     std::thread::sleep(Duration::from_secs(2));
     let daemon_launched = find_daemon_pid(&root);
 
@@ -217,14 +244,8 @@ fn daemon_stop_tombstone_suppresses_broker_proactive_launch() {
         err.lock().unwrap().join("\n  ")
     );
     assert!(
-        request_message.contains("tombstone active"),
-        "broker must report that it skipped the requested launch under a live \
-             tombstone\n{log}"
-    );
-    assert!(
-        daemon_launched.is_none(),
-        "no daemon may be launched while the tombstone is live (found pid \
-             {daemon_launched:?})\n{log}"
+        daemon_launched.is_some(),
+        "new client demand must launch exactly one replacement\n{log}"
     );
 }
 
