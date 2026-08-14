@@ -266,8 +266,8 @@ jobs:
 
       # soldr#1218 — the standalone `Run fetch integration test` step
       # was removed; the same `tests/fetch_crgx.rs` binary already runs
-      # inside `Run CLI smoke tests` above (which invokes `cargo test
-      # -p soldr-cli --tests` — `--tests` selects every integration test
+      # inside `Run CLI smoke tests` above (which invokes `cargo nextest
+      # run -p soldr-cli --tests` — `--tests` selects every integration test
       # target). Running it twice wasted ~40 s per CI run for zero
       # additional coverage.
 

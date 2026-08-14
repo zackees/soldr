@@ -12,7 +12,6 @@ use common::*;
 use serde_json::Value;
 use std::fs;
 use std::process::Command;
-use std::time::Duration;
 
 #[test]
 fn toolchain_doctor_json_emits_schema_version_one_with_host_and_probes() {

@@ -36,7 +36,13 @@ use std::path::{Path, PathBuf};
 /// explanation is the whole point of keeping a record — someone reading
 /// `test_util.rs` and wondering where the watchdog went should find the answer
 /// there rather than in a commit message.
-const EXEMPT_FILE_NAMES: &[&str] = &["no_timed_test_guard.rs", "test_util.rs"];
+/// Matched on the repo-relative path, not the bare file name: exempting every
+/// file called `test_util.rs` anywhere under `crates/` would be a standing hole
+/// in the guard.
+const EXEMPT_PATHS: &[&str] = &[
+    "crates/soldr-cli/tests/no_timed_test_guard.rs",
+    "crates/soldr-core/src/test_util.rs",
+];
 
 fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -72,13 +78,15 @@ fn timed_test_is_not_reintroduced() {
         sources.len()
     );
 
+    let root = common::workspace_root();
     let mut offenders = Vec::new();
     for path in sources {
-        if path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| EXEMPT_FILE_NAMES.contains(&name))
-        {
+        let relative = path
+            .strip_prefix(&root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        if EXEMPT_PATHS.contains(&relative.as_str()) {
             continue;
         }
         let Ok(body) = std::fs::read_to_string(&path) else {

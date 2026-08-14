@@ -14,6 +14,14 @@ if command -v soldr >/dev/null 2>&1; then
 else
   echo "warning: soldr not on PATH; falling back to bare cargo (no caching). Install soldr to get the caching path." >&2
   CARGO=(cargo)
+  # soldr#2493: the test steps below need cargo-nextest, which soldr fetches
+  # automatically but a bare cargo does not. Say so plainly rather than
+  # letting cargo report `no such subcommand: nextest`.
+  if ! cargo nextest --version >/dev/null 2>&1; then
+    echo "error: cargo-nextest is required to run the test suite (it owns per-test timeouts since soldr#2493)." >&2
+    echo "       Install soldr, or run: cargo install cargo-nextest --locked" >&2
+    exit 1
+  fi
 fi
 
 run_step "Build workspace" "${CARGO[@]}" build --workspace

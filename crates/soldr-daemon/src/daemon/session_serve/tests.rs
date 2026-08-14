@@ -6,8 +6,6 @@
 //! — with **no spawned child at the session layer** (zccache owns any rustc
 //! child internally).
 
-use std::time::Duration;
-
 use running_process::broker::backend_handle::DaemonProcess;
 use running_process::broker::protocol::Endpoint;
 use running_process::broker::protocol_v2::{

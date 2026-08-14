@@ -12,52 +12,52 @@
     {
       "id": "rust-embedded-runtime-topology",
       "gate": "hard",
-      "command": "soldr --no-cache cargo test -p soldr-cli --test no_standalone_spawn_lint"
+      "command": "soldr --no-cache cargo nextest run -p soldr-cli --test no_standalone_spawn_lint"
     },
     {
       "id": "rust-zccache-entry",
       "gate": "hard",
-      "command": "soldr --no-cache cargo test -p soldr-cli --test zccache_trampoline_gate"
+      "command": "soldr --no-cache cargo nextest run -p soldr-cli --test zccache_trampoline_gate"
     },
     {
       "id": "rust-wrapper-env",
       "gate": "hard",
-      "command": "soldr --no-cache cargo test -p soldr-cli --test cli_cargo_wrappers"
+      "command": "soldr --no-cache cargo nextest run -p soldr-cli --test cli_cargo_wrappers"
     },
     {
       "id": "rust-rust-plan",
       "gate": "hard",
-      "command": "soldr --no-cache cargo test -p soldr-cli --test cli_rust_plan"
+      "command": "soldr --no-cache cargo nextest run -p soldr-cli --test cli_rust_plan"
     },
     {
       "id": "rust-cache-cli",
       "gate": "hard",
-      "command": "soldr --no-cache cargo test -p soldr-cli --test cli_cache"
+      "command": "soldr --no-cache cargo nextest run -p soldr-cli --test cli_cache"
     },
     {
       "id": "rust-cache-session",
       "gate": "hard",
-      "command": "soldr --no-cache cargo test -p soldr-cli --lib cache::session::tests"
+      "command": "soldr --no-cache cargo nextest run -p soldr-cli --lib cache::session::tests"
     },
     {
       "id": "rust-native-cache-unit",
       "gate": "hard",
-      "command": "soldr --no-cache cargo test -p soldr-cli --lib native_cc::tests"
+      "command": "soldr --no-cache cargo nextest run -p soldr-cli --lib native_cc::tests"
     },
     {
       "id": "rust-native-cache-integration",
       "gate": "hard",
-      "command": "soldr --no-cache cargo test -p soldr-cli --test cli_cargo_native_cc"
+      "command": "soldr --no-cache cargo nextest run -p soldr-cli --test cli_cargo_native_cc"
     },
     {
       "id": "rust-wrapper-perf",
       "gate": "hard",
-      "command": "soldr --no-cache cargo test -p soldr-cli --test cli_wrapper_perf"
+      "command": "soldr --no-cache cargo nextest run -p soldr-cli --test cli_wrapper_perf"
     },
     {
       "id": "rust-watchdog-lint",
       "gate": "hard",
-      "command": "soldr --no-cache cargo test -p soldr-cli --test no_timed_test_guard"
+      "command": "soldr --no-cache cargo nextest run -p soldr-cli --test no_timed_test_guard"
     },
     {
       "id": "python-setup-contracts",

@@ -11,8 +11,6 @@
 //!   probe on the same handler is answered (mux `ProbeAnswered`), so the SESSION
 //!   endpoint stays broker-probe-compatible — the coexistence Option A requires.
 
-use std::time::Duration;
-
 use running_process::broker::backend_handle::DaemonProcess;
 use running_process::broker::protocol::{
     encode_framed, try_decode_framed, Endpoint, Frame, BACKEND_HANDLE_PROBE_PAYLOAD_PROTOCOL,

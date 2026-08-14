@@ -2,7 +2,6 @@
 //! 1,000-line production-source ceiling.
 
 use super::*;
-use std::time::Duration;
 
 fn sample_request<'a>(
     paths: &'a SoldrPaths,

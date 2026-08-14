@@ -2,7 +2,6 @@
 //! 1,000-line production-source ceiling.
 
 use super::*;
-use std::time::Duration;
 
 #[test]
 fn build_log_paths_output_carries_schema_version_one() {

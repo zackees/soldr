@@ -14,7 +14,6 @@
 //! binary so the env-mutation it does cannot race other tests).
 
 use super::*;
-use std::time::Duration;
 
 // Runtime-gated to Windows hosts: the assertions look for
 // backslash-joined path segments (`VC\Tools\MSVC\...`) which only
