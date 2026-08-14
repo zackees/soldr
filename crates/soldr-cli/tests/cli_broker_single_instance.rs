@@ -7,7 +7,7 @@
 //! process against the same bind name must be refused rather than racing it.
 
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 mod common;
@@ -17,7 +17,7 @@ const LOSER_EXIT_TIMEOUT: Duration = Duration::from_secs(15);
 const POLL: Duration = Duration::from_millis(100);
 
 fn spawn_broker(home: &Path) -> std::process::Child {
-    Command::new(common::soldr_bin())
+    common::isolated_soldr_command()
         .args(["broker", "serve"])
         .env("HOME", home)
         .env("USERPROFILE", home)

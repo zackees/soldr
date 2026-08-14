@@ -93,7 +93,7 @@ fn daemon_stop_tombstone_fences_old_launch_but_allows_new_demand() {
     // confirms/resurrects the stable broker before planting the route
     // tombstone. Stop that broker explicitly before starting the
     // instrumented foreground broker below; the tombstone itself remains.
-    let broker_stop = Command::new(common::soldr_bin())
+    let broker_stop = common::isolated_soldr_command()
         .args(["broker", "stop"])
         .env("HOME", &home)
         .env("USERPROFILE", &home)
@@ -201,7 +201,9 @@ fn daemon_stop_tombstone_fences_old_launch_but_allows_new_demand() {
     let first_request = request_command()
         .spawn()
         .expect("request route through compiler wrapper");
-    let launch_deadline = Instant::now() + Duration::from_secs(30);
+    // The test seam is reached after the route-local daemon image is hashed;
+    // loaded CI hosts can spend more than 30 seconds on that cold path.
+    let launch_deadline = Instant::now() + Duration::from_secs(60);
     while !launch_ready.is_file() && Instant::now() < launch_deadline {
         std::thread::sleep(Duration::from_millis(25));
     }
