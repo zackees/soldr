@@ -38,7 +38,8 @@ fn fake_metadata_with_mtime(temp_path: &std::path::Path, mtime_unix: u64) -> std
     std::fs::metadata(temp_path).unwrap()
 }
 
-crate::timed_test!(last_used_prefers_global_cache_when_key_present, {
+#[test]
+fn last_used_prefers_global_cache_when_key_present() {
     let tmp = tempfile::tempdir().unwrap();
     let f = tmp.path().join("probe");
     let meta = fake_metadata_with_mtime(&f, 1_700_000_000);
@@ -57,7 +58,7 @@ crate::timed_test!(last_used_prefers_global_cache_when_key_present, {
         resolve_registry_src_last_used(Some(&map), "index.crates.io-abc123", "serde-1.0.0", &meta);
     assert_eq!(ts, 1_800_000_000);
     assert_eq!(source, "global_cache");
-});
+}
 
 #[test]
 fn last_used_falls_back_to_mtime_when_tracker_missing() {
@@ -85,7 +86,8 @@ fn last_used_falls_back_to_mtime_when_key_missing() {
     assert_eq!(source, "fs_mtime");
 }
 
-crate::timed_test!(last_used_falls_back_when_dir_name_is_not_versioned, {
+#[test]
+fn last_used_falls_back_when_dir_name_is_not_versioned() {
     let tmp = tempfile::tempdir().unwrap();
     let f = tmp.path().join("probe");
     let meta = fake_metadata_with_mtime(&f, 1_700_000_000);
@@ -98,7 +100,7 @@ crate::timed_test!(last_used_falls_back_when_dir_name_is_not_versioned, {
         resolve_registry_src_last_used(Some(&map), "index.crates.io-abc123", "bare-serde", &meta);
     assert_eq!(ts, 1_700_000_000);
     assert_eq!(source, "fs_mtime");
-});
+}
 
 // -------------------------------------------------------------------
 // last-used resolution for cargo_git_checkouts entries (issue #1544).
@@ -183,122 +185,113 @@ fn insert_git_checkout_row(conn: &rusqlite::Connection, repo_dir: &str, commit_d
     .unwrap();
 }
 
-crate::timed_test!(
-    git_checkout_last_used_prefers_global_cache_when_key_present,
-    {
-        let tmp = tempfile::tempdir().unwrap();
-        let f = tmp.path().join("probe");
-        let meta = fake_metadata_with_mtime(&f, 1_700_000_000);
-        let mut map: std::collections::HashMap<
-            crate::cache_lib::cargo_global_cache::GitCheckoutKey,
-            i64,
-        > = std::collections::HashMap::new();
-        map.insert(
-            ("dep-76b10f3504cf35a4".to_string(), "3381ba4".to_string()),
-            1_800_000_000,
-        );
-        let (ts, source) =
-            resolve_git_checkout_last_used(Some(&map), "dep-76b10f3504cf35a4", "3381ba4", &meta);
-        assert_eq!(ts, 1_800_000_000);
-        assert_eq!(source, "global_cache");
-    }
-);
+#[test]
+fn git_checkout_last_used_prefers_global_cache_when_key_present() {
+    let tmp = tempfile::tempdir().unwrap();
+    let f = tmp.path().join("probe");
+    let meta = fake_metadata_with_mtime(&f, 1_700_000_000);
+    let mut map: std::collections::HashMap<
+        crate::cache_lib::cargo_global_cache::GitCheckoutKey,
+        i64,
+    > = std::collections::HashMap::new();
+    map.insert(
+        ("dep-76b10f3504cf35a4".to_string(), "3381ba4".to_string()),
+        1_800_000_000,
+    );
+    let (ts, source) =
+        resolve_git_checkout_last_used(Some(&map), "dep-76b10f3504cf35a4", "3381ba4", &meta);
+    assert_eq!(ts, 1_800_000_000);
+    assert_eq!(source, "global_cache");
+}
 
-crate::timed_test!(
-    git_checkout_last_used_falls_back_to_mtime_when_tracker_missing,
-    {
-        let tmp = tempfile::tempdir().unwrap();
-        let f = tmp.path().join("probe");
-        let meta = fake_metadata_with_mtime(&f, 1_700_000_000);
-        let (ts, source) =
-            resolve_git_checkout_last_used(None, "dep-76b10f3504cf35a4", "3381ba4", &meta);
-        assert_eq!(ts, 1_700_000_000);
-        assert_eq!(source, "fs_mtime");
-    }
-);
+#[test]
+fn git_checkout_last_used_falls_back_to_mtime_when_tracker_missing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let f = tmp.path().join("probe");
+    let meta = fake_metadata_with_mtime(&f, 1_700_000_000);
+    let (ts, source) =
+        resolve_git_checkout_last_used(None, "dep-76b10f3504cf35a4", "3381ba4", &meta);
+    assert_eq!(ts, 1_700_000_000);
+    assert_eq!(source, "fs_mtime");
+}
 
-crate::timed_test!(
-    git_checkout_last_used_falls_back_to_mtime_when_key_missing,
-    {
-        let tmp = tempfile::tempdir().unwrap();
-        let f = tmp.path().join("probe");
-        let meta = fake_metadata_with_mtime(&f, 1_700_000_000);
-        // Tracker exists (Some), but doesn't have a row for this
-        // checkout. The fallback must be per-checkout, not per-tracker.
-        let map: std::collections::HashMap<
-            crate::cache_lib::cargo_global_cache::GitCheckoutKey,
-            i64,
-        > = std::collections::HashMap::new();
-        let (ts, source) =
-            resolve_git_checkout_last_used(Some(&map), "dep-76b10f3504cf35a4", "3381ba4", &meta);
-        assert_eq!(ts, 1_700_000_000);
-        assert_eq!(source, "fs_mtime");
-    }
-);
+#[test]
+fn git_checkout_last_used_falls_back_to_mtime_when_key_missing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let f = tmp.path().join("probe");
+    let meta = fake_metadata_with_mtime(&f, 1_700_000_000);
+    // Tracker exists (Some), but doesn't have a row for this
+    // checkout. The fallback must be per-checkout, not per-tracker.
+    let map: std::collections::HashMap<crate::cache_lib::cargo_global_cache::GitCheckoutKey, i64> =
+        std::collections::HashMap::new();
+    let (ts, source) =
+        resolve_git_checkout_last_used(Some(&map), "dep-76b10f3504cf35a4", "3381ba4", &meta);
+    assert_eq!(ts, 1_700_000_000);
+    assert_eq!(source, "fs_mtime");
+}
 
-crate::timed_test!(
-    active_git_checkout_with_fresh_db_usage_is_not_purge_selected,
-    {
-        let tmp = tempfile::tempdir().unwrap();
-        let cargo_home = tmp.path();
-        let now: i64 = 2_000_000_000;
-        let threshold_seconds: i64 = 30 * 86_400;
-        let old_mtime = now - 100 * 86_400;
-        let fresh_ts = now - 3_600;
+#[test]
+fn active_git_checkout_with_fresh_db_usage_is_not_purge_selected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cargo_home = tmp.path();
+    let now: i64 = 2_000_000_000;
+    let threshold_seconds: i64 = 30 * 86_400;
+    let old_mtime = now - 100 * 86_400;
+    let fresh_ts = now - 3_600;
 
-        // Active checkout: dir mtime 100 days old (set at checkout
-        // time), but cargo's tracker says it was used an hour ago.
-        make_git_checkout_dir(cargo_home, "dep-76b10f3504cf35a4", "3381ba4", old_mtime);
-        // Genuinely stale checkout: old mtime AND old tracker row.
-        make_git_checkout_dir(cargo_home, "olddep-aabbccddeeff0011", "9f8e7d6", old_mtime);
-        let conn = make_global_cache_git_db(cargo_home);
-        insert_git_checkout_row(&conn, "dep-76b10f3504cf35a4", "3381ba4", fresh_ts);
-        insert_git_checkout_row(
-            &conn,
-            "olddep-aabbccddeeff0011",
-            "9f8e7d6",
-            now - 200 * 86_400,
-        );
-        drop(conn);
+    // Active checkout: dir mtime 100 days old (set at checkout
+    // time), but cargo's tracker says it was used an hour ago.
+    make_git_checkout_dir(cargo_home, "dep-76b10f3504cf35a4", "3381ba4", old_mtime);
+    // Genuinely stale checkout: old mtime AND old tracker row.
+    make_git_checkout_dir(cargo_home, "olddep-aabbccddeeff0011", "9f8e7d6", old_mtime);
+    let conn = make_global_cache_git_db(cargo_home);
+    insert_git_checkout_row(&conn, "dep-76b10f3504cf35a4", "3381ba4", fresh_ts);
+    insert_git_checkout_row(
+        &conn,
+        "olddep-aabbccddeeff0011",
+        "9f8e7d6",
+        now - 200 * 86_400,
+    );
+    drop(conn);
 
-        let entries = walk_cargo_git_checkouts(cargo_home, now);
-        assert_eq!(entries.len(), 2);
-        let active = entries
+    let entries = walk_cargo_git_checkouts(cargo_home, now);
+    assert_eq!(entries.len(), 2);
+    let active = entries
+        .iter()
+        .find(|e| e.path.contains("dep-76b10f3504cf35a4"))
+        .unwrap();
+    let stale = entries
+        .iter()
+        .find(|e| e.path.contains("olddep-aabbccddeeff0011"))
+        .unwrap();
+
+    // The active checkout must surface cargo's usage recency, not
+    // the checkout-time mtime.
+    assert_eq!(active.last_used_unix, fresh_ts);
+    assert_eq!(active.last_used_source, Some("global_cache"));
+    // Age-threshold purge selection (what `gc list` JSON consumers
+    // and age-gated purge passes do): the active checkout must NOT
+    // be selected; the genuinely stale one still must be.
+    let selected: Vec<&str> = entries
+        .iter()
+        .filter(|e| e.age_seconds > threshold_seconds)
+        .map(|e| e.path.as_str())
+        .collect();
+    assert!(
+        !selected.iter().any(|p| p.contains("dep-76b10f3504cf35a4")),
+        "actively-used git checkout was purge-selected: {selected:?}"
+    );
+    assert!(
+        selected
             .iter()
-            .find(|e| e.path.contains("dep-76b10f3504cf35a4"))
-            .unwrap();
-        let stale = entries
-            .iter()
-            .find(|e| e.path.contains("olddep-aabbccddeeff0011"))
-            .unwrap();
+            .any(|p| p.contains("olddep-aabbccddeeff0011")),
+        "genuinely stale git checkout must remain purge-selected"
+    );
+    assert_eq!(stale.last_used_source, Some("global_cache"));
+}
 
-        // The active checkout must surface cargo's usage recency, not
-        // the checkout-time mtime.
-        assert_eq!(active.last_used_unix, fresh_ts);
-        assert_eq!(active.last_used_source, Some("global_cache"));
-        // Age-threshold purge selection (what `gc list` JSON consumers
-        // and age-gated purge passes do): the active checkout must NOT
-        // be selected; the genuinely stale one still must be.
-        let selected: Vec<&str> = entries
-            .iter()
-            .filter(|e| e.age_seconds > threshold_seconds)
-            .map(|e| e.path.as_str())
-            .collect();
-        assert!(
-            !selected.iter().any(|p| p.contains("dep-76b10f3504cf35a4")),
-            "actively-used git checkout was purge-selected: {selected:?}"
-        );
-        assert!(
-            selected
-                .iter()
-                .any(|p| p.contains("olddep-aabbccddeeff0011")),
-            "genuinely stale git checkout must remain purge-selected"
-        );
-        assert_eq!(stale.last_used_source, Some("global_cache"));
-    }
-);
-
-crate::timed_test!(git_checkout_walk_falls_back_to_mtime_when_db_garbled, {
+#[test]
+fn git_checkout_walk_falls_back_to_mtime_when_db_garbled() {
     let tmp = tempfile::tempdir().unwrap();
     let cargo_home = tmp.path();
     let now: i64 = 2_000_000_000;
@@ -313,9 +306,10 @@ crate::timed_test!(git_checkout_walk_falls_back_to_mtime_when_db_garbled, {
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].last_used_unix, old_mtime);
     assert_eq!(entries[0].last_used_source, Some("fs_mtime"));
-});
+}
 
-crate::timed_test!(git_checkout_walk_falls_back_to_mtime_when_row_missing, {
+#[test]
+fn git_checkout_walk_falls_back_to_mtime_when_row_missing() {
     let tmp = tempfile::tempdir().unwrap();
     let cargo_home = tmp.path();
     let now: i64 = 2_000_000_000;
@@ -332,7 +326,7 @@ crate::timed_test!(git_checkout_walk_falls_back_to_mtime_when_row_missing, {
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].last_used_unix, old_mtime);
     assert_eq!(entries[0].last_used_source, Some("fs_mtime"));
-});
+}
 
 // -------------------------------------------------------------------
 // End-to-end registry-src walk against a REAL-schema `.global-cache`
@@ -415,78 +409,78 @@ fn insert_registry_src_row(
     .unwrap();
 }
 
-crate::timed_test!(
-    active_registry_src_with_fresh_db_usage_is_not_purge_selected,
-    {
-        let tmp = tempfile::tempdir().unwrap();
-        let cargo_home = tmp.path();
-        let now: i64 = 2_000_000_000;
-        let threshold_seconds: i64 = 30 * 86_400;
-        let old_mtime = now - 100 * 86_400;
-        let fresh_ts = now - 3_600;
-        let registry = "index.crates.io-1949cf8c6b5b557f";
+#[test]
+fn active_registry_src_with_fresh_db_usage_is_not_purge_selected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cargo_home = tmp.path();
+    let now: i64 = 2_000_000_000;
+    let threshold_seconds: i64 = 30 * 86_400;
+    let old_mtime = now - 100 * 86_400;
+    let fresh_ts = now - 3_600;
+    let registry = "index.crates.io-1949cf8c6b5b557f";
 
-        // Active source: dir mtime 100 days old (set at extraction
-        // time), but cargo's tracker says it was used an hour ago.
-        make_registry_src_dir(cargo_home, registry, "serde-1.0.219", old_mtime);
-        // Genuinely stale source: old mtime AND old tracker row.
-        make_registry_src_dir(cargo_home, registry, "oldcrate-0.1.0", old_mtime);
-        let conn = make_global_cache_registry_db(cargo_home);
-        insert_registry_src_row(&conn, registry, "serde-1.0.219", fresh_ts);
-        insert_registry_src_row(&conn, registry, "oldcrate-0.1.0", now - 200 * 86_400);
-        drop(conn);
+    // Active source: dir mtime 100 days old (set at extraction
+    // time), but cargo's tracker says it was used an hour ago.
+    make_registry_src_dir(cargo_home, registry, "serde-1.0.219", old_mtime);
+    // Genuinely stale source: old mtime AND old tracker row.
+    make_registry_src_dir(cargo_home, registry, "oldcrate-0.1.0", old_mtime);
+    let conn = make_global_cache_registry_db(cargo_home);
+    insert_registry_src_row(&conn, registry, "serde-1.0.219", fresh_ts);
+    insert_registry_src_row(&conn, registry, "oldcrate-0.1.0", now - 200 * 86_400);
+    drop(conn);
 
-        // Read-only guarantee: the walk must leave cargo's database
-        // byte-identical.
-        let db_before = std::fs::read(cargo_home.join(".global-cache")).unwrap();
-        let entries = walk_cargo_registry_src(cargo_home, now);
-        let db_after = std::fs::read(cargo_home.join(".global-cache")).unwrap();
-        assert_eq!(db_before, db_after, "gc walk mutated cargo's .global-cache");
+    // Read-only guarantee: the walk must leave cargo's database
+    // byte-identical.
+    let db_before = std::fs::read(cargo_home.join(".global-cache")).unwrap();
+    let entries = walk_cargo_registry_src(cargo_home, now);
+    let db_after = std::fs::read(cargo_home.join(".global-cache")).unwrap();
+    assert_eq!(db_before, db_after, "gc walk mutated cargo's .global-cache");
 
-        assert_eq!(entries.len(), 2);
-        let active = entries
-            .iter()
-            .find(|e| e.path.contains("serde-1.0.219"))
-            .unwrap();
-        let stale = entries
-            .iter()
-            .find(|e| e.path.contains("oldcrate-0.1.0"))
-            .unwrap();
+    assert_eq!(entries.len(), 2);
+    let active = entries
+        .iter()
+        .find(|e| e.path.contains("serde-1.0.219"))
+        .unwrap();
+    let stale = entries
+        .iter()
+        .find(|e| e.path.contains("oldcrate-0.1.0"))
+        .unwrap();
 
-        // The active source must surface cargo's usage recency, not
-        // the extraction-time mtime.
-        assert_eq!(active.last_used_unix, fresh_ts);
-        assert_eq!(active.last_used_source, Some("global_cache"));
-        // Age-threshold purge selection: the active source must NOT
-        // be selected; the genuinely stale one still must be.
-        let selected: Vec<&str> = entries
-            .iter()
-            .filter(|e| e.age_seconds > threshold_seconds)
-            .map(|e| e.path.as_str())
-            .collect();
-        assert!(
-            !selected.iter().any(|p| p.contains("serde-1.0.219")),
-            "actively-used registry source was purge-selected: {selected:?}"
-        );
-        assert!(
-            selected.iter().any(|p| p.contains("oldcrate-0.1.0")),
-            "genuinely stale registry source must remain purge-selected"
-        );
-        assert_eq!(stale.last_used_source, Some("global_cache"));
-    }
-);
+    // The active source must surface cargo's usage recency, not
+    // the extraction-time mtime.
+    assert_eq!(active.last_used_unix, fresh_ts);
+    assert_eq!(active.last_used_source, Some("global_cache"));
+    // Age-threshold purge selection: the active source must NOT
+    // be selected; the genuinely stale one still must be.
+    let selected: Vec<&str> = entries
+        .iter()
+        .filter(|e| e.age_seconds > threshold_seconds)
+        .map(|e| e.path.as_str())
+        .collect();
+    assert!(
+        !selected.iter().any(|p| p.contains("serde-1.0.219")),
+        "actively-used registry source was purge-selected: {selected:?}"
+    );
+    assert!(
+        selected.iter().any(|p| p.contains("oldcrate-0.1.0")),
+        "genuinely stale registry source must remain purge-selected"
+    );
+    assert_eq!(stale.last_used_source, Some("global_cache"));
+}
 
 // soldr#2199: `gc target --purge` counted an already-missing directory as a
 // failure, which inflates failed_count and makes the command exit non-zero
 // for work that is already done. GC deletes from a plan built earlier in the
 // run, so the window is real.
-crate::timed_test!(remove_target_dir_treats_a_missing_directory_as_success, {
+#[test]
+fn remove_target_dir_treats_a_missing_directory_as_success() {
     let temp = tempfile::tempdir().expect("tempdir");
     super::remove_target_dir(&temp.path().join("already-gone"))
         .expect("an absent target/ is not a purge failure");
-});
+}
 
-crate::timed_test!(remove_target_dir_still_removes_a_real_tree, {
+#[test]
+fn remove_target_dir_still_removes_a_real_tree() {
     let temp = tempfile::tempdir().expect("tempdir");
     let target = temp.path().join("target");
     std::fs::create_dir_all(target.join("debug")).expect("mkdir");
@@ -494,13 +488,14 @@ crate::timed_test!(remove_target_dir_still_removes_a_real_tree, {
 
     super::remove_target_dir(&target).expect("a real tree must still be removed");
     assert!(!target.exists(), "tree survived: {}", target.display());
-});
+}
 
 // soldr#2134: the block-tier reclaim runs synchronously in front of a build
 // that is already blocked, so it must be bounded. The budget itself is the
 // contract; a value large enough to be indistinguishable from unbounded on a
 // dirty volume would silently reintroduce the stall.
-crate::timed_test!(the_block_tier_prune_budget_is_bounded_and_plausible, {
+#[test]
+fn the_block_tier_prune_budget_is_bounded_and_plausible() {
     let budget = super::auto::BLOCK_TIER_PRUNE_BUDGET;
     assert!(
         budget >= std::time::Duration::from_secs(5),
@@ -510,4 +505,4 @@ crate::timed_test!(the_block_tier_prune_budget_is_bounded_and_plausible, {
         budget <= std::time::Duration::from_secs(120),
         "a budget this large is the unbounded stall soldr#2134 asked to avoid: {budget:?}",
     );
-});
+}

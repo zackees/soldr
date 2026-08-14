@@ -84,12 +84,14 @@ mod tests {
         (dir, paths)
     }
 
-    crate::timed_test!(absent_tombstone_is_inactive, {
+    #[test]
+    fn absent_tombstone_is_inactive() {
         let (_d, paths) = temp_paths();
         assert!(!is_active(&paths));
-    });
+    }
 
-    crate::timed_test!(planted_tombstone_is_active_then_cleared, {
+    #[test]
+    fn planted_tombstone_is_active_then_cleared() {
         let (_d, paths) = temp_paths();
         plant(&paths, Duration::from_secs(30));
         assert!(
@@ -98,9 +100,10 @@ mod tests {
         );
         clear(&paths);
         assert!(!is_active(&paths), "clear must lift the suppression");
-    });
+    }
 
-    crate::timed_test!(expired_tombstone_is_inactive_and_removed, {
+    #[test]
+    fn expired_tombstone_is_inactive_and_removed() {
         let (_d, paths) = temp_paths();
         // Already-expired window: `now < expiry` is false immediately.
         plant(&paths, Duration::from_millis(0));
@@ -110,5 +113,5 @@ mod tests {
         );
         // And it is proactively removed, so it never wedges the daemon.
         assert!(!is_active(&paths));
-    });
+    }
 }

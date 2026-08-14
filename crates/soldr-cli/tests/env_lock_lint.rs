@@ -42,15 +42,13 @@ use std::path::{Path, PathBuf};
 
 mod common;
 
-use soldr_cli::timed_test;
-
 /// Every workspace crate's `src/`, not just this one's.
 ///
 /// soldr#1994: this returned only `soldr-cli/src`, so the lint guarded one of
 /// five crates. `soldr-fetch`'s `llvm.rs` raced itself on `SOLDR_LLVM_DIR`
 /// with no barrier at all, and the failure surfaced on an unrelated daemon PR
 /// -- exactly the class this lint exists to prevent, in a crate it could not
-/// see. `timed_test_lint.rs` next door already walked the whole workspace.
+/// see. `no_timed_test_guard.rs` next door already walked the whole workspace.
 fn crate_src_roots() -> Vec<PathBuf> {
     // soldr#2008: resolved at *runtime*, not from `CARGO_MANIFEST_DIR`. That
     // env var is baked in at compile time and points at the machine that built
@@ -195,7 +193,8 @@ const PRODUCTION_ENV_WRITERS: &[(&str, &str)] = &[
     ),
 ];
 
-timed_test!(no_env_var_is_guarded_by_two_different_barriers, {
+#[test]
+fn no_env_var_is_guarded_by_two_different_barriers() {
     let roots = crate_src_roots();
     if !any_src_root_exists(&roots) {
         // The pre-built test-archive lanes run away from the checkout.
@@ -268,7 +267,7 @@ timed_test!(no_env_var_is_guarded_by_two_different_barriers, {
          a reason.",
         violations.join("\n\n"),
     );
-});
+}
 
 // Plain `//`, not `///`: a doc comment cannot attach to a macro
 // invocation and `-D warnings` makes `unused_doc_comments` fatal.
@@ -298,7 +297,8 @@ timed_test!(no_env_var_is_guarded_by_two_different_barriers, {
 // barrier keeps its blast radius, so a bare unwrap there is a style
 // question rather than a correctness one, and flagging ~60 of them
 // would bury the signal.
-timed_test!(shared_barrier_acquisitions_recover_from_poisoning, {
+#[test]
+fn shared_barrier_acquisitions_recover_from_poisoning() {
     let roots = crate_src_roots();
     if !any_src_root_exists(&roots) {
         eprintln!("env_lock_lint: skipping — no workspace crate sources present");
@@ -341,7 +341,7 @@ timed_test!(shared_barrier_acquisitions_recover_from_poisoning, {
          worth propagating.",
         offenders.join("\n"),
     );
-});
+}
 
 /// Variables that production code reads to resolve paths, from many call
 /// sites, so *any* concurrent test is potentially a reader.
@@ -356,58 +356,56 @@ timed_test!(shared_barrier_acquisitions_recover_from_poisoning, {
 /// For this class, "does anyone else write it" is the wrong question.
 const AMBIENT_ENV_VARS: &[&str] = &["CARGO_HOME", "HOME", "USERPROFILE", "RUSTUP_HOME", "PATH"];
 
-timed_test!(
-    ambient_path_vars_are_mutated_only_under_the_shared_barrier,
-    {
-        // Deliberately soldr-cli only, unlike the two rules above.
-        //
-        // This one requires the *shared* barrier, and `TEST_PROCESS_ENV_LOCK`
-        // lives in soldr-cli. The dependency runs soldr-core -> soldr-cli, so
-        // an upstream crate cannot reach it: `soldr-core`'s
-        // `cargo_path_check.rs` mutates PATH in a test and could not satisfy a
-        // widened rule however true the rule is. Widening this without first
-        // moving a barrier into soldr-core (soldr#1896 identified that as the
-        // only common dependency) would manufacture an unfixable failure.
-        let src = common::workspace_root().join("crates/soldr-cli/src");
-        if !src.is_dir() {
-            eprintln!("env_lock_lint: skipping — {} absent", src.display());
-            return;
-        }
-        let mut files = Vec::new();
-        collect_rs(&src, &mut files);
-        files.sort();
+#[test]
+fn ambient_path_vars_are_mutated_only_under_the_shared_barrier() {
+    // Deliberately soldr-cli only, unlike the two rules above.
+    //
+    // This one requires the *shared* barrier, and `TEST_PROCESS_ENV_LOCK`
+    // lives in soldr-cli. The dependency runs soldr-core -> soldr-cli, so
+    // an upstream crate cannot reach it: `soldr-core`'s
+    // `cargo_path_check.rs` mutates PATH in a test and could not satisfy a
+    // widened rule however true the rule is. Widening this without first
+    // moving a barrier into soldr-core (soldr#1896 identified that as the
+    // only common dependency) would manufacture an unfixable failure.
+    let src = common::workspace_root().join("crates/soldr-cli/src");
+    if !src.is_dir() {
+        eprintln!("env_lock_lint: skipping — {} absent", src.display());
+        return;
+    }
+    let mut files = Vec::new();
+    collect_rs(&src, &mut files);
+    files.sort();
 
-        let mut offenders = Vec::new();
-        for file in &files {
-            let rel = repo_relative(file);
-            if PRODUCTION_ENV_WRITERS.iter().any(|(p, _)| *p == rel) {
-                continue;
-            }
-            let Ok(text) = fs::read_to_string(file) else {
-                continue;
-            };
-            if barrier_of(&text) != Barrier::Private {
-                continue;
-            }
-            let ambient: Vec<String> = mutated_vars(&text)
-                .into_iter()
-                .filter(|v| AMBIENT_ENV_VARS.contains(&v.as_str()))
-                .collect();
-            if !ambient.is_empty() {
-                offenders.push(format!(
-                    "{rel} mutates {} under a private mutex",
-                    ambient.join(", ")
-                ));
-            }
+    let mut offenders = Vec::new();
+    for file in &files {
+        let rel = repo_relative(file);
+        if PRODUCTION_ENV_WRITERS.iter().any(|(p, _)| *p == rel) {
+            continue;
         }
+        let Ok(text) = fs::read_to_string(file) else {
+            continue;
+        };
+        if barrier_of(&text) != Barrier::Private {
+            continue;
+        }
+        let ambient: Vec<String> = mutated_vars(&text)
+            .into_iter()
+            .filter(|v| AMBIENT_ENV_VARS.contains(&v.as_str()))
+            .collect();
+        if !ambient.is_empty() {
+            offenders.push(format!(
+                "{rel} mutates {} under a private mutex",
+                ambient.join(", ")
+            ));
+        }
+    }
 
-        assert!(
-            offenders.is_empty(),
-            "these files mutate path-resolution variables that production code reads \
+    assert!(
+        offenders.is_empty(),
+        "these files mutate path-resolution variables that production code reads \
          from many call sites, so every concurrent test is a potential reader. A \
          private mutex serialises only the module that declares it. Use \
          `crate::TEST_PROCESS_ENV_LOCK`:\n  {}",
-            offenders.join("\n  ")
-        );
-    }
-);
+        offenders.join("\n  ")
+    );
+}

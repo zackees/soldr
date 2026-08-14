@@ -554,7 +554,8 @@ mod tests {
         );
     }
 
-    crate::timed_test!(cargo_nextest_is_registered_and_pinned, {
+    #[test]
+    fn cargo_nextest_is_registered_and_pinned() {
         let spec = lookup_by_crate("cargo-nextest").expect("cargo-nextest must be registered");
         assert_eq!(spec.cargo_subcommand, Some("nextest"));
         assert_eq!(spec.binary_name, "cargo-nextest");
@@ -562,7 +563,7 @@ mod tests {
         assert_eq!(spec.tag_prefix, Some("cargo-nextest-"));
         assert_eq!(spec.pinned_version, Some(CARGO_NEXTEST_PINNED_VERSION));
         assert_eq!(CARGO_NEXTEST_PINNED_VERSION, "0.9.140");
-    });
+    }
 
     #[test]
     fn crgx_is_registered_and_pinned_to_managed_version() {

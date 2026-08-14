@@ -87,13 +87,13 @@ pub fn holders_under(_dir: &Path) -> Vec<ProcessHolder> {
 mod tests {
     use super::*;
 
-    #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+    #[test]
     fn linux_liveness_reports_current_process_alive() {
         assert!(is_alive(std::process::id()));
         assert!(!is_zombie(std::process::id()));
     }
 
-    #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+    #[test]
     fn linux_image_path_resolves_for_current_process() {
         let path = executable_path(std::process::id());
         assert!(path.is_some(), "current process image must be readable");

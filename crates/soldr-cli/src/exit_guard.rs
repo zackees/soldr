@@ -83,28 +83,31 @@ pub(crate) fn guarded_exit(code: i32) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::timed_test;
 
-    timed_test!(a_silent_non_zero_exit_is_annotated, {
+    #[test]
+    fn a_silent_non_zero_exit_is_annotated() {
         assert!(needs_annotation(1, false));
         assert!(needs_annotation(101, false));
         assert!(needs_annotation(-1073741502, false));
-    });
+    }
 
-    timed_test!(success_is_never_annotated, {
+    #[test]
+    fn success_is_never_annotated() {
         // Nothing to explain, whether or not anything spoke.
         assert!(!needs_annotation(0, false));
         assert!(!needs_annotation(0, true));
-    });
+    }
 
-    timed_test!(a_failure_that_already_spoke_is_left_alone, {
+    #[test]
+    fn a_failure_that_already_spoke_is_left_alone() {
         // The ordinary failing build: cargo ran and printed its own error.
         // Adding a line here would put noise on every red build, which is
         // why the guard is conditional rather than unconditional.
         assert!(!needs_annotation(1, true));
-    });
+    }
 
-    timed_test!(the_annotation_names_the_code_and_disclaims_a_build_error, {
+    #[test]
+    fn the_annotation_names_the_code_and_disclaims_a_build_error() {
         let text = annotation(1);
         assert!(text.contains("exiting 1"), "{text}");
         assert!(
@@ -118,13 +121,14 @@ mod tests {
         for line in text.lines() {
             assert!(line.starts_with("soldr: "), "unprefixed line: {line:?}");
         }
-    });
+    }
 
-    timed_test!(mark_spoke_is_observable, {
+    #[test]
+    fn mark_spoke_is_observable() {
         // The flag is process-wide and this test shares it with the rest of
         // the binary, so it may already be set; assert the transition, not
         // the initial value.
         mark_spoke();
         assert!(spoke());
-    });
+    }
 }

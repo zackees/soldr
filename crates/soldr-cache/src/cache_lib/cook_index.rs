@@ -514,7 +514,8 @@ mod tests {
         }
     }
 
-    crate::timed_test!(round_trip_upsert_lookup, {
+    #[test]
+    fn round_trip_upsert_lookup() {
         let dir = TempDir::new().expect("tempdir");
         let path = dir.path().join("state.redb");
         let key = sample_key(1);
@@ -522,16 +523,18 @@ mod tests {
         upsert(&path, &key, &entry).expect("upsert");
         let got = lookup(&path, &key).expect("lookup");
         assert_eq!(got, Some(entry));
-    });
+    }
 
-    crate::timed_test!(lookup_returns_none_when_missing, {
+    #[test]
+    fn lookup_returns_none_when_missing() {
         let dir = TempDir::new().expect("tempdir");
         let path = dir.path().join("state.redb");
         let key = sample_key(2);
         assert_eq!(lookup(&path, &key).expect("lookup"), None);
-    });
+    }
 
-    crate::timed_test!(per_target_safety_isolates_rows, {
+    #[test]
+    fn per_target_safety_isolates_rows() {
         let dir = TempDir::new().expect("tempdir");
         let path = dir.path().join("state.redb");
         let mut a = sample_key(3);
@@ -546,9 +549,10 @@ mod tests {
         assert_eq!(got_b.sha256, [0xBB; 32]);
         assert_eq!(got_a.size_bytes, 100);
         assert_eq!(got_b.size_bytes, 200);
-    });
+    }
 
-    crate::timed_test!(per_profile_safety_isolates_rows, {
+    #[test]
+    fn per_profile_safety_isolates_rows() {
         let dir = TempDir::new().expect("tempdir");
         let path = dir.path().join("state.redb");
         let mut release = sample_key(4);
@@ -561,31 +565,30 @@ mod tests {
             lookup(&path, &release).expect("a").expect("hit").sha256,
             lookup(&path, &debug).expect("b").expect("hit").sha256
         );
-    });
+    }
 
-    crate::timed_test!(
-        drift_collects_other_recipe_hashes_with_same_origin_and_target,
-        {
-            let dir = TempDir::new().expect("tempdir");
-            let path = dir.path().join("state.redb");
-            let origin = "https://github.com/zackees/soldr";
-            let key_a = sample_key(5);
-            let key_b = sample_key(6);
-            let mut entry_a = sample_entry(0xA1, 10, Some(origin));
-            entry_a.last_used_unix_ms = 100;
-            let mut entry_b = sample_entry(0xB2, 20, Some(origin));
-            entry_b.last_used_unix_ms = 200;
-            upsert(&path, &key_a, &entry_a).expect("upsert a");
-            upsert(&path, &key_b, &entry_b).expect("upsert b");
-            let miss = sample_key(7);
-            let drift = drift_recipe_hashes(&path, &miss, Some(origin), 10).expect("drift");
-            assert_eq!(drift.len(), 2);
-            assert_eq!(drift[0], [6u8; 32]);
-            assert_eq!(drift[1], [5u8; 32]);
-        }
-    );
+    #[test]
+    fn drift_collects_other_recipe_hashes_with_same_origin_and_target() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("state.redb");
+        let origin = "https://github.com/zackees/soldr";
+        let key_a = sample_key(5);
+        let key_b = sample_key(6);
+        let mut entry_a = sample_entry(0xA1, 10, Some(origin));
+        entry_a.last_used_unix_ms = 100;
+        let mut entry_b = sample_entry(0xB2, 20, Some(origin));
+        entry_b.last_used_unix_ms = 200;
+        upsert(&path, &key_a, &entry_a).expect("upsert a");
+        upsert(&path, &key_b, &entry_b).expect("upsert b");
+        let miss = sample_key(7);
+        let drift = drift_recipe_hashes(&path, &miss, Some(origin), 10).expect("drift");
+        assert_eq!(drift.len(), 2);
+        assert_eq!(drift[0], [6u8; 32]);
+        assert_eq!(drift[1], [5u8; 32]);
+    }
 
-    crate::timed_test!(drift_skips_other_targets_and_other_origins, {
+    #[test]
+    fn drift_skips_other_targets_and_other_origins() {
         let dir = TempDir::new().expect("tempdir");
         let path = dir.path().join("state.redb");
         let origin = "https://github.com/zackees/soldr";
@@ -606,67 +609,64 @@ mod tests {
         miss.target_triple = "x86_64-unknown-linux-gnu".into();
         let drift = drift_recipe_hashes(&path, &miss, Some(origin), 10).expect("drift");
         assert!(drift.is_empty());
-    });
+    }
 
-    crate::timed_test!(
-        fallback_prefers_branch_lineage_before_newer_unrelated_branch,
-        {
-            let dir = TempDir::new().expect("tempdir");
-            let path = dir.path().join("state.redb");
-            let origin = "https://github.com/zackees/soldr";
+    #[test]
+    fn fallback_prefers_branch_lineage_before_newer_unrelated_branch() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("state.redb");
+        let origin = "https://github.com/zackees/soldr";
 
-            let main_key = sample_key(60);
-            let other_key = sample_key(61);
+        let main_key = sample_key(60);
+        let other_key = sample_key(61);
 
-            let mut main_entry = sample_entry(0x60, 10, Some(origin));
-            main_entry.branch_name = Some("main".into());
-            main_entry.last_used_unix_ms = 100;
-            let mut other_entry = sample_entry(0x61, 20, Some(origin));
-            other_entry.branch_name = Some("other".into());
-            other_entry.last_used_unix_ms = 200;
+        let mut main_entry = sample_entry(0x60, 10, Some(origin));
+        main_entry.branch_name = Some("main".into());
+        main_entry.last_used_unix_ms = 100;
+        let mut other_entry = sample_entry(0x61, 20, Some(origin));
+        other_entry.branch_name = Some("other".into());
+        other_entry.last_used_unix_ms = 200;
 
-            upsert(&path, &main_key, &main_entry).expect("upsert main");
-            upsert(&path, &other_key, &other_entry).expect("upsert other");
+        upsert(&path, &main_key, &main_entry).expect("upsert main");
+        upsert(&path, &other_key, &other_entry).expect("upsert other");
 
-            let miss = sample_key(62);
-            let lineage = vec!["feature/cook".to_string(), "main".to_string()];
-            let (key, entry) = lookup_origin_fallback(&path, &miss, Some(origin), &lineage)
-                .expect("fallback")
-                .expect("hit");
-            assert_eq!(key.recipe_hash, [60u8; 32]);
-            assert_eq!(entry.sha256, [0x60; 32]);
-        }
-    );
+        let miss = sample_key(62);
+        let lineage = vec!["feature/cook".to_string(), "main".to_string()];
+        let (key, entry) = lookup_origin_fallback(&path, &miss, Some(origin), &lineage)
+            .expect("fallback")
+            .expect("hit");
+        assert_eq!(key.recipe_hash, [60u8; 32]);
+        assert_eq!(entry.sha256, [0x60; 32]);
+    }
 
-    crate::timed_test!(
-        fallback_keeps_legacy_unbranched_entries_when_lineage_is_known,
-        {
-            let dir = TempDir::new().expect("tempdir");
-            let path = dir.path().join("state.redb");
-            let origin = "https://github.com/zackees/soldr";
+    #[test]
+    fn fallback_keeps_legacy_unbranched_entries_when_lineage_is_known() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("state.redb");
+        let origin = "https://github.com/zackees/soldr";
 
-            let old_key = sample_key(70);
-            let new_key = sample_key(71);
-            let mut old_entry = sample_entry(0x70, 10, Some(origin));
-            old_entry.last_used_unix_ms = 100;
-            let mut new_entry = sample_entry(0x71, 20, Some(origin));
-            new_entry.branch_name = Some("other".into());
-            new_entry.last_used_unix_ms = 200;
+        let old_key = sample_key(70);
+        let new_key = sample_key(71);
+        let mut old_entry = sample_entry(0x70, 10, Some(origin));
+        old_entry.last_used_unix_ms = 100;
+        let mut new_entry = sample_entry(0x71, 20, Some(origin));
+        new_entry.branch_name = Some("other".into());
+        new_entry.last_used_unix_ms = 200;
 
-            upsert(&path, &old_key, &old_entry).expect("upsert old");
-            upsert(&path, &new_key, &new_entry).expect("upsert new");
+        upsert(&path, &old_key, &old_entry).expect("upsert old");
+        upsert(&path, &new_key, &new_entry).expect("upsert new");
 
-            let miss = sample_key(72);
-            let lineage = vec!["feature/cook".to_string(), "main".to_string()];
-            let (key, entry) = lookup_origin_fallback(&path, &miss, Some(origin), &lineage)
-                .expect("fallback")
-                .expect("hit");
-            assert_eq!(key.recipe_hash, [70u8; 32]);
-            assert_eq!(entry.sha256, [0x70; 32]);
-        }
-    );
+        let miss = sample_key(72);
+        let lineage = vec!["feature/cook".to_string(), "main".to_string()];
+        let (key, entry) = lookup_origin_fallback(&path, &miss, Some(origin), &lineage)
+            .expect("fallback")
+            .expect("hit");
+        assert_eq!(key.recipe_hash, [70u8; 32]);
+        assert_eq!(entry.sha256, [0x70; 32]);
+    }
 
-    crate::timed_test!(fallback_uses_newest_same_origin_when_lineage_is_empty, {
+    #[test]
+    fn fallback_uses_newest_same_origin_when_lineage_is_empty() {
         let dir = TempDir::new().expect("tempdir");
         let path = dir.path().join("state.redb");
         let origin = "https://github.com/zackees/soldr";
@@ -688,9 +688,10 @@ mod tests {
             .expect("hit");
         assert_eq!(key.recipe_hash, [81u8; 32]);
         assert_eq!(entry.sha256, [0x81; 32]);
-    });
+    }
 
-    crate::timed_test!(drift_returns_empty_without_origin_hint, {
+    #[test]
+    fn drift_returns_empty_without_origin_hint() {
         let dir = TempDir::new().expect("tempdir");
         let path = dir.path().join("state.redb");
         upsert(
@@ -703,9 +704,10 @@ mod tests {
         assert!(drift_recipe_hashes(&path, &miss, None, 10)
             .expect("drift")
             .is_empty());
-    });
+    }
 
-    crate::timed_test!(touch_bumps_last_used_ms, {
+    #[test]
+    fn touch_bumps_last_used_ms() {
         let dir = TempDir::new().expect("tempdir");
         let path = dir.path().join("state.redb");
         let key = sample_key(30);
@@ -715,15 +717,17 @@ mod tests {
         assert!(touch(&path, &[0xFF; 32], 9_999).expect("touch"));
         let got = lookup(&path, &key).expect("lookup").expect("hit");
         assert_eq!(got.last_used_unix_ms, 9_999);
-    });
+    }
 
-    crate::timed_test!(touch_returns_false_when_sha_unknown, {
+    #[test]
+    fn touch_returns_false_when_sha_unknown() {
         let dir = TempDir::new().expect("tempdir");
         let path = dir.path().join("state.redb");
         assert!(!touch(&path, &[0x00; 32], 1).expect("touch"));
-    });
+    }
 
-    crate::timed_test!(stats_sums_entries_and_sizes, {
+    #[test]
+    fn stats_sums_entries_and_sizes() {
         let dir = TempDir::new().expect("tempdir");
         let path = dir.path().join("state.redb");
         upsert(&path, &sample_key(40), &sample_entry(0x40, 1_024, None)).expect("a");
@@ -732,19 +736,21 @@ mod tests {
         let (count, total) = stats(&path).expect("stats");
         assert_eq!(count, 3);
         assert_eq!(total, 1_024 + 2_048 + 4_096);
-    });
+    }
 
-    crate::timed_test!(ensure_initialized_is_idempotent, {
+    #[test]
+    fn ensure_initialized_is_idempotent() {
         let dir = TempDir::new().expect("tempdir");
         let path = dir.path().join("state.redb");
         ensure_initialized(&path).expect("init 1");
         ensure_initialized(&path).expect("init 2");
         let (count, total) = stats(&path).expect("stats");
         assert_eq!((count, total), (0, 0));
-    });
+    }
 
     // Tag-byte hygiene: every value blob starts with 0x01.
-    crate::timed_test!(value_blobs_carry_the_prost_tag, {
+    #[test]
+    fn value_blobs_carry_the_prost_tag() {
         let dir = TempDir::new().expect("tempdir");
         let path = dir.path().join("state.redb");
         upsert(&path, &sample_key(50), &sample_entry(0x50, 1, None)).expect("upsert");
@@ -755,11 +761,12 @@ mod tests {
             let (_, v) = entry.expect("entry");
             assert_eq!(v.value()[0], REDB_TAG_PROST);
         }
-    });
+    }
 
     // migrate_drop_v1 evicts a populated v1 table on first
     // ensure_initialized call.
-    crate::timed_test!(migration_drops_pre_580_cook_index_v1, {
+    #[test]
+    fn migration_drops_pre_580_cook_index_v1() {
         let dir = TempDir::new().expect("tempdir");
         let path = dir.path().join("state.redb");
         // Seed a v1 row with arbitrary bytes — the format doesn't matter
@@ -785,5 +792,5 @@ mod tests {
             txn.open_table(COOK_INDEX_V1).is_err(),
             "cook_index_v1 must be dropped after migration"
         );
-    });
+    }
 }

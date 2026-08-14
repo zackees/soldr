@@ -564,19 +564,22 @@ mod tests {
         }"#
     }
 
-    crate::timed_test!(parses_well_formed_manifest, {
+    #[test]
+    fn parses_well_formed_manifest() {
         let idx = ManifestIndex::from_json(sample_json()).expect("parse ok");
         assert_eq!(idx.entries.len(), 2);
         assert_eq!(idx.entries[0].owner, "zackees");
         assert_eq!(idx.entries[1].repo, "cargo-chef");
-    });
+    }
 
-    crate::timed_test!(from_json_returns_none_on_malformed_input, {
+    #[test]
+    fn from_json_returns_none_on_malformed_input() {
         assert!(ManifestIndex::from_json("not-json").is_none());
         assert!(ManifestIndex::from_json("{}").is_some()); // empty entries field is fine
-    });
+    }
 
-    crate::timed_test!(lookup_finds_exact_match, {
+    #[test]
+    fn lookup_finds_exact_match() {
         let idx = ManifestIndex::from_json(sample_json()).unwrap();
         let hit = idx
             .lookup(
@@ -588,9 +591,10 @@ mod tests {
             .expect("should hit");
         assert!(hit.url.contains("zccache"));
         assert_eq!(hit.sha256.len(), 64);
-    });
+    }
 
-    crate::timed_test!(lookup_misses_on_unknown_tuple, {
+    #[test]
+    fn lookup_misses_on_unknown_tuple() {
         let idx = ManifestIndex::from_json(sample_json()).unwrap();
         assert!(idx
             .lookup("zackees", "zccache", "1.12.9", "not-an-asset.zip")
@@ -611,29 +615,33 @@ mod tests {
                 "zccache-x86_64-pc-windows-msvc.zip"
             )
             .is_none());
-    });
+    }
 
-    crate::timed_test!(empty_index_lookup_always_misses, {
+    #[test]
+    fn empty_index_lookup_always_misses() {
         let idx = ManifestIndex::empty();
         assert!(idx.lookup("a", "b", "c", "d").is_none());
         assert!(idx.lookup_release("a", "b", "c").is_empty());
-    });
+    }
 
-    crate::timed_test!(lookup_release_returns_every_asset_for_a_tag, {
+    #[test]
+    fn lookup_release_returns_every_asset_for_a_tag() {
         let idx = ManifestIndex::from_json(sample_json()).unwrap();
         let hits = idx.lookup_release("zackees", "zccache", "1.12.9");
         assert_eq!(hits.len(), 1);
         assert!(hits[0].asset.contains("zccache"));
-    });
+    }
 
-    crate::timed_test!(lookup_asset_finds_toolchain_owned_repackages, {
+    #[test]
+    fn lookup_asset_finds_toolchain_owned_repackages() {
         let idx = ManifestIndex::from_json(sample_json()).unwrap();
         let hits = idx.lookup_asset("cargo-chef-x86_64-pc-windows-msvc.tar.gz");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].repo, "cargo-chef");
-    });
+    }
 
-    crate::timed_test!(catalogue_asset_digest_is_mandatory, {
+    #[test]
+    fn catalogue_asset_digest_is_mandatory() {
         let bytes = br#"{"schema_version":1}"#;
         let entry = ManifestEntry {
             owner: "zackees".into(),
@@ -650,9 +658,10 @@ mod tests {
             verify_catalogue_asset_sha256(&entry, &super::super::trust::sha256_of(b"changed"))
                 .is_err()
         );
-    });
+    }
 
-    crate::timed_test!(catalogue_asset_body_keeps_a_response_wide_deadline, {
+    #[test]
+    fn catalogue_asset_body_keeps_a_response_wide_deadline() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -686,18 +695,20 @@ mod tests {
             assert!(super::super::retry::is_transient(&error));
             assert!(error.to_string().contains("body read timed out"), "{error}");
         });
-    });
+    }
 
-    crate::timed_test!(cache_buster_preserves_existing_query_parameters, {
+    #[test]
+    fn cache_buster_preserves_existing_query_parameters() {
         let plain = cache_busted_url("https://example.invalid/map.json");
         assert!(plain.starts_with("https://example.invalid/map.json?soldr_refresh="));
         let queried = cache_busted_url("https://example.invalid/map.json?mirror=1");
         assert!(queried.starts_with("https://example.invalid/map.json?mirror=1&soldr_refresh="));
-    });
+    }
 
     // soldr#988 Phase 2: catalogue origin resolution.
 
-    crate::timed_test!(catalogue_url_defaults_to_pages_origin, {
+    #[test]
+    fn catalogue_url_defaults_to_pages_origin() {
         // Caller may have SOLDR_TOOLCHAIN_ORIGIN set in their env;
         // exercise the public string-shape via the pure helper that
         // does not read env: build the URL from the default origin.
@@ -706,9 +717,10 @@ mod tests {
             url,
             "https://zackees.github.io/soldr-toolchain/catalogue.v1.json"
         );
-    });
+    }
 
-    crate::timed_test!(catalogue_v1_json_parses_through_manifest_index, {
+    #[test]
+    fn catalogue_v1_json_parses_through_manifest_index() {
         // Phase 2 must accept the v1 wire shape transparently — the
         // top-level extras (schema_version, generated_at, origin)
         // are unknown fields ManifestIndex must ignore.
@@ -731,9 +743,10 @@ mod tests {
         assert_eq!(idx.entries.len(), 1);
         assert_eq!(idx.entries[0].owner, "zackees");
         assert_eq!(idx.entries[0].tag, "1.12.11");
-    });
+    }
 
-    crate::timed_test!(disabled_via_env_handles_truthy_and_falsy_values, {
+    #[test]
+    fn disabled_via_env_handles_truthy_and_falsy_values() {
         // Test the parser directly via the same shape disabled_via_env
         // uses, since touching the process env in unit tests is racy.
         let check = |value: Option<&str>| match value {
@@ -752,7 +765,7 @@ mod tests {
         assert!(check(Some("true")));
         assert!(check(Some("yes")));
         assert!(check(Some("anything-else")));
-    });
+    }
 
     // Back-compat guard for issue #861: after schema v6 lands beside
     // the flat-array shape this module owns, an old flat manifest
@@ -760,7 +773,8 @@ mod tests {
     // proves the dispatch isn't accidentally captured by the new v6
     // parser — the two shapes are disjoint on the wire (`entries: []`
     // vs. `schema_version: 6, tools: {...}`) and must stay so.
-    crate::timed_test!(flat_schema_v5_still_parses_for_back_compat, {
+    #[test]
+    fn flat_schema_v5_still_parses_for_back_compat() {
         let flat = r#"{
             "entries": [
                 {
@@ -781,9 +795,10 @@ mod tests {
             super::super::manifest_v6::ManifestV6::from_json(flat).is_none(),
             "v6 parser must reject the flat-array shape"
         );
-    });
+    }
 
-    crate::timed_test!(default_toolchain_origin_is_pages, {
+    #[test]
+    fn default_toolchain_origin_is_pages() {
         // soldr#988 Phase 5: legacy manifest-branch URL constant is
         // gone. The default catalogue origin is the soldr-toolchain
         // Pages site.
@@ -791,9 +806,10 @@ mod tests {
             DEFAULT_TOOLCHAIN_ORIGIN,
             "https://zackees.github.io/soldr-toolchain"
         );
-    });
+    }
 
-    crate::timed_test!(catalogue_url_override_takes_precedence, {
+    #[test]
+    fn catalogue_url_override_takes_precedence() {
         // The full-URL override is the one the integration tests use
         // when they spawn a local HTTP listener on a random port —
         // they can't fit that under the `origin + /catalogue.v1.json`
@@ -803,5 +819,5 @@ mod tests {
             TOOLCHAIN_CATALOGUE_URL_ENV_VAR,
             "SOLDR_TOOLCHAIN_CATALOGUE_URL"
         );
-    });
+    }
 }

@@ -516,7 +516,8 @@ mod tests {
     use running_process::broker::backend_sdk::MuxPoll;
     use tempfile::TempDir;
 
-    crate::timed_test!(broker_service_partition_covers_root_and_image_hash, {
+    #[test]
+    fn broker_service_partition_covers_root_and_image_hash() {
         let temp = TempDir::new().expect("tempdir");
         let binary_a = temp.path().join("soldr-daemon-a");
         let binary_b = temp.path().join("soldr-daemon-b");
@@ -545,9 +546,10 @@ mod tests {
         );
         assert!(route.starts_with("soldr-daemon-"));
         assert_eq!(route.len(), "soldr-daemon-".len() + 32);
-    });
+    }
 
-    crate::timed_test!(broker_route_claim_round_trips_and_replaces_atomically, {
+    #[test]
+    fn broker_route_claim_round_trips_and_replaces_atomically() {
         let temp = TempDir::new().expect("tempdir");
         let paths = SoldrPaths::with_root(temp.path().join("root"));
         let first = current_daemon_process(&paths, Some(3)).expect("first claim");
@@ -573,9 +575,10 @@ mod tests {
             .filter(|entry| entry.path() != broker_route_claim_path(&paths))
             .count();
         assert_eq!(leftovers, 0, "atomic publish must not leave temp files");
-    });
+    }
 
-    crate::timed_test!(corrupt_broker_route_claim_is_invalid_disposable_state, {
+    #[test]
+    fn corrupt_broker_route_claim_is_invalid_disposable_state() {
         let temp = TempDir::new().expect("tempdir");
         let paths = SoldrPaths::with_root(temp.path().join("root"));
         std::fs::create_dir_all(soldr_daemon_dir(&paths)).expect("daemon dir");
@@ -585,9 +588,10 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         prune_broker_route_claim(&paths);
         assert!(!broker_route_claim_path(&paths).exists());
-    });
+    }
 
-    crate::timed_test!(dependency_status_documents_active_backend_handle_usage, {
+    #[test]
+    fn dependency_status_documents_active_backend_handle_usage() {
         let status = RUNNING_PROCESS_BACKEND_HANDLE_STATUS;
         assert_eq!(status.crate_name, "running-process");
         // After #726 the dep ships as a published crates.io release rather
@@ -603,16 +607,18 @@ mod tests {
         assert_eq!(status.soldr_issue, "zackees/soldr#718");
         assert!(status.active_endpoint_probe);
         assert!(status.remaining_gate.contains("BackendEndpointMux adopted"));
-    });
+    }
 
-    crate::timed_test!(probe_missing_route_claim_reports_no_handle, {
+    #[test]
+    fn probe_missing_route_claim_reports_no_handle() {
         let temp = TempDir::new().expect("tempdir");
         let paths = SoldrPaths::with_root(temp.path().to_path_buf());
 
         assert!(probe_soldr_daemon(&paths).is_none());
-    });
+    }
 
-    crate::timed_test!(backend_endpoint_mux_classifies_soldr_legacy_header, {
+    #[test]
+    fn backend_endpoint_mux_classifies_soldr_legacy_header() {
         let current_exe = std::env::current_exe().expect("current exe");
         let endpoint = Endpoint::unix_socket("test", "/tmp/soldr-test.sock")
             .or_else(|_| Endpoint::windows_pipe("test", "soldr-test"))
@@ -625,16 +631,17 @@ mod tests {
         soldr_header[4..].copy_from_slice(&PROTOCOL_VERSION.to_le_bytes());
 
         assert!(matches!(mux.poll(&soldr_header), Ok(MuxPoll::Legacy)));
-    });
+    }
 
-    crate::timed_test!(soldr_legacy_detector_waits_for_full_header, {
+    #[test]
+    fn soldr_legacy_detector_waits_for_full_header() {
         let mut partial = [0_u8; CONTROL_FRAME_HEADER_BYTES - 1];
         partial[..4].copy_from_slice(&1_u32.to_le_bytes());
         assert_eq!(
             classify_soldr_control_wire(&partial),
             LegacyClassification::NeedMoreBytes,
         );
-    });
+    }
 
     // soldr#1893: the whole point of the classifier is that a probe which
     // never got an answer must not be reported as "daemon is not running".
@@ -643,35 +650,35 @@ mod tests {
         BackendHandleError::Probe(ProbeError::EndpointResponse(inner))
     }
 
-    crate::timed_test!(probe_timeout_is_treated_as_inconclusive, {
+    #[test]
+    fn probe_timeout_is_treated_as_inconclusive() {
         assert!(probe_error_is_transient(&endpoint_err(
             EndpointProbeError::Timeout
         )));
-    });
+    }
 
-    crate::timed_test!(
-        connect_timeout_and_absent_endpoint_are_told_apart_by_io_kind,
-        {
-            // Both arrive as `Connect`; only the ErrorKind separates them, which
-            // is the trap this classifier exists to avoid.
+    #[test]
+    fn connect_timeout_and_absent_endpoint_are_told_apart_by_io_kind() {
+        // Both arrive as `Connect`; only the ErrorKind separates them, which
+        // is the trap this classifier exists to avoid.
+        assert!(
+            probe_error_is_transient(&endpoint_err(EndpointProbeError::Connect(io::Error::from(
+                io::ErrorKind::TimedOut
+            )))),
+            "a connect that timed out says nothing about the daemon"
+        );
+        for definitive in [io::ErrorKind::NotFound, io::ErrorKind::ConnectionRefused] {
             assert!(
-                probe_error_is_transient(&endpoint_err(EndpointProbeError::Connect(
-                    io::Error::from(io::ErrorKind::TimedOut)
+                !probe_error_is_transient(&endpoint_err(EndpointProbeError::Connect(
+                    io::Error::from(definitive)
                 ))),
-                "a connect that timed out says nothing about the daemon"
+                "{definitive:?} means the endpoint is genuinely absent"
             );
-            for definitive in [io::ErrorKind::NotFound, io::ErrorKind::ConnectionRefused] {
-                assert!(
-                    !probe_error_is_transient(&endpoint_err(EndpointProbeError::Connect(
-                        io::Error::from(definitive)
-                    ))),
-                    "{definitive:?} means the endpoint is genuinely absent"
-                );
-            }
         }
-    );
+    }
 
-    crate::timed_test!(identity_and_mismatch_failures_are_definitive, {
+    #[test]
+    fn identity_and_mismatch_failures_are_definitive() {
         assert!(!probe_error_is_transient(&BackendHandleError::Probe(
             ProbeError::EndpointMismatch
         )));
@@ -687,9 +694,10 @@ mod tests {
         assert!(!probe_error_is_transient(&BackendHandleError::Probe(
             ProbeError::VerifyPid(VerifyPidError::NotFound { pid: 4321 })
         )));
-    });
+    }
 
-    crate::timed_test!(reading_a_live_process_image_can_fail_transiently, {
+    #[test]
+    fn reading_a_live_process_image_can_fail_transiently() {
         // The process may be alive and healthy while an exe-path read fails.
         assert!(probe_error_is_transient(&BackendHandleError::Probe(
             ProbeError::VerifyPid(VerifyPidError::ExePath {
@@ -697,9 +705,10 @@ mod tests {
                 source: io::Error::from(io::ErrorKind::PermissionDenied),
             })
         )));
-    });
+    }
 
-    crate::timed_test!(retry_budget_allows_more_than_one_probe_attempt, {
+    #[test]
+    fn retry_budget_allows_more_than_one_probe_attempt() {
         // A budget shorter than the 500 ms probe deadline would make the
         // retry unreachable in practice.
         assert!(
@@ -707,5 +716,5 @@ mod tests {
             "retry budget must exceed one probe deadline or it buys nothing"
         );
         assert!(PROBE_INCONCLUSIVE_RETRY_BACKOFF < PROBE_INCONCLUSIVE_RETRY_BUDGET);
-    });
+    }
 }

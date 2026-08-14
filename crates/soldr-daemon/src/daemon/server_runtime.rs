@@ -428,11 +428,12 @@ fn select_existing_daemon_pid(
 mod endpoint_occupancy_tests {
     use super::select_existing_daemon_pid;
 
-    crate::timed_test!(protocol_mismatched_daemon_still_blocks_direct_startup, {
+    #[test]
+    fn protocol_mismatched_daemon_still_blocks_direct_startup() {
         assert_eq!(select_existing_daemon_pid(Some(41), None), Some(41));
         assert_eq!(select_existing_daemon_pid(None, Some(42)), Some(42));
         assert_eq!(select_existing_daemon_pid(None, None), None);
-    });
+    }
 }
 
 // The Unix endpoint exclusivity and retirement-fence tests live in

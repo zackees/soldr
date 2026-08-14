@@ -9,7 +9,8 @@ use crate::TEST_PROCESS_ENV_LOCK as ENV_MUTEX;
 // / `remove_var` mutate global state, and cargo runs tests in
 // parallel within a single process — without a barrier the tests
 // race and intermittently fail (soldr#1267).
-crate::timed_test!(opt_out_env_var_recognized, {
+#[test]
+fn opt_out_env_var_recognized() {
     let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let prev = std::env::var_os(USE_LEGACY_XWIN_ENV_VAR);
 
@@ -29,9 +30,10 @@ crate::timed_test!(opt_out_env_var_recognized, {
         Some(v) => std::env::set_var(USE_LEGACY_XWIN_ENV_VAR, v),
         None => std::env::remove_var(USE_LEGACY_XWIN_ENV_VAR),
     }
-});
+}
 
-crate::timed_test!(xwin_prep_is_linux_host_only, {
+#[test]
+fn xwin_prep_is_linux_host_only() {
     let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let prev = std::env::var_os(USE_LEGACY_XWIN_ENV_VAR);
     std::env::remove_var(USE_LEGACY_XWIN_ENV_VAR);
@@ -53,9 +55,10 @@ crate::timed_test!(xwin_prep_is_linux_host_only, {
         Some(v) => std::env::set_var(USE_LEGACY_XWIN_ENV_VAR, v),
         None => std::env::remove_var(USE_LEGACY_XWIN_ENV_VAR),
     }
-});
+}
 
-crate::timed_test!(native_windows_msvc_gets_no_xwin_prep, {
+#[test]
+fn native_windows_msvc_gets_no_xwin_prep() {
     if crate::platform::host::facts::os() != HostOs::Windows {
         return;
     }
@@ -99,9 +102,10 @@ crate::timed_test!(native_windows_msvc_gets_no_xwin_prep, {
     assert!(prep.env.is_empty());
     assert!(prep.path_dirs.is_empty());
     assert!(prep.cargo_args.is_empty());
-});
+}
 
-crate::timed_test!(linux_targets_get_no_xwin_or_sdk_prep, {
+#[test]
+fn linux_targets_get_no_xwin_or_sdk_prep() {
     let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     // soldr#1064 Phase B: syslib catalogue overrides may populate
     // prep.env even on linux targets. The invariant we still want to
@@ -123,9 +127,10 @@ crate::timed_test!(linux_targets_get_no_xwin_or_sdk_prep, {
     assert!(prep.sdkroot.is_none());
     assert!(prep.env.is_empty());
     assert!(prep.cargo_args.is_empty());
-});
+}
 
-crate::timed_test!(msvc_tool_env_uses_clang_cl_for_cc_rs, {
+#[test]
+fn msvc_tool_env_uses_clang_cl_for_cc_rs() {
     let mut prep = BlessedPrep::default();
 
     add_msvc_tool_env(
@@ -146,9 +151,10 @@ crate::timed_test!(msvc_tool_env_uses_clang_cl_for_cc_rs, {
         env.get("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER"),
         Some(&"lld-link")
     );
-});
+}
 
-crate::timed_test!(path_prefix_keeps_clang_shim_ahead_of_managed_tools, {
+#[test]
+fn path_prefix_keeps_clang_shim_ahead_of_managed_tools() {
     let shim = PathBuf::from("/soldr/clang-shim");
     let llvm = PathBuf::from("/soldr/llvm/bin");
     let cmake = PathBuf::from("/soldr/cmake/bin");
@@ -159,9 +165,10 @@ crate::timed_test!(path_prefix_keeps_clang_shim_ahead_of_managed_tools, {
     };
 
     assert_eq!(prep.path_prefix(), vec![shim, llvm, cmake]);
-});
+}
 
-crate::timed_test!(dsymutil_override_is_added_to_child_path, {
+#[test]
+fn dsymutil_override_is_added_to_child_path() {
     let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("tmpdir");
     let bin = tmp.path().join("dsymutil");
@@ -175,9 +182,10 @@ crate::timed_test!(dsymutil_override_is_added_to_child_path, {
         None => std::env::remove_var(SOLDR_DSYMUTIL_ENV_VAR),
     }
     assert_eq!(prep.path_dirs, vec![tmp.path()]);
-});
+}
 
-crate::timed_test!(darwin_lld_policy_uses_host_lld_on_linux_fallback, {
+#[test]
+fn darwin_lld_policy_uses_host_lld_on_linux_fallback() {
     assert!(
         darwin_should_use_lld(true),
         "managed LLVM should always enable LLD for Darwin cross-links",
@@ -194,9 +202,10 @@ crate::timed_test!(darwin_lld_policy_uses_host_lld_on_linux_fallback, {
             "non-Linux fallback keeps platform clang behavior unless managed LLVM is present",
         );
     }
-});
+}
 
-crate::timed_test!(mingw_w64_gcc_env_injects_target_scoped_tools, {
+#[test]
+fn mingw_w64_gcc_env_injects_target_scoped_tools() {
     let tmp = tempfile::tempdir().expect("tmpdir");
     let root = tmp.path().join("mingw");
     let mut prep = BlessedPrep::default();
@@ -221,9 +230,10 @@ crate::timed_test!(mingw_w64_gcc_env_injects_target_scoped_tools, {
     ] {
         assert!(names.contains(required), "missing env var {required}");
     }
-});
+}
 
-crate::timed_test!(windows_gnu_requires_supported_mingw_host, {
+#[test]
+fn windows_gnu_requires_supported_mingw_host() {
     let host = crate::platform::host::facts::info();
     let supported =
         (host.os == HostOs::Windows || host.os == HostOs::Linux) && host.arch == HostArch::X86_64;
@@ -258,9 +268,10 @@ crate::timed_test!(windows_gnu_requires_supported_mingw_host, {
         err.to_string().contains("cargo-zigbuild is no longer used"),
         "unexpected error: {err}"
     );
-});
+}
 
-crate::timed_test!(cmake_generator_sweep_removes_only_mismatches, {
+#[test]
+fn cmake_generator_sweep_removes_only_mismatches() {
     // Simulate a pre-Ninja cached target tree: one Unix Makefiles
     // cache in the host-profile layout, one Ninja cache in the
     // per-triple layout, one Visual Studio cache in the per-triple
@@ -299,14 +310,16 @@ crate::timed_test!(cmake_generator_sweep_removes_only_mismatches, {
         ninja_triple.join("CMakeCache.txt").is_file(),
         "surviving cache intact"
     );
-});
+}
 
-crate::timed_test!(cmake_generator_sweep_tolerates_missing_target, {
+#[test]
+fn cmake_generator_sweep_tolerates_missing_target() {
     // A nonexistent target root is a no-op, not an error.
     sweep_mismatched_cmake_build_dirs(std::path::Path::new("Z:/does/not/exist"), "Ninja");
-});
+}
 
-crate::timed_test!(cmake_injection_respects_system_opt_out, {
+#[test]
+fn cmake_injection_respects_system_opt_out() {
     let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("tmpdir");
     let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
@@ -320,9 +333,10 @@ crate::timed_test!(cmake_injection_respects_system_opt_out, {
 
     assert!(prep.env.is_empty(), "opt-out must inject nothing");
     assert!(prep.path_dirs.is_empty());
-});
+}
 
-crate::timed_test!(cmake_injection_defers_to_user_cmake_env, {
+#[test]
+fn cmake_injection_defers_to_user_cmake_env() {
     let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     // A caller-provided CMAKE (or CMAKE_GENERATOR) means the user
     // already decided; the managed injection must stand down
@@ -342,9 +356,10 @@ crate::timed_test!(cmake_injection_defers_to_user_cmake_env, {
         );
         assert!(prep.path_dirs.is_empty());
     }
-});
+}
 
-crate::timed_test!(xwin_cflags_emits_imsvc_for_present_dirs, {
+#[test]
+fn xwin_cflags_emits_imsvc_for_present_dirs() {
     // soldr#1036: simulate an xwin-cache layout, confirm CFLAGS
     // string contains an `/imsvc <path>` entry for each present
     // include subtree (and skips absent ones).
@@ -371,17 +386,19 @@ crate::timed_test!(xwin_cflags_emits_imsvc_for_present_dirs, {
         !cflags.contains("winrt"),
         "absent winrt subtree leaked into cflags: {cflags}"
     );
-});
+}
 
-crate::timed_test!(xwin_cflags_empty_for_empty_cache, {
+#[test]
+fn xwin_cflags_empty_for_empty_cache() {
     // No subtrees present → empty cflags string. Caller can detect
     // this and skip the CFLAGS_<t> env var injection entirely.
     let tmp = tempfile::tempdir().expect("tmpdir");
     let cflags = xwin_msvc_cflags(tmp.path());
     assert!(cflags.is_empty(), "expected empty cflags, got: {cflags:?}");
-});
+}
 
-crate::timed_test!(xwin_link_args_picks_correct_arch_subdir, {
+#[test]
+fn xwin_link_args_picks_correct_arch_subdir() {
     // Confirm aarch64-pc-windows-msvc looks under `arm64/`,
     // x86_64-pc-windows-msvc looks under `x64/`. This is the
     // MS-arch-notation contract from xwin's
@@ -413,9 +430,10 @@ crate::timed_test!(xwin_link_args_picks_correct_arch_subdir, {
         !x86.contains("/arm64") && !x86.contains("\\arm64"),
         "x86_64 link args leaked arm64 path: {x86}"
     );
-});
+}
 
-crate::timed_test!(xwin_link_args_unknown_arch_returns_empty, {
+#[test]
+fn xwin_link_args_unknown_arch_returns_empty() {
     let tmp = tempfile::tempdir().expect("tmpdir");
     // Non-MSVC triple → empty link args.
     let out = xwin_msvc_link_args(tmp.path(), "x86_64-unknown-linux-gnu");
@@ -423,9 +441,10 @@ crate::timed_test!(xwin_link_args_unknown_arch_returns_empty, {
         out.is_empty(),
         "non-msvc triple must yield empty link args, got: {out:?}"
     );
-});
+}
 
-crate::timed_test!(xwin_link_args_accepts_cargo_xwin_arch_names, {
+#[test]
+fn xwin_link_args_accepts_cargo_xwin_arch_names() {
     let tmp = tempfile::tempdir().expect("tmpdir");
     let root = tmp.path();
     std::fs::create_dir_all(root.join("crt").join("lib").join("x86_64")).unwrap();
@@ -442,9 +461,10 @@ crate::timed_test!(xwin_link_args_accepts_cargo_xwin_arch_names, {
         3,
         "expected all three x86_64 lib dirs in link args: {out}"
     );
-});
+}
 
-crate::timed_test!(xwin_link_args_accepts_cargo_xwin_aarch64_arch_names, {
+#[test]
+fn xwin_link_args_accepts_cargo_xwin_aarch64_arch_names() {
     let tmp = tempfile::tempdir().expect("tmpdir");
     let root = tmp.path();
     std::fs::create_dir_all(root.join("crt").join("lib").join("aarch64")).unwrap();
@@ -461,9 +481,10 @@ crate::timed_test!(xwin_link_args_accepts_cargo_xwin_aarch64_arch_names, {
         3,
         "expected all three aarch64 lib dirs in link args: {out}"
     );
-});
+}
 
-crate::timed_test!(xwin_link_args_format_uses_c_link_arg_pairs, {
+#[test]
+fn xwin_link_args_format_uses_c_link_arg_pairs() {
     // Each /LIBPATH: must be paired with a leading `-C` so rustc
     // parses them as link-args. Without the `-C` prefix the flag
     // would be passed as a plain rustc arg and silently dropped.
@@ -485,9 +506,10 @@ crate::timed_test!(xwin_link_args_format_uses_c_link_arg_pairs, {
     for index in libpath_indexes {
         assert_eq!(tokens.get(index.wrapping_sub(1)), Some(&"-C"), "{out}");
     }
-});
+}
 
-crate::timed_test!(xwin_link_args_select_dynamic_crt_import_libraries, {
+#[test]
+fn xwin_link_args_select_dynamic_crt_import_libraries() {
     let tmp = tempfile::tempdir().expect("tmpdir");
     let root = tmp.path();
     std::fs::create_dir_all(root.join("crt").join("lib").join("arm64")).unwrap();
@@ -499,4 +521,4 @@ crate::timed_test!(xwin_link_args_select_dynamic_crt_import_libraries, {
     assert!(out.contains("link-arg=/DEFAULTLIB:ucrt.lib"), "{out}");
     assert!(out.contains("link-arg=/DEFAULTLIB:vcruntime.lib"), "{out}");
     assert!(!out.contains("link-arg=/DEFAULTLIB:libucrt.lib"), "{out}");
-});
+}

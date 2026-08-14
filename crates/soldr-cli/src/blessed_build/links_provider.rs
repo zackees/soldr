@@ -193,7 +193,8 @@ mod tests {
         format!("{{\"packages\":[{packages}]}}").into_bytes()
     }
 
-    crate::timed_test!(sole_provider_is_reported_by_name, {
+    #[test]
+    fn sole_provider_is_reported_by_name() {
         let map = links_map_from_metadata_json(&json(
             r#"{"name":"libmimalloc-sys","links":"mimalloc"},
                {"name":"serde","links":null}"#,
@@ -206,9 +207,10 @@ mod tests {
         );
         assert!(map.get("mimalloc").unwrap().contains("libmimalloc-sys"));
         assert!(!map.contains_key("serde"), "a null links is not an entry");
-    });
+    }
 
-    crate::timed_test!(a_fork_claiming_the_same_links_is_distinguishable, {
+    #[test]
+    fn a_fork_claiming_the_same_links_is_distinguishable() {
         let map =
             links_map_from_metadata_json(&json(r#"{"name":"mimalloc-pprof","links":"mimalloc"}"#))
                 .expect("parse");
@@ -218,22 +220,25 @@ mod tests {
             !names.contains("libmimalloc-sys"),
             "the fork must not be mistaken for upstream"
         );
-    });
+    }
 
-    crate::timed_test!(missing_and_empty_links_are_ignored, {
+    #[test]
+    fn missing_and_empty_links_are_ignored() {
         let map = links_map_from_metadata_json(&json(r#"{"name":"a"},{"name":"b","links":""}"#))
             .expect("parse");
         assert!(map.is_empty());
-    });
+    }
 
-    crate::timed_test!(provider_predicate_matches_only_the_named_crate, {
+    #[test]
+    fn provider_predicate_matches_only_the_named_crate() {
         assert!(LinksProvider::Package("libmimalloc-sys".to_string()).is("libmimalloc-sys"));
         assert!(!LinksProvider::Package("mimalloc-pprof".to_string()).is("libmimalloc-sys"));
         assert!(!LinksProvider::Absent.is("libmimalloc-sys"));
         assert!(!LinksProvider::Unknown("probe failed".to_string()).is("libmimalloc-sys"));
-    });
+    }
 
-    crate::timed_test!(a_manifestless_dir_resolves_without_spawning_cargo, {
+    #[test]
+    fn a_manifestless_dir_resolves_without_spawning_cargo() {
         // The point is that this returns promptly and does not depend
         // on a cargo binary being resolvable at all.
         let tmp = tempfile::tempdir().expect("tmpdir");
@@ -249,9 +254,10 @@ mod tests {
             !LinksProvider::Unknown(String::new()).is("libmimalloc-sys"),
             "and Unknown must never authorize a substitution"
         );
-    });
+    }
 
-    crate::timed_test!(malformed_metadata_is_an_error_not_a_panic, {
+    #[test]
+    fn malformed_metadata_is_an_error_not_a_panic() {
         assert!(links_map_from_metadata_json(b"not json").is_err());
-    });
+    }
 }

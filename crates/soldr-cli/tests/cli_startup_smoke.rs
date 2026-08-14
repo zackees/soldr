@@ -23,7 +23,6 @@
 mod common;
 
 use std::process::Command;
-use std::time::Duration;
 
 /// Run the built soldr with `args`, returning (success, stdout+stderr).
 fn run(args: &[&str]) -> (bool, String) {
@@ -36,7 +35,8 @@ fn run(args: &[&str]) -> (bool, String) {
     (output.status.success(), text)
 }
 
-soldr_cli::timed_test!(version_flag_starts_and_prints, Duration::from_secs(120), {
+#[test]
+fn version_flag_starts_and_prints() {
     let (ok, text) = run(&["--version"]);
     assert!(
         ok,
@@ -49,9 +49,10 @@ soldr_cli::timed_test!(version_flag_starts_and_prints, Duration::from_secs(120),
         text.contains("soldr"),
         "version output must name the program: {text}"
     );
-});
+}
 
-soldr_cli::timed_test!(help_flag_starts_and_prints, Duration::from_secs(120), {
+#[test]
+fn help_flag_starts_and_prints() {
     // `--help` walks every subcommand and every global arg, so it is the
     // deepest cheap path through command construction -- the one most
     // likely to exhaust the stack first as the CLI grows.
@@ -61,4 +62,4 @@ soldr_cli::timed_test!(help_flag_starts_and_prints, Duration::from_secs(120), {
         text.contains("Usage"),
         "help output must contain a usage line: {text}"
     );
-});
+}

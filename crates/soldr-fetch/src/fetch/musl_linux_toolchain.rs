@@ -182,7 +182,8 @@ pub fn env_for_target(
 mod tests {
     use super::*;
 
-    crate::timed_test!(maps_only_supported_musl_targets, {
+    #[test]
+    fn maps_only_supported_musl_targets() {
         assert_eq!(
             MuslLinuxToolchainTarget::for_triple("x86_64-unknown-linux-musl"),
             Some(MuslLinuxToolchainTarget::X86_64)
@@ -195,9 +196,10 @@ mod tests {
             MuslLinuxToolchainTarget::for_triple("x86_64-unknown-linux-gnu"),
             None
         );
-    });
+    }
 
-    crate::timed_test!(target_env_is_managed_and_sysrooted, {
+    #[test]
+    fn target_env_is_managed_and_sysrooted() {
         let toolchain = MuslLinuxToolchain {
             root: PathBuf::from("/managed"),
             bin_dir: PathBuf::from("/managed/bin"),
@@ -222,9 +224,10 @@ mod tests {
             asset_url_for(MUSL_LINUX_TOOLCHAIN_VERSION, "linux-arm64-musl")
                 .contains("/musl-linux-toolchain/")
         );
-    });
+    }
 
-    crate::timed_test!(incomplete_bundle_fails_with_the_missing_managed_path, {
+    #[test]
+    fn incomplete_bundle_fails_with_the_missing_managed_path() {
         let dir = tempfile::tempdir().expect("tempdir");
         let toolchain = MuslLinuxToolchain {
             root: dir.path().to_path_buf(),
@@ -236,5 +239,5 @@ mod tests {
         let rendered = error.to_string();
         assert!(rendered.contains("musl/Linux toolchain"));
         assert!(rendered.contains("aarch64-linux-musl-gcc"));
-    });
+    }
 }

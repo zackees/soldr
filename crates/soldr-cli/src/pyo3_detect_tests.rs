@@ -32,7 +32,8 @@ impl Drop for EnvVarGuard {
     }
 }
 
-crate::timed_test!(target_aware_policy_matrix, {
+#[test]
+fn target_aware_policy_matrix() {
     let cases = [
         (
             "native",
@@ -94,9 +95,10 @@ crate::timed_test!(target_aware_policy_matrix, {
         assert_eq!(plan.mode, expected_mode, "{name}");
         assert_eq!(plan.env.contains_key("PYO3_NO_PYTHON"), no_python, "{name}");
     }
-});
+}
 
-crate::timed_test!(non_abi3_and_legacy_are_never_silently_abi3, {
+#[test]
+fn non_abi3_and_legacy_are_never_silently_abi3() {
     for (shape, version, target) in [
         (BuildShape::Embedding, "0.29.0", "x86_64-pc-windows-msvc"),
         (BuildShape::Extension, "0.22.6", "x86_64-pc-windows-msvc"),
@@ -120,9 +122,10 @@ crate::timed_test!(non_abi3_and_legacy_are_never_silently_abi3, {
         resolve_policy(raw_dylib_disabled).mode,
         PlanMode::RequiresExplicitCompatibility
     );
-});
+}
 
-crate::timed_test!(explicit_compatibility_and_caller_overrides_win, {
+#[test]
+fn explicit_compatibility_and_caller_overrides_win() {
     let mut compatibility = PolicyInput::test(
         BuildShape::Embedding,
         false,
@@ -146,34 +149,33 @@ crate::timed_test!(explicit_compatibility_and_caller_overrides_win, {
     let plan = resolve_policy(caller);
     assert_eq!(plan.mode, PlanMode::CallerConfigured);
     assert!(plan.env.is_empty());
-});
+}
 
-crate::timed_test!(
-    compatibility_sysroot_exports_explicit_target_python_config,
-    {
-        let env = compatibility_sysroot_env(Path::new("/sdk/python/package"), "3.13.14");
-        assert_eq!(env.get("PYO3_CROSS").map(String::as_str), Some("1"));
-        let expected_lib_dir = Path::new("/sdk/python/package")
-            .join("lib")
-            .display()
-            .to_string();
-        assert_eq!(
-            env.get("PYO3_CROSS_LIB_DIR").map(String::as_str),
-            Some(expected_lib_dir.as_str())
-        );
-        assert_eq!(
-            env.get("PYO3_CROSS_PYTHON_VERSION").map(String::as_str),
-            Some("3.13")
-        );
-        assert_eq!(
-            env.get("PYO3_CROSS_PYTHON_IMPLEMENTATION")
-                .map(String::as_str),
-            Some("CPython")
-        );
-    }
-);
+#[test]
+fn compatibility_sysroot_exports_explicit_target_python_config() {
+    let env = compatibility_sysroot_env(Path::new("/sdk/python/package"), "3.13.14");
+    assert_eq!(env.get("PYO3_CROSS").map(String::as_str), Some("1"));
+    let expected_lib_dir = Path::new("/sdk/python/package")
+        .join("lib")
+        .display()
+        .to_string();
+    assert_eq!(
+        env.get("PYO3_CROSS_LIB_DIR").map(String::as_str),
+        Some(expected_lib_dir.as_str())
+    );
+    assert_eq!(
+        env.get("PYO3_CROSS_PYTHON_VERSION").map(String::as_str),
+        Some("3.13")
+    );
+    assert_eq!(
+        env.get("PYO3_CROSS_PYTHON_IMPLEMENTATION")
+            .map(String::as_str),
+        Some("CPython")
+    );
+}
 
-crate::timed_test!(target_precedence_is_args_env_project_host, {
+#[test]
+fn target_precedence_is_args_env_project_host() {
     let args = ["--target".into(), "win-x64".into()];
     assert_eq!(
         choose_build_target(
@@ -206,9 +208,10 @@ crate::timed_test!(target_precedence_is_args_env_project_host, {
         choose_build_target(&[], None, None, "x86_64-unknown-linux-gnu"),
         "x86_64-unknown-linux-gnu"
     );
-});
+}
 
-crate::timed_test!(cargo_metadata_resolves_active_version_features_and_shape, {
+#[test]
+fn cargo_metadata_resolves_active_version_features_and_shape() {
     let metadata = serde_json::json!({
         "workspace_members": ["app 0.1.0 (path+file:///app)"],
         "packages": [
@@ -236,9 +239,10 @@ crate::timed_test!(cargo_metadata_resolves_active_version_features_and_shape, {
     assert_eq!(detected.shape, BuildShape::Extension);
     assert_eq!(detected.versions, BTreeSet::from(["0.29.0".to_string()]));
     assert!(detected.abi3());
-});
+}
 
-crate::timed_test!(cargo_metadata_probe_captures_child_stdout, {
+#[test]
+fn cargo_metadata_probe_captures_child_stdout() {
     if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         // The probe fake is a POSIX shell script; Windows hosts
         // cannot execute it and there is no .cmd fixture for it.
@@ -292,9 +296,10 @@ crate::timed_test!(cargo_metadata_probe_captures_child_stdout, {
 
     assert_eq!(detected.versions, BTreeSet::from(["0.29.0".to_string()]));
     assert!(detected.abi3());
-});
+}
 
-crate::timed_test!(metadata_ignores_unreachable_pyo3_versions_and_features, {
+#[test]
+fn metadata_ignores_unreachable_pyo3_versions_and_features() {
     let metadata = serde_json::json!({
         "workspace_members": ["app"],
         "workspace_default_members": ["app"],
@@ -315,9 +320,10 @@ crate::timed_test!(metadata_ignores_unreachable_pyo3_versions_and_features, {
     assert_eq!(detected.versions, BTreeSet::from(["0.29.0".to_string()]));
     assert!(!detected.features.contains("auto-initialize"));
     assert_eq!(detected.shape, BuildShape::Extension);
-});
+}
 
-crate::timed_test!(maturin_target_aliases_are_normalized_before_exec, {
+#[test]
+fn maturin_target_aliases_are_normalized_before_exec() {
     assert_eq!(
         normalize_explicit_target_args(&[
             "pep517".into(),
@@ -336,9 +342,10 @@ crate::timed_test!(maturin_target_aliases_are_normalized_before_exec, {
         normalize_explicit_target_args(&["build".into(), "--target=mac-arm64".into()]),
         ["build", "--target=aarch64-apple-darwin"]
     );
-});
+}
 
-crate::timed_test!(only_build_producing_maturin_commands_receive_policy, {
+#[test]
+fn only_build_producing_maturin_commands_receive_policy() {
     for args in [
         vec!["build".into()],
         vec!["develop".into()],
@@ -355,29 +362,29 @@ crate::timed_test!(only_build_producing_maturin_commands_receive_policy, {
     ] {
         assert!(!maturin_args_are_build(&args), "{args:?}");
     }
-});
+}
 
-crate::timed_test!(host_triple_resolves_to_known_triple, {
+#[test]
+fn host_triple_resolves_to_known_triple() {
     let host = host_triple();
     assert!(host.is_empty() || crate::core::is_canonical(host) || host.contains('-'));
-});
+}
 
-crate::timed_test!(
-    known_native_cargo_resolution_does_not_require_workspace_metadata,
-    {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let missing_workspace = temp.path().join("does-not-exist");
-        let host = host_triple();
+#[test]
+fn known_native_cargo_resolution_does_not_require_workspace_metadata() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let missing_workspace = temp.path().join("does-not-exist");
+    let host = host_triple();
 
-        let plan = resolve_for_cargo_invocation(&missing_workspace, &[], Some(host));
+    let plan = resolve_for_cargo_invocation(&missing_workspace, &[], Some(host));
 
-        assert_eq!(plan.mode, PlanMode::Native);
-        assert!(plan.env.is_empty());
-        assert!(plan.diagnostic.is_none());
-    }
-);
+    assert_eq!(plan.mode, PlanMode::Native);
+    assert!(plan.env.is_empty());
+    assert!(plan.diagnostic.is_none());
+}
 
-crate::timed_test!(unknown_cargo_target_does_not_assume_native, {
+#[test]
+fn unknown_cargo_target_does_not_assume_native() {
     let temp = tempfile::tempdir().expect("tempdir");
     let missing_workspace = temp.path().join("does-not-exist");
 
@@ -388,9 +395,10 @@ crate::timed_test!(unknown_cargo_target_does_not_assume_native, {
         .diagnostic
         .as_deref()
         .is_some_and(|message| message.contains("metadata")));
-});
+}
 
-crate::timed_test!(cargo_config_target_keeps_conservative_metadata_path, {
+#[test]
+fn cargo_config_target_keeps_conservative_metadata_path() {
     let temp = tempfile::tempdir().expect("tempdir");
     let missing_workspace = temp.path().join("does-not-exist");
     let args = vec![
@@ -402,9 +410,10 @@ crate::timed_test!(cargo_config_target_keeps_conservative_metadata_path, {
     let plan = resolve_for_cargo_invocation(&missing_workspace, &args, Some(host_triple()));
 
     assert_eq!(plan.mode, PlanMode::Unresolved);
-});
+}
 
-crate::timed_test!(explicit_cross_target_beats_weaker_known_native_target, {
+#[test]
+fn explicit_cross_target_beats_weaker_known_native_target() {
     let temp = tempfile::tempdir().expect("tempdir");
     let missing_workspace = temp.path().join("does-not-exist");
     let cross_target = if host_triple().contains("windows") {
@@ -422,9 +431,10 @@ crate::timed_test!(explicit_cross_target_beats_weaker_known_native_target, {
 
     assert_eq!(plan.mode, PlanMode::Unresolved);
     assert_eq!(plan.target, cross_target);
-});
+}
 
-crate::timed_test!(target_after_separator_cannot_override_known_cargo_target, {
+#[test]
+fn target_after_separator_cannot_override_known_cargo_target() {
     let temp = tempfile::tempdir().expect("tempdir");
     let missing_workspace = temp.path().join("does-not-exist");
     let cross_target = if host_triple().contains("windows") {
@@ -443,13 +453,14 @@ crate::timed_test!(target_after_separator_cannot_override_known_cargo_target, {
 
     assert_eq!(plan.mode, PlanMode::Unresolved);
     assert_eq!(plan.target, cross_target);
-});
+}
 
-crate::timed_test!(public_native_plan_keeps_metadata_reporting_semantics, {
+#[test]
+fn public_native_plan_keeps_metadata_reporting_semantics() {
     let temp = tempfile::tempdir().expect("tempdir");
     let missing_workspace = temp.path().join("does-not-exist");
 
     let plan = resolve_for_invocation(&missing_workspace, &[], Some(host_triple()));
 
     assert_eq!(plan.mode, PlanMode::Unresolved);
-});
+}

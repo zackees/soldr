@@ -312,11 +312,12 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    crate::timed_test!(report_starts_empty_on_unseeded_state, {
+    #[test]
+    fn report_starts_empty_on_unseeded_state() {
         let dir = TempDir::new().expect("tempdir");
         let paths = SoldrPaths::with_root(dir.path().to_path_buf());
         paths.ensure_dirs().expect("ensure");
         let report = cook_evict_pass(&paths, &CookConfig::default());
         assert_eq!(report, CookEvictReport::default());
-    });
+    }
 }

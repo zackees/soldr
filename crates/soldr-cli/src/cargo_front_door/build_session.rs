@@ -274,7 +274,6 @@ pub(super) fn persist_build_session_end_fallback_inner(
 mod tests {
     use super::*;
     use crate::core::jobs::{JobsSource, ResolvedJobs};
-    use crate::timed_test;
 
     fn daemon(jobs: usize, source: &str) -> DaemonCompileLimit {
         DaemonCompileLimit {
@@ -291,7 +290,8 @@ mod tests {
     // contention budget. Counting opens is the assertion because the count
     // is the cost — three opens under a concurrent build is up to three
     // stalls for one record.
-    timed_test!(a_session_start_fallback_opens_the_state_db_once, {
+    #[test]
+    fn a_session_start_fallback_opens_the_state_db_once() {
         let temp = tempfile::tempdir().expect("tempdir");
         let paths = SoldrPaths::with_root(temp.path().join("root"));
 
@@ -307,11 +307,12 @@ mod tests {
             .expect("read back")
             .expect("record persisted");
         assert_eq!(stored.repo_root, Path::new("/repo").display().to_string());
-    });
+    }
 
     // A raw redb lock string reads like corruption — soldr#2223 was filed
     // on that impression. Contention must say so, and say where to look.
-    timed_test!(contention_errors_explain_themselves, {
+    #[test]
+    fn contention_errors_explain_themselves() {
         let text = contention_aware_error(
             "redb database error: Database already open. \
                                            Cannot acquire lock.",
@@ -323,9 +324,10 @@ mod tests {
         // An unrelated failure must not be dressed up as contention.
         let other = contention_aware_error("permission denied").to_string();
         assert!(!other.contains("not a corrupt database"), "{other}");
-    });
+    }
 
-    timed_test!(a_matching_limit_says_nothing, {
+    #[test]
+    fn a_matching_limit_says_nothing() {
         assert_eq!(
             drift_warning(
                 &daemon(8, "default"),
@@ -336,9 +338,10 @@ mod tests {
             ),
             None
         );
-    });
+    }
 
-    timed_test!(matching_numbers_from_different_sources_still_say_nothing, {
+    #[test]
+    fn matching_numbers_from_different_sources_still_say_nothing() {
         // The build does exactly what was asked for. Reporting a
         // provenance difference that changes no behavior would put a
         // warning on ordinary builds -- e.g. `SOLDR_JOBS=8` on a host
@@ -354,9 +357,10 @@ mod tests {
             ),
             None
         );
-    });
+    }
 
-    timed_test!(a_drifted_limit_names_both_values_and_the_fix, {
+    #[test]
+    fn a_drifted_limit_names_both_values_and_the_fix() {
         let text = drift_warning(
             &daemon(16, "default"),
             ResolvedJobs {
@@ -377,9 +381,10 @@ mod tests {
         for line in text.lines() {
             assert!(line.starts_with("soldr warning: "), "unprefixed: {line:?}");
         }
-    });
+    }
 
-    timed_test!(drift_is_reported_in_both_directions, {
+    #[test]
+    fn drift_is_reported_in_both_directions() {
         // Asking for *fewer* compiles than the daemon runs is the case
         // that matters most -- it is how someone reins in a machine that
         // is thrashing, and the direction where silently getting the
@@ -400,7 +405,7 @@ mod tests {
             },
         );
         assert!(more.is_some());
-    });
+    }
 
     // soldr#2224 acceptance: one logical session end = one acquisition of
     // `state.redb`.
@@ -409,7 +414,8 @@ mod tests {
     // `aggregate_session`, `upsert_build`, `append_event` — so a single
     // session end could burn four consecutive 5 s contention budgets and
     // still lose the row, which is the warning soldr#2223 reported.
-    timed_test!(a_session_end_fallback_opens_the_state_db_once, {
+    #[test]
+    fn a_session_end_fallback_opens_the_state_db_once() {
         let temp = tempfile::tempdir().expect("tempdir");
         let paths = SoldrPaths::with_root(temp.path().join("root"));
         let db_path = crate::cache_lib::data_db_path(&paths);
@@ -427,5 +433,5 @@ mod tests {
             .expect("record persisted");
         assert_eq!(stored.exit_code, Some(0));
         assert_eq!(stored.ended_at_ms, Some(5_000));
-    });
+    }
 }

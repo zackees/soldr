@@ -321,7 +321,8 @@ pub fn cxx_stdlib_pin_env(
 mod tests {
     use super::*;
 
-    crate::timed_test!(maps_only_supported_gnu_targets, {
+    #[test]
+    fn maps_only_supported_gnu_targets() {
         assert_eq!(
             GnuLinuxToolchainTarget::for_triple("x86_64-unknown-linux-gnu"),
             Some(GnuLinuxToolchainTarget::X86_64)
@@ -334,13 +335,14 @@ mod tests {
             GnuLinuxToolchainTarget::for_triple("x86_64-unknown-linux-musl"),
             None
         );
-    });
+    }
 
-    crate::timed_test!(asset_url_uses_catalogue_identity, {
+    #[test]
+    fn asset_url_uses_catalogue_identity() {
         let url = asset_url_for(GNU_LINUX_TOOLCHAIN_VERSION, "linux-arm64-gnu");
         assert!(url.contains("/gnu-linux-toolchain/gcc-13.3.0-glibc-2.17-1/linux-arm64-gnu/"));
         assert!(url.ends_with("/bundle.tar.zst"));
-    });
+    }
 
     /// A minimal on-disk toolchain layout that passes the tool-binary
     /// half of `validate()`. `usr/lib` is created per `lib_kind`:
@@ -369,14 +371,16 @@ mod tests {
         }
     }
 
-    crate::timed_test!(validate_accepts_real_sysroot_dirs, {
+    #[test]
+    fn validate_accepts_real_sysroot_dirs() {
         let tmp = tempfile::tempdir().unwrap();
         let toolchain = synth_toolchain(tmp.path(), "dir");
         validate(&toolchain).expect("real dirs must validate");
         assert!(!sysroot_has_wrong_flavor_link(&toolchain));
-    });
+    }
 
-    crate::timed_test!(validate_names_remedy_for_non_traversable_sysroot_entry, {
+    #[test]
+    fn validate_names_remedy_for_non_traversable_sysroot_entry() {
         let tmp = tempfile::tempdir().unwrap();
         let toolchain = synth_toolchain(tmp.path(), "wrong-flavor");
         let err = validate(&toolchain).expect_err("wrong-flavor entry must fail");
@@ -391,9 +395,10 @@ mod tests {
             "must name the exact directory to delete: {message}"
         );
         assert!(sysroot_has_wrong_flavor_link(&toolchain));
-    });
+    }
 
-    crate::timed_test!(validate_reports_truly_missing_sysroot_dir, {
+    #[test]
+    fn validate_reports_truly_missing_sysroot_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let toolchain = synth_toolchain(tmp.path(), "absent");
         let err = validate(&toolchain).expect_err("absent entry must fail");
@@ -406,9 +411,10 @@ mod tests {
             !sysroot_has_wrong_flavor_link(&toolchain),
             "absent entry must NOT trigger the self-heal re-extract"
         );
-    });
+    }
 
-    crate::timed_test!(target_env_uses_prefixed_gcc_and_sysroot, {
+    #[test]
+    fn target_env_uses_prefixed_gcc_and_sysroot() {
         let toolchain = GnuLinuxToolchain {
             root: PathBuf::from("/managed"),
             bin_dir: PathBuf::from("/managed/bin"),
@@ -449,12 +455,13 @@ mod tests {
             "x86_64-unknown-linux-musl",
             GNU_LINUX_GLIBC_BASELINE
         ));
-    });
+    }
 
     // soldr#2309: the pin must sit exactly on cc-rs's lookup chain, or a
     // caller override through one of the other spellings would be shadowed
     // instead of respected.
-    crate::timed_test!(cxx_stdlib_lookup_matches_cc_rs_chain, {
+    #[test]
+    fn cxx_stdlib_lookup_matches_cc_rs_chain() {
         assert_eq!(
             cxx_stdlib_lookup_keys("aarch64-unknown-linux-gnu"),
             [
@@ -464,9 +471,10 @@ mod tests {
                 "CXXSTDLIB".to_string(),
             ]
         );
-    });
+    }
 
-    crate::timed_test!(cxx_stdlib_pin_defaults_to_stdcxx, {
+    #[test]
+    fn cxx_stdlib_pin_defaults_to_stdcxx() {
         let env = cxx_stdlib_pin_env("aarch64-unknown-linux-gnu", true, |_| false);
         assert_eq!(
             env,
@@ -482,9 +490,10 @@ mod tests {
         for (key, _) in &env {
             assert!(keys.contains(key), "pin key {key} missing from plan keys");
         }
-    });
+    }
 
-    crate::timed_test!(cxx_stdlib_pin_withholds_bare_form_on_non_linux_hosts, {
+    #[test]
+    fn cxx_stdlib_pin_withholds_bare_form_on_non_linux_hosts() {
         let env = cxx_stdlib_pin_env("x86_64-unknown-linux-gnu", false, |_| false);
         assert_eq!(
             env,
@@ -493,9 +502,10 @@ mod tests {
                 "stdc++".to_string()
             )]
         );
-    });
+    }
 
-    crate::timed_test!(caller_set_stdlib_wins_over_the_pin, {
+    #[test]
+    fn caller_set_stdlib_wins_over_the_pin() {
         // Any spelling in cc-rs's chain -- including the caller pinning it
         // to a *different* stdlib, or to empty ("link no stdlib") -- must
         // suppress the injection entirely.
@@ -507,5 +517,5 @@ mod tests {
                 "caller-set {caller_key} must suppress the pin, got {env:?}"
             );
         }
-    });
+    }
 }

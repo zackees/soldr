@@ -161,127 +161,121 @@ fn stop_daemon(cache_root: &Path, child: &mut std::process::Child) {
     let _ = child.wait();
 }
 
-soldr_cli::timed_test!(
-    two_daemons_against_one_root_never_coexist,
-    Duration::from_secs(240),
-    {
-        let cache_root = unique_temp_dir("single-instance-cache");
-        let home_root = unique_temp_dir("single-instance-home");
+#[test]
+fn two_daemons_against_one_root_never_coexist() {
+    let cache_root = unique_temp_dir("single-instance-cache");
+    let home_root = unique_temp_dir("single-instance-home");
 
-        // First daemon wins the root and starts serving.
-        let mut first = spawn_daemon(&cache_root, &home_root);
-        assert!(
-            wait_until_serving(&cache_root, Instant::now() + READY_TIMEOUT),
-            "first daemon never became ready"
-        );
+    // First daemon wins the root and starts serving.
+    let mut first = spawn_daemon(&cache_root, &home_root);
+    assert!(
+        wait_until_serving(&cache_root, Instant::now() + READY_TIMEOUT),
+        "first daemon never became ready"
+    );
 
-        // Record who is serving *before* the challenger appears. Compared
-        // against `first.id()` this is immune to the daemon re-execing or
-        // relocating itself (which it does on Windows), while still proving the
-        // incumbent was not displaced.
-        let sock = direct_sock(&cache_root);
-        let incumbent_pid = settled(|| soldr_cli::daemon::client::status(&sock))
-            .expect("incumbent must be serving")
-            .pid;
+    // Record who is serving *before* the challenger appears. Compared
+    // against `first.id()` this is immune to the daemon re-execing or
+    // relocating itself (which it does on Windows), while still proving the
+    // incumbent was not displaced.
+    let sock = direct_sock(&cache_root);
+    let incumbent_pid = settled(|| soldr_cli::daemon::client::status(&sock))
+        .expect("incumbent must be serving")
+        .pid;
 
-        // Second daemon, same root. It must refuse rather than coexist.
-        let second = spawn_daemon(&cache_root, &home_root);
-        let output = {
-            let deadline = Instant::now() + LOSER_EXIT_TIMEOUT;
-            let mut second = second;
-            loop {
-                if matches!(second.try_wait(), Ok(Some(_))) {
-                    break second.wait_with_output().expect("collect loser output");
-                }
-                if Instant::now() >= deadline {
-                    let _ = second.kill();
-                    let _ = second.wait();
-                    stop_daemon(&cache_root, &mut first);
-                    panic!(
-                        "a second soldr-daemon stayed alive against the same root for \
+    // Second daemon, same root. It must refuse rather than coexist.
+    let second = spawn_daemon(&cache_root, &home_root);
+    let output = {
+        let deadline = Instant::now() + LOSER_EXIT_TIMEOUT;
+        let mut second = second;
+        loop {
+            if matches!(second.try_wait(), Ok(Some(_))) {
+                break second.wait_with_output().expect("collect loser output");
+            }
+            if Instant::now() >= deadline {
+                let _ = second.kill();
+                let _ = second.wait();
+                stop_daemon(&cache_root, &mut first);
+                panic!(
+                    "a second soldr-daemon stayed alive against the same root for \
                          {LOSER_EXIT_TIMEOUT:?} — the single-instance guard did not hold \
                          (issue #1814)"
-                    );
-                }
-                std::thread::sleep(POLL);
+                );
             }
-        };
-
-        // The loser reports why. `daemon_entry` deliberately exits 0 on
-        // AlreadyRunning (it is not an error for a redundant spawn to no-op),
-        // so the diagnostic is the assertion, not the exit code.
-        let combined = format!(
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(
-            combined.contains("already running") || combined.contains("root ownership is busy"),
-            "second daemon exited without explaining that a daemon already owned the \
-             root; output was:\n{combined}"
-        );
-
-        // The winner is still the one serving — the loser must not have
-        // displaced it, stolen the endpoint, or corrupted the route claim.
-        let status = settled(|| soldr_cli::daemon::client::status(&sock))
-            .expect("the original daemon must still be serving after the loser exits");
-        assert_eq!(
-            status.pid, incumbent_pid,
-            "the endpoint was served by pid {incumbent_pid} before the second daemon \
-             started and by pid {} after — the challenger displaced the incumbent \
-             instead of backing off (issue #1814)",
-            status.pid
-        );
-
-        stop_daemon(&cache_root, &mut first);
-    }
-);
-
-soldr_cli::timed_test!(
-    losing_daemon_leaves_the_state_db_openable,
-    Duration::from_secs(240),
-    {
-        // The failure mode #1814 is really about: a coexisting second daemon
-        // holds `state.redb`, so the incumbent's own opens start failing with
-        // `DatabaseAlreadyOpen`. With the guard holding, a rejected second
-        // daemon must leave the state DB exactly as openable as before.
-        let cache_root = unique_temp_dir("single-instance-db-cache");
-        let home_root = unique_temp_dir("single-instance-db-home");
-
-        let mut first = spawn_daemon(&cache_root, &home_root);
-        assert!(
-            wait_until_serving(&cache_root, Instant::now() + READY_TIMEOUT),
-            "first daemon never became ready"
-        );
-
-        let mut second = spawn_daemon(&cache_root, &home_root);
-        let deadline = Instant::now() + LOSER_EXIT_TIMEOUT;
-        while Instant::now() < deadline && !matches!(second.try_wait(), Ok(Some(_))) {
             std::thread::sleep(POLL);
         }
-        let _ = second.kill();
-        let _ = second.wait();
+    };
 
-        // The incumbent still answers, which is only possible if its own
-        // state-DB access never lost the file lock to the rejected daemon.
-        let sock = direct_sock(&cache_root);
-        assert!(
-            settled(|| soldr_cli::daemon::client::status(&sock)).is_ok(),
-            "incumbent daemon stopped serving after a second daemon was rejected"
-        );
+    // The loser reports why. `daemon_entry` deliberately exits 0 on
+    // AlreadyRunning (it is not an error for a redundant spawn to no-op),
+    // so the diagnostic is the assertion, not the exit code.
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("already running") || combined.contains("root ownership is busy"),
+        "second daemon exited without explaining that a daemon already owned the \
+             root; output was:\n{combined}"
+    );
 
-        // And no contention was ever recorded against the state DB. This is the
-        // #1814 acceptance criterion ("zero DatabaseAlreadyOpen errors") applied
-        // to the two-daemon scenario specifically.
-        let contention_log = cache_root.join("logs").join("redb-contention.jsonl");
-        let contention = std::fs::read_to_string(&contention_log).unwrap_or_default();
-        assert!(
-            !contention.contains("budget-exhausted"),
-            "a rejected second daemon must not cause state-DB open failures; \
-             {} contained:\n{contention}",
-            contention_log.display()
-        );
+    // The winner is still the one serving — the loser must not have
+    // displaced it, stolen the endpoint, or corrupted the route claim.
+    let status = settled(|| soldr_cli::daemon::client::status(&sock))
+        .expect("the original daemon must still be serving after the loser exits");
+    assert_eq!(
+        status.pid, incumbent_pid,
+        "the endpoint was served by pid {incumbent_pid} before the second daemon \
+             started and by pid {} after — the challenger displaced the incumbent \
+             instead of backing off (issue #1814)",
+        status.pid
+    );
 
-        stop_daemon(&cache_root, &mut first);
+    stop_daemon(&cache_root, &mut first);
+}
+
+#[test]
+fn losing_daemon_leaves_the_state_db_openable() {
+    // The failure mode #1814 is really about: a coexisting second daemon
+    // holds `state.redb`, so the incumbent's own opens start failing with
+    // `DatabaseAlreadyOpen`. With the guard holding, a rejected second
+    // daemon must leave the state DB exactly as openable as before.
+    let cache_root = unique_temp_dir("single-instance-db-cache");
+    let home_root = unique_temp_dir("single-instance-db-home");
+
+    let mut first = spawn_daemon(&cache_root, &home_root);
+    assert!(
+        wait_until_serving(&cache_root, Instant::now() + READY_TIMEOUT),
+        "first daemon never became ready"
+    );
+
+    let mut second = spawn_daemon(&cache_root, &home_root);
+    let deadline = Instant::now() + LOSER_EXIT_TIMEOUT;
+    while Instant::now() < deadline && !matches!(second.try_wait(), Ok(Some(_))) {
+        std::thread::sleep(POLL);
     }
-);
+    let _ = second.kill();
+    let _ = second.wait();
+
+    // The incumbent still answers, which is only possible if its own
+    // state-DB access never lost the file lock to the rejected daemon.
+    let sock = direct_sock(&cache_root);
+    assert!(
+        settled(|| soldr_cli::daemon::client::status(&sock)).is_ok(),
+        "incumbent daemon stopped serving after a second daemon was rejected"
+    );
+
+    // And no contention was ever recorded against the state DB. This is the
+    // #1814 acceptance criterion ("zero DatabaseAlreadyOpen errors") applied
+    // to the two-daemon scenario specifically.
+    let contention_log = cache_root.join("logs").join("redb-contention.jsonl");
+    let contention = std::fs::read_to_string(&contention_log).unwrap_or_default();
+    assert!(
+        !contention.contains("budget-exhausted"),
+        "a rejected second daemon must not cause state-DB open failures; \
+             {} contained:\n{contention}",
+        contention_log.display()
+    );
+
+    stop_daemon(&cache_root, &mut first);
+}

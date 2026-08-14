@@ -70,7 +70,8 @@ pub async fn ensure_sqlite_sysroot(
 mod tests {
     use super::*;
 
-    crate::timed_test!(slug_for_supported_triples, {
+    #[test]
+    fn slug_for_supported_triples() {
         assert_eq!(
             catalogue_slug_for("x86_64-unknown-linux-musl"),
             Some("linux-x64-musl")
@@ -84,13 +85,14 @@ mod tests {
             Some("darwin-arm64")
         );
         assert_eq!(catalogue_slug_for("wasm32-unknown-unknown"), None);
-    });
+    }
 
-    crate::timed_test!(asset_url_layout_matches_catalogue, {
+    #[test]
+    fn asset_url_layout_matches_catalogue() {
         let u = asset_url_for(MANAGED_SQLITE_VERSION, "linux-arm64-musl");
         assert!(u.contains("/sqlite/3.46.0/linux-arm64-musl/"));
         assert!(u.ends_with("/bundle.tar.zst"));
-    });
+    }
 
     // The original `ensure_sqlite_sysroot_returns_not_yet_ingested` test
     // was removed in the soldr#1064 phase B follow-up: sqlite 3.46.0 IS

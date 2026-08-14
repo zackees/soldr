@@ -27,7 +27,6 @@
 //! assertions are shared, because the contract they check is the transport's
 //! *observable behaviour*, which must be identical on both.
 
-use soldr_cli::timed_test;
 use std::time::Duration;
 
 /// Short enough that the test finishes quickly, long enough that a loaded
@@ -94,67 +93,60 @@ impl Drop for WedgeGuard {
     }
 }
 
-timed_test!(
-    a_daemon_that_accepts_then_never_answers_reports_a_wedged_stall,
-    Duration::from_secs(60),
-    {
-        // Must happen before anything touches `compile_reply_timeout()`.
-        std::env::set_var("SOLDR_COMPILE_REPLY_TIMEOUT_SECS", STALL_BUDGET_SECS);
+#[test]
+fn a_daemon_that_accepts_then_never_answers_reports_a_wedged_stall() {
+    // Must happen before anything touches `compile_reply_timeout()`.
+    std::env::set_var("SOLDR_COMPILE_REPLY_TIMEOUT_SECS", STALL_BUDGET_SECS);
 
-        let (endpoint, _wedge) = spawn_wedged_daemon();
+    let (endpoint, _wedge) = spawn_wedged_daemon();
 
-        let request = soldr_cli::daemon::protocol::CompileRequest {
-            args: vec!["rustc".to_string(), "--version".to_string()],
-            cwd: std::env::current_dir().expect("cwd").display().to_string(),
-            env: Vec::new(),
-            stdin: Vec::new(),
-            lifecycle: None,
-            ipc_busy_retries: 0,
-        };
+    let request = soldr_cli::daemon::protocol::CompileRequest {
+        args: vec!["rustc".to_string(), "--version".to_string()],
+        cwd: std::env::current_dir().expect("cwd").display().to_string(),
+        env: Vec::new(),
+        stdin: Vec::new(),
+        lifecycle: None,
+        ipc_busy_retries: 0,
+    };
 
-        let mut stdout: Vec<u8> = Vec::new();
-        let mut stderr: Vec<u8> = Vec::new();
-        let started = std::time::Instant::now();
-        let result = soldr_cli::daemon::client::compile_streaming(
-            &endpoint,
-            request,
-            &mut stdout,
-            &mut stderr,
-        );
-        let elapsed = started.elapsed();
+    let mut stdout: Vec<u8> = Vec::new();
+    let mut stderr: Vec<u8> = Vec::new();
+    let started = std::time::Instant::now();
+    let result =
+        soldr_cli::daemon::client::compile_streaming(&endpoint, request, &mut stdout, &mut stderr);
+    let elapsed = started.elapsed();
 
-        let error = result.expect_err("a daemon that never answers must not report success");
-        match error {
-            soldr_cli::daemon::client::ClientError::CompileStalled {
-                saw_output,
-                elapsed: reported,
-            } => {
-                // The whole point of the variant: nothing arrived, so this is
-                // the wedge case, whose remedy is to bypass the cache -- not
-                // the slow-build case, whose remedy is a longer deadline.
-                assert!(
-                    !saw_output,
-                    "a silent daemon must report saw_output=false, or the \
+    let error = result.expect_err("a daemon that never answers must not report success");
+    match error {
+        soldr_cli::daemon::client::ClientError::CompileStalled {
+            saw_output,
+            elapsed: reported,
+        } => {
+            // The whole point of the variant: nothing arrived, so this is
+            // the wedge case, whose remedy is to bypass the cache -- not
+            // the slow-build case, whose remedy is a longer deadline.
+            assert!(
+                !saw_output,
+                "a silent daemon must report saw_output=false, or the \
                      wrapper will advise raising the timeout instead of \
                      bypassing a wedged cache"
-                );
-                assert!(
-                    reported >= Duration::from_secs(1),
-                    "the reported elapsed should reflect the real wait, got {reported:?}"
-                );
-            }
-            other => panic!("expected CompileStalled from a wedged daemon, got {other:?}"),
+            );
+            assert!(
+                reported >= Duration::from_secs(1),
+                "the reported elapsed should reflect the real wait, got {reported:?}"
+            );
         }
-
-        // Without the budget being honoured this would sit for the 30-minute
-        // default, which is exactly what Phase 4 wants provable.
-        assert!(
-            elapsed < WEDGE_HOLD,
-            "the stall must be bounded by SOLDR_COMPILE_REPLY_TIMEOUT_SECS, took {elapsed:?}"
-        );
-        assert!(
-            stdout.is_empty() && stderr.is_empty(),
-            "a wedged daemon produced no bytes, so nothing should have been relayed"
-        );
+        other => panic!("expected CompileStalled from a wedged daemon, got {other:?}"),
     }
-);
+
+    // Without the budget being honoured this would sit for the 30-minute
+    // default, which is exactly what Phase 4 wants provable.
+    assert!(
+        elapsed < WEDGE_HOLD,
+        "the stall must be bounded by SOLDR_COMPILE_REPLY_TIMEOUT_SECS, took {elapsed:?}"
+    );
+    assert!(
+        stdout.is_empty() && stderr.is_empty(),
+        "a wedged daemon produced no bytes, so nothing should have been relayed"
+    );
+}

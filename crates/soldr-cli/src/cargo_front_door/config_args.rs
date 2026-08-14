@@ -32,7 +32,8 @@ mod tests {
         args.split_whitespace().map(str::to_string).collect()
     }
 
-    crate::timed_test!(inserts_after_nextest_archive_subcommand, {
+    #[test]
+    fn inserts_after_nextest_archive_subcommand() {
         let args = argvec(
             "--manifest-path Cargo.toml nextest --color never archive --target x86_64-apple-darwin",
         );
@@ -47,9 +48,10 @@ mod tests {
             got,
             argvec("--manifest-path Cargo.toml nextest --color never archive --config target.x86_64-apple-darwin.mimalloc.rustc-link-lib=[\"static=mimalloc\"] --target x86_64-apple-darwin")
         );
-    });
+    }
 
-    crate::timed_test!(stays_before_regular_cargo_subcommand, {
+    #[test]
+    fn stays_before_regular_cargo_subcommand() {
         let args = argvec("--manifest-path Cargo.toml build --target x86_64-apple-darwin");
         let cargo_args = vec![
             "--config".to_string(),
@@ -62,5 +64,5 @@ mod tests {
             got,
             argvec("--manifest-path Cargo.toml --config target.x86_64-apple-darwin.mimalloc.rustc-link-lib=[\"static=mimalloc\"] build --target x86_64-apple-darwin")
         );
-    });
+    }
 }

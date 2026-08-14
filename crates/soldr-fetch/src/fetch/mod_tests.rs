@@ -178,7 +178,8 @@ fn resolve_local_crgx_errors_when_binary_missing() {
     );
 }
 
-crate::timed_test!(resolver_order_parses_default_and_subsets, {
+#[test]
+fn resolver_order_parses_default_and_subsets() {
     // Unset / empty / whitespace → all hops enabled.
     assert_eq!(ResolverOrder::parse(""), ResolverOrder::all());
     assert_eq!(ResolverOrder::parse("   "), ResolverOrder::all());
@@ -200,18 +201,20 @@ crate::timed_test!(resolver_order_parses_default_and_subsets, {
     assert!(mixed.try_embed);
     assert!(mixed.try_live);
     assert!(!mixed.try_api);
-});
+}
 
-crate::timed_test!(resolver_order_env_var_skips_embed_when_unset, {
+#[test]
+fn resolver_order_env_var_skips_embed_when_unset() {
     // Defensive: ensure the canonical "all on" form keeps embed on.
     // The actual env-var override is exercised in the integration
     // test under `tests/embed_first_resolver.rs` (touching the live
     // process env from a unit test is racy).
     let order = ResolverOrder::all();
     assert!(order.try_embed && order.try_live && order.try_api);
-});
+}
 
-crate::timed_test!(try_embedded_manifest_v6_misses_on_empty_blob, {
+#[test]
+fn try_embedded_manifest_v6_misses_on_empty_blob() {
     use crate::core::SoldrPaths;
     // The shipped embed (before this PR's build-time refresh ran)
     // can legitimately be the empty envelope on a fresh checkout.
@@ -241,7 +244,7 @@ crate::timed_test!(try_embedded_manifest_v6_misses_on_empty_blob, {
         ))
         .expect("must return Ok, not Err");
     assert!(result.is_none(), "unknown tool must miss");
-});
+}
 
 #[test]
 fn annotate_release_fetch_error_includes_version_and_target() {
@@ -300,7 +303,8 @@ fn darwin_x64_catalogue_mappings_cover_blessed_mac_x86() {
 
 // soldr#936 smoke-test-or-evict regression tests.
 
-crate::timed_test!(smoke_test_missing_file_errors, {
+#[test]
+fn smoke_test_missing_file_errors() {
     let tmp = tempfile::tempdir().expect("tmpdir");
     let bogus = tmp.path().join("not-a-binary");
     let err = smoke_test_or_evict(&bogus, "fake-tool", &TargetTriple::host().unwrap())
@@ -309,9 +313,10 @@ crate::timed_test!(smoke_test_missing_file_errors, {
         err.to_string().contains("not a file after extract"),
         "expected 'not a file after extract' in error, got: {err}"
     );
-});
+}
 
-crate::timed_test!(smoke_test_corrupt_shell_evicts_file, {
+#[test]
+fn smoke_test_corrupt_shell_evicts_file() {
     // soldr#936's actual motivating case: a downloaded artifact
     // is actually a corrupted shell script that fails with
     // `4: Syntax error: ")" unexpected`. Smoke runs --version,
@@ -335,18 +340,20 @@ crate::timed_test!(smoke_test_corrupt_shell_evicts_file, {
         !bogus_bin.is_file(),
         "smoke failure must evict the corrupted binary at {bogus_bin:?}"
     );
-});
+}
 
-crate::timed_test!(dylint_link_smoke_sets_target_qualified_toolchain, {
+#[test]
+fn dylint_link_smoke_sets_target_qualified_toolchain() {
     let target = TargetTriple::from_triple("x86_64-unknown-linux-gnu").unwrap();
     assert_eq!(
         smoke_rustup_toolchain("dylint-link", &target).as_deref(),
         Some("nightly-x86_64-unknown-linux-gnu")
     );
     assert_eq!(smoke_rustup_toolchain("cargo-dylint", &target), None);
-});
+}
 
-crate::timed_test!(dylint_link_accepts_msvc_help_exit, {
+#[test]
+fn dylint_link_accepts_msvc_help_exit() {
     let output = b"Microsoft (R) Incremental Linker Version 14.44\r\n\
                        usage: LINK [options] [files]";
     assert!(dylint_link_help_output_is_valid(Some(1), output, b""));
@@ -357,4 +364,4 @@ crate::timed_test!(dylint_link_accepts_msvc_help_exit, {
         b"unrelated failure",
         b""
     ));
-});
+}

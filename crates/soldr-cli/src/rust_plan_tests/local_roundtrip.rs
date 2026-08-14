@@ -78,46 +78,45 @@ fn context_for(
     }
 }
 
-crate::timed_test!(
-    run_zccache_rust_plan_local_save_then_restore_roundtrips_an_artifact,
-    {
-        let workspace = unique_dir("rustplan-ws");
-        let target_dir = workspace.join("target");
-        // A plausible full-target artifact under target/debug/deps.
-        let artifact = target_dir.join("debug").join("deps").join("libdemo.rlib");
-        std::fs::create_dir_all(artifact.parent().unwrap()).unwrap();
-        std::fs::write(&artifact, b"demo-rlib-contents").unwrap();
+#[test]
+fn run_zccache_rust_plan_local_save_then_restore_roundtrips_an_artifact() {
+    let workspace = unique_dir("rustplan-ws");
+    let target_dir = workspace.join("target");
+    // A plausible full-target artifact under target/debug/deps.
+    let artifact = target_dir.join("debug").join("deps").join("libdemo.rlib");
+    std::fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+    std::fs::write(&artifact, b"demo-rlib-contents").unwrap();
 
-        let cache_dir = unique_dir("rustplan-cache");
-        let plan_path = unique_dir("rustplan-plan").join("plan.pb");
-        let plan = full_mode_plan(&workspace, &target_dir);
-        std::fs::write(&plan_path, plan.to_proto_bytes().expect("encode plan")).unwrap();
+    let cache_dir = unique_dir("rustplan-cache");
+    let plan_path = unique_dir("rustplan-plan").join("plan.pb");
+    let plan = full_mode_plan(&workspace, &target_dir);
+    std::fs::write(&plan_path, plan.to_proto_bytes().expect("encode plan")).unwrap();
 
-        let ctx = context_for(&plan_path, &cache_dir);
+    let ctx = context_for(&plan_path, &cache_dir);
 
-        // Save: in-process `save_rust_plan_local` — must not spawn anything.
-        run_zccache_rust_plan(&ctx, "save", true).expect("in-process local save");
+    // Save: in-process `save_rust_plan_local` — must not spawn anything.
+    run_zccache_rust_plan(&ctx, "save", true).expect("in-process local save");
 
-        // Delete the artifact so restore has to bring it back.
-        std::fs::remove_file(&artifact).unwrap();
-        assert!(!artifact.exists());
+    // Delete the artifact so restore has to bring it back.
+    std::fs::remove_file(&artifact).unwrap();
+    assert!(!artifact.exists());
 
-        // Restore: in-process `restore_rust_plan_local`.
-        run_zccache_rust_plan(&ctx, "restore", false).expect("in-process local restore");
+    // Restore: in-process `restore_rust_plan_local`.
+    run_zccache_rust_plan(&ctx, "restore", false).expect("in-process local restore");
 
-        assert!(
-            artifact.exists(),
-            "restore must recreate the saved target artifact at {}",
-            artifact.display()
-        );
-        assert_eq!(std::fs::read(&artifact).unwrap(), b"demo-rlib-contents");
+    assert!(
+        artifact.exists(),
+        "restore must recreate the saved target artifact at {}",
+        artifact.display()
+    );
+    assert_eq!(std::fs::read(&artifact).unwrap(), b"demo-rlib-contents");
 
-        let _ = std::fs::remove_dir_all(&workspace);
-        let _ = std::fs::remove_dir_all(&cache_dir);
-    }
-);
+    let _ = std::fs::remove_dir_all(&workspace);
+    let _ = std::fs::remove_dir_all(&cache_dir);
+}
 
-crate::timed_test!(run_zccache_rust_plan_errors_on_missing_plan_file, {
+#[test]
+fn run_zccache_rust_plan_errors_on_missing_plan_file() {
     // Proves the in-process load path is exercised (no subprocess): a
     // missing plan file surfaces as a soldr error, not a spawn failure.
     let cache_dir = unique_dir("rustplan-missing-cache");
@@ -129,4 +128,4 @@ crate::timed_test!(run_zccache_rust_plan_errors_on_missing_plan_file, {
         "error should come from the in-process plan load, got: {err}"
     );
     let _ = std::fs::remove_dir_all(&cache_dir);
-});
+}

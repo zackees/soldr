@@ -240,7 +240,8 @@ fn run_uv(
 mod tests {
     use super::*;
 
-    crate::timed_test!(provisioner_parse_defaults_to_auto, {
+    #[test]
+    fn provisioner_parse_defaults_to_auto() {
         assert_eq!(
             MaturinProvisioner::from_env_value(None),
             MaturinProvisioner::Auto
@@ -262,9 +263,10 @@ mod tests {
             MaturinProvisioner::from_env_value(Some(" uv ")),
             MaturinProvisioner::Uv
         );
-    });
+    }
 
-    crate::timed_test!(env_layout_is_versioned_and_platform_correct, {
+    #[test]
+    fn env_layout_is_versioned_and_platform_correct() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
         let dir = env_dir_for(&paths, "maturin", "1.14.1");
@@ -278,9 +280,10 @@ mod tests {
         } else {
             assert!(exe.ends_with("bin/maturin"));
         }
-    });
+    }
 
-    crate::timed_test!(completed_env_short_circuits_without_uv, {
+    #[test]
+    fn completed_env_short_circuits_without_uv() {
         // A tool exe + sentinel must satisfy the provisioner with
         // zero network / uv-bundle work — proven by pointing at a
         // synthetic root where no uv bundle could possibly exist.
@@ -299,9 +302,10 @@ mod tests {
             ))
             .expect("completed env must short-circuit");
         assert_eq!(got, exe);
-    });
+    }
 
-    crate::timed_test!(missing_sentinel_means_incomplete, {
+    #[test]
+    fn missing_sentinel_means_incomplete() {
         // Exe without sentinel = half-built env → NOT complete, must
         // be rebuilt rather than served. Sentinel without exe likewise.
         let tmp = tempfile::tempdir().expect("tmpdir");
@@ -319,13 +323,14 @@ mod tests {
 
         std::fs::remove_file(&exe).unwrap();
         assert!(!env_is_complete(&env_dir, "ninja"), "no exe → incomplete");
-    });
+    }
 
-    crate::timed_test!(ninja_fallback_version_well_formed, {
+    #[test]
+    fn ninja_fallback_version_well_formed() {
         let parts: Vec<&str> = NINJA_PYPI_FALLBACK_VERSION.split('.').collect();
         assert!(parts.len() >= 2);
         for p in parts {
             assert!(p.chars().all(|c| c.is_ascii_digit()));
         }
-    });
+    }
 }

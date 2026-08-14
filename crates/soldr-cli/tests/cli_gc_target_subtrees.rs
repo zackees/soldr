@@ -6,7 +6,6 @@ mod common;
 
 use common::*;
 use serde_json::Value;
-use soldr_cli::timed_test;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -69,7 +68,8 @@ fn seed_one_target_subtree(label: &str, kind: &str) -> (PathBuf, PathBuf) {
     (cache_root, victim)
 }
 
-timed_test!(gc_list_json_walks_target_subtree_kinds, {
+#[test]
+fn gc_list_json_walks_target_subtree_kinds() {
     let cache_root = unique_temp_dir("gc-list-target-subtrees");
     let target = seed_all_target_subtrees(&cache_root);
     let (cargo_home, rustup_home) = sandbox_env("gc-list-target-subtrees");
@@ -110,9 +110,10 @@ timed_test!(gc_list_json_walks_target_subtree_kinds, {
         assert!(entry["size_bytes"].as_u64().unwrap_or(0) > 0);
         assert!(entry["file_count"].as_u64().unwrap_or(0) > 0);
     }
-});
+}
 
-timed_test!(gc_purge_target_subtree_flags_delete_only_selected_kind, {
+#[test]
+fn gc_purge_target_subtree_flags_delete_only_selected_kind() {
     let cases = [
         ("--target-incremental", "cargo_target_incremental"),
         ("--build-scripts", "cargo_target_build_script_binaries"),
@@ -154,4 +155,4 @@ timed_test!(gc_purge_target_subtree_flags_delete_only_selected_kind, {
             victim.display()
         );
     }
-});
+}

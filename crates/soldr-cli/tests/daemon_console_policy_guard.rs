@@ -36,7 +36,8 @@ fn read_crate_src(rel: &str) -> String {
     read_source_with_includes(&path)
 }
 
-soldr_cli::timed_test!(only_broker_launcher_places_and_spawns_daemon, {
+#[test]
+fn only_broker_launcher_places_and_spawns_daemon() {
     let launcher = read_crate_src("src/broker_launcher.rs");
     assert!(
         launcher.contains("ensure_daemon_relocated"),
@@ -85,4 +86,4 @@ soldr_cli::timed_test!(only_broker_launcher_places_and_spawns_daemon, {
             "compile_dispatch must have no direct daemon acquisition API: {forbidden}"
         );
     }
-});
+}

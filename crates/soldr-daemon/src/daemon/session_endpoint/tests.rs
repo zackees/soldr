@@ -42,20 +42,18 @@ const PROBE_NONCE_BYTES: usize = 32;
 // (`#![cfg(unix)]` / `#![cfg(target_os = "macos")]`) — they exercise
 // host-specific bind mechanics now owned by the platform listener leaf.
 
-crate::timed_test!(
-    private_endpoints_are_sibling_names_of_the_daemon_session_path,
-    {
-        let session = "/home/me/.soldr/routes/a/soldr-daemon.session.sock";
-        assert_eq!(
-            private_control_endpoint_from_session(session),
-            "/home/me/.soldr/routes/a/soldr-daemon.control.sock"
-        );
-        assert_eq!(
-            handoff_endpoint_path(session),
-            "/home/me/.soldr/routes/a/soldr-daemon.handoff.sock"
-        );
-    }
-);
+#[test]
+fn private_endpoints_are_sibling_names_of_the_daemon_session_path() {
+    let session = "/home/me/.soldr/routes/a/soldr-daemon.session.sock";
+    assert_eq!(
+        private_control_endpoint_from_session(session),
+        "/home/me/.soldr/routes/a/soldr-daemon.control.sock"
+    );
+    assert_eq!(
+        handoff_endpoint_path(session),
+        "/home/me/.soldr/routes/a/soldr-daemon.handoff.sock"
+    );
+}
 
 fn test_daemon_identity() -> DaemonProcess {
     let endpoint = Endpoint {
@@ -91,117 +89,115 @@ where
     }
 }
 
-crate::timed_test!(
-    session_endpoint_serves_real_compile_via_mux,
-    Duration::from_secs(300),
-    {
-        tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(async {
-                // Real rustc + the repo's pinned toolchain (mirrors the 6c
-                // bridge test), but driven through the endpoint's mux handler.
-                let current_dir = std::env::current_dir().expect("cwd");
-                let repo = current_dir
-                    .ancestors()
-                    .find(|c| c.join("rust-toolchain.toml").is_file())
-                    .expect("find repo rust-toolchain.toml");
-                let pinned = crate::core::read_rust_toolchain_manifest(repo)
-                    .expect("read rust-toolchain.toml")
-                    .channel
-                    .expect("rust-toolchain.toml declares a channel");
-                let rustc = zccache::test_support::find_rustc()
-                    .expect("Rust compiler prerequisite failed: no rustc on PATH");
+#[test]
+fn session_endpoint_serves_real_compile_via_mux() {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            // Real rustc + the repo's pinned toolchain (mirrors the 6c
+            // bridge test), but driven through the endpoint's mux handler.
+            let current_dir = std::env::current_dir().expect("cwd");
+            let repo = current_dir
+                .ancestors()
+                .find(|c| c.join("rust-toolchain.toml").is_file())
+                .expect("find repo rust-toolchain.toml");
+            let pinned = crate::core::read_rust_toolchain_manifest(repo)
+                .expect("read rust-toolchain.toml")
+                .channel
+                .expect("rust-toolchain.toml declares a channel");
+            let rustc = zccache::test_support::find_rustc()
+                .expect("Rust compiler prerequisite failed: no rustc on PATH");
 
-                let temp = tempfile::tempdir().expect("tempdir");
-                let project = temp.path().join("workspace");
-                std::fs::create_dir_all(project.join("src")).expect("create src dir");
-                std::fs::write(
-                    project.join("src/lib.rs"),
-                    "pub fn endpoint_answer() -> u32 { 6060 }\n",
-                )
-                .expect("write source");
+            let temp = tempfile::tempdir().expect("tempdir");
+            let project = temp.path().join("workspace");
+            std::fs::create_dir_all(project.join("src")).expect("create src dir");
+            std::fs::write(
+                project.join("src/lib.rs"),
+                "pub fn endpoint_answer() -> u32 { 6060 }\n",
+            )
+            .expect("write source");
 
-                let args: Vec<String> = vec![
-                    "--edition".into(),
-                    "2021".into(),
-                    "--crate-type".into(),
-                    "lib".into(),
-                    "--crate-name".into(),
-                    "soldr_session_endpoint_e2e".into(),
-                    "--emit=metadata".into(),
-                    "-C".into(),
-                    "metadata=sep1".into(),
-                    "--out-dir".into(),
-                    "target/debug/deps".into(),
-                    "src/lib.rs".into(),
-                ];
-                let mut env: Vec<SessionEnvVar> = std::env::vars()
-                    .filter(|(k, _)| k != "RUSTUP_TOOLCHAIN")
-                    .map(|(key, value)| SessionEnvVar { key, value })
-                    .collect();
-                env.push(SessionEnvVar {
-                    key: "RUSTUP_TOOLCHAIN".into(),
-                    value: pinned,
-                });
-                let start = running_process::broker::protocol_v2::SessionStart {
-                    program: rustc.as_path().display().to_string(),
-                    args,
-                    cwd: project.display().to_string(),
-                    env,
-                    clear_inherited_env: false,
-                };
-
-                let daemon = test_daemon_identity();
-                let paths = SoldrPaths::with_root(temp.path().join("root"));
-                let service = SoldrZccacheService::start(&paths, &daemon)
-                    .await
-                    .expect("start embedded zccache service");
-                let service = CompileServiceReadiness::ready(Arc::new(service));
-                let mux = soldr_session_endpoint_mux(daemon);
-
-                let (mut client, server) = tokio::io::duplex(1 << 20);
-                let client_fut = async {
-                    let hello = encode_session_frame(
-                        &SessionFrame {
-                            kind: Some(session_frame::Kind::Start(start)),
-                        },
-                        0,
-                    )
-                    .expect("encode SessionStart");
-                    client.write_all(&hello).await.expect("send SessionStart");
-                    client.flush().await.expect("flush");
-                    read_until_exit(&mut client).await
-                };
-
-                let (handler_res, (stdout, exit)) = tokio::join!(
-                    serve_session_connection(server, &service, &paths, &mux),
-                    client_fut
-                );
-                handler_res.expect("handler serve ok");
-
-                assert_eq!(
-                    exit.code,
-                    0,
-                    "real rustc compile must succeed through the endpoint handler; stdout={}",
-                    String::from_utf8_lossy(&stdout)
-                );
-                assert!(
-                    exit.metadata
-                        .contains_key(crate::daemon::session_sink::META_CACHE_OUTCOME),
-                    "SessionExit.metadata carries cache_outcome"
-                );
-                assert!(
-                    exit.metadata
-                        .contains_key(crate::daemon::session_sink::META_COMPILE_ID),
-                    "SessionExit.metadata carries compile_id"
-                );
+            let args: Vec<String> = vec![
+                "--edition".into(),
+                "2021".into(),
+                "--crate-type".into(),
+                "lib".into(),
+                "--crate-name".into(),
+                "soldr_session_endpoint_e2e".into(),
+                "--emit=metadata".into(),
+                "-C".into(),
+                "metadata=sep1".into(),
+                "--out-dir".into(),
+                "target/debug/deps".into(),
+                "src/lib.rs".into(),
+            ];
+            let mut env: Vec<SessionEnvVar> = std::env::vars()
+                .filter(|(k, _)| k != "RUSTUP_TOOLCHAIN")
+                .map(|(key, value)| SessionEnvVar { key, value })
+                .collect();
+            env.push(SessionEnvVar {
+                key: "RUSTUP_TOOLCHAIN".into(),
+                value: pinned,
             });
-    }
-);
+            let start = running_process::broker::protocol_v2::SessionStart {
+                program: rustc.as_path().display().to_string(),
+                args,
+                cwd: project.display().to_string(),
+                env,
+                clear_inherited_env: false,
+            };
 
-crate::timed_test!(session_endpoint_answers_backend_handle_probe, {
+            let daemon = test_daemon_identity();
+            let paths = SoldrPaths::with_root(temp.path().join("root"));
+            let service = SoldrZccacheService::start(&paths, &daemon)
+                .await
+                .expect("start embedded zccache service");
+            let service = CompileServiceReadiness::ready(Arc::new(service));
+            let mux = soldr_session_endpoint_mux(daemon);
+
+            let (mut client, server) = tokio::io::duplex(1 << 20);
+            let client_fut = async {
+                let hello = encode_session_frame(
+                    &SessionFrame {
+                        kind: Some(session_frame::Kind::Start(start)),
+                    },
+                    0,
+                )
+                .expect("encode SessionStart");
+                client.write_all(&hello).await.expect("send SessionStart");
+                client.flush().await.expect("flush");
+                read_until_exit(&mut client).await
+            };
+
+            let (handler_res, (stdout, exit)) = tokio::join!(
+                serve_session_connection(server, &service, &paths, &mux),
+                client_fut
+            );
+            handler_res.expect("handler serve ok");
+
+            assert_eq!(
+                exit.code,
+                0,
+                "real rustc compile must succeed through the endpoint handler; stdout={}",
+                String::from_utf8_lossy(&stdout)
+            );
+            assert!(
+                exit.metadata
+                    .contains_key(crate::daemon::session_sink::META_CACHE_OUTCOME),
+                "SessionExit.metadata carries cache_outcome"
+            );
+            assert!(
+                exit.metadata
+                    .contains_key(crate::daemon::session_sink::META_COMPILE_ID),
+                "SessionExit.metadata carries compile_id"
+            );
+        });
+}
+
+#[test]
+fn session_endpoint_answers_backend_handle_probe() {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -260,7 +256,7 @@ crate::timed_test!(session_endpoint_answers_backend_handle_probe, {
                 "probe response echoes the request id"
             );
         });
-});
+}
 
 /// A unique local-socket name for a test: a filesystem path under `temp` on
 /// Unix, a namespaced pipe name on Windows.
@@ -277,7 +273,8 @@ fn unique_session_socket(temp: &tempfile::TempDir) -> String {
     }
 }
 
-crate::timed_test!(session_endpoint_accept_loop_binds_and_dispatches_probe, {
+#[test]
+fn session_endpoint_accept_loop_binds_and_dispatches_probe() {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -335,4 +332,4 @@ crate::timed_test!(session_endpoint_accept_loop_binds_and_dispatches_probe, {
 
             server.abort();
         });
-});
+}

@@ -18,7 +18,8 @@ fn age(path: &std::path::Path, older_than_ttl_by: Duration) {
         .expect("backdate scratch entry");
 }
 
-crate::timed_test!(aggressive_cargo_gc_uses_cargo_accepted_duration_syntax, {
+#[test]
+fn aggressive_cargo_gc_uses_cargo_accepted_duration_syntax() {
     let ages = crate::cache_lib::auto_gc::CargoGcAgeSeconds {
         max_src: 604_800,
         max_crate: 1_209_600,
@@ -31,9 +32,10 @@ crate::timed_test!(aggressive_cargo_gc_uses_cargo_accepted_duration_syntax, {
     assert_eq!(args.max_src_age.as_deref(), Some("604800 seconds"));
     assert_eq!(args.max_crate_age.as_deref(), Some("1209600 seconds"));
     assert_eq!(args.max_git_co_age.as_deref(), Some("604800 seconds"));
-});
+}
 
-crate::timed_test!(sweep_reclaims_stale_entries_and_keeps_fresh_ones, {
+#[test]
+fn sweep_reclaims_stale_entries_and_keeps_fresh_ones() {
     let temp = tempfile::tempdir().expect("tempdir");
     let paths = SoldrPaths::with_root(temp.path().to_path_buf());
     let scratch = crate::core::ensure_temp_root_for(&paths);
@@ -58,15 +60,17 @@ crate::timed_test!(sweep_reclaims_stale_entries_and_keeps_fresh_ones, {
         "an entry inside the TTL must survive -- the sweep must never race \
              an in-flight download or a running test"
     );
-});
+}
 
-crate::timed_test!(sweep_is_a_no_op_when_scratch_does_not_exist, {
+#[test]
+fn sweep_is_a_no_op_when_scratch_does_not_exist() {
     let temp = tempfile::tempdir().expect("tempdir");
     let paths = SoldrPaths::with_root(temp.path().join("never-created"));
     assert_eq!(sweep_stale_scratch(&paths, now_ms()), 0);
-});
+}
 
-crate::timed_test!(scratch_root_tracks_the_cache_volume, {
+#[test]
+fn scratch_root_tracks_the_cache_volume() {
     // The reason scratch is pinned at all: temp -> cache renames are only
     // atomic while both live on one filesystem. It sits *beside* the cache
     // rather than inside it, which is precisely why this sweep has to
@@ -76,9 +80,10 @@ crate::timed_test!(scratch_root_tracks_the_cache_volume, {
     let scratch = crate::core::temp_root_for(&paths);
     assert!(scratch.starts_with(&paths.root), "same volume as the cache");
     assert!(!scratch.starts_with(&paths.cache), "but outside the cache");
-});
+}
 
-crate::timed_test!(offline_cook_gc_requires_and_releases_root_ownership, {
+#[test]
+fn offline_cook_gc_requires_and_releases_root_ownership() {
     let temp = tempfile::tempdir().expect("tempdir");
     let paths = SoldrPaths::with_root(temp.path().join("owned"));
     let config = crate::core::CookConfig {
@@ -102,9 +107,10 @@ crate::timed_test!(offline_cook_gc_requires_and_releases_root_ownership, {
             .is_some(),
         "the pass must resume after daemon ownership is released"
     );
-});
+}
 
-crate::timed_test!(offline_event_prune_requires_and_releases_root_ownership, {
+#[test]
+fn offline_event_prune_requires_and_releases_root_ownership() {
     let temp = tempfile::tempdir().expect("tempdir");
     let paths = SoldrPaths::with_root(temp.path().join("owned"));
     let owner = crate::daemon::lifecycle::RootOwnershipGuard::try_acquire(&paths)
@@ -119,4 +125,4 @@ crate::timed_test!(offline_event_prune_requires_and_releases_root_ownership, {
         run_offline_daemon_event_prune(&paths, 0).expect("offline event prune"),
         Some(0)
     );
-});
+}

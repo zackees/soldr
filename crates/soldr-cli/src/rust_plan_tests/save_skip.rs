@@ -103,7 +103,8 @@ fn save_skip_test_context(plan: &RustArtifactPlan) -> RustArtifactPlanContext {
 // (a) The true no-op rebuild: restore was skipped this invocation (target
 // already proven to hold the exact bytes the last save produced) and the
 // wrapper recorded zero compiles. There is nothing new to save — skip.
-crate::timed_test!(skip_fires_when_restore_skipped_and_zero_compilations, {
+#[test]
+fn skip_fires_when_restore_skipped_and_zero_compilations() {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _skip = EnvVarGuard::set(SKIP_WARM_RESTORE_ENV_VAR, "1");
 
@@ -113,7 +114,7 @@ crate::timed_test!(skip_fires_when_restore_skipped_and_zero_compilations, {
     let result = should_skip_rust_plan_save(&ctx, RustPlanRestoreOutcome::Skipped, Some(0));
     let reason = result.expect("expected Some(reason): nothing changed, save should be skipped");
     assert!(!reason.is_empty(), "skip reason must be operator-visible");
-});
+}
 
 // (b) The "degenerate mtime" correctness gate: even though restore was
 // skipped (target looked untouched by the coarse generation-marker
@@ -122,7 +123,8 @@ crate::timed_test!(skip_fires_when_restore_skipped_and_zero_compilations, {
 // models "content changed under the same mtime/size" at the causal
 // level: whatever changed, it went through a wrapper invocation, so the
 // skip must NOT fire and `rust-plan save` must run normally.
-crate::timed_test!(skip_does_not_fire_when_any_compilation_happened, {
+#[test]
+fn skip_does_not_fire_when_any_compilation_happened() {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _skip = EnvVarGuard::set(SKIP_WARM_RESTORE_ENV_VAR, "1");
 
@@ -134,12 +136,13 @@ crate::timed_test!(skip_does_not_fire_when_any_compilation_happened, {
         result.is_none(),
         "a nonzero compile count must force a real save even though restore was skipped"
     );
-});
+}
 
 // An unreachable daemon (no baseline/current compile-stats snapshot)
 // means we cannot prove zero writes happened. Treat as unproven, never
 // skip — the safe default when the authoritative signal is missing.
-crate::timed_test!(skip_does_not_fire_when_compilation_count_is_unproven, {
+#[test]
+fn skip_does_not_fire_when_compilation_count_is_unproven() {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _skip = EnvVarGuard::set(SKIP_WARM_RESTORE_ENV_VAR, "1");
 
@@ -151,12 +154,13 @@ crate::timed_test!(skip_does_not_fire_when_compilation_count_is_unproven, {
         result.is_none(),
         "an unproven compile count (daemon unreachable) must never skip the save"
     );
-});
+}
 
 // If restore actually ran (or was never attempted), we have no proof
 // `target/` already matched a prior save's generation, so the save must
 // always proceed regardless of the compile count.
-crate::timed_test!(skip_does_not_fire_when_restore_was_not_skipped, {
+#[test]
+fn skip_does_not_fire_when_restore_was_not_skipped() {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _skip = EnvVarGuard::set(SKIP_WARM_RESTORE_ENV_VAR, "1");
 
@@ -170,11 +174,12 @@ crate::timed_test!(skip_does_not_fire_when_restore_was_not_skipped, {
     assert!(
         should_skip_rust_plan_save(&ctx, RustPlanRestoreOutcome::NotAttempted, Some(0)).is_none()
     );
-});
+}
 
 // The gating env var must disable this short-circuit exactly like it
 // disables the restore-side one, even when every other condition matches.
-crate::timed_test!(skip_does_not_fire_when_feature_disabled, {
+#[test]
+fn skip_does_not_fire_when_feature_disabled() {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _skip = EnvVarGuard::set(SKIP_WARM_RESTORE_ENV_VAR, "0");
 
@@ -183,4 +188,4 @@ crate::timed_test!(skip_does_not_fire_when_feature_disabled, {
 
     let result = should_skip_rust_plan_save(&ctx, RustPlanRestoreOutcome::Skipped, Some(0));
     assert!(result.is_none());
-});
+}

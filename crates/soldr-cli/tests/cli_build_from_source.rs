@@ -1,7 +1,6 @@
 mod common;
 
 use common::*;
-use soldr_cli::timed_test;
 use std::path::{Path, PathBuf};
 
 fn fake_build_from_source_cargo_script(log_path: &Path) -> String {
@@ -41,7 +40,8 @@ fn install_fake_build_from_source_cargo(log_path: &Path) -> PathBuf {
     cargo
 }
 
-timed_test!(build_from_source_replaces_inherited_rustc_wrappers, {
+#[test]
+fn build_from_source_replaces_inherited_rustc_wrappers() {
     if matches!(
         soldr_platform::host::facts::os(),
         soldr_platform::host::facts::HostOs::Windows
@@ -103,13 +103,14 @@ timed_test!(build_from_source_replaces_inherited_rustc_wrappers, {
         "expected source-built binary at {}",
         installed.display()
     );
-});
+}
 
 // Issue #1788 routes source-build rustc through soldr's zccache shim by
 // default. `SOLDR_SOURCE_BUILD_CACHE=off` is the documented escape hatch back
 // to the historical fully-uncached spawn, so pin it: without this, a
 // regression that ignores the kill switch would go unnoticed.
-timed_test!(build_from_source_cache_kill_switch_scrubs_every_wrapper, {
+#[test]
+fn build_from_source_cache_kill_switch_scrubs_every_wrapper() {
     if matches!(
         soldr_platform::host::facts::os(),
         soldr_platform::host::facts::HostOs::Windows
@@ -149,4 +150,4 @@ timed_test!(build_from_source_cache_kill_switch_scrubs_every_wrapper, {
         log.contains("cargo wrapper= workspace_wrapper= args=install crgx@1.2.3"),
         "kill switch must restore the fully-uncached spawn: {log}"
     );
-});
+}

@@ -58,7 +58,8 @@ mod tests {
     };
     use std::fs;
 
-    crate::timed_test!(detects_missing_zccache_submodule_in_soldr_checkout, {
+    #[test]
+    fn detects_missing_zccache_submodule_in_soldr_checkout() {
         let fixture = tempfile::tempdir().expect("fixture directory");
         let root = fixture.path();
         fs::create_dir_all(root.join("crates/soldr-cli")).expect("soldr crate directory");
@@ -83,9 +84,10 @@ mod tests {
             missing_zccache_submodule(&root.join("crates/soldr-cli")),
             Some(root.to_path_buf())
         );
-    });
+    }
 
-    crate::timed_test!(reports_the_exact_submodule_remedy, {
+    #[test]
+    fn reports_the_exact_submodule_remedy() {
         let _env = crate::TEST_PROCESS_ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -113,9 +115,10 @@ mod tests {
         assert!(error
             .to_string()
             .contains("git submodule update --init _vender/zccache"));
-    });
+    }
 
-    crate::timed_test!(ignores_unrelated_missing_submodules, {
+    #[test]
+    fn ignores_unrelated_missing_submodules() {
         let fixture = tempfile::tempdir().expect("fixture directory");
         let root = fixture.path();
         fs::create_dir_all(root.join("crates/soldr-cli")).expect("soldr crate directory");
@@ -136,9 +139,10 @@ mod tests {
         .expect("gitmodules");
 
         assert_eq!(missing_zccache_submodule(root), None);
-    });
+    }
 
-    crate::timed_test!(accepts_initialized_zccache_submodule, {
+    #[test]
+    fn accepts_initialized_zccache_submodule() {
         let fixture = tempfile::tempdir().expect("fixture directory");
         let root = fixture.path();
         fs::create_dir_all(root.join("crates/soldr-cli")).expect("soldr crate directory");
@@ -165,5 +169,5 @@ mod tests {
         .expect("zccache manifest");
 
         assert_eq!(missing_zccache_submodule(root), None);
-    });
+    }
 }

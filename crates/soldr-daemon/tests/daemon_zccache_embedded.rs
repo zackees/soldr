@@ -6,10 +6,10 @@
 use std::time::Duration;
 
 use soldr_daemon::core::SoldrPaths;
-use soldr_daemon::timed_test;
 use soldr_daemon::zccache_embedded::sweep_legacy_cache_roots;
 
-timed_test!(legacy_sweep_retains_version_with_unreadable_linked_tree, {
+#[test]
+fn legacy_sweep_retains_version_with_unreadable_linked_tree() {
     if matches!(
         soldr_platform::host::facts::os(),
         soldr_platform::host::facts::HostOs::Windows
@@ -25,9 +25,10 @@ timed_test!(legacy_sweep_retains_version_with_unreadable_linked_tree, {
     assert_eq!(report.removed, 0);
     assert_eq!(report.failed, 1);
     assert!(candidate.is_dir());
-});
+}
 
-timed_test!(working_fake_compiler_probe_is_accepted, {
+#[test]
+fn working_fake_compiler_probe_is_accepted() {
     if matches!(
         soldr_platform::host::facts::os(),
         soldr_platform::host::facts::HostOs::Windows
@@ -46,7 +47,7 @@ timed_test!(working_fake_compiler_probe_is_accepted, {
 
     let version = probe_working_compiler(&compiler).expect("working compiler probe");
     assert!(version.contains("rustc 1.94.1 (fake)"));
-});
+}
 
 /// Run `rustc -vV` against `path` and require plausible rustc output,
 /// mirroring the in-module probe that `zccache_embedded.rs` uses.

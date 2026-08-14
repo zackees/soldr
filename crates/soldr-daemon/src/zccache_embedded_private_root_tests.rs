@@ -26,7 +26,8 @@ fn shutdown_report(
     }
 }
 
-crate::timed_test!(shutdown_requires_a_complete_cache_checkpoint, {
+#[test]
+fn shutdown_requires_a_complete_cache_checkpoint() {
     let complete = shutdown_report(true, true, FlushStepOutcome::Completed);
     ensure_complete_shutdown(&complete).expect("complete checkpoint");
 
@@ -36,7 +37,7 @@ crate::timed_test!(shutdown_requires_a_complete_cache_checkpoint, {
     assert!(message.contains("cache checkpoint incomplete"));
     assert!(message.contains("index_writer_drained=false"));
     assert!(message.contains("TimedOut"));
-});
+}
 
 fn validate_compiler_probe(
     path: &std::path::Path,
@@ -94,7 +95,8 @@ fn test_daemon_identity() -> DaemonProcess {
     .expect("current test process identity")
 }
 
-crate::timed_test!(identity_is_portable_across_cache_roots, {
+#[test]
+fn identity_is_portable_across_cache_roots() {
     let identity = derive_identity();
     let cold = SoldrPaths::with_root(std::path::PathBuf::from("/tmp/cache-cold"));
     let warm = SoldrPaths::with_root(std::path::PathBuf::from("/tmp/cache-warm"));
@@ -110,13 +112,15 @@ crate::timed_test!(identity_is_portable_across_cache_roots, {
             .expect("warm cache prefix"),
         "save/load roots must select the same archived private subtree",
     );
-});
+}
 
-crate::timed_test!(identity_survives_soldr_upgrades, {
+#[test]
+fn identity_survives_soldr_upgrades() {
     assert_eq!(derive_identity().instance_id, "embedded-v1");
-});
+}
 
-crate::timed_test!(embedded_root_rejects_a_cross_product_link, {
+#[test]
+fn embedded_root_rejects_a_cross_product_link() {
     let temp = tempfile::tempdir().expect("tempdir");
     let paths = SoldrPaths::with_root(temp.path().join("selected-product"));
     let daemon = test_daemon_identity();
@@ -148,9 +152,10 @@ crate::timed_test!(embedded_root_rejects_a_cross_product_link, {
     assert!(prepare_embedded_cache_root(&paths, &daemon, &stable).is_err());
     assert_eq!(std::fs::read(&sentinel).unwrap(), b"keep");
     assert!(!external.join("logs").exists());
-});
+}
 
-crate::timed_test!(embedded_version_root_rejects_a_cross_product_link, {
+#[test]
+fn embedded_version_root_rejects_a_cross_product_link() {
     let temp = tempfile::tempdir().expect("tempdir");
     let paths = SoldrPaths::with_root(temp.path().join("selected-product"));
     let daemon = test_daemon_identity();
@@ -178,9 +183,10 @@ crate::timed_test!(embedded_version_root_rejects_a_cross_product_link, {
     }
     assert!(prepare_embedded_cache_root(&paths, &daemon, &stable).is_err());
     assert!(!external.join("logs").exists());
-});
+}
 
-crate::timed_test!(exact_same_root_legacy_identity_wins_over_newer_siblings, {
+#[test]
+fn exact_same_root_legacy_identity_wins_over_newer_siblings() {
     let temp = tempfile::tempdir().expect("tempdir");
     let paths = SoldrPaths::with_root(temp.path().join("root"));
     let daemon = test_daemon_identity();
@@ -203,9 +209,10 @@ crate::timed_test!(exact_same_root_legacy_identity_wins_over_newer_siblings, {
         b"exact"
     );
     assert!(sibling.is_dir(), "unselected sibling must remain untouched");
-});
+}
 
-crate::timed_test!(relocated_legacy_cache_uses_uniquely_newest_backend, {
+#[test]
+fn relocated_legacy_cache_uses_uniquely_newest_backend() {
     let temp = tempfile::tempdir().expect("tempdir");
     let paths = SoldrPaths::with_root(temp.path().join("relocated"));
     let daemon = test_daemon_identity();
@@ -229,9 +236,10 @@ crate::timed_test!(relocated_legacy_cache_uses_uniquely_newest_backend, {
         older.is_dir(),
         "unselected older root must remain untouched"
     );
-});
+}
 
-crate::timed_test!(tied_legacy_candidates_are_rejected_loudly, {
+#[test]
+fn tied_legacy_candidates_are_rejected_loudly() {
     let parent = std::path::PathBuf::from("cache/zccache/daemon-state");
     let tied = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(7);
     let result = select_legacy_candidate(
@@ -248,9 +256,10 @@ crate::timed_test!(tied_legacy_candidates_are_rejected_loudly, {
         ),
         "equal newest mtimes must not choose an arbitrary backend: {result:?}"
     );
-});
+}
 
-crate::timed_test!(save_load_restores_the_selected_private_subtree, {
+#[test]
+fn save_load_restores_the_selected_private_subtree() {
     use crate::cache_lib::save::{
         load, save, LoadOptions, SaveOptions, SaveProfile, DEFAULT_ZSTD_LEVEL,
     };
@@ -295,13 +304,14 @@ crate::timed_test!(save_load_restores_the_selected_private_subtree, {
         std::fs::read(warm_object).expect("read restored object"),
         b"portable-cache-object",
     );
-});
+}
 
 // The executable fake-compiler probe moved to
 // `tests/daemon_zccache_embedded.rs` (`#![cfg(unix)]`) — it needs a
 // Unix shebang and 0o755 (#2493).
 
-crate::timed_test!(unusable_proxy_probe_reports_complete_diagnostics, {
+#[test]
+fn unusable_proxy_probe_reports_complete_diagnostics() {
     let compiler = std::path::Path::new("rustc-proxy");
     let error = validate_compiler_probe(
         compiler,
@@ -317,9 +327,10 @@ crate::timed_test!(unusable_proxy_probe_reports_complete_diagnostics, {
     assert!(error.contains("exit_code=Some(1)"));
     assert!(error.contains("proxy stdout"));
     assert!(error.contains("compiler component is not applicable"));
-});
+}
 
-crate::timed_test!(successful_non_compiler_probe_is_rejected, {
+#[test]
+fn successful_non_compiler_probe_is_rejected() {
     let compiler = std::path::Path::new("not-rustc");
     let error = validate_compiler_probe(
         compiler,
@@ -335,15 +346,16 @@ crate::timed_test!(successful_non_compiler_probe_is_rejected, {
     assert!(error.contains("unexpected rustc -vV output"));
     assert!(error.contains("some unrelated executable"));
     assert!(error.contains("unexpected shim diagnostics"));
-});
+}
 
-crate::timed_test!(missing_compiler_probe_reports_path_and_spawn_error, {
+#[test]
+fn missing_compiler_probe_reports_path_and_spawn_error() {
     let temp = tempfile::tempdir().expect("tempdir");
     let compiler = temp.path().join("missing-compiler");
     let error = probe_working_compiler(&compiler).expect_err("missing compiler must fail");
     assert!(error.contains(&format!("path={}", compiler.display())));
     assert!(error.contains("spawn_error="));
-});
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn real_rustc_hit_survives_full_and_ci_save_load_relocation() {
@@ -517,7 +529,8 @@ async fn real_rustc_hit_survives_full_and_ci_save_load_relocation() {
     }
 }
 
-crate::timed_test!(private_root_is_stable_per_backend_identity, {
+#[test]
+fn private_root_is_stable_per_backend_identity() {
     let paths = SoldrPaths::with_root(std::path::PathBuf::from("/tmp/soldr"));
     let first = HostIdentity {
         product: "soldr".into(),
@@ -537,4 +550,4 @@ crate::timed_test!(private_root_is_stable_per_backend_identity, {
         private_zccache_cache_root(&paths, &first),
         private_zccache_cache_root(&paths, &second)
     );
-});
+}

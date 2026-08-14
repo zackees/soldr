@@ -12,9 +12,9 @@
 mod common;
 
 use soldr_cli::core::CANONICAL_TARGETS;
-use soldr_cli::timed_test;
 
-timed_test!(canonical_const_matches_workspace_metadata, {
+#[test]
+fn canonical_const_matches_workspace_metadata() {
     let workspace_toml = common::workspace_root().join("Cargo.toml");
     assert!(
         workspace_toml.is_file(),
@@ -57,4 +57,4 @@ timed_test!(canonical_const_matches_workspace_metadata, {
             "drift at index {i}: workspace={workspace_triple}, const={const_triple}",
         );
     }
-});
+}

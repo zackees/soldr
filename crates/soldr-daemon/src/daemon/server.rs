@@ -185,7 +185,8 @@ pub(crate) fn config_compile_jobs() -> Option<usize> {
 mod shutdown_backstop_tests {
     use super::*;
 
-    crate::timed_test!(watchdog_grace_defaults_and_is_only_disabled_explicitly, {
+    #[test]
+    fn watchdog_grace_defaults_and_is_only_disabled_explicitly() {
         assert_eq!(parse_watchdog_grace(None), Some(SHUTDOWN_WATCHDOG_GRACE));
         assert_eq!(
             parse_watchdog_grace(Some("90")),
@@ -208,9 +209,10 @@ mod shutdown_backstop_tests {
                 "malformed override {bogus:?} must fall back to the default"
             );
         }
-    });
+    }
 
-    crate::timed_test!(watchdog_fires_before_the_client_stops_waiting, {
+    #[test]
+    fn watchdog_fires_before_the_client_stops_waiting() {
         // If the backstop outlived the client's patience it would be
         // pointless: `daemon stop` would report failure and leave the
         // process running anyway.
@@ -218,7 +220,7 @@ mod shutdown_backstop_tests {
             SHUTDOWN_WATCHDOG_GRACE < crate::daemon::lifecycle::GRACEFUL_SHUTDOWN_WAIT_TIMEOUT,
             "watchdog grace must be under the client's graceful-shutdown timeout"
         );
-    });
+    }
 
     // `wait()` must observe a `request()` that races it.
     //
@@ -231,7 +233,8 @@ mod shutdown_backstop_tests {
     // Probabilistic by nature — the window is a few instructions wide — so
     // it is a regression net, not a proof. The ordering guarantee itself is
     // established by `enable()`-before-check in `ShutdownSignal::wait`.
-    crate::timed_test!(shutdown_wait_observes_a_racing_request, {
+    #[test]
+    fn shutdown_wait_observes_a_racing_request() {
         use crate::daemon::maintenance::ShutdownSignal;
         use std::sync::Arc;
 
@@ -261,7 +264,7 @@ mod shutdown_backstop_tests {
                     .expect("waiter task panicked");
             }
         });
-    });
+    }
 }
 
 #[cfg(test)]
@@ -269,14 +272,16 @@ mod ipc_burst_tests {
     use super::*;
     use tokio::sync::{mpsc, Mutex};
 
-    crate::timed_test!(listener_pool_defaults_and_override_are_bounded, {
+    #[test]
+    fn listener_pool_defaults_and_override_are_bounded() {
         assert_eq!(windows_listener_pool_size_from(1, None), 16);
         assert_eq!(windows_listener_pool_size_from(12, None), 48);
         assert_eq!(windows_listener_pool_size_from(64, None), 128);
         assert_eq!(windows_listener_pool_size_from(2, Some(3)), 3);
-    });
+    }
 
-    crate::timed_test!(compile_admission_is_bounded_and_reports_backpressure, {
+    #[test]
+    fn compile_admission_is_bounded_and_reports_backpressure() {
         let admission = CompileAdmission::new(2, 1);
         let first = admission.try_admit().expect("first request admitted");
         let second = admission.try_admit().expect("second request queued");
@@ -295,65 +300,63 @@ mod ipc_burst_tests {
             admission.try_admit().is_some(),
             "capacity recovers after completion"
         );
-    });
+    }
 
-    crate::timed_test!(
-        windows_burst_policy_keeps_four_pool_sizes_fifo_and_recovers,
-        {
-            // This is intentionally platform-neutral: it exercises the exact
-            // bounded-admission and fair Tokio semaphore policy used by the
-            // Windows named-pipe listener, so Linux Docker can validate it while
-            // the Windows matrix owns the actual pipe transport.
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("runtime");
-            runtime.block_on(async {
-                const LISTENER_POOL: usize = 16;
-                const CLIENTS: usize = LISTENER_POOL * 4;
-                let admission = Arc::new(CompileAdmission::new(CLIENTS, 1));
-                let compile_gate = Arc::new(Semaphore::new(1));
-                let held_compile = compile_gate.clone().acquire_owned().await.expect("permit");
-                let completion_order = Arc::new(Mutex::new(Vec::with_capacity(CLIENTS)));
-                let (ready_tx, mut ready_rx) = mpsc::channel(CLIENTS);
-                let mut joins = Vec::with_capacity(CLIENTS);
+    #[test]
+    fn windows_burst_policy_keeps_four_pool_sizes_fifo_and_recovers() {
+        // This is intentionally platform-neutral: it exercises the exact
+        // bounded-admission and fair Tokio semaphore policy used by the
+        // Windows named-pipe listener, so Linux Docker can validate it while
+        // the Windows matrix owns the actual pipe transport.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async {
+            const LISTENER_POOL: usize = 16;
+            const CLIENTS: usize = LISTENER_POOL * 4;
+            let admission = Arc::new(CompileAdmission::new(CLIENTS, 1));
+            let compile_gate = Arc::new(Semaphore::new(1));
+            let held_compile = compile_gate.clone().acquire_owned().await.expect("permit");
+            let completion_order = Arc::new(Mutex::new(Vec::with_capacity(CLIENTS)));
+            let (ready_tx, mut ready_rx) = mpsc::channel(CLIENTS);
+            let mut joins = Vec::with_capacity(CLIENTS);
 
-                // Queue each request in a known order before submitting the next.
-                // Tokio's semaphore preserves this waiter order when the small
-                // compile gate opens, which is the FIFO contract for the burst.
-                for index in 0..CLIENTS {
-                    let admission = admission.clone();
-                    let compile_gate = compile_gate.clone();
-                    let completion_order = completion_order.clone();
-                    let ready_tx = ready_tx.clone();
-                    joins.push(tokio::spawn(async move {
-                        let _admission = admission.try_admit().expect("queue has room");
-                        ready_tx.send(()).await.expect("ready receiver");
-                        let _compile = compile_gate.acquire_owned().await.expect("compile permit");
-                        completion_order.lock().await.push(index);
-                    }));
-                    ready_rx.recv().await.expect("request admitted before next");
-                }
-                drop(held_compile);
-                for join in joins {
-                    join.await.expect("queued request completes");
-                }
-                assert_eq!(
-                    *completion_order.lock().await,
-                    (0..CLIENTS).collect::<Vec<_>>(),
-                    "bounded waiting line must preserve FIFO order"
-                );
-                let stats = admission.stats();
-                assert_eq!(stats.accepted, CLIENTS as u64);
-                assert_eq!(stats.backpressured, 0);
-                assert_eq!(stats.queue_high_water, CLIENTS as u64);
-                assert!(
-                    admission.try_admit().is_some(),
-                    "all capacity recovers after the burst drains"
-                );
-            });
-        }
-    );
+            // Queue each request in a known order before submitting the next.
+            // Tokio's semaphore preserves this waiter order when the small
+            // compile gate opens, which is the FIFO contract for the burst.
+            for index in 0..CLIENTS {
+                let admission = admission.clone();
+                let compile_gate = compile_gate.clone();
+                let completion_order = completion_order.clone();
+                let ready_tx = ready_tx.clone();
+                joins.push(tokio::spawn(async move {
+                    let _admission = admission.try_admit().expect("queue has room");
+                    ready_tx.send(()).await.expect("ready receiver");
+                    let _compile = compile_gate.acquire_owned().await.expect("compile permit");
+                    completion_order.lock().await.push(index);
+                }));
+                ready_rx.recv().await.expect("request admitted before next");
+            }
+            drop(held_compile);
+            for join in joins {
+                join.await.expect("queued request completes");
+            }
+            assert_eq!(
+                *completion_order.lock().await,
+                (0..CLIENTS).collect::<Vec<_>>(),
+                "bounded waiting line must preserve FIFO order"
+            );
+            let stats = admission.stats();
+            assert_eq!(stats.accepted, CLIENTS as u64);
+            assert_eq!(stats.backpressured, 0);
+            assert_eq!(stats.queue_high_water, CLIENTS as u64);
+            assert!(
+                admission.try_admit().is_some(),
+                "all capacity recovers after the burst drains"
+            );
+        });
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -499,7 +502,8 @@ mod build_session_start_tests {
     use super::merge_build_session_start;
     use crate::daemon::protocol::{BuildCacheSummary, BuildLogPaths, BuildMissReason, BuildRecord};
 
-    crate::timed_test!(late_start_preserves_finalized_build_history, {
+    #[test]
+    fn late_start_preserves_finalized_build_history() {
         let cache_summary = BuildCacheSummary {
             hits: 1,
             misses: 2,
@@ -554,7 +558,7 @@ mod build_session_start_tests {
         assert_eq!(merged.cache_summary, Some(cache_summary));
         assert_eq!(merged.log_paths, Some(log_paths));
         assert_eq!(merged.miss_reasons, vec![miss_reason]);
-    });
+    }
 }
 
 /// Start the embedded zccache compile service at daemon boot. Issue

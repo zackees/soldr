@@ -128,7 +128,8 @@ fn unix_millis() -> u128 {
 mod tests {
     use super::*;
 
-    crate::timed_test!(record_carries_the_stable_diagnostic_fields, {
+    #[test]
+    fn record_carries_the_stable_diagnostic_fields() {
         let line = render_record(4242, phase::BIND_LISTENER, 17, 950, 1_700_000_000_000);
         let parsed: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
         assert_eq!(parsed["schema_version"], 1);
@@ -139,9 +140,10 @@ mod tests {
         assert_eq!(parsed["total_ms"], 950);
         // One record per line: a newline inside would corrupt the JSONL.
         assert!(!line.contains('\n'));
-    });
+    }
 
-    crate::timed_test!(phases_append_one_line_each_as_they_complete, {
+    #[test]
+    fn phases_append_one_line_each_as_they_complete() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut recorder = BringupRecorder::new(Some(dir.path()));
         recorder.phase(phase::SECURE_DIRECTORIES);
@@ -161,11 +163,12 @@ mod tests {
             second["total_ms"].as_u64() >= first["total_ms"].as_u64(),
             "total_ms must be cumulative"
         );
-    });
+    }
 
-    crate::timed_test!(an_unwritable_log_location_still_reports_timings, {
+    #[test]
+    fn an_unwritable_log_location_still_reports_timings() {
         // No durable log: construction must succeed and phases must not panic.
         let mut recorder = BringupRecorder::new(None);
         recorder.phase(phase::PEER_POLICY);
-    });
+    }
 }

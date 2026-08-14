@@ -13,9 +13,8 @@
 
 use std::time::Duration;
 
-use soldr_cli::timed_test;
-
-timed_test!(manifest_disable_env_var_bypasses_lookup, {
+#[test]
+fn manifest_disable_env_var_bypasses_lookup() {
     // SAFETY: this is the only test in this binary, so the env-var
     // write here has no parallel readers.
     std::env::set_var("SOLDR_MANIFEST_DISABLE", "1");
@@ -53,4 +52,4 @@ timed_test!(manifest_disable_env_var_bypasses_lookup, {
 
     std::env::remove_var("SOLDR_MANIFEST_DISABLE");
     std::env::remove_var("SOLDR_TOOLCHAIN_CATALOGUE_URL");
-});
+}

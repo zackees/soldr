@@ -485,7 +485,8 @@ mod tests {
         }
     }
 
-    crate::timed_test!(cargo_install_timeout_is_an_explicit_safety_ceiling, {
+    #[test]
+    fn cargo_install_timeout_is_an_explicit_safety_ceiling() {
         let _lock = ENV_LOCK.lock().unwrap();
 
         {
@@ -509,9 +510,10 @@ mod tests {
             InstallerWatchdogConfig::from_env(CARGO_INSTALL_TIMEOUT_ENV_VAR).safety_timeout,
             Duration::from_secs(crate::core::DEFAULT_INSTALLER_SAFETY_TIMEOUT_SECS)
         );
-    });
+    }
 
-    crate::timed_test!(unsupported_tool_errors_with_directive, {
+    #[test]
+    fn unsupported_tool_errors_with_directive() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let paths = synthetic_paths(tmp.path());
         let err = resolve_plan(
@@ -531,9 +533,10 @@ mod tests {
             msg.contains("cargo-foo"),
             "directive must mention the bad input, got: {msg}"
         );
-    });
+    }
 
-    crate::timed_test!(default_target_resolves_to_host, {
+    #[test]
+    fn default_target_resolves_to_host() {
         // `target: None` must not panic and must produce a non-empty
         // triple matching the auto-detected host. We don't assert the
         // exact triple since the test harness host varies across CI
@@ -553,9 +556,10 @@ mod tests {
             .join(&plan.version)
             .join(&plan.target);
         assert_eq!(plan.install_dir, expected_parent);
-    });
+    }
 
-    crate::timed_test!(version_defaults_to_known_tools_pinned, {
+    #[test]
+    fn version_defaults_to_known_tools_pinned() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let paths = synthetic_paths(tmp.path());
 
@@ -624,63 +628,62 @@ mod tests {
         )
         .expect("cargo-chef v-prefixed version");
         assert_eq!(v_prefixed.version, "0.1.42");
-    });
+    }
 
-    crate::timed_test!(
-        cached_build_validation_rejects_partial_missing_and_mismatched_sidecars,
-        {
-            let tmp = tempfile::tempdir().expect("tempdir");
-            let paths = synthetic_paths(tmp.path());
-            let plan = resolve_plan(
-                "dylint-link",
-                Some("x86_64-unknown-linux-gnu".to_string()),
-                None,
-                &paths,
-            )
-            .expect("resolve");
-            std::fs::create_dir_all(&plan.install_dir).unwrap();
-            std::fs::write(&plan.final_binary, b"partial").unwrap();
+    #[test]
+    fn cached_build_validation_rejects_partial_missing_and_mismatched_sidecars() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let paths = synthetic_paths(tmp.path());
+        let plan = resolve_plan(
+            "dylint-link",
+            Some("x86_64-unknown-linux-gnu".to_string()),
+            None,
+            &paths,
+        )
+        .expect("resolve");
+        std::fs::create_dir_all(&plan.install_dir).unwrap();
+        std::fs::write(&plan.final_binary, b"partial").unwrap();
 
-            assert!(
-                !cached_build_is_valid(&plan).unwrap(),
-                "a partial binary without its commit sidecar must be rejected"
-            );
+        assert!(
+            !cached_build_is_valid(&plan).unwrap(),
+            "a partial binary without its commit sidecar must be rejected"
+        );
 
-            let sidecar = plan.final_binary.with_extension("sha256");
-            std::fs::write(
-                &sidecar,
-                format!(
-                    "{}  {}\n",
-                    "0".repeat(64),
-                    plan.final_binary.file_name().unwrap().to_string_lossy()
-                ),
-            )
-            .unwrap();
-            assert!(
-                !cached_build_is_valid(&plan).unwrap(),
-                "a mismatched sidecar must be rejected"
-            );
+        let sidecar = plan.final_binary.with_extension("sha256");
+        std::fs::write(
+            &sidecar,
+            format!(
+                "{}  {}\n",
+                "0".repeat(64),
+                plan.final_binary.file_name().unwrap().to_string_lossy()
+            ),
+        )
+        .unwrap();
+        assert!(
+            !cached_build_is_valid(&plan).unwrap(),
+            "a mismatched sidecar must be rejected"
+        );
 
-            let digest = sha256_of_file(&plan.final_binary).unwrap();
-            std::fs::write(
-                &sidecar,
-                format!(
-                    "{digest}  {}\n",
-                    plan.final_binary.file_name().unwrap().to_string_lossy()
-                ),
-            )
-            .unwrap();
-            assert!(cached_build_is_valid(&plan).unwrap());
+        let digest = sha256_of_file(&plan.final_binary).unwrap();
+        std::fs::write(
+            &sidecar,
+            format!(
+                "{digest}  {}\n",
+                plan.final_binary.file_name().unwrap().to_string_lossy()
+            ),
+        )
+        .unwrap();
+        assert!(cached_build_is_valid(&plan).unwrap());
 
-            std::fs::write(&plan.final_binary, b"tampered-after-sidecar").unwrap();
-            assert!(
-                !cached_build_is_valid(&plan).unwrap(),
-                "a binary changed after publication must be rejected"
-            );
-        }
-    );
+        std::fs::write(&plan.final_binary, b"tampered-after-sidecar").unwrap();
+        assert!(
+            !cached_build_is_valid(&plan).unwrap(),
+            "a binary changed after publication must be rejected"
+        );
+    }
 
-    crate::timed_test!(windows_triple_uses_exe_suffix, {
+    #[test]
+    fn windows_triple_uses_exe_suffix() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let paths = synthetic_paths(tmp.path());
         let plan = resolve_plan(
@@ -699,9 +702,10 @@ mod tests {
             "windows triple must produce a .exe binary path, got: {}",
             plan.final_binary.display(),
         );
-    });
+    }
 
-    crate::timed_test!(invalid_triple_rejected_at_parse_time, {
+    #[test]
+    fn invalid_triple_rejected_at_parse_time() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let paths = synthetic_paths(tmp.path());
         let err = resolve_plan("crgx", Some("not-a-real-triple".to_string()), None, &paths)
@@ -711,9 +715,10 @@ mod tests {
             msg.to_lowercase().contains("triple") || msg.to_lowercase().contains("target"),
             "error should mention target/triple, got: {msg}",
         );
-    });
+    }
 
-    crate::timed_test!(source_build_cache_gate_honors_both_kill_switches, {
+    #[test]
+    fn source_build_cache_gate_honors_both_kill_switches() {
         // Serialize against other env-mutating tests in this binary.
         let restore = |key: &str, previous: Option<std::ffi::OsString>| match previous {
             Some(value) => std::env::set_var(key, value),
@@ -742,5 +747,5 @@ mod tests {
 
         restore(SOURCE_BUILD_CACHE_ENV_VAR, prev_cache);
         restore("ZCCACHE_DISABLE", prev_disable);
-    });
+    }
 }

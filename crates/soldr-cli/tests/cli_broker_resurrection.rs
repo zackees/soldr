@@ -63,203 +63,193 @@ fn stop_broker(home: &Path) {
         .output();
 }
 
-soldr_cli::timed_test!(
-    issue_2481_same_version_old_image_is_replaced_before_readiness,
-    Duration::from_secs(90),
-    {
-        let home = common::unique_temp_dir("broker-same-version-old-image");
-        let old_instance = format!("soldr-{}-{}", env!("CARGO_PKG_VERSION"), "0".repeat(64));
-        let mut incumbent_command = Command::new(common::soldr_bin());
-        common::scrub_outer_soldr_env(&mut incumbent_command);
-        let mut incumbent = incumbent_command
-            .args(["broker", "serve"])
-            .env("HOME", &home)
-            .env("USERPROFILE", &home)
-            .env("SOLDR_INTERNAL_BROKER_INSTANCE_ID", &old_instance)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn simulated old-image broker");
+#[test]
+fn issue_2481_same_version_old_image_is_replaced_before_readiness() {
+    let home = common::unique_temp_dir("broker-same-version-old-image");
+    let old_instance = format!("soldr-{}-{}", env!("CARGO_PKG_VERSION"), "0".repeat(64));
+    let mut incumbent_command = Command::new(common::soldr_bin());
+    common::scrub_outer_soldr_env(&mut incumbent_command);
+    let mut incumbent = incumbent_command
+        .args(["broker", "serve"])
+        .env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .env("SOLDR_INTERNAL_BROKER_INSTANCE_ID", &old_instance)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn simulated old-image broker");
 
-        let ready_deadline = Instant::now() + Duration::from_secs(20);
-        let mut before = String::new();
-        while Instant::now() < ready_deadline {
-            before = broker_status(&home);
-            if before.contains(&old_instance) {
-                break;
-            }
-            std::thread::sleep(POLL);
+    let ready_deadline = Instant::now() + Duration::from_secs(20);
+    let mut before = String::new();
+    while Instant::now() < ready_deadline {
+        before = broker_status(&home);
+        if before.contains(&old_instance) {
+            break;
         }
-
-        let mut replacement = front_door(&home)
-            .spawn()
-            .expect("start front door against old-image broker");
-        let replacement_status =
-            wait_for_child(&mut replacement, Instant::now() + Duration::from_secs(40));
-
-        let replacement_deadline = Instant::now() + Duration::from_secs(20);
-        let mut after = String::new();
-        while Instant::now() < replacement_deadline {
-            after = broker_status(&home);
-            if after.contains("broker_instance:") && !after.contains(&old_instance) {
-                break;
-            }
-            std::thread::sleep(POLL);
-        }
-
-        stop_broker(&home);
-        let incumbent_exit =
-            wait_for_child(&mut incumbent, Instant::now() + Duration::from_secs(5));
-        if incumbent_exit.is_none() {
-            let _ = incumbent.kill();
-            let _ = incumbent.wait();
-        }
-
-        assert!(
-            before.contains(&old_instance),
-            "simulated old-image broker never became ready; last status:\n{before}"
-        );
-        assert!(
-            replacement_status.is_some_and(|status| status.success()),
-            "front door did not recover through broker replacement; status={replacement_status:?}\n{}",
-            spawn_log(&home)
-        );
-        assert!(
-            after.contains("broker_instance:") && !after.contains(&old_instance),
-            "replacement did not publish a new image identity; last status:\n{after}\n{}",
-            spawn_log(&home)
-        );
-        assert!(
-            incumbent_exit.is_some(),
-            "the incompatible incumbent was not retired"
-        );
+        std::thread::sleep(POLL);
     }
-);
 
-soldr_cli::timed_test!(
-    issue_2476_sixty_four_process_stampede_binds_one_broker,
-    Duration::from_secs(120),
-    {
-        let home = common::unique_temp_dir("broker-64-process-stampede");
-        let mut children: Vec<_> = (0..64)
-            .map(|_| {
-                let mut command = front_door(&home);
-                // Keep the lease winner in the fenced section briefly so all
-                // 64 independently-started hosts compete for the same row.
-                command.env("SOLDR_TEST_BROKER_LEASE_PAUSE_MS", "500");
-                command.spawn().expect("spawn front door contender")
-            })
-            .collect();
+    let mut replacement = front_door(&home)
+        .spawn()
+        .expect("start front door against old-image broker");
+    let replacement_status =
+        wait_for_child(&mut replacement, Instant::now() + Duration::from_secs(40));
 
-        let deadline = Instant::now() + Duration::from_secs(60);
-        let mut failures = Vec::new();
-        for child in &mut children {
-            match wait_for_child(child, deadline) {
-                Some(status) if status.success() => {}
-                Some(status) => failures.push(format!("pid {} exited {status}", child.id())),
-                None => {
-                    failures.push(format!("pid {} did not exit", child.id()));
-                    let _ = child.kill();
-                    let _ = child.wait();
-                }
+    let replacement_deadline = Instant::now() + Duration::from_secs(20);
+    let mut after = String::new();
+    while Instant::now() < replacement_deadline {
+        after = broker_status(&home);
+        if after.contains("broker_instance:") && !after.contains(&old_instance) {
+            break;
+        }
+        std::thread::sleep(POLL);
+    }
+
+    stop_broker(&home);
+    let incumbent_exit = wait_for_child(&mut incumbent, Instant::now() + Duration::from_secs(5));
+    if incumbent_exit.is_none() {
+        let _ = incumbent.kill();
+        let _ = incumbent.wait();
+    }
+
+    assert!(
+        before.contains(&old_instance),
+        "simulated old-image broker never became ready; last status:\n{before}"
+    );
+    assert!(
+        replacement_status.is_some_and(|status| status.success()),
+        "front door did not recover through broker replacement; status={replacement_status:?}\n{}",
+        spawn_log(&home)
+    );
+    assert!(
+        after.contains("broker_instance:") && !after.contains(&old_instance),
+        "replacement did not publish a new image identity; last status:\n{after}\n{}",
+        spawn_log(&home)
+    );
+    assert!(
+        incumbent_exit.is_some(),
+        "the incompatible incumbent was not retired"
+    );
+}
+
+#[test]
+fn issue_2476_sixty_four_process_stampede_binds_one_broker() {
+    let home = common::unique_temp_dir("broker-64-process-stampede");
+    let mut children: Vec<_> = (0..64)
+        .map(|_| {
+            let mut command = front_door(&home);
+            // Keep the lease winner in the fenced section briefly so all
+            // 64 independently-started hosts compete for the same row.
+            command.env("SOLDR_TEST_BROKER_LEASE_PAUSE_MS", "500");
+            command.spawn().expect("spawn front door contender")
+        })
+        .collect();
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut failures = Vec::new();
+    for child in &mut children {
+        match wait_for_child(child, deadline) {
+            Some(status) if status.success() => {}
+            Some(status) => failures.push(format!("pid {} exited {status}", child.id())),
+            None => {
+                failures.push(format!("pid {} did not exit", child.id()));
+                let _ = child.kill();
+                let _ = child.wait();
             }
         }
-
-        let log = spawn_log(&home);
-        stop_broker(&home);
-        assert!(
-            failures.is_empty(),
-            "front-door failures: {failures:?}\n{log}"
-        );
-        assert_eq!(
-            log.lines()
-                .filter(|line| line.contains("stable endpoint bound at"))
-                .count(),
-            1,
-            "64 contenders must produce exactly one bound broker\n{log}"
-        );
-        assert_eq!(
-            log.lines()
-                .filter(|line| line.contains("binding stable endpoint"))
-                .count(),
-            1,
-            "only the lease winner may spawn a broker candidate\n{log}"
-        );
     }
-);
 
-soldr_cli::timed_test!(
-    issue_2476_sigstop_owner_is_fenced_after_lease_expiry,
-    Duration::from_secs(90),
-    {
-        if matches!(
-            soldr_platform::host::facts::os(),
-            soldr_platform::host::facts::HostOs::Windows
-        ) {
-            return;
-        }
-        let home = common::unique_temp_dir("broker-sigstop-takeover");
-        let ready = home.join("lease-acquired");
-        let stopped_owner_stderr = home.join("stopped-owner.stderr");
-        let mut stopped_owner = front_door(&home)
-            // Longer than the five-second lease, but short enough that the
-            // resumed owner reaches its fence check promptly even when the OS
-            // restarts an interrupted sleep with its remaining duration.
-            .env("SOLDR_TEST_BROKER_LEASE_PAUSE_MS", "6000")
-            .env("SOLDR_TEST_BROKER_LEASE_READY_FILE", &ready)
-            .stderr(
-                std::fs::File::create(&stopped_owner_stderr)
-                    .expect("create stopped-owner diagnostic log"),
-            )
-            .spawn()
-            .expect("spawn lease owner");
+    let log = spawn_log(&home);
+    stop_broker(&home);
+    assert!(
+        failures.is_empty(),
+        "front-door failures: {failures:?}\n{log}"
+    );
+    assert_eq!(
+        log.lines()
+            .filter(|line| line.contains("stable endpoint bound at"))
+            .count(),
+        1,
+        "64 contenders must produce exactly one bound broker\n{log}"
+    );
+    assert_eq!(
+        log.lines()
+            .filter(|line| line.contains("binding stable endpoint"))
+            .count(),
+        1,
+        "only the lease winner may spawn a broker candidate\n{log}"
+    );
+}
 
-        let ready_deadline = Instant::now() + Duration::from_secs(20);
-        while !ready.exists() && Instant::now() < ready_deadline {
-            std::thread::sleep(POLL);
-        }
-        assert!(ready.exists(), "first host never acquired the lease");
-        let pid = stopped_owner.id().to_string();
-        let stop = Command::new("kill")
-            .args(["-STOP", &pid])
-            .status()
-            .expect("SIGSTOP lease owner");
-        assert!(stop.success(), "could not SIGSTOP lease owner");
+#[test]
+fn issue_2476_sigstop_owner_is_fenced_after_lease_expiry() {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
+    let home = common::unique_temp_dir("broker-sigstop-takeover");
+    let ready = home.join("lease-acquired");
+    let stopped_owner_stderr = home.join("stopped-owner.stderr");
+    let mut stopped_owner = front_door(&home)
+        // Longer than the five-second lease, but short enough that the
+        // resumed owner reaches its fence check promptly even when the OS
+        // restarts an interrupted sleep with its remaining duration.
+        .env("SOLDR_TEST_BROKER_LEASE_PAUSE_MS", "6000")
+        .env("SOLDR_TEST_BROKER_LEASE_READY_FILE", &ready)
+        .stderr(
+            std::fs::File::create(&stopped_owner_stderr)
+                .expect("create stopped-owner diagnostic log"),
+        )
+        .spawn()
+        .expect("spawn lease owner");
 
-        let mut replacement = front_door(&home)
-            .spawn()
-            .expect("spawn replacement contender");
-        let replacement_status =
-            wait_for_child(&mut replacement, Instant::now() + Duration::from_secs(30));
+    let ready_deadline = Instant::now() + Duration::from_secs(20);
+    while !ready.exists() && Instant::now() < ready_deadline {
+        std::thread::sleep(POLL);
+    }
+    assert!(ready.exists(), "first host never acquired the lease");
+    let pid = stopped_owner.id().to_string();
+    let stop = Command::new("kill")
+        .args(["-STOP", &pid])
+        .status()
+        .expect("SIGSTOP lease owner");
+    assert!(stop.success(), "could not SIGSTOP lease owner");
 
-        let _ = Command::new("kill").args(["-CONT", &pid]).status();
-        let resumed_status =
-            wait_for_child(&mut stopped_owner, Instant::now() + Duration::from_secs(15));
-        if resumed_status.is_none() {
-            let _ = stopped_owner.kill();
-            let _ = stopped_owner.wait();
-        }
-        let log = spawn_log(&home);
-        let stopped_owner_diagnostic =
-            std::fs::read_to_string(&stopped_owner_stderr).unwrap_or_default();
-        stop_broker(&home);
+    let mut replacement = front_door(&home)
+        .spawn()
+        .expect("spawn replacement contender");
+    let replacement_status =
+        wait_for_child(&mut replacement, Instant::now() + Duration::from_secs(30));
 
-        assert!(
-            replacement_status.is_some_and(|status| status.success()),
-            "a contender must recover after the stopped owner's five-second lease expires\n{log}"
-        );
-        assert!(
-            resumed_status.is_some_and(|status| status.success()),
-            "the resumed former holder must observe its fence and exit without staging/spawning; \
+    let _ = Command::new("kill").args(["-CONT", &pid]).status();
+    let resumed_status =
+        wait_for_child(&mut stopped_owner, Instant::now() + Duration::from_secs(15));
+    if resumed_status.is_none() {
+        let _ = stopped_owner.kill();
+        let _ = stopped_owner.wait();
+    }
+    let log = spawn_log(&home);
+    let stopped_owner_diagnostic =
+        std::fs::read_to_string(&stopped_owner_stderr).unwrap_or_default();
+    stop_broker(&home);
+
+    assert!(
+        replacement_status.is_some_and(|status| status.success()),
+        "a contender must recover after the stopped owner's five-second lease expires\n{log}"
+    );
+    assert!(
+        resumed_status.is_some_and(|status| status.success()),
+        "the resumed former holder must observe its fence and exit without staging/spawning; \
              status={resumed_status:?}\nstderr:\n{stopped_owner_diagnostic}\n{log}"
-        );
-        assert_eq!(
-            log.lines()
-                .filter(|line| line.contains("stable endpoint bound at"))
-                .count(),
-            1,
-            "the fenced owner must not spawn a second broker after resume\n{log}"
-        );
-    }
-);
+    );
+    assert_eq!(
+        log.lines()
+            .filter(|line| line.contains("stable endpoint bound at"))
+            .count(),
+        1,
+        "the fenced owner must not spawn a second broker after resume\n{log}"
+    );
+}

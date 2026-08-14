@@ -502,7 +502,8 @@ fn disk_cache_limits_from_values(
 mod disk_limit_tests {
     use super::*;
 
-    crate::timed_test!(disk_limit_overrides_are_validated_and_mutually_exclusive, {
+    #[test]
+    fn disk_limit_overrides_are_validated_and_mutually_exclusive() {
         let (_, dynamic) = disk_cache_limits_from_values(None, None).unwrap();
         assert_eq!(dynamic.source, "dynamic_5_percent_clamped_40_200_gib");
         let (_, bytes) = disk_cache_limits_from_values(Some("42949672960"), None).unwrap();
@@ -512,14 +513,15 @@ mod disk_limit_tests {
         assert!(disk_cache_limits_from_values(Some("1"), Some("5")).is_err());
         assert!(disk_cache_limits_from_values(Some("0"), None).is_err());
         assert!(disk_cache_limits_from_values(None, Some("101")).is_err());
-    });
+    }
 }
 
 #[cfg(test)]
 mod journal_migration_tests {
     use super::*;
 
-    crate::timed_test!(startup_scrubs_live_and_rotated_pre_redaction_journals, {
+    #[test]
+    fn startup_scrubs_live_and_rotated_pre_redaction_journals() {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
             "../../../_vender/zccache/crates/zccache-daemon-core/src/daemon/compile_journal/tests/compile_journal_env_security_v1.json"
         ))
@@ -545,7 +547,7 @@ mod journal_migration_tests {
             assert!(row.get("env").is_none());
         }
         assert!(current.starts_with(paths.cache.join("zccache/daemon-state/embedded-v1")));
-    });
+    }
 }
 
 fn ensure_complete_shutdown(
@@ -649,33 +651,33 @@ pub fn strip_internal_soldr_fallback_notices(stderr: Vec<u8>) -> Vec<u8> {
 mod fallback_output_tests {
     use super::strip_internal_soldr_fallback_notices;
 
-    crate::timed_test!(
-        cached_internal_fallback_notice_is_removed_without_touching_diagnostics,
-        {
-            let input = b"warning: first\n\
+    #[test]
+    fn cached_internal_fallback_notice_is_removed_without_touching_diagnostics() {
+        let input = b"warning: first\n\
 soldr: compile daemon unavailable after 30000ms \xe2\x80\x94 falling back to direct uncached rustc (soldr#1657); reason=daemon unavailable\n\
 error[E0001]: real compiler diagnostic\r\n\
 note: contains soldr: compile daemon unavailable after but is user text"
                 .to_vec();
-            let filtered = strip_internal_soldr_fallback_notices(input);
-            assert_eq!(
-                filtered,
-                b"warning: first\n\
+        let filtered = strip_internal_soldr_fallback_notices(input);
+        assert_eq!(
+            filtered,
+            b"warning: first\n\
 error[E0001]: real compiler diagnostic\r\n\
 note: contains soldr: compile daemon unavailable after but is user text"
-            );
-        }
-    );
+        );
+    }
 
-    crate::timed_test!(near_prefix_compiler_diagnostic_is_preserved, {
+    #[test]
+    fn near_prefix_compiler_diagnostic_is_preserved() {
         let input = b"soldr: compile daemon unavailable after lunch; this is user text\n".to_vec();
         assert_eq!(strip_internal_soldr_fallback_notices(input.clone()), input);
-    });
+    }
 
-    crate::timed_test!(compiler_stderr_without_internal_notice_is_byte_identical, {
+    #[test]
+    fn compiler_stderr_without_internal_notice_is_byte_identical() {
         let input = b"\0non-utf8:\xff\r\nreal stderr without trailing newline".to_vec();
         assert_eq!(strip_internal_soldr_fallback_notices(input.clone()), input);
-    });
+    }
 }
 
 /// Pull the rustc binary path out of the wrapper's argv. The wrapper

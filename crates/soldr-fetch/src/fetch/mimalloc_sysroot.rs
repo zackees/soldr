@@ -71,7 +71,8 @@ pub async fn ensure_mimalloc_sysroot(
 mod tests {
     use super::*;
 
-    crate::timed_test!(slug_for_supported_triples, {
+    #[test]
+    fn slug_for_supported_triples() {
         assert_eq!(
             catalogue_slug_for("x86_64-pc-windows-msvc"),
             Some("windows-x64")
@@ -85,13 +86,14 @@ mod tests {
             Some("linux-arm64-gnu")
         );
         assert_eq!(catalogue_slug_for("wasm32-unknown-unknown"), None);
-    });
+    }
 
-    crate::timed_test!(asset_url_layout_matches_catalogue, {
+    #[test]
+    fn asset_url_layout_matches_catalogue() {
         let u = asset_url_for(MANAGED_MIMALLOC_VERSION, "windows-x64");
         assert!(u.contains("/mimalloc/3.3.2/windows-x64/"));
         assert!(u.ends_with("/bundle.tar.zst"));
-    });
+    }
 
     // No live "not yet ingested" assertion here: mimalloc rows are
     // expected to appear in the catalogue as part of soldr#1064.

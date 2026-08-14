@@ -307,7 +307,6 @@ fn directory_mtime_ms(path: &Path) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::timed_test;
 
     fn seed_workspace(root: &Path, name: &str, target_bytes: usize) -> PathBuf {
         let workspace = root.join(name);
@@ -324,7 +323,8 @@ mod tests {
         workspace
     }
 
-    timed_test!(walk_finds_workspaces_and_returns_unsorted, {
+    #[test]
+    fn walk_finds_workspaces_and_returns_unsorted() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path();
         let small = seed_workspace(root, "small", 1024);
@@ -346,9 +346,10 @@ mod tests {
         assert!(large_entry.size_bytes >= 1024 * 1024);
         assert!(large_entry.target_dir.ends_with("target"));
         assert!(large_entry.file_count >= 1);
-    });
+    }
 
-    timed_test!(walk_descends_into_dot_claude_worktrees, {
+    #[test]
+    fn walk_descends_into_dot_claude_worktrees() {
         // Issue #680: clud's `/clud-pr` skill stores every PR's
         // feature-branch worktree under `.claude/worktrees/<branch>/`
         // and builds Rust there. The walker MUST descend into
@@ -368,9 +369,10 @@ mod tests {
             paths.contains(&workspace.as_path()),
             "expected `.claude/worktrees/...` target to be discovered; got {paths:?}",
         );
-    });
+    }
 
-    timed_test!(walk_still_skips_vcs_metadata_dirs, {
+    #[test]
+    fn walk_still_skips_vcs_metadata_dirs() {
         // Issue #680: the relaxed hidden-dir filter must NOT cause
         // VCS metadata roots (`.git/`, `.hg/`, `.svn/`, `.jj/`) or
         // `node_modules/` to be walked. Cargo-shaped layouts can show
@@ -393,9 +395,10 @@ mod tests {
             "expected only the real workspace; got {paths:?}",
         );
         assert!(paths.contains(&real.as_path()));
-    });
+    }
 
-    timed_test!(walk_does_not_recurse_into_target_dirs, {
+    #[test]
+    fn walk_does_not_recurse_into_target_dirs() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path();
         let parent = seed_workspace(root, "outer", 1024);
@@ -413,9 +416,10 @@ mod tests {
         let entries = walk(root, 8);
         assert_eq!(entries.len(), 1);
         assert!(entries[0].workspace_root.ends_with("outer"));
-    });
+    }
 
-    timed_test!(walk_respects_max_depth, {
+    #[test]
+    fn walk_respects_max_depth() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path();
         let deep = root.join("a").join("b").join("c").join("project");
@@ -429,9 +433,10 @@ mod tests {
         // misses it, depth 8 finds it.
         assert!(walk(root, 4).is_empty());
         assert_eq!(walk(root, 8).len(), 1);
-    });
+    }
 
-    timed_test!(walk_skips_workspaces_without_target_dir, {
+    #[test]
+    fn walk_skips_workspaces_without_target_dir() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path();
         let no_target = root.join("no-target");
@@ -441,14 +446,15 @@ mod tests {
 
         let entries = walk(root, 4);
         assert!(entries.is_empty());
-    });
+    }
 
-    timed_test!(walk_returns_empty_when_root_missing, {
+    #[test]
+    fn walk_returns_empty_when_root_missing() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let bogus = tmp.path().join("does-not-exist");
         let entries = walk(&bogus, 4);
         assert!(entries.is_empty());
-    });
+    }
 
     /// Seed a `target/` directory without a sibling `Cargo.toml`,
     /// laying down a cargo-shape marker so the content-discovery
@@ -472,7 +478,8 @@ mod tests {
         parent
     }
 
-    timed_test!(walk_content_discovers_target_without_sibling_cargo_toml, {
+    #[test]
+    fn walk_content_discovers_target_without_sibling_cargo_toml() {
         // Issue #681: a `target/` dir whose contents look cargo-shaped
         // but lacks a sibling Cargo.toml must still be reclaimable.
         // Exercises each of the five recognized markers.
@@ -504,9 +511,10 @@ mod tests {
             );
             assert_eq!(entries[0].workspace_root, parent);
         }
-    });
+    }
 
-    timed_test!(walk_content_skips_target_without_cargo_markers, {
+    #[test]
+    fn walk_content_skips_target_without_cargo_markers() {
         // Negative: a `target/` dir with NO cargo-shape markers (e.g.
         // a Maven-style `target/classes/` layout) must NOT be picked
         // up by content discovery. This protects the heuristic from
@@ -526,9 +534,10 @@ mod tests {
             entries.is_empty(),
             "Maven-style target/ without cargo markers must NOT be picked up; got {entries:?}",
         );
-    });
+    }
 
-    timed_test!(walk_manifest_path_wins_over_content_path, {
+    #[test]
+    fn walk_manifest_path_wins_over_content_path() {
         // When both detection paths fire on the same target/, the
         // manifest entry (high-confidence, parent declared itself a
         // cargo workspace) wins. We never emit both.
@@ -550,9 +559,10 @@ mod tests {
             TargetDiscovery::Manifest,
             "dual-eligible target/ must report as Manifest, not Content",
         );
-    });
+    }
 
-    timed_test!(walk_emits_both_paths_when_distinct_targets, {
+    #[test]
+    fn walk_emits_both_paths_when_distinct_targets() {
         // A root with one manifest-discovered AND one
         // content-discovered target/ must emit both entries, each
         // tagged with the correct discovery field.
@@ -573,9 +583,10 @@ mod tests {
             .expect("content entry present");
         assert_eq!(manifest.discovery, TargetDiscovery::Manifest);
         assert_eq!(content.discovery, TargetDiscovery::Content);
-    });
+    }
 
-    timed_test!(walk_content_path_serializes_lowercase_discovery_in_json, {
+    #[test]
+    fn walk_content_path_serializes_lowercase_discovery_in_json() {
         // The `TargetDiscovery` enum carries `#[serde(rename_all =
         // "lowercase")]` so the JSON wire form is the stable
         // string contract the CLI handler depends on. Lock it in.
@@ -583,5 +594,5 @@ mod tests {
         let content = serde_json::to_string(&TargetDiscovery::Content).expect("serialize");
         assert_eq!(manifest, "\"manifest\"");
         assert_eq!(content, "\"content\"");
-    });
+    }
 }

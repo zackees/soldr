@@ -107,7 +107,7 @@ pub(crate) fn codeload_zip_url_for_sha(owner: &str, repo: &str, sha: &str) -> St
 mod tests {
     use super::*;
 
-    #[test] // allow-bare-test: soldr#2310 install unit test (sync+fast); timed_test! migration is a follow-up
+    #[test]
     fn ref_autoclass_hex_is_rev() {
         assert_eq!(
             auto_classify_ref("9f2c1ab"),
@@ -119,7 +119,7 @@ mod tests {
         );
     }
 
-    #[test] // allow-bare-test: soldr#2310 install unit test (sync+fast); timed_test! migration is a follow-up
+    #[test]
     fn ref_autoclass_else_is_branch() {
         // "dev" is too short to be a sha and non-hex-only words are branches.
         assert_eq!(auto_classify_ref("dev"), Ref::Branch("dev".to_string()));
@@ -131,7 +131,7 @@ mod tests {
         );
     }
 
-    #[test] // allow-bare-test: soldr#2310 install unit test (sync+fast); timed_test! migration is a follow-up
+    #[test]
     fn release_offset_parses_tilde_n() {
         assert_eq!(ReleaseSel::parse("~1").unwrap(), ReleaseSel::Offset(1));
         assert_eq!(ReleaseSel::parse("~3").unwrap(), ReleaseSel::Offset(3));

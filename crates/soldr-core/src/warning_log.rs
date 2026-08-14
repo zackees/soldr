@@ -105,15 +105,17 @@ mod tests {
         guard
     }
 
-    crate::timed_test!(nothing_warned_yields_no_block, {
+    #[test]
+    fn nothing_warned_yields_no_block() {
         let _g = fresh();
         assert!(
             replay_block().is_none(),
             "an empty block would print a bare header"
         );
-    });
+    }
 
-    crate::timed_test!(a_recorded_warning_is_replayed, {
+    #[test]
+    fn a_recorded_warning_is_replayed() {
         let _g = fresh();
         record("soldr warning: fast linker was unavailable");
         let block = replay_block().expect("a warning was recorded");
@@ -122,9 +124,10 @@ mod tests {
             block.contains("may be the cause"),
             "the reader must be told why this is being repeated: {block}"
         );
-    });
+    }
 
-    crate::timed_test!(warnings_replay_oldest_first, {
+    #[test]
+    fn warnings_replay_oldest_first() {
         let _g = fresh();
         record("soldr warning: first");
         record("soldr warning: second");
@@ -132,15 +135,16 @@ mod tests {
         let first = block.find("first").expect("first present");
         let second = block.find("second").expect("second present");
         assert!(first < second, "order is the causal hint: {block}");
-    });
+    }
 
     // Repeating two hundred lines at the failure is the same disease as
     // silence: the reader still cannot find the cause.
-    crate::timed_test!(retention_is_bounded, {
+    #[test]
+    fn retention_is_bounded() {
         let _g = fresh();
         for i in 0..(MAX_RETAINED * 3) {
             record(format!("soldr warning: {i}"));
         }
         assert_eq!(recorded().len(), MAX_RETAINED);
-    });
+    }
 }

@@ -96,7 +96,8 @@ fn add_build_script_override(
 mod tests {
     use super::*;
 
-    crate::timed_test!(build_script_override_uses_target_config, {
+    #[test]
+    fn build_script_override_uses_target_config() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let sysroot = tmp.path().join("mimalloc sysroot");
         let mut prep = BlessedPrep::default();
@@ -116,5 +117,5 @@ mod tests {
         assert_eq!(prep.cargo_args[4], "--config");
         assert!(prep.cargo_args[5]
             .starts_with("target.x86_64-unknown-linux-gnu.mimalloc.metadata_include_dir=\""));
-    });
+    }
 }

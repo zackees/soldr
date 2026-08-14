@@ -241,7 +241,8 @@ fn normalize_driver_target(input: &str) -> String {
 mod tests {
     use super::*;
 
-    crate::timed_test!(print_tool_selection_is_unambiguous, {
+    #[test]
+    fn print_tool_selection_is_unambiguous() {
         let tools = NativeToolchain {
             cc: PathBuf::from("/sdk/cc"),
             cxx: PathBuf::from("/sdk/c++"),
@@ -262,18 +263,20 @@ mod tests {
             selected_print_path(&args, &tools),
             Some(Path::new("/sdk/c++"))
         );
-    });
+    }
 
-    crate::timed_test!(alias_errors_name_the_cc_surface, {
+    #[test]
+    fn alias_errors_name_the_cc_surface() {
         let error = crate::target_alias::resolve_soldr_target("not-target")
             .unwrap_err()
             .to_string();
         let message = reword_alias_error(error, "cc");
         assert!(message.starts_with("soldr cc --target"));
         assert!(!message.starts_with("soldr build --target"));
-    });
+    }
 
-    crate::timed_test!(print_request_with_compiler_args_is_detectable_early, {
+    #[test]
+    fn print_request_with_compiler_args_is_detectable_early() {
         let args = CcArgs {
             target: "host".to_string(),
             print_cc: true,
@@ -288,9 +291,10 @@ mod tests {
             reword_alias_error("soldr build --target: bad target".to_string(), "c++")
                 .starts_with("soldr c++ --target")
         );
-    });
+    }
 
-    crate::timed_test!(zig_style_gnu_target_normalizes_to_the_rust_triple, {
+    #[test]
+    fn zig_style_gnu_target_normalizes_to_the_rust_triple() {
         assert_eq!(
             normalize_driver_target("x86_64-linux-gnu.2.17"),
             "x86_64-unknown-linux-gnu.2.17"
@@ -299,9 +303,10 @@ mod tests {
             normalize_driver_target("aarch64-linux-gnu"),
             "aarch64-unknown-linux-gnu"
         );
-    });
+    }
 
-    crate::timed_test!(path_prefix_keeps_the_managed_bin_first, {
+    #[test]
+    fn path_prefix_keeps_the_managed_bin_first() {
         let _env = crate::TEST_PROCESS_ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -316,5 +321,5 @@ mod tests {
         let value = path_with_prepend(Path::new(managed)).unwrap();
         let entries = std::env::split_paths(&value).collect::<Vec<_>>();
         assert_eq!(entries.first(), Some(&PathBuf::from(managed)));
-    });
+    }
 }

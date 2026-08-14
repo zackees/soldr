@@ -13,7 +13,6 @@ use soldr_cli::cache_lib::save::{
     ci_profile_excludes_cache_path, load, read_manifest_from_archive, save, save_delta,
     CacheLayerKind, LoadOptions, SaveDeltaOptions, SaveOptions, SaveProfile, DEFAULT_ZSTD_LEVEL,
 };
-use soldr_cli::timed_test;
 
 fn write(path: &Path, content: &[u8]) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -85,40 +84,38 @@ fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
     (dir, ws, cache, archive)
 }
 
-timed_test!(
-    ci_profile_exclusion_filter_keeps_cache_payloads_and_drops_runtime_noise,
-    {
-        for rel in [
-            "logs/session.log",
-            "debug/logs/session.jsonl",
-            "tmp/extracting.bin",
-            "scratch/retry.tmp",
-            "server.sock",
-            "compile.lock",
-            "zccache/runtime-binaries/zccache.exe",
-            "bin/soldr.exe",
-            "sdk/x86_64-pc-windows-msvc/crt/include/windows.h",
-        ] {
-            assert!(
-                ci_profile_excludes_cache_path(Path::new(rel)),
-                "ci profile should exclude {rel}"
-            );
-        }
-
-        for rel in [
-            "ab/cd/object-1.bin",
-            "index.json",
-            "debug/deps/libsoldr_cli.rlib",
-            "release/build/ring/out/libring_core.a",
-            ".fingerprint/soldr-cli/dep-bin-soldr",
-        ] {
-            assert!(
-                !ci_profile_excludes_cache_path(Path::new(rel)),
-                "ci profile should keep cache payload {rel}"
-            );
-        }
+#[test]
+fn ci_profile_exclusion_filter_keeps_cache_payloads_and_drops_runtime_noise() {
+    for rel in [
+        "logs/session.log",
+        "debug/logs/session.jsonl",
+        "tmp/extracting.bin",
+        "scratch/retry.tmp",
+        "server.sock",
+        "compile.lock",
+        "zccache/runtime-binaries/zccache.exe",
+        "bin/soldr.exe",
+        "sdk/x86_64-pc-windows-msvc/crt/include/windows.h",
+    ] {
+        assert!(
+            ci_profile_excludes_cache_path(Path::new(rel)),
+            "ci profile should exclude {rel}"
+        );
     }
-);
+
+    for rel in [
+        "ab/cd/object-1.bin",
+        "index.json",
+        "debug/deps/libsoldr_cli.rlib",
+        "release/build/ring/out/libring_core.a",
+        ".fingerprint/soldr-cli/dep-bin-soldr",
+    ] {
+        assert!(
+            !ci_profile_excludes_cache_path(Path::new(rel)),
+            "ci profile should keep cache payload {rel}"
+        );
+    }
+}
 
 #[test]
 fn roundtrip_basic_mtime_restoration() {
@@ -199,73 +196,71 @@ fn roundtrip_basic_mtime_restoration() {
     );
 }
 
-timed_test!(
-    ci_profile_save_excludes_noise_but_roundtrips_cache_payloads,
-    {
-        let (_g, ws, cache, archive) = fixture();
-        write(&cache.join("logs/session.log"), b"runtime log");
-        write(&cache.join("tmp/inflight.tmp"), &[0xDD; 512]);
-        write(&cache.join("daemon.sock"), b"socket placeholder");
-        write(&cache.join("sdk/toolchain/bin/clang"), b"managed tool");
-        write(
-            &cache.join("zccache/runtime-binaries/zccache"),
-            b"runtime binary",
-        );
+#[test]
+fn ci_profile_save_excludes_noise_but_roundtrips_cache_payloads() {
+    let (_g, ws, cache, archive) = fixture();
+    write(&cache.join("logs/session.log"), b"runtime log");
+    write(&cache.join("tmp/inflight.tmp"), &[0xDD; 512]);
+    write(&cache.join("daemon.sock"), b"socket placeholder");
+    write(&cache.join("sdk/toolchain/bin/clang"), b"managed tool");
+    write(
+        &cache.join("zccache/runtime-binaries/zccache"),
+        b"runtime binary",
+    );
 
-        let report = save(&SaveOptions {
-            workspace: Some(&ws),
-            cache_dir: Some(&cache),
-            out: &archive,
-            zstd_level: DEFAULT_ZSTD_LEVEL,
-            threads: None,
-            mtimes_only: false,
-            profile: SaveProfile::Ci,
-        })
-        .expect("ci profile save ok");
-        assert_eq!(report.profile, SaveProfile::Ci);
-        assert_eq!(report.cache_files, 4, "only fixture cache payloads remain");
-        assert_eq!(report.excluded_files, 5);
-        assert!(report.excluded_bytes > 0);
+    let report = save(&SaveOptions {
+        workspace: Some(&ws),
+        cache_dir: Some(&cache),
+        out: &archive,
+        zstd_level: DEFAULT_ZSTD_LEVEL,
+        threads: None,
+        mtimes_only: false,
+        profile: SaveProfile::Ci,
+    })
+    .expect("ci profile save ok");
+    assert_eq!(report.profile, SaveProfile::Ci);
+    assert_eq!(report.cache_files, 4, "only fixture cache payloads remain");
+    assert_eq!(report.excluded_files, 5);
+    assert!(report.excluded_bytes > 0);
 
-        let paths = archive_paths(&archive);
-        assert!(paths.contains(&"cache/ab/cd/object-1.bin".to_string()));
-        assert!(paths.contains(&"cache/index.json".to_string()));
-        assert!(!paths.iter().any(|p| p.contains("logs/session.log")));
-        assert!(!paths.iter().any(|p| p.contains("tmp/inflight.tmp")));
-        assert!(!paths.iter().any(|p| p.contains("daemon.sock")));
-        assert!(!paths.iter().any(|p| p.contains("sdk/toolchain/bin/clang")));
-        assert!(!paths.iter().any(|p| p.contains("runtime-binaries/zccache")));
+    let paths = archive_paths(&archive);
+    assert!(paths.contains(&"cache/ab/cd/object-1.bin".to_string()));
+    assert!(paths.contains(&"cache/index.json".to_string()));
+    assert!(!paths.iter().any(|p| p.contains("logs/session.log")));
+    assert!(!paths.iter().any(|p| p.contains("tmp/inflight.tmp")));
+    assert!(!paths.iter().any(|p| p.contains("daemon.sock")));
+    assert!(!paths.iter().any(|p| p.contains("sdk/toolchain/bin/clang")));
+    assert!(!paths.iter().any(|p| p.contains("runtime-binaries/zccache")));
 
-        let manifest = read_manifest_from_archive(&archive).expect("manifest");
-        assert_eq!(manifest.cache_file_count, 4);
-        assert!(manifest
-            .cache_files
-            .iter()
-            .all(|entry| !entry.path.contains("logs/") && !entry.path.contains("tmp/")));
+    let manifest = read_manifest_from_archive(&archive).expect("manifest");
+    assert_eq!(manifest.cache_file_count, 4);
+    assert!(manifest
+        .cache_files
+        .iter()
+        .all(|entry| !entry.path.contains("logs/") && !entry.path.contains("tmp/")));
 
-        fs::remove_dir_all(&cache).unwrap();
-        fs::create_dir_all(&cache).unwrap();
-        let lreport = load(&LoadOptions {
-            archive: &archive,
-            cache_dir: Some(&cache),
-            workspace: Some(&ws),
-            threads: None,
-            mtimes_only: false,
-            profile_extract: false,
-            auto_defender_exclude: false,
-        })
-        .expect("ci profile load ok");
+    fs::remove_dir_all(&cache).unwrap();
+    fs::create_dir_all(&cache).unwrap();
+    let lreport = load(&LoadOptions {
+        archive: &archive,
+        cache_dir: Some(&cache),
+        workspace: Some(&ws),
+        threads: None,
+        mtimes_only: false,
+        profile_extract: false,
+        auto_defender_exclude: false,
+    })
+    .expect("ci profile load ok");
 
-        assert_eq!(lreport.cache_files_restored, 4);
-        assert!(cache.join("ab/cd/object-1.bin").exists());
-        assert!(cache.join("index.json").exists());
-        assert!(!cache.join("logs/session.log").exists());
-        assert!(!cache.join("tmp/inflight.tmp").exists());
-        assert!(!cache.join("daemon.sock").exists());
-        assert!(!cache.join("sdk/toolchain/bin/clang").exists());
-        assert!(!cache.join("zccache/runtime-binaries/zccache").exists());
-    }
-);
+    assert_eq!(lreport.cache_files_restored, 4);
+    assert!(cache.join("ab/cd/object-1.bin").exists());
+    assert!(cache.join("index.json").exists());
+    assert!(!cache.join("logs/session.log").exists());
+    assert!(!cache.join("tmp/inflight.tmp").exists());
+    assert!(!cache.join("daemon.sock").exists());
+    assert!(!cache.join("sdk/toolchain/bin/clang").exists());
+    assert!(!cache.join("zccache/runtime-binaries/zccache").exists());
+}
 
 #[test]
 fn save_and_delta_support_long_cache_paths() {
@@ -1053,7 +1048,8 @@ fn profile_extract_flag_does_not_break_load() {
 // Regression guard for the manifest-driven metadata application: the
 // restored file's sub-second nanos must match the saved value, not be
 // truncated to tar's second resolution.
-timed_test!(cache_mtimes_restore_nanosecond_precision, {
+#[test]
+fn cache_mtimes_restore_nanosecond_precision() {
     let dir = tempfile::tempdir().unwrap();
     let cache = dir.path().join("cache");
     let archive = dir.path().join("snap.tar.zst");
@@ -1106,12 +1102,13 @@ timed_test!(cache_mtimes_restore_nanosecond_precision, {
         123_456_789,
         "nanosecond mtime component must round-trip exactly"
     );
-});
+}
 
 // #1541 — the manifest's per-cache-file blake3 must equal the hash of
 // the bytes actually archived, so a later `save --delta-from-manifest`
 // compares against reality. Guards the hash-through-tar save path.
-timed_test!(manifest_cache_hashes_match_archived_payload, {
+#[test]
+fn manifest_cache_hashes_match_archived_payload() {
     let (_g, ws, cache, archive) = fixture();
     save(&SaveOptions {
         workspace: Some(&ws),
@@ -1158,7 +1155,7 @@ timed_test!(manifest_cache_hashes_match_archived_payload, {
         seen += 1;
     }
     assert_eq!(seen, 4, "all cache payloads must be visited");
-});
+}
 
 fn blake3_of(bytes: &[u8]) -> Vec<u8> {
     let mut hasher = zccache::hash::StreamHasher::new();
@@ -1168,7 +1165,8 @@ fn blake3_of(bytes: &[u8]) -> Vec<u8> {
 
 // #1541 — corruption detection: a truncated archive must fail the load
 // loudly instead of silently restoring a partial cache.
-timed_test!(truncated_archive_load_fails_loudly, {
+#[test]
+fn truncated_archive_load_fails_loudly() {
     let (_g, ws, cache, archive) = fixture();
     // Add a larger entry so truncation lands mid-payload.
     write(&cache.join("deps/large.bin"), &vec![0x5A; 512 * 1024]);
@@ -1203,7 +1201,7 @@ timed_test!(truncated_archive_load_fails_loudly, {
     .expect_err("truncated archive must fail the load");
     let msg = err.to_string();
     assert!(!msg.is_empty(), "error must carry a message");
-});
+}
 
 /// soldr#587: an executable file (0o755) restored from cache must
 /// still be executable. Without the per-worker chmod that fix
@@ -1319,7 +1317,8 @@ mod symlinks {
         .expect("load ok")
     }
 
-    timed_test!(cache_symlinks_roundtrip_into_fresh_root, {
+    #[test]
+    fn cache_symlinks_roundtrip_into_fresh_root() {
         if matches!(
             soldr_platform::host::facts::os(),
             soldr_platform::host::facts::HostOs::Windows
@@ -1380,9 +1379,10 @@ mod symlinks {
         assert!(is_symlink(&nested));
         assert_eq!(read_link_str(&nested), "../deps/libfoo.rlib");
         assert_eq!(fs::read(&nested).unwrap(), b"rlib-bytes");
-    });
+    }
 
-    timed_test!(load_restores_retargeted_symlink_to_archived_target, {
+    #[test]
+    fn load_restores_retargeted_symlink_to_archived_target() {
         if matches!(
             soldr_platform::host::facts::os(),
             soldr_platform::host::facts::HostOs::Windows
@@ -1409,9 +1409,10 @@ mod symlinks {
         assert_eq!(lreport.cache_symlinks_restored, 1);
         assert_eq!(read_link_str(&cache.join("current")), "a.bin");
         assert_eq!(fs::read(cache.join("current")).unwrap(), b"content-a");
-    });
+    }
 
-    timed_test!(save_skips_absolute_escaping_and_broken_symlinks_loudly, {
+    #[test]
+    fn save_skips_absolute_escaping_and_broken_symlinks_loudly() {
         if matches!(
             soldr_platform::host::facts::os(),
             soldr_platform::host::facts::HostOs::Windows
@@ -1452,9 +1453,10 @@ mod symlinks {
             );
         }
         assert_eq!(fs::read(fresh.join("real.bin")).unwrap(), b"payload");
-    });
+    }
 
-    timed_test!(load_refuses_crafted_escaping_symlink_manifest, {
+    #[test]
+    fn load_refuses_crafted_escaping_symlink_manifest() {
         if matches!(
             soldr_platform::host::facts::os(),
             soldr_platform::host::facts::HostOs::Windows
@@ -1546,9 +1548,10 @@ mod symlinks {
             fs::symlink_metadata(dir.path().join("pwned")).is_err(),
             "nothing may be written outside the restore root"
         );
-    });
+    }
 
-    timed_test!(workspace_symlinked_source_surfaced_via_target_content, {
+    #[test]
+    fn workspace_symlinked_source_surfaced_via_target_content() {
         if matches!(
             soldr_platform::host::facts::os(),
             soldr_platform::host::facts::HostOs::Windows
@@ -1600,9 +1603,10 @@ mod symlinks {
             !by_path.contains_key("src/broken.rs"),
             "broken link stays conservatively omitted"
         );
-    });
+    }
 
-    timed_test!(delta_load_tombstones_removed_symlink, {
+    #[test]
+    fn delta_load_tombstones_removed_symlink() {
         if matches!(
             soldr_platform::host::facts::os(),
             soldr_platform::host::facts::HostOs::Windows
@@ -1654,5 +1658,5 @@ mod symlinks {
         );
         assert!(is_symlink(&fresh.join("stay-link")));
         assert_eq!(fs::read(fresh.join("stay-link")).unwrap(), b"kept");
-    });
+    }
 }

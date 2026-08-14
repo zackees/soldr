@@ -179,7 +179,8 @@ mod tests {
     //
     // Textual, because the property is about which module a handler
     // reaches for, and that is exactly what the reviewer would check.
-    crate::timed_test!(no_state_db_opens_on_tokio_workers, {
+    #[test]
+    fn no_state_db_opens_on_tokio_workers() {
         let handler_sources = [
             (
                 "server handlers",
@@ -215,14 +216,15 @@ mod tests {
                 }
             }
         }
-    });
+    }
 
-    crate::timed_test!(strip_test_items_removes_whole_cfg_test_blocks, {
+    #[test]
+    fn strip_test_items_removes_whole_cfg_test_blocks() {
         let source =
             "fn keep() {}\n#[cfg(test)]\nmod tests {\n    fn drop_me() {}\n}\nfn also_keep() {}\n";
         let stripped = strip_test_items(source);
         assert!(stripped.contains("fn keep()"));
         assert!(stripped.contains("fn also_keep()"));
         assert!(!stripped.contains("drop_me"));
-    });
+    }
 }

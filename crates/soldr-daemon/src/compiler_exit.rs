@@ -26,14 +26,16 @@ mod tests {
     // platform crate's exit tests; here the assertion is conditional on the
     // platform's own answer so the diagnostic path is covered on Unix hosts
     // and the no-op path is covered on Windows hosts.
-    crate::timed_test!(signal_termination_gets_an_actionable_diagnostic, {
+    #[test]
+    fn signal_termination_gets_an_actionable_diagnostic() {
         let stderr = annotate_signal_termination(-1, Vec::new());
         if crate::platform::process::exit::is_signal_termination(-1) {
             assert_eq!(stderr, SIGNAL_DIAGNOSTIC);
         }
-    });
+    }
 
-    crate::timed_test!(compiler_stderr_is_preserved_before_the_diagnostic, {
+    #[test]
+    fn compiler_stderr_is_preserved_before_the_diagnostic() {
         let original = b"rustc said why".to_vec();
         let stderr = annotate_signal_termination(-1, original.clone());
         if crate::platform::process::exit::is_signal_termination(-1) {
@@ -42,10 +44,11 @@ mod tests {
         } else {
             assert_eq!(stderr, original);
         }
-    });
+    }
 
-    crate::timed_test!(ordinary_exit_codes_are_byte_identical, {
+    #[test]
+    fn ordinary_exit_codes_are_byte_identical() {
         let original = b"ordinary compiler error\n".to_vec();
         assert_eq!(annotate_signal_termination(1, original.clone()), original);
-    });
+    }
 }

@@ -448,48 +448,47 @@ mod tests {
     // soldr#1934. This is the regression the 0.8.26 trampoline caused, and it
     // is asserted on the argv the wrapper *receives* -- not on "the shim ran",
     // which was true throughout the outage.
-    crate::timed_test!(
-        a_trampoline_rustc_wrapper_invocation_matches_the_hardlink_shape,
-        {
-            // What cargo hands a hardlinked shim: the tool identity is argv[0] and
-            // argv[1] is the real compiler.
-            let hardlink = args(&[
-                "/wheel/shims/rustc",
-                "/toolchains/1.94.1/bin/rustc",
-                "-",
-                "--crate-name",
-                "___",
-            ]);
-            // What the trampoline forwards: identical, minus argv[0], which the
-            // script could not set and passed in the environment instead.
-            let trampoline = args(&[
-                "/wheel/lib/soldr",
-                "/toolchains/1.94.1/bin/rustc",
-                "-",
-                "--crate-name",
-                "___",
-            ]);
+    #[test]
+    fn a_trampoline_rustc_wrapper_invocation_matches_the_hardlink_shape() {
+        // What cargo hands a hardlinked shim: the tool identity is argv[0] and
+        // argv[1] is the real compiler.
+        let hardlink = args(&[
+            "/wheel/shims/rustc",
+            "/toolchains/1.94.1/bin/rustc",
+            "-",
+            "--crate-name",
+            "___",
+        ]);
+        // What the trampoline forwards: identical, minus argv[0], which the
+        // script could not set and passed in the environment instead.
+        let trampoline = args(&[
+            "/wheel/lib/soldr",
+            "/toolchains/1.94.1/bin/rustc",
+            "-",
+            "--crate-name",
+            "___",
+        ]);
 
-            let _guard = ShimEnvGuard::set("/wheel/shims/rustc");
-            let restored = apply_shim_argv0_override(trampoline);
+        let _guard = ShimEnvGuard::set("/wheel/shims/rustc");
+        let restored = apply_shim_argv0_override(trampoline);
 
-            assert_eq!(
-                restored, hardlink,
-                "the trampoline shape must be byte-identical to the hardlink shape"
-            );
-            // The consequence that actually broke builds: without the override the
-            // deferral gate never fires, `wrapper.rs` reads a tool name out of
-            // argv[1] instead of the compiler path, and the real rustc path stays
-            // in the compile args as a second source file.
-            assert!(toolchain_shim_should_defer_to_rustc_wrapper(&restored));
-            assert_eq!(restored[1], "/toolchains/1.94.1/bin/rustc");
+        assert_eq!(
+            restored, hardlink,
+            "the trampoline shape must be byte-identical to the hardlink shape"
+        );
+        // The consequence that actually broke builds: without the override the
+        // deferral gate never fires, `wrapper.rs` reads a tool name out of
+        // argv[1] instead of the compiler path, and the real rustc path stays
+        // in the compile args as a second source file.
+        assert!(toolchain_shim_should_defer_to_rustc_wrapper(&restored));
+        assert_eq!(restored[1], "/toolchains/1.94.1/bin/rustc");
 
-            // And the variable does not survive into any child process.
-            assert!(env::var_os(SHIM_ARGV0_ENV).is_none());
-        }
-    );
+        // And the variable does not survive into any child process.
+        assert!(env::var_os(SHIM_ARGV0_ENV).is_none());
+    }
 
-    crate::timed_test!(shim_argv0_override_is_inert_without_the_env_var, {
+    #[test]
+    fn shim_argv0_override_is_inert_without_the_env_var() {
         let _lock = crate::TEST_PROCESS_ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -498,17 +497,19 @@ mod tests {
         // untouched, including argv[0].
         let hardlink = args(&["/wheel/shims/cargo", "build", "--release"]);
         assert_eq!(apply_shim_argv0_override(hardlink.clone()), hardlink);
-    });
+    }
 
-    crate::timed_test!(an_empty_shim_override_is_ignored_rather_than_trusted, {
+    #[test]
+    fn an_empty_shim_override_is_ignored_rather_than_trusted() {
         // A truncated or hand-edited trampoline must not be able to blank
         // argv[0] and send dispatch somewhere unintended.
         let original = args(&["/wheel/lib/soldr", "--version"]);
         let _guard = ShimEnvGuard::set("");
         assert_eq!(apply_shim_argv0_override(original.clone()), original);
-    });
+    }
 
-    crate::timed_test!(the_scrubbed_path_entry_is_the_shim_dir_not_the_soldr_dir, {
+    #[test]
+    fn the_scrubbed_path_entry_is_the_shim_dir_not_the_soldr_dir() {
         // A trampoline's `current_exe()` is the real soldr binary, which lives
         // somewhere else entirely; argv[0] is the only source that names the
         // directory actually on PATH (soldr#1934).
@@ -545,9 +546,10 @@ mod tests {
         );
         assert!(path.split(separator).any(|entry| entry == other), "{path}");
         drop(guard);
-    });
+    }
 
-    crate::timed_test!(classify_argv0_recognizes_toolchain_shims, {
+    #[test]
+    fn classify_argv0_recognizes_toolchain_shims() {
         assert_eq!(
             classify_argv0("/tmp/shims/cargo"),
             Some(ShimIdentity::Toolchain("cargo"))
@@ -557,9 +559,10 @@ mod tests {
             Some(ShimIdentity::Toolchain("clippy-driver"))
         );
         assert_eq!(classify_argv0("soldr"), None);
-    });
+    }
 
-    crate::timed_test!(classify_argv0_recognizes_clang_and_zccache_shims, {
+    #[test]
+    fn classify_argv0_recognizes_clang_and_zccache_shims() {
         assert_eq!(
             classify_argv0("/tmp/clang-shim/clang"),
             Some(ShimIdentity::Clang(ClangTool::Clang))
@@ -572,9 +575,10 @@ mod tests {
             classify_argv0("zccache-soldr"),
             Some(ShimIdentity::ZccacheSoldr)
         );
-    });
+    }
 
-    crate::timed_test!(classify_argv0_recognizes_runtime_aliases, {
+    #[test]
+    fn classify_argv0_recognizes_runtime_aliases() {
         assert_eq!(
             classify_argv0("/opt/soldr/soldr-daemon"),
             Some(ShimIdentity::SoldrDaemon)
@@ -593,15 +597,17 @@ mod tests {
         );
         assert_eq!(classify_argv0("zccache"), None);
         assert_eq!(classify_argv0("zccache.exe"), None);
-    });
+    }
 
-    crate::timed_test!(filter_path_drops_self_dir, {
+    #[test]
+    fn filter_path_drops_self_dir() {
         let shim = PathBuf::from("/opt/.soldr/v0.8/shims");
         let path = "/usr/bin:/opt/.soldr/v0.8/shims:/usr/local/bin";
         assert_eq!(filter_path(path, &shim, ':'), "/usr/bin:/usr/local/bin");
-    });
+    }
 
-    crate::timed_test!(argv_has_msvc_target_detects_single_and_split_forms, {
+    #[test]
+    fn argv_has_msvc_target_detects_single_and_split_forms() {
         assert!(argv_has_msvc_target(&os_args(&[
             "-O2",
             "--target=aarch64-pc-windows-msvc",
@@ -613,16 +619,18 @@ mod tests {
         assert!(!argv_has_msvc_target(&os_args(&[
             "--target=aarch64-unknown-linux-gnu",
         ])));
-    });
+    }
 
-    crate::timed_test!(normalize_exit_code_collapses_out_of_range_values, {
+    #[test]
+    fn normalize_exit_code_collapses_out_of_range_values() {
         assert_eq!(normalize_exit_code(0), 0);
         assert_eq!(normalize_exit_code(255), 255);
         assert_eq!(normalize_exit_code(256), 1);
         assert_eq!(normalize_exit_code(-1), 1);
-    });
+    }
 
-    crate::timed_test!(only_compiler_shims_defer_rustc_wrapper_contract, {
+    #[test]
+    fn only_compiler_shims_defer_rustc_wrapper_contract() {
         for argv in [
             ["rustc", "/opt/rust/bin/rustc", "-vV"],
             ["clippy-driver.exe", "/opt/rust/bin/rustc", "-vV"],
@@ -646,9 +654,10 @@ mod tests {
                 "non-compiler shim must use normal multicall dispatch: {argv:?}"
             );
         }
-    });
+    }
 
-    crate::timed_test!(cargo_rustc_multicall_preserves_every_argument, {
+    #[test]
+    fn cargo_rustc_multicall_preserves_every_argument() {
         let raw_args = [
             "/tmp/soldr-shims/cargo",
             "rustc",
@@ -683,5 +692,5 @@ mod tests {
                 .into()
             ))
         );
-    });
+    }
 }

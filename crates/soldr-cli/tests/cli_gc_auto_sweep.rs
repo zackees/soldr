@@ -11,11 +11,10 @@
 
 use std::process::Command;
 
-use soldr_cli::timed_test;
-
 mod common;
 
-timed_test!(gc_auto_sweep_runs_and_logs_start_line, {
+#[test]
+fn gc_auto_sweep_runs_and_logs_start_line() {
     let cache_root = tempfile::tempdir().expect("cache tempdir");
     let home_root = tempfile::tempdir().expect("home tempdir");
 
@@ -45,4 +44,4 @@ timed_test!(gc_auto_sweep_runs_and_logs_start_line, {
         "a standalone auto-sweep process must not consider a build \
          active; log content: {content:?}"
     );
-});
+}

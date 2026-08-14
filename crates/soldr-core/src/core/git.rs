@@ -229,7 +229,8 @@ where
 mod tests {
     use super::*;
 
-    crate::timed_test!(rewrite_scp_style_canonicalizes_ssh_shorthand, {
+    #[test]
+    fn rewrite_scp_style_canonicalizes_ssh_shorthand() {
         assert_eq!(
             rewrite_scp_style("git@github.com:zackees/soldr.git"),
             Some("https://github.com/zackees/soldr.git".to_string())
@@ -238,9 +239,10 @@ mod tests {
             rewrite_scp_style("git@github.com:zackees/soldr"),
             Some("https://github.com/zackees/soldr".to_string())
         );
-    });
+    }
 
-    crate::timed_test!(rewrite_scp_style_ignores_full_urls, {
+    #[test]
+    fn rewrite_scp_style_ignores_full_urls() {
         assert_eq!(
             rewrite_scp_style("https://github.com/zackees/soldr.git"),
             None
@@ -249,14 +251,16 @@ mod tests {
             rewrite_scp_style("ssh://git@github.com/zackees/soldr"),
             None
         );
-    });
+    }
 
-    crate::timed_test!(normalize_strips_credentials_and_dot_git, {
+    #[test]
+    fn normalize_strips_credentials_and_dot_git() {
         let out = normalize_origin_url("https://user:pass@GitHub.com/Owner/Repo.git");
         assert_eq!(out, "https://github.com/Owner/Repo");
-    });
+    }
 
-    crate::timed_test!(normalize_drops_default_port, {
+    #[test]
+    fn normalize_drops_default_port() {
         assert_eq!(
             normalize_origin_url("https://github.com:443/zackees/soldr"),
             "https://github.com/zackees/soldr"
@@ -265,23 +269,26 @@ mod tests {
             normalize_origin_url("http://github.com:80/zackees/soldr"),
             "http://github.com/zackees/soldr"
         );
-    });
+    }
 
-    crate::timed_test!(normalize_canonicalizes_scp_form_to_https, {
+    #[test]
+    fn normalize_canonicalizes_scp_form_to_https() {
         assert_eq!(
             normalize_origin_url("git@github.com:Owner/Repo.git"),
             "https://github.com/Owner/Repo"
         );
-    });
+    }
 
-    crate::timed_test!(normalize_round_trips_unknown_schemes_verbatim, {
+    #[test]
+    fn normalize_round_trips_unknown_schemes_verbatim() {
         assert_eq!(
             normalize_origin_url("file:///srv/git/repo.git"),
             "file:///srv/git/repo"
         );
-    });
+    }
 
-    crate::timed_test!(branch_lineage_dedups_current_main, {
+    #[test]
+    fn branch_lineage_dedups_current_main() {
         let dir = tempfile::tempdir().unwrap();
         let status = std::process::Command::new("git")
             .arg("-C")
@@ -295,5 +302,5 @@ mod tests {
         assert_eq!(lineage.first().map(String::as_str), Some("main"));
         assert_eq!(lineage.iter().filter(|b| b.as_str() == "main").count(), 1);
         assert!(lineage.iter().any(|b| b == "master"));
-    });
+    }
 }

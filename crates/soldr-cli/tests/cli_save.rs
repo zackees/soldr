@@ -3,10 +3,8 @@ mod common;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::time::Duration;
 
 use serde_json::Value;
-use soldr_cli::timed_test;
 
 fn write(path: &Path, bytes: &[u8]) {
     if let Some(parent) = path.parent() {
@@ -81,7 +79,8 @@ fn u64_field(json: &Value, key: &str) -> u64 {
         .unwrap_or_else(|| panic!("missing numeric {key} in {json:#?}"))
 }
 
-timed_test!(save_ci_json_reports_profile_and_exclusions, {
+#[test]
+fn save_ci_json_reports_profile_and_exclusions() {
     let (ws, cache, archive) = fixture("save-ci-json");
     let output = Command::new(common::soldr_bin())
         .args(["save", "--ci", "--json", "--zstd-level", "1"])
@@ -108,9 +107,10 @@ timed_test!(save_ci_json_reports_profile_and_exclusions, {
     assert!(json["archive_bytes"].as_u64().unwrap() > 0);
     assert_eq!(json["mtimes_only"], false);
     assert!(archive.exists());
-});
+}
 
-timed_test!(save_minimal_alias_selects_ci_profile, {
+#[test]
+fn save_minimal_alias_selects_ci_profile() {
     let (ws, cache, archive) = fixture("save-minimal-json");
     let output = Command::new(common::soldr_bin())
         .args(["save", "--minimal", "--json", "--zstd-level", "1"])
@@ -133,9 +133,10 @@ timed_test!(save_minimal_alias_selects_ci_profile, {
     assert_eq!(json["profile"], "ci");
     assert_eq!(json["cache_files"], 1);
     assert_eq!(json["excluded_files"], 2);
-});
+}
 
-timed_test!(save_profile_env_selects_ci_when_flag_absent, {
+#[test]
+fn save_profile_env_selects_ci_when_flag_absent() {
     let (ws, cache, archive) = fixture("save-ci-env-json");
     let output = Command::new(common::soldr_bin())
         .env("SOLDR_SAVE_PROFILE", "minimal")
@@ -159,102 +160,95 @@ timed_test!(save_profile_env_selects_ci_when_flag_absent, {
     assert_eq!(json["profile"], "ci");
     assert_eq!(json["cache_files"], 1);
     assert_eq!(json["excluded_files"], 2);
-});
+}
 
 #[test]
 #[ignore = "does two real soldr cargo builds; run explicitly for #1297 acceptance"]
 fn save_ci_load_preserves_real_warm_rustc_hits() {
-    soldr_cli::test_util::run_with_watchdog(
-        "save_ci_load_preserves_real_warm_rustc_hits",
-        Duration::from_secs(300),
-        || {
-            let root = common::unique_temp_dir("save-ci-real-hits");
-            let workspace = root.join("workspace");
-            let cold_root = root.join("cold-cache-root");
-            let warm_root = root.join("warm-cache-root");
-            let archive = root.join("cache.tar.zst");
-            let cold_cache = cold_root.join("cache");
-            let warm_cache = warm_root.join("cache");
+    let root = common::unique_temp_dir("save-ci-real-hits");
+    let workspace = root.join("workspace");
+    let cold_root = root.join("cold-cache-root");
+    let warm_root = root.join("warm-cache-root");
+    let archive = root.join("cache.tar.zst");
+    let cold_cache = cold_root.join("cache");
+    let warm_cache = warm_root.join("cache");
 
-            create_real_crate(&workspace);
-            fs::create_dir_all(&cold_cache).expect("create cold cache");
-            fs::create_dir_all(&warm_cache).expect("create warm cache");
+    create_real_crate(&workspace);
+    fs::create_dir_all(&cold_cache).expect("create cold cache");
+    fs::create_dir_all(&warm_cache).expect("create warm cache");
 
-            let mut cold_build = soldr_command(&["cargo", "build", "--release"]);
-            cold_build
-                .current_dir(&workspace)
-                .env("SOLDR_CACHE_DIR", &cold_root);
-            run_command(cold_build, "cold soldr cargo build");
+    let mut cold_build = soldr_command(&["cargo", "build", "--release"]);
+    cold_build
+        .current_dir(&workspace)
+        .env("SOLDR_CACHE_DIR", &cold_root);
+    run_command(cold_build, "cold soldr cargo build");
 
-            let mut flush = soldr_command(&["cache", "flush", "--json"]);
-            flush.env("SOLDR_CACHE_DIR", &cold_root);
-            run_command(flush, "cold cache flush");
+    let mut flush = soldr_command(&["cache", "flush", "--json"]);
+    flush.env("SOLDR_CACHE_DIR", &cold_root);
+    run_command(flush, "cold cache flush");
 
-            let mut shutdown = soldr_command(&["cache", "shutdown", "--no-wait", "--json"]);
-            shutdown.env("SOLDR_CACHE_DIR", &cold_root);
-            run_command(shutdown, "cold cache shutdown");
+    let mut shutdown = soldr_command(&["cache", "shutdown", "--no-wait", "--json"]);
+    shutdown.env("SOLDR_CACHE_DIR", &cold_root);
+    run_command(shutdown, "cold cache shutdown");
 
-            write(
-                &cold_cache.join("zccache/runtime-binaries/zccache"),
-                b"runtime binary must not enter ci archive",
-            );
+    write(
+        &cold_cache.join("zccache/runtime-binaries/zccache"),
+        b"runtime binary must not enter ci archive",
+    );
 
-            let mut save = soldr_command(&["save", "--ci", "--json", "--zstd-level", "1"]);
-            save.arg("--cache-dir")
-                .arg(&cold_cache)
-                .arg("--workspace")
-                .arg(&workspace)
-                .arg("--out")
-                .arg(&archive);
-            let save_output = run_command(save, "soldr save --ci");
-            let save_json: Value =
-                serde_json::from_slice(&save_output.stdout).expect("parse save json");
-            assert_eq!(save_json["profile"], "ci");
-            assert!(
-                u64_field(&save_json, "cache_files") > 0,
-                "ci save must include real cache payloads: {save_json:#?}"
-            );
-            assert!(
-                u64_field(&save_json, "excluded_files") > 0,
-                "ci save should report excluded runtime files: {save_json:#?}"
-            );
+    let mut save = soldr_command(&["save", "--ci", "--json", "--zstd-level", "1"]);
+    save.arg("--cache-dir")
+        .arg(&cold_cache)
+        .arg("--workspace")
+        .arg(&workspace)
+        .arg("--out")
+        .arg(&archive);
+    let save_output = run_command(save, "soldr save --ci");
+    let save_json: Value = serde_json::from_slice(&save_output.stdout).expect("parse save json");
+    assert_eq!(save_json["profile"], "ci");
+    assert!(
+        u64_field(&save_json, "cache_files") > 0,
+        "ci save must include real cache payloads: {save_json:#?}"
+    );
+    assert!(
+        u64_field(&save_json, "excluded_files") > 0,
+        "ci save should report excluded runtime files: {save_json:#?}"
+    );
 
-            let mut load = soldr_command(&["load", "--json"]);
-            load.arg("--archive")
-                .arg(&archive)
-                .arg("--cache-dir")
-                .arg(&warm_cache)
-                .arg("--workspace")
-                .arg(&workspace);
-            run_command(load, "soldr load ci archive");
-            assert!(
-                !warm_cache.join("zccache/runtime-binaries/zccache").exists(),
-                "ci load must not restore zccache runtime binaries"
-            );
+    let mut load = soldr_command(&["load", "--json"]);
+    load.arg("--archive")
+        .arg(&archive)
+        .arg("--cache-dir")
+        .arg(&warm_cache)
+        .arg("--workspace")
+        .arg(&workspace);
+    run_command(load, "soldr load ci archive");
+    assert!(
+        !warm_cache.join("zccache/runtime-binaries/zccache").exists(),
+        "ci load must not restore zccache runtime binaries"
+    );
 
-            let _ = fs::remove_dir_all(workspace.join("target"));
+    let _ = fs::remove_dir_all(workspace.join("target"));
 
-            let mut warm_build = soldr_command(&["cargo", "build", "--release"]);
-            warm_build
-                .current_dir(&workspace)
-                .env("SOLDR_CACHE_DIR", &warm_root);
-            run_command(warm_build, "warm soldr cargo build");
+    let mut warm_build = soldr_command(&["cargo", "build", "--release"]);
+    warm_build
+        .current_dir(&workspace)
+        .env("SOLDR_CACHE_DIR", &warm_root);
+    run_command(warm_build, "warm soldr cargo build");
 
-            let stats = read_json_file(
-                &warm_cache
-                    .join("zccache")
-                    .join("logs")
-                    .join("last-session-stats.json"),
-            );
-            assert!(
-                u64_field(&stats, "hits") > 0,
-                "warm build should hit restored ci archive cache: {stats:#?}"
-            );
-            assert_eq!(
-                u64_field(&stats, "misses"),
-                0,
-                "warm build should not miss after restoring ci archive: {stats:#?}"
-            );
-        },
+    let stats = read_json_file(
+        &warm_cache
+            .join("zccache")
+            .join("logs")
+            .join("last-session-stats.json"),
+    );
+    assert!(
+        u64_field(&stats, "hits") > 0,
+        "warm build should hit restored ci archive cache: {stats:#?}"
+    );
+    assert_eq!(
+        u64_field(&stats, "misses"),
+        0,
+        "warm build should not miss after restoring ci archive: {stats:#?}"
     );
 }

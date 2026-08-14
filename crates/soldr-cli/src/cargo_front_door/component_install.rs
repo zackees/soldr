@@ -245,7 +245,8 @@ fn emit_install_notice(component: &str, channel: Option<&str>) {
 mod tests {
     use super::*;
 
-    crate::timed_test!(map_covers_fmt_clippy_miri_only, {
+    #[test]
+    fn map_covers_fmt_clippy_miri_only() {
         assert!(lookup_component("fmt").is_some());
         assert!(lookup_component("clippy").is_some());
         assert!(lookup_component("miri").is_some());
@@ -253,33 +254,34 @@ mod tests {
         assert!(lookup_component("test").is_none());
         assert!(lookup_component("nextest").is_none());
         assert!(lookup_component("").is_none());
-    });
+    }
 
-    crate::timed_test!(fmt_resolves_to_rustfmt_component_and_cargo_fmt_probe, {
+    #[test]
+    fn fmt_resolves_to_rustfmt_component_and_cargo_fmt_probe() {
         let row = lookup_component("fmt").expect("fmt entry");
         assert_eq!(row.component, "rustfmt");
         assert_eq!(row.probe_binary, "cargo-fmt");
         assert!(!row.nightly_only);
-    });
+    }
 
-    crate::timed_test!(
-        clippy_resolves_to_clippy_component_and_cargo_clippy_probe,
-        {
-            let row = lookup_component("clippy").expect("clippy entry");
-            assert_eq!(row.component, "clippy");
-            assert_eq!(row.probe_binary, "cargo-clippy");
-            assert!(!row.nightly_only);
-        }
-    );
+    #[test]
+    fn clippy_resolves_to_clippy_component_and_cargo_clippy_probe() {
+        let row = lookup_component("clippy").expect("clippy entry");
+        assert_eq!(row.component, "clippy");
+        assert_eq!(row.probe_binary, "cargo-clippy");
+        assert!(!row.nightly_only);
+    }
 
-    crate::timed_test!(miri_marked_nightly_only, {
+    #[test]
+    fn miri_marked_nightly_only() {
         let row = lookup_component("miri").expect("miri entry");
         assert_eq!(row.component, "miri");
         assert_eq!(row.probe_binary, "cargo-miri");
         assert!(row.nightly_only);
-    });
+    }
 
-    crate::timed_test!(nightly_channel_detection_is_prefix_match, {
+    #[test]
+    fn nightly_channel_detection_is_prefix_match() {
         assert!(is_nightly_channel(Some("nightly")));
         assert!(is_nightly_channel(Some("nightly-2026-01-15")));
         assert!(is_nightly_channel(Some("nightly-x86_64-pc-windows-msvc")));
@@ -287,9 +289,10 @@ mod tests {
         assert!(!is_nightly_channel(Some("beta")));
         assert!(!is_nightly_channel(Some("1.94.1")));
         assert!(!is_nightly_channel(None));
-    });
+    }
 
-    crate::timed_test!(opt_out_accepts_canonical_truthy_values, {
+    #[test]
+    fn opt_out_accepts_canonical_truthy_values() {
         // Save & restore so other tests aren't affected.
         let prior = std::env::var_os(SOLDR_NO_AUTO_COMPONENT_ENV);
         for v in ["1", "true", "yes", "on", "TRUE", "YES"] {
@@ -306,10 +309,11 @@ mod tests {
         if let Some(v) = prior {
             std::env::set_var(SOLDR_NO_AUTO_COMPONENT_ENV, v);
         }
-    });
+    }
 
-    crate::timed_test!(memo_key_format_is_pipe_separated, {
+    #[test]
+    fn memo_key_format_is_pipe_separated() {
         assert_eq!(memo_key("1.94.1", "rustfmt"), "1.94.1|rustfmt");
         assert_eq!(memo_key("", "clippy"), "|clippy");
-    });
+    }
 }

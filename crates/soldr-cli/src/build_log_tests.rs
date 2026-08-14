@@ -2,7 +2,6 @@
 //! 1,000-line production-source ceiling.
 
 use super::*;
-use crate::timed_test;
 use std::time::Duration;
 
 fn sample_request<'a>(
@@ -28,105 +27,101 @@ fn sample_request<'a>(
     }
 }
 
-timed_test!(
-    toolchain_homes_render_when_present_and_vanish_when_absent,
-    {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
-        let args = vec!["cargo".to_string(), "build".to_string()];
+#[test]
+fn toolchain_homes_render_when_present_and_vanish_when_absent() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
+    let args = vec!["cargo".to_string(), "build".to_string()];
 
-        // Absent: no element at all, rather than an element claiming an
-        // origin nobody established. soldr#1799's CI check treats a missing
-        // <toolchain> as "not asserted"; a fabricated one would read as a
-        // pass.
-        let request = sample_request(&paths, tmp.path(), &args);
-        let without = write_build_log(&request).expect("write");
-        let raw = std::fs::read_to_string(&without).expect("read");
-        assert!(
-            !raw.contains("<toolchain"),
-            "absent telemetry must emit no element, got:
+    // Absent: no element at all, rather than an element claiming an
+    // origin nobody established. soldr#1799's CI check treats a missing
+    // <toolchain> as "not asserted"; a fabricated one would read as a
+    // pass.
+    let request = sample_request(&paths, tmp.path(), &args);
+    let without = write_build_log(&request).expect("write");
+    let raw = std::fs::read_to_string(&without).expect("read");
+    assert!(
+        !raw.contains("<toolchain"),
+        "absent telemetry must emit no element, got:
 {raw}"
-        );
+    );
 
-        // Present: origin and the binary that justifies it.
-        let mut request = sample_request(&paths, tmp.path(), &args);
-        request.toolchain = Some(ToolchainHomes {
-            home_origin: "caller",
-            binary: PathBuf::from("/usr/bin/cargo"),
-        });
-        let with = write_build_log(&request).expect("write");
-        let raw = std::fs::read_to_string(&with).expect("read");
-        assert!(
-            raw.contains("home_origin=\"caller\""),
-            "expected the caller origin, got:
+    // Present: origin and the binary that justifies it.
+    let mut request = sample_request(&paths, tmp.path(), &args);
+    request.toolchain = Some(ToolchainHomes {
+        home_origin: "caller",
+        binary: PathBuf::from("/usr/bin/cargo"),
+    });
+    let with = write_build_log(&request).expect("write");
+    let raw = std::fs::read_to_string(&with).expect("read");
+    assert!(
+        raw.contains("home_origin=\"caller\""),
+        "expected the caller origin, got:
 {raw}"
-        );
-        assert!(
-            raw.contains("cargo"),
-            "expected the resolved binary, got:
+    );
+    assert!(
+        raw.contains("cargo"),
+        "expected the resolved binary, got:
 {raw}"
-        );
-    }
-);
+    );
+}
 
-timed_test!(
-    write_build_log_writes_file_with_expected_header,
-    Duration::from_secs(10),
-    {
-        let tmp = tempfile::tempdir().expect("tmpdir");
-        let paths = SoldrPaths::with_root(tmp.path().join("soldr-root"));
-        let cwd_dir = tmp.path().join("project");
-        std::fs::create_dir_all(&cwd_dir).expect("mkdir cwd");
-        let args = vec!["cargo".to_string(), "build".to_string()];
-        let request = sample_request(&paths, &cwd_dir, &args);
+#[test]
+fn write_build_log_writes_file_with_expected_header() {
+    let tmp = tempfile::tempdir().expect("tmpdir");
+    let paths = SoldrPaths::with_root(tmp.path().join("soldr-root"));
+    let cwd_dir = tmp.path().join("project");
+    std::fs::create_dir_all(&cwd_dir).expect("mkdir cwd");
+    let args = vec!["cargo".to_string(), "build".to_string()];
+    let request = sample_request(&paths, &cwd_dir, &args);
 
-        let path = write_build_log(&request).expect("write_build_log");
-        assert!(path.is_file(), "log file must exist: {}", path.display());
-        assert_eq!(path.extension().and_then(|e| e.to_str()), Some("xml"));
+    let path = write_build_log(&request).expect("write_build_log");
+    assert!(path.is_file(), "log file must exist: {}", path.display());
+    assert_eq!(path.extension().and_then(|e| e.to_str()), Some("xml"));
 
-        let raw = std::fs::read_to_string(&path).expect("read log");
-        assert!(
-            raw.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"),
-            "must start with the XML declaration: {raw}"
-        );
-        assert!(raw.contains("schema_version=\"1\""), "{raw}");
-        assert!(
-            raw.contains(&format!(
-                "cwd=\"{}\"",
-                xml_escape_attr(&cwd_dir.display().to_string())
-            )),
-            "{raw}"
-        );
-        assert!(raw.contains("<arg>cargo</arg>"), "{raw}");
-        assert!(raw.contains("<arg>build</arg>"), "{raw}");
-        assert!(raw.contains("wall_ms=\"5000\""), "totals wall_ms: {raw}");
-        // Empty compile/download groups render self-closing (no
-        // <item> children).
-        assert!(!raw.contains("<item"), "no items expected: {raw}");
-        assert!(raw.contains("derived=\"true\""), "{raw}");
-        // The compile AND link group nodes both carry the derived
-        // build-settings attributes (owner's load-bearing
-        // requirement — settings stamped on both groups).
-        for group in ["<compile", "<link"] {
-            let start = raw
-                .find(group)
-                .unwrap_or_else(|| panic!("{group} missing: {raw}"));
-            let end = raw[start..]
-                .find(['>', '/'])
-                .map(|i| start + i)
-                .unwrap_or(raw.len());
-            let head = &raw[start..end];
-            for attr_name in ["target=", "profile=", "debug=", "opt_level=", "lto="] {
-                assert!(
-                    head.contains(attr_name),
-                    "{group} node missing {attr_name}: {head}"
-                );
-            }
+    let raw = std::fs::read_to_string(&path).expect("read log");
+    assert!(
+        raw.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"),
+        "must start with the XML declaration: {raw}"
+    );
+    assert!(raw.contains("schema_version=\"1\""), "{raw}");
+    assert!(
+        raw.contains(&format!(
+            "cwd=\"{}\"",
+            xml_escape_attr(&cwd_dir.display().to_string())
+        )),
+        "{raw}"
+    );
+    assert!(raw.contains("<arg>cargo</arg>"), "{raw}");
+    assert!(raw.contains("<arg>build</arg>"), "{raw}");
+    assert!(raw.contains("wall_ms=\"5000\""), "totals wall_ms: {raw}");
+    // Empty compile/download groups render self-closing (no
+    // <item> children).
+    assert!(!raw.contains("<item"), "no items expected: {raw}");
+    assert!(raw.contains("derived=\"true\""), "{raw}");
+    // The compile AND link group nodes both carry the derived
+    // build-settings attributes (owner's load-bearing
+    // requirement — settings stamped on both groups).
+    for group in ["<compile", "<link"] {
+        let start = raw
+            .find(group)
+            .unwrap_or_else(|| panic!("{group} missing: {raw}"));
+        let end = raw[start..]
+            .find(['>', '/'])
+            .map(|i| start + i)
+            .unwrap_or(raw.len());
+        let head = &raw[start..end];
+        for attr_name in ["target=", "profile=", "debug=", "opt_level=", "lto="] {
+            assert!(
+                head.contains(attr_name),
+                "{group} node missing {attr_name}: {head}"
+            );
         }
     }
-);
+}
 
-timed_test!(write_build_log_without_daemon_never_opens_state_db, {
+#[test]
+fn write_build_log_without_daemon_never_opens_state_db() {
     let tmp = tempfile::tempdir().expect("tmpdir");
     let paths = SoldrPaths::with_root(tmp.path().join("soldr-root"));
     let cwd_dir = tmp.path().join("project");
@@ -148,9 +143,10 @@ timed_test!(write_build_log_without_daemon_never_opens_state_db, {
         !crate::cache_lib::data_db_path(&paths).exists(),
         "a daemon-less build log must stay incomplete instead of opening state.redb"
     );
-});
+}
 
-timed_test!(filename_shape_starts_with_compact_timestamp_and_slug, {
+#[test]
+fn filename_shape_starts_with_compact_timestamp_and_slug() {
     let tmp = tempfile::tempdir().expect("tmpdir");
     let dir = tmp.path().join("builds");
     std::fs::create_dir_all(&dir).expect("mkdir");
@@ -180,9 +176,10 @@ timed_test!(filename_shape_starts_with_compact_timestamp_and_slug, {
         second.ends_with("-2.xml"),
         "collision must append -2: {second}"
     );
-});
+}
 
-timed_test!(derive_build_meta_reads_release_debug_and_target_flags, {
+#[test]
+fn derive_build_meta_reads_release_debug_and_target_flags() {
     let tmp = tempfile::tempdir().expect("tmpdir");
     let cwd = tmp.path();
 
@@ -219,9 +216,10 @@ timed_test!(derive_build_meta_reads_release_debug_and_target_flags, {
     assert_eq!(meta.profile, "debug");
     assert!(meta.debug);
     assert_eq!(meta.opt_level, "0");
-});
+}
 
-timed_test!(derive_build_meta_reads_lto_from_cargo_toml, {
+#[test]
+fn derive_build_meta_reads_lto_from_cargo_toml() {
     let tmp = tempfile::tempdir().expect("tmpdir");
     let cwd = tmp.path();
     std::fs::write(
@@ -237,9 +235,10 @@ timed_test!(derive_build_meta_reads_lto_from_cargo_toml, {
     ];
     let meta = derive_build_meta(&args, cwd);
     assert_eq!(meta.lto, "thin");
-});
+}
 
-timed_test!(prune_build_logs_keeps_newest_n, Duration::from_secs(15), {
+#[test]
+fn prune_build_logs_keeps_newest_n() {
     let tmp = tempfile::tempdir().expect("tmpdir");
     let dir = tmp.path().join("builds");
     std::fs::create_dir_all(&dir).expect("mkdir");
@@ -275,9 +274,10 @@ timed_test!(prune_build_logs_keeps_newest_n, Duration::from_secs(15), {
             "oldest file should be pruned: {name}"
         );
     }
-});
+}
 
-timed_test!(prune_build_logs_matches_both_xml_and_legacy_json, {
+#[test]
+fn prune_build_logs_matches_both_xml_and_legacy_json() {
     // Legacy `.json` files (written by interim builds before the
     // JSON->XML conversion) must still be swept alongside current
     // `.xml` files, and unrelated extensions must be left alone.
@@ -305,9 +305,10 @@ timed_test!(prune_build_logs_matches_both_xml_and_legacy_json, {
         vec!["readme.txt".to_string()],
         "non-log extensions must be left alone: {remaining:?}"
     );
-});
+}
 
-timed_test!(xml_escape_attr_escapes_reserved_and_control_chars, {
+#[test]
+fn xml_escape_attr_escapes_reserved_and_control_chars() {
     assert_eq!(xml_escape_attr("plain"), "plain");
     assert_eq!(xml_escape_attr("a & b"), "a &amp; b");
     assert_eq!(xml_escape_attr("<tag>"), "&lt;tag&gt;");
@@ -317,42 +318,41 @@ timed_test!(xml_escape_attr_escapes_reserved_and_control_chars, {
     // tab and newline pass through unescaped.
     assert_eq!(xml_escape_attr("a\u{1}b"), "a&#x01;b");
     assert_eq!(xml_escape_attr("a\tb\nc"), "a\tb\nc");
-});
+}
 
-timed_test!(
-    write_build_log_escapes_ampersand_and_quote_in_cwd_and_args,
-    {
-        let tmp = tempfile::tempdir().expect("tmpdir");
-        let paths = SoldrPaths::with_root(tmp.path().join("soldr-root"));
-        // Directory names can't literally contain `"` on Windows, so
-        // exercise the escaper against the raw cwd string embedded in
-        // the request rather than an actual created directory — the
-        // writer only needs `request.cwd` for rendering the `cwd`
-        // attribute and the filename slug, both of which tolerate a
-        // synthetic (non-existent) path fine for this test.
-        let raw_cwd = tmp.path().join("a & b");
-        std::fs::create_dir_all(&raw_cwd).expect("mkdir cwd");
-        let args = vec![
-            "cargo".to_string(),
-            "build".to_string(),
-            "--message-format=\"json\"".to_string(),
-        ];
-        let request = sample_request(&paths, &raw_cwd, &args);
+#[test]
+fn write_build_log_escapes_ampersand_and_quote_in_cwd_and_args() {
+    let tmp = tempfile::tempdir().expect("tmpdir");
+    let paths = SoldrPaths::with_root(tmp.path().join("soldr-root"));
+    // Directory names can't literally contain `"` on Windows, so
+    // exercise the escaper against the raw cwd string embedded in
+    // the request rather than an actual created directory — the
+    // writer only needs `request.cwd` for rendering the `cwd`
+    // attribute and the filename slug, both of which tolerate a
+    // synthetic (non-existent) path fine for this test.
+    let raw_cwd = tmp.path().join("a & b");
+    std::fs::create_dir_all(&raw_cwd).expect("mkdir cwd");
+    let args = vec![
+        "cargo".to_string(),
+        "build".to_string(),
+        "--message-format=\"json\"".to_string(),
+    ];
+    let request = sample_request(&paths, &raw_cwd, &args);
 
-        let path = write_build_log(&request).expect("write_build_log");
-        let raw = std::fs::read_to_string(&path).expect("read log");
+    let path = write_build_log(&request).expect("write_build_log");
+    let raw = std::fs::read_to_string(&path).expect("read log");
 
-        // The escaped forms are present...
-        assert!(raw.contains("a &amp; b"), "{raw}");
-        assert!(raw.contains("--message-format=&quot;json&quot;"), "{raw}");
-        // ...and the raw, unescaped forms are not (would produce
-        // malformed XML).
-        assert!(!raw.contains("a & b\""), "{raw}");
-        assert!(!raw.contains("--message-format=\"json\""), "{raw}");
-    }
-);
+    // The escaped forms are present...
+    assert!(raw.contains("a &amp; b"), "{raw}");
+    assert!(raw.contains("--message-format=&quot;json&quot;"), "{raw}");
+    // ...and the raw, unescaped forms are not (would produce
+    // malformed XML).
+    assert!(!raw.contains("a & b\""), "{raw}");
+    assert!(!raw.contains("--message-format=\"json\""), "{raw}");
+}
 
-timed_test!(compile_journal_cache_outcomes_map_hit_and_miss, {
+#[test]
+fn compile_journal_cache_outcomes_map_hit_and_miss() {
     let tmp = tempfile::tempdir().expect("tmpdir");
     let journal_path = tmp.path().join("compile_journal.jsonl");
     let lines = [
@@ -388,9 +388,10 @@ timed_test!(compile_journal_cache_outcomes_map_hit_and_miss, {
         tail_only.get("miss-crate").map(String::as_str),
         Some("miss")
     );
-});
+}
 
-timed_test!(build_compile_items_pairs_start_and_end_events, {
+#[test]
+fn build_compile_items_pairs_start_and_end_events() {
     let events = vec![
         Event {
             ts_ms: 1_000,
@@ -441,4 +442,4 @@ timed_test!(build_compile_items_pairs_start_and_end_events, {
     assert_eq!(link.items.len(), 1);
     assert_eq!(link.items[0].crate_name, "crate-b");
     assert!(link.derived);
-});
+}

@@ -22,17 +22,19 @@ fn parse_official_marker(marker: Option<&str>) -> bool {
 mod tests {
     use super::*;
 
-    crate::timed_test!(parse_official_marker_only_accepts_stamped_one, {
+    #[test]
+    fn parse_official_marker_only_accepts_stamped_one() {
         assert!(parse_official_marker(Some("1")));
         assert!(!parse_official_marker(None));
         assert!(!parse_official_marker(Some("0")));
         assert!(!parse_official_marker(Some("true")));
         assert!(!parse_official_marker(Some("")));
-    });
+    }
 
-    crate::timed_test!(dev_build_under_test_reports_unofficial, {
+    #[test]
+    fn dev_build_under_test_reports_unofficial() {
         // The test binary itself is always a local/dev build (SOLDR_RELEASE_CI
         // is never set for `cargo test` runs), so this should always hold.
         assert!(!is_official_build());
-    });
+    }
 }

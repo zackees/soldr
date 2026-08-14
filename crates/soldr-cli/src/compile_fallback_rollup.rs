@@ -135,33 +135,36 @@ pub(crate) fn print_section(rollup: &FallbackRollup) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::timed_test;
 
     const FALLBACK_A: &str = r#"{"schema_version":1,"event":"compile_daemon_fallback","ts_ms":1000,"reason":"daemon unavailable"}"#;
     const FALLBACK_B: &str = r#"{"schema_version":1,"event":"compile_daemon_fallback","ts_ms":3000,"reason":"reply timed out"}"#;
 
-    timed_test!(an_empty_journal_is_an_empty_rollup, {
+    #[test]
+    fn an_empty_journal_is_an_empty_rollup() {
         assert_eq!(summarize("", 5), FallbackRollup::default());
         assert_eq!(summarize("   \n\n  ", 5), FallbackRollup::default());
-    });
+    }
 
-    timed_test!(counts_every_fallback_and_orders_recent_newest_first, {
+    #[test]
+    fn counts_every_fallback_and_orders_recent_newest_first() {
         let jsonl = format!("{FALLBACK_A}\n{FALLBACK_B}\n");
         let rollup = summarize(&jsonl, 5);
         assert_eq!(rollup.total, 2);
         // Newest (ts 3000) first even though it is second in the journal.
         assert_eq!(rollup.recent[0].reason, "reply timed out");
         assert_eq!(rollup.recent[1].reason, "daemon unavailable");
-    });
+    }
 
-    timed_test!(max_recent_bounds_the_window_but_not_the_total, {
+    #[test]
+    fn max_recent_bounds_the_window_but_not_the_total() {
         let jsonl = format!("{FALLBACK_A}\n{FALLBACK_B}\n{FALLBACK_A}\n{FALLBACK_B}\n");
         let rollup = summarize(&jsonl, 2);
         assert_eq!(rollup.total, 4, "total counts all records");
         assert_eq!(rollup.recent.len(), 2, "window is bounded");
-    });
+    }
 
-    timed_test!(malformed_lines_and_foreign_events_are_skipped_not_fatal, {
+    #[test]
+    fn malformed_lines_and_foreign_events_are_skipped_not_fatal() {
         // A corrupt journal must never make the rollup (and thus doctor) fail.
         let jsonl = format!(
             "not json at all\n\
@@ -172,22 +175,24 @@ mod tests {
         let rollup = summarize(&jsonl, 5);
         assert_eq!(rollup.total, 1, "only the one valid fallback counts");
         assert_eq!(rollup.recent[0].reason, "daemon unavailable");
-    });
+    }
 
-    timed_test!(a_missing_timestamp_or_reason_degrades_but_still_counts, {
+    #[test]
+    fn a_missing_timestamp_or_reason_degrades_but_still_counts() {
         let line = r#"{"event":"compile_daemon_fallback"}"#;
         let rollup = summarize(line, 5);
         assert_eq!(rollup.total, 1);
         assert_eq!(rollup.recent[0].ts_ms, 0);
         assert_eq!(rollup.recent[0].reason, "(reason unrecorded)");
-    });
+    }
 
-    timed_test!(age_rendering_picks_a_sensible_unit, {
+    #[test]
+    fn age_rendering_picks_a_sensible_unit() {
         let now = 1_000_000_000u64;
         assert_eq!(format_age(0, now), "time unknown");
         assert_eq!(format_age(now - 5_000, now), "5s ago");
         assert_eq!(format_age(now - 600_000, now), "10m ago");
         assert_eq!(format_age(now - 7_200_000, now), "2h ago");
         assert_eq!(format_age(now - 259_200_000, now), "3d ago");
-    });
+    }
 }

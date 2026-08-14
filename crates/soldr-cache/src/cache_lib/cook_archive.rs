@@ -597,7 +597,8 @@ mod tests {
         concat!("Car", "go.lock")
     }
 
-    crate::timed_test!(recipe_hash_skips_large_operational_state_trees, {
+    #[test]
+    fn recipe_hash_skips_large_operational_state_trees() {
         let dir = TempDir::new().expect("tempdir");
         write_file(&dir.path().join(lock_name()), b"lock-v1\n");
         write_file(&dir.path().join(manifest_name()), b"[workspace]\n");
@@ -655,9 +656,10 @@ mod tests {
             baseline,
             "included source manifest mutation must change the recipe hash"
         );
-    });
+    }
 
-    crate::timed_test!(referenced_manifests_override_operational_tree_exclusions, {
+    #[test]
+    fn referenced_manifests_override_operational_tree_exclusions() {
         let dir = TempDir::new().expect("tempdir");
         write_file(&dir.path().join(lock_name()), b"lock-v1\n");
         write_file(
@@ -713,9 +715,10 @@ mod tests {
             baseline,
             "path dependency must affect hash"
         );
-    });
+    }
 
-    crate::timed_test!(pack_writes_content_addressed_artifact, {
+    #[test]
+    fn pack_writes_content_addressed_artifact() {
         let dir = TempDir::new().expect("tempdir");
         let source = dir.path().join("release");
         write_file(&source.join("deps").join("libfoo-abc.rlib"), b"hello\n");
@@ -736,9 +739,10 @@ mod tests {
             .map(|it| it.flatten().count())
             .unwrap_or(0);
         assert_eq!(leftover_count, 0);
-    });
+    }
 
-    crate::timed_test!(pack_is_idempotent_on_same_content, {
+    #[test]
+    fn pack_is_idempotent_on_same_content() {
         let dir = TempDir::new().expect("tempdir");
         let source = dir.path().join("release");
         write_file(&source.join("deps").join("libfoo-abc.rlib"), b"hello\n");
@@ -753,9 +757,10 @@ mod tests {
         // not byte stability across runs.)
         assert_eq!(a.path.file_name(), b.path.file_name());
         assert!(a.path.is_file());
-    });
+    }
 
-    crate::timed_test!(pack_errors_on_missing_source_dir, {
+    #[test]
+    fn pack_errors_on_missing_source_dir() {
         let dir = TempDir::new().expect("tempdir");
         let missing = dir.path().join("does-not-exist");
         let cook_dir = dir.path().join("cook");
@@ -764,27 +769,30 @@ mod tests {
             RegistryError::Io(e) => assert_eq!(e.kind(), std::io::ErrorKind::NotFound),
             other => panic!("expected Io NotFound, got {other:?}"),
         }
-    });
+    }
 
-    crate::timed_test!(sha_abbrev_is_twelve_lowercase_hex_chars, {
+    #[test]
+    fn sha_abbrev_is_twelve_lowercase_hex_chars() {
         let bytes = [0xAB; 32];
         let abbrev = sha_abbrev(&bytes);
         assert_eq!(abbrev.len(), 12);
         assert!(abbrev
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));
-    });
+    }
 
-    crate::timed_test!(artifact_path_matches_sha_filename, {
+    #[test]
+    fn artifact_path_matches_sha_filename() {
         let cook = Path::new("/cook");
         let sha = [0x12u8; 32];
         let path = artifact_path_for_sha(cook, &sha);
         let name = path.file_name().unwrap().to_string_lossy();
         assert!(name.ends_with(".tar.zst"));
         assert!(name.starts_with(&hex_lower(&sha)));
-    });
+    }
 
-    crate::timed_test!(verify_sha256_matches_packed_artifact, {
+    #[test]
+    fn verify_sha256_matches_packed_artifact() {
         let dir = TempDir::new().expect("tempdir");
         let source = dir.path().join("release");
         write_file(&source.join("deps").join("libfoo-abc.rlib"), b"hello\n");
@@ -795,9 +803,10 @@ mod tests {
         let mut wrong = packed.sha256;
         wrong[0] ^= 0xFF;
         assert!(!verify_sha256(&packed.path, &wrong).expect("verify"));
-    });
+    }
 
-    crate::timed_test!(extract_round_trips_packed_bytes, {
+    #[test]
+    fn extract_round_trips_packed_bytes() {
         let dir = TempDir::new().expect("tempdir");
         let source = dir.path().join("release");
         write_file(&source.join("deps").join("libfoo-abc.rlib"), b"foo\n");
@@ -814,7 +823,7 @@ mod tests {
         let restored_foo = std::fs::read(dest.join("release").join("deps").join("libfoo-abc.rlib"))
             .expect("read foo");
         assert_eq!(restored_foo, b"foo\n");
-    });
+    }
 
     // #1880: cargo's `build-script-build` binaries must come back
     // executable. The extractor hand-copies bytes into a fresh
@@ -831,7 +840,8 @@ mod tests {
     // The regression test for this lives in
     // `tests/cook_archive_executable_bit.rs` (Unix-only, since mode
     // bits only exist there).
-    crate::timed_test!(extract_skips_existing_files, {
+    #[test]
+    fn extract_skips_existing_files() {
         let dir = TempDir::new().expect("tempdir");
         let source = dir.path().join("release");
         write_file(&source.join("deps").join("libfoo-abc.rlib"), b"FRESH\n");
@@ -851,9 +861,10 @@ mod tests {
             on_disk, b"USER-OWNS-THIS\n",
             "must not overwrite user state"
         );
-    });
+    }
 
-    crate::timed_test!(quarantine_renames_artifact_in_place, {
+    #[test]
+    fn quarantine_renames_artifact_in_place() {
         let dir = TempDir::new().expect("tempdir");
         let cook = dir.path().join("cook");
         std::fs::create_dir_all(&cook).unwrap();
@@ -867,12 +878,13 @@ mod tests {
             .unwrap()
             .to_string_lossy()
             .ends_with(".quarantine"));
-    });
+    }
 
-    crate::timed_test!(is_unsafe_tar_path_rejects_traversal, {
+    #[test]
+    fn is_unsafe_tar_path_rejects_traversal() {
         assert!(is_unsafe_tar_path(Path::new("../etc/passwd")));
         assert!(is_unsafe_tar_path(Path::new("/etc/passwd")));
         assert!(is_unsafe_tar_path(Path::new("")));
         assert!(!is_unsafe_tar_path(Path::new("release/deps/libfoo.rlib")));
-    });
+    }
 }

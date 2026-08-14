@@ -299,7 +299,8 @@ fn extract_zip_tree<R: std::io::Read + std::io::Seek>(
 mod tests {
     use super::*;
 
-    crate::timed_test!(zig_download_url_known_targets, {
+    #[test]
+    fn zig_download_url_known_targets() {
         // Smoke: we don't hit the network in unit tests, just verify the
         // URL builder formats the asset name correctly.
         let (asset, url) =
@@ -316,9 +317,10 @@ mod tests {
             asset.ends_with(".tar.xz") || asset.ends_with(".zip"),
             "asset extension should match the OS family: {asset}",
         );
-    });
+    }
 
-    crate::timed_test!(zig_download_url_naming_swap_at_0_14, {
+    #[test]
+    fn zig_download_url_naming_swap_at_0_14() {
         // Zig 0.13.0: pre-swap naming → `zig-{os}-{arch}-{ver}.tar.xz`.
         // Zig 0.14.0+: post-swap naming → `zig-{arch}-{os}-{ver}.tar.xz`.
         let (asset_13, _) = zig_download_url("0.13.0").unwrap();
@@ -332,9 +334,10 @@ mod tests {
         let post_14 = format!("zig-{arch}-{os}-0.14.1");
         assert!(asset_13.starts_with(&pre_13), "0.13.0: {asset_13}");
         assert!(asset_14.starts_with(&post_14), "0.14.1: {asset_14}");
-    });
+    }
 
-    crate::timed_test!(managed_zig_archive_root_swaps_with_version, {
+    #[test]
+    fn managed_zig_archive_root_swaps_with_version() {
         // The directory name inside the tarball mirrors the asset name.
         // 0.13.x uses `zig-{os}-{arch}-{ver}/`, 0.14+ uses
         // `zig-{arch}-{os}-{ver}/`. This test confirms managed_zig_archive_root
@@ -351,9 +354,10 @@ mod tests {
             root, expected,
             "managed_zig_archive_root should match the 0.14+ post-swap layout"
         );
-    });
+    }
 
-    crate::timed_test!(managed_zig_binary_path_falls_back_to_scan, {
+    #[test]
+    fn managed_zig_binary_path_falls_back_to_scan() {
         // Even if upstream changes the directory naming AGAIN in a future
         // release without soldr getting a coordinated bump, the scan
         // fallback should locate the binary. soldr#1032 hardening.
@@ -369,9 +373,10 @@ mod tests {
             resolved, zig,
             "scan fallback should find the zig binary in any subdirectory"
         );
-    });
+    }
 
-    crate::timed_test!(env_var_overrides_path_and_managed_install, {
+    #[test]
+    fn env_var_overrides_path_and_managed_install() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let exe = tmp.path().join(zig_binary_filename());
         std::fs::write(&exe, b"#!/bin/sh\necho fake-zig\n").expect("write");
@@ -383,5 +388,5 @@ mod tests {
             None => std::env::remove_var(ZIG_ENV_VAR),
         }
         assert_eq!(resolved.as_deref(), exe.parent());
-    });
+    }
 }

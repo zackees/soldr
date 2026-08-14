@@ -16,7 +16,7 @@ pub fn sibling(exe_dir: &Path, name: &str) -> PathBuf {
 mod tests {
     use super::*;
 
-    #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+    #[test]
     fn macos_native_names_carry_no_suffix() {
         assert_eq!(native("soldr-daemon"), "soldr-daemon");
         assert_eq!(

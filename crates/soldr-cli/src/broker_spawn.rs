@@ -747,56 +747,56 @@ mod tests {
     // env-var-gated tests in this crate use.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    crate::timed_test!(
-        broker_spawn_env_preserves_soldr_and_endpoint_resolver_inputs,
-        {
-            use std::ffi::OsString;
+    #[test]
+    fn broker_spawn_env_preserves_soldr_and_endpoint_resolver_inputs() {
+        use std::ffi::OsString;
 
-            let forwarded = filter_broker_spawn_env(vec![
+        let forwarded = filter_broker_spawn_env(vec![
+            (
+                OsString::from("SOLDR_CACHE_DIR"),
+                OsString::from("/tmp/cache"),
+            ),
+            (OsString::from("HOME"), OsString::from("/mounted/home")),
+            (
+                OsString::from("XDG_CONFIG_HOME"),
+                OsString::from("/mounted/config"),
+            ),
+            (
+                OsString::from("XDG_RUNTIME_DIR"),
+                OsString::from("/run/user/123"),
+            ),
+            (OsString::from("PATH"), OsString::from("/usr/bin")),
+        ]);
+        assert_eq!(
+            forwarded,
+            vec![
                 (
                     OsString::from("SOLDR_CACHE_DIR"),
-                    OsString::from("/tmp/cache"),
+                    OsString::from("/tmp/cache")
                 ),
                 (OsString::from("HOME"), OsString::from("/mounted/home")),
                 (
                     OsString::from("XDG_CONFIG_HOME"),
-                    OsString::from("/mounted/config"),
+                    OsString::from("/mounted/config")
                 ),
                 (
                     OsString::from("XDG_RUNTIME_DIR"),
-                    OsString::from("/run/user/123"),
+                    OsString::from("/run/user/123")
                 ),
-                (OsString::from("PATH"), OsString::from("/usr/bin")),
-            ]);
-            assert_eq!(
-                forwarded,
-                vec![
-                    (
-                        OsString::from("SOLDR_CACHE_DIR"),
-                        OsString::from("/tmp/cache")
-                    ),
-                    (OsString::from("HOME"), OsString::from("/mounted/home")),
-                    (
-                        OsString::from("XDG_CONFIG_HOME"),
-                        OsString::from("/mounted/config")
-                    ),
-                    (
-                        OsString::from("XDG_RUNTIME_DIR"),
-                        OsString::from("/run/user/123")
-                    ),
-                ],
-            );
-        }
-    );
+            ],
+        );
+    }
 
-    crate::timed_test!(wrapper_invocation_is_never_eligible, {
+    #[test]
+    fn wrapper_invocation_is_never_eligible() {
         let _guard = ENV_LOCK.lock().unwrap();
         let raw_args = vec!["soldr".to_string(), "/usr/bin/rustc".to_string()];
         assert!(crate::wrapper::is_wrapper_invocation(&raw_args[1]));
         assert!(!front_door_broker_spawn_eligible(&raw_args));
-    });
+    }
 
-    crate::timed_test!(broker_subcommand_itself_does_not_recursively_spawn, {
+    #[test]
+    fn broker_subcommand_itself_does_not_recursively_spawn() {
         let _guard = ENV_LOCK.lock().unwrap();
         let raw_args = vec![
             "soldr".to_string(),
@@ -804,9 +804,10 @@ mod tests {
             "serve".to_string(),
         ];
         assert!(!front_door_broker_spawn_eligible(&raw_args));
-    });
+    }
 
-    crate::timed_test!(teardown_commands_remain_broker_eligible, {
+    #[test]
+    fn teardown_commands_remain_broker_eligible() {
         let raw_args = vec![
             "soldr".to_string(),
             "cache".to_string(),
@@ -835,23 +836,26 @@ mod tests {
 
         let status = vec!["soldr".to_string(), "status".to_string()];
         assert!(!is_teardown_command(&status));
-    });
+    }
 
     // soldr#2388: the broker is unconditional — an ordinary invocation is
     // always eligible (there is no opt-out).
-    crate::timed_test!(ordinary_invocation_is_eligible, {
+    #[test]
+    fn ordinary_invocation_is_eligible() {
         let _guard = ENV_LOCK.lock().unwrap();
         let raw_args = vec!["soldr".to_string(), "status".to_string()];
         assert!(front_door_broker_spawn_eligible(&raw_args));
-    });
+    }
 
-    crate::timed_test!(no_positional_arg_is_ineligible, {
+    #[test]
+    fn no_positional_arg_is_ineligible() {
         let _guard = ENV_LOCK.lock().unwrap();
         let raw_args = vec!["soldr".to_string()];
         assert!(!front_door_broker_spawn_eligible(&raw_args));
-    });
+    }
 
-    crate::timed_test!(ci_diagnostics_preserve_machine_readable_output, {
+    #[test]
+    fn ci_diagnostics_preserve_machine_readable_output() {
         assert!(!ci_endpoint_diagnostics_eligible(&[
             "soldr".into(),
             "env".into(),
@@ -871,9 +875,10 @@ mod tests {
             "soldr".into(),
             "build".into(),
         ]));
-    });
+    }
 
-    crate::timed_test!(ci_diagnostics_show_the_one_stable_path_derived_endpoint, {
+    #[test]
+    fn ci_diagnostics_show_the_one_stable_path_derived_endpoint() {
         let diagnostics = BrokerEndpointDiagnostics {
             executable: std::path::PathBuf::from("/home/me/.soldr/broker/soldr-broker"),
             logical: "/home/me/.soldr/broker/soldr-broker.sock".into(),
@@ -884,5 +889,5 @@ mod tests {
         assert!(rendered.contains("ci=github_actions"));
         assert!(rendered.contains("logical=/home/me/.soldr/broker/soldr-broker.sock"));
         assert!(rendered.contains("bind=/home/me/.soldr/broker/soldr-broker.sock"));
-    });
+    }
 }

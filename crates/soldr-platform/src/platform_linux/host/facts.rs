@@ -191,7 +191,7 @@ fn probe_glibc_dynamic_linker_present() -> bool {
 mod tests {
     use super::*;
 
-    #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+    #[test]
     fn libc_classification_prefers_compile_time_then_probes() {
         assert_eq!(classify_linux_libc(true, false, false, false), HostLibc::Musl);
         assert_eq!(classify_linux_libc(false, true, false, false), HostLibc::Musl);
@@ -200,7 +200,7 @@ mod tests {
         assert_eq!(classify_linux_libc(false, false, false, false), HostLibc::Gnu);
     }
 
-    #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+    #[test]
     fn linux_facts_report_linux() {
         assert_eq!(os(), HostOs::Linux);
     }

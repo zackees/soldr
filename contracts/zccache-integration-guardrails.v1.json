@@ -57,7 +57,7 @@
     {
       "id": "rust-watchdog-lint",
       "gate": "hard",
-      "command": "soldr --no-cache cargo test -p soldr-cli --test timed_test_lint"
+      "command": "soldr --no-cache cargo test -p soldr-cli --test no_timed_test_guard"
     },
     {
       "id": "python-setup-contracts",
@@ -321,11 +321,11 @@
       "gate": "hard",
       "covers": [
         "zccache integration tests live outside monolithic source modules",
-        "new tests use the timed_test watchdog",
+        "the removed per-test watchdog does not return (timeouts belong to nextest)",
         "embedded-runtime contract tests remain discoverable"
       ],
       "test_files": [
-        "crates/soldr-cli/tests/timed_test_lint.rs",
+        "crates/soldr-cli/tests/no_timed_test_guard.rs",
         "crates/soldr-cli/tests/no_standalone_spawn_lint.rs",
         "crates/soldr-cli/tests/zccache_trampoline_gate.rs",
         "crates/soldr-cli/src/cargo_front_door/cache_plan.rs"

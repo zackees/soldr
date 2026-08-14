@@ -131,29 +131,33 @@ mod tests {
     use super::*;
     use scan::scan_text;
 
-    crate::timed_test!(suppression_on_offending_line_clears_finding, {
+    #[test]
+    fn suppression_on_offending_line_clears_finding() {
         let text = "        run: cargo xwin build --target x86_64-pc-windows-msvc  # soldr-lint-ci: allow cross-compile-surface -- legacy regression test";
         let report = analyze_files(&[scan_text("wf.yml".into(), text)]);
         assert!(report.findings.is_empty());
         assert!(report.ok);
         assert_eq!(report.exit_code(), 0);
-    });
+    }
 
-    crate::timed_test!(suppression_on_line_above_clears_finding, {
+    #[test]
+    fn suppression_on_line_above_clears_finding() {
         let text = "        # soldr-lint-ci: allow cross-compile-surface -- legacy\n        run: cargo xwin build --target x86_64-pc-windows-msvc";
         let report = analyze_files(&[scan_text("wf.yml".into(), text)]);
         assert!(report.findings.is_empty());
-    });
+    }
 
-    crate::timed_test!(unrelated_suppression_does_not_clear_finding, {
+    #[test]
+    fn unrelated_suppression_does_not_clear_finding() {
         let text = "        run: cargo xwin build --target x86_64-pc-windows-msvc  # soldr-lint-ci: allow some-other-rule";
         let report = analyze_files(&[scan_text("wf.yml".into(), text)]);
         assert_eq!(report.findings.len(), 1);
         assert!(!report.ok);
         assert_eq!(report.exit_code(), 1);
-    });
+    }
 
-    crate::timed_test!(json_schema_is_stable, {
+    #[test]
+    fn json_schema_is_stable() {
         let text = "        run: cargo zigbuild --target aarch64-apple-darwin";
         let report = analyze_files(&[scan_text("wf.yml".into(), text)]);
         let value: serde_json::Value = serde_json::to_value(&report).unwrap();
@@ -184,14 +188,15 @@ mod tests {
         assert_eq!(obj["severity"], "error");
         assert_eq!(obj["tool"], "cargo zigbuild");
         assert_eq!(obj["target"], "aarch64-apple-darwin");
-    });
+    }
 
-    crate::timed_test!(clean_report_is_ok_and_exit_zero, {
+    #[test]
+    fn clean_report_is_ok_and_exit_zero() {
         let text = "        run: soldr build --target aarch64-apple-darwin";
         let report = analyze_files(&[scan_text("wf.yml".into(), text)]);
         assert!(report.findings.is_empty());
         assert!(report.ok);
         assert_eq!(report.exit_code(), 0);
         assert_eq!(report.schema_version, model::SCHEMA_VERSION);
-    });
+    }
 }

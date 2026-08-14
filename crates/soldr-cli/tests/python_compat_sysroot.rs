@@ -7,7 +7,6 @@ use std::thread;
 use soldr_cli::core::SoldrPaths;
 use soldr_cli::fetch::{manifest_lookup, syslib_common, trust};
 use soldr_cli::pyo3_detect::{resolve_policy, BuildShape, DetectedPyo3, PlanMode, PolicyInput};
-use soldr_cli::timed_test;
 
 fn test_bundle() -> Vec<u8> {
     let encoder = zstd::stream::Encoder::new(Vec::new(), 1).expect("zstd encoder");
@@ -91,7 +90,8 @@ fn serve_fixture(bundle: Vec<u8>) -> (String, Arc<Mutex<Vec<String>>>, thread::J
     (origin, requests, handle)
 }
 
-timed_test!(compatibility_sysroot_uses_catalogue_sha_and_target_row, {
+#[test]
+fn compatibility_sysroot_uses_catalogue_sha_and_target_row() {
     let bundle = test_bundle();
     let (origin, requests, server) = serve_fixture(bundle);
     let catalogue_url = format!("{origin}/catalogue.v1.json");
@@ -158,4 +158,4 @@ timed_test!(compatibility_sysroot_uses_catalogue_sha_and_target_row, {
             "/python/3.13.14/windows-x64/bundle.tar.zst",
         ]
     );
-});
+}

@@ -201,7 +201,8 @@ mod tests {
         bin
     }
 
-    crate::timed_test!(install_one_creates_file_when_missing, {
+    #[test]
+    fn install_one_creates_file_when_missing() {
         let tmp = TempDir::new().unwrap();
         let source = fake_shim_source(&tmp);
         let target = tmp.path().join("cargo");
@@ -214,9 +215,10 @@ mod tests {
             std::fs::read(&source).unwrap(),
             "target content must match soldr source byte-for-byte"
         );
-    });
+    }
 
-    crate::timed_test!(install_one_is_idempotent, {
+    #[test]
+    fn install_one_is_idempotent() {
         let tmp = TempDir::new().unwrap();
         let source = fake_shim_source(&tmp);
         let target = tmp.path().join("rustc");
@@ -227,9 +229,10 @@ mod tests {
         let second = install_one(&target, &source, "rustc").unwrap();
         assert!(!second.created, "second run must not re-create");
         assert_eq!(second.skip_reason, Some(SKIP_EXISTING_MATCHES));
-    });
+    }
 
-    crate::timed_test!(install_one_replaces_when_source_changes, {
+    #[test]
+    fn install_one_replaces_when_source_changes() {
         let tmp = TempDir::new().unwrap();
         let source = fake_shim_source(&tmp);
         let target = tmp.path().join("rustfmt");
@@ -245,18 +248,20 @@ mod tests {
             b"FAKE-SOLDR-BYTES-v2",
             "target should reflect new source bytes"
         );
-    });
+    }
 
-    crate::timed_test!(tool_file_name_appends_exe_on_windows_only, {
+    #[test]
+    fn tool_file_name_appends_exe_on_windows_only() {
         let cargo = tool_file_name("cargo");
         if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
             assert_eq!(cargo, "cargo.exe");
         } else {
             assert_eq!(cargo, "cargo");
         }
-    });
+    }
 
-    crate::timed_test!(sweep_orphans_removes_only_tmp_files, {
+    #[test]
+    fn sweep_orphans_removes_only_tmp_files() {
         let tmp = TempDir::new().unwrap();
         std::fs::write(tmp.path().join("cargo"), b"keep").unwrap();
         std::fs::write(tmp.path().join("cargo.tmp.999-1"), b"sweep").unwrap();
@@ -274,9 +279,10 @@ mod tests {
             !tmp.path().join("rustc.tmp.999-2").exists(),
             "tmp file must be swept"
         );
-    });
+    }
 
-    crate::timed_test!(json_output_carries_versioned_path_entry_and_schema, {
+    #[test]
+    fn json_output_carries_versioned_path_entry_and_schema() {
         let entries = vec![ToolEntry {
             name: "cargo".to_string(),
             shim_path: "/.soldr/v0.7.55/shims/cargo".to_string(),
@@ -305,5 +311,5 @@ mod tests {
             parsed["tools"][0].get("skip_reason").is_none(),
             "skip_reason must be omitted when None"
         );
-    });
+    }
 }

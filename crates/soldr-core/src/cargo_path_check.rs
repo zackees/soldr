@@ -205,125 +205,120 @@ pub fn warning_for(finding: &CargoOnPathFinding) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::timed_test;
-    use std::time::Duration;
 
-    timed_test!(classify_chocolatey_windows_path, Duration::from_secs(5), {
+    #[test]
+    fn classify_chocolatey_windows_path() {
         let p = PathBuf::from(r"C:\ProgramData\chocolatey\bin\cargo.exe");
         let f = classify_cargo_path(&p);
         assert_eq!(f.classification, CargoClassification::Chocolatey);
         assert!(!f.honors_rust_toolchain_toml);
         assert!(warning_for(&f).is_some());
-    });
+    }
 
-    timed_test!(classify_chocolatey_msys_form, Duration::from_secs(5), {
+    #[test]
+    fn classify_chocolatey_msys_form() {
         // The MSYS / git-for-windows bash form of the same path.
         let p = PathBuf::from("/c/ProgramData/chocolatey/bin/cargo");
         let f = classify_cargo_path(&p);
         assert_eq!(f.classification, CargoClassification::Chocolatey);
         assert!(!f.honors_rust_toolchain_toml);
-    });
+    }
 
-    timed_test!(classify_scoop_path, Duration::from_secs(5), {
+    #[test]
+    fn classify_scoop_path() {
         let p = PathBuf::from(r"C:\Users\me\scoop\shims\cargo.exe");
         let f = classify_cargo_path(&p);
         assert_eq!(f.classification, CargoClassification::Scoop);
         assert!(!f.honors_rust_toolchain_toml);
-    });
+    }
 
-    timed_test!(classify_rustup_cargo_home, Duration::from_secs(5), {
+    #[test]
+    fn classify_rustup_cargo_home() {
         let p = PathBuf::from(r"C:\Users\me\.cargo\bin\cargo.exe");
         let f = classify_cargo_path(&p);
         assert_eq!(f.classification, CargoClassification::Rustup);
         assert!(f.honors_rust_toolchain_toml);
         assert!(warning_for(&f).is_none());
-    });
+    }
 
-    timed_test!(classify_rustup_cargo_home_linux, Duration::from_secs(5), {
+    #[test]
+    fn classify_rustup_cargo_home_linux() {
         let p = PathBuf::from("/home/me/.cargo/bin/cargo");
         let f = classify_cargo_path(&p);
         assert_eq!(f.classification, CargoClassification::Rustup);
         assert!(f.honors_rust_toolchain_toml);
-    });
+    }
 
-    timed_test!(
-        classify_soldr_versioned_multicall_shim,
-        Duration::from_secs(5),
-        {
-            let p = PathBuf::from("/home/me/.soldr/v0.8.0/shims/cargo");
-            let f = classify_cargo_path(&p);
-            assert_eq!(f.classification, CargoClassification::SoldrShim);
-            assert!(f.honors_rust_toolchain_toml);
-            assert!(warning_for(&f).is_none());
-        }
-    );
+    #[test]
+    fn classify_soldr_versioned_multicall_shim() {
+        let p = PathBuf::from("/home/me/.soldr/v0.8.0/shims/cargo");
+        let f = classify_cargo_path(&p);
+        assert_eq!(f.classification, CargoClassification::SoldrShim);
+        assert!(f.honors_rust_toolchain_toml);
+        assert!(warning_for(&f).is_none());
+    }
 
-    timed_test!(
-        classify_rustup_toolchain_bin_is_warned,
-        Duration::from_secs(5),
-        {
-            // Direct toolchain bin path — pinned to ONE channel, ignores
-            // per-crate overrides. Warn.
-            let p = PathBuf::from(
-                "/home/me/.rustup/toolchains/1.94.1-x86_64-pc-windows-msvc/bin/cargo",
-            );
-            let f = classify_cargo_path(&p);
-            assert_eq!(f.classification, CargoClassification::RustupToolchainBin);
-            assert!(!f.honors_rust_toolchain_toml);
-        }
-    );
+    #[test]
+    fn classify_rustup_toolchain_bin_is_warned() {
+        // Direct toolchain bin path — pinned to ONE channel, ignores
+        // per-crate overrides. Warn.
+        let p =
+            PathBuf::from("/home/me/.rustup/toolchains/1.94.1-x86_64-pc-windows-msvc/bin/cargo");
+        let f = classify_cargo_path(&p);
+        assert_eq!(f.classification, CargoClassification::RustupToolchainBin);
+        assert!(!f.honors_rust_toolchain_toml);
+    }
 
-    timed_test!(classify_system_package_linux, Duration::from_secs(5), {
+    #[test]
+    fn classify_system_package_linux() {
         let p = PathBuf::from("/usr/bin/cargo");
         let f = classify_cargo_path(&p);
         assert_eq!(f.classification, CargoClassification::SystemPackage);
         assert!(!f.honors_rust_toolchain_toml);
-    });
+    }
 
-    timed_test!(classify_unknown_falls_through, Duration::from_secs(5), {
+    #[test]
+    fn classify_unknown_falls_through() {
         let p = PathBuf::from("/tmp/random/cargo");
         let f = classify_cargo_path(&p);
         assert_eq!(f.classification, CargoClassification::Unknown);
         assert!(!f.honors_rust_toolchain_toml);
         assert!(warning_for(&f).is_some());
-    });
+    }
 
-    timed_test!(
-        detect_cargo_on_path_respects_synth_env,
-        Duration::from_secs(10),
+    #[test]
+    fn detect_cargo_on_path_respects_synth_env() {
+        // Build an isolated PATH and a fake cargo binary; verify the
+        // detector finds it. Restore PATH at the end so we don't
+        // pollute downstream tests.
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let bin = tmp.path().join("scoop").join("shims");
+        std::fs::create_dir_all(&bin).unwrap();
+        let exe_name = if crate::platform::host::facts::os()
+            == crate::platform::host::facts::HostOs::Windows
         {
-            // Build an isolated PATH and a fake cargo binary; verify the
-            // detector finds it. Restore PATH at the end so we don't
-            // pollute downstream tests.
-            let tmp = tempfile::tempdir().expect("tmpdir");
-            let bin = tmp.path().join("scoop").join("shims");
-            std::fs::create_dir_all(&bin).unwrap();
-            let exe_name = if crate::platform::host::facts::os()
-                == crate::platform::host::facts::HostOs::Windows
-            {
-                "cargo.exe"
-            } else {
-                "cargo"
-            };
-            let exe = bin.join(exe_name);
-            std::fs::write(&exe, b"#!/bin/sh\n").unwrap();
-            crate::platform::fs::permissions::make_executable(&exe).unwrap();
-            // soldr#1994: PATH is mutated here and in soldr-cli. Two barriers
-            // over one variable are no barrier, and this test previously had
-            // none at all -- so take the one process-wide lock, which lives in
-            // this crate precisely so upstream and downstream can share it.
-            let _env = crate::test_util::TEST_PROCESS_ENV_LOCK
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            let prior = std::env::var_os("PATH");
-            std::env::set_var("PATH", &bin);
-            let found = detect_cargo_on_path();
-            match prior {
-                Some(v) => std::env::set_var("PATH", v),
-                None => std::env::remove_var("PATH"),
-            }
-            let found = found.expect("detector should find the fake cargo");
-            assert_eq!(found.classification, CargoClassification::Scoop);
+            "cargo.exe"
+        } else {
+            "cargo"
+        };
+        let exe = bin.join(exe_name);
+        std::fs::write(&exe, b"#!/bin/sh\n").unwrap();
+        crate::platform::fs::permissions::make_executable(&exe).unwrap();
+        // soldr#1994: PATH is mutated here and in soldr-cli. Two barriers
+        // over one variable are no barrier, and this test previously had
+        // none at all -- so take the one process-wide lock, which lives in
+        // this crate precisely so upstream and downstream can share it.
+        let _env = crate::test_util::TEST_PROCESS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let prior = std::env::var_os("PATH");
+        std::env::set_var("PATH", &bin);
+        let found = detect_cargo_on_path();
+        match prior {
+            Some(v) => std::env::set_var("PATH", v),
+            None => std::env::remove_var("PATH"),
         }
-    );
+        let found = found.expect("detector should find the fake cargo");
+        assert_eq!(found.classification, CargoClassification::Scoop);
+    }
 }

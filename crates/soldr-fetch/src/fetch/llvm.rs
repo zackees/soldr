@@ -309,7 +309,8 @@ mod tests {
     /// barrier costs suite latency and buys no correctness.
     static LLVM_DIR_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    crate::timed_test!(env_var_overrides_when_pointing_at_real_dir, {
+    #[test]
+    fn env_var_overrides_when_pointing_at_real_dir() {
         let _guard = LLVM_DIR_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().expect("tmpdir");
         let fake_bin = tmp.path().join("hardlinked").join("bin");
@@ -322,9 +323,10 @@ mod tests {
             None => std::env::remove_var(LLVM_DIR_ENV_VAR),
         }
         assert_eq!(resolved.as_deref(), Some(fake_bin.as_path()));
-    });
+    }
 
-    crate::timed_test!(env_var_ignored_when_path_is_missing, {
+    #[test]
+    fn env_var_ignored_when_path_is_missing() {
         let _guard = LLVM_DIR_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let prev = std::env::var_os(LLVM_DIR_ENV_VAR);
         std::env::set_var(LLVM_DIR_ENV_VAR, "/definitely/not/a/real/path/29384720");
@@ -337,9 +339,10 @@ mod tests {
             resolved.is_none(),
             "missing dir should be ignored: {resolved:?}",
         );
-    });
+    }
 
-    crate::timed_test!(constants_are_well_formed, {
+    #[test]
+    fn constants_are_well_formed() {
         // Smoke: catch typos in any pinned URL / sha256 entry during a
         // version bump. Mirrors apple_sdk's `constants_are_well_formed`.
         assert!(!MANAGED_LLVM_VERSION.is_empty());
@@ -381,9 +384,10 @@ mod tests {
                 "{triple}: plat_arch must be non-empty",
             );
         }
-    });
+    }
 
-    crate::timed_test!(musl_host_does_not_select_glibc_llvm_asset, {
+    #[test]
+    fn musl_host_does_not_select_glibc_llvm_asset() {
         if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Linux
             || crate::platform::host::facts::libc() != crate::platform::host::facts::HostLibc::Musl
         {
@@ -393,5 +397,5 @@ mod tests {
             host_triple_for_llvm().is_none(),
             "musl hosts must not select the glibc LLVM archive",
         );
-    });
+    }
 }

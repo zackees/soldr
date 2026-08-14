@@ -254,7 +254,7 @@ jobs:
           Write-Host "Using isolated test SOLDR_CACHE_DIR=$env:SOLDR_CACHE_DIR"
           Write-Host "Using isolated test ZCCACHE_CACHE_DIR=$env:ZCCACHE_CACHE_DIR"
           $timer = [Diagnostics.Stopwatch]::StartNew()
-          soldr cargo test --workspace --lib --tests --target ${{ inputs.target }}
+          soldr cargo nextest run --workspace --lib --tests --target ${{ inputs.target }}
           $exitCode = $LASTEXITCODE
           $timer.Stop()
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ([string]::Format(

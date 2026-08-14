@@ -366,7 +366,8 @@ mod tests {
         }))
     }
 
-    crate::timed_test!(managed_plan_applies_session_and_path_remap_env, {
+    #[test]
+    fn managed_plan_applies_session_and_path_remap_env() {
         let _lock = ENV_LOCK.lock().unwrap();
         let _native = EnvGuard::set(native_cc::NATIVE_CACHE_ENV_VAR, "0");
         let mut command = std::process::Command::new("cargo");
@@ -419,9 +420,10 @@ mod tests {
             command_env_override(&command, crate::cache_lib::ZCCACHE_WORKTREE_ROOT_ENV_VAR),
             Some(Some(OsString::from("/tmp/worktree")))
         );
-    });
+    }
 
-    crate::timed_test!(native_cache_opt_out_leaves_cc_and_cxx_unset, {
+    #[test]
+    fn native_cache_opt_out_leaves_cc_and_cxx_unset() {
         let _lock = ENV_LOCK.lock().unwrap();
         let _native = EnvGuard::set(native_cc::NATIVE_CACHE_ENV_VAR, "0");
         let _cc = EnvGuard::remove("CC");
@@ -438,179 +440,169 @@ mod tests {
 
         assert_eq!(command_env_override(&command, "CC"), None);
         assert_eq!(command_env_override(&command, "CXX"), None);
-    });
+    }
 
-    crate::timed_test!(
-        native_cache_opt_out_keeps_windows_gnu_cross_compiler_unwrapped,
-        {
-            let _lock = ENV_LOCK.lock().unwrap();
-            let _native = EnvGuard::set(native_cc::NATIVE_CACHE_ENV_VAR, "0");
-            let _cc = EnvGuard::set("CC_x86_64_pc_windows_gnu", "C:\\soldr\\mingw\\bin\\gcc.exe");
-            let _cxx = EnvGuard::set(
-                "CXX_x86_64_pc_windows_gnu",
-                "C:\\soldr\\mingw\\bin\\g++.exe",
-            );
-            let mut command = std::process::Command::new("cargo");
-            let plan = CargoCachePlan {
-                cache_enabled_for_cargo: true,
-                rustc_wrapper: Some(managed_wrapper_plan()),
-                rust_artifact_plan: None,
-            };
+    #[test]
+    fn native_cache_opt_out_keeps_windows_gnu_cross_compiler_unwrapped() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _native = EnvGuard::set(native_cc::NATIVE_CACHE_ENV_VAR, "0");
+        let _cc = EnvGuard::set("CC_x86_64_pc_windows_gnu", "C:\\soldr\\mingw\\bin\\gcc.exe");
+        let _cxx = EnvGuard::set(
+            "CXX_x86_64_pc_windows_gnu",
+            "C:\\soldr\\mingw\\bin\\g++.exe",
+        );
+        let mut command = std::process::Command::new("cargo");
+        let plan = CargoCachePlan {
+            cache_enabled_for_cargo: true,
+            rustc_wrapper: Some(managed_wrapper_plan()),
+            rust_artifact_plan: None,
+        };
 
-            plan.apply_to_command(&mut command, Some("x86_64-pc-windows-gnu"))
-                .expect("apply cache plan");
+        plan.apply_to_command(&mut command, Some("x86_64-pc-windows-gnu"))
+            .expect("apply cache plan");
 
-            assert_eq!(
-                command_env_override(&command, crate::cache_lib::CACHE_ENABLED_ENV_VAR),
-                Some(Some(OsString::from(
-                    crate::cache_lib::cache_enabled_env_value(true)
-                )))
-            );
-            assert!(command_env_override(&command, "RUSTC_WRAPPER")
-                .and_then(|value| value)
-                .is_some());
-            assert_eq!(
-                command_env_override(&command, "CC_x86_64_pc_windows_gnu"),
-                None,
-                "SOLDR_NATIVE_CACHE=0 must not wrap the managed MinGW C compiler"
-            );
-            assert_eq!(
-                command_env_override(&command, "CXX_x86_64_pc_windows_gnu"),
-                None,
-                "SOLDR_NATIVE_CACHE=0 must not wrap the managed MinGW C++ compiler"
-            );
-        }
-    );
+        assert_eq!(
+            command_env_override(&command, crate::cache_lib::CACHE_ENABLED_ENV_VAR),
+            Some(Some(OsString::from(
+                crate::cache_lib::cache_enabled_env_value(true)
+            )))
+        );
+        assert!(command_env_override(&command, "RUSTC_WRAPPER")
+            .and_then(|value| value)
+            .is_some());
+        assert_eq!(
+            command_env_override(&command, "CC_x86_64_pc_windows_gnu"),
+            None,
+            "SOLDR_NATIVE_CACHE=0 must not wrap the managed MinGW C compiler"
+        );
+        assert_eq!(
+            command_env_override(&command, "CXX_x86_64_pc_windows_gnu"),
+            None,
+            "SOLDR_NATIVE_CACHE=0 must not wrap the managed MinGW C++ compiler"
+        );
+    }
 
-    crate::timed_test!(
-        custom_wrapper_plan_sets_wrapper_and_clears_managed_zccache_env,
-        {
-            let mut command = std::process::Command::new("cargo");
-            command.env(crate::cache_lib::ZCCACHE_BINARY_ENV_VAR, "/old/zccache");
-            command.env(
-                crate::cache_lib::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR,
-                "/old/cache",
-            );
-            command.env(crate::cache_lib::ZCCACHE_SESSION_ID_ENV_VAR, "old-session");
-            let plan = CargoCachePlan {
-                cache_enabled_for_cargo: true,
-                rustc_wrapper: Some(RustcWrapperPlan::Custom {
-                    wrapper: OsString::from("sccache"),
-                    sccache_dir: Some(std::path::PathBuf::from("/tmp/sccache")),
-                }),
-                rust_artifact_plan: None,
-            };
-            assert!(!plan.uses_managed_zccache());
+    #[test]
+    fn custom_wrapper_plan_sets_wrapper_and_clears_managed_zccache_env() {
+        let mut command = std::process::Command::new("cargo");
+        command.env(crate::cache_lib::ZCCACHE_BINARY_ENV_VAR, "/old/zccache");
+        command.env(
+            crate::cache_lib::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR,
+            "/old/cache",
+        );
+        command.env(crate::cache_lib::ZCCACHE_SESSION_ID_ENV_VAR, "old-session");
+        let plan = CargoCachePlan {
+            cache_enabled_for_cargo: true,
+            rustc_wrapper: Some(RustcWrapperPlan::Custom {
+                wrapper: OsString::from("sccache"),
+                sccache_dir: Some(std::path::PathBuf::from("/tmp/sccache")),
+            }),
+            rust_artifact_plan: None,
+        };
+        assert!(!plan.uses_managed_zccache());
 
-            plan.apply_to_command(&mut command, None)
-                .expect("apply cache plan");
+        plan.apply_to_command(&mut command, None)
+            .expect("apply cache plan");
 
-            assert_eq!(
-                command_env_override(&command, "RUSTC_WRAPPER"),
-                Some(Some(OsString::from("sccache")))
-            );
-            assert_eq!(
-                command_env_override(&command, "SCCACHE_DIR"),
-                Some(Some(OsString::from("/tmp/sccache")))
-            );
-            assert_eq!(
-                command_env_override(&command, crate::cache_lib::ZCCACHE_BINARY_ENV_VAR),
-                Some(None)
-            );
-            assert_eq!(
-                command_env_override(&command, crate::cache_lib::ZCCACHE_SESSION_ID_ENV_VAR),
-                Some(None)
-            );
-        }
-    );
+        assert_eq!(
+            command_env_override(&command, "RUSTC_WRAPPER"),
+            Some(Some(OsString::from("sccache")))
+        );
+        assert_eq!(
+            command_env_override(&command, "SCCACHE_DIR"),
+            Some(Some(OsString::from("/tmp/sccache")))
+        );
+        assert_eq!(
+            command_env_override(&command, crate::cache_lib::ZCCACHE_BINARY_ENV_VAR),
+            Some(None)
+        );
+        assert_eq!(
+            command_env_override(&command, crate::cache_lib::ZCCACHE_SESSION_ID_ENV_VAR),
+            Some(None)
+        );
+    }
 
-    crate::timed_test!(
-        disabled_wrapper_plan_removes_wrapper_and_managed_zccache_env,
-        {
-            let mut command = std::process::Command::new("cargo");
-            command.env("RUSTC_WRAPPER", "old-wrapper");
-            command.env(crate::cache_lib::ZCCACHE_BINARY_ENV_VAR, "/old/zccache");
-            command.env(crate::cache_lib::ZCCACHE_SESSION_ID_ENV_VAR, "old-session");
-            let plan = CargoCachePlan {
-                cache_enabled_for_cargo: true,
-                rustc_wrapper: Some(RustcWrapperPlan::Disabled),
-                rust_artifact_plan: None,
-            };
-            assert!(!plan.uses_managed_zccache());
+    #[test]
+    fn disabled_wrapper_plan_removes_wrapper_and_managed_zccache_env() {
+        let mut command = std::process::Command::new("cargo");
+        command.env("RUSTC_WRAPPER", "old-wrapper");
+        command.env(crate::cache_lib::ZCCACHE_BINARY_ENV_VAR, "/old/zccache");
+        command.env(crate::cache_lib::ZCCACHE_SESSION_ID_ENV_VAR, "old-session");
+        let plan = CargoCachePlan {
+            cache_enabled_for_cargo: true,
+            rustc_wrapper: Some(RustcWrapperPlan::Disabled),
+            rust_artifact_plan: None,
+        };
+        assert!(!plan.uses_managed_zccache());
 
-            plan.apply_to_command(&mut command, None)
-                .expect("apply cache plan");
+        plan.apply_to_command(&mut command, None)
+            .expect("apply cache plan");
 
-            assert_eq!(command_env_override(&command, "RUSTC_WRAPPER"), Some(None));
-            assert_eq!(
-                command_env_override(&command, crate::cache_lib::ZCCACHE_BINARY_ENV_VAR),
-                Some(None)
-            );
-            assert_eq!(
-                command_env_override(&command, crate::cache_lib::ZCCACHE_SESSION_ID_ENV_VAR),
-                Some(None)
-            );
-        }
-    );
+        assert_eq!(command_env_override(&command, "RUSTC_WRAPPER"), Some(None));
+        assert_eq!(
+            command_env_override(&command, crate::cache_lib::ZCCACHE_BINARY_ENV_VAR),
+            Some(None)
+        );
+        assert_eq!(
+            command_env_override(&command, crate::cache_lib::ZCCACHE_SESSION_ID_ENV_VAR),
+            Some(None)
+        );
+    }
 
-    crate::timed_test!(
-        disabled_wrapper_plan_keeps_windows_gnu_cross_compiler_unwrapped,
-        {
-            let _lock = ENV_LOCK.lock().unwrap();
-            let _cc = EnvGuard::set("CC_x86_64_pc_windows_gnu", "C:\\soldr\\mingw\\bin\\gcc.exe");
-            let _cxx = EnvGuard::set(
-                "CXX_x86_64_pc_windows_gnu",
-                "C:\\soldr\\mingw\\bin\\g++.exe",
-            );
-            let mut command = std::process::Command::new("cargo");
-            command.env("RUSTC_WRAPPER", "old-wrapper");
-            let plan = CargoCachePlan {
-                cache_enabled_for_cargo: true,
-                rustc_wrapper: Some(RustcWrapperPlan::Disabled),
-                rust_artifact_plan: None,
-            };
+    #[test]
+    fn disabled_wrapper_plan_keeps_windows_gnu_cross_compiler_unwrapped() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _cc = EnvGuard::set("CC_x86_64_pc_windows_gnu", "C:\\soldr\\mingw\\bin\\gcc.exe");
+        let _cxx = EnvGuard::set(
+            "CXX_x86_64_pc_windows_gnu",
+            "C:\\soldr\\mingw\\bin\\g++.exe",
+        );
+        let mut command = std::process::Command::new("cargo");
+        command.env("RUSTC_WRAPPER", "old-wrapper");
+        let plan = CargoCachePlan {
+            cache_enabled_for_cargo: true,
+            rustc_wrapper: Some(RustcWrapperPlan::Disabled),
+            rust_artifact_plan: None,
+        };
 
-            plan.apply_to_command(&mut command, Some("x86_64-pc-windows-gnu"))
-                .expect("apply cache plan");
+        plan.apply_to_command(&mut command, Some("x86_64-pc-windows-gnu"))
+            .expect("apply cache plan");
 
-            assert_eq!(command_env_override(&command, "RUSTC_WRAPPER"), Some(None));
-            assert_eq!(
-                command_env_override(&command, "CC_x86_64_pc_windows_gnu"),
-                None,
-                "disabled rustc wrapper plan must not wrap the managed MinGW C compiler"
-            );
-            assert_eq!(
-                command_env_override(&command, "CXX_x86_64_pc_windows_gnu"),
-                None,
-                "disabled rustc wrapper plan must not wrap the managed MinGW C++ compiler"
-            );
-        }
-    );
+        assert_eq!(command_env_override(&command, "RUSTC_WRAPPER"), Some(None));
+        assert_eq!(
+            command_env_override(&command, "CC_x86_64_pc_windows_gnu"),
+            None,
+            "disabled rustc wrapper plan must not wrap the managed MinGW C compiler"
+        );
+        assert_eq!(
+            command_env_override(&command, "CXX_x86_64_pc_windows_gnu"),
+            None,
+            "disabled rustc wrapper plan must not wrap the managed MinGW C++ compiler"
+        );
+    }
 
-    crate::timed_test!(
-        non_cacheable_plan_marks_cache_disabled_without_touching_wrapper,
-        {
-            let mut command = std::process::Command::new("cargo");
-            command.env("RUSTC_WRAPPER", "inherited-wrapper");
-            let plan = CargoCachePlan {
-                cache_enabled_for_cargo: false,
-                rustc_wrapper: None,
-                rust_artifact_plan: None,
-            };
+    #[test]
+    fn non_cacheable_plan_marks_cache_disabled_without_touching_wrapper() {
+        let mut command = std::process::Command::new("cargo");
+        command.env("RUSTC_WRAPPER", "inherited-wrapper");
+        let plan = CargoCachePlan {
+            cache_enabled_for_cargo: false,
+            rustc_wrapper: None,
+            rust_artifact_plan: None,
+        };
 
-            plan.apply_to_command(&mut command, None)
-                .expect("apply cache plan");
+        plan.apply_to_command(&mut command, None)
+            .expect("apply cache plan");
 
-            assert_eq!(
-                command_env_override(&command, crate::cache_lib::CACHE_ENABLED_ENV_VAR),
-                Some(Some(OsString::from(
-                    crate::cache_lib::cache_enabled_env_value(false)
-                )))
-            );
-            assert_eq!(
-                command_env_override(&command, "RUSTC_WRAPPER"),
-                Some(Some(OsString::from("inherited-wrapper")))
-            );
-        }
-    );
+        assert_eq!(
+            command_env_override(&command, crate::cache_lib::CACHE_ENABLED_ENV_VAR),
+            Some(Some(OsString::from(
+                crate::cache_lib::cache_enabled_env_value(false)
+            )))
+        );
+        assert_eq!(
+            command_env_override(&command, "RUSTC_WRAPPER"),
+            Some(Some(OsString::from("inherited-wrapper")))
+        );
+    }
 }

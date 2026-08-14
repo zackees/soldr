@@ -315,7 +315,6 @@ fn configure_installer_process_tree(command: &mut Command) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::timed_test;
 
     const TEST_EXPLICIT_CEILING_ENV_VAR: &str = "SOLDR_TEST_INSTALLER_EXPLICIT_CEILING_SECS";
 
@@ -416,7 +415,8 @@ mod tests {
         )
     }
 
-    timed_test!(steady_progress_can_outlast_the_old_deadline, {
+    #[test]
+    fn steady_progress_can_outlast_the_old_deadline() {
         let mut command = steady_progress_command();
         let result = run_installer_command(
             &mut command,
@@ -425,9 +425,10 @@ mod tests {
             InstallerWatchdogConfig::for_test(test_stall_timeout(), test_safety_timeout()),
         );
         assert!(result.unwrap().success());
-    });
+    }
 
-    timed_test!(a_true_stall_reports_category_phase_and_elapsed_times, {
+    #[test]
+    fn a_true_stall_reports_category_phase_and_elapsed_times() {
         let command = quiet_wait_command();
         let error = wait_for_test_child(
             command,
@@ -440,9 +441,10 @@ mod tests {
         assert!(error.contains("phase=test"), "{error}");
         assert!(error.contains("total_elapsed="), "{error}");
         assert!(error.contains("since_progress="), "{error}");
-    });
+    }
 
-    timed_test!(quiet_active_work_does_not_false_stall, {
+    #[test]
+    fn quiet_active_work_does_not_false_stall() {
         let command = quiet_wait_command();
         let result = wait_for_test_child(
             command,
@@ -450,9 +452,10 @@ mod tests {
             AlwaysProgress,
         );
         assert!(result.unwrap().success());
-    });
+    }
 
-    timed_test!(quiet_cpu_active_work_resets_the_watchdog, {
+    #[test]
+    fn quiet_cpu_active_work_resets_the_watchdog() {
         // The CPU-ticks probe is Linux-only (procfs); other hosts have no
         // progress source beyond output, so the quiet-but-active scenario
         // does not exist there.
@@ -469,9 +472,10 @@ mod tests {
             InstallerWatchdogConfig::for_test(test_stall_timeout(), test_safety_timeout()),
         );
         assert!(result.unwrap().success());
-    });
+    }
 
-    timed_test!(watchdog_terminates_the_installer_process_group, {
+    #[test]
+    fn watchdog_terminates_the_installer_process_group() {
         // Asserts against /proc, which only exists on Linux.
         if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Linux {
             return;
@@ -510,9 +514,10 @@ mod tests {
             thread::sleep(Duration::from_millis(20));
         }
         panic!("descendant {descendant_pid} survived the watchdog process-group kill");
-    });
+    }
 
-    timed_test!(safety_ceiling_wins_even_when_work_keeps_progressing, {
+    #[test]
+    fn safety_ceiling_wins_even_when_work_keeps_progressing() {
         let command = quiet_wait_command();
         let error = wait_for_test_child(
             command,
@@ -522,34 +527,32 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(error.contains("category=safety-ceiling"), "{error}");
-    });
+    }
 
-    timed_test!(
-        shared_safety_ceiling_applies_without_an_explicit_operation_limit,
-        {
-            let _lock = crate::test_util::TEST_PROCESS_ENV_LOCK
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let previous_shared = std::env::var_os(INSTALLER_SAFETY_TIMEOUT_ENV_VAR);
-            let previous_explicit = std::env::var_os(TEST_EXPLICIT_CEILING_ENV_VAR);
-            unsafe {
-                std::env::set_var(INSTALLER_SAFETY_TIMEOUT_ENV_VAR, "123");
-                std::env::remove_var(TEST_EXPLICIT_CEILING_ENV_VAR);
+    #[test]
+    fn shared_safety_ceiling_applies_without_an_explicit_operation_limit() {
+        let _lock = crate::test_util::TEST_PROCESS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous_shared = std::env::var_os(INSTALLER_SAFETY_TIMEOUT_ENV_VAR);
+        let previous_explicit = std::env::var_os(TEST_EXPLICIT_CEILING_ENV_VAR);
+        unsafe {
+            std::env::set_var(INSTALLER_SAFETY_TIMEOUT_ENV_VAR, "123");
+            std::env::remove_var(TEST_EXPLICIT_CEILING_ENV_VAR);
+        }
+        assert_eq!(
+            InstallerWatchdogConfig::from_env(TEST_EXPLICIT_CEILING_ENV_VAR).safety_timeout,
+            Duration::from_secs(123)
+        );
+        unsafe {
+            match previous_shared {
+                Some(value) => std::env::set_var(INSTALLER_SAFETY_TIMEOUT_ENV_VAR, value),
+                None => std::env::remove_var(INSTALLER_SAFETY_TIMEOUT_ENV_VAR),
             }
-            assert_eq!(
-                InstallerWatchdogConfig::from_env(TEST_EXPLICIT_CEILING_ENV_VAR).safety_timeout,
-                Duration::from_secs(123)
-            );
-            unsafe {
-                match previous_shared {
-                    Some(value) => std::env::set_var(INSTALLER_SAFETY_TIMEOUT_ENV_VAR, value),
-                    None => std::env::remove_var(INSTALLER_SAFETY_TIMEOUT_ENV_VAR),
-                }
-                match previous_explicit {
-                    Some(value) => std::env::set_var(TEST_EXPLICIT_CEILING_ENV_VAR, value),
-                    None => std::env::remove_var(TEST_EXPLICIT_CEILING_ENV_VAR),
-                }
+            match previous_explicit {
+                Some(value) => std::env::set_var(TEST_EXPLICIT_CEILING_ENV_VAR, value),
+                None => std::env::remove_var(TEST_EXPLICIT_CEILING_ENV_VAR),
             }
         }
-    );
+    }
 }

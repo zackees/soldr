@@ -573,7 +573,8 @@ fn warm_restore_skip_enabled_respects_explicit_falsy() {
     }
 }
 
-crate::timed_test!(warm_restore_skip_rejects_target_deleted_after_save, {
+#[test]
+fn warm_restore_skip_rejects_target_deleted_after_save() {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _skip = EnvVarGuard::set(SKIP_WARM_RESTORE_ENV_VAR, "1");
     let _run = EnvVarGuard::set("GITHUB_RUN_ID", "run-delete");
@@ -598,9 +599,10 @@ crate::timed_test!(warm_restore_skip_rejects_target_deleted_after_save, {
         should_skip_warm_restore(&ctx).is_none(),
         "deleting target/ after save must invalidate the warm-restore skip"
     );
-});
+}
 
-crate::timed_test!(warm_restore_skip_rejects_invalid_target_markers, {
+#[test]
+fn warm_restore_skip_rejects_invalid_target_markers() {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _skip = EnvVarGuard::set(SKIP_WARM_RESTORE_ENV_VAR, "1");
     let _run = EnvVarGuard::set("GITHUB_RUN_ID", "run-markers");
@@ -655,4 +657,4 @@ crate::timed_test!(warm_restore_skip_rejects_invalid_target_markers, {
         should_skip_warm_restore(&ctx).is_none(),
         "plan-mismatched marker must force restore"
     );
-});
+}

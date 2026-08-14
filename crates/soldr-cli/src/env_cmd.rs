@@ -174,21 +174,24 @@ mod tests {
     // an unguarded reader for us.
     use crate::TEST_PROCESS_ENV_LOCK as ENV_LOCK;
 
-    crate::timed_test!(env_block_darwin_carries_sdkroot, {
+    #[test]
+    fn env_block_darwin_carries_sdkroot() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let env = build_env_block("aarch64-apple-darwin").expect("ok");
         assert!(env.contains_key("SDKROOT"), "darwin must export SDKROOT");
         assert!(env.contains_key("CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER"));
-    });
+    }
 
-    crate::timed_test!(env_block_windows_lacks_sdkroot, {
+    #[test]
+    fn env_block_windows_lacks_sdkroot() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let env = build_env_block("x86_64-pc-windows-msvc").expect("ok");
         assert!(!env.contains_key("SDKROOT"));
         assert!(env.contains_key("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER"));
-    });
+    }
 
-    crate::timed_test!(env_block_does_not_guess_pyo3_no_python, {
+    #[test]
+    fn env_block_does_not_guess_pyo3_no_python() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Resolve against an empty workspace rather than the ambient cwd.
         // PYO3_NO_PYTHON is emitted when workspace metadata proves an ABI3
@@ -207,15 +210,16 @@ mod tests {
                 "no workspace metadata means no ABI3 proof, so the key must not                  be guessed for {triple}"
             );
         }
-    });
+    }
 
-    crate::timed_test!(shell_quote_strips_bare_alnum, {
+    #[test]
+    fn shell_quote_strips_bare_alnum() {
         assert_eq!(shell_quote("plain123"), "plain123");
         assert_eq!(shell_quote("/usr/local/bin"), "/usr/local/bin");
         // Anything with a space or special character gets wrapped.
         assert_eq!(shell_quote("with space"), "'with space'");
         assert_eq!(shell_quote("don't"), "'don'\\''t'");
-    });
+    }
 
     // soldr#1927: this began as a `probe_cwd_decides` diagnostic that chdir'd
     // into a fixture, printed whether PYO3_NO_PYTHON leaked, and asserted
@@ -227,7 +231,8 @@ mod tests {
     //
     // Keep the proof, drop the chdir. Resolving through the explicit-root seam
     // asserts the same causal claim without touching global state.
-    crate::timed_test!(workspace_root_decides_pyo3_no_python, {
+    #[test]
+    fn workspace_root_decides_pyo3_no_python() {
         // Still needs the barrier: the root is explicit now, but the plan also
         // consults `caller_pyo3_env()`, and a leaked ambient `PYO3_*` takes the
         // CallerConfigured early return -- which would suppress the key and
@@ -308,5 +313,5 @@ pyo3 = { path = \"pyo3\", features = [\"abi3-py38\", \"extension-module\"] }
              guessed -- these two roots differing is exactly why callers must \
              pass the root rather than inherit the ambient CWD"
         );
-    });
+    }
 }

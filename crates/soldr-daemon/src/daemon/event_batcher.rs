@@ -476,7 +476,8 @@ mod tests {
     // contract is already covered by `failed_flush_retains_rows_for_retry`
     // above (verified: it fails if the restore is removed); this pins the
     // success half.
-    crate::timed_test!(successful_flush_clears_the_buffer, {
+    #[test]
+    fn successful_flush_clears_the_buffer() {
         let rt = Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
             let dir = TempDir::new().expect("tempdir");
@@ -495,9 +496,10 @@ mod tests {
             // success path.
             assert!(buf.is_empty(), "a successful flush must drain the buffer");
         });
-    });
+    }
 
-    crate::timed_test!(batcher_persists_rows_after_flush, {
+    #[test]
+    fn batcher_persists_rows_after_flush() {
         let rt = Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
             let dir = TempDir::new().expect("tempdir");
@@ -518,7 +520,7 @@ mod tests {
             // Build list table is untouched by the batcher.
             assert!(list_builds(&path, 10, None).expect("list").is_empty());
         });
-    });
+    }
 
     fn session_start_event(session: u64) -> Event {
         Event {
@@ -532,47 +534,46 @@ mod tests {
         }
     }
 
-    crate::timed_test!(
-        session_aggregate_matches_db_aggregate_and_is_consumed_once,
-        {
-            let rt = Builder::new_current_thread().enable_all().build().unwrap();
-            rt.block_on(async {
-                let dir = TempDir::new().expect("tempdir");
-                let path = dir.path().join("state.redb");
-                crate::daemon::db::ensure_initialized(&path).expect("init");
-                let batcher = EventBatcher::start(path.clone());
-                batcher.record(session_start_event(21)).await;
-                for i in 0..4 {
-                    batcher
-                        .record(sample_event(21, &format!("s{i}"), None))
-                        .await;
-                    batcher
-                        .record(sample_event(21, &format!("s{i}"), Some(500 + i)))
-                        .await;
-                }
-                batcher.flush().await;
+    #[test]
+    fn session_aggregate_matches_db_aggregate_and_is_consumed_once() {
+        let rt = Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let dir = TempDir::new().expect("tempdir");
+            let path = dir.path().join("state.redb");
+            crate::daemon::db::ensure_initialized(&path).expect("init");
+            let batcher = EventBatcher::start(path.clone());
+            batcher.record(session_start_event(21)).await;
+            for i in 0..4 {
+                batcher
+                    .record(sample_event(21, &format!("s{i}"), None))
+                    .await;
+                batcher
+                    .record(sample_event(21, &format!("s{i}"), Some(500 + i)))
+                    .await;
+            }
+            batcher.flush().await;
 
-                let agg = batcher
-                    .take_session_aggregate(21)
-                    .expect("aggregate tracked from SessionStart");
-                let in_memory = agg.finalize();
-                let from_db = aggregate_session(&path, 21).expect("db agg");
-                assert_eq!(
-                    in_memory, from_db,
-                    "incremental rollup must mirror the scan"
-                );
-                assert_eq!(in_memory.0, 4);
-                assert_eq!(in_memory.1, Some(503));
-                assert_eq!(in_memory.2.as_deref(), Some("s3"));
+            let agg = batcher
+                .take_session_aggregate(21)
+                .expect("aggregate tracked from SessionStart");
+            let in_memory = agg.finalize();
+            let from_db = aggregate_session(&path, 21).expect("db agg");
+            assert_eq!(
+                in_memory, from_db,
+                "incremental rollup must mirror the scan"
+            );
+            assert_eq!(in_memory.0, 4);
+            assert_eq!(in_memory.1, Some(503));
+            assert_eq!(in_memory.2.as_deref(), Some("s3"));
 
-                // Consumed: a second take falls back to the scan path.
-                assert!(batcher.take_session_aggregate(21).is_none());
-                batcher.shutdown().await;
-            });
-        }
-    );
+            // Consumed: a second take falls back to the scan path.
+            assert!(batcher.take_session_aggregate(21).is_none());
+            batcher.shutdown().await;
+        });
+    }
 
-    crate::timed_test!(session_aggregate_without_session_start_is_untrusted, {
+    #[test]
+    fn session_aggregate_without_session_start_is_untrusted() {
         let rt = Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
             let dir = TempDir::new().expect("tempdir");
@@ -590,9 +591,10 @@ mod tests {
             );
             batcher.shutdown().await;
         });
-    });
+    }
 
-    crate::timed_test!(session_end_event_does_not_resurrect_aggregate, {
+    #[test]
+    fn session_end_event_does_not_resurrect_aggregate() {
         let rt = Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
             let dir = TempDir::new().expect("tempdir");
@@ -617,9 +619,10 @@ mod tests {
             assert!(batcher.take_session_aggregate(55).is_none());
             batcher.shutdown().await;
         });
-    });
+    }
 
-    crate::timed_test!(batcher_batches_at_capacity_boundary, {
+    #[test]
+    fn batcher_batches_at_capacity_boundary() {
         let rt = Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
             let dir = TempDir::new().expect("tempdir");
@@ -638,9 +641,10 @@ mod tests {
             assert_eq!(count as usize, MAX_BATCH_ROWS + 7);
             batcher.shutdown().await;
         });
-    });
+    }
 
-    crate::timed_test!(failed_flush_retains_rows_for_retry, {
+    #[test]
+    fn failed_flush_retains_rows_for_retry() {
         let rt = Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
             let dir = TempDir::new().expect("tempdir");
@@ -662,5 +666,5 @@ mod tests {
             assert_eq!(count, 1, "failed batch must be retried, not dropped");
             batcher.shutdown().await.expect("shutdown");
         });
-    });
+    }
 }

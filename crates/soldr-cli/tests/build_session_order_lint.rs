@@ -41,8 +41,6 @@ use std::path::{Path, PathBuf};
 
 mod common;
 
-use soldr_cli::timed_test;
-
 /// Marks the start of the build session: acquires the activity lease,
 /// sets `build_active`, and publishes `BuildSessionStart`.
 const SESSION_START: &str = "begin_build_activity_lease(&paths, session_id";
@@ -85,7 +83,7 @@ const FALLIBLE_PRE_SPAWN_STEPS: &[(&str, &str)] = &[
 /// The `target-run` / `Linux x64` lanes execute a **pre-built test archive**
 /// on a machine with no source tree, so a source-reading lint cannot run
 /// there and skips instead of failing — the same tolerance
-/// `timed_test_lint`'s `collect_rs_files` has for directories it cannot read.
+/// `no_timed_test_guard`'s `rust_sources` has for directories it cannot read.
 ///
 /// soldr#2008: the path is resolved at *runtime* via `workspace_root()`.
 /// `CARGO_MANIFEST_DIR` is baked in at compile time and points at whichever
@@ -146,7 +144,8 @@ fn line_of(text: &str, needle: &str) -> Option<usize> {
         .map(|idx| idx + 1)
 }
 
-timed_test!(build_session_starts_after_every_fallible_setup_step, {
+#[test]
+fn build_session_starts_after_every_fallible_setup_step() {
     let Some((path, text)) = front_door_source() else {
         return;
     };
@@ -195,9 +194,10 @@ timed_test!(build_session_starts_after_every_fallible_setup_step, {
         path.display(),
         violations.join("\n"),
     );
-});
+}
 
-timed_test!(both_post_session_exit_paths_clear_the_active_flag, {
+#[test]
+fn both_post_session_exit_paths_clear_the_active_flag() {
     // The other half of soldr#1667: once the session *has* started, the
     // cargo-run-error arm and the normal-completion tail must each clear
     // `build_active` and emit a terminal session record. `BuildActivityLease`
@@ -241,4 +241,4 @@ timed_test!(both_post_session_exit_paths_clear_the_active_flag, {
         ends.len(),
         path.display(),
     );
-});
+}

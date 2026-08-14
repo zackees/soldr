@@ -8,7 +8,6 @@
 mod common;
 
 use serde_json::Value;
-use soldr_cli::timed_test;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -28,7 +27,8 @@ fn seed_workspace(root: &Path, name: &str, target_bytes: usize) -> PathBuf {
     workspace
 }
 
-timed_test!(gc_target_dry_run_json_shape_is_stable, {
+#[test]
+fn gc_target_dry_run_json_shape_is_stable() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
     let small = seed_workspace(root, "small", 4 * 1024);
@@ -79,9 +79,10 @@ timed_test!(gc_target_dry_run_json_shape_is_stable, {
 
     let total_bytes = json["total_bytes"].as_u64().unwrap_or(0);
     assert!(total_bytes >= 1024 * 1024 + 4 * 1024);
-});
+}
 
-timed_test!(gc_target_purge_yes_deletes_target_dirs, {
+#[test]
+fn gc_target_purge_yes_deletes_target_dirs() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
     let alpha = seed_workspace(root, "alpha", 8 * 1024);
@@ -122,9 +123,10 @@ timed_test!(gc_target_purge_yes_deletes_target_dirs, {
     assert_eq!(json["entry_count"], 2);
     assert_eq!(json["purged_count"], 2);
     assert_eq!(json["failed_count"], 0);
-});
+}
 
-timed_test!(gc_target_empty_root_reports_zero, {
+#[test]
+fn gc_target_empty_root_reports_zero() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
 
@@ -144,4 +146,4 @@ timed_test!(gc_target_empty_root_reports_zero, {
     let json: Value = serde_json::from_slice(&output.stdout).expect("JSON");
     assert_eq!(json["entry_count"], 0);
     assert_eq!(json["total_bytes"], 0);
-});
+}

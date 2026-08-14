@@ -188,27 +188,32 @@ pub mod fetch_timing {
 mod tests {
     use super::*;
 
-    crate::timed_test!(slug_of_windows_path_with_drive_letter, {
+    #[test]
+    fn slug_of_windows_path_with_drive_letter() {
         let slug = sanitize_cwd_slug(Path::new(r"C:\Users\niteris\dev\soldr2"));
         assert_eq!(slug, "c-users-niteris-dev-soldr2");
-    });
+    }
 
-    crate::timed_test!(slug_handles_unicode_and_spaces, {
+    #[test]
+    fn slug_handles_unicode_and_spaces() {
         let slug = sanitize_cwd_slug(Path::new(r"/home/user/My Café Projëct"));
         assert_eq!(slug, "home-user-my-caf-proj-ct");
-    });
+    }
 
-    crate::timed_test!(slug_collapses_and_trims_dashes, {
+    #[test]
+    fn slug_collapses_and_trims_dashes() {
         let slug = sanitize_cwd_slug(Path::new("///weird---path!!!name///"));
         assert_eq!(slug, "weird-path-name");
-    });
+    }
 
-    crate::timed_test!(slug_of_empty_or_symbol_only_path_is_root, {
+    #[test]
+    fn slug_of_empty_or_symbol_only_path_is_root() {
         assert_eq!(sanitize_cwd_slug(Path::new("")), "root");
         assert_eq!(sanitize_cwd_slug(Path::new("///!!!///")), "root");
-    });
+    }
 
-    crate::timed_test!(slug_is_capped_at_80_chars_without_trailing_dash, {
+    #[test]
+    fn slug_is_capped_at_80_chars_without_trailing_dash() {
         // 100 'a' characters separated so collapsing doesn't shrink it,
         // then capped to 80 with no trailing dash.
         let long = "a".repeat(100);
@@ -216,9 +221,10 @@ mod tests {
         assert_eq!(slug.chars().count(), 80);
         assert!(!slug.ends_with('-'));
         assert_eq!(slug, "a".repeat(80));
-    });
+    }
 
-    crate::timed_test!(slug_cap_does_not_leave_trailing_dash_mid_word_boundary, {
+    #[test]
+    fn slug_cap_does_not_leave_trailing_dash_mid_word_boundary() {
         // Construct a path whose 80th character would land exactly on
         // a '-' after collapsing, to make sure the cap trims it off.
         let mut raw = "a".repeat(79);
@@ -227,13 +233,15 @@ mod tests {
         let slug = sanitize_cwd_slug(Path::new(&raw));
         assert!(!slug.ends_with('-'));
         assert!(slug.len() <= 80);
-    });
+    }
 
-    crate::timed_test!(timestamp_at_unix_epoch, {
+    #[test]
+    fn timestamp_at_unix_epoch() {
         assert_eq!(utc_compact_timestamp(0), "19700101T000000Z");
-    });
+    }
 
-    crate::timed_test!(timestamp_at_known_modern_value, {
+    #[test]
+    fn timestamp_at_known_modern_value() {
         // 2026-07-23T14:15:02Z. Rather than hand-deriving the day
         // count (error-prone), this test computes it via an
         // independent civil-date-to-days reference (`days_from_civil`
@@ -244,11 +252,12 @@ mod tests {
         let ms_of_day: i64 = ((14 * 60 + 15) * 60 + 2) * 1000;
         let unix_ms = days * 24 * 60 * 60 * 1000 + ms_of_day;
         assert_eq!(utc_compact_timestamp(unix_ms), "20260723T141502Z");
-    });
+    }
 
-    crate::timed_test!(timestamp_clamps_negative_input_to_epoch, {
+    #[test]
+    fn timestamp_clamps_negative_input_to_epoch() {
         assert_eq!(utc_compact_timestamp(-1_000_000), "19700101T000000Z");
-    });
+    }
 
     /// Independent day-count reference (Howard Hinnant's
     /// `days_from_civil`), used only by the test above so the test
@@ -262,38 +271,36 @@ mod tests {
         era * 146_097 + doe as i64 - 719_468
     }
 
-    crate::timed_test!(
-        fetch_timing_record_and_drain_empties_buffer_and_preserves_order,
-        {
-            // Drain first so this test is independent of any other test's
-            // recordings (the collector is process-global and tests may
-            // interleave threads within the same binary).
-            let _ = fetch_timing::drain();
+    #[test]
+    fn fetch_timing_record_and_drain_empties_buffer_and_preserves_order() {
+        // Drain first so this test is independent of any other test's
+        // recordings (the collector is process-global and tests may
+        // interleave threads within the same binary).
+        let _ = fetch_timing::drain();
 
-            fetch_timing::record(fetch_timing::FetchTiming {
-                name: "cargo-nextest".to_string(),
-                source: "github-release".to_string(),
-                started_at_ms: 1000,
-                duration_ms: 250,
-            });
-            fetch_timing::record(fetch_timing::FetchTiming {
-                name: "cargo-audit".to_string(),
-                source: "crates-io".to_string(),
-                started_at_ms: 1300,
-                duration_ms: 400,
-            });
+        fetch_timing::record(fetch_timing::FetchTiming {
+            name: "cargo-nextest".to_string(),
+            source: "github-release".to_string(),
+            started_at_ms: 1000,
+            duration_ms: 250,
+        });
+        fetch_timing::record(fetch_timing::FetchTiming {
+            name: "cargo-audit".to_string(),
+            source: "crates-io".to_string(),
+            started_at_ms: 1300,
+            duration_ms: 400,
+        });
 
-            let drained = fetch_timing::drain();
-            assert_eq!(drained.len(), 2);
-            assert_eq!(drained[0].name, "cargo-nextest");
-            assert_eq!(drained[0].source, "github-release");
-            assert_eq!(drained[0].started_at_ms, 1000);
-            assert_eq!(drained[0].duration_ms, 250);
-            assert_eq!(drained[1].name, "cargo-audit");
-            assert_eq!(drained[1].source, "crates-io");
+        let drained = fetch_timing::drain();
+        assert_eq!(drained.len(), 2);
+        assert_eq!(drained[0].name, "cargo-nextest");
+        assert_eq!(drained[0].source, "github-release");
+        assert_eq!(drained[0].started_at_ms, 1000);
+        assert_eq!(drained[0].duration_ms, 250);
+        assert_eq!(drained[1].name, "cargo-audit");
+        assert_eq!(drained[1].source, "crates-io");
 
-            // Buffer is empty after drain.
-            assert!(fetch_timing::drain().is_empty());
-        }
-    );
+        // Buffer is empty after drain.
+        assert!(fetch_timing::drain().is_empty());
+    }
 }

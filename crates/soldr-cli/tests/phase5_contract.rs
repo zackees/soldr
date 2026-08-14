@@ -44,14 +44,13 @@
 
 use soldr_cli::daemon::protocol::{CompileRequest, CompileResponseBody, Request, Response};
 use soldr_cli::daemon::wire::{decode_request, decode_response, encode_request, encode_response};
-use soldr_cli::timed_test;
-use std::time::Duration;
 
 // =============================================================================
 // Phase 5b — chunked Response variants round-trip byte-for-byte
 // =============================================================================
 
-timed_test!(compile_stdout_chunk_round_trips, Duration::from_secs(5), {
+#[test]
+fn compile_stdout_chunk_round_trips() {
     let payload = vec![0x10, 0x20, 0x30, 0xff, 0x00, 0x7e];
     let r = Response::CompileStdoutChunk(payload.clone());
     let bytes = encode_response(&r);
@@ -63,9 +62,10 @@ timed_test!(compile_stdout_chunk_round_trips, Duration::from_secs(5), {
              versions and cold builds will silently miss the chunk-streaming win \
              from soldr#981. Got: {decoded:?}"
     );
-});
+}
 
-timed_test!(compile_stderr_chunk_round_trips, Duration::from_secs(5), {
+#[test]
+fn compile_stderr_chunk_round_trips() {
     let payload = b"error: linker `lld` not found\n".to_vec();
     let r = Response::CompileStderrChunk(payload.clone());
     let bytes = encode_response(&r);
@@ -74,191 +74,176 @@ timed_test!(compile_stderr_chunk_round_trips, Duration::from_secs(5), {
         matches!(decoded, Response::CompileStderrChunk(ref b) if b == &payload),
         "Phase 5b: CompileStderrChunk must round-trip byte-for-byte. Got: {decoded:?}"
     );
-});
+}
 
-timed_test!(
-    compile_done_round_trips_with_outcome_fields,
-    Duration::from_secs(5),
-    {
-        // CompileDone is the terminal frame in the soldr#981 streaming
-        // protocol. Without `exit_code`, the wrapper can't propagate
-        // rustc's status; without `cached` / `cache_outcome`, the
-        // session-summary banner reports wrong hit/miss counts.
-        let r = Response::CompileDone {
-            exit_code: 42,
-            cached: true,
-            cache_outcome: 1, // matches `CompileResponseBody.cache_outcome` integer encoding
-            compile_id: "test-compile-id-7f3".to_string(),
-        };
-        let bytes = encode_response(&r);
-        let decoded = decode_response(&bytes).expect("decode");
-        match decoded {
-            Response::CompileDone {
-                exit_code,
-                cached,
-                cache_outcome,
-                compile_id,
-            } => {
-                assert_eq!(exit_code, 42);
-                assert!(cached);
-                assert_eq!(cache_outcome, 1);
-                assert_eq!(compile_id, "test-compile-id-7f3");
-            }
-            other => panic!("expected CompileDone, got {other:?}"),
+#[test]
+fn compile_done_round_trips_with_outcome_fields() {
+    // CompileDone is the terminal frame in the soldr#981 streaming
+    // protocol. Without `exit_code`, the wrapper can't propagate
+    // rustc's status; without `cached` / `cache_outcome`, the
+    // session-summary banner reports wrong hit/miss counts.
+    let r = Response::CompileDone {
+        exit_code: 42,
+        cached: true,
+        cache_outcome: 1, // matches `CompileResponseBody.cache_outcome` integer encoding
+        compile_id: "test-compile-id-7f3".to_string(),
+    };
+    let bytes = encode_response(&r);
+    let decoded = decode_response(&bytes).expect("decode");
+    match decoded {
+        Response::CompileDone {
+            exit_code,
+            cached,
+            cache_outcome,
+            compile_id,
+        } => {
+            assert_eq!(exit_code, 42);
+            assert!(cached);
+            assert_eq!(cache_outcome, 1);
+            assert_eq!(compile_id, "test-compile-id-7f3");
         }
+        other => panic!("expected CompileDone, got {other:?}"),
     }
-);
+}
 
-timed_test!(
-    chunked_frames_are_independently_decodable,
-    Duration::from_secs(5),
-    {
-        // Three frames written in sequence to a wire buffer should
-        // decode back to three distinct Response variants. Models the
-        // wrapper's read-loop in daemon/client.rs that drains
-        // CompileStdoutChunk* + CompileStderrChunk* + CompileDone.
-        let frames = vec![
-            Response::CompileStdoutChunk(b"hello".to_vec()),
-            Response::CompileStderrChunk(b"warn: unused\n".to_vec()),
-            Response::CompileDone {
-                exit_code: 0,
-                cached: false,
-                cache_outcome: 0,
-                compile_id: "x".to_string(),
-            },
-        ];
-        for frame in &frames {
-            let bytes = encode_response(frame);
-            let back = decode_response(&bytes).expect("decode");
-            // Hand-check: each frame survives encode → decode on its own,
-            // mirroring how the wrapper reads one frame at a time over the
-            // length-prefixed transport.
-            assert_eq!(
-                std::mem::discriminant(&back),
-                std::mem::discriminant(frame),
-                "frame {frame:?} should round-trip to same variant"
-            );
-        }
+#[test]
+fn chunked_frames_are_independently_decodable() {
+    // Three frames written in sequence to a wire buffer should
+    // decode back to three distinct Response variants. Models the
+    // wrapper's read-loop in daemon/client.rs that drains
+    // CompileStdoutChunk* + CompileStderrChunk* + CompileDone.
+    let frames = vec![
+        Response::CompileStdoutChunk(b"hello".to_vec()),
+        Response::CompileStderrChunk(b"warn: unused\n".to_vec()),
+        Response::CompileDone {
+            exit_code: 0,
+            cached: false,
+            cache_outcome: 0,
+            compile_id: "x".to_string(),
+        },
+    ];
+    for frame in &frames {
+        let bytes = encode_response(frame);
+        let back = decode_response(&bytes).expect("decode");
+        // Hand-check: each frame survives encode → decode on its own,
+        // mirroring how the wrapper reads one frame at a time over the
+        // length-prefixed transport.
+        assert_eq!(
+            std::mem::discriminant(&back),
+            std::mem::discriminant(frame),
+            "frame {frame:?} should round-trip to same variant"
+        );
     }
-);
+}
 
 // =============================================================================
 // Phase 5c — env filter contract
 // =============================================================================
 
-timed_test!(
-    compile_request_env_round_trips_via_wire,
-    Duration::from_secs(5),
-    {
-        // Build a CompileRequest with a representative env subset and
-        // confirm the wire round-trip preserves it. This is the
-        // payload the daemon's tokio worker prost-encodes on every
-        // compile; under #981 the env filter (compile_dispatch::
-        // is_compile_env_var) caps the per-request payload size.
-        let req = CompileRequest {
-            args: vec!["rustc".to_string(), "--version".to_string()],
-            cwd: "/work".to_string(),
-            env: vec![
-                ("CARGO_PKG_NAME".to_string(), "soldr-cli".to_string()),
-                ("RUSTC_BOOTSTRAP".to_string(), "1".to_string()),
-                ("LIB".to_string(), "C:\\foo;C:\\bar".to_string()),
-                ("ZCCACHE_CACHE_DIR".to_string(), "/cache".to_string()),
-            ],
-            stdin: Vec::new(),
-            lifecycle: None,
-            ipc_busy_retries: 0,
-        };
-        let r = Request::Compile(req.clone());
-        let bytes = encode_request(&r);
-        let back = decode_request(&bytes).expect("decode");
-        match back {
-            Request::Compile(decoded) => {
-                assert_eq!(decoded.args, req.args);
-                assert_eq!(decoded.cwd, req.cwd);
-                assert_eq!(decoded.env, req.env);
-            }
-            other => panic!("expected Compile, got {other:?}"),
+#[test]
+fn compile_request_env_round_trips_via_wire() {
+    // Build a CompileRequest with a representative env subset and
+    // confirm the wire round-trip preserves it. This is the
+    // payload the daemon's tokio worker prost-encodes on every
+    // compile; under #981 the env filter (compile_dispatch::
+    // is_compile_env_var) caps the per-request payload size.
+    let req = CompileRequest {
+        args: vec!["rustc".to_string(), "--version".to_string()],
+        cwd: "/work".to_string(),
+        env: vec![
+            ("CARGO_PKG_NAME".to_string(), "soldr-cli".to_string()),
+            ("RUSTC_BOOTSTRAP".to_string(), "1".to_string()),
+            ("LIB".to_string(), "C:\\foo;C:\\bar".to_string()),
+            ("ZCCACHE_CACHE_DIR".to_string(), "/cache".to_string()),
+        ],
+        stdin: Vec::new(),
+        lifecycle: None,
+        ipc_busy_retries: 0,
+    };
+    let r = Request::Compile(req.clone());
+    let bytes = encode_request(&r);
+    let back = decode_request(&bytes).expect("decode");
+    match back {
+        Request::Compile(decoded) => {
+            assert_eq!(decoded.args, req.args);
+            assert_eq!(decoded.cwd, req.cwd);
+            assert_eq!(decoded.env, req.env);
         }
+        other => panic!("expected Compile, got {other:?}"),
     }
-);
+}
 
-timed_test!(
-    is_compile_env_var_drops_cargo_pkg_noise,
-    Duration::from_secs(5),
-    {
-        // The filter must keep cargo's compile contract vars (and, per
-        // the linux-arm-musl crgx regression, any build-script-emitted
-        // `cargo:rustc-env` var — arbitrary names, so the filter is a
-        // noise denylist) while still dropping interactive-session
-        // noise from the per-compile prost payload.
-        use soldr_cli::compile_dispatch::is_compile_env_var;
-        for kept in [
-            "CARGO_PKG_NAME",
-            "CARGO_PKG_VERSION",
-            "CARGO_CFG_TARGET_ARCH",
-            // build-script `cargo:rustc-env` vars — names are arbitrary
-            "CRGX_TARGET",
-            "VERGEN_GIT_SHA",
-        ] {
-            assert!(
-                is_compile_env_var(kept),
-                "{kept} must be forwarded (cargo compile contract / \
+#[test]
+fn is_compile_env_var_drops_cargo_pkg_noise() {
+    // The filter must keep cargo's compile contract vars (and, per
+    // the linux-arm-musl crgx regression, any build-script-emitted
+    // `cargo:rustc-env` var — arbitrary names, so the filter is a
+    // noise denylist) while still dropping interactive-session
+    // noise from the per-compile prost payload.
+    use soldr_cli::compile_dispatch::is_compile_env_var;
+    for kept in [
+        "CARGO_PKG_NAME",
+        "CARGO_PKG_VERSION",
+        "CARGO_CFG_TARGET_ARCH",
+        // build-script `cargo:rustc-env` vars — names are arbitrary
+        "CRGX_TARGET",
+        "VERGEN_GIT_SHA",
+    ] {
+        assert!(
+            is_compile_env_var(kept),
+            "{kept} must be forwarded (cargo compile contract / \
                  build-script rustc-env)"
-            );
-        }
-        // Known session-noise vars must stay out of the payload.
-        for dropped in [
-            "PROMPT",
-            "PS1",
-            "OLDPWD",
-            "SHLVL",
-            "DISPLAY",
-            "GDM_LANG",
-            "DBUS_SESSION_BUS_ADDRESS",
-            "XDG_SESSION_TYPE",
-        ] {
-            assert!(
-                !is_compile_env_var(dropped),
-                "{dropped} must be dropped — Phase 5c env filter (#981) keeps the per-compile \
+        );
+    }
+    // Known session-noise vars must stay out of the payload.
+    for dropped in [
+        "PROMPT",
+        "PS1",
+        "OLDPWD",
+        "SHLVL",
+        "DISPLAY",
+        "GDM_LANG",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "XDG_SESSION_TYPE",
+    ] {
+        assert!(
+            !is_compile_env_var(dropped),
+            "{dropped} must be dropped — Phase 5c env filter (#981) keeps the per-compile \
                  prost payload under ~5 KB; if this fails the daemon's tokio runtime burns \
                  cycles encoding noise"
-            );
-        }
+        );
     }
-);
+}
 
 // =============================================================================
 // Phase 5b regression — Response::Compile (the old buffered shape) is gone
 // =============================================================================
 
-timed_test!(
-    response_compile_buffered_shape_is_deprecated,
-    Duration::from_secs(5),
-    {
-        // Soldr#981 Phase 5b deprecated the single-frame
-        // `Response::Compile(CompileResponseBody)` shape in favor of
-        // the chunked variants. The wire codec still understands the
-        // shape (for protocol-version-N-minus-one peers) but the
-        // daemon no longer EMITS it. If anyone re-introduces emission,
-        // the cold-build chunking win disappears.
-        //
-        // This test asserts the buffered shape still decodes (forward
-        // compat) but documents that production code should not be
-        // sending it.
-        let body = CompileResponseBody {
-            exit_code: 0,
-            stdout: b"compiled".to_vec(),
-            stderr: Vec::new(),
-            cached: false,
-            cache_outcome: 0,
-        };
-        let r = Response::Compile(body.clone());
-        let bytes = encode_response(&r);
-        let back = decode_response(&bytes).expect("decode");
-        assert!(
-            matches!(back, Response::Compile(_)),
-            "legacy Response::Compile must still decode for backwards compat with v6 wrappers; \
+#[test]
+fn response_compile_buffered_shape_is_deprecated() {
+    // Soldr#981 Phase 5b deprecated the single-frame
+    // `Response::Compile(CompileResponseBody)` shape in favor of
+    // the chunked variants. The wire codec still understands the
+    // shape (for protocol-version-N-minus-one peers) but the
+    // daemon no longer EMITS it. If anyone re-introduces emission,
+    // the cold-build chunking win disappears.
+    //
+    // This test asserts the buffered shape still decodes (forward
+    // compat) but documents that production code should not be
+    // sending it.
+    let body = CompileResponseBody {
+        exit_code: 0,
+        stdout: b"compiled".to_vec(),
+        stderr: Vec::new(),
+        cached: false,
+        cache_outcome: 0,
+    };
+    let r = Response::Compile(body.clone());
+    let bytes = encode_response(&r);
+    let back = decode_response(&bytes).expect("decode");
+    assert!(
+        matches!(back, Response::Compile(_)),
+        "legacy Response::Compile must still decode for backwards compat with v6 wrappers; \
              but the daemon must emit chunked variants instead — see soldr#981 Phase 5b."
-        );
-    }
-);
+    );
+}

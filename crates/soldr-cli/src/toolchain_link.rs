@@ -250,7 +250,8 @@ mod tests {
         }
     }
 
-    crate::timed_test!(windows_link_shims_are_visible_to_rust_command_lookup, {
+    #[test]
+    fn windows_link_shims_are_visible_to_rust_command_lookup() {
         if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
             return;
         }
@@ -274,7 +275,7 @@ mod tests {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
-    });
+    }
 
     #[test]
     fn write_shims_skips_existing_matching_files() {

@@ -284,7 +284,6 @@ mod cancel_on_disconnect_tests {
         DispatchOutcome,
     };
     use crate::daemon::protocol::CompileLifecycle;
-    use crate::timed_test;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -307,7 +306,8 @@ mod cancel_on_disconnect_tests {
         crate::daemon::db::list_events_for_session(db_path, session_id).expect("list events")
     }
 
-    timed_test!(compile_lifecycle_events_preserve_history_fields, {
+    #[test]
+    fn compile_lifecycle_events_preserve_history_fields() {
         let lifecycle = test_lifecycle(42);
         let start = compile_lifecycle_event(&lifecycle, None);
         assert_eq!(start.kind, crate::daemon::db::EventKind::CompileStart);
@@ -322,9 +322,10 @@ mod cancel_on_disconnect_tests {
         assert_eq!(end.session_id, start.session_id);
         assert_eq!(end.crate_name, start.crate_name);
         assert_eq!(end.target_dir, start.target_dir);
-    });
+    }
 
-    timed_test!(successful_compile_records_exactly_start_and_end, {
+    #[test]
+    fn successful_compile_records_exactly_start_and_end() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -350,9 +351,10 @@ mod cancel_on_disconnect_tests {
             assert_eq!(events[1].kind, crate::daemon::db::EventKind::CompileEnd);
             assert!(events[1].duration_us.is_some());
         });
-    });
+    }
 
-    timed_test!(compile_service_error_still_records_end, {
+    #[test]
+    fn compile_service_error_still_records_end() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -377,9 +379,10 @@ mod cancel_on_disconnect_tests {
             assert_eq!(events[0].kind, crate::daemon::db::EventKind::CompileStart);
             assert_eq!(events[1].kind, crate::daemon::db::EventKind::CompileEnd);
         });
-    });
+    }
 
-    timed_test!(client_disconnect_records_start_without_completion, {
+    #[test]
+    fn client_disconnect_records_start_without_completion() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -408,7 +411,7 @@ mod cancel_on_disconnect_tests {
             assert_eq!(events[0].kind, crate::daemon::db::EventKind::CompileStart);
             assert!(events[0].duration_us.is_none());
         });
-    });
+    }
 
     /// A future that flips `aborted` to `true` if it is dropped before
     /// completing. Lets the test prove the helper actually cancelled
@@ -426,148 +429,142 @@ mod cancel_on_disconnect_tests {
         }
     }
 
-    timed_test!(
-        race_against_disconnect_aborts_inflight_future_when_client_disconnects,
-        Duration::from_secs(10),
-        {
-            // Use a multi-thread runtime so the disconnect-spawner task
-            // can make progress on a different worker while
-            // race_against_disconnect parks the calling task on the
-            // select!. A current-thread runtime would serialize them,
-            // making the latency measurement uninterpretable.
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .enable_all()
-                .build()
-                .expect("tokio rt");
-            rt.block_on(async {
-                // tokio::io::duplex gives us a paired in-memory
-                // bidirectional stream — exactly the shape of the
-                // daemon's per-connection AsyncRead+AsyncWrite stream
-                // (Unix socket / Windows named pipe) without the OS
-                // round-trip. Dropping one half makes `read` on the
-                // other half return Ok(0) immediately, which is the
-                // disconnect signal `race_against_disconnect` is built
-                // around.
-                let (server_side, client_side) = tokio::io::duplex(64);
-                let (mut server_reader, _server_writer) = tokio::io::split(server_side);
+    #[test]
+    fn race_against_disconnect_aborts_inflight_future_when_client_disconnects() {
+        // Use a multi-thread runtime so the disconnect-spawner task
+        // can make progress on a different worker while
+        // race_against_disconnect parks the calling task on the
+        // select!. A current-thread runtime would serialize them,
+        // making the latency measurement uninterpretable.
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            // tokio::io::duplex gives us a paired in-memory
+            // bidirectional stream — exactly the shape of the
+            // daemon's per-connection AsyncRead+AsyncWrite stream
+            // (Unix socket / Windows named pipe) without the OS
+            // round-trip. Dropping one half makes `read` on the
+            // other half return Ok(0) immediately, which is the
+            // disconnect signal `race_against_disconnect` is built
+            // around.
+            let (server_side, client_side) = tokio::io::duplex(64);
+            let (mut server_reader, _server_writer) = tokio::io::split(server_side);
 
-                let aborted = Arc::new(AtomicBool::new(false));
-                let polled_once = Arc::new(AtomicBool::new(false));
-                let aborted_inner = Arc::clone(&aborted);
-                let polled_inner = Arc::clone(&polled_once);
+            let aborted = Arc::new(AtomicBool::new(false));
+            let polled_once = Arc::new(AtomicBool::new(false));
+            let aborted_inner = Arc::clone(&aborted);
+            let polled_inner = Arc::clone(&polled_once);
 
-                // A "compile" that would sit for an hour if uninterrupted
-                // — well past the timed_test! 10s watchdog so the test
-                // can only pass via real cancellation. The `tracker` is
-                // constructed on the first poll, so we MUST give the
-                // select! at least one polling round before the
-                // disconnect fires (see the spawn below) — otherwise
-                // the inner async block never executes, no tracker is
-                // ever created, and the Drop side of the cancellation
-                // contract is untestable.
-                let slow_compile = async move {
-                    let mut tracker = CancelTracker {
-                        aborted: aborted_inner,
-                        completed: false,
-                    };
-                    polled_inner.store(true, Ordering::SeqCst);
-                    tokio::time::sleep(Duration::from_secs(3600)).await;
-                    tracker.completed = true;
-                    "compile_done"
+            // A "compile" that would sit for an hour if uninterrupted
+            // — well past any nextest budget, so the test
+            // can only pass via real cancellation. The `tracker` is
+            // constructed on the first poll, so we MUST give the
+            // select! at least one polling round before the
+            // disconnect fires (see the spawn below) — otherwise
+            // the inner async block never executes, no tracker is
+            // ever created, and the Drop side of the cancellation
+            // contract is untestable.
+            let slow_compile = async move {
+                let mut tracker = CancelTracker {
+                    aborted: aborted_inner,
+                    completed: false,
                 };
+                polled_inner.store(true, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+                tracker.completed = true;
+                "compile_done"
+            };
 
-                // Simulate the CLI dying SHORTLY AFTER the daemon has
-                // begun the compile. The 50ms head-start lets the
-                // select! poll `slow_compile` at least once (it goes
-                // Pending on the 1h sleep), establishing the async
-                // state machine WITH `tracker` constructed. Then we
-                // drop the client end; the server's reader returns
-                // EOF; select! drops the pinned slow_compile; the
-                // state-machine drop runs `CancelTracker::drop`,
-                // setting `aborted = true` — proving the cancellation
-                // really did happen mid-execution.
-                tokio::spawn(async move {
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                    drop(client_side);
-                });
+            // Simulate the CLI dying SHORTLY AFTER the daemon has
+            // begun the compile. The 50ms head-start lets the
+            // select! poll `slow_compile` at least once (it goes
+            // Pending on the 1h sleep), establishing the async
+            // state machine WITH `tracker` constructed. Then we
+            // drop the client end; the server's reader returns
+            // EOF; select! drops the pinned slow_compile; the
+            // state-machine drop runs `CancelTracker::drop`,
+            // setting `aborted = true` — proving the cancellation
+            // really did happen mid-execution.
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                drop(client_side);
+            });
 
-                let start = Instant::now();
-                let outcome = race_against_disconnect(&mut server_reader, slow_compile).await;
-                let elapsed = start.elapsed();
+            let start = Instant::now();
+            let outcome = race_against_disconnect(&mut server_reader, slow_compile).await;
+            let elapsed = start.elapsed();
 
-                assert!(
-                    matches!(outcome, DispatchOutcome::ClientDisconnected(_)),
-                    "expected ClientDisconnected, got a Completed variant — \
+            assert!(
+                matches!(outcome, DispatchOutcome::ClientDisconnected(_)),
+                "expected ClientDisconnected, got a Completed variant — \
                      race_against_disconnect did not detect EOF"
-                );
-                assert!(
-                    polled_once.load(Ordering::SeqCst),
-                    "slow_compile was never polled — test setup did not give \
+            );
+            assert!(
+                polled_once.load(Ordering::SeqCst),
+                "slow_compile was never polled — test setup did not give \
                      the future a chance to start. Cancellation is being \
                      tested on a never-started future, which does not match \
                      production reality."
-                );
-                assert!(
-                    elapsed < Duration::from_millis(500),
-                    "disconnect detection took {elapsed:?}; the contract is \
+            );
+            assert!(
+                elapsed < Duration::from_millis(500),
+                "disconnect detection took {elapsed:?}; the contract is \
                      'instantly' (<500ms including the 50ms scheduled delay \
                      before the disconnect). A regression here usually means \
                      the helper is no longer running the disconnect probe \
                      concurrently with the inner future."
-                );
-                assert!(
-                    aborted.load(Ordering::SeqCst),
-                    "slow_compile future was NOT dropped on disconnect — \
+            );
+            assert!(
+                aborted.load(Ordering::SeqCst),
+                "slow_compile future was NOT dropped on disconnect — \
                      the inflight build would have continued running. The \
                      `select!` arm must drop the pinned future at its \
                      boundary."
-                );
-            });
-        }
-    );
+            );
+        });
+    }
 
     // Sanity counter-test: when the client does NOT disconnect and the
     // future completes normally, we get `Completed` and the inner
     // future ran to its natural end (no spurious cancellation).
-    timed_test!(
-        race_against_disconnect_returns_completed_on_happy_path,
-        Duration::from_secs(10),
-        {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("tokio rt");
-            rt.block_on(async {
-                let (server_side, _client_side) = tokio::io::duplex(64);
-                let (mut server_reader, _server_writer) = tokio::io::split(server_side);
+    #[test]
+    fn race_against_disconnect_returns_completed_on_happy_path() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let (server_side, _client_side) = tokio::io::duplex(64);
+            let (mut server_reader, _server_writer) = tokio::io::split(server_side);
 
-                let aborted = Arc::new(AtomicBool::new(false));
-                let aborted_inner = Arc::clone(&aborted);
-                let fast = async move {
-                    let mut tracker = CancelTracker {
-                        aborted: aborted_inner,
-                        completed: false,
-                    };
-                    tokio::time::sleep(Duration::from_millis(5)).await;
-                    tracker.completed = true;
-                    42_u32
+            let aborted = Arc::new(AtomicBool::new(false));
+            let aborted_inner = Arc::clone(&aborted);
+            let fast = async move {
+                let mut tracker = CancelTracker {
+                    aborted: aborted_inner,
+                    completed: false,
                 };
+                tokio::time::sleep(Duration::from_millis(5)).await;
+                tracker.completed = true;
+                42_u32
+            };
 
-                let outcome = race_against_disconnect(&mut server_reader, fast).await;
-                match outcome {
-                    DispatchOutcome::Completed(value) => assert_eq!(value, 42),
-                    DispatchOutcome::ClientDisconnected(reason) => {
-                        panic!("unexpected disconnect ({reason:?}) — client end was held open");
-                    }
+            let outcome = race_against_disconnect(&mut server_reader, fast).await;
+            match outcome {
+                DispatchOutcome::Completed(value) => assert_eq!(value, 42),
+                DispatchOutcome::ClientDisconnected(reason) => {
+                    panic!("unexpected disconnect ({reason:?}) — client end was held open");
                 }
-                assert!(
-                    !aborted.load(Ordering::SeqCst),
-                    "inner future was cancelled despite running to completion"
-                );
-            });
-        }
-    );
+            }
+            assert!(
+                !aborted.load(Ordering::SeqCst),
+                "inner future was cancelled despite running to completion"
+            );
+        });
+    }
 
     // soldr#1857 regression: the `biased` select polls the reader on
     // every tick, so a compile that finished in the SAME tick as the
@@ -576,40 +573,38 @@ mod cancel_on_disconnect_tests {
     // with nothing to show for it. Here the client end is already gone
     // (EOF is immediately ready) and the compile is already complete;
     // the finished result must win.
-    timed_test!(
-        completed_compile_is_not_discarded_by_a_simultaneous_disconnect,
-        Duration::from_secs(10),
-        {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("tokio rt");
-            rt.block_on(async {
-                let (server_side, client_side) = tokio::io::duplex(64);
-                let (mut server_reader, _server_writer) = tokio::io::split(server_side);
-                // Client is gone before the race even starts: the read
-                // probe resolves to EOF on its very first poll.
-                drop(client_side);
+    #[test]
+    fn completed_compile_is_not_discarded_by_a_simultaneous_disconnect() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let (server_side, client_side) = tokio::io::duplex(64);
+            let (mut server_reader, _server_writer) = tokio::io::split(server_side);
+            // Client is gone before the race even starts: the read
+            // probe resolves to EOF on its very first poll.
+            drop(client_side);
 
-                let outcome = race_against_disconnect(&mut server_reader, async { 4_2_u32 }).await;
+            let outcome = race_against_disconnect(&mut server_reader, async { 4_2_u32 }).await;
 
-                match outcome {
-                    DispatchOutcome::Completed(value) => assert_eq!(value, 42),
-                    DispatchOutcome::ClientDisconnected(reason) => panic!(
-                        "a compile that had already completed was discarded as \
+            match outcome {
+                DispatchOutcome::Completed(value) => assert_eq!(value, 42),
+                DispatchOutcome::ClientDisconnected(reason) => panic!(
+                    "a compile that had already completed was discarded as \
                          {reason:?}. That is soldr#1857: the daemon runs the \
                          compile, journals exit 0, throws the result away, and \
                          cargo reports an unexplained failure. The disconnect \
                          branch must poll the future once before giving up."
-                    ),
-                }
-            });
-        }
-    );
+                ),
+            }
+        });
+    }
 
     // The durable JSONL row says *how* the wrapper went away; these are
     // the three signals that map onto it.
-    timed_test!(disconnect_reason_details_are_stable_and_distinct, {
+    #[test]
+    fn disconnect_reason_details_are_stable_and_distinct() {
         use super::DisconnectReason;
         assert_eq!(DisconnectReason::Eof.detail(), "eof");
         assert_eq!(
@@ -620,43 +615,40 @@ mod cancel_on_disconnect_tests {
             DisconnectReason::UnexpectedBytes(4).detail(),
             "unexpected_bytes:4"
         );
-    });
+    }
 
     // A wrapper that violates the request-response contract by sending
     // bytes mid-compile is a different fault from one that died, and
     // the record has to be able to tell them apart.
-    timed_test!(
-        stray_bytes_mid_compile_are_recorded_as_a_protocol_violation,
-        Duration::from_secs(10),
-        {
-            use tokio::io::AsyncWriteExt;
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("tokio rt");
-            rt.block_on(async {
-                let (server_side, mut client_side) = tokio::io::duplex(64);
-                let (mut server_reader, _server_writer) = tokio::io::split(server_side);
-                tokio::spawn(async move {
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                    let _ = client_side.write_all(b"x").await;
-                    // Hold the connection open so this is unambiguously
-                    // "stray bytes", not "EOF".
-                    tokio::time::sleep(Duration::from_secs(30)).await;
-                });
-                let outcome = race_against_disconnect(&mut server_reader, async {
-                    tokio::time::sleep(Duration::from_secs(3600)).await;
-                })
-                .await;
-                match outcome {
-                    DispatchOutcome::ClientDisconnected(reason) => {
-                        assert_eq!(reason.detail(), "unexpected_bytes:1");
-                    }
-                    DispatchOutcome::Completed(_) => {
-                        panic!("the 1h sleep cannot have completed");
-                    }
-                }
+    #[test]
+    fn stray_bytes_mid_compile_are_recorded_as_a_protocol_violation() {
+        use tokio::io::AsyncWriteExt;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let (server_side, mut client_side) = tokio::io::duplex(64);
+            let (mut server_reader, _server_writer) = tokio::io::split(server_side);
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                let _ = client_side.write_all(b"x").await;
+                // Hold the connection open so this is unambiguously
+                // "stray bytes", not "EOF".
+                tokio::time::sleep(Duration::from_secs(30)).await;
             });
-        }
-    );
+            let outcome = race_against_disconnect(&mut server_reader, async {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+            })
+            .await;
+            match outcome {
+                DispatchOutcome::ClientDisconnected(reason) => {
+                    assert_eq!(reason.detail(), "unexpected_bytes:1");
+                }
+                DispatchOutcome::Completed(_) => {
+                    panic!("the 1h sleep cannot have completed");
+                }
+            }
+        });
+    }
 }

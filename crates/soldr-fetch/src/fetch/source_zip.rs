@@ -176,7 +176,8 @@ mod tests {
         buf
     }
 
-    crate::timed_test!(extract_zip_tree_writes_full_tree, {
+    #[test]
+    fn extract_zip_tree_writes_full_tree() {
         let tmp = tempfile::tempdir().unwrap();
         let zip = make_zip(&[
             ("repo-abc123/Cargo.toml", b"[package]"),
@@ -186,20 +187,22 @@ mod tests {
         let root = single_top_level_dir(tmp.path()).unwrap();
         assert!(root.join("Cargo.toml").is_file());
         assert!(root.join("src/main.rs").is_file());
-    });
+    }
 
-    crate::timed_test!(extract_zip_tree_rejects_zip_slip, {
+    #[test]
+    fn extract_zip_tree_rejects_zip_slip() {
         let tmp = tempfile::tempdir().unwrap();
         let zip = make_zip(&[("../escape.txt", b"pwned")]);
         let err = extract_zip_tree(std::io::Cursor::new(zip), tmp.path())
             .expect_err("zip-slip must be rejected");
         assert!(format!("{err}").contains("unsafe path"), "{err}");
-    });
+    }
 
-    crate::timed_test!(single_top_level_dir_requires_exactly_one, {
+    #[test]
+    fn single_top_level_dir_requires_exactly_one() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir(tmp.path().join("a")).unwrap();
         std::fs::create_dir(tmp.path().join("b")).unwrap();
         assert!(single_top_level_dir(tmp.path()).is_err());
-    });
+    }
 }

@@ -126,7 +126,8 @@ impl Drop for CwdGuard {
 mod cwd_guard_tests {
     use super::CwdGuard;
 
-    crate::timed_test!(cwd_guard_restores_on_normal_exit, {
+    #[test]
+    fn cwd_guard_restores_on_normal_exit() {
         let _env = crate::TEST_PROCESS_ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -137,12 +138,13 @@ mod cwd_guard_tests {
             assert_ne!(std::env::current_dir().expect("cwd"), before);
         }
         assert_eq!(std::env::current_dir().expect("cwd"), before);
-    });
+    }
 
     // The property the old inline `set_current_dir(prev)` in `archive_cmd`
     // did not have: a panic between chdir and restore left the process cwd
     // pointing at a temp dir for every later test in the binary.
-    crate::timed_test!(cwd_guard_restores_while_unwinding, {
+    #[test]
+    fn cwd_guard_restores_while_unwinding() {
         let _env = crate::TEST_PROCESS_ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -160,7 +162,7 @@ mod cwd_guard_tests {
             before,
             "Drop runs during unwinding, so the cwd must be restored even              when the guarded body panics"
         );
-    });
+    }
 }
 
 pub mod archive_cmd;
@@ -302,11 +304,10 @@ pub mod zccache_lifecycle;
 // #1490 Phase 2 facade (mechanics rule M3): every module that was
 // ever a `mod` in soldr-cli stays reachable as `soldr_cli::<name>` /
 // `crate::<name>` via these re-exports of the extracted soldr-core
-// crate. `timed_test` is the `#[macro_export]` watchdog macro.
 pub use soldr_cache::cache_lib;
 pub use soldr_core::{
     build_log_meta, cargo_path_check, core, defender, defender_probe, fuzzy_match, self_relocate,
-    startup_profile, test_util, timed_test,
+    startup_profile, test_util,
 };
 pub use soldr_daemon::{daemon, zccache_embedded};
 pub use soldr_fetch::fetch;

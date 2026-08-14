@@ -533,7 +533,8 @@ mod tests {
         dir
     }
 
-    crate::timed_test!(host_info_serializes_with_three_string_fields, {
+    #[test]
+    fn host_info_serializes_with_three_string_fields() {
         let host = HostInfo {
             os: "linux".to_string(),
             arch: "x86_64".to_string(),
@@ -543,16 +544,18 @@ mod tests {
         assert_eq!(json["os"], Value::from("linux"));
         assert_eq!(json["arch"], Value::from("x86_64"));
         assert_eq!(json["libc"], Value::from("gnu"));
-    });
+    }
 
-    crate::timed_test!(host_info_detect_populates_all_fields, {
+    #[test]
+    fn host_info_detect_populates_all_fields() {
         let host = HostInfo::detect();
         assert!(!host.os.is_empty(), "os should not be empty: {host:?}");
         assert!(!host.arch.is_empty(), "arch should not be empty: {host:?}");
         assert!(!host.libc.is_empty(), "libc should not be empty: {host:?}");
-    });
+    }
 
-    crate::timed_test!(probe_musl_cc_is_skipped_on_non_linux, {
+    #[test]
+    fn probe_musl_cc_is_skipped_on_non_linux() {
         let host = HostInfo {
             os: "macos".to_string(),
             arch: "aarch64".to_string(),
@@ -567,9 +570,10 @@ mod tests {
             "non-linux probe should report skipped=not-linux: {}",
             probe.details
         );
-    });
+    }
 
-    crate::timed_test!(probe_musl_cc_on_linux_returns_search_metadata, {
+    #[test]
+    fn probe_musl_cc_on_linux_returns_search_metadata() {
         // We can't guarantee musl is installed on the test host, so just
         // assert that the linux path returns either a found-tool record
         // (with `musl_cc` populated) or a not-found record (`found: false`).
@@ -593,9 +597,10 @@ mod tests {
             "linux probe must report either a found musl-cc or found=false: {}",
             probe.details
         );
-    });
+    }
 
-    crate::timed_test!(probe_shared_target_warning_reports_no_target_dir, {
+    #[test]
+    fn probe_shared_target_warning_reports_no_target_dir() {
         let dir = tempdir("no-target");
         let probe = probe_shared_target_warning(&dir);
         assert_eq!(probe.name, PROBE_SHARED_TARGET_WARNING);
@@ -603,9 +608,10 @@ mod tests {
         assert_eq!(probe.details["would_warn"], Value::from(false));
         assert_eq!(probe.details["fingerprint_dirs_found"], Value::from(0));
         assert_eq!(probe.details["reason"], Value::from("no-target-dir"));
-    });
+    }
 
-    crate::timed_test!(probe_shared_target_warning_clean_target_dir, {
+    #[test]
+    fn probe_shared_target_warning_clean_target_dir() {
         let dir = tempdir("clean-target");
         // Empty target/ dir — exists but has no `.fingerprint/`.
         fs::create_dir_all(dir.join("target")).expect("mkdir target");
@@ -613,97 +619,97 @@ mod tests {
         assert!(probe.ok);
         assert_eq!(probe.details["would_warn"], Value::from(false));
         assert_eq!(probe.details["fingerprint_dirs_found"], Value::from(0));
-    });
+    }
 
-    crate::timed_test!(
-        probe_shared_target_warning_detects_populated_fingerprint_dir,
-        {
-            let dir = tempdir("populated-target");
-            // Mirror cargo's layout: target/<profile>/.fingerprint/<crate>/...
-            let fingerprint = dir.join("target").join("debug").join(".fingerprint");
-            fs::create_dir_all(fingerprint.join("some-crate-abc123")).expect("mkdir fingerprint");
-            fs::write(
-                fingerprint
-                    .join("some-crate-abc123")
-                    .join("invoked.timestamp"),
-                "",
-            )
-            .expect("seed fingerprint entry");
+    #[test]
+    fn probe_shared_target_warning_detects_populated_fingerprint_dir() {
+        let dir = tempdir("populated-target");
+        // Mirror cargo's layout: target/<profile>/.fingerprint/<crate>/...
+        let fingerprint = dir.join("target").join("debug").join(".fingerprint");
+        fs::create_dir_all(fingerprint.join("some-crate-abc123")).expect("mkdir fingerprint");
+        fs::write(
+            fingerprint
+                .join("some-crate-abc123")
+                .join("invoked.timestamp"),
+            "",
+        )
+        .expect("seed fingerprint entry");
 
-            let probe = probe_shared_target_warning(&dir);
-            assert!(probe.ok);
-            assert_eq!(probe.details["would_warn"], Value::from(true));
-            assert!(
-                probe.details["fingerprint_dirs_found"]
-                    .as_u64()
-                    .unwrap_or(0)
-                    >= 1,
-                "expected at least 1 fingerprint dir, got {}",
-                probe.details["fingerprint_dirs_found"]
-            );
-        }
-    );
+        let probe = probe_shared_target_warning(&dir);
+        assert!(probe.ok);
+        assert_eq!(probe.details["would_warn"], Value::from(true));
+        assert!(
+            probe.details["fingerprint_dirs_found"]
+                .as_u64()
+                .unwrap_or(0)
+                >= 1,
+            "expected at least 1 fingerprint dir, got {}",
+            probe.details["fingerprint_dirs_found"]
+        );
+    }
 
-    crate::timed_test!(classify_rustlib_lib_dir_reports_missing_for_absent_dir, {
+    #[test]
+    fn classify_rustlib_lib_dir_reports_missing_for_absent_dir() {
         let dir = tempdir("rustlib-missing").join("does-not-exist");
         assert_eq!(classify_rustlib_lib_dir(&dir), RustlibLibDirStatus::Missing);
-    });
+    }
 
-    crate::timed_test!(
-        classify_rustlib_lib_dir_reports_empty_for_dir_without_rlibs,
-        {
-            let dir = tempdir("rustlib-empty");
-            fs::create_dir_all(&dir).expect("mkdir lib");
-            fs::write(dir.join("libstd-abc.rmeta"), b"placeholder").expect("write non-rlib");
-            assert_eq!(
-                classify_rustlib_lib_dir(&dir),
-                RustlibLibDirStatus::EmptyOrNoRlibs,
-                "only .rmeta present → status must be EmptyOrNoRlibs"
-            );
-        }
-    );
+    #[test]
+    fn classify_rustlib_lib_dir_reports_empty_for_dir_without_rlibs() {
+        let dir = tempdir("rustlib-empty");
+        fs::create_dir_all(&dir).expect("mkdir lib");
+        fs::write(dir.join("libstd-abc.rmeta"), b"placeholder").expect("write non-rlib");
+        assert_eq!(
+            classify_rustlib_lib_dir(&dir),
+            RustlibLibDirStatus::EmptyOrNoRlibs,
+            "only .rmeta present → status must be EmptyOrNoRlibs"
+        );
+    }
 
-    crate::timed_test!(
-        classify_rustlib_lib_dir_reports_populated_when_rlib_present,
-        {
-            let dir = tempdir("rustlib-populated");
-            fs::create_dir_all(&dir).expect("mkdir lib");
-            fs::write(dir.join("libcore-abcdef.rlib"), b"placeholder").expect("write rlib");
-            assert_eq!(
-                classify_rustlib_lib_dir(&dir),
-                RustlibLibDirStatus::Populated
-            );
-        }
-    );
+    #[test]
+    fn classify_rustlib_lib_dir_reports_populated_when_rlib_present() {
+        let dir = tempdir("rustlib-populated");
+        fs::create_dir_all(&dir).expect("mkdir lib");
+        fs::write(dir.join("libcore-abcdef.rlib"), b"placeholder").expect("write rlib");
+        assert_eq!(
+            classify_rustlib_lib_dir(&dir),
+            RustlibLibDirStatus::Populated
+        );
+    }
 
-    crate::timed_test!(rustlib_lib_dir_status_label_is_stable, {
+    #[test]
+    fn rustlib_lib_dir_status_label_is_stable() {
         assert_eq!(RustlibLibDirStatus::Populated.label(), "populated");
         assert_eq!(RustlibLibDirStatus::Missing.label(), "missing");
         assert_eq!(
             RustlibLibDirStatus::EmptyOrNoRlibs.label(),
             "empty-or-no-rlibs"
         );
-    });
+    }
 
-    crate::timed_test!(parse_rustc_sysroot_stdout_accepts_trimmed_absolute_path, {
+    #[test]
+    fn parse_rustc_sysroot_stdout_accepts_trimmed_absolute_path() {
         let parsed = parse_rustc_sysroot_stdout(b"  C:\\toolchains\\1.94.1  \r\n")
             .expect("valid sysroot output");
         assert_eq!(parsed, PathBuf::from(r"C:\toolchains\1.94.1"));
-    });
+    }
 
-    crate::timed_test!(parse_rustc_sysroot_stdout_rejects_empty_output, {
+    #[test]
+    fn parse_rustc_sysroot_stdout_rejects_empty_output() {
         let err = parse_rustc_sysroot_stdout(b" \r\n\t")
             .expect_err("empty sysroot output must be rejected");
         assert!(err.contains("empty path"), "unexpected error: {err}");
-    });
+    }
 
-    crate::timed_test!(parse_rustc_sysroot_stdout_rejects_non_utf8_output, {
+    #[test]
+    fn parse_rustc_sysroot_stdout_rejects_non_utf8_output() {
         let err = parse_rustc_sysroot_stdout(&[0xff, 0xfe])
             .expect_err("non-UTF-8 sysroot output must be rejected");
         assert!(err.contains("non-UTF-8"), "unexpected error: {err}");
-    });
+    }
 
-    crate::timed_test!(doctor_output_serializes_schema_version_one, {
+    #[test]
+    fn doctor_output_serializes_schema_version_one() {
         let output = DoctorOutput {
             schema_version: SCHEMA_VERSION,
             host: HostInfo {
@@ -733,5 +739,5 @@ mod tests {
         assert_eq!(probes[0]["name"], Value::from(PROBE_MUSL_CC));
         assert_eq!(probes[1]["name"], Value::from(PROBE_SHARED_TARGET_WARNING));
         assert!(json["elapsed_ms"].is_number());
-    });
+    }
 }

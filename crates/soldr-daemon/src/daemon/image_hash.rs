@@ -334,16 +334,18 @@ fn write_cache_entry(
 mod tests {
     use super::*;
 
-    crate::timed_test!(platform_lock_contention_is_retryable, {
+    #[test]
+    fn platform_lock_contention_is_retryable() {
         // WouldBlock is the normalized form on every platform; the raw
         // Windows error codes are covered beside the Windows implementation
         // in soldr-platform.
         assert!(lock_is_contended(&io::Error::from(
             io::ErrorKind::WouldBlock
         )));
-    });
+    }
 
-    crate::timed_test!(hash_lock_wait_is_bounded_and_degrades_to_direct_hashing, {
+    #[test]
+    fn hash_lock_wait_is_bounded_and_degrades_to_direct_hashing() {
         use fs2::FileExt as _;
 
         let temp = tempfile::tempdir().expect("tempdir");
@@ -382,9 +384,10 @@ mod tests {
             "must not overshoot the budget, waited {elapsed:?}"
         );
         fs2::FileExt::unlock(&holder).expect("release");
-    });
+    }
 
-    crate::timed_test!(production_budget_outlasts_a_legitimate_hash, {
+    #[test]
+    fn production_budget_outlasts_a_legitimate_hash() {
         // Regression guard for the trade-off this constant encodes. Too short
         // and every waiter abandons, restoring the very stampede the lock was
         // added to prevent (soldr#2442) plus the wasted wait. The module
@@ -393,9 +396,10 @@ mod tests {
             HASH_LOCK_WAIT_BUDGET >= std::time::Duration::from_secs(20),
             "budget {HASH_LOCK_WAIT_BUDGET:?} is shorter than a documented cold hash"
         );
-    });
+    }
 
-    crate::timed_test!(uncontended_hash_lock_is_acquired_without_waiting, {
+    #[test]
+    fn uncontended_hash_lock_is_acquired_without_waiting() {
         let temp = tempfile::tempdir().expect("tempdir");
         let lock = std::fs::OpenOptions::new()
             .create(true)
@@ -410,9 +414,10 @@ mod tests {
             HashLockOutcome::Proceed
         );
         assert!(started.elapsed() < std::time::Duration::from_millis(500));
-    });
+    }
 
-    crate::timed_test!(jittered_backoff_stays_within_its_window, {
+    #[test]
+    fn jittered_backoff_stays_within_its_window() {
         let window = std::time::Duration::from_millis(40);
         let mut seen = std::collections::HashSet::new();
         for _ in 0..64 {
@@ -422,18 +427,20 @@ mod tests {
         }
         // Full jitter must actually spread the herd, not return a constant.
         assert!(seen.len() > 1, "backoff produced a single value");
-    });
+    }
 
-    crate::timed_test!(blake3_hex_matches_zccache_reference, {
+    #[test]
+    fn blake3_hex_matches_zccache_reference() {
         let temp = tempfile::tempdir().expect("tempdir");
         let f = temp.path().join("bin");
         std::fs::write(&f, b"hello world").expect("write");
         let got = blake3_hex(&f).expect("hash");
         let expected = zccache::hash::hash_bytes(b"hello world").to_hex();
         assert_eq!(got, expected);
-    });
+    }
 
-    crate::timed_test!(cache_hit_returns_same_digest, {
+    #[test]
+    fn cache_hit_returns_same_digest() {
         let temp = tempfile::tempdir().expect("tempdir");
         let cache = temp.path().join("cache");
         let f = temp.path().join("bin");
@@ -449,9 +456,10 @@ mod tests {
         let second = cached_blake3_hex(&cache, &f).expect("second");
         assert_eq!(first, second);
         assert_eq!(first, zccache::hash::hash_bytes(b"payload-v1").to_hex());
-    });
+    }
 
-    crate::timed_test!(cache_miss_reports_real_bytes_and_hit_stays_silent, {
+    #[test]
+    fn cache_miss_reports_real_bytes_and_hit_stays_silent() {
         let temp = tempfile::tempdir().expect("tempdir");
         let cache = temp.path().join("cache");
         let file = temp.path().join("daemon");
@@ -475,9 +483,10 @@ mod tests {
             .expect("hash hit");
         assert_eq!(second, first);
         assert_eq!(hit_events, 0, "a cache hit must not invent byte progress");
-    });
+    }
 
-    crate::timed_test!(cold_stampede_hashes_the_file_once, {
+    #[test]
+    fn cold_stampede_hashes_the_file_once() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::{Arc, Barrier};
 
@@ -517,9 +526,10 @@ mod tests {
             1,
             "only the cache-miss winner may scan the executable"
         );
-    });
+    }
 
-    crate::timed_test!(changed_content_invalidates_cache, {
+    #[test]
+    fn changed_content_invalidates_cache() {
         let temp = tempfile::tempdir().expect("tempdir");
         let cache = temp.path().join("cache");
         let f = temp.path().join("bin");
@@ -538,9 +548,10 @@ mod tests {
             second,
             zccache::hash::hash_bytes(b"payload-v2-longer").to_hex()
         );
-    });
+    }
 
-    crate::timed_test!(malformed_cached_digest_is_recomputed, {
+    #[test]
+    fn malformed_cached_digest_is_recomputed() {
         let temp = tempfile::tempdir().expect("tempdir");
         let cache = temp.path().join("cache");
         let file = temp.path().join("daemon");
@@ -552,5 +563,5 @@ mod tests {
 
         let got = cached_blake3_hex(&cache, &file).expect("recomputed hash");
         assert_eq!(got, zccache::hash::hash_bytes(b"payload").to_hex());
-    });
+    }
 }

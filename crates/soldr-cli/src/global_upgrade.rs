@@ -111,7 +111,8 @@ fn delegate(binary: &Path, args: &[String]) -> i32 {
 mod tests {
     use super::*;
 
-    crate::timed_test!(parses_plain_and_v_prefixed_versions, {
+    #[test]
+    fn parses_plain_and_v_prefixed_versions() {
         assert_eq!(
             parse_soldr_version("soldr 0.8.19\n"),
             Some(Version::parse("0.8.19").expect("valid semver"))
@@ -120,10 +121,11 @@ mod tests {
             parse_soldr_version("soldr v1.0.0-beta.1\n"),
             Some(Version::parse("1.0.0-beta.1").expect("valid semver"))
         );
-    });
+    }
 
-    crate::timed_test!(rejects_non_soldr_or_invalid_output, {
+    #[test]
+    fn rejects_non_soldr_or_invalid_output() {
         assert_eq!(parse_soldr_version("cargo 1.2.3\n"), None);
         assert_eq!(parse_soldr_version("soldr latest\n"), None);
-    });
+    }
 }

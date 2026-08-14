@@ -257,7 +257,6 @@ impl<W: Write> Write for SilenceDetectingWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::timed_test;
 
     /// Serializes the tests that drive `soldr_core::warning_log`.
     ///
@@ -275,7 +274,8 @@ mod tests {
     // soldr#1857 — a dispatched compile that fails *and* says nothing is
     // the fault signature worth calling out. These three cases pin the
     // boundary: only failure-with-silence gets the extra diagnostic.
-    timed_test!(silent_failure_gets_an_explanatory_diagnostic, {
+    #[test]
+    fn silent_failure_gets_an_explanatory_diagnostic() {
         let mut sink: Vec<u8> = Vec::new();
         let mut writer = SilenceDetectingWriter::new(&mut sink);
         writer.report_if_silently_failed(1);
@@ -296,13 +296,14 @@ mod tests {
             "expected the documented bypass; got:
 {text}"
         );
-    });
+    }
 
     // soldr#1999 rule 1: a warning emitted earlier in the build must appear
     // *at* the failure. Left upstream it sits hundreds of Cargo progress lines
     // above the error and nobody connects the two -- #1992's rust-lld retry
     // notice is the worked example.
-    timed_test!(an_earlier_warning_is_repeated_at_the_failure, {
+    #[test]
+    fn an_earlier_warning_is_repeated_at_the_failure() {
         let _guard = warning_log_lock();
         soldr_core::warning_log::clear();
         soldr_core::warning_log::record("soldr warning: fast linker was unavailable");
@@ -318,11 +319,12 @@ mod tests {
             text.contains("fast linker was unavailable"),
             "the earlier warning must be repeated at the failure, got: {text}"
         );
-    });
+    }
 
     // A successful build must not be decorated with a warning replay -- the
     // warning was already printed once, when it happened.
-    timed_test!(a_successful_build_does_not_replay_warnings, {
+    #[test]
+    fn a_successful_build_does_not_replay_warnings() {
         let _guard = warning_log_lock();
         soldr_core::warning_log::clear();
         soldr_core::warning_log::record("soldr warning: something minor");
@@ -338,11 +340,12 @@ mod tests {
             !text.contains("something minor"),
             "exit 0 must stay quiet, got: {text}"
         );
-    });
+    }
 
     // soldr#1969 — a linker error naming a file inside soldr's cache reads as
     // a broken toolchain. These pin that soldr says whose file it is.
-    timed_test!(a_failure_naming_a_cache_path_is_attributed_to_soldr, {
+    #[test]
+    fn a_failure_naming_a_cache_path_is_attributed_to_soldr() {
         let mut sink: Vec<u8> = Vec::new();
         {
             let mut writer = SilenceDetectingWriter::new(&mut sink);
@@ -357,11 +360,12 @@ mod tests {
             "must attribute the file to soldr, got: {text}"
         );
         assert!(text.contains("1969"), "must cite the issue, got: {text}");
-    });
+    }
 
     // The marker arrives split across two writes -- the exact case the rolling
     // window exists for, and the one a per-chunk scan would miss.
-    timed_test!(a_cache_path_split_across_chunks_is_still_found, {
+    #[test]
+    fn a_cache_path_split_across_chunks_is_still_found() {
         let mut sink: Vec<u8> = Vec::new();
         {
             let mut writer = SilenceDetectingWriter::new(&mut sink);
@@ -374,7 +378,7 @@ mod tests {
             text.contains("soldr's own compile cache"),
             "a marker split across writes must still be detected, got: {text}"
         );
-    });
+    }
 
     /// A realistic soldr#2188 line: the real failure quotes a staging path
     /// built from a deep `SOLDR_CACHE_DIR`.
@@ -396,36 +400,35 @@ mod tests {
     // soldr#1969 reclaim race, and "retrying usually succeeds" is wrong for
     // it -- the linker fails identically every time. These two pin that the
     // remedy follows the cause rather than the marker alone.
-    timed_test!(
-        an_over_max_path_cache_failure_names_the_length_not_a_retry,
+    #[test]
+    fn an_over_max_path_cache_failure_names_the_length_not_a_retry() {
+        let mut sink: Vec<u8> = Vec::new();
         {
-            let mut sink: Vec<u8> = Vec::new();
-            {
-                let mut writer = SilenceDetectingWriter::new(&mut sink);
-                let payload = lnk1104_over_max_path();
-                let _ = writer.write_all(&payload);
-                writer.report_if_silently_failed(1);
-            }
-            let text = String::from_utf8(sink).expect("utf8");
-            assert!(
-                text.contains("MAX_PATH"),
-                "must name the length limit, got: {text}"
-            );
-            assert!(text.contains("2188"), "must cite the issue, got: {text}");
-            assert!(
-                text.contains("SOLDR_CACHE_DIR"),
-                "must name the knob that fixes it, got: {text}"
-            );
-            assert!(
-                !text.contains("retrying usually succeeds"),
-                "must not advise a retry that cannot work, got: {text}"
-            );
+            let mut writer = SilenceDetectingWriter::new(&mut sink);
+            let payload = lnk1104_over_max_path();
+            let _ = writer.write_all(&payload);
+            writer.report_if_silently_failed(1);
         }
-    );
+        let text = String::from_utf8(sink).expect("utf8");
+        assert!(
+            text.contains("MAX_PATH"),
+            "must name the length limit, got: {text}"
+        );
+        assert!(text.contains("2188"), "must cite the issue, got: {text}");
+        assert!(
+            text.contains("SOLDR_CACHE_DIR"),
+            "must name the knob that fixes it, got: {text}"
+        );
+        assert!(
+            !text.contains("retrying usually succeeds"),
+            "must not advise a retry that cannot work, got: {text}"
+        );
+    }
 
     // The other side of the boundary: a short cache path keeps the #1969
     // reclaim-race advice, which is correct there.
-    timed_test!(a_short_cache_path_failure_keeps_the_retry_advice, {
+    #[test]
+    fn a_short_cache_path_failure_keeps_the_retry_advice() {
         let mut sink: Vec<u8> = Vec::new();
         {
             let mut writer = SilenceDetectingWriter::new(&mut sink);
@@ -443,11 +446,12 @@ mod tests {
             !text.contains("MAX_PATH"),
             "must not blame path length for a short path, got: {text}"
         );
-    });
+    }
 
     // The long path arrives split across writes, as streamed stderr does.
     // Measuring it requires bridging more than the marker itself.
-    timed_test!(an_over_max_path_split_across_chunks_is_still_measured, {
+    #[test]
+    fn an_over_max_path_split_across_chunks_is_still_measured() {
         let mut sink: Vec<u8> = Vec::new();
         {
             let mut writer = SilenceDetectingWriter::new(&mut sink);
@@ -462,10 +466,11 @@ mod tests {
             text.contains("MAX_PATH"),
             "a long path split across writes must still be measured, got: {text}"
         );
-    });
+    }
 
     // An ordinary compile error must not be blamed on the cache.
-    timed_test!(an_ordinary_failure_is_not_attributed_to_the_cache, {
+    #[test]
+    fn an_ordinary_failure_is_not_attributed_to_the_cache() {
         let mut sink: Vec<u8> = Vec::new();
         {
             let mut writer = SilenceDetectingWriter::new(&mut sink);
@@ -477,10 +482,11 @@ mod tests {
             !text.contains("soldr's own compile cache"),
             "a normal compile error must not be blamed on soldr, got: {text}"
         );
-    });
+    }
 
     // Success is never annotated, even if the output mentions the cache.
-    timed_test!(a_successful_compile_is_never_attributed, {
+    #[test]
+    fn a_successful_compile_is_never_attributed() {
         let mut sink: Vec<u8> = Vec::new();
         {
             let mut writer = SilenceDetectingWriter::new(&mut sink);
@@ -492,9 +498,10 @@ mod tests {
             !text.contains("1969"),
             "exit 0 must stay silent, got: {text}"
         );
-    });
+    }
 
-    timed_test!(failure_that_produced_output_is_left_alone, {
+    #[test]
+    fn failure_that_produced_output_is_left_alone() {
         let mut sink: Vec<u8> = Vec::new();
         let mut writer = SilenceDetectingWriter::new(&mut sink);
         // Whatever rustc already said about the failure.
@@ -517,27 +524,30 @@ mod tests {
             "error[E0308]: mismatched types
 "
         );
-    });
+    }
 
-    timed_test!(successful_silent_compile_is_left_alone, {
+    #[test]
+    fn successful_silent_compile_is_left_alone() {
         let mut sink: Vec<u8> = Vec::new();
         let mut writer = SilenceDetectingWriter::new(&mut sink);
         // The overwhelmingly common case: a cache hit says nothing and succeeds.
         writer.report_if_silently_failed(0);
 
         assert!(sink.is_empty(), "exit 0 must stay silent");
-    });
+    }
 
-    timed_test!(byte_count_tracks_partial_writes, {
+    #[test]
+    fn byte_count_tracks_partial_writes() {
         let mut sink: Vec<u8> = Vec::new();
         let mut writer = SilenceDetectingWriter::new(&mut sink);
         writer.write_all(b"abc").expect("write");
         writer.write_all(b"de").expect("write");
 
         assert_eq!(writer.bytes_written, 5);
-    });
+    }
 
-    timed_test!(maxpath_headroom_warns_only_when_the_root_leaves_no_room, {
+    #[test]
+    fn maxpath_headroom_warns_only_when_the_root_leaves_no_room() {
         // soldr#2188 was found at ~160 characters and reproduced cleanly:
         // ~40 and ~99 character roots build fine, ~160 fails at link.
         // Forward slashes deliberately: the check measures length, not shape,
@@ -565,5 +575,5 @@ mod tests {
             // The limit is Windows-only; warning elsewhere would be noise.
             assert!(warning.is_none(), "must not warn off Windows");
         }
-    });
+    }
 }

@@ -285,31 +285,35 @@ pub fn path_with_mingw_bin(
 mod tests {
     use super::*;
 
-    crate::timed_test!(asset_url_layout_matches_catalogue, {
+    #[test]
+    fn asset_url_layout_matches_catalogue() {
         let url = mingw_w64_gcc_asset_url_for(MANAGED_MINGW_W64_GCC_VERSION, MINGW_W64_GCC_SLUG);
         assert!(url.contains("/mingw-w64-gcc/"));
         assert!(url.contains("/15.3.0posix-14.0.0-msvcrt-r1/windows-x64-gnu/"));
         assert!(url.ends_with("/bundle.tar.zst"));
-    });
+    }
 
-    crate::timed_test!(target_slug_scope_is_explicit, {
+    #[test]
+    fn target_slug_scope_is_explicit() {
         assert_eq!(
             slug_for_target("x86_64-pc-windows-gnu"),
             Some("windows-x64-gnu")
         );
         assert_eq!(slug_for_target("aarch64-pc-windows-gnullvm"), None);
         assert_eq!(slug_for_target("x86_64-pc-windows-msvc"), None);
-    });
+    }
 
-    crate::timed_test!(host_scope_is_windows_x64_only, {
+    #[test]
+    fn host_scope_is_windows_x64_only() {
         let expected = crate::platform::host::facts::os()
             == crate::platform::host::facts::HostOs::Windows
             && crate::platform::host::facts::arch()
                 == crate::platform::host::facts::HostArch::X86_64;
         assert_eq!(current_host_supports_mingw_w64_gcc(), expected);
-    });
+    }
 
-    crate::timed_test!(env_for_target_sets_cargo_and_cc_rs_vars, {
+    #[test]
+    fn env_for_target_sets_cargo_and_cc_rs_vars() {
         let root = Path::new("C:/soldr/mingw");
         let env = env_for_target(root, "x86_64-pc-windows-gnu");
         let lookup = |name: &str| {
@@ -325,9 +329,10 @@ mod tests {
         // soldr#2336 gap #4: dlltool must be surfaced.
         assert!(lookup("DLLTOOL_x86_64_pc_windows_gnu").contains("dlltool"));
         assert!(lookup("CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER").contains("gcc"));
-    });
+    }
 
-    crate::timed_test!(sysroot_asset_url_layout_matches_catalogue, {
+    #[test]
+    fn sysroot_asset_url_layout_matches_catalogue() {
         // soldr-toolchain#114 host-neutral sysroot lives beside the
         // compiler bundle under its own tool subtree, same version/slug.
         let url =
@@ -338,17 +343,19 @@ mod tests {
         // The sysroot pins the SAME upstream release as the compiler so
         // CRT/gcc/mingw versions agree.
         assert_eq!(MINGW_W64_SYSROOT_TOOL, "mingw-w64-sysroot");
-    });
+    }
 
-    crate::timed_test!(sysroot_dirs_resolve_under_target_triple, {
+    #[test]
+    fn sysroot_dirs_resolve_under_target_triple() {
         let root = Path::new("/soldr/mingw-sysroot/package");
         let lib = sysroot_lib_dir(root);
         let include = sysroot_include_dir(root);
         assert!(lib.ends_with("x86_64-w64-mingw32/lib"));
         assert!(include.ends_with("x86_64-w64-mingw32/include"));
-    });
+    }
 
-    crate::timed_test!(cross_env_points_at_mingw32_prefixed_drivers, {
+    #[test]
+    fn cross_env_points_at_mingw32_prefixed_drivers() {
         // soldr-toolchain#114 Phase 2: Linux-host cross toolchain uses
         // `bin/x86_64-w64-mingw32-*`, not a Windows `bin/gcc.exe`.
         let root = Path::new("/soldr/mingw-cross");
@@ -366,12 +373,13 @@ mod tests {
         assert!(
             lookup("CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER").contains("x86_64-w64-mingw32-gcc")
         );
-    });
+    }
 
-    crate::timed_test!(cross_asset_url_uses_host_slug, {
+    #[test]
+    fn cross_asset_url_uses_host_slug() {
         let url = mingw_w64_cross_asset_url_for(MINGW_W64_CROSS_VERSION, MINGW_W64_CROSS_HOST_SLUG);
         assert!(url.contains("/mingw-w64-cross/"));
         assert!(url.contains("/mingw-w64-gcc-15.3.0/linux-x64-gnu/"));
         assert!(url.ends_with("/bundle.tar.zst"));
-    });
+    }
 }

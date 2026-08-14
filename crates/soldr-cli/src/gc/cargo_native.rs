@@ -548,10 +548,11 @@ fn run_soldr_target_purge_for_sweep(
 mod tests {
     use super::*;
 
-    crate::timed_test!(aggressive_cargo_gc_uses_cargo_accepted_duration_syntax, {
+    #[test]
+    fn aggressive_cargo_gc_uses_cargo_accepted_duration_syntax() {
         let args = aggressive_cargo_args(false, true, 0);
         assert_eq!(args.max_src_age.as_deref(), Some("604800 seconds"));
         assert_eq!(args.max_crate_age.as_deref(), Some("1209600 seconds"));
         assert_eq!(args.max_git_co_age.as_deref(), Some("604800 seconds"));
-    });
+    }
 }

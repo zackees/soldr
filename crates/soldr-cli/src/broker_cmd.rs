@@ -402,7 +402,8 @@ mod tests {
     use super::*;
     use clap::CommandFactory;
 
-    crate::timed_test!(broker_commands_have_no_endpoint_namespace_argument, {
+    #[test]
+    fn broker_commands_have_no_endpoint_namespace_argument() {
         let command = crate::cli_args::Cli::command();
         let broker = command
             .find_subcommand("broker")
@@ -416,5 +417,5 @@ mod tests {
                 "{verb} must use the one stable endpoint"
             );
         }
-    });
+    }
 }

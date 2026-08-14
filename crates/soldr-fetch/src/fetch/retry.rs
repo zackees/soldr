@@ -50,7 +50,7 @@ pub(crate) const FETCH_INITIAL_BACKOFF: Duration = Duration::from_secs(5);
 /// up to **155 seconds** for one call that used to fail once at 30s.
 ///
 /// That is not theoretical: it pushed `cli_build_fetch_overlap` tests past the
-/// 120s `timed_test!` watchdog on CI, where they abort as SIGABRT/0xC0000409
+/// 120s nextest budget on CI, where they are terminated and reported as TIMEOUT
 /// and look like a hang rather than a slow fetch.
 ///
 /// With this budget the worst case is one in-flight attempt plus the budget,
@@ -206,7 +206,8 @@ mod tests {
             .block_on(future)
     }
 
-    crate::timed_test!(transient_failures_are_retried_until_one_succeeds, {
+    #[test]
+    fn transient_failures_are_retried_until_one_succeeds() {
         let calls = Cell::new(0u32);
         let result: Result<&str, SoldrError> = block_on(with_backoff_params(
             "test-asset",
@@ -229,9 +230,10 @@ mod tests {
             "bundle"
         );
         assert_eq!(calls.get(), 3, "should stop as soon as an attempt succeeds");
-    });
+    }
 
-    crate::timed_test!(a_checksum_mismatch_is_never_retried, {
+    #[test]
+    fn a_checksum_mismatch_is_never_retried() {
         // The case that must stay fatal: retrying an integrity failure would
         // turn one hard stop into several chances to accept a bad artifact.
         let calls = Cell::new(0u32);
@@ -251,9 +253,10 @@ mod tests {
         ));
         assert!(result.is_err());
         assert_eq!(calls.get(), 1, "a non-transient error must not be retried");
-    });
+    }
 
-    crate::timed_test!(attempts_are_bounded_and_the_last_error_survives, {
+    #[test]
+    fn attempts_are_bounded_and_the_last_error_survives() {
         let calls = Cell::new(0u32);
         let result: Result<(), SoldrError> = block_on(with_backoff_params(
             "test-asset",
@@ -276,13 +279,14 @@ mod tests {
             Err(SoldrError::Network(message)) => assert_eq!(message, "attempt 4"),
             other => panic!("expected the final Network error, got {other:?}"),
         }
-    });
+    }
 
-    crate::timed_test!(a_slow_attempt_cannot_blow_the_total_budget, {
+    #[test]
+    fn a_slow_attempt_cannot_blow_the_total_budget() {
         // The regression this budget exists for: an attempt that is itself a
         // long timeout. With 4 attempts and no deadline, a 30s
         // `MANIFEST_FETCH_TIMEOUT` becomes 4x30s + 35s of backoff = 155s for
-        // one call, which is past the 120s `timed_test!` watchdog.
+        // one call, which is past the 120s nextest budget.
         //
         // Simulated with a short "timeout" and a backoff scaled to match, so
         // the test itself stays fast: each attempt burns most of the budget,
@@ -314,9 +318,10 @@ mod tests {
             "total time must stay near the budget, took {:?}",
             started.elapsed()
         );
-    });
+    }
 
-    crate::timed_test!(late_asset_failure_is_retried_after_progress, {
+    #[test]
+    fn late_asset_failure_is_retried_after_progress() {
         // This attempt is longer than the control-plane budget used above. An
         // asset transfer with a late truncation must still get a fresh attempt:
         // the per-attempt stream idle watchdog prevents an infinite hang.
@@ -339,9 +344,10 @@ mod tests {
         ));
         assert_eq!(result.expect("second attempt must run"), "recovered");
         assert_eq!(calls.get(), 2);
-    });
+    }
 
-    crate::timed_test!(transient_predicate_covers_network_and_not_found_only, {
+    #[test]
+    fn transient_predicate_covers_network_and_not_found_only() {
         assert!(is_transient(&SoldrError::Network("timeout".into())));
         assert!(is_transient(&SoldrError::ToolNotFound(
             "not published yet".into()
@@ -351,5 +357,5 @@ mod tests {
         assert!(!is_transient(&SoldrError::UnsupportedPlatform(
             "wasm".into()
         )));
-    });
+    }
 }

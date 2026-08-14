@@ -61,11 +61,13 @@ pub fn is_canonical(triple: &str) -> bool {
 mod tests {
     use super::*;
 
-    crate::timed_test!(canonical_targets_length_is_8, {
+    #[test]
+    fn canonical_targets_length_is_8() {
         assert_eq!(CANONICAL_TARGETS.len(), 8);
-    });
+    }
 
-    crate::timed_test!(canonical_targets_are_all_recognized_triples, {
+    #[test]
+    fn canonical_targets_are_all_recognized_triples() {
         // Every entry must parse as a Rust target triple — guards
         // against typos like accidentally dropping a hyphen.
         // Apple triples have 2 hyphens (arch-apple-darwin); the
@@ -77,9 +79,10 @@ mod tests {
             );
             assert!(!triple.contains(' '), "{triple} contains whitespace",);
         }
-    });
+    }
 
-    crate::timed_test!(is_canonical_matches_listing, {
+    #[test]
+    fn is_canonical_matches_listing() {
         for t in CANONICAL_TARGETS {
             assert!(is_canonical(t), "{t} not recognized by is_canonical");
         }
@@ -92,5 +95,5 @@ mod tests {
             "wasm not canonical"
         );
         assert!(!is_canonical(""), "empty string");
-    });
+    }
 }

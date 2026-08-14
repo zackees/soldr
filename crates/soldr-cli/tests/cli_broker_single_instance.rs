@@ -46,7 +46,7 @@ fn wait_until_bound(
         false
     });
     // Poll-join with a deadline rather than a blocking join, since a wedged
-    // process would otherwise hang the test past its own timed_test! budget.
+    // process would otherwise hang the test past its own nextest budget.
     let start = Instant::now();
     loop {
         if handle.is_finished() {
@@ -62,68 +62,65 @@ fn wait_until_bound(
     }
 }
 
-soldr_cli::timed_test!(
-    two_brokers_against_one_endpoint_never_coexist,
-    Duration::from_secs(90),
-    {
-        let home = common::unique_temp_dir("broker-single-home");
+#[test]
+fn two_brokers_against_one_endpoint_never_coexist() {
+    let home = common::unique_temp_dir("broker-single-home");
 
-        let mut first = spawn_broker(&home);
-        let ready = wait_until_bound(&mut first, Instant::now() + READY_TIMEOUT);
-        assert!(
-            ready.is_some(),
-            "first broker never printed its bound-at line within {READY_TIMEOUT:?}"
-        );
+    let mut first = spawn_broker(&home);
+    let ready = wait_until_bound(&mut first, Instant::now() + READY_TIMEOUT);
+    assert!(
+        ready.is_some(),
+        "first broker never printed its bound-at line within {READY_TIMEOUT:?}"
+    );
 
-        // A second broker for the same installed endpoint must refuse.
-        let second = spawn_broker(&home);
-        let output = {
-            let deadline = Instant::now() + LOSER_EXIT_TIMEOUT;
-            let mut second = second;
-            loop {
-                if matches!(second.try_wait(), Ok(Some(_))) {
-                    break second.wait_with_output().expect("collect loser output");
-                }
-                if Instant::now() >= deadline {
-                    let _ = second.kill();
-                    let _ = second.wait();
-                    let _ = first.kill();
-                    let _ = first.wait();
-                    panic!(
-                        "a second broker stayed alive for {LOSER_EXIT_TIMEOUT:?} -- the \
-                         singleton guard did not hold"
-                    );
-                }
-                std::thread::sleep(POLL);
+    // A second broker for the same installed endpoint must refuse.
+    let second = spawn_broker(&home);
+    let output = {
+        let deadline = Instant::now() + LOSER_EXIT_TIMEOUT;
+        let mut second = second;
+        loop {
+            if matches!(second.try_wait(), Ok(Some(_))) {
+                break second.wait_with_output().expect("collect loser output");
             }
-        };
+            if Instant::now() >= deadline {
+                let _ = second.kill();
+                let _ = second.wait();
+                let _ = first.kill();
+                let _ = first.wait();
+                panic!(
+                    "a second broker stayed alive for {LOSER_EXIT_TIMEOUT:?} -- the \
+                         singleton guard did not hold"
+                );
+            }
+            std::thread::sleep(POLL);
+        }
+    };
 
-        assert_eq!(
-            output.status.code(),
-            Some(75),
-            "loser broker must exit EX_TEMPFAIL(75), got {:?}",
-            output.status
-        );
-        let combined = format!(
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(
-            combined.contains("another broker is already bound"),
-            "second broker exited without explaining that another broker already \
+    assert_eq!(
+        output.status.code(),
+        Some(75),
+        "loser broker must exit EX_TEMPFAIL(75), got {:?}",
+        output.status
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("another broker is already bound"),
+        "second broker exited without explaining that another broker already \
              owned the bind path; output was:\n{combined}"
-        );
-        // soldr#2024 exit-guard regression check: an explained non-zero exit
-        // must not ALSO get the generic "fault in soldr itself" annotation
-        // (this is the mark_spoke() bug this test would have caught).
-        assert!(
-            !combined.contains("fault in soldr itself"),
-            "the already-bound refusal is a real explanation and must not trip \
+    );
+    // soldr#2024 exit-guard regression check: an explained non-zero exit
+    // must not ALSO get the generic "fault in soldr itself" annotation
+    // (this is the mark_spoke() bug this test would have caught).
+    assert!(
+        !combined.contains("fault in soldr itself"),
+        "the already-bound refusal is a real explanation and must not trip \
              the silent-failure annotation; output was:\n{combined}"
-        );
+    );
 
-        let _ = first.kill();
-        let _ = first.wait();
-    }
-);
+    let _ = first.kill();
+    let _ = first.wait();
+}

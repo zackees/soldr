@@ -94,7 +94,8 @@ mod tests {
     use crate::daemon::compile_sink::CompileOutputSink as _;
     use running_process::broker::session_codec::try_decode_session_frame;
 
-    crate::timed_test!(session_sink_frames_round_trip_through_session_codec, {
+    #[test]
+    fn session_sink_frames_round_trip_through_session_codec() {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -134,5 +135,5 @@ mod tests {
                     other => panic!("expected Exit, got {other:?}"),
                 }
             });
-    });
+    }
 }

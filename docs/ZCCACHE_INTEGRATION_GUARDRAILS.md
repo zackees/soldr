@@ -38,7 +38,7 @@ soldr --no-cache cargo test -p soldr-cli --lib cache::session::tests
 soldr --no-cache cargo test -p soldr-cli --lib native_cc::tests
 soldr --no-cache cargo test -p soldr-cli --test cli_cargo_native_cc
 soldr --no-cache cargo test -p soldr-cli --test cli_wrapper_perf
-soldr --no-cache cargo test -p soldr-cli --test timed_test_lint
+soldr --no-cache cargo test -p soldr-cli --test no_timed_test_guard
 uv run --no-sync pytest tests/test_zccache_integration_guardrails.py tests/test_zccache_runtime_contract.py tests/test_setup_soldr_action.py tests/test_setup_soldr_exporter.py tests/test_setup_soldr_ensure_soldr.py -q
 node scripts/test-npm-package.js
 ```

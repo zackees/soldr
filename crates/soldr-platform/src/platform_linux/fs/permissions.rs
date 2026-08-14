@@ -61,7 +61,7 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
-    #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+    #[test]
     fn make_writable_like_adopts_source_exec_bits() {
         // A freshly created private copy lands at the umask default
         // (0o644); the source's exec bits must survive the adoption.
@@ -79,7 +79,7 @@ mod tests {
         assert_eq!(mode & 0o7777, 0o755);
     }
 
-    #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+    #[test]
     fn make_writable_like_keeps_private_modes_private() {
         // A 0o600 source stays 0o600: only the owner-write bit is added,
         // group/other bits are not invented.

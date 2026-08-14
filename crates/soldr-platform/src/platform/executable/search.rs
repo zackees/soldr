@@ -42,7 +42,7 @@ pub(crate) fn find_on_path_using(
 mod tests {
     use super::*;
 
-    #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+    #[test]
     fn shared_walker_tries_bare_then_extensions_in_each_dir() {
         let temp =
             std::env::temp_dir().join(format!("soldr-platform-search-{}", std::process::id()));
@@ -78,7 +78,7 @@ mod tests {
         std::fs::remove_dir_all(&temp).ok();
     }
 
-    #[test] // allow-bare-test: soldr-platform is a dependency leaf; timed_test! lives in soldr-core (#2493)
+    #[test]
     fn shared_walker_trusts_explicit_paths() {
         // Path-like arguments are never rewritten into a lookup.
         assert_eq!(

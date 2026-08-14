@@ -1,7 +1,6 @@
 mod common;
 
 use common::*;
-use soldr_cli::timed_test;
 use std::path::Path;
 
 fn fake_exec_nested_cargo_script(log_path: &Path) -> String {
@@ -55,7 +54,8 @@ fn fake_direct_rustup_cargo_script(log_path: &Path) -> String {
     }
 }
 
-timed_test!(exec_cargo_build_routes_through_child_shims_and_zccache, {
+#[test]
+fn exec_cargo_build_routes_through_child_shims_and_zccache() {
     let cache_root = unique_temp_dir("exec-cargo-zccache-shims");
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
@@ -107,4 +107,4 @@ timed_test!(exec_cargo_build_routes_through_child_shims_and_zccache, {
             .any(|line| line.contains("zccache wrapper") && line.contains("exec_demo")),
         "nested cargo rustc call should route through zccache: {log}"
     );
-});
+}

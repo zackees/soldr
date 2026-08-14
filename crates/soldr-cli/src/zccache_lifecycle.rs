@@ -167,40 +167,43 @@ pub(crate) fn command_stderr(output: &Output) -> String {
 mod tests {
     use super::*;
 
-    crate::timed_test!(output_snippet_omits_empty_output, {
+    #[test]
+    fn output_snippet_omits_empty_output() {
         assert_eq!(zccache_output_snippet(b""), None);
         assert_eq!(zccache_output_snippet(b" \n\t "), None);
-    });
+    }
 
-    crate::timed_test!(output_snippet_compacts_whitespace, {
+    #[test]
+    fn output_snippet_compacts_whitespace() {
         assert_eq!(
             zccache_output_snippet(b"  first line\n\nsecond\tline  ").as_deref(),
             Some("first line second line")
         );
-    });
+    }
 
-    crate::timed_test!(output_snippet_truncates_long_output, {
+    #[test]
+    fn output_snippet_truncates_long_output() {
         let output = "x".repeat(ZCCACHE_ANALYZE_NOTE_LIMIT + 10);
         let snippet = zccache_output_snippet(output.as_bytes()).unwrap();
         assert_eq!(snippet.len(), ZCCACHE_ANALYZE_NOTE_LIMIT + 3);
         assert!(snippet.ends_with("..."));
-    });
+    }
 
-    crate::timed_test!(unknown_session_detector_matches_exact_zccache_line, {
+    #[test]
+    fn unknown_session_detector_matches_exact_zccache_line() {
         let stderr = b"zccache error: unknown session: abc-123\n";
         assert!(stderr_indicates_unknown_session(stderr));
-    });
+    }
 
-    crate::timed_test!(unknown_session_detector_matches_substring_not_line_shape, {
+    #[test]
+    fn unknown_session_detector_matches_substring_not_line_shape() {
         let stderr = b"prelude blah blah unknown session: 0000 trailing\n";
         assert!(stderr_indicates_unknown_session(stderr));
-    });
+    }
 
-    crate::timed_test!(
-        unknown_session_detector_does_not_match_other_session_text,
-        {
-            let stderr = b"zccache info: session started\nzccache info: session ok\n";
-            assert!(!stderr_indicates_unknown_session(stderr));
-        }
-    );
+    #[test]
+    fn unknown_session_detector_does_not_match_other_session_text() {
+        let stderr = b"zccache info: session started\nzccache info: session ok\n";
+        assert!(!stderr_indicates_unknown_session(stderr));
+    }
 }

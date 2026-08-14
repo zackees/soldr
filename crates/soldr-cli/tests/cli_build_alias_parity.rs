@@ -151,7 +151,8 @@ fn soldr_build_help_documents_blessed_surface() {
     );
 }
 
-soldr_cli::timed_test!(canonical_aliases_resolve_through_the_cli, {
+#[test]
+fn canonical_aliases_resolve_through_the_cli() {
     let cwd = unique_temp_dir("canonical-alias-cli-parity");
     for (alias, triple) in soldr_cli::target_alias::CANONICAL_ALIASES {
         for (input, via_alias) in [(*alias, true), (*triple, false)] {
@@ -201,4 +202,4 @@ soldr_cli::timed_test!(canonical_aliases_resolve_through_the_cli, {
         }
     }
     let _ = std::fs::remove_dir_all(cwd);
-});
+}

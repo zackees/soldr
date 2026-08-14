@@ -239,29 +239,28 @@ mod tests {
 
     // soldr#1979 remediation. The detection half shipped in #1983; these
     // cover the removal it deliberately left out.
-    crate::timed_test!(
-        removal_deletes_the_shadowing_file_and_spares_the_installed_one,
-        {
-            let tmp = tempfile::tempdir().expect("tmpdir");
-            let running = tmp.path().join("soldr");
-            let installed = tmp.path().join("soldr.exe");
-            // Different lengths: that is what `detect_shadowing_at` keys on.
-            std::fs::write(&running, b"stale").expect("write running");
-            std::fs::write(&installed, b"installed binary, longer").expect("write installed");
+    #[test]
+    fn removal_deletes_the_shadowing_file_and_spares_the_installed_one() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let running = tmp.path().join("soldr");
+        let installed = tmp.path().join("soldr.exe");
+        // Different lengths: that is what `detect_shadowing_at` keys on.
+        std::fs::write(&running, b"stale").expect("write running");
+        std::fs::write(&installed, b"installed binary, longer").expect("write installed");
 
-            let outcome = remove_shadowing_at(&running);
-            assert_eq!(outcome, RemovalOutcome::Removed(running.clone()));
-            assert!(!running.exists(), "the shadowing file must be gone");
-            assert!(
+        let outcome = remove_shadowing_at(&running);
+        assert_eq!(outcome, RemovalOutcome::Removed(running.clone()));
+        assert!(!running.exists(), "the shadowing file must be gone");
+        assert!(
             installed.exists(),
             "the installed .exe must never be touched -- removing it would              uninstall soldr instead of repairing it"
         );
-        }
-    );
+    }
 
     // Equal lengths are the healthy hardlinked steady state. Removing there
     // would delete a perfectly good alias.
-    crate::timed_test!(removal_leaves_a_matching_pair_alone, {
+    #[test]
+    fn removal_leaves_a_matching_pair_alone() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let running = tmp.path().join("soldr");
         let installed = tmp.path().join("soldr.exe");
@@ -271,22 +270,24 @@ mod tests {
         assert_eq!(remove_shadowing_at(&running), RemovalOutcome::NothingToDo);
         assert!(running.exists(), "a healthy alias must survive");
         assert!(installed.exists());
-    });
+    }
 
     // No sibling at all: the common case on a machine that was never
     // affected. Must not report a removal it did not perform.
-    crate::timed_test!(removal_is_a_no_op_without_a_managed_sibling, {
+    #[test]
+    fn removal_is_a_no_op_without_a_managed_sibling() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let running = tmp.path().join("soldr");
         std::fs::write(&running, b"lonely").expect("write");
 
         assert_eq!(remove_shadowing_at(&running), RemovalOutcome::NothingToDo);
         assert!(running.exists());
-    });
+    }
 
     // A failure must say so. A silent no-op would leave the user believing
     // they had repaired a machine that is still broken.
-    crate::timed_test!(a_failed_removal_is_reported_with_the_reason, {
+    #[test]
+    fn a_failed_removal_is_reported_with_the_reason() {
         let outcome = RemovalOutcome::Failed {
             path: PathBuf::from("C:/tools/Scripts/soldr"),
             reason: "Access is denied. (os error 5)".to_string(),
@@ -301,14 +302,15 @@ mod tests {
             text.contains("daemon stop"),
             "must say what to try next, got: {text}"
         );
-    });
+    }
 
     // The rename fallback is the path that actually runs in the real world:
     // the orphan is what wins on PATH, so it is the running image, and
     // Windows refuses to delete a running image. The first version of this
     // feature only tried `remove_file` and repaired nothing -- verified end to
     // end with `Access is denied. (os error 5)`.
-    crate::timed_test!(the_disused_name_can_no_longer_shadow, {
+    #[test]
+    fn the_disused_name_can_no_longer_shadow() {
         let aside = disused_name_for(Path::new("C:/tools/Scripts/soldr"));
         assert_eq!(
             aside,
@@ -317,9 +319,10 @@ mod tests {
         // The whole point: a name with an extension is not what a shell picks
         // for bare `soldr`, so the renamed file cannot shadow anything.
         assert_eq!(shadowed_sibling_path(&aside), None);
-    });
+    }
 
-    crate::timed_test!(a_rename_report_says_the_machine_is_already_fixed, {
+    #[test]
+    fn a_rename_report_says_the_machine_is_already_fixed() {
         let text = removal_report(&RemovalOutcome::Renamed {
             from: PathBuf::from("C:/s/soldr"),
             to: PathBuf::from("C:/s/soldr.shadowed-disused"),
@@ -329,21 +332,23 @@ mod tests {
             text.contains("fixed now"),
             "a rename is the fix, not a partial step -- the user must not be              left thinking more is required, got: {text}"
         );
-    });
+    }
 
-    crate::timed_test!(a_successful_removal_says_what_to_do_next, {
+    #[test]
+    fn a_successful_removal_says_what_to_do_next() {
         let text = removal_report(&RemovalOutcome::Removed(PathBuf::from("C:/s/soldr")));
         assert!(text.contains("REMOVED"), "got: {text}");
         assert!(
             text.contains("re-run any soldr command"),
             "must tell the user the fix has taken effect, got: {text}"
         );
-    });
+    }
 
     // The rule is "extensionless shadows .exe". Anything already carrying an
     // extension is not what a shell picks for bare `soldr`, so it can never
     // be the shadowing party.
-    crate::timed_test!(only_an_extensionless_path_can_shadow, {
+    #[test]
+    fn only_an_extensionless_path_can_shadow() {
         assert_eq!(
             shadowed_sibling_path(Path::new("C:/tools/Scripts/soldr")),
             Some(PathBuf::from("C:/tools/Scripts/soldr.exe"))
@@ -356,38 +361,42 @@ mod tests {
             shadowed_sibling_path(Path::new("/usr/local/bin/soldr.sh")),
             None
         );
-    });
+    }
 
     // Guards the name, not just the extension: the sibling must be the same
     // stem plus `.exe`, never a hardcoded "soldr.exe" -- the daemon alias
     // travels the same code path.
-    crate::timed_test!(sibling_keeps_the_original_stem, {
+    #[test]
+    fn sibling_keeps_the_original_stem() {
         assert_eq!(
             shadowed_sibling_path(Path::new("/x/soldr-daemon")),
             Some(PathBuf::from("/x/soldr-daemon.exe"))
         );
-    });
+    }
 
-    crate::timed_test!(no_sibling_on_disk_is_not_shadowing, {
+    #[test]
+    fn no_sibling_on_disk_is_not_shadowing() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let running = tmp.path().join("soldr");
         std::fs::write(&running, b"only-me").expect("write");
         assert_eq!(detect_shadowing_at(&running), None);
-    });
+    }
 
     // The healthy steady state: soldr hardlinks its aliases, so the running
     // file and its .exe sibling are the same binary. Reporting that as a
     // problem would make the check pure noise on every correct install.
-    crate::timed_test!(a_matching_sibling_is_the_healthy_case_not_a_warning, {
+    #[test]
+    fn a_matching_sibling_is_the_healthy_case_not_a_warning() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let running = tmp.path().join("soldr");
         let installed = tmp.path().join("soldr.exe");
         std::fs::write(&running, b"same-bytes").expect("write");
         std::fs::write(&installed, b"same-bytes").expect("write");
         assert_eq!(detect_shadowing_at(&running), None);
-    });
+    }
 
-    crate::timed_test!(a_differing_sibling_is_reported_with_both_paths, {
+    #[test]
+    fn a_differing_sibling_is_reported_with_both_paths() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let running = tmp.path().join("soldr");
         let installed = tmp.path().join("soldr.exe");
@@ -404,5 +413,5 @@ mod tests {
         // otherwise -- that is the entire reason the check exists.
         assert!(report.contains("rm "), "{report}");
         assert!(report.contains(&running.display().to_string()), "{report}");
-    });
+    }
 }

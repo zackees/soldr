@@ -1,7 +1,6 @@
 mod common;
 
 use common::*;
-use soldr_cli::timed_test;
 use std::path::Path;
 
 fn fake_global_soldr(log: &Path) -> String {
@@ -33,7 +32,8 @@ fn fake_global_soldr(log: &Path) -> String {
     }
 }
 
-timed_test!(project_policy_delegates_to_newer_global_soldr, {
+#[test]
+fn project_policy_delegates_to_newer_global_soldr() {
     let fixture = unique_temp_dir("newer-global-soldr");
     std::fs::write(
         fixture.join("Cargo.toml"),
@@ -72,7 +72,7 @@ timed_test!(project_policy_delegates_to_newer_global_soldr, {
         String::from_utf8_lossy(&output.stderr).contains("delegating to newer global soldr"),
         "delegation should be visible on stderr"
     );
-});
+}
 
 // The delegation policy must NOT apply to `RUSTC_WRAPPER` callbacks
 // (#1847). Cargo issues one per compile unit, and `probe_version`
@@ -84,7 +84,8 @@ timed_test!(project_policy_delegates_to_newer_global_soldr, {
 // that asserts a user-facing invocation still hands off, this asserts a
 // wrapper invocation never does. Same opt-in manifest, same newer fake
 // global on PATH — only the invocation shape differs.
-timed_test!(wrapper_invocations_never_delegate_to_newer_global_soldr, {
+#[test]
+fn wrapper_invocations_never_delegate_to_newer_global_soldr() {
     let fixture = unique_temp_dir("wrapper-no-global-delegate");
     std::fs::write(
         fixture.join("Cargo.toml"),
@@ -139,4 +140,4 @@ timed_test!(wrapper_invocations_never_delegate_to_newer_global_soldr, {
         !stderr.contains("delegating to newer global soldr"),
         "wrapper invocation should not announce delegation\nstderr:\n{stderr}"
     );
-});
+}

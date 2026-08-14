@@ -29,7 +29,8 @@ fn subprocess_maturin_build_lease_then_exit() {
     std::process::exit(0);
 }
 
-crate::timed_test!(maturin_build_lease_defers_gc_and_survives_abrupt_exit, {
+#[test]
+fn maturin_build_lease_defers_gc_and_survives_abrupt_exit() {
     let temp = tempfile::tempdir().unwrap();
     let paths = SoldrPaths::with_root(temp.path().join("owned"));
     let direct_args = vec!["build".to_string()];
@@ -69,13 +70,14 @@ crate::timed_test!(maturin_build_lease_defers_gc_and_survives_abrupt_exit, {
             .unwrap()
             .is_none()
     );
-});
+}
 
 // soldr#1663: `EnvVarGuard` moved to the crate root so every module
 // shares one panic-safe guard instead of re-implementing it.
 use crate::EnvVarGuard;
 
-crate::timed_test!(prepend_path_dirs_preserves_declared_priority, {
+#[test]
+fn prepend_path_dirs_preserves_declared_priority() {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().expect("tempdir");
     let shim = tmp.path().join("clang-shim");
@@ -89,7 +91,7 @@ crate::timed_test!(prepend_path_dirs_preserves_declared_priority, {
     let actual =
         std::env::split_paths(&std::env::var_os("PATH").expect("PATH")).collect::<Vec<_>>();
     assert_eq!(actual, vec![shim, llvm, inherited]);
-});
+}
 
 #[test]
 fn gc_cli_parses_summary_and_purge_modes() {
@@ -923,7 +925,8 @@ fn insert_cargo_config_args_after_xwin_build_pair() {
     );
 }
 
-crate::timed_test!(insert_cargo_config_args_after_nextest_inner_command, {
+#[test]
+fn insert_cargo_config_args_after_nextest_inner_command() {
     let args = vec![
         "nextest".to_string(),
         "--color".to_string(),
@@ -947,7 +950,7 @@ crate::timed_test!(insert_cargo_config_args_after_nextest_inner_command, {
             "aarch64-unknown-linux-gnu",
         ]
     );
-});
+}
 
 #[test]
 fn maturin_cargo_config_stays_before_rustc_separator() {

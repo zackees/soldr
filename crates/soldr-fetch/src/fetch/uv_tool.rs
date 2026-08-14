@@ -83,7 +83,8 @@ pub fn uv_exe(bundle_root: &Path) -> PathBuf {
 mod tests {
     use super::*;
 
-    crate::timed_test!(uv_host_slug_covers_all_eight_shapes, {
+    #[test]
+    fn uv_host_slug_covers_all_eight_shapes() {
         assert_eq!(host_slug_for("x86_64-pc-windows-msvc"), Some("windows-x64"));
         assert_eq!(
             host_slug_for("x86_64-unknown-linux-musl"),
@@ -96,33 +97,37 @@ mod tests {
         );
         assert_eq!(host_slug_for("wasm32-unknown-unknown"), None);
         assert_eq!(UV_TOOL_HOSTS.len(), 8);
-    });
+    }
 
-    crate::timed_test!(uv_asset_url_layout_matches_catalogue, {
+    #[test]
+    fn uv_asset_url_layout_matches_catalogue() {
         let u = asset_url_for(MANAGED_UV_VERSION, "windows-x64");
         assert!(u.starts_with("https://media.githubusercontent.com/media/"));
         assert!(u.contains("/uv/0.11.26/windows-x64/"));
         assert!(u.ends_with("/bundle.tar.zst"));
-    });
+    }
 
-    crate::timed_test!(uv_version_constant_well_formed, {
+    #[test]
+    fn uv_version_constant_well_formed() {
         let parts: Vec<&str> = MANAGED_UV_VERSION.split('.').collect();
         assert_eq!(parts.len(), 3);
         for p in parts {
             assert!(p.chars().all(|c| c.is_ascii_digit()));
         }
-    });
+    }
 
-    crate::timed_test!(uv_exe_path_is_platform_correct, {
+    #[test]
+    fn uv_exe_path_is_platform_correct() {
         let exe = uv_exe(Path::new("root"));
         if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
             assert!(exe.ends_with("bin/uv.exe") || exe.ends_with("bin\\uv.exe"));
         } else {
             assert!(exe.ends_with("bin/uv"));
         }
-    });
+    }
 
-    crate::timed_test!(ensure_uv_bundle_rejects_unsupported_host, {
+    #[test]
+    fn ensure_uv_bundle_rejects_unsupported_host() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
         let err = tokio::runtime::Runtime::new()
@@ -130,5 +135,5 @@ mod tests {
             .block_on(ensure_uv_bundle(&paths, "wasm32-unknown-unknown"))
             .expect_err("unsupported host must error");
         assert!(matches!(err, SoldrError::UnsupportedPlatform(_)));
-    });
+    }
 }

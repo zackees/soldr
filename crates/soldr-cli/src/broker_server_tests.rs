@@ -3,7 +3,8 @@
 
 use super::*;
 
-crate::timed_test!(shutdown_signal_survives_before_accept_loop_waits, {
+#[test]
+fn shutdown_signal_survives_before_accept_loop_waits() {
     let shutdown = tokio::sync::Notify::new();
     request_shutdown(&shutdown);
 
@@ -16,23 +17,22 @@ crate::timed_test!(shutdown_signal_survives_before_accept_loop_waits, {
                 .await
                 .expect("an early shutdown signal must retain a permit");
         });
-});
+}
 
-crate::timed_test!(
-    direct_handoff_eligibility_requires_platform_capability_and_token,
-    {
-        use running_process::broker::capabilities::CAP_HANDLE_PASSING;
+#[test]
+fn direct_handoff_eligibility_requires_platform_capability_and_token() {
+    use running_process::broker::capabilities::CAP_HANDLE_PASSING;
 
-        assert_eq!(
-            direct_handoff_eligible(CAP_HANDLE_PASSING, &[1]),
-            crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows
-        );
-        assert!(!direct_handoff_eligible(0, &[1]));
-        assert!(!direct_handoff_eligible(CAP_HANDLE_PASSING, &[]));
-    }
-);
+    assert_eq!(
+        direct_handoff_eligible(CAP_HANDLE_PASSING, &[1]),
+        crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows
+    );
+    assert!(!direct_handoff_eligible(0, &[1]));
+    assert!(!direct_handoff_eligible(CAP_HANDLE_PASSING, &[]));
+}
 
-crate::timed_test!(windows_handoff_ready_uses_async_original_pipe, {
+#[test]
+fn windows_handoff_ready_uses_async_original_pipe() {
     if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows {
         return;
     }
@@ -88,19 +88,18 @@ crate::timed_test!(windows_handoff_ready_uses_async_original_pipe, {
 
             tokio::join!(server, client);
         });
-});
+}
 
-crate::timed_test!(
-    broker_instance_identity_includes_the_complete_image_digest,
-    {
-        let first = format_broker_instance_id("0.9.0", &"a".repeat(64));
-        let second = format_broker_instance_id("0.9.0", &"b".repeat(64));
-        assert_ne!(first, second, "same-version images must not alias");
-        assert!(first.ends_with(&"a".repeat(64)));
-    }
-);
+#[test]
+fn broker_instance_identity_includes_the_complete_image_digest() {
+    let first = format_broker_instance_id("0.9.0", &"a".repeat(64));
+    let second = format_broker_instance_id("0.9.0", &"b".repeat(64));
+    assert_ne!(first, second, "same-version images must not alias");
+    assert!(first.ends_with(&"a".repeat(64)));
+}
 
-crate::timed_test!(route_heartbeat_stays_inside_the_client_silence_budget, {
+#[test]
+fn route_heartbeat_stays_inside_the_client_silence_budget() {
     assert_eq!(
         route_progress_heartbeat_interval(Duration::from_secs(5)),
         Duration::from_secs(1)
@@ -112,9 +111,10 @@ crate::timed_test!(route_heartbeat_stays_inside_the_client_silence_budget, {
     assert!(
         route_progress_heartbeat_interval(Duration::from_millis(30)) < Duration::from_millis(30)
     );
-});
+}
 
-crate::timed_test!(progress_and_attestation_are_protobuf_roundtrips, {
+#[test]
+fn progress_and_attestation_are_protobuf_roundtrips() {
     let progress = RouteProgress {
         stage: "spawn".into(),
         attempt: 3,
@@ -130,19 +130,18 @@ crate::timed_test!(progress_and_attestation_are_protobuf_roundtrips, {
     let attestation = ClientHostAttestation::decode(bytes.as_slice()).unwrap();
     assert!(!attestation.machine_id.is_empty());
     assert!(!attestation.boot_id.is_empty());
-});
+}
 
-crate::timed_test!(
-    deadline_env_values_are_positive_and_have_contract_defaults,
-    {
-        let deadlines = BrokerDeadlines::from_env();
-        assert!(!deadlines.first_response.is_zero());
-        assert!(!deadlines.progress_silence.is_zero());
-        assert!(!deadlines.route_ceiling.is_zero());
-    }
-);
+#[test]
+fn deadline_env_values_are_positive_and_have_contract_defaults() {
+    let deadlines = BrokerDeadlines::from_env();
+    assert!(!deadlines.first_response.is_zero());
+    assert!(!deadlines.progress_silence.is_zero());
+    assert!(!deadlines.route_ceiling.is_zero());
+}
 
-crate::timed_test!(mismatched_machine_attestation_is_refused_as_shared_home, {
+#[test]
+fn mismatched_machine_attestation_is_refused_as_shared_home() {
     let hello = Hello {
         client_lib_name: "soldr".into(),
         peer_attestation_nonce: ClientHostAttestation {
@@ -164,9 +163,10 @@ crate::timed_test!(mismatched_machine_attestation_is_refused_as_shared_home, {
     assert!(refused.reason.contains("shared Soldr home"));
     assert!(refused.details.contains_key("client_machine_id"));
     assert!(refused.details.contains_key("broker_machine_id"));
-});
+}
 
-crate::timed_test!(stale_socket_n_way_bind_has_exactly_one_winner, {
+#[test]
+fn stale_socket_n_way_bind_has_exactly_one_winner() {
     if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         return;
     }
@@ -212,9 +212,10 @@ crate::timed_test!(stale_socket_n_way_bind_has_exactly_one_winner, {
     for thread in threads {
         thread.join().expect("bind contender");
     }
-});
+}
 
-crate::timed_test!(macos_listener_restricts_socket_permissions_after_bind, {
+#[test]
+fn macos_listener_restricts_socket_permissions_after_bind() {
     if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::MacOs {
         return;
     }
@@ -231,4 +232,4 @@ crate::timed_test!(macos_listener_restricts_socket_permissions_after_bind, {
     let mode = crate::platform::fs::permissions::mode(&socket).expect("socket mode") & 0o777;
     assert_eq!(mode, 0o600);
     drop(listener);
-});
+}

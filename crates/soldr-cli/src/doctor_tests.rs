@@ -36,7 +36,8 @@ impl Drop for EnvGuard {
 // soldr#1467: a stale per-launch daemon copy under
 // `<root>/<version>/runtime-binaries/` is reported; unrelated files
 // in the same tree are not.
-crate::timed_test!(stale_runtime_binaries_scan_finds_daemon_copies, {
+#[test]
+fn stale_runtime_binaries_scan_finds_daemon_copies() {
     let root = tempfile::tempdir().expect("tempdir");
     let rb = root.path().join("v1.12.14").join("runtime-binaries");
     std::fs::create_dir_all(&rb).expect("create runtime-binaries");
@@ -52,21 +53,23 @@ crate::timed_test!(stale_runtime_binaries_scan_finds_daemon_copies, {
         vec![daemon_copy.display().to_string()],
         "scan must report exactly the zccache-daemon copy"
     );
-});
+}
 
 // soldr#1467: a clean root (runtime-binaries absent or without
 // daemon copies) reports nothing; a missing root is silent.
-crate::timed_test!(stale_runtime_binaries_scan_empty_when_clean, {
+#[test]
+fn stale_runtime_binaries_scan_empty_when_clean() {
     let root = tempfile::tempdir().expect("tempdir");
     std::fs::create_dir_all(root.path().join("v1.12.15").join("runtime-binaries"))
         .expect("create empty runtime-binaries");
     assert!(scan_stale_runtime_binaries_in(root.path()).is_empty());
     assert!(scan_stale_runtime_binaries_in(&root.path().join("does-not-exist")).is_empty());
-});
+}
 
 // soldr#1467: the `SOLDR_TEST_ZCCACHE_SCAN_ROOT` seam drives the
 // full scan entry point.
-crate::timed_test!(stale_runtime_binaries_env_seam_overrides_root, {
+#[test]
+fn stale_runtime_binaries_env_seam_overrides_root() {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let root = tempfile::tempdir().expect("tempdir");
     let rb = root.path().join("v1.12.14").join("runtime-binaries");
@@ -79,11 +82,12 @@ crate::timed_test!(stale_runtime_binaries_env_seam_overrides_root, {
         scan_stale_runtime_binaries(),
         vec![daemon_copy.display().to_string()]
     );
-});
+}
 
 // soldr#1467: the `SOLDR_TEST_PROCESS_LIST_FILE` seam replaces the
 // real process scan; only `zccache-daemon*` image names match.
-crate::timed_test!(process_list_seam_reports_daemon_rows, {
+#[test]
+fn process_list_seam_reports_daemon_rows() {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().expect("tempdir");
     let list = dir.path().join("procs.txt");
@@ -101,11 +105,12 @@ crate::timed_test!(process_list_seam_reports_daemon_rows, {
             "zccache-daemon.5.exe (pid 12)".to_string(),
         ]
     );
-});
+}
 
 // soldr#1467: clean seams (empty scan root + empty process list)
 // produce two empty vecs — the healthy-box baseline.
-crate::timed_test!(standalone_zccache_probe_clean_baseline_is_empty, {
+#[test]
+fn standalone_zccache_probe_clean_baseline_is_empty() {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let root = tempfile::tempdir().expect("tempdir");
     let list = root.path().join("procs.txt");
@@ -115,11 +120,12 @@ crate::timed_test!(standalone_zccache_probe_clean_baseline_is_empty, {
     let _list_guard = EnvGuard::set(SOLDR_TEST_PROCESS_LIST_FILE_ENV, list.as_os_str());
     assert!(scan_stale_runtime_binaries().is_empty());
     assert!(scan_standalone_daemon_processes().is_empty());
-});
+}
 
 // soldr#1467: Windows `tasklist /FO CSV /NH` rows — image name
 // first, PID second, both quoted.
-crate::timed_test!(tasklist_csv_parser_filters_daemon_images, {
+#[test]
+fn tasklist_csv_parser_filters_daemon_images() {
     let csv = "\"zccache-daemon.123.exe\",\"4567\",\"Console\",\"1\",\"10,000 K\"\r\n\
                    \"cargo.exe\",\"99\",\"Console\",\"1\",\"5,000 K\"\r\n\
                    \"zccache.exe\",\"100\",\"Console\",\"1\",\"5,000 K\"\r\n";
@@ -127,7 +133,7 @@ crate::timed_test!(tasklist_csv_parser_filters_daemon_images, {
         parse_tasklist_csv(csv),
         vec!["zccache-daemon.123.exe (pid 4567)".to_string()]
     );
-});
+}
 
 /// #590: cover the byte formatter at every unit boundary so the
 /// human output stays readable as cache dirs grow.

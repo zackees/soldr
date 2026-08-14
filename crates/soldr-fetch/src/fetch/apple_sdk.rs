@@ -614,7 +614,8 @@ mod tests {
         }
     }
 
-    crate::timed_test!(env_var_overrides_when_pointing_at_real_dir, {
+    #[test]
+    fn env_var_overrides_when_pointing_at_real_dir() {
         let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().expect("tmpdir");
         let fake_sdk = tmp.path().join("FakeMacOSX.sdk");
@@ -622,9 +623,10 @@ mod tests {
         let _guard = EnvVarGuard::set(SDKROOT_ENV_VAR, &fake_sdk);
         let resolved = sdk_from_env_var();
         assert_eq!(resolved.as_deref(), Some(fake_sdk.as_path()));
-    });
+    }
 
-    crate::timed_test!(env_var_ignored_when_path_is_missing, {
+    #[test]
+    fn env_var_ignored_when_path_is_missing() {
         let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let _guard = EnvVarGuard::set(SDKROOT_ENV_VAR, "/definitely/not/a/real/path/3819237");
         let resolved = sdk_from_env_var();
@@ -632,9 +634,10 @@ mod tests {
             resolved.is_none(),
             "missing dir should be ignored: {resolved:?}"
         );
-    });
+    }
 
-    crate::timed_test!(constants_are_well_formed, {
+    #[test]
+    fn constants_are_well_formed() {
         assert_eq!(MANAGED_APPLE_SDK_VERSION, "14.5");
         assert_eq!(MANAGED_APPLE_SDK_DIRNAME, "MacOSX14.5.sdk");
         assert!(MANAGED_APPLE_SDK_URL.starts_with("https://"));
@@ -643,9 +646,10 @@ mod tests {
         assert!(MANAGED_APPLE_SDK_SHA256
             .chars()
             .all(|c| c.is_ascii_hexdigit()));
-    });
+    }
 
-    crate::timed_test!(shape_slugs_match_catalogue_layout, {
+    #[test]
+    fn shape_slugs_match_catalogue_layout() {
         assert_eq!(
             AppleSdkShape::Universal2.catalogue_slug(),
             "darwin-universal2"
@@ -655,9 +659,10 @@ mod tests {
             AppleSdkShape::ThinAArch64.catalogue_slug(),
             "darwin-aarch64"
         );
-    });
+    }
 
-    crate::timed_test!(catalogue_url_substr_format, {
+    #[test]
+    fn catalogue_url_substr_format() {
         assert_eq!(
             catalogue_url_substr("14.5", AppleSdkShape::Universal2),
             "/apple-sdk/14.5/darwin-universal2/"
@@ -670,9 +675,10 @@ mod tests {
             catalogue_url_substr("11.3", AppleSdkShape::Universal2),
             "/apple-sdk/MacOSX11.3/darwin-universal2/"
         );
-    });
+    }
 
-    crate::timed_test!(asset_url_layout_matches_live_catalogue_rows, {
+    #[test]
+    fn asset_url_layout_matches_live_catalogue_rows() {
         assert_eq!(
             asset_url_for("14.5", AppleSdkShape::ThinX86_64),
             "https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets/apple-sdk/14.5/darwin-x86_64/sdk.tar.zst"
@@ -685,9 +691,10 @@ mod tests {
             asset_url_for("11.3", AppleSdkShape::Universal2),
             "https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets/apple-sdk/MacOSX11.3/darwin-universal2/sdk.tar.zstd"
         );
-    });
+    }
 
-    crate::timed_test!(selection_defaults_to_target_specific_14_5_rows, {
+    #[test]
+    fn selection_defaults_to_target_specific_14_5_rows() {
         let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let _shape = EnvVarGuard::remove(APPLE_SDK_SHAPE_ENV_VAR);
         let _version = EnvVarGuard::remove(APPLE_SDK_VERSION_ENV_VAR);
@@ -706,9 +713,10 @@ mod tests {
                 shape: AppleSdkShape::ThinAArch64,
             }
         );
-    });
+    }
 
-    crate::timed_test!(sdk_cache_path_includes_version_and_shape, {
+    #[test]
+    fn sdk_cache_path_includes_version_and_shape() {
         let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let _shape = EnvVarGuard::remove(APPLE_SDK_SHAPE_ENV_VAR);
         let _version = EnvVarGuard::remove(APPLE_SDK_VERSION_ENV_VAR);
@@ -728,9 +736,10 @@ mod tests {
                 || legacy.ends_with("apple-sdk\\11.3\\darwin-universal2\\MacOSX11.3.sdk")
         );
         assert_ne!(x86, legacy);
-    });
+    }
 
-    crate::timed_test!(picker_env_var_behaviour_serial, {
+    #[test]
+    fn picker_env_var_behaviour_serial() {
         let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let _shape = EnvVarGuard::remove(APPLE_SDK_SHAPE_ENV_VAR);
         let _version = EnvVarGuard::remove(APPLE_SDK_VERSION_ENV_VAR);
@@ -788,9 +797,10 @@ mod tests {
         drop(_version_bad);
 
         assert_eq!(resolve_apple_sdk_version(), MANAGED_APPLE_SDK_VERSION);
-    });
+    }
 
-    crate::timed_test!(legacy_11_3_auto_keeps_universal2_shape, {
+    #[test]
+    fn legacy_11_3_auto_keeps_universal2_shape() {
         let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let _shape = EnvVarGuard::remove(APPLE_SDK_SHAPE_ENV_VAR);
         let _version = EnvVarGuard::set(APPLE_SDK_VERSION_ENV_VAR, "11.3");
@@ -802,13 +812,15 @@ mod tests {
                 shape: AppleSdkShape::Universal2,
             }
         );
-    });
+    }
 
-    crate::timed_test!(supported_versions_include_default, {
+    #[test]
+    fn supported_versions_include_default() {
         assert!(SUPPORTED_APPLE_SDK_VERSIONS.contains(&MANAGED_APPLE_SDK_VERSION));
-    });
+    }
 
-    crate::timed_test!(cache_stamp_requires_current_extraction_format, {
+    #[test]
+    fn cache_stamp_requires_current_extraction_format() {
         let selection = AppleSdkSelection {
             version: "14.5".to_string(),
             shape: AppleSdkShape::ThinX86_64,
@@ -822,29 +834,27 @@ mod tests {
         );
         std::fs::write(&stamp, expected_cache_stamp(&selection)).expect("write current stamp");
         assert!(cache_stamp_is_current(&stamp, &selection));
-    });
+    }
 
-    crate::timed_test!(
-        validate_extracted_sdk_requires_readable_header_and_framework_dir,
-        {
-            let temp = tempfile::tempdir().expect("tempdir");
-            let sdk = temp.path().join("MacOSX14.5.sdk");
-            let pthread = sdk.join("usr/include/pthread.h");
-            let headers = sdk.join("System/Library/Frameworks/CoreFoundation.framework/Headers");
-            std::fs::create_dir_all(headers).expect("create framework headers");
-            std::fs::create_dir_all(pthread.parent().expect("header parent"))
-                .expect("create include dir");
-            std::fs::write(&pthread, "header").expect("write pthread header");
-            assert!(validate_extracted_sdk(&sdk).is_ok());
+    #[test]
+    fn validate_extracted_sdk_requires_readable_header_and_framework_dir() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let sdk = temp.path().join("MacOSX14.5.sdk");
+        let pthread = sdk.join("usr/include/pthread.h");
+        let headers = sdk.join("System/Library/Frameworks/CoreFoundation.framework/Headers");
+        std::fs::create_dir_all(headers).expect("create framework headers");
+        std::fs::create_dir_all(pthread.parent().expect("header parent"))
+            .expect("create include dir");
+        std::fs::write(&pthread, "header").expect("write pthread header");
+        assert!(validate_extracted_sdk(&sdk).is_ok());
 
-            std::fs::remove_file(&pthread).expect("remove pthread header");
-            let err =
-                validate_extracted_sdk(&sdk).expect_err("missing header must fail validation");
-            assert!(err.to_string().contains("pthread.h"));
-        }
-    );
+        std::fs::remove_file(&pthread).expect("remove pthread header");
+        let err = validate_extracted_sdk(&sdk).expect_err("missing header must fail validation");
+        assert!(err.to_string().contains("pthread.h"));
+    }
 
-    crate::timed_test!(find_extracted_sdk_dir_accepts_single_sdk_dir, {
+    #[test]
+    fn find_extracted_sdk_dir_accepts_single_sdk_dir() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let expected = tmp.path().join("MacOSX14.5.sdk");
         let fallback = tmp.path().join("SomeOtherName.sdk");
@@ -853,9 +863,10 @@ mod tests {
             find_extracted_sdk_dir(tmp.path(), &expected).expect("single sdk fallback"),
             fallback
         );
-    });
+    }
 
-    crate::timed_test!(find_extracted_sdk_dir_accepts_nested_sdk_dir, {
+    #[test]
+    fn find_extracted_sdk_dir_accepts_nested_sdk_dir() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let expected = tmp.path().join("MacOSX14.5.sdk");
         let nested = tmp
@@ -868,9 +879,10 @@ mod tests {
             find_extracted_sdk_dir(tmp.path(), &expected).expect("nested sdk fallback"),
             nested
         );
-    });
+    }
 
-    crate::timed_test!(find_extracted_sdk_dir_accepts_conan_package_sdk_root, {
+    #[test]
+    fn find_extracted_sdk_dir_accepts_conan_package_sdk_root() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let expected = tmp.path().join("MacOSX14.5.sdk");
         let sdk = tmp.path().join("package").join("sdk");
@@ -881,9 +893,10 @@ mod tests {
             find_extracted_sdk_dir(tmp.path(), &expected).expect("package sdk fallback"),
             sdk
         );
-    });
+    }
 
-    crate::timed_test!(find_extracted_sdk_dir_prefers_expected_name_when_nested, {
+    #[test]
+    fn find_extracted_sdk_dir_prefers_expected_name_when_nested() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let expected = tmp.path().join("MacOSX14.5.sdk");
         let wanted = tmp.path().join("thin").join("MacOSX14.5.sdk");
@@ -894,9 +907,10 @@ mod tests {
             find_extracted_sdk_dir(tmp.path(), &expected).expect("expected name wins"),
             wanted
         );
-    });
+    }
 
-    crate::timed_test!(extract_skips_windows_invalid_manpage_names, {
+    #[test]
+    fn extract_skips_windows_invalid_manpage_names() {
         let mut raw = Vec::new();
         {
             let encoder = zstd::stream::write::Encoder::new(&mut raw, 1).expect("zstd");
@@ -951,9 +965,10 @@ mod tests {
             .path()
             .join("package/sdk/usr/lib/libSystem.tbd")
             .is_file());
-    });
+    }
 
-    crate::timed_test!(extract_rejects_invalid_paths_outside_optional_man_tree, {
+    #[test]
+    fn extract_rejects_invalid_paths_outside_optional_man_tree() {
         let mut raw = Vec::new();
         {
             let encoder = zstd::stream::write::Encoder::new(&mut raw, 1).expect("zstd");
@@ -972,5 +987,5 @@ mod tests {
         let err =
             extract_tar_zst_tree(std::io::Cursor::new(raw), dest.path()).expect_err("must reject");
         assert!(err.to_string().contains("unsafe path"));
-    });
+    }
 }

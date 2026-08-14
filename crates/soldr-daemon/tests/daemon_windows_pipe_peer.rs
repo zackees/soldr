@@ -3,9 +3,8 @@
 //! when that file became host-neutral (#2493): the pipe machinery this
 //! exercises is inherently Windows-specific.
 
-use soldr_daemon::timed_test;
-
-timed_test!(accepted_pipe_reports_the_os_observed_client, {
+#[test]
+fn accepted_pipe_reports_the_os_observed_client() {
     if !matches!(
         soldr_platform::host::facts::os(),
         soldr_platform::host::facts::HostOs::Windows
@@ -60,4 +59,4 @@ timed_test!(accepted_pipe_reports_the_os_observed_client, {
                 .expect("canonical peer executable");
         assert_eq!(observed, expected);
     });
-});
+}

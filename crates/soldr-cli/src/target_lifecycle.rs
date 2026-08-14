@@ -693,7 +693,8 @@ fn contains_codegen_pair(tokens: &[String], value: &str) -> bool {
 mod tests {
     use super::*;
 
-    crate::timed_test!(every_canonical_target_has_a_stable_capability_plan, {
+    #[test]
+    fn every_canonical_target_has_a_stable_capability_plan() {
         for target in crate::core::CANONICAL_TARGETS {
             let plan = plan(target).unwrap_or_else(|error| panic!("{target}: {error}"));
             assert!(plan.canonical, "{target}");
@@ -721,9 +722,10 @@ mod tests {
                 plan.environment.keys
             );
         }
-    });
+    }
 
-    crate::timed_test!(linux_arm64_plan_uses_catalogue_gnu_toolchain_without_zig, {
+    #[test]
+    fn linux_arm64_plan_uses_catalogue_gnu_toolchain_without_zig() {
         let plan = plan_for_host("aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu").unwrap();
         assert_eq!(plan.toolchain.family, "linux-gnu");
         assert_eq!(plan.toolchain.linker, "managed gcc");
@@ -736,11 +738,12 @@ mod tests {
             "normal GNU plans must not advertise Zig: {json}"
         );
         assert!(!json.contains("cargo-zigbuild"));
-    });
+    }
 
     // soldr#2309: the linux-gnu plan advertises the C++ stdlib pin; every
     // other family stays unchanged (musl/windows/darwin ship no such pin).
-    crate::timed_test!(only_linux_gnu_plans_advertise_the_cxx_stdlib_pin, {
+    #[test]
+    fn only_linux_gnu_plans_advertise_the_cxx_stdlib_pin() {
         let host = "x86_64-unknown-linux-gnu";
         let gnu = plan_for_host("aarch64-unknown-linux-gnu", host).unwrap();
         assert!(gnu
@@ -764,9 +767,10 @@ mod tests {
                 plan.environment.keys
             );
         }
-    });
+    }
 
-    crate::timed_test!(linux_musl_plan_uses_catalogue_toolchain_without_zig, {
+    #[test]
+    fn linux_musl_plan_uses_catalogue_toolchain_without_zig() {
         let plan = plan_for_host("aarch64-unknown-linux-musl", "x86_64-unknown-linux-gnu").unwrap();
         assert_eq!(plan.toolchain.family, "linux-musl");
         assert_eq!(plan.toolchain.linker, "managed gcc");
@@ -779,9 +783,10 @@ mod tests {
             "normal musl plans must not advertise Zig: {json}"
         );
         assert!(!json.contains("cargo-zigbuild"));
-    });
+    }
 
-    crate::timed_test!(legacy_linux_override_does_not_mix_blessed_wrappers, {
+    #[test]
+    fn legacy_linux_override_does_not_mix_blessed_wrappers() {
         assert!(!should_prepare_managed_linux(
             TargetOs::Linux,
             Some(TargetAbi::Gnu),
@@ -789,9 +794,10 @@ mod tests {
             "x86_64-unknown-linux-gnu",
             true,
         ));
-    });
+    }
 
-    crate::timed_test!(host_native_gnu_uses_catalogue_toolchain, {
+    #[test]
+    fn host_native_gnu_uses_catalogue_toolchain() {
         // GNU target dispatch occurs before the Zig fallback, including
         // host-native x64, so the ABI cannot inherit the runner's linker.
         assert!(!should_prepare_managed_linux(
@@ -801,9 +807,10 @@ mod tests {
             "x86_64-unknown-linux-gnu",
             false,
         ));
-    });
+    }
 
-    crate::timed_test!(the_reported_linux_plans_match_the_catalogue_lifecycle, {
+    #[test]
+    fn the_reported_linux_plans_match_the_catalogue_lifecycle() {
         let plan = plan_for_host("x86_64-unknown-linux-gnu", "x86_64-unknown-linux-gnu").unwrap();
         assert_eq!(plan.toolchain.linker, "managed gcc");
         assert_eq!(plan.platform.provider, "soldr-toolchain");
@@ -813,9 +820,10 @@ mod tests {
         assert_eq!(musl.toolchain.linker, "managed gcc");
         assert_eq!(musl.platform.provider, "soldr-toolchain");
         assert_eq!(musl.platform.kind, "musl-linux-sysroot");
-    });
+    }
 
-    crate::timed_test!(normal_musl_never_reaches_legacy_zig, {
+    #[test]
+    fn normal_musl_never_reaches_legacy_zig() {
         assert!(!should_prepare_managed_linux(
             TargetOs::Linux,
             Some(TargetAbi::Musl),
@@ -823,9 +831,10 @@ mod tests {
             "x86_64-unknown-linux-musl",
             false,
         ));
-    });
+    }
 
-    crate::timed_test!(only_explicit_legacy_musl_can_reach_zig_fallback, {
+    #[test]
+    fn only_explicit_legacy_musl_can_reach_zig_fallback() {
         assert!(should_prepare_managed_linux(
             TargetOs::Linux,
             Some(TargetAbi::Musl),
@@ -840,15 +849,17 @@ mod tests {
             "x86_64-unknown-linux-gnu",
             false,
         ));
-    });
+    }
 
-    crate::timed_test!(noncanonical_targets_do_not_advertise_blessed_operations, {
+    #[test]
+    fn noncanonical_targets_do_not_advertise_blessed_operations() {
         let plan = plan("x86_64-pc-windows-gnu").unwrap();
         assert!(!plan.canonical);
         assert!(plan.supported_operations.is_empty());
-    });
+    }
 
-    crate::timed_test!(required_msvc_flags_merge_with_target_and_project_flags, {
+    #[test]
+    fn required_msvc_flags_merge_with_target_and_project_flags() {
         let required = "-C link-arg=/LIBPATH:/soldr/sdk";
         let merged = merge_flag_values(
             required,
@@ -858,9 +869,10 @@ mod tests {
         assert!(merged.contains("/LIBPATH:/soldr/sdk"));
         assert!(merged.contains("target-cpu=x86-64-v3"));
         assert!(merged.contains("-Dwarnings"));
-    });
+    }
 
-    crate::timed_test!(required_c_flags_merge_with_project_flags, {
+    #[test]
+    fn required_c_flags_merge_with_project_flags() {
         let merged = merge_flag_values(
             "/imsvc/soldr/sdk/include",
             Some("-DPROJECT_TARGET=1"),
@@ -869,31 +881,30 @@ mod tests {
         assert!(merged.contains("/imsvc/soldr/sdk/include"));
         assert!(merged.contains("-DPROJECT_TARGET=1"));
         assert!(merged.contains("-DPROJECT_GLOBAL=1"));
-    });
+    }
 
-    crate::timed_test!(
-        encoded_project_rustflags_keep_required_linker_search_path,
-        {
-            let merged = merge_encoded_rustflags(
-                "-Dwarnings\u{1f}-C\u{1f}target-cpu=x86-64-v3",
-                "-C link-arg=/LIBPATH:/soldr/sdk",
-                None,
-                Some("-C target-feature=+crt-static"),
-            );
-            let tokens: Vec<_> = merged.split('\u{1f}').collect();
-            assert!(tokens.contains(&"-Dwarnings"));
-            assert!(tokens.contains(&"target-cpu=x86-64-v3"));
-            assert!(tokens.contains(&"target-feature=+crt-static"));
-            assert!(tokens.contains(&"link-arg=/LIBPATH:/soldr/sdk"));
-            assert_eq!(
-                tokens.iter().filter(|token| **token == "-C").count(),
-                3,
-                "each encoded codegen option retains its -C prefix"
-            );
-        }
-    );
+    #[test]
+    fn encoded_project_rustflags_keep_required_linker_search_path() {
+        let merged = merge_encoded_rustflags(
+            "-Dwarnings\u{1f}-C\u{1f}target-cpu=x86-64-v3",
+            "-C link-arg=/LIBPATH:/soldr/sdk",
+            None,
+            Some("-C target-feature=+crt-static"),
+        );
+        let tokens: Vec<_> = merged.split('\u{1f}').collect();
+        assert!(tokens.contains(&"-Dwarnings"));
+        assert!(tokens.contains(&"target-cpu=x86-64-v3"));
+        assert!(tokens.contains(&"target-feature=+crt-static"));
+        assert!(tokens.contains(&"link-arg=/LIBPATH:/soldr/sdk"));
+        assert_eq!(
+            tokens.iter().filter(|token| **token == "-C").count(),
+            3,
+            "each encoded codegen option retains its -C prefix"
+        );
+    }
 
-    crate::timed_test!(encoded_required_flags_preserve_paths_with_spaces, {
+    #[test]
+    fn encoded_required_flags_preserve_paths_with_spaces() {
         let merged = merge_encoded_rustflags(
             "",
             "-C linker-flavor=lld-link -C link-arg=/LIBPATH:/soldr sdk/lib",
@@ -902,9 +913,10 @@ mod tests {
         );
         let tokens: Vec<_> = merged.split('\u{1f}').collect();
         assert!(tokens.contains(&"link-arg=/LIBPATH:/soldr sdk/lib"));
-    });
+    }
 
-    crate::timed_test!(applying_target_flags_consumes_higher_precedence_globals, {
+    #[test]
+    fn applying_target_flags_consumes_higher_precedence_globals() {
         let _lock = crate::TEST_PROCESS_ENV_LOCK
             .lock()
             .unwrap_or_else(|error| error.into_inner());
@@ -936,9 +948,10 @@ mod tests {
         assert!(tokens.contains(&"-Dwarnings"));
         assert!(tokens.contains(&"target-cpu=x86-64-v3"));
         assert!(tokens.contains(&"link-arg=/LIBPATH:/soldr/sdk"));
-    });
+    }
 
-    crate::timed_test!(all_compiling_cargo_surfaces_enter_the_lifecycle, {
+    #[test]
+    fn all_compiling_cargo_surfaces_enter_the_lifecycle() {
         for command in [
             "build --target linux-arm64",
             "clippy --target linux-arm64",
@@ -953,13 +966,12 @@ mod tests {
         }
         let clean = ["clean", "--target", "linux-arm64"].map(str::to_string);
         assert!(!cargo_operation_requires_prep(&clean));
-    });
+    }
 }
 
 #[cfg(test)]
 mod link_self_contained_tests {
     use super::supports_link_self_contained;
-    use crate::timed_test;
 
     // A native aarch64 release build failed with
     //   error: option `-C link-self-contained` is not supported on this target
@@ -967,26 +979,30 @@ mod link_self_contained_tests {
     // release workflow builds aarch64 natively -- every other lane drives it
     // from an x86_64 host -- so nothing else exercised this path.
     // The release failure: rustc rejects the flag outright here.
-    timed_test!(aarch64_gnu_does_not_get_link_self_contained, {
+    #[test]
+    fn aarch64_gnu_does_not_get_link_self_contained() {
         assert!(!supports_link_self_contained("aarch64-unknown-linux-gnu"));
-    });
+    }
 
     // The managed musl CRT owns startup objects. Re-injecting the Zig-only
     // self-contained override can produce a duplicate `_start` at link time.
-    timed_test!(managed_musl_never_gets_the_zig_startup_override, {
+    #[test]
+    fn managed_musl_never_gets_the_zig_startup_override() {
         assert!(!supports_link_self_contained("aarch64-unknown-linux-musl"));
         assert!(!supports_link_self_contained("x86_64-unknown-linux-musl"));
-    });
+    }
 
-    timed_test!(x86_64_gnu_still_gets_it, {
+    #[test]
+    fn x86_64_gnu_still_gets_it() {
         assert!(supports_link_self_contained("x86_64-unknown-linux-gnu"));
-    });
+    }
 
     // Unknown targets must default to *not* passing the flag: passing it
     // where unsupported is a hard error, while omitting it merely restores
     // the pre-managed-zig linking behaviour.
-    timed_test!(an_unknown_target_defaults_to_omitting_the_flag, {
+    #[test]
+    fn an_unknown_target_defaults_to_omitting_the_flag() {
         assert!(!supports_link_self_contained("riscv64gc-unknown-linux-gnu"));
         assert!(!supports_link_self_contained("powerpc64le-unknown-linux"));
-    });
+    }
 }

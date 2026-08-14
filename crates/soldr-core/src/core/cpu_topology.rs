@@ -37,7 +37,8 @@ pub fn physical_cores() -> Option<usize> {
 mod tests {
     use super::*;
 
-    crate::timed_test!(physical_cores_are_plausible_or_absent, {
+    #[test]
+    fn physical_cores_are_plausible_or_absent() {
         let logical = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
@@ -52,9 +53,10 @@ mod tests {
                 "physical cores ({cores}) cannot exceed logical CPUs ({logical})"
             );
         }
-    });
+    }
 
-    crate::timed_test!(physical_cores_is_stable_across_calls, {
+    #[test]
+    fn physical_cores_is_stable_across_calls() {
         assert_eq!(physical_cores(), physical_cores());
-    });
+    }
 }

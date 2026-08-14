@@ -15,6 +15,6 @@
 /// in `soldr-platform`; this crate calls only `crate::platform::…`.
 pub(crate) use soldr_platform as platform;
 
-pub use soldr_core::{core, defender, timed_test};
+pub use soldr_core::{core, defender};
 
 pub mod cache_lib;

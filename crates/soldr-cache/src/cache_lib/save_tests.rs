@@ -2,9 +2,9 @@
 //! production-source ceiling.
 
 use super::*;
-use crate::timed_test;
 
-timed_test!(full_profile_excludes_soldr_daemon_runtime_state, {
+#[test]
+fn full_profile_excludes_soldr_daemon_runtime_state() {
     let root = tempfile::tempdir().unwrap();
     let cache = root.path();
     std::fs::create_dir_all(cache.join("soldr-daemon")).unwrap();
@@ -23,9 +23,10 @@ timed_test!(full_profile_excludes_soldr_daemon_runtime_state, {
 
     assert_eq!(walk.included_paths, vec![payload]);
     assert_eq!(walk.excluded_files, 3);
-});
+}
 
-timed_test!(daemon_runtime_exclusion_is_top_level_only, {
+#[test]
+fn daemon_runtime_exclusion_is_top_level_only() {
     assert!(archive_always_excludes_cache_path(Path::new(
         "soldr-daemon/daemon.pid"
     )));
@@ -41,53 +42,52 @@ timed_test!(daemon_runtime_exclusion_is_top_level_only, {
     assert!(!archive_always_excludes_cache_path(Path::new(
         "soldr-daemon-cache/payload.bin"
     )));
-});
+}
 
 // The exact path from the failing bench lane. A full-profile save used to
 // collect this file, then die on it when the daemon removed its own lock
 // between the walk and the stat.
-timed_test!(
-    full_profile_never_archives_live_runtime_coordination_files,
-    {
-        let vanished = Path::new(
-            "zccache/daemon-state/embedded-v1/v1.12.17/staging/2492-0-1785226007178685948/.active.lock",
-        );
+#[test]
+fn full_profile_never_archives_live_runtime_coordination_files() {
+    let vanished = Path::new(
+        "zccache/daemon-state/embedded-v1/v1.12.17/staging/2492-0-1785226007178685948/.active.lock",
+    );
+    assert!(
+        archive_always_excludes_cache_path(vanished),
+        "the lock that broke `soldr save` must be excluded from every profile"
+    );
+
+    for rel in [
+        "zccache/daemon-state/embedded-v1/v1/staging/7-0-1/partial.bin",
+        "zccache/x/daemon.sock",
+        "zccache/x/daemon.pid",
+        "zccache/x/.lock",
+    ] {
         assert!(
-            archive_always_excludes_cache_path(vanished),
-            "the lock that broke `soldr save` must be excluded from every profile"
+            archive_always_excludes_cache_path(Path::new(rel)),
+            "{rel} is runtime coordination state, not cache payload"
         );
-
-        for rel in [
-            "zccache/daemon-state/embedded-v1/v1/staging/7-0-1/partial.bin",
-            "zccache/x/daemon.sock",
-            "zccache/x/daemon.pid",
-            "zccache/x/.lock",
-        ] {
-            assert!(
-                archive_always_excludes_cache_path(Path::new(rel)),
-                "{rel} is runtime coordination state, not cache payload"
-            );
-        }
-
-        // The exclusion must stay narrow: real payload that merely sits deep
-        // in the same tree still gets archived, or the cache restores empty.
-        for rel in [
-            "zccache/daemon-state/embedded-v1/v1/objects/ab/cdef.o",
-            "zccache/index.redb",
-            "registry/cache/foo-1.0.crate",
-        ] {
-            assert!(
-                !archive_always_excludes_cache_path(Path::new(rel)),
-                "{rel} is cache payload and must still be archived"
-            );
-        }
     }
-);
+
+    // The exclusion must stay narrow: real payload that merely sits deep
+    // in the same tree still gets archived, or the cache restores empty.
+    for rel in [
+        "zccache/daemon-state/embedded-v1/v1/objects/ab/cdef.o",
+        "zccache/index.redb",
+        "registry/cache/foo-1.0.crate",
+    ] {
+        assert!(
+            !archive_always_excludes_cache_path(Path::new(rel)),
+            "{rel} is cache payload and must still be archived"
+        );
+    }
+}
 
 // Defence in depth: even with the exclusion, walk-then-stat is two passes
 // over a tree a live daemon writes, so the window cannot be closed
 // entirely.
-timed_test!(a_file_that_vanishes_after_the_walk_is_skipped_not_fatal, {
+#[test]
+fn a_file_that_vanishes_after_the_walk_is_skipped_not_fatal() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let cache = tmp.path();
     let missing = cache.join("gone.bin");
@@ -106,9 +106,10 @@ timed_test!(a_file_that_vanishes_after_the_walk_is_skipped_not_fatal, {
         cache_file_entry(cache, &present).expect("stat").is_some(),
         "an existing file must still produce an entry"
     );
-});
+}
 
-timed_test!(legacy_archive_cannot_mutate_live_daemon_runtime, {
+#[test]
+fn legacy_archive_cannot_mutate_live_daemon_runtime() {
     let root = tempfile::tempdir().unwrap();
     let archived_cache = root.path().join("archived-cache");
     let restore_cache = root.path().join("restore-cache");
@@ -165,9 +166,10 @@ timed_test!(legacy_archive_cannot_mutate_live_daemon_runtime, {
     );
     assert!(!live_runtime.join("archived.pid").exists());
     assert!(!live_runtime.join("link").exists());
-});
+}
 
-timed_test!(delta_ignores_daemon_runtime_from_legacy_base_manifest, {
+#[test]
+fn delta_ignores_daemon_runtime_from_legacy_base_manifest() {
     let root = tempfile::tempdir().unwrap();
     let cache = root.path().join("cache");
     std::fs::create_dir_all(&cache).unwrap();
@@ -204,9 +206,10 @@ timed_test!(delta_ignores_daemon_runtime_from_legacy_base_manifest, {
 
     assert_eq!(report.deleted_cache_files, 0);
     assert!(delta.deleted_cache_paths.is_empty());
-});
+}
 
-timed_test!(cargo_input_inventory_selects_declared_inputs, {
+#[test]
+fn cargo_input_inventory_selects_declared_inputs() {
     let root = tempfile::tempdir().unwrap();
     let workspace = root.path().join("workspace");
     let target = workspace.join("target");
@@ -231,9 +234,10 @@ timed_test!(cargo_input_inventory_selects_declared_inputs, {
     assert!(files.contains(&PathBuf::from("Cargo.toml")));
     assert!(files.contains(&PathBuf::from("Cargo.lock")));
     assert!(!files.contains(&PathBuf::from("irrelevant.log")));
-});
+}
 
-timed_test!(cargo_input_inventory_falls_back_on_malformed_dep_info, {
+#[test]
+fn cargo_input_inventory_falls_back_on_malformed_dep_info() {
     let root = tempfile::tempdir().unwrap();
     let workspace = root.path().join("workspace");
     let target = workspace.join("target/debug/deps");
@@ -244,9 +248,10 @@ timed_test!(cargo_input_inventory_falls_back_on_malformed_dep_info, {
             .unwrap()
             .is_none()
     );
-});
+}
 
-timed_test!(profile_line_matches_documented_shape, {
+#[test]
+fn profile_line_matches_documented_shape() {
     // Synthetic per-file latencies: 6 values with known order so the
     // percentile math is hand-checkable. p50/p95/p99 indices on a
     // 6-element vec are round((6-1)*p): 3 → 250, 5 → 1200, 5 → 1200.
@@ -280,9 +285,10 @@ timed_test!(profile_line_matches_documented_shape, {
     assert!(line.contains("p95_us=1200"), "p95 wrong: {line}");
     assert!(line.contains("p99_us=1200"), "p99 wrong: {line}");
     assert!(line.contains("cache_files=6"), "files count wrong: {line}");
-});
+}
 
-timed_test!(profile_line_handles_empty_latencies, {
+#[test]
+fn profile_line_handles_empty_latencies() {
     // No per-file data (e.g. cache had zero regular entries) — must
     // still emit a parseable line, with zeros for the percentiles.
     let line = format_profile_line(
@@ -299,14 +305,15 @@ timed_test!(profile_line_handles_empty_latencies, {
     assert!(line.contains("p95_us=0"), "{line}");
     assert!(line.contains("p99_us=0"), "{line}");
     assert!(line.contains("workers={}"), "{line}");
-});
+}
 
 // extract_one is the worker entrypoint. Pointing it at a destination
 // whose parent path conflicts with a pre-existing regular file makes
 // create_dir_all fail. Gives us a deterministic, OS-agnostic failure
 // injection without patching production code. The first-error-wins
 // semantic is exercised end-to-end in tests/save_roundtrip.rs.
-timed_test!(extract_one_returns_error_with_failing_path, {
+#[test]
+fn extract_one_returns_error_with_failing_path() {
     let tmp = tempfile::tempdir().unwrap();
     let blocking_file = tmp.path().join("not-a-dir");
     std::fs::write(&blocking_file, b"i am a file").unwrap();
@@ -327,7 +334,7 @@ timed_test!(extract_one_returns_error_with_failing_path, {
         msg.contains("not-a-dir"),
         "error must mention the offending path: {msg}"
     );
-});
+}
 
 // #1909: dropping the dispatch without `finish()` -- which is what
 // every `?` in the driver loop does -- must still wait for workers.
@@ -342,8 +349,9 @@ timed_test!(extract_one_returns_error_with_failing_path, {
 // satisfied it blocks forever, so a regression hangs this test rather
 // than failing it. That is deliberate -- there is no non-racy way to
 // observe "a worker is still running" from outside, and a hang is an
-// unambiguous signal. `timed_test!` bounds it.
-timed_test!(dropping_dispatch_without_finish_still_waits_for_workers, {
+// unambiguous signal. The nextest budget bounds it.
+#[test]
+fn dropping_dispatch_without_finish_still_waits_for_workers() {
     let tmp = tempfile::tempdir().unwrap();
     let pool = build_pool(Some(2)).expect("pool");
     let err_slot: Arc<Mutex<Option<SaveLoadError>>> = Arc::new(Mutex::new(None));
@@ -380,13 +388,14 @@ timed_test!(dropping_dispatch_without_finish_still_waits_for_workers, {
     );
     assert_eq!(counter.load(Ordering::Relaxed), 1, "job should be counted");
     assert!(err_slot.lock().unwrap().is_none(), "no worker error");
-});
+}
 
 // #1548 — purely-lexical symlink-target containment. Runs on every
 // platform (no symlink creation involved), which is what gives the
 // Windows lanes coverage of the validation logic that the
 // #[cfg(unix)] integration tests exercise end-to-end.
-timed_test!(symlink_target_validation_accepts_safe_relative_targets, {
+#[test]
+fn symlink_target_validation_accepts_safe_relative_targets() {
     // Sibling file.
     assert_eq!(
         resolve_symlink_target_in_root(Path::new("deps/link.rlib"), "libfoo.rlib"),
@@ -407,9 +416,10 @@ timed_test!(symlink_target_validation_accepts_safe_relative_targets, {
         resolve_symlink_target_in_root(Path::new("link"), "payload.bin"),
         Some(PathBuf::from("payload.bin"))
     );
-});
+}
 
-timed_test!(symlink_target_validation_rejects_unsafe_targets, {
+#[test]
+fn symlink_target_validation_rejects_unsafe_targets() {
     // Absolute POSIX target — rejected even when it would point back
     // inside the root; we only ever preserve relative links.
     assert_eq!(
@@ -447,7 +457,7 @@ timed_test!(symlink_target_validation_rejects_unsafe_targets, {
             "resolved path must stay inside the root: {resolved:?}"
         );
     }
-});
+}
 
 // #1547 — the workspace source walker must not exclude a directory by
 // *name* alone: a `target/` directory that isn't the real Cargo output
@@ -455,115 +465,109 @@ timed_test!(symlink_target_validation_rejects_unsafe_targets, {
 // be hashed. Only the resolved Cargo target dir(s) are excluded, and
 // `.git` / `node_modules` stay excluded by name (never legitimate
 // source basenames).
-timed_test!(
-    walk_workspace_files_hashes_nested_dir_literally_named_target,
-    {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
+#[test]
+fn walk_workspace_files_hashes_nested_dir_literally_named_target() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
 
-        // Legitimate source: a package sub-module directory that happens
-        // to be named "target", nested under src/ — NOT the Cargo build
-        // output dir.
-        std::fs::create_dir_all(root.join("src/target")).unwrap();
-        std::fs::write(root.join("src/target/mod.rs"), b"pub fn noop() {}").unwrap();
-        std::fs::write(root.join("src/lib.rs"), b"mod target;").unwrap();
+    // Legitimate source: a package sub-module directory that happens
+    // to be named "target", nested under src/ — NOT the Cargo build
+    // output dir.
+    std::fs::create_dir_all(root.join("src/target")).unwrap();
+    std::fs::write(root.join("src/target/mod.rs"), b"pub fn noop() {}").unwrap();
+    std::fs::write(root.join("src/lib.rs"), b"mod target;").unwrap();
 
-        // The REAL Cargo output dir at the workspace root — must stay
-        // excluded.
-        std::fs::create_dir_all(root.join("target/debug")).unwrap();
-        std::fs::write(root.join("target/debug/build-artifact.bin"), b"junk").unwrap();
+    // The REAL Cargo output dir at the workspace root — must stay
+    // excluded.
+    std::fs::create_dir_all(root.join("target/debug")).unwrap();
+    std::fs::write(root.join("target/debug/build-artifact.bin"), b"junk").unwrap();
 
-        // .git and node_modules — must stay excluded regardless of depth.
-        std::fs::create_dir_all(root.join(".git/objects")).unwrap();
-        std::fs::write(root.join(".git/objects/pack.idx"), b"gitjunk").unwrap();
-        std::fs::create_dir_all(root.join("node_modules/leftpad")).unwrap();
-        std::fs::write(root.join("node_modules/leftpad/index.js"), b"jsjunk").unwrap();
+    // .git and node_modules — must stay excluded regardless of depth.
+    std::fs::create_dir_all(root.join(".git/objects")).unwrap();
+    std::fs::write(root.join(".git/objects/pack.idx"), b"gitjunk").unwrap();
+    std::fs::create_dir_all(root.join("node_modules/leftpad")).unwrap();
+    std::fs::write(root.join("node_modules/leftpad/index.js"), b"jsjunk").unwrap();
 
-        let files = walk_workspace_files(root, None).unwrap();
-        let rel_strs: Vec<String> = files
+    let files = walk_workspace_files(root, None).unwrap();
+    let rel_strs: Vec<String> = files
+        .iter()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .collect();
+
+    assert!(
+        rel_strs.contains(&"src/target/mod.rs".to_string()),
+        "src/target/mod.rs must be hashed as legitimate source, got: {rel_strs:?}"
+    );
+    assert!(
+        rel_strs.contains(&"src/lib.rs".to_string()),
+        "src/lib.rs must be hashed, got: {rel_strs:?}"
+    );
+    assert!(
+        !rel_strs
             .iter()
-            .map(|p| p.to_string_lossy().replace('\\', "/"))
-            .collect();
-
-        assert!(
-            rel_strs.contains(&"src/target/mod.rs".to_string()),
-            "src/target/mod.rs must be hashed as legitimate source, got: {rel_strs:?}"
-        );
-        assert!(
-            rel_strs.contains(&"src/lib.rs".to_string()),
-            "src/lib.rs must be hashed, got: {rel_strs:?}"
-        );
-        assert!(
-            !rel_strs
-                .iter()
-                .any(|p| p.starts_with("target/") || p == "target"),
-            "the real workspace target/ dir must stay excluded, got: {rel_strs:?}"
-        );
-        assert!(
-            !rel_strs.iter().any(|p| p.starts_with(".git/")),
-            ".git must stay excluded, got: {rel_strs:?}"
-        );
-        assert!(
-            !rel_strs.iter().any(|p| p.starts_with("node_modules/")),
-            "node_modules must stay excluded, got: {rel_strs:?}"
-        );
-    }
-);
+            .any(|p| p.starts_with("target/") || p == "target"),
+        "the real workspace target/ dir must stay excluded, got: {rel_strs:?}"
+    );
+    assert!(
+        !rel_strs.iter().any(|p| p.starts_with(".git/")),
+        ".git must stay excluded, got: {rel_strs:?}"
+    );
+    assert!(
+        !rel_strs.iter().any(|p| p.starts_with("node_modules/")),
+        "node_modules must stay excluded, got: {rel_strs:?}"
+    );
+}
 
 // #1547 mutation check: CARGO_TARGET_DIR overrides must also be
 // resolved-path excluded even though they don't literally live under
 // `<workspace>/target`.
-timed_test!(
-    walk_workspace_files_excludes_cargo_target_dir_env_override,
-    {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(root.join("src/lib.rs"), b"// real source").unwrap();
-        // Override target dir lives INSIDE the workspace under a
-        // differently-named directory (simulating CARGO_TARGET_DIR=out).
-        std::fs::create_dir_all(root.join("out/debug")).unwrap();
-        std::fs::write(root.join("out/debug/artifact.bin"), b"junk").unwrap();
-        // A directory named "out" is NOT excluded when CARGO_TARGET_DIR is
-        // unset — sanity check the negative case first.
-        let baseline = walk_workspace_files(root, None).unwrap();
-        let baseline_strs: Vec<String> = baseline
-            .iter()
-            .map(|p| p.to_string_lossy().replace('\\', "/"))
-            .collect();
-        assert!(
-            baseline_strs.contains(&"out/debug/artifact.bin".to_string()),
-            "without CARGO_TARGET_DIR, out/ is ordinary source: {baseline_strs:?}"
-        );
-    }
-);
+#[test]
+fn walk_workspace_files_excludes_cargo_target_dir_env_override() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/lib.rs"), b"// real source").unwrap();
+    // Override target dir lives INSIDE the workspace under a
+    // differently-named directory (simulating CARGO_TARGET_DIR=out).
+    std::fs::create_dir_all(root.join("out/debug")).unwrap();
+    std::fs::write(root.join("out/debug/artifact.bin"), b"junk").unwrap();
+    // A directory named "out" is NOT excluded when CARGO_TARGET_DIR is
+    // unset — sanity check the negative case first.
+    let baseline = walk_workspace_files(root, None).unwrap();
+    let baseline_strs: Vec<String> = baseline
+        .iter()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .collect();
+    assert!(
+        baseline_strs.contains(&"out/debug/artifact.bin".to_string()),
+        "without CARGO_TARGET_DIR, out/ is ordinary source: {baseline_strs:?}"
+    );
+}
 
 // #1547 — a directory named "target" that is NOT at the workspace
 // root (and not a CARGO_TARGET_DIR/CARGO_BUILD_TARGET_DIR override)
 // must never be excluded, including deeper nesting than one level.
-timed_test!(
-    walk_workspace_files_hashes_deeply_nested_target_named_dirs,
-    {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        std::fs::create_dir_all(root.join("crates/foo/src/target")).unwrap();
-        std::fs::write(
-            root.join("crates/foo/src/target/mod.rs"),
-            b"pub struct Target;",
-        )
-        .unwrap();
+#[test]
+fn walk_workspace_files_hashes_deeply_nested_target_named_dirs() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("crates/foo/src/target")).unwrap();
+    std::fs::write(
+        root.join("crates/foo/src/target/mod.rs"),
+        b"pub struct Target;",
+    )
+    .unwrap();
 
-        let files = walk_workspace_files(root, None).unwrap();
-        let rel_strs: Vec<String> = files
-            .iter()
-            .map(|p| p.to_string_lossy().replace('\\', "/"))
-            .collect();
-        assert!(
-            rel_strs.contains(&"crates/foo/src/target/mod.rs".to_string()),
-            "deeply nested target-named source must be hashed: {rel_strs:?}"
-        );
-    }
-);
+    let files = walk_workspace_files(root, None).unwrap();
+    let rel_strs: Vec<String> = files
+        .iter()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .collect();
+    assert!(
+        rel_strs.contains(&"crates/foo/src/target/mod.rs".to_string()),
+        "deeply nested target-named source must be hashed: {rel_strs:?}"
+    );
+}
 #[cfg(test)]
 mod etxtbsy_tests {
     use super::*;
@@ -585,7 +589,8 @@ mod etxtbsy_tests {
         }
     }
 
-    crate::timed_test!(staging_path_is_a_sibling_of_the_destination, {
+    #[test]
+    fn staging_path_is_a_sibling_of_the_destination() {
         // Same directory or `rename` stops being atomic -- a temp dir can sit
         // on a different filesystem, where rename degrades to copy+delete and
         // reintroduces the very window this fix closes.
@@ -597,9 +602,10 @@ mod etxtbsy_tests {
             "staging file must be a sibling so the rename stays atomic"
         );
         assert_ne!(staged.file_name(), dest.file_name());
-    });
+    }
 
-    crate::timed_test!(staging_paths_are_unique_across_calls, {
+    #[test]
+    fn staging_paths_are_unique_across_calls() {
         // Concurrent workers restore different entries simultaneously; two
         // collisions would corrupt each other's content.
         let dest = Path::new("/tmp/target/debug/build/x/build-script-build");
@@ -609,9 +615,10 @@ mod etxtbsy_tests {
             a, b,
             "concurrent extract workers must not share a staging path"
         );
-    });
+    }
 
-    crate::timed_test!(extract_leaves_no_staging_file_behind, {
+    #[test]
+    fn extract_leaves_no_staging_file_behind() {
         // A stray `.soldr-tmp` inside target/ would survive into the next
         // build and confuse cargo.
         let tmp = tempfile::tempdir().unwrap();
@@ -626,9 +633,10 @@ mod etxtbsy_tests {
             .filter(|n| n.contains("soldr-tmp"))
             .collect();
         assert!(strays.is_empty(), "staging files left behind: {strays:?}");
-    });
+    }
 
-    crate::timed_test!(extract_replaces_an_existing_destination_atomically, {
+    #[test]
+    fn extract_replaces_an_existing_destination_atomically() {
         // Restores land on top of a previous build's artifacts. The rename
         // must replace the old inode rather than fail on it.
         let tmp = tempfile::tempdir().unwrap();
@@ -637,9 +645,10 @@ mod etxtbsy_tests {
 
         extract_one(&regular_job(dest.clone(), b"fresh", None)).expect("extract over existing");
         assert_eq!(std::fs::read(&dest).unwrap(), b"fresh");
-    });
+    }
 
-    crate::timed_test!(restored_executable_keeps_its_mode_through_the_rename, {
+    #[test]
+    fn restored_executable_keeps_its_mode_through_the_rename() {
         // Unix mode bits only exist on unix hosts; the facade's `mode()`
         // returns `None` on Windows, so the test self-skips there.
         if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
@@ -659,9 +668,10 @@ mod etxtbsy_tests {
         let mode =
             crate::platform::fs::permissions::mode(&dest).expect("stat restored mode") & 0o777;
         assert_eq!(mode, 0o755, "executable bit must survive the rename");
-    });
+    }
 
-    crate::timed_test!(restored_executable_can_actually_be_executed, {
+    #[test]
+    fn restored_executable_can_actually_be_executed() {
         // Unix mode bits only exist on unix hosts; the facade's `mode()`
         // returns `None` on Windows, so the test self-skips there.
         if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
@@ -686,5 +696,5 @@ mod etxtbsy_tests {
             .status()
             .expect("restored build script must be executable immediately after restore");
         assert_eq!(status.code(), Some(7));
-    });
+    }
 }

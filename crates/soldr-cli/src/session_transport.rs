@@ -697,15 +697,17 @@ where
 mod tests {
     use super::*;
 
-    crate::timed_test!(pre_output_error_is_attributed_without_output, {
+    #[test]
+    fn pre_output_error_is_attributed_without_output() {
         let err = SessionError::pre_output(io::Error::other("connect refused"));
         assert!(
             !err.output_started,
             "a setup failure must be identified as pre-output"
         );
-    });
+    }
 
-    crate::timed_test!(busy_class_is_bounded_and_missing_endpoints_are_concrete, {
+    #[test]
+    fn busy_class_is_bounded_and_missing_endpoints_are_concrete() {
         assert!(broker_connect_is_busy(
             &io::Error::from_raw_os_error(231),
             Duration::from_millis(500)
@@ -724,9 +726,10 @@ mod tests {
                 Duration::from_millis(51)
             ));
         }
-    });
+    }
 
-    crate::timed_test!(hello_retry_is_limited_to_pre_reply_disconnects, {
+    #[test]
+    fn hello_retry_is_limited_to_pre_reply_disconnects() {
         assert!(broker_hello_retryable(&io::Error::other(
             "broker closed before Hello reply"
         )));
@@ -741,9 +744,10 @@ mod tests {
             io::ErrorKind::TimedOut,
             "route acquisition ceiling"
         )));
-    });
+    }
 
-    crate::timed_test!(relayed_diagnostic_suppresses_the_silent_fault_annotation, {
+    #[test]
+    fn relayed_diagnostic_suppresses_the_silent_fault_annotation() {
         assert!(mark_relayed_output(
             b"compiler terminated by a Unix signal\n"
         ));
@@ -752,9 +756,10 @@ mod tests {
             -1,
             crate::exit_guard::spoke()
         ));
-    });
+    }
 
-    crate::timed_test!(accepted_relay_that_never_negotiates_is_bounded, {
+    #[test]
+    fn accepted_relay_that_never_negotiates_is_bounded() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -776,9 +781,10 @@ mod tests {
             assert_eq!(error.kind(), io::ErrorKind::TimedOut);
             assert!(error.to_string().contains("first-response deadline"));
         });
-    });
+    }
 
-    crate::timed_test!(continuous_progress_is_still_bounded_by_route_ceiling, {
+    #[test]
+    fn continuous_progress_is_still_bounded_by_route_ceiling() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -830,9 +836,10 @@ mod tests {
             assert_eq!(error.kind(), io::ErrorKind::TimedOut);
             assert!(error.to_string().contains("route acquisition ceiling"));
         });
-    });
+    }
 
-    crate::timed_test!(compile_service_that_never_publishes_is_bounded, {
+    #[test]
+    fn compile_service_that_never_publishes_is_bounded() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -846,5 +853,5 @@ mod tests {
             assert_eq!(err.source.kind(), io::ErrorKind::TimedOut);
             assert!(!err.output_started);
         });
-    });
+    }
 }

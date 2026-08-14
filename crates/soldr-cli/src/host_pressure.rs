@@ -262,12 +262,14 @@ mod tests {
     // The whole check hinges on this constant matching what
     // `ExitStatus::code()` actually returns, which is the sign-reinterpreted
     // NTSTATUS rather than the literal 0xC0000142.
-    crate::timed_test!(status_constant_is_the_sign_reinterpreted_ntstatus, {
+    #[test]
+    fn status_constant_is_the_sign_reinterpreted_ntstatus() {
         assert_eq!(STATUS_DLL_INIT_FAILED, -1_073_741_502);
         assert_eq!(STATUS_DLL_INIT_FAILED as u32, 0xC000_0142);
-    });
+    }
 
-    crate::timed_test!(recognizes_only_the_process_init_failure_code, {
+    #[test]
+    fn recognizes_only_the_process_init_failure_code() {
         assert!(is_process_init_failure(STATUS_DLL_INIT_FAILED));
         // Ordinary compiler failures must not be explained away as a host
         // condition -- that would turn a real build error into a "just retry"
@@ -278,9 +280,10 @@ mod tests {
                 "exit code {code} must not be treated as process-init failure"
             );
         }
-    });
+    }
 
-    crate::timed_test!(note_names_the_tool_and_contradicts_the_toolchain_advice, {
+    #[test]
+    fn note_names_the_tool_and_contradicts_the_toolchain_advice() {
         let note = process_init_failure_note("link.exe");
         assert!(note.contains("link.exe"), "{note}");
         assert!(note.contains("STATUS_DLL_INIT_FAILED"), "{note}");
@@ -288,14 +291,15 @@ mod tests {
         // The rustc-emitted "repair your build tools" line is the specific
         // false lead this exists to counter, so the rebuttal must be explicit.
         assert!(note.contains("false lead"), "{note}");
-    });
+    }
 
     // Regression guard for the correction in this module's docs: the first
     // shipped wording asserted handle exhaustion, and 0xC0000142 was then
     // observed on a host with entirely healthy handles. Naming one unmeasured
     // cause sends people to fix the wrong thing -- the precise failure this
     // module exists to prevent -- so the note must offer the alternatives.
-    crate::timed_test!(note_does_not_assert_a_single_unmeasured_cause, {
+    #[test]
+    fn note_does_not_assert_a_single_unmeasured_cause() {
         let note = process_init_failure_note("rustc.exe");
         assert!(
             note.contains("desktop heap"),
@@ -314,9 +318,10 @@ mod tests {
             note.contains("does not mean the condition is gone"),
             "{note}"
         );
-    });
+    }
 
-    crate::timed_test!(reports_only_on_the_matching_exit_code, {
+    #[test]
+    fn reports_only_on_the_matching_exit_code() {
         let mut sink = Vec::new();
         assert!(!report_process_init_failure(&mut sink, "rustc.exe", 1));
         assert!(sink.is_empty(), "a plain exit 1 must stay silent");
@@ -329,14 +334,15 @@ mod tests {
         ));
         let out = String::from_utf8(sink).expect("utf8");
         assert!(out.contains("rustc.exe"), "{out}");
-    });
+    }
 
     // --- soldr#2021: live host-pressure snapshot -------------------------
 
     // The image classifier drives the compiler-process count, so it must
     // match exactly the images the issue names (case-insensitively) and the
     // cc1*/clang* prefix families, and nothing else.
-    crate::timed_test!(compiler_image_matches_toolchain_processes_only, {
+    #[test]
+    fn compiler_image_matches_toolchain_processes_only() {
         for yes in [
             "rustc.exe",
             "RUSTC.EXE",
@@ -363,11 +369,12 @@ mod tests {
                 "should NOT classify as compiler: {no}"
             );
         }
-    });
+    }
 
     // The formatter is pure: given a fully-populated struct it must surface
     // every field, the tool name, and the issue reference.
-    crate::timed_test!(format_snapshot_renders_all_known_fields, {
+    #[test]
+    fn format_snapshot_renders_all_known_fields() {
         let snap = HostPressureSnapshot {
             jobs: Some(16),
             total_processes: Some(412),
@@ -383,12 +390,13 @@ mod tests {
         assert!(out.contains("9"), "compiler procs: {out}");
         assert!(out.contains("56000"), "commit used: {out}");
         assert!(out.contains("270000"), "commit limit: {out}");
-    });
+    }
 
     // Every probe may fail on the already-failing path, so an all-None struct
     // must still render -- as "unknown", so a missed probe is distinguishable
     // from a genuine zero.
-    crate::timed_test!(format_snapshot_renders_unknown_for_missing_probes, {
+    #[test]
+    fn format_snapshot_renders_unknown_for_missing_probes() {
         let snap = HostPressureSnapshot::default();
         let out = format_snapshot(&snap, "rustc.exe");
         assert!(out.contains("rustc.exe"), "{out}");
@@ -398,12 +406,13 @@ mod tests {
         );
         // No panic and no empty output is the real contract here.
         assert!(!out.is_empty(), "{out}");
-    });
+    }
 
     // The capture entry point must never panic and must always populate at
     // least `jobs` (available on every platform). This exercises the real
     // probes on Windows and the stub elsewhere.
-    crate::timed_test!(capture_snapshot_is_infallible_and_reports_jobs, {
+    #[test]
+    fn capture_snapshot_is_infallible_and_reports_jobs() {
         let snap = capture_snapshot();
         assert!(
             snap.jobs.is_some(),
@@ -411,11 +420,12 @@ mod tests {
         );
         // Formatting the real capture must also never panic.
         let _ = format_snapshot(&snap, "rustc.exe");
-    });
+    }
 
     // CARGO_BUILD_JOBS, when set and parseable, wins over the detected core
     // count -- that is the knob the note tells users to turn.
-    crate::timed_test!(resolve_jobs_prefers_cargo_build_jobs, {
+    #[test]
+    fn resolve_jobs_prefers_cargo_build_jobs() {
         // NOTE: single-threaded env mutation within one test body.
         let prev = std::env::var("CARGO_BUILD_JOBS").ok();
         std::env::set_var("CARGO_BUILD_JOBS", "3");
@@ -427,5 +437,5 @@ mod tests {
             Some(v) => std::env::set_var("CARGO_BUILD_JOBS", v),
             None => std::env::remove_var("CARGO_BUILD_JOBS"),
         }
-    });
+    }
 }

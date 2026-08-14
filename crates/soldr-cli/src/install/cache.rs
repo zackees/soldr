@@ -189,7 +189,7 @@ mod tests {
         SoldrPaths::with_root(root)
     }
 
-    #[test] // allow-bare-test: soldr#2310 install unit test (sync+fast); timed_test! migration is a follow-up
+    #[test]
     fn entry_is_expired_respects_ttl_and_min_age() {
         let ttl = 2 * 24 * 3600; // 2 days
         let min = MIN_AGE_SECS;
@@ -203,7 +203,7 @@ mod tests {
         assert!(!entry_is_expired(min, ttl, min));
     }
 
-    #[test] // allow-bare-test: soldr#2310 install unit test (sync+fast); timed_test! migration is a follow-up
+    #[test]
     fn ttl_secs_env_overrides_config() {
         std::env::remove_var(TTL_DAYS_ENV_VAR);
         assert_eq!(ttl_secs(2), 2 * 24 * 3600);
@@ -212,7 +212,8 @@ mod tests {
         std::env::remove_var(TTL_DAYS_ENV_VAR);
     }
 
-    crate::timed_test!(partial_marker_hides_incomplete_entry, {
+    #[test]
+    fn partial_marker_hides_incomplete_entry() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = synthetic_paths(tmp.path());
         let dir = source_cache_dir(&paths, "github.com", "o", "r", "abc123");
@@ -220,9 +221,10 @@ mod tests {
         assert!(!is_complete(&dir), "a .partial entry is not a cache hit");
         clear_partial(&dir).unwrap();
         assert!(is_complete(&dir), "cleared entry is a cache hit");
-    });
+    }
 
-    crate::timed_test!(sweep_removes_expired_but_keeps_fresh_and_partial, {
+    #[test]
+    fn sweep_removes_expired_but_keeps_fresh_and_partial() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = synthetic_paths(tmp.path());
 
@@ -246,5 +248,5 @@ mod tests {
         assert!(!old.exists());
         assert!(fresh.exists());
         assert!(inflight.exists());
-    });
+    }
 }

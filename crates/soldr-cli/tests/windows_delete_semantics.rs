@@ -23,7 +23,6 @@
 //! it) are recorded on soldr#2199; they need a live child process to observe
 //! and are a poor fit for a unit test.
 
-use soldr_cli::timed_test;
 use std::fs;
 use std::path::Path;
 
@@ -40,7 +39,8 @@ fn make_read_only(path: &Path) {
 
 // The shape soldr#2199 reported: a cache-restored artifact under `deps/`
 // carrying the read-only attribute it shares with the CAS object.
-timed_test!(read_only_files_do_not_block_a_recursive_delete, {
+#[test]
+fn read_only_files_do_not_block_a_recursive_delete() {
     if !matches!(
         soldr_platform::host::facts::os(),
         soldr_platform::host::facts::HostOs::Windows
@@ -65,11 +65,12 @@ timed_test!(read_only_files_do_not_block_a_recursive_delete, {
          the disproof on that issue needs revisiting",
     );
     assert!(!target.exists());
-});
+}
 
 // soldr#2200 extends the proposed ban to `remove_file` on the same grounds,
 // so the same claim is checked for it.
-timed_test!(read_only_files_do_not_block_a_single_file_delete, {
+#[test]
+fn read_only_files_do_not_block_a_single_file_delete() {
     if !matches!(
         soldr_platform::host::facts::os(),
         soldr_platform::host::facts::HostOs::Windows
@@ -86,12 +87,13 @@ timed_test!(read_only_files_do_not_block_a_single_file_delete, {
          if this fails, the soldr#2200 premise holds for remove_file",
     );
     assert!(!file.exists());
-});
+}
 
 // A read-only *directory* is the case neither issue tested, and it is the one
 // that would still surprise: the attribute means something different on a
 // directory, so the answer is not implied by the file cases above.
-timed_test!(a_read_only_directory_does_not_block_its_parents_delete, {
+#[test]
+fn a_read_only_directory_does_not_block_its_parents_delete() {
     if !matches!(
         soldr_platform::host::facts::os(),
         soldr_platform::host::facts::HostOs::Windows
@@ -107,4 +109,4 @@ timed_test!(a_read_only_directory_does_not_block_its_parents_delete, {
 
     fs::remove_dir_all(&target).expect("a read-only directory must not block the delete either");
     assert!(!target.exists());
-});
+}

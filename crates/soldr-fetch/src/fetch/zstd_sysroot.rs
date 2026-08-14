@@ -79,7 +79,8 @@ pub async fn ensure_zstd_sysroot(
 mod tests {
     use super::*;
 
-    crate::timed_test!(slug_for_supported_triples, {
+    #[test]
+    fn slug_for_supported_triples() {
         assert_eq!(
             catalogue_slug_for("x86_64-pc-windows-msvc"),
             Some("windows-x64")
@@ -117,13 +118,14 @@ mod tests {
             Some("linux-arm64-musl")
         );
         assert_eq!(catalogue_slug_for("wasm32-unknown-unknown"), None);
-    });
+    }
 
-    crate::timed_test!(asset_url_layout_matches_catalogue, {
+    #[test]
+    fn asset_url_layout_matches_catalogue() {
         let u = asset_url_for(MANAGED_ZSTD_VERSION, "linux-x64-musl");
         assert!(u.contains("/zstd/1.5.7/linux-x64-musl/"));
         assert!(u.ends_with("/bundle.tar.zst"));
-    });
+    }
 
     // The original `ensure_zstd_sysroot_returns_not_yet_ingested` unit
     // test was removed in the soldr#1064 phase B follow-up: now that the

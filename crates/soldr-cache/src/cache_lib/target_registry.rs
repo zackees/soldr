@@ -597,7 +597,8 @@ mod tests {
         crate::platform::fs::links::create(&src.to_string_lossy(), dst, true).is_ok()
     }
 
-    crate::timed_test!(directory_size_does_not_follow_a_symlink_cycle, {
+    #[test]
+    fn directory_size_does_not_follow_a_symlink_cycle() {
         // Before #1662 the per-entry check used `DirEntry::metadata`, which
         // follows the link, so `is_symlink()` never fired and this recursed
         // until the stack blew.
@@ -614,28 +615,27 @@ mod tests {
         // The assertion is that this terminates at all; the size must also
         // count only the one real file, not the cycle's repeats.
         assert_eq!(directory_size(root.path()), 10);
-    });
+    }
 
-    crate::timed_test!(
-        directory_size_ignores_a_symlink_pointing_outside_the_tree,
-        {
-            let root = tempdir().expect("tempdir");
-            let outside = tempdir().expect("tempdir");
-            std::fs::write(outside.path().join("huge.bin"), vec![0u8; 4096]).expect("write");
-            std::fs::write(root.path().join("small.bin"), b"abc").expect("write");
+    #[test]
+    fn directory_size_ignores_a_symlink_pointing_outside_the_tree() {
+        let root = tempdir().expect("tempdir");
+        let outside = tempdir().expect("tempdir");
+        std::fs::write(outside.path().join("huge.bin"), vec![0u8; 4096]).expect("write");
+        std::fs::write(root.path().join("small.bin"), b"abc").expect("write");
 
-            if !try_symlink_dir(outside.path(), &root.path().join("escape")) {
-                eprintln!("skipping: cannot create directory symlinks here");
-                return;
-            }
-
-            // Only `small.bin`. Counting the linked-in tree would make an
-            // unrelated directory look like it belonged to this target.
-            assert_eq!(directory_size(root.path()), 3);
+        if !try_symlink_dir(outside.path(), &root.path().join("escape")) {
+            eprintln!("skipping: cannot create directory symlinks here");
+            return;
         }
-    );
 
-    crate::timed_test!(directory_size_and_files_is_symlink_safe, {
+        // Only `small.bin`. Counting the linked-in tree would make an
+        // unrelated directory look like it belonged to this target.
+        assert_eq!(directory_size(root.path()), 3);
+    }
+
+    #[test]
+    fn directory_size_and_files_is_symlink_safe() {
         let root = tempdir().expect("tempdir");
         let inner = root.path().join("inner");
         std::fs::create_dir_all(&inner).expect("mkdir");
@@ -648,7 +648,7 @@ mod tests {
 
         let (bytes, files) = directory_size_and_files(root.path());
         assert_eq!((bytes, files), (5, 1));
-    });
+    }
 
     #[test]
     fn upsert_is_idempotent_and_updates_timestamp() {

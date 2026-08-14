@@ -284,7 +284,8 @@ mod tests {
         dir
     }
 
-    crate::timed_test!(prefetch_plans_locked_target_fetch, {
+    #[test]
+    fn prefetch_plans_locked_target_fetch() {
         let dir = project_with_lockfile("fo-basic");
         let plan = plan_prefetch(
             &args(&["build", "--target", TARGET, "--release"]),
@@ -298,9 +299,10 @@ mod tests {
             Some(args(&["fetch", "--target", TARGET])),
             "basic blessed build must plan a locked, target-scoped fetch"
         );
-    });
+    }
 
-    crate::timed_test!(prefetch_forwards_manifest_path, {
+    #[test]
+    fn prefetch_forwards_manifest_path() {
         let dir = project_with_lockfile("fo-manifest");
         let member = dir.path().join("member");
         std::fs::create_dir_all(&member).expect("member dir");
@@ -357,9 +359,10 @@ mod tests {
                 "member/Cargo.toml",
             ])),
         );
-    });
+    }
 
-    crate::timed_test!(prefetch_skips_offline_and_frozen_builds, {
+    #[test]
+    fn prefetch_skips_offline_and_frozen_builds() {
         let dir = project_with_lockfile("fo-offline");
         for offline_flag in ["--offline", "--frozen"] {
             let plan = plan_prefetch(
@@ -387,9 +390,10 @@ mod tests {
             plan.is_some(),
             "tokens after `--` are not cargo flags and must not suppress the prefetch"
         );
-    });
+    }
 
-    crate::timed_test!(prefetch_skips_when_cargo_net_offline, {
+    #[test]
+    fn prefetch_skips_when_cargo_net_offline() {
         let dir = project_with_lockfile("fo-netoff");
         let build = args(&["build", "--target", TARGET]);
         for truthy in ["true", "1", "TRUE", " yes "] {
@@ -405,9 +409,10 @@ mod tests {
                 "CARGO_NET_OFFLINE={falsy:?} must not suppress the prefetch"
             );
         }
-    });
+    }
 
-    crate::timed_test!(prefetch_kill_switch_recognized, {
+    #[test]
+    fn prefetch_kill_switch_recognized() {
         let dir = project_with_lockfile("fo-kill");
         let build = args(&["build", "--target", TARGET]);
         for falsy in ["0", "off", "false", "NO"] {
@@ -423,9 +428,10 @@ mod tests {
                 "SOLDR_FETCH_OVERLAP={enabled:?} must keep the prefetch enabled"
             );
         }
-    });
+    }
 
-    crate::timed_test!(prefetch_does_not_require_a_lockfile, {
+    #[test]
+    fn prefetch_does_not_require_a_lockfile() {
         let dir = tempfile::Builder::new()
             .prefix("fo-nolock")
             .tempdir()
@@ -438,5 +444,5 @@ mod tests {
             None,
         );
         assert_eq!(plan, Some(args(&["fetch", "--target", TARGET])));
-    });
+    }
 }

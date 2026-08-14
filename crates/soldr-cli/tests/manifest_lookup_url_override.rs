@@ -14,7 +14,6 @@
 use std::sync::Arc;
 
 use soldr_cli::fetch::manifest_lookup::get_or_fetch;
-use soldr_cli::timed_test;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -45,7 +44,8 @@ async fn spawn_one_shot_json_server(body: String) -> String {
     url
 }
 
-timed_test!(catalogue_url_override_env_var_works, {
+#[test]
+fn catalogue_url_override_env_var_works() {
     // SAFETY: only test in this binary, so env-var writes are
     // single-threaded.
     std::env::remove_var("SOLDR_MANIFEST_DISABLE");
@@ -98,4 +98,4 @@ timed_test!(catalogue_url_override_env_var_works, {
 
         std::env::remove_var("SOLDR_TOOLCHAIN_CATALOGUE_URL");
     });
-});
+}

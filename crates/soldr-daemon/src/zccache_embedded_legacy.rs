@@ -244,7 +244,8 @@ pub fn sweep_legacy_cache_roots(
 mod legacy_gc_tests {
     use super::*;
 
-    crate::timed_test!(legacy_sweep_protects_current_and_sibling_roots, {
+    #[test]
+    fn legacy_sweep_protects_current_and_sibling_roots() {
         let temp = tempfile::tempdir().unwrap();
         let owned = SoldrPaths::with_root(temp.path().join(".soldr"));
         let sibling = SoldrPaths::with_root(temp.path().join(".soldr-dev"));
@@ -287,5 +288,5 @@ mod legacy_gc_tests {
         assert!(current.join("artifact").is_file());
         assert!(malformed.join("artifact").is_file());
         assert!(sibling_sentinel.is_file());
-    });
+    }
 }

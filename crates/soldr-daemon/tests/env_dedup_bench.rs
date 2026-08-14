@@ -174,7 +174,8 @@ fn full_mode() -> bool {
     std::env::var_os("SOLDR_ENV_DEDUP_BENCH_FULL").is_some()
 }
 
-soldr_core::timed_test!(env_dedup_micro_benchmark, Duration::from_secs(300), {
+#[test]
+fn env_dedup_micro_benchmark() {
     println!();
     println!("issue #1550 env-dedup micro-benchmark (per-compile costs)");
     if full_mode() {
@@ -288,4 +289,4 @@ soldr_core::timed_test!(env_dedup_micro_benchmark, Duration::from_secs(300), {
         );
         println!();
     }
-});
+}
