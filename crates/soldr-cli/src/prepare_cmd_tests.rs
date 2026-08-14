@@ -50,6 +50,21 @@ impl Drop for EnvVarGuard {
     }
 }
 
+/// Scrub the ambient compiler-flag globals that `target_lifecycle::resolved_env`
+/// deliberately folds into a `CARGO_TARGET_*_RUSTFLAGS` / `CFLAGS_*` / `CXXFLAGS_*`
+/// key (documented there; a `CARGO_ENCODED_RUSTFLAGS` set upstream would silently
+/// outrank the target flags otherwise). A test that asserts the *exact* prepared
+/// flags must control these, or it reads whatever the surrounding shell set. Under
+/// `cargo test` they happened to be unset; under nextest each test is its own
+/// process that inherits the CI lane's env, where they are not (soldr#2521 B3).
+#[must_use]
+fn scrub_flag_globals() -> Vec<EnvVarGuard> {
+    ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CFLAGS", "CXXFLAGS"]
+        .into_iter()
+        .map(EnvVarGuard::remove)
+        .collect()
+}
+
 // soldr#1663 follow-up: one shared cwd guard at the crate root, for the
 // same reason there is one shared env barrier -- a per-module copy makes
 // each site look correct while leaving the global state unprotected.
@@ -74,6 +89,7 @@ fn append_env_no_op_when_none() {
 #[test]
 fn apply_blessed_prep_env_exports_mingw_and_syslib_env() {
     let _lock = ENV_LOCK.lock().expect("env lock");
+    let _flag_globals = scrub_flag_globals();
     let _mingw = EnvVarGuard::remove("MINGW_W64_GCC_ROOT");
     let _pkg_config = EnvVarGuard::remove("PKG_CONFIG_PATH_x86_64-pc-windows-gnu");
 
@@ -120,6 +136,7 @@ fn apply_blessed_prep_env_exports_mingw_and_syslib_env() {
 #[test]
 fn apply_blessed_prep_env_exports_msvc_target_env() {
     let _lock = ENV_LOCK.lock().expect("env lock");
+    let _flag_globals = scrub_flag_globals();
     let _cc = EnvVarGuard::remove("CC_x86_64_pc_windows_msvc");
     let _cxx = EnvVarGuard::remove("CXX_x86_64_pc_windows_msvc");
     let _ar = EnvVarGuard::remove("AR_x86_64_pc_windows_msvc");
@@ -203,6 +220,7 @@ fn apply_blessed_prep_env_exports_msvc_target_env() {
 #[test]
 fn darwin_prepare_exports_blessed_env_for_deferred_cook() {
     let _lock = ENV_LOCK.lock().expect("env lock");
+    let _flag_globals = scrub_flag_globals();
     let tmp = tempfile::tempdir().expect("tmpdir");
     let soldr_root = tmp.path().join("soldr-root");
     let github_env = tmp.path().join("github-env");
@@ -249,7 +267,6 @@ fn darwin_prepare_exports_blessed_env_for_deferred_cook() {
     let _sdkroot = EnvVarGuard::set("SDKROOT", &sdk);
     let _llvm = EnvVarGuard::set("SOLDR_LLVM_DIR", &llvm_bin);
     let _dsymutil = EnvVarGuard::set("SOLDR_DSYMUTIL", &fake_dsymutil);
-    let _legacy_zig = EnvVarGuard::remove(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR);
     let _legacy_sys = EnvVarGuard::set(crate::blessed_build::USE_LEGACY_VENDORED_SYS_ENV_VAR, "1");
     let _system_cmake = EnvVarGuard::set(crate::blessed_build::USE_SYSTEM_CMAKE_ENV_VAR, "1");
 

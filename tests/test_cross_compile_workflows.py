@@ -459,13 +459,17 @@ def test_production_cross_workflows_do_not_select_legacy_backends() -> None:
 
 
 def test_normal_gnu_lifecycle_has_no_zig_fallback() -> None:
-    """#2237: GNU must stay catalogue-backed even while musl retains #2244's fallback."""
-    lifecycle = (REPO_ROOT / "crates" / "soldr-cli" / "src" / "target_lifecycle.rs").read_text(
-        encoding="utf-8"
-    )
-    legacy_musl = (REPO_ROOT / "crates" / "soldr-cli" / "src" / "linux_cross.rs").read_text(
-        encoding="utf-8"
-    )
+    """#2237: GNU stays catalogue-backed. soldr#2519 strengthened this.
+
+    This used to assert that `linux_cross.rs` carried a comment promising GNU
+    never reached the Zig fallback, and that it had no GNU match arms. That
+    module is now deleted outright -- removing `SOLDR_USE_LEGACY_ZIGBUILD` made
+    it unreachable -- so the guarantee is structural rather than textual: there
+    is no Zig fallback module for any target to reach.
+    """
+    lifecycle = (
+        REPO_ROOT / "crates" / "soldr-cli" / "src" / "target_lifecycle.rs"
+    ).read_text(encoding="utf-8")
     prepare = (REPO_ROOT / "crates" / "soldr-cli" / "src" / "prepare_cmd.rs").read_text(
         encoding="utf-8"
     )
@@ -474,10 +478,9 @@ def test_normal_gnu_lifecycle_has_no_zig_fallback() -> None:
     )
     cross = (WORKFLOWS / "_ci-cross-build-linux.yml").read_text(encoding="utf-8")
 
+    assert not (REPO_ROOT / "crates" / "soldr-cli" / "src" / "linux_cross.rs").exists()
     assert "no catalogue-backed GNU/Linux toolchain is available" in lifecycle
     assert "abi == Some(TargetAbi::Musl)" in lifecycle
-    assert not re.search(r'"(?:x86_64|aarch64)-unknown-linux-gnu"\s*=>', legacy_musl)
-    assert "GNU Linux uses the catalogue-backed compiler/sysroot lifecycle" in legacy_musl
     assert "GNU/Linux toolchain" in prepare
     assert "GNU uses the catalogue-backed toolchain" in prepare_tests
 

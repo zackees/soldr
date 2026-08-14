@@ -119,7 +119,6 @@ const MATURIN_USE_XWIN_ENV_VAR: &str = "MATURIN_USE_XWIN";
 fn maturin_xwin_policy(
     target: &str,
     explicit_maturin: Option<&str>,
-    legacy_soldr: Option<&str>,
 ) -> Option<&'static str> {
     if explicit_maturin.is_some()
         || !target
@@ -128,8 +127,7 @@ fn maturin_xwin_policy(
     {
         return None;
     }
-    let legacy = legacy_soldr.is_some_and(|value| !value.is_empty() && value != "0");
-    Some(if legacy { "1" } else { "0" })
+    Some("0")
 }
 
 fn report_and_exit(error: SoldrError) -> i32 {

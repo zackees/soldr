@@ -783,13 +783,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 if maturin_build {
                     let explicit_maturin =
                         std::env::var_os(MATURIN_USE_XWIN_ENV_VAR).map(|_| "set");
-                    let legacy_soldr =
-                        std::env::var(crate::blessed_build::USE_LEGACY_XWIN_ENV_VAR).ok();
-                    if let Some(policy) = maturin_xwin_policy(
-                        &maturin_target,
-                        explicit_maturin,
-                        legacy_soldr.as_deref(),
-                    ) {
+                    if let Some(policy) = maturin_xwin_policy(&maturin_target, explicit_maturin) {
                         command.env(MATURIN_USE_XWIN_ENV_VAR, policy);
                     }
                 }
