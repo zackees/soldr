@@ -254,6 +254,7 @@ def test_cross_build_nextest_archive_uses_ci_nextest_profile() -> None:
     assert '--cargo-profile "$ci_profile"' in workflow
     assert "CARGO_PROFILE_TEST_DEBUG: line-tables-only" in workflow
     assert "[profile.ci-nextest]" in cargo_toml
+    assert "debug-assertions = true" in cargo_toml
     assert 'inherits = "ci-release"' in cargo_toml
     assert 'debug = "line-tables-only"' in cargo_toml
     assert 'strip = "none"' in cargo_toml

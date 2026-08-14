@@ -191,6 +191,12 @@ const PRODUCTION_ENV_WRITERS: &[(&str, &str)] = &[
          also carried a test module using TEST_PROCESS_ENV_LOCK; moving those tests to \
          cli_args_tests.rs left the production write correctly bare",
     ),
+    (
+        "crates/soldr-cli/src/target_lifecycle.rs",
+        "apply_to_process installs the blessed target's resolved environment and mutually \
+         exclusive Rust flags before dispatching the production build; this is child-process \
+         setup, not a test fixture mutating ambient state",
+    ),
 ];
 
 #[test]

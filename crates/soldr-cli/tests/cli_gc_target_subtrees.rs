@@ -8,7 +8,6 @@ use common::*;
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 fn sandbox_env(label: &str) -> (PathBuf, PathBuf) {
     (
@@ -74,7 +73,7 @@ fn gc_list_json_walks_target_subtree_kinds() {
     let target = seed_all_target_subtrees(&cache_root);
     let (cargo_home, rustup_home) = sandbox_env("gc-list-target-subtrees");
 
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args(["gc", "list", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("CARGO_HOME", &cargo_home)
@@ -131,7 +130,7 @@ fn gc_purge_target_subtree_flags_delete_only_selected_kind() {
         );
         let (cargo_home, rustup_home) = sandbox_env(&label);
 
-        let output = Command::new(common::soldr_bin())
+        let output = common::isolated_soldr_command()
             .args(["gc", "purge", flag, "--all", "--json"])
             .env("SOLDR_CACHE_DIR", &cache_root)
             .env("CARGO_HOME", &cargo_home)

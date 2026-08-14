@@ -8,6 +8,18 @@ use std::time::{Duration, Instant};
 
 const POLL: Duration = Duration::from_millis(50);
 
+fn stage_incumbent_broker(home: &Path) -> std::path::PathBuf {
+    let broker_dir = home.join(".soldr").join("broker");
+    std::fs::create_dir_all(&broker_dir).expect("create incumbent broker directory");
+    let broker = broker_dir.join(if cfg!(windows) {
+        "soldr-broker.exe"
+    } else {
+        "soldr-broker"
+    });
+    std::fs::copy(common::soldr_bin(), &broker).expect("stage incumbent broker image");
+    broker
+}
+
 fn front_door(home: &Path) -> Command {
     let mut command = Command::new(common::soldr_bin());
     common::scrub_outer_soldr_env(&mut command);
@@ -69,7 +81,12 @@ fn stop_broker(home: &Path) {
 fn issue_2481_same_version_old_image_is_replaced_before_readiness() {
     let home = common::unique_temp_dir("broker-same-version-old-image");
     let old_instance = format!("soldr-{}-{}", env!("CARGO_PKG_VERSION"), "0".repeat(64));
-    let mut incumbent_command = Command::new(common::soldr_bin());
+    // Run the incumbent from the stable per-home image path used in
+    // production. Windows broker identity and replacement are path-derived;
+    // launching the build artifact directly only happened to model that
+    // lifecycle correctly on Unix.
+    let incumbent_broker = stage_incumbent_broker(&home);
+    let mut incumbent_command = Command::new(incumbent_broker);
     common::scrub_outer_soldr_env(&mut incumbent_command);
     let mut incumbent = incumbent_command
         .args(["broker", "serve"])
