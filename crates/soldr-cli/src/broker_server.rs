@@ -364,20 +364,42 @@ pub(crate) fn serve(endpoint: &crate::broker_identity::ResolvedBrokerEndpoint) -
 fn serve_on_runtime_thread(
     endpoint: &crate::broker_identity::ResolvedBrokerEndpoint,
 ) -> io::Result<()> {
+    // soldr#2493 follow-up: every step between the caller's `binding stable
+    // endpoint` line and the `stable endpoint bound at` line below is timed
+    // and reported as it completes. A broker that stalls in cold start now
+    // names the phase it stalled in instead of going silent.
+    use crate::broker_bringup::phase;
+    // Start the clock before the first phase, but open the durable log only
+    // after the broker directory has been secured: the recorder's `open_append`
+    // would otherwise create that directory itself, at the default umask.
+    let bringup_started = Instant::now();
+
     endpoint
         .create_owner_only_directories()
         .map_err(io::Error::other)?;
     if let Some(diagnostic) = endpoint.fallback_diagnostic() {
         eprintln!("soldr broker: {diagnostic}");
     }
+    let mut bringup = crate::broker_bringup::BringupRecorder::resuming(
+        bringup_started,
+        endpoint.executable_path.parent(),
+    );
+    bringup.phase(phase::SECURE_DIRECTORIES);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_name("soldr-broker")
         .build()?;
+    bringup.phase(phase::TOKIO_RUNTIME);
     let peer_policy = PeerCredentialPolicy::current_user()
         .ok_or_else(|| io::Error::other("current-user broker peer policy is unavailable"))?;
+    bringup.phase(phase::PEER_POLICY);
+    // Split out of the state construction below: this is the only phase that
+    // can block on another process (the image-hash lock), so it must be
+    // attributable on its own rather than folded into `broker_state`.
+    let instance_id = broker_server_instance_id()?;
+    bringup.phase(phase::INSTANCE_ID);
     let state = Arc::new(BrokerState {
-        instance_id: broker_server_instance_id()?,
+        instance_id,
         loader: CombinedServiceDefinitionLoader::new(
             running_process::broker::server::service_definition_dir(),
         ),
@@ -388,9 +410,11 @@ fn serve_on_runtime_thread(
         connections_open: AtomicU64::new(0),
         fd_guard: FdPressureGuard::default(),
     });
+    bringup.phase(phase::BROKER_STATE);
     let runtime_context = runtime.enter();
     let listener = bind_listener(endpoint)?;
     drop(runtime_context);
+    bringup.phase(phase::BIND_LISTENER);
     println!(
         "soldr broker: stable endpoint bound at {} (admin+hello+session)",
         endpoint.bind_endpoint
