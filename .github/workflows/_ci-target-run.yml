@@ -192,7 +192,7 @@ jobs:
             --workspace-remap "$GITHUB_WORKSPACE" \
             --profile target-run \
             --no-fail-fast \
-            --max-fail 3:fail
+            --max-fail 3:immediate
           run_status=$?
           set -e
           summary_status=0
