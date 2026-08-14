@@ -250,6 +250,11 @@ inherits = "ci-release"
 # These artifacts exist only for cross-target test execution. Avoid LLVM's
 # optimized-codegen memory cost on cold, all-miss hosted-runner builds.
 opt-level = 0
+# Integration-test seams such as the broker lease pause are deliberately
+# debug-only so production binaries cannot be delayed through SOLDR_TEST_*
+# environment variables. Target-run archives must retain those seams even
+# though this profile inherits its remaining defaults from ci-release.
+debug-assertions = true
 debug = "line-tables-only"
 strip = "none"
 

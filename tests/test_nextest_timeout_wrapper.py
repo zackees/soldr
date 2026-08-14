@@ -164,10 +164,20 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
     assert 'platform = { target = "cfg(unix)" }' in config
     assert 'platform = { host = "cfg(unix)" }' not in config
     assert "[test-groups.soldr-runtime]" in config
-    assert "filter = 'binary(cli_daemon_lifecycle)'" in config
-    assert "filter = 'binary(cli_daemon_builds)'" in config
-    assert "filter = 'binary(cli_daemon_flush_caches)'" in config
     assert "binary(cli_broker_resurrection) + binary(cli_broker_routes)" in config
-    assert config.count("test-group = 'soldr-runtime'") == 4
+    assert config.count("test-group = 'soldr-runtime'") == 2
+    for binary in (
+        "agent_worktree_share",
+        "cli_daemon_builds",
+        "cli_daemon_flush_caches",
+        "cli_daemon_lifecycle",
+        "cli_daemon_single_instance",
+        "cli_daemon_target_touch",
+        "cli_daemon_tombstone",
+        "daemon_cache_maintenance",
+        "daemon_stall_harness",
+        "session_multiprocess_smoke",
+    ):
+        assert f"binary({binary})" in config
     assert 'threads-required = "num-cpus"' in config
     assert config.count('grace-period = "30s"') == 5
