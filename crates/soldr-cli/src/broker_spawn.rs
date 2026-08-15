@@ -179,7 +179,8 @@ fn ensure_stable_broker_ready() -> Result<(), String> {
         .enable_all()
         .build()
         .map_err(|error| format!("could not create readiness runtime: {error}"))?;
-    if stable_broker_is_ready(&runtime, &endpoint.bind_endpoint) {
+    if let Some(observed) = broker_instance_at(&runtime, &endpoint.bind_endpoint) {
+        warn_on_broker_image_mismatch(&observed);
         return Ok(());
     }
 
@@ -214,26 +215,25 @@ fn ensure_stable_broker_ready() -> Result<(), String> {
     let result = (|| {
         // A winner may have become ready while this process was entering the
         // immediate transaction. Never stage or spawn after that re-probe.
-        if stable_broker_is_ready(&runtime, &endpoint.bind_endpoint) {
-            return Ok(());
-        }
         let instance = broker_instance_at(&runtime, &endpoint.bind_endpoint).or_else(|| {
             admission_endpoint_exists(&endpoint.bind_endpoint)
                 .then(|| wait_for_existing_broker(&runtime, &endpoint.bind_endpoint))
                 .flatten()
         });
         if let Some(instance) = instance {
-            if broker_instance_is_compatible(&instance) {
-                return Ok(());
-            }
-            stop_incompatible_broker(&runtime, &endpoint.bind_endpoint, &instance, &lease)?;
-            // Another front door may win the replacement race after the old
-            // generation exits. Accept that compatible winner instead of
-            // staging over its live image or spawning a duplicate.
-            if stable_broker_is_ready(&runtime, &endpoint.bind_endpoint) {
-                return Ok(());
-            }
-        } else if admission_endpoint_accepts_connections(&endpoint.bind_endpoint) {
+            // soldr#2549: the broker is a stable, long-lived singleton for its
+            // user-home endpoint. A package-version or image-digest mismatch is
+            // a loud diagnostic condition, never a lifecycle action — this path
+            // must not stop, kill, replace, or stage over a live broker. The
+            // running Soldr image still gets a closely-aligned daemon: the
+            // route's service name is keyed on the daemon image hash, so the
+            // stable broker launches (or adopts) a matching daemon generation
+            // behind itself and the prior daemon drains under daemon lifecycle
+            // policy. Operators recover deliberately with `soldr broker remove`.
+            warn_on_broker_image_mismatch(&instance);
+            return Ok(());
+        }
+        if admission_endpoint_accepts_connections(&endpoint.bind_endpoint) {
             // A listener that accepts connections but cannot answer admin
             // under a startup stampede is still a live owner. Preserve it;
             // the compile handshake will either succeed or report the
@@ -352,18 +352,42 @@ fn wait_for_stable_broker(
     }
 }
 
+/// soldr#2549: readiness is liveness. Any broker that answers admin STATUS at
+/// the stable endpoint owns it, whatever image it was linked from. Folding
+/// image compatibility into this predicate is what used to make an ordinary
+/// front door retire and re-stage a perfectly healthy broker.
 fn stable_broker_is_ready(runtime: &tokio::runtime::Runtime, endpoint: &str) -> bool {
-    let Some(observed) = broker_instance_at(runtime, endpoint) else {
-        return false;
-    };
-    broker_instance_is_compatible(&observed)
+    broker_instance_at(runtime, endpoint).is_some()
 }
 
-fn broker_instance_is_compatible(observed: &str) -> bool {
+/// The operator-facing recovery command for a broker image/version mismatch.
+/// Named in the front door's warning and asserted by tests so the two cannot
+/// drift apart.
+pub(crate) const BROKER_REMOVE_COMMAND: &str = "soldr broker remove";
+
+/// Render the mismatch diagnostic. soldr#2549 makes this the *only* response to
+/// an identity mismatch: loud, actionable, and free of any lifecycle action.
+pub(crate) fn broker_image_mismatch_warning(observed: &str, expected: &str) -> String {
+    format!(
+        "soldr: warning: the running broker was started from a different Soldr image\n\
+         soldr:   running broker: {observed}\n\
+         soldr:   this soldr:     {expected}\n\
+         soldr: the broker is a stable singleton and is never replaced automatically; \
+         work continues through it and a matching daemon generation is launched behind it.\n\
+         soldr: to retire it deliberately, run: {BROKER_REMOVE_COMMAND}"
+    )
+}
+
+fn warn_on_broker_image_mismatch(observed: &str) {
+    // A local identity that cannot be computed is not evidence of a mismatch.
+    // Stay quiet rather than warning about a comparison that never happened.
     let Ok(expected) = crate::broker_server::broker_image_instance_id() else {
-        return false;
+        return;
     };
-    observed == expected
+    if observed == expected {
+        return;
+    }
+    eprintln!("{}", broker_image_mismatch_warning(observed, &expected));
 }
 
 fn wait_for_existing_broker(runtime: &tokio::runtime::Runtime, endpoint: &str) -> Option<String> {
@@ -469,98 +493,21 @@ fn broker_snapshot_at(runtime: &tokio::runtime::Runtime, endpoint: &str) -> Opti
     })
 }
 
-fn stop_incompatible_broker(
-    runtime: &tokio::runtime::Runtime,
-    endpoint: &str,
-    instance: &str,
-    lease: &crate::broker_lease::BrokerLease,
-) -> Result<(), String> {
-    use running_process::broker::client::send_admin_request;
-    use running_process::broker::protocol::{AdminRequest, AdminVerb};
-
-    let broker_pid = broker_snapshot_at(runtime, endpoint)
-        .filter(|(observed, _)| observed == instance)
-        .map(|(_, pid)| pid)
-        .ok_or_else(|| {
-            format!("incompatible broker instance {instance} changed before shutdown")
-        })?;
-    let broker_start_token = crate::broker_cmd::verified_broker_generation(broker_pid).ok_or_else(
-        || {
-            format!(
-                "incompatible broker pid {broker_pid} is not the verified stable broker; refusing to signal it"
-            )
-        },
-    )?;
-    let reply = send_admin_request(
-        endpoint,
-        AdminRequest {
-            verb: AdminVerb::Shutdown as i32,
-            drain_deadline_ms: SPAWN_WAIT_TIMEOUT.as_millis() as u64,
-            ..Default::default()
-        },
-    )
-    .map_err(|error| format!("could not stop incompatible broker instance {instance}: {error}"))?;
-    if reply.exit_code != 0 {
-        return Err(format!(
-            "incompatible broker instance {instance} rejected shutdown with exit code {}",
-            reply.exit_code
-        ));
-    }
-    let deadline = Instant::now() + SPAWN_WAIT_TIMEOUT;
-    let mut next_renew = Instant::now() + Duration::from_secs(1);
-    while crate::broker_cmd::verified_broker_generation(broker_pid) == Some(broker_start_token)
-        && Instant::now() < deadline
-    {
-        if Instant::now() >= next_renew {
-            lease.renew().map_err(|error| error.to_string())?;
-            next_renew = Instant::now() + Duration::from_secs(1);
-        }
-        std::thread::sleep(POLL_INTERVAL);
-    }
-    if crate::broker_cmd::verified_broker_generation(broker_pid) == Some(broker_start_token) {
-        use running_process::broker::backend_lifecycle::verify_pid::force_kill_pid;
-
-        // Recheck immediately before the signal. PID reuse can only turn this
-        // into an observed exit; it must never target the replacement owner.
-        if crate::broker_cmd::verified_broker_generation(broker_pid) == Some(broker_start_token) {
-            force_kill_pid(broker_pid).map_err(|error| {
-                format!(
-                    "incompatible broker instance {instance} exceeded its drain deadline: {error}"
-                )
-            })?;
-        }
-        let kill_deadline = Instant::now() + SPAWN_WAIT_TIMEOUT;
-        while crate::broker_cmd::verified_broker_generation(broker_pid) == Some(broker_start_token)
-            && Instant::now() < kill_deadline
-        {
-            if Instant::now() >= next_renew {
-                lease.renew().map_err(|error| error.to_string())?;
-                next_renew = Instant::now() + Duration::from_secs(1);
-            }
-            std::thread::sleep(POLL_INTERVAL);
-        }
-        if crate::broker_cmd::verified_broker_generation(broker_pid) == Some(broker_start_token) {
-            return Err(format!(
-                "incompatible broker instance {instance} survived bounded termination"
-            ));
-        }
-    }
-    retire_incompatible_admission_endpoint(endpoint, instance)?;
-    Ok(())
-}
-
-fn retire_incompatible_admission_endpoint(endpoint: &str, instance: &str) -> Result<(), String> {
+/// Unlink a stopped broker's admission endpoint. soldr#2549 leaves exactly one
+/// caller: the deliberate `soldr broker remove` operation. A broker that exits
+/// through its own cooperative drain retires the endpoint itself
+/// (`broker_server::serve_loop`); a force-killed one cannot, so removal has to.
+pub(crate) fn retire_admission_endpoint(endpoint: &str) -> Result<(), String> {
     if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
-        // Named-pipe listeners have no filesystem entry to unlink. Once shutdown
-        // is acknowledged, the old broker has stopped admission and a new pipe
-        // instance can take the stable name while established sessions drain.
+        // Named-pipe listeners have no filesystem entry to unlink. Once the
+        // owner exits, the stable pipe name is free for the next broker.
         return Ok(());
     }
     match std::fs::remove_file(endpoint) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(format!(
-            "could not retire incompatible broker instance {instance} at {endpoint}: {error}"
+            "could not retire the broker admission endpoint at {endpoint}: {error}"
         )),
     }
 }
@@ -875,6 +822,24 @@ mod tests {
             "soldr".into(),
             "build".into(),
         ]));
+    }
+
+    /// soldr#2549 acceptance criterion: "an identity mismatch emits an
+    /// actionable warning naming `soldr broker remove`".
+    #[test]
+    fn image_mismatch_warning_is_actionable_and_names_the_remove_command() {
+        let observed = format!("soldr-0.9.0-{}", "0".repeat(64));
+        let expected = format!("soldr-0.9.0-{}", "1".repeat(64));
+        let warning = broker_image_mismatch_warning(&observed, &expected);
+
+        assert!(warning.contains(&observed), "{warning}");
+        assert!(warning.contains(&expected), "{warning}");
+        assert!(warning.contains(BROKER_REMOVE_COMMAND), "{warning}");
+        assert_eq!(BROKER_REMOVE_COMMAND, "soldr broker remove");
+        // Never promise a lifecycle action the front door no longer performs.
+        for forbidden in ["replacing", "restarting", "stopping the broker"] {
+            assert!(!warning.contains(forbidden), "{warning}");
+        }
     }
 
     #[test]

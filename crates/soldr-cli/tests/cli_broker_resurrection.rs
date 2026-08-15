@@ -26,6 +26,14 @@ fn stage_incumbent_broker(home: &Path) -> std::path::PathBuf {
 }
 
 fn front_door(home: &Path) -> Command {
+    let mut command = front_door_capturing_stderr(home);
+    command.stderr(Stdio::null());
+    command
+}
+
+/// Same front door, but with stderr left capturable — soldr#2549's broker
+/// image-mismatch warning is a stderr diagnostic.
+fn front_door_capturing_stderr(home: &Path) -> Command {
     let mut command = Command::new(common::soldr_bin());
     common::scrub_outer_soldr_env(&mut command);
     command
@@ -33,8 +41,7 @@ fn front_door(home: &Path) -> Command {
         .env("HOME", home)
         .env("USERPROFILE", home)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdout(Stdio::null());
     command
 }
 
@@ -82,78 +89,120 @@ fn stop_broker(home: &Path) {
         .output();
 }
 
-#[test]
-fn issue_2481_same_version_old_image_is_replaced_before_readiness() {
-    let home = common::unique_temp_dir("broker-same-version-old-image");
-    let old_instance = format!("soldr-{}-{}", env!("CARGO_PKG_VERSION"), "0".repeat(64));
-    // Run the incumbent from the stable per-home image path used in
-    // production. Windows broker identity and replacement are path-derived;
-    // launching the build artifact directly only happened to model that
-    // lifecycle correctly on Unix.
-    let incumbent_broker = stage_incumbent_broker(&home);
+fn remove_broker(home: &Path) -> std::process::Output {
+    let mut command = Command::new(common::soldr_bin());
+    common::scrub_outer_soldr_env(&mut command);
+    command
+        .args(["broker", "remove"])
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .stdin(Stdio::null())
+        .output()
+        .expect("run broker remove")
+}
+
+/// Bring up a broker that reports a same-version-but-different-image identity,
+/// running from the production per-home image path (Windows broker identity is
+/// path-derived, so launching the build artifact directly would not model it).
+fn spawn_simulated_old_image_broker(home: &Path, instance: &str) -> Child {
+    let incumbent_broker = stage_incumbent_broker(home);
     let mut incumbent_command = Command::new(incumbent_broker);
     common::scrub_outer_soldr_env(&mut incumbent_command);
-    let mut incumbent = incumbent_command
+    incumbent_command
         .args(["broker", "serve"])
-        .env("HOME", &home)
-        .env("USERPROFILE", &home)
-        .env("SOLDR_INTERNAL_BROKER_INSTANCE_ID", &old_instance)
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .env("SOLDR_INTERNAL_BROKER_INSTANCE_ID", instance)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .expect("spawn simulated old-image broker");
+        .expect("spawn simulated old-image broker")
+}
 
-    let ready_deadline = Instant::now() + Duration::from_secs(20);
-    let mut before = String::new();
-    while Instant::now() < ready_deadline {
-        before = broker_status(&home);
-        if before.contains(&old_instance) {
-            break;
+fn wait_for_broker_instance(home: &Path, instance: &str) -> String {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut status = String::new();
+    while Instant::now() < deadline {
+        status = broker_status(home);
+        if status.contains(instance) {
+            return status;
         }
         std::thread::sleep(POLL);
     }
+    status
+}
 
-    let mut replacement = front_door(&home)
-        .spawn()
-        .expect("start front door against old-image broker");
-    let replacement_status =
-        wait_for_child(&mut replacement, Instant::now() + Duration::from_secs(40));
+/// soldr#2549: the broker is a stable, long-lived singleton. A same-version
+/// image-digest mismatch must produce a loud diagnostic, never a lifecycle
+/// action — this is the inversion of the old
+/// `issue_2481_same_version_old_image_is_replaced_before_readiness`, which
+/// asserted the incumbent was retired automatically.
+#[test]
+fn issue_2549_same_version_old_image_broker_is_never_replaced_automatically() {
+    let home = common::unique_temp_dir("broker-same-version-old-image");
+    let old_instance = format!("soldr-{}-{}", env!("CARGO_PKG_VERSION"), "0".repeat(64));
+    let mut incumbent = spawn_simulated_old_image_broker(&home, &old_instance);
+    let before = wait_for_broker_instance(&home, &old_instance);
 
-    let replacement_deadline = Instant::now() + Duration::from_secs(20);
-    let mut after = String::new();
-    while Instant::now() < replacement_deadline {
-        after = broker_status(&home);
-        if after.contains("broker_instance:") && !after.contains(&old_instance) {
-            break;
-        }
-        std::thread::sleep(POLL);
-    }
+    let front_door = front_door_capturing_stderr(&home)
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run front door against old-image broker");
+    let stderr = String::from_utf8_lossy(&front_door.stderr).into_owned();
 
-    stop_broker(&home);
-    let incumbent_exit = wait_for_child(&mut incumbent, Instant::now() + Duration::from_secs(5));
+    // The incumbent must still be the bound broker after the front door has
+    // fully returned: not stopped, not killed, not staged over.
+    let after = broker_status(&home);
+    let survived = incumbent.try_wait().expect("inspect incumbent").is_none();
+
+    // Recovery is explicit and operator-driven.
+    let removal = remove_broker(&home);
+    let removal_output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&removal.stdout),
+        String::from_utf8_lossy(&removal.stderr)
+    );
+    let incumbent_exit = wait_for_child(&mut incumbent, Instant::now() + Duration::from_secs(15));
     if incumbent_exit.is_none() {
         let _ = incumbent.kill();
         let _ = incumbent.wait();
     }
+    let log = spawn_log(&home);
+    stop_broker(&home);
 
     assert!(
         before.contains(&old_instance),
         "simulated old-image broker never became ready; last status:\n{before}"
     );
     assert!(
-        replacement_status.is_some_and(|status| status.success()),
-        "front door did not recover through broker replacement; status={replacement_status:?}\n{}",
-        spawn_log(&home)
+        front_door.status.success(),
+        "the front door must succeed through a mismatched broker; status={:?}\n{log}",
+        front_door.status
     );
     assert!(
-        after.contains("broker_instance:") && !after.contains(&old_instance),
-        "replacement did not publish a new image identity; last status:\n{after}\n{}",
-        spawn_log(&home)
+        survived,
+        "soldr#2549: a live broker must never be retired automatically for an identity mismatch"
+    );
+    assert!(
+        after.contains(&old_instance),
+        "the incumbent must still own the endpoint after the front door ran; last status:\n{after}\n{log}"
+    );
+    assert!(
+        stderr.contains("soldr broker remove"),
+        "the mismatch warning must name the explicit recovery command; stderr:\n{stderr}"
+    );
+    assert!(
+        !log.contains("stable endpoint bound at"),
+        "no replacement broker may be staged or spawned for a live incumbent\n{log}"
     );
     assert!(
         incumbent_exit.is_some(),
-        "the incompatible incumbent was not retired"
+        "`soldr broker remove` must retire the broker the operator asked it to:\n{removal_output}"
+    );
+    assert!(
+        removal.status.success(),
+        "`soldr broker remove` must succeed:\n{removal_output}"
     );
 }
 

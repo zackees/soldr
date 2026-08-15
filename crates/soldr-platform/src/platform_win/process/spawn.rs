@@ -18,10 +18,9 @@ pub fn daemon_stdio(log: Option<&std::fs::File>) -> running_process::DaemonStdio
     let Some(log) = log else {
         return running_process::DaemonStdio::default();
     };
-    use std::os::windows::io::AsHandle;
     running_process::DaemonStdio {
-        stdout: running_process::DaemonStdioSource::Handle(log.as_handle()),
-        stderr: running_process::DaemonStdioSource::Handle(log.as_handle()),
+        stdout: running_process::DaemonStdioSource::File(log),
+        stderr: running_process::DaemonStdioSource::File(log),
     }
 }
 

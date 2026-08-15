@@ -145,6 +145,7 @@ Anything not registered falls through the generic External subcommand, which res
   `soldr-daemon`, which owns the embedded zccache service. No standalone
   zccache process is started and no manual `soldr start` is required.
 - **Recovery from a wedged cache**: `SOLDR_COMPILE_REPLY_TIMEOUT_SECS=<n>` shortens the 30-min compile-reply backstop so the build fails quickly. Inspect `soldr doctor`, `soldr status`, and `soldr logs paths`; restart the broker-owned route with `soldr daemon stop` followed by `soldr daemon start`. Cacheable compiler work never silently bypasses the broker/daemon. See [docs/DAEMON_TIMEOUTS.md](docs/DAEMON_TIMEOUTS.md).
+- **The broker is a stable singleton; Soldr never replaces it automatically** (soldr#2549): a package-version or image-digest mismatch between the running Soldr and the live broker is a loud front-door warning, never a lifecycle action — no stop, no kill, no staging over. The version+digest generation belongs to the *daemon*: the route service name is keyed on the daemon image hash, so the stable broker launches or adopts a matching daemon generation behind itself and the prior daemon drains under `displace_stale_daemon`. Operator recovery is the explicit `soldr broker remove`.
 - **Embedded cache location is Soldr-owned**: By default the service receives
   `~/.soldr/cache/zccache/daemon-state/embedded-v1` as its top-level cache
   root and zccache versions persistent state beneath `v<VERSION>/`. Per-build

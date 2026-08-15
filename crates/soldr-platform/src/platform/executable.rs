@@ -7,5 +7,6 @@
 //! build target* stay outside this namespace — that is target policy, not
 //! host mechanics.
 
+pub mod image;
 pub mod name;
 pub mod search;

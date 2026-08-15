@@ -55,6 +55,18 @@ pub(crate) enum BrokerSubcommand {
     /// broker re-adopts those daemons from their verified claims. With no broker
     /// bound this prints a "not running" line and exits 0.
     Stop,
+    /// Deliberately retire the broker installed for this Soldr home (soldr#2549).
+    ///
+    /// The broker is a stable, long-lived singleton: Soldr never stops, kills,
+    /// replaces, or stages over a live broker on its own, not even when the
+    /// running image's version or digest differs. This is the explicit,
+    /// operator-driven recovery the front door's mismatch warning names. It
+    /// stops the verified broker process, unlinks its admission endpoint, and
+    /// deletes the staged broker image so the next invocation installs a
+    /// matching one. Daemon routes are retained and re-adopted from their
+    /// verified claims. With no broker bound it prints a "not running" line and
+    /// exits 0.
+    Remove,
 }
 
 pub(crate) fn run_broker_command(command: BrokerSubcommand) -> Result<(), SoldrError> {
@@ -63,6 +75,7 @@ pub(crate) fn run_broker_command(command: BrokerSubcommand) -> Result<(), SoldrE
         BrokerSubcommand::Status { json } => run_broker_status(json),
         BrokerSubcommand::Routes { json } => run_broker_routes(json),
         BrokerSubcommand::Stop => run_broker_stop(),
+        BrokerSubcommand::Remove => run_broker_remove(),
     }
 }
 
@@ -241,39 +254,27 @@ fn run_broker_status(json: bool) -> Result<(), SoldrError> {
 /// Stop only the broker. Daemon lifetime is intentionally independent: a new
 /// broker re-adopts each live daemon through its deterministic protobuf claim.
 fn run_broker_stop() -> Result<(), SoldrError> {
+    let socket_path = broker_control_socket_path()?;
+    let Some(broker_pid) = stop_verified_broker(&socket_path, "stop")? else {
+        println!("soldr broker: not running (nothing to stop)");
+        return Ok(());
+    };
+    println!("soldr broker: stopped (broker pid {broker_pid}; daemon routes retained)");
+    Ok(())
+}
+
+/// The complete, PID-verified broker teardown shared by `broker stop` and
+/// `broker remove`. Returns `Ok(None)` when nothing is bound at `socket_path`,
+/// or the stopped broker's PID. `operation` only names the caller in
+/// diagnostics.
+fn stop_verified_broker(socket_path: &str, operation: &str) -> Result<Option<u32>, SoldrError> {
     use running_process::broker::backend_lifecycle::verify_pid::{
         force_kill_pid, signal_terminate,
     };
-    use running_process::broker::client::{send_admin_request, BrokerClientError};
-    use running_process::broker::protocol::{AdminRequest, AdminVerb};
 
-    let socket_path = broker_control_socket_path()?;
-
-    let reply = match send_admin_request(
-        &socket_path,
-        AdminRequest {
-            verb: AdminVerb::Status as i32,
-            json: true,
-            ..Default::default()
-        },
-    ) {
-        Ok(reply) => reply,
-        Err(BrokerClientError::BrokerConnect(_)) => {
-            println!("soldr broker: not running (nothing to stop)");
-            return Ok(());
-        }
-        Err(err) => {
-            return Err(SoldrError::Other(format!(
-                "soldr broker: could not query broker before stop: {err}"
-            )))
-        }
+    let Some(snapshot) = broker_status_snapshot(socket_path, operation)? else {
+        return Ok(None);
     };
-
-    let snapshot: serde_json::Value = serde_json::from_str(&reply.body).map_err(|err| {
-        SoldrError::Other(format!(
-            "soldr broker: could not parse broker status snapshot before stop: {err}"
-        ))
-    })?;
     let broker_pid = snapshot
         .get("broker_pid")
         .and_then(serde_json::Value::as_u64)
@@ -281,11 +282,10 @@ fn run_broker_stop() -> Result<(), SoldrError> {
         .map(|pid| pid as u32);
 
     let Some(broker_pid) = broker_pid else {
-        return Err(SoldrError::Other(
+        return Err(SoldrError::Other(format!(
             "soldr broker: the stable broker answered status but reported no pid; refusing to \
-             stop by any less-verified means"
-                .to_string(),
-        ));
+             {operation} it by any less-verified means"
+        )));
     };
     let broker_start_token = verified_broker_generation(broker_pid).ok_or_else(|| {
         SoldrError::Other(format!(
@@ -298,7 +298,7 @@ fn run_broker_stop() -> Result<(), SoldrError> {
     // the accept loop's worker scope joins, and exits. Brokers that predate the
     // SHUTDOWN verb answer exit_code 2 (or the request errors), and we fall back
     // to terminating the broker by its verified PID.
-    let cooperative = try_cooperative_shutdown(&socket_path);
+    let cooperative = try_cooperative_shutdown(socket_path);
     if cooperative {
         println!(
             "soldr broker: requested cooperative shutdown (drain deadline {}ms)",
@@ -349,8 +349,125 @@ fn run_broker_stop() -> Result<(), SoldrError> {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 
-    println!("soldr broker: stopped (broker pid {broker_pid}; daemon routes retained)");
+    Ok(Some(broker_pid))
+}
+
+/// One admin STATUS round trip, parsed. `Ok(None)` means nothing is bound —
+/// every broker verb treats that as a clean, non-error outcome so scripts can
+/// probe without starting anything.
+fn broker_status_snapshot(
+    socket_path: &str,
+    operation: &str,
+) -> Result<Option<serde_json::Value>, SoldrError> {
+    use running_process::broker::client::{send_admin_request, BrokerClientError};
+    use running_process::broker::protocol::{AdminRequest, AdminVerb};
+
+    let reply = match send_admin_request(
+        socket_path,
+        AdminRequest {
+            verb: AdminVerb::Status as i32,
+            json: true,
+            ..Default::default()
+        },
+    ) {
+        Ok(reply) => reply,
+        Err(BrokerClientError::BrokerConnect(_)) => return Ok(None),
+        Err(err) => {
+            return Err(SoldrError::Other(format!(
+                "soldr broker: could not query broker before {operation}: {err}"
+            )))
+        }
+    };
+    serde_json::from_str(&reply.body).map(Some).map_err(|err| {
+        SoldrError::Other(format!(
+            "soldr broker: could not parse broker status snapshot before {operation}: {err}"
+        ))
+    })
+}
+
+/// `soldr broker remove` (soldr#2549): the explicit operator recovery for a
+/// broker whose image or package version no longer matches the running Soldr.
+///
+/// Soldr never takes this action on its own — the front door only warns and
+/// keeps using the live broker. Removal stops the PID-verified broker, unlinks
+/// its admission endpoint, and deletes the staged broker image so the next
+/// invocation stages a matching one. Daemon routes survive: they are keyed on
+/// the daemon image and re-adopted from their verified claims by the next
+/// broker.
+fn run_broker_remove() -> Result<(), SoldrError> {
+    let endpoint = crate::broker_identity::ResolvedBrokerEndpoint::resolve()
+        .map_err(|error| SoldrError::Other(format!("soldr broker: {error}")))?;
+    let socket_path = endpoint.bind_endpoint.clone();
+
+    // Diagnostics before the destructive step, so an operator who ran this by
+    // mistake can see exactly which generation was retired and why.
+    match broker_status_snapshot(&socket_path, "remove")? {
+        Some(snapshot) => {
+            let observed = snapshot
+                .get("broker_instance")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("<unreported>");
+            println!("soldr broker: removing the broker bound at {socket_path}");
+            println!("soldr broker:   running broker: {observed}");
+            match crate::broker_server::broker_image_instance_id() {
+                Ok(expected) if expected == observed => println!(
+                    "soldr broker:   this soldr:     {expected} (matches; removal is not required)"
+                ),
+                Ok(expected) => println!("soldr broker:   this soldr:     {expected} (mismatch)"),
+                Err(error) => {
+                    println!("soldr broker:   this soldr:     <unavailable: {error}>")
+                }
+            }
+        }
+        None => {
+            println!("soldr broker: not running (nothing to remove)");
+            return Ok(());
+        }
+    }
+
+    let Some(broker_pid) = stop_verified_broker(&socket_path, "remove")? else {
+        // The broker exited between the diagnostic probe and the stop request.
+        println!("soldr broker: not running (nothing to remove)");
+        return Ok(());
+    };
+    crate::broker_spawn::retire_admission_endpoint(&socket_path).map_err(SoldrError::Other)?;
+
+    // Delete the staged image last: `verified_broker_generation` resolves the
+    // installed path on every poll above, so removing it earlier would break
+    // the PID verification that makes the stop safe.
+    let image = &endpoint.executable_path;
+    match remove_staged_broker_image(image) {
+        Ok(true) => println!(
+            "soldr broker: removed staged broker image {}",
+            image.display()
+        ),
+        Ok(false) => {}
+        Err(error) => {
+            return Err(SoldrError::Other(format!(
+                "soldr broker: stopped broker pid {broker_pid} but could not remove its staged \
+                 image {}: {error}",
+                image.display()
+            )))
+        }
+    }
+    println!("soldr broker: removed (broker pid {broker_pid}; daemon routes retained)");
     Ok(())
+}
+
+/// Delete the staged broker image, reporting whether one was there. Windows can
+/// still hold a sharing lock on the executable for a short window after the
+/// process it backed has exited, so a first `PermissionDenied` is retried
+/// briefly rather than reported as a failed removal.
+fn remove_staged_broker_image(image: &std::path::Path) -> std::io::Result<bool> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match std::fs::remove_file(image) {
+            Ok(()) => return Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) if std::time::Instant::now() >= deadline => return Err(error),
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(50)),
+        }
+    }
 }
 
 /// Return the start token only when `pid` still names the exact installed
@@ -408,7 +525,7 @@ mod tests {
         let broker = command
             .find_subcommand("broker")
             .expect("broker subcommand registered");
-        for verb in ["serve", "status", "stop"] {
+        for verb in ["serve", "status", "stop", "remove"] {
             let command = broker
                 .find_subcommand(verb)
                 .unwrap_or_else(|| panic!("{verb} subcommand registered"));
@@ -417,5 +534,19 @@ mod tests {
                 "{verb} must use the one stable endpoint"
             );
         }
+    }
+
+    /// soldr#2549: the mismatch warning is only actionable if the command it
+    /// names actually exists. Bind the two together so neither can drift.
+    #[test]
+    fn the_command_named_by_the_mismatch_warning_is_a_real_verb() {
+        let remove_verb = crate::broker_spawn::BROKER_REMOVE_COMMAND
+            .strip_prefix("soldr broker ")
+            .expect("the remedy is a `soldr broker` verb");
+        assert!(crate::cli_args::Cli::command()
+            .find_subcommand("broker")
+            .expect("broker subcommand registered")
+            .find_subcommand(remove_verb)
+            .is_some());
     }
 }
