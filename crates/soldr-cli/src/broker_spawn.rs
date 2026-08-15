@@ -8,7 +8,7 @@
 //! Per the #2364 design, the front door is the sole broker-spawner, and the
 //! broker is the sole daemon-spawner via `serve_launching_backends`. The
 //! broker→daemon→SESSION compile path is proven end-to-end on the real-process
-//! integration harness (`session_multiprocess_smoke`).
+//! daemon and wrapper integration suites.
 //!
 //! The one invariant that must never regress: a `RUSTC_WRAPPER` re-entry
 //! (`soldr /path/to/rustc ...`, cargo calling back into soldr once per

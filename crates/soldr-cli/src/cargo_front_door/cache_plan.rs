@@ -267,6 +267,10 @@ impl CargoCachePlan {
                         report.incomplete_reason()
                     )));
                 }
+                // The daemon may be gone because code run by this command
+                // stopped it. Final checkpointing is best-effort in that
+                // already-unavailable state.
+                Err(crate::daemon::client::ClientError::NotRunning) => {}
                 Err(err) => {
                     return Err(SoldrError::Other(format!(
                         "embedded zccache checkpoint unavailable: {err:?}"
