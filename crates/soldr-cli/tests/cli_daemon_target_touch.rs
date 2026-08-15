@@ -167,6 +167,16 @@ fn daemon_path_writes_via_ipc_when_available() {
 
     let mut daemon = DaemonProc::spawn(&cache_root, &home_root);
 
+    // Derive the control endpoint BEFORE EnvScope swaps HOME: when the
+    // executable-scoped socket path overflows `sun_path` (long temp dirs —
+    // macOS `/var/folders/...`, Docker harness roots), the derivation falls
+    // back to a path under the ambient HOME's broker dir. The daemon bound
+    // using the spawn-time ambient env, so the client must derive under that
+    // same env or it dials a socket nothing listens on — which made this
+    // test fail deterministically on exactly those hosts while passing on
+    // short-`/tmp` Linux runners.
+    let sock = direct_sock(&cache_root);
+
     let _scope = EnvScope::set(&[
         ("SOLDR_CACHE_DIR", cache_root.as_path()),
         ("HOME", home_root.as_path()),
@@ -185,8 +195,6 @@ fn daemon_path_writes_via_ipc_when_available() {
         lifecycle::is_live(&paths).is_some(),
         "daemon never published a live route claim"
     );
-
-    let sock = direct_sock(&cache_root);
 
     let mut submitted = false;
     let deadline = Instant::now() + Duration::from_secs(5);

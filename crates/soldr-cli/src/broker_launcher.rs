@@ -477,9 +477,12 @@ impl SoldrBackendLauncher {
         );
         let mut last_hash_progress = std::time::Instant::now();
         let source_hash = crate::daemon::image_hash::cached_blake3_hex_with_progress(
-            &crate::daemon::service_definition::broker_owned_paths()
-                .cache
-                .join("image-hash"),
+            // soldr#2521 B1: machine-scoped memo so isolated roots share hits.
+            &crate::daemon::image_hash::machine_scoped_cache_dir(
+                &crate::daemon::service_definition::broker_owned_paths()
+                    .cache
+                    .join("image-hash"),
+            ),
             source_binary,
             |completed, total| {
                 if last_hash_progress.elapsed() >= Duration::from_millis(500) || completed >= total

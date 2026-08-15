@@ -93,9 +93,12 @@ pub fn broker_route_identity(
     // (path,size,mtime) cache, replacing the whole-file SHA-256 read that made
     // cold daemon-image placement slow. The digest is a hex string on both this
     // registration side and the broker's verification side, so the label
-    // matches.
-    let image_hash =
-        super::image_hash::cached_blake3_hex(&paths.cache.join("image-hash"), daemon_binary)?;
+    // matches. soldr#2521 B1: the memo is machine-scoped so isolated roots
+    // share hits; the root-scoped dir remains the fallback.
+    let image_hash = super::image_hash::cached_blake3_hex(
+        &super::image_hash::machine_scoped_cache_dir(&paths.cache.join("image-hash")),
+        daemon_binary,
+    )?;
     let mut hasher = Sha256::new();
     hasher.update(identity.as_bytes());
     hasher.update([0]);

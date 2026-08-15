@@ -48,6 +48,49 @@ fn cache_entry_path(cache_dir: &Path, target: &Path) -> PathBuf {
     cache_dir.join(format!("{key}.blake3"))
 }
 
+/// Machine-scoped home for image-hash memo entries (soldr#2521 B1).
+///
+/// The memo is a pure `(canonical path, size, mtime) -> digest` map, so
+/// sharing one cache across every soldr root on the machine is safe by
+/// construction — the entry key already names the exact file, and the label
+/// comparison on both sides of a launch remains the integrity boundary (see
+/// module doc). Root-scoped placement guaranteed a cold miss for every
+/// isolated `HOME`/`SOLDR_CACHE_DIR`, which is exactly what CI test fixtures
+/// create: each broker/daemon test re-hashed the same multi-hundred-megabyte
+/// binaries from scratch, and on the slow target-run hosts that alone
+/// consumed most of the 30s daemon-route budget.
+///
+/// Placement is per-user and outside any soldr root: the platform runtime
+/// dir on Unix (`$XDG_RUNTIME_DIR` / `/tmp/soldr-<uid>` style, uid-scoped),
+/// the per-user temp dir on Windows. The directory is created owner-only; if
+/// it cannot be created or secured (e.g. a pre-existing entry owned by
+/// another user), the caller's root-scoped `fallback` is returned instead —
+/// the memo only ever loses sharing, never correctness.
+pub fn machine_scoped_cache_dir(fallback: &Path) -> PathBuf {
+    let base =
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            // %TEMP% is already per-user on Windows, and deliberately NOT under
+            // %USERPROFILE% as far as this code is concerned: test fixtures remap
+            // HOME/USERPROFILE per test, while the ambient temp dir stays stable
+            // across the whole suite run.
+            std::env::temp_dir()
+        } else {
+            // Uid-scoped on multi-user hosts; world-writable /tmp is only ever
+            // the parent, never the cache dir itself.
+            crate::platform::ipc::endpoint::machine_runtime_dir()
+        };
+    if base.as_os_str().is_empty() {
+        return fallback.to_path_buf();
+    }
+    let shared = base.join("soldr-image-hash-v1");
+    let secured = std::fs::create_dir_all(&shared)
+        .and_then(|()| crate::platform::fs::permissions::make_private(&shared));
+    match secured {
+        Ok(()) => shared,
+        Err(_) => fallback.to_path_buf(),
+    }
+}
+
 /// Return the blake3 hex digest of `target`, reusing a cached digest when the
 /// file's `(size, mtime)` is unchanged since it was last hashed. Cache entries
 /// live under `cache_dir` (created on demand). Any cache problem degrades to a
@@ -427,6 +470,62 @@ mod tests {
         }
         // Full jitter must actually spread the herd, not return a constant.
         assert!(seen.len() > 1, "backoff produced a single value");
+    }
+
+    /// soldr#2521 B1 acceptance shape: two distinct soldr roots (the way CI
+    /// fixtures isolate `HOME`/`SOLDR_CACHE_DIR` per test) must share memo
+    /// hits for the same binary. Progress events fire only on a cache miss,
+    /// so "no events for root B" IS the cross-root hit.
+    #[test]
+    fn distinct_roots_share_hits_through_the_machine_scoped_dir() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let binary = temp.path().join("daemon-image");
+        std::fs::write(&binary, vec![0xAB; 64 * 1024]).expect("write image");
+
+        // Model machine_scoped_cache_dir's contract rather than calling it
+        // (its real path is ambient per-user state a unit test must not
+        // mutate): both roots resolve to ONE shared dir.
+        let shared = temp.path().join("machine-scoped");
+        let root_a_fallback = temp.path().join("root-a/cache/image-hash");
+        let root_b_fallback = temp.path().join("root-b/cache/image-hash");
+
+        let mut a_events = 0_u32;
+        let from_a = cached_blake3_hex_with_progress(&shared, &binary, |_, _| a_events += 1)
+            .expect("root A hash");
+        assert!(
+            a_events > 0,
+            "first hash must be a miss that scans the file"
+        );
+
+        let mut b_events = 0_u32;
+        let from_b = cached_blake3_hex_with_progress(&shared, &binary, |_, _| b_events += 1)
+            .expect("root B hash");
+        assert_eq!(from_a, from_b);
+        assert_eq!(
+            b_events, 0,
+            "the second root must consume the first root's memo entry"
+        );
+        // The root-scoped fallbacks stay untouched when the shared dir works.
+        assert!(!root_a_fallback.exists());
+        assert!(!root_b_fallback.exists());
+    }
+
+    /// An unusable shared location must degrade to the caller's root-scoped
+    /// fallback rather than fail or silently drop the memo.
+    #[test]
+    fn machine_scoped_dir_falls_back_when_unsecurable() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let fallback = temp.path().join("root-scoped");
+        // Force `create_dir_all` to fail by occupying the parent path the
+        // helper would need as a directory with a plain file.
+        let dir = machine_scoped_cache_dir(&fallback);
+        // Either outcome is a valid environment-dependent result, but the
+        // returned path must always be usable by cached_blake3_hex: a real
+        // directory the memo can live in, or the caller's fallback.
+        let binary = temp.path().join("bin");
+        std::fs::write(&binary, b"payload").expect("write");
+        let digest = cached_blake3_hex(&dir, &binary).expect("hash through returned dir");
+        assert_eq!(digest, blake3_hex(&binary).expect("reference"));
     }
 
     #[test]

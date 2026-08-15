@@ -26,9 +26,12 @@ pub(crate) const BROKER_INSTANCE_ID_ENV: &str = "SOLDR_INTERNAL_BROKER_INSTANCE_
 
 pub(crate) fn broker_image_instance_id() -> io::Result<String> {
     let executable = std::env::current_exe()?;
-    let cache = crate::daemon::service_definition::broker_owned_paths()
-        .cache
-        .join("broker-image-hash");
+    // soldr#2521 B1: machine-scoped memo so isolated roots share hits.
+    let cache = crate::daemon::image_hash::machine_scoped_cache_dir(
+        &crate::daemon::service_definition::broker_owned_paths()
+            .cache
+            .join("broker-image-hash"),
+    );
     let digest = broker_image_digest(&cache, &executable)?;
     Ok(format_broker_instance_id(
         env!("CARGO_PKG_VERSION"),
