@@ -42,6 +42,18 @@ pub const ERROR_PIPE_BUSY: i32 = 231;
 /// pool, while still riding out a transient pool-wide admission spike.
 pub const PIPE_BUSY_RETRY_LIMIT: u32 = 8;
 
+/// Retry budget for `ERROR_FILE_NOT_FOUND` on a named-pipe open.
+///
+/// A pipe name is transiently absent while a healthy server re-posts its
+/// next listener instance: `CreateFile` landing between one client's
+/// disconnect and the server's next `CreateNamedPipe` gets NotFound even
+/// though the daemon is alive — Unix sockets absorb the same moment in
+/// the listen backlog, which is why this failure shape was Windows-only
+/// (the msvc target-run lanes' `daemon registry query: NotRunning`).
+/// Bounded much tighter than the busy budget so a genuinely absent
+/// daemon still reports NotRunning promptly (~30ms added, not ~250ms).
+pub const PIPE_NOT_FOUND_RETRY_LIMIT: u32 = 4;
+
 /// Outcome of [`open_pipe_with_retry`]: the connected stream plus how
 /// many busy-pipe retries the open consumed (surfaced to the daemon as
 /// `ipc_busy_retries` telemetry).

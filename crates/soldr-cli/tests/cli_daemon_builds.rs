@@ -73,13 +73,18 @@ impl DaemonProc {
     fn spawn(cache_root: &Path, home_root: &Path) -> Self {
         let mut cmd =
             common::isolated_daemon::isolated_daemon_command(&soldr_daemon_bin(), cache_root);
+        // Capture stderr: when the daemon dies between the readiness check
+        // and a later in-test IPC call, its own diagnostics are the only
+        // evidence, and Stdio::null() was discarding them.
+        let stderr_log = std::fs::File::create(cache_root.join("daemon-stderr.log"))
+            .expect("create daemon stderr log");
         cmd.args(["--foreground", "--idle-timeout-secs", "60"])
             .env("SOLDR_CACHE_DIR", cache_root)
             .env("HOME", home_root)
             .env("USERPROFILE", home_root)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stderr(Stdio::from(stderr_log));
         let mut child = cmd.spawn().expect("spawn soldr-daemon");
         // Cold target-run hosts may hash several large test images before
         // this daemon can publish its route. The profile serializes this
@@ -273,7 +278,7 @@ fn gc_list_uses_daemon_owned_registry_while_the_daemon_holds_the_lock() {
             .expect("seed live target");
     }
 
-    let _daemon = DaemonProc::spawn(&cache_root, &home_root);
+    let mut daemon = DaemonProc::spawn(&cache_root, &home_root);
     let output = run_soldr(&["gc", "list", "--json"], &cache_root, &home_root);
     assert!(
         output.status.success(),
@@ -288,7 +293,21 @@ fn gc_list_uses_daemon_owned_registry_while_the_daemon_holds_the_lock() {
         .any(|entry| entry["path"] == live_target.display().to_string()));
 
     let sock = direct_sock(&cache_root);
-    let rows = client::list_target_registry(&sock).expect("daemon registry query");
+    let rows = match client::list_target_registry(&sock) {
+        Ok(rows) => rows,
+        Err(error) => {
+            let child_state = daemon
+                .child
+                .as_mut()
+                .map(|child| format!("{:?}", child.try_wait()));
+            let daemon_stderr =
+                std::fs::read_to_string(cache_root.join("daemon-stderr.log")).unwrap_or_default();
+            panic!(
+                "daemon registry query failed ({error:?}) dialing {}\nchild={child_state:?}\ndaemon stderr:\n{daemon_stderr}",
+                sock.display()
+            )
+        }
+    };
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].path, live_target.display().to_string());
     assert_eq!(
@@ -429,12 +448,19 @@ fn logs_unavailable_daemon_never_waits_for_its_database_lock() {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = command.spawn().expect("spawn logs list");
+    // 10s, not the historical 3s: the old tight budget existed to
+    // distinguish a fast IPC failure from redb's 5s exclusive-lock wait.
+    // Post-SQLite there is no lock wait to detect (the CLI never opens the
+    // daemon-owned store, and WAL would not block a reader anyway), so the
+    // budget only needs to bound the whole invocation -- and 3s raced the
+    // front door's cold broker staging under load, which is startup noise,
+    // not the property this test asserts.
     let status = child
-        .wait_timeout(Duration::from_secs(3))
+        .wait_timeout(Duration::from_secs(10))
         .expect("wait for logs list")
         .unwrap_or_else(|| {
             let _ = child.kill();
-            panic!("logs list waited on daemon-owned state.sqlite3 instead of failing through IPC")
+            panic!("logs list hung instead of failing through IPC")
         });
     let output = child.wait_with_output().expect("collect logs list output");
     assert!(

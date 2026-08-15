@@ -136,7 +136,18 @@ pub fn resolved_control_endpoint_path(_paths: &SoldrPaths) -> io::Result<std::pa
     Ok(runtime_control_endpoint_path(logical))
 }
 
-fn runtime_control_endpoint_path(logical: std::path::PathBuf) -> std::path::PathBuf {
+/// Convert a logical endpoint value into the path the transport actually
+/// dials: on Windows the logical (filesystem-looking) value lives under the
+/// named-pipe namespace, so the `\\.\pipe\` prefix is prepended when absent.
+///
+/// Public because every dialer must apply it — the daemon's own listener and
+/// the CLI's env-resolved path always did, but a test harness deriving the
+/// endpoint from the executable path and dialing the raw logical leaf gets
+/// `CreateFile` on a relative *file* path: NotFound, reported as
+/// `NotRunning` against a demonstrably live daemon. That mismatch was the
+/// deterministic, Windows-only `daemon registry query: NotRunning` failure
+/// on the msvc target-run lanes.
+pub fn runtime_control_endpoint_path(logical: std::path::PathBuf) -> std::path::PathBuf {
     if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         // The broker assigns a filesystem-looking logical path; the
         // Windows transport dials it under the named-pipe namespace.
