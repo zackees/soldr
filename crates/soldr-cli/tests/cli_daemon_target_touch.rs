@@ -126,11 +126,15 @@ impl Drop for DaemonProc {
 }
 
 fn registry_row_exists(cache_root: &Path, target_path: &Path) -> Option<i64> {
+    // Tolerant of a lock-contended open: the live daemon's per-write handle
+    // takes the same exclusive redb lock, so a failed open during a poll
+    // means "no observation this round", not a test failure.
     let db_path = cache_root.join("state.redb");
-    let registry = TargetRegistry::open(&db_path).expect("open registry");
+    let registry = TargetRegistry::open(&db_path).ok()?;
     registry
         .get(target_path)
-        .expect("get registry row")
+        .ok()
+        .flatten()
         .map(|row| row.last_used)
 }
 
@@ -215,23 +219,35 @@ fn daemon_path_writes_via_ipc_when_available() {
     }
     assert!(submitted, "fire-and-forget submit never succeeded");
 
-    // The daemon persists the row immediately on processing (per-write redb
-    // open in the dispatch handler), so it is observable without any
-    // shutdown. Poll for it BEFORE initiating shutdown: the old fixed 200ms
-    // sleep raced the daemon's accept -> read -> spawn_blocking -> redb-open
-    // pipeline on slow hosts, and the 3s-then-kill teardown below could then
-    // destroy the daemon before the write landed — the darwin target-run
-    // lanes failed exactly here. A transient open-lock clash with the
-    // daemon's own per-write handle reads as "no row yet" and simply polls
-    // again.
+    // Converge on the row BEFORE initiating shutdown, resubmitting on every
+    // iteration. Two hazards make a submit-once-then-wait shape flaky and
+    // both bit the darwin target-run lanes:
+    //
+    // * The old fixed 200ms sleep raced the daemon's accept -> read ->
+    //   spawn_blocking -> redb-open pipeline, and the 3s-then-kill teardown
+    //   below could destroy the daemon before the write landed.
+    // * A single fire-and-forget write is silently dropped if the daemon's
+    //   per-write `TargetRegistry::open` loses the exclusive redb lock race
+    //   -- including to THIS test's own `registry_row_exists` probe, which
+    //   takes the same lock. Errors are silent by design on that path, so
+    //   the only convergent shape is submit-check-repeat: the upsert is
+    //   idempotent (same path, same timestamp), and any write lost to a
+    //   lock collision is replayed by the next iteration.
     let mut row = None;
     let deadline = Instant::now() + Duration::from_secs(15);
     while Instant::now() < deadline {
+        let _ = client::submit_fire_and_forget(
+            &sock,
+            &Request::RecordTargetTouch {
+                path: target.display().to_string(),
+                unix_seconds: 1_700_000_000,
+            },
+        );
+        std::thread::sleep(Duration::from_millis(150));
         row = registry_row_exists(&cache_root, &target);
         if row.is_some() {
             break;
         }
-        std::thread::sleep(Duration::from_millis(100));
     }
 
     let _ = client::shutdown(&sock);
