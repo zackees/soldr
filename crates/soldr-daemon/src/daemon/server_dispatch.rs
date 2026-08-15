@@ -118,21 +118,28 @@ where
             let _ = write_frame_async(&mut stream, &response).await;
         }
         Request::RecordTargetTouch { path, unix_seconds } => {
-            // Fire-and-forget: open redb just for this write, drop
-            // the handle immediately so a concurrent CLI process
-            // (`soldr gc list`, `soldr cache report`) can still open
-            // the same file. Errors are silent by design.
+            // soldr#2558: acknowledge RECEIPT before processing. On
+            // macOS/BSD a connection the client closes before this server
+            // accepts it is discarded together with its buffered frame, so
+            // pure write-then-close fire-and-forget lost every touch that
+            // raced the accept loop. The client now holds the connection
+            // until this ack (bounded); the ack races nothing because it is
+            // sent before the store write begins. A client that already
+            // closed makes this write fail, which is fine — its frame was
+            // received, which is all the ack exists to prove.
+            let _ = write_frame_async(&mut stream, &Response::Ack).await;
+            // Fire-and-forget for the WRITE half: errors are silent by
+            // design and the client never learns the outcome.
             //
             // soldr#2224: on the blocking pool. This request arrives once
             // per rustc invocation, and a contended open waits seconds —
             // exactly the stall that must not land on a tokio worker.
             //
-            // The open is retried briefly: redb's lock is exclusive, so a
-            // concurrent reader (`soldr gc list`) holding the file used to
-            // make this single silent attempt drop the touch permanently —
-            // the row simply never existed afterward. Waiting out a
-            // transient holder keeps the write; a wedged holder still ends
-            // the attempt silently at the deadline, unchanged semantics.
+            // The open is retried briefly: a concurrent writer holding the
+            // store used to make a single silent attempt drop the touch
+            // permanently. Waiting out a transient holder keeps the write;
+            // a wedged holder still ends the attempt silently at the
+            // deadline, unchanged semantics.
             let db_path = state.db_path.clone();
             let _ = tokio::task::spawn_blocking(move || {
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);

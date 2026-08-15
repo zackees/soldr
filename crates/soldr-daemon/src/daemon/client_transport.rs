@@ -115,28 +115,46 @@ where
         .map_err(ClientError::from)
 }
 
+/// The bound on waiting for the daemon's receipt ack after a hot-path
+/// write (soldr#2558). Named pipes do not share the macOS pre-accept
+/// drop, but acking uniformly keeps the transports' contracts identical
+/// and the wait is sub-ms against a healthy daemon (the ack precedes the
+/// store write).
+const HOT_PATH_ACK_TIMEOUT: Duration = Duration::from_millis(200);
+
 fn submit_fire_and_forget_windows(sock_path: &Path, req: &Request) -> Result<(), ClientError> {
     use tokio::time::timeout;
 
     let sock_path = sock_path.to_path_buf();
     let req = req.clone();
-    run_windows_ipc("daemon IPC hot-path write", HOT_PATH_TIMEOUT, move || {
-        let runtime = windows_runtime()?;
-        runtime.block_on(async move {
-            let mut stream = crate::platform::ipc::connect::open_pipe_with_retry(&sock_path)
-                .await?
-                .stream;
-            timeout(HOT_PATH_TIMEOUT, write_frame_async(&mut stream, &req))
-                .await
-                .map_err(|_| {
-                    crate::platform::ipc::connect::pipe_timeout_error(
-                        "daemon IPC hot-path write",
-                        HOT_PATH_TIMEOUT,
-                    )
-                })??;
-            Ok::<(), std::io::Error>(())
-        })
-    })
+    run_windows_ipc(
+        "daemon IPC hot-path write",
+        HOT_PATH_TIMEOUT + HOT_PATH_ACK_TIMEOUT,
+        move || {
+            let runtime = windows_runtime()?;
+            runtime.block_on(async move {
+                let mut stream = crate::platform::ipc::connect::open_pipe_with_retry(&sock_path)
+                    .await?
+                    .stream;
+                timeout(HOT_PATH_TIMEOUT, write_frame_async(&mut stream, &req))
+                    .await
+                    .map_err(|_| {
+                        crate::platform::ipc::connect::pipe_timeout_error(
+                            "daemon IPC hot-path write",
+                            HOT_PATH_TIMEOUT,
+                        )
+                    })??;
+                // Best-effort receipt ack (soldr#2558); an old daemon that
+                // never acks costs only this bounded wait.
+                let _ = timeout(
+                    HOT_PATH_ACK_TIMEOUT,
+                    read_frame_async::<_, Response>(&mut stream),
+                )
+                .await;
+                Ok::<(), std::io::Error>(())
+            })
+        },
+    )
 }
 
 fn submit_request_windows(sock_path: &Path, req: &Request) -> Result<Response, ClientError> {
