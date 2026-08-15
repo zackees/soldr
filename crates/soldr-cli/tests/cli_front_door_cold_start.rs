@@ -2,9 +2,9 @@
 //! front-door `soldr` invocation on a clean isolated root spawns **exactly one**
 //! broker, and a second front-door invocation against the same endpoint does NOT
 //! spawn a second (the front door is the sole broker-spawner and the broker
-//! singleton-binds). Paired with `session_multiprocess_smoke`'s one-daemon
-//! assertion, this is the "one build → one broker + one daemon" invariant #2364
-//! calls for, exercised on the real process harness (no Docker required).
+//! singleton-binds). This covers the broker half of the "one build → one
+//! broker + one daemon" invariant #2364 calls for, exercised on the real
+//! process harness (no Docker required).
 
 mod common;
 
