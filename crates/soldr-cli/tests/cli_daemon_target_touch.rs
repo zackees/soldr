@@ -287,9 +287,20 @@ fn daemon_path_writes_via_ipc_when_available() {
         let _ = child.wait();
     }
 
+    // Failure triage aid: distinguish "this platform/path cannot take the
+    // write at all" from "the daemon never processed the frame" by writing a
+    // sentinel row directly from the test process.
+    let direct_probe = TargetRegistry::open(&cache_root.join("state.redb"))
+        .map_err(|error| error.to_string())
+        .and_then(|registry| {
+            registry
+                .upsert_with_time(Path::new("probe-sentinel"), 1)
+                .map_err(|error| error.to_string())
+        });
     assert!(
         row.is_some(),
-        "daemon never wrote the target registry row for {}; daemon stderr:\n{}",
+        "daemon never wrote the target registry row for {}; \
+         direct write from the test process: {direct_probe:?}; daemon stderr:\n{}",
         target.display(),
         daemon_stderr_tail(&cache_root)
     );

@@ -137,12 +137,31 @@ where
             let _ = tokio::task::spawn_blocking(move || {
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
                 loop {
-                    if let Ok(registry) = TargetRegistry::open(&db_path) {
-                        let _ = registry.upsert_with_time(Path::new(&path), unix_seconds);
-                        return;
-                    }
-                    if std::time::Instant::now() >= deadline {
-                        return;
+                    match TargetRegistry::open(&db_path) {
+                        Ok(registry) => {
+                            // Silent to the CLIENT (fire-and-forget), but a
+                            // failed write is worth one daemon-stderr line:
+                            // an every-time failure here looked like a plain
+                            // missing row and took several blind rounds to
+                            // localize on the darwin target-run lanes.
+                            if let Err(error) =
+                                registry.upsert_with_time(Path::new(&path), unix_seconds)
+                            {
+                                eprintln!(
+                                    "soldr-daemon: target-touch upsert failed for {path}: {error}"
+                                );
+                            }
+                            return;
+                        }
+                        Err(error) => {
+                            if std::time::Instant::now() >= deadline {
+                                eprintln!(
+                                    "soldr-daemon: target-touch dropped; could not open {} after retries: {error}",
+                                    db_path.display()
+                                );
+                                return;
+                            }
+                        }
                     }
                     std::thread::sleep(std::time::Duration::from_millis(50));
                 }
