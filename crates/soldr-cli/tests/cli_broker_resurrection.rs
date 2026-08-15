@@ -206,6 +206,72 @@ fn issue_2549_same_version_old_image_broker_is_never_replaced_automatically() {
     );
 }
 
+/// soldr#2554: `soldr env --json` against a broker started by a different
+/// Soldr image must stay byte-clean JSON on stdout, with no soldr#2549
+/// mismatch warning on stderr either — a caller that merges the two streams
+/// to parse this output (as `.github/scripts/gnu_linux_toolchain_e2e.py`
+/// does) must never see its `json.loads()` broken by an unrelated
+/// diagnostic. This is the inverse of
+/// `issue_2549_same_version_old_image_broker_is_never_replaced_automatically`,
+/// which asserts the warning DOES appear for a human-facing command.
+#[test]
+fn issue_2554_env_json_against_mismatched_broker_stays_parseable() {
+    let home = common::unique_temp_dir("broker-env-json-mismatch");
+    let old_instance = format!("soldr-{}-{}", env!("CARGO_PKG_VERSION"), "0".repeat(64));
+    let mut incumbent = spawn_simulated_old_image_broker(&home, &old_instance);
+    let before = wait_for_broker_instance(&home, &old_instance);
+
+    // A bare cwd outside the workspace, plus SOLDR_NO_BOOTSTRAP, keep PyO3
+    // sysroot detection a no-op: this test's process inherits the outer
+    // `cargo test` run's toolchain env, and under the isolated `HOME` above
+    // that can otherwise send `env --json` down soldr's rustup-bootstrap
+    // path -- noisy stderr unrelated to the mismatch-warning invariant this
+    // test checks.
+    let cwd = common::unique_temp_dir("broker-env-json-mismatch-cwd");
+    let mut command = Command::new(common::soldr_bin());
+    common::scrub_outer_soldr_env(&mut command);
+    let output = command
+        .args(["env", "--target", "aarch64-unknown-linux-gnu", "--json"])
+        .env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .env("SOLDR_NO_BOOTSTRAP", "1")
+        .current_dir(&cwd)
+        .stdin(Stdio::null())
+        .output()
+        .expect("run env --json against mismatched broker");
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+
+    let incumbent_exit = wait_for_child(&mut incumbent, Instant::now() + Duration::from_secs(15));
+    if incumbent_exit.is_none() {
+        let _ = incumbent.kill();
+        let _ = incumbent.wait();
+    }
+    let log = spawn_log(&home);
+    stop_broker(&home);
+
+    assert!(
+        before.contains(&old_instance),
+        "simulated old-image broker never became ready; last status:\n{before}"
+    );
+    assert!(
+        output.status.success(),
+        "env --json must succeed through a mismatched broker; status={:?}\n{log}",
+        output.status
+    );
+    assert!(
+        stderr.is_empty(),
+        "soldr#2554: --json mode must suppress every unsolicited diagnostic, \
+         including the soldr#2549 mismatch warning; stderr:\n{stderr}"
+    );
+    let payload: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|err| {
+        panic!(
+            "soldr#2554: env --json stdout must be valid JSON on its own; error={err}\nstdout:\n{}",
+            String::from_utf8_lossy(&output.stdout)
+        )
+    });
+    assert_eq!(payload["command"], "env");
+}
+
 #[test]
 fn issue_2476_sixty_four_process_stampede_binds_one_broker() {
     let home = common::unique_temp_dir("broker-64-process-stampede");

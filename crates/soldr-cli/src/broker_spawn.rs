@@ -126,6 +126,13 @@ fn is_teardown_command(raw_args: &[String]) -> bool {
         .any(|arg| arg == command)
 }
 
+/// Governs every stdout/stderr diagnostic `maybe_spawn_broker_front_door`
+/// might emit -- not just the CI endpoint banner its name refers to. A caller
+/// passing `--json` / `--shell-export` / `--github-env` intends to parse or
+/// `eval` this process's output, so nothing unsolicited may reach either
+/// stream: soldr#2554 found a caller that merges stdout+stderr to parse
+/// `soldr env --json`, and an unrelated eprintln! (the soldr#2549 broker
+/// image-mismatch warning) broke that parse.
 fn ci_endpoint_diagnostics_eligible(raw_args: &[String]) -> bool {
     !raw_args.iter().any(|arg| {
         matches!(arg.as_str(), "--json" | "--github-env" | "--shell-export")
@@ -161,15 +168,28 @@ pub(crate) fn maybe_spawn_broker_front_door(raw_args: &[String]) {
     {
         return;
     }
-    if ci_endpoint_diagnostics_eligible(raw_args) {
+    let diagnostics_eligible = ci_endpoint_diagnostics_eligible(raw_args);
+    if diagnostics_eligible {
         emit_ci_endpoint_diagnostics();
     }
-    if let Err(error) = ensure_stable_broker_ready() {
-        eprintln!("soldr: broker resurrection did not complete: {error}");
+    if let Err(error) = ensure_stable_broker_ready(diagnostics_eligible) {
+        if diagnostics_eligible {
+            eprintln!("soldr: broker resurrection did not complete: {error}");
+        }
     }
 }
 
-fn ensure_stable_broker_ready() -> Result<(), String> {
+/// `diagnostics_eligible` mirrors [`ci_endpoint_diagnostics_eligible`]: when a
+/// caller asked for `--json` / `--shell-export` / `--github-env`, it is going
+/// to parse or `eval` this process's output, very possibly with stdout and
+/// stderr merged (the soldr#938 doc comment's own `eval "$(soldr env ...)"`
+/// example does exactly that). An unconditional warning here would land
+/// inside that machine-readable payload and break the parse -- reproduced by
+/// soldr#2554: `soldr env --json` against a broker started by a different
+/// Soldr image (the common CI shape once setup-soldr's pinned binary and a
+/// freshly-built checkout binary share one broker endpoint) corrupted a
+/// caller's `json.loads()` with the soldr#2549 mismatch warning.
+fn ensure_stable_broker_ready(diagnostics_eligible: bool) -> Result<(), String> {
     let endpoint = crate::broker_identity::ResolvedBrokerEndpoint::resolve()
         .map_err(|error| error.to_string())?;
     endpoint
@@ -180,7 +200,9 @@ fn ensure_stable_broker_ready() -> Result<(), String> {
         .build()
         .map_err(|error| format!("could not create readiness runtime: {error}"))?;
     if let Some(observed) = broker_instance_at(&runtime, &endpoint.bind_endpoint) {
-        warn_on_broker_image_mismatch(&observed);
+        if diagnostics_eligible {
+            warn_on_broker_image_mismatch(&observed);
+        }
         return Ok(());
     }
 
@@ -230,7 +252,9 @@ fn ensure_stable_broker_ready() -> Result<(), String> {
             // stable broker launches (or adopts) a matching daemon generation
             // behind itself and the prior daemon drains under daemon lifecycle
             // policy. Operators recover deliberately with `soldr broker remove`.
-            warn_on_broker_image_mismatch(&instance);
+            if diagnostics_eligible {
+                warn_on_broker_image_mismatch(&instance);
+            }
             return Ok(());
         }
         if admission_endpoint_accepts_connections(&endpoint.bind_endpoint) {
