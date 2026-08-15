@@ -96,6 +96,21 @@ pub(crate) fn front_door_broker_spawn_eligible(raw_args: &[String]) -> bool {
     let Some(first_positional) = raw_args.get(1) else {
         return false;
     };
+    // A flag-shaped first argument (`--version`, `--help`, `-V`, `--as ...`)
+    // is not a command; it either prints-and-exits or gets peeled off before
+    // dispatch. Booting broker infrastructure for it is never right, and one
+    // shape is actively harmful: `global_upgrade::probe_version` runs
+    // `<global soldr> --version` as a child of EVERY invocation in a
+    // `prefer_newer_global` checkout, so an eligible `--version` made even
+    // read-only probes (`soldr broker status` under an isolated test HOME)
+    // stage a broker image into that HOME, spawn `broker serve`, and then
+    // find "a broker" running -- the target-run broker-absent test failures
+    // on Windows (#2521 D). An `--as`-pinned invocation loses nothing: the
+    // pinned soldr the trampoline execs applies this predicate to its own
+    // argv, where the real command is the first positional again.
+    if first_positional.starts_with('-') {
+        return false;
+    }
     // A rustc-wrapper re-entry must never reach here -- see module doc.
     // Belt-and-suspenders: `run_main` already returns before calling this
     // module on that path, but the predicate stays correct standalone.
@@ -823,6 +838,24 @@ mod tests {
         let _guard = ENV_LOCK.lock().unwrap();
         let raw_args = vec!["soldr".to_string()];
         assert!(!front_door_broker_spawn_eligible(&raw_args));
+    }
+
+    /// A flag first argument is not a command. `soldr --version` is the
+    /// load-bearing case: `global_upgrade::probe_version` runs it as a child
+    /// of every invocation in a `prefer_newer_global` checkout, and an
+    /// eligible `--version` made that probe spawn a broker under whatever
+    /// HOME it inherited -- including the isolated homes of the target-run
+    /// broker-absent tests, which then found "a broker" running.
+    #[test]
+    fn flag_first_argument_is_ineligible() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        for flag in ["--version", "-V", "--help", "-h", "--as"] {
+            let raw_args = vec!["soldr".to_string(), flag.to_string()];
+            assert!(
+                !front_door_broker_spawn_eligible(&raw_args),
+                "flag-shaped first argument {flag} must not boot broker infrastructure"
+            );
+        }
     }
 
     #[test]
