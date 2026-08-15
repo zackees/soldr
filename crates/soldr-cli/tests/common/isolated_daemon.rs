@@ -21,9 +21,13 @@ pub(crate) fn isolated_daemon_control_endpoint(source: &Path, root: &Path) -> Pa
     let executable = isolated_daemon_executable(source, root);
     let endpoint = soldr_cli::broker_identity::daemon_session_endpoint_from_executable(&executable)
         .expect("derive test daemon endpoint");
-    PathBuf::from(
+    // The runtime conversion is load-bearing on Windows: the logical value
+    // is a bare pipe leaf, and dialing it without the `\\.\pipe\` prefix is
+    // a relative-file CreateFile that reports NotFound (-> NotRunning)
+    // against a live daemon.
+    soldr_cli::daemon::session_endpoint::runtime_control_endpoint_path(PathBuf::from(
         soldr_cli::daemon::session_endpoint::private_control_endpoint_from_session(&endpoint.path),
-    )
+    ))
 }
 
 pub(crate) fn isolated_daemon_executable(source: &Path, root: &Path) -> PathBuf {

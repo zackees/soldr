@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use crate::platform::ipc::connect::{
     busy_pipe_retry_delay, BoxedSyncStream, PipeOpen, ERROR_PIPE_BUSY, PIPE_BUSY_RETRY_LIMIT,
+    PIPE_NOT_FOUND_RETRY_LIMIT,
 };
 
 /// Connect an interprocess local socket through the platform boundary.
@@ -22,8 +23,16 @@ pub async fn connect_local_socket(
 /// backpressure, not evidence that the daemon died, so the retry loop
 /// lives inside this one client call and callers never mistake it for
 /// daemon failure.
+///
+/// `ERROR_FILE_NOT_FOUND` is also retried, but under the much smaller
+/// [`PIPE_NOT_FOUND_RETRY_LIMIT`]: a healthy server's pipe name is
+/// transiently absent between one client's disconnect and the next
+/// `CreateNamedPipe`, and failing that instant as "NotRunning" was the
+/// Windows-only `daemon registry query: NotRunning` failure the msvc
+/// target-run lanes kept reporting against a demonstrably live daemon.
 pub async fn open_pipe_with_retry(path: &Path) -> io::Result<PipeOpen> {
     use tokio::net::windows::named_pipe::ClientOptions;
+    let mut not_found_attempts: u32 = 0;
     for attempt in 0..PIPE_BUSY_RETRY_LIMIT {
         match ClientOptions::new().open(path) {
             Ok(stream) => {
@@ -36,6 +45,14 @@ pub async fn open_pipe_with_retry(path: &Path) -> io::Result<PipeOpen> {
                 if error.raw_os_error() == Some(ERROR_PIPE_BUSY)
                     && attempt + 1 < PIPE_BUSY_RETRY_LIMIT =>
             {
+                tokio::time::sleep(busy_pipe_retry_delay(attempt)).await;
+            }
+            Err(error)
+                if error.kind() == io::ErrorKind::NotFound
+                    && not_found_attempts + 1 < PIPE_NOT_FOUND_RETRY_LIMIT
+                    && attempt + 1 < PIPE_BUSY_RETRY_LIMIT =>
+            {
+                not_found_attempts += 1;
                 tokio::time::sleep(busy_pipe_retry_delay(attempt)).await;
             }
             Err(error) => return Err(error),
