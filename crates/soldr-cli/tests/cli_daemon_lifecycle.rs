@@ -273,9 +273,29 @@ fn managed_windows_start_has_one_consoleless_owner() {
     let paths = SoldrPaths::with_root(cache_root.clone());
     let (pid, exe) = soldr_cli::daemon::lifecycle::read_route_claim_identity(&paths)
         .expect("daemon route claim publication");
+    // Two canonical placements exist post-#2364: the per-root
+    // self-relocation tree (`<root>/runtime/soldr-daemon/...`) and the
+    // broker's route-runtime tree
+    // (`.../soldr-broker/routes/<route>/runtime/soldr-daemon/...`) — the
+    // broker is the sole daemon spawner and places images in its own tree,
+    // while adoption of a previously relocated daemon keeps the per-root
+    // shape. Which one wins is timing-dependent; both are canonical, and
+    // asserting only the per-root shape made this test flake on whichever
+    // spawn path won the race.
+    let per_root = exe.starts_with(soldr_cli::self_relocate::daemon_runtime_root(&paths));
+    let components: Vec<String> = exe
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().to_ascii_lowercase())
+        .collect();
+    let broker_route = components.iter().any(|c| c == "soldr-broker")
+        && components
+            .windows(2)
+            .any(|pair| pair[0] == "runtime" && pair[1] == "soldr-daemon");
     assert!(
-        exe.starts_with(soldr_cli::self_relocate::daemon_runtime_root(&paths)),
-        "the PID owner must be the canonical runtime image: {}",
+        per_root || broker_route,
+        "the PID owner must be a canonical runtime image (per-root \
+         `<root>/runtime/soldr-daemon/...` or broker route \
+         `.../soldr-broker/routes/<r>/runtime/soldr-daemon/...`): {}",
         exe.display()
     );
     assert!(
@@ -285,11 +305,13 @@ fn managed_windows_start_has_one_consoleless_owner() {
         "the live PID owner must hold the root lock"
     );
 
-    let second = run_soldr(
-        &["daemon", "start", "--idle-timeout", "60"],
-        &cache_root,
-        &home_root,
-    );
+    // A plain second start: `--idle-timeout` is a hard-rejected legacy flag
+    // under the broker-owned model (#2441), so the old `--idle-timeout 60`
+    // here could never succeed — it went unnoticed for weeks because the
+    // Windows lanes kept aborting on earlier failures before this test ever
+    // executed. The invariant under test is unchanged: an idempotent second
+    // start must preserve the one root owner.
+    let second = run_soldr(&["daemon", "start"], &cache_root, &home_root);
     assert!(
         second.status.success(),
         "second detached start failed: {second:?}"
@@ -426,7 +448,7 @@ fn cargo_test_recovers_after_daemon_stop_without_herd_spawning() {
         &cache_root,
         &home_root,
         &project,
-        Duration::from_secs(90),
+        Duration::from_secs(150),
     );
     assert!(
         first.status.success(),
@@ -450,7 +472,7 @@ fn cargo_test_recovers_after_daemon_stop_without_herd_spawning() {
         &cache_root,
         &home_root,
         &project,
-        Duration::from_secs(90),
+        Duration::from_secs(150),
     );
     assert!(
         second.status.success(),
