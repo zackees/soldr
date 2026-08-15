@@ -179,11 +179,6 @@ impl BackendLauncher for SoldrBackendLauncher {
         );
         self.ensure_route_deadline(request)?;
         let paths = routed_paths(request)?;
-        // Every launcher call is backed by an explicit client route request.
-        // That new work authorizes resurrection after `daemon stop`; the
-        // tombstone still fences a launch when stop races after this point.
-        crate::daemon::tombstone::clear(&paths);
-
         let source_binary = canonical_backend_binary(request)?;
         self.report_progress(
             request,
@@ -267,13 +262,6 @@ impl BackendLauncher for SoldrBackendLauncher {
             );
         }
 
-        // Close the stop-vs-launch window: if stop planted its tombstone after
-        // the first check, do not allow this child to become ready.
-        if crate::daemon::tombstone::is_active(&paths) {
-            let _ = child.kill();
-            return Err(tombstone_error());
-        }
-
         self.report_progress(
             request,
             "readiness-probe",
@@ -292,12 +280,13 @@ impl BackendLauncher for SoldrBackendLauncher {
             },
         ) {
             Ok(handle) => {
-                pause_after_spawn_for_test();
-                if crate::daemon::tombstone::is_active(&paths)
-                    || self.ensure_route_deadline(request).is_err()
-                {
+                // spawn_blocking cannot cancel a running OS thread, so a
+                // timed-out route worker re-checks the connection deadline
+                // here too: a daemon that became ready after the caller gave
+                // up must not be published as this route's backend.
+                if let Err(error) = self.ensure_route_deadline(request) {
                     let _ = child.kill();
-                    return Err(tombstone_error());
+                    return Err(error);
                 }
                 if debug {
                     eprintln!(
@@ -323,19 +312,6 @@ impl BackendLauncher for SoldrBackendLauncher {
             }
         }
     }
-}
-
-fn pause_after_spawn_for_test() {
-    let Some(delay) = std::env::var_os("SOLDR_TEST_DAEMON_LAUNCH_PAUSE_MS")
-        .and_then(|value| value.to_str().and_then(|value| value.parse::<u64>().ok()))
-        .map(Duration::from_millis)
-    else {
-        return;
-    };
-    if let Some(path) = std::env::var_os("SOLDR_TEST_DAEMON_LAUNCH_READY_FILE") {
-        let _ = std::fs::write(path, b"spawned");
-    }
-    std::thread::sleep(delay);
 }
 
 fn daemon_launch_failure(error: &std::io::Error, log_path: &std::path::Path) -> String {
@@ -644,12 +620,6 @@ fn routed_paths(
     Ok(crate::core::SoldrPaths::with_root(PathBuf::from(root)))
 }
 
-fn tombstone_error() -> BackendLaunchError {
-    BackendLaunchError::Launcher(
-        "soldr daemon tombstone active; implicit broker launch suppressed".to_string(),
-    )
-}
-
 fn canonical_backend_binary(
     request: &BackendLaunchRequest<'_>,
 ) -> Result<PathBuf, BackendLaunchError> {
@@ -738,29 +708,6 @@ mod tests {
         );
         let key = BackendKey::new(BrokerInstanceKey::Shared, "soldr-daemon-test", "1.0.0", "");
         (definition, key, TraceContext::default())
-    }
-
-    #[test]
-    fn explicit_route_request_clears_active_tombstone() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let root = temp.path().join("root");
-        let paths = crate::core::SoldrPaths::with_root(root.clone());
-        crate::daemon::tombstone::plant(&paths, Duration::from_secs(30));
-        let missing = temp.path().join("missing-daemon");
-        let (definition, key, trace_context) = request_parts(&root, &missing, &"0".repeat(64));
-        let request = BackendLaunchRequest {
-            key: &key,
-            service_definition: &definition,
-            trace_context: &trace_context,
-            session_token: None,
-        };
-
-        let err = match SoldrBackendLauncher::new().launch(&request) {
-            Ok(_) => panic!("missing image must fail"),
-            Err(err) => err,
-        };
-        assert!(!crate::daemon::tombstone::is_active(&paths));
-        assert!(!err.to_string().contains("tombstone active"), "{err}");
     }
 
     #[test]

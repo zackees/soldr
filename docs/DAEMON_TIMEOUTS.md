@@ -108,8 +108,8 @@ quickly with evidence rather than waiting for the production backstop.
 ### Daemon is wedged
 
 Run `soldr daemon stop`, wait for its bounded graceful shutdown, then run
-`soldr daemon start`. Explicit start clears the stop tombstone, re-registers
-the current daemon image, and asks the singleton broker to create the route.
+`soldr daemon start`. Explicit start re-registers the current daemon image
+and asks the singleton broker to create the route.
 
 Do not delete PID files, sockets, or `state.redb`; those are ownership and
 forensic records, not recovery switches.

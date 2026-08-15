@@ -175,11 +175,41 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
         "cli_daemon_lifecycle",
         "cli_daemon_single_instance",
         "cli_daemon_target_touch",
-        "cli_daemon_tombstone",
         "daemon_cache_maintenance",
         "daemon_stall_harness",
-        "session_multiprocess_smoke",
     ):
         assert f"binary({binary})" in config
+    # nextest hard-validates binary names in filter expressions, so a filter
+    # naming a deleted test binary fails EVERY `nextest run` at config-parse
+    # time (exit 96) -- this is how the whole CI matrix went red when
+    # cli_daemon_tombstone and session_multiprocess_smoke were removed
+    # without updating the config (soldr#2553 fallout).
+    for deleted in ("cli_daemon_tombstone", "session_multiprocess_smoke"):
+        assert f"binary({deleted})" not in config
     assert 'threads-required = "num-cpus"' in config
     assert config.count('grace-period = "30s"') == 5
+
+
+def test_every_binary_named_in_nextest_filters_is_a_real_test_target() -> None:
+    """Deleting a test file without updating nextest.toml breaks ALL lanes.
+
+    Generalizes the soldr#2553 lesson beyond the two names it burned us with:
+    every `binary(NAME)` in a filter must resolve to `crates/*/tests/NAME.rs`
+    (or a `[[bench]]`/example target), so the mismatch fails here in the fast
+    Lint job with the offending name, not as exit-96 in every nextest lane.
+    """
+    import re
+
+    config = CONFIG.read_text(encoding="utf-8")
+    named = set(re.findall(r"binary\(([A-Za-z0-9_-]+)\)", config))
+    assert named, "expected at least one binary() filter in nextest.toml"
+    test_targets = {
+        path.stem for path in REPO_ROOT.glob("crates/*/tests/*.rs")
+    } | {path.stem for path in REPO_ROOT.glob("crates/*/benches/*.rs")}
+    missing = sorted(named - test_targets)
+    assert not missing, (
+        f"nextest.toml filters name test binaries that do not exist: {missing}; "
+        "nextest refuses to parse the config for EVERY test run when a filter "
+        "names a missing binary -- update .config/nextest.toml in the same "
+        "commit that deletes or renames a test file"
+    )

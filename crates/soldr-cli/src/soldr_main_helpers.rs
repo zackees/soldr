@@ -148,7 +148,6 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
             foreground,
             idle_timeout,
         } => {
-            crate::daemon::tombstone::clear(&paths); // explicit start lifts the stop tombstone (soldr#2388)
             if foreground || idle_timeout != 0 {
                 return Err(SoldrError::Other(
                     "`soldr daemon start --foreground/--idle-timeout` is incompatible with the broker-owned daemon model; run `soldr daemon start` and let the singleton broker own placement and lifetime"
@@ -182,7 +181,6 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
             Ok(())
         }
         DaemonSubcommand::Stop => {
-            crate::daemon::tombstone::plant(&paths, crate::daemon::tombstone::TOMBSTONE_DURATION);
             match client::shutdown(&sock) {
                 Ok(responder) => {
                     let outcome = crate::daemon::lifecycle::wait_for_shutdown_responder(
