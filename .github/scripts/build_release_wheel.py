@@ -65,6 +65,16 @@ def build_environment(target: str, base: Mapping[str, str]) -> dict[str, str]:
     env.setdefault("SOLDR_JOBS", "2")
     if target.endswith("-pc-windows-msvc"):
         env["MATURIN_USE_XWIN"] = "0"
+        # The pinned setup-soldr re-exports `soldr env`'s blanket
+        # `CARGO_TARGET_<T>_LINKER=clang` placeholder after `soldr prepare`
+        # already exported the correct `lld-link`, and the later GITHUB_ENV
+        # write wins. rustc then invokes `clang -flavor link <MSVC args>`,
+        # which clang rejects (`unknown argument: '-flavor'`). Pin the
+        # linker back to lld-link — it matches the exported
+        # `-C linker-flavor=lld-link` RUSTFLAGS and resolves from the
+        # managed LLVM bin dir `soldr prepare` put on PATH.
+        triple_env = target.upper().replace("-", "_")
+        env[f"CARGO_TARGET_{triple_env}_LINKER"] = "lld-link"
     return env
 
 
