@@ -1394,7 +1394,7 @@ The global scope covers:
 - `~/.soldr/cache`
 - `~/.soldr/bench`
 - `~/.soldr/runtime`
-- `~/.soldr/state.redb`
+- `~/.soldr/state.sqlite3`
 - Soldr's embedded-zccache state and session/report owner directory
   (`~/.soldr/cache/zccache`).
   When `ZCCACHE_CACHE_DIR` is set, that caller-selected zccache cache root is
@@ -1457,7 +1457,7 @@ silence it. The warning is also suppressed automatically in CI.
 ### `soldr gc`
 
 Review reclaimable Cargo `target/` directories tracked in
-`~/.soldr/state.redb`. Implemented by issue #234 and made safe-by-default
+`~/.soldr/state.sqlite3`. Implemented by issue #234 and made safe-by-default
 by issue #289. The wrapper-mode hot path upserts each invocation's
 resolved workspace `target/` path with the current timestamp; `soldr gc`
 walks the registry, drops missing rows, applies safety guards, and
@@ -1601,7 +1601,7 @@ Read-only enumeration of every cache directory soldr cares about. No
 deletion, no last-used derivation. Walks `$CARGO_HOME/{registry/{src,
 cache,index},git/{db,checkouts},.global-cache}`,
 `$RUSTUP_HOME/{toolchains,update-hashes}`, `~/.soldr/cache/`, and
-`~/.soldr/state.redb`. Missing paths are reported with `exists: false`
+`~/.soldr/state.sqlite3`. Missing paths are reported with `exists: false`
 and zero size.
 
 ```bash
@@ -2175,7 +2175,7 @@ that's intentional ("reproduce CI exactly"). To suppress it manually, unset
 |-- runtime/
 |   `-- soldr-self/ # Windows self-relocated soldr.exe copies plus periodic GC marker
 |-- config.toml
-|-- state.redb             # redb state store, including tracked target/ dirs
+|-- state.sqlite3             # SQLite state store, including tracked target/ dirs
 |-- .gc_warning_marker     # last-emitted timestamp for the stale-target startup warning
 `-- daemon.*
 ```

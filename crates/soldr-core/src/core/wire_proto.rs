@@ -52,7 +52,7 @@ pub enum WireRequestKind {
     #[prost(message, tag = "15")]
     CompileStats(WireUnit),
     /// v19 / soldr#1814 slice 2a — ask the daemon for the build-log inputs it
-    /// already owns, instead of the CLI opening state.redb itself.
+    /// already owns, instead of the CLI opening state.sqlite3 itself.
     #[prost(message, tag = "16")]
     BuildLogInputs(WireBuildLogInputsRequest),
     /// v19 / soldr#1814 slice 2c — cargo-debug-default warning decision, so
@@ -304,7 +304,7 @@ pub enum WireResponseKind {
     #[prost(message, tag = "14")]
     CacheFlushed(WireCacheFlush),
     /// v19 / soldr#1814 slice 2a — build-log inputs served by the daemon so
-    /// the CLI stops opening the daemon tables in state.redb directly.
+    /// the CLI stops opening the daemon tables in state.sqlite3 directly.
     #[prost(message, tag = "15")]
     BuildLogInputs(WireBuildLogInputs),
     /// v19 / soldr#1814 slice 2c — reply to ShouldWarnCargoDebugDefault.

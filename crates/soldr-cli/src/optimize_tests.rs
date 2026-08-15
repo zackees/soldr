@@ -235,11 +235,11 @@ fn global_paths_include_soldr_owned_roots() {
     let cache_root = PathBuf::from("/fake/.soldr");
     let zccache = cache_root.join("cache").join("zccache");
     let paths = plan_global_paths(&cache_root, &zccache);
-    // Cache, bench, runtime, state.redb, and the zccache subdir.
+    // Cache, bench, runtime, state.sqlite3, and the zccache subdir.
     assert!(paths.iter().any(|p: &PathBuf| p.ends_with("cache")));
     assert!(paths.iter().any(|p: &PathBuf| p.ends_with("bench")));
     assert!(paths.iter().any(|p: &PathBuf| p.ends_with("runtime")));
-    assert!(paths.iter().any(|p: &PathBuf| p.ends_with("state.redb")));
+    assert!(paths.iter().any(|p: &PathBuf| p.ends_with("state.sqlite3")));
     assert!(paths.iter().any(|p: &PathBuf| p == &zccache));
 }
 

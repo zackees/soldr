@@ -447,7 +447,7 @@ pub(crate) enum Commands {
     /// Review reclaimable cargo target/ directories
     ///
     /// Aliases: `purge-targets` (matches issue #234's `soldr --purge`
-    /// wording). Uses the soldr registry (`~/.soldr/state.redb`) to
+    /// wording). Uses the soldr registry (`~/.soldr/state.sqlite3`) to
     /// discover tracked Cargo `target/` directories.
     #[command(alias = "purge-targets")]
     Gc {

@@ -2,7 +2,7 @@
 //! finalization, and the build-log history attach (soldr#2224).
 //!
 //! Split out of `server.rs`, which is far over the per-file ceiling. These
-//! three are the handlers that touch `state.redb`, so keeping them together
+//! three are the handlers that touch `state.sqlite3`, so keeping them together
 //! also keeps the "one handle per logical operation" rule in one place: each
 //! runs its whole read-modify-write inside a single
 //! [`db_async::with_handle`] closure rather than opening the database once
@@ -114,10 +114,10 @@ pub(super) async fn finalize_build_session(
 /// CLI-side, but under the daemon's sole ownership of the table.
 ///
 /// Takes a handle rather than a path (soldr#2224): the merge is a
-/// read → aggregate → write triple, and opening `state.redb` once per step
+/// read → aggregate → write triple, and opening `state.sqlite3` once per step
 /// meant three exclusive-lock acquisitions for one logical update.
 pub(super) fn attach_build_log_history(
-    db: &redb::Database,
+    db: &rusqlite::Connection,
     update: &crate::daemon::protocol::BuildLogHistoryUpdate,
 ) -> Response {
     let mut record = match db::get_build_in(db, update.session_id) {
@@ -236,7 +236,7 @@ mod finalize_build_session_tests {
             .expect("tokio rt");
         rt.block_on(async {
             let temp = TempDir::new().expect("tempdir");
-            let db_path = temp.path().join("state.redb");
+            let db_path = temp.path().join("state.sqlite3");
             db::ensure_initialized(&db_path).expect("init");
 
             // Large unrelated history + poison rows carrying THIS
@@ -305,7 +305,7 @@ mod finalize_build_session_tests {
             .expect("tokio rt");
         rt.block_on(async {
             let temp = TempDir::new().expect("tempdir");
-            let db_path = temp.path().join("state.redb");
+            let db_path = temp.path().join("state.sqlite3");
             db::ensure_initialized(&db_path).expect("init");
 
             // Events written by a previous daemon lifetime.
@@ -344,7 +344,7 @@ mod finalize_build_session_tests {
         rt.block_on(async {
             for history in [0usize, 10_000, 100_000] {
                 let temp = TempDir::new().expect("tempdir");
-                let db_path = temp.path().join("state.redb");
+                let db_path = temp.path().join("state.sqlite3");
                 db::ensure_initialized(&db_path).expect("init");
                 seed_unrelated_history(&db_path, history);
 

@@ -426,7 +426,7 @@ impl From<crate::core::SoldrError> for ServerError {
 }
 
 struct State {
-    /// Path to the shared `state.redb`. The daemon opens this on
+    /// Path to the shared `state.sqlite3`. The daemon opens this on
     /// demand for each write rather than holding the redb handle for
     /// its lifetime — redb refuses concurrent multi-process opens
     /// ("Database already open. Cannot acquire lock."), and the
@@ -485,7 +485,7 @@ impl State {
     }
 
     fn status(&self) -> StatusInfo {
-        // Serialization of concurrent redb opens against `state.redb`
+        // Serialization of concurrent redb opens against `state.sqlite3`
         // is handled inside `cook_index::stats` itself via the shared
         // `redb_lock::state_db_open_lock` (#608) — no extra mutex
         // needed here.

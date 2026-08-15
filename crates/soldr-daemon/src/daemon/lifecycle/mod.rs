@@ -658,7 +658,7 @@ pub fn preflight_displace_stale_daemon_for_service(
     // REPLY_TIMEOUT". Treating both as staleness displaced healthy daemons
     // that were merely too busy to answer a 2 s ping, which is how a build
     // could lose its warm daemon mid-run (and, per #1814, briefly end up with
-    // two daemons contending for state.redb).
+    // two daemons contending for state.sqlite3).
     //
     // Require positive evidence instead. A process that is alive, looks like
     // one of our daemons, and publishes *this exact* version claim cannot be

@@ -22,9 +22,9 @@ pub mod gc_policy;
 pub mod path_safety;
 pub mod pep517_gc;
 pub mod prune_target;
-pub mod redb_lock;
 pub mod save;
 pub mod state_db;
+pub mod state_store;
 pub mod strip_target;
 pub mod target_registry;
 pub mod trash_gc;
@@ -40,13 +40,13 @@ pub fn auto_gc_throttle_marker_path(paths: &SoldrPaths) -> PathBuf {
     paths.root.join(".auto_gc_marker")
 }
 
-/// Path to the soldr state database (`~/.soldr/state.redb`) used by the
+/// Path to the soldr state database (`~/.soldr/state.sqlite3`) used by the
 /// target-directory registry.
 pub fn data_db_path(paths: &SoldrPaths) -> PathBuf {
     paths.root.join(target_registry::DATA_DB_FILE)
 }
 
-/// Path to the redb-backed soldr state database (`~/.soldr/state.redb`).
+/// Path to the SQLite-backed soldr state database (`~/.soldr/state.sqlite3`).
 pub fn state_db_path(paths: &SoldrPaths) -> PathBuf {
     paths.root.join(state_db::STATE_DB_FILE)
 }

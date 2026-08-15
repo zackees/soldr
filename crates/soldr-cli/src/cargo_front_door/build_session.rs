@@ -20,7 +20,7 @@
 //! The warning is *only* a warning. Displacing the running daemon to apply
 //! the new limit is deliberately not done here: that writes to the path
 //! behind #1865 (a healthy-but-busy daemon killed for failing a 2 s ping)
-//! and #1814 (the resulting double-spawn contending for `state.redb`), and
+//! and #1814 (the resulting double-spawn contending for `state.sqlite3`), and
 //! belongs in its own reviewed change.
 
 use std::path::Path;
@@ -126,23 +126,23 @@ fn persist_start_fallback(
 
 /// Turn a state-DB open failure into a message that says what to do.
 ///
-/// `Database already open. Cannot acquire lock.` is redb's wording, and on
-/// its own it reads like corruption — soldr#2223 was filed on exactly that
-/// impression. It is not corruption: it means another soldr process held
-/// the file for longer than this one's open budget. Name that, and point at
-/// the forensic log that says who and for how long.
+/// `database is locked` is SQLite's busy-timeout wording, and on its own it
+/// reads like corruption — soldr#2223 was filed on exactly that impression
+/// (against the redb-era equivalent). It is not corruption: it means another
+/// soldr process held the write lock for longer than this one's busy budget.
+/// Name that.
 #[cfg(test)]
 pub(super) fn contention_aware_error(error: impl std::fmt::Display) -> SoldrError {
     let text = error.to_string();
-    if !text.contains("already open") {
+    if !text.contains("database is locked") && !text.contains("database table is locked") {
         return SoldrError::Other(format!("open build history: {text}"));
     }
     SoldrError::Other(format!(
         "open build history: {text}\n\
-         soldr note: this is lock contention on ~/.soldr/state.redb, not a corrupt database — \
-         another soldr process (a concurrent build, or the daemon's maintenance sweep) held it \
-         longer than this build was willing to wait. The build itself is unaffected; only this \
-         session's history row was skipped. Per-event detail is in ~/.soldr/logs/redb-contention.jsonl."
+         soldr note: this is write contention on ~/.soldr/state.sqlite3, not a corrupt database — \
+         another soldr process (a concurrent build, or the daemon's maintenance sweep) held the \
+         write lock longer than this build was willing to wait. The build itself is unaffected; \
+         only this session's history row was skipped."
     ))
 }
 
@@ -283,7 +283,7 @@ mod tests {
     }
 
     // soldr#2224 acceptance: one logical session start = one acquisition
-    // of `state.redb`.
+    // of `state.sqlite3`.
     //
     // It used to be three (`get_build`, `upsert_build`, `append_event`),
     // each an independent exclusive-lock acquire/release with its own 5 s
@@ -295,13 +295,13 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let paths = SoldrPaths::with_root(temp.path().join("root"));
 
-        let before = crate::cache_lib::redb_lock::state_db_open_count();
+        let before = crate::cache_lib::state_store::state_db_open_count();
         persist_start_fallback_inner(&paths, 99, Path::new("/repo"), 1_000).expect("fallback");
-        let opens = crate::cache_lib::redb_lock::state_db_open_count() - before;
+        let opens = crate::cache_lib::state_store::state_db_open_count() - before;
 
         assert_eq!(
             opens, 1,
-            "the session-start fallback must acquire state.redb exactly once (soldr#2224)"
+            "the session-start fallback must acquire state.sqlite3 exactly once (soldr#2224)"
         );
         let stored = crate::daemon::db::get_build(&crate::cache_lib::data_db_path(&paths), 99)
             .expect("read back")
@@ -309,17 +309,13 @@ mod tests {
         assert_eq!(stored.repo_root, Path::new("/repo").display().to_string());
     }
 
-    // A raw redb lock string reads like corruption — soldr#2223 was filed
-    // on that impression. Contention must say so, and say where to look.
+    // A raw lock string reads like corruption — soldr#2223 was filed on
+    // that impression. Contention must say so.
     #[test]
     fn contention_errors_explain_themselves() {
-        let text = contention_aware_error(
-            "redb database error: Database already open. \
-                                           Cannot acquire lock.",
-        )
-        .to_string();
+        let text = contention_aware_error("sqlite error: database is locked (code 5)").to_string();
         assert!(text.contains("not a corrupt database"), "{text}");
-        assert!(text.contains("redb-contention.jsonl"), "{text}");
+        assert!(text.contains("write contention"), "{text}");
 
         // An unrelated failure must not be dressed up as contention.
         let other = contention_aware_error("permission denied").to_string();
@@ -408,7 +404,7 @@ mod tests {
     }
 
     // soldr#2224 acceptance: one logical session end = one acquisition of
-    // `state.redb`.
+    // `state.sqlite3`.
     //
     // This path was the worst offender at four opens — `get_build`,
     // `aggregate_session`, `upsert_build`, `append_event` — so a single
@@ -420,13 +416,13 @@ mod tests {
         let paths = SoldrPaths::with_root(temp.path().join("root"));
         let db_path = crate::cache_lib::data_db_path(&paths);
 
-        let before = crate::cache_lib::redb_lock::state_db_open_count();
+        let before = crate::cache_lib::state_store::state_db_open_count();
         persist_build_session_end_fallback_inner(&paths, 7, 0, 5_000).expect("end fallback");
-        let opens = crate::cache_lib::redb_lock::state_db_open_count() - before;
+        let opens = crate::cache_lib::state_store::state_db_open_count() - before;
 
         assert_eq!(
             opens, 1,
-            "the session-end fallback must acquire state.redb exactly once (soldr#2224)"
+            "the session-end fallback must acquire state.sqlite3 exactly once (soldr#2224)"
         );
         let stored = crate::daemon::db::get_build(&db_path, 7)
             .expect("read back")

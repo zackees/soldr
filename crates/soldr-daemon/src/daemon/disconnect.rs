@@ -332,7 +332,7 @@ mod cancel_on_disconnect_tests {
             .expect("tokio rt");
         rt.block_on(async {
             let temp = tempfile::tempdir().expect("tempdir");
-            let db_path = temp.path().join("state.redb");
+            let db_path = temp.path().join("state.sqlite3");
             let batcher = crate::daemon::event_batcher::EventBatcher::start(db_path.clone());
             let (server, _client) = tokio::io::duplex(64);
             let (mut reader, _writer) = tokio::io::split(server);
@@ -361,7 +361,7 @@ mod cancel_on_disconnect_tests {
             .expect("tokio rt");
         rt.block_on(async {
             let temp = tempfile::tempdir().expect("tempdir");
-            let db_path = temp.path().join("state.redb");
+            let db_path = temp.path().join("state.sqlite3");
             let batcher = crate::daemon::event_batcher::EventBatcher::start(db_path.clone());
             let (server, _client) = tokio::io::duplex(64);
             let (mut reader, _writer) = tokio::io::split(server);
@@ -389,7 +389,7 @@ mod cancel_on_disconnect_tests {
             .expect("tokio rt");
         rt.block_on(async {
             let temp = tempfile::tempdir().expect("tempdir");
-            let db_path = temp.path().join("state.redb");
+            let db_path = temp.path().join("state.sqlite3");
             let batcher = crate::daemon::event_batcher::EventBatcher::start(db_path.clone());
             let (server, client) = tokio::io::duplex(64);
             let (mut reader, _writer) = tokio::io::split(server);

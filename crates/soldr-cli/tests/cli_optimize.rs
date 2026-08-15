@@ -190,7 +190,7 @@ fn optimize_invokes_add_mppreference_with_admin_seam() {
         format!("{soldr_root}\\cache"),
         format!("{soldr_root}\\bench"),
         format!("{soldr_root}\\runtime"),
-        format!("{soldr_root}\\state.redb"),
+        format!("{soldr_root}\\state.sqlite3"),
         format!("{soldr_root}\\cache\\zccache"),
         format!("{soldr_root}\\ws\\target"),
     ] {

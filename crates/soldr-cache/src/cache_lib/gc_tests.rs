@@ -199,13 +199,13 @@ fn make_workspace(root: &Path, name: &str, size_bytes: u64) -> (PathBuf, PathBuf
 ///
 /// `TargetRegistry::open` takes the process-wide `state_db_open_lock`
 /// for the handle's whole lifetime (#608), so anything else that
-/// opens `state.redb` — `daemon::db`, `cook_index`, and the
+/// opens `state.sqlite3` — `daemon::db`, `cook_index`, and the
 /// `RecordTargetTouch` handler on every rustc-wrapper call — is
 /// blocked for as long as GC holds it.
 #[test]
 fn snapshot_releases_the_handle_before_long_work() {
     let dir = tempdir().unwrap();
-    let db = dir.path().join("state.redb");
+    let db = dir.path().join("state.sqlite3");
     let (_, target) = make_workspace(dir.path(), "repo-a", 512);
     {
         let registry = TargetRegistry::open(&db).unwrap();
@@ -242,7 +242,7 @@ fn snapshot_releases_the_handle_before_long_work() {
     match rx.recv_timeout(Duration::from_secs(10)) {
         Ok(result) => result.expect("concurrent state write must succeed"),
         Err(_) => panic!(
-            "state.redb was still locked while GC did its filesystem work — \
+            "state.sqlite3 was still locked while GC did its filesystem work — \
                  the scan is holding its handle across the long phase (#1681)",
         ),
     }

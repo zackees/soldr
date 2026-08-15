@@ -288,8 +288,8 @@ fn wrapper_without_a_session_never_opens_state_db_directly() {
     let path = record_target_dir_in_registry(&args);
     assert_eq!(path, TargetTouchPath::DaemonFirst);
     assert!(
-        !cache_root.join("state.redb").exists(),
-        "a wrapper with no build session must wait for the bounded daemon lifecycle instead of opening state.redb directly; target was {}",
+        !cache_root.join("state.sqlite3").exists(),
+        "a wrapper with no build session must wait for the bounded daemon lifecycle instead of opening state.sqlite3 directly; target was {}",
         expected_target.display(),
     );
 }
@@ -338,7 +338,7 @@ fn memo_path_skips_redb_when_env_matches_resolved_target() {
     // IPC. The cargo front door is responsible for the one-time
     // upsert in production; the test simulates that by not touching
     // the registry itself.
-    let registry_path = cache_root.join("state.redb");
+    let registry_path = cache_root.join("state.sqlite3");
     if registry_path.exists() {
         let registry = TargetRegistry::open(&registry_path).expect("open registry");
         let rows = registry.list().expect("list rows");

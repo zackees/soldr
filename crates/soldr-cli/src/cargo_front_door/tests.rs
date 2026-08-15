@@ -2417,7 +2417,7 @@ fn build_session_bookkeeping_never_falls_back_to_direct_state_db() {
 
     assert!(
         !db_path.exists(),
-        "unavailable-daemon session bookkeeping must not open state.redb directly"
+        "unavailable-daemon session bookkeeping must not open state.sqlite3 directly"
     );
 }
 
@@ -2472,7 +2472,7 @@ fn compile_journal_history_uses_effective_embedded_version_root() {
 // soldr#1790: rendering-level RED->GREEN evidence for the build-log writer.
 // Since soldr#1814/#2257, daemon-owned history reaches production exclusively
 // over IPC; this fixture injects the response payload rather than reopening
-// state.redb from the CLI process.
+// state.sqlite3 from the CLI process.
 #[test]
 fn write_build_log_reflects_seeded_compile_session_events() {
     let root = tempfile::tempdir().expect("temp root");

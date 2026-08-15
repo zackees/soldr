@@ -19,13 +19,14 @@ hex = { workspace = true }
 interprocess = { version = "2", features = ["tokio"] }
 widestring = "1"
 prost = { workspace = true }
-redb = { workspace = true }
+
 running-process = { version = "4.10.1", git = "https://github.com/zackees/running-process.git", rev = "d45c90d278318e667652e1f16711dc79573e5ee8", default-features = false, features = ["client"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
+rusqlite = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

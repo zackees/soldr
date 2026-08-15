@@ -17,7 +17,7 @@ const CARGO_ABORT_LOG_FILE: &str = "cargo-aborts.jsonl";
 /// build provenance. Official (`release-auto.yml`-published) builds keep
 /// the historical `~/.soldr`. Dev/manual builds default to a distinct
 /// `~/.soldr-dev` root instead, so a locally-built daemon and a
-/// managed/prod daemon never collide on `state.redb` / the PID file /
+/// managed/prod daemon never collide on `state.sqlite3` / the PID file /
 /// the IPC socket when `SOLDR_CACHE_DIR` is left unset (the confirmed
 /// bug: both used to fall back to the same `~/.soldr`, defeating the
 /// broker's "dev doesn't stomp prod" design intent). An explicit
@@ -135,7 +135,7 @@ impl SoldrPaths {
     /// Per-version state root — `<root>/v<MANAGED_SHIM_VERSION>/`.
     ///
     /// Reserved for the layout RFC tracked at zackees/soldr#743 (per-soldr-version
-    /// isolation of `shims/`, future `bin/`, `cache/`, `state.redb`, etc.).
+    /// isolation of `shims/`, future `bin/`, `cache/`, `state.sqlite3`, etc.).
     /// This PR only exposes the accessor; existing top-level subdirs
     /// (`bin`, `cache`, `config_file`) are NOT migrated here. The first
     /// real consumer is `versioned_shims_dir` (zackees/soldr#742).
@@ -536,7 +536,7 @@ mod tests {
         // soldr#1597 Phase 1: this is the whole fix. An official build and
         // a dev build must resolve to different home-anchored roots so a
         // locally-built daemon and a managed/prod daemon never collide on
-        // state.redb / the PID file / the IPC socket when SOLDR_CACHE_DIR
+        // state.sqlite3 / the PID file / the IPC socket when SOLDR_CACHE_DIR
         // is left unset.
         assert_eq!(default_home_dir_name_for(true), ".soldr");
         assert_eq!(default_home_dir_name_for(false), ".soldr-dev");

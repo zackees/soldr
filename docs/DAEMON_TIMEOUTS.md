@@ -111,7 +111,7 @@ Run `soldr daemon stop`, wait for its bounded graceful shutdown, then run
 `soldr daemon start`. Explicit start re-registers the current daemon image
 and asks the singleton broker to create the route.
 
-Do not delete PID files, sockets, or `state.redb`; those are ownership and
+Do not delete PID files, sockets, or `state.sqlite3`; those are ownership and
 forensic records, not recovery switches.
 
 ### Distinct cache roots interfere

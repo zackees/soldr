@@ -153,7 +153,7 @@ fn registry_row_exists(cache_root: &Path, target_path: &Path) -> Option<i64> {
     // Tolerant of a lock-contended open: the live daemon's per-write handle
     // takes the same exclusive redb lock, so a failed open during a poll
     // means "no observation this round", not a test failure.
-    let db_path = cache_root.join("state.redb");
+    let db_path = cache_root.join("state.sqlite3");
     let registry = TargetRegistry::open(&db_path).ok()?;
     registry
         .get(target_path)
@@ -176,7 +176,7 @@ fn unavailable_daemon_does_not_open_state_db() {
     ]);
     let paths = soldr_cli::core::SoldrPaths::new().expect("paths");
 
-    let db_path = cache_root.join("state.redb");
+    let db_path = cache_root.join("state.sqlite3");
     client::record_target_touch_or_fallback(&paths, &target);
 
     assert!(
@@ -290,7 +290,7 @@ fn daemon_path_writes_via_ipc_when_available() {
     // Failure triage aid: distinguish "this platform/path cannot take the
     // write at all" from "the daemon never processed the frame" by writing a
     // sentinel row directly from the test process.
-    let direct_probe = TargetRegistry::open(&cache_root.join("state.redb"))
+    let direct_probe = TargetRegistry::open(&cache_root.join("state.sqlite3"))
         .map_err(|error| error.to_string())
         .and_then(|registry| {
             registry

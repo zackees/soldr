@@ -105,7 +105,7 @@ pub struct RegistrySnapshot {
 /// [`TargetRegistry`] holds the process-wide `state_db_open_lock` guard
 /// and the redb file lock for its whole lifetime (#608). A GC pass that
 /// keeps one alive across directory sizing, per-candidate prompting, and
-/// recursive deletion therefore blocks every other `state.redb` opener —
+/// recursive deletion therefore blocks every other `state.sqlite3` opener —
 /// `daemon::db`, `cache_lib::cook_index`, and the `RecordTargetTouch`
 /// handler that runs on every rustc-wrapper call — for the whole
 /// duration. Prompting in particular is unbounded: it waits on a human.
@@ -156,7 +156,7 @@ pub fn scan_released(db_path: &Path, options: &GcOptions) -> Result<GcReport, Re
 /// Scan an already-owned registry snapshot received from the daemon.
 ///
 /// The caller has no database handle: the daemon remains the sole process
-/// that reads or mutates `state.redb`, while the CLI retains the filesystem
+/// that reads or mutates `state.sqlite3`, while the CLI retains the filesystem
 /// sizing and safety-guard work that must run in the caller's environment.
 pub fn scan_daemon_snapshot(
     rows: Vec<TargetRow>,

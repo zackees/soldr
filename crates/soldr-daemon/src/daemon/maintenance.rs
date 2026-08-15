@@ -556,7 +556,7 @@ fn run_local_components(
 
 /// The daemon's periodic `target/` eviction pass.
 ///
-/// **Never holds the `state.redb` handle across filesystem work**
+/// **Never holds the `state.sqlite3` handle across filesystem work**
 /// (soldr#2224). `TargetRegistry::open` takes redb's exclusive whole-file
 /// lock *and* the process-wide `state_db_open_lock` for the handle's whole
 /// lifetime (#608), and this sweep's middle phase — directory sizing plus

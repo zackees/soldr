@@ -102,7 +102,6 @@ tar = "0.4"
 # the compressed tarball bytes to disk as the binary (#809).
 xz2 = "0.1"
 toml = "0.8"
-redb = "4.1.0"
 rayon = "1"
 prost = "0.14"
 # soldr#1356 A2 — walkdir workspace dep removed; jwalk is the sole

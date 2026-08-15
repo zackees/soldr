@@ -1,7 +1,7 @@
 //! Integration coverage for the Phase 2 build-session pipeline.
 //!
 //! Seeds events + builds directly via `daemon::db` helpers (which open
-//! the same `state.redb` the daemon uses), then runs
+//! the same `state.sqlite3` the daemon uses), then runs
 //! `soldr daemon builds list --json` / `... slow --threshold-ms <ms>`
 //! through the CLI and asserts the JSON payload shape and filters.
 
@@ -145,7 +145,7 @@ fn seed_build(
     wall_ms: u64,
     exit_code: i32,
 ) {
-    let db_path = cache_root.join("state.redb");
+    let db_path = cache_root.join("state.sqlite3");
     db::upsert_build(
         &db_path,
         &seeded_record(session_id, started_at_ms, wall_ms, exit_code),
@@ -266,7 +266,8 @@ fn gc_list_uses_daemon_owned_registry_while_the_daemon_holds_the_lock() {
     std::fs::create_dir_all(&live_target).expect("create target");
     std::fs::write(live_target.join("artifact"), b"seeded").expect("write target artifact");
     {
-        let registry = TargetRegistry::open(&cache_root.join("state.redb")).expect("open registry");
+        let registry =
+            TargetRegistry::open(&cache_root.join("state.sqlite3")).expect("open registry");
         registry
             .upsert_with_time(&live_target, 1_700_000_000)
             .expect("seed live target");
@@ -276,7 +277,7 @@ fn gc_list_uses_daemon_owned_registry_while_the_daemon_holds_the_lock() {
     let output = run_soldr(&["gc", "list", "--json"], &cache_root, &home_root);
     assert!(
         output.status.success(),
-        "gc list failed while daemon owns state.redb: {}",
+        "gc list failed while daemon owns state.sqlite3: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     let body: Value = serde_json::from_slice(&output.stdout).expect("gc list json");
@@ -307,7 +308,7 @@ fn logs_queries_use_the_daemon_while_it_owns_the_build_history_lock() {
     let session_id = 0xabc_def0_1234_u64;
     seed_build(&cache_root, session_id, 1_000, 1_500, 0);
     db::append_event(
-        &cache_root.join("state.redb"),
+        &cache_root.join("state.sqlite3"),
         &Event {
             ts_ms: 1_500,
             session_id: Some(session_id),
@@ -324,7 +325,7 @@ fn logs_queries_use_the_daemon_while_it_owns_the_build_history_lock() {
     let list = run_soldr(&["logs", "list", "--json"], &cache_root, &home_root);
     assert!(
         list.status.success(),
-        "logs list failed while the daemon owns state.redb: {}",
+        "logs list failed while the daemon owns state.sqlite3: {}",
         String::from_utf8_lossy(&list.stderr)
     );
     let list_body: Value = serde_json::from_slice(&list.stdout).expect("logs list json");
@@ -337,7 +338,7 @@ fn logs_queries_use_the_daemon_while_it_owns_the_build_history_lock() {
     );
     assert!(
         show.status.success(),
-        "logs show failed while the daemon owns state.redb: {}",
+        "logs show failed while the daemon owns state.sqlite3: {}",
         String::from_utf8_lossy(&show.stderr)
     );
     let show_body: Value = serde_json::from_slice(&show.stdout).expect("logs show json");
@@ -352,7 +353,7 @@ fn logs_queries_use_the_daemon_while_it_owns_the_build_history_lock() {
 fn logs_show_exact_id_is_not_limited_by_prefix_history_page_size() {
     let cache_root = unique_temp_dir("logs-exact-cache");
     let home_root = unique_temp_dir("logs-exact-home");
-    let db_path = cache_root.join("state.redb");
+    let db_path = cache_root.join("state.sqlite3");
     let database = db::open_handle(&db_path).expect("open seed database");
 
     db::upsert_build_in(&database, &seeded_record(1, 1, 100, 0)).expect("seed old record");
@@ -402,7 +403,7 @@ fn logs_unavailable_daemon_never_waits_for_its_database_lock() {
         soldr_platform::host::facts::HostOs::Windows
     ) {
         Box::new(
-            db::open_handle(&cache_root.join("state.redb"))
+            db::open_handle(&cache_root.join("state.sqlite3"))
                 .expect("hold the daemon-owned database lock without a named-pipe endpoint"),
         )
     } else {
@@ -433,7 +434,7 @@ fn logs_unavailable_daemon_never_waits_for_its_database_lock() {
         .expect("wait for logs list")
         .unwrap_or_else(|| {
             let _ = child.kill();
-            panic!("logs list waited on daemon-owned state.redb instead of failing through IPC")
+            panic!("logs list waited on daemon-owned state.sqlite3 instead of failing through IPC")
         });
     let output = child.wait_with_output().expect("collect logs list output");
     assert!(
