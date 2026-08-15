@@ -126,10 +126,25 @@ where
             // soldr#2224: on the blocking pool. This request arrives once
             // per rustc invocation, and a contended open waits seconds —
             // exactly the stall that must not land on a tokio worker.
+            //
+            // The open is retried briefly: redb's lock is exclusive, so a
+            // concurrent reader (`soldr gc list`) holding the file used to
+            // make this single silent attempt drop the touch permanently —
+            // the row simply never existed afterward. Waiting out a
+            // transient holder keeps the write; a wedged holder still ends
+            // the attempt silently at the deadline, unchanged semantics.
             let db_path = state.db_path.clone();
             let _ = tokio::task::spawn_blocking(move || {
-                if let Ok(registry) = TargetRegistry::open(&db_path) {
-                    let _ = registry.upsert_with_time(Path::new(&path), unix_seconds);
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                loop {
+                    if let Ok(registry) = TargetRegistry::open(&db_path) {
+                        let _ = registry.upsert_with_time(Path::new(&path), unix_seconds);
+                        return;
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
                 }
             })
             .await;
