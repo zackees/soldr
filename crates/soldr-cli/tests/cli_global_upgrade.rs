@@ -74,6 +74,71 @@ fn project_policy_delegates_to_newer_global_soldr() {
     );
 }
 
+/// #2521 D root cause: in a `prefer_newer_global` checkout the delegation
+/// probe ran `<global soldr> --version` as a child of EVERY invocation —
+/// including `soldr broker status` — and a released soldr's front door stages
+/// a broker under the inherited HOME and spawns `broker serve` before printing
+/// its version. The broker-absent target-run tests then found "a broker"
+/// running in their isolated homes: the one their own probe child had just
+/// created. Broker-family commands are now delegation-exempt, so the probe
+/// never fires and the isolated home stays broker-free.
+#[test]
+fn broker_status_in_opted_in_checkout_neither_probes_nor_spawns() {
+    let fixture = unique_temp_dir("broker-status-no-delegate");
+    std::fs::write(
+        fixture.join("Cargo.toml"),
+        "[workspace]\n\n[workspace.metadata.soldr]\nprefer_newer_global = true\n",
+    )
+    .expect("write opt-in manifest");
+
+    let global_bin_dir = fixture.join("global-bin");
+    std::fs::create_dir_all(&global_bin_dir).expect("create global bin dir");
+    let log = fixture.join("global-invocation.log");
+    let global_soldr = fake_script_path(&global_bin_dir, "soldr");
+    write_fake_script(&global_soldr, &fake_global_soldr(&log));
+
+    let home = fixture.join("isolated-home");
+    std::fs::create_dir_all(&home).expect("create isolated home");
+
+    let output = isolated_soldr_command()
+        .args(["broker", "status"])
+        .current_dir(&fixture)
+        .env("PATH", prepend_to_path(&global_bin_dir))
+        .env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .output()
+        .expect("run soldr broker status");
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "broker status must stay a successful local probe:\n{combined}"
+    );
+    assert!(
+        combined.contains("not running"),
+        "an isolated home has no broker and none may be manufactured:\n{combined}"
+    );
+    assert!(
+        !log.exists(),
+        "broker status must not probe the global soldr; probe log:\n{}",
+        std::fs::read_to_string(&log).unwrap_or_default()
+    );
+    let staged_broker_dir = home.join(".soldr").join("broker");
+    let staged: Vec<_> = std::fs::read_dir(&staged_broker_dir)
+        .map(|entries| entries.flatten().map(|e| e.file_name()).collect())
+        .unwrap_or_default();
+    assert!(
+        staged.is_empty(),
+        "no broker image or logs may be staged into the isolated home by a \
+         read-only status probe; found: {staged:?}"
+    );
+}
+
 // The delegation policy must NOT apply to `RUSTC_WRAPPER` callbacks
 // (#1847). Cargo issues one per compile unit, and `probe_version`
 // spawns the global soldr to read its `--version` — 52-61 ms measured,

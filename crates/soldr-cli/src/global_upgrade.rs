@@ -19,7 +19,7 @@ const GLOBAL_DELEGATION_ENV_VAR: &str = "SOLDR_GLOBAL_DELEGATING";
 /// (or the exec failed); callers should continue their normal dispatch on
 /// `None`.
 pub fn maybe_delegate(raw_args: &[String]) -> Option<i32> {
-    if is_internal_broker_serve(raw_args)
+    if is_delegation_exempt(raw_args)
         || std::env::var_os(GLOBAL_DELEGATION_ENV_VAR).is_some()
         || !crate::cargo_metadata_soldr::prefer_newer_global_from_cwd()
     {
@@ -42,12 +42,27 @@ pub fn maybe_delegate(raw_args: &[String]) -> Option<i32> {
     Some(delegate(&global, &raw_args[1..]))
 }
 
-/// The stable broker image is selected and staged by the front door. Letting
-/// that image apply project-level global delegation would re-enter soldr to
-/// probe another image before the broker binds, and could ultimately replace
-/// the exact broker image whose identity the front door selected.
-fn is_internal_broker_serve(raw_args: &[String]) -> bool {
-    matches!(raw_args, [_, command, verb, ..] if command == "broker" && verb == "serve")
+/// Invocation shapes the delegation policy must leave alone. The probe is not
+/// free of side effects: `probe_version` runs `<global soldr> --version` with
+/// this process's environment, and a released soldr's front door stages a
+/// broker image under the inherited HOME and spawns `broker serve` before it
+/// prints its version. That side effect is what made the target-run
+/// broker-absent tests find "a broker" running in their isolated homes
+/// (#2521 D) — the probe child had just created it.
+///
+/// * `broker` family — lifecycle commands operate on the invoked image's own
+///   endpoint identity; delegating (or even probing) here either swaps which
+///   identity is inspected/retired or manufactures the very broker a status
+///   probe is asking about. `broker serve` additionally must never re-enter
+///   soldr before the bind (the front door already selected this exact image).
+/// * flag-shaped first argument (`--version`, `--help`, `-V`) — prints and
+///   exits; there is no build for a newer global soldr to own.
+fn is_delegation_exempt(raw_args: &[String]) -> bool {
+    match raw_args.get(1).map(String::as_str) {
+        None => true,
+        Some("broker") => true,
+        Some(first) => first.starts_with('-'),
+    }
 }
 
 fn find_global_soldr(current: &Path) -> Option<PathBuf> {
@@ -139,20 +154,26 @@ mod tests {
     }
 
     #[test]
-    fn broker_serve_is_internal_but_broker_admin_commands_are_not() {
-        assert!(is_internal_broker_serve(&[
-            "soldr".into(),
-            "broker".into(),
-            "serve".into(),
-        ]));
-        assert!(!is_internal_broker_serve(&[
-            "soldr".into(),
-            "broker".into(),
-            "status".into(),
-        ]));
-        assert!(!is_internal_broker_serve(&[
-            "soldr".into(),
-            "version".into(),
-        ]));
+    fn broker_family_and_flag_invocations_are_delegation_exempt() {
+        for verb in ["serve", "status", "stop", "routes", "remove"] {
+            assert!(
+                is_delegation_exempt(&["soldr".into(), "broker".into(), verb.into()]),
+                "broker {verb} must not probe or delegate"
+            );
+        }
+        for flag in ["--version", "-V", "--help"] {
+            assert!(
+                is_delegation_exempt(&["soldr".into(), flag.into()]),
+                "{flag} must not probe or delegate"
+            );
+        }
+        assert!(is_delegation_exempt(&["soldr".into()]));
+        // Ordinary commands still delegate in an opted-in checkout.
+        for verb in ["version", "status", "cargo"] {
+            assert!(
+                !is_delegation_exempt(&["soldr".into(), verb.into()]),
+                "{verb} must remain delegable"
+            );
+        }
     }
 }
