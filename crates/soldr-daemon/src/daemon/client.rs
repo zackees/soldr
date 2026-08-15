@@ -200,19 +200,34 @@ impl From<std::io::Error> for ClientError {
     }
 }
 
-/// Submit `req` to the daemon and drop the connection without reading
-/// any reply. Used for `RecordTargetTouch`. The wrapper hot path calls
-/// this and ignores the result on the failure side.
+/// Submit `req` to the daemon without surfacing any processing outcome.
+/// Used for `RecordTargetTouch`. The wrapper hot path calls this and
+/// ignores the result on the failure side.
+///
+/// soldr#2558: "fire-and-forget" no longer means write-then-close. On
+/// macOS/BSD a connection closed before the server accepts it is
+/// discarded together with its buffered frame, so the old shape silently
+/// lost every touch that raced the daemon's accept loop. The daemon now
+/// acks RECEIPT before processing, and this client waits (bounded) for
+/// that ack before closing; the wait is best-effort — an old daemon that
+/// never acks just costs the bounded read and the touch is delivered on
+/// the platforms where it always was.
 pub fn submit_fire_and_forget(sock_path: &Path, req: &Request) -> Result<(), ClientError> {
     if let Some(mut stream) = connect_through_override(sock_path, HOT_PATH_TIMEOUT)? {
         write_frame_sync(&mut stream, req)?;
+        let _ = read_frame_sync::<_, Response>(&mut stream);
         return Ok(());
     }
     if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
         submit_fire_and_forget_windows(sock_path, req)
     } else {
+        // `connect` floors the read timeout at 200ms, which is the ack
+        // wait's bound: sub-ms on a healthy daemon (the ack precedes the
+        // store write), 200ms worst case against a wedged or pre-ack
+        // daemon.
         let mut stream = connect(sock_path, HOT_PATH_TIMEOUT)?;
         write_frame_sync(&mut stream, req)?;
+        let _ = read_frame_sync::<_, Response>(&mut stream);
         Ok(())
     }
 }
