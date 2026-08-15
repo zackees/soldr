@@ -167,9 +167,18 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
                 &installed.definition.service_name,
             );
             crate::daemon::lifecycle::preflight_displace_stale_daemon(&paths);
+            // 60s, not the SESSION path's 30s: an explicit `daemon start` on a
+            // cold root legitimately covers image staging (a multi-hundred-MB
+            // copy), spawn, and the broker launcher's own 25s readiness
+            // window. On slow hosts (emulated ARM target-run lanes) the whole
+            // chain measures ~32s — real bounded work, not a hang — and a 30s
+            // client budget fired first with a generic timeout, masking the
+            // launcher's more precise attribution. This is a deliberate
+            // lifecycle command, not a compile hot path, so the wider bound
+            // costs nothing when healthy and still fails fast enough when not.
             crate::session_transport::ensure_broker_route(
                 &installed.definition.service_name,
-                std::time::Duration::from_secs(30),
+                std::time::Duration::from_secs(60),
             )
             .map_err(|err| {
                 SoldrError::Other(format!(

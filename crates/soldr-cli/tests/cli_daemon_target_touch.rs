@@ -215,7 +215,25 @@ fn daemon_path_writes_via_ipc_when_available() {
     }
     assert!(submitted, "fire-and-forget submit never succeeded");
 
-    std::thread::sleep(Duration::from_millis(200));
+    // The daemon persists the row immediately on processing (per-write redb
+    // open in the dispatch handler), so it is observable without any
+    // shutdown. Poll for it BEFORE initiating shutdown: the old fixed 200ms
+    // sleep raced the daemon's accept -> read -> spawn_blocking -> redb-open
+    // pipeline on slow hosts, and the 3s-then-kill teardown below could then
+    // destroy the daemon before the write landed — the darwin target-run
+    // lanes failed exactly here. A transient open-lock clash with the
+    // daemon's own per-write handle reads as "no row yet" and simply polls
+    // again.
+    let mut row = None;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < deadline {
+        row = registry_row_exists(&cache_root, &target);
+        if row.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
     let _ = client::shutdown(&sock);
     if let Some(mut child) = daemon.child.take() {
         let deadline = Instant::now() + Duration::from_secs(3);
@@ -229,7 +247,6 @@ fn daemon_path_writes_via_ipc_when_available() {
         let _ = child.wait();
     }
 
-    let row = registry_row_exists(&cache_root, &target);
     assert!(
         row.is_some(),
         "daemon never wrote the target registry row for {}",
