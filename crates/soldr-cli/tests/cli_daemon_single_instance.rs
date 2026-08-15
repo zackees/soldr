@@ -2,7 +2,7 @@
 //!
 //! The reliability audit that produced zccache#1223 observed **two live
 //! `soldr-daemon` processes** on a dev host. That is the root availability
-//! failure the whole meta hangs off: two daemons both open `~/.soldr/state.redb`,
+//! failure the whole meta hangs off: two daemons both open `~/.soldr/state.sqlite3`,
 //! so one loses the exclusive redb file lock, its embedded compile service
 //! reports `NotRunning`, and the wrapper falls back into the read-only
 //! hardlinked-artifact collision that surfaced as `.rmeta is not writeable`.
@@ -237,7 +237,7 @@ fn two_daemons_against_one_root_never_coexist() {
 #[test]
 fn losing_daemon_leaves_the_state_db_openable() {
     // The failure mode #1814 is really about: a coexisting second daemon
-    // holds `state.redb`, so the incumbent's own opens start failing with
+    // holds `state.sqlite3`, so the incumbent's own opens start failing with
     // `DatabaseAlreadyOpen`. With the guard holding, a rejected second
     // daemon must leave the state DB exactly as openable as before.
     let cache_root = unique_temp_dir("single-instance-db-cache");

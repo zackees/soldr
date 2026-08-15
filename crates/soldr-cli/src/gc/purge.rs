@@ -398,7 +398,7 @@ pub(crate) fn run_gc_purge_target_subtree_command(
 /// prompting loop and the parallel `remove_dir_all` pool run with no
 /// database open, and the handle is reacquired only for the bounded
 /// row-removal phase at the end. Holding it across the deletion blocked
-/// every other `state.redb` opener for the duration, and the prompt is
+/// every other `state.sqlite3` opener for the duration, and the prompt is
 /// unbounded — it waits on a human.
 pub(super) fn run_gc_purge_candidates(
     paths: &SoldrPaths,

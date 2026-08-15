@@ -1,6 +1,6 @@
-//! Source-policy guard for daemon-owned `state.redb` access (soldr#2252).
+//! Source-policy guard for daemon-owned `state.sqlite3` access (soldr#2252).
 //!
-//! The daemon is the production owner of state.redb. A CLI fallback may touch
+//! The daemon is the production owner of state.sqlite3. A CLI fallback may touch
 //! it only as an explicit offline operation: it must hold the same root lock
 //! as the daemon and mark the exact opener as an audited exception. This
 //! lightweight scan keeps a future direct-open fallback from silently

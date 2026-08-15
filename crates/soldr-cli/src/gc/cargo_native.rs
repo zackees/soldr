@@ -300,7 +300,7 @@ pub(crate) fn run_gc_locations_command(json: bool) -> Result<(), SoldrError> {
 }
 
 /// Enumerate every directory soldr cares about: cargo home subdirs,
-/// rustup home subdirs, soldr's own cache root, and the state.redb
+/// rustup home subdirs, soldr's own cache root, and the state.sqlite3
 /// file. Missing paths are reported with `exists = false` and zero
 /// size so the JSON shape stays predictable.
 fn enumerate_cache_locations(paths: &SoldrPaths) -> Vec<GcLocationOutput> {
@@ -365,7 +365,7 @@ fn enumerate_cache_locations(paths: &SoldrPaths) -> Vec<GcLocationOutput> {
     ));
     entries.push(gc_location_for(
         "soldr_state_db",
-        &paths.root.join("state.redb"),
+        &paths.root.join("state.sqlite3"),
         "soldr",
         "user_action",
     ));

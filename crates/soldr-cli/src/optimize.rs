@@ -34,7 +34,7 @@ const MANAGED_EXCLUSIONS_FILE: &str = "managed-defender-exclusions.json";
 #[clap(rename_all = "lowercase")]
 pub(crate) enum OptimizeScope {
     /// `~/.soldr/cache`, `~/.soldr/bench`, `~/.soldr/runtime`,
-    /// `~/.soldr/state.redb`, and the resolved zccache cache dir.
+    /// `~/.soldr/state.sqlite3`, and the resolved zccache cache dir.
     Global,
     /// `<workspace_root>/target` (walks up from cwd for `Cargo.toml`).
     Project,
@@ -186,7 +186,7 @@ pub(crate) fn plan_global_paths(soldr_root: &Path, resolved_zccache_dir: &Path) 
         soldr_root.join("cache"),
         soldr_root.join("bench"),
         soldr_root.join("runtime"),
-        soldr_root.join("state.redb"),
+        soldr_root.join("state.sqlite3"),
     ];
     let zccache = resolved_zccache_dir.to_path_buf();
     if !paths.iter().any(|p| p == &zccache) {

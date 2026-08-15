@@ -89,7 +89,7 @@ use serde::{Deserialize, Serialize};
 /// * v19 (soldr#1814 criterion 2 — the daemon becomes the single owner of
 ///   its own tables): adds `BuildLogInputs`, so the daemon serves the event
 ///   rows and build record `build_log` previously read by opening
-///   `state.redb` itself (slice 2a); and `ShouldWarnCargoDebugDefault`, so
+///   `state.sqlite3` itself (slice 2a); and `ShouldWarnCargoDebugDefault`, so
 ///   the cargo-debug-default read-modify-write stops making every front-door
 ///   invocation another opener (slice 2c); and `AttachBuildLogHistory`, so the
 ///   front-door tail stops doing its own get/mutate/upsert of the build
@@ -138,7 +138,7 @@ pub enum Request {
     /// in the soldr target registry. The wrapper hot path uses this.
     RecordTargetTouch { path: String, unix_seconds: i64 },
     /// Request-response: snapshot daemon-owned target-registry rows for a
-    /// CLI filesystem scan. The daemon remains the only state.redb opener.
+    /// CLI filesystem scan. The daemon remains the only state.sqlite3 opener.
     ListTargetRegistry,
     /// Request-response: remove registry rows after a CLI has confirmed its
     /// target directories are absent or successfully deleted.
@@ -235,7 +235,7 @@ pub enum Request {
     /// for `session_id` — its event rows plus the build record.
     ///
     /// soldr#1814 slice 2a. `build_log` used to read these by opening
-    /// `state.redb` itself, making the CLI a second opener of daemon-owned
+    /// `state.sqlite3` itself, making the CLI a second opener of daemon-owned
     /// tables on every build. Two back-to-back `Required` opens (5 s budget
     /// each) is also what exceeded a 10 s test deadline under parallel test
     /// processes. Replies with [`Response::BuildLogInputs`].
@@ -246,7 +246,7 @@ pub enum Request {
     /// soldr#1814 slice 2c. This is a read-modify-write against
     /// `state_db`'s tables — it records the repo and prunes expired rows — so
     /// having the front door perform it directly made every `soldr cargo`
-    /// invocation another opener of `state.redb`. Replies with
+    /// invocation another opener of `state.sqlite3`. Replies with
     /// [`Response::CargoDebugWarning`].
     ShouldWarnCargoDebugDefault { repo_root: String },
     /// Request-response: attach this build's log-history results to the

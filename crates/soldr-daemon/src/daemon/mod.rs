@@ -20,7 +20,7 @@
 #![allow(dead_code, unused_imports)]
 
 pub mod backend_handle_adoption;
-/// soldr#2224 — the three IPC handlers that touch `state.redb`, split
+/// soldr#2224 — the three IPC handlers that touch `state.sqlite3`, split
 /// out of the oversized `server.rs`.
 pub mod build_session_ops;
 pub mod client;
@@ -39,7 +39,7 @@ pub(crate) mod compile_sink;
 /// the zccache#939 buffer-elimination plan failed to find.
 pub mod compile_trace;
 pub mod db;
-/// soldr#2224 — `spawn_blocking` wrappers so a contended `state.redb`
+/// soldr#2224 — `spawn_blocking` wrappers so a contended `state.sqlite3`
 /// open never parks a tokio worker thread.
 pub mod db_async;
 /// soldr#1857 — the compile/disconnect race and the durable record of

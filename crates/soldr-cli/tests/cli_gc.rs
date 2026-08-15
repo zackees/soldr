@@ -280,9 +280,10 @@ fn gc_purge_all_json_reports_error_log_path_and_keeps_failed_row() {
         log_path.display()
     );
 
-    let registry =
-        soldr_cli::cache_lib::target_registry::TargetRegistry::open(&cache_root.join("state.redb"))
-            .expect("failed to open target registry");
+    let registry = soldr_cli::cache_lib::target_registry::TargetRegistry::open(
+        &cache_root.join("state.sqlite3"),
+    )
+    .expect("failed to open target registry");
     assert!(
         registry.get(&target).unwrap().is_some(),
         "failed deletion row should remain retryable"
@@ -514,7 +515,7 @@ fn gc_list_json_prunes_missing_registry_rows_in_one_pass() {
 
     {
         let registry = soldr_cli::cache_lib::target_registry::TargetRegistry::open(
-            &cache_root.join("state.redb"),
+            &cache_root.join("state.sqlite3"),
         )
         .expect("failed to open target registry");
         let now = soldr_cli::cache_lib::target_registry::current_unix_seconds()
@@ -557,9 +558,10 @@ fn gc_list_json_prunes_missing_registry_rows_in_one_pass() {
         assert_ne!(p, missing_str, "missing path leaked into output");
     }
 
-    let registry_after =
-        soldr_cli::cache_lib::target_registry::TargetRegistry::open(&cache_root.join("state.redb"))
-            .expect("failed to reopen registry");
+    let registry_after = soldr_cli::cache_lib::target_registry::TargetRegistry::open(
+        &cache_root.join("state.sqlite3"),
+    )
+    .expect("failed to reopen registry");
     assert!(
         registry_after.get(&missing_target).unwrap().is_none(),
         "missing row should be batched out of the registry"

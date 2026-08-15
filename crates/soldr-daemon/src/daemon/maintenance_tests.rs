@@ -41,7 +41,7 @@ fn sweep_fs_phase_child_holds_the_barrier() {
 }
 
 // soldr#2224 acceptance: the daemon's maintenance sweep must not hold
-// `state.redb` across its filesystem phase.
+// `state.sqlite3` across its filesystem phase.
 //
 // Real processes, deliberately. The process-wide `state_db_open_lock`
 // masks this bug in-thread — a second opener in the same process just
@@ -191,7 +191,7 @@ fn sweep_never_holds_state_db_across_filesystem_work() {
     result.unwrap_or_else(|error| {
         panic!(
             "the build-session fallback lost its record while the daemon was \
-                 mid-maintenance-sweep: {error}. The sweep is holding state.redb \
+                 mid-maintenance-sweep: {error}. The sweep is holding state.sqlite3 \
                  across its filesystem phase again (soldr#2224)."
         )
     });

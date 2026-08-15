@@ -401,7 +401,7 @@ fn should_emit_cargo_debug_default_warning(
 ) -> bool {
     // soldr#1814 slice 2c: ask the daemon, which owns state_db's tables,
     // rather than making every front-door invocation another opener of
-    // state.redb. When it is unavailable, fail open: repeating a warning is
+    // state.sqlite3. When it is unavailable, fail open: repeating a warning is
     // preferable to making the front door a second state-database opener.
     let sock = crate::daemon::client::default_sock_path(paths);
     if let Ok(emit) = crate::daemon::client::should_warn_cargo_debug_default(&sock, repo_path) {

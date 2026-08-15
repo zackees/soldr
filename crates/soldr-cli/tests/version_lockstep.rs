@@ -235,7 +235,9 @@ fn soldr_cli_and_embedded_zccache_shared_direct_deps_are_compatible() {
 
     let soldr_deps = read_dependency_names(&soldr_cli_manifest);
     let zccache_deps = read_dependency_names(&zccache_manifest);
-    let intentionally_split = ["redb"];
+    // No intentional splits today (the redb split retired with the
+    // redb→SQLite state-store migration).
+    let intentionally_split: [&str; 0] = [];
     let mut checked = Vec::new();
 
     for dep in soldr_deps.intersection(&zccache_deps) {

@@ -1,12 +1,12 @@
 //! Async wrappers around the blocking [`crate::daemon::db`] entry points
 //! (soldr#2224).
 //!
-//! Opening `state.redb` is not a "short transaction" — it acquires redb's
-//! exclusive whole-file lock, and when another process holds it the open
-//! spins inside [`crate::cache_lib::redb_lock`] for up to its 5 s
-//! `Required` budget. Calling the sync `db::*` functions straight from an
-//! IPC handler therefore parks a tokio **worker** thread for seconds under
-//! contention, starving every other connection the runtime is serving.
+//! A state-store operation is still synchronous filesystem work: SQLite
+//! WAL removed redb's exclusive-open contention, but a contended write
+//! can wait out the busy timeout and every commit is real I/O. Calling
+//! the sync `db::*` functions straight from an IPC handler parks a tokio
+//! **worker** thread for that duration, starving every other connection
+//! the runtime is serving.
 //!
 //! `event_batcher` already learned this (soldr#1669) and wraps its
 //! `write_batch` in `spawn_blocking`; the request handlers in `server.rs`
@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 /// there is nothing to retry inline.
 fn join_err(error: tokio::task::JoinError) -> RegistryError {
     RegistryError::Io(std::io::Error::other(format!(
-        "state.redb blocking task failed: {error}"
+        "state-store blocking task failed: {error}"
     )))
 }
 
@@ -112,12 +112,11 @@ pub async fn list_events_for_session(
 ///
 /// This is the escape hatch for multi-step handler work (read → mutate →
 /// write) that must not pay several opens: the closure receives one
-/// [`crate::cache_lib::redb_lock::StateDbHandle`] and uses the `_in`
-/// variants throughout.
+/// connection and uses the `_in` variants throughout.
 pub async fn with_handle<T, F>(db_path: &Path, work: F) -> Result<T, RegistryError>
 where
     T: Send + 'static,
-    F: FnOnce(&redb::Database) -> Result<T, RegistryError> + Send + 'static,
+    F: FnOnce(&rusqlite::Connection) -> Result<T, RegistryError> + Send + 'static,
 {
     let path: PathBuf = db_path.to_path_buf();
     blocking(move || {
@@ -129,7 +128,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    /// The sync `db` entry points that open `state.redb` themselves. Each
+    /// The sync `db` entry points that open `state.sqlite3` themselves. Each
     /// takes a `&Path`; the `*_in` variants take an already-open handle and
     /// are therefore fine to call from inside a `spawn_blocking` closure.
     const PATH_TAKING_OPENERS: &[&str] = &[
@@ -168,7 +167,7 @@ mod tests {
         kept
     }
 
-    // soldr#2224 acceptance: no `state.redb` open runs on a tokio worker.
+    // soldr#2224 acceptance: no `state.sqlite3` open runs on a tokio worker.
     //
     // The IPC handlers are `async`, so a sync `db::*` call in one runs on
     // the worker that is polling the connection. Those calls are not
@@ -207,7 +206,7 @@ mod tests {
                     assert!(
                         !code.contains(opener),
                         "{name} calls `{opener}` directly (line {} of the test-stripped \
-                         source). Handlers are async, so this opens state.redb on a tokio \
+                         source). Handlers are async, so this opens state.sqlite3 on a tokio \
                          worker and can park it for the full 5 s contention budget. Use \
                          `db_async::*` (or `db_async::with_handle` for multi-step work) \
                          instead (soldr#2224).\n  {line}",

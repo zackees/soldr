@@ -347,7 +347,7 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
     // 2-day TTL — the first value-bearing cache evicted, costing only a
     // network re-fetch to restore. Runs every throttle window regardless
     // of disk pressure, honoring SOLDR_INSTALL_SRC_TTL_DAYS /
-    // SOLDR_NO_INSTALL_SRC_GC. Never opens state.redb, so no daemon
+    // SOLDR_NO_INSTALL_SRC_GC. Never opens state.sqlite3, so no daemon
     // ownership conflict.
     let install_source_removed = if has_policy_action("install_source") {
         crate::install::cache::sweep_with_config(&paths, full_config.install.source_ttl_days)
@@ -371,7 +371,7 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
     // throttle window when the cook knobs are non-zero.
     if has_policy_action("cook") {
         // soldr#1814 slice 2b (criterion 2 — single owning process per file).
-        // `cook_evict_pass` opens `state.redb` via `cook_index`, so running it
+        // `cook_evict_pass` opens `state.sqlite3` via `cook_index`, so running it
         // here makes the CLI a second opener alongside the daemon.
         //
         // Skipping it when the daemon is up costs no coverage: the daemon runs
@@ -388,13 +388,13 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
         // as a `PEP 517 daemon smoke (windows-x64)` failure here.
         //
         // Version-blind is also the semantically correct question: *any* live
-        // soldr daemon owns state.redb, whatever protocol it speaks.
+        // soldr daemon owns state.sqlite3, whatever protocol it speaks.
         match crate::daemon::lifecycle::claimed_daemon_occupies_route(&paths) {
             Some(pid) => {
                 let _ = append_auto_gc_log_line(
                     &log_path,
                     &format!(
-                        "cook-gc skipped: daemon pid={pid} owns state.redb and runs \
+                        "cook-gc skipped: daemon pid={pid} owns state.sqlite3 and runs \
                          the same pass every 5 min (soldr#1814)"
                     ),
                 );
@@ -613,7 +613,7 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
 ///
 /// This is the coordinated offline counterpart to daemon maintenance: once
 /// the lock is held, a daemon cannot start between the liveness probe and
-/// `cook_evict_pass` opening `state.redb`.
+/// `cook_evict_pass` opening `state.sqlite3`.
 fn run_offline_cook_gc(
     paths: &SoldrPaths,
     config: &crate::core::CookConfig,

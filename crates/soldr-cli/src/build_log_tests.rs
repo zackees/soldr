@@ -140,7 +140,7 @@ fn write_build_log_without_daemon_never_opens_state_db() {
     );
     assert!(
         !crate::cache_lib::data_db_path(&paths).exists(),
-        "a daemon-less build log must stay incomplete instead of opening state.redb"
+        "a daemon-less build log must stay incomplete instead of opening state.sqlite3"
     );
 }
 

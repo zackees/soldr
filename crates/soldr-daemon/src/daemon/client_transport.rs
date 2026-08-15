@@ -19,7 +19,7 @@ pub fn submit_request_with_timeout(
 }
 
 /// Wrapper-side target touch. State is daemon-owned: an unavailable daemon
-/// leaves the touch unrecorded rather than opening `state.redb` in this process.
+/// leaves the touch unrecorded rather than opening `state.sqlite3` in this process.
 pub fn record_target_touch_or_fallback(paths: &SoldrPaths, target: &Path) {
     let unix_seconds = match current_unix_seconds() {
         Ok(s) => s,

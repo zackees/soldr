@@ -35,12 +35,13 @@ pub enum WireDecodeError {
 }
 
 // =========================================================================
-// Wire-tagged byte for redb persistent rows
+// Wire-tagged byte for persistent state-store rows
 // =========================================================================
 
-/// The 0x01 byte that prefixes every prost-encoded redb row written
-/// by this codebase. Reads look for it; absence (or any other byte)
-/// triggers the legacy-bincode fallback.
+/// The 0x01 byte that prefixes every prost-encoded state-store row
+/// written by this codebase (named for the redb era; the encoding
+/// survived the SQLite migration verbatim). Reads look for it; absence
+/// (or any other byte) is rejected as invalid data.
 pub const REDB_TAG_PROST: u8 = 0x01;
 
 /// Prepend [`REDB_TAG_PROST`] to a prost-encoded body. Used by every

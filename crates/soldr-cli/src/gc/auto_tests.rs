@@ -98,7 +98,7 @@ fn offline_cook_gc_requires_and_releases_root_ownership() {
         run_offline_cook_gc(&paths, &config)
             .expect("offline cook probe")
             .is_none(),
-        "the offline pass must not become a second state.redb owner"
+        "the offline pass must not become a second state.sqlite3 owner"
     );
     drop(owner);
     assert!(

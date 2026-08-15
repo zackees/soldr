@@ -293,7 +293,7 @@ where
         Request::BuildLogInputs { session_id } => {
             // soldr#1814 slice 2a: the daemon owns these tables, so it answers
             // both reads in one round trip. The CLI previously opened
-            // state.redb twice per build to get them.
+            // state.sqlite3 twice per build to get them.
             // soldr#2224: one handle for both reads, on the blocking pool.
             let inputs = db_async::with_handle(&state.db_path, move |db| {
                 let events = db::list_events_for_session_in(db, session_id)?;
@@ -334,7 +334,7 @@ where
             // performs this read-modify-write (record the repo, prune expired
             // rows) instead of every front-door invocation opening the file.
             let db_path = crate::cache_lib::state_db_path(&state.paths);
-            // soldr#2224: `StateDb::open` is the same exclusive `state.redb`
+            // soldr#2224: `StateDb::open` is the same exclusive `state.sqlite3`
             // open as everything else here, so it belongs on the blocking
             // pool rather than a tokio worker.
             let emit = tokio::task::spawn_blocking(move || {

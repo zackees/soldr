@@ -5,7 +5,7 @@
 //!
 //! Pre-L4, every `Request::RecordCompile` IPC call landed in
 //! [`crate::daemon::db::append_event`], which opens the shared
-//! `state.redb`, runs a write txn to bump `next_event_id` (fsync #1) and
+//! `state.sqlite3`, runs a write txn to bump `next_event_id` (fsync #1) and
 //! a second write txn to insert the event row (fsync #2). The cold
 //! profile recorded 171 compile misses ≈ ~342 fsyncs ≈ ~3.4 s of
 //! pure-sync wait on Windows/WSL2 at ~10 ms/fsync. None of those events
@@ -49,22 +49,19 @@
 //! complete, and the `Drop` semantics of the mpsc receiver mean even an
 //! aborted task drains the channel one more time before exiting.
 
-use crate::cache_lib::redb_lock::open_state_db;
+use crate::cache_lib::state_store::open_state_db;
 use crate::daemon::db::{Event, EventKind};
 use crate::daemon::wire::{self, prost_tagged_bytes};
-use redb::{ReadableTable, TableDefinition};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
-/// Mirrors the table definitions in [`crate::daemon::db`]. Kept as
-/// private constants here so the batcher does not have to take a write
-/// txn through `daemon::db` (which would re-allocate IDs one at a time
-/// and defeat the entire point of L4).
-const EVENTS: TableDefinition<u64, &[u8]> = TableDefinition::new("daemon_events");
-const META: TableDefinition<&str, u64> = TableDefinition::new("daemon_meta");
+/// Mirrors [`crate::daemon::db`]'s meta key. Kept private here so the
+/// batcher can allocate a contiguous ID range in one write instead of
+/// re-allocating IDs one at a time through `daemon::db` (which would
+/// defeat the entire point of L4).
 const META_NEXT_EVENT_ID: &str = "next_event_id";
 
 /// Flush whenever the staged batch reaches this many rows. Picked to
@@ -402,48 +399,47 @@ async fn flush_batch(db_path: &Path, buf: &mut Vec<Event>) -> Result<(), String>
     }
 }
 
-/// Open `state.redb` under the shared `state_db_open_lock`, allocate
-/// `count` event IDs in a single META insert, and insert every row in
-/// the same write txn. One fsync covers the entire batch.
+/// Open the state store, allocate `count` consecutive event IDs in a
+/// single `daemon_meta` write, and insert every row in the same
+/// transaction. One commit covers the entire batch.
 ///
 /// `pub(crate)` so tests (soldr#1536 finalization-scaling guards) can
 /// seed large event histories in a single transaction.
 pub(crate) fn write_batch(db_path: &Path, buf: &[Event]) -> std::io::Result<()> {
-    let handle =
-        open_state_db(db_path).map_err(|e| std::io::Error::other(format!("redb open: {e}")))?;
-    let txn = handle
-        .begin_write()
-        .map_err(|e| std::io::Error::other(format!("redb begin_write: {e}")))?;
-    {
-        // Allocate `count` consecutive IDs in one META write.
-        let start_id: u64;
-        {
-            let mut meta = txn
-                .open_table(META)
-                .map_err(|e| std::io::Error::other(format!("redb open META: {e}")))?;
-            let current = meta
-                .get(META_NEXT_EVENT_ID)
-                .map_err(|e| std::io::Error::other(format!("redb meta get: {e}")))?
-                .map(|v| v.value())
-                .unwrap_or(1);
-            start_id = current;
-            let next = current.saturating_add(buf.len() as u64);
-            meta.insert(META_NEXT_EVENT_ID, &next)
-                .map_err(|e| std::io::Error::other(format!("redb meta insert: {e}")))?;
-        }
-        let mut events = txn
-            .open_table(EVENTS)
-            .map_err(|e| std::io::Error::other(format!("redb open EVENTS: {e}")))?;
-        for (i, event) in buf.iter().enumerate() {
-            let id = start_id.saturating_add(i as u64);
-            let bytes = prost_tagged_bytes(&wire::event_to_wire(event));
-            events
-                .insert(id, bytes.as_slice())
-                .map_err(|e| std::io::Error::other(format!("redb events insert: {e}")))?;
-        }
+    use rusqlite::{params, OptionalExtension};
+
+    let sql_io = |e: rusqlite::Error| std::io::Error::other(format!("sqlite: {e}"));
+    let handle = open_state_db(db_path)?;
+    let tx = handle.unchecked_transaction().map_err(sql_io)?;
+    // Allocate `count` consecutive IDs in one daemon_meta write.
+    let current: i64 = tx
+        .query_row(
+            "SELECT value FROM daemon_meta WHERE key = ?1",
+            params![META_NEXT_EVENT_ID],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(sql_io)?
+        .unwrap_or(1);
+    let start_id = current as u64;
+    let next = start_id.saturating_add(buf.len() as u64);
+    tx.execute(
+        "INSERT INTO daemon_meta(key, value) VALUES(?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![META_NEXT_EVENT_ID, next as i64],
+    )
+    .map_err(sql_io)?;
+    for (i, event) in buf.iter().enumerate() {
+        let id = start_id.saturating_add(i as u64);
+        let bytes = prost_tagged_bytes(&wire::event_to_wire(event));
+        tx.execute(
+            "INSERT INTO daemon_events(key, value) VALUES(?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![id as i64, bytes],
+        )
+        .map_err(sql_io)?;
     }
-    txn.commit()
-        .map_err(|e| std::io::Error::other(format!("redb commit: {e}")))?;
+    tx.commit().map_err(sql_io)?;
     Ok(())
 }
 
@@ -481,7 +477,7 @@ mod tests {
         let rt = Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
             let dir = TempDir::new().expect("tempdir");
-            let path = dir.path().join("state.redb");
+            let path = dir.path().join("state.sqlite3");
             crate::daemon::db::ensure_initialized(&path).expect("init");
 
             let mut buf = vec![
@@ -503,7 +499,7 @@ mod tests {
         let rt = Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
             let dir = TempDir::new().expect("tempdir");
-            let path = dir.path().join("state.redb");
+            let path = dir.path().join("state.sqlite3");
             crate::daemon::db::ensure_initialized(&path).expect("init");
             let batcher = EventBatcher::start(path.clone());
             for i in 0..5 {
@@ -539,7 +535,7 @@ mod tests {
         let rt = Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
             let dir = TempDir::new().expect("tempdir");
-            let path = dir.path().join("state.redb");
+            let path = dir.path().join("state.sqlite3");
             crate::daemon::db::ensure_initialized(&path).expect("init");
             let batcher = EventBatcher::start(path.clone());
             batcher.record(session_start_event(21)).await;
@@ -577,7 +573,7 @@ mod tests {
         let rt = Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
             let dir = TempDir::new().expect("tempdir");
-            let path = dir.path().join("state.redb");
+            let path = dir.path().join("state.sqlite3");
             crate::daemon::db::ensure_initialized(&path).expect("init");
             let batcher = EventBatcher::start(path.clone());
             // Daemon (re)started mid-build: compiles arrive without a
@@ -598,7 +594,7 @@ mod tests {
         let rt = Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
             let dir = TempDir::new().expect("tempdir");
-            let path = dir.path().join("state.redb");
+            let path = dir.path().join("state.sqlite3");
             crate::daemon::db::ensure_initialized(&path).expect("init");
             let batcher = EventBatcher::start(path.clone());
             batcher.record(session_start_event(55)).await;
@@ -626,7 +622,7 @@ mod tests {
         let rt = Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
             let dir = TempDir::new().expect("tempdir");
-            let path = dir.path().join("state.redb");
+            let path = dir.path().join("state.sqlite3");
             crate::daemon::db::ensure_initialized(&path).expect("init");
             let batcher = EventBatcher::start(path.clone());
             // Push more than MAX_BATCH_ROWS to force an auto-flush before
@@ -649,7 +645,7 @@ mod tests {
         rt.block_on(async {
             let dir = TempDir::new().expect("tempdir");
             let parent = dir.path().join("file-parent");
-            let path = parent.join("state.redb");
+            let path = parent.join("state.sqlite3");
             std::fs::write(&parent, "not a directory").expect("create blocking parent");
             let batcher = EventBatcher::start(path.clone());
             batcher

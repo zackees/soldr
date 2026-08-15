@@ -1,19 +1,15 @@
-//! Redb-backed registry of observed Cargo `target/` directories.
+//! SQLite-backed registry of observed Cargo `target/` directories.
 //!
 //! Implements the data plane for issue #234: every `RUSTC_WRAPPER`
 //! invocation upserts the resolved workspace `target/` path with the
 //! current unix timestamp. The `soldr gc` command later scans the
 //! registry to find stale candidates for reclamation.
 //!
-//! The store lives in `~/.soldr/state.redb` alongside other soldr state.
+//! The store lives in `~/.soldr/state.sqlite3` alongside other soldr state.
 
-use crate::cache_lib::redb_lock::{open_state_db, open_state_db_best_effort, StateDbHandle};
-use redb::{
-    backends::InMemoryBackend, Database, ReadableDatabase, ReadableTable, ReadableTableMetadata,
-    TableDefinition,
-};
+use crate::cache_lib::state_store::{open_state_db, open_state_db_best_effort, StateDbHandle};
+use rusqlite::{params, OptionalExtension};
 use std::{
-    ops::Deref,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -30,20 +26,10 @@ pub const DEFAULT_STALE_AGE_SECONDS: u64 = 10 * 24 * 60 * 60;
 /// startup warning.
 pub const DEFAULT_STALE_SIZE_BYTES: u64 = 256 * 1024 * 1024;
 
-const TARGETS: TableDefinition<&str, i64> = TableDefinition::new("target_registry_targets");
-
 #[derive(Debug, Error)]
 pub enum RegistryError {
-    #[error("redb database error: {0}")]
-    Database(#[from] redb::DatabaseError),
-    #[error("redb transaction error: {0}")]
-    Transaction(#[from] redb::TransactionError),
-    #[error("redb table error: {0}")]
-    Table(#[from] redb::TableError),
-    #[error("redb storage error: {0}")]
-    Storage(#[from] redb::StorageError),
-    #[error("redb commit error: {0}")]
-    Commit(#[from] redb::CommitError),
+    #[error("sqlite error: {0}")]
+    Sqlite(#[from] rusqlite::Error),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
     #[error("system clock before unix epoch: {0}")]
@@ -58,97 +44,54 @@ pub struct TargetRow {
     pub last_used: i64,
 }
 
-/// Internal backing store for [`TargetRegistry`]. File-backed instances
-/// hold the process-wide [`state_db_open_lock`] guard alongside the
-/// redb [`Database`] so concurrent opens against `state.redb` from
-/// other daemon code paths (`daemon::db`, `cache_lib::cook_index`)
-/// serialize safely (#608). In-memory instances bypass the lock —
-/// each is an independent database with no file backing and no
-/// cross-instance contention.
-enum TargetRegistryDb {
-    File(StateDbHandle),
-    InMemory(Database),
-}
-
-impl Deref for TargetRegistryDb {
-    type Target = Database;
-    fn deref(&self) -> &Database {
-        match self {
-            Self::File(h) => h,
-            Self::InMemory(db) => db,
-        }
-    }
-}
-
-/// Redb registry backed by `~/.soldr/state.redb` (or a caller-provided
-/// path).
+/// SQLite registry backed by `~/.soldr/state.sqlite3` (or a
+/// caller-provided path).
 pub struct TargetRegistry {
-    db: TargetRegistryDb,
+    db: StateDbHandle,
 }
 
 impl TargetRegistry {
     /// Open or create the database at the given path. Parent dirs are
-    /// created automatically. The returned registry holds the
-    /// process-wide [`state_db_open_lock`] guard for its entire
-    /// lifetime so the redb file lock is never contended by another
-    /// in-process opener — the `RecordTargetTouch` handler runs on
-    /// every rustc-wrapper call and would otherwise race with
-    /// `daemon::db` / `cache_lib::cook_index` (#608).
+    /// created automatically. WAL mode means this handle coexists with
+    /// concurrent readers and one writer across processes — the redb-era
+    /// in-process open mutex and exclusive-file-lock choreography (#608)
+    /// are gone.
     pub fn open(path: &Path) -> Result<Self, RegistryError> {
-        let handle = open_state_db(path)?;
-        Self::init_schema(&handle)?;
         Ok(Self {
-            db: TargetRegistryDb::File(handle),
+            db: open_state_db(path)?,
         })
     }
 
     /// Open for a latency-critical, losable write (issue #1814).
     ///
-    /// Same as [`TargetRegistry::open`] but with the short cross-process
-    /// budget of [`open_state_db_best_effort`]: under contention this returns
-    /// `Err` in tens of milliseconds instead of blocking for up to 5 s. The
-    /// wrapper's per-rustc `target/` touch uses it because the row is GC
-    /// bookkeeping that the next invocation re-touches — stalling a compile to
-    /// write it is strictly worse than skipping it.
+    /// Same as [`TargetRegistry::open`] but a contended write waits tens of
+    /// milliseconds instead of the full busy budget. The wrapper's per-rustc
+    /// `target/` touch uses it because the row is GC bookkeeping that the
+    /// next invocation re-touches — stalling a compile to write it is
+    /// strictly worse than skipping it.
     pub fn open_best_effort(path: &Path) -> Result<Self, RegistryError> {
-        let handle = open_state_db_best_effort(path)?;
-        Self::init_schema(&handle)?;
         Ok(Self {
-            db: TargetRegistryDb::File(handle),
+            db: open_state_db_best_effort(path)?,
         })
     }
 
     /// Open an in-memory database. Useful for tests and for callers
-    /// that want a registry without touching disk. In-memory instances
-    /// are independent databases (no file backing), so they do not
-    /// acquire [`state_db_open_lock`].
+    /// that want a registry without touching disk.
     pub fn open_in_memory() -> Result<Self, RegistryError> {
-        let db = Database::builder().create_with_backend(InMemoryBackend::new())?;
-        Self::init_schema(&db)?;
         Ok(Self {
-            db: TargetRegistryDb::InMemory(db),
+            db: crate::cache_lib::state_store::open_state_db_in_memory()?,
         })
-    }
-
-    fn init_schema(db: &Database) -> Result<(), RegistryError> {
-        let write_txn = db.begin_write()?;
-        {
-            let _table = write_txn.open_table(TARGETS)?;
-        }
-        write_txn.commit()?;
-        Ok(())
     }
 
     /// Insert or update the row for `path` with the supplied unix
     /// timestamp.
     pub fn upsert_with_time(&self, path: &Path, unix_seconds: i64) -> Result<(), RegistryError> {
         let path_str = path_to_string(path);
-        let write_txn = self.db.begin_write()?;
-        {
-            let mut table = write_txn.open_table(TARGETS)?;
-            table.insert(path_str.as_str(), &unix_seconds)?;
-        }
-        write_txn.commit()?;
+        self.db.execute(
+            "INSERT INTO target_registry_targets(key, value) VALUES(?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![path_str, unix_seconds],
+        )?;
         Ok(())
     }
 
@@ -159,78 +102,75 @@ impl TargetRegistry {
 
     /// Return all tracked rows, ordered by `last_used` ascending.
     pub fn list(&self) -> Result<Vec<TargetRow>, RegistryError> {
-        let read_txn = self.db.begin_read()?;
-        let table = read_txn.open_table(TARGETS)?;
-        let mut rows = Vec::new();
-        for row in table.iter()? {
-            let (path, last_used) = row?;
-            rows.push(TargetRow {
-                path: PathBuf::from(path.value()),
-                last_used: last_used.value(),
-            });
-        }
-        rows.sort_by(|a, b| {
-            a.last_used
-                .cmp(&b.last_used)
-                .then_with(|| a.path.cmp(&b.path))
-        });
+        let mut statement = self.db.prepare(
+            "SELECT key, value FROM target_registry_targets ORDER BY value ASC, key ASC",
+        )?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(TargetRow {
+                    path: PathBuf::from(row.get::<_, String>(0)?),
+                    last_used: row.get(1)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
 
     /// Look up a single tracked row by path, if present.
     pub fn get(&self, path: &Path) -> Result<Option<TargetRow>, RegistryError> {
         let path_str = path_to_string(path);
-        let read_txn = self.db.begin_read()?;
-        let table = read_txn.open_table(TARGETS)?;
-        let Some(last_used) = table.get(path_str.as_str())? else {
-            return Ok(None);
-        };
-        Ok(Some(TargetRow {
+        let last_used: Option<i64> = self
+            .db
+            .query_row(
+                "SELECT value FROM target_registry_targets WHERE key = ?1",
+                params![path_str],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(last_used.map(|last_used| TargetRow {
             path: PathBuf::from(path_str),
-            last_used: last_used.value(),
+            last_used,
         }))
     }
 
     /// Remove the row for `path`. No-op if it doesn't exist.
     pub fn remove(&self, path: &Path) -> Result<bool, RegistryError> {
         let path_str = path_to_string(path);
-        let write_txn = self.db.begin_write()?;
-        let removed = {
-            let mut table = write_txn.open_table(TARGETS)?;
-            let old = table.remove(path_str.as_str())?;
-            old.is_some()
-        };
-        write_txn.commit()?;
-        Ok(removed)
+        let removed = self.db.execute(
+            "DELETE FROM target_registry_targets WHERE key = ?1",
+            params![path_str],
+        )?;
+        Ok(removed > 0)
     }
 
-    /// Remove rows for every path in `paths` in a single write
-    /// transaction. Missing rows are skipped. Returns the number of
-    /// rows that were actually removed.
+    /// Remove rows for every path in `paths` in a single transaction.
+    /// Missing rows are skipped. Returns the number of rows that were
+    /// actually removed.
     pub fn remove_many(&self, paths: &[PathBuf]) -> Result<usize, RegistryError> {
         if paths.is_empty() {
             return Ok(0);
         }
-        let write_txn = self.db.begin_write()?;
+        let tx = self.db.unchecked_transaction()?;
         let mut removed = 0usize;
-        {
-            let mut table = write_txn.open_table(TARGETS)?;
-            for path in paths {
-                let key = path_to_string(path);
-                if table.remove(key.as_str())?.is_some() {
-                    removed += 1;
-                }
-            }
+        for path in paths {
+            let key = path_to_string(path);
+            removed += tx.execute(
+                "DELETE FROM target_registry_targets WHERE key = ?1",
+                params![key],
+            )?;
         }
-        write_txn.commit()?;
+        tx.commit()?;
         Ok(removed)
     }
 
     /// Total number of tracked rows.
     pub fn len(&self) -> Result<usize, RegistryError> {
-        let read_txn = self.db.begin_read()?;
-        let table = read_txn.open_table(TARGETS)?;
-        Ok(table.len()? as usize)
+        let count: i64 =
+            self.db
+                .query_row("SELECT COUNT(*) FROM target_registry_targets", [], |row| {
+                    row.get(0)
+                })?;
+        Ok(count as usize)
     }
 
     /// Whether the registry has any rows.
@@ -726,7 +666,7 @@ mod tests {
     #[test]
     fn open_persists_to_disk() {
         let dir = tempdir().unwrap();
-        let db_path = dir.path().join("state.redb");
+        let db_path = dir.path().join("state.sqlite3");
         {
             let registry = TargetRegistry::open(&db_path).unwrap();
             registry

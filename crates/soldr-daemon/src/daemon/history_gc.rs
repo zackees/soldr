@@ -584,7 +584,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let paths = SoldrPaths::with_root(temp.path().join("owned"));
         let sibling = SoldrPaths::with_root(temp.path().join("sibling"));
-        let db_path = paths.root.join("state.redb");
+        let db_path = paths.root.join("state.sqlite3");
         let now = UNIX_EPOCH + Duration::from_secs(100 * 24 * 60 * 60);
         let now_ms = now.duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
         for (id, age_days, active) in [
@@ -639,7 +639,7 @@ mod tests {
     fn pre_redaction_migration_removes_only_completed_legacy() {
         let temp = tempfile::tempdir().unwrap();
         let paths = SoldrPaths::with_root(temp.path().join("owned"));
-        let db_path = paths.root.join("state.redb");
+        let db_path = paths.root.join("state.sqlite3");
         for (id, active) in [(1_u64, false), (2, true)] {
             let dir = history_root(&paths).join(id.to_string());
             std::fs::create_dir_all(&dir).unwrap();
@@ -674,7 +674,7 @@ mod tests {
         // their build-scoped stats and sanitized compile journal.
         let temp = tempfile::tempdir().unwrap();
         let paths = SoldrPaths::with_root(temp.path().join("owned"));
-        let db_path = paths.root.join("state.redb");
+        let db_path = paths.root.join("state.sqlite3");
         let completed = history_root(&paths).join("31");
         let active = history_root(&paths).join("32");
         for archive in [&completed, &active] {
@@ -760,7 +760,7 @@ mod tests {
     fn abandoned_unfinished_database_row_does_not_block_retention() {
         let temp = tempfile::tempdir().unwrap();
         let paths = SoldrPaths::with_root(temp.path().join("owned"));
-        let db_path = paths.root.join("state.redb");
+        let db_path = paths.root.join("state.sqlite3");
         let archive = history_root(&paths).join("23");
         std::fs::create_dir_all(&archive).unwrap();
         std::fs::write(archive.join("pre-redaction"), b"secret").unwrap();
@@ -775,7 +775,7 @@ mod tests {
     fn ended_database_row_does_not_expose_partial_publication() {
         let temp = tempfile::tempdir().unwrap();
         let paths = SoldrPaths::with_root(temp.path().join("owned"));
-        let db_path = paths.root.join("state.redb");
+        let db_path = paths.root.join("state.sqlite3");
         let archive = history_root(&paths).join("11");
         mark_history_publishing(&archive).unwrap();
         std::fs::write(archive.join("partial"), b"partial").unwrap();
@@ -839,7 +839,7 @@ mod tests {
     fn database_failures_block_success_markers() {
         let temp = tempfile::tempdir().unwrap();
         let paths = SoldrPaths::with_root(temp.path().join("owned"));
-        let db_path = paths.root.join("state.redb");
+        let db_path = paths.root.join("state.sqlite3");
         let options = HistoryGcOptions::default();
         let list_failed = sweep_with_ops(
             &paths,
@@ -878,7 +878,7 @@ mod tests {
     fn delete_failure_restores_archive_paths_for_retry() {
         let temp = tempfile::tempdir().unwrap();
         let paths = SoldrPaths::with_root(temp.path().join("owned"));
-        let db_path = paths.root.join("state.redb");
+        let db_path = paths.root.join("state.sqlite3");
         let archive = history_root(&paths).join("17");
         std::fs::create_dir_all(&archive).unwrap();
         std::fs::write(archive.join("payload"), b"keep").unwrap();
@@ -930,7 +930,7 @@ mod tests {
         .unwrap();
         let report = sweep_with_ops(
             &paths,
-            &paths.root.join("state.redb"),
+            &paths.root.join("state.sqlite3"),
             &HistoryGcOptions::default(),
             |_| 1,
             |_| Ok(Vec::new()),
