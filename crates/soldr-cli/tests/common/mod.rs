@@ -1289,6 +1289,15 @@ pub(crate) fn fake_logging_cargo_script(log_path: &Path) -> String {
         soldr_platform::host::facts::os(),
         soldr_platform::host::facts::HostOs::Windows
     ) {
+        // One file per invocation, claimed via `mkdir` (atomic-exclusive in
+        // cmd), NOT `>>` appends to a shared file: cmd's append is
+        // seek-then-write, so concurrent children (e.g. `lint deps` running
+        // deny/audit/machete in parallel) could clobber each other's lines
+        // — the target-run x86_64-msvc lane lost the `audit` line exactly
+        // that way. POSIX `>>` is O_APPEND and unaffected. Slot names carry
+        // a sortable centisecond timestamp so sequential consumers (the
+        // toolchain tests assert invocation order) still read back in
+        // order; process-spawn overhead dwarfs centisecond ties.
         format!(
             "@echo off\n\
              setlocal enabledelayedexpansion\n\
@@ -1299,7 +1308,14 @@ pub(crate) fn fake_logging_cargo_script(log_path: &Path) -> String {
              shift\n\
              goto loop\n\
              :done\n\
-             echo !line!>>\"{}\"\n\
+             set \"stamp=!TIME: =0!\"\n\
+             set \"stamp=!stamp::=!\"\n\
+             set \"stamp=!stamp:.=!\"\n\
+             set \"stamp=!stamp:,=!\"\n\
+             :mkslot\n\
+             set \"slot={0}.d\\!stamp!_!RANDOM!_!RANDOM!\"\n\
+             mkdir \"!slot!\" 2>nul || goto mkslot\n\
+             echo !line!>\"!slot!\\line.txt\"\n\
              exit /b 0\n",
             log_path.display()
         )
@@ -1490,8 +1506,27 @@ pub(crate) fn install_failing_fake_rustc() -> PathBuf {
 /// Each returned `Vec<String>` is one invocation, with argv split on
 /// the ASCII unit separator.
 pub(crate) fn read_logged_cargo_invocations(log_path: &Path) -> Vec<Vec<String>> {
-    let text = fs::read_to_string(log_path).unwrap_or_default();
-    text.lines()
+    // Two sources, merged in order: the shared append log (Unix scripts and
+    // the versioned-cargo script) first, then the Windows per-invocation
+    // slot directory sorted by its timestamped slot names — see
+    // `fake_logging_cargo_script` for why Windows cannot share one file.
+    let mut lines: Vec<String> = fs::read_to_string(log_path)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    let slot_root = PathBuf::from(format!("{}.d", log_path.display()));
+    if let Ok(entries) = fs::read_dir(&slot_root) {
+        let mut slots: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+        slots.sort();
+        for slot in slots {
+            if let Ok(text) = fs::read_to_string(slot.join("line.txt")) {
+                lines.extend(text.lines().map(str::to_string));
+            }
+        }
+    }
+    lines
+        .into_iter()
         .filter(|line| !line.trim().is_empty())
         .map(|line| line.split('\u{1f}').map(str::to_string).collect())
         .collect()
