@@ -81,13 +81,19 @@ impl DaemonProc {
     fn spawn(cache_root: &Path, home_root: &Path) -> Self {
         let mut cmd =
             common::isolated_daemon::isolated_daemon_command(&soldr_daemon_bin(), cache_root);
+        // Capture stderr to a file: when a lane-specific failure appears (the
+        // aarch64-darwin target-run lane lost every RecordTargetTouch write
+        // while status round-trips worked), the daemon's own diagnostics are
+        // the only evidence, and Stdio::null() was discarding them.
+        let stderr_log = std::fs::File::create(daemon_stderr_path(cache_root))
+            .expect("create daemon stderr log");
         cmd.args(["--foreground", "--idle-timeout-secs", "60"])
             .env("SOLDR_CACHE_DIR", cache_root)
             .env("HOME", home_root)
             .env("USERPROFILE", home_root)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stderr(Stdio::from(stderr_log));
         let child = cmd.spawn().expect("spawn soldr-daemon");
         let deadline = Instant::now() + Duration::from_secs(40);
         let pid_path = cache_root
@@ -95,17 +101,35 @@ impl DaemonProc {
             .join("soldr-daemon")
             .join("broker-route-claim.pb");
         let sock = direct_sock(cache_root);
+        let mut status_ok = false;
         while Instant::now() < deadline {
             if pid_path.exists() && client::status(&sock).is_ok() {
+                status_ok = true;
                 break;
             }
             std::thread::sleep(Duration::from_millis(50));
         }
+        assert!(
+            status_ok,
+            "daemon control endpoint never answered status within 40s; daemon stderr:\n{}",
+            daemon_stderr_tail(cache_root)
+        );
         Self {
             child: Some(child),
             cache_root: cache_root.to_path_buf(),
         }
     }
+}
+
+fn daemon_stderr_path(cache_root: &Path) -> PathBuf {
+    cache_root.join("daemon-stderr.log")
+}
+
+fn daemon_stderr_tail(cache_root: &Path) -> String {
+    let text = std::fs::read_to_string(daemon_stderr_path(cache_root)).unwrap_or_default();
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.len().saturating_sub(40);
+    lines[start..].join("\n")
 }
 
 impl Drop for DaemonProc {
@@ -265,8 +289,9 @@ fn daemon_path_writes_via_ipc_when_available() {
 
     assert!(
         row.is_some(),
-        "daemon never wrote the target registry row for {}",
-        target.display()
+        "daemon never wrote the target registry row for {}; daemon stderr:\n{}",
+        target.display(),
+        daemon_stderr_tail(&cache_root)
     );
     assert_eq!(row, Some(1_700_000_000));
 }
