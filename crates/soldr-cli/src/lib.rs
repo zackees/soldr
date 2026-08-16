@@ -189,6 +189,7 @@ pub mod build_from_source_cmd;
 pub mod build_log;
 pub mod builtin_verbs;
 pub mod cache;
+pub(crate) mod cache_health;
 pub mod cargo_diagnostics;
 pub mod cargo_front_door;
 pub mod cargo_metadata_soldr;
