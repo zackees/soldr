@@ -198,6 +198,10 @@ impl Harness {
             // into an immediate error naming the fetch, instead of a slow
             // suite that aborts at the 120s watchdog saying nothing.
             .env("SOLDR_TEST_NO_NETWORK", "1")
+            // soldr#2437: these fixtures seed a FAKE Linux toolchain and run
+            // on Windows lanes too; disable the host-cross guard so the
+            // machinery under test stays reachable.
+            .env("SOLDR_WINDOWS_LINUX_CROSS_GUARD", "off")
             // Isolate from any outer environment that would change the
             // overlap decision.
             .env_remove("CARGO_NET_OFFLINE")
