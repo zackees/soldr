@@ -817,6 +817,11 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                     crate::cache_lib::CACHE_ENABLED_ENV_VAR,
                     crate::cache_lib::cache_enabled_env_value(cache_enabled),
                 );
+                // soldr#2545 pre-spawn sweep: the wrapper policy below keys
+                // on the inherited `RUSTC_WRAPPER`; if a Soldr-owned pair
+                // drifted upstream, propagating it into a maturin/tool child
+                // would bake the drift into that build. Fail first.
+                crate::wrapper_identity::assert_inherited_wrapper_coherent("tool dispatch")?;
                 if std::env::var_os("RUSTC_WRAPPER").is_none() {
                     if cache_enabled {
                         let wrapper_plan =

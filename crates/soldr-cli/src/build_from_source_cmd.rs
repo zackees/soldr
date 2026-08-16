@@ -338,11 +338,14 @@ pub fn execute_plan(plan: &BuildPlan) -> Result<BuildReport, SoldrError> {
             // to attach to fds it cannot see (see soldr #283).
             .env_remove("MAKEFLAGS")
             .env_remove("CARGO_MAKEFLAGS")
-            // An accidentally-inherited wrapper env must never leak into
-            // this spawn; caching, when enabled, is opted into explicitly
-            // below with soldr's own compiler-named wrapper shim.
-            .env_remove("RUSTC_WRAPPER")
             .env_remove("RUSTC_WORKSPACE_WRAPPER");
+        // An accidentally-inherited wrapper env must never leak into this
+        // spawn; caching, when enabled, is opted into explicitly below with
+        // soldr's own compiler-named wrapper shim. Scrub the identity
+        // mirror together with `RUSTC_WRAPPER` (soldr#2545) — removing one
+        // while the other leaks through is exactly the drift the wrapper
+        // re-entry assertion rejects.
+        crate::wrapper_identity::remove_owned_rustc_wrapper(&mut command);
         apply_source_build_cache_wrapper(&mut command);
         suppress_windows_console_window(&mut command);
 
