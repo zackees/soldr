@@ -362,28 +362,45 @@ fn gc_list_json_reports_built_project_target_dir() {
 
     let canonical_target = fs::canonicalize(&target_dir).unwrap_or_else(|_| target_dir.clone());
 
-    let output = soldr_command(&soldr_bin)
-        .args(["gc", "list", "--json"])
-        .env("SOLDR_CACHE_DIR", &cache_root)
-        .env_remove(soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR)
-        .env("CARGO_HOME", &sandbox_cargo_home)
-        .env("RUSTUP_HOME", &sandbox_rustup_home)
-        .output()
-        .expect("failed to run soldr gc list --json");
+    // The wrapper's RecordTargetTouch is fire-and-forget by design: the
+    // daemon acks receipt BEFORE persisting (soldr#2561's hot-path
+    // contract), so the build returning does not imply the registry row
+    // is readable yet. Poll until the touch converges instead of racing
+    // it -- a single-shot read flaked the Linux x64 lane at exactly this
+    // assertion once suite timing shifted (soldr#2575's run).
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let json: Value = loop {
+        let output = soldr_command(&soldr_bin)
+            .args(["gc", "list", "--json"])
+            .env("SOLDR_CACHE_DIR", &cache_root)
+            .env_remove(soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR)
+            .env("CARGO_HOME", &sandbox_cargo_home)
+            .env("RUSTUP_HOME", &sandbox_rustup_home)
+            .output()
+            .expect("failed to run soldr gc list --json");
 
-    assert!(
-        output.status.success(),
-        "gc list --json failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+        assert!(
+            output.status.success(),
+            "gc list --json failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
 
-    let json: Value = serde_json::from_slice(&output.stdout).expect("gc list --json must be JSON");
-    assert_eq!(json["schema_version"], 3);
-    assert_eq!(json["command"], "gc");
-    assert_eq!(json["mode"], "list");
-    let entry_count = json["entry_count"].as_u64().expect("entry_count");
-    assert!(entry_count >= 1, "expected at least one tracked target dir");
+        let json: Value =
+            serde_json::from_slice(&output.stdout).expect("gc list --json must be JSON");
+        assert_eq!(json["schema_version"], 3);
+        assert_eq!(json["command"], "gc");
+        assert_eq!(json["mode"], "list");
+        let entry_count = json["entry_count"].as_u64().expect("entry_count");
+        if entry_count >= 1 {
+            break json;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "expected at least one tracked target dir within 10s of the build"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    };
 
     let entries = json["entries"].as_array().expect("entries array");
     let canonical_str = canonical_target.display().to_string();
