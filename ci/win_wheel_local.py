@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -49,10 +50,13 @@ IMAGE = "soldr-win-wheel"
 TARGET = "x86_64-pc-windows-msvc"
 RUST_TOOLCHAIN = "1.95.0"
 
-# The soldr that DRIVES the build, pinned deliberately. 0.9.0 is also on PyPI,
-# but its broker cannot dial its daemon route, so it cannot drive a build at
-# all -- that is what wedged the host this harness exists to rescue.
-SOLDR_VERSION = "0.8.44"
+# The soldr that DRIVES the build, pinned deliberately. 0.9.1 carries the
+# `soldr maturin` blessed-target wiring (MATURIN_USE_XWIN policy + prepared
+# SDK env, soldr#2519), so maturin uses the baked xwin cache instead of
+# hanging in its own MSVC CRT download the way the 0.8.44 driver did.
+# (0.9.0 stays unusable as a driver: its broker cannot dial its daemon
+# route -- that is what wedged the host this harness exists to rescue.)
+SOLDR_VERSION = "0.9.1"
 
 # `soldr wheel` refuses this workspace ("could not read Cargo metadata, so
 # soldr cannot prove this workspace is abi3-safe") even though `soldr cargo
@@ -149,6 +153,13 @@ def build_wheel(*, release: bool) -> int:
             # Seeded from the image on first mount, so the baked toolchain and
             # SDK survive into the volume and stay warm from then on.
             "-v", f"{volumes['soldr']}:/root/.soldr",
+            # Bounded on purpose: Docker Desktop's memory cap OOM-kills an
+            # unbounded parallel rustc fleet mid-build (observed at 7 jobs;
+            # soldr#2453 names the signature). 2 matches the release wheel
+            # lane's budget. Override via the same env vars if your Docker
+            # has more memory.
+            "-e", f"CARGO_BUILD_JOBS={os.environ.get('CARGO_BUILD_JOBS', '2')}",
+            "-e", f"SOLDR_JOBS={os.environ.get('SOLDR_JOBS', '2')}",
             "-w", "/work",
             IMAGE,
             "bash", "-lc", inner,
