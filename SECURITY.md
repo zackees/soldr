@@ -78,12 +78,15 @@ Current state:
 
 - releases are validated in GitHub Actions from the merged `main` commit that bumped the workspace version
 - `.github/workflows/release-auto.yml` is the single release path; it derives the version from `Cargo.toml` and only proceeds when that version is strictly greater than the latest version published on PyPI
-- the release workflow re-runs lint, build, test, integration, and e2e checks before publishing
+- the release workflow does **not** currently re-run lint, build, test,
+  integration, or e2e checks before publishing; the only pre-publication
+  validation is what ran on the version-bump PR (restoring release-time
+  gates is tracked in soldr#2469)
 - release tags are minted with the workflow's built-in `GITHUB_TOKEN`; no GitHub App or PAT is involved
 - PyPI wheels are uploaded through OIDC Trusted Publishing bound to `release-auto.yml`
 - release assets are published to GitHub Releases with a generated checksum manifest
 - release assets are attested in GitHub Actions prior to publication
-- the intentional authorization step is the reviewed version-bump merge to protected `main` — there is no environment approval gate at release time
+- the intentional authorization step is the reviewed version-bump merge to `main` — note that `main` is not currently branch-protected (soldr#2469) and there is no environment approval gate at release time
 - immutable releases and any tag-protection settings still depend on repository configuration outside the git tree
 - current user-facing verification guidance is checksum verification plus `gh attestation verify`
 

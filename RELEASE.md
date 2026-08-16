@@ -22,7 +22,9 @@ The release model satisfies these properties:
 
 These controls are in place:
 
-- `main` is protected with required CI and e2e checks
+- `main` is **not currently branch-protected**: there are no required
+  checks, no rulesets, and merges are not mechanically gated (verified
+  2026-08-11; restoring protection is tracked in soldr#2469)
 - immutable GitHub Releases are enabled
 - GitHub Actions requires full-SHA pinning for third-party actions
 - `.github/workflows/release-auto.yml` is the only release workflow
@@ -35,10 +37,14 @@ crates.io publication is not part of the current release direction. `soldr` is b
 The release flow is unattended and PyPI-centric:
 
 1. A reviewed PR bumps the workspace version in `Cargo.toml`.
-2. That PR is merged to protected `main`.
+2. That PR is merged to `main` (not currently branch-protected — see
+   Current State above).
 3. `.github/workflows/release-auto.yml` triggers from that push (it is filtered to `paths: Cargo.toml`).
 4. The `prepare` job derives `vX.Y.Z` from `Cargo.toml`, looks up the latest version on PyPI, and sets `should_release=true` only when the Cargo version is strictly greater. It also records `tag_exists` for the catch-up case.
-5. The workflow reruns lint, build, tests, integration, and e2e gates on the merged commit.
+5. The release workflow does **not** re-run lint/test/e2e gates on the
+   merged commit today; the only validation before publication is what
+   ran on the PR itself. Restoring release-time gates is soldr#2469's
+   target state.
 6. The `build` and `build-pypi` jobs produce the platform archives and hardened wheel set.
 7. The `publish` job — gated on `tag_exists == 'false'` — uses the workflow's built-in `GITHUB_TOKEN` to create the `vX.Y.Z` GitHub Release with `SHA256SUMS.txt` and a build provenance attestation.
 8. The `publish-pypi` job uploads the wheel set through `pypa/gh-action-pypi-publish` using OIDC.
