@@ -50,9 +50,10 @@ mod journal_hygiene_tests {
         assert_eq!(journal_lines(&paths).len(), 2);
     }
 
-    /// A pid that is definitely dead: spawn a trivial child and reap it.
-    /// (Synthetic sentinels like u32::MAX are unreliable — Unix pids are
-    /// i32-backed and the platform probe may wrap them.)
+    /// A pid that is definitely dead: spawn a trivial child through the
+    /// sanctioned running-process boundary and reap it. (Synthetic
+    /// sentinels like u32::MAX are unreliable — Unix pids are i32-backed
+    /// and the platform probe may wrap them.)
     fn reaped_child_pid() -> u32 {
         let windows =
             crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows;
@@ -60,7 +61,14 @@ mod journal_hygiene_tests {
         if windows {
             command.args(["/c", "exit"]);
         }
-        let mut child = command.spawn().expect("spawn trivial child");
+        let stdio = running_process::SpawnStdio {
+            stdin: running_process::StdioSource::Null,
+            stdout: running_process::StdioSource::Null,
+            stderr: running_process::StdioSource::Null,
+            drain_timeout: None,
+            show_console: false,
+        };
+        let mut child = running_process::spawn(&mut command, stdio).expect("spawn trivial child");
         let pid = child.id();
         child.wait().expect("reap child");
         pid
