@@ -7,4 +7,5 @@
 
 mod events;
 mod pid_liveness;
+mod root_acquire;
 mod spawn_log;

@@ -134,13 +134,31 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     std::fs::create_dir_all(soldr_daemon_dir(&paths))?;
     init_embedded_service_file_tracing(&paths);
 
-    let _root_ownership = crate::daemon::lifecycle::RootOwnershipGuard::try_acquire(&paths)?
-        .ok_or_else(|| {
-            ServerError::Io(std::io::Error::new(
-                std::io::ErrorKind::AddrInUse,
-                crate::daemon::lifecycle::describe_root_ownership_conflict(&paths),
-            ))
-        })?;
+    // Bounded grace for the stop→relaunch race: the previous daemon's lock
+    // is released only when its process exits, which lags the stop
+    // acknowledgment. Retry while nobody serves the root; back off
+    // immediately when a live daemon does (issue #1814 semantics).
+    let _root_ownership = {
+        use crate::daemon::lifecycle::RootAcquireOutcome;
+        let outcome = crate::daemon::lifecycle::RootOwnershipGuard::acquire_with_grace(
+            &paths,
+            ROOT_OWNERSHIP_ACQUIRE_BUDGET,
+            ROOT_OWNERSHIP_ACQUIRE_POLL,
+            || existing_daemon_pid(&paths),
+        )?;
+        match outcome {
+            RootAcquireOutcome::Acquired(guard) => guard,
+            RootAcquireOutcome::AlreadyServing(pid) => {
+                return Err(ServerError::AlreadyRunning(pid));
+            }
+            RootAcquireOutcome::TimedOut => {
+                return Err(ServerError::Io(std::io::Error::new(
+                    std::io::ErrorKind::AddrInUse,
+                    crate::daemon::lifecycle::describe_root_ownership_conflict(&paths),
+                )));
+            }
+        }
+    };
 
     if let Some(existing) = existing_daemon_pid(&paths) {
         return Err(ServerError::AlreadyRunning(existing));
@@ -597,6 +615,14 @@ async fn accept_windows_pipe_instance(
 /// Read budget for draining a doomed connection (#1853). Short on purpose:
 /// we only need to clear what the peer already queued, not wait for more.
 const DRAIN_READ_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// How long a starting daemon waits for a busy root-owner lock when no live
+/// daemon serves the root — the window where the previous owner has
+/// acknowledged `daemon stop` but its process (and thus the lock handle) has
+/// not finished exiting. Well under the broker's 60s daemon-readiness budget
+/// so a genuine conflict still surfaces inside one spawn attempt.
+const ROOT_OWNERSHIP_ACQUIRE_BUDGET: Duration = Duration::from_secs(10);
+const ROOT_OWNERSHIP_ACQUIRE_POLL: Duration = Duration::from_millis(200);
 
 /// Tell a peer whose protocol we cannot speak *why* we are hanging up, then
 /// close cleanly (#1853).
