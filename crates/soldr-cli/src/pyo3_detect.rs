@@ -496,9 +496,25 @@ fn detect_workspace_pyo3(
 ) -> Result<Option<DetectedPyo3>, String> {
     let cargo =
         crate::binaries::resolve_toolchain_binary("cargo").map_err(|error| error.to_string())?;
-    let mut command = Command::new(cargo);
+    let mut command = Command::new(&cargo);
     command.args(["metadata", "--format-version", "1"]);
     command.current_dir(workspace_root);
+    // A direct (non-rustup-proxy) toolchain cargo resolves `rustc` from
+    // PATH, and a soldr-managed environment often has no bare rustc there —
+    // the probe then dies with `could not execute process \`rustc -vV\``
+    // and `soldr wheel` refuses an abi3-provable workspace (soldr#2576).
+    // Pin RUSTC to the resolved cargo's sibling, exactly as the maturin
+    // dispatch does for the same failure class; an explicit caller RUSTC
+    // always wins.
+    if std::env::var_os("RUSTC").is_none() {
+        if let Some(sibling) = cargo
+            .parent()
+            .map(|dir| dir.join(crate::platform::executable::name::native("rustc")))
+            .filter(|path| path.is_file())
+        {
+            command.env("RUSTC", sibling);
+        }
+    }
     // Cargo metadata may invoke rustc through a rustup proxy. In managed CI
     // the pinned toolchain lives in a private rustup home and is not the
     // user's default, so carry the explicit channel into this probe just as
