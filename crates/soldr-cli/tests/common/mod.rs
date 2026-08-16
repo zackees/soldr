@@ -213,6 +213,44 @@ pub(crate) fn is_outer_route_env(name: &str) -> bool {
     OUTER_ROUTE_ENV_VARS.contains(&name) || name.starts_with("RUNNING_PROCESS_BROKER_V1_")
 }
 
+/// Stop the stable broker a fixture's front-door calls may have started
+/// under its temp HOME. `daemon stop` deliberately leaves the broker
+/// running (soldr#2549), so a fixture that never stops it leaks one
+/// detached broker process per run — 96 were found alive on one dev box
+/// (soldr#2568). Best effort: an absent broker is a cheap no-op.
+pub(crate) fn stop_fixture_broker(cache_root: &std::path::Path, home_root: &std::path::Path) {
+    let mut command = isolated_soldr_command();
+    command
+        .args(["broker", "stop"])
+        .env("SOLDR_CACHE_DIR", cache_root)
+        .env("HOME", home_root)
+        .env("USERPROFILE", home_root);
+    let _ = command.output();
+}
+
+/// Drop guard for fixtures that have no other teardown struct. Declare it
+/// FIRST in the test body so it drops LAST — after any daemon guard has
+/// already stopped the daemon the broker fronts.
+pub(crate) struct BrokerHomeGuard {
+    cache_root: std::path::PathBuf,
+    home_root: std::path::PathBuf,
+}
+
+impl BrokerHomeGuard {
+    pub(crate) fn new(cache_root: &std::path::Path, home_root: &std::path::Path) -> Self {
+        Self {
+            cache_root: cache_root.to_path_buf(),
+            home_root: home_root.to_path_buf(),
+        }
+    }
+}
+
+impl Drop for BrokerHomeGuard {
+    fn drop(&mut self) {
+        stop_fixture_broker(&self.cache_root, &self.home_root);
+    }
+}
+
 pub(crate) fn scrub_outer_soldr_env(command: &mut Command) -> &mut Command {
     command
         // soldr#1766: fixtures build in bare temp workspaces that deliberately
