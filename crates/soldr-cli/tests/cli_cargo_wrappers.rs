@@ -1289,9 +1289,9 @@ fn cache_enabled_zccache_build_completes_under_60_seconds() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        // Hang backstop; performance gates belong to the Perf Matrix.
-        elapsed < Duration::from_secs(60),
-        "cache-enabled zccache build took {elapsed:?}, expected under 60s"
+        // Hang backstop, not a perf gate (Perf Matrix owns those): contended Windows hits 62-68s cold; 100s beats nextest's 120s kill.
+        elapsed < Duration::from_secs(100),
+        "cache-enabled zccache build took {elapsed:?}, expected under 100s"
     );
 
     let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
