@@ -154,7 +154,8 @@ fn allow_dylint_driver_build() -> bool {
 pub(crate) fn nested_dylint_driver_build(rustc_args: &[String]) -> Option<String> {
     let mut is_driver_crate = false;
     for (index, arg) in rustc_args.iter().enumerate() {
-        if arg == "--crate-name" && rustc_args.get(index + 1).map(String::as_str) == Some("dylint_driver")
+        if arg == "--crate-name"
+            && rustc_args.get(index + 1).map(String::as_str) == Some("dylint_driver")
         {
             is_driver_crate = true;
             break;
@@ -631,10 +632,8 @@ mod tests {
         assert_eq!(detected.as_deref(), Some("6.0.2"));
 
         // `--crate-name=<value>` spelling.
-        let detected = nested_dylint_driver_build(&args(&[
-            "--crate-name=dylint_driver",
-            "src/main.rs",
-        ]));
+        let detected =
+            nested_dylint_driver_build(&args(&["--crate-name=dylint_driver", "src/main.rs"]));
         assert_eq!(detected.as_deref(), Some("unknown"));
     }
 
