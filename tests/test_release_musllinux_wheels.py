@@ -7,8 +7,11 @@ RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-auto.yml"
 def test_release_workflow_builds_and_publishes_musllinux_wheels() -> None:
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
 
-    assert "py3-none-musllinux_1_2_x86_64.whl" in workflow
-    assert "py3-none-musllinux_1_2_aarch64.whl" in workflow
+    # soldr#2469 step 2.2: expected wheel names are generated from
+    # ci/canonical-targets.json via release_completeness.py (whose parity
+    # test pins the musllinux_1_2 tags); the workflow gates must invoke
+    # the generator instead of carrying inline name lists.
+    assert workflow.count("--list-expected-github-assets") == 2
     assert (
         "uses: zackees/setup-soldr@40320d277ba4946e38d4b3c02e6c7a15a29c3f3f" in workflow
     )

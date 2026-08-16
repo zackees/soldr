@@ -111,25 +111,14 @@ jobs:
           github_release_complete=false
           github_release_immutable=false
           github_release_missing_assets="release-not-found"
-          expected_assets=(
-            "soldr-${version}-x86_64-unknown-linux-gnu.tar.zst"
-            "soldr-${version}-aarch64-unknown-linux-gnu.tar.zst"
-            "soldr-${version}-x86_64-unknown-linux-musl.tar.zst"
-            "soldr-${version}-aarch64-unknown-linux-musl.tar.zst"
-            "soldr-${version}-x86_64-apple-darwin.tar.zst"
-            "soldr-${version}-aarch64-apple-darwin.tar.zst"
-            "soldr-${version}-x86_64-pc-windows-msvc.tar.zst"
-            "soldr-${version}-aarch64-pc-windows-msvc.tar.zst"
-            "soldr-${cargo_version}-py3-none-macosx_10_12_x86_64.whl"
-            "soldr-${cargo_version}-py3-none-macosx_11_0_arm64.whl"
-            "soldr-${cargo_version}-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl"
-            "soldr-${cargo_version}-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
-            "soldr-${cargo_version}-py3-none-musllinux_1_2_aarch64.whl"
-            "soldr-${cargo_version}-py3-none-musllinux_1_2_x86_64.whl"
-            "soldr-${cargo_version}-py3-none-win_amd64.whl"
-            "soldr-${cargo_version}-py3-none-win_arm64.whl"
-            "soldr-${version}-SHA256SUMS.txt"
-          )
+          # Contract-generated (soldr#2469 step 2.2): one source of truth in
+          # ci/canonical-targets.json via release_completeness.py, no inline
+          # duplicate list. Captured first so a script failure fails the step.
+          expected_asset_list="$(python3 .github/scripts/release_completeness.py --list-expected-github-assets "$version")"
+          expected_assets=()
+          while IFS= read -r asset; do
+            expected_assets+=("$asset")
+          done <<< "$expected_asset_list"
           release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${version}" 2>/dev/null || true)"
           if [[ -n "$release_json" ]]; then
             is_draft="$(jq -r '.draft' <<< "$release_json")"
@@ -1882,6 +1871,9 @@ jobs:
     timeout-minutes: 15
 
     steps:
+      # Needed since soldr#2469 step 2.2: the expected-asset list is
+      # generated from ci/canonical-targets.json by a repo script.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - name: Verify expected release assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1895,25 +1887,12 @@ jobs:
             echo "GitHub release $tag is still a draft" >&2
             exit 1
           fi
-          expected_assets=(
-            "soldr-${tag}-x86_64-unknown-linux-gnu.tar.zst"
-            "soldr-${tag}-aarch64-unknown-linux-gnu.tar.zst"
-            "soldr-${tag}-x86_64-unknown-linux-musl.tar.zst"
-            "soldr-${tag}-aarch64-unknown-linux-musl.tar.zst"
-            "soldr-${tag}-x86_64-apple-darwin.tar.zst"
-            "soldr-${tag}-aarch64-apple-darwin.tar.zst"
-            "soldr-${tag}-x86_64-pc-windows-msvc.tar.zst"
-            "soldr-${tag}-aarch64-pc-windows-msvc.tar.zst"
-            "soldr-${cargo_version}-py3-none-macosx_10_12_x86_64.whl"
-            "soldr-${cargo_version}-py3-none-macosx_11_0_arm64.whl"
-            "soldr-${cargo_version}-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl"
-            "soldr-${cargo_version}-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
-            "soldr-${cargo_version}-py3-none-musllinux_1_2_aarch64.whl"
-            "soldr-${cargo_version}-py3-none-musllinux_1_2_x86_64.whl"
-            "soldr-${cargo_version}-py3-none-win_amd64.whl"
-            "soldr-${cargo_version}-py3-none-win_arm64.whl"
-            "soldr-${tag}-SHA256SUMS.txt"
-          )
+          # Contract-generated (soldr#2469 step 2.2) — see the prepare job.
+          expected_asset_list="$(python3 .github/scripts/release_completeness.py --list-expected-github-assets "$tag")"
+          expected_assets=()
+          while IFS= read -r asset; do
+            expected_assets+=("$asset")
+          done <<< "$expected_asset_list"
           missing=()
           for asset in "${expected_assets[@]}"; do
             size="$(jq --arg name "$asset" -r '.assets[] | select(.name == $name) | .size' <<< "$release_json" | head -n1)"

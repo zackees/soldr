@@ -190,14 +190,18 @@ def test_ci_and_blessed_alias_workflow_cover_every_target() -> None:
 def test_release_inclusions_and_exclusions_match_contract() -> None:
     rows = contract_targets()
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
-    included = {row["triple"] for row in rows if row["release"]["status"] == "included"}
-    archive_gate = workflow.split("expected_assets=(", 1)[1].split("\n          )", 1)[
-        0
-    ]
-    archives = set(re.findall(r'soldr-\$\{version\}-([^"/]+)\.tar\.zst', archive_gate))
-    assert (
-        archives == included
-    ), "release archive gate drifted from canonical-targets.json"
+    # soldr#2469 step 2.2: the inline expected_assets lists were replaced by
+    # generation from the contract via release_completeness.py. Both asset
+    # gates (prepare + verify_github_release) must call the generator, and
+    # no hand-maintained inline asset list may reappear.
+    assert workflow.count("--list-expected-github-assets") == 2, (
+        "both release asset gates must generate their expected list from "
+        "ci/canonical-targets.json via release_completeness.py"
+    )
+    assert "x86_64-unknown-linux-gnu.tar.zst" not in workflow, (
+        "an inline release asset list reappeared in release-auto.yml; the "
+        "contract script is the single source (soldr#2469 step 2.2)"
+    )
     for row in rows:
         release = row["release"]
         if release["status"] == "documented-exclusion":
