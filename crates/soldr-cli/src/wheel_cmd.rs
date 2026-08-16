@@ -244,7 +244,11 @@ fn target_in_argv(argv: &[String]) -> Option<&str> {
 /// target: a host-native build, a workspace with no PyO3 at all, abi3
 /// (`PYO3_NO_PYTHON`), modern Windows `raw-dylib`, an explicitly opted-in
 /// Python sysroot, or a caller who configured `PYO3_*` themselves.
-pub fn abi3_scope_check(mode: PlanMode, target: &str) -> Result<(), SoldrError> {
+pub fn abi3_scope_check(
+    mode: PlanMode,
+    target: &str,
+    diagnostic: Option<&str>,
+) -> Result<(), SoldrError> {
     match mode {
         PlanMode::Native
         | PlanMode::NoPyo3
@@ -261,12 +265,21 @@ pub fn abi3_scope_check(mode: PlanMode, target: &str) -> Result<(), SoldrError> 
                  drive maturin yourself with `soldr maturin build`."
             )))
         }
-        PlanMode::Unresolved => Err(SoldrError::Other(format!(
-            "soldr wheel: could not read Cargo metadata, so soldr cannot prove this \
-             workspace is abi3-safe for `{target}`. The first cut of `soldr wheel` is \
-             abi3-only (soldr#2139); run `soldr maturin build --target {target}` to build \
-             anyway."
-        ))),
+        PlanMode::Unresolved => {
+            // Surface the probe's real failure (soldr#2576): the summary
+            // alone sent users chasing `cargo metadata` by hand, which
+            // succeeds through the front door and proves nothing about
+            // this probe's environment.
+            let detail = diagnostic
+                .map(|text| format!("\n  probe error: {text}"))
+                .unwrap_or_default();
+            Err(SoldrError::Other(format!(
+                "soldr wheel: could not read Cargo metadata, so soldr cannot prove this \
+                 workspace is abi3-safe for `{target}`. The first cut of `soldr wheel` is \
+                 abi3-only (soldr#2139); run `soldr maturin build --target {target}` to build \
+                 anyway.{detail}"
+            )))
+        }
     }
 }
 
@@ -294,7 +307,7 @@ pub(crate) fn maturin_invocation(
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let plan =
             crate::pyo3_detect::resolve_for_invocation(&workspace_root, &build, Some(&triple));
-        abi3_scope_check(plan.mode, &triple)?;
+        abi3_scope_check(plan.mode, &triple, plan.diagnostic.as_deref())?;
     }
 
     let mut argv = Vec::with_capacity(build.len() + 2);
@@ -591,7 +604,7 @@ mod tests {
             PlanMode::CallerConfigured,
         ] {
             assert!(
-                abi3_scope_check(mode, "aarch64-unknown-linux-gnu").is_ok(),
+                abi3_scope_check(mode, "aarch64-unknown-linux-gnu", None).is_ok(),
                 "{mode:?} should be in scope"
             );
         }
@@ -600,7 +613,7 @@ mod tests {
             PlanMode::RequiresExplicitCompatibility,
             PlanMode::Unresolved,
         ] {
-            let err = abi3_scope_check(mode, "aarch64-unknown-linux-gnu")
+            let err = abi3_scope_check(mode, "aarch64-unknown-linux-gnu", None)
                 .expect_err("out-of-scope mode must refuse");
             let message = err.to_string();
             assert!(message.contains("abi3-only"), "{mode:?}: {message}");
