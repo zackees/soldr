@@ -255,10 +255,7 @@ def test_npm_install_selectors_match_contract() -> None:
     while five targets vanished -- this cross-consumer check is the guard
     that pattern was missing (install.js is a consumer the other tests in
     this file do not read)."""
-    import json as _json
-    import re
-
-    contract = _json.loads(CONTRACT.read_text(encoding="utf-8"))
+    contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
     included = {
         entry["triple"]
         for entry in contract["targets"]
@@ -280,9 +277,7 @@ def test_release_asset_expectation_matches_contract() -> None:
     targets is N archives + N wheels + SHA256SUMS. Pin the arithmetic to the
     contract so a target removal shows up here as well as in the matrix (a
     removal must be an explicit reviewed decision, never a side effect)."""
-    import json as _json
-
-    contract = _json.loads(CONTRACT.read_text(encoding="utf-8"))
+    contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
     included = [
         entry
         for entry in contract["targets"]
