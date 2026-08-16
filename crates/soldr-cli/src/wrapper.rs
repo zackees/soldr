@@ -134,6 +134,73 @@ fn normalize_nested_workspace_wrapper_args<'a>(
     std::borrow::Cow::Owned(normalized)
 }
 
+/// Explicit opt-in that permits a one-time dylint-driver source build
+/// through the wrapper (soldr#2484). Off by default: binary-or-exit.
+pub(crate) const ALLOW_DYLINT_DRIVER_BUILD_ENV_VAR: &str = "SOLDR_ALLOW_DYLINT_DRIVER_BUILD";
+
+fn allow_dylint_driver_build() -> bool {
+    std::env::var(ALLOW_DYLINT_DRIVER_BUILD_ENV_VAR)
+        .map(|value| {
+            let value = value.trim().to_ascii_lowercase();
+            matches!(value.as_str(), "1" | "true" | "yes" | "on")
+        })
+        .unwrap_or(false)
+}
+
+/// Detect a rustc invocation that compiles the `dylint_driver` crate
+/// itself (as opposed to *executing* an installed dylint-driver against
+/// user crates, where the crate names are the user's). Returns the
+/// requested driver version when the registry source path reveals it.
+pub(crate) fn nested_dylint_driver_build(rustc_args: &[String]) -> Option<String> {
+    let mut is_driver_crate = false;
+    for (index, arg) in rustc_args.iter().enumerate() {
+        if arg == "--crate-name" && rustc_args.get(index + 1).map(String::as_str) == Some("dylint_driver")
+        {
+            is_driver_crate = true;
+            break;
+        }
+        if arg == "--crate-name=dylint_driver" {
+            is_driver_crate = true;
+            break;
+        }
+    }
+    if !is_driver_crate {
+        return None;
+    }
+    let version = rustc_args
+        .iter()
+        .find_map(|arg| {
+            let start = arg.find("dylint_driver-")?;
+            let tail = &arg[start + "dylint_driver-".len()..];
+            let end = tail
+                .find(|c: char| c != '.' && !c.is_ascii_digit())
+                .unwrap_or(tail.len());
+            let candidate = &tail[..end];
+            candidate
+                .contains('.')
+                .then(|| candidate.trim_end_matches('.').to_string())
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+    Some(version)
+}
+
+fn nested_dylint_driver_diagnostic(requested_version: &str) -> String {
+    format!(
+        concat!(
+            "soldr: refusing a nested dylint-driver source build ",
+            "(requested dylint_driver v{}). Soldr's contract is ",
+            "binary-or-exit (soldr#2432/#2484): an uncached compiler ",
+            "plugin must not silently turn a lint/test run into a long ",
+            "source build. Prepare the prebuilt driver first by running ",
+            "`soldr cargo dylint --all` once in this workspace (it ",
+            "resolves and verifies the exact version + nightly + host ",
+            "driver under DYLINT_DRIVER_PATH), or explicitly permit the ",
+            "one-time source build with {}=1."
+        ),
+        requested_version, ALLOW_DYLINT_DRIVER_BUILD_ENV_VAR
+    )
+}
+
 pub(crate) fn run_rustc_wrapper(
     raw_args: &[String],
     mut profile: WrapperProfile,
@@ -148,6 +215,21 @@ pub(crate) fn run_rustc_wrapper(
         .unwrap_or(tool_arg);
 
     profile.mark("tool_resolved");
+
+    // soldr#2484: nested Dylint flows (dylint_testing and friends) launch
+    // their own cargo build of the dylint-driver crate. The top-level
+    // front door already refuses a missing/mismatched driver
+    // (require_prebuilt_driver, soldr#2432), but a nested build re-enters
+    // here as an ordinary rustc unit and would silently turn a lint/test
+    // run into a long uncached source build. Fail closed before any
+    // daemon contact; the one-time build needs an explicit opt-in.
+    if let Some(requested) = nested_dylint_driver_build(&raw_args[2..]) {
+        if !allow_dylint_driver_build() {
+            return Err(SoldrError::Other(nested_dylint_driver_diagnostic(
+                &requested,
+            )));
+        }
+    }
 
     // Per-build target/ tracking for `soldr gc`. Best-effort: if we
     // can't resolve a workspace target dir cheaply, or the redb
@@ -532,6 +614,65 @@ pub(crate) use crate::wrapper_target::{record_target_dir_in_registry, TargetTouc
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn nested_driver_build_is_detected_with_version_from_registry_path() {
+        let detected = nested_dylint_driver_build(&args(&[
+            "--crate-name",
+            "dylint_driver",
+            "--edition=2021",
+            "/home/u/.cargo/registry/src/index.crates.io-abc/dylint_driver-6.0.2/src/main.rs",
+            "--emit=link",
+        ]));
+        assert_eq!(detected.as_deref(), Some("6.0.2"));
+
+        // `--crate-name=<value>` spelling.
+        let detected = nested_dylint_driver_build(&args(&[
+            "--crate-name=dylint_driver",
+            "src/main.rs",
+        ]));
+        assert_eq!(detected.as_deref(), Some("unknown"));
+    }
+
+    #[test]
+    fn executing_the_driver_against_user_crates_is_not_a_driver_build() {
+        // dylint RUNS the installed driver with the USER's crate names;
+        // that must never trip the build guard (soldr#2484).
+        assert_eq!(
+            nested_dylint_driver_build(&args(&[
+                "--crate-name",
+                "my_workspace_crate",
+                "src/lib.rs",
+            ])),
+            None
+        );
+        // A crate merely depending on a path containing the string is
+        // not the driver crate either.
+        assert_eq!(
+            nested_dylint_driver_build(&args(&[
+                "--crate-name",
+                "other",
+                "/x/dylint_driver-6.0.2/vendored.rs",
+            ])),
+            None
+        );
+    }
+
+    #[test]
+    fn nested_driver_diagnostic_names_version_preparation_and_opt_in() {
+        let message = nested_dylint_driver_diagnostic("6.0.2");
+        assert!(message.contains("dylint_driver v6.0.2"), "{message}");
+        assert!(message.contains("soldr cargo dylint --all"), "{message}");
+        assert!(
+            message.contains("SOLDR_ALLOW_DYLINT_DRIVER_BUILD=1"),
+            "{message}"
+        );
+        assert!(message.contains("DYLINT_DRIVER_PATH"), "{message}");
+    }
 
     #[test]
     fn stdin_source_path_is_content_addressed() {
