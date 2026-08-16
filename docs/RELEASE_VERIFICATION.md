@@ -21,12 +21,17 @@ Those positions are deliberate. They may be revisited later, but they are the cu
 
 For a normal `soldr` release:
 
-- a reviewed version bump is merged to protected `main`
+- a reviewed version bump is merged to `main` (not currently
+  branch-protected — no required checks or rulesets; soldr#2469 tracks
+  restoring protection)
 - `.github/workflows/release-auto.yml` derives the tag directly from `Cargo.toml` at that merged commit
-- the workflow re-runs lint, workspace build, tests, integration, and all supported e2e bootstrap jobs for that exact commit
+- the workflow does **not** currently re-run lint, build, test,
+  integration, or e2e jobs for that commit before publishing; the only
+  validation is what ran on the PR (target state: soldr#2469 Phase 1)
 - release archives are built from that exact commit
 - final publication happens in the `release` environment
-- the version tag is protected by repository rulesets and created through the release workflow path
+- the version tag is created through the release workflow path; no
+  repository rulesets protect tags today (soldr#2469)
 - the published GitHub Release is immutable once published
 - a SHA-256 checksum manifest is published with the release assets
 - GitHub build provenance attestations are generated for the published assets
