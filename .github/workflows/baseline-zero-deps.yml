@@ -252,7 +252,12 @@ jobs:
         run: |
           set -euo pipefail
           # zigbuild fetches its own zig + linker via soldr — we want the
-          # same code path the rest of the workflow exercises.
+          # same code path the rest of the workflow exercises. This manual
+          # acceptance harness deliberately exercises the explicit-legacy
+          # zigbuild passthrough (issue #860); production surfaces use the
+          # blessed `soldr build` route the cross-compile-surface rule
+          # enforces (soldr#2297).
+          # soldr-lint-ci: allow cross-compile-surface -- legacy-path acceptance harness
           "$BOOTSTRAP_SOLDR" cargo zigbuild --release --package soldr-cli --target "${{ matrix.target }}"
 
       - name: Stage soldr binary for upload

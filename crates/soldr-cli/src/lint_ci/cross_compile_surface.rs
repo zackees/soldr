@@ -6,9 +6,12 @@
 //! `cargo zigbuild`), a raw cross compiler (`zig cc`, mingw, osxcross, or a
 //! `clang`/`gcc` carrying an Apple/Windows `--target`) for those targets.
 //!
-//! Zig / cargo-zigbuild remain **allowed** for `*-unknown-linux-*` and
-//! manylinux builds — the rule is target-aware, so a legitimate Linux-Zig
-//! matrix row never masks an invalid Apple/Windows row.
+//! Zig / cargo-zigbuild are banned for `*-unknown-linux-*` too
+//! (soldr#2297): the catalogue GNU/musl toolchains are the sole blessed
+//! Linux route, so any zig on a Linux target is a second toolchain whose
+//! output soldr's pinning no longer describes. The explicit-legacy
+//! `soldr cargo zigbuild` passthrough remains available to users; this
+//! rule keeps it out of soldr's own CI surfaces.
 
 use super::model::{Finding, Severity};
 use super::registry::CiRule;
@@ -108,6 +111,19 @@ fn check_line(file: &ScannedFile, line: &LogicalLine) -> Vec<Finding> {
 fn detect_tool(code: &str) -> Option<ToolKind> {
     let toks: Vec<&str> = code.split_whitespace().collect();
 
+    // An interpreter invoking a script treats later bare tool names as
+    // *arguments* (`python3 toolchain_asset_query.py ... cargo-zigbuild`
+    // queries the catalogue about the tool). Keep the two-token
+    // `cargo zigbuild` invocation detection; skip only the bare
+    // executable-name form for such lines.
+    let head_is_interpreter = toks
+        .first()
+        .map(|head| {
+            let stem = head.rsplit(['/', '\\']).next().unwrap_or(head);
+            matches!(stem, "python" | "python3" | "uv" | "sh" | "bash")
+        })
+        .unwrap_or(false);
+
     // `cargo xwin` / `cargo zigbuild` — adjacent subcommand tokens.
     for w in toks.windows(2) {
         if w[0] == "cargo" && w[1] == "xwin" {
@@ -119,17 +135,19 @@ fn detect_tool(code: &str) -> Option<ToolKind> {
     }
 
     // `cargo-xwin` / `cargo-zigbuild` executable at a command position.
-    for (i, tok) in toks.iter().enumerate() {
-        let prev_is_flag = i > 0 && toks[i - 1].starts_with('-');
-        if prev_is_flag {
-            continue;
-        }
-        let normalized = tok.trim_start_matches("./");
-        if normalized == "cargo-xwin" {
-            return Some(ToolKind::Xwin);
-        }
-        if normalized == "cargo-zigbuild" {
-            return Some(ToolKind::Zigbuild);
+    if !head_is_interpreter {
+        for (i, tok) in toks.iter().enumerate() {
+            let prev_is_flag = i > 0 && toks[i - 1].starts_with('-');
+            if prev_is_flag {
+                continue;
+            }
+            let normalized = tok.trim_start_matches("./");
+            if normalized == "cargo-xwin" {
+                return Some(ToolKind::Xwin);
+            }
+            if normalized == "cargo-zigbuild" {
+                return Some(ToolKind::Zigbuild);
+            }
         }
     }
 
@@ -218,6 +236,9 @@ fn evaluate(
         let is_flag = match kind {
             TargetKind::Apple | TargetKind::WindowsMsvc => true,
             TargetKind::WindowsGnu => flag_windows_gnu,
+            // soldr#2297: zig is a second toolchain on Linux targets too —
+            // the catalogue GNU/musl toolchains are the sole blessed route.
+            TargetKind::Linux => matches!(tool, ToolKind::Zigbuild | ToolKind::ZigCc),
             _ => false,
         };
         if is_flag {
@@ -236,18 +257,9 @@ fn evaluate(
         ToolKind::Xwin => vec![(Severity::Error, "*-pc-windows-msvc".to_string())],
         ToolKind::Mingw => vec![(Severity::Error, "*-pc-windows-gnu".to_string())],
         ToolKind::OsxCross => vec![(Severity::Error, "*-apple-darwin".to_string())],
-        // zigbuild is legitimate for Linux. If it resolved to concrete
-        // (Linux) targets, pass. If the target is unresolvable on a surface
-        // that is capable of Apple/Windows, warn rather than silently pass.
-        ToolKind::Zigbuild => {
-            if !concrete.is_empty() {
-                Vec::new()
-            } else if file.capable {
-                vec![(Severity::Warning, "<unresolved>".to_string())]
-            } else {
-                Vec::new()
-            }
-        }
+        // soldr#2297: zigbuild is banned on every target class soldr CI
+        // builds — with no concrete target it is still a zig invocation.
+        ToolKind::Zigbuild => vec![(Severity::Error, "<any target>".to_string())],
         // Raw zig / generic compilers only violate when a concrete
         // Apple/Windows target is present (handled above). Otherwise pass to
         // avoid flagging Linux/native compiler use.
@@ -395,18 +407,25 @@ mod tests {
     }
 
     #[test]
-    fn passes_zig_for_linux_and_manylinux() {
-        assert!(errors("        run: cargo zigbuild --target x86_64-unknown-linux-gnu").is_empty());
+    fn interpreter_argument_naming_the_tool_is_not_an_invocation() {
+        // A catalogue query script taking `cargo-zigbuild` as an argument
+        // (its own docstring example) is data, not an invocation.
+        assert!(findings(
+            "        python3 .github/scripts/toolchain_asset_query.py              --platform linux --arch x86 --extra gnu cargo-zigbuild"
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn flags_zig_for_linux_and_manylinux() {
+        // soldr#2297 flip: Linux zig rows are violations now — the
+        // catalogue toolchains are the sole blessed Linux route.
         assert!(
-            errors("        run: cargo zigbuild --target aarch64-unknown-linux-musl").is_empty()
+            !errors("        run: cargo zigbuild --target x86_64-unknown-linux-gnu").is_empty()
         );
+        assert!(!errors("        run: cargo zigbuild").is_empty());
         assert!(
-            findings("        run: cargo zigbuild --target x86_64-unknown-linux-gnu").is_empty(),
-            "no warnings for a plainly-Linux zigbuild"
-        );
-        // maturin-driven zig for manylinux.
-        assert!(
-            errors("        run: maturin build --zig --target x86_64-unknown-linux-gnu").is_empty()
+            !errors("        run: cargo zigbuild --target aarch64-unknown-linux-musl").is_empty()
         );
     }
 
@@ -421,12 +440,15 @@ mod tests {
     steps:
       - run: cargo zigbuild --target ${{ matrix.target }}";
         let e = errors(text);
-        assert_eq!(e.len(), 1, "only the apple row is a violation");
-        assert_eq!(e[0].target, "aarch64-apple-darwin");
+        // soldr#2297 flip: the Linux row is a violation too.
+        assert_eq!(e.len(), 2, "both matrix rows are violations now");
+        let targets: Vec<&str> = e.iter().map(|f| f.target.as_str()).collect();
+        assert!(targets.contains(&"aarch64-apple-darwin"));
+        assert!(targets.contains(&"x86_64-unknown-linux-gnu"));
     }
 
     #[test]
-    fn all_linux_matrix_zigbuild_passes() {
+    fn all_linux_matrix_zigbuild_is_flagged() {
         let text = "\
     strategy:
       matrix:
@@ -435,8 +457,7 @@ mod tests {
           - aarch64-unknown-linux-musl
     steps:
       - run: cargo zigbuild --target ${{ matrix.target }}";
-        assert!(errors(text).is_empty());
-        assert!(findings(text).is_empty());
+        assert_eq!(errors(text).len(), 2);
     }
 
     #[test]
@@ -499,11 +520,10 @@ mod tests {
       NOTE: builds x86_64-pc-windows-msvc somewhere
     steps:
       - run: cargo zigbuild --target ${{ matrix.target }}";
-        let all = findings(text);
-        assert_eq!(all.len(), 1);
-        assert_eq!(all[0].severity, Severity::Warning);
-        assert_eq!(all[0].target, "<unresolved>");
-        // Warning-only does not produce an error.
-        assert!(errors(text).is_empty());
+        // soldr#2297 flip: zigbuild is banned on every class this rule
+        // scans, so an unresolvable target is a hard error, not a warning.
+        let e = errors(text);
+        assert_eq!(e.len(), 1);
+        assert_eq!(e[0].target, "<any target>");
     }
 }
