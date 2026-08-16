@@ -2050,3 +2050,31 @@ jobs:
         run: node scripts/test-npm-package.js && npm pack --dry-run
       - name: Publish package to npm
         run: python3 ../release-control/.github/scripts/publish_npm_package.py --source-dir .
+
+  # soldr#2469 step 1.1: terminal truth check. Green must mean the whole
+  # public surface (17 GitHub assets from the canonical-targets contract,
+  # the PyPI wheel set, the npm version) is verified complete for this
+  # release ref. always() so upstream skips (the 0.9.0 false-green path:
+  # verify_github_release skipped on an already-immutable release) cannot
+  # exempt the run from the check. Recovery-only npm dispatches carry no
+  # should_release and are reported as recovery by their own job, never
+  # as a normal release result.
+  release-completeness:
+    name: Release surface completeness gate
+    needs:
+      - prepare
+      - publish
+      - verify_github_release
+      - publish-pypi
+      - publish-npm
+    if: always() && needs.prepare.outputs.should_release == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Verify every public release surface is complete
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python3 .github/scripts/release_completeness.py
+          --version "${{ needs.prepare.outputs.version }}"
