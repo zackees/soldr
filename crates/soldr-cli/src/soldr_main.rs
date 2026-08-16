@@ -273,6 +273,9 @@ async fn run_dylint_command(
     cache_enabled: bool,
     trust_inherited_soldr_env: bool,
 ) -> Result<i32, SoldrError> {
+    if args.first().map(String::as_str) == Some("prepare") {
+        return crate::dylint_prepare::run(&args[1..]).await;
+    }
     if args.first().map(String::as_str) == Some("cook") {
         return dylint_cook::run(&args[1..], cache_enabled).await;
     }
