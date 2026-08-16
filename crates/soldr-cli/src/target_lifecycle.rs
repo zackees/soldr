@@ -100,7 +100,13 @@ pub(crate) async fn prepare_target(
     // the old behavior fetched hundreds of megabytes and then died deep in
     // the first *-sys build with `%1 is not a valid Win32 application
     // (os error 193)`. Fail fast with the supported paths instead.
-    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows
+    // Test seam per the Agent Development Environment rule: fixtures that
+    // seed a fake Linux toolchain (cli_build_fetch_overlap) disable the
+    // guard to exercise the surrounding machinery on Windows lanes.
+    let host_cross_guard_disabled = std::env::var("SOLDR_WINDOWS_LINUX_CROSS_GUARD")
+        .is_ok_and(|value| value.trim().eq_ignore_ascii_case("off"));
+    if !host_cross_guard_disabled
+        && crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows
         && attrs.os == TargetOs::Linux
     {
         return Err(SoldrError::UnsupportedPlatform(format!(
