@@ -2526,9 +2526,8 @@ fn write_build_log_reflects_seeded_compile_session_events() {
         exit_code: 0,
         compile_journal_path: None,
         compile_journal_start_len: 0,
-        // soldr#1799: a managed-home binary, so the rendered log must say
-        // `managed`. The pairing of origin and binary path is what makes the
-        // log checkable rather than merely descriptive.
+        // soldr#1799: a managed-home binary must render `managed`; the
+        // origin+binary pairing is what makes the log checkable.
         toolchain: Some(crate::build_log::ToolchainHomes {
             home_origin: "managed",
             binary: paths.root.join("cargo").join("bin").join("cargo"),
