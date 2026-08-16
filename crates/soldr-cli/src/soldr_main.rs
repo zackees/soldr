@@ -161,6 +161,17 @@ fn run_main(raw_args: Vec<String>) -> i32 {
     // Route client control through the broker; standalone daemons never install this hook.
     let _ = crate::broker_control_transport::install();
     if raw_args.len() > 1 && wrapper::is_wrapper_invocation(&raw_args[1]) {
+        // soldr#2545: a Soldr-owned wrapper lineage must arrive with the
+        // effective-wrapper mirror still matching RUSTC_WRAPPER. Drift here
+        // means something rewired the wrapper identity mid-build; failing
+        // before broker/daemon contact beats silently recompiling the world.
+        if let Err(error) =
+            crate::wrapper_identity::assert_inherited_wrapper_coherent("wrapper re-entry")
+        {
+            eprintln!("soldr: {error}");
+            exit_guard::mark_spoke();
+            guarded_exit(1);
+        }
         // Per-phase startup timing for #440. `WrapperProfile::new()` is a
         // cheap branch + one `var_os` syscall when SOLDR_PROFILE_STARTUP
         // is unset, so the dominant production path pays effectively

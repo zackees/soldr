@@ -324,7 +324,11 @@ impl RustcWrapperPlan {
                 // zccache binary or managed session to plumb, so clear
                 // the legacy session env and only seed the parent-cache
                 // path-remap vars.
-                cargo.env("RUSTC_WRAPPER", &plan.wrapper_path);
+                crate::wrapper_identity::set_owned_rustc_wrapper(
+                    cargo,
+                    plan.wrapper_path.as_os_str(),
+                    crate::wrapper_identity::WrapperOrigin::SoldrManaged,
+                );
                 cargo.env(
                     crate::daemon::backend_handle_adoption::SOLDR_BROKER_SERVICE_ENV_VAR,
                     &plan.broker_service_name,
@@ -342,11 +346,15 @@ impl RustcWrapperPlan {
                 if let Some(sccache_dir) = sccache_dir {
                     cargo.env("SCCACHE_DIR", sccache_dir);
                 }
-                cargo.env("RUSTC_WRAPPER", wrapper);
+                crate::wrapper_identity::set_owned_rustc_wrapper(
+                    cargo,
+                    wrapper,
+                    crate::wrapper_identity::WrapperOrigin::CustomOverride,
+                );
                 remove_managed_zccache_env(cargo);
             }
             Self::Disabled => {
-                cargo.env_remove("RUSTC_WRAPPER");
+                crate::wrapper_identity::remove_owned_rustc_wrapper(cargo);
                 remove_managed_zccache_env(cargo);
             }
         }
