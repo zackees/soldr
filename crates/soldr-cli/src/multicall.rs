@@ -94,6 +94,13 @@ pub(crate) fn apply_shim_argv0_override(raw_args: Vec<String>) -> Vec<String> {
     rebuilt
 }
 
+/// Whether argv0 selects a multicall shim identity (rustc/cargo/clang/...)
+/// rather than the plain `soldr` front door. Shim entries are by definition
+/// sanctioned re-entrancy (soldr#2547).
+pub(crate) fn is_shim_identity(argv0: &str) -> bool {
+    classify_argv0(argv0).is_some()
+}
+
 pub(crate) fn maybe_dispatch(raw_args: &[String]) -> Option<MulticallDispatch> {
     let argv0 = raw_args.first().map(String::as_str).unwrap_or("");
     match classify_argv0(argv0)? {

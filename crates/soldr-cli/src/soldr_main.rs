@@ -121,6 +121,13 @@ pub fn run() -> std::process::ExitCode {
     // — is what makes the trampoline and hardlink shapes the same program.
     let raw_args = multicall::apply_shim_argv0_override(raw_args);
 
+    // Re-entrancy guard (soldr#2547/#2566): judge inherited parentage and
+    // stamp IN_SOLDR_PID before any dispatch, spawn, or runtime setup.
+    if let Some(code) = crate::reentrancy_guard::enforce_and_mark(&raw_args) {
+        exit_guard::mark_spoke();
+        guarded_exit(code);
+    }
+
     if !multicall::toolchain_shim_should_defer_to_rustc_wrapper(&raw_args) {
         match multicall::maybe_dispatch(&raw_args) {
             Some(multicall::MulticallDispatch::Exit(code)) => guarded_exit(code),

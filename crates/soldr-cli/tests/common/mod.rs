@@ -260,6 +260,12 @@ pub(crate) fn scrub_outer_soldr_env(command: &mut Command) -> &mut Command {
         // every fixture.
         .env(soldr_cli::toolchain::ALLOW_UNPINNED_ENV_VAR, "1")
         .env_remove("RUSTC_WRAPPER")
+        // Fixtures spawn soldr from a non-soldr test process; the outer
+        // dogfooded `soldr cargo nextest` stamps IN_SOLDR_PID, which would
+        // make every fixture child look like unsanctioned re-entrancy once
+        // CI flips SOLDR_REENTRANCY_GUARD=strict (soldr#2566). Scrub both.
+        .env_remove(soldr_cli::reentrancy_guard::IN_SOLDR_PID_ENV)
+        .env_remove(soldr_cli::reentrancy_guard::GUARD_MODE_ENV)
         .env_remove("RUSTC_WORKSPACE_WRAPPER")
         .env_remove("SOLDR_LINKER")
         .env_remove("CARGO_BUILD_TARGET")
