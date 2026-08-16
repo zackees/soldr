@@ -1366,6 +1366,7 @@ pub(crate) fn fake_logging_cargo_script(log_path: &Path) -> String {
              set \"slot={0}.d\\!stamp!_!RANDOM!_!RANDOM!\"\n\
              mkdir \"!slot!\" 2>nul || goto mkslot\n\
              echo !line!>\"!slot!\\line.txt\"\n\
+             if not exist \"!slot!\\line.txt\" exit /b 97\n\
              exit /b 0\n",
             log_path.display()
         )
@@ -1570,8 +1571,16 @@ pub(crate) fn read_logged_cargo_invocations(log_path: &Path) -> Vec<Vec<String>>
         let mut slots: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
         slots.sort();
         for slot in slots {
-            if let Ok(text) = fs::read_to_string(slot.join("line.txt")) {
-                lines.extend(text.lines().map(str::to_string));
+            match fs::read_to_string(slot.join("line.txt")) {
+                Ok(text) => lines.extend(text.lines().map(str::to_string)),
+                // soldr#2589: a slot dir was claimed (mkdir succeeded) but
+                // its line never became readable. Silently skipping is how
+                // invocations vanished from two Windows lanes post-#2562;
+                // fail loudly so the next occurrence localizes itself.
+                Err(error) => panic!(
+                    "claimed fake-cargo slot {} has no readable line.txt: {error}                      (soldr#2589 -- the writer lost the line after claiming)",
+                    slot.display()
+                ),
             }
         }
     }
