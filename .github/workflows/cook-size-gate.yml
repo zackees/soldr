@@ -79,7 +79,16 @@ jobs:
           # tests/test_setup_soldr_version_pins.py.
           version: 0.9.1
           toolchain: 1.95.0
+          # soldr#2451: `cache: false` alone does NOT gate setup-soldr's
+          # soldr-mini / build-cache / target-cache reuse layers, and this
+          # lane runs the checkout-built soldr — every layer must be off so
+          # a stale restore can never masquerade as the binary under test.
           cache: false
+          build-cache: false
+          target-cache: false
+          cargo-registry-cache: false
+          soldr-mini-cache: false
+          solo-toolchain-cache: false
           zccache-seed-strict: true
 
       # soldr#1981 — ci-release. This builds only the *tool* that runs `cook`
@@ -88,6 +97,13 @@ jobs:
       # a separate, load-bearing flag and stays.
       - name: Build soldr CLI (ci-release)
         working-directory: soldr
+        env:
+          # With every setup-soldr reuse layer off (soldr#2451) this build is
+          # fully cold, and unbounded parallel ci-release rustc OOM-killed on
+          # the hosted runner (the soldr#2453 signature). Same bounded-jobs
+          # remedy as the release wheel lanes.
+          CARGO_BUILD_JOBS: "2"
+          SOLDR_JOBS: "2"
         run: soldr cargo build -p soldr-cli --profile ci-release
 
       - name: Checkout zccache fixture
