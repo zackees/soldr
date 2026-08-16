@@ -560,10 +560,14 @@ def test_mac_x64_distribution_uses_pinned_setup_soldr_on_intel() -> None:
     assert "version: 0.8.44" in release
     assert "cross-targets: ${{ matrix.setup_target }}" in release
     assert "target-wheel-hook" in release
-    assert "soldr-${version}-x86_64-apple-darwin.tar.zst" in release
-    intel_wheel = "soldr-${cargo_version}-py3-none-macosx_10_12_x86_64.whl"
-    assert release.count(intel_wheel) == 2
-    assert "soldr-${cargo_version}-py3-none-macosx_11_0_x86_64.whl" not in release
+    # soldr#2469 step 2.2: asset names are generated from
+    # ci/canonical-targets.json via release_completeness.py, not inlined.
+    # The mac-x64 archive + intel-wheel guarantees these greps used to pin
+    # now live in the contract itself (test_release_completeness.py pins
+    # x86_64-apple-darwin -> macosx_10_12_x86_64, making a fabricated
+    # 11_0 intel tag impossible); here we pin that both release asset
+    # gates actually invoke the generator.
+    assert release.count("--list-expected-github-assets") == 2
 
     sdk_step = _step_block(release, "Restore the native macOS SDK root")
     assert "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" in sdk_step
