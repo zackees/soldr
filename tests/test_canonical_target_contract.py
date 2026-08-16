@@ -246,3 +246,48 @@ def test_documented_alias_table_matches_contract() -> None:
         assert (
             f"| `{row['alias']}` | `{row['triple']}` |" in table
         ), f"documentation row missing for {row['alias']} -> {row['triple']}"
+
+
+def test_npm_install_selectors_match_contract() -> None:
+    """soldr#2469 step 2.1: the npm installer's platform->triple map must
+    cover exactly the release-included contract targets. PR #2455 shrank the
+    matrix, canonical targets, and npm selectors together, so nothing failed
+    while five targets vanished -- this cross-consumer check is the guard
+    that pattern was missing (install.js is a consumer the other tests in
+    this file do not read)."""
+    contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
+    included = {
+        entry["triple"]
+        for entry in contract["targets"]
+        if entry["release"]["status"] == "included"
+    }
+    install_js = (ROOT / "scripts" / "install.js").read_text(encoding="utf-8")
+    selector_triples = set(
+        re.findall(r'triple:\s*"([a-z0-9_]+-[a-z0-9-]+)"', install_js)
+    )
+    assert selector_triples == included, (
+        "scripts/install.js platform selectors drifted from "
+        f"canonical-targets.json: selectors={sorted(selector_triples)} "
+        f"contract={sorted(included)}"
+    )
+
+
+def test_release_asset_expectation_matches_contract() -> None:
+    """soldr#2469 step 2.1: the full public release surface for N included
+    targets is N archives + N wheels + SHA256SUMS. Pin the arithmetic to the
+    contract so a target removal shows up here as well as in the matrix (a
+    removal must be an explicit reviewed decision, never a side effect)."""
+    contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
+    included = [
+        entry
+        for entry in contract["targets"]
+        if entry["release"]["status"] == "included"
+    ]
+    expected_assets = 2 * len(included) + 1  # archives + wheels + SHA256SUMS
+    assert len(included) == 8 and expected_assets == 17, (
+        "the supported release surface changed size "
+        f"({len(included)} targets -> {expected_assets} public assets). If "
+        "this is intentional it needs an explicit compatibility decision in "
+        "canonical-targets.json reviewed on its own (soldr#2469 step 2.1), "
+        "plus updates to every consumer this suite checks."
+    )
