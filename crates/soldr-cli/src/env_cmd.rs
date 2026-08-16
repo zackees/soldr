@@ -68,14 +68,25 @@ fn build_env_plan_in(
         env.insert("SDKROOT".to_string(), sdk_dir.display().to_string());
     }
 
-    // Linker selection — clang via lld. The actual clang path is
-    // tied to soldr's bundled LLVM (soldr#934). When that catalogue
-    // row ships the CARGO_TARGET_*_LINKER variable should resolve
-    // through the SoldrPaths::bin/llvm-tools location.
+    // Linker selection. MSVC targets link through lld-link — the same
+    // value `soldr prepare` / the blessed build export, and the only one
+    // consistent with the `-C linker-flavor=lld-link` RUSTFLAGS the xwin
+    // prep emits. The old blanket `clang` placeholder made rustc invoke
+    // `clang -flavor link <MSVC args>`, which clang rejects; consumers
+    // that re-export this block (setup-soldr) then clobbered prepare's
+    // correct value and broke every Linux-hosted MSVC wheel link.
+    // Non-MSVC targets keep clang as the driver (lld via -fuse-ld where
+    // the prep sets it); the actual clang path is tied to soldr's
+    // bundled LLVM (soldr#934).
     let triple_upper = rust_triple.to_ascii_uppercase().replace('-', "_");
+    let linker = if rust_triple.ends_with("-pc-windows-msvc") {
+        "lld-link"
+    } else {
+        "clang"
+    };
     env.insert(
         format!("CARGO_TARGET_{triple_upper}_LINKER"),
-        "clang".to_string(),
+        linker.to_string(),
     );
 
     // Python ABI policy is separate from the target SDK/linker block.
@@ -188,6 +199,32 @@ mod tests {
         let env = build_env_block("x86_64-pc-windows-msvc").expect("ok");
         assert!(!env.contains_key("SDKROOT"));
         assert!(env.contains_key("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER"));
+    }
+
+    // MSVC links through lld-link, matching what `soldr prepare` exports
+    // and what the `-C linker-flavor=lld-link` RUSTFLAGS require. A clang
+    // value here made rustc run `clang -flavor link`, which clang rejects
+    // — release wheel links died on it (Autonomous Release, both
+    // Linux-hosted MSVC lanes). setup-soldr re-exports this block last,
+    // so its value must agree with the blessed prep, not shadow it.
+    #[test]
+    fn env_block_msvc_linker_matches_blessed_prepare() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        for triple in ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"] {
+            let env = build_env_block(triple).expect("ok");
+            let key = format!(
+                "CARGO_TARGET_{}_LINKER",
+                triple.to_ascii_uppercase().replace('-', "_")
+            );
+            assert_eq!(env.get(&key).map(String::as_str), Some("lld-link"));
+        }
+        // Non-MSVC targets keep the clang driver.
+        let env = build_env_block("aarch64-apple-darwin").expect("ok");
+        assert_eq!(
+            env.get("CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER")
+                .map(String::as_str),
+            Some("clang")
+        );
     }
 
     #[test]

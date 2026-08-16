@@ -46,6 +46,30 @@ def test_release_environment_forces_soldr_maturin_off_xwin() -> None:
     assert env["MATURIN_USE_XWIN"] == "0"
 
 
+@pytest.mark.parametrize(
+    "target,key",
+    [
+        ("x86_64-pc-windows-msvc", "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER"),
+        ("aarch64-pc-windows-msvc", "CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER"),
+    ],
+)
+def test_release_environment_pins_msvc_linker_to_lld_link(target: str, key: str) -> None:
+    # The pinned setup-soldr's last GITHUB_ENV write is `soldr env`'s
+    # blanket `LINKER=clang` placeholder, which clobbers `soldr prepare`'s
+    # lld-link and makes rustc drive `clang -flavor link` — a hard clang
+    # error that killed both Linux-hosted MSVC wheel lanes of every
+    # Autonomous Release attempt. The wheel build must always relink
+    # through lld-link, even when the inherited env says otherwise.
+    env = wheel.build_environment(target, {key: "clang"})
+    assert env[key] == "lld-link"
+
+
+def test_release_environment_leaves_non_msvc_linker_alone() -> None:
+    key = "CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER"
+    env = wheel.build_environment("aarch64-apple-darwin", {key: "clang"})
+    assert env[key] == "clang"
+
+
 def test_source_install_is_pinned_and_forces_a_local_build() -> None:
     command = wheel.soldr_maturin_install_command(Path("venv-python"))
     assert command == [
