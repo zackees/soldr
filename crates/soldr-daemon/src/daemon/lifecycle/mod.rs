@@ -6,8 +6,10 @@
 //! endpoint. Readers verify the live process before acting on that claim.
 
 mod legacy_endpoint;
+mod root_ownership;
 mod spawn;
 mod spawn_env;
+pub use root_ownership::{RootAcquireOutcome, RootOwnershipGuard};
 pub(crate) use spawn::*;
 pub(crate) use spawn_env::*;
 
@@ -33,39 +35,6 @@ pub const SOLDR_DAEMON_EXE_ENV_VAR: &str = "SOLDR_INTERNAL_DAEMON_EXE";
 pub enum LifecycleError {
     Io(std::io::Error),
     Spawn(std::io::Error),
-}
-
-const ROOT_OWNER_LOCK_NAME: &str = "root-owner.lock";
-
-/// Version-independent ownership for one product root. The daemon holds this
-/// for its whole lifetime; explicit orphan-root maintenance uses the same lock
-/// so startup and manual deletion cannot race even across protocol versions.
-pub struct RootOwnershipGuard {
-    file: File,
-}
-
-impl RootOwnershipGuard {
-    pub fn try_acquire(paths: &SoldrPaths) -> std::io::Result<Option<Self>> {
-        let dir = soldr_daemon_dir(paths);
-        fs::create_dir_all(&dir)?;
-        let file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(dir.join(ROOT_OWNER_LOCK_NAME))?;
-        match file.try_lock_exclusive() {
-            Ok(()) => Ok(Some(Self { file })),
-            Err(error) if crate::cache_lib::cargo_lock::lock_is_held(&error) => Ok(None),
-            Err(error) => Err(error),
-        }
-    }
-}
-
-impl Drop for RootOwnershipGuard {
-    fn drop(&mut self) {
-        let _ = self.file.unlock();
-    }
 }
 
 impl From<std::io::Error> for LifecycleError {
