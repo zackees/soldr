@@ -387,11 +387,13 @@ fn rustup_add_target_uses_soldr_managed_rustup_state() {
     let _cargo_home = EnvVarGuard::remove(crate::core::CARGO_HOME_ENV_VAR);
     let _rustup_home = EnvVarGuard::remove(crate::core::RUSTUP_HOME_ENV_VAR);
 
-    rustup_add_target("aarch64-apple-darwin").expect("rustup target add");
+    // A triple that is never a CI host: the soldr#2613 host short-circuit
+    // must not skip the spawn these assertions observe.
+    rustup_add_target("x86_64-pc-windows-gnu").expect("rustup target add");
 
     let body = std::fs::read_to_string(&log).expect("read fake rustup log");
     assert!(
-        body.contains("args=target add aarch64-apple-darwin"),
+        body.contains("args=target add x86_64-pc-windows-gnu"),
         "fake rustup should receive target add args, got: {body}"
     );
     assert!(
@@ -415,7 +417,7 @@ fn rustup_add_target_uses_soldr_managed_rustup_state() {
         let _cargo_home = EnvVarGuard::set(crate::core::CARGO_HOME_ENV_VAR, &explicit_cargo);
         let _toolchain_home =
             EnvVarGuard::set(crate::core::RUSTUP_HOME_ENV_VAR, &explicit_toolchain);
-        rustup_add_target("aarch64-unknown-linux-gnu").expect("explicit target add");
+        rustup_add_target("i686-pc-windows-gnu").expect("explicit target add");
     }
     let body = std::fs::read_to_string(&log).expect("read explicit toolchain log");
     assert!(body.contains(&format!("CARGO_HOME={}", explicit_cargo.display())));
@@ -456,11 +458,11 @@ fn rustup_add_target_scopes_to_pinned_toolchain_channel() {
     let _root = EnvVarGuard::set(crate::core::SOLDR_CACHE_DIR_ENV_VAR, &soldr_root);
     let _log = EnvVarGuard::set("SOLDR_RUSTUP_LOG", &log);
 
-    rustup_add_target("aarch64-apple-darwin").expect("rustup target add");
+    rustup_add_target("x86_64-pc-windows-gnu").expect("rustup target add");
 
     let body = std::fs::read_to_string(&log).expect("read fake rustup log");
     assert!(
-        body.contains("args=target add aarch64-apple-darwin --toolchain 1.94.1"),
+        body.contains("args=target add x86_64-pc-windows-gnu --toolchain 1.94.1"),
         "fake rustup should receive pinned toolchain args, got: {body}"
     );
 }
