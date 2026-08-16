@@ -436,10 +436,31 @@ fn binary_ext_for_triple(triple: &str) -> &'static str {
     }
 }
 
+/// Test-only tripwire (soldr#2436 phase 1, D9): when set truthy, every
+/// source-build chokepoint errors instead of spawning cargo. The dylint
+/// containment tests set it on every invocation so "no soldr code path
+/// compiles implicitly" is asserted structurally rather than resting on
+/// one regression test. Never set outside tests.
+pub(crate) const FORBID_SOURCE_BUILD_ENV_VAR: &str = "SOLDR_TEST_FORBID_SOURCE_BUILD";
+
+pub(crate) fn forbid_source_build_tripwire(chokepoint: &str) -> Result<(), SoldrError> {
+    let tripped = std::env::var(FORBID_SOURCE_BUILD_ENV_VAR)
+        .map(|value| matches!(value.trim(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false);
+    if tripped {
+        return Err(SoldrError::Other(format!(
+            "test tripwire: source-build chokepoint reached ({chokepoint}) with \
+             {FORBID_SOURCE_BUILD_ENV_VAR} set — an implicit compile path survived"
+        )));
+    }
+    Ok(())
+}
+
 fn run_cargo_install_attempt(
     command: &mut std::process::Command,
     plan: &BuildPlan,
 ) -> Result<std::process::ExitStatus, SoldrError> {
+    forbid_source_build_tripwire("build-from-source cargo install")?;
     run_installer_command(
         command,
         &format!(

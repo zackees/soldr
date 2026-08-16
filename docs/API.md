@@ -2036,6 +2036,7 @@ Commands:
 | `SOLDR_TARGET_AUTO_PRUNE_ENABLED` | Master toggle for the host-volume disk watchdog (issue #574). Falsy values (`0`, `false`, `no`, `off`, empty — case-insensitive) disable the watchdog entirely. | `1` |
 | `SOLDR_GC_TARGET_ROOT` | Default walk root for `soldr gc target` (issue #574). The `--root <PATH>` flag always takes precedence. | `~/dev` |
 | `SOLDR_TEST_DISK_FREE_BYTES` | Test seam for the watchdog: when set to a `u64` byte count (or `error`), overrides the real `fs2::available_space` probe so tests can drive every threshold edge. Internal — never set this in production. | unset |
+| `SOLDR_TEST_FORBID_SOURCE_BUILD` | Test-only tripwire (soldr#2436): truthy values make every source-build chokepoint (`build-from-source` cargo install, toolchain plugin install) error with a distinctive message instead of spawning cargo, so containment tests can prove no implicit compile path is reached. Never set in production. | unset |
 | `SOLDR_PROFILE_EXTRACT` | Env-var equivalent of `soldr load --profile-extract` (issue #575). Any non-empty value other than `0` enables the per-phase profile line on stderr after a load (`zstd_decode`, `tar_parse`, `extract_total`, per-worker job counts, per-file `p50`/`p95`/`p99`). Useful for tuning the parallel-extract worker count against real workloads. | unset |
 | `SOLDR_LOAD_WORKERS` | Cap on the parallel-extract worker pool used by `soldr load` (issue #575). Positive integer; wins over the explicit `--threads` flag. When unset, `--threads` (or rayon's `num_cpus` default) is used. | unset |
 

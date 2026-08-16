@@ -143,7 +143,11 @@ fn dylint_command(root: &Path) -> std::process::Command {
             "SOLDR_DYLINT_CONFIGURED_RUSTC_COMMIT_HASH",
             "0123456789abcdef0123456789abcdef01234567",
         )
-        .env("SOLDR_DYLINT_PREPARED_IDENTITY", identity);
+        .env("SOLDR_DYLINT_PREPARED_IDENTITY", identity)
+        // soldr#2436 phase 1 (D9): every dylint containment test carries
+        // the tripwire, so any surviving implicit source-build path fails
+        // with a distinctive message instead of silently compiling.
+        .env("SOLDR_TEST_FORBID_SOURCE_BUILD", "1");
     command
 }
 
@@ -267,5 +271,115 @@ fn missing_prebuilt_driver_fails_before_cargo_dylint_launch() {
     assert!(
         !log.contains("cargo-dylint argv=dylint"),
         "cargo-dylint lint execution must not launch when its driver is absent: {log}"
+    );
+}
+
+/// soldr#2436 phase 1 (A3): a driver whose version probe hangs must be
+/// killed AND reaped within the probe's 2-second deadline — bounded
+/// failure, no orphaned child, no compiler process spawned.
+#[test]
+fn hanging_driver_probe_is_killed_and_reaped() {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
+    let root = unique_temp_dir("dylint-hang-probe");
+    let mut command = dylint_command(&root);
+    let channel = format!(
+        "nightly-2026-05-26-{}",
+        soldr_cli::pyo3_detect::host_triple()
+    );
+    let hung_driver = root.join("drivers").join(channel).join("dylint-driver");
+    write_script(&hung_driver, "#!/bin/sh\nsleep 60\n".to_string());
+
+    let started = std::time::Instant::now();
+    let output = command
+        .args(["dylint", "--all"])
+        .output()
+        .expect("run soldr dylint with a hanging driver probe");
+    let elapsed = started.elapsed();
+
+    assert_eq!(output.status.code(), Some(1));
+    // Probe deadline is 2s; 30s leaves a 15x scheduler margin while
+    // still proving the failure is bounded, not a hang.
+    assert!(
+        elapsed < std::time::Duration::from_secs(30),
+        "hanging probe must fail bounded, took {elapsed:?}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("version probe exceeded the 2-second deadline"),
+        "unexpected stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("test tripwire"),
+        "the source-build chokepoint must not be reached: {stderr}"
+    );
+
+    // Reap check (Linux): no process may survive whose cmdline names the
+    // hung driver script. /proc scan, runtime-branched — no cfg.
+    let needle = hung_driver.display().to_string();
+    let survivors: Vec<String> = std::fs::read_dir("/proc")
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .filter_map(|entry| {
+                    let cmdline = entry.path().join("cmdline");
+                    std::fs::read(cmdline).ok().and_then(|bytes| {
+                        let text = String::from_utf8_lossy(&bytes).replace('\0', " ");
+                        text.contains(&needle).then_some(text)
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        survivors.is_empty(),
+        "hung driver child was not reaped: {survivors:?}"
+    );
+}
+
+/// soldr#2436 phase 1 (A6): an inherited Dylint scope is trusted — a
+/// recursive invocation whose parent already established the scope must
+/// NOT re-run the driver preflight (its parent owns that verdict), while
+/// the entrypoint case without a driver stays a hard failure (covered by
+/// missing_prebuilt_driver_fails_before_cargo_dylint_launch above).
+#[test]
+fn inherited_dylint_scope_skips_the_driver_preflight() {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
+    let root = unique_temp_dir("dylint-inherited-scope");
+    let mut command = dylint_command(&root);
+    fs::remove_dir_all(root.join("drivers")).expect("remove prebuilt driver fixture");
+    let channel = format!(
+        "nightly-2026-05-26-{}",
+        soldr_cli::pyo3_detect::host_triple()
+    );
+
+    let output = command
+        .env("SOLDR_DYLINT_TOOLCHAIN", channel)
+        .args(["cargo", "dylint", "--all"])
+        .output()
+        .expect("run recursive soldr cargo dylint with inherited scope");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("is not built for this machine"),
+        "inherited scope must not re-run the driver preflight: {stderr}"
+    );
+    assert!(
+        !stderr.contains("test tripwire"),
+        "inherited scope must not reach a source-build chokepoint: {stderr}"
+    );
+    assert!(
+        output.status.success(),
+        "inherited-scope invocation failed\nstdout:\n{}\nstderr:\n{stderr}",
+        String::from_utf8_lossy(&output.stdout),
     );
 }

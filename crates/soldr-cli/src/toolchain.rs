@@ -850,6 +850,7 @@ fn format_plugin_label(name: &str, spec: &crate::core::PluginSpec) -> String {
 /// active cargo already honors `rust-toolchain.toml` at exec time, so
 /// no explicit channel is passed.
 fn cargo_install_plugin(name: &str, spec: &crate::core::PluginSpec) -> Result<i32, SoldrError> {
+    crate::build_from_source_cmd::forbid_source_build_tripwire("toolchain plugin cargo install")?;
     let cargo = resolve_toolchain_binary("cargo")?;
     let mut command = std::process::Command::new(&cargo);
     command.arg("install").arg(name);
