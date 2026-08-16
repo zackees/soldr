@@ -5,11 +5,16 @@
 //! A route-local protobuf claim records the daemon process and its private
 //! endpoint. Readers verify the live process before acting on that claim.
 
+mod displacement_policy;
 mod journal_hygiene;
 mod legacy_endpoint;
 mod root_ownership;
 mod spawn;
 mod spawn_env;
+pub(crate) use displacement_policy::{displacement_drain_timeout, ephemeral_displacement_blocked};
+pub use displacement_policy::{
+    ALLOW_EPHEMERAL_DISPLACE_ENV_VAR, DISPLACEMENT_DRAIN_TIMEOUT_ENV_VAR,
+};
 pub use journal_hygiene::{detect_unclean_shutdown, rotate_lifecycle_journal};
 pub use root_ownership::{RootAcquireOutcome, RootOwnershipGuard};
 pub(crate) use spawn::*;
@@ -494,8 +499,11 @@ pub fn wait_for_shutdown_responder(
 /// current-version daemon can take over (soldr#1495). Graceful IPC is always
 /// attempted first, including for historical daemons whose executable was
 /// accidentally named `rustc`. A verified-PID signal is permitted only when
-/// no shutdown acknowledgement was received. Once acknowledged, the daemon
-/// owns its graceful flush to completion and is never force-killed.
+/// no shutdown acknowledgement was received. An acknowledged daemon owns
+/// its graceful flush for the whole D7 drain budget
+/// (`SOLDR_DISPLACEMENT_DRAIN_TIMEOUT_SECS`, default 120 s); only on
+/// budget expiry — recorded as `drain-timeout` — does the kill fallback
+/// engage (soldr#2436 phase 3).
 /// `source` attributes the request, so two `displace-kill-fallback`
 /// records from different entry points stay distinguishable (soldr#1808).
 pub fn displace_stale_daemon(paths: &SoldrPaths, source: Option<LifecycleSource>) -> bool {
@@ -521,8 +529,23 @@ pub fn displace_stale_daemon(paths: &SoldrPaths, source: Option<LifecycleSource>
     };
     match crate::daemon::client::shutdown(&sock) {
         Ok(responder) => {
-            return wait_for_shutdown_responder(&sock, responder, Duration::from_secs(5))
-                .is_complete();
+            // soldr#2436 phase 3 (D7): an acknowledged shutdown gets the
+            // whole drain budget, not a 5 s proof-wait — a real drain
+            // (depgraph snapshot, event flush) can take minutes, and
+            // racing it was the #1814 two-daemons window that loses
+            // in-memory compile contexts. On expiry, record the timeout
+            // and fall through to the existing kill fallback below.
+            if wait_for_shutdown_responder(&sock, responder, displacement_drain_timeout())
+                .is_complete()
+            {
+                return true;
+            }
+            append_lifecycle_event_with(
+                paths,
+                "drain-timeout",
+                LifecycleDetails::requested(LifecycleReason::StaleVersion)
+                    .from_current_process(source),
+            );
         }
         Err(crate::daemon::client::ClientError::NotRunning) if recorded_live_pid.is_none() => {
             append_lifecycle_event_with(
@@ -652,6 +675,15 @@ pub fn preflight_displace_stale_daemon_for_service(
         recorded_process_is_alive,
         endpoint_artifact_exists,
     ) {
+        if ephemeral_displacement_blocked() {
+            eprintln!(
+                "soldr: not displacing the running daemon: this soldr runs from a \
+                 disposable build directory (pip/uv build env), whose image will \
+                 vanish (soldr#2436 D8). Set {ALLOW_EPHEMERAL_DISPLACE_ENV_VAR}=1 \
+                 to override."
+            );
+            return;
+        }
         displace_stale_daemon(paths, Some(LifecycleSource::Preflight));
     } else if let Some(pid) = claim_proves_current {
         tracing::warn!(
