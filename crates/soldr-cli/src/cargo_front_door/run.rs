@@ -20,6 +20,13 @@ pub(crate) async fn run_cargo_front_door(
     // error, not a reason to launch a child that would need cleanup.
     let cargo_wait_timeout = cargo_wait_timeout()?;
 
+    // soldr#2545 pre-spawn sweep: a front door nested inside a Soldr-owned
+    // lineage (build scripts, tools re-invoking `soldr cargo`) must fail
+    // here — before daemons start or cargo spawns — if the inherited
+    // wrapper pair drifted, because cargo would fingerprint the changed
+    // wrapper and silently recompile the world.
+    crate::wrapper_identity::assert_inherited_wrapper_coherent("cargo front door")?;
+
     let trust_inherited_soldr_env =
         trust_inherited_soldr_env || env_flag_truthy(crate::TRUST_INHERITED_SOLDR_ENV_VAR);
     // The stable-rustc fallback re-enters this front door. Snapshot the
