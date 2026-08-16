@@ -126,6 +126,17 @@ pub const BUILD_LOG_KEEP: usize = 100;
 /// log self-checking: `home_origin="managed"` is only legitimate when
 /// `binary` physically lives inside a managed home, and that is exactly the
 /// pair CI asserts on.
+/// soldr#2545: the effective compiler-wrapper identity this build applied
+/// to its cargo child, beside the origin that produced it. `effective` is
+/// `None` when Soldr explicitly disabled the wrapper. Mirrors the
+/// `SOLDR_EFFECTIVE_RUSTC_WRAPPER` pair so a future wrapper-flip rebuild
+/// storm explains itself from the log alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrapperIdentity {
+    pub effective: Option<PathBuf>,
+    pub origin: &'static str,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolchainHomes {
     /// `caller` or `managed` -- see `binaries::HomeOrigin`.
@@ -156,6 +167,9 @@ pub struct BuildLogRequest<'a> {
     /// than guessed -- a wrong value here would be worse than no value,
     /// since CI keys on it.
     pub toolchain: Option<ToolchainHomes>,
+    /// soldr#2545: effective wrapper identity, absent when the caller could
+    /// not resolve it (logged as absent rather than guessed).
+    pub wrapper: Option<WrapperIdentity>,
 }
 
 /// `<soldr root>/logs/builds` — flat directory, one XML file per
@@ -265,6 +279,7 @@ fn write_build_log_with_history(
             home_origin: t.home_origin,
             binary: t.binary.clone(),
         }),
+        wrapper: request.wrapper.clone(),
         steps: Steps {
             download: download_step,
             compile: CompileStep {
@@ -352,6 +367,8 @@ struct BuildLogDocument {
     history_source: &'static str,
     /// soldr#1799 -- see [`ToolchainHomes`].
     toolchain: Option<ToolchainHomes>,
+    /// soldr#2545 -- see [`WrapperIdentity`].
+    wrapper: Option<WrapperIdentity>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -483,6 +500,7 @@ fn render_xml(doc: &BuildLogDocument) -> String {
 
     render_args(&mut out, &doc.args);
     render_toolchain(&mut out, doc.toolchain.as_ref());
+    render_wrapper(&mut out, doc.wrapper.as_ref());
     render_steps(&mut out, &doc.steps, &doc.build);
     render_totals(&mut out, &doc.totals);
 
@@ -503,6 +521,22 @@ fn render_args(out: &mut String, args: &[String]) {
 /// soldr#1799. Emitted as its own element rather than as attributes on
 /// `<build>` so a later phase can add per-execution rows (passthrough,
 /// dylint, wrapper) without changing the shape callers already parse.
+/// soldr#2545. Same element-not-attribute rationale as `<toolchain>`.
+fn render_wrapper(out: &mut String, wrapper: Option<&WrapperIdentity>) {
+    let Some(wrapper) = wrapper else {
+        return;
+    };
+    out.push_str("  <wrapper");
+    out.push_str(&attr("origin", wrapper.origin));
+    if let Some(effective) = wrapper.effective.as_ref() {
+        out.push_str(&attr("effective", &effective.display().to_string()));
+    }
+    out.push_str(
+        " />
+",
+    );
+}
+
 fn render_toolchain(out: &mut String, toolchain: Option<&ToolchainHomes>) {
     let Some(toolchain) = toolchain else {
         return;

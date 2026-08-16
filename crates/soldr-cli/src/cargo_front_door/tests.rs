@@ -2533,6 +2533,7 @@ fn write_build_log_reflects_seeded_compile_session_events() {
             home_origin: "managed",
             binary: paths.root.join("cargo").join("bin").join("cargo"),
         }),
+        wrapper: None,
     };
 
     let path = crate::build_log::write_build_log_with_history_for_test(&request, &events)

@@ -346,6 +346,8 @@ fn write_always_on_build_log(
     // `rustup which` subprocesses (~65 ms each), and #1843 is specifically
     // about the front door's fixed per-invocation overhead.
     cargo_bin: &Path,
+    // soldr#2545: the effective wrapper identity the cache plan applied.
+    wrapper: Option<crate::build_log::WrapperIdentity>,
 ) -> Option<PathBuf> {
     let toolchain = crate::binaries::home_origin_for_binary_opt(cargo_bin).map(|origin| {
         crate::build_log::ToolchainHomes {
@@ -364,6 +366,7 @@ fn write_always_on_build_log(
         compile_journal_path: Some(embedded_compile_journal_path(paths)),
         compile_journal_start_len,
         toolchain,
+        wrapper,
     };
     // soldr#1813: the written path is returned so the end-of-build log summary
     // can name a file it knows exists, rather than a location it guessed.
