@@ -385,6 +385,13 @@ def main() -> int:
                 )
             binary = build_fixture(soldr, args.target, env, work / "restored-build")
             verify_artifact(args.repo, args.target, root, binary, env)
+            # Stop the daemon that owns the restored root BEFORE
+            # TemporaryDirectory.__exit__ rmtrees it (soldr#2521 B2): a live
+            # daemon still writing under restored-soldr made teardown die
+            # with "Directory not empty". The `finally` below stops the
+            # checkout root's broker, which is a different root, and runs
+            # only after cleanup has already been attempted.
+            stop_soldr_broker(soldr, restored_env)
     finally:
         stop_soldr_broker(soldr, checkout_env)
     return 0
