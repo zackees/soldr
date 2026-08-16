@@ -6,8 +6,10 @@
 //! endpoint. Readers verify the live process before acting on that claim.
 
 mod legacy_endpoint;
+mod root_ownership;
 mod spawn;
 mod spawn_env;
+pub use root_ownership::{RootAcquireOutcome, RootOwnershipGuard};
 pub(crate) use spawn::*;
 pub(crate) use spawn_env::*;
 
@@ -33,96 +35,6 @@ pub const SOLDR_DAEMON_EXE_ENV_VAR: &str = "SOLDR_INTERNAL_DAEMON_EXE";
 pub enum LifecycleError {
     Io(std::io::Error),
     Spawn(std::io::Error),
-}
-
-const ROOT_OWNER_LOCK_NAME: &str = "root-owner.lock";
-
-/// Version-independent ownership for one product root. The daemon holds this
-/// for its whole lifetime; explicit orphan-root maintenance uses the same lock
-/// so startup and manual deletion cannot race even across protocol versions.
-pub struct RootOwnershipGuard {
-    file: File,
-}
-
-impl RootOwnershipGuard {
-    pub fn try_acquire(paths: &SoldrPaths) -> std::io::Result<Option<Self>> {
-        let dir = soldr_daemon_dir(paths);
-        fs::create_dir_all(&dir)?;
-        let file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(dir.join(ROOT_OWNER_LOCK_NAME))?;
-        match file.try_lock_exclusive() {
-            Ok(()) => Ok(Some(Self { file })),
-            Err(error) if crate::cache_lib::cargo_lock::lock_is_held(&error) => Ok(None),
-            Err(error) => Err(error),
-        }
-    }
-
-    /// [`Self::try_acquire`] with a bounded grace window for a lock still
-    /// held by an exiting daemon.
-    ///
-    /// `soldr daemon stop` acknowledges before the stopped daemon's process
-    /// fully exits, and the root-owner lock is only released when its handle
-    /// closes at exit. A daemon launched into that window — the broker
-    /// relaunches on the very next compile — used to fail its single
-    /// acquisition attempt and die with "root ownership is busy", failing the
-    /// whole build (observed as the Windows
-    /// `cargo_test_recovers_after_daemon_stop_without_herd_spawning` CI
-    /// failure).
-    ///
-    /// The retry is deliberately conditional: `is_serving` reports whether a
-    /// live daemon currently serves this root. While one does, the busy lock
-    /// means a healthy owner and the caller gets `AlreadyServing` immediately
-    /// — a redundant spawn must keep backing off fast (issue #1814). Only a
-    /// busy lock with *nobody serving* is the exit-in-progress window worth
-    /// waiting out.
-    pub fn acquire_with_grace(
-        paths: &SoldrPaths,
-        budget: Duration,
-        poll: Duration,
-        mut is_serving: impl FnMut() -> Option<u32>,
-    ) -> std::io::Result<RootAcquireOutcome> {
-        let deadline = Instant::now() + budget;
-        let mut waited = false;
-        loop {
-            if let Some(guard) = Self::try_acquire(paths)? {
-                return Ok(RootAcquireOutcome::Acquired(guard));
-            }
-            if let Some(pid) = is_serving() {
-                return Ok(RootAcquireOutcome::AlreadyServing(pid));
-            }
-            if Instant::now() >= deadline {
-                return Ok(RootAcquireOutcome::TimedOut);
-            }
-            if !waited {
-                waited = true;
-                tracing::info!(
-                    "root ownership is busy with no daemon serving; waiting up to {budget:?} \
-                     for the previous owner to finish exiting"
-                );
-            }
-            std::thread::sleep(poll);
-        }
-    }
-}
-
-/// Result of [`RootOwnershipGuard::acquire_with_grace`].
-pub enum RootAcquireOutcome {
-    /// This process now owns the root.
-    Acquired(RootOwnershipGuard),
-    /// A live daemon serves this root; the caller is a redundant spawn.
-    AlreadyServing(u32),
-    /// The lock stayed busy with nobody serving for the whole budget.
-    TimedOut,
-}
-
-impl Drop for RootOwnershipGuard {
-    fn drop(&mut self) {
-        let _ = self.file.unlock();
-    }
 }
 
 impl From<std::io::Error> for LifecycleError {
