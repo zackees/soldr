@@ -71,6 +71,8 @@ struct DoctorOutput {
     /// paths). Otherwise populated with whatever subset was
     /// available. (#590)
     cook: Option<DoctorCookStats>,
+    /// Degenerate-cache detectors (soldr#2436 phase 4, D10).
+    cache_health: crate::cache_health::CacheHealth,
 }
 
 /// Cook-cache aggregate counts surfaced in `soldr doctor`. (#590)
@@ -165,6 +167,7 @@ pub(crate) fn run_doctor(
     let defender = collect_defender_probe(refresh_defender_probe);
     let cook = collect_cook_stats();
     let fallbacks = collect_fallback_rollup();
+    let cache_health = crate::cache_health::assess(&SoldrPaths::new()?);
 
     let Some(channel) = manifest.channel.as_deref() else {
         if json {
@@ -186,6 +189,7 @@ pub(crate) fn run_doctor(
                 soldr_debug_info: soldr_debug_info.clone(),
                 defender_probe: defender_for_json(defender.as_ref()),
                 cook: cook.clone(),
+                cache_health: cache_health.clone(),
             };
             print_json(&output)?;
         } else if manifest_present {
@@ -194,6 +198,7 @@ pub(crate) fn run_doctor(
                 manifest_path.display()
             );
             print_zccache_sections(&bundle);
+            crate::cache_health::print_human(&cache_health);
             crate::broker_server::print_doctor_deadlines();
             crate::broker_identity::print_doctor_endpoint();
             print_soldr_debug_info_human(&soldr_debug_info);
@@ -209,6 +214,7 @@ pub(crate) fn run_doctor(
                 workspace_root.display()
             );
             print_zccache_sections(&bundle);
+            crate::cache_health::print_human(&cache_health);
             crate::broker_server::print_doctor_deadlines();
             crate::broker_identity::print_doctor_endpoint();
             print_soldr_debug_info_human(&soldr_debug_info);
@@ -289,6 +295,7 @@ pub(crate) fn run_doctor(
             soldr_debug_info: soldr_debug_info.clone(),
             defender_probe: defender_for_json(defender.as_ref()),
             cook: cook.clone(),
+            cache_health: cache_health.clone(),
         };
         print_json(&output)?;
     } else {
@@ -305,6 +312,7 @@ pub(crate) fn run_doctor(
             &soldr_debug_info,
             defender.as_ref(),
             cook.as_ref(),
+            &cache_health,
         );
         crate::timeout_registry::print_doctor_section();
         crate::broker_server::print_doctor_deadlines();
@@ -801,6 +809,7 @@ fn print_doctor_human(
     soldr_debug_info: &DoctorSoldrDebugInfo,
     defender: Option<&DefenderProbeOutcome>,
     cook: Option<&DoctorCookStats>,
+    cache_health: &crate::cache_health::CacheHealth,
 ) {
     println!("manifest: {}", manifest_path.display());
     println!("toolchain: {channel}");
@@ -858,6 +867,7 @@ fn print_doctor_human(
     }
 
     print_zccache_sections(bundle);
+    crate::cache_health::print_human(cache_health);
     print_soldr_debug_info_human(soldr_debug_info);
     print_defender_probe_human(defender);
     if let Some(c) = cook {
