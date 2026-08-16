@@ -103,3 +103,15 @@ def test_missing_pypi_wheel_and_npm_version_are_named() -> None:
     )
     assert any(f.startswith("pypi missing file:") for f in failures)
     assert any("npm" in f and "0.9.1" in f for f in failures)
+
+
+def test_list_mode_prints_contract_assets_and_touches_no_network(capsys) -> None:
+    rc = release_completeness.main(
+        ["--version", "v0.9.1", "--list-expected-github-assets"]
+    )
+    assert rc == 0
+    lines = capsys.readouterr().out.strip().splitlines()
+    assert lines == release_completeness.expected_github_assets(
+        "v0.9.1", contract_triples()
+    )
+    assert len(lines) == 17

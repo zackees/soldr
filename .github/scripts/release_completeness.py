@@ -129,10 +129,22 @@ def fetch_npm_versions() -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", required=True, help="release tag, e.g. v0.9.1")
+    parser.add_argument(
+        "--list-expected-github-assets",
+        action="store_true",
+        help="print the contract-derived GitHub asset names (one per line) "
+        "and exit without any network access — the single source the "
+        "workflow's inline asset lists were replaced by (soldr#2469 "
+        "step 2.2)",
+    )
     opts = parser.parse_args(argv)
     tag = opts.version if opts.version.startswith("v") else f"v{opts.version}"
 
     triples = included_triples()
+    if opts.list_expected_github_assets:
+        for asset in expected_github_assets(tag, triples):
+            print(asset)
+        return 0
     failures = verify_surfaces(
         tag,
         triples,
