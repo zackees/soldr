@@ -853,10 +853,14 @@ mod tests {
                 &mut client,
                 2476,
                 crate::broker_server::BrokerDeadlines {
-                    busy_budget: Duration::from_millis(10),
-                    first_response: Duration::from_millis(20),
-                    progress_silence: Duration::from_millis(20),
-                    route_ceiling: Duration::from_millis(60),
+                    busy_budget: Duration::from_millis(100),
+                    first_response: Duration::from_millis(200),
+                    // 40x the 5ms progress cadence: a contended runner's late
+                    // scheduler wake must never turn the expected *ceiling*
+                    // timeout into a *silence* timeout (four Windows-lane
+                    // failures on 2026-08-16 with the old 20ms budget).
+                    progress_silence: Duration::from_millis(200),
+                    route_ceiling: Duration::from_millis(400),
                 },
             )
             .await
