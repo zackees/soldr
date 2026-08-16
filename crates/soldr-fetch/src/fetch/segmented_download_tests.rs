@@ -63,15 +63,16 @@ pub(super) fn clear_segmented_env() {
 #[test]
 fn healthy_chunks_reset_the_idle_watchdog() {
     runtime().block_on(async {
-        let idle = Duration::from_millis(100);
+        // Idle is 5x the chunk gap: a loaded runner stretching one 100ms
+        // gap must not fire the watchdog this test asserts is RESET by
+        // healthy chunks (darwin lane flake, 2026-08-16). Total transfer
+        // (8 x 100ms) still outlives the idle interval, preserving intent.
+        let idle = Duration::from_millis(500);
         let url = serve_chunks(
-            vec![
-                (b"a".to_vec(), Duration::from_millis(55)),
-                (b"b".to_vec(), Duration::from_millis(55)),
-                (b"c".to_vec(), Duration::from_millis(55)),
-                (b"d".to_vec(), Duration::from_millis(55)),
-            ],
-            4,
+            (b'a'..=b'h')
+                .map(|byte| (vec![byte], Duration::from_millis(100)))
+                .collect(),
+            8,
         )
         .await;
         let started = Instant::now();
@@ -83,8 +84,8 @@ fn healthy_chunks_reset_the_idle_watchdog() {
             started.elapsed() > idle,
             "transfer must outlive one idle interval"
         );
-        assert_eq!(asset.bytes(), 4);
-        assert_eq!(asset.sha256(), super::super::trust::sha256_of(b"abcd"));
+        assert_eq!(asset.bytes(), 8);
+        assert_eq!(asset.sha256(), super::super::trust::sha256_of(b"abcdefgh"));
     });
 }
 
@@ -119,21 +120,23 @@ fn truncated_body_is_transient() {
 #[test]
 fn global_safety_ceiling_stops_a_slow_but_progressing_transfer() {
     runtime().block_on(async {
+        // The asserted error must be the CEILING, so every competing
+        // timeout needs slack (windows arm64 flake, 2026-08-16): idle (2s)
+        // is 20x the 100ms chunk gap, and the 300ms ceiling fires mid-way
+        // through the ~600ms transfer with 3x the gap in margin.
         let url = serve_chunks(
-            vec![
-                (b"a".to_vec(), Duration::from_millis(30)),
-                (b"b".to_vec(), Duration::from_millis(30)),
-                (b"c".to_vec(), Duration::from_millis(30)),
-            ],
-            3,
+            (b'a'..=b'f')
+                .map(|byte| (vec![byte], Duration::from_millis(100)))
+                .collect(),
+            6,
         )
         .await;
         let response = reqwest::Client::new().get(&url).send().await.expect("GET");
         let error = stream_response_to_temp_file_with_safety_timeout(
             response,
             &url,
-            Duration::from_millis(100),
-            Duration::from_millis(50),
+            Duration::from_millis(2000),
+            Duration::from_millis(300),
         )
         .await
         .expect_err("global ceiling must stop the transfer");
