@@ -194,7 +194,32 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
         })?;
     let handoff_listener = crate::daemon::session_endpoint::resolve_handoff_listener(&paths)?;
 
-    append_lifecycle_event(&paths, "spawn");
+    // soldr#2436 phase 2: bound the journal, attribute any un-drained
+    // predecessor, then record this start with version + exe identity.
+    crate::daemon::lifecycle::rotate_lifecycle_journal(&paths);
+    crate::daemon::lifecycle::detect_unclean_shutdown(&paths);
+    crate::daemon::lifecycle::append_lifecycle_event_with(
+        &paths,
+        "spawn",
+        crate::daemon::lifecycle::LifecycleDetails::recording_daemon_identity(),
+    );
+    // A panic previously left no exit record at all (soldr#2436 fact 4).
+    // Chain the default hook so backtraces still print.
+    {
+        let panic_paths = paths.clone();
+        let default_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            crate::daemon::lifecycle::append_lifecycle_event_with(
+                &panic_paths,
+                "died-panic",
+                crate::daemon::lifecycle::LifecycleDetails {
+                    reason: Some(crate::daemon::lifecycle::LifecycleReason::Panic),
+                    ..crate::daemon::lifecycle::LifecycleDetails::recording_daemon_identity()
+                },
+            );
+            default_hook(info);
+        }));
+    }
     let mut session_identity = daemon_identity.clone();
     session_identity.ipc_endpoint.path =
         crate::daemon::session_endpoint::resolved_session_endpoint_path(&paths)?;
