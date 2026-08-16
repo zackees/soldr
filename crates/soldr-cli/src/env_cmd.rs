@@ -31,8 +31,29 @@ pub async fn run_env_command(
     target_input: &str,
     shell_export: bool,
     json: bool,
+    plan_only: bool,
 ) -> Result<i32, SoldrError> {
     let resolved = resolve_soldr_target(target_input).map_err(map_alias_err)?;
+
+    // `--plan-only` (requires --json): resolution/introspection without
+    // materializing anything — the alias-parity tests and IDE tooling
+    // probe all sixteen canonical inputs this way, which must not cost
+    // eight toolchain downloads. `env` is null so the payload can never
+    // be mistaken for the prepared environment.
+    if plan_only {
+        let target_plan = crate::target_lifecycle::plan(&resolved.rust_triple)?;
+        let payload = serde_json::json!({
+            "schema_version": 1,
+            "command": "env",
+            "input": resolved.input,
+            "rust_triple": resolved.rust_triple,
+            "via_alias": resolved.via_alias,
+            "env": serde_json::Value::Null,
+            "target_plan": target_plan,
+        });
+        println!("{}", serde_json::to_string(&payload).unwrap_or_default());
+        return Ok(0);
+    }
 
     // soldr#2554 contract: machine-readable mode suppresses every
     // unsolicited diagnostic — including the fetch/installer progress
