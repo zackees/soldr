@@ -437,6 +437,13 @@ jobs:
           soldr cargo clippy --workspace --all-targets
           --target x86_64-unknown-linux-gnu -- -D warnings
 
+      # soldr#2413: duplicate-dependency ratchet. deny.toml skips the known
+      # upstream-blocked survivors (each with its blocker documented); any
+      # NEW multiple-version crate fails here instead of silently regressing
+      # the #2406/#2411/#2412 convergence work.
+      - name: Duplicate-dependency ratchet (cargo-deny bans)
+        run: soldr cargo deny check bans
+
       # soldr#1978. `cargo install cargo-dylint` compiles from source, and on a
       # run where the Rust cache misses it was once the most expensive step in
       # this job: 168s of a 10m51s run. soldr#2469 Phase 0.2 removes that cache-
