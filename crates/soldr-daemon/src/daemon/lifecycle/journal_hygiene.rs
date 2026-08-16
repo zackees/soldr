@@ -62,4 +62,3 @@ pub fn detect_unclean_shutdown(paths: &SoldrPaths) {
         },
     );
 }
-
