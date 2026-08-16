@@ -104,7 +104,7 @@ jobs:
       - name: Setup soldr build cache
         uses: zackees/setup-soldr@40320d277ba4946e38d4b3c02e6c7a15a29c3f3f
         with:
-          version: 0.8.29
+          version: 0.9.1
           toolchain: 1.95.0
           # soldr#2451: disable every setup-soldr reuse layer, not just the
           # `cache` umbrella (soldr-mini / solo-toolchain / build-cache each
@@ -234,27 +234,14 @@ jobs:
       # soldr#2493 — the suite runs under nextest, which owns the per-test
       # timeouts in `.config/nextest.toml` now that the watchdog macro is gone.
       #
-      # This step drives the suite with the soldr THIS lane just built, not the
-      # pinned setup-soldr release on PATH, because no released soldr can do the
-      # job:
-      #
-      #   0.8.29 (the pin) injects syslib `--config` overrides *before* the
-      #     `nextest` verb, and cargo-nextest rejects that at its top-level
-      #     parser -- `unexpected argument '--config' found` -- for `run` and
-      #     `archive` alike.
-      #   0.8.44 places `--config` correctly but its daemon fails the
-      #     cook-size-gate and thin-v2 lanes with `soldr root ownership is
-      #     busy`, and `test_setup_soldr_version_pins.py` (correctly) forbids
-      #     lanes running different versions.
-      #
-      # The `--config` placement fix is in this branch, so the binary built a
-      # few steps up is the first soldr that can run this suite. This costs a
-      # rebuild -- cargo hashes the RUSTC_WRAPPER path into per-crate
-      # fingerprints, so changing the wrapper invalidates the tree that `Build
-      # workspace + tests` just warmed (~1m 27s, main run 28760796620). That
-      # cost is accepted deliberately: a correct suite that recompiles beats a
-      # warm one that cannot start. Once a release carries the fix, this step
-      # goes back to plain `soldr cargo nextest run` and the pin moves instead.
+      # soldr#2521 A1 resolved: the pinned setup-soldr release (0.9.1) is the
+      # first release that can drive this suite -- it carries the nextest
+      # `--config` placement fix (#2518 train) and the daemon root-ownership
+      # grace (#2564) that broke 0.8.44 on the cook-size-gate and thin-v2
+      # lanes. Driving the PATH soldr again keeps the tree the build step
+      # warmed; the just-built-binary detour cost a full recompile per run
+      # (~1m 27s) because cargo hashes the RUSTC_WRAPPER path into per-crate
+      # fingerprints.
       - name: Run library + CLI smoke tests
         shell: bash
         env:
@@ -265,15 +252,10 @@ jobs:
         run: |
           set -euo pipefail
           echo "Using isolated test SOLDR_CACHE_DIR=$SOLDR_CACHE_DIR"
-          soldr_under_test="target/${{ inputs.target }}/debug/soldr"
-          test -x "$soldr_under_test" || {
-            echo "expected the freshly built soldr at $soldr_under_test" >&2
-            exit 1
-          }
-          echo "Driving the suite with $soldr_under_test ($("$soldr_under_test" version))"
+          echo "Driving the suite with the pinned PATH soldr ($(soldr version))"
           python3 .github/scripts/step_duration.py \
             --label "${{ inputs.target }} / Library + smoke tests" \
-            -- "$soldr_under_test" cargo nextest run --workspace --lib --tests \
+            -- soldr cargo nextest run --workspace --lib --tests \
             --target ${{ inputs.target }}
       # soldr#1218 — the standalone `Run fetch integration test` step
       # was removed; the same `tests/fetch_crgx.rs` binary already runs
