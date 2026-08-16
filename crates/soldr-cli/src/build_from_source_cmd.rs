@@ -198,11 +198,32 @@ pub(crate) fn apply_source_build_cache_wrapper(command: &mut std::process::Comma
     };
     match crate::binaries::rustc_wrapper_shim_binary(&paths) {
         Ok(shim) => {
-            crate::wrapper_identity::set_owned_rustc_wrapper(
-                command,
-                shim.as_os_str(),
-                crate::wrapper_identity::WrapperOrigin::SourceBuild,
-            );
+            // The shim alone is not a working route: each compile re-enters
+            // soldr as the wrapper and resolves the broker daemon route by
+            // SOLDR_BROKER_SERVICE. Nothing on this path had registered the
+            // daemon image, so in a fresh root every rustc died with
+            // "cannot resolve the broker daemon route (os error 2)" and the
+            // whole source build failed (soldr#2492's audit). Same fix as
+            // the maturin caller-wrapper branch (soldr#2451): register the
+            // image and pass the service name down.
+            match crate::zccache::register_broker_daemon_service() {
+                Ok((_daemon, service_name)) => {
+                    command.env(
+                        crate::daemon::backend_handle_adoption::SOLDR_BROKER_SERVICE_ENV_VAR,
+                        service_name,
+                    );
+                    crate::wrapper_identity::set_owned_rustc_wrapper(
+                        command,
+                        shim.as_os_str(),
+                        crate::wrapper_identity::WrapperOrigin::SourceBuild,
+                    );
+                }
+                Err(error) => {
+                    eprintln!(
+                        "soldr build-from-source: could not register the broker daemon                          route; building uncached: {error}"
+                    );
+                }
+            }
         }
         Err(error) => {
             eprintln!(
