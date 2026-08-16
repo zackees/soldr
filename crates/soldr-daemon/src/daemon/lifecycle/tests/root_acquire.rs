@@ -71,9 +71,7 @@ fn busy_lock_never_released_times_out_after_the_budget() {
         .expect("io ok")
         .expect("first acquisition wins");
     let outcome =
-        RootOwnershipGuard::acquire_with_grace(&paths, Duration::from_millis(200), POLL, || {
-            None
-        })
-        .expect("io ok");
+        RootOwnershipGuard::acquire_with_grace(&paths, Duration::from_millis(200), POLL, || None)
+            .expect("io ok");
     assert!(matches!(outcome, RootAcquireOutcome::TimedOut));
 }
