@@ -21,8 +21,7 @@ fn wrapper_invocation() -> (Command, String) {
             .as_nanos()
     ));
     std::fs::create_dir_all(&dir).expect("fixture dir");
-    let rustc_name = if cfg!(windows) { "rustc.exe" } else { "rustc" };
-    let rustc_path = dir.join(rustc_name);
+    let rustc_path = dir.join(soldr_platform::executable::name::native("rustc"));
     std::fs::copy(common::soldr_bin(), &rustc_path).expect("materialize rustc shim");
     let rustc_like = rustc_path.display().to_string();
     let mut cmd = common::isolated_soldr_command();

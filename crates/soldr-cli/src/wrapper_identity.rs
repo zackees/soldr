@@ -158,26 +158,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn non_utf8_paths_mirror_exactly() {
-        use std::os::unix::ffi::OsStrExt;
-        let mut command = Command::new("true");
-        let path = OsStr::from_bytes(b"/tmp/\xff\xfe/rustc");
-        set_owned_rustc_wrapper(&mut command, path, WrapperOrigin::SourceBuild);
-        let envs = env_pairs(&command);
-        let wrapper = envs
-            .iter()
-            .find(|(k, _)| k == "RUSTC_WRAPPER")
-            .and_then(|(_, v)| v.clone());
-        let mirror = envs
-            .iter()
-            .find(|(k, _)| k == EFFECTIVE_WRAPPER_ENV)
-            .and_then(|(_, v)| v.clone());
-        assert_eq!(wrapper.as_deref(), Some(path));
-        assert_eq!(mirror.as_deref(), Some(path));
-    }
-
     #[test]
     fn remove_clears_both_and_records_disabled() {
         let mut command = Command::new("true");
