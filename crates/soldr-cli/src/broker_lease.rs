@@ -125,7 +125,7 @@ impl BrokerLease {
                     });
                 }
                 Err(_source) if !recovered_corruption => {
-                    recover_corrupt_database(path).map_err(|source| {
+                    recover_corrupt_database(path, deadline).map_err(|source| {
                         BrokerLeaseError::Recovery {
                             path: path.to_path_buf(),
                             source,
@@ -368,9 +368,22 @@ fn read_holder_summary_with_timeout(path: &Path, busy_timeout: Duration) -> Opti
 /// Delete disposable coordination state under a separate OS file lock.
 /// A contender rechecks the database after acquiring the lock because another
 /// process may already have completed recovery.
-fn recover_corrupt_database(path: &Path) -> std::io::Result<()> {
+///
+/// `deadline` is the *acquisition's* absolute deadline (soldr#2478): the
+/// public busy ceiling describes total wall-clock acquisition time, so
+/// recovery must not open a second budget of its own. Lock polling and
+/// jitter are clamped to the remaining budget, and once it is exhausted the
+/// attributed timeout returns immediately — no diagnostic or validation
+/// reads after expiry.
+fn recover_corrupt_database(path: &Path, deadline: Instant) -> std::io::Result<()> {
     use fs2::FileExt as _;
 
+    let recovery_timeout = || {
+        std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "corruption recovery lock was still held at the acquisition deadline",
+        )
+    };
     let parent = path
         .parent()
         .ok_or_else(|| std::io::Error::other("lease database has no parent"))?;
@@ -382,17 +395,21 @@ fn recover_corrupt_database(path: &Path) -> std::io::Result<()> {
         .read(true)
         .write(true)
         .open(lock_path)?;
-    let deadline = Instant::now() + ACQUIRE_BUSY_CEILING;
     loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(recovery_timeout());
+        }
         match lock.try_lock_exclusive() {
             Ok(()) => break,
-            Err(error)
-                if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline =>
-            {
-                std::thread::sleep(full_jitter());
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(full_jitter().min(remaining));
             }
             Err(error) => return Err(error),
         }
+    }
+    if Instant::now() >= deadline {
+        return Err(recovery_timeout());
     }
     if open_database(path).is_ok() {
         return Ok(());
@@ -577,6 +594,42 @@ mod tests {
         };
         assert_eq!(reported, path);
         assert_eq!(waited, Duration::from_millis(40));
+    }
+
+    #[test]
+    fn held_recovery_lock_respects_the_acquisition_deadline() {
+        use fs2::FileExt as _;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("lease.sqlite3");
+        std::fs::write(&path, b"this is not sqlite").unwrap();
+        // Another contender is mid-recovery: the OS lock is held and never
+        // released while this acquisition runs.
+        let lock_path = temp.path().join("broker-lease-recovery.lock");
+        let held = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(lock_path)
+            .unwrap();
+        held.lock_exclusive().unwrap();
+
+        let started = Instant::now();
+        let error = BrokerLease::acquire_with_ceiling(&path, Duration::from_millis(200))
+            .expect_err("corrupt state behind a held recovery lock must fail, not hang");
+        // soldr#2478: recovery used to start its own five-second deadline,
+        // so a 200 ms ceiling still waited ~5 s here. The caller's ceiling
+        // is the whole wall-clock contract; 2 s leaves a 10x scheduler
+        // margin over the ceiling while sitting far below the old overrun.
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "acquisition overran its ceiling: {:?}",
+            started.elapsed()
+        );
+        assert!(
+            matches!(error, BrokerLeaseError::Recovery { .. }),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
