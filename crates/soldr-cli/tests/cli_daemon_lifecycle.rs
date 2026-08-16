@@ -121,14 +121,54 @@ fn run_soldr_with_timeout(
         let _ = child.kill();
         let output = child.wait_with_output().expect("collect timed-out output");
         panic!(
-            "soldr {:?} timed out after {:?}\nstdout:\n{}\nstderr:\n{}",
+            "soldr {:?} timed out after {:?}\nstdout:\n{}\nstderr:\n{}\n{}",
             args,
             timeout,
             String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
+            String::from_utf8_lossy(&output.stderr),
+            spawn_log_forensics(cache_root, home_root),
         );
     }
     child.wait_with_output().expect("collect soldr output")
+}
+
+/// The timed-out child often dies before its first byte of output
+/// (soldr#2571: `doctor --json` at 15s with both streams empty), so the
+/// only evidence lives in the fixture's spawn logs. Collect their tails
+/// into the panic message instead of leaving the next occurrence
+/// undiagnosable.
+fn spawn_log_forensics(cache_root: &Path, home_root: &Path) -> String {
+    let mut report = String::from("spawn-log forensics:\n");
+    for (label, path) in [
+        (
+            "broker-spawn.log",
+            home_root
+                .join(".soldr")
+                .join("broker")
+                .join("broker-spawn.log"),
+        ),
+        ("daemon-spawn.log", cache_root.join("daemon-spawn.log")),
+    ] {
+        match fs::read_to_string(&path) {
+            Ok(content) => {
+                // Keep the tail: startup noise ages out, the wedge is recent.
+                let tail_start = content.len().saturating_sub(4096);
+                let tail = &content[content
+                    .char_indices()
+                    .map(|(i, _)| i)
+                    .find(|&i| i >= tail_start)
+                    .unwrap_or(0)..];
+                report.push_str(&format!("--- {label} ({}):\n{tail}\n", path.display()));
+            }
+            Err(err) => {
+                report.push_str(&format!(
+                    "--- {label} ({}): unreadable: {err}\n",
+                    path.display()
+                ));
+            }
+        }
+    }
+    report
 }
 
 struct Daemon {
