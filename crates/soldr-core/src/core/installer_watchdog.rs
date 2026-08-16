@@ -355,7 +355,7 @@ mod tests {
             ]);
             command
         } else {
-            unix_shell("i=0; while [ $i -lt 8 ]; do echo progress; sleep 0.10; i=$((i + 1)); done")
+            unix_shell("i=0; while [ $i -lt 10 ]; do echo progress; sleep 0.15; i=$((i + 1)); done")
         }
     }
 
@@ -370,21 +370,23 @@ mod tests {
             ]);
             command
         } else {
-            unix_shell("sleep 0.3")
+            unix_shell("sleep 2")
         }
     }
 
-    // Windows budgets carry wide contention margins (soldr#2565): the old
-    // 1s-progress-gap vs 1.5s-stall pairing left 0.5s of slack, and loaded
-    // CI runners stretched a single Start-Sleep past it — a false stall
-    // kill that flaked the target-run lanes. Every pairing below keeps at
-    // least 1.5s between the event being asserted and the budget that
-    // must not fire first.
+    // Both hosts' budgets carry wide contention margins (soldr#2565): the
+    // old 1s-gap/1.5s-stall Windows pairing and the 0.3s-child/0.25s-stall
+    // unix pairing each left well under half a budget of slack, and loaded
+    // CI runners blew both — a false stall kill on Windows, and on macOS a
+    // quiet child exiting cleanly before the stall it was supposed to
+    // trigger (`a_true_stall…` at 0.53s). Every pairing below keeps at
+    // least 3x between the event being asserted and the budget that must
+    // not fire first.
     fn test_stall_timeout() -> Duration {
         if is_windows_test_host() {
             Duration::from_millis(2500)
         } else {
-            Duration::from_millis(250)
+            Duration::from_millis(500)
         }
     }
 
@@ -392,7 +394,7 @@ mod tests {
         if is_windows_test_host() {
             Duration::from_secs(10)
         } else {
-            Duration::from_secs(2)
+            Duration::from_secs(5)
         }
     }
 
