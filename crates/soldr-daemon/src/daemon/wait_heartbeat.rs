@@ -400,14 +400,25 @@ mod tests {
             Duration::from_millis(10),
             move |msg| sink_target.lock().unwrap().push(msg),
         );
-        std::thread::sleep(Duration::from_millis(400));
+        // Poll for the condition instead of sleeping a fixed 400ms: the
+        // heartbeat thread fires every ~100ms (STOP_POLL-bounded), and a
+        // contended runner can starve it past a fixed window's 2x margin
+        // (darwin lane failures on 2026-08-15/16). Healthy runs still exit
+        // in ~200ms; only a genuine stall burns the 5s bound.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if emitted.lock().unwrap().len() >= 2 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a slow op must emit repeated heartbeats within 5s; got {}",
+                emitted.lock().unwrap().len()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
         drop(guard);
         let hits = emitted.lock().unwrap();
-        assert!(
-            hits.len() >= 2,
-            "a slow op must emit repeated heartbeats; got {}",
-            hits.len()
-        );
         assert!(
             hits[0].contains("unit test") && hits[0].contains("after"),
             "{}",
