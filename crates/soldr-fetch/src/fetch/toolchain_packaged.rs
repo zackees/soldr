@@ -12,14 +12,22 @@ use crate::core::{SoldrError, SoldrPaths, TargetTriple};
 /// these explicitly opted-in packages keep the binary-only contract intact on
 /// Windows, macOS, and musl without weakening catalogue SHA verification.
 pub(super) fn asset_name(cache_name: &str, version: &str, target: &TargetTriple) -> Option<String> {
-    matches!(cache_name, "cargo-dylint" | "dylint-link" | "dylint-driver").then(|| {
-        format!(
-            "{}-{}-{}.tar.gz",
-            cache_name,
-            version.trim_start_matches('v'),
-            target.triple()
-        )
-    })
+    // The catalogued asset prefix usually equals the cache name. maturin is
+    // the exception: soldr caches and invokes the binary as `maturin`, but
+    // the toolchain catalogues the forge-built blobs under the fork/package
+    // identity `soldr-maturin` (soldr#2573), so the prefix is mapped rather
+    // than assumed.
+    let asset_prefix = match cache_name {
+        "cargo-dylint" | "dylint-link" | "dylint-driver" => cache_name,
+        "maturin" => "soldr-maturin",
+        _ => return None,
+    };
+    Some(format!(
+        "{}-{}-{}.tar.gz",
+        asset_prefix,
+        version.trim_start_matches('v'),
+        target.triple()
+    ))
 }
 
 /// Resolve an explicitly supported soldr-toolchain repackaged binary by its
@@ -203,6 +211,35 @@ mod tests {
         }
         let host = TargetTriple::from_triple("x86_64-unknown-linux-gnu").unwrap();
         assert_eq!(asset_name("cargo-nextest", "1", &host), None);
+    }
+
+    // The forge-built maturin blobs are catalogued under the fork/package
+    // identity `soldr-maturin`, while soldr's cache name for the tool is
+    // plain `maturin` (soldr#2573). The mapping must produce the catalogued
+    // filename exactly, for every supported target, or the sha-pinned CDN
+    // rung silently never fires and the fetch falls through to GitHub.
+    #[test]
+    fn maturin_maps_to_the_soldr_maturin_catalogue_prefix() {
+        let targets = [
+            "x86_64-pc-windows-msvc",
+            "aarch64-pc-windows-msvc",
+            "x86_64-apple-darwin",
+            "aarch64-apple-darwin",
+            "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-unknown-linux-musl",
+            "aarch64-unknown-linux-musl",
+        ];
+        for triple in targets {
+            let target = TargetTriple::from_triple(triple).unwrap();
+            assert_eq!(
+                asset_name("maturin", "1.14.1.post1", &target),
+                Some(format!("soldr-maturin-1.14.1.post1-{triple}.tar.gz"))
+            );
+        }
+        // The mapped prefix must not leak to lookalike cache names.
+        let host = TargetTriple::from_triple("x86_64-unknown-linux-gnu").unwrap();
+        assert_eq!(asset_name("soldr-maturin", "1.14.1.post1", &host), None);
     }
 
     #[test]
