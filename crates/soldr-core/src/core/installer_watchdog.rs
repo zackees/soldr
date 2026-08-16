@@ -351,7 +351,7 @@ mod tests {
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                "1..3 | ForEach-Object { Write-Output progress; Start-Sleep -Seconds 1 }",
+                "1..6 | ForEach-Object { Write-Output progress; Start-Sleep -Milliseconds 500 }",
             ]);
             command
         } else {
@@ -366,7 +366,7 @@ mod tests {
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                "Start-Sleep -Seconds 2",
+                "Start-Sleep -Seconds 4",
             ]);
             command
         } else {
@@ -374,9 +374,15 @@ mod tests {
         }
     }
 
+    // Windows budgets carry wide contention margins (soldr#2565): the old
+    // 1s-progress-gap vs 1.5s-stall pairing left 0.5s of slack, and loaded
+    // CI runners stretched a single Start-Sleep past it — a false stall
+    // kill that flaked the target-run lanes. Every pairing below keeps at
+    // least 1.5s between the event being asserted and the budget that
+    // must not fire first.
     fn test_stall_timeout() -> Duration {
         if is_windows_test_host() {
-            Duration::from_millis(1500)
+            Duration::from_millis(2500)
         } else {
             Duration::from_millis(250)
         }
@@ -384,7 +390,7 @@ mod tests {
 
     fn test_safety_timeout() -> Duration {
         if is_windows_test_host() {
-            Duration::from_secs(5)
+            Duration::from_secs(10)
         } else {
             Duration::from_secs(2)
         }
