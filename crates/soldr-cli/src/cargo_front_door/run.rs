@@ -611,6 +611,7 @@ pub(crate) async fn run_cargo_front_door(
                 -1,
                 compile_journal_start_len,
                 &cargo,
+                cache_plan.wrapper_identity(),
             );
             crate::cache_lib::build_active::set(false);
             drop(build_activity_lease);
@@ -767,6 +768,7 @@ pub(crate) async fn run_cargo_front_door(
         effective_exit_code,
         compile_journal_start_len,
         &cargo,
+        cache_plan.wrapper_identity(),
     );
     // soldr#2302: automatic cache-stats summary from the session baseline-diff
     // (precisely build-scoped), printed just above the log-paths block.

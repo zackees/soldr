@@ -56,6 +56,29 @@ impl CargoCachePlanPrefetch {
 }
 
 impl CargoCachePlan {
+    /// soldr#2545: the effective wrapper identity this plan applies, for the
+    /// build log. `None` when no plan was prepared (cache disabled before
+    /// planning); `Some` with `effective: None` when the plan explicitly
+    /// cleared the wrapper.
+    pub(crate) fn wrapper_identity(&self) -> Option<crate::build_log::WrapperIdentity> {
+        use crate::wrapper_identity::WrapperOrigin;
+        let plan = self.rustc_wrapper.as_ref()?;
+        Some(match plan {
+            RustcWrapperPlan::ManagedZccache(managed) => crate::build_log::WrapperIdentity {
+                effective: Some(managed.wrapper_path.clone()),
+                origin: WrapperOrigin::SoldrManaged.as_str(),
+            },
+            RustcWrapperPlan::Custom { wrapper, .. } => crate::build_log::WrapperIdentity {
+                effective: Some(std::path::PathBuf::from(wrapper)),
+                origin: WrapperOrigin::CustomOverride.as_str(),
+            },
+            RustcWrapperPlan::Disabled => crate::build_log::WrapperIdentity {
+                effective: None,
+                origin: WrapperOrigin::Disabled.as_str(),
+            },
+        })
+    }
+
     pub(crate) fn uses_managed_zccache(&self) -> bool {
         self.rustc_wrapper
             .as_ref()

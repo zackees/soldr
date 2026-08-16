@@ -23,6 +23,7 @@ fn sample_request<'a>(
         // `None` must stay renderable, since it is what a build whose
         // soldr root failed to resolve produces.
         toolchain: None,
+        wrapper: None,
     }
 }
 
@@ -61,6 +62,62 @@ fn toolchain_homes_render_when_present_and_vanish_when_absent() {
     assert!(
         raw.contains("cargo"),
         "expected the resolved binary, got:
+{raw}"
+    );
+}
+
+#[test]
+fn wrapper_identity_renders_when_present_and_vanishes_when_absent() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
+    let args = vec!["cargo".to_string(), "build".to_string()];
+
+    // Absent stays absent (soldr#2545): same not-asserted contract as
+    // <toolchain>.
+    let request = sample_request(&paths, tmp.path(), &args);
+    let without = write_build_log(&request).expect("write");
+    let raw = std::fs::read_to_string(&without).expect("read");
+    assert!(
+        !raw.contains("<wrapper"),
+        "got:
+{raw}"
+    );
+
+    // Managed identity carries origin + effective path.
+    let mut request = sample_request(&paths, tmp.path(), &args);
+    request.wrapper = Some(WrapperIdentity {
+        effective: Some(PathBuf::from("/root/.soldr/v1/shims/rustc")),
+        origin: "soldr-managed",
+    });
+    let with = write_build_log(&request).expect("write");
+    let raw = std::fs::read_to_string(&with).expect("read");
+    assert!(
+        raw.contains("origin=\"soldr-managed\""),
+        "got:
+{raw}"
+    );
+    assert!(
+        raw.contains("shims"),
+        "got:
+{raw}"
+    );
+
+    // Disabled records the origin with no effective attribute.
+    let mut request = sample_request(&paths, tmp.path(), &args);
+    request.wrapper = Some(WrapperIdentity {
+        effective: None,
+        origin: "disabled",
+    });
+    let disabled = write_build_log(&request).expect("write");
+    let raw = std::fs::read_to_string(&disabled).expect("read");
+    assert!(
+        raw.contains("origin=\"disabled\""),
+        "got:
+{raw}"
+    );
+    assert!(
+        !raw.contains("effective="),
+        "got:
 {raw}"
     );
 }
