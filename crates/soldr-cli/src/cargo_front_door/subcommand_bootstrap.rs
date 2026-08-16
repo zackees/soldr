@@ -60,7 +60,7 @@ pub(crate) struct SubcommandToolBootstrap {
     pub cargo_args: Vec<String>,
 }
 
-async fn ensure_known_subcommand_tool(
+pub(crate) async fn ensure_known_subcommand_tool(
     args: &[String],
     paths: &SoldrPaths,
 ) -> Result<SubcommandToolBootstrap, SoldrError> {

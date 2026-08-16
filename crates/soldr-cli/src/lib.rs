@@ -211,6 +211,7 @@ pub mod daemon_entry;
 pub(crate) mod daemon_status_render;
 pub mod doctor;
 mod dylint_cook;
+pub(crate) mod dylint_prepare;
 pub mod dylint_toolchain;
 /// soldr#938 — `soldr env --target` subcommand implementation.
 pub mod env_cmd;
