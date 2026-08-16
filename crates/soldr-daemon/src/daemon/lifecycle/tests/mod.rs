@@ -6,6 +6,7 @@
 //! module, which is now two levels up rather than one.
 
 mod events;
+mod journal_hygiene;
 mod pid_liveness;
 mod root_acquire;
 mod spawn_log;

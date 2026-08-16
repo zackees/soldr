@@ -5,10 +5,12 @@
 //! A route-local protobuf claim records the daemon process and its private
 //! endpoint. Readers verify the live process before acting on that claim.
 
+mod journal_hygiene;
 mod legacy_endpoint;
 mod root_ownership;
 mod spawn;
 mod spawn_env;
+pub use journal_hygiene::{detect_unclean_shutdown, rotate_lifecycle_journal};
 pub use root_ownership::{RootAcquireOutcome, RootOwnershipGuard};
 pub(crate) use spawn::*;
 pub(crate) use spawn_env::*;
@@ -741,6 +743,9 @@ pub enum LifecycleReason {
     ProtocolMismatch,
     /// A spawn deadline expired while a stale daemon still held the endpoint.
     StartupDeadline,
+    /// The daemon process panicked (soldr#2436 phase 2: every restart must
+    /// be attributable; a panic previously left no exit record at all).
+    Panic,
 }
 
 /// Which entry point asked for a lifecycle transition.
@@ -806,19 +811,38 @@ pub struct LifecycleDetails {
     pub reason: Option<LifecycleReason>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outcome: Option<LifecycleOutcome>,
+    /// Soldr package version of the recording daemon (soldr#2436 D2:
+    /// restart forensics need the version without correlating PIDs
+    /// against install logs).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub soldr_version: Option<String>,
+    /// Embedded zccache library version of the recording daemon.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zccache_version: Option<String>,
 }
 
 impl LifecycleDetails {
     /// A forced termination of `target_pid`, for `reason`.
     pub fn forced(target_pid: u32, reason: LifecycleReason) -> Self {
         Self {
-            requester_pid: None,
-            requester_exe: None,
             target_pid: Some(target_pid),
-            target_generation: None,
-            requester_source: None,
             reason: Some(reason),
             outcome: Some(LifecycleOutcome::Forced),
+            ..Self::default()
+        }
+    }
+
+    /// Version + executable identity of the recording daemon, for the
+    /// `spawn` and panic exit records (soldr#2436 phase 2).
+    pub fn recording_daemon_identity() -> Self {
+        Self {
+            requester_pid: Some(std::process::id()),
+            requester_exe: std::env::current_exe()
+                .ok()
+                .map(|path| path.to_string_lossy().into_owned()),
+            soldr_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            zccache_version: Some(zccache::core::VERSION.to_string()),
+            ..Self::default()
         }
     }
 
