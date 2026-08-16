@@ -95,6 +95,29 @@ pub(crate) async fn prepare_target(
         )));
     }
 
+    // soldr#2437: the catalogue GNU/musl Linux toolchains ship Linux ELF
+    // compilers. A Windows host can download them but not execute them --
+    // the old behavior fetched hundreds of megabytes and then died deep in
+    // the first *-sys build with `%1 is not a valid Win32 application
+    // (os error 193)`. Fail fast with the supported paths instead.
+    if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows
+        && attrs.os == TargetOs::Linux
+    {
+        return Err(SoldrError::UnsupportedPlatform(format!(
+            concat!(
+                "Windows-hosted cross-builds for `{target}` are not supported: ",
+                "the catalogue toolchain for Linux targets ships Linux ELF ",
+                "compilers that cannot execute on Windows (soldr#2437). Build ",
+                "on a Linux host or the Docker Linux harness (`uv run ",
+                "--no-project python ci/perf_local.py cargo build --target ",
+                "{target} ...`), or use the explicit legacy passthrough ",
+                "(`soldr cargo zigbuild --target {target}`) if a ",
+                "Windows-hosted build is unavoidable."
+            ),
+            target = target
+        )));
+    }
+
     let gnu_uses_catalogue_toolchain =
         attrs.os == TargetOs::Linux && attrs.abi == Some(TargetAbi::Gnu);
     if gnu_uses_catalogue_toolchain {
