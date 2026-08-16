@@ -1289,12 +1289,7 @@ fn cache_enabled_zccache_build_completes_under_60_seconds() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        // Hang backstop; performance gates belong to the Perf Matrix. 100s,
-        // not 60: contended Windows runners take 62-68s through a cold
-        // broker start with fake tools (three main-lane failures on
-        // 2026-08-16 alone), and the backstop exists to name a hang before
-        // nextest's 120s terminate does -- not to be the flakiest perf gate
-        // in the suite.
+        // Hang backstop, not a perf gate (Perf Matrix owns those): contended Windows hits 62-68s cold; 100s beats nextest's 120s kill.
         elapsed < Duration::from_secs(100),
         "cache-enabled zccache build took {elapsed:?}, expected under 100s"
     );
