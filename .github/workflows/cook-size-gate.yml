@@ -97,6 +97,13 @@ jobs:
       # a separate, load-bearing flag and stays.
       - name: Build soldr CLI (ci-release)
         working-directory: soldr
+        env:
+          # With every setup-soldr reuse layer off (soldr#2451) this build is
+          # fully cold, and unbounded parallel ci-release rustc OOM-killed on
+          # the hosted runner (the soldr#2453 signature). Same bounded-jobs
+          # remedy as the release wheel lanes.
+          CARGO_BUILD_JOBS: "2"
+          SOLDR_JOBS: "2"
         run: soldr cargo build -p soldr-cli --profile ci-release
 
       - name: Checkout zccache fixture
