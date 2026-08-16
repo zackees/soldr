@@ -293,6 +293,7 @@ pub mod wheel_cmd;
 /// its opaque missing-manifest error (soldr#2232).
 pub(crate) mod worktree_submodule;
 pub mod wrapper;
+pub mod wrapper_identity;
 /// `wrapper_target` holds the wrapper hot-path target-registry routing
 /// extracted out of `wrapper.rs` so integration tests under
 /// `tests/cli_wrapper_perf.rs` can drive it in-process (issue #474).

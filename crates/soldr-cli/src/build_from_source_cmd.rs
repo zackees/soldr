@@ -198,7 +198,11 @@ pub(crate) fn apply_source_build_cache_wrapper(command: &mut std::process::Comma
     };
     match crate::binaries::rustc_wrapper_shim_binary(&paths) {
         Ok(shim) => {
-            command.env("RUSTC_WRAPPER", &shim);
+            crate::wrapper_identity::set_owned_rustc_wrapper(
+                command,
+                shim.as_os_str(),
+                crate::wrapper_identity::WrapperOrigin::SourceBuild,
+            );
         }
         Err(error) => {
             eprintln!(

@@ -260,6 +260,12 @@ pub(crate) fn scrub_outer_soldr_env(command: &mut Command) -> &mut Command {
         // every fixture.
         .env(soldr_cli::toolchain::ALLOW_UNPINNED_ENV_VAR, "1")
         .env_remove("RUSTC_WRAPPER")
+        // soldr#2545: the outer dogfooded suite driver exports the owned
+        // effective-wrapper mirror beside RUSTC_WRAPPER. Scrubbing only one
+        // of the pair would make every wrapper-shaped fixture child read as
+        // Soldr-owned drift; the pair travels together.
+        .env_remove(soldr_cli::wrapper_identity::EFFECTIVE_WRAPPER_ENV)
+        .env_remove(soldr_cli::wrapper_identity::EFFECTIVE_WRAPPER_ORIGIN_ENV)
         // Fixtures spawn soldr from a non-soldr test process; the outer
         // dogfooded `soldr cargo nextest` stamps IN_SOLDR_PID, which would
         // make every fixture child look like unsanctioned re-entrancy once
