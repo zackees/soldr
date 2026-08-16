@@ -149,12 +149,19 @@ impl ResolvedBrokerEndpoint {
                     source,
                 }
             })?;
-            crate::platform::fs::permissions::make_private(&directory).map_err(|source| {
-                BrokerIdentityError::SecureDirectory {
+            // soldr#2477: the staged broker executable and the resurrection
+            // lease are integrity boundaries, so the privacy policy must
+            // hold on every platform. `make_private` is a no-op on Windows
+            // (NTFS ACLs, not mode bits), which left these directories on
+            // the ambient inherited DACL. running-process's secure_dir owns
+            // the tested cross-platform policy: 0700 on Unix, a protected
+            // owner+SYSTEM DACL on Windows.
+            running_process::broker::secure_dir::ensure_private_dir(&directory).map_err(
+                |source| BrokerIdentityError::SecureDirectory {
                     path: directory.clone(),
                     source,
-                }
-            })?;
+                },
+            )?;
         }
         Ok(())
     }
@@ -468,5 +475,49 @@ pub fn daemon_session_endpoint_from_executable(
         };
         Endpoint::unix_socket(namespace_id, bind.to_string_lossy().into_owned())
             .map_err(|error| BrokerIdentityError::Endpoint(error.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod secure_directory_tests {
+    use super::*;
+
+    /// soldr#2477: broker-owned directories must satisfy running-process's
+    /// cross-platform privacy predicate — 0700 on Unix, the protected
+    /// owner+SYSTEM DACL on Windows. Pre-creating the directories models the
+    /// unsafe state: they exist with ambient inherited permissions, and
+    /// `create_owner_only_directories` must repair them, not accept them.
+    /// No cfg-gating: the same assertions run on every host.
+    #[test]
+    fn preexisting_broker_directories_are_repaired_to_private() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let exe_dir = tmp.path().join("broker-install");
+        let lease_dir = tmp.path().join("broker-lease");
+        let sock_dir = tmp.path().join("broker-sock");
+        std::fs::create_dir_all(&exe_dir).expect("exe dir");
+        std::fs::create_dir_all(&lease_dir).expect("lease dir");
+        std::fs::create_dir_all(&sock_dir).expect("sock dir");
+
+        let endpoint = ResolvedBrokerEndpoint {
+            executable_path: exe_dir.join("soldr-broker.exe"),
+            logical_socket_path: "test-logical".to_string(),
+            bind_endpoint: sock_dir.join("broker.sock").display().to_string(),
+            windows_pipe_leaf: None,
+            oversized_windows_pipe_leaf: None,
+            fallback: None,
+            lease_database_path: lease_dir.join("lease.sqlite3"),
+        };
+        endpoint
+            .create_owner_only_directories()
+            .expect("secure broker directories");
+
+        for directory in [&exe_dir, &lease_dir] {
+            assert!(
+                running_process::broker::secure_dir::private_dir_permissions_are_private(directory)
+                    .expect("read permissions"),
+                "directory must satisfy the private policy: {}",
+                directory.display()
+            );
+        }
     }
 }
