@@ -180,6 +180,9 @@ struct DaemonCleanup {
 impl Drop for DaemonCleanup {
     fn drop(&mut self) {
         let _ = run_soldr(&["daemon", "stop"], &self.cache_root, &self.home_root);
+        // The broker outlives `daemon stop` by design (soldr#2549); stop it
+        // too or the fixture leaks one detached broker per run (soldr#2568).
+        let _ = run_soldr(&["broker", "stop"], &self.cache_root, &self.home_root);
     }
 }
 
@@ -213,6 +216,9 @@ impl Drop for DetachedDaemonCleanup {
         if let Some(pid) = pid {
             let _ = wait_for_process_exit(pid, Duration::from_secs(5));
         }
+        // Stop the fixture broker before deleting its install dir out from
+        // under it (soldr#2549 keeps it alive past `daemon stop`; soldr#2568).
+        let _ = run_soldr(&["broker", "stop"], &self.cache_root, &self.home_root);
         let _ = fs::remove_dir_all(&self.cache_root);
         let _ = fs::remove_dir_all(&self.home_root);
     }
@@ -522,6 +528,7 @@ fn status_when_daemon_absent_reports_not_running() {
 fn install_servicedef_writes_running_process_definition() {
     let cache_root = unique_temp_dir("daemon-servicedef-cache");
     let home_root = unique_temp_dir("daemon-servicedef-home");
+    let _broker = common::BrokerHomeGuard::new(&cache_root, &home_root);
     let service_root = unique_temp_dir("daemon-servicedef-services");
     let daemon_dir = unique_temp_dir("daemon-servicedef-bin");
     let daemon_binary = daemon_dir.join(

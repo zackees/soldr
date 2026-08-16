@@ -179,6 +179,7 @@ fn seeded_record(session_id: u64, started_at_ms: i64, wall_ms: u64, exit_code: i
 fn builds_list_returns_seeded_records_via_daemon_query() {
     let cache_root = unique_temp_dir("builds-list-cache");
     let home_root = unique_temp_dir("builds-list-home");
+    let _broker = common::BrokerHomeGuard::new(&cache_root, &home_root);
 
     seed_build(&cache_root, 1, 1_000, 500, 0);
     seed_build(&cache_root, 2, 2_000, 250, 0);
@@ -213,6 +214,7 @@ fn builds_list_returns_seeded_records_via_daemon_query() {
 fn builds_slow_filters_by_threshold() {
     let cache_root = unique_temp_dir("builds-slow-cache");
     let home_root = unique_temp_dir("builds-slow-home");
+    let _broker = common::BrokerHomeGuard::new(&cache_root, &home_root);
 
     seed_build(&cache_root, 100, 1_000, 50, 0); // fast
     seed_build(&cache_root, 200, 2_000, 1_500, 0); // medium
@@ -245,6 +247,7 @@ fn builds_slow_filters_by_threshold() {
 fn builds_list_when_daemon_absent_reports_not_running() {
     let cache_root = unique_temp_dir("builds-absent-cache");
     let home_root = unique_temp_dir("builds-absent-home");
+    let _broker = common::BrokerHomeGuard::new(&cache_root, &home_root);
     let out = run_soldr(
         &["daemon", "builds", "list", "--json"],
         &cache_root,
@@ -267,6 +270,7 @@ fn builds_list_when_daemon_absent_reports_not_running() {
 fn gc_list_uses_daemon_owned_registry_while_the_daemon_holds_the_lock() {
     let cache_root = unique_temp_dir("gc-daemon-registry-cache");
     let home_root = unique_temp_dir("gc-daemon-registry-home");
+    let _broker = common::BrokerHomeGuard::new(&cache_root, &home_root);
     let live_target = cache_root.join("seeded-workspace").join("target");
     std::fs::create_dir_all(&live_target).expect("create target");
     std::fs::write(live_target.join("artifact"), b"seeded").expect("write target artifact");
@@ -324,6 +328,7 @@ fn gc_list_uses_daemon_owned_registry_while_the_daemon_holds_the_lock() {
 fn logs_queries_use_the_daemon_while_it_owns_the_build_history_lock() {
     let cache_root = unique_temp_dir("logs-query-cache");
     let home_root = unique_temp_dir("logs-query-home");
+    let _broker = common::BrokerHomeGuard::new(&cache_root, &home_root);
     let session_id = 0xabc_def0_1234_u64;
     seed_build(&cache_root, session_id, 1_000, 1_500, 0);
     db::append_event(
@@ -372,6 +377,7 @@ fn logs_queries_use_the_daemon_while_it_owns_the_build_history_lock() {
 fn logs_show_exact_id_is_not_limited_by_prefix_history_page_size() {
     let cache_root = unique_temp_dir("logs-exact-cache");
     let home_root = unique_temp_dir("logs-exact-home");
+    let _broker = common::BrokerHomeGuard::new(&cache_root, &home_root);
     let db_path = cache_root.join("state.sqlite3");
     let database = db::open_handle(&db_path).expect("open seed database");
 
@@ -415,6 +421,7 @@ fn logs_show_exact_id_is_not_limited_by_prefix_history_page_size() {
 fn logs_unavailable_daemon_never_waits_for_its_database_lock() {
     let cache_root = unique_temp_dir("logs-unavailable-cache");
     let home_root = unique_temp_dir("logs-unavailable-home");
+    let _broker = common::BrokerHomeGuard::new(&cache_root, &home_root);
     seed_build(&cache_root, 77, 1_000, 500, 0);
 
     let _endpoint_owner: Box<dyn std::any::Any> = if matches!(
