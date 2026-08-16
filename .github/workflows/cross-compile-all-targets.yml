@@ -178,10 +178,11 @@ jobs:
       # `soldr build`, and it is the binary the linux-x86 archive ships.
       #
       # Before soldr#2157 that binary linked against the runner's own glibc
-      # (2.39 on ubuntu-24.04) because the managed-zig arm was skipped for
-      # host-native targets. #2157 routes it through zig, so it should now
-      # reach zig's 2.28 default -- the same floor the cross-built aarch64
-      # artifact already has.
+      # (2.39 on ubuntu-24.04). #2157 routed it through the managed
+      # toolchain; since the zig purge that toolchain is the catalogue
+      # gnu-linux gcc with a glibc-2.17 sysroot, and the measured floor of
+      # the blessed release binary is GLIBC_2.16 -- so the ceiling ratchets
+      # to the soldr#1060 target baseline, 2.17 (Rust Tier 1 / manylinux_2_17).
       #
       # This is what makes that claim checkable on a PR instead of only
       # after a release: the release-lane ratchets in `release-auto.yml` are
@@ -192,7 +193,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 .github/scripts/verify_glibc_baseline.py \
-            --max-glibc 2.28 \
+            --max-glibc 2.17 \
             target/x86_64-unknown-linux-gnu/debug/soldr
 
       - name: Stage layout for linux-x86 archive
@@ -454,7 +455,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 .github/scripts/verify_glibc_baseline.py \
-            --max-glibc 2.28 \
+            --max-glibc 2.17 \
             "target/${{ matrix.target }}/debug/soldr"
 
       - name: Capture per-target stats

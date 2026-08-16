@@ -489,7 +489,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 .github/scripts/verify_glibc_baseline.py \
-            --max-glibc 2.28 \
+            --max-glibc 2.17 \
             "target/${{ inputs.target }}/ci-nextest/soldr"
 
       # The macOS and Windows equivalents of the ratchet above. Both targets
