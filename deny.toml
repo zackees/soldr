@@ -1,0 +1,45 @@
+# cargo-deny configuration — duplicate-version ratchet (soldr#2413).
+#
+# After #2406/#2411/#2412 converged windows-sys from 3 versions to 1, this
+# gate keeps future dependency updates from silently re-introducing
+# duplicates. Policy: NEW multiple-version crates fail `cargo deny check
+# bans`; the known survivors below are explicitly skipped, each with the
+# blocker that keeps it alive. Removing an entry once its blocker clears is
+# the intended direction — never add one without naming the blocker.
+#
+# Run locally: `soldr cargo deny check bans`.
+
+[graph]
+# The workspace vendors zccache and running-process as path dependencies;
+# their trees are part of the build and therefore part of the ratchet.
+all-features = false
+
+[bans]
+multiple-versions = "deny"
+# Wildcard-version and registry hygiene are out of scope here; this file
+# exists for the duplicate ratchet only (advisories/licenses/sources keep
+# their cargo-deny defaults and are not checked in CI).
+wildcards = "allow"
+
+# ---- Known survivors (soldr#2413's table, re-measured 2026-08-16) -------
+skip = [
+    # dashmap pins an internal hashbrown API (273 usages in zccache).
+    { name = "hashbrown" },
+    # sysinfo → windows 0.62 while other deps hold 0.52 (~30 type fixes).
+    { name = "windows" },
+    { name = "windows-core" },
+    # ring 0.17 (rustls TLS stack) holds getrandom 0.2.
+    { name = "getrandom" },
+    # sha2 0.10 holds cpufeatures 0.2 (negligible).
+    { name = "cpufeatures" },
+    # errno/rustix/tempfile still cap at 0.52, reached only through
+    # prost-build's build-dependency tree (vendored zccache-protocol and
+    # running-process). The #2406 convergence covered the runtime tree;
+    # this build-dep tail waits on upstream bumps.
+    { name = "windows-sys" },
+    # inotify 0.10 (via the vendored notify) holds bitflags 1.3.
+    { name = "bitflags" },
+    # derive_arbitrary (via zip 2.4's arbitrary feature chain) holds syn 2
+    # while the proc-macro ecosystem moves to syn 3.
+    { name = "syn" },
+]
