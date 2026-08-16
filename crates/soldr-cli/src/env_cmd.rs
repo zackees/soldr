@@ -34,6 +34,13 @@ pub async fn run_env_command(
 ) -> Result<i32, SoldrError> {
     let resolved = resolve_soldr_target(target_input).map_err(map_alias_err)?;
 
+    // soldr#2554 contract: machine-readable mode suppresses every
+    // unsolicited diagnostic — including the fetch/installer progress
+    // the preparation below may emit. The marker is process-internal;
+    // eval callers of the shell formats keep normal progress on stderr.
+    if json {
+        std::env::set_var(crate::core::quiet::QUIET_DIAGNOSTICS_ENV_VAR, "1");
+    }
     let paths = SoldrPaths::new()?;
     let prep = crate::target_lifecycle::prepare_target(&paths, &resolved.rust_triple).await?;
     let pairs = crate::prepare_github_env::exported_env_pairs(&prep, &resolved.rust_triple)?;

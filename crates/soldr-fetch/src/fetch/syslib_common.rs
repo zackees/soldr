@@ -115,7 +115,9 @@ pub async fn ensure_syslib_bundle(
     };
     let expected_sha256 = entry.sha256.clone();
 
-    eprintln!("soldr: fetching syslib {lib}/{version}/{slug} from {url}...");
+    if !crate::core::quiet::diagnostics_suppressed() {
+        eprintln!("soldr: fetching syslib {lib}/{version}/{slug} from {url}...");
+    }
 
     // soldr#2132: retry the download itself. A truncated body here surfaced as
     // `managed cmake unavailable ... network error: error decoding response
@@ -134,7 +136,9 @@ pub async fn ensure_syslib_bundle(
              expected {expected_sha256}, got {digest}"
         )));
     }
-    eprintln!("soldr: trust: verified syslib {lib}/{version}/{slug} sha256={digest}");
+    if !crate::core::quiet::diagnostics_suppressed() {
+        eprintln!("soldr: trust: verified syslib {lib}/{version}/{slug} sha256={digest}");
+    }
 
     if install_root.exists() {
         std::fs::remove_dir_all(&install_root)?;
@@ -151,7 +155,9 @@ pub async fn ensure_syslib_bundle(
     }
 
     std::fs::write(&stamp, format!("{lib} {version} {slug}"))?;
-    eprintln!("soldr: extracted syslib to {}", sysroot.display());
+    if !crate::core::quiet::diagnostics_suppressed() {
+        eprintln!("soldr: extracted syslib to {}", sysroot.display());
+    }
     Ok(sysroot)
 }
 

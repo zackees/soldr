@@ -149,14 +149,27 @@ pub fn run_installer_command(
         .spawn()
         .map_err(|err| SoldrError::Other(format!("failed to invoke {context}: {err}")))?;
     let (progress_tx, progress_rx) = mpsc::channel();
-    let stdout_reader = child
-        .stdout
-        .take()
-        .map(|pipe| tee_pipe_async(pipe, std::io::stdout(), progress_tx.clone()));
-    let stderr_reader = child
-        .stderr
-        .take()
-        .map(|pipe| tee_pipe_async(pipe, std::io::stderr(), progress_tx));
+    // soldr#2304 x soldr#2554: machine-readable verbs (env --json) set the
+    // internal quiet marker; child installer output must not corrupt their
+    // parseable payload, so both streams tee to a sink instead of the
+    // terminal. The progress channel still sees every byte, so the stall
+    // watchdog is unaffected.
+    let suppress = super::quiet::diagnostics_suppressed();
+    let stdout_reader = child.stdout.take().map(|pipe| {
+        if suppress {
+            tee_pipe_async(pipe, std::io::sink(), progress_tx.clone())
+        } else {
+            tee_pipe_async(pipe, std::io::stdout(), progress_tx.clone())
+        }
+    });
+    let stderr_reader = child.stderr.take().map(|pipe| {
+        if suppress {
+            tee_pipe_async(pipe, std::io::sink(), progress_tx.clone())
+        } else {
+            tee_pipe_async(pipe, std::io::stderr(), progress_tx.clone())
+        }
+    });
+    drop(progress_tx);
 
     let cpu_probe = ProcessTreeCpuProbe::new(child.id());
     let result =
@@ -291,7 +304,13 @@ fn wait_for_child_with_watchdog<P: ProgressProbe>(
         }
 
         let now = Instant::now();
-        if let Some(interval) = config.heartbeat_interval {
+        // Quiet machine-readable mode also silences the heartbeat — with
+        // the tee routed to a sink, output-silence is guaranteed and the
+        // heartbeat would corrupt the parseable payload it protects.
+        if let (Some(interval), false) = (
+            config.heartbeat_interval,
+            super::quiet::diagnostics_suppressed(),
+        ) {
             if heartbeat_due(
                 now.duration_since(last_output),
                 now.duration_since(last_heartbeat),
