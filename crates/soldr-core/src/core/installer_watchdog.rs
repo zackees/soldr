@@ -15,6 +15,11 @@ use wait_timeout::ChildExt;
 
 use super::SoldrError;
 
+/// Environment variable for the silent-work heartbeat cadence (soldr#2359).
+/// `0` disables heartbeat lines entirely.
+pub const INSTALLER_HEARTBEAT_ENV_VAR: &str = "SOLDR_INSTALLER_HEARTBEAT_SECS";
+/// Default heartbeat cadence while a supervised child produces no output.
+pub const DEFAULT_INSTALLER_HEARTBEAT_SECS: u64 = 10;
 /// Environment variable for the maximum time an installer may be quiet.
 pub const INSTALLER_STALL_TIMEOUT_ENV_VAR: &str = "SOLDR_INSTALLER_STALL_TIMEOUT_SECS";
 /// Environment variable for the maximum total installer runtime.
@@ -35,6 +40,9 @@ pub struct InstallerWatchdogConfig {
     pub stall_timeout: Duration,
     /// Absolute, opt-in-adjustable upper bound for a runaway process.
     pub safety_timeout: Duration,
+    /// Cadence for "still working" lines while the child emits no output
+    /// (soldr#2359). `None` disables the heartbeat.
+    pub heartbeat_interval: Option<Duration>,
     safety_timeout_env_var: &'static str,
     poll_interval: Duration,
 }
@@ -55,6 +63,7 @@ impl InstallerWatchdogConfig {
         Self {
             stall_timeout: installer_stall_timeout(),
             safety_timeout,
+            heartbeat_interval: installer_heartbeat_interval(),
             safety_timeout_env_var,
             poll_interval: DEFAULT_POLL_INTERVAL,
         }
@@ -65,6 +74,7 @@ impl InstallerWatchdogConfig {
         Self {
             stall_timeout,
             safety_timeout,
+            heartbeat_interval: None,
             safety_timeout_env_var: INSTALLER_SAFETY_TIMEOUT_ENV_VAR,
             poll_interval: Duration::from_millis(10),
         }
@@ -81,6 +91,40 @@ pub fn installer_stall_timeout() -> Duration {
 pub fn installer_safety_timeout() -> Duration {
     positive_env_duration(INSTALLER_SAFETY_TIMEOUT_ENV_VAR)
         .unwrap_or_else(|| Duration::from_secs(DEFAULT_INSTALLER_SAFETY_TIMEOUT_SECS))
+}
+
+/// Resolve the heartbeat cadence. Unset or invalid values keep the default;
+/// an explicit `0` disables the heartbeat (soldr#2359's escape hatch).
+fn installer_heartbeat_interval() -> Option<Duration> {
+    match std::env::var(INSTALLER_HEARTBEAT_ENV_VAR) {
+        Ok(value) => match value.trim().parse::<u64>() {
+            Ok(0) => None,
+            Ok(seconds) => Some(Duration::from_secs(seconds)),
+            Err(_) => Some(Duration::from_secs(DEFAULT_INSTALLER_HEARTBEAT_SECS)),
+        },
+        Err(_) => Some(Duration::from_secs(DEFAULT_INSTALLER_HEARTBEAT_SECS)),
+    }
+}
+
+/// A heartbeat is due when the child has been output-silent for at least one
+/// interval AND at least one interval has passed since the previous emission.
+/// CPU-probe progress deliberately does not suppress it: a busy-but-silent
+/// compile is exactly the state a caller mistakes for a hang (soldr#2359).
+fn heartbeat_due(since_output: Duration, since_emit: Duration, interval: Duration) -> bool {
+    since_output >= interval && since_emit >= interval
+}
+
+fn heartbeat_line(context: &str, elapsed: Duration, since_output: Duration) -> String {
+    format!(
+        concat!(
+            "soldr: {} is still working ({}s elapsed, no output for {}s); ",
+            "this can take several minutes on first-time setup - ",
+            "do not kill this process"
+        ),
+        context,
+        elapsed.as_secs(),
+        since_output.as_secs(),
+    )
 }
 
 fn positive_env_duration(name: &str) -> Option<Duration> {
@@ -225,6 +269,11 @@ fn wait_for_child_with_watchdog<P: ProgressProbe>(
 ) -> Result<ExitStatus, SoldrError> {
     let started = Instant::now();
     let mut last_progress = started;
+    // Output-only timeline for the soldr#2359 heartbeat: CPU activity resets
+    // the stall watchdog but not this, because a busy-but-silent child is
+    // what looks like a hang from the caller's side.
+    let mut last_output = started;
+    let mut last_heartbeat = started;
     loop {
         if let Some(status) = child
             .try_wait()
@@ -235,12 +284,30 @@ fn wait_for_child_with_watchdog<P: ProgressProbe>(
 
         while progress_rx.try_recv().is_ok() {
             last_progress = Instant::now();
+            last_output = last_progress;
         }
         if probe.made_progress() {
             last_progress = Instant::now();
         }
 
         let now = Instant::now();
+        if let Some(interval) = config.heartbeat_interval {
+            if heartbeat_due(
+                now.duration_since(last_output),
+                now.duration_since(last_heartbeat),
+                interval,
+            ) {
+                eprintln!(
+                    "{}",
+                    heartbeat_line(
+                        context,
+                        now.duration_since(started),
+                        now.duration_since(last_output)
+                    )
+                );
+                last_heartbeat = now;
+            }
+        }
         if now.duration_since(started) >= config.safety_timeout {
             return Err(kill_for_watchdog(
                 child,
@@ -317,6 +384,42 @@ mod tests {
     use super::*;
 
     const TEST_EXPLICIT_CEILING_ENV_VAR: &str = "SOLDR_TEST_INSTALLER_EXPLICIT_CEILING_SECS";
+
+    #[test]
+    fn heartbeat_due_requires_both_silence_and_emission_spacing() {
+        let interval = Duration::from_secs(10);
+        // Silent long enough, never emitted: due.
+        assert!(heartbeat_due(
+            Duration::from_secs(10),
+            Duration::from_secs(60),
+            interval
+        ));
+        // Output arrived recently: not due, however long since last emit.
+        assert!(!heartbeat_due(
+            Duration::from_secs(3),
+            Duration::from_secs(60),
+            interval
+        ));
+        // Silent, but a heartbeat just fired: wait a full interval again.
+        assert!(!heartbeat_due(
+            Duration::from_secs(60),
+            Duration::from_secs(3),
+            interval
+        ));
+    }
+
+    #[test]
+    fn heartbeat_line_names_context_elapsed_and_warns_against_killing() {
+        let line = heartbeat_line(
+            "rustup toolchain install 1.95.0",
+            Duration::from_secs(95),
+            Duration::from_secs(30),
+        );
+        assert!(line.contains("rustup toolchain install 1.95.0"), "{line}");
+        assert!(line.contains("95s elapsed"), "{line}");
+        assert!(line.contains("no output for 30s"), "{line}");
+        assert!(line.contains("do not kill"), "{line}");
+    }
 
     struct NeverProgress;
 

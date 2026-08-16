@@ -123,11 +123,18 @@ pub fn auto_bootstrap_if_missing_blocking(
         return Ok(AutoBootstrapOutcome::OptedOut);
     }
     eprintln!(
-        "soldr: rustup not found; bootstrapping into {} \
-         (set {NO_BOOTSTRAP_ENV_VAR}=1 to disable auto-install)",
-        paths.bin.display()
+        concat!(
+            "soldr: rustup not found; bootstrapping the Rust toolchain into {} ",
+            "(set {}=1 to disable auto-install). This downloads and installs ",
+            "rustup + a toolchain and can take several minutes on a cold ",
+            "machine - do not kill this process; interrupting mid-bootstrap ",
+            "corrupts the toolchain state and forces a full re-bootstrap."
+        ),
+        paths.bin.display(),
+        NO_BOOTSTRAP_ENV_VAR
     );
     let report = bootstrap_rustup_blocking(paths)?;
+    eprintln!("soldr: rustup bootstrap complete");
     Ok(AutoBootstrapOutcome::Installed(report))
 }
 
@@ -144,11 +151,18 @@ pub async fn auto_bootstrap_if_missing(
         return Ok(AutoBootstrapOutcome::OptedOut);
     }
     eprintln!(
-        "soldr: rustup not found; bootstrapping into {} \
-         (set {NO_BOOTSTRAP_ENV_VAR}=1 to disable auto-install)",
-        paths.bin.display()
+        concat!(
+            "soldr: rustup not found; bootstrapping the Rust toolchain into {} ",
+            "(set {}=1 to disable auto-install). This downloads and installs ",
+            "rustup + a toolchain and can take several minutes on a cold ",
+            "machine - do not kill this process; interrupting mid-bootstrap ",
+            "corrupts the toolchain state and forces a full re-bootstrap."
+        ),
+        paths.bin.display(),
+        NO_BOOTSTRAP_ENV_VAR
     );
     let report = bootstrap_rustup(paths).await?;
+    eprintln!("soldr: rustup bootstrap complete");
     Ok(AutoBootstrapOutcome::Installed(report))
 }
 
