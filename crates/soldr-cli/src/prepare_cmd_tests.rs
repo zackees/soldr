@@ -871,3 +871,14 @@ fn classifier_against_rustc_target_list() {
         "expected all 9 soldr-supported triples to classify Ok"
     );
 }
+
+/// soldr#2612: adding the host triple as a target must be a no-op — on a
+/// musl host rustup hard-fails with a missing-manifest error for the
+/// musl-hosted toolchain, and the host std is already installed anyway.
+/// The proof is structural: this call returns Ok without resolving
+/// rustup, paths, or a pinned channel (any of which would error or spawn
+/// in this bare test environment).
+#[test]
+fn host_triple_target_add_is_a_no_op() {
+    rustup_add_target(crate::pyo3_detect::host_triple()).expect("host triple must short-circuit");
+}
