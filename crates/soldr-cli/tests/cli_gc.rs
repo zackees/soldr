@@ -12,6 +12,29 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+/// Wall-clock bound for the registry-touch convergence poll.
+///
+/// Paired with [`GC_TOUCH_MIN_POLLS`], and neither is sufficient alone,
+/// because this loop's cost is not what it looks like: **every iteration
+/// spawns a whole `soldr gc list` front door**, so the 100 ms sleep between
+/// attempts is a rounding error next to process startup. On an idle host that
+/// startup is ~60 ms (measured via `SOLDR_STARTUP_TRACE`, soldr#2571) and the
+/// budget below buys dozens of observations; on a contended windows-2025
+/// runner paying broker/daemon cold-start image hashing (soldr#2517) it buys a
+/// handful — on exactly the runner where convergence is slowest.
+///
+/// That is the soldr#2624 family's whole shape: a fixed window colliding with
+/// cold-start cost, failing on `main` where no PR can be blamed (run
+/// 32052826733, `expected at least one tracked target dir within 10s`).
+const GC_TOUCH_POLL_BUDGET: Duration = Duration::from_secs(10);
+
+/// Floor on *observations*, not time. A runner slow enough that the budget
+/// above buys two polls is precisely the runner that needs more than two
+/// looks; failing there measures runner weather rather than the touch. Worst
+/// case is this many polls times the per-poll cost, which stays well inside
+/// the binary's 120 s nextest budget (the failing run's whole test was 42 s).
+const GC_TOUCH_MIN_POLLS: usize = 8;
+
 fn soldr_command(soldr_bin: &Path) -> Command {
     let mut command = Command::new(soldr_bin);
     common::scrub_outer_soldr_env(&mut command);
@@ -368,8 +391,11 @@ fn gc_list_json_reports_built_project_target_dir() {
     // is readable yet. Poll until the touch converges instead of racing
     // it -- a single-shot read flaked the Linux x64 lane at exactly this
     // assertion once suite timing shifted (soldr#2575's run).
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let poll_started = Instant::now();
+    let deadline = poll_started + GC_TOUCH_POLL_BUDGET;
+    let mut attempts = 0usize;
     let json: Value = loop {
+        attempts += 1;
         let output = soldr_command(&soldr_bin)
             .args(["gc", "list", "--json"])
             .env("SOLDR_CACHE_DIR", &cache_root)
@@ -395,9 +421,16 @@ fn gc_list_json_reports_built_project_target_dir() {
         if entry_count >= 1 {
             break json;
         }
+        let elapsed = poll_started.elapsed();
         assert!(
-            std::time::Instant::now() < deadline,
-            "expected at least one tracked target dir within 10s of the build"
+            attempts < GC_TOUCH_MIN_POLLS || Instant::now() < deadline,
+            "no tracked target dir after {attempts} `gc list` polls over \
+             {elapsed:?} (~{:?} per poll; budget {GC_TOUCH_POLL_BUDGET:?}, \
+             floor {GC_TOUCH_MIN_POLLS} polls). The per-poll cost above is the \
+             diagnosis: seconds means a contended runner spending the budget on \
+             process startup (soldr#2624), milliseconds means the touch \
+             genuinely never converged (soldr#2561).",
+            elapsed / u32::try_from(attempts).unwrap_or(1),
         );
         std::thread::sleep(Duration::from_millis(100));
     };
