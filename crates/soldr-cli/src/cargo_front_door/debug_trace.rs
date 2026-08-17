@@ -236,14 +236,19 @@ pub(crate) fn run_observed_inheriting_stdio(
                     started_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let cmdline = running_process::observer::read_process_cmdline(event.pid)
                         .unwrap_or_default();
+                    // running-process#1025: the platform monitors report the
+                    // immediate parent where discovery knows it (Linux,
+                    // macOS); render 0 for unknown so the JSONL field stays
+                    // numeric and the tree edge stays reconstructible.
+                    let ppid = event.ppid.unwrap_or(0);
                     emit(
                         &pump_context,
                         &format!(
-                            "descendant-started pid={} ({pump_context}): {cmdline}",
+                            "descendant-started pid={} ppid={ppid} ({pump_context}): {cmdline}",
                             event.pid
                         ),
                         &format!(
-                            r#"{{"event":"descendant-started","t_ms":{},"pid":{},"context":{},"cmdline":{}}}"#,
+                            r#"{{"event":"descendant-started","t_ms":{},"pid":{},"ppid":{ppid},"context":{},"cmdline":{}}}"#,
                             elapsed_ms(),
                             event.pid,
                             json_string(&pump_context),
