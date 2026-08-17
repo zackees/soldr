@@ -163,3 +163,153 @@ fn emit(_context: &str, human: &str, json: &str) {
 #[cfg(test)]
 #[path = "debug_trace_tests.rs"]
 mod tests;
+
+/// soldr#2546 slice 2: run an inherited-stdio cargo child under the
+/// running-process observer so the timeline includes descendants
+/// (grandchildren: rustc, build scripts, linkers spawned by cargo).
+///
+/// Only the inherited-stdio front-door mode routes here, and only when
+/// tracing is enabled — the capture modes keep slice 1's direct-child
+/// timeline until their pipe plumbing is adapted. Timeout semantics
+/// mirror `wait_for_cargo_child_with_heartbeat`: a heartbeat line per
+/// interval, and on deadline the observed tree is killed through
+/// running-process containment.
+pub(crate) fn run_observed_inheriting_stdio(
+    command: &mut Command,
+    context: &str,
+    timeout: Option<std::time::Duration>,
+    heartbeat: std::time::Duration,
+) -> Result<ExitStatus, crate::core::SoldrError> {
+    use running_process::{
+        CommandSpec, EventCategory, NativeProcess, ObserverConfig, ObserverEventKind,
+        ProcessConfig, StderrMode, StdinMode,
+    };
+
+    let argv = render_argv(command);
+    // `with_observer_and_command` consumes the Command; the config's own
+    // command field is ignored in favor of the override.
+    let owned = std::mem::replace(command, Command::new("soldr-debug-trace-consumed"));
+    let config = ProcessConfig {
+        command: CommandSpec::Argv(vec!["soldr-debug-trace-override".to_string()]),
+        cwd: None,
+        env: None,
+        capture: false,
+        stderr_mode: StderrMode::Stdout,
+        creationflags: None,
+        create_process_group: false,
+        stdin_mode: StdinMode::Inherit,
+        nice: None,
+        address_space_limit_bytes: None,
+    };
+    let observer =
+        ObserverConfig::with_categories([EventCategory::Lifecycle, EventCategory::Process]);
+    let (process, subscriber) = NativeProcess::with_observer_and_command(owned, config, observer);
+    process
+        .start()
+        .map_err(|err| crate::core::SoldrError::Other(format!("spawn {context} failed: {err}")))?;
+    let pid = process.pid().unwrap_or(0);
+    emit(
+        context,
+        &format!("spawned pid={pid} ({context}, observed): {argv}"),
+        &format!(
+            r#"{{"event":"spawned","t_ms":{},"pid":{pid},"context":{},"argv":{},"observed":true}}"#,
+            elapsed_ms(),
+            json_string(context),
+            json_string(&argv),
+        ),
+    );
+
+    // Drain descendant events on a dedicated thread; it ends when the
+    // process closes and the emitter side of the channel drops.
+    let pump_context = context.to_string();
+    let pump = std::thread::spawn(move || {
+        while let Some(event) = subscriber.recv() {
+            match event.kind {
+                ObserverEventKind::DescendantStarted => {
+                    let cmdline = running_process::observer::read_process_cmdline(event.pid)
+                        .unwrap_or_default();
+                    emit(
+                        &pump_context,
+                        &format!(
+                            "descendant-started pid={} ({pump_context}): {cmdline}",
+                            event.pid
+                        ),
+                        &format!(
+                            r#"{{"event":"descendant-started","t_ms":{},"pid":{},"context":{},"cmdline":{}}}"#,
+                            elapsed_ms(),
+                            event.pid,
+                            json_string(&pump_context),
+                            json_string(&cmdline),
+                        ),
+                    );
+                }
+                ObserverEventKind::DescendantExited => {
+                    emit(
+                        &pump_context,
+                        &format!("descendant-exited pid={} ({pump_context})", event.pid),
+                        &format!(
+                            r#"{{"event":"descendant-exited","t_ms":{},"pid":{},"context":{}}}"#,
+                            elapsed_ms(),
+                            event.pid,
+                            json_string(&pump_context),
+                        ),
+                    );
+                }
+                // The direct child's Started/Exited are already covered by
+                // the `spawned`/`exited` events this module emits itself.
+                _ => {}
+            }
+        }
+    });
+
+    let started = Instant::now();
+    let code = loop {
+        let elapsed = started.elapsed();
+        if let Some(limit) = timeout {
+            if elapsed >= limit {
+                let _ = process.kill();
+                let _ = process.wait(Some(std::time::Duration::from_secs(5)));
+                let _ = process.close();
+                drop(pump);
+                return Err(crate::core::SoldrError::Other(format!(
+                    "{context} exceeded its {}s wall-clock deadline under --debug \
+                     observation; the observed process tree was terminated",
+                    limit.as_secs()
+                )));
+            }
+        }
+        let slice = timeout
+            .map(|limit| limit.saturating_sub(elapsed).min(heartbeat))
+            .unwrap_or(heartbeat);
+        match process.wait(Some(slice)) {
+            Ok(code) => break code,
+            Err(running_process::ProcessError::Timeout) => {
+                eprintln!(
+                    "soldr: {context} still running after {}s (--debug observed)",
+                    started.elapsed().as_secs()
+                );
+            }
+            Err(err) => {
+                let _ = process.close();
+                drop(pump);
+                return Err(crate::core::SoldrError::Other(format!(
+                    "wait on {context} failed: {err}"
+                )));
+            }
+        }
+    };
+    // Give the descendant backend a beat to flush trailing exit events,
+    // then detach the pump: it ends when `process` drops and the observer
+    // emitter's channel closes. Joining here would deadlock — the emitter
+    // stays alive as long as the process handle does, so `recv()` cannot
+    // return `None` before this function's own scope ends.
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    let _ = process.close();
+    drop(pump);
+    child_exited(
+        pid,
+        context,
+        &crate::platform::process::exit::exit_status_from_code(code),
+    );
+    Ok(crate::platform::process::exit::exit_status_from_code(code))
+}

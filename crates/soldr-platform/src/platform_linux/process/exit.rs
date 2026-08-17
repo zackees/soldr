@@ -39,6 +39,18 @@ pub fn is_init_failure(code: i32) -> bool {
     code == 0xC000_0142_u32 as i32
 }
 
+/// Reconstruct a `std::process::ExitStatus` from a running-process-style
+/// exit code (soldr#2546): non-negative codes are normal exits, negative
+/// values are `-signal` terminations.
+pub fn exit_status_from_code(code: i32) -> std::process::ExitStatus {
+    use std::os::unix::process::ExitStatusExt;
+    if code < 0 {
+        std::process::ExitStatus::from_raw((-code) & 0x7f)
+    } else {
+        std::process::ExitStatus::from_raw((code & 0xff) << 8)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
