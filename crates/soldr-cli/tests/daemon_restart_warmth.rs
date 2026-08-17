@@ -352,3 +352,160 @@ fn u64_field(stats: &Value, key: &str) -> u64 {
         .and_then(Value::as_u64)
         .unwrap_or_else(|| panic!("missing or non-u64 `{key}` in {stats:#?}"))
 }
+
+/// soldr#2645 (deferred from #2436 phase 6): SIGKILL loss bound.
+///
+/// The vendored zccache saves the dependency graph once ≥32 new contexts
+/// have registered (DEPGRAPH_SAVE_BATCH, polled every 5s), so a hard kill
+/// may orphan at most one save batch. A fixture with 30+ compile units is
+/// what makes the bound falsifiable: pre-phase-5, a kill after any wait
+/// lost EVERY context and the rebuild attributed them all as
+/// `context_not_found`.
+#[test]
+fn hard_killed_daemon_loses_at_most_one_save_batch() {
+    if !matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Linux
+    ) {
+        return;
+    }
+
+    let workdir = unique_temp_dir("daemon-hard-kill-loss");
+    let cache_dir = workdir.join("cache-root");
+    let home_dir = workdir.join("home");
+    fs::create_dir_all(&cache_dir).expect("create cache dir");
+    fs::create_dir_all(&home_dir).expect("create home dir");
+    let _broker = common::BrokerHomeGuard::new(&cache_dir, &home_dir);
+    let guard = DaemonGuard {
+        workdir: workdir.clone(),
+        cache_dir: cache_dir.clone(),
+        home_dir: home_dir.clone(),
+    };
+
+    let crate_dir = workdir.join("fixture-workspace");
+    create_many_unit_workspace(&crate_dir, 34);
+
+    let cold_output = match soldr_cargo_check(&guard, &crate_dir, &workdir.join("cold-target")) {
+        Ok(output) => output,
+        Err(BuildSkip::NoDefaultToolchain(detail)) => {
+            eprintln!(
+                "skipping hard-kill loss-bound E2E: fixture host has no \
+                 default rustup toolchain (soldr#2614): {detail}"
+            );
+            return;
+        }
+    };
+    let cold = read_json(&latest_archived_session_stats(&cache_dir, &cold_output));
+    let cold_misses = u64_field(&cold, "misses");
+    assert!(
+        cold_misses >= 34,
+        "the fixture must register enough contexts to cross the 32-entry \
+         save batch: {cold:#?}"
+    );
+
+    // Let the 5s-polled batch trigger land its save (≥32 unsaved contexts
+    // make one due at the next tick). Three poll periods bound scheduler
+    // noise without masking anything: if batch saving were broken, no
+    // amount of waiting short of the 300s interval timer would save, and
+    // the assertion below would see every context orphaned.
+    std::thread::sleep(Duration::from_secs(15));
+
+    let pid = guard.daemon_pid().expect("daemon PID publication");
+    let _ = std::process::Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .status();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline && soldr_platform::process::inspect::is_alive(pid) {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(
+        !soldr_platform::process::inspect::is_alive(pid),
+        "SIGKILLed daemon {pid} must exit"
+    );
+
+    let journal = compile_journal_path(&cache_dir);
+    let pre_rebuild_lines = journal_lines(&journal).len();
+
+    // Rebuild against a fresh target: every unit re-drives the wrapper and
+    // the successor daemon must recognize all but at most one batch.
+    let warm_output = soldr_cargo_check(&guard, &crate_dir, &workdir.join("warm-target"))
+        .expect("rebuild cannot lose the toolchain the cold build resolved");
+    let warm = read_json(&new_archived_session_stats(
+        &cache_dir,
+        &archived_session_stats(&cache_dir)
+            .into_iter()
+            .take(1)
+            .collect::<Vec<_>>(),
+        &warm_output,
+    ));
+    let _ = warm; // stats retained for the panic path via read_json above
+
+    guard.stop_and_assert_exited();
+    let all_lines = journal_lines(&journal);
+    let orphaned = all_lines[pre_rebuild_lines..]
+        .iter()
+        .filter(|line| {
+            serde_json::from_str::<Value>(line)
+                .ok()
+                .and_then(|entry| {
+                    entry
+                        .get("miss_reason")
+                        .and_then(Value::as_str)
+                        .map(|reason| reason == "context_not_found")
+                })
+                .unwrap_or(false)
+        })
+        .count();
+    assert!(
+        orphaned <= 32,
+        "hard kill must lose at most one save batch (32), lost {orphaned}"
+    );
+}
+
+/// A workspace with `count` leaf library crates plus a root binary that
+/// depends on all of them — enough distinct compile units to cross the
+/// dependency graph's 32-registration save batch in one cold build.
+fn create_many_unit_workspace(dir: &Path, count: usize) {
+    let mut members = String::new();
+    let mut deps = String::new();
+    let mut calls = String::new();
+    for index in 0..count {
+        let name = format!("m{index:02}");
+        members.push_str(&format!("    \"{name}\",\n"));
+        deps.push_str(&format!("{name} = {{ path = \"../{name}\" }}\n"));
+        calls.push_str(&format!("    total += {name}::value();\n"));
+        let member_dir = dir.join(&name);
+        fs::create_dir_all(member_dir.join("src")).expect("member src dir");
+        fs::write(
+            member_dir.join("Cargo.toml"),
+            format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+        )
+        .expect("member manifest");
+        fs::write(
+            member_dir.join("src").join("lib.rs"),
+            format!("pub fn value() -> u64 {{ {index} }}\n"),
+        )
+        .expect("member lib");
+    }
+    let root_dir = dir.join("root");
+    fs::create_dir_all(root_dir.join("src")).expect("root src dir");
+    fs::write(
+        root_dir.join("Cargo.toml"),
+        format!(
+            "[package]\nname = \"root\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n{deps}"
+        ),
+    )
+    .expect("root manifest");
+    fs::write(
+        root_dir.join("src").join("main.rs"),
+        format!(
+            "fn main() {{\n    let mut total = 0u64;\n{calls}    println!(\"{{total}}\");\n}}\n"
+        ),
+    )
+    .expect("root main");
+    fs::write(
+        dir.join("Cargo.toml"),
+        format!("[workspace]\nmembers = [\n{members}    \"root\",\n]\nresolver = \"2\"\n"),
+    )
+    .expect("workspace manifest");
+}
