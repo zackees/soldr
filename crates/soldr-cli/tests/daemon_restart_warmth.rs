@@ -104,22 +104,6 @@ fn graceful_daemon_restart_serves_the_next_build_warm() {
     ) {
         return;
     }
-    // This E2E drives a REAL fixture compile, which needs a resolvable
-    // default toolchain. The aarch64-musl target-run host has rustup but
-    // no usable default (soldr#2614 — the musl host cannot bootstrap
-    // one), so probe instead of hard-gating on libc: any Linux host that
-    // can resolve a default cargo runs the test.
-    let cargo_resolves = std::process::Command::new("rustup")
-        .args(["which", "cargo"])
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false);
-    if !cargo_resolves {
-        eprintln!(
-            "skipping restart-warmth E2E: no resolvable default cargo on this host (soldr#2614)"
-        );
-        return;
-    }
 
     let workdir = unique_temp_dir("daemon-restart-warmth");
     let cache_dir = workdir.join("cache-root");
@@ -139,7 +123,22 @@ fn graceful_daemon_restart_serves_the_next_build_warm() {
     create_test_crate(&crate_dir);
 
     // Session 1: cold build. Every cacheable unit misses and is published.
-    let cold_output = soldr_cargo_check(&guard, &crate_dir, &workdir.join("cold-target"));
+    // The aarch64 target-run hosts ship rustup with no default toolchain
+    // configured (soldr#2614's bootstrap gap), so the fixture's bare
+    // temp-dir compile cannot resolve a cargo there. Classify that exact
+    // failure from the fixture's own stderr — probing the test process's
+    // environment proved wrong twice: the answer differs between this
+    // process's cwd (the repo checkout) and the scrubbed fixture.
+    let cold_output = match soldr_cargo_check(&guard, &crate_dir, &workdir.join("cold-target")) {
+        Ok(output) => output,
+        Err(BuildSkip::NoDefaultToolchain(detail)) => {
+            eprintln!(
+                "skipping restart-warmth E2E: fixture host has no default \
+                 rustup toolchain (soldr#2614): {detail}"
+            );
+            return;
+        }
+    };
     let cold = read_json(&latest_archived_session_stats(&cache_dir, &cold_output));
     let cold_sessions = archived_session_stats(&cache_dir);
     let cold_misses = u64_field(&cold, "misses");
@@ -168,7 +167,8 @@ fn graceful_daemon_restart_serves_the_next_build_warm() {
     // A fresh target forces cargo to re-drive every unit through the
     // wrapper; the restarted daemon must recognize each context from the
     // drained graph and serve it warm.
-    let warm_output = soldr_cargo_check(&guard, &crate_dir, &workdir.join("warm-target"));
+    let warm_output = soldr_cargo_check(&guard, &crate_dir, &workdir.join("warm-target"))
+        .expect("warm build cannot lose the toolchain the cold build resolved");
     let warm = read_json(&new_archived_session_stats(
         &cache_dir,
         &cold_sessions,
@@ -237,9 +237,21 @@ fn main() {
     .expect("write src/main.rs");
 }
 
+/// The one fixture failure that means "skip", not "fail".
+#[derive(Debug)]
+enum BuildSkip {
+    /// rustup exists but no default toolchain is configured, so a bare
+    /// temp-dir crate cannot resolve any cargo (soldr#2614 hosts).
+    NoDefaultToolchain(String),
+}
+
 /// Runs the fixture build and returns soldr's combined output for the
 /// missing-stats diagnostics, mirroring `agent_worktree_share`.
-fn soldr_cargo_check(guard: &DaemonGuard, worktree: &Path, target_dir: &Path) -> String {
+fn soldr_cargo_check(
+    guard: &DaemonGuard,
+    worktree: &Path,
+    target_dir: &Path,
+) -> Result<String, BuildSkip> {
     let mut command = common::isolated_soldr_command();
     command
         .args(["cargo", "check"])
@@ -254,12 +266,17 @@ fn soldr_cargo_check(guard: &DaemonGuard, worktree: &Path, target_dir: &Path) ->
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
+    if !output.status.success()
+        && rendered.contains("rustup could not choose a version of cargo to run")
+    {
+        return Err(BuildSkip::NoDefaultToolchain(rendered));
+    }
     assert!(
         output.status.success(),
         "soldr cargo check failed in {}: {rendered}",
         worktree.display(),
     );
-    rendered
+    Ok(rendered)
 }
 
 /// The embedded store's durable compile journal (soldr#2186 layout): the
