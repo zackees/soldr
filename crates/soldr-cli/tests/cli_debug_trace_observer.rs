@@ -78,25 +78,31 @@ fn debug_build_records_the_direct_child_and_a_descendant() {
         String::from_utf8_lossy(&output.stdout),
     );
 
-    // Headless --debug builds take the diagnostic capture mode, whose
-    // descendant observation attaches to the spawned pid (slice 3).
-    assert!(
-        stderr.contains("(cargo diagnostic capture)"),
-        "expected the diagnostic-capture spawn announcement: {stderr}"
+    // Headless --debug builds take the diagnostic capture mode on Unix
+    // (post-hoc attach, slice 3); Windows keeps the observed
+    // inherited-stdio spawn, whose Job Object discovers descendants.
+    let windows = matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
     );
+    if windows {
+        assert!(
+            stderr.contains("(cargo, observed)"),
+            "Windows --debug must keep the observed spawn: {stderr}"
+        );
+    } else {
+        assert!(
+            stderr.contains("(cargo diagnostic capture)"),
+            "expected the diagnostic-capture spawn announcement: {stderr}"
+        );
+    }
     assert!(
         stderr.contains("soldr debug: process timeline ->"),
         "expected the JSONL pointer: {stderr}"
     );
-    // ...and the grandchild was noticed by the descendant backend. The
-    // post-hoc attach rides the Unix polling monitors; Windows' monitor
-    // is spawn-tied upstream, so the attach observes nothing there.
-    if matches!(
-        soldr_platform::host::facts::os(),
-        soldr_platform::host::facts::HostOs::Windows
-    ) {
-        return;
-    }
+    // ...and the grandchild was noticed by the descendant backend —
+    // through the Job Object on Windows's observed spawn, and through
+    // the post-hoc attach on the Unix capture path.
     assert!(
         stderr.contains("descendant-started"),
         "expected a descendant-started event for the fake cargo's grandchild: {stderr}"
@@ -130,8 +136,13 @@ fn debug_build_records_the_direct_child_and_a_descendant() {
 
     // The end-of-run summary identifies observed/incomplete descendants
     // (soldr#2546 acceptance: preserve ordering + identify unobserved exits).
+    let summary_context = if windows {
+        "summary (cargo): descendants started="
+    } else {
+        "summary (cargo diagnostic capture): descendants started="
+    };
     assert!(
-        stderr.contains("summary (cargo diagnostic capture): descendants started="),
+        stderr.contains(summary_context),
         "expected the summary line: {stderr}"
     );
 

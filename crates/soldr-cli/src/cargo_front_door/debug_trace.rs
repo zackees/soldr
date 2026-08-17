@@ -30,6 +30,15 @@ pub(crate) fn enabled() -> bool {
     }
 }
 
+/// Whether --debug requires the observed (spawn-owning) run mode to see
+/// descendants on this host. Windows discovers descendants through the
+/// Job Object IOCP wired at spawn, so the capture modes' post-hoc attach
+/// (running-process#1026) observes nothing there; Unix monitors walk any
+/// live pid and do not need the spawn.
+pub(crate) fn observed_spawn_required() -> bool {
+    enabled() && crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows
+}
+
 /// Spawn `command`, emitting a `spawned` trace event when tracing is on.
 ///
 /// The error type stays `std::io::Error` so call sites keep their existing

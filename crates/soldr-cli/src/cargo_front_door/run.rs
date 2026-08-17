@@ -585,13 +585,16 @@ pub(crate) async fn run_cargo_front_door(
             .unwrap_or_else(|| disk::cargo_disk_space_probe_path(args));
         run_command_capturing_cargo_json(&mut command, &target_dir, cargo_wait_timeout)
             .map(|(status, captured, paths)| (status, Some(captured), Some(paths)))
-    } else if capture_for_diagnostics {
-        // soldr#2546 slice 3: the diagnostic-tail capture now observes
+    } else if capture_for_diagnostics && !debug_trace::observed_spawn_required() {
+        // soldr#2546 slice 3: the diagnostic-tail capture observes
         // descendants by attaching the monitor to the spawned pid
-        // post-hoc (running-process#1026), so the slice-2 trade — which
-        // skipped this mode under --debug and with it the post-failure
-        // diagnostics summary — is repaid: headless --debug builds keep
-        // both the diagnostics and the descendant timeline.
+        // post-hoc (running-process#1026), so on Unix the slice-2 trade —
+        // which skipped this mode under --debug and with it the
+        // post-failure diagnostics summary — is repaid: headless --debug
+        // builds keep both the diagnostics and the descendant timeline.
+        // Windows keeps the observed inherited-stdio spawn under --debug
+        // instead: its descendant discovery is the Job Object wired at
+        // spawn, so a post-hoc attach observes nothing there.
         run_command_capturing_diagnostic_tail(&mut command, cargo_wait_timeout)
             .map(|(status, captured)| (status, Some(captured), None))
     } else {
