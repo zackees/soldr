@@ -104,6 +104,22 @@ fn graceful_daemon_restart_serves_the_next_build_warm() {
     ) {
         return;
     }
+    // This E2E drives a REAL fixture compile, which needs a resolvable
+    // default toolchain. The aarch64-musl target-run host has rustup but
+    // no usable default (soldr#2614 — the musl host cannot bootstrap
+    // one), so probe instead of hard-gating on libc: any Linux host that
+    // can resolve a default cargo runs the test.
+    let cargo_resolves = std::process::Command::new("rustup")
+        .args(["which", "cargo"])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+    if !cargo_resolves {
+        eprintln!(
+            "skipping restart-warmth E2E: no resolvable default cargo on this host (soldr#2614)"
+        );
+        return;
+    }
 
     let workdir = unique_temp_dir("daemon-restart-warmth");
     let cache_dir = workdir.join("cache-root");
