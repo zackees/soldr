@@ -231,7 +231,19 @@ fn issue_2554_env_json_against_mismatched_broker_stays_parseable() {
     let mut command = Command::new(common::soldr_bin());
     common::scrub_outer_soldr_env(&mut command);
     let output = command
-        .args(["env", "--target", "aarch64-unknown-linux-gnu", "--json"])
+        // --plan-only (soldr#2304): this test's subject is the soldr#2549
+        // mismatch-warning suppression in machine-readable mode, not
+        // toolchain materialization — which is host-dependent and
+        // unsupported for a fixed foreign triple on the darwin/windows
+        // lanes. The materializing-quiet path is covered by the
+        // env-unification container verification.
+        .args([
+            "env",
+            "--target",
+            "aarch64-unknown-linux-gnu",
+            "--json",
+            "--plan-only",
+        ])
         .env("HOME", &home)
         .env("USERPROFILE", &home)
         .env("SOLDR_NO_BOOTSTRAP", "1")
