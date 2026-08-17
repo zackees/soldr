@@ -402,3 +402,22 @@ mod pin_requirement_tests {
         }
     }
 }
+
+/// soldr#2614: the musl libgcc probe's path-injectable core.
+#[test]
+fn musl_libgcc_probe_finds_any_candidate_and_reports_absence() {
+    let dir = std::env::temp_dir().join(format!("libgcc-probe-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("probe dir");
+    let missing_a = dir.join("usr-lib-libgcc_s.so.1");
+    let missing_b = dir.join("lib-libgcc_s.so.1");
+    assert!(!super::musl_libgcc_present(&[
+        missing_a.as_path(),
+        missing_b.as_path()
+    ]));
+    std::fs::write(&missing_b, b"elf").expect("write candidate");
+    assert!(super::musl_libgcc_present(&[
+        missing_a.as_path(),
+        missing_b.as_path()
+    ]));
+    let _ = std::fs::remove_dir_all(&dir);
+}
