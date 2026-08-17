@@ -82,11 +82,17 @@ def read_github_env(path: Path) -> dict[str, str]:
     return values
 
 
+ZIG_TOKEN = re.compile(r"(?<![0-9a-z])(cargo-zigbuild|zigbuild|ziglang|zig)(?![0-9a-z])")
+
+
 def require_no_zig(text: str, context: str) -> None:
-    lowered = text.lower()
-    for forbidden in ("zig", "cargo-zigbuild", "ziglang"):
-        if forbidden in lowered:
-            raise RuntimeError(f"{context} unexpectedly references {forbidden}: {text}")
+    # Token match, not substring: a mkdtemp suffix once rolled the letters
+    # `fhzig4jt` into the scanned output and failed a healthy zig-free run.
+    # Real zig references (`zig cc`, `/zig/`, `cargo-zigbuild`, `ziglang`)
+    # always appear delimited by non-alphanumerics.
+    match = ZIG_TOKEN.search(text.lower())
+    if match:
+        raise RuntimeError(f"{context} unexpectedly references {match.group(1)}: {text}")
 
 
 def assert_plan(soldr: str, target: str, env: dict[str, str]) -> None:
