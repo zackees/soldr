@@ -1,20 +1,16 @@
-"""The documented escape hatch must name a real env var (soldr#2148).
+"""Debug-sidecar docs must stay truthful about the cache (soldr#2148, #2424).
 
-`docs/DEBUG_SIDECARS.md` tells a Windows contributor to build with
-`ZCCACHE_DISABLE=1` to get a `.pdb`, because a cached build drops it. That
-instruction is only useful while the variable it names is the one soldr
-actually honours — a rename would leave the doc confidently wrong, which is
-exactly the failure mode the note exists to correct.
+`docs/DEBUG_SIDECARS.md` once carried a `ZCCACHE_DISABLE=1` workaround for
+cached Windows builds dropping their `.pdb` (soldr#2148). That bug is fixed —
+the vendored cache declares `<image>.pdb` as a link output and replays it —
+and soldr#2424 purged the stale cache-bypass advice. The guards here point in
+both directions now:
 
-The section previously said "debug the resulting Soldr binary and its normal
-`.pdb`", and on Windows that silently did not work at all. A doc that is wrong
-about how to get symbols is worse than one that says nothing, because the
-reader stops looking.
-
-Deliberately *not* asserted here: that the bug still exists. Pinning the
-workaround would make this test fail when soldr#2148 is fixed, turning a
-successful fix into a red build. The note carries its own "remove when #2148
-closes" instruction instead.
+- every env var the doc still names must exist in the tree, so instructions
+  cannot rot into confidently-wrong (a rename leaves the doc lying); and
+- the retired bypass advice must not quietly reappear. The sanctioned story
+  is that cached builds retain their sidecars; recommending a cache bypass
+  again should be a deliberate, reviewed decision, not a stale-doc revert.
 """
 
 from __future__ import annotations
@@ -59,17 +55,19 @@ def test_documented_env_vars_exist_in_the_tree() -> None:
     )
 
 
-def test_the_windows_pdb_note_is_actionable() -> None:
+def test_the_retired_pdb_cache_bypass_does_not_return() -> None:
     text = DOC.read_text(encoding="utf-8")
-    # The note has to carry the command, or it states a problem without a way
-    # out -- which is what the section did before soldr#2148.
-    assert "ZCCACHE_DISABLE=1" in text, (
-        "the Windows .pdb note must give the actual command that produces a "
-        "symbolizable build"
+    # soldr#2148 is fixed: cached Windows builds retain the .pdb. The old
+    # ZCCACHE_DISABLE workaround must stay gone (soldr#2424) — a bypass
+    # recommendation reappearing here would either be stale-doc drift or a
+    # regression report that belongs in an issue, not a workaround note.
+    assert "ZCCACHE_DISABLE" not in text, (
+        "docs/DEBUG_SIDECARS.md recommends a cache bypass again; the cached "
+        "path retains debug sidecars (soldr#2148), so either the doc "
+        "regressed or a real new bug needs an issue instead of a workaround"
     )
-    assert "2148" in text, "the note must reference the issue it is tracking"
-    # And it must say when to delete it, so it does not outlive the bug.
-    assert re.search(r"[Rr]emove this note when .*2148", text), (
-        "the note must say when to remove it; an obsolete workaround that "
-        "nobody knows is obsolete is its own trap"
-    )
+    # The positive claim stays documented so a Windows contributor knows the
+    # cached path is supported for symbolized debugging.
+    assert re.search(
+        r"[Cc]ached builds retain", text
+    ), "the doc must state that cached builds retain their debug sidecars"
