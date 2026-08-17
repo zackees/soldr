@@ -78,16 +78,25 @@ fn debug_build_records_the_direct_child_and_a_descendant() {
         String::from_utf8_lossy(&output.stdout),
     );
 
-    // The direct child went through the observed spawn path...
+    // Headless --debug builds take the diagnostic capture mode, whose
+    // descendant observation attaches to the spawned pid (slice 3).
     assert!(
-        stderr.contains("(cargo, observed)"),
-        "expected the observed spawn announcement: {stderr}"
+        stderr.contains("(cargo diagnostic capture)"),
+        "expected the diagnostic-capture spawn announcement: {stderr}"
     );
     assert!(
         stderr.contains("soldr debug: process timeline ->"),
         "expected the JSONL pointer: {stderr}"
     );
-    // ...and the grandchild was noticed by the descendant backend.
+    // ...and the grandchild was noticed by the descendant backend. The
+    // post-hoc attach rides the Unix polling monitors; Windows' monitor
+    // is spawn-tied upstream, so the attach observes nothing there.
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
     assert!(
         stderr.contains("descendant-started"),
         "expected a descendant-started event for the fake cargo's grandchild: {stderr}"
@@ -122,7 +131,7 @@ fn debug_build_records_the_direct_child_and_a_descendant() {
     // The end-of-run summary identifies observed/incomplete descendants
     // (soldr#2546 acceptance: preserve ordering + identify unobserved exits).
     assert!(
-        stderr.contains("summary (cargo): descendants started="),
+        stderr.contains("summary (cargo diagnostic capture): descendants started="),
         "expected the summary line: {stderr}"
     );
 
@@ -155,5 +164,77 @@ fn without_debug_the_observed_path_is_not_used() {
     assert!(
         !stderr.contains("soldr debug:"),
         "no debug-trace output without the flag: {stderr}"
+    );
+}
+
+/// soldr#2546 slice 3: the capture front-door modes own their pipes, so
+/// descendant observation attaches to the spawned cargo pid post-hoc
+/// (running-process#1026's `observe_launched_tree`). A real cached
+/// compile through a private daemon proves the attach end-to-end: rustc
+/// shim processes are cargo's descendants and must appear in the
+/// capture-mode timeline.
+#[test]
+fn debug_cached_capture_mode_records_descendants() {
+    // The post-hoc attach rides the Unix polling monitors; Windows'
+    // discovery is spawn-tied upstream and observes nothing here. The
+    // real-compile fixture also needs a resolvable toolchain (soldr#2614
+    // hosts lack one — same skip as daemon_restart_warmth).
+    if !matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Linux
+    ) {
+        return;
+    }
+    let workdir = unique_temp_dir("debug-trace-json-capture");
+    let cache_dir = workdir.join("cache-root");
+    let home_dir = workdir.join("home");
+    fs::create_dir_all(&cache_dir).expect("cache dir");
+    fs::create_dir_all(&home_dir).expect("home dir");
+    let _broker = common::BrokerHomeGuard::new(&cache_dir, &home_dir);
+    let crate_dir = workdir.join("fixture");
+    write_fixture_workspace(&crate_dir);
+
+    let output = isolated_soldr_command()
+        .args(["--debug", "cargo", "check"])
+        .current_dir(&crate_dir)
+        .env("SOLDR_CACHE_DIR", &cache_dir)
+        .env("HOME", &home_dir)
+        .env("USERPROFILE", &home_dir)
+        .env("CARGO_TARGET_DIR", workdir.join("target"))
+        .output()
+        .expect("run soldr --debug cargo check");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Stop the fixture daemon before asserting so a panic cannot leak it.
+    let _ = isolated_soldr_command()
+        .args(["daemon", "stop"])
+        .env("SOLDR_CACHE_DIR", &cache_dir)
+        .env("HOME", &home_dir)
+        .env("USERPROFILE", &home_dir)
+        .output();
+
+    if !output.status.success()
+        && stderr.contains("rustup could not choose a version of cargo to run")
+    {
+        eprintln!("skipping: no default rustup toolchain on this host (soldr#2614)");
+        return;
+    }
+    assert!(
+        output.status.success(),
+        "--debug cached build failed: {stderr}"
+    );
+    assert!(
+        stderr.contains("(cargo diagnostic capture)"),
+        "cache-enabled headless --debug build must take the diagnostic          capture mode: {stderr}"
+    );
+    assert!(
+        stderr.lines().any(|line| {
+            line.contains("descendant-started") && line.contains("cargo diagnostic capture")
+        }),
+        "capture mode must observe cargo's descendants (rustc): {stderr}"
+    );
+    assert!(
+        stderr.contains("summary (cargo diagnostic capture): descendants started="),
+        "capture-mode observation must emit its summary: {stderr}"
     );
 }

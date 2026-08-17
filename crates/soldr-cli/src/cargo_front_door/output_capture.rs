@@ -91,10 +91,16 @@ fn run_command_capturing_cargo_json(
     configure_cargo_child_for_timeout(command);
     let mut child = debug_trace::spawn_traced(command, "cargo JSON capture")
         .map_err(|err| SoldrError::Other(format!("spawn cargo for JSON capture failed: {err}")))?;
+    // soldr#2546 slice 3: capture modes own their pipes, so descendant
+    // observation attaches to the spawned pid post-hoc.
+    let observation = debug_trace::DescendantObservation::attach(child.id(), "cargo JSON capture");
     let stamp = line_stamp_anchor(std::io::IsTerminal::is_terminal(&std::io::stdout()));
     let stdout_rx = spawn_capture_pipe_reader_to_stdout(child.stdout.take().expect("piped"), stamp);
     let stderr_rx = spawn_capture_pipe_reader(child.stderr.take().expect("piped"), stamp);
     let status = wait_for_cargo_child(&mut child, "cargo JSON capture", timeout)?;
+    if let Some(observation) = observation {
+        observation.finish();
+    }
     let stdout = drain_capture_pipe_after_child_exit(&stdout_rx, "cargo JSON stdout");
     let stderr = drain_capture_pipe_after_child_exit(&stderr_rx, "cargo JSON stderr");
     let paths = parse_cargo_artifact_closure(&stdout, target_dir);
@@ -292,6 +298,9 @@ fn run_command_capturing_diagnostic_tail(
     let mut child = debug_trace::spawn_traced(command, "cargo diagnostic capture").map_err(|err| {
         SoldrError::Other(format!("spawn cargo for diagnostic capture failed: {err}"))
     })?;
+    // soldr#2546 slice 3: same post-hoc descendant attach as JSON capture.
+    let observation =
+        debug_trace::DescendantObservation::attach(child.id(), "cargo diagnostic capture");
     let child_stderr = child.stderr.take().expect("piped");
 
     let stderr_rx = spawn_capture_pipe_reader(
@@ -300,6 +309,9 @@ fn run_command_capturing_diagnostic_tail(
     );
 
     let status = wait_for_cargo_child(&mut child, "cargo diagnostic capture", timeout)?;
+    if let Some(observation) = observation {
+        observation.finish();
+    }
     let bytes = drain_capture_pipe_after_child_exit(&stderr_rx, "cargo diagnostic stderr");
     let captured = String::from_utf8_lossy(&bytes).into_owned();
     Ok((status, captured))
