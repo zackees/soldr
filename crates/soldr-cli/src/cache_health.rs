@@ -74,8 +74,7 @@ pub(crate) fn max_distinct_spawn_pids_per_hour(spawns: &[(i64, u32)]) -> usize {
 }
 
 pub(crate) fn assess(paths: &SoldrPaths) -> CacheHealth {
-    let sessions = read_history_sessions_newest_first(paths);
-    let run = zero_hit_storm_run(&sessions);
+    let run = zero_hit_storm_run_from_history(paths);
     let spawns = read_spawn_events(paths);
     let churn = max_distinct_spawn_pids_per_hour(&spawns);
     CacheHealth {
@@ -113,10 +112,13 @@ fn history_dir(paths: &SoldrPaths) -> PathBuf {
     paths.cache.join("zccache").join("history")
 }
 
-/// Read `(compilations, hit_rate)` per archived session, newest first.
-/// Session directory names are numeric build-session ids, so numeric
-/// descending order is newest-first without touching mtimes.
-fn read_history_sessions_newest_first(paths: &SoldrPaths) -> Vec<SessionStats> {
+/// Archived session ids, newest first.
+///
+/// Directory names are numeric build-session ids, so numeric descending
+/// order is newest-first without touching mtimes. This is a directory scan
+/// only — no session file is opened here, which is what lets the caller stop
+/// reading as soon as the run ends.
+fn session_ids_newest_first(paths: &SoldrPaths) -> Vec<u64> {
     let Ok(entries) = std::fs::read_dir(history_dir(paths)) else {
         return Vec::new();
     };
@@ -125,19 +127,53 @@ fn read_history_sessions_newest_first(paths: &SoldrPaths) -> Vec<SessionStats> {
         .filter_map(|entry| entry.file_name().to_str().and_then(|s| s.parse().ok()))
         .collect();
     ids.sort_unstable_by(|a, b| b.cmp(a));
-    ids.into_iter()
-        .filter_map(|id| {
-            let stats = history_dir(paths)
-                .join(id.to_string())
-                .join("last-session-stats.json");
-            let value: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(stats).ok()?).ok()?;
-            Some((
-                value.get("compilations")?.as_u64()?,
-                value.get("hit_rate")?.as_f64()?,
-            ))
-        })
-        .collect()
+    ids
+}
+
+/// `(compilations, hit_rate)` for one archived session, or `None` when the
+/// file is missing or malformed.
+fn read_session_stats(paths: &SoldrPaths, id: u64) -> Option<SessionStats> {
+    let stats = history_dir(paths)
+        .join(id.to_string())
+        .join("last-session-stats.json");
+    let value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(stats).ok()?).ok()?;
+    Some((
+        value.get("compilations")?.as_u64()?,
+        value.get("hit_rate")?.as_f64()?,
+    ))
+}
+
+/// [`zero_hit_storm_run`] against the on-disk history, reading only as far
+/// as the answer requires.
+///
+/// The run ends at the first healthy session, so the newest one usually
+/// settles it — but this used to read and JSON-parse **every** archived
+/// session first and hand the whole vector to a `take_while`. History grows
+/// one directory per build session and is never pruned here: 763 sessions on
+/// an ordinary dev box, each costing an open plus a parse, which measured as
+/// **~4.0 s of `soldr doctor`'s 8.4 s** on an idle machine (soldr#2571's
+/// startup trace). Every one of those reads past the first was discarded.
+///
+/// Semantics are unchanged, including the subtle one: a missing or malformed
+/// session is *skipped* rather than treated as a break, exactly as the old
+/// `filter_map` did, so a corrupt file between two degenerate sessions still
+/// does not hide the storm.
+fn zero_hit_storm_run_from_history(paths: &SoldrPaths) -> usize {
+    let mut run = 0;
+    for id in session_ids_newest_first(paths) {
+        match read_session_stats(paths, id) {
+            None => continue,
+            Some((compilations, hit_rate)) => {
+                if compilations >= ZERO_HIT_STORM_MIN_COMPILATIONS && hit_rate == 0.0 {
+                    run += 1;
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+    run
 }
 
 /// Read `(ts_ms, pid)` for every spawn record in the lifecycle journal.
@@ -228,6 +264,60 @@ mod tests {
         assert_eq!(health.consecutive_zero_hit_sessions, 3);
         assert!(health.daemon_churn, "{health:?}");
         assert_eq!(health.max_distinct_spawn_pids_per_hour, 5);
+    }
+
+    fn seed_session(paths: &SoldrPaths, id: u64, body: &str) {
+        let dir = history_dir(paths).join(id.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("last-session-stats.json"), body).unwrap();
+    }
+
+    fn seed_ok_session(paths: &SoldrPaths, id: u64, compilations: u64, hit_rate: f64) {
+        seed_session(
+            paths,
+            id,
+            &format!("{{\"compilations\":{compilations},\"hit_rate\":{hit_rate},\"hits\":0}}"),
+        );
+    }
+
+    /// The lazy reader must agree with the pure `take_while` on every shape,
+    /// including the one that is easy to lose: a malformed session is
+    /// *skipped*, not treated as the end of the run.
+    #[test]
+    fn history_run_matches_the_pure_predicate_and_skips_malformed_sessions() {
+        let tmp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
+        // Newest first: 9 degenerate, 8 corrupt, 7 degenerate, 6 healthy.
+        seed_ok_session(&paths, 9, 90, 0.0);
+        seed_session(&paths, 8, "{ this is not json");
+        seed_ok_session(&paths, 7, 120, 0.0);
+        seed_ok_session(&paths, 6, 80, 0.9);
+
+        assert_eq!(
+            zero_hit_storm_run_from_history(&paths),
+            zero_hit_storm_run(&[(90, 0.0), (120, 0.0), (80, 0.9)]),
+            "the corrupt session must be skipped, not end the run"
+        );
+        assert_eq!(zero_hit_storm_run_from_history(&paths), 2);
+    }
+
+    /// The point of the rewrite: sessions older than the run are never read.
+    ///
+    /// Asserted by making them unreadable-as-JSON *and* proving the answer is
+    /// unchanged — if the reader still walked the whole history it would have
+    /// to open them, and a `break`-on-malformed implementation would give a
+    /// different run length.
+    #[test]
+    fn sessions_older_than_the_run_are_not_read() {
+        let tmp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
+        seed_ok_session(&paths, 100, 90, 0.0);
+        seed_ok_session(&paths, 99, 80, 0.75); // healthy: ends the run here
+        for id in 0..90u64 {
+            seed_session(&paths, id, "{ never parsed");
+        }
+
+        assert_eq!(zero_hit_storm_run_from_history(&paths), 1);
     }
 
     #[test]
