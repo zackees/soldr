@@ -311,7 +311,19 @@ fn issue_2476_sixty_four_process_stampede_binds_one_broker() {
         }
     }
 
-    let log = spawn_log(&home);
+    // soldr#2624 observations: on contended runners the winner's broker is
+    // still paying its cold start (image hash, soldr#2517) when the last
+    // front door exits — `soldr version` has bounded waits and does not
+    // require the broker, so all 64 legitimately exit before the bind
+    // completes. The bind is asynchronous and still in flight: poll for its
+    // completion before asserting, instead of reading the log at a racy
+    // instant (two identical 14s failures with `bound == 0`).
+    let bind_deadline = Instant::now() + Duration::from_secs(60);
+    let mut log = spawn_log(&home);
+    while Instant::now() < bind_deadline && !log.contains("stable endpoint bound at") {
+        std::thread::sleep(Duration::from_millis(200));
+        log = spawn_log(&home);
+    }
     stop_broker(&home);
     assert!(
         failures.is_empty(),
