@@ -20,6 +20,24 @@ from pathlib import Path
 JOB_HEADER = re.compile(r"^  ([A-Za-z0-9_-]+):\s*(?:#.*)?$")
 TOP_LEVEL_KEY = re.compile(r"^    ([A-Za-z0-9_-]+):(?:\s*(.*))?$")
 INTEGER = re.compile(r"^[0-9]+$")
+# soldr#2615: a reusable workflow may size its budget by a boolean input
+# (`run_pep517_smoke` grows the target-run job only when the wheel smoke
+# rides along). Both branches are static integers, so the bound is still
+# fully verifiable here — arbitrary expressions remain rejected.
+CONDITIONAL = re.compile(
+    r"^\$\{\{\s*inputs\.[A-Za-z0-9_-]+\s*&&\s*([0-9]+)\s*\|\|\s*([0-9]+)\s*\}\}$"
+)
+
+
+def _timeout_value_is_valid(value: str) -> bool:
+    """A literal 1..360 integer, or an inputs-gated choice between two."""
+
+    if INTEGER.fullmatch(value):
+        return 1 <= int(value) <= 360
+    conditional = CONDITIONAL.fullmatch(value)
+    return conditional is not None and all(
+        1 <= int(branch) <= 360 for branch in conditional.groups()
+    )
 
 
 def _job_blocks(workflow: str) -> list[tuple[str, list[str]]]:
@@ -89,7 +107,7 @@ def find_timeout_violations(workflow: str) -> list[str]:
             )
             continue
         value = values[0]
-        if not INTEGER.fullmatch(value) or not 1 <= int(value) <= 360:
+        if not _timeout_value_is_valid(value):
             violations.append(
                 f"{job_id}: timeout-minutes must be an integer from 1 to 360 (got {value!r})"
             )

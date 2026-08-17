@@ -379,10 +379,32 @@ def test_pep517_platform_smokes_run_on_pull_requests() -> None:
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
     block = _job_block(ci, "pep517-daemon-smoke", "e2e-linux-x64")
 
-    assert '"name":"macos-arm64"' in block
+    # soldr#2615: the macos-arm64 smoke rides the e2e-macos-arm64 target-run
+    # allocation instead of a second macos-15 VM; only windows-x64 keeps a
+    # dedicated smoke leg here.
+    assert '"name":"macos-arm64"' not in block
     assert '"name":"windows-x64"' in block
     assert "github.event.pull_request.labels" in block
     assert "fromJSON('[" in block
+
+    run = _job_block(ci, "e2e-macos-arm64")
+    assert _job_input(run, "run_pep517_smoke") == (
+        "${{ github.ref_name == 'main' || "
+        "!contains(github.event.pull_request.labels.*.name, 'fast-build') }}"
+    )
+
+    target_run = (WORKFLOWS / "_ci-target-run.yml").read_text(encoding="utf-8")
+    assert "run_pep517_smoke:" in target_run
+    for step_name in [
+        "Build soldr wheel under test",
+        "Run downstream PEP 517 daemon smoke",
+    ]:
+        step = _step_block(target_run, step_name)
+        assert "if: ${{ inputs.run_pep517_smoke }}" in step
+    # The smoke must run after (and never gate) the archive replay.
+    assert target_run.index(
+        "      - name: Run complete pre-built test archive\n"
+    ) < target_run.index("      - name: Build soldr wheel under test\n")
 
 
 def test_manual_cross_compile_workflows_use_blessed_supported_targets() -> None:

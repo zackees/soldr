@@ -656,11 +656,14 @@ jobs:
     timeout-minutes: 35
     strategy:
       fail-fast: false
-      # PEP 517 is a public wheel boundary, so both native platform smokes run
-      # on pull requests as well as main. The matrix remains selected rather
-      # than filtered per-leg so a `fast-build` PR allocates neither runner.
+      # PEP 517 is a public wheel boundary, so the native platform smokes run
+      # on pull requests as well as main. The macos-arm64 leg moved into the
+      # e2e-macos-arm64 target-run (soldr#2615, `run_pep517_smoke: true`) so a
+      # PR allocates macos-15 once instead of twice; only windows-x64 remains
+      # here. The matrix stays selected rather than filtered per-leg so a
+      # `fast-build` PR allocates no runner.
       matrix:
-        include: ${{ fromJSON('[{"name":"macos-arm64","runner":"macos-15","python":"3.13"},{"name":"windows-x64","runner":"windows-2025","python":"3.13t"}]') }}
+        include: ${{ fromJSON('[{"name":"windows-x64","runner":"windows-2025","python":"3.13t"}]') }}
     env:
       RUST_BACKTRACE: "1"
       CARGO_TERM_COLOR: always
@@ -1018,6 +1021,10 @@ jobs:
       runs_on: macos-15
       target: aarch64-apple-darwin
       artifact_name: soldr-ci-e2e-macos-arm64
+      # soldr#2615: run the PEP 517 wheel smoke on this same macos-15
+      # allocation instead of a dedicated pep517-daemon-smoke leg. Mirrors
+      # that job's gate: main always runs it, `fast-build` PRs skip it.
+      run_pep517_smoke: ${{ github.ref_name == 'main' || !contains(github.event.pull_request.labels.*.name, 'fast-build') }}
 
   # ---------- Windows x64 ----------
   e2e-windows-x64-build:
