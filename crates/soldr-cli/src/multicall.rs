@@ -163,6 +163,11 @@ fn run_soldr_dylint(raw_args: &[String]) -> i32 {
         Ok(code) => normalize_exit_code(code),
         Err(err) => {
             eprintln!("soldr-dylint: wrapper dispatch failed: {err}");
+            // This line IS the explanation for the non-zero exit; without
+            // the mark, the soldr#2024 exit annotation would follow it
+            // claiming "soldr emitted no diagnostic" — actively misleading
+            // right under a printed diagnostic (soldr#2634 finding 3).
+            crate::exit_guard::mark_spoke();
             101
         }
     }
@@ -264,6 +269,7 @@ fn run_zccache_soldr() -> i32 {
             "zccache-soldr: missing compiler-path argument (wrapper contract is \
              `[wrapper_path, compiler_path, ...compiler_args]`)"
         );
+        crate::exit_guard::mark_spoke();
         return 2;
     }
 
@@ -275,6 +281,7 @@ fn run_zccache_soldr() -> i32 {
         Ok(code) => normalize_exit_code(code),
         Err(failure) => {
             eprintln!("zccache-soldr: dispatch failed: {failure}");
+            crate::exit_guard::mark_spoke();
             101
         }
     }
@@ -303,6 +310,7 @@ fn run_clang_shim(tool: ClangTool) -> i32 {
                      is not on PATH after stripping the shim's own directory"
                 );
             }
+            crate::exit_guard::mark_spoke();
             127
         }
     }
@@ -367,6 +375,7 @@ fn exec_with_argv(binary: &Path, args: &[OsString]) -> i32 {
         Ok(status) => status.code().map(normalize_exit_code).unwrap_or(1),
         Err(err) => {
             eprintln!("clang shim: exec({binary:?}) failed: {err}");
+            crate::exit_guard::mark_spoke();
             126
         }
     }
