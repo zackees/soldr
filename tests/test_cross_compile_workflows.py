@@ -1,3 +1,4 @@
+import json
 import re
 from pathlib import Path
 
@@ -548,12 +549,10 @@ def test_mac_x64_distribution_uses_pinned_setup_soldr_on_intel() -> None:
     assert "target: x86_64-apple-darwin" in mac_build
 
     # Release lanes use the same pinned setup-soldr target environment;
-    # macOS x64 stays native on the Intel runner.
-    assert (
-        "- name: macOS x64\n"
-        "            runner: macos-15-intel\n"
-        "            target: x86_64-apple-darwin" in release
-    )
+    # macOS x64 stays native on the Intel runner. The matrix itself is
+    # contract-generated (soldr#2469 step 2.1) and the intel-runner fact is
+    # pinned in test_canonical_target_contract.py against release.build.
+    assert "include: ${{ fromJSON(needs.prepare.outputs.build_matrix) }}" in release
     assert '"x86_64-apple-darwin": {"os": "darwin", "arch": "x86_64"}' in release
     assert 'prepare --target "$target" --github-env "$GITHUB_ENV"' in release
     assert "uses: zackees/setup-soldr@40320d277ba4946e38d4b3c02e6c7a15a29c3f3f" in release
@@ -586,15 +585,19 @@ def test_mac_x64_distribution_uses_pinned_setup_soldr_on_intel() -> None:
 
 
 def test_linux_arm64_release_uses_matching_supported_hosts() -> None:
-    """GNU ARM cross-builds on x64 while musl ARM builds and smokes natively."""
-    release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
-    assert "- name: Linux ARM64 (glibc)\n" in release
-    assert "- name: Linux ARM64 (musl)\n" in release
-    arm_blocks = re.findall(
-        r"- name: Linux ARM64 \((?:glibc|musl)\)\n(?:\s+#.*\n)*\s+runner: ([^\n]+)",
-        release,
+    """GNU ARM cross-builds on x64 while musl ARM builds and smokes natively.
+
+    soldr#2469 step 2.1: the release matrix is contract-generated, so the
+    host assignment now lives in `release.build` of canonical-targets.json.
+    """
+    contract = json.loads(
+        (REPO_ROOT / "ci" / "canonical-targets.json").read_text(encoding="utf-8")
     )
-    assert arm_blocks == ["ubuntu-24.04", "ubuntu-24.04-arm"]
+    build = {
+        entry["triple"]: entry["release"]["build"] for entry in contract["targets"]
+    }
+    assert build["aarch64-unknown-linux-gnu"]["runner"] == "ubuntu-24.04"
+    assert build["aarch64-unknown-linux-musl"]["runner"] == "ubuntu-24.04-arm"
 
 
 def test_release_wheels_use_setup_soldr_target_hooks_without_zig_or_xwin() -> None:
@@ -613,13 +616,11 @@ def test_release_wheels_use_setup_soldr_target_hooks_without_zig_or_xwin() -> No
     assert "maturin --zig" not in release
     assert "Setup zig for Linux wheel lanes" not in release
     assert "lzma_pkgconfig" not in release
-    assert "runner: ubuntu-24.04-arm" in release
+    # soldr#2469 step 2.1: the build matrix (including the ARM64-musl
+    # native-runner exception) is contract-generated; its per-target facts
+    # are pinned in test_canonical_target_contract.py.
+    assert "include: ${{ fromJSON(needs.prepare.outputs.build_matrix) }}" in release
     assert "startsWith(matrix.target, 'aarch64-')" not in release
-    assert (
-        "target: aarch64-unknown-linux-musl\n"
-        '            setup_target: ""\n'
-        "            binary: soldr" in release
-    )
     native_arm_musl = _step_block(release, "Build ARM64 musl release binary natively")
     assert "CC_aarch64_unknown_linux_musl: musl-gcc" in native_arm_musl
     assert ".github/scripts/native_release_build.py binary" in native_arm_musl
@@ -702,11 +703,9 @@ def test_windows_wheel_does_not_reuse_archive_executable_output() -> None:
     wheel_smoke = _step_block(release, "Smoke test wheel")
 
     assert "build_driver:" not in matrix
-    assert (
-        "- name: Windows x64 (Linux cross)\n"
-        "            runner: ubuntu-24.04\n"
-        "            target: x86_64-pc-windows-msvc" in matrix
-    )
+    # soldr#2469 step 2.1: the Windows Linux-cross entries now come from the
+    # contract-generated matrix (see test_canonical_target_contract.py).
+    assert "include: ${{ fromJSON(needs.prepare.outputs.build_matrix) }}" in matrix
     assert ".github/scripts/build_release_wheel.py" in wheel_step
     assert "--target-dir target" not in wheel_step
     assert "!contains(matrix.target, 'pc-windows-msvc')" in wheel_smoke
@@ -726,11 +725,17 @@ def test_windows_wheel_does_not_reuse_archive_executable_output() -> None:
     assert "target: x86_64-pc-windows-msvc" in smoke_windows
     assert "runner: windows-11-arm" in smoke_windows
     assert "target: aarch64-pc-windows-msvc" in smoke_windows
-    assert (
-        "- name: Windows ARM64 (Linux cross)\n"
-        "            runner: ubuntu-24.04\n"
-        "            target: aarch64-pc-windows-msvc" in matrix
+    # soldr#2469 step 2.1: the ARM64 Windows Linux-cross build entry lives
+    # in the contract's release.build block.
+    contract = json.loads(
+        (REPO_ROOT / "ci" / "canonical-targets.json").read_text(encoding="utf-8")
     )
+    arm_win = next(
+        entry["release"]["build"]
+        for entry in contract["targets"]
+        if entry["triple"] == "aarch64-pc-windows-msvc"
+    )
+    assert arm_win["runner"] == "ubuntu-24.04"
 
 
 def test_partial_immutable_release_can_recover_missing_pypi_wheels() -> None:

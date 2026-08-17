@@ -55,12 +55,20 @@ jobs:
       npm_has_version: ${{ steps.validate.outputs.npm_has_version }}
       version: ${{ steps.validate.outputs.version }}
       commit_sha: ${{ steps.validate.outputs.commit_sha }}
+      build_matrix: ${{ steps.build_matrix.outputs.matrix }}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           submodules: recursive
           fetch-depth: 0
+
+      # Contract-generated (soldr#2469 step 2.1): the build job's matrix
+      # comes from ci/canonical-targets.json, so the matrix and the
+      # completeness contract cannot drift apart separately again.
+      - name: Generate release build matrix from the target contract
+        id: build_matrix
+        run: echo "matrix=$(python3 .github/scripts/release_completeness.py --build-matrix)" >> "$GITHUB_OUTPUT"
 
       - name: Compare candidate version against PyPI
         id: validate
@@ -114,7 +122,7 @@ jobs:
           # Contract-generated (soldr#2469 step 2.2): one source of truth in
           # ci/canonical-targets.json via release_completeness.py, no inline
           # duplicate list. Captured first so a script failure fails the step.
-          expected_asset_list="$(python3 .github/scripts/release_completeness.py --list-expected-github-assets "$version")"
+          expected_asset_list="$(python3 .github/scripts/release_completeness.py --version "$version" --list-expected-github-assets)"
           expected_assets=()
           while IFS= read -r asset; do
             expected_assets+=("$asset")
@@ -238,50 +246,13 @@ jobs:
     continue-on-error: false
     strategy:
       fail-fast: false
+      # Contract-generated (soldr#2469 step 2.1): per-target release build
+      # metadata (runner, setup_target, binary — including the ARM64-musl
+      # native-runner exception and the Linux-cross Windows lanes) lives in
+      # ci/canonical-targets.json under `release.build`. The prepare job
+      # emits the include list via release_completeness.py --build-matrix.
       matrix:
-        include:
-          # Cross targets use catalogue-backed Soldr environments. ARM64
-          # musl builds natively because its catalogue compiler is i386-hosted.
-          - name: Linux x64 (glibc)
-            runner: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            setup_target: x86_64-unknown-linux-gnu
-            binary: soldr
-          - name: Linux ARM64 (glibc)
-            runner: ubuntu-24.04
-            target: aarch64-unknown-linux-gnu
-            setup_target: aarch64-unknown-linux-gnu
-            binary: soldr
-          - name: Linux x64 (musl)
-            runner: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-            setup_target: x86_64-unknown-linux-musl
-            binary: soldr
-          - name: Linux ARM64 (musl)
-            runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
-            setup_target: ""
-            binary: soldr
-          - name: macOS x64
-            runner: macos-15-intel
-            target: x86_64-apple-darwin
-            setup_target: x86_64-apple-darwin
-            binary: soldr
-          - name: macOS ARM64
-            runner: macos-15
-            target: aarch64-apple-darwin
-            setup_target: aarch64-apple-darwin
-            binary: soldr
-          - name: Windows x64 (Linux cross)
-            runner: ubuntu-24.04
-            target: x86_64-pc-windows-msvc
-            setup_target: x86_64-pc-windows-msvc
-            binary: soldr.exe
-          - name: Windows ARM64 (Linux cross)
-            runner: ubuntu-24.04
-            target: aarch64-pc-windows-msvc
-            setup_target: aarch64-pc-windows-msvc
-            binary: soldr.exe
+        include: ${{ fromJSON(needs.prepare.outputs.build_matrix) }}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -1888,7 +1859,7 @@ jobs:
             exit 1
           fi
           # Contract-generated (soldr#2469 step 2.2) — see the prepare job.
-          expected_asset_list="$(python3 .github/scripts/release_completeness.py --list-expected-github-assets "$tag")"
+          expected_asset_list="$(python3 .github/scripts/release_completeness.py --version "$tag" --list-expected-github-assets)"
           expected_assets=()
           while IFS= read -r asset; do
             expected_assets+=("$asset")

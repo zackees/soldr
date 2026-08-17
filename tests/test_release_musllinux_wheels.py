@@ -1,7 +1,9 @@
+import json
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-auto.yml"
+CONTRACT = REPO_ROOT / "ci" / "canonical-targets.json"
 
 
 def test_release_workflow_builds_and_publishes_musllinux_wheels() -> None:
@@ -19,8 +21,20 @@ def test_release_workflow_builds_and_publishes_musllinux_wheels() -> None:
     assert "cross-targets: ${{ matrix.setup_target }}" in workflow
     assert "target-wheel-hook" in workflow
     assert ".github/scripts/build_release_wheel.py" in workflow
-    assert "target: x86_64-unknown-linux-musl" in workflow
-    assert "target: aarch64-unknown-linux-musl" in workflow
+    # soldr#2469 step 2.1: the musl build lanes come from the
+    # contract-generated matrix rather than inline workflow entries.
+    contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
+    musl_triples = {
+        entry["triple"]
+        for entry in contract["targets"]
+        if entry["triple"].endswith("-musl")
+        and entry["release"]["status"] == "included"
+    }
+    assert musl_triples == {
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl",
+    }
+    assert "include: ${{ fromJSON(needs.prepare.outputs.build_matrix) }}" in workflow
     assert "name: pypi-soldr-${{ matrix.target }}" in workflow
     assert "Assert linux-musl wheels are tagged musllinux_1_2" in workflow
     assert "Smoke test musllinux wheel on Alpine" in workflow
