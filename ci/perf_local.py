@@ -20,6 +20,7 @@ Usage::
     uv run --no-project python ci/perf_local.py cargo test --workspace
     uv run --no-project python ci/perf_local.py smoke
     uv run --no-project python ci/perf_local.py smoke-console
+    uv run --no-project python ci/perf_local.py smoke-debug
     uv run --no-project python ci/perf_local.py --status
     uv run --no-project python ci/perf_local.py --stop
     uv run --no-project python ci/perf_local.py --reset-runner
@@ -70,6 +71,7 @@ USAGE = """\
 usage: python ci/perf_local.py cargo <args...>
        python ci/perf_local.py smoke
        python ci/perf_local.py smoke-console
+       python ci/perf_local.py smoke-debug
        python ci/perf_local.py --status
        python ci/perf_local.py --stop
        python ci/perf_local.py --reset-runner
@@ -380,7 +382,7 @@ def main(argv: list[str]) -> int:
                 return reset_runner(runner)
             return wipe(runner)
     command_argv = container_argv(argv)
-    smoke_command = argv in (["smoke"], ["smoke-console"])
+    smoke_command = argv in (["smoke"], ["smoke-console"], ["smoke-debug"])
     if argv[0].startswith("smoke") and not smoke_command:
         print(f"error: smoke commands take no arguments\n\n{USAGE}", file=sys.stderr)
         return 2
@@ -412,9 +414,41 @@ def main(argv: list[str]) -> int:
                 exec_command(runner, command_argv, workdir, tty=tty_enabled()),
                 check=False,
             )
+            if argv == ["smoke-debug"]:
+                retain_debug_trace(runner)
             return completed.returncode
         finally:
             mark_runner_used(source_root)
+
+
+def retain_debug_trace(runner: Runner) -> None:
+    """Copy the smoke run's process-trace JSONL out of the runner (soldr#2546).
+
+    Dev-built soldr roots at ``~/.soldr-dev`` inside the container; the
+    timelines land under ``logs/debug-trace/``. They are copied to
+    ``.perf-local/debug-trace/`` in the repository mount so the host can keep
+    them as run artifacts. Best-effort: a smoke that spawned no traced child
+    simply retains nothing.
+    """
+    script = (
+        "mkdir -p /repo/.perf-local/debug-trace && "
+        "for d in /root/.soldr-dev/logs/debug-trace /root/.soldr/logs/debug-trace; do "
+        '  if [ -d "$d" ]; then cp -f "$d"/*.jsonl /repo/.perf-local/debug-trace/ 2>/dev/null || true; fi; '
+        "done && ls /repo/.perf-local/debug-trace/ | tail -5"
+    )
+    copied = subprocess.run(
+        ["docker", "exec", runner.container, "sh", "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if copied.returncode == 0 and copied.stdout.strip():
+        print(
+            "smoke-debug: process timelines retained in .perf-local/debug-trace/ "
+            f"(latest: {copied.stdout.strip().splitlines()[-1]})"
+        )
+    else:
+        print("smoke-debug: no process timelines were produced by this run")
 
 
 def shared_source_root(repo_root: Path) -> Path:
@@ -451,6 +485,17 @@ def container_argv(argv: list[str]) -> list[str]:
         return [
             "env",
             "SOLDR_SMOKE_TOKIO_CONSOLE=1",
+            "bash",
+            "ci/smoke_local.sh",
+        ]
+    if argv == ["smoke-debug"]:
+        # soldr#2546: the smoke pipeline under `soldr --debug`-equivalent
+        # tracing — every front-door child spawn (and, on observed paths,
+        # descendants) lands in the JSONL timelines that
+        # `retain_debug_trace` copies out after the run.
+        return [
+            "env",
+            "SOLDR_DEBUG_TRACE=1",
             "bash",
             "ci/smoke_local.sh",
         ]

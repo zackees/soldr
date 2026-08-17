@@ -278,6 +278,17 @@ def test_exec_command_reuses_runner_and_changes_only_workdir(tmp_path: Path) -> 
     ]
 
 
+def test_smoke_debug_traces_and_retains_timelines() -> None:
+    # soldr#2546: recursive Docker smoke runs can retain the process JSONL.
+    assert perf_local.container_argv(["smoke-debug"]) == [
+        "env",
+        "SOLDR_DEBUG_TRACE=1",
+        "bash",
+        "ci/smoke_local.sh",
+    ]
+    assert callable(perf_local.retain_debug_trace)
+
+
 def test_smoke_command_runs_the_complete_repository_pipeline() -> None:
     assert perf_local.container_argv(["smoke"]) == ["bash", "ci/smoke_local.sh"]
     assert perf_local.container_argv(["smoke-console"]) == [
