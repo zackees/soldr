@@ -89,9 +89,14 @@ fn lint_deps_runs_all_tools_without_compiler_cache() {
         vec!["audit".to_string()],
         vec!["machete".to_string()],
     ] {
+        // soldr#2589: on a miss, include soldr's stderr — it carries the
+        // per-leg `lint deps: `cargo <sub>` (pid N) exited with <status>`
+        // telemetry that distinguishes a child that ran but whose log
+        // vanished from a leg that never ran yet reported success.
         assert!(
             invocations.contains(&expected),
-            "expected dependency check {expected:?}; got {invocations:?}"
+            "expected dependency check {expected:?}; got {invocations:?}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stderr),
         );
     }
     assert!(
