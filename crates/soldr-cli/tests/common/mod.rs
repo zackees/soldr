@@ -1347,8 +1347,11 @@ pub(crate) fn fake_logging_cargo_script(log_path: &Path) -> String {
         soldr_platform::host::facts::os(),
         soldr_platform::host::facts::HostOs::Windows
     ) {
-        // One file per invocation, claimed via `mkdir` (atomic-exclusive in
-        // cmd), NOT `>>` appends to a shared file: cmd's append is
+        // One file per invocation, claimed via `mkdir` — exclusive **only
+        // under a parent that already exists**, which is why
+        // [`install_logging_fake_cargo`] pre-creates the slot root; see the
+        // soldr#2589 note there. NOT `>>` appends to a shared file: cmd's
+        // append is
         // seek-then-write, so concurrent children (e.g. `lint deps` running
         // deny/audit/machete in parallel) could clobber each other's lines
         // — the target-run x86_64-msvc lane lost the `audit` line exactly
@@ -1356,6 +1359,18 @@ pub(crate) fn fake_logging_cargo_script(log_path: &Path) -> String {
         // a sortable centisecond timestamp so sequential consumers (the
         // toolchain tests assert invocation order) still read back in
         // order; process-spawn overhead dwarfs centisecond ties.
+        //
+        // soldr#2589: claiming the slot is not enough — the write into it can
+        // still be lost. The 2026-08-17 recurrence had all three `lint deps`
+        // legs exit 0 (so the writer's existence guard passed) with one line
+        // absent at read time and a teed `The process cannot access the file
+        // because it is being used by another process.` beside it: the
+        // redirect created `line.txt` and lost its content, and a 0-byte file
+        // satisfies `if not exist`. So verify the *size*, and retry the write
+        // into the SAME slot (`echo >` truncates, so a retry is idempotent).
+        // Re-claiming a fresh slot instead would strand the abandoned one —
+        // `rmdir` fails while the handle that caused the violation is open,
+        // and the reader now treats a blank slot as a hard error.
         format!(
             "@echo off\n\
              setlocal enabledelayedexpansion\n\
@@ -1373,9 +1388,17 @@ pub(crate) fn fake_logging_cargo_script(log_path: &Path) -> String {
              :mkslot\n\
              set \"slot={0}.d\\!stamp!_!RANDOM!_!RANDOM!\"\n\
              mkdir \"!slot!\" 2>nul || goto mkslot\n\
+             set \"tries=0\"\n\
+             :writeline\n\
+             set /a tries+=1\n\
              echo !line!>\"!slot!\\line.txt\"\n\
-             if not exist \"!slot!\\line.txt\" exit /b 97\n\
-             exit /b 0\n",
+             set \"size=\"\n\
+             for %%A in (\"!slot!\\line.txt\") do set \"size=%%~zA\"\n\
+             if not defined size set \"size=0\"\n\
+             if !size! GTR 0 exit /b 0\n\
+             if !tries! GEQ 10 exit /b 97\n\
+             if !tries! GEQ 2 ping -n 2 127.0.0.1 >nul\n\
+             goto writeline\n",
             log_path.display()
         )
     } else {
@@ -1402,6 +1425,23 @@ pub(crate) fn fake_logging_cargo_script(log_path: &Path) -> String {
 /// Install a fake cargo that logs argv per invocation. Returns the path
 /// to the fake binary, ready to hand to `SOLDR_TEST_CARGO_BIN`.
 pub(crate) fn install_logging_fake_cargo(log_path: &Path) -> PathBuf {
+    // soldr#2589: create the slot root before any child can run.
+    //
+    // The Windows script claims its slot with `mkdir "<root>\<slot>"`, and
+    // that is a reliable exclusive claim only when `<root>` already exists.
+    // When two children race to create the *parent* as well, cmd's `md` can
+    // report success to **both** — reproduced directly: 32 concurrent writers
+    // logged `writer0` and `writer1` claiming the identical slot path on
+    // their first attempt, followed by one sharing violation and one lost
+    // line. (A single-component `mkdir` under an existing parent is exclusive;
+    // 64 concurrent processes racing one such path yield exactly one winner.)
+    //
+    // That is the whole flake: `lint deps` starts deny/audit/machete
+    // simultaneously against a fresh log root, so the first two to reach
+    // `mkdir` are exactly the pair that can collide — which is why the lost
+    // line was always one of the first tools to start.
+    let slot_root = PathBuf::from(format!("{}.d", log_path.display()));
+    fs::create_dir_all(&slot_root).expect("failed to create fake-cargo slot root");
     let dir = unique_temp_dir("fake-cargo-logging");
     let cargo = fake_script_path(&dir, "cargo");
     write_fake_script(&cargo, &fake_logging_cargo_script(log_path));
@@ -1580,6 +1620,17 @@ pub(crate) fn read_logged_cargo_invocations(log_path: &Path) -> Vec<Vec<String>>
         slots.sort();
         for slot in slots {
             match fs::read_to_string(slot.join("line.txt")) {
+                // soldr#2589: a claimed slot whose line is blank contributes
+                // nothing once the terminal `.filter(!trim().is_empty())`
+                // below runs — which is exactly how the 2026-08-17 machete
+                // line vanished while every leg still exited 0. An empty slot
+                // is writer-loss, not an empty invocation; say so.
+                Ok(text) if text.trim().is_empty() => panic!(
+                    "claimed fake-cargo slot {} has a blank line.txt \
+                     (soldr#2589 -- the writer claimed the slot but its \
+                     content never landed)",
+                    slot.display()
+                ),
                 Ok(text) => lines.extend(text.lines().map(str::to_string)),
                 // soldr#2589: a slot dir was claimed (mkdir succeeded) but
                 // its line never became readable. Silently skipping is how

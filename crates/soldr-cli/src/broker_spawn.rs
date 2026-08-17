@@ -238,16 +238,26 @@ pub(crate) fn maybe_spawn_broker_front_door(raw_args: &[String]) {
 /// freshly-built checkout binary share one broker endpoint) corrupted a
 /// caller's `json.loads()` with the soldr#2549 mismatch warning.
 fn ensure_stable_broker_ready(diagnostics_eligible: bool) -> Result<(), String> {
+    // soldr#2571: the `startup_trace` marks below gate on their own env var,
+    // NOT on `diagnostics_eligible` — see that module's doc for why folding
+    // them into the suppression would silence the exact shape that wedges.
     let endpoint = crate::broker_identity::ResolvedBrokerEndpoint::resolve()
         .map_err(|error| error.to_string())?;
+    crate::startup_trace::phase(crate::startup_trace::phase::BROKER_ENDPOINT_RESOLVE);
     endpoint
         .create_owner_only_directories()
         .map_err(|error| error.to_string())?;
+    crate::startup_trace::phase(crate::startup_trace::phase::BROKER_OWNER_DIRECTORIES);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|error| format!("could not create readiness runtime: {error}"))?;
-    if let Some(observed) = broker_instance_at(&runtime, &endpoint.bind_endpoint) {
+    crate::startup_trace::phase(crate::startup_trace::phase::BROKER_PROBE_RUNTIME);
+    // The hot path for an already-live broker: this dial is the whole of
+    // `ensure_stable_broker_ready` when nothing needs resurrecting.
+    let observed_instance = broker_instance_at(&runtime, &endpoint.bind_endpoint);
+    crate::startup_trace::phase(crate::startup_trace::phase::BROKER_ADMIN_PROBE);
+    if let Some(observed) = observed_instance {
         if diagnostics_eligible {
             warn_on_broker_image_mismatch(&observed);
         }
@@ -275,6 +285,7 @@ fn ensure_stable_broker_ready(diagnostics_eligible: bool) -> Result<(), String> 
             Err(error) => return Err(error.to_string()),
         }
     };
+    crate::startup_trace::phase(crate::startup_trace::phase::BROKER_LEASE);
 
     #[cfg(debug_assertions)]
     if !test_pause_after_lease_acquired(&lease)? {
@@ -320,6 +331,7 @@ fn ensure_stable_broker_ready(diagnostics_eligible: bool) -> Result<(), String> 
         // hit instead of racing a cold executable scan while the lease ages.
         let broker_instance_id = crate::broker_server::broker_image_instance_id()
             .map_err(|error| format!("could not identify broker image: {error}"))?;
+        crate::startup_trace::phase(crate::startup_trace::phase::BROKER_IMAGE_HASH);
         lease.renew().map_err(|error| error.to_string())?;
         stage_broker_image(&endpoint.executable_path, &lease).map_err(|error| {
             format!(
@@ -327,6 +339,7 @@ fn ensure_stable_broker_ready(diagnostics_eligible: bool) -> Result<(), String> 
                 endpoint.executable_path.display()
             )
         })?;
+        crate::startup_trace::phase(crate::startup_trace::phase::BROKER_STAGE_IMAGE);
         lease.renew().map_err(|error| error.to_string())?;
         lease.check_fence().map_err(|error| error.to_string())?;
 
@@ -352,7 +365,10 @@ fn ensure_stable_broker_ready(diagnostics_eligible: bool) -> Result<(), String> 
             EnvironmentPolicy::UserBaseline,
         )
         .map_err(|error| format!("could not spawn stable broker: {error}"))?;
-        wait_for_stable_broker(&runtime, &endpoint.bind_endpoint, Some((&lease, child)))
+        let ready =
+            wait_for_stable_broker(&runtime, &endpoint.bind_endpoint, Some((&lease, child)));
+        crate::startup_trace::phase(crate::startup_trace::phase::BROKER_SPAWN_WAIT);
+        ready
     })();
     lease.release();
     result

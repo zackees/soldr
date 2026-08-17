@@ -51,6 +51,59 @@ fn version_flag_starts_and_prints() {
     );
 }
 
+/// soldr#2571: the startup trace has to survive a real spawn.
+///
+/// The pure unit tests in `startup_trace` prove the line *shape*; only running
+/// the built binary proves the marks are actually reached and that stderr
+/// carries them out of the process. That is the whole point — the flake this
+/// instruments produced a child with two empty streams, so "the marks emit
+/// through a real spawn" is the property under test.
+#[test]
+fn startup_trace_names_front_door_phases_on_stderr() {
+    let output = std::process::Command::new(common::soldr_bin())
+        .arg("--version")
+        .env(soldr_cli::startup_trace::STARTUP_TRACE_ENV_VAR, "1")
+        .output()
+        .expect("spawn soldr");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "`soldr --version` must still exit 0 with the trace on: {stderr}"
+    );
+    for phase in [
+        soldr_cli::startup_trace::phase::REENTRANCY_GUARD,
+        soldr_cli::startup_trace::phase::MULTICALL_DISPATCH,
+    ] {
+        assert!(
+            stderr.contains(&format!("soldr front-door: startup phase={phase} ms=")),
+            "trace must name the {phase} phase; stderr was:\n{stderr}"
+        );
+    }
+}
+
+/// The other half of the contract: unset means byte-for-byte the old behavior.
+///
+/// soldr#2554 requires `--json` / `--shell-export` payloads to stay parseable
+/// when a caller merges stdout and stderr. The trace is allowed to write to
+/// stderr *because* it is opt-in, so "silent unless asked" is load-bearing.
+#[test]
+fn startup_trace_is_silent_unless_the_env_var_asks_for_it() {
+    let output = std::process::Command::new(common::soldr_bin())
+        .arg("--version")
+        // Removed, not set to "0": this must hold for a caller that has never
+        // heard of the variable.
+        .env_remove(soldr_cli::startup_trace::STARTUP_TRACE_ENV_VAR)
+        .output()
+        .expect("spawn soldr");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("soldr front-door: startup phase="),
+        "the trace must stay off by default; stderr was:\n{stderr}"
+    );
+}
+
 #[test]
 fn help_flag_starts_and_prints() {
     // `--help` walks every subcommand and every global arg, so it is the

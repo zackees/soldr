@@ -13,9 +13,9 @@ use crate::{
     dylint_cook, env_cmd, exec_cmd, exit_guard, fetch, fuzzy_match, gc, install_shims, linker,
     lint_cmd, logs_cmd, msvc_host, multicall, native_cc, optimize, optimize_detect,
     optimize_windows, prepare_cmd, pyo3_detect, release_sidecar, rust_plan, save_load,
-    self_relocate, shim_dir, shim_materialize, startup_profile, target_alias, test_util, toolchain,
-    toolchain_doctor, toolchain_ensure, toolchain_link, trampoline, version_trampoline, wrapper,
-    wrapper_target, zccache, zccache_embedded, zccache_lifecycle,
+    self_relocate, shim_dir, shim_materialize, startup_profile, startup_trace, target_alias,
+    test_util, toolchain, toolchain_doctor, toolchain_ensure, toolchain_link, trampoline,
+    version_trampoline, wrapper, wrapper_target, zccache, zccache_embedded, zccache_lifecycle,
 };
 
 pub(crate) use crate::cli_args::{
@@ -127,6 +127,10 @@ pub fn run() -> std::process::ExitCode {
         exit_guard::mark_spoke();
         guarded_exit(code);
     }
+    // soldr#2571: from here on, every startup boundary is announced under
+    // SOLDR_STARTUP_TRACE. A client that wedges before its command produces
+    // output then names the last phase it completed instead of going silent.
+    startup_trace::phase(startup_trace::phase::REENTRANCY_GUARD);
 
     if !multicall::toolchain_shim_should_defer_to_rustc_wrapper(&raw_args) {
         match multicall::maybe_dispatch(&raw_args) {
@@ -138,6 +142,7 @@ pub fn run() -> std::process::ExitCode {
             None => {}
         }
     }
+    startup_trace::phase(startup_trace::phase::MULTICALL_DISPATCH);
 
     guarded_exit(run_main(raw_args));
 }
@@ -157,9 +162,11 @@ fn run_main(raw_args: Vec<String>) -> i32 {
             Err(error) => guarded_exit(report_and_exit(error)),
         }
     }
+    startup_trace::phase(startup_trace::phase::SELF_RELOCATE);
 
     // Route client control through the broker; standalone daemons never install this hook.
     let _ = crate::broker_control_transport::install();
+    startup_trace::phase(startup_trace::phase::BROKER_CONTROL_TRANSPORT);
     if raw_args.len() > 1 && wrapper::is_wrapper_invocation(&raw_args[1]) {
         // soldr#2545: a Soldr-owned wrapper lineage must arrive with the
         // effective-wrapper mirror still matching RUSTC_WRAPPER. Drift here
@@ -208,6 +215,7 @@ fn run_main(raw_args: Vec<String>) -> i32 {
     }
 
     crate::broker_spawn::maybe_spawn_broker_front_door(&raw_args);
+    startup_trace::phase(startup_trace::phase::BROKER_FRONT_DOOR);
     // `--as <version>` trampoline. Peeled off before clap so the fetched
     // older soldr parses its own argv on its own terms.
     let (pinned_version, trampoline_args) = match extract_as_pin(&raw_args[1..]) {
@@ -227,10 +235,12 @@ fn run_main(raw_args: Vec<String>) -> i32 {
         // that have `--as <ver>` stripped.
         return block_on_exit_code(run_with_args(&raw_args[0], &trampoline_args));
     }
+    startup_trace::phase(startup_trace::phase::VERSION_PIN);
 
     if let Some(code) = crate::global_upgrade::maybe_delegate(&raw_args) {
         return code;
     }
+    startup_trace::phase(startup_trace::phase::GLOBAL_UPGRADE);
 
     block_on_exit_code(run_with_args(&raw_args[0], &raw_args[1..]))
 }
@@ -258,6 +268,9 @@ fn soldr_as_env_pin() -> Option<String> {
 }
 
 async fn run_with_args(prog: &str, args: &[String]) -> Result<i32, SoldrError> {
+    // Reached only once `block_on_exit_code` has built the multi-thread runtime
+    // and is driving this future.
+    startup_trace::phase(startup_trace::phase::TOKIO_RUNTIME);
     let mut argv: Vec<String> = Vec::with_capacity(args.len() + 1);
     argv.push(prog.to_string());
     argv.extend(args.iter().cloned());
@@ -265,6 +278,7 @@ async fn run_with_args(prog: &str, args: &[String]) -> Result<i32, SoldrError> {
     // usage errors with its built-in exit(0) / exit(2), matching the original
     // invocation path's UX exactly.
     let cli = Cli::parse_from(argv);
+    startup_trace::phase(startup_trace::phase::CLAP_PARSE);
     Box::pin(run_cli(cli)).await.map(|_| 0)
 }
 
