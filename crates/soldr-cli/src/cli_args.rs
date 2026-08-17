@@ -133,6 +133,19 @@ Place it BEFORE `cargo`, as with --timestamp-lines."
     /// soldr#2302 — suppress per-unit cache HIT/MISS lines + stats summary (SOLDR_NO_CACHE_STATES=1); place before `cargo`, as with --no-cache.
     #[arg(long, help = "Suppress cache HIT/MISS lines + the stats summary")]
     pub(crate) no_cache_states: bool,
+    /// soldr#2546 — opt-in build process-tree tracing.
+    #[arg(
+        long,
+        help = "Trace build child processes to stderr + a JSONL timeline (soldr#2546)",
+        long_help = "Trace the processes soldr spawns for this build: each spawn and exit is \
+announced on stderr with elapsed time and PID, and a structured JSONL timeline is written \
+beside the build logs.
+
+Equivalent to SOLDR_DEBUG_TRACE=1. Place it BEFORE `cargo`, as in `soldr --debug cargo build`: \
+everything after `cargo` is passed through untouched, so `cargo install --debug` keeps its \
+own meaning. With the flag absent no tracing work is performed."
+    )]
+    pub(crate) debug: bool,
     #[arg(
         long,
         value_enum,
@@ -202,6 +215,14 @@ impl Cli {
         if self.no_cache_states {
             std::env::set_var(
                 crate::cargo_front_door::cache_states::NO_CACHE_STATES_ENV_VAR,
+                "1",
+            );
+        }
+        // soldr#2546. Publish the env spelling `debug_trace::enabled()` reads,
+        // so nested soldr invocations (shims, lint children) inherit tracing.
+        if self.debug {
+            std::env::set_var(
+                crate::cargo_front_door::debug_trace::DEBUG_TRACE_ENV_VAR,
                 "1",
             );
         }

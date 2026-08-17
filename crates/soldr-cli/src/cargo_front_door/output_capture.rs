@@ -49,8 +49,7 @@ fn retry_zthreads_without_flag(
     }
     suppress_windows_console_window(&mut command);
     configure_cargo_child_for_timeout(&mut command);
-    let mut child = command
-        .spawn()
+    let mut child = debug_trace::spawn_traced(&mut command, "soldr -Zthreads fallback")
         .map_err(|err| SoldrError::Other(format!("spawn -Zthreads fallback failed: {err}")))?;
     let status = wait_for_cargo_child(&mut child, "soldr -Zthreads fallback", None)?;
     Ok(status
@@ -90,8 +89,7 @@ fn run_command_capturing_cargo_json(
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
     configure_cargo_child_for_timeout(command);
-    let mut child = command
-        .spawn()
+    let mut child = debug_trace::spawn_traced(command, "cargo JSON capture")
         .map_err(|err| SoldrError::Other(format!("spawn cargo for JSON capture failed: {err}")))?;
     let stamp = line_stamp_anchor(std::io::IsTerminal::is_terminal(&std::io::stdout()));
     let stdout_rx = spawn_capture_pipe_reader_to_stdout(child.stdout.take().expect("piped"), stamp);
@@ -257,8 +255,7 @@ fn run_command_inheriting_stdio(
     timeout: Option<Duration>,
 ) -> Result<std::process::ExitStatus, SoldrError> {
     configure_cargo_child_for_timeout(command);
-    let mut child = command
-        .spawn()
+    let mut child = debug_trace::spawn_traced(command, "cargo")
         .map_err(|err| SoldrError::Other(format!("spawn cargo failed: {err}")))?;
     wait_for_cargo_child(&mut child, "cargo", timeout)
 }
@@ -280,7 +277,7 @@ fn run_command_capturing_diagnostic_tail(
     command.stderr(std::process::Stdio::piped());
     // stdout stays inherited — we don't need its bytes.
     configure_cargo_child_for_timeout(command);
-    let mut child = command.spawn().map_err(|err| {
+    let mut child = debug_trace::spawn_traced(command, "cargo diagnostic capture").map_err(|err| {
         SoldrError::Other(format!("spawn cargo for diagnostic capture failed: {err}"))
     })?;
     let child_stderr = child.stderr.take().expect("piped");
