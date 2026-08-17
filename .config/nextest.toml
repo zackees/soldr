@@ -44,7 +44,7 @@ filter = 'binary(agent_worktree_share) + binary(cli_daemon_builds) + binary(cli_
 test-group = 'soldr-runtime'
 
 [[profile.default.overrides]]
-filter = 'binary(cli_broker_resurrection) + binary(cli_broker_routes) + binary(cli_broker_single_instance) + binary(cli_broker_status) + binary(cli_broker_stop) + binary(cli_build_alias_parity) + binary(cli_build_fetch_overlap)'
+filter = 'binary(cli_broker_resurrection) + binary(cli_broker_routes) + binary(cli_broker_single_instance) + binary(cli_broker_status) + binary(cli_broker_stop) + binary(cli_build_alias_parity) + binary(cli_build_fetch_overlap) + binary(cli_kill_matrix)'
 test-group = 'soldr-runtime'
 
 [scripts.wrapper.timeout-diagnostics]
@@ -91,6 +91,13 @@ threads-required = "num-cpus"
 # child still executing, and the run passed on a quieter runner).
 [[profile.default.overrides]]
 filter = 'test(=cargo_fmt_routes_rustfmt_through_zccache_formatter)'
+slow-timeout = { period = "60s", terminate-after = 4, grace-period = "30s" }
+
+# 240s: the soldr#2442 kill-matrix — each test cold-starts a broker and
+# daemon (sometimes twice), pays the soldr#2517 image-hash cost per start,
+# and then waits bounded recovery deadlines after real SIGKILLs.
+[[profile.default.overrides]]
+filter = 'binary(cli_kill_matrix)'
 slow-timeout = { period = "60s", terminate-after = 4, grace-period = "30s" }
 
 # Inherits `[profile.default]`, so the timeouts above apply here too. That is
