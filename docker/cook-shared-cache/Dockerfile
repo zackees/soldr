@@ -61,6 +61,18 @@ RUN apt-get update \
        zstd \
     && rm -rf /var/lib/apt/lists/*
 
+# soldr#2424 P1: bake a stable machine identity. Minimal container images
+# ship no /etc/machine-id, so every broker SID / host-identity consumer in
+# the vendored running-process suite exercised only its fallback here —
+# and before running-process#1024 added one, 26 SID-dependent tests could
+# not run in this image at all. A fixed random id (not the host's) keeps
+# the identity container-scoped while giving each container generation a
+# stable value across its lifetime.
+RUN { dbus-uuidgen 2>/dev/null \
+      || head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n'; } > /etc/machine-id \
+    && echo >> /etc/machine-id \
+    && grep -qE '^[0-9a-f]{32}$' /etc/machine-id
+
 # soldr's `cargo test` jobs check the system rustc version; pin it here
 # to match `rust-toolchain.toml` (Rust 1.95.0).
 RUN rustup default 1.95.0 \
