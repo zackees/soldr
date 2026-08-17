@@ -478,9 +478,7 @@ fn create_many_unit_workspace(dir: &Path, count: usize) {
         fs::create_dir_all(member_dir.join("src")).expect("member src dir");
         fs::write(
             member_dir.join("Cargo.toml"),
-            format!(
-                "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"
-            ),
+            format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
         )
         .expect("member manifest");
         fs::write(
@@ -500,7 +498,9 @@ fn create_many_unit_workspace(dir: &Path, count: usize) {
     .expect("root manifest");
     fs::write(
         root_dir.join("src").join("main.rs"),
-        format!("fn main() {{\n    let mut total = 0u64;\n{calls}    println!(\"{{total}}\");\n}}\n"),
+        format!(
+            "fn main() {{\n    let mut total = 0u64;\n{calls}    println!(\"{{total}}\");\n}}\n"
+        ),
     )
     .expect("root main");
     fs::write(
