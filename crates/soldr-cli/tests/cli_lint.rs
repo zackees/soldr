@@ -5,7 +5,9 @@ mod common;
 use common::*;
 use std::{
     fs,
+    io::Read,
     path::Path,
+    process::Stdio,
     time::{Duration, Instant},
 };
 
@@ -206,21 +208,69 @@ fn dependency_failure_cancels_sibling_lint_children() {
     let cargo = fake_script_path(&tools, "cargo");
     write_fake_script(&cargo, dependency_failure_script());
 
-    let started = Instant::now();
-    let output = isolated_soldr_command()
+    let mut child = isolated_soldr_command()
         .args(["lint", "deps"])
         .env("SOLDR_CACHE_DIR", root.join("cache"))
         .env("SOLDR_TEST_CARGO_BIN", cargo)
         .env("PATH", prepend_to_path(&tools))
-        .output()
-        .expect("run failing soldr lint deps");
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn failing soldr lint deps");
 
-    assert_eq!(output.status.code(), Some(9));
-    let elapsed = started.elapsed();
+    // Drain both pipes on their own threads. A single-threaded read would
+    // deadlock against a child that fills the other pipe's buffer, and the
+    // EOF instant is a measurement here, not just cleanup.
+    let started = Instant::now();
+    let mut stdout_pipe = child.stdout.take().expect("piped stdout");
+    let mut stderr_pipe = child.stderr.take().expect("piped stderr");
+    let stdout_drain = std::thread::spawn(move || {
+        let mut buffer = Vec::new();
+        let _ = stdout_pipe.read_to_end(&mut buffer);
+        (buffer, Instant::now())
+    });
+    let stderr_drain = std::thread::spawn(move || {
+        let mut buffer = Vec::new();
+        let _ = stderr_pipe.read_to_end(&mut buffer);
+        (buffer, Instant::now())
+    });
+
+    let status = child.wait().expect("wait for failing soldr lint deps");
+    let soldr_exited = started.elapsed();
+    let (stdout_bytes, stdout_eof) = stdout_drain.join().expect("join stdout drain");
+    let (stderr_bytes, stderr_eof) = stderr_drain.join().expect("join stderr drain");
+    let last_holder = stdout_eof.max(stderr_eof).duration_since(started);
+    let stderr = String::from_utf8_lossy(&stderr_bytes).into_owned();
+
+    assert_eq!(
+        status.code(),
+        Some(9),
+        "the failing dependency check's exit code must propagate\nstdout:\n{}\nstderr:\n{stderr}",
+        String::from_utf8_lossy(&stdout_bytes),
+    );
+
+    // soldr#2605: these two budgets used to be one. `Command::output()` reads
+    // both pipes to EOF *before* reaping, so its elapsed time is
+    // `max(soldr exit, last descendant holding the inherited stdio)` — and a
+    // 31 s failure could mean either "cancellation never interrupted the
+    // sleeping sibling" or "cancellation worked and something outlived it
+    // still holding the pipe". Both produced the same panic, so five
+    // sightings could not be told apart. Measured separately, the failure
+    // names itself.
     assert!(
-        elapsed < Duration::from_secs(SIBLING_CANCEL_BUDGET_SECS),
-        "dependency failure must cancel sibling lint children promptly: took \
-         {elapsed:?}, and an uncancelled sibling would have slept \
-         {SIBLING_SLEEP_SECS}s (soldr#1876)"
+        soldr_exited < Duration::from_secs(SIBLING_CANCEL_BUDGET_SECS),
+        "dependency failure must cancel sibling lint children promptly: soldr \
+         itself ran {soldr_exited:?}, and an uncancelled sibling would have \
+         slept {SIBLING_SLEEP_SECS}s (soldr#1876). This is the cancellation \
+         path failing, not a leaked descendant.\nstderr:\n{stderr}"
+    );
+    assert!(
+        last_holder < Duration::from_secs(SIBLING_CANCEL_BUDGET_SECS),
+        "soldr exited in {soldr_exited:?} but its inherited stdio stayed open \
+         for {last_holder:?}: cancellation returned while a descendant \
+         outlived it holding the pipe (soldr#2605). The sibling's fake cargo \
+         redirects only stdout, so its `sleep`/`ping` grandchild inherits this \
+         stderr for the full {SIBLING_SLEEP_SECS}s. Look for a descendant \
+         outside the killed tree, not at the cancellation logic.\nstderr:\n{stderr}"
     );
 }
