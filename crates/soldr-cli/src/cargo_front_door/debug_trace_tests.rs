@@ -65,3 +65,68 @@ fn spawn_traced_without_the_flag_only_spawns() {
     let status = child.wait().expect("wait");
     assert!(status.success());
 }
+
+/// soldr#2658 item 2 (soldr#2546 acceptance): non-Unicode argv must
+/// round-trip byte-for-byte through the observed spawn. The
+/// running-process#1023 seam carries the real `std::process::Command`, so
+/// no String conversion sits between soldr and exec — this proves it end
+/// to end with an invalid-UTF-8 argument on Unix.
+#[test]
+fn observed_spawn_round_trips_non_unicode_argv() {
+    if matches!(
+        crate::platform::host::facts::os(),
+        crate::platform::host::facts::HostOs::Windows
+    ) {
+        // Windows argv is UTF-16 at the OS boundary; arbitrary-byte argv
+        // is a Unix concern.
+        return;
+    }
+    let _lock = crate::TEST_PROCESS_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = crate::EnvVarGuard::set(DEBUG_TRACE_ENV_VAR, "1");
+
+    let dir = std::env::temp_dir().join(format!(
+        "non-unicode-argv-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+    let script = dir.join("echo-args.sh");
+    let out_path = dir.join("argv.bin");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf '%s' \"$1\" > \"{}\"\n",
+            out_path.display()
+        ),
+    )
+    .expect("write script");
+    crate::platform::fs::permissions::make_executable(&script).expect("chmod script");
+
+    // 0xFF can never appear in well-formed UTF-8. SAFETY: on Unix the
+    // OS-string encoding is arbitrary bytes, so any byte sequence is a
+    // valid encoded OS string; the Windows early-return above keeps this
+    // construction off the platform whose encoding (WTF-8) it could
+    // violate. Spelled through the encoding-neutral constructor so no
+    // `std::os::unix` path appears outside the platform crate
+    // (platform-cfg boundary ratchet).
+    let raw = unsafe { std::ffi::OsStr::from_encoded_bytes_unchecked(b"--cfg=weird\xFFbytes") };
+    let mut command = std::process::Command::new(&script);
+    command.arg(raw);
+    let status = run_observed_inheriting_stdio(
+        &mut command,
+        "non-unicode fixture",
+        Some(std::time::Duration::from_secs(30)),
+        std::time::Duration::from_secs(10),
+    )
+    .expect("observed spawn must run the fixture");
+    assert!(status.success(), "fixture exited nonzero");
+
+    let echoed = std::fs::read(&out_path).expect("fixture argv capture");
+    assert_eq!(
+        echoed, b"--cfg=weird\xffbytes",
+        "argv bytes must survive the observed spawn unchanged"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
