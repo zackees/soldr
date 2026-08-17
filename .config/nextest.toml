@@ -82,6 +82,17 @@ filter = 'test(=issue_2476_sigstop_owner_is_fenced_after_lease_expiry)'
 slow-timeout = { period = "60s", terminate-after = 3, grace-period = "30s" }
 threads-required = "num-cpus"
 
+# 240s: two complete isolated-HOME soldr runs back to back (the cargo-fmt and
+# bare-fmt labels), each paying a cold broker start with a full executable
+# image hash (soldr#2517). soldr#2624 observations 3-4: timed out at exactly
+# 120s twice on contended windows-msvc target-runs while stub siblings in the
+# same binary legitimately ran 49-85s — the length is real cold-start work
+# x2, not a hang (the second strike's retained output shows the first soldr
+# child still executing, and the run passed on a quieter runner).
+[[profile.default.overrides]]
+filter = 'test(=cargo_fmt_routes_rustfmt_through_zccache_formatter)'
+slow-timeout = { period = "60s", terminate-after = 4, grace-period = "30s" }
+
 # Inherits `[profile.default]`, so the timeouts above apply here too. That is
 # required, not incidental: with `timed_test!` gone, this profile would
 # otherwise let a hung test run until the job's 45-minute ceiling.
