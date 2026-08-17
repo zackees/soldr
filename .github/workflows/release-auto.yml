@@ -1121,116 +1121,17 @@ jobs:
             --target "${{ matrix.target }}" \
             --expected-version "${EXPECTED_VERSION#v}"
 
+      # soldr#2469 2.2: logic lives in the unit-tested script.
       - name: Lint wheel filenames against workspace version
-        shell: python
-        env:
-          EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          # soldr#1083 follow-up: catch wrong-versioned wheels (e.g.
-          # the 0.0.1-tagged stubs from the v0.7.72 release that
-          # aborted PyPI upload) BEFORE they leave the build job and
-          # poison the publish-pypi twine step. Fails the build with
-          # a clear error if any wheel in dist/ has a name whose
-          # version field doesn't match `[workspace.package].version`
-          # as derived from the prepare job. PEP 491: wheel filename
-          # is `<distname>-<version>-...`, so version is parts[1].
-          import os
-          import re
-          import sys
-          from pathlib import Path
-
-          # outputs.version is `vX.Y.Z`; wheel filename uses `X.Y.Z`.
-          expected = os.environ["EXPECTED_VERSION"].lstrip("v")
-          wheels = sorted(Path("dist").glob("*.whl"))
-          if not wheels:
-              sys.exit("no wheels in dist/ — maturin produced nothing?")
-          bad = []
-          for w in wheels:
-              parts = w.stem.split("-")
-              if len(parts) < 2:
-                  bad.append((w.name, "filename has no version field"))
-                  continue
-              wheel_version = parts[1]
-              if wheel_version != expected:
-                  bad.append(
-                      (w.name, f"version {wheel_version!r} != expected {expected!r}")
-                  )
-          if bad:
-              msg = ["wheel version lint FAILED:"]
-              for name, why in bad:
-                  msg.append(f"  - {name}: {why}")
-              msg.append("")
-              msg.append(
-                  f"Every wheel in dist/ must be tagged {expected!r} to match "
-                  f"[workspace.package].version in Cargo.toml. A wrong-versioned "
-                  f"wheel here would cause twine to abort the whole PyPI publish "
-                  f"on its first '400 File already exists' (see soldr#1083 + the "
-                  f"v0.7.72 release log)."
-              )
-              sys.exit("\n".join(msg))
-          print(
-              f"wheel version lint OK: {len(wheels)} wheel(s) all tagged {expected!r}:"
-          )
-          for w in wheels:
-              print(f"  - {w.name}")
+        run: >-
+          python3 .github/scripts/wheel_filename_lints.py version
+          --expected-version "${{ needs.prepare.outputs.version }}"
 
       - name: Assert linux-gnu wheels are tagged manylinux_2_17
         if: contains(matrix.target, 'unknown-linux-gnu')
-        shell: python
-        run: |
-          # soldr#1005 / fbuild ingestion: hard assertion-gate in the
-          # spirit of FastLED/fbuild's `NO CHEATING` artifact gates
-          # (cf. fbuild ci/docker-mac-cross/build.sh:77-84, where
-          # file(1) must report Mach-O for every cross-built artifact
-          # or the lane fails loudly — a silently host-linked binary
-          # must never ship). Here the equivalent silent failure mode
-          # is maturin quietly falling back to the runner glibc and
-          # tagging manylinux_2_39: the wheel still builds, still
-          # smoke-tests on the 2.39 runner, and only breaks downstream
-          # when pip on glibc<2.39 skips it and installs the 0.1.0
-          # placeholder sdist instead. Fail the lane at build time if
-          # any linux wheel filename is not manylinux_2_17-tagged.
-          import sys
-          from pathlib import Path
+        # soldr#2469 2.2: logic lives in the unit-tested script.
+        run: python3 .github/scripts/wheel_filename_lints.py manylinux
 
-          wheels = sorted(Path("dist").glob("*.whl"))
-          if not wheels:
-              sys.exit("no wheels in dist/ — maturin produced nothing?")
-          bad = [w.name for w in wheels if "manylinux_2_17" not in w.name]
-          if bad:
-              msg = ["manylinux_2_17 tag assertion FAILED:"]
-              for name in bad:
-                  msg.append(f"  - {name}")
-              msg.append("")
-              msg.append(
-                  "Every linux-gnu wheel must carry the manylinux_2_17 "
-                  "platform tag (glibc 2.17 floor via the catalogue-backed "
-                  "Maturin target environment). A higher tag "
-                  "(e.g. manylinux_2_39 from the runner glibc) makes "
-                  "`pip install soldr` on older glibc fall back to the "
-                  "0.1.0 placeholder sdist — the soldr#1005 trap. Check "
-                  "that `soldr prepare --github-env` exported the target "
-                  "environment before Maturin ran."
-              )
-              sys.exit("\n".join(msg))
-          print(f"manylinux_2_17 tag assertion OK: {len(wheels)} wheel(s):")
-          for w in wheels:
-              print(f"  - {w.name}")
-
-      # The step above checks the wheel's NAME. This one checks its bytes.
-      #
-      # The two mis-taggings are not equally visible. Tagged 2.39 when the
-      # binary is fine means pip skips the wheel -- loud, and the step above
-      # catches it. Tagged 2.17 when the binary actually needs 2.39 means pip
-      # INSTALLS it, because the tag promises it will work, and the program
-      # then dies at run time with "version `GLIBC_2.39' not found". A
-      # skipped wheel is an install problem; a mis-tagged one is a broken
-      # program, and nothing checked for it.
-      #
-      # This passes on the published v0.8.29 wheel today (verified: its
-      # embedded soldr needs at most GLIBC_2.17 and runs on Debian 12), so it
-      # is a gate rather than a ratchet -- unlike the tarball binaries from
-      # the same release, which require 2.39. That gap is soldr#1060 item 3.
       - name: Assert linux-gnu wheel binary honours the 2.17 floor (soldr#1060)
         if: contains(matrix.target, 'unknown-linux-gnu')
         shell: bash
