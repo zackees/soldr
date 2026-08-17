@@ -41,6 +41,14 @@ pub fn is_init_failure(code: i32) -> bool {
     )
 }
 
+/// Reconstruct a `std::process::ExitStatus` from a running-process-style
+/// exit code (soldr#2546). Windows has no signal exits; negative values
+/// pass through as the raw (NTSTATUS-shaped) process exit code.
+pub fn exit_status_from_code(code: i32) -> std::process::ExitStatus {
+    use std::os::windows::process::ExitStatusExt;
+    std::process::ExitStatus::from_raw(code as u32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -57,12 +65,4 @@ mod tests {
         );
         assert_eq!(termination_kind(2), TerminationKind::Exit(2));
     }
-}
-
-/// Reconstruct a `std::process::ExitStatus` from a running-process-style
-/// exit code (soldr#2546). Windows has no signal exits; negative values
-/// pass through as the raw (NTSTATUS-shaped) process exit code.
-pub fn exit_status_from_code(code: i32) -> std::process::ExitStatus {
-    use std::os::windows::process::ExitStatusExt;
-    std::process::ExitStatus::from_raw(code as u32)
 }
