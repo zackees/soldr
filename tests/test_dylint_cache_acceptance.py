@@ -81,3 +81,15 @@ def test_acceptance_uses_the_per_checkout_perf_runner_identity() -> None:
     assert 'runpy.run_path(str(ROOT / "ci" / "perf_local.py"))' in source
     assert "runner_container = runner.container" in source
     assert '"soldr-perf-local"' not in source
+
+
+def test_second_identical_run_carries_the_a5_compile_bound() -> None:
+    """soldr#2436 phase 6 / soldr#2645: the full-mode check list must bound
+    the second identical run's compiles under 20% of the cold run — the
+    #2435 pathology was a warm run recompiling the world, and hit-count
+    checks alone cannot see it."""
+    source = (
+        Path(__file__).parents[1] / ".github" / "scripts" / "dylint_cache_acceptance.py"
+    ).read_text(encoding="utf-8")
+    assert 'by_name["warm_same_target"]["misses"] * 5' in source
+    assert "second identical run must compile <20% of the cold run" in source

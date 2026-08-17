@@ -576,6 +576,19 @@ def main() -> int:
                         by_name["changed_source"]["misses"] > 0,
                         "changed source must miss changed units",
                     ),
+                    # A5 gate (soldr#2436 phase 6 / soldr#2645): a second
+                    # identical run must compile under 20% of what the cold
+                    # run compiled — the #2435 pathology was exactly a warm
+                    # run recompiling the world. A fully-fresh second run
+                    # (zero wrapper invocations) passes trivially, which is
+                    # correct: no compiles is the best possible warm result;
+                    # the warm-clean-target hits>0 check above is what
+                    # proves the cache actually serves.
+                    (
+                        by_name["warm_same_target"]["misses"] * 5
+                        < by_name["cold"]["misses"],
+                        "second identical run must compile <20% of the cold run",
+                    ),
                 ]
             )
         for passed, message in checks:
