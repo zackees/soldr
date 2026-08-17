@@ -44,6 +44,7 @@ case "${{1:-}}" in
   --version) printf 'cargo-dylint 6.0.3\n'; exit 0 ;;
   --help) exit 0 ;;
 esac
+echo "cargo-dylint pair wrapper=${{RUSTC_WRAPPER:-<unset>}} mirror=${{SOLDR_EFFECTIVE_RUSTC_WRAPPER:-<unset>}}" >> "{log}"
 case "${{RUSTC_WRAPPER:-}}" in
   /*/soldr-dylint) ;;
   *) echo "RUSTC_WRAPPER is not an absolute soldr-dylint path: ${{RUSTC_WRAPPER:-}}" >&2; exit 91 ;;
@@ -205,6 +206,61 @@ fn dylint_front_door_preserves_direct_and_nested_compiler_chains() {
                 .contains("dylint compile diagnostic on stderr"),
         "successful compiler diagnostics were not replayed"
     );
+}
+
+/// soldr#2634: the dylint branch re-points `RUSTC_WRAPPER` at the dedicated
+/// `soldr-dylint` shim AFTER the cache plan already stamped the rustc shim
+/// into the soldr#2545 effective-wrapper mirror. If only `RUSTC_WRAPPER`
+/// moves, every nested front-door re-entry under cargo-dylint (its `cargo
+/// metadata` probe first) fails the drift guard — and cargo-dylint swallows
+/// that as "No libraries were found", exiting 0 having linted nothing.
+#[test]
+fn dylint_wrapper_shim_keeps_the_effective_mirror_paired() {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
+    let root = unique_temp_dir("dylint-wrapper-mirror");
+    let output = dylint_command(&root)
+        .args(["cargo", "dylint", "--all"])
+        .output()
+        .expect("run soldr cargo dylint");
+
+    assert!(
+        output.status.success(),
+        "soldr cargo dylint failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let log = fs::read_to_string(root.join("tool.log")).expect("read fake tool log");
+    let pairs: Vec<&str> = log
+        .lines()
+        .filter(|line| line.starts_with("cargo-dylint pair "))
+        .collect();
+    assert!(
+        !pairs.is_empty(),
+        "no wrapper/mirror pair line in fake tool log: {log}"
+    );
+    for pair in pairs {
+        let field = |name: &str| {
+            pair.split_whitespace()
+                .find_map(|token| token.strip_prefix(name))
+                .unwrap_or_else(|| panic!("no `{name}` field in pair line: {pair}"))
+        };
+        let wrapper = field("wrapper=");
+        let mirror = field("mirror=");
+        assert!(
+            wrapper.ends_with("soldr-dylint"),
+            "cargo-dylint did not receive the dedicated wrapper shim: {pair}"
+        );
+        assert_eq!(
+            wrapper, mirror,
+            "the soldr#2545 effective-wrapper mirror must move together with \
+             RUSTC_WRAPPER when the dylint shim is applied: {pair}"
+        );
+    }
 }
 
 #[test]
