@@ -50,6 +50,14 @@ fn allow_unpinned_fixtures() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         std::env::set_var(soldr_cli::toolchain::ALLOW_UNPINNED_ENV_VAR, "1");
+        // soldr#2566: under native CI lanes this test binary itself runs
+        // beneath `soldr cargo nextest run`, so it inherits the outer
+        // soldr's IN_SOLDR_PID. Tests model fresh user sessions — the
+        // soldr children they spawn are new roots, not re-entries — so
+        // scrub the marker once for the whole test process. The canary
+        // suite (cli_reentrancy_guard_canary) re-injects it explicitly to
+        // prove strict-mode rejection end-to-end.
+        std::env::remove_var("IN_SOLDR_PID");
     });
 }
 

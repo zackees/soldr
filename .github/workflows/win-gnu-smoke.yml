@@ -37,6 +37,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  SOLDR_REENTRANCY_GUARD: strict
   CARGO_TERM_COLOR: always
   # Authenticated GitHub Releases lookups (5,000/hr) for soldr's asset fetches.
   SOLDR_GITHUB_TOKEN: ${{ github.token }}

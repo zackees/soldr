@@ -39,6 +39,13 @@ concurrency:
   group: dylint-cook-acceptance-${{ github.ref }}
   cancel-in-progress: true
 
+# soldr#2566: strict re-entrancy enforcement in every soldr CI lane — an
+# unsanctioned soldr -> tool -> soldr re-entry exits 1 with a diagnostic
+# instead of shipping as a mystery hang. Canary:
+# crates/soldr-cli/tests/cli_reentrancy_guard_canary.rs
+env:
+  SOLDR_REENTRANCY_GUARD: strict
+
 jobs:
   dylint-cook:
     name: check-shaped dependency cook matrix

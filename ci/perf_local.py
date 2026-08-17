@@ -220,7 +220,9 @@ def incremental_gc(current_root: Path) -> None:
             except OSError:
                 last_used = now
         candidates.append({"source_root": source_root, "last_used_epoch": last_used})
-    selected = incremental_gc_candidate(candidates, current_root=current_root, now_epoch=now)
+    selected = incremental_gc_candidate(
+        candidates, current_root=current_root, now_epoch=now
+    )
     if selected is None:
         return
     stale_root = selected["source_root"]
@@ -240,14 +242,20 @@ def incremental_gc(current_root: Path) -> None:
         if last_used > selected["last_used_epoch"]:
             return
         count_pressure = len(candidates) > MAX_RUNNER_GROUPS
-        if stale_root.exists() and not count_pressure and time.time() - last_used < GC_MAX_AGE_SECS:
+        if (
+            stale_root.exists()
+            and not count_pressure
+            and time.time() - last_used < GC_MAX_AGE_SECS
+        ):
             return
         _remove_runner_group(runner_for(stale_root))
 
 
 def _remove_runner_group(stale: Runner) -> None:
     removed = subprocess.run(["docker", "rm", "-f", stale.container], check=False)
-    volumes = subprocess.run(["docker", "volume", "rm", "--force", *stale.volumes], check=False)
+    volumes = subprocess.run(
+        ["docker", "volume", "rm", "--force", *stale.volumes], check=False
+    )
     if removed.returncode == 0 and volumes.returncode == 0:
         print(f"incremental gc: removed stale runner {stale.container}")
     else:
@@ -282,7 +290,9 @@ def _builder_exists() -> bool:
 
 
 def _ensure_builder() -> bool:
-    version = subprocess.run(["docker", "buildx", "version"], capture_output=True, check=False)
+    version = subprocess.run(
+        ["docker", "buildx", "version"], capture_output=True, check=False
+    )
     if version.returncode != 0:
         return False
     if _builder_exists():
@@ -300,7 +310,9 @@ def _ensure_builder() -> bool:
 def incremental_buildkit_gc() -> None:
     """Prune only soldr's BuildKit records; never touch Docker's default builder."""
     if _builder_exists():
-        result = subprocess.run(buildkit_prune_command(), capture_output=True, check=False)
+        result = subprocess.run(
+            buildkit_prune_command(), capture_output=True, check=False
+        )
         if result.returncode != 0:
             print("warning: soldr BuildKit GC failed", file=sys.stderr)
 
@@ -397,7 +409,8 @@ def main(argv: list[str]) -> int:
         workdir = container_workdir(source_root, repo_root)
         try:
             completed = subprocess.run(
-                exec_command(runner, command_argv, workdir, tty=tty_enabled()), check=False
+                exec_command(runner, command_argv, workdir, tty=tty_enabled()),
+                check=False,
             )
             return completed.returncode
         finally:
@@ -483,7 +496,14 @@ def ensure_image(repo_root: Path) -> str:
             return str(image_id)
 
     if _ensure_builder():
-        build_command = ["docker", "buildx", "build", "--builder", BUILDER_NAME, "--load"]
+        build_command = [
+            "docker",
+            "buildx",
+            "build",
+            "--builder",
+            BUILDER_NAME,
+            "--load",
+        ]
     else:
         build_command = ["docker", "build"]
     build = subprocess.run(
@@ -562,6 +582,11 @@ def create_command(runner: Runner, image_id: str) -> list[str]:
             # Python process can always start under the full smoke suite.
             "-e",
             "NEXTEST_TEST_THREADS=2",
+            # soldr#2566: local agent Docker loops enforce the same strict
+            # re-entrancy invariant as every soldr CI lane. Takes effect on
+            # the next --reset-runner for an existing container.
+            "-e",
+            "SOLDR_REENTRANCY_GUARD=strict",
             "-w",
             "/repo",
             IMAGE,
@@ -577,7 +602,9 @@ def ptrace_enabled() -> bool:
     return os.environ.get(PTRACE_ENV, "").strip().lower() in ("1", "true", "yes")
 
 
-def exec_command(runner: Runner, argv: list[str], workdir: str, *, tty: bool) -> list[str]:
+def exec_command(
+    runner: Runner, argv: list[str], workdir: str, *, tty: bool
+) -> list[str]:
     command = ["docker", "exec"]
     if tty:
         command.append("-it")
@@ -618,7 +645,9 @@ def ensure_runner(runner: Runner, image_id: str) -> None:
             )
         subprocess.run(create_command(runner, image_id), check=True)
 
-    running = docker_output(["inspect", "--format", "{{.State.Running}}", runner.container])
+    running = docker_output(
+        ["inspect", "--format", "{{.State.Running}}", runner.container]
+    )
     if running != "true":
         subprocess.run(["docker", "start", runner.container], check=True)
     subprocess.run(
@@ -710,7 +739,9 @@ def runner_lock(source_root: Path) -> Iterator[None]:
 def reset_runner(runner: Runner) -> int:
     if not docker_output(["inspect", "--format", "{{.Id}}", runner.container]):
         return 0
-    return subprocess.run(["docker", "rm", "-f", runner.container], check=False).returncode
+    return subprocess.run(
+        ["docker", "rm", "-f", runner.container], check=False
+    ).returncode
 
 
 def stop_runner(runner: Runner) -> int:
@@ -730,13 +761,16 @@ def wipe(runner: Runner) -> int:
 
 def status(runner: Runner) -> int:
     state = (
-        docker_output(["inspect", "--format", "{{.State.Status}}", runner.container]) or "(absent)"
+        docker_output(["inspect", "--format", "{{.State.Status}}", runner.container])
+        or "(absent)"
     )
     print(f"root: {runner.source_root}")
     print(f"{runner.container}  {state}")
     rows: list[tuple[str, str]] = []
     for name in runner.volumes:
-        mountpoint = docker_output(["volume", "inspect", "--format", "{{.Mountpoint}}", name])
+        mountpoint = docker_output(
+            ["volume", "inspect", "--format", "{{.Mountpoint}}", name]
+        )
         rows.append((name, mountpoint or "(absent)"))
     width = max(len(name) for name, _ in rows)
     for name, info in rows:

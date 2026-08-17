@@ -22,6 +22,17 @@ A long compile prints a progressive heartbeat rather than remaining silent.
 The heartbeat names the operation, elapsed time, deadline, and the active
 timeout override.
 
+**Looks like a hang → check for a re-entrancy diagnostic first** (soldr#2566).
+Months of "hang" incidents were actually unsanctioned `soldr -> tool -> soldr`
+re-entry multiplying startup work per build unit. With
+`SOLDR_REENTRANCY_GUARD=strict` (exported in every soldr CI lane and the
+`ci/perf_local.py` runner), such an entry exits 1 immediately and prints a
+bounded stderr diagnostic naming both processes (`inherited IN_SOLDR_PID=...,
+this pid=...`), the argv head, and the routing variables — grep the failing
+step's stderr for `unsanctioned Soldr re-entrancy`. Without strict mode the
+same shape presents as silence; suspect it whenever a "hang" reproduces only
+under nesting.
+
 ## Timeout surface
 
 | Bound | Default | Override | Notes |
