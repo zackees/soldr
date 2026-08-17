@@ -93,7 +93,7 @@ pub(crate) fn front_door_broker_spawn_eligible(raw_args: &[String]) -> bool {
     if !broker_enabled() {
         return false;
     }
-    let Some(first_positional) = raw_args.get(1) else {
+    let Some(first_positional) = first_command_positional(raw_args) else {
         return false;
     };
     // A flag-shaped first argument (`--version`, `--help`, `-V`, `--as ...`)
@@ -124,6 +124,39 @@ pub(crate) fn front_door_broker_spawn_eligible(raw_args: &[String]) -> bool {
         return false;
     }
     true
+}
+
+/// The first argument that names a command, skipping the global pre-verb
+/// flags clap accepts before it.
+///
+/// `soldr --debug cargo build` (cold cache root) used to be the failure:
+/// `raw_args[1]` was `--debug`, the flag-shaped check below declared the
+/// invocation broker-free, no broker ever started, and every cacheable
+/// wrapper compile hard-failed with "soldr broker is unreachable". Any
+/// leading global flag (`--trust-inherited-soldr-env`, `--allow-unpinned`,
+/// …) had the same effect. Only KNOWN global flags are skipped: an
+/// unrecognized flag (`--version`, `-V`, `--help`) keeps the deliberate
+/// no-spawn behavior the flag-shaped rule exists for.
+fn first_command_positional(raw_args: &[String]) -> Option<&String> {
+    let mut iter = raw_args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--no-cache"
+            | "--trust-inherited-soldr-env"
+            | "--allow-unpinned"
+            | "--timestamp-lines"
+            | "--no-timestamp-lines"
+            | "--no-cache-states"
+            | "--debug" => continue,
+            "--zccache" | "--jobs" => {
+                let _ = iter.next();
+                continue;
+            }
+            value if value.starts_with("--zccache=") || value.starts_with("--jobs=") => continue,
+            _ => return Some(arg),
+        }
+    }
+    None
 }
 
 fn is_teardown_command(raw_args: &[String]) -> bool {
@@ -856,6 +889,40 @@ mod tests {
                 "flag-shaped first argument {flag} must not boot broker infrastructure"
             );
         }
+    }
+
+    /// Global pre-verb flags must not hide the command from broker
+    /// bringup: `soldr --debug cargo check` against a cold root used to
+    /// skip the spawn entirely, so every cacheable compile died with
+    /// "soldr broker is unreachable".
+    #[test]
+    fn global_flags_before_the_verb_stay_eligible() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let cases: &[&[&str]] = &[
+            &["soldr", "--debug", "cargo", "check"],
+            &["soldr", "--no-cache", "--debug", "cargo", "build"],
+            &["soldr", "--trust-inherited-soldr-env", "cargo", "test"],
+            &["soldr", "--allow-unpinned", "status"],
+            &["soldr", "--zccache", "managed", "cargo", "build"],
+            &["soldr", "--zccache=managed", "cargo", "build"],
+            &["soldr", "--jobs", "4", "cargo", "build"],
+        ];
+        for case in cases {
+            let raw_args: Vec<String> = case.iter().map(|arg| arg.to_string()).collect();
+            assert!(
+                front_door_broker_spawn_eligible(&raw_args),
+                "global flags before the verb must stay broker-eligible: {case:?}"
+            );
+        }
+        // Trailing global flags with no verb at all remain ineligible.
+        let raw_args = vec!["soldr".to_string(), "--debug".to_string()];
+        assert!(!front_door_broker_spawn_eligible(&raw_args));
+        // The wrapper and broker exclusions still see through the flags.
+        let raw_args: Vec<String> = ["soldr", "--debug", "broker", "status"]
+            .iter()
+            .map(|arg| arg.to_string())
+            .collect();
+        assert!(!front_door_broker_spawn_eligible(&raw_args));
     }
 
     #[test]
