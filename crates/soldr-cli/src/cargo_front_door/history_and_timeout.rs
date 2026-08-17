@@ -96,8 +96,7 @@ fn retry_timed_out_cargo_without_cache(
     command.env(CARGO_TIMEOUT_RETRY_DISABLE_ENV_VAR, "1");
     suppress_windows_console_window(&mut command);
     configure_cargo_child_for_timeout(&mut command);
-    let mut child = command
-        .spawn()
+    let mut child = debug_trace::spawn_traced(&mut command, "soldr no-cache cargo retry")
         .map_err(|err| SoldrError::Other(format!("spawn no-cache cargo retry failed: {err}")))?;
     // The nested soldr invocation inherits the explicit timeout that caused
     // this retry and has recursion disabled above. The outer supervisor must
@@ -749,7 +748,11 @@ fn wait_for_cargo_child_with_heartbeat(
             .wait_timeout(wait_for)
             .map_err(|err| SoldrError::Other(format!("wait on {context} failed: {err}")))?
         {
-            Some(status) => return Ok(status),
+            Some(status) => {
+                // soldr#2546: pair the `spawned` event from `spawn_traced`.
+                debug_trace::child_exited(child.id(), context, &status);
+                return Ok(status);
+            }
             None => {
                 if let Some(timeout) = timeout {
                     if start.elapsed() >= timeout {

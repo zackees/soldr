@@ -202,3 +202,54 @@ fn jobs_flag_is_accepted_after_the_subcommand() {
     let cli = Cli::parse_from(["soldr", "status", "--jobs", "4"]);
     assert_eq!(cli.jobs, Some(4));
 }
+
+// soldr#2546. Same contract as --timestamp-lines: publish the variable
+// `debug_trace::enabled()` reads so nested soldr invocations inherit it.
+#[test]
+fn debug_flag_publishes_the_env_var() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let name = crate::cargo_front_door::debug_trace::DEBUG_TRACE_ENV_VAR;
+    let previous = std::env::var(name).ok();
+
+    std::env::remove_var(name);
+    Cli::parse_from(["soldr", "--debug", "status"]).export_global_env();
+    let on = std::env::var(name).ok();
+
+    std::env::remove_var(name);
+    Cli::parse_from(["soldr", "status"]).export_global_env();
+    let absent = std::env::var(name).ok();
+
+    restore(name, previous);
+    assert_eq!(on.as_deref(), Some("1"));
+    assert_eq!(absent, None, "without --debug nothing may be published");
+}
+
+// soldr#2546: `--debug` must not collide with cargo's own `--debug`
+// meaning (`cargo install --debug`). After `cargo`, args are raw
+// passthrough and belong to cargo byte-for-byte.
+#[test]
+fn debug_flag_must_precede_the_cargo_passthrough() {
+    let after = Cli::parse_from(["soldr", "cargo", "install", "--debug", "cargo-audit"]);
+    assert!(!after.debug, "--debug after `cargo` belongs to cargo");
+    match &after.command {
+        Commands::Cargo { args } => {
+            assert_eq!(
+                args,
+                &[
+                    "install".to_string(),
+                    "--debug".into(),
+                    "cargo-audit".into()
+                ],
+                "cargo's own --debug must pass through untouched"
+            );
+        }
+        _ => panic!("expected the cargo passthrough"),
+    }
+
+    let before = Cli::parse_from(["soldr", "--debug", "cargo", "build"]);
+    assert!(before.debug);
+    match &before.command {
+        Commands::Cargo { args } => assert_eq!(args, &["build".to_string()]),
+        _ => panic!("expected the cargo passthrough"),
+    }
+}
