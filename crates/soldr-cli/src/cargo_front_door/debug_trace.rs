@@ -181,8 +181,8 @@ pub(crate) fn run_observed_inheriting_stdio(
     heartbeat: std::time::Duration,
 ) -> Result<ExitStatus, crate::core::SoldrError> {
     use running_process::{
-        CommandSpec, EventCategory, NativeProcess, ObserverConfig, ObserverEventKind,
-        ProcessConfig, StderrMode, StdinMode,
+        CommandSpec, EventCategory, NativeProcess, ObserverConfig, ProcessConfig, StderrMode,
+        StdinMode,
     };
 
     let argv = render_argv(command);
@@ -231,48 +231,7 @@ pub(crate) fn run_observed_inheriting_stdio(
     let pump_context = context.to_string();
     let pump = std::thread::spawn(move || {
         while let Some(event) = subscriber.recv() {
-            match event.kind {
-                ObserverEventKind::DescendantStarted => {
-                    started_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let cmdline = running_process::observer::read_process_cmdline(event.pid)
-                        .unwrap_or_default();
-                    // running-process#1025: the platform monitors report the
-                    // immediate parent where discovery knows it (Linux,
-                    // macOS); render 0 for unknown so the JSONL field stays
-                    // numeric and the tree edge stays reconstructible.
-                    let ppid = event.ppid.unwrap_or(0);
-                    emit(
-                        &pump_context,
-                        &format!(
-                            "descendant-started pid={} ppid={ppid} ({pump_context}): {cmdline}",
-                            event.pid
-                        ),
-                        &format!(
-                            r#"{{"event":"descendant-started","t_ms":{},"pid":{},"ppid":{ppid},"context":{},"cmdline":{}}}"#,
-                            elapsed_ms(),
-                            event.pid,
-                            json_string(&pump_context),
-                            json_string(&cmdline),
-                        ),
-                    );
-                }
-                ObserverEventKind::DescendantExited => {
-                    exited_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    emit(
-                        &pump_context,
-                        &format!("descendant-exited pid={} ({pump_context})", event.pid),
-                        &format!(
-                            r#"{{"event":"descendant-exited","t_ms":{},"pid":{},"context":{}}}"#,
-                            elapsed_ms(),
-                            event.pid,
-                            json_string(&pump_context),
-                        ),
-                    );
-                }
-                // The direct child's Started/Exited are already covered by
-                // the `spawned`/`exited` events this module emits itself.
-                _ => {}
-            }
+            handle_descendant_event(&pump_context, &event, &started_counter, &exited_counter);
         }
     });
 
@@ -341,4 +300,151 @@ pub(crate) fn run_observed_inheriting_stdio(
         ),
     );
     Ok(crate::platform::process::exit::exit_status_from_code(code))
+}
+
+/// Shared descendant-event renderer for both observation modes.
+fn handle_descendant_event(
+    context: &str,
+    event: &running_process::ObserverEvent,
+    started: &std::sync::atomic::AtomicUsize,
+    exited: &std::sync::atomic::AtomicUsize,
+) {
+    use running_process::ObserverEventKind;
+    match event.kind {
+        ObserverEventKind::DescendantStarted => {
+            started.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let cmdline =
+                running_process::observer::read_process_cmdline(event.pid).unwrap_or_default();
+            // running-process#1025: the platform monitors report the
+            // immediate parent where discovery knows it (Linux, macOS);
+            // render 0 for unknown so the JSONL field stays numeric and
+            // the tree edge stays reconstructible.
+            let ppid = event.ppid.unwrap_or(0);
+            emit(
+                context,
+                &format!(
+                    "descendant-started pid={} ppid={ppid} ({context}): {cmdline}",
+                    event.pid
+                ),
+                &format!(
+                    r#"{{"event":"descendant-started","t_ms":{},"pid":{},"ppid":{ppid},"context":{},"cmdline":{}}}"#,
+                    elapsed_ms(),
+                    event.pid,
+                    json_string(context),
+                    json_string(&cmdline),
+                ),
+            );
+        }
+        ObserverEventKind::DescendantExited => {
+            exited.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            emit(
+                context,
+                &format!("descendant-exited pid={} ({context})", event.pid),
+                &format!(
+                    r#"{{"event":"descendant-exited","t_ms":{},"pid":{},"context":{}}}"#,
+                    elapsed_ms(),
+                    event.pid,
+                    json_string(context),
+                ),
+            );
+        }
+        // The direct child's Started/Exited are already covered by the
+        // `spawned`/`exited` events this module emits itself.
+        _ => {}
+    }
+}
+
+fn emit_descendant_summary(
+    context: &str,
+    started: &std::sync::atomic::AtomicUsize,
+    exited: &std::sync::atomic::AtomicUsize,
+) {
+    let started = started.load(std::sync::atomic::Ordering::Relaxed);
+    let exited = exited.load(std::sync::atomic::Ordering::Relaxed);
+    emit(
+        context,
+        &format!(
+            "summary ({context}): descendants started={started} exited={exited} incomplete={}",
+            started.saturating_sub(exited)
+        ),
+        &format!(
+            r#"{{"event":"summary","t_ms":{},"context":{},"descendants_started":{started},"descendants_exited":{exited},"incomplete_exits":{}}}"#,
+            elapsed_ms(),
+            json_string(context),
+            started.saturating_sub(exited),
+        ),
+    );
+}
+
+/// soldr#2546 slice 3: descendant observation for the capture front-door
+/// modes, which own their pipe plumbing and therefore cannot route through
+/// [`run_observed_inheriting_stdio`]'s owned spawn. running-process#1026's
+/// `observe_launched_tree` attaches the per-OS descendant monitor to the
+/// already-spawned cargo pid; timeline and summary match the
+/// inherited-stdio mode's. Windows' monitor is spawn-tied upstream, so
+/// this attach observes nothing there today.
+pub(crate) struct DescendantObservation {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pump: std::thread::JoinHandle<()>,
+    started: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    exited: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    context: String,
+}
+
+impl DescendantObservation {
+    /// Attach to `pid` when tracing is enabled; `None` otherwise.
+    pub(crate) fn attach(pid: u32, context: &str) -> Option<Self> {
+        if !enabled() {
+            return None;
+        }
+        let subscriber = running_process::observer::observe_launched_tree(
+            pid,
+            running_process::ObserverConfig::with_categories([
+                running_process::EventCategory::Process,
+            ]),
+        );
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let started = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let exited = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let pump_stop = std::sync::Arc::clone(&stop);
+        let started_counter = std::sync::Arc::clone(&started);
+        let exited_counter = std::sync::Arc::clone(&exited);
+        let pump_context = context.to_string();
+        // The pump owns the subscriber: its Drop is what stops the
+        // platform monitor, so the thread must end for teardown. It polls
+        // the stop flag between events; `finish` sets the flag, so the
+        // join below is bounded by one poll interval.
+        let pump = std::thread::spawn(move || loop {
+            match subscriber.recv_timeout(std::time::Duration::from_millis(200)) {
+                Ok(event) => handle_descendant_event(
+                    &pump_context,
+                    &event,
+                    &started_counter,
+                    &exited_counter,
+                ),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    if pump_stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        break;
+                    }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        });
+        Some(Self {
+            stop,
+            pump,
+            started,
+            exited,
+            context: context.to_string(),
+        })
+    }
+
+    /// Flush trailing exit events, stop the monitor, and emit the summary.
+    /// Call after the observed child has been reaped.
+    pub(crate) fn finish(self) {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = self.pump.join();
+        emit_descendant_summary(&self.context, &self.started, &self.exited);
+    }
 }

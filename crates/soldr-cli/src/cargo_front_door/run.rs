@@ -585,18 +585,22 @@ pub(crate) async fn run_cargo_front_door(
             .unwrap_or_else(|| disk::cargo_disk_space_probe_path(args));
         run_command_capturing_cargo_json(&mut command, &target_dir, cargo_wait_timeout)
             .map(|(status, captured, paths)| (status, Some(captured), Some(paths)))
-    } else if capture_for_diagnostics && !debug_trace::enabled() {
+    } else if capture_for_diagnostics {
+        // soldr#2546 slice 3: the diagnostic-tail capture now observes
+        // descendants by attaching the monitor to the spawned pid
+        // post-hoc (running-process#1026), so the slice-2 trade — which
+        // skipped this mode under --debug and with it the post-failure
+        // diagnostics summary — is repaid: headless --debug builds keep
+        // both the diagnostics and the descendant timeline.
         run_command_capturing_diagnostic_tail(&mut command, cargo_wait_timeout)
             .map(|(status, captured)| (status, Some(captured), None))
     } else {
-        // soldr#2546 slice 2: under --debug, builds run inherited-stdio
-        // through the running-process observer so the timeline records
-        // descendants (rustc, build scripts). The explicit trade, for an
-        // opt-in diagnostics mode: the post-failure diagnostic-tail
-        // summary is skipped while --debug is active — cargo's own output
-        // still reaches the terminal unmodified. The JSON artifact-capture
-        // mode above keeps slice-1 direct-child tracing because its
-        // artifact stream is load-bearing.
+        // soldr#2546 slice 2: under --debug on a terminal, builds run
+        // inherited-stdio through the running-process observer
+        // (`with_observer_and_command`) so the timeline records
+        // descendants without touching cargo's TTY output. The JSON
+        // artifact-capture mode above keeps its load-bearing pipe
+        // plumbing and observes via the same post-hoc attach.
         run_command_inheriting_stdio(&mut command, cargo_wait_timeout)
             .map(|status| (status, None, None))
     };
