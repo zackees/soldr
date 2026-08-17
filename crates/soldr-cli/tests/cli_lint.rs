@@ -105,6 +105,94 @@ fn lint_deps_runs_all_tools_without_compiler_cache() {
     );
 }
 
+/// soldr#2589, reader half: a claimed slot whose `line.txt` is blank must be
+/// a hard error, not a shrug.
+///
+/// The 2026-08-17 recurrence lost the `machete` invocation with every process
+/// exiting 0 — the writer's `if not exist` guard passes for a 0-byte file and
+/// `Ok("")` fell straight through to the terminal blank-line filter, so the
+/// line vanished with no signal anywhere. Blank means the writer claimed the
+/// slot and lost the content; that is a defect, not an empty invocation.
+#[test]
+#[should_panic(expected = "blank line.txt")]
+fn blank_fake_cargo_slot_is_a_hard_error() {
+    let root = unique_temp_dir("lint-blank-slot");
+    let log = root.join("cargo.log");
+    let slot = root.join("cargo.log.d").join("00000000_1_1");
+    fs::create_dir_all(&slot).expect("create fake slot");
+    fs::write(slot.join("line.txt"), "").expect("write blank slot line");
+
+    let _ = read_logged_cargo_invocations(&log);
+}
+
+/// The companion to [`blank_fake_cargo_slot_is_a_hard_error`]: a populated
+/// slot still reads back as exactly one invocation, split on the unit
+/// separator.
+#[test]
+fn populated_fake_cargo_slot_reads_back_as_one_invocation() {
+    let root = unique_temp_dir("lint-slot-readback");
+    let log = root.join("cargo.log");
+    let slot = root.join("cargo.log.d").join("00000000_1_1");
+    fs::create_dir_all(&slot).expect("create fake slot");
+    fs::write(slot.join("line.txt"), "deny\u{1f}check\r\n").expect("write slot line");
+
+    assert_eq!(
+        read_logged_cargo_invocations(&log),
+        vec![strings(&["deny", "check"])],
+    );
+}
+
+/// soldr#2589, writer half: concurrent fake-cargo children must each land
+/// exactly one readable line.
+///
+/// `lint deps` runs deny/audit/machete in parallel, and every sighting of this
+/// flake has been one of those three lines going missing. Twelve concurrent
+/// writers over one log root is the same shape with more chances to collide —
+/// on the slot claim (`mkdir`) and on the write into it. It cannot force the
+/// sharing violation that the CI recurrence showed; the writer's bounded
+/// retry covers that, and its exhaustion path exits 97 rather than 0, so a
+/// residual loss fails loudly instead of silently.
+#[test]
+fn concurrent_fake_cargo_writers_each_land_one_line() {
+    const WRITERS: usize = 12;
+
+    let root = unique_temp_dir("lint-slot-concurrency");
+    let log = root.join("cargo.log");
+    let cargo = install_logging_fake_cargo(&log);
+
+    let children: Vec<_> = (0..WRITERS)
+        .map(|index| {
+            let tag = format!("--writer{index}");
+            std::process::Command::new(&cargo)
+                .args(["check", tag.as_str()])
+                .spawn()
+                .expect("spawn fake cargo writer")
+        })
+        .collect();
+    for mut child in children {
+        let status = child.wait().expect("wait for fake cargo writer");
+        assert!(
+            status.success(),
+            "fake cargo writer exited with {status} (97 = the slot write never landed)"
+        );
+    }
+
+    let invocations = read_logged_cargo_invocations(&log);
+    assert_eq!(
+        invocations.len(),
+        WRITERS,
+        "expected one line per writer; got {invocations:?}"
+    );
+    for index in 0..WRITERS {
+        let tag = format!("--writer{index}");
+        let expected = strings(&["check", tag.as_str()]);
+        assert!(
+            invocations.contains(&expected),
+            "writer {index} lost its line; got {invocations:?}"
+        );
+    }
+}
+
 #[test]
 fn lint_rust_uses_canonical_commands_without_a_redundant_check() {
     let root = unique_temp_dir("lint-rust");
