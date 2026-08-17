@@ -23,6 +23,15 @@ on:
         type: string
         required: true
         description: Name of the artifact produced by _ci-cross-build-linux.yml.
+      run_pep517_smoke:
+        type: boolean
+        required: false
+        default: false
+        description: >-
+          After the archive replay, build the native soldr wheel and run the
+          downstream PEP 517 daemon smoke on this same runner. soldr#2615:
+          reuses the one macOS allocation instead of allocating a second VM of
+          the identical image for the standalone smoke job.
 
 permissions:
   contents: read
@@ -31,7 +40,9 @@ jobs:
   target-run:
     name: target-run ${{ inputs.target }}
     runs-on: ${{ inputs.runs_on }}
-    timeout-minutes: 30
+    # The PEP 517 smoke adds native wheel compilation plus 3m/15m inner smoke
+    # limits on top of the ~30-minute replay budget (soldr#2615).
+    timeout-minutes: ${{ inputs.run_pep517_smoke && 65 || 30 }}
     env:
       SOLDR_GITHUB_TOKEN: ${{ github.token }}
     steps:
@@ -206,6 +217,54 @@ jobs:
             exit "$run_status"
           fi
           exit "$summary_status"
+
+      # soldr#2615: the PEP 517 wheel smoke rides this allocation instead of a
+      # second VM of the identical image. Wheel compilation routes through the
+      # packaged target-native soldr via the toolchain shims written above, so
+      # the self-build policy (no prebuilt soldr builds this repo) still holds.
+      # soldr#1438/#1479 rationale for the cache key shape is unchanged from
+      # the standalone job; the key is target-triple-scoped now.
+      - name: Restore cargo + target caches for wheel build
+        if: ${{ inputs.run_pep517_smoke }}
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: pep517-${{ inputs.target }}-ci-release-v2
+
+      - name: Build soldr wheel under test
+        if: ${{ inputs.run_pep517_smoke }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The provisioning step exported CARGO/RUSTC as absolute toolchain
+          # paths for the replay. maturin honors $CARGO, which would bypass
+          # the soldr shims — clear both so the shim dir on PATH routes the
+          # wheel build through the packaged soldr under test.
+          unset CARGO RUSTC
+          export PATH="$TOOLCHAIN_SHIM_DIR:$PATH"
+          python -m pip install --upgrade pip
+          python .github/scripts/install_soldr_maturin.py
+          maturin build --profile ci-release --out dist
+
+      - name: Run downstream PEP 517 daemon smoke
+        if: ${{ inputs.run_pep517_smoke }}
+        shell: bash
+        env:
+          SOLDR_DAEMON_REQUIRED: "1"
+          SOLDR_DAEMON_SPAWN_RETRY_BUDGET_MS: "5000"
+        run: >-
+          python .github/scripts/pep517_daemon_smoke.py
+          --wheel "dist/*.whl"
+          --timeout 900
+          --log-dir "${{ runner.temp }}/pep517-soldr-logs"
+
+      - name: Upload PEP 517 Soldr logs
+        if: ${{ always() && inputs.run_pep517_smoke }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: pep517-soldr-logs-${{ inputs.target }}
+          path: ${{ runner.temp }}/pep517-soldr-logs
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Upload target-run diagnostics
         if: always()
