@@ -688,9 +688,6 @@ pub fn require_toolchain_pin(workspace_root: &Path) -> Result<(), SoldrError> {
     )))
 }
 
-/// Prepare the channel needed by the cargo front door using the long
-/// toolchain-command timeout. Plugins remain exclusive to prepare/ensure.
-
 /// soldr#2614: the rustup musl-host toolchain's binaries dynamically link
 /// libgcc's unwinder, which stock Alpine does not ship. Without it every
 /// toolchain binary dies with the cryptic
@@ -724,6 +721,8 @@ fn musl_libgcc_present(candidates: &[&std::path::Path]) -> bool {
     candidates.iter().any(|path| path.is_file())
 }
 
+/// Prepare the channel needed by the cargo front door using the long
+/// toolchain-command timeout. Plugins remain exclusive to prepare/ensure.
 pub(crate) fn ensure_cargo_toolchain(explicit_channel: Option<&str>) -> Result<(), SoldrError> {
     warn_when_musl_host_lacks_libgcc();
     let workspace_root = std::env::current_dir()?;
