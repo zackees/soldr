@@ -383,3 +383,43 @@ fn inherited_dylint_scope_skips_the_driver_preflight() {
         String::from_utf8_lossy(&output.stdout),
     );
 }
+
+/// soldr#2436 phase 6 (fact 6): one successful fake-tool dylint run must
+/// leave the prepared marker behind, so the second run takes the warm path
+/// (cached identity, no catalogue fetch).
+#[test]
+fn dylint_run_writes_the_prepared_marker_for_the_warm_path() {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
+    let root = unique_temp_dir("dylint-wrapper-marker");
+    let output = dylint_command(&root)
+        .args(["cargo", "dylint", "--all"])
+        .output()
+        .expect("run soldr cargo dylint");
+    assert!(
+        output.status.success(),
+        "soldr cargo dylint failed\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // SoldrPaths roots at SOLDR_CACHE_DIR (= <root>/cache in this harness);
+    // prepare_resolved derives the marker name from the configured release
+    // (1.89.0-nightly -> "1.89").
+    let marker = root
+        .join("cache")
+        .join("dylint")
+        .join("prepared")
+        .join("v1")
+        .join("1.89.identity");
+    assert!(
+        marker.is_file(),
+        "the prepared marker must exist after a successful dylint run \
+         (looked at {}); without it every run repeats the cold catalogue \
+         fetch + verification",
+        marker.display()
+    );
+}
