@@ -157,6 +157,13 @@ jobs:
       - name: Release-profile policy
         run: python3 .github/scripts/verify_release_profile_policy.py
 
+      # soldr#2442 slice 4 — tree-level raw process-spawn guard: a new raw
+      # `.spawn()` site in any production crate fails here by name until it
+      # is routed through a sanctioned module or allowlisted with a
+      # justification. Complements the soldr-daemon dylint boundary.
+      - name: Spawn-path guard
+        run: python3 .github/scripts/spawn_path_guard.py
+
       # Same pinned action benchmark-stats.yml already uses. `uv run --with`
       # builds an ephemeral env, which sidesteps the PEP 668 / system-python
       # friction that workflow hit with `uv pip install --system`.

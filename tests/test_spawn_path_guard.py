@@ -1,0 +1,71 @@
+"""Regression tests for the tree-level raw-spawn guard (soldr#2442 slice 4)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from conftest import load_script_module
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SCRIPT_PATH = REPO_ROOT / ".github" / "scripts" / "spawn_path_guard.py"
+GUARD = load_script_module(SCRIPT_PATH, "spawn_path_guard")
+
+
+def test_current_tree_passes_the_guard() -> None:
+    counts = GUARD.spawn_counts()
+    assert GUARD.violations(counts) == []
+
+
+def test_every_allowlist_entry_is_still_live() -> None:
+    """A file that no longer spawns must lose its entry (anti-mask rule)."""
+    counts = GUARD.spawn_counts()
+    stale = [rel for rel in GUARD.ALLOWLIST if counts.get(rel, 0) == 0]
+    assert stale == [], f"allowlist entries for files with no spawns: {stale}"
+
+
+def test_a_new_spawn_file_is_a_named_violation() -> None:
+    counts = GUARD.spawn_counts()
+    counts["crates/soldr-cli/src/imaginary_new_module.rs"] = 1
+    problems = GUARD.violations(counts)
+    assert any("imaginary_new_module.rs" in p and "no allowlist entry" in p for p in problems)
+
+
+def test_a_grown_count_is_a_named_violation() -> None:
+    counts = GUARD.spawn_counts()
+    some_file = next(iter(GUARD.ALLOWLIST))
+    counts[some_file] = GUARD.ALLOWLIST[some_file][0] + 1
+    problems = GUARD.violations(counts)
+    assert any(some_file in p and "grew" in p for p in problems)
+
+
+def test_sanctioned_broker_and_daemon_paths_are_not_allowlisted() -> None:
+    """The front-door broker spawn and all daemon children go through
+    running_process::spawn*; the guard exists so raw spawns cannot appear
+    beside them. Their files must never need entries."""
+    assert "crates/soldr-cli/src/broker_spawn.rs" not in GUARD.ALLOWLIST
+    daemon_entries = [
+        rel
+        for rel in GUARD.ALLOWLIST
+        if rel.startswith("crates/soldr-daemon/")
+        and "false positive" not in GUARD.ALLOWLIST[rel][1]
+    ]
+    assert daemon_entries == []
+
+
+def test_test_sources_are_out_of_scope() -> None:
+    assert not GUARD.is_production_source(
+        REPO_ROOT / "crates/soldr-cli/src/cargo_front_door/tests.rs"
+    )
+    assert not GUARD.is_production_source(
+        REPO_ROOT / "crates/soldr-cli/src/prepare_cmd_tests.rs"
+    )
+    assert GUARD.is_production_source(
+        REPO_ROOT / "crates/soldr-cli/src/broker_spawn.rs"
+    )
+
+
+def test_lint_job_runs_the_guard() -> None:
+    workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "spawn_path_guard.py" in workflow
