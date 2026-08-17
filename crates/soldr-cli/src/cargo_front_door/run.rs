@@ -421,9 +421,17 @@ pub(crate) async fn run_cargo_front_door(
     profile.mark("cache_plan_finalize");
     cache_plan.apply_to_command(&mut command, native_cache_target.as_deref())?;
     if dylint_plan.is_some() && cache_plan.uses_managed_zccache() {
-        command.env(
-            "RUSTC_WRAPPER",
-            crate::binaries::dylint_wrapper_shim_binary(&paths)?,
+        // Re-point the pair, not just RUSTC_WRAPPER: `apply_to_command`
+        // above already stamped the rustc-shim identity into the
+        // effective-wrapper mirror, and cargo-dylint re-enters the front
+        // door (its nested `cargo metadata`), where a mismatched pair
+        // fails the soldr#2545 drift guard. That failure is silent at
+        // this level — dylint reports "No libraries were found" and
+        // exits 0 having linted nothing (soldr#2634).
+        crate::wrapper_identity::set_owned_rustc_wrapper(
+            &mut command,
+            crate::binaries::dylint_wrapper_shim_binary(&paths)?.as_os_str(),
+            crate::wrapper_identity::WrapperOrigin::SoldrManaged,
         );
     }
 
