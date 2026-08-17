@@ -47,6 +47,12 @@
 //!   machine-parseable when stdout and stderr are merged. Setting the variable
 //!   *is* the caller's consent to extra stderr; an unset variable is byte-for-
 //!   byte the old behavior.
+//! * For the same reason the marks in `broker_spawn::ensure_stable_broker_ready`
+//!   are **not** gated on that module's `diagnostics_eligible`. That flag
+//!   suppresses unasked-for warnings on `--json` / `--shell-export` invocations
+//!   — which is precisely the shape that wedged in soldr#2571, so folding these
+//!   marks into it would silence the one case they exist to explain. Do not
+//!   "fix" the asymmetry; it is the point.
 
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;

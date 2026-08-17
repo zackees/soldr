@@ -238,13 +238,9 @@ pub(crate) fn maybe_spawn_broker_front_door(raw_args: &[String]) {
 /// freshly-built checkout binary share one broker endpoint) corrupted a
 /// caller's `json.loads()` with the soldr#2549 mismatch warning.
 fn ensure_stable_broker_ready(diagnostics_eligible: bool) -> Result<(), String> {
-    // soldr#2571: these marks are unconditional on the trace env var, not on
-    // `diagnostics_eligible`. The suppression above exists so an unasked-for
-    // warning cannot corrupt a `--json` payload; `SOLDR_STARTUP_TRACE` is the
-    // caller explicitly asking for stderr, which is consent, not corruption.
-    // Do not "fix" this by folding it into `diagnostics_eligible` — the
-    // soldr#2571 wedge that needs naming happens on `doctor --json`, exactly
-    // the shape that suppression silences.
+    // soldr#2571: the `startup_trace` marks below gate on their own env var,
+    // NOT on `diagnostics_eligible` — see that module's doc for why folding
+    // them into the suppression would silence the exact shape that wedges.
     let endpoint = crate::broker_identity::ResolvedBrokerEndpoint::resolve()
         .map_err(|error| error.to_string())?;
     crate::startup_trace::phase(crate::startup_trace::phase::BROKER_ENDPOINT_RESOLVE);
@@ -258,8 +254,7 @@ fn ensure_stable_broker_ready(diagnostics_eligible: bool) -> Result<(), String> 
         .map_err(|error| format!("could not create readiness runtime: {error}"))?;
     crate::startup_trace::phase(crate::startup_trace::phase::BROKER_PROBE_RUNTIME);
     // The hot path for an already-live broker: this dial is the whole of
-    // `ensure_stable_broker_ready` when nothing needs resurrecting, so it is
-    // the front-door wedge candidate the soldr#2571 recurrence left standing.
+    // `ensure_stable_broker_ready` when nothing needs resurrecting.
     let observed_instance = broker_instance_at(&runtime, &endpoint.bind_endpoint);
     crate::startup_trace::phase(crate::startup_trace::phase::BROKER_ADMIN_PROBE);
     if let Some(observed) = observed_instance {
