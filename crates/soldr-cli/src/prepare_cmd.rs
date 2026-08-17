@@ -804,6 +804,16 @@ pub(crate) fn restore_prepare_state(archive: &Path, paths: &SoldrPaths) -> Resul
 /// Run `rustup target add <triple>` for the active toolchain.
 /// Idempotent — already-installed targets are a no-op.
 pub(crate) fn rustup_add_target(triple: &str) -> Result<(), SoldrError> {
+    // soldr#2612: the host's own std ships with the toolchain, so adding
+    // the host triple as a target is a no-op at best — and on a musl host
+    // (Alpine) it is a hard failure: rustup errors with "Missing manifest
+    // in toolchain '<channel>-x86_64-unknown-linux-musl'" for the
+    // musl-hosted distribution. Found by the soldr#2297 hermetic Alpine
+    // proof, where host-native `soldr build --target linux-x64-musl`
+    // could not get past this call.
+    if triple == crate::pyo3_detect::host_triple() {
+        return Ok(());
+    }
     let paths = SoldrPaths::new()?;
     let rustup = crate::binaries::rustup_binary();
     let mut command = std::process::Command::new(rustup);

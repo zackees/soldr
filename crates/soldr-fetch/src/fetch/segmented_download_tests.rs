@@ -92,8 +92,15 @@ fn healthy_chunks_reset_the_idle_watchdog() {
 #[test]
 fn idle_pause_reports_bytes_and_is_transient() {
     runtime().block_on(async {
-        let idle = Duration::from_millis(40);
-        let url = serve_chunks(vec![(b"partial".to_vec(), Duration::from_millis(120))], 12).await;
+        // Scheduler-proof margins (the soldr#2592 doctrine; this test was
+        // missed by that rescale): the first chunk must arrive well inside
+        // one idle interval on a loaded Windows runner — at 40 ms the idle
+        // timer could fire before ANY bytes landed, and the error then
+        // said "0 bytes", failing the assert twice in a row on the
+        // target-run lane. 400 ms idle vs near-instant delivery, and a
+        // 1200 ms pause (3x idle) to trigger the timeout deterministically.
+        let idle = Duration::from_millis(400);
+        let url = serve_chunks(vec![(b"partial".to_vec(), Duration::from_millis(1200))], 12).await;
         let response = reqwest::Client::new().get(&url).send().await.expect("GET");
         let error = stream_response_to_temp_file(response, &url, idle)
             .await
