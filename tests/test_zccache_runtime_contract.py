@@ -218,12 +218,23 @@ def test_release_workflow_and_docs_reference_contract_layout() -> None:
     npm_docs = (REPO_ROOT / "docs" / "NPM_PUBLISHING.md").read_text(encoding="utf-8")
     runtime_docs = (REPO_ROOT / "docs" / "ZCCACHE_RUNTIME_CONTRACT.md").read_text(encoding="utf-8")
 
-    assert '"schema_version": 3' in release_workflow
-    assert '"format": "tar.zst"' in release_workflow
-    assert '"debug_info": ${soldr_debug_info_json}' in release_workflow
+    # soldr#2469 step 2.2: the manifest body moved out of a heredoc in
+    # release-auto.yml into release_manifest.py, so the shape it must produce
+    # is asserted at its new home. Kept as three separate facts rather than a
+    # substring sweep of the script: the schema version, the archive format,
+    # and that debug sidecars are still emitted at all.
+    manifest_writer = (
+        REPO_ROOT / ".github" / "scripts" / "release_manifest.py"
+    ).read_text(encoding="utf-8")
+    assert "SCHEMA_VERSION = 3" in manifest_writer
+    assert 'ARCHIVE_FORMAT = "tar.zst"' in manifest_writer
+    assert '"debug_info": debug_info' in manifest_writer
+    assert ".github/scripts/release_manifest.py" in release_workflow
     assert "CARGO_PROFILE_RELEASE_DEBUG" in release_workflow
     for base in contract["release_archive"]["required_binaries"]:
-        assert base in release_workflow
+        # The workflow still stages and verifies each binary by name; the
+        # manifest writer names them too, now that it composes the entries.
+        assert base in release_workflow or base in manifest_writer
         assert base in npm_docs
     assert "contracts/zccache-runtime.v1.json" in npm_docs
     assert "contracts/zccache-runtime.v1.json" in runtime_docs
