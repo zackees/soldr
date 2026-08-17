@@ -73,6 +73,33 @@ def stop_soldr_broker(soldr: str, env: dict[str, str]) -> None:
         print(f"warning: best-effort isolated broker stop failed: {exc}", flush=True)
 
 
+def stop_soldr_root(soldr: str, env: dict[str, str]) -> None:
+    """Quiesce every soldr process writing under this root's cache dir.
+
+    `broker stop` is not enough, and the failure says so out loud:
+
+        soldr broker: stopped (broker pid 2542; daemon routes retained)
+        OSError: [Errno 39] Directory not empty: 'restored-soldr'
+
+    Retaining daemon routes is deliberate — the broker is a stable singleton
+    and stopping it must not take the compile daemons with it (soldr#2549).
+    But the process still writing into the temporary root is the *daemon*, so
+    the soldr#2521 B2 mitigation stopped the wrong one and the rmtree still
+    raced live writes.
+
+    Daemon first, then broker: stopping the broker first leaves the daemon
+    running with nothing to reach it through.
+    """
+    for verb in (["daemon", "stop"], ["broker", "stop"]):
+        try:
+            subprocess.run([soldr, *verb], env=env, timeout=30, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(
+                f"warning: best-effort isolated `{' '.join(verb)}` failed: {exc}",
+                flush=True,
+            )
+
+
 def read_github_env(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
     for raw in path.read_text(encoding="utf-8").splitlines():
@@ -356,7 +383,13 @@ def main() -> int:
     try:
         assert_plan(soldr, args.target, checkout_env)
         with tempfile.TemporaryDirectory(
-            prefix=f"soldr-gnu-e2e-{TARGETS[args.target][0]}-"
+            prefix=f"soldr-gnu-e2e-{TARGETS[args.target][0]}-",
+            # Safety net, not the fix: `stop_soldr_root` below is what stops
+            # the writers. But a rmtree racing one straggler must not fail an
+            # otherwise-passing end-to-end — the runner discards this whole
+            # filesystem moments later, so an undeleted temp file is worth
+            # exactly nothing next to a red lane on `main`.
+            ignore_cleanup_errors=True,
         ) as raw:
             work = Path(raw)
             archive = work / "prepared.tar.zst"
@@ -391,13 +424,13 @@ def main() -> int:
                 )
             binary = build_fixture(soldr, args.target, env, work / "restored-build")
             verify_artifact(args.repo, args.target, root, binary, env)
-            # Stop the daemon that owns the restored root BEFORE
+            # Stop everything that owns the restored root BEFORE
             # TemporaryDirectory.__exit__ rmtrees it (soldr#2521 B2): a live
             # daemon still writing under restored-soldr made teardown die
             # with "Directory not empty". The `finally` below stops the
             # checkout root's broker, which is a different root, and runs
             # only after cleanup has already been attempted.
-            stop_soldr_broker(soldr, restored_env)
+            stop_soldr_root(soldr, restored_env)
     finally:
         stop_soldr_broker(soldr, checkout_env)
     return 0
