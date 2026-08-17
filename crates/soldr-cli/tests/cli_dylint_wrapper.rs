@@ -479,3 +479,50 @@ fn dylint_run_writes_the_prepared_marker_for_the_warm_path() {
         marker.display()
     );
 }
+
+/// soldr#2634 finding 3: a shim whose dispatch fails prints its own
+/// diagnostic and exits non-zero. The soldr#2024 exit annotation must NOT
+/// follow it — "soldr emitted no diagnostic" directly under a printed
+/// diagnostic turns a clear error into a self-contradictory one.
+#[test]
+fn shim_dispatch_failure_is_not_annotated_as_silent() {
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
+    let root = unique_temp_dir("dylint-shim-spoke");
+    let shim = root.join("soldr-dylint");
+    std::fs::hard_link(common::soldr_bin(), &shim)
+        .or_else(|_| std::fs::copy(common::soldr_bin(), &shim).map(|_| ()))
+        .expect("materialize soldr-dylint shim name");
+    soldr_platform::fs::permissions::make_executable(&shim).expect("chmod shim");
+
+    let mut command = std::process::Command::new(&shim);
+    common::scrub_outer_soldr_env(&mut command);
+    // No broker, no session env, no daemon: dispatch must fail.
+    command
+        .arg("/no/such/rustc")
+        .arg("--crate-name")
+        .arg("probe")
+        .env("SOLDR_CACHE_DIR", root.join("cache"))
+        .env("HOME", root.join("home"))
+        .env("USERPROFILE", root.join("home"));
+    let output = command.output().expect("run soldr-dylint shim");
+
+    assert!(
+        !output.status.success(),
+        "dispatch against a nonexistent rustc with no route must fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("wrapper dispatch failed"),
+        "the shim must explain its failure: {stderr}"
+    );
+    assert!(
+        !stderr.contains("soldr emitted no diagnostic"),
+        "the soldr#2024 silent-exit annotation must not contradict the \
+         diagnostic printed right above it: {stderr}"
+    );
+}
