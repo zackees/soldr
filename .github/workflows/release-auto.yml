@@ -1003,126 +1003,24 @@ jobs:
           fi
 
       - name: Smoke test combined tar.zst archive
-        # Round-trip: extract the freshly-packaged combined archive into a
-        # scratch dir, list its contents, and run soldr from there. Catches
-        # mistakes in the tar layout / file modes / zstd compression /
-        # bundled binary names before the artifact reaches the GH
-        # release. Cross-arch archives can't be executed (e.g. aarch64
-        # build on x86_64 host) so the `--version` step is gated to
-        # native-arch combinations.
+        # The last gate before an archive reaches the GitHub release.
+        # Catches tar layout / file mode / bundled-binary mistakes, the
+        # soldr#1140 stub-binary regression via a 2 MiB floor on every
+        # lane, and the soldr#1202 `version --json` path. Cross-arch
+        # archives skip only the checks that must execute the binary.
         shell: bash
         run: |
           set -euo pipefail
           version="${{ needs.prepare.outputs.version }}"
-          archive="dist/soldr-${version}-${{ matrix.target }}.tar.zst"
-          test -f "$archive" || { echo "missing archive: $archive" >&2; exit 1; }
+          case "$RUNNER_OS" in Windows) driver_suffix=".exe" ;; *) driver_suffix="" ;; esac
+          python3 .github/scripts/release_archive_smoke.py \
+            --version "$version" \
+            --target "${{ matrix.target }}" \
+            --binary "${{ matrix.binary }}" \
+            --archive "dist/soldr-${version}-${{ matrix.target }}.tar.zst" \
+            --driver "target/release/soldr${driver_suffix}" \
+            --runner-os "$RUNNER_OS"
 
-          extract=$(mktemp -d)
-          case "$RUNNER_OS" in
-            Windows) driver_suffix=".exe" ;;
-            *) driver_suffix="" ;;
-          esac
-          driver="target/release/soldr${driver_suffix}"
-          "$driver" archive --input "$archive" --extract-dir "$extract"
-          echo "--- extracted layout ---"
-          ls -la "$extract"
-
-          # Every archive must ship soldr, its daemon alias, crgx,
-          # cargo-chef, and a manifest.json describing the bundle.
-          # Windows archives must also ship soldr's PDB sidecar.
-          suffix=""
-          case "${{ matrix.target }}" in *-pc-windows-msvc) suffix=".exe" ;; esac
-          for required in \
-            "${{ matrix.binary }}" \
-            "soldr-daemon${suffix}" \
-            "crgx${suffix}" \
-            "cargo-chef${suffix}" \
-            "manifest.json"; do
-            test -f "$extract/$required" \
-              || { echo "missing $required in $archive" >&2; exit 1; }
-          done
-          if [ -n "$suffix" ]; then
-            if ! find "$extract" -maxdepth 1 -type f \( -name 'soldr.pdb' -o -name 'soldr_cli.pdb' \) | grep -q .; then
-              echo "missing soldr PDB sidecar in $archive" >&2
-              exit 1
-            fi
-          fi
-          echo "--- extracted manifest.json ---"
-          cat "$extract/manifest.json"
-
-          # soldr#1202 follow-up to #1206: cross-arch size-floor guard.
-          # The `soldr --version` + `soldr version --json` guards below
-          # only run on native-arch matches (aarch64 archives can't
-          # execute on x86_64 release runners). A stub binary shipped
-          # into a cross-arch archive would slip past every dynamic
-          # check. Enforce a 2 MiB floor here so a shipped `soldr` bin
-          # that got left as a 332 KiB stub is rejected before it
-          # reaches the GH release surface, on every lane. Real soldr
-          # ~13-15 MB on Linux glibc / ~15 MB on Windows / ~15 MB on
-          # darwin; 2 MiB is well below that but far above any
-          # conceivable stub.
-          MIN_SOLDR_BYTES=$((2 * 1024 * 1024))
-          soldr_size=$(wc -c < "$extract/${{ matrix.binary }}" | tr -d ' ')
-          if [ "$soldr_size" -lt "$MIN_SOLDR_BYTES" ]; then
-              echo "ERROR: '$extract/${{ matrix.binary }}' is ${soldr_size} bytes; expected >= ${MIN_SOLDR_BYTES} (2 MiB)." >&2
-              echo "This is the soldr#1140 / soldr#1202 stub-binary regression — the release archive shipped a placeholder instead of the real soldr binary." >&2
-              exit 1
-          fi
-          echo "archive smoke test — ${{ matrix.binary }} size ${soldr_size} bytes >= ${MIN_SOLDR_BYTES} floor OK"
-
-          # Run soldr only when the archive's target matches the runner's
-          # native arch. ubuntu-24.04 / windows-2025 are x86_64; the
-          # ubuntu-24.04-arm / windows-11-arm runners are aarch64; macOS is
-          # whatever the matrix entry says (Intel vs ARM).
-          runner_arch=$(uname -m)
-          target="${{ matrix.target }}"
-          os_matches=false
-          arch_matches=false
-          case "$RUNNER_OS:$target" in
-            Linux:*-unknown-linux-*|macOS:*-apple-darwin|Windows:*-pc-windows-msvc)
-              os_matches=true
-              ;;
-          esac
-          case "$runner_arch:$target" in
-            x86_64:x86_64-*|aarch64:aarch64-*|arm64:aarch64-*)
-              arch_matches=true
-              ;;
-          esac
-          if [[ "$os_matches" == true && "$arch_matches" == true ]]; then
-              "$extract/${{ matrix.binary }}" --version
-
-              # soldr#1202: `soldr version --json` is a distinct code
-              # path (Commands::Version arm) from `soldr --version`
-              # (clap's built-in --version flag → early exit). v0.7.87
-              # shipped a stub whose `soldr --version` printed
-              # `soldr 0.0.1` — trivially passing the "starts with
-              # soldr " wheel check — while `soldr version --json`
-              # produced empty stdout, breaking every downstream JSON
-              # consumer including setup-soldr's verify step. Guard
-              # both paths here so the class of regression can't
-              # recur.
-              expected_soldr_version="${version#v}"
-              json_out="$("$extract/${{ matrix.binary }}" version --json)"
-              if [ -z "$json_out" ]; then
-                  echo "ERROR: 'soldr version --json' produced empty stdout — likely a stub binary (soldr#1140 / soldr#1202)." >&2
-                  exit 1
-              fi
-              printf 'soldr version --json output: %s\n' "$json_out"
-              # Compact JSON before matching so the pattern survives
-              # any whitespace / newline formatting.
-              compact="$(printf '%s' "$json_out" | tr -d ' \n\r\t')"
-              if ! printf '%s' "$compact" | grep -q "\"soldr_version\":\"${expected_soldr_version}\""; then
-                  echo "ERROR: 'soldr version --json' output does not include soldr_version=${expected_soldr_version} (soldr#1202)." >&2
-                  exit 1
-              fi
-
-              # Smoke the bundled tools too — same arch gate.
-              "$extract/soldr-daemon${suffix}" --help >/dev/null
-              "$extract/crgx${suffix}" --version
-              "$extract/cargo-chef${suffix}" --version
-          else
-              echo "skipping --version (runner $RUNNER_OS/$runner_arch vs target $target)"
-          fi
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
