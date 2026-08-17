@@ -92,26 +92,32 @@ fn debug_build_records_the_direct_child_and_a_descendant() {
         stderr.contains("descendant-started"),
         "expected a descendant-started event for the fake cargo's grandchild: {stderr}"
     );
-    // running-process#1025: on Linux the children-file walk names the
+    // running-process#1025: on Linux/macOS the pid-walk monitors name the
     // grandchild's immediate parent, so the event line must carry a real
     // ppid — 0 is the explicit unknown marker and would mean the parent
-    // edge was lost.
-    let ppid_ok = stderr.lines().any(|line| {
-        line.contains("descendant-started")
-            && line
-                .split("ppid=")
-                .nth(1)
-                .and_then(|rest| {
-                    rest.split_whitespace()
-                        .next()
-                        .and_then(|value| value.parse::<u32>().ok())
-                })
-                .is_some_and(|ppid| ppid > 0)
-    });
-    assert!(
-        ppid_ok,
-        "expected a descendant-started event carrying a nonzero ppid: {stderr}"
-    );
+    // edge was lost. Windows' Job Object IOCP notification is PID-only by
+    // design, so 0 is the documented value there.
+    if !matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        let ppid_ok = stderr.lines().any(|line| {
+            line.contains("descendant-started")
+                && line
+                    .split("ppid=")
+                    .nth(1)
+                    .and_then(|rest| {
+                        rest.split_whitespace()
+                            .next()
+                            .and_then(|value| value.parse::<u32>().ok())
+                    })
+                    .is_some_and(|ppid| ppid > 0)
+        });
+        assert!(
+            ppid_ok,
+            "expected a descendant-started event carrying a nonzero ppid: {stderr}"
+        );
+    }
 
     // The end-of-run summary identifies observed/incomplete descendants
     // (soldr#2546 acceptance: preserve ordering + identify unobserved exits).
