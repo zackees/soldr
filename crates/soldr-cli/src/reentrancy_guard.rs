@@ -108,6 +108,23 @@ pub(crate) fn enforce_and_mark(raw_args: &[String]) -> Option<i32> {
     None
 }
 
+/// Routing variables the diagnostic is allowed to disclose. An allowlist,
+/// not a denylist: the guard fires on process graphs that may carry
+/// credentials, registry tokens, or signing material elsewhere in the
+/// environment, and soldr#2547 item 5 requires everything unrelated to how
+/// this process came to exist to stay out of the record.
+const DISCLOSED_ROUTING_ENV_VARS: &[&str] = &[
+    "RUSTC_WRAPPER",
+    "SOLDR_RUSTC_WRAPPER",
+    "SOLDR_GLOBAL_DELEGATING",
+    "SOLDR_TRAMPOLINING",
+];
+
+/// How many argv entries the record keeps. Bounded per soldr#2547 item 5;
+/// a rejected re-entry is identified by its head, and a cargo-shaped argv
+/// can run to hundreds of entries.
+const RECORDED_ARGV_LIMIT: usize = 16;
+
 /// Bounded diagnostic: both processes, the argv head, and only the routing
 /// variables relevant to how this process came to exist — never the full
 /// environment (soldr#2547 item 5).
@@ -131,12 +148,7 @@ fn emit_rejection(inherited_pid: u32, current_pid: u32, raw_args: &[String]) {
          soldr:   exe: {exe}\n\
          soldr:   cwd: {cwd}"
     );
-    for name in [
-        "RUSTC_WRAPPER",
-        "SOLDR_RUSTC_WRAPPER",
-        "SOLDR_GLOBAL_DELEGATING",
-        "SOLDR_TRAMPOLINING",
-    ] {
+    for name in DISCLOSED_ROUTING_ENV_VARS {
         if let Ok(value) = std::env::var(name) {
             eprintln!("soldr:   {name}={value}");
         }
@@ -146,7 +158,110 @@ fn emit_rejection(inherited_pid: u32, current_pid: u32, raw_args: &[String]) {
          this looks like a hang in the wild and is forbidden under strict mode \
          (soldr#2547, soldr#2566)"
     );
+    // soldr#2547 item 5: the diagnostic must survive stderr being redirected
+    // or absent. The processes this guard exists to catch are precisely the
+    // ones nobody is watching — a detached `broker serve` writes its stderr
+    // into a spawn log at best, and a rejected child of a tool chain writes
+    // it wherever that tool decided. Persist the same facts where `soldr
+    // logs` can find them afterwards.
+    match write_rejection_record(inherited_pid, current_pid, raw_args) {
+        Some(path) => eprintln!("soldr:   record: {}", path.display()),
+        // Deliberately quiet: a rejection that cannot be journalled is still
+        // a rejection, and the stderr text above already carries every field.
+        None => eprintln!("soldr:   record: <not written>"),
+    }
 }
+
+/// Persist the rejection as JSON under `<soldr root>/logs/reentrancy/`,
+/// mirroring the `debug-trace` layout. Best effort in every step: this runs
+/// on a path that is already exiting 1, so a read-only disk or an
+/// unresolvable home must not turn a clean refusal into a crash.
+fn write_rejection_record(
+    inherited_pid: u32,
+    current_pid: u32,
+    raw_args: &[String],
+) -> Option<std::path::PathBuf> {
+    let dir = crate::core::SoldrPaths::new()
+        .ok()?
+        .root
+        .join("logs")
+        .join("reentrancy");
+    std::fs::create_dir_all(&dir).ok()?;
+    let unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or(0);
+    let path = dir.join(format!("{unix_ms}-{current_pid}.json"));
+    let record = render_rejection_record(
+        inherited_pid,
+        current_pid,
+        raw_args,
+        unix_ms,
+        std::env::current_exe()
+            .map(|exe| exe.display().to_string())
+            .ok(),
+        std::env::current_dir()
+            .map(|cwd| cwd.display().to_string())
+            .ok(),
+        &disclosed_routing_env(),
+    );
+    std::fs::write(&path, record).ok()?;
+    Some(path)
+}
+
+/// The routing variables actually present, in allowlist order.
+fn disclosed_routing_env() -> Vec<(String, String)> {
+    DISCLOSED_ROUTING_ENV_VARS
+        .iter()
+        .filter_map(|name| {
+            std::env::var(name)
+                .ok()
+                .map(|value| ((*name).to_string(), value))
+        })
+        .collect()
+}
+
+/// Render the record. Pure so the schema and — more importantly — the
+/// redaction are unit-testable without touching the process environment or
+/// the filesystem.
+fn render_rejection_record(
+    inherited_pid: u32,
+    current_pid: u32,
+    raw_args: &[String],
+    unix_ms: u128,
+    exe: Option<String>,
+    cwd: Option<String>,
+    routing_env: &[(String, String)],
+) -> String {
+    let argv: Vec<&String> = raw_args.iter().take(RECORDED_ARGV_LIMIT).collect();
+    let routing: serde_json::Map<String, serde_json::Value> = routing_env
+        .iter()
+        .map(|(name, value)| (name.clone(), serde_json::Value::String(value.clone())))
+        .collect();
+    serde_json::json!({
+        "schema_version": REJECTION_SCHEMA_VERSION,
+        "event": "reentrancy_rejected",
+        "unix_ms": unix_ms as u64,
+        "inherited_in_soldr_pid": inherited_pid,
+        "pid": current_pid,
+        "exe": exe,
+        "cwd": cwd,
+        "argv": argv,
+        "argv_truncated": raw_args.len() > RECORDED_ARGV_LIMIT,
+        "routing_env": routing,
+    })
+    .to_string()
+}
+
+/// Stable shape for consumers of `logs/reentrancy/*.json`.
+///
+/// Version 1 omits the process *role* and the immediate parent pid that
+/// soldr#2547 item 5 also asks for: roles are the issue's next slice (the
+/// guard currently judges a flat sanctioned-edge allowlist, not a role
+/// matrix), and a parent pid needs a new cross-platform primitive in
+/// `soldr-platform` — Windows has no std equivalent of `getppid`. Both are
+/// additive fields when they land.
+const REJECTION_SCHEMA_VERSION: u32 = 1;
 
 #[cfg(test)]
 mod tests {
@@ -190,6 +305,78 @@ mod tests {
             decide(true, Some("123"), 456, false, false, false),
             GuardDecision::Reject { inherited_pid: 123 }
         );
+    }
+
+    fn sample_record(raw_args: &[String], routing: &[(String, String)]) -> serde_json::Value {
+        let rendered = render_rejection_record(
+            123,
+            456,
+            raw_args,
+            1_700_000_000_000,
+            Some("/opt/soldr".to_string()),
+            Some("/work".to_string()),
+            routing,
+        );
+        serde_json::from_str(&rendered).expect("record must be valid JSON")
+    }
+
+    #[test]
+    fn record_carries_both_processes_and_the_invocation() {
+        let argv = vec!["soldr".to_string(), "--version".to_string()];
+        let record = sample_record(&argv, &[]);
+        assert_eq!(record["schema_version"], 1);
+        assert_eq!(record["event"], "reentrancy_rejected");
+        assert_eq!(record["inherited_in_soldr_pid"], 123);
+        assert_eq!(record["pid"], 456);
+        assert_eq!(record["unix_ms"], 1_700_000_000_000u64);
+        assert_eq!(record["exe"], "/opt/soldr");
+        assert_eq!(record["cwd"], "/work");
+        assert_eq!(record["argv"][1], "--version");
+        assert_eq!(record["argv_truncated"], false);
+    }
+
+    #[test]
+    fn record_discloses_only_routing_variables() {
+        // The whole point of the allowlist: this guard fires on process
+        // graphs that may carry tokens elsewhere in the environment, and the
+        // record is written to disk where it outlives the process.
+        let routing = vec![
+            ("RUSTC_WRAPPER".to_string(), "/opt/soldr".to_string()),
+            ("SOLDR_TRAMPOLINING".to_string(), "1".to_string()),
+        ];
+        let record = sample_record(&[], &routing);
+        assert_eq!(record["routing_env"]["RUSTC_WRAPPER"], "/opt/soldr");
+        assert_eq!(record["routing_env"]["SOLDR_TRAMPOLINING"], "1");
+        assert_eq!(
+            record["routing_env"].as_object().expect("object").len(),
+            2,
+            "only the variables handed in may appear"
+        );
+        assert!(
+            DISCLOSED_ROUTING_ENV_VARS.len() == 4
+                && !DISCLOSED_ROUTING_ENV_VARS.contains(&"PATH")
+                && !DISCLOSED_ROUTING_ENV_VARS.contains(&"HOME"),
+            "the disclosure allowlist must stay narrow: {DISCLOSED_ROUTING_ENV_VARS:?}"
+        );
+    }
+
+    #[test]
+    fn long_argv_is_bounded_and_says_so() {
+        let argv: Vec<String> = (0..40).map(|index| format!("--arg{index}")).collect();
+        let record = sample_record(&argv, &[]);
+        assert_eq!(
+            record["argv"].as_array().expect("array").len(),
+            RECORDED_ARGV_LIMIT
+        );
+        assert_eq!(record["argv_truncated"], true);
+    }
+
+    #[test]
+    fn a_missing_exe_or_cwd_records_null_rather_than_failing() {
+        let rendered = render_rejection_record(1, 2, &[], 0, None, None, &[]);
+        let record: serde_json::Value = serde_json::from_str(&rendered).expect("valid JSON");
+        assert!(record["exe"].is_null());
+        assert!(record["cwd"].is_null());
     }
 
     #[test]
