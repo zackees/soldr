@@ -241,6 +241,10 @@ jobs:
           # wheel build through the packaged soldr under test.
           unset CARGO RUSTC
           export PATH="$TOOLCHAIN_SHIM_DIR:$PATH"
+          # No setup-soldr in this lane puts a `soldr` on PATH; hand the
+          # installer the packaged target-native binary explicitly (its
+          # designed release-lane override).
+          export SOLDR_RELEASE_DRIVER="$SOLDR_BIN"
           python -m pip install --upgrade pip
           python .github/scripts/install_soldr_maturin.py
           maturin build --profile ci-release --out dist
