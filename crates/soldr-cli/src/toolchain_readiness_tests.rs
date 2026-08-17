@@ -51,7 +51,9 @@ fn probe_reports_missing_partial_and_ready() {
 
     // The wedge signature from soldr#2618: component manifests landed,
     // rustc never did.
-    let toolchain = home.join("toolchains").join("1.95.0-x86_64-unknown-linux-gnu");
+    let toolchain = home
+        .join("toolchains")
+        .join("1.95.0-x86_64-unknown-linux-gnu");
     std::fs::create_dir_all(toolchain.join("lib").join("rustlib")).expect("mkdir");
     std::fs::write(
         toolchain
@@ -68,13 +70,12 @@ fn probe_reports_missing_partial_and_ready() {
 
     let bin = toolchain.join("bin");
     std::fs::create_dir_all(&bin).expect("mkdir bin");
-    let rustc = if crate::platform::host::facts::os()
-        == crate::platform::host::facts::HostOs::Windows
-    {
-        bin.join("rustc.exe")
-    } else {
-        bin.join("rustc")
-    };
+    let rustc =
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            bin.join("rustc.exe")
+        } else {
+            bin.join("rustc")
+        };
     std::fs::write(&rustc, b"").expect("write rustc");
     assert_eq!(
         probe_toolchain_state(home, "1.95.0", host),

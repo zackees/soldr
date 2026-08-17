@@ -24,9 +24,7 @@
 //! toolchain the probe inspects is the toolchain the install writes and
 //! the target add mutates.
 
-use crate::core::{
-    run_installer_command, InstallerWatchdogConfig, SoldrError, SoldrPaths,
-};
+use crate::core::{run_installer_command, InstallerWatchdogConfig, SoldrError, SoldrPaths};
 use std::path::{Path, PathBuf};
 
 /// Where the pinned toolchain stands in the effective `RUSTUP_HOME`.
