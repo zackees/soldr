@@ -50,6 +50,47 @@ pub(crate) struct EnvironmentPlan {
     pub(crate) path_prepend: bool,
 }
 
+/// soldr#2618 — settle every rustup mutation for `target` (pinned
+/// toolchain install, `rustup target add`) sequentially, before any cargo
+/// child can spawn. On a fresh root nothing else installs the pinned
+/// toolchain explicitly: it used to be installed implicitly by whichever
+/// child first hit a rustup proxy — usually the soldr#1543 dependency
+/// prefetch running concurrently with prep — and `rustup target add`
+/// racing that install failed with `Missing manifest in toolchain`, after
+/// which `kill_on_drop` reaped the prefetch mid-extraction and left a
+/// permanently wedged partial toolchain.
+///
+/// Idempotent and memoized per process, so the blessed build can call it
+/// eagerly (before spawning the prefetch) and `prepare_target` can keep
+/// its own call without spawning rustup twice. Mirrors the soldr#2613
+/// host-triple short-circuit: a host-triple target performs no rustup
+/// work at all (the host std ships with the toolchain, and on a musl host
+/// rustup cannot provide one — soldr#2614).
+pub(crate) fn provision_target_toolchain(target: &str) -> Result<(), SoldrError> {
+    use std::sync::{Mutex, OnceLock};
+    static PROVISIONED: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
+
+    let base = crate::target_alias::split_glibc_floor(target).map_or(target, |(base, _)| base);
+    if classify_target(base).is_err() || base == crate::pyo3_detect::host_triple() {
+        return Ok(());
+    }
+    let provisioned = PROVISIONED.get_or_init(|| Mutex::new(BTreeSet::new()));
+    if provisioned
+        .lock()
+        .expect("provisioned-target set poisoned")
+        .contains(base)
+    {
+        return Ok(());
+    }
+    crate::toolchain_readiness::ensure_pinned_toolchain_installed()?;
+    crate::prepare_cmd::rustup_add_target(base)?;
+    provisioned
+        .lock()
+        .expect("provisioned-target set poisoned")
+        .insert(base.to_string());
+    Ok(())
+}
+
 pub(crate) async fn prepare_target(
     paths: &SoldrPaths,
     target: &str,
@@ -72,7 +113,7 @@ pub(crate) async fn prepare_target(
 
     let attrs = classify_target(base)?;
     let host = crate::pyo3_detect::host_triple();
-    crate::prepare_cmd::rustup_add_target(base)?;
+    provision_target_toolchain(target)?;
     let mut prep = crate::blessed_build::prepare(paths, base).await?;
 
     if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Linux

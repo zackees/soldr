@@ -18,6 +18,14 @@ async fn run_blessed_build(
     // forward otherwise unchanged.
     if let Some(target_triple) = extract_target_from_args(&full_args) {
         let paths = crate::core::SoldrPaths::new()?;
+        // soldr#2618: settle all rustup work (pinned toolchain install +
+        // target add) BEFORE the prefetch spawns. The prefetch's cargo is
+        // a rustup proxy on a fresh root, and letting it auto-install the
+        // toolchain concurrently with prep's `rustup target add` produced
+        // the `Missing manifest in toolchain` race — worse, the resulting
+        // prep error reaped the prefetch mid-extraction (kill_on_drop),
+        // leaving a permanently wedged partial toolchain.
+        crate::target_lifecycle::provision_target_toolchain(&target_triple)?;
         // soldr#1543: start a bounded `cargo fetch
         // --target <T>` NOW so dependency acquisition overlaps
         // the catalogue/SDK materialization below. Joined

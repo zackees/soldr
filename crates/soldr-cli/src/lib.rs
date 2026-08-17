@@ -284,6 +284,7 @@ pub mod toolchain;
 pub mod toolchain_doctor;
 pub mod toolchain_ensure;
 pub mod toolchain_link;
+pub mod toolchain_readiness;
 pub mod trampoline;
 /// soldr#2024 — the `--as <version>` trampoline, split out of
 /// `soldr_main.rs` so that file could stop growing.
