@@ -121,7 +121,7 @@ pub fn broker_service_name() -> io::Result<String> {
     }
     let paths = SoldrPaths::new().map_err(|err| io::Error::other(err.to_string()))?;
     let current = std::env::current_exe()?;
-    let daemon = current
+    let sibling = current
         .parent()
         .map(|parent| {
             parent.join(
@@ -135,7 +135,30 @@ pub fn broker_service_name() -> io::Result<String> {
             )
         })
         .unwrap_or_else(|| PathBuf::from("soldr-daemon"));
+    let daemon = resolve_daemon_image_for_route(&paths, sibling);
     broker_service_name_for(&paths, &daemon)
+}
+
+/// Pick the daemon image whose hash names the broker route.
+///
+/// The sibling guess covers the main soldr binary, whose install dir
+/// carries a `soldr-daemon` alias. Compiler wrapper shims live in the
+/// versioned shims directory, which has no daemon sibling — and the
+/// invocations that reach a shim without `SOLDR_BROKER_SERVICE` are
+/// exactly the env-sanitized ones (cargo-dylint's driver build scrubs the
+/// front door's route export; soldr#2634). Recover from the broker route
+/// claim instead: it records the executable of the daemon the broker
+/// currently fronts, which is the image identity the route was registered
+/// under. A missing or unreadable claim keeps the sibling guess so the
+/// resulting error still names the expected location.
+fn resolve_daemon_image_for_route(paths: &SoldrPaths, sibling: PathBuf) -> PathBuf {
+    if sibling.is_file() {
+        return sibling;
+    }
+    match read_broker_route_claim(paths) {
+        Ok(Some(claim)) if claim.exe_path.is_file() => claim.exe_path,
+        _ => sibling,
+    }
 }
 pub(crate) const RUNNING_PROCESS_BACKEND_HANDLE_STATUS: RunningProcessBackendHandleStatus =
     RunningProcessBackendHandleStatus {
@@ -518,6 +541,60 @@ mod tests {
     use crate::cache_lib::soldr_daemon_dir;
     use running_process::broker::backend_sdk::MuxPoll;
     use tempfile::TempDir;
+
+    fn claim_for(paths: &SoldrPaths, exe_path: &Path) -> DaemonProcess {
+        let endpoint = if crate::platform::host::facts::os()
+            == crate::platform::host::facts::HostOs::Windows
+        {
+            Endpoint::windows_pipe(exe_path.display().to_string(), "soldr-route-test")
+        } else {
+            Endpoint::unix_socket(
+                exe_path.display().to_string(),
+                paths.root.join("route-test.sock").display().to_string(),
+            )
+        }
+        .expect("test endpoint");
+        DaemonProcess {
+            pid: 4242,
+            exe_sha256: [0; 32],
+            exe_path: exe_path.to_path_buf(),
+            boot_id: "route-test-boot".to_string(),
+            ipc_endpoint: endpoint,
+            started_at_unix_ms: 0,
+            idle_timeout_secs: None,
+        }
+    }
+
+    /// soldr#2634: a wrapper shim has no `soldr-daemon` sibling, and the
+    /// env-sanitized invocations that reach it (dylint's driver build)
+    /// carry no `SOLDR_BROKER_SERVICE`. The route image must then come
+    /// from the broker route claim — not fail on the absent sibling.
+    #[test]
+    fn missing_daemon_sibling_recovers_the_image_from_the_route_claim() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("root"));
+        std::fs::create_dir_all(&paths.root).expect("create root");
+        let claimed = temp.path().join("claimed-soldr-daemon");
+        std::fs::write(&claimed, b"claimed-image").expect("claimed image");
+        publish_broker_route_claim(&paths, &claim_for(&paths, &claimed)).expect("publish claim");
+
+        let missing_sibling = temp.path().join("shims").join("soldr-daemon");
+        let resolved = resolve_daemon_image_for_route(&paths, missing_sibling.clone());
+        assert_eq!(resolved, claimed, "claimed daemon image must win");
+
+        // An existing sibling always wins: it is the installed alias the
+        // route was registered under on the main-binary path.
+        let sibling = temp.path().join("soldr-daemon");
+        std::fs::write(&sibling, b"sibling-image").expect("sibling image");
+        let resolved = resolve_daemon_image_for_route(&paths, sibling.clone());
+        assert_eq!(resolved, sibling, "existing sibling must win");
+
+        // No claim, no sibling: keep the sibling guess so downstream
+        // errors name the expected install location.
+        prune_broker_route_claim(&paths);
+        let resolved = resolve_daemon_image_for_route(&paths, missing_sibling.clone());
+        assert_eq!(resolved, missing_sibling);
+    }
 
     #[test]
     fn broker_service_partition_covers_root_and_image_hash() {
