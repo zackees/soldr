@@ -149,17 +149,85 @@ fn install_extensionless_driver(
     let driver_dir = driver_root.join(qualified_channel);
     std::fs::create_dir_all(&driver_dir)?;
     let destination = driver_dir.join("dylint-driver");
-    let temporary = driver_dir.join(format!(".dylint-driver.part-{}", std::process::id()));
-    std::fs::copy(source, &temporary)?;
+    // Unix hosts get a loader-env wrapper in the `dylint-driver` slot and
+    // the real binary beside it (soldr#2634 finding 4): the catalogued
+    // driver's baked rpath names the *builder's* rustup layout, so a host
+    // with any other `RUSTUP_HOME` fails
+    // `error while loading shared libraries: librustc_driver-…` the
+    // moment cargo-dylint execs the driver directly — soldr's own probe
+    // survives only because it injects the toolchain `lib/` itself. The
+    // wrapper derives that directory from the invoking environment at run
+    // time, so the staged driver is layout-portable. Windows resolves
+    // rustc DLLs through PATH, which cargo-dylint already provides.
+    let payload_destination =
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            destination.clone()
+        } else {
+            driver_dir.join("dylint-driver-real")
+        };
+    install_driver_file_atomically(source, &driver_dir, &payload_destination, |src, tmp| {
+        std::fs::copy(src, tmp).map(|_| ())
+    })?;
+    if payload_destination != destination {
+        let script = driver_loader_wrapper_script(qualified_channel);
+        install_driver_file_atomically(source, &driver_dir, &destination, |_, tmp| {
+            std::fs::write(tmp, &script)
+        })?;
+    }
+    Ok(destination)
+}
+
+/// Write one staged driver file through a part-file + rename so a
+/// concurrent reader never observes a torn executable.
+fn install_driver_file_atomically(
+    source: &Path,
+    driver_dir: &Path,
+    destination: &Path,
+    materialize: impl Fn(&Path, &Path) -> std::io::Result<()>,
+) -> Result<(), SoldrError> {
+    let file_name = destination
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or("dylint-driver");
+    let temporary = driver_dir.join(format!(".{file_name}.part-{}", std::process::id()));
+    materialize(source, &temporary)?;
     crate::platform::fs::permissions::make_executable(&temporary)?;
     if destination.is_file() {
-        std::fs::remove_file(&destination)?;
+        std::fs::remove_file(destination)?;
     }
-    if let Err(error) = std::fs::rename(&temporary, &destination) {
+    if let Err(error) = std::fs::rename(&temporary, destination) {
         let _ = std::fs::remove_file(&temporary);
         return Err(error.into());
     }
-    Ok(destination)
+    Ok(())
+}
+
+/// The Unix `dylint-driver` slot: export the toolchain's shared-library
+/// directory for the loader, then exec the real catalogued binary.
+///
+/// The toolchain directory is derived from `RUSTUP_HOME` (or its default)
+/// at *run* time, so one staged driver works across hosts whose rustup
+/// layouts differ from the catalogue builder's. A missing directory adds
+/// nothing and lets the exec proceed — an rpath-compatible layout still
+/// works, and an incompatible one fails with the loader's own message.
+fn driver_loader_wrapper_script(qualified_channel: &str) -> String {
+    format!(
+        r#"#!/bin/sh
+# soldr: loader-env wrapper for the catalogued Dylint driver (soldr#2634).
+dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+lib="${{RUSTUP_HOME:-$HOME/.rustup}}/toolchains/{qualified_channel}/lib"
+if [ -d "$lib" ]; then
+  if [ "$(uname)" = "Darwin" ]; then
+    DYLD_FALLBACK_LIBRARY_PATH="$lib${{DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}}"
+    export DYLD_FALLBACK_LIBRARY_PATH
+  else
+    LD_LIBRARY_PATH="$lib${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}"
+    export LD_LIBRARY_PATH
+  fi
+fi
+exec "$dir/dylint-driver-real" "$@"
+"#
+    )
 }
 
 fn dated_nightly_prefix(channel: &str) -> Option<&str> {
@@ -179,6 +247,67 @@ fn dated_nightly_prefix(channel: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// soldr#2634 finding 4: the Unix `dylint-driver` slot must be the
+    /// loader-env wrapper with the real catalogued binary beside it, so
+    /// cargo-dylint's direct exec survives rustup layouts that differ
+    /// from the catalogue builder's baked rpath. Windows keeps the plain
+    /// copy (DLL resolution goes through PATH there).
+    #[test]
+    fn staged_driver_layout_is_loader_portable() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let source = temp.path().join("fetched-driver");
+        std::fs::write(&source, b"driver-payload").expect("source");
+        let root = temp.path().join("drivers");
+        let channel = "nightly-2026-05-28-x86_64-unknown-linux-gnu";
+
+        let destination =
+            install_extensionless_driver(&source, &root, channel).expect("stage driver");
+        assert_eq!(destination, root.join(channel).join("dylint-driver"));
+        let staged = std::fs::read(&destination).expect("read staged slot");
+
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
+            assert_eq!(staged, b"driver-payload", "Windows stages the plain copy");
+            return;
+        }
+        let script = String::from_utf8(staged).expect("wrapper script is text");
+        assert!(script.starts_with("#!/bin/sh"), "wrapper must be a script");
+        assert!(
+            script.contains(&format!("toolchains/{channel}/lib")),
+            "wrapper must derive the staged channel's lib dir: {script}"
+        );
+        assert!(
+            script.contains("exec \"$dir/dylint-driver-real\""),
+            "wrapper must exec the real driver: {script}"
+        );
+        let payload = std::fs::read(root.join(channel).join("dylint-driver-real"))
+            .expect("real driver beside the wrapper");
+        assert_eq!(payload, b"driver-payload");
+    }
+
+    /// Restaging over an existing installation must replace both files.
+    #[test]
+    fn restaging_replaces_an_existing_driver() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let source_one = temp.path().join("driver-one");
+        let source_two = temp.path().join("driver-two");
+        std::fs::write(&source_one, b"one").expect("source one");
+        std::fs::write(&source_two, b"two").expect("source two");
+        let root = temp.path().join("drivers");
+        let channel = "nightly-2026-05-28-x86_64-unknown-linux-gnu";
+
+        install_extensionless_driver(&source_one, &root, channel).expect("first stage");
+        install_extensionless_driver(&source_two, &root, channel).expect("second stage");
+
+        let payload_path = if crate::platform::host::facts::os()
+            == crate::platform::host::facts::HostOs::Windows
+        {
+            root.join(channel).join("dylint-driver")
+        } else {
+            root.join(channel).join("dylint-driver-real")
+        };
+        assert_eq!(std::fs::read(payload_path).expect("payload"), b"two");
+    }
 
     #[test]
     fn dylint_packages_cover_all_supported_targets() {
@@ -263,7 +392,18 @@ mod tests {
         )
         .unwrap();
         assert_eq!(destination.file_name().unwrap(), "dylint-driver");
-        assert_eq!(std::fs::read(destination).unwrap(), b"driver");
+        // The extensionless slot holds the payload directly on Windows
+        // and the loader-env wrapper on Unix (soldr#2634 finding 4); the
+        // payload then lives beside it. Either way the payload bytes are
+        // staged under the extensionless contract.
+        let payload = if crate::platform::host::facts::os()
+            == crate::platform::host::facts::HostOs::Windows
+        {
+            destination
+        } else {
+            destination.with_file_name("dylint-driver-real")
+        };
+        assert_eq!(std::fs::read(payload).unwrap(), b"driver");
     }
 
     #[test]
