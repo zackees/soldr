@@ -14,10 +14,11 @@
 //!   one replacement daemon per route;
 //! - broker killed → the next front door brings up exactly one new broker.
 //!
-//! Unix-gated: the matrix drives `kill -9` and pgrep-style process
-//! inspection; the Windows containment story is job-object-based and is
-//! exercised by the daemon suites' own lifecycle tests.
-#![cfg(unix)]
+//! Unix-gated at runtime (the platform-cfg boundary lives in
+//! soldr-platform): the matrix drives `kill -9` and pgrep-style process
+//! inspection, so on Windows every test returns immediately — the Windows
+//! containment story is job-object-based and is exercised by the daemon
+//! suites' own lifecycle tests.
 
 mod common;
 
@@ -29,6 +30,14 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const READY_DEADLINE: Duration = Duration::from_secs(60);
+
+/// Runtime Unix gate (no host `#[cfg]` outside soldr-platform).
+fn skip_on_windows() -> bool {
+    matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    )
+}
 
 fn unique_temp_dir(label: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -161,6 +170,9 @@ impl Drop for Fixture {
 
 #[test]
 fn daemon_kill_invalidates_only_its_route_and_one_replacement_launches() {
+    if skip_on_windows() {
+        return;
+    }
     let fx = Fixture::new("killmatrix-daemon");
     let start = run_soldr(&["daemon", "start"], &fx.cache_root, &fx.home_root);
     assert!(
@@ -210,6 +222,9 @@ fn daemon_kill_invalidates_only_its_route_and_one_replacement_launches() {
 
 #[test]
 fn two_roots_killing_one_daemon_never_disrupts_the_other() {
+    if skip_on_windows() {
+        return;
+    }
     let fx = Fixture::new("killmatrix-two-roots");
     let root_b = unique_temp_dir("killmatrix-two-roots-b");
 
@@ -242,6 +257,9 @@ fn two_roots_killing_one_daemon_never_disrupts_the_other() {
 
 #[test]
 fn concurrent_restarts_after_a_kill_converge_on_one_replacement() {
+    if skip_on_windows() {
+        return;
+    }
     let fx = Fixture::new("killmatrix-storm");
     let start = run_soldr(&["daemon", "start"], &fx.cache_root, &fx.home_root);
     assert!(start.status.success() && wait_for_running(&fx.cache_root, &fx.home_root));
@@ -277,6 +295,9 @@ fn concurrent_restarts_after_a_kill_converge_on_one_replacement() {
 
 #[test]
 fn broker_kill_is_recovered_by_the_next_front_door_with_one_replacement() {
+    if skip_on_windows() {
+        return;
+    }
     let fx = Fixture::new("killmatrix-broker");
     let start = run_soldr(&["daemon", "start"], &fx.cache_root, &fx.home_root);
     assert!(start.status.success() && wait_for_running(&fx.cache_root, &fx.home_root));
