@@ -708,10 +708,10 @@ fn warn_when_musl_host_lacks_libgcc() {
             std::path::Path::new("/lib/libgcc_s.so.1"),
             std::path::Path::new("/usr/local/lib/libgcc_s.so.1"),
         ];
-        if !musl_libgcc_present(&candidates) {
-            eprintln!(
-                "soldr: warning: this musl host has no libgcc_s.so.1 in the loader                  paths. The rustup musl-host Rust toolchain dynamically links                  libgcc's unwinder, so its cargo/rustc will fail with 'Error                  relocating ...: _Unwind_GetCFA: symbol not found'. On Alpine,                  install it first: apk add libgcc (soldr#2614)."
-            );
+        for line in
+            musl_host_prerequisite_warnings(musl_libgcc_present(&candidates), musl_linker_present())
+        {
+            eprintln!("{line}");
         }
     });
 }
@@ -719,6 +719,66 @@ fn warn_when_musl_host_lacks_libgcc() {
 /// Pure core of the probe, path-injectable for tests.
 fn musl_libgcc_present(candidates: &[&std::path::Path]) -> bool {
     candidates.iter().any(|path| path.is_file())
+}
+
+/// Whether a `cc` linker driver is reachable on PATH.
+///
+/// Separate from the libgcc probe because the two failures are separate and
+/// land at different moments: without libgcc the toolchain's own binaries
+/// cannot start at all, while with libgcc but no `cc` they start fine and the
+/// first link dies instead.
+fn musl_linker_present() -> bool {
+    crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Windows
+        && std::env::var_os("PATH")
+            .map(|path| std::env::split_paths(&path).any(|dir| dir.join("cc").is_file()))
+            .unwrap_or(false)
+}
+
+/// Pure message builder: which musl-host prerequisites are missing, and what
+/// to install.
+///
+/// Measured on stock `alpine:3.20` with rustup 1.29.0 and
+/// `1.95.0-x86_64-unknown-linux-musl` (soldr#2614):
+///
+/// * no libgcc  -> every toolchain binary dies relocating `_Unwind_GetCFA`;
+/// * libgcc only -> `rustc --version` works and `cargo build` fails with
+///   `error: linker 'cc' not found`;
+/// * `libgcc gcc musl-dev` -> compiles and the binary runs.
+///
+/// That third line matters beyond the message: the rustup musl-host channel
+/// *does* ship a complete toolchain, so the earlier "rustc is not installed
+/// for the toolchain" reading was a downstream symptom of the missing
+/// unwinder, not a gap in the channel.
+///
+/// Warning-only, both of them: a musl host that gets its unwinder or its
+/// linker some other way (custom `LD_LIBRARY_PATH`, `clang` as the linker
+/// driver, a static toolchain) must not be blocked by a probe.
+fn musl_host_prerequisite_warnings(libgcc: bool, linker: bool) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if !libgcc {
+        warnings.push(
+            concat!(
+                "soldr: warning: this musl host has no libgcc_s.so.1 in the loader paths. ",
+                "The rustup musl-host Rust toolchain dynamically links libgcc's unwinder, ",
+                "so its cargo/rustc will fail with ",
+                "'Error relocating ...: _Unwind_GetCFA: symbol not found'. ",
+                "On Alpine, install it first: apk add libgcc (soldr#2614).",
+            )
+            .to_string(),
+        );
+    }
+    if !linker {
+        warnings.push(
+            concat!(
+                "soldr: warning: this musl host has no `cc` on PATH. The toolchain will ",
+                "start, and then the first link will fail with ",
+                "\"error: linker `cc` not found\". ",
+                "On Alpine, install it first: apk add gcc musl-dev (soldr#2614).",
+            )
+            .to_string(),
+        );
+    }
+    warnings
 }
 
 /// Prepare the channel needed by the cargo front door using the long

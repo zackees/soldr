@@ -421,3 +421,45 @@ fn musl_libgcc_probe_finds_any_candidate_and_reports_absence() {
     ]));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// soldr#2614: both musl-host prerequisites, and their remedies.
+///
+/// Measured on stock `alpine:3.20` with rustup 1.29.0 and
+/// `1.95.0-x86_64-unknown-linux-musl`: libgcc alone gets `rustc --version`
+/// working but the first link still dies with ``error: linker `cc` not
+/// found``, so a message naming only libgcc sends someone back for a second
+/// round trip.
+#[test]
+fn musl_host_warnings_name_each_missing_prerequisite() {
+    assert!(super::musl_host_prerequisite_warnings(true, true).is_empty());
+
+    let no_libgcc = super::musl_host_prerequisite_warnings(false, true);
+    assert_eq!(no_libgcc.len(), 1);
+    assert!(no_libgcc[0].contains("apk add libgcc"));
+    assert!(no_libgcc[0].contains("_Unwind_GetCFA"));
+
+    let no_linker = super::musl_host_prerequisite_warnings(true, false);
+    assert_eq!(no_linker.len(), 1);
+    assert!(no_linker[0].contains("apk add gcc musl-dev"));
+    assert!(no_linker[0].contains("linker `cc` not found"));
+
+    // Stock Alpine: both missing, both named, so one read fixes the host.
+    assert_eq!(
+        super::musl_host_prerequisite_warnings(false, false).len(),
+        2
+    );
+}
+
+/// The warnings are user-facing prose, and a `\`-continued Rust string
+/// literal is flattened by rustfmt into runs of indentation spaces. The
+/// shipped libgcc message had exactly that: "in the loader" followed by
+/// eighteen spaces before "paths.".
+#[test]
+fn musl_host_warnings_have_no_ragged_whitespace() {
+    for warning in super::musl_host_prerequisite_warnings(false, false) {
+        assert!(
+            !warning.contains("  "),
+            "warning carries collapsed-continuation whitespace: {warning:?}"
+        );
+    }
+}
