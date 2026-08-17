@@ -93,6 +93,13 @@ fn debug_build_records_the_direct_child_and_a_descendant() {
         "expected a descendant-started event for the fake cargo's grandchild: {stderr}"
     );
 
+    // The end-of-run summary identifies observed/incomplete descendants
+    // (soldr#2546 acceptance: preserve ordering + identify unobserved exits).
+    assert!(
+        stderr.contains("summary (cargo): descendants started="),
+        "expected the summary line: {stderr}"
+    );
+
     // The fake cargo actually ran (exit-code and stdio passthrough intact).
     let log = fs::read_to_string(&log_path).expect("fake cargo log");
     assert!(
