@@ -81,7 +81,6 @@ fn observed_spawn_round_trips_non_unicode_argv() {
         // is a Unix concern.
         return;
     }
-    use std::os::unix::ffi::OsStrExt;
     let _lock = crate::TEST_PROCESS_ENV_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -105,8 +104,14 @@ fn observed_spawn_round_trips_non_unicode_argv() {
     .expect("write script");
     crate::platform::fs::permissions::make_executable(&script).expect("chmod script");
 
-    // 0xFF can never appear in well-formed UTF-8.
-    let raw = std::ffi::OsStr::from_bytes(b"--cfg=weird\xFFbytes");
+    // 0xFF can never appear in well-formed UTF-8. SAFETY: on Unix the
+    // OS-string encoding is arbitrary bytes, so any byte sequence is a
+    // valid encoded OS string; the Windows early-return above keeps this
+    // construction off the platform whose encoding (WTF-8) it could
+    // violate. Spelled through the encoding-neutral constructor so no
+    // `std::os::unix` path appears outside the platform crate
+    // (platform-cfg boundary ratchet).
+    let raw = unsafe { std::ffi::OsStr::from_encoded_bytes_unchecked(b"--cfg=weird\xFFbytes") };
     let mut command = std::process::Command::new(&script);
     command.arg(raw);
     let status = run_observed_inheriting_stdio(
