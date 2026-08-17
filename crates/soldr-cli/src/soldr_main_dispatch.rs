@@ -254,8 +254,9 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             target,
             shell_export,
             json,
+            plan_only,
         } => {
-            guarded_exit(env_cmd::run_env_command(&target, shell_export, json).await?);
+            guarded_exit(env_cmd::run_env_command(&target, shell_export, json, plan_only).await?);
         }
         Commands::Status { json } => {
             let output = cache::collect_status_output(cache_enabled)?;

@@ -48,21 +48,25 @@ fn override_applies(target_triple: &str) -> bool {
         // skipping saves materializing the sysroot too.
         links_provider::LinksProvider::Absent => false,
         links_provider::LinksProvider::Package(name) => {
-            eprintln!(
-                "soldr build: not substituting the managed mimalloc for {target_triple}: \
-                 `links = \"mimalloc\"` is provided by `{name}`, not `{MIMALLOC_SYS_CRATE}`"
-            );
-            eprintln!(
-                "soldr build: `{name}` will build its own vendored copy, which is what a \
-                 mimalloc fork needs (soldr#2142)"
-            );
+            if !crate::core::quiet::diagnostics_suppressed() {
+                eprintln!(
+                    "soldr build: not substituting the managed mimalloc for {target_triple}: \
+                     `links = \"mimalloc\"` is provided by `{name}`, not `{MIMALLOC_SYS_CRATE}`"
+                );
+                eprintln!(
+                    "soldr build: `{name}` will build its own vendored copy, which is what a \
+                     mimalloc fork needs (soldr#2142)"
+                );
+            }
             false
         }
         links_provider::LinksProvider::Unknown(reason) => {
-            eprintln!(
-                "soldr build: not substituting the managed mimalloc for {target_triple}: \
-                 could not determine which crate provides `links = \"mimalloc\"` ({reason})"
-            );
+            if !crate::core::quiet::diagnostics_suppressed() {
+                eprintln!(
+                    "soldr build: not substituting the managed mimalloc for {target_triple}: \
+                     could not determine which crate provides `links = \"mimalloc\"` ({reason})"
+                );
+            }
             false
         }
     }

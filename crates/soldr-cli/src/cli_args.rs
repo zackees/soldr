@@ -575,6 +575,12 @@ pub(crate) enum Commands {
         /// exclusive with --shell-export.
         #[arg(long, conflicts_with = "shell_export")]
         json: bool,
+        /// Resolution/introspection only: emit the JSON payload without
+        /// materializing the toolchain (env is null). Requires --json.
+        /// The default (soldr#2304) prepares the target exactly like
+        /// `soldr prepare` and emits the complete blessed environment.
+        #[arg(long, requires = "json")]
+        plan_only: bool,
     },
 
     /// Cross-compile a soldr-bundled tool (crgx, cargo-chef) for a target triple

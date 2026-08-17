@@ -28,6 +28,7 @@ pub mod installer_watchdog;
 /// and shared by the admission queue and the compile semaphore.
 pub mod jobs;
 mod paths;
+pub mod quiet;
 mod target_triple;
 mod temp;
 mod toolchain_manifest;

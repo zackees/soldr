@@ -157,7 +157,7 @@ fn canonical_aliases_resolve_through_the_cli() {
     for (alias, triple) in soldr_cli::target_alias::CANONICAL_ALIASES {
         for (input, via_alias) in [(*alias, true), (*triple, false)] {
             let output = Command::new(common::soldr_bin())
-                .args(["env", "--target", input, "--json"])
+                .args(["env", "--target", input, "--json", "--plan-only"])
                 .current_dir(&cwd)
                 .output()
                 .unwrap_or_else(|err| panic!("failed to resolve canonical target {input}: {err}"));
