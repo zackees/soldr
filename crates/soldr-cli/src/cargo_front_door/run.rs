@@ -93,6 +93,16 @@ pub(crate) async fn run_cargo_front_door(
         (None, None) => args,
     };
 
+    // soldr#2334: the bare `soldr cargo build --target <foreign>`
+    // passthrough is contractually verbatim (CLAUDE.md two-build-paths),
+    // so it does NOT route C dependencies through the managed target
+    // toolchain — cc-built deps compile as host objects and the final
+    // link fails with a wall of undefined references. When that shape is
+    // detected with no routed/caller toolchain in scope, say so once and
+    // name the blessed route instead of letting the link failure explain
+    // itself badly.
+    maybe_hint_foreign_target_passthrough(args);
+
     crate::toolchain::ensure_cargo_toolchain(explicit_toolchain)?;
     profile.mark("ensure_cargo_toolchain");
     let paths = SoldrPaths::new()?;
@@ -827,4 +837,88 @@ pub(crate) async fn run_cargo_front_door(
     }
     drop(trampoline_plan);
     Ok(status.code().unwrap_or(1))
+}
+
+/// soldr#2334: hint (never fail) when a foreign `--target` goes through
+/// the verbatim cargo passthrough with no routed target C toolchain.
+///
+/// Fires only when every condition holds:
+/// - the subcommand compiles (`build`/`b`/`test`/`t`/`bench`/`run`/`r`),
+/// - an explicit `--target` names a triple that is not the host,
+/// - no target-scoped C compiler is in scope: neither the blessed prep
+///   (which exports `CC_<triple>` into the process before the front door
+///   runs) nor a caller-managed override.
+fn maybe_hint_foreign_target_passthrough(args: &[String]) {
+    let compiles = matches!(
+        first_cargo_subcommand(args),
+        Some("build" | "b" | "test" | "t" | "bench" | "run" | "r")
+    );
+    if !compiles {
+        return;
+    }
+    let Some(triple) = extract_target_arg(args) else {
+        return;
+    };
+    if !foreign_target_passthrough_needs_hint(
+        triple,
+        crate::pyo3_detect::host_triple(),
+        |key| std::env::var_os(key).is_some(),
+    ) {
+        return;
+    }
+    eprintln!(
+        "soldr: note: `--target {triple}` through the bare cargo passthrough uses \
+         whatever C toolchain cargo finds on this host, so cc-built dependencies \
+         may compile as host objects and fail the final link (soldr#2334). The \
+         blessed cross route is `soldr build --target {triple}`, which manages \
+         the target C toolchain and sysroot."
+    );
+}
+
+/// Pure decision core for the soldr#2334 hint, so the discrimination
+/// matrix (host-native, blessed-prep, caller-managed, bare passthrough)
+/// is unit-testable without process env.
+fn foreign_target_passthrough_needs_hint(
+    triple: &str,
+    host_triple: &str,
+    env_present: impl Fn(&str) -> bool,
+) -> bool {
+    if triple == host_triple {
+        return false;
+    }
+    // Only hint for target families soldr actually manages a C toolchain
+    // for — an exotic triple gets whatever cargo does today, unhinted.
+    let managed_family = triple.ends_with("-unknown-linux-gnu")
+        || triple.ends_with("-unknown-linux-musl")
+        || triple.ends_with("-pc-windows-gnu")
+        || triple.ends_with("-apple-darwin");
+    if !managed_family {
+        return false;
+    }
+    let suffix = triple.replace('-', "_");
+    // Blessed prep exports CC_<triple>; callers doing it by hand set the
+    // same var. Either way a routed toolchain is in scope: stay quiet.
+    !env_present(&format!("CC_{suffix}"))
+}
+
+#[cfg(test)]
+mod foreign_target_hint_tests {
+    use super::foreign_target_passthrough_needs_hint as needs_hint;
+
+    #[test]
+    fn hint_matrix() {
+        let host = "x86_64-unknown-linux-gnu";
+        let none = |_: &str| false;
+        // Foreign managed family, nothing routed: hint.
+        assert!(needs_hint("x86_64-pc-windows-gnu", host, none));
+        assert!(needs_hint("aarch64-unknown-linux-gnu", host, none));
+        // Host-native: never.
+        assert!(!needs_hint(host, host, none));
+        // Unmanaged family: never.
+        assert!(!needs_hint("wasm32-unknown-unknown", host, none));
+        assert!(!needs_hint("x86_64-pc-windows-msvc", host, none));
+        // Routed toolchain in scope (blessed prep or caller): quiet.
+        let routed = |key: &str| key == "CC_x86_64_pc_windows_gnu";
+        assert!(!needs_hint("x86_64-pc-windows-gnu", host, routed));
+    }
 }
