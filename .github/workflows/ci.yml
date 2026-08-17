@@ -49,6 +49,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
+  SOLDR_REENTRANCY_GUARD: strict
   RUST_BACKTRACE: "1"
   # Direct CI jobs may resolve managed zccache from zackees/zccache.
   # Use soldr's explicit opt-in token env for authenticated release
