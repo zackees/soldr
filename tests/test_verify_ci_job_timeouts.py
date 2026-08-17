@@ -50,6 +50,40 @@ jobs:
         ]
 
 
+def test_inputs_gated_conditional_between_two_integers_is_accepted() -> None:
+    # soldr#2615: _ci-target-run.yml grows its budget only when the PEP 517
+    # smoke rides along. Both branches are static and range-checked.
+    workflow = """\
+jobs:
+  direct:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.run_pep517_smoke && 65 || 30 }}
+    steps:
+      - run: echo ok
+"""
+    assert VERIFY.find_timeout_violations(workflow) == []
+
+
+def test_conditional_with_out_of_range_branch_is_rejected() -> None:
+    for value in (
+        "${{ inputs.flag && 361 || 30 }}",
+        "${{ inputs.flag && 65 || 0 }}",
+        "${{ inputs.flag && 65 || matrix.slow }}",
+        "${{ github.ref_name == 'main' && 65 || 30 }}",
+    ):
+        workflow = f"""\
+jobs:
+  direct:
+    runs-on: ubuntu-latest
+    timeout-minutes: {value}
+    steps:
+      - run: echo ok
+"""
+        assert VERIFY.find_timeout_violations(workflow) == [
+            f"direct: timeout-minutes must be an integer from 1 to 360 (got {value!r})"
+        ]
+
+
 def test_reusable_workflow_callers_are_not_required_to_have_timeout() -> None:
     workflow = """\
 jobs:
