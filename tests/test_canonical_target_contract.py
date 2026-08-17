@@ -295,3 +295,100 @@ def test_release_asset_expectation_matches_contract() -> None:
         "canonical-targets.json reviewed on its own (soldr#2469 step 2.1), "
         "plus updates to every consumer this suite checks."
     )
+
+
+def test_release_build_matrix_is_generated_from_the_contract() -> None:
+    """soldr#2469 step 2.1: release-auto.yml's build matrix is generated
+    from ci/canonical-targets.json, not hand-inlined. The hand-inlined
+    matrix is exactly what let PR #2455 shrink the matrix and the contract
+    together with nothing failing."""
+    script = ROOT / ".github" / "scripts" / "release_completeness.py"
+    module = load_script_module(script, "release_completeness_matrix")
+    matrix = module.build_matrix()
+    contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
+    included = [
+        entry
+        for entry in contract["targets"]
+        if entry["release"]["status"] == "included"
+    ]
+
+    assert [row["target"] for row in matrix] == [e["triple"] for e in included]
+    assert len({row["name"] for row in matrix}) == len(matrix)
+    for row in matrix:
+        assert set(row) == {"name", "runner", "target", "setup_target", "binary"}
+
+    by_target = {row["target"]: row for row in matrix}
+    # The two structural exceptions the old inline matrix encoded in
+    # comments: ARM64 musl builds natively (its catalogue compiler is
+    # i386-hosted) and Windows targets build as Linux cross lanes.
+    arm_musl = by_target["aarch64-unknown-linux-musl"]
+    assert arm_musl["runner"] == "ubuntu-24.04-arm"
+    assert arm_musl["setup_target"] == ""
+    for triple in ("x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"):
+        assert by_target[triple]["runner"] == "ubuntu-24.04"
+        assert by_target[triple]["binary"] == "soldr.exe"
+
+
+def test_release_workflow_consumes_the_generated_matrix() -> None:
+    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    assert "include: ${{ fromJSON(needs.prepare.outputs.build_matrix) }}" in workflow
+    assert "--build-matrix" in workflow
+    # No hand-inlined matrix entry may reappear.
+    assert "- name: Linux x64 (glibc)" not in workflow
+    assert workflow.count("setup_target: x86_64-unknown-linux-gnu") == 0
+
+
+def test_release_workflow_calls_the_asset_generator_correctly() -> None:
+    """The asset-list generator requires --version; a positional tag after
+    the boolean flag is an argparse error that would kill the release run
+    at prepare (found latent 2026-08-16)."""
+    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    for line in workflow.splitlines():
+        if "--list-expected-github-assets" in line:
+            assert re.search(
+                r'--version "\$(?:version|tag)" --list-expected-github-assets\s*\)"$',
+                line.strip(),
+            ), f"malformed release_completeness.py invocation: {line.strip()}"
+
+
+def test_target_removal_requires_a_compatibility_decision() -> None:
+    """soldr#2469 step 2.1: removing a target relative to the previous
+    supported release must be an explicitly reviewed decision recorded in
+    the contract file — never reachable as a side effect. The baseline is
+    the v0.9.1 supported set; when a future release intentionally drops a
+    target, add a compatibility_decisions entry naming it (and update the
+    baseline here in the same reviewed PR)."""
+    baseline_v0_9_1 = {
+        "x86_64-pc-windows-msvc",
+        "aarch64-pc-windows-msvc",
+        "x86_64-apple-darwin",
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl",
+    }
+    contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
+    assert "compatibility_decisions" in contract, (
+        "canonical-targets.json must carry the compatibility_decisions "
+        "list (soldr#2469 step 2.1)"
+    )
+    included = {
+        entry["triple"]
+        for entry in contract["targets"]
+        if entry["release"]["status"] == "included"
+    }
+    decided = {
+        decision["triple"] for decision in contract["compatibility_decisions"]
+    }
+    for decision in contract["compatibility_decisions"]:
+        assert {"triple", "decision", "reference"} <= set(decision), (
+            "each compatibility decision needs at least triple + decision + "
+            f"reference (a PR/issue): {decision}"
+        )
+    removed_without_decision = baseline_v0_9_1 - included - decided
+    assert not removed_without_decision, (
+        "targets removed from the supported release set without an explicit "
+        "compatibility_decisions entry in canonical-targets.json: "
+        f"{sorted(removed_without_decision)} (soldr#2469 step 2.1)"
+    )

@@ -59,6 +59,32 @@ def included_triples(contract_path: Path = CONTRACT) -> list[str]:
     ]
 
 
+def build_matrix(contract_path: Path = CONTRACT) -> list[dict[str, str]]:
+    """Contract-generated release build matrix (soldr#2469 step 2.1).
+
+    Returns the `strategy.matrix.include` list for release-auto.yml's build
+    job, derived from each included target's `release.build` block — the
+    workflow's hand-inlined matrix this replaces is exactly what let PR
+    #2455 shrink the matrix and the contract together with nothing failing.
+    """
+    data = json.loads(contract_path.read_text(encoding="utf-8"))
+    matrix = []
+    for entry in data["targets"]:
+        if entry["release"]["status"] != "included":
+            continue
+        build = entry["release"]["build"]
+        matrix.append(
+            {
+                "name": build["name"],
+                "runner": build["runner"],
+                "target": entry["triple"],
+                "setup_target": build["setup_target"],
+                "binary": build["binary"],
+            }
+        )
+    return matrix
+
+
 def expected_github_assets(tag: str, triples: list[str]) -> list[str]:
     version = tag.lstrip("v")
     assets = [f"soldr-{tag}-{triple}.tar.zst" for triple in triples]
@@ -128,7 +154,7 @@ def fetch_npm_versions() -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", required=True, help="release tag, e.g. v0.9.1")
+    parser.add_argument("--version", help="release tag, e.g. v0.9.1")
     parser.add_argument(
         "--list-expected-github-assets",
         action="store_true",
@@ -137,7 +163,19 @@ def main(argv: list[str] | None = None) -> int:
         "workflow's inline asset lists were replaced by (soldr#2469 "
         "step 2.2)",
     )
+    parser.add_argument(
+        "--build-matrix",
+        action="store_true",
+        help="print the contract-derived release build matrix as a JSON "
+        "array for `strategy.matrix.include`, no network access "
+        "(soldr#2469 step 2.1)",
+    )
     opts = parser.parse_args(argv)
+    if opts.build_matrix:
+        print(json.dumps(build_matrix(), separators=(",", ":")))
+        return 0
+    if not opts.version:
+        parser.error("--version is required except with --build-matrix")
     tag = opts.version if opts.version.startswith("v") else f"v{opts.version}"
 
     triples = included_triples()
