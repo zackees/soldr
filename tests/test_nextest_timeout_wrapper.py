@@ -187,7 +187,9 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
     for deleted in ("cli_daemon_tombstone", "session_multiprocess_smoke"):
         assert f"binary({deleted})" not in config
     assert 'threads-required = "num-cpus"' in config
-    assert config.count('grace-period = "30s"') == 5
+    # 6 = the default profile + five measured per-test overrides (the
+    # soldr#2624 cargo-fmt double-cold-start entry is the sixth block).
+    assert config.count('grace-period = "30s"') == 6
 
 
 def test_every_binary_named_in_nextest_filters_is_a_real_test_target() -> None:
