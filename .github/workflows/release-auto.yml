@@ -710,145 +710,23 @@ jobs:
             --max-glibc 2.39 "${bundled[@]}"
 
       - name: Write manifest.json
-        # Drop a small JSON descriptor into the archive root so downstream
-        # consumers (setup-soldr, npm install wrapper, ad-hoc tooling)
-        # have one stable source of truth for what's inside: soldr +
-        # zccache versions, target triples, per-binary sha256s, archive
-        # format. Schema is versioned so we can extend later without
-        # breaking parsers.
+        # The archive's self-description: versions, target triples,
+        # per-binary sha256s, provenance. setup-soldr, the npm install
+        # wrapper and ad-hoc tooling all read it, and the verify step
+        # below re-derives every declared digest from the staged bytes.
+        env:
+          CRGX_SOURCE_COMMIT: ${{ env.CRGX_SOURCE_COMMIT }}
+          CARGO_CHEF_SOURCE_COMMIT: ${{ env.CARGO_CHEF_SOURCE_COMMIT }}
         shell: bash
         run: |
           set -euo pipefail
-          version="${{ needs.prepare.outputs.version }}"
-          commit_sha="${{ needs.prepare.outputs.commit_sha }}"
-          soldr_target="${{ matrix.target }}"
-          zccache_version=$(sed -n 's/^version = "\(.*\)"/\1/p' \
-            _vender/zccache/Cargo.toml | head -n1)
-          crgx_version=$(sed -n 's/.*MANAGED_CRGX_VERSION: &str = "\(.*\)";/\1/p' \
-            crates/soldr-fetch/src/fetch/mod.rs | head -n1)
-          cargo_chef_version=$(sed -n 's/.*CARGO_CHEF_PINNED_VERSION: &str = "\(.*\)";/\1/p' \
-            crates/soldr-fetch/src/fetch/known_tools.rs | head -n1)
-          if [ -z "$crgx_version" ]; then
-            echo "could not read MANAGED_CRGX_VERSION from crates/soldr-fetch/src/fetch/mod.rs" >&2
-            exit 1
-          fi
-          if [ -z "$cargo_chef_version" ]; then
-            echo "could not read CARGO_CHEF_PINNED_VERSION from crates/soldr-fetch/src/fetch/known_tools.rs" >&2
-            exit 1
-          fi
-          crgx_commit="${CRGX_SOURCE_COMMIT:-unknown}"
-          cargo_chef_commit="${CARGO_CHEF_SOURCE_COMMIT:-unknown}"
-          zccache_target="$soldr_target"
-          suffix=""
-          case "$soldr_target" in *-pc-windows-msvc) suffix=".exe" ;; esac
-
-          sha256_of() {
-            # Cross-platform sha256: macOS lacks `sha256sum` by default,
-            # so fall back to `shasum -a 256` (or fail loudly).
-            if command -v sha256sum >/dev/null 2>&1; then
-              sha256sum "$1" | awk '{print $1}'
-            else
-              shasum -a 256 "$1" | awk '{print $1}'
-            fi
-          }
-
-          soldr_sha=$(sha256_of "dist/package/soldr${suffix}")
-          # Build `soldr.debug_info` from every sidecar staged above
-          # (issue #786). Windows .pdb is REQUIRED — its absence fails
-          # the build. Linux .dwp / macOS .dSYM are OPTIONAL — the
-          # default Rust release profile doesn't emit them, so a
-          # missing sidecar is silent and the array stays empty. Format
-          # tags MUST match the constants in
-          # `crates/soldr-cli/src/release_sidecar.rs::DebugSidecarFormat::as_manifest_str`.
-          soldr_debug_info_entries=()
-          add_sidecar_entry() {
-            local path="$1" format="$2"
-            local name sha
-            name=$(basename "$path")
-            sha=$(sha256_of "$path")
-            soldr_debug_info_entries+=("{ \"name\": \"${name}\", \"sha256\": \"${sha}\", \"format\": \"${format}\" }")
-          }
-          if [ -n "$suffix" ]; then
-            soldr_pdb=$(find dist/package -maxdepth 1 -type f \( -name 'soldr.pdb' -o -name 'soldr_cli.pdb' \) -print -quit)
-            if [ -z "$soldr_pdb" ]; then
-              echo "missing soldr PDB sidecar in dist/package for Windows release" >&2
-              ls -la dist/package >&2
-              exit 1
-            fi
-            add_sidecar_entry "$soldr_pdb" "pdb"
-          fi
-          soldr_dwp=$(find dist/package -maxdepth 1 -type f \( -name 'soldr.dwp' -o -name 'soldr_cli.dwp' \) -print -quit)
-          if [ -n "$soldr_dwp" ]; then
-            add_sidecar_entry "$soldr_dwp" "dwp"
-          fi
-          # macOS dSYM is a directory; sha256 it as a tarball of its
-          # contents so consumers can verify the whole bundle in one
-          # check. The bundle layout itself is preserved on disk.
-          # Pipe through whichever sha256 binary is available — the
-          # `sha256_of` helper above takes a path arg, not stdin.
-          soldr_dsym=$(find dist/package -maxdepth 1 -type d \( -name 'soldr.dSYM' -o -name 'soldr_cli.dSYM' \) -print -quit)
-          if [ -n "$soldr_dsym" ]; then
-            dsym_name=$(basename "$soldr_dsym")
-            if command -v sha256sum >/dev/null 2>&1; then
-              dsym_sha=$(tar -cf - -C "$(dirname "$soldr_dsym")" "$dsym_name" | sha256sum | awk '{print $1}')
-            else
-              dsym_sha=$(tar -cf - -C "$(dirname "$soldr_dsym")" "$dsym_name" | shasum -a 256 | awk '{print $1}')
-            fi
-            soldr_debug_info_entries+=("{ \"name\": \"${dsym_name}\", \"sha256\": \"${dsym_sha}\", \"format\": \"dsym\" }")
-          fi
-          if [ ${#soldr_debug_info_entries[@]} -eq 0 ]; then
-            soldr_debug_info_json="[]"
-          else
-            soldr_debug_info_json=$(printf "[%s]" "$(IFS=,; echo "${soldr_debug_info_entries[*]}")")
-          fi
-          soldr_daemon_sha=$(sha256_of "dist/package/soldr-daemon${suffix}")
-          crgx_sha=$(sha256_of "dist/package/crgx${suffix}")
-          cargo_chef_sha=$(sha256_of "dist/package/cargo-chef${suffix}")
-          built_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
-          cat > dist/package/manifest.json <<EOF
-          {
-            "schema_version": 3,
-            "soldr": {
-              "version": "${version}",
-              "target": "${soldr_target}",
-              "binary": "soldr${suffix}",
-              "sha256": "${soldr_sha}",
-              "sidecars": [
-                { "name": "soldr-daemon${suffix}", "sha256": "${soldr_daemon_sha}" }
-              ],
-              "debug_info": ${soldr_debug_info_json},
-              "commit_sha": "${commit_sha}"
-            },
-            "zccache": {
-              "version": "${zccache_version}",
-              "target": "${zccache_target}",
-              "embedded": true
-            },
-            "crgx": {
-              "version": "${crgx_version}",
-              "target": "${soldr_target}",
-              "binary": "crgx${suffix}",
-              "sha256": "${crgx_sha}",
-              "source_commit": "${crgx_commit}"
-            },
-            "cargo_chef": {
-              "version": "${cargo_chef_version}",
-              "target": "${soldr_target}",
-              "binary": "cargo-chef${suffix}",
-              "sha256": "${cargo_chef_sha}",
-              "source_commit": "${cargo_chef_commit}"
-            },
-            "archive": {
-              "format": "tar.zst",
-              "compression_level": 19
-            },
-            "built_at": "${built_at}"
-          }
-          EOF
-
-          echo "--- manifest.json ---"
-          cat dist/package/manifest.json
+          python3 .github/scripts/release_manifest.py \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --commit-sha "${{ needs.prepare.outputs.commit_sha }}" \
+            --target "${{ matrix.target }}" \
+            --package-dir dist/package \
+            --crgx-source-commit "${CRGX_SOURCE_COMMIT:-unknown}" \
+            --cargo-chef-source-commit "${CARGO_CHEF_SOURCE_COMMIT:-unknown}"
 
       # manifest.json is the release describing itself, and setup-soldr, the
       # npm wrapper and ad-hoc tooling all read it. Nothing checked it, and it
