@@ -283,6 +283,7 @@ fn run_dependency_steps(
     let soldr = current_soldr_binary()?;
     let mut children = Vec::with_capacity(steps.len());
     for args in steps {
+        let label = format!("cargo {}", args.join(" "));
         let mut command = Command::new(&soldr);
         command.arg("--no-cache");
         if trust_inherited_soldr_env {
@@ -291,27 +292,48 @@ fn run_dependency_steps(
         command.arg("cargo").args(args);
         cargo_front_door::configure_cargo_child_for_timeout(&mut command);
         command.env(cargo_front_door::INHERIT_PARENT_PROCESS_GROUP_ENV, "1");
-        children.push(command.spawn().map_err(|error| {
+        let child = command.spawn().map_err(|error| {
             SoldrError::Other(format!(
-                "lint deps: failed to start child Soldr process: {error}"
+                "lint deps: failed to start child Soldr process for `{label}`: {error}"
             ))
-        })?);
+        })?;
+        children.push((label, child));
     }
     wait_for_parallel_children(&mut children)
 }
 
-fn wait_for_parallel_children(children: &mut [Child]) -> Result<i32, SoldrError> {
+/// Waits for every `(label, child)` pair, reporting each child's exit on
+/// stderr as it completes. The per-leg line is diagnostic load-bearing, not
+/// decoration: soldr#2589's Windows lane loses one dependency-check
+/// invocation while `lint deps` still exits 0, and without the observed
+/// pid + exit status per leg a recurrence cannot distinguish "child ran and
+/// its effects vanished" from "child never ran but reported success".
+fn wait_for_parallel_children(children: &mut [(String, Child)]) -> Result<i32, SoldrError> {
+    let mut reported = vec![false; children.len()];
     loop {
         let mut complete = 0;
         for index in 0..children.len() {
-            if let Some(status) = children[index].try_wait()? {
+            let (label, child) = &mut children[index];
+            if let Some(status) = child.try_wait()? {
                 complete += 1;
+                if !reported[index] {
+                    reported[index] = true;
+                    eprintln!(
+                        "soldr: lint deps: `{label}` (pid {}) exited with {status}",
+                        child.id()
+                    );
+                }
                 if !status.success() {
-                    let failed_id = children[index].id();
-                    for other in children.iter_mut() {
+                    let failed_id = child.id();
+                    for (other_label, other) in children.iter_mut() {
                         if other.id() != failed_id {
                             let _ = cargo_front_door::kill_cargo_process_tree(other);
-                            let _ = other.wait();
+                            if let Ok(other_status) = other.wait() {
+                                eprintln!(
+                                    "soldr: lint deps: `{other_label}` (pid {}) canceled with {other_status}",
+                                    other.id()
+                                );
+                            }
                         }
                     }
                     return Ok(status.code().unwrap_or(1));
