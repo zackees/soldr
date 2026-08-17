@@ -588,7 +588,11 @@ def test_mac_x64_distribution_uses_pinned_setup_soldr_on_intel() -> None:
     # x86_64-apple-darwin -> macosx_10_12_x86_64, making a fabricated
     # 11_0 intel tag impossible); here we pin that both release asset
     # gates actually invoke the generator.
-    assert release.count("--list-expected-github-assets") == 2
+    # soldr#2469 step 2.2: one gate still calls the generator from YAML; the
+    # prepare-side gate now imports it (release_detect.py). Both still derive
+    # from ci/canonical-targets.json — asserted in
+    # tests/test_canonical_target_contract.py.
+    assert release.count("--list-expected-github-assets") == 1
 
     sdk_step = _step_block(release, "Restore the native macOS SDK root")
     assert "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" in sdk_step
@@ -768,7 +772,19 @@ def test_partial_immutable_release_can_recover_missing_pypi_wheels() -> None:
         "github_release_immutable: ${{ steps.validate.outputs.github_release_immutable }}"
         in release
     )
-    assert 'gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${version}"' in release
+    # soldr#2469 step 2.2: the release lookup moved out of inline bash into
+    # release_detect.py, so assert the property (the immutable flag is derived
+    # from the real release object) at its new home. The recovery behaviour
+    # itself — immutable-and-incomplete still lets PyPI republish — is covered
+    # directly in tests/test_release_detect.py, which the inline bash could
+    # never be tested for.
+    detector = (REPO_ROOT / ".github" / "scripts" / "release_detect.py").read_text(
+        encoding="utf-8"
+    )
+    assert "releases/tags/" in detector and "immutable" in detector, (
+        "release detection must read the real GitHub release object to learn "
+        "whether it is immutable"
+    )
     assert "github_release_immutable != 'true'" in release
     assert "needs.verify_github_release.result == 'success'" in pypi_job
     assert "github.event_name == 'workflow_dispatch'" in pypi_job

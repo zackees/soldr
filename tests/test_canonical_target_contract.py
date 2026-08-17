@@ -194,9 +194,28 @@ def test_release_inclusions_and_exclusions_match_contract() -> None:
     # generation from the contract via release_completeness.py. Both asset
     # gates (prepare + verify_github_release) must call the generator, and
     # no hand-maintained inline asset list may reappear.
-    assert workflow.count("--list-expected-github-assets") == 2, (
-        "both release asset gates must generate their expected list from "
-        "ci/canonical-targets.json via release_completeness.py"
+    # The prepare-side gate now reaches the generator by importing it, because
+    # its whole step moved into release_detect.py. Assert the property (both
+    # gates derive from the contract), not the call syntax: checking only the
+    # CLI flag would have quietly passed a rewrite that hardcoded the list in
+    # Python instead.
+    assert workflow.count("--list-expected-github-assets") == 1, (
+        "the verify_github_release gate must still generate its expected "
+        "list from ci/canonical-targets.json via release_completeness.py"
+    )
+    detector = (ROOT / ".github" / "scripts" / "release_detect.py").read_text(
+        encoding="utf-8"
+    )
+    assert "expected_github_assets" in detector and (
+        "from release_completeness import" in detector
+    ), (
+        "the prepare-side gate must derive its expected assets from "
+        "release_completeness (i.e. from ci/canonical-targets.json), not "
+        "from a list of its own"
+    )
+    assert not re.search(r'"soldr-.*\.tar\.zst"', detector), (
+        "a hand-maintained asset list reappeared in release_detect.py; the "
+        "contract is the single source (soldr#2469 step 2.2)"
     )
     assert "x86_64-unknown-linux-gnu.tar.zst" not in workflow, (
         "an inline release asset list reappeared in release-auto.yml; the "
