@@ -273,6 +273,9 @@ pub mod session_transport;
 pub mod shim_dir;
 pub(crate) mod shim_hygiene;
 pub mod shim_materialize;
+/// soldr#2571 — opt-in per-phase startup breadcrumbs for the front door,
+/// so a client that wedges before its first byte still names the phase.
+pub mod startup_trace;
 /// soldr#997 — friendly target aliases + Rust-triple passthrough.
 /// See module doc for the `soldr build --target <alias>` UX contract.
 pub mod target_alias;
