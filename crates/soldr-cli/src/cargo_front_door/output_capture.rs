@@ -254,6 +254,18 @@ fn run_command_inheriting_stdio(
     command: &mut std::process::Command,
     timeout: Option<Duration>,
 ) -> Result<std::process::ExitStatus, SoldrError> {
+    if debug_trace::enabled() {
+        // soldr#2546 slice 2: under --debug the inherited-stdio mode runs
+        // through the running-process observer so the timeline records
+        // descendants (rustc, build scripts) rather than only the direct
+        // cargo child. running-process owns containment for this spawn.
+        return debug_trace::run_observed_inheriting_stdio(
+            command,
+            "cargo",
+            timeout,
+            Duration::from_secs(CARGO_WAIT_HEARTBEAT_SECS),
+        );
+    }
     configure_cargo_child_for_timeout(command);
     let mut child = debug_trace::spawn_traced(command, "cargo")
         .map_err(|err| SoldrError::Other(format!("spawn cargo failed: {err}")))?;
