@@ -12,8 +12,13 @@ def test_release_workflow_builds_and_publishes_musllinux_wheels() -> None:
     # soldr#2469 step 2.2: expected wheel names are generated from
     # ci/canonical-targets.json via release_completeness.py (whose parity
     # test pins the musllinux_1_2 tags); the workflow gates must invoke
-    # the generator instead of carrying inline name lists.
-    assert workflow.count("--list-expected-github-assets") == 2
+    # the generator instead of carrying inline name lists. The prepare-side
+    # gate now imports the generator instead of shelling to it — its step
+    # moved into release_detect.py — so only one CLI call remains in YAML.
+    assert workflow.count("--list-expected-github-assets") == 1
+    assert "expected_github_assets" in (
+        REPO_ROOT / ".github" / "scripts" / "release_detect.py"
+    ).read_text(encoding="utf-8")
     assert (
         "uses: zackees/setup-soldr@40320d277ba4946e38d4b3c02e6c7a15a29c3f3f" in workflow
     )
