@@ -1347,8 +1347,11 @@ pub(crate) fn fake_logging_cargo_script(log_path: &Path) -> String {
         soldr_platform::host::facts::os(),
         soldr_platform::host::facts::HostOs::Windows
     ) {
-        // One file per invocation, claimed via `mkdir` (atomic-exclusive in
-        // cmd), NOT `>>` appends to a shared file: cmd's append is
+        // One file per invocation, claimed via `mkdir` — exclusive **only
+        // under a parent that already exists**, which is why
+        // [`install_logging_fake_cargo`] pre-creates the slot root; see the
+        // soldr#2589 note there. NOT `>>` appends to a shared file: cmd's
+        // append is
         // seek-then-write, so concurrent children (e.g. `lint deps` running
         // deny/audit/machete in parallel) could clobber each other's lines
         // — the target-run x86_64-msvc lane lost the `audit` line exactly
@@ -1422,6 +1425,23 @@ pub(crate) fn fake_logging_cargo_script(log_path: &Path) -> String {
 /// Install a fake cargo that logs argv per invocation. Returns the path
 /// to the fake binary, ready to hand to `SOLDR_TEST_CARGO_BIN`.
 pub(crate) fn install_logging_fake_cargo(log_path: &Path) -> PathBuf {
+    // soldr#2589: create the slot root before any child can run.
+    //
+    // The Windows script claims its slot with `mkdir "<root>\<slot>"`, and
+    // that is a reliable exclusive claim only when `<root>` already exists.
+    // When two children race to create the *parent* as well, cmd's `md` can
+    // report success to **both** — reproduced directly: 32 concurrent writers
+    // logged `writer0` and `writer1` claiming the identical slot path on
+    // their first attempt, followed by one sharing violation and one lost
+    // line. (A single-component `mkdir` under an existing parent is exclusive;
+    // 64 concurrent processes racing one such path yield exactly one winner.)
+    //
+    // That is the whole flake: `lint deps` starts deny/audit/machete
+    // simultaneously against a fresh log root, so the first two to reach
+    // `mkdir` are exactly the pair that can collide — which is why the lost
+    // line was always one of the first tools to start.
+    let slot_root = PathBuf::from(format!("{}.d", log_path.display()));
+    fs::create_dir_all(&slot_root).expect("failed to create fake-cargo slot root");
     let dir = unique_temp_dir("fake-cargo-logging");
     let cargo = fake_script_path(&dir, "cargo");
     write_fake_script(&cargo, &fake_logging_cargo_script(log_path));

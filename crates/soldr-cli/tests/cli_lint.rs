@@ -146,15 +146,20 @@ fn populated_fake_cargo_slot_reads_back_as_one_invocation() {
 /// exactly one readable line.
 ///
 /// `lint deps` runs deny/audit/machete in parallel, and every sighting of this
-/// flake has been one of those three lines going missing. Twelve concurrent
-/// writers over one log root is the same shape with more chances to collide —
-/// on the slot claim (`mkdir`) and on the write into it. It cannot force the
-/// sharing violation that the CI recurrence showed; the writer's bounded
-/// retry covers that, and its exhaustion path exits 97 rather than 0, so a
-/// residual loss fails loudly instead of silently.
+/// flake has been one of those three lines going missing. This is the same
+/// shape with more contenders — and it **reproduces the bug**, which nothing
+/// else ever did: at this width it failed 2 runs in 12 against the unfixed
+/// slot root, and 0 in 24 with the fix, turning a roughly-once-per-20-CI-runs
+/// flake into a sub-second local experiment.
+///
+/// The width is load-bearing. The collision needs two children to reach
+/// `mkdir` before *either* has created the shared parent, so the pair at risk
+/// is the first two to start; more writers means more chances that two of them
+/// land in that window, not merely more writes. Lowering this to make a lane
+/// green would delete the only reliable repro this issue has had.
 #[test]
 fn concurrent_fake_cargo_writers_each_land_one_line() {
-    const WRITERS: usize = 12;
+    const WRITERS: usize = 32;
 
     let root = unique_temp_dir("lint-slot-concurrency");
     let log = root.join("cargo.log");
