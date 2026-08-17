@@ -221,11 +221,19 @@ pub(crate) fn run_observed_inheriting_stdio(
 
     // Drain descendant events on a dedicated thread; it ends when the
     // process closes and the emitter side of the channel drops.
+    // Shared counters feed the end-of-run summary event: descendants whose
+    // exit was never observed are the "incomplete/unobserved exits" the
+    // soldr#2546 acceptance list wants identified.
+    let descendants_started = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let descendants_exited = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let started_counter = std::sync::Arc::clone(&descendants_started);
+    let exited_counter = std::sync::Arc::clone(&descendants_exited);
     let pump_context = context.to_string();
     let pump = std::thread::spawn(move || {
         while let Some(event) = subscriber.recv() {
             match event.kind {
                 ObserverEventKind::DescendantStarted => {
+                    started_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let cmdline = running_process::observer::read_process_cmdline(event.pid)
                         .unwrap_or_default();
                     emit(
@@ -244,6 +252,7 @@ pub(crate) fn run_observed_inheriting_stdio(
                     );
                 }
                 ObserverEventKind::DescendantExited => {
+                    exited_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     emit(
                         &pump_context,
                         &format!("descendant-exited pid={} ({pump_context})", event.pid),
@@ -310,6 +319,21 @@ pub(crate) fn run_observed_inheriting_stdio(
         pid,
         context,
         &crate::platform::process::exit::exit_status_from_code(code),
+    );
+    let started = descendants_started.load(std::sync::atomic::Ordering::Relaxed);
+    let exited = descendants_exited.load(std::sync::atomic::Ordering::Relaxed);
+    emit(
+        context,
+        &format!(
+            "summary ({context}): descendants started={started} exited={exited} incomplete={}",
+            started.saturating_sub(exited)
+        ),
+        &format!(
+            r#"{{"event":"summary","t_ms":{},"context":{},"descendants_started":{started},"descendants_exited":{exited},"incomplete_exits":{}}}"#,
+            elapsed_ms(),
+            json_string(context),
+            started.saturating_sub(exited),
+        ),
     );
     Ok(crate::platform::process::exit::exit_status_from_code(code))
 }
