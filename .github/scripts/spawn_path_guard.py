@@ -147,11 +147,11 @@ def violations(counts: dict[str, int]) -> list[str]:
                 f"{rel}: raw .spawn() count grew {expected[0]} -> {count} — "
                 "a new spawn site needs review (soldr#2442 slice 4)"
             )
-    for rel, (expected, _) in sorted(ALLOWLIST.items()):
+    for rel, (allowed, _) in sorted(ALLOWLIST.items()):
         actual = counts.get(rel, 0)
-        if actual < expected:
+        if actual < allowed:
             problems.append(
-                f"{rel}: allowlist expects {expected} spawn(s) but found "
+                f"{rel}: allowlist expects {allowed} spawn(s) but found "
                 f"{actual} — shrink/remove the entry so it cannot mask a "
                 "future addition"
             )
