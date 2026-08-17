@@ -111,6 +111,11 @@ fn run_soldr_with_timeout(
     );
     cmd.env("SOLDR_DAEMON_SPAWN_RETRY_BUDGET_MS", "10000");
     cmd.env("SOLDR_COMPILE_REPLY_TIMEOUT_SECS", "60");
+    // soldr#2571: the wedge these timeouts catch produced zero bytes on both
+    // streams, so the panic below had nothing to report beyond "15s passed".
+    // With the trace on, the captured stderr ends at the last startup phase the
+    // child completed — which is the diagnosis.
+    cmd.env(soldr_cli::startup_trace::STARTUP_TRACE_ENV_VAR, "1");
 
     let mut child = cmd.spawn().expect("failed to spawn soldr");
     if child

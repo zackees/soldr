@@ -162,12 +162,25 @@ pub(crate) fn run_doctor(
     let manifest_path = workspace_root.join("rust-toolchain.toml");
     let manifest = crate::core::read_rust_toolchain_manifest(&workspace_root)?;
     let manifest_present = manifest_path.exists();
+    crate::startup_trace::phase(crate::startup_trace::phase::DOCTOR_MANIFEST);
+    // soldr#2571: `doctor` emits its first byte only at the closing
+    // `print_json`, so every collector below runs inside the silent window
+    // that made the 15 s wedge undiagnosable. Two of them are the prime
+    // suspects — the Defender probe shells out to PowerShell on Windows, and
+    // the cook stats dial the daemon (the very endpoint the flaky test is
+    // named for) — so each reports its own completion under the trace.
     let bundle = collect_zccache_bundle()?;
+    crate::startup_trace::phase(crate::startup_trace::phase::DOCTOR_ZCCACHE_BUNDLE);
     let soldr_debug_info = collect_soldr_debug_info();
+    crate::startup_trace::phase(crate::startup_trace::phase::DOCTOR_DEBUG_INFO);
     let defender = collect_defender_probe(refresh_defender_probe);
+    crate::startup_trace::phase(crate::startup_trace::phase::DOCTOR_DEFENDER_PROBE);
     let cook = collect_cook_stats();
+    crate::startup_trace::phase(crate::startup_trace::phase::DOCTOR_COOK_STATS);
     let fallbacks = collect_fallback_rollup();
+    crate::startup_trace::phase(crate::startup_trace::phase::DOCTOR_FALLBACK_ROLLUP);
     let cache_health = crate::cache_health::assess(&SoldrPaths::new()?);
+    crate::startup_trace::phase(crate::startup_trace::phase::DOCTOR_CACHE_HEALTH);
 
     let Some(channel) = manifest.channel.as_deref() else {
         if json {
