@@ -24,7 +24,7 @@ format in `crates/soldr-cli/src/release_sidecar.rs`.
 
 | Platform | Sidecar | Emitted today? | Why |
 |---|---|---|---|
-| Windows MSVC (x64 + ARM64) | `soldr.pdb` | **Yes — for soldr's own release** | MSVC always produces a PDB next to the binary; the release lane hard-fails if it is missing (`expected a soldr PDB sidecar`). But see the caveat below — that guarantee does not extend to builds that go through the compile cache. |
+| Windows MSVC (x64 + ARM64) | `soldr.pdb` | **Yes — for soldr's own release** | MSVC always produces a PDB next to the binary; the release lane hard-fails if it is missing (`expected a soldr PDB sidecar`). Cached builds retain it too: the vendored cache models `<image>.pdb` as a declared output of the link step (soldr#2148), so hits replay the sidecar beside the image. |
 | Linux (gnu + musl, x64 + ARM64) | `soldr.dwp` | No | Split DWARF (`-C split-debuginfo=packed`) is not enabled in the release profile; symbols stay embedded in the binary (then get stripped by size trims). Staging is in place — if the profile ever enables split DWARF, the `.dwp` is packaged and recorded automatically. |
 | macOS (x64 + ARM64) | `soldr.dSYM/` | No | Same as Linux: dSYM bundles are only produced by `dsymutil`/split-debuginfo, which the release profile does not run today. Staging handles the bundle when present. |
 
@@ -34,27 +34,6 @@ MSVC link step and are required for `cdb`/WinDbg crash triage (#780,
 release size for symbol data nobody currently consumes. Revisit by
 flipping `split-debuginfo` in the release profile — no workflow change
 is needed, the staging + manifest recording pick the artifacts up.
-
-## Caveat: cached Windows debug sidecars
-
-> [!WARNING]
-> A cached Windows build currently drops its `.pdb` after linking (soldr#2148).
-> Because cacheable builds now have one mandatory broker route, release or
-> debugging workflows that require a PDB must treat a missing sidecar as a hard
-> failure until the vendored cache output enumeration is fixed.
->
-> To produce a symbolizable Windows build today, take that unit off the cache
-> so the `.pdb` survives linking:
->
-> ```console
-> $ ZCCACHE_DISABLE=1 soldr build --release --target x86_64-pc-windows-msvc
-> ```
->
-> (`soldr --no-cache build …` does the same thing — both keep the sidecar.)
-
-The release archive guard still requires `soldr.pdb`; it must not bypass the
-cache to manufacture a green result. Remove this note when soldr#2148 is
-fixed and the cached path retains the sidecar.
 
 ## Verifying an archive
 
@@ -85,28 +64,10 @@ checkout whose `_vender/zccache` submodule contains the code under test. There
 is no external zccache daemon or `SOLDR_ZCCACHE_LOCAL_DIR` symbol-copy path in
 the embedded architecture.
 
-> **Windows:** a cached build currently emits the executable without retaining
-> its PDB (soldr#2148). Treat that as an unsupported cached-debug result: fail
-> the build and fix or update the vendored cache implementation.
->
-> The cause is in the vendored zccache submodule. The rustc path already
-> handles *multiple* outputs — the daemon carries `rustc_all_outputs` and
-> stages each one — so this is a missing entry, not a missing capability.
->
-> The lever is `rustc_expected_output_paths` in
-> `zccache-daemon-core/src/daemon/server/rustc.rs`. It enumerates what a rustc
-> invocation is expected to produce (the link output, the `--emit` products,
-> explicit emit paths) and that list drives staging, capture and replay. It has
-> no `.pdb` entry, so the file rustc writes beside the binary is never
-> redirected into staging and never stored. The same function already appends a
-> conditional extra product for Dylint cdylibs
-> (`dylint_library_sidecar_output_path`), which is the shape a `.pdb` entry
-> would follow.
->
-> Two things still need deciding before writing it, and they are the reason
-> this note is not already stale: what happens when a declared output is not
-> produced (a build with debuginfo off must not start failing), and keeping the
-> `.exe` and `.pdb` stored as a set — a stale `.pdb` beside a fresh `.exe`
-> would be worse than none.
->
-> Remove this note when soldr#2148 closes.
+On Windows, cached builds retain the `.pdb`: `rustc_expected_output_paths` in
+the vendored `zccache-daemon-core/src/daemon/server/rustc.rs` declares
+`<image>.pdb` beside a linked MSVC image (soldr#2148), so the sidecar is
+staged, stored, and replayed with the executable. A declared `.pdb` that a
+debuginfo-off build never produces is filtered out at collection time rather
+than failing the compile. There is no cache-bypass step in the debugging
+workflow.
