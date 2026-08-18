@@ -138,7 +138,9 @@ def test_runner_storage_budget_is_a_hard_ceiling() -> None:
     assert perf_local.runner_over_budget(perf_local.RUNNER_VOLUME_BUDGET_BYTES + 1)
 
 
-def test_activity_marker_lives_in_soldr_state_not_the_checkout(tmp_path: Path, monkeypatch) -> None:
+def test_activity_marker_lives_in_soldr_state_not_the_checkout(
+    tmp_path: Path, monkeypatch
+) -> None:
     state = tmp_path / "state"
     checkout = tmp_path / "checkout"
     monkeypatch.setattr(perf_local, "GC_STATE_DIR", state)
@@ -181,7 +183,9 @@ def test_create_command_uses_one_named_runner_and_persistent_volumes(
     assert command[-3:] == ["tail", "-f", "/dev/null"]
 
 
-def test_create_command_enables_ptrace_only_when_requested(tmp_path: Path, monkeypatch) -> None:
+def test_create_command_enables_ptrace_only_when_requested(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setenv(perf_local.PTRACE_ENV, "1")
     runner = perf_local.runner_for(tmp_path)
     command = perf_local.create_command(runner, "sha256:image")
@@ -252,7 +256,9 @@ def test_runner_match_requires_schema_image_and_source_root(tmp_path: Path) -> N
     info = {"Config": {"Labels": dict(labels)}}
     assert perf_local.runner_matches(info, labels)
 
-    stale = {"Config": {"Labels": {**labels, f"{perf_local.LABEL_PREFIX}.image-id": "old"}}}
+    stale = {
+        "Config": {"Labels": {**labels, f"{perf_local.LABEL_PREFIX}.image-id": "old"}}
+    }
     assert not perf_local.runner_matches(stale, labels)
     assert not perf_local.runner_matches({"Config": {"Labels": None}}, labels)
 
@@ -271,7 +277,9 @@ def test_exec_command_reuses_runner_and_changes_only_workdir(tmp_path: Path) -> 
         "test",
         "--workspace",
     ]
-    assert perf_local.exec_command(runner, ["cargo", "check"], "/repo", tty=True)[:3] == [
+    assert perf_local.exec_command(runner, ["cargo", "check"], "/repo", tty=True)[
+        :3
+    ] == [
         "docker",
         "exec",
         "-it",

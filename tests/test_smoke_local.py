@@ -21,7 +21,11 @@ def test_smoke_bootstraps_then_dogfoods_current_source() -> None:
     dogfood = 'export PATH="$(dirname "$current_soldr"):$PATH"'
     assert bootstrap in script
     assert dogfood in script
-    assert script.index(bootstrap) < script.index(dogfood) < script.index("exec bash ./test")
+    assert (
+        script.index(bootstrap)
+        < script.index(dogfood)
+        < script.index("exec bash ./test")
+    )
     assert 'if [[ -x "$current_soldr" ]]' in script
     assert '"$current_soldr" cargo build -p soldr-cli --bin soldr' in script
     assert 'export TMPDIR="${CARGO_TARGET_DIR:-/target}/tmp"' in script
@@ -29,4 +33,4 @@ def test_smoke_bootstraps_then_dogfoods_current_source() -> None:
     assert "SOLDR_DAEMON_TOKIO_CONSOLE_PUBLISH_INTERVAL_MS=20" in script
     assert "smoke-tokio-console.json" in script
     assert "smoke-tokio-console.stop" in script
-    assert "wait \"$dump_pid\"" in script
+    assert 'wait "$dump_pid"' in script

@@ -58,6 +58,8 @@ def test_source_build_environment_uses_real_rustc_and_soldr_cargo() -> None:
 
 
 def test_ci_invokes_the_tested_installer() -> None:
-    workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
     assert "python .github/scripts/install_soldr_maturin.py" in workflow
     assert "pip install --no-cache-dir --no-binary soldr-maturin" not in workflow

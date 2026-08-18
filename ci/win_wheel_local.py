@@ -147,22 +147,31 @@ def build_wheel(*, release: bool) -> int:
             "--rm",
             # Bind-mounted, never COPYied, so an edit is visible immediately
             # and no image layer is invalidated by a source change.
-            "-v", f"{REPO_ROOT}:/work",
-            "-v", f"{OUT_DIR}:/out",
-            "-v", f"{volumes['target']}:/work/target",
+            "-v",
+            f"{REPO_ROOT}:/work",
+            "-v",
+            f"{OUT_DIR}:/out",
+            "-v",
+            f"{volumes['target']}:/work/target",
             # Seeded from the image on first mount, so the baked toolchain and
             # SDK survive into the volume and stay warm from then on.
-            "-v", f"{volumes['soldr']}:/root/.soldr",
+            "-v",
+            f"{volumes['soldr']}:/root/.soldr",
             # Bounded on purpose: Docker Desktop's memory cap OOM-kills an
             # unbounded parallel rustc fleet mid-build (observed at 7 jobs;
             # soldr#2453 names the signature). 2 matches the release wheel
             # lane's budget. Override via the same env vars if your Docker
             # has more memory.
-            "-e", f"CARGO_BUILD_JOBS={os.environ.get('CARGO_BUILD_JOBS', '2')}",
-            "-e", f"SOLDR_JOBS={os.environ.get('SOLDR_JOBS', '2')}",
-            "-w", "/work",
+            "-e",
+            f"CARGO_BUILD_JOBS={os.environ.get('CARGO_BUILD_JOBS', '2')}",
+            "-e",
+            f"SOLDR_JOBS={os.environ.get('SOLDR_JOBS', '2')}",
+            "-w",
+            "/work",
             IMAGE,
-            "bash", "-lc", inner,
+            "bash",
+            "-lc",
+            inner,
         ]
     )
 
@@ -191,7 +200,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.wipe:
         return run(["docker", "volume", "rm", "--force", *volume_names().values()])
 
-    before = {path.name for path in OUT_DIR.glob("*.whl")} if OUT_DIR.is_dir() else set()
+    before = (
+        {path.name for path in OUT_DIR.glob("*.whl")} if OUT_DIR.is_dir() else set()
+    )
 
     code = build_image(rebuild=args.rebuild_image)
     if code != 0:
@@ -204,8 +215,10 @@ def main(argv: list[str] | None = None) -> int:
     if not produced:
         # A zero exit with no new wheel means the build silently produced
         # nothing; say so rather than reporting success.
-        print(f"win_wheel_local: build succeeded but no new wheel appeared in {OUT_DIR}",
-              file=sys.stderr)
+        print(
+            f"win_wheel_local: build succeeded but no new wheel appeared in {OUT_DIR}",
+            file=sys.stderr,
+        )
         return 1
 
     print()

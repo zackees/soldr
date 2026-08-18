@@ -21,10 +21,14 @@ from pathlib import Path
 TOOLCHAIN = "1.95.0"
 ARM64_MUSL = "aarch64-unknown-linux-musl"
 MUSL_TARGETS = ("x86_64-unknown-linux-musl", ARM64_MUSL)
-CONTRACT_PATH = Path(__file__).resolve().parents[2] / "contracts" / "zccache-runtime.v1.json"
+CONTRACT_PATH = (
+    Path(__file__).resolve().parents[2] / "contracts" / "zccache-runtime.v1.json"
+)
 MATURIN_CONTRACT = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))["maturin"]
 SOLDR_MATURIN_NO_BINARY = str(MATURIN_CONTRACT["pypi_package"])
-SOLDR_MATURIN_REQUIREMENT = f"{SOLDR_MATURIN_NO_BINARY}=={MATURIN_CONTRACT['managed_version']}"
+SOLDR_MATURIN_REQUIREMENT = (
+    f"{SOLDR_MATURIN_NO_BINARY}=={MATURIN_CONTRACT['managed_version']}"
+)
 
 
 def cargo_command(driver: Path, *args: str) -> list[str]:
@@ -68,7 +72,9 @@ def release_build_environment(base: Mapping[str, str]) -> dict[str, str]:
 
 def build_binary(driver: Path, target: str) -> None:
     env = release_build_environment(os.environ)
-    clean = cargo_command(driver, "clean", "-p", "soldr-cli", "--target", target, "--release")
+    clean = cargo_command(
+        driver, "clean", "-p", "soldr-cli", "--target", target, "--release"
+    )
     print(f"release helper: $ {shlex.join(clean)}", flush=True)
     subprocess.run(
         clean,

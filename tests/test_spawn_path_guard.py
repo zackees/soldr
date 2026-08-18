@@ -27,7 +27,9 @@ def test_a_new_spawn_file_is_a_named_violation() -> None:
     counts = GUARD.spawn_counts()
     counts["crates/soldr-cli/src/imaginary_new_module.rs"] = 1
     problems = GUARD.violations(counts)
-    assert any("imaginary_new_module.rs" in p and "no allowlist entry" in p for p in problems)
+    assert any(
+        "imaginary_new_module.rs" in p and "no allowlist entry" in p for p in problems
+    )
 
 
 def test_a_grown_count_is_a_named_violation() -> None:

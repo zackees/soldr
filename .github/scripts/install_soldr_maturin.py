@@ -115,7 +115,9 @@ def main() -> int:
         [
             str(python),
             "-c",
-            (f"from importlib.metadata import version; assert version('{package}') == '{version}'"),
+            (
+                f"from importlib.metadata import version; assert version('{package}') == '{version}'"
+            ),
         ],
         env=env,
     )

@@ -32,7 +32,9 @@ RELEASE_TARGETS = frozenset(
         "aarch64-pc-windows-msvc",
     }
 )
-CONTRACT_PATH = Path(__file__).resolve().parents[2] / "contracts" / "zccache-runtime.v1.json"
+CONTRACT_PATH = (
+    Path(__file__).resolve().parents[2] / "contracts" / "zccache-runtime.v1.json"
+)
 MATURIN_CONTRACT = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))["maturin"]
 SOLDR_MATURIN_PACKAGE = str(MATURIN_CONTRACT["pypi_package"])
 SOLDR_MATURIN_VERSION = str(MATURIN_CONTRACT["managed_version"])
@@ -198,13 +200,17 @@ def resolve_toolchain_rustc(driver: Path, env: Mapping[str, str]) -> Path:
     return rustc
 
 
-def with_toolchain_shims(base: Mapping[str, str], shim_dir: Path, rustc: Path) -> dict[str, str]:
+def with_toolchain_shims(
+    base: Mapping[str, str], shim_dir: Path, rustc: Path
+) -> dict[str, str]:
     """Route Cargo through Soldr while exposing its pinned real rustc to probes."""
 
     env = dict(base)
     shim_dir = shim_dir.resolve()
     rustc = rustc.resolve()
-    env["PATH"] = f"{rustc.parent}{os.pathsep}{shim_dir}{os.pathsep}{env.get('PATH', '')}"
+    env["PATH"] = (
+        f"{rustc.parent}{os.pathsep}{shim_dir}{os.pathsep}{env.get('PATH', '')}"
+    )
     suffix = ".exe" if os.name == "nt" else ""
     env["CARGO"] = str(shim_dir / f"cargo{suffix}")
     env["RUSTC"] = str(rustc)
@@ -281,7 +287,9 @@ def run_hook(*, target: str, hook: str, base_env: Mapping[str, str]) -> None:
     target_env = with_toolchain_shims(target_env, SOLDR_TOOLCHAIN_SHIMS, rustc)
     print(f"setup-soldr wheel target: {target}", flush=True)
     print("Soldr PEP 517 profile: release", flush=True)
-    print(f"Maturin distribution: {SOLDR_MATURIN_REQUIREMENT} (source-built)", flush=True)
+    print(
+        f"Maturin distribution: {SOLDR_MATURIN_REQUIREMENT} (source-built)", flush=True
+    )
     run(maturin_build_command(maturin, target), env=target_env)
 
 

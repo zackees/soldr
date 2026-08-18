@@ -59,7 +59,9 @@ def main(argv: list[str] | None = None) -> int:
     elapsed = time.monotonic() - started
 
     append_summary(args.label, elapsed)
-    print(f"step_duration: {args.label} took {elapsed:.3f}s (exit {completed.returncode})")
+    print(
+        f"step_duration: {args.label} took {elapsed:.3f}s (exit {completed.returncode})"
+    )
     return completed.returncode
 
 

@@ -31,7 +31,9 @@ def main(argv: list[str]) -> int:
     controls = ("--status", "--stop", "--reset-runner", "--wipe")
     if argv[0] in controls and len(argv) == 1:
         return perf_local.main(argv)
-    print(f"error: unsupported smoke-runner arguments: {' '.join(argv)}", file=sys.stderr)
+    print(
+        f"error: unsupported smoke-runner arguments: {' '.join(argv)}", file=sys.stderr
+    )
     return 2
 
 

@@ -397,9 +397,7 @@ def test_target_removal_requires_a_compatibility_decision() -> None:
         for entry in contract["targets"]
         if entry["release"]["status"] == "included"
     }
-    decided = {
-        decision["triple"] for decision in contract["compatibility_decisions"]
-    }
+    decided = {decision["triple"] for decision in contract["compatibility_decisions"]}
     for decision in contract["compatibility_decisions"]:
         assert {"triple", "decision", "reference"} <= set(decision), (
             "each compatibility decision needs at least triple + decision + "
