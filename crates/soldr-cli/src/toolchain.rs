@@ -688,43 +688,10 @@ pub fn require_toolchain_pin(workspace_root: &Path) -> Result<(), SoldrError> {
     )))
 }
 
-/// soldr#2614: the rustup musl-host toolchain's binaries dynamically link
-/// libgcc's unwinder, which stock Alpine does not ship. Without it every
-/// toolchain binary dies with the cryptic
-/// `Error relocating .../cargo: _Unwind_GetCFA: symbol not found`, long
-/// after the actionable moment. Probe the loader paths once per process
-/// and name the remedy up front. Warning-only: a musl host that gets its
-/// unwinder some other way (custom LD_LIBRARY_PATH, static toolchain)
-/// must not be blocked.
-fn warn_when_musl_host_lacks_libgcc() {
-    use std::sync::OnceLock;
-    static WARNED: OnceLock<()> = OnceLock::new();
-    if crate::platform::host::facts::libc() != crate::platform::host::facts::HostLibc::Musl {
-        return;
-    }
-    WARNED.get_or_init(|| {
-        let candidates = [
-            std::path::Path::new("/usr/lib/libgcc_s.so.1"),
-            std::path::Path::new("/lib/libgcc_s.so.1"),
-            std::path::Path::new("/usr/local/lib/libgcc_s.so.1"),
-        ];
-        if !musl_libgcc_present(&candidates) {
-            eprintln!(
-                "soldr: warning: this musl host has no libgcc_s.so.1 in the loader                  paths. The rustup musl-host Rust toolchain dynamically links                  libgcc's unwinder, so its cargo/rustc will fail with 'Error                  relocating ...: _Unwind_GetCFA: symbol not found'. On Alpine,                  install it first: apk add libgcc (soldr#2614)."
-            );
-        }
-    });
-}
-
-/// Pure core of the probe, path-injectable for tests.
-fn musl_libgcc_present(candidates: &[&std::path::Path]) -> bool {
-    candidates.iter().any(|path| path.is_file())
-}
-
 /// Prepare the channel needed by the cargo front door using the long
 /// toolchain-command timeout. Plugins remain exclusive to prepare/ensure.
 pub(crate) fn ensure_cargo_toolchain(explicit_channel: Option<&str>) -> Result<(), SoldrError> {
-    warn_when_musl_host_lacks_libgcc();
+    crate::musl_host::warn_when_missing_prerequisites();
     let workspace_root = std::env::current_dir()?;
     let manifest = crate::core::read_rust_toolchain_manifest(&workspace_root)?;
     let channel = explicit_channel

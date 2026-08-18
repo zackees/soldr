@@ -250,6 +250,8 @@ pub mod logs_cmd;
 /// follow-up in the same issue.
 pub mod msvc_host;
 pub mod multicall;
+/// soldr#2614 — musl-host prerequisite probes (libgcc unwinder + cc linker).
+pub(crate) mod musl_host;
 pub mod native_cc;
 pub mod optimize;
 pub mod optimize_detect;
