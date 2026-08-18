@@ -794,12 +794,18 @@ def test_windows_wheel_does_not_reuse_archive_executable_output() -> None:
     for step_name in [
         "Restore executable bit on bootstrap driver",
         "Build release binary (soldr-driven)",
-        "Package combined archive (tar.zst level 19)",
         "Build wheel through setup-soldr target environment",
         "Smoke test combined tar.zst archive",
     ]:
         step = _step_block(release, step_name)
         assert 'case "$RUNNER_OS" in' in step
+
+    package_archive = _step_block(release, "Package combined archive (tar.zst level 19)")
+    archive_packager = (
+        REPO_ROOT / ".github" / "scripts" / "package_release_archive.py"
+    ).read_text(encoding="utf-8")
+    assert ".github/scripts/package_release_archive.py" in package_archive
+    assert 'runner_os == "Windows"' in archive_packager
 
     smoke_windows = _job_block(release, "smoke_windows", "publish")
     assert "runner: windows-2025" in smoke_windows

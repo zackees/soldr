@@ -428,21 +428,7 @@ jobs:
         # on a runner-local `zstd` executable. The command uses level 19
         # and all available cores.
         shell: bash
-        run: |
-          set -euo pipefail
-          version="${{ needs.prepare.outputs.version }}"
-          name="soldr-${version}-${{ matrix.target }}"
-          # soldr#2453: native builds use the just-built binary with the
-          # platform-appropriate suffix; Linux cross-builds use the
-          # bootstrap driver.
-          case "$RUNNER_OS" in
-            Windows) driver_suffix=".exe" ;;
-            *) driver_suffix="" ;;
-          esac
-          driver="target/release/soldr${driver_suffix}"
-          "$driver" archive --stage-dir dist/package --output "dist/${name}.tar.zst"
-          ls -la "dist/${name}.tar.zst"
-          echo "compressed_size_bytes=$(wc -c < "dist/${name}.tar.zst")"
+        run: python3 .github/scripts/package_release_archive.py --version "${{ needs.prepare.outputs.version }}" --target "${{ matrix.target }}" --runner-os "$RUNNER_OS"
 
       - name: Install uv
         uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
