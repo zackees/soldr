@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Release wheel-filename lints, extracted from release-auto.yml (soldr#2469 2.2).
 
-Two independently-runnable gates over ``dist/*.whl``:
+Three independently-runnable gates over ``dist/*.whl``:
 
 ``version``
     soldr#1083 follow-up: catch wrong-versioned wheels (e.g. the
@@ -17,9 +17,15 @@ Two independently-runnable gates over ``dist/*.whl``:
     installs the 0.1.0 placeholder sdist. Every linux-gnu wheel must carry
     the manylinux_2_17 tag (the catalogue-backed Maturin target floor).
 
+``musllinux``
+    soldr#909: every linux-musl wheel must carry musllinux_1_2. A native
+    Linux tag makes pip on Alpine skip the binary wheel and fall back to a
+    source build.
+
 Usage:
     wheel_filename_lints.py version --expected-version vX.Y.Z [--dist DIR]
     wheel_filename_lints.py manylinux [--dist DIR]
+    wheel_filename_lints.py musllinux [--dist DIR]
 """
 
 from __future__ import annotations
@@ -45,9 +51,7 @@ def version_failures(wheels: list[Path], expected: str) -> list[tuple[str, str]]
             continue
         wheel_version = parts[1]
         if wheel_version != expected:
-            bad.append(
-                (wheel.name, f"version {wheel_version!r} != expected {expected!r}")
-            )
+            bad.append((wheel.name, f"version {wheel_version!r} != expected {expected!r}"))
     return bad
 
 
@@ -98,9 +102,31 @@ def lint_manylinux(dist: Path) -> None:
     print(f"manylinux_2_17 tag assertion OK for {len(wheels)} wheel(s)")
 
 
+def musllinux_failures(wheels: list[Path]) -> list[str]:
+    return [wheel.name for wheel in wheels if "musllinux_1_2" not in wheel.name]
+
+
+def lint_musllinux(dist: Path) -> None:
+    wheels = collect_wheels(dist)
+    bad = musllinux_failures(wheels)
+    if bad:
+        msg = ["musllinux_1_2 tag assertion FAILED:"]
+        msg.extend(f"  - {name}" for name in bad)
+        msg.append("")
+        msg.append(
+            "Every linux-musl wheel must carry the musllinux_1_2 "
+            "platform tag (PEP 656). A native linux tag or missing "
+            "musllinux tag makes `pip install soldr` on Alpine skip "
+            "the binary wheel and fall back to source build, which is "
+            "the soldr#909 regression."
+        )
+        sys.exit("\n".join(msg))
+    print(f"musllinux_1_2 tag assertion OK for {len(wheels)} wheel(s)")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("gate", choices=["version", "manylinux"])
+    parser.add_argument("gate", choices=["version", "manylinux", "musllinux"])
     parser.add_argument("--expected-version", default=None)
     parser.add_argument("--dist", default="dist", type=Path)
     args = parser.parse_args(argv)
@@ -108,8 +134,10 @@ def main(argv: list[str] | None = None) -> int:
         if not args.expected_version:
             parser.error("version gate requires --expected-version")
         lint_version(args.dist, args.expected_version)
-    else:
+    elif args.gate == "manylinux":
         lint_manylinux(args.dist)
+    else:
+        lint_musllinux(args.dist)
     return 0
 
 
