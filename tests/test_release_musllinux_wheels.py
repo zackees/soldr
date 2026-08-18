@@ -19,9 +19,7 @@ def test_release_workflow_builds_and_publishes_musllinux_wheels() -> None:
     assert "expected_github_assets" in (
         REPO_ROOT / ".github" / "scripts" / "release_detect.py"
     ).read_text(encoding="utf-8")
-    assert (
-        "uses: zackees/setup-soldr@40320d277ba4946e38d4b3c02e6c7a15a29c3f3f" in workflow
-    )
+    assert "uses: zackees/setup-soldr@40320d277ba4946e38d4b3c02e6c7a15a29c3f3f" in workflow
     assert "version: 0.8.44" in workflow
     assert "cross-targets: ${{ matrix.setup_target }}" in workflow
     assert "target-wheel-hook" in workflow
@@ -35,8 +33,7 @@ def test_release_workflow_builds_and_publishes_musllinux_wheels() -> None:
     musl_triples = {
         entry["triple"]
         for entry in contract["targets"]
-        if entry["triple"].endswith("-musl")
-        and entry["release"]["status"] == "included"
+        if entry["triple"].endswith("-musl") and entry["release"]["status"] == "included"
     }
     assert musl_triples == {
         "x86_64-unknown-linux-musl",
@@ -45,6 +42,7 @@ def test_release_workflow_builds_and_publishes_musllinux_wheels() -> None:
     assert "include: ${{ fromJSON(needs.prepare.outputs.build_matrix) }}" in workflow
     assert "name: pypi-soldr-${{ matrix.target }}" in workflow
     assert "Assert linux-musl wheels are tagged musllinux_1_2" in workflow
+    assert "wheel_filename_lints.py musllinux" in workflow
     assert "Smoke test musllinux wheel on Alpine" in workflow
     assert "alpine:3.20" in workflow
     assert "--only-binary=:all:" in workflow

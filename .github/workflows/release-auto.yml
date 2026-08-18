@@ -491,31 +491,8 @@ jobs:
 
       - name: Assert linux-musl wheels are tagged musllinux_1_2
         if: contains(matrix.target, 'unknown-linux-musl')
-        shell: python
-        run: |
-          import sys
-          from pathlib import Path
-
-          wheels = sorted(Path("dist").glob("*.whl"))
-          if not wheels:
-              sys.exit("no wheels in dist/ - maturin produced nothing?")
-          bad = [w.name for w in wheels if "musllinux_1_2" not in w.name]
-          if bad:
-              msg = ["musllinux_1_2 tag assertion FAILED:"]
-              for name in bad:
-                  msg.append(f"  - {name}")
-              msg.append("")
-              msg.append(
-                  "Every linux-musl wheel must carry the musllinux_1_2 "
-                  "platform tag (PEP 656). A native linux tag or missing "
-                  "musllinux tag makes `pip install soldr` on Alpine skip "
-                  "the binary wheel and fall back to source build, which is "
-                  "the soldr#909 regression."
-              )
-              sys.exit("\n".join(msg))
-          print(f"musllinux_1_2 tag assertion OK: {len(wheels)} wheel(s):")
-          for w in wheels:
-              print(f"  - {w.name}")
+        # soldr#2469 2.2: logic lives in the unit-tested script.
+        run: python3 .github/scripts/wheel_filename_lints.py musllinux
 
       # soldr#2469 2.2: logic lives in the unit-tested script.
       - name: Verify wheel ships the bin script at the spec path

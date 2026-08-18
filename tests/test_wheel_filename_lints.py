@@ -23,10 +23,7 @@ def wheel(tmp_path: Path, name: str) -> None:
 def test_version_gate_accepts_matching_wheels(tmp_path: Path) -> None:
     wheel(tmp_path, "soldr-0.9.2-cp310-abi3-manylinux_2_17_x86_64.whl")
     wheel(tmp_path, "soldr-0.9.2-cp310-abi3-win_amd64.whl")
-    assert (
-        lints.main(["version", "--expected-version", "v0.9.2", "--dist", str(tmp_path)])
-        == 0
-    )
+    assert lints.main(["version", "--expected-version", "v0.9.2", "--dist", str(tmp_path)]) == 0
 
 
 def test_version_gate_names_every_mismatch(tmp_path: Path) -> None:
@@ -59,11 +56,23 @@ def test_manylinux_gate_rejects_runner_glibc_tag(tmp_path: Path) -> None:
     with pytest.raises(SystemExit) as failure:
         lints.main(["manylinux", "--dist", str(tmp_path)])
     rendered = str(failure.value)
-    assert (
-        "manylinux_2_39" in rendered
-        or "manylinux_2_17 tag assertion FAILED" in rendered
-    )
+    assert "manylinux_2_39" in rendered or "manylinux_2_17 tag assertion FAILED" in rendered
     assert "soldr#1005" in rendered
+
+
+def test_musllinux_gate_accepts_1_2(tmp_path: Path) -> None:
+    wheel(tmp_path, "soldr-0.9.2-cp310-abi3-musllinux_1_2_x86_64.whl")
+    assert lints.main(["musllinux", "--dist", str(tmp_path)]) == 0
+
+
+def test_musllinux_gate_rejects_a_native_linux_tag(tmp_path: Path) -> None:
+    """The soldr#909 regression: Alpine skips an untagged binary wheel."""
+    wheel(tmp_path, "soldr-0.9.2-cp310-abi3-linux_x86_64.whl")
+    with pytest.raises(SystemExit) as failure:
+        lints.main(["musllinux", "--dist", str(tmp_path)])
+    rendered = str(failure.value)
+    assert "linux_x86_64" in rendered or "musllinux_1_2 tag assertion FAILED" in rendered
+    assert "soldr#909" in rendered
 
 
 def test_empty_dist_is_a_hard_error(tmp_path: Path) -> None:
@@ -73,8 +82,9 @@ def test_empty_dist_is_a_hard_error(tmp_path: Path) -> None:
 
 
 def test_the_workflow_invokes_both_gates() -> None:
-    workflow = (
-        Path(__file__).parents[1] / ".github" / "workflows" / "release-auto.yml"
-    ).read_text(encoding="utf-8")
+    workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "release-auto.yml").read_text(
+        encoding="utf-8"
+    )
     assert "wheel_filename_lints.py version" in workflow
     assert "wheel_filename_lints.py manylinux" in workflow
+    assert "wheel_filename_lints.py musllinux" in workflow
