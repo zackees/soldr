@@ -590,6 +590,9 @@ def test_gnu_catalogue_fixture_is_part_of_both_gnu_ci_lanes() -> None:
 def test_mac_x64_distribution_uses_pinned_setup_soldr_on_intel() -> None:
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
     release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
+    support_fetch = (
+        REPO_ROOT / ".github" / "scripts" / "fetch_release_support_binaries.py"
+    ).read_text(encoding="utf-8")
     install = (REPO_ROOT / "scripts" / "install.js").read_text(encoding="utf-8")
     npm_docs = (REPO_ROOT / "docs" / "NPM_PUBLISHING.md").read_text(encoding="utf-8")
     verification_docs = (REPO_ROOT / "docs" / "RELEASE_VERIFICATION.md").read_text(
@@ -605,7 +608,7 @@ def test_mac_x64_distribution_uses_pinned_setup_soldr_on_intel() -> None:
     # contract-generated (soldr#2469 step 2.1) and the intel-runner fact is
     # pinned in test_canonical_target_contract.py against release.build.
     assert "include: ${{ fromJSON(needs.prepare.outputs.build_matrix) }}" in release
-    assert '"x86_64-apple-darwin": {"os": "darwin", "arch": "x86_64"}' in release
+    assert '"x86_64-apple-darwin": {"os": "darwin", "arch": "x86_64"}' in support_fetch
     assert 'prepare --target "$target" --github-env "$GITHUB_ENV"' in release
     assert (
         "uses: zackees/setup-soldr@40320d277ba4946e38d4b3c02e6c7a15a29c3f3f" in release
