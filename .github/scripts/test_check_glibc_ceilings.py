@@ -41,9 +41,10 @@ def _workflow(*ceilings: str) -> str:
 def _release_workflow(own: str, bundled: str) -> str:
     """`release-auto.yml`'s two steps, which differ only in what they check.
 
-    The operands matter: the own-binary step names one built artifact, the
-    bundled step passes an array that also holds fetched third-party
-    binaries. That is the only thing distinguishing them.
+    The invocation shape matters: the own-binary step names one built artifact,
+    while the bundled step uses the shared dispatcher for fetched third-party
+    binaries too. That is what distinguishes their intentionally different
+    ceilings.
     """
     return (
         "jobs:\n"
@@ -53,9 +54,10 @@ def _release_workflow(own: str, bundled: str) -> str:
         f"            --max-glibc {own} \\\n"
         '            "target/${{ matrix.target }}/release/${{ matrix.binary }}"\n'
         "      - name: Verify bundled binaries\n"
-        "        run: |\n"
-        "          python3 .github/scripts/verify_glibc_baseline.py \\\n"
-        f'            --max-glibc {bundled} "${{bundled[@]}}"\n'
+        "        run: >-\n"
+        "          python3 .github/scripts/verify_release_bundle.py "
+        '--target "${{ matrix.target }}" --check glibc-baseline '
+        f"--max-glibc {bundled}\n"
     )
 
 
@@ -118,13 +120,11 @@ def test_release_own_binary_ceiling_drifting_fails(mod, tmp_path):
 
 
 @pytest.mark.parametrize("drop", ["own", "bundled"])
-def test_a_removed_release_ratchet_fails_rather_than_passing_vacuously(
-    mod, tmp_path, drop
-):
+def test_a_removed_release_ratchet_fails_rather_than_passing_vacuously(mod, tmp_path, drop):
     # Same reasoning as the per-PR case: a deleted step would otherwise be
     # indistinguishable from a satisfied one.
     release = _release_workflow("2.39", "2.39")
-    marker = "${{ matrix.binary }}" if drop == "own" else "${bundled[@]}"
+    marker = mod.RELEASE_OWN_BINARY_MARKER if drop == "own" else mod.RELEASE_BUNDLED_MARKER
     release = "\n".join(line for line in release.splitlines() if marker not in line)
     _seed(tmp_path, _workflow("2.28"), _workflow("2.28", "2.28"), release=release)
     assert mod.main(["--repo-root", str(tmp_path)]) == 1

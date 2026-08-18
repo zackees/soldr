@@ -77,11 +77,13 @@ RELEASE_WORKFLOW = ".github/workflows/release-auto.yml"
 # widen, or close and reopen, without this failing.
 RELEASE_OWN_BINARY_CEILING = "2.39"
 
-# Tells the two release invocations apart. The own-binary step names a
-# single built artifact; the bundled step passes an array that includes
-# fetched third-party binaries.
+# Tells the two release invocations apart. The own-binary step invokes the
+# ELF verifier directly for one built artifact. The bundled step dispatches to
+# the shared bundle verifier because it also includes fetched third-party
+# binaries.
 RELEASE_OWN_BINARY_MARKER = "${{ matrix.binary }}"
-RELEASE_BUNDLED_MARKER = "${bundled[@]}"
+RELEASE_BUNDLED_SCRIPT = "verify_release_bundle.py"
+RELEASE_BUNDLED_MARKER = "--check glibc-baseline"
 
 CEILING_RE = re.compile(r"--max-glibc\s+([0-9][0-9.]*)")
 
@@ -106,25 +108,24 @@ def ceilings_in(text: str) -> list[str]:
 
 
 def ceilings_by_marker(text: str) -> "dict[str, str]":
-    """Map each marker in `RELEASE_*_MARKER` to the ceiling guarding it.
+    """Map each release ratchet marker to its glibc ceiling.
 
-    Both release invocations call the same script, so they are told apart by
-    the argument each passes — a single built artifact versus the bundled
-    array. The window is wider than `ceilings_in`'s because the operand sits
-    on the line *after* the `--max-glibc` flag.
+    The own-binary step calls the ELF verifier directly. The bundled step goes
+    through the shared dispatcher so it can find all staged executables first.
+    Both shapes must be recognized, or extraction would make this guard pass
+    vacuously after a release ratchet disappeared.
     """
     found: dict[str, str] = {}
     lines = text.splitlines()
-    for index, line in enumerate(lines):
-        if SCRIPT not in line:
-            continue
+    for index in range(len(lines)):
         window = "\n".join(lines[index : index + 6])
         match = CEILING_RE.search(window)
         if not match:
             continue
-        for marker in (RELEASE_OWN_BINARY_MARKER, RELEASE_BUNDLED_MARKER):
-            if marker in window:
-                found[marker] = match.group(1)
+        if SCRIPT in window and RELEASE_OWN_BINARY_MARKER in window:
+            found[RELEASE_OWN_BINARY_MARKER] = match.group(1)
+        if RELEASE_BUNDLED_SCRIPT in window and RELEASE_BUNDLED_MARKER in window:
+            found[RELEASE_BUNDLED_MARKER] = match.group(1)
     return found
 
 
@@ -141,13 +142,11 @@ def check_release_ceilings(repo_root: Path) -> int:
         return 1
 
     found = ceilings_by_marker(text)
-    missing = [
-        m for m in (RELEASE_OWN_BINARY_MARKER, RELEASE_BUNDLED_MARKER) if m not in found
-    ]
+    missing = [m for m in (RELEASE_OWN_BINARY_MARKER, RELEASE_BUNDLED_MARKER) if m not in found]
     if missing:
         print(
             f"check_glibc_ceilings: {RELEASE_WORKFLOW} no longer has a "
-            f"{SCRIPT} step for: {', '.join(missing)}. A release ratchet was "
+            f"glibc release check for: {', '.join(missing)}. A release ratchet was "
             "removed or reshaped — if deliberate, update this script and say why.",
             file=sys.stderr,
         )
