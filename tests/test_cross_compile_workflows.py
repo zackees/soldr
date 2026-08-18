@@ -673,11 +673,15 @@ def test_release_wheels_use_setup_soldr_target_hooks_without_zig_or_xwin() -> No
     )
     assert "version: 0.8.44" in release
     assert "cross-targets: ${{ matrix.setup_target }}" in release
-    assert "wheel_hook='${{ steps.setup_soldr.outputs.target-wheel-hook }}'" in release
-    assert ".github/scripts/build_release_wheel.py" in release
-    assert "uv python install 3.13" in release
-    assert "uv run --no-project --python 3.13 --with build python" in release
-    assert '--target "${{ matrix.target }}"' in release
+    assert ".github/scripts/prepare_release_wheel.py" in release
+    assert '--runner-os "$RUNNER_OS"' in release
+    wheel_preparer = (
+        REPO_ROOT / ".github" / "scripts" / "prepare_release_wheel.py"
+    ).read_text(encoding="utf-8")
+    assert "build_release_wheel.py" in wheel_preparer
+    assert 'subprocess.run(["uv", "python", "install", "3.13"]' in wheel_preparer
+    assert '"uv",\n        "run",\n        "--no-project",' in wheel_preparer
+    assert '"--target",\n        target,' in wheel_preparer
     assert "maturin --zig" not in release
     assert "Setup zig for Linux wheel lanes" not in release
     assert "lzma_pkgconfig" not in release
@@ -740,7 +744,8 @@ def test_release_target_prepare_retries_transient_setup_failure() -> None:
     assert ".github/scripts/prepare_release_target.py" in retry
     assert '--github-env "$GITHUB_ENV"' in retry
     assert "Get-Command soldr -ErrorAction Stop" in materialize
-    assert "wheel_hook='python -m build --wheel'" in wheel
+    assert ".github/scripts/prepare_release_wheel.py" in wheel
+    assert '--wheel-hook \'${{ steps.setup_soldr.outputs.target-wheel-hook }}\'' in wheel
 
 
 def test_release_supports_isolated_npm_recovery_from_an_immutable_ref() -> None:
@@ -787,25 +792,28 @@ def test_windows_wheel_does_not_reuse_archive_executable_output() -> None:
     # soldr#2469 step 2.1: the Windows Linux-cross entries now come from the
     # contract-generated matrix (see test_canonical_target_contract.py).
     assert "include: ${{ fromJSON(needs.prepare.outputs.build_matrix) }}" in matrix
-    assert ".github/scripts/build_release_wheel.py" in wheel_step
+    assert ".github/scripts/prepare_release_wheel.py" in wheel_step
     assert "--target-dir target" not in wheel_step
     assert "!contains(matrix.target, 'pc-windows-msvc')" in wheel_smoke
 
     for step_name in [
         "Restore executable bit on bootstrap driver",
         "Build release binary (soldr-driven)",
-        "Build wheel through setup-soldr target environment",
         "Smoke test combined tar.zst archive",
     ]:
         step = _step_block(release, step_name)
         assert 'case "$RUNNER_OS" in' in step
 
+    wheel_preparer = (
+        REPO_ROOT / ".github" / "scripts" / "prepare_release_wheel.py"
+    ).read_text(encoding="utf-8")
+    assert "runner_binary_suffix(runner_os)" in wheel_preparer
     package_archive = _step_block(release, "Package combined archive (tar.zst level 19)")
     archive_packager = (
         REPO_ROOT / ".github" / "scripts" / "package_release_archive.py"
     ).read_text(encoding="utf-8")
     assert ".github/scripts/package_release_archive.py" in package_archive
-    assert 'runner_os == "Windows"' in archive_packager
+    assert "runner_binary_suffix(runner_os)" in archive_packager
 
     smoke_windows = _job_block(release, "smoke_windows", "publish")
     assert "runner: windows-2025" in smoke_windows

@@ -18,6 +18,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from release_artifacts import runner_binary_suffix
+
 
 class ArchivePackagingError(RuntimeError):
     """The release archive could not be created or was not materialized."""
@@ -25,8 +27,7 @@ class ArchivePackagingError(RuntimeError):
 
 def driver_path(runner_os: str, driver_dir: Path) -> Path:
     """Return the checked-out Soldr driver executable for a CI runner."""
-    suffix = ".exe" if runner_os == "Windows" else ""
-    return driver_dir / f"soldr{suffix}"
+    return driver_dir / f"soldr{runner_binary_suffix(runner_os)}"
 
 
 def archive_path(version: str, target: str, output_dir: Path) -> Path:
