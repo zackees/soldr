@@ -26,6 +26,12 @@ def test_non_windows_targets_have_no_executable_suffix() -> None:
         assert artifacts.binary_suffix(target) == ""
 
 
+def test_runner_os_controls_the_host_driver_suffix() -> None:
+    assert artifacts.runner_binary_suffix("Windows") == ".exe"
+    assert artifacts.runner_binary_suffix("Linux") == ""
+    assert artifacts.runner_binary_suffix("macOS") == ""
+
+
 def test_release_scripts_share_the_same_suffix_policy() -> None:
     consumers = [
         "fetch_release_support_binaries",
@@ -38,3 +44,10 @@ def test_release_scripts_share_the_same_suffix_policy() -> None:
         shared = load_script_module(SCRIPTS / "release_artifacts.py", "release_artifacts")
         module = load_script_module(SCRIPTS / f"{consumer}.py", consumer)
         assert module.binary_suffix is shared.binary_suffix
+
+
+def test_runner_scripts_share_the_same_host_suffix_policy() -> None:
+    for consumer in ("package_release_archive", "prepare_release_wheel"):
+        shared = load_script_module(SCRIPTS / "release_artifacts.py", "release_artifacts")
+        module = load_script_module(SCRIPTS / f"{consumer}.py", consumer)
+        assert module.runner_binary_suffix is shared.runner_binary_suffix

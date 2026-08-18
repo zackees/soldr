@@ -11,3 +11,8 @@ from __future__ import annotations
 def binary_suffix(target: str) -> str:
     """Return the executable suffix used by a release target."""
     return ".exe" if target.endswith("-pc-windows-msvc") else ""
+
+
+def runner_binary_suffix(runner_os: str) -> str:
+    """Return the executable suffix required by a CI runner operating system."""
+    return ".exe" if runner_os == "Windows" else ""

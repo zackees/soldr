@@ -447,42 +447,7 @@ jobs:
           AR_aarch64_unknown_linux_musl: ${{ matrix.target == 'aarch64-unknown-linux-musl' && 'ar' || '' }}
           RANLIB_aarch64_unknown_linux_musl: ${{ matrix.target == 'aarch64-unknown-linux-musl' && 'ranlib' || '' }}
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: ${{ matrix.target == 'aarch64-unknown-linux-musl' && 'musl-gcc' || '' }}
-        run: |
-          set -euo pipefail
-          rm -f dist/*.whl
-          rm -rf target/wheels target/maturin
-          find target -name "*.whl" -delete 2>/dev/null || true
-          case "$RUNNER_OS" in
-            Windows) driver="target/release/soldr.exe" ;;
-            *) driver="target/release/soldr" ;;
-          esac
-          "$driver" cargo clean -p soldr-cli --target "${{ matrix.target }}" --release 2>/dev/null || true
-          mkdir -p dist
-
-          expected="${EXPECTED_VERSION#v}"
-          git restore -- Cargo.toml Cargo.lock crates/soldr-cli/Cargo.toml || true
-
-          cargo_version="$("$driver" cargo metadata --no-deps --format-version 1 --manifest-path crates/soldr-cli/Cargo.toml 2>/dev/null \
-              | python3 -c 'import json,sys; d=json.load(sys.stdin); pkgs=[p for p in d["packages"] if p["name"]=="soldr-cli"]; print(pkgs[0]["version"] if pkgs else "")' 2>/dev/null || true)"
-          if [ -z "$cargo_version" ]; then
-              echo "ERROR: cargo metadata returned no version for soldr-cli" >&2
-              exit 1
-          fi
-          if [ "$cargo_version" != "$expected" ]; then
-              echo "ERROR: soldr-cli version ($cargo_version) does not match prepare.outputs.version ($expected)" >&2
-              exit 1
-          fi
-
-          wheel_hook='${{ steps.setup_soldr.outputs.target-wheel-hook }}'
-          if [ -z "$wheel_hook" ]; then
-            wheel_hook='python -m build --wheel'
-          fi
-          echo "setup-soldr wheel hook: $wheel_hook"
-          uv python install 3.13
-          uv run --no-project --python 3.13 --with build python \
-            .github/scripts/build_release_wheel.py \
-            --target "${{ matrix.target }}" \
-            --hook "$wheel_hook"
+        run: python3 .github/scripts/prepare_release_wheel.py --target "${{ matrix.target }}" --runner-os "$RUNNER_OS" --expected-version "$EXPECTED_VERSION" --wheel-hook '${{ steps.setup_soldr.outputs.target-wheel-hook }}'
 
       - name: Build musl wheel in an explicit uv venv
         if: contains(matrix.target, 'unknown-linux-musl')
