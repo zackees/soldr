@@ -23,7 +23,7 @@ WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "release-auto.y
 # in the same PR whenever extraction shrinks the workflow; never raise it —
 # new release logic belongs in a `ci/*.py` or `.github/scripts/*.py` script
 # with unit tests, invoked from a one-line `run:`.
-INLINE_RUN_LINE_CEILING = 508
+INLINE_RUN_LINE_CEILING = 432
 
 
 def count_inline_run_lines(text: str) -> int:
