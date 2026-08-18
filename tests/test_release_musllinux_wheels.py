@@ -25,7 +25,10 @@ def test_release_workflow_builds_and_publishes_musllinux_wheels() -> None:
     assert "version: 0.8.44" in workflow
     assert "cross-targets: ${{ matrix.setup_target }}" in workflow
     assert "target-wheel-hook" in workflow
-    assert ".github/scripts/build_release_wheel.py" in workflow
+    assert ".github/scripts/prepare_release_wheel.py" in workflow
+    assert "build_release_wheel.py" in (
+        REPO_ROOT / ".github" / "scripts" / "prepare_release_wheel.py"
+    ).read_text(encoding="utf-8")
     # soldr#2469 step 2.1: the musl build lanes come from the
     # contract-generated matrix rather than inline workflow entries.
     contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
