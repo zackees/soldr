@@ -36,7 +36,7 @@ exclude = [
 version = "0.9.2"
 edition = "2021"
 rust-version = "1.95.0"
-license = "BSD-3-Clause"
+license = "AGPL-3.0-only"
 repository = "https://github.com/zackees/soldr"
 homepage = "https://github.com/zackees/soldr"
 

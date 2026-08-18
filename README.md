@@ -491,4 +491,6 @@ Built on lessons from:
 
 ## License
 
-BSD-3-Clause.
+GNU Affero General Public License v3.0 only (AGPL-3.0-only). See [LICENSE](LICENSE).
+
+Historical BSD-3-Clause notices are retained in [LICENSE-BSD-3-Clause](LICENSE-BSD-3-Clause).
