@@ -212,6 +212,19 @@ class TestStaging:
             github_env.read_text(encoding="utf-8") == "CRGX_SOURCE_COMMIT=soldr-toolchain:v1.2.3\n"
         )
 
+    def test_cargo_chef_provenance_uses_its_distinct_environment_variable(
+        self, tmp_path: Path
+    ) -> None:
+        github_env = tmp_path / "github-env"
+        github_env.touch()
+
+        support.write_source_commit(github_env, "cargo-chef", "v0.1.73")
+
+        assert (
+            github_env.read_text(encoding="utf-8")
+            == "CARGO_CHEF_SOURCE_COMMIT=soldr-toolchain:v0.1.73\n"
+        )
+
 
 class TestArchiveSafety:
     def test_zip_path_traversal_is_rejected_before_extraction(self, tmp_path: Path) -> None:
