@@ -39,9 +39,7 @@ class TestPinnedVersions:
             value = manifest_mod.read_pinned_version(REPO_ROOT, spec)
             assert value and value.strip() == value, (spec, value)
 
-    def test_a_missing_pin_is_an_error_not_an_empty_string(
-        self, tmp_path: Path
-    ) -> None:
+    def test_a_missing_pin_is_an_error_not_an_empty_string(self, tmp_path: Path) -> None:
         target = tmp_path / "some.rs"
         target.write_text("nothing here\n", encoding="utf-8")
         with pytest.raises(manifest_mod.ManifestError, match="WIDGET"):
@@ -79,9 +77,7 @@ class TestManifestShape:
             "commit_sha": "deadbeef",
             "target": "x86_64-unknown-linux-gnu",
             "suffix": "",
-            "digests": dict.fromkeys(
-                ("soldr", "soldr-daemon", "crgx", "cargo-chef"), "a" * 64
-            ),
+            "digests": dict.fromkeys(("soldr", "soldr-daemon", "crgx", "cargo-chef"), "a" * 64),
             "debug_info": [],
             "versions": {"zccache": "1.13.5", "crgx": "0.1.0", "cargo_chef": "0.1.73"},
             "commits": {"crgx": "abc", "cargo_chef": "def"},
@@ -114,9 +110,7 @@ class TestManifestShape:
         and `cargo_chef.source_commit` came out `"unknown"`. `json.dumps`
         escapes the newline instead of letting it end a field.
         """
-        leaked = (
-            "soldr-toolchain:v0.1.0\nCARGO_CHEF_SOURCE_COMMIT=soldr-toolchain:v0.1.73"
-        )
+        leaked = "soldr-toolchain:v0.1.0\nCARGO_CHEF_SOURCE_COMMIT=soldr-toolchain:v0.1.73"
         manifest = self.build(commits={"crgx": leaked, "cargo_chef": "clean"})
         reparsed = json.loads(json.dumps(manifest))
         assert reparsed["crgx"]["source_commit"] == leaked

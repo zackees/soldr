@@ -23,13 +23,11 @@ import shutil
 import sys
 from pathlib import Path
 
+from release_artifacts import binary_suffix
+
 
 class StagingError(RuntimeError):
     """A required release artifact was absent or could not be staged."""
-
-
-def binary_suffix(target: str) -> str:
-    return ".exe" if target.endswith("-pc-windows-msvc") else ""
 
 
 def release_contents(directory: Path) -> str:
@@ -40,15 +38,11 @@ def release_contents(directory: Path) -> str:
 
 
 def first_file(directory: Path, names: list[str]) -> Path | None:
-    return next(
-        (directory / name for name in names if (directory / name).is_file()), None
-    )
+    return next((directory / name for name in names if (directory / name).is_file()), None)
 
 
 def first_directory(directory: Path, names: list[str]) -> Path | None:
-    return next(
-        (directory / name for name in names if (directory / name).is_dir()), None
-    )
+    return next((directory / name for name in names if (directory / name).is_dir()), None)
 
 
 def copy_or_link(source: Path, destination: Path) -> None:
@@ -69,9 +63,7 @@ def mark_executable(path: Path) -> None:
         pass
 
 
-def stage_release_binaries(
-    target: str, release_dir: Path, package_dir: Path
-) -> list[Path]:
+def stage_release_binaries(target: str, release_dir: Path, package_dir: Path) -> list[Path]:
     """Populate ``package_dir`` with the executable, daemon, and debug sidecars."""
     suffix = binary_suffix(target)
     source = release_dir / f"soldr{suffix}"

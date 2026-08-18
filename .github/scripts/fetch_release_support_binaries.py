@@ -37,6 +37,8 @@ import zipfile
 from pathlib import Path, PureWindowsPath
 from urllib.parse import urljoin
 
+from release_artifacts import binary_suffix
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ORIGIN = "https://zackees.github.io/soldr-toolchain"
 DEFAULT_ISSUE_URL = "https://github.com/zackees/soldr-toolchain/issues/47"
@@ -49,10 +51,6 @@ CARGO_CHEF_VERSION = (
 
 class SupportBinaryError(RuntimeError):
     """A catalogue, archive, or staging defect that must stop the release."""
-
-
-def binary_suffix(target: str) -> str:
-    return ".exe" if target.endswith("-pc-windows-msvc") else ""
 
 
 def platform_for_target(target: str) -> dict[str, str]:

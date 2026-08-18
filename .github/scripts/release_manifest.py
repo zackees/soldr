@@ -42,6 +42,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from release_artifacts import binary_suffix
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 SCHEMA_VERSION = 3
@@ -83,10 +85,6 @@ def read_pinned_version(root: Path, spec: tuple[str, str, str]) -> str:
     return match.group(1)
 
 
-def binary_suffix(target: str) -> str:
-    return ".exe" if target.endswith("-pc-windows-msvc") else ""
-
-
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -110,9 +108,7 @@ def sha256_dsym(path: Path) -> str:
     return hashlib.sha256(completed.stdout).hexdigest()
 
 
-def find_sidecar(
-    package_dir: Path, names: list[str], directory: bool = False
-) -> Path | None:
+def find_sidecar(package_dir: Path, names: list[str], directory: bool = False) -> Path | None:
     for name in names:
         candidate = package_dir / name
         if candidate.is_dir() if directory else candidate.is_file():
@@ -137,9 +133,7 @@ def collect_debug_info(package_dir: Path, suffix: str) -> list[dict[str, str]]:
         entries.append({"name": dwp.name, "sha256": sha256_file(dwp), "format": "dwp"})
     dsym = find_sidecar(package_dir, ["soldr.dSYM", "soldr_cli.dSYM"], directory=True)
     if dsym is not None:
-        entries.append(
-            {"name": dsym.name, "sha256": sha256_dsym(dsym), "format": "dsym"}
-        )
+        entries.append({"name": dsym.name, "sha256": sha256_dsym(dsym), "format": "dsym"})
     return entries
 
 
@@ -163,9 +157,7 @@ def build_manifest(
             "target": target,
             "binary": f"soldr{suffix}",
             "sha256": digests["soldr"],
-            "sidecars": [
-                {"name": f"soldr-daemon{suffix}", "sha256": digests["soldr-daemon"]}
-            ],
+            "sidecars": [{"name": f"soldr-daemon{suffix}", "sha256": digests["soldr-daemon"]}],
             "debug_info": debug_info,
             "commit_sha": commit_sha,
         },

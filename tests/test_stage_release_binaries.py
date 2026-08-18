@@ -11,9 +11,7 @@ REPO_ROOT = Path(__file__).parents[1]
 SCRIPTS = REPO_ROOT / ".github" / "scripts"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-auto.yml"
 
-stage = load_script_module(
-    SCRIPTS / "stage_release_binaries.py", "stage_release_binaries"
-)
+stage = load_script_module(SCRIPTS / "stage_release_binaries.py", "stage_release_binaries")
 
 
 def write_file(directory: Path, name: str, contents: bytes = b"artifact") -> Path:
@@ -47,9 +45,7 @@ def test_windows_missing_pdb_is_a_named_release_failure(tmp_path: Path) -> None:
     write_file(release, "soldr.exe")
 
     with pytest.raises(stage.StagingError, match="PDB sidecar"):
-        stage.stage_release_binaries(
-            "x86_64-pc-windows-msvc", release, tmp_path / "package"
-        )
+        stage.stage_release_binaries("x86_64-pc-windows-msvc", release, tmp_path / "package")
 
 
 def test_linux_stages_optional_split_dwarf_when_present(tmp_path: Path) -> None:
@@ -87,9 +83,7 @@ def test_macos_stages_optional_dsym_bundle(tmp_path: Path) -> None:
     staged = stage.stage_release_binaries("aarch64-apple-darwin", release, package)
 
     assert [path.name for path in staged] == ["soldr", "soldr-daemon", "soldr.dSYM"]
-    assert (
-        package / "soldr.dSYM" / "Contents" / "Resources" / "DWARF"
-    ).read_bytes() == b"symbols"
+    assert (package / "soldr.dSYM" / "Contents" / "Resources" / "DWARF").read_bytes() == b"symbols"
 
 
 def test_missing_main_binary_reports_observed_release_directory(tmp_path: Path) -> None:
@@ -98,9 +92,7 @@ def test_missing_main_binary_reports_observed_release_directory(tmp_path: Path) 
     write_file(release, "another-file")
 
     with pytest.raises(stage.StagingError, match="expected soldr") as error:
-        stage.stage_release_binaries(
-            "x86_64-unknown-linux-gnu", release, tmp_path / "package"
-        )
+        stage.stage_release_binaries("x86_64-unknown-linux-gnu", release, tmp_path / "package")
 
     assert "another-file" in str(error.value)
 
