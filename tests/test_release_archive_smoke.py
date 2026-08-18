@@ -16,9 +16,7 @@ SCRIPTS = REPO_ROOT / ".github" / "scripts"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-auto.yml"
 CONTRACT = REPO_ROOT / "ci" / "canonical-targets.json"
 
-smoke = load_script_module(
-    SCRIPTS / "release_archive_smoke.py", "release_archive_smoke"
-)
+smoke = load_script_module(SCRIPTS / "release_archive_smoke.py", "release_archive_smoke")
 
 
 class TestRequiredEntries:
@@ -69,9 +67,7 @@ class TestNativeArchGate:
             ("macOS", "arm64", "x86_64-apple-darwin", False),
         ],
     )
-    def test_gate(
-        self, runner_os: str, runner_arch: str, target: str, expected: bool
-    ) -> None:
+    def test_gate(self, runner_os: str, runner_arch: str, target: str, expected: bool) -> None:
         assert smoke.native_arch_match(runner_os, runner_arch, target) is expected
 
     def test_every_contracted_target_can_be_matched_by_some_runner(self) -> None:
@@ -94,8 +90,7 @@ class TestNativeArchGate:
         for entry in contract["targets"]:
             triple = entry["triple"]
             assert any(
-                smoke.native_arch_match(os_name, arch, triple)
-                for os_name, arch in runners
+                smoke.native_arch_match(os_name, arch, triple) for os_name, arch in runners
             ), f"{triple} matches no runner shape"
 
 

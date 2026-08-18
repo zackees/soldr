@@ -36,6 +36,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from release_artifacts import binary_suffix
+
 # soldr#1202: real soldr is ~13-15 MB on every platform. Two MiB is far below
 # that and far above any conceivable stub, so it rejects the regression
 # without becoming a size assertion nobody can maintain.
@@ -44,10 +46,6 @@ MIN_SOLDR_BYTES = 2 * 1024 * 1024
 
 class SmokeError(RuntimeError):
     """An archive defect that must stop the release."""
-
-
-def binary_suffix(target: str) -> str:
-    return ".exe" if target.endswith("-pc-windows-msvc") else ""
 
 
 def required_entries(target: str, binary: str) -> list[str]:
@@ -137,9 +135,7 @@ def smoke(args: argparse.Namespace) -> None:
         [args.driver, "archive", "--input", str(archive), "--extract-dir", str(extract)]
     )
     if extracted.returncode != 0:
-        raise SmokeError(
-            f"archive extraction failed:\n{extracted.stdout}\n{extracted.stderr}"
-        )
+        raise SmokeError(f"archive extraction failed:\n{extracted.stdout}\n{extracted.stderr}")
     print("--- extracted layout ---")
     for entry in sorted(extract.iterdir()):
         print(f"  {entry.name}")
@@ -166,10 +162,7 @@ def smoke(args: argparse.Namespace) -> None:
 
     runner_arch = platform.machine()
     if not native_arch_match(args.runner_os, runner_arch, args.target):
-        print(
-            f"skipping --version (runner {args.runner_os}/{runner_arch} "
-            f"vs target {args.target})"
-        )
+        print(f"skipping --version (runner {args.runner_os}/{runner_arch} vs target {args.target})")
         return
 
     version_flag = run([str(soldr), "--version"])
@@ -200,9 +193,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--binary", required=True, help="soldr binary name in archive")
     parser.add_argument("--archive", required=True)
     parser.add_argument("--driver", required=True, help="host soldr used to extract")
-    parser.add_argument(
-        "--runner-os", required=True, choices=["Linux", "macOS", "Windows"]
-    )
+    parser.add_argument("--runner-os", required=True, choices=["Linux", "macOS", "Windows"])
     args = parser.parse_args(argv)
     try:
         smoke(args)

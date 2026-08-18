@@ -334,23 +334,7 @@ jobs:
       - name: Ratchet the Windows DLL imports (soldr#1060)
         if: contains(matrix.target, 'pc-windows-msvc')
         shell: bash
-        run: |
-          set -euo pipefail
-          # bash 3.2 -- what macOS ships, frozen there by GPLv3 -- has no
-          # `mapfile`. A read loop is the portable equivalent and behaves
-          # identically on every runner.
-          bundled=()
-          while IFS= read -r bundled_path; do
-            bundled+=("$bundled_path")
-          done < <(find dist/package -maxdepth 1 -type f \
-            \( -name 'soldr.exe' -o -name 'soldr-daemon.exe' \
-               -o -name 'crgx.exe' -o -name 'cargo-chef.exe' \))
-          if [ "${#bundled[@]}" -eq 0 ]; then
-            echo "no bundled binaries found in dist/package to verify" >&2
-            ls -la dist/package >&2
-            exit 1
-          fi
-          python3 .github/scripts/verify_windows_imports.py "${bundled[@]}"
+        run: python3 .github/scripts/verify_release_bundle.py --target "${{ matrix.target }}" --check windows-imports
 
       # soldr#1060, macOS side. A Mach-O records the oldest OS it will start
       # on, and nothing watched that value: it is whatever the toolchain and
@@ -374,43 +358,12 @@ jobs:
       - name: Ratchet the macOS minimum version (soldr#1060)
         if: contains(matrix.target, 'apple-darwin')
         shell: bash
-        run: |
-          set -euo pipefail
-          # bash 3.2 -- what macOS ships, frozen there by GPLv3 -- has no
-          # `mapfile`. A read loop is the portable equivalent and behaves
-          # identically on every runner.
-          bundled=()
-          while IFS= read -r bundled_path; do
-            bundled+=("$bundled_path")
-          done < <(find dist/package -maxdepth 1 -type f \
-            \( -name soldr -o -name soldr-daemon -o -name crgx -o -name cargo-chef \))
-          if [ "${#bundled[@]}" -eq 0 ]; then
-            echo "no bundled binaries found in dist/package to verify" >&2
-            ls -la dist/package >&2
-            exit 1
-          fi
-          python3 .github/scripts/verify_macos_min_version.py \
-            --target "${{ matrix.target }}" "${bundled[@]}"
+        run: python3 .github/scripts/verify_release_bundle.py --target "${{ matrix.target }}" --check macos-min-version
 
       - name: Verify every bundled musl binary is static (soldr#1060)
         if: contains(matrix.target, 'musl')
         shell: bash
-        run: |
-          set -euo pipefail
-          # bash 3.2 -- what macOS ships, frozen there by GPLv3 -- has no
-          # `mapfile`. A read loop is the portable equivalent and behaves
-          # identically on every runner.
-          bundled=()
-          while IFS= read -r bundled_path; do
-            bundled+=("$bundled_path")
-          done < <(find dist/package -maxdepth 1 -type f \
-            \( -name soldr -o -name soldr-daemon -o -name crgx -o -name cargo-chef \))
-          if [ "${#bundled[@]}" -eq 0 ]; then
-            echo "no bundled binaries found in dist/package to verify" >&2
-            ls -la dist/package >&2
-            exit 1
-          fi
-          python3 .github/scripts/verify_static_link.py "${bundled[@]}"
+        run: python3 .github/scripts/verify_release_bundle.py --target "${{ matrix.target }}" --check static
 
       # The gnu counterpart of the musl check above, and for the same reason
       # #2084 extended that one: the bundle ships FOUR binaries, and the
@@ -429,23 +382,7 @@ jobs:
       - name: Check glibc baseline of every bundled gnu binary (soldr#1060)
         if: contains(matrix.target, 'unknown-linux-gnu')
         shell: bash
-        run: |
-          set -euo pipefail
-          # bash 3.2 -- what macOS ships, frozen there by GPLv3 -- has no
-          # `mapfile`. A read loop is the portable equivalent and behaves
-          # identically on every runner.
-          bundled=()
-          while IFS= read -r bundled_path; do
-            bundled+=("$bundled_path")
-          done < <(find dist/package -maxdepth 1 -type f \
-            \( -name soldr -o -name soldr-daemon -o -name crgx -o -name cargo-chef \))
-          if [ "${#bundled[@]}" -eq 0 ]; then
-            echo "no bundled binaries found in dist/package to verify" >&2
-            ls -la dist/package >&2
-            exit 1
-          fi
-          python3 .github/scripts/verify_glibc_baseline.py \
-            --max-glibc 2.39 "${bundled[@]}"
+        run: python3 .github/scripts/verify_release_bundle.py --target "${{ matrix.target }}" --check glibc-baseline --max-glibc 2.39
 
       - name: Write manifest.json
         # The archive's self-description: versions, target triples,

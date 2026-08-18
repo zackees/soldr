@@ -1,0 +1,40 @@
+"""Shared release-artifact naming policy tests."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from conftest import load_script_module
+
+REPO_ROOT = Path(__file__).parents[1]
+SCRIPTS = REPO_ROOT / ".github" / "scripts"
+
+artifacts = load_script_module(SCRIPTS / "release_artifacts.py", "release_artifacts")
+
+
+def test_windows_msvc_targets_have_the_executable_suffix() -> None:
+    assert artifacts.binary_suffix("x86_64-pc-windows-msvc") == ".exe"
+    assert artifacts.binary_suffix("aarch64-pc-windows-msvc") == ".exe"
+
+
+def test_non_windows_targets_have_no_executable_suffix() -> None:
+    for target in (
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-musl",
+        "x86_64-apple-darwin",
+    ):
+        assert artifacts.binary_suffix(target) == ""
+
+
+def test_release_scripts_share_the_same_suffix_policy() -> None:
+    consumers = [
+        "fetch_release_support_binaries",
+        "release_archive_smoke",
+        "release_manifest",
+        "stage_release_binaries",
+        "verify_release_bundle",
+    ]
+    for consumer in consumers:
+        shared = load_script_module(SCRIPTS / "release_artifacts.py", "release_artifacts")
+        module = load_script_module(SCRIPTS / f"{consumer}.py", consumer)
+        assert module.binary_suffix is shared.binary_suffix

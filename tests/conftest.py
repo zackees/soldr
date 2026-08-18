@@ -39,6 +39,15 @@ def load_script_module(path: str | Path, name: str | None = None) -> ModuleType:
     return module
 
 
+# Release scripts are standalone modules, but several share this module. Load it
+# once during test collection so their direct sibling import resolves under the
+# importlib-based test loader too.
+RELEASE_ARTIFACTS = load_script_module(
+    Path(__file__).parents[1] / ".github" / "scripts" / "release_artifacts.py",
+    "release_artifacts",
+)
+
+
 # The workspace's first-party crates. Two guards assert over this same list,
 # and a crate added to the workspace must reach both of them.
 WORKSPACE_CRATES = [
@@ -126,9 +135,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
 
 
-def pytest_collection_modifyitems(
-    config: pytest.Config, items: list[pytest.Item]
-) -> None:
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     marker_options = {
         "act_integration": "--act-integration",
         "cacheability_integration": "--cacheability-integration",
