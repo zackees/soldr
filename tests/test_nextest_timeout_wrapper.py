@@ -207,9 +207,9 @@ def test_every_binary_named_in_nextest_filters_is_a_real_test_target() -> None:
     config = CONFIG.read_text(encoding="utf-8")
     named = set(re.findall(r"binary\(([A-Za-z0-9_-]+)\)", config))
     assert named, "expected at least one binary() filter in nextest.toml"
-    test_targets = {
-        path.stem for path in REPO_ROOT.glob("crates/*/tests/*.rs")
-    } | {path.stem for path in REPO_ROOT.glob("crates/*/benches/*.rs")}
+    test_targets = {path.stem for path in REPO_ROOT.glob("crates/*/tests/*.rs")} | {
+        path.stem for path in REPO_ROOT.glob("crates/*/benches/*.rs")
+    }
     missing = sorted(named - test_targets)
     assert not missing, (
         f"nextest.toml filters name test binaries that do not exist: {missing}; "

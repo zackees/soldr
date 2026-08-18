@@ -41,7 +41,10 @@ def test_cargo_command_routes_through_pinned_soldr_rustup() -> None:
 
 def test_soldr_cli_version_requires_exactly_one_package() -> None:
     assert (
-        MODULE.soldr_cli_version('{"packages":[{"name":"soldr-cli","version":"0.9.0"}]}') == "0.9.0"
+        MODULE.soldr_cli_version(
+            '{"packages":[{"name":"soldr-cli","version":"0.9.0"}]}'
+        )
+        == "0.9.0"
     )
     with pytest.raises(RuntimeError, match="expected one soldr-cli package"):
         MODULE.soldr_cli_version('{"packages":[]}')

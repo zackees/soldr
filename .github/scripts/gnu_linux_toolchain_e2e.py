@@ -109,7 +109,9 @@ def read_github_env(path: Path) -> dict[str, str]:
     return values
 
 
-ZIG_TOKEN = re.compile(r"(?<![0-9a-z])(cargo-zigbuild|zigbuild|ziglang|zig)(?![0-9a-z])")
+ZIG_TOKEN = re.compile(
+    r"(?<![0-9a-z])(cargo-zigbuild|zigbuild|ziglang|zig)(?![0-9a-z])"
+)
 
 
 def require_no_zig(text: str, context: str) -> None:
@@ -119,7 +121,9 @@ def require_no_zig(text: str, context: str) -> None:
     # always appear delimited by non-alphanumerics.
     match = ZIG_TOKEN.search(text.lower())
     if match:
-        raise RuntimeError(f"{context} unexpectedly references {match.group(1)}: {text}")
+        raise RuntimeError(
+            f"{context} unexpectedly references {match.group(1)}: {text}"
+        )
 
 
 def assert_plan(soldr: str, target: str, env: dict[str, str]) -> None:

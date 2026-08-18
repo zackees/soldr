@@ -55,7 +55,7 @@ def test_detector_flags_crate_level_host_cfg() -> None:
 
 def test_detector_ignores_comments_strings_and_feature_cfgs() -> None:
     masked = _ratchet.mask_comments_and_strings(
-        '''
+        """
         fn neutral() {
             let _ = "#[cfg(windows)]";
             let _ = r###"cfg!(target_os = "linux")"###;
@@ -63,7 +63,7 @@ def test_detector_ignores_comments_strings_and_feature_cfgs() -> None:
             #[cfg(feature = "tokio-console")]
             let _ = 1;
         }
-        '''
+        """
     )
     assert _ratchet.platform_cfg_invocations(masked) == []
 
@@ -91,9 +91,7 @@ def test_detector_finds_native_platform_references() -> None:
 
 
 def test_boundary_files_are_never_violations() -> None:
-    assert _ratchet.is_boundary(
-        Path("crates/soldr-platform/src/lib.rs")
-    )
+    assert _ratchet.is_boundary(Path("crates/soldr-platform/src/lib.rs"))
     assert _ratchet.is_boundary(
         Path("crates/soldr-platform/src/platform_win/fs/identity.rs")
     )

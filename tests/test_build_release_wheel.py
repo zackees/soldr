@@ -53,7 +53,9 @@ def test_release_environment_forces_soldr_maturin_off_xwin() -> None:
         ("aarch64-pc-windows-msvc", "CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER"),
     ],
 )
-def test_release_environment_pins_msvc_linker_to_lld_link(target: str, key: str) -> None:
+def test_release_environment_pins_msvc_linker_to_lld_link(
+    target: str, key: str
+) -> None:
     # The pinned setup-soldr's last GITHUB_ENV write is `soldr env`'s
     # blanket `LINKER=clang` placeholder, which clobbers `soldr prepare`'s
     # lld-link and makes rustc drive `clang -flavor link` — a hard clang
@@ -113,7 +115,9 @@ def test_source_build_environment_removes_cross_target_state() -> None:
         ("x86_64-unknown-linux-gnu", "manylinux_2_17"),
     ],
 )
-def test_direct_maturin_command_is_release_locked(target: str, compatibility: str) -> None:
+def test_direct_maturin_command_is_release_locked(
+    target: str, compatibility: str
+) -> None:
     command = wheel.maturin_build_command(Path("maturin"), target)
     assert command == [
         "maturin",
@@ -133,7 +137,9 @@ def test_direct_maturin_command_is_release_locked(target: str, compatibility: st
 
 def test_environment_rejects_non_release_pep517_profile() -> None:
     with pytest.raises(ValueError, match="requires SOLDR_PEP517_PROFILE=release"):
-        wheel.build_environment("x86_64-unknown-linux-gnu", {"SOLDR_PEP517_PROFILE": "dev"})
+        wheel.build_environment(
+            "x86_64-unknown-linux-gnu", {"SOLDR_PEP517_PROFILE": "dev"}
+        )
 
 
 def test_unknown_target_is_rejected() -> None:
@@ -141,14 +147,18 @@ def test_unknown_target_is_rejected() -> None:
         wheel.validate_target("riscv64gc-unknown-linux-gnu")
 
 
-def test_hook_source_builds_downstream_then_runs_it_with_target_env(monkeypatch) -> None:
+def test_hook_source_builds_downstream_then_runs_it_with_target_env(
+    monkeypatch,
+) -> None:
     observed = []
 
     def fake_run(command, *, env):
         observed.append((command, env))
 
     monkeypatch.setattr(wheel, "run", fake_run)
-    monkeypatch.setattr(wheel, "resolve_soldr_driver", lambda _env: Path("release-driver"))
+    monkeypatch.setattr(
+        wheel, "resolve_soldr_driver", lambda _env: Path("release-driver")
+    )
     monkeypatch.setattr(
         wheel,
         "resolve_toolchain_rustc",

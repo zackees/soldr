@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 LINT = ROOT / "dylints" / "ban_raw_ipc_transport"
 

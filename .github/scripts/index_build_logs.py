@@ -38,7 +38,9 @@ LOG_SUFFIXES = (".xml", ".jsonl", ".json", ".log")
 
 # Directories that hold build state rather than diagnostics. Walking into these
 # turns an index into a full `target/` listing.
-SKIP_DIRECTORY_NAMES = frozenset({"bin", "sdk", "shims", "rustup", "cargo", "toolchains"})
+SKIP_DIRECTORY_NAMES = frozenset(
+    {"bin", "sdk", "shims", "rustup", "cargo", "toolchains"}
+)
 
 
 def human_bytes(size: int) -> str:
