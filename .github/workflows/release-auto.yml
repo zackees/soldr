@@ -531,28 +531,8 @@ jobs:
         shell: bash
         env:
           EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          set -euo pipefail
-          binary="target/${{ matrix.target }}/release/${{ matrix.binary }}"
-          test -x "$binary" || { echo "missing release binary: $binary" >&2; exit 1; }
-          file "$binary" || true
-          "./$binary" --version
-
-          # soldr#1202: guard the `version --json` dispatch-arm code
-          # path — v0.7.87 shipped a stub whose `--version` passed but
-          # whose `version --json` returned empty stdout.
-          expected_soldr_version="${EXPECTED_VERSION#v}"
-          json_out="$("./$binary" version --json)"
-          if [ -z "$json_out" ]; then
-              echo "ERROR: 'soldr version --json' produced empty stdout on musl binary (soldr#1202)." >&2
-              exit 1
-          fi
-          printf 'musl smoke test — soldr version --json output: %s\n' "$json_out"
-          compact="$(printf '%s' "$json_out" | tr -d ' \n\r\t')"
-          if ! printf '%s' "$compact" | grep -q "\"soldr_version\":\"${expected_soldr_version}\""; then
-              echo "ERROR: musl 'soldr version --json' output does not include soldr_version=${expected_soldr_version} (soldr#1202)." >&2
-              exit 1
-          fi
+        # soldr#2469 2.2: logic lives in the unit-tested script.
+        run: python3 .github/scripts/smoke_musl_binary.py --target "${{ matrix.target }}" --binary "${{ matrix.binary }}" --expected-version "$EXPECTED_VERSION"
 
       - name: Smoke test combined tar.zst archive
         # The last gate before an archive reaches the GitHub release.

@@ -32,6 +32,18 @@ def test_runner_os_controls_the_host_driver_suffix() -> None:
     assert artifacts.runner_binary_suffix("macOS") == ""
 
 
+def test_release_version_normalization_removes_only_the_prefix() -> None:
+    assert artifacts.normalized_release_version("v0.9.2") == "0.9.2"
+    assert artifacts.normalized_release_version("0.9.2") == "0.9.2"
+
+
+def test_version_json_status_requires_a_parseable_exact_payload() -> None:
+    assert artifacts.version_json_status('{ "soldr_version" : "0.9.2" }', "0.9.2") is None
+    assert artifacts.version_json_status("", "0.9.2") == "empty"
+    assert artifacts.version_json_status('{"soldr_version":"0.0.1"}', "0.9.2") == "mismatch"
+    assert artifacts.version_json_status('warning\n{"soldr_version":"0.9.2"}', "0.9.2") == "invalid"
+
+
 def test_release_scripts_share_the_same_suffix_policy() -> None:
     consumers = [
         "fetch_release_support_binaries",

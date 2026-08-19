@@ -17,6 +17,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from release_artifacts import normalized_release_version, version_json_status
+
 
 class WheelSmokeError(RuntimeError):
     """The release wheel cannot be installed or fails its CLI contract."""
@@ -45,10 +47,10 @@ def version_problem(output: str) -> str | None:
 
 
 def version_json_problem(output: str, expected_version: str) -> str | None:
-    if not output.strip():
+    status = version_json_status(output, expected_version)
+    if status == "empty":
         return "wheel's 'soldr version --json' produced empty stdout (soldr#1202)."
-    compact = "".join(output.split())
-    if f'"soldr_version":"{expected_version}"' not in compact:
+    if status in {"mismatch", "invalid"}:
         return (
             "wheel's 'soldr version --json' output does not include "
             f"soldr_version={expected_version} (soldr#1202)."
@@ -85,7 +87,7 @@ def smoke_wheel(*, expected_version: str, dist: Path, venv: Path) -> None:
     print(f"wheel smoke test — soldr --version output: {version_output.strip()}")
 
     json_output = run_cli([str(soldr), "version", "--json"])
-    problem = version_json_problem(json_output, expected_version.removeprefix("v"))
+    problem = version_json_problem(json_output, normalized_release_version(expected_version))
     if problem:
         raise WheelSmokeError(problem)
     print(f"wheel smoke test — soldr version --json output: {json_output.strip()}")

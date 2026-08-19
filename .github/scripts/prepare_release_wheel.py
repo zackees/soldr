@@ -21,7 +21,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from release_artifacts import runner_binary_suffix
+from release_artifacts import normalized_release_version, runner_binary_suffix
 
 DEFAULT_WHEEL_HOOK = "python -m build --wheel"
 BUILD_SCRIPT = Path(__file__).with_name("build_release_wheel.py")
@@ -37,7 +37,7 @@ def driver_path(runner_os: str, driver_dir: Path) -> Path:
 
 
 def expected_package_version(version: str) -> str:
-    return version.removeprefix("v")
+    return normalized_release_version(version)
 
 
 def clean_wheel_outputs(repo_root: Path) -> None:
