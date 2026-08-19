@@ -33,6 +33,15 @@ def expected_version(version: str) -> str:
     return normalized_release_version(version)
 
 
+def version_problem(output: str) -> str | None:
+    if output.startswith("soldr "):
+        return None
+    return (
+        "musl binary's 'soldr --version' output did not start with 'soldr ' "
+        "— likely shipping a stub binary (soldr#1140)."
+    )
+
+
 def version_json_problem(output: str, expected: str) -> str | None:
     status = version_json_status(output, expected)
     if status == "empty":
@@ -71,7 +80,11 @@ def smoke_binary(*, target: str, binary: str, expected: str, target_dir: Path) -
     if not path.is_file() or not os.access(path, os.X_OK):
         raise MuslBinarySmokeError(f"missing executable release binary: {path}")
     print_file_metadata(path)
-    run_cli([str(path), "--version"], capture=False)
+    version_output = run_cli([str(path), "--version"], capture=True)
+    problem = version_problem(version_output)
+    if problem:
+        raise MuslBinarySmokeError(problem)
+    print(f"musl smoke test — soldr --version output: {version_output.strip()}")
 
     json_output = run_cli([str(path), "version", "--json"], capture=True)
     problem = version_json_problem(json_output, expected)
