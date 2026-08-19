@@ -556,7 +556,7 @@ mod tests {
         .expect("test endpoint");
         DaemonProcess {
             pid: 4242,
-            exe_sha256: [0; 32],
+            exe_hash: [0; 32],
             exe_path: exe_path.to_path_buf(),
             boot_id: "route-test-boot".to_string(),
             ipc_endpoint: endpoint,
@@ -644,7 +644,7 @@ mod tests {
             .expect("claim exists");
         assert_eq!(observed.pid, second.pid);
         assert_eq!(observed.exe_path, second.exe_path);
-        assert_eq!(observed.exe_sha256, second.exe_sha256);
+        assert_eq!(observed.exe_hash, second.exe_hash);
         assert_eq!(observed.boot_id, second.boot_id);
         assert_eq!(observed.ipc_endpoint, second.ipc_endpoint);
         assert_eq!(observed.idle_timeout_secs, Some(9));
@@ -655,6 +655,20 @@ mod tests {
             .filter(|entry| entry.path() != broker_route_claim_path(&paths))
             .count();
         assert_eq!(leftovers, 0, "atomic publish must not leave temp files");
+    }
+
+    #[test]
+    fn broker_route_claim_uses_blake3_daemon_identity() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("root"));
+        let daemon = current_daemon_process(&paths, Some(30)).expect("daemon identity");
+        let expected = running_process::blake3_file(&daemon.exe_path).expect("hash daemon image");
+
+        assert_eq!(
+            daemon.exe_hash,
+            *expected.as_bytes(),
+            "Soldr's broker route claim must carry the running-process BLAKE3 identity"
+        );
     }
 
     #[test]

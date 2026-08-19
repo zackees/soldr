@@ -20,7 +20,7 @@ mod lifecycle_event_tests {
         .expect("test endpoint");
         let claim = DaemonProcess {
             pid,
-            exe_sha256: [0; 32],
+            exe_hash: [0; 32],
             exe_path: exe_path.to_path_buf(),
             boot_id: "test-boot".to_string(),
             ipc_endpoint: endpoint,
