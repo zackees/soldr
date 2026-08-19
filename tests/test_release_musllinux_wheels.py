@@ -44,16 +44,17 @@ def test_release_workflow_builds_and_publishes_musllinux_wheels() -> None:
     assert "Assert linux-musl wheels are tagged musllinux_1_2" in workflow
     assert "wheel_filename_lints.py musllinux" in workflow
     assert "Smoke test musllinux wheel on Alpine" in workflow
-    assert "alpine:3.20" in workflow
-    assert "--only-binary=:all:" in workflow
-    alpine_smoke = workflow.split("Smoke test musllinux wheel on Alpine", 1)[1].split(
-        "Smoke test standalone musl binary", 1
-    )[0]
+    assert ".github/scripts/smoke_musllinux_wheel.py" in workflow
+    musllinux_smoke = (REPO_ROOT / ".github" / "scripts" / "smoke_musllinux_wheel.py").read_text(
+        encoding="utf-8"
+    )
+    assert "alpine:3.20" in musllinux_smoke
+    assert "--only-binary=:all:" in musllinux_smoke
     assert (
         'pip install --no-index --only-binary=:all: --find-links /dist "soldr==${EXPECTED_VERSION}"'
-        in alpine_smoke
+        in musllinux_smoke
     )
-    assert "uv pip install --python .venv dist/*.whl" not in alpine_smoke
+    assert "uv pip install --python .venv dist/*.whl" not in musllinux_smoke
     assert "expected=8" in workflow
 
     stale_markers = [

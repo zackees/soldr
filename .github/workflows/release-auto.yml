@@ -519,33 +519,8 @@ jobs:
         shell: bash
         env:
           EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          set -euo pipefail
-          expected_soldr_version="${EXPECTED_VERSION#v}"
-          docker run --rm \
-            -e EXPECTED_VERSION="$expected_soldr_version" \
-            -v "$PWD/dist:/dist:ro" \
-            alpine:3.20 \
-            sh -euxc '
-              apk add --no-cache python3 py3-pip
-              python3 -m venv /tmp/venv
-              . /tmp/venv/bin/activate
-              pip install --no-index --only-binary=:all: --find-links /dist "soldr==${EXPECTED_VERSION}"
-              out="$(soldr --version)"
-              printf "alpine wheel smoke test - soldr --version output: %s\n" "$out"
-              case "$out" in
-                "soldr "*) ;;
-                *) echo "ERROR: soldr --version output did not start with soldr " >&2; exit 1 ;;
-              esac
-              json_out="$(soldr version --json)"
-              test -n "$json_out"
-              printf "alpine wheel smoke test - soldr version --json output: %s\n" "$json_out"
-              compact="$(printf "%s" "$json_out" | tr -d " \n\r\t")"
-              case "$compact" in
-                *"\"soldr_version\":\"${EXPECTED_VERSION}\""*) ;;
-                *) echo "ERROR: soldr version --json did not include soldr_version=${EXPECTED_VERSION}" >&2; exit 1 ;;
-              esac
-            '
+        # soldr#2469 2.2: logic lives in the unit-tested script.
+        run: python3 .github/scripts/smoke_musllinux_wheel.py --expected-version "$EXPECTED_VERSION"
 
       - name: Smoke test standalone musl binary
         # The Alpine wheel smoke above verifies pip compatibility for
