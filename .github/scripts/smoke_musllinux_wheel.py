@@ -16,6 +16,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from release_artifacts import normalized_release_version
+
 ALPINE_IMAGE = "alpine:3.20"
 ALPINE_SMOKE = r"""apk add --no-cache python3 py3-pip
 python3 -m venv /tmp/venv
@@ -42,7 +44,7 @@ class MusllinuxWheelSmokeError(RuntimeError):
 
 
 def expected_version(version: str) -> str:
-    return version.removeprefix("v")
+    return normalized_release_version(version)
 
 
 def docker_command(*, expected: str, dist: Path) -> list[str]:

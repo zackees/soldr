@@ -36,7 +36,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from release_artifacts import binary_suffix
+from release_artifacts import binary_suffix, normalized_release_version, version_json_status
 
 # soldr#1202: real soldr is ~13-15 MB on every platform. Two MiB is far below
 # that and far above any conceivable stub, so it rejects the regression
@@ -95,17 +95,17 @@ def stub_floor_problem(size: int, name: str) -> str | None:
 def version_json_problem(output: str, expected_version: str) -> str | None:
     """Validate `soldr version --json` the way the incident requires.
 
-    Empty stdout is the v0.7.87 signature. The version match is done against
-    whitespace-stripped text so the check survives any pretty-printing change
-    in the payload.
+    Empty stdout is the v0.7.87 signature. The normalized version comparison
+    lives in ``release_artifacts`` so every release smoke gate follows the
+    same contract.
     """
-    if not output.strip():
+    status = version_json_status(output, expected_version)
+    if status == "empty":
         return (
             "ERROR: 'soldr version --json' produced empty stdout — likely a stub "
             "binary (soldr#1140 / soldr#1202)."
         )
-    compact = "".join(output.split())
-    if f'"soldr_version":"{expected_version}"' not in compact:
+    if status in {"mismatch", "invalid"}:
         return (
             "ERROR: 'soldr version --json' output does not include "
             f"soldr_version={expected_version} (soldr#1202)."
@@ -171,7 +171,7 @@ def smoke(args: argparse.Namespace) -> None:
     print(version_flag.stdout.strip())
 
     version_json = run([str(soldr), "version", "--json"])
-    problem = version_json_problem(version_json.stdout, args.version.lstrip("v"))
+    problem = version_json_problem(version_json.stdout, normalized_release_version(args.version))
     if problem:
         raise SmokeError(problem)
     print(f"soldr version --json output: {version_json.stdout.strip()}")
