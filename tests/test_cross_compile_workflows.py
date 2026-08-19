@@ -745,7 +745,7 @@ def test_release_target_prepare_retries_transient_setup_failure() -> None:
     assert '--github-env "$GITHUB_ENV"' in retry
     assert "Get-Command soldr -ErrorAction Stop" in materialize
     assert ".github/scripts/prepare_release_wheel.py" in wheel
-    assert '--wheel-hook \'${{ steps.setup_soldr.outputs.target-wheel-hook }}\'' in wheel
+    assert "--wheel-hook '${{ steps.setup_soldr.outputs.target-wheel-hook }}'" in wheel
 
 
 def test_release_supports_isolated_npm_recovery_from_an_immutable_ref() -> None:
@@ -799,7 +799,6 @@ def test_windows_wheel_does_not_reuse_archive_executable_output() -> None:
     for step_name in [
         "Restore executable bit on bootstrap driver",
         "Build release binary (soldr-driven)",
-        "Smoke test combined tar.zst archive",
     ]:
         step = _step_block(release, step_name)
         assert 'case "$RUNNER_OS" in' in step
@@ -808,12 +807,21 @@ def test_windows_wheel_does_not_reuse_archive_executable_output() -> None:
         REPO_ROOT / ".github" / "scripts" / "prepare_release_wheel.py"
     ).read_text(encoding="utf-8")
     assert "runner_binary_suffix(runner_os)" in wheel_preparer
-    package_archive = _step_block(release, "Package combined archive (tar.zst level 19)")
+    package_archive = _step_block(
+        release, "Package combined archive (tar.zst level 19)"
+    )
     archive_packager = (
         REPO_ROOT / ".github" / "scripts" / "package_release_archive.py"
     ).read_text(encoding="utf-8")
     assert ".github/scripts/package_release_archive.py" in package_archive
     assert "runner_binary_suffix(runner_os)" in archive_packager
+
+    archive_smoke = _step_block(release, "Smoke test combined tar.zst archive")
+    archive_smoker = (
+        REPO_ROOT / ".github" / "scripts" / "release_archive_smoke.py"
+    ).read_text(encoding="utf-8")
+    assert ".github/scripts/release_archive_smoke.py" in archive_smoke
+    assert "runner_binary_suffix(runner_os)" in archive_smoker
 
     smoke_windows = _job_block(release, "smoke_windows", "publish")
     assert "runner: windows-2025" in smoke_windows

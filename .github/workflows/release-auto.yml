@@ -541,17 +541,8 @@ jobs:
         # lane, and the soldr#1202 `version --json` path. Cross-arch
         # archives skip only the checks that must execute the binary.
         shell: bash
-        run: |
-          set -euo pipefail
-          version="${{ needs.prepare.outputs.version }}"
-          case "$RUNNER_OS" in Windows) driver_suffix=".exe" ;; *) driver_suffix="" ;; esac
-          python3 .github/scripts/release_archive_smoke.py \
-            --version "$version" \
-            --target "${{ matrix.target }}" \
-            --binary "${{ matrix.binary }}" \
-            --archive "dist/soldr-${version}-${{ matrix.target }}.tar.zst" \
-            --driver "target/release/soldr${driver_suffix}" \
-            --runner-os "$RUNNER_OS"
+        # soldr#2469 2.2: logic lives in the unit-tested script.
+        run: python3 .github/scripts/release_archive_smoke.py --version "${{ needs.prepare.outputs.version }}" --target "${{ matrix.target }}" --binary "${{ matrix.binary }}" --runner-os "$RUNNER_OS"
 
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

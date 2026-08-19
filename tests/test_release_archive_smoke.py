@@ -16,7 +16,9 @@ SCRIPTS = REPO_ROOT / ".github" / "scripts"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-auto.yml"
 CONTRACT = REPO_ROOT / "ci" / "canonical-targets.json"
 
-smoke = load_script_module(SCRIPTS / "release_archive_smoke.py", "release_archive_smoke")
+smoke = load_script_module(
+    SCRIPTS / "release_archive_smoke.py", "release_archive_smoke"
+)
 
 
 class TestRequiredEntries:
@@ -67,7 +69,9 @@ class TestNativeArchGate:
             ("macOS", "arm64", "x86_64-apple-darwin", False),
         ],
     )
-    def test_gate(self, runner_os: str, runner_arch: str, target: str, expected: bool) -> None:
+    def test_gate(
+        self, runner_os: str, runner_arch: str, target: str, expected: bool
+    ) -> None:
         assert smoke.native_arch_match(runner_os, runner_arch, target) is expected
 
     def test_every_contracted_target_can_be_matched_by_some_runner(self) -> None:
@@ -90,7 +94,8 @@ class TestNativeArchGate:
         for entry in contract["targets"]:
             triple = entry["triple"]
             assert any(
-                smoke.native_arch_match(os_name, arch, triple) for os_name, arch in runners
+                smoke.native_arch_match(os_name, arch, triple)
+                for os_name, arch in runners
             ), f"{triple} matches no runner shape"
 
 
@@ -130,6 +135,47 @@ class TestVersionJson:
         # "starts with soldr " check; this is the path that catches it.
         problem = smoke.version_json_problem('{"soldr_version":"0.0.1"}', "0.9.2")
         assert problem is not None and "0.9.2" in problem
+
+
+class TestInvocationDefaults:
+    def test_default_paths_follow_runner_and_release_target(
+        self, tmp_path: Path
+    ) -> None:
+        assert smoke.archive_path("v0.9.2", "x86_64-unknown-linux-gnu", tmp_path) == (
+            tmp_path / "soldr-v0.9.2-x86_64-unknown-linux-gnu.tar.zst"
+        )
+        assert smoke.driver_path("Windows", tmp_path) == tmp_path / "soldr.exe"
+        assert smoke.driver_path("Linux", tmp_path) == tmp_path / "soldr"
+
+    def test_main_derives_missing_driver_and_archive(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, object] = {}
+        monkeypatch.setattr(smoke, "smoke", lambda args: captured.update(vars(args)))
+
+        assert (
+            smoke.main(
+                [
+                    "--version",
+                    "v0.9.2",
+                    "--target",
+                    "x86_64-pc-windows-msvc",
+                    "--binary",
+                    "soldr.exe",
+                    "--runner-os",
+                    "Windows",
+                    "--dist",
+                    str(tmp_path / "dist"),
+                    "--driver-dir",
+                    str(tmp_path / "release"),
+                ]
+            )
+            == 0
+        )
+        assert captured["archive"] == str(
+            tmp_path / "dist" / "soldr-v0.9.2-x86_64-pc-windows-msvc.tar.zst"
+        )
+        assert captured["driver"] == str(tmp_path / "release" / "soldr.exe")
 
 
 def test_workflow_invokes_the_script_instead_of_inlining_the_gate() -> None:
