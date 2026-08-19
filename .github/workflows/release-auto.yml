@@ -510,34 +510,8 @@ jobs:
         shell: bash
         env:
           EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          set -euo pipefail
-          uv venv .venv
-          uv pip install --python .venv dist/*.whl
-          if [ -x .venv/bin/soldr ]; then
-              soldr_bin=".venv/bin/soldr"
-          else
-              soldr_bin=".venv/Scripts/soldr.exe"
-          fi
-          out="$("$soldr_bin" --version)"
-          printf 'wheel smoke test — soldr --version output: %s\n' "$out"
-          case "$out" in
-              "soldr "*) ;;
-              *) echo "ERROR: 'soldr --version' output did not start with 'soldr ' — likely shipping a stub binary (soldr#1140)." >&2; exit 1 ;;
-          esac
-
-          expected_soldr_version="${EXPECTED_VERSION#v}"
-          json_out="$("$soldr_bin" version --json)"
-          if [ -z "$json_out" ]; then
-              echo "ERROR: 'soldr version --json' produced empty stdout in wheel (soldr#1202)." >&2
-              exit 1
-          fi
-          printf 'wheel smoke test — soldr version --json output: %s\n' "$json_out"
-          compact="$(printf '%s' "$json_out" | tr -d ' \n\r\t')"
-          if ! printf '%s' "$compact" | grep -q "\"soldr_version\":\"${expected_soldr_version}\""; then
-              echo "ERROR: wheel's 'soldr version --json' output does not include soldr_version=${expected_soldr_version} (soldr#1202)." >&2
-              exit 1
-          fi
+        # soldr#2469 2.2: logic lives in the unit-tested script.
+        run: python3 .github/scripts/smoke_release_wheel.py --expected-version "$EXPECTED_VERSION"
 
       - name: Smoke test musllinux wheel on Alpine
         # Both musl lanes run on matching native-architecture Linux hosts.
