@@ -132,6 +132,45 @@ class TestVersionJson:
         assert problem is not None and "0.9.2" in problem
 
 
+class TestInvocationDefaults:
+    def test_default_paths_follow_runner_and_release_target(self, tmp_path: Path) -> None:
+        assert smoke.archive_path("v0.9.2", "x86_64-unknown-linux-gnu", tmp_path) == (
+            tmp_path / "soldr-v0.9.2-x86_64-unknown-linux-gnu.tar.zst"
+        )
+        assert smoke.driver_path("Windows", tmp_path) == tmp_path / "soldr.exe"
+        assert smoke.driver_path("Linux", tmp_path) == tmp_path / "soldr"
+
+    def test_main_derives_missing_driver_and_archive(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, object] = {}
+        monkeypatch.setattr(smoke, "smoke", lambda args: captured.update(vars(args)))
+
+        assert (
+            smoke.main(
+                [
+                    "--version",
+                    "v0.9.2",
+                    "--target",
+                    "x86_64-pc-windows-msvc",
+                    "--binary",
+                    "soldr.exe",
+                    "--runner-os",
+                    "Windows",
+                    "--dist",
+                    str(tmp_path / "dist"),
+                    "--driver-dir",
+                    str(tmp_path / "release"),
+                ]
+            )
+            == 0
+        )
+        assert captured["archive"] == str(
+            tmp_path / "dist" / "soldr-v0.9.2-x86_64-pc-windows-msvc.tar.zst"
+        )
+        assert captured["driver"] == str(tmp_path / "release" / "soldr.exe")
+
+
 def test_workflow_invokes_the_script_instead_of_inlining_the_gate() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     assert ".github/scripts/release_archive_smoke.py" in workflow
