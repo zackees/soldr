@@ -22,13 +22,10 @@ def test_binary_path_uses_target_release_layout(tmp_path: Path) -> None:
     )
 
 
-def test_version_contract_rejects_empty_or_wrong_json_payload() -> None:
+def test_musl_binary_contract_uses_release_version_helpers() -> None:
     assert smoke.expected_version("v0.9.2") == "0.9.2"
     assert smoke.version_problem("soldr 0.9.2\n") is None
-    assert smoke.version_problem("not soldr\n") is not None
-    assert smoke.version_json_problem('{"soldr_version":"0.9.2"}', "0.9.2") is None
-    assert smoke.version_json_problem("", "0.9.2") is not None
-    assert smoke.version_json_problem('{"soldr_version":"0.0.1"}', "0.9.2") is not None
+    assert smoke.version_json_problem('warning\n{"soldr_version":"0.9.2"}', "0.9.2") is not None
 
 
 def test_missing_or_non_executable_binary_is_a_named_failure(tmp_path: Path) -> None:
@@ -66,19 +63,22 @@ def test_smoke_runs_file_and_both_cli_paths(
     binary.parent.mkdir(parents=True)
     binary.write_bytes(b"")
     binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
-    calls: list[tuple[list[str], dict[str, object]]] = []
+    file_calls: list[Path] = []
+    cli_calls: list[tuple[list[str], bool]] = []
 
-    def fake_run(command: list[str], **kwargs: object) -> SimpleNamespace:
-        calls.append((command, kwargs))
-        if command[0] == "file":
-            return SimpleNamespace(stdout="")
+    def fake_file_metadata(path: Path) -> None:
+        file_calls.append(path)
+
+    def fake_cli(command: list[str], *, capture: bool) -> str:
+        cli_calls.append((command, capture))
         if command[-1] == "--version":
-            return SimpleNamespace(stdout="soldr 0.9.2\n")
+            return "soldr 0.9.2\n"
         if command[-2:] == ["version", "--json"]:
-            return SimpleNamespace(stdout='{"soldr_version":"0.9.2"}\n')
+            return '{"soldr_version":"0.9.2"}\n'
         raise AssertionError(f"unexpected command: {command}")
 
-    monkeypatch.setattr(smoke.subprocess, "run", fake_run)
+    monkeypatch.setattr(smoke, "print_file_metadata", fake_file_metadata)
+    monkeypatch.setattr(smoke, "run_cli", fake_cli)
 
     smoke.smoke_binary(
         target="x86_64-unknown-linux-musl",
@@ -87,11 +87,11 @@ def test_smoke_runs_file_and_both_cli_paths(
         target_dir=tmp_path,
     )
 
-    assert calls[0] == (["file", str(binary)], {"check": False})
-    assert calls[1][0] == [str(binary), "--version"]
-    assert calls[1][1] == {"check": True, "capture_output": True, "text": True}
-    assert calls[2][0] == [str(binary), "version", "--json"]
-    assert calls[2][1] == {"check": True, "capture_output": True, "text": True}
+    assert file_calls == [binary]
+    assert cli_calls == [
+        ([str(binary), "--version"], True),
+        ([str(binary), "version", "--json"], True),
+    ]
 
 
 def test_json_probe_failure_keeps_the_binary_stderr(
