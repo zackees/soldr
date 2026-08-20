@@ -181,24 +181,28 @@ fn canonical_aliases_resolve_through_the_cli() {
                 payload["target_plan"]["canonical_alias"].as_str(),
                 Some(*alias)
             );
+            let operations = payload["target_plan"]["supported_operations"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{input} did not advertise supported operations"));
             assert!(
-                payload["target_plan"]["supported_operations"]
-                    .as_array()
-                    .is_some_and(|operations| {
-                        [
-                            "prepare",
-                            "build",
-                            "clippy",
-                            "test-no-run",
-                            "nextest-archive",
-                            "pep517-wheel",
-                            "pep517-sdist",
-                        ]
-                        .iter()
-                        .all(|expected| operations.iter().any(|actual| actual == expected))
-                    }),
-                "{input} did not advertise the complete blessed lifecycle: {payload}"
+                [
+                    "prepare",
+                    "build",
+                    "clippy",
+                    "test-no-run",
+                    "nextest-archive"
+                ]
+                .iter()
+                .all(|expected| operations.iter().any(|actual| actual == expected)),
+                "{input} did not advertise the common blessed lifecycle: {payload}"
             );
+            for operation in ["pep517-wheel", "pep517-sdist"] {
+                assert_eq!(
+                    operations.iter().any(|actual| actual == operation),
+                    *alias != "win-x64-gnu",
+                    "{input} advertised the wrong Python lifecycle: {payload}"
+                );
+            }
         }
     }
     let _ = std::fs::remove_dir_all(cwd);
