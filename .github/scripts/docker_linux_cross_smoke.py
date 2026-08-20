@@ -34,7 +34,8 @@ def main() -> int:
     args = parser.parse_args()
 
     fixture = args.fixture.resolve()
-    command = [args.soldr, "--no-cache", "build", "--target", args.target]
+    soldr = Path(args.soldr).resolve()
+    command = [str(soldr), "--no-cache", "build", "--target", args.target]
     print(f"$ {' '.join(command)}  (cwd={fixture})", flush=True)
     result = subprocess.run(command, cwd=fixture, check=False)
     if result.returncode:
