@@ -412,6 +412,14 @@ jobs:
             exit "$status"
           fi
 
+      - name: Exercise 2b — Alpine musl-host bootstrap and native build
+        if: ${{ matrix.libc == 'musl' }}
+        shell: bash
+        run: >-
+          python3 ci/alpine_musl_host_e2e.py
+          --image "${{ matrix.image_tag }}"
+          --timeout-seconds 600
+
       - name: Exercise 3 — legacy cargo zigbuild for aarch64-apple-darwin
         shell: bash
         run: |
