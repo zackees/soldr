@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - ".github/scripts/docker_linux_cross_smoke.py"
+      - ".github/scripts/ensure_linux_docker.py"
       - ".github/workflows/docker-linux-cross-smoke.yml"
       - "ci/fixtures/docker-cross-c/**"
       - "crates/soldr-cli/**"
