@@ -48,7 +48,7 @@ pub(crate) enum Host {
 
 impl Host {
     pub(crate) fn current() -> Self {
-        if cfg!(windows) {
+        if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
             Host::Windows
         } else {
             Host::Other
