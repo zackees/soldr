@@ -36,7 +36,12 @@ import sys
 import tempfile
 from pathlib import Path
 
-from release_artifacts import binary_suffix, normalized_release_version, version_json_status
+from release_artifacts import (
+    binary_suffix,
+    normalized_release_version,
+    runner_binary_suffix,
+    version_json_status,
+)
 
 # soldr#1202: real soldr is ~13-15 MB on every platform. Two MiB is far below
 # that and far above any conceivable stub, so it rejects the regression
@@ -58,6 +63,14 @@ def required_entries(target: str, binary: str) -> list[str]:
         f"cargo-chef{suffix}",
         "manifest.json",
     ]
+
+
+def archive_path(version: str, target: str, dist_dir: Path) -> Path:
+    return dist_dir / f"soldr-{version}-{target}.tar.zst"
+
+
+def driver_path(runner_os: str, driver_dir: Path) -> Path:
+    return driver_dir / f"soldr{runner_binary_suffix(runner_os)}"
 
 
 def native_arch_match(runner_os: str, runner_arch: str, target: str) -> bool:
@@ -191,10 +204,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--version", required=True)
     parser.add_argument("--target", required=True)
     parser.add_argument("--binary", required=True, help="soldr binary name in archive")
-    parser.add_argument("--archive", required=True)
-    parser.add_argument("--driver", required=True, help="host soldr used to extract")
+    parser.add_argument("--archive", default=None)
+    parser.add_argument("--driver", default=None, help="host soldr used to extract")
+    parser.add_argument("--dist", type=Path, default=Path("dist"))
+    parser.add_argument("--driver-dir", type=Path, default=Path("target/release"))
     parser.add_argument("--runner-os", required=True, choices=["Linux", "macOS", "Windows"])
     args = parser.parse_args(argv)
+    if args.archive is None:
+        args.archive = str(archive_path(args.version, args.target, args.dist))
+    if args.driver is None:
+        args.driver = str(driver_path(args.runner_os, args.driver_dir))
     try:
         smoke(args)
     except SmokeError as error:
