@@ -172,7 +172,7 @@ pub fn prefer_newer_global_from_cwd() -> bool {
 ///    `Cargo.toml` found, return `[*.metadata.soldr].targets` if the
 ///    section is present **and non-empty**.
 /// 2. Otherwise fall back to [`crate::core::canonical_targets`] —
-///    soldr's compiled-in 8-target list. Prints a one-line stderr
+///    soldr's compiled-in canonical target list. Prints a one-line stderr
 ///    notice so the fallback is visible in container build logs.
 ///
 /// The fallback path is what makes `soldr prepare --target all`
@@ -191,13 +191,13 @@ pub fn resolve_all_targets() -> Result<Vec<String>, SoldrError> {
         eprintln!(
             "soldr prepare --target all: `{}` declares no \
              `[workspace.metadata.soldr].targets` — falling back to soldr's \
-             compiled-in canonical 8-target list (soldr#937).",
+             compiled-in canonical target list (soldr#937).",
             manifest.display()
         );
     } else {
         eprintln!(
             "soldr prepare --target all: no Cargo.toml under `{}` — \
-             falling back to soldr's compiled-in canonical 8-target list (soldr#937).",
+             falling back to soldr's compiled-in canonical target list (soldr#937).",
             cwd.display()
         );
     }

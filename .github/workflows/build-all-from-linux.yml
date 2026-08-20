@@ -3,7 +3,7 @@ name: Build all targets from Linux (pinned soldr, zero host toolchain)
 # soldr#1309 — the self-hosting proof, now with a real pinned driver.
 #
 # One ubuntu runner installs a PINNED, previously-released soldr from
-# PyPI and drives `soldr build --release --target X` for all 8 targets.
+# PyPI and drives `soldr build --release --target X` for all 9 targets.
 # No in-tree `cargo build` of the driver (the "N-1 builds N" ratchet:
 # a released soldr compiles the next one), and — because soldr 0.8.17+
 # self-provisions the entire cross toolchain (LLVM from
@@ -12,9 +12,9 @@ name: Build all targets from Linux (pinned soldr, zero host toolchain)
 # llvm musl-tools`. soldr is a bootstrapping tool: the runner brings
 # only rust + the pinned soldr wheel.
 #
-# The pin MUST be >= 0.8.17 (the first release with canonical friendly
-# target alias forwarding, soldr#1695). Older pins pass aliases such as
-# `mac-x64` through to rustc, which rejects them as unknown targets.
+# The pin MUST be >= 0.9.2: it contains the Linux-hosted win-gnu blessed
+# path. That release predates only the new `win-x64-gnu` alias, so the GNU
+# matrix row temporarily supplies its Rust triple as the N-1 build input.
 #
 # Dry-run: builds + format-verifies each binary; no packaging/publish.
 #
@@ -26,9 +26,9 @@ on:
   workflow_dispatch:
     inputs:
       soldr_version:
-        description: "Pinned soldr version from PyPI (>= 0.8.17)"
+        description: "Pinned soldr version from PyPI (>= 0.9.2)"
         required: false
-        default: "0.8.17"
+        default: "0.9.2"
         type: string
   pull_request:
     paths:
@@ -67,6 +67,9 @@ jobs:
           - { alias: mac-x64,         target: x86_64-apple-darwin,         exe_suffix: "" }
           - { alias: mac-arm64,       target: aarch64-apple-darwin,        exe_suffix: "" }
           - { alias: win-x64,         target: x86_64-pc-windows-msvc,      exe_suffix: ".exe" }
+          # v0.9.2 has the blessed GNU path but predates the canonical alias.
+          # Use the triple until the next released driver carries win-x64-gnu.
+          - { alias: win-x64-gnu,     target: x86_64-pc-windows-gnu,       input: x86_64-pc-windows-gnu, exe_suffix: ".exe" }
           - { alias: win-arm64,       target: aarch64-pc-windows-msvc,     exe_suffix: ".exe" }
 
     steps:
@@ -88,7 +91,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          soldr_version="${{ inputs.soldr_version || '0.8.17' }}"
+          soldr_version="${{ inputs.soldr_version || '0.9.2' }}"
           echo "pinned soldr driver: $soldr_version"
           python3 -m venv "$RUNNER_TEMP/soldr-venv"
           "$RUNNER_TEMP/soldr-venv/bin/pip" install --disable-pip-version-check \
@@ -103,12 +106,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "::group::soldr build --target ${{ matrix.alias }} (${{ matrix.target }})"
+          echo "::group::soldr build --target ${{ matrix.input || matrix.alias }} (${{ matrix.target }})"
           # The pinned wheel predates the vendored zccache cross-target output
           # fix; disable only its compile cache here so this bootstrap lane
           # validates the released driver and artifact layout deterministically.
           ZCCACHE_DISABLE=1 soldr build --release \
-            --target "${{ matrix.alias }}" \
+            --target "${{ matrix.input || matrix.alias }}" \
             --package soldr-cli \
             --bin soldr
           echo "::endgroup::"
@@ -131,7 +134,7 @@ jobs:
           magic="$(head -c4 "$built" | od -An -tx1 | tr -d ' \n')"
           echo "magic: $magic"
           case "${{ matrix.target }}" in
-            *-pc-windows-msvc)  [ "${magic:0:4}" = "4d5a" ] || { echo "NOT a PE binary (magic=$magic)" >&2; exit 1; } ;;
+            *-pc-windows-*)     [ "${magic:0:4}" = "4d5a" ] || { echo "NOT a PE binary (magic=$magic)" >&2; exit 1; } ;;
             *-apple-darwin)     case "$magic" in cffaedfe|feedfacf|cafebabe) : ;; *) echo "NOT a Mach-O binary (magic=$magic)" >&2; exit 1 ;; esac ;;
             *-unknown-linux-*)  [ "$magic" = "7f454c46" ] || { echo "NOT an ELF binary (magic=$magic)" >&2; exit 1; } ;;
           esac

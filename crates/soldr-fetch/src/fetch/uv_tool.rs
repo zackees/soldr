@@ -17,8 +17,9 @@
 //! ```
 //!
 //! Unlike cmake/ninja, upstream ships musl builds, so all 8 standard
-//! shapes are supported. Stub-until-ingested like every catalogue
-//! consumer: a catalogue miss errors and callers fall through.
+//! host shapes cover the 9 canonical target triples. Stub-until-ingested
+//! like every catalogue consumer: a catalogue miss errors and callers fall
+//! through.
 
 use std::path::{Path, PathBuf};
 
@@ -30,6 +31,7 @@ pub const MANAGED_UV_VERSION: &str = "0.11.26";
 /// Host triple → catalogue shape slug. uv is a HOST tool.
 pub const UV_TOOL_HOSTS: &[(&str, &str)] = &[
     ("x86_64-pc-windows-msvc", "windows-x64"),
+    ("x86_64-pc-windows-gnu", "windows-x64"),
     ("aarch64-pc-windows-msvc", "windows-arm64"),
     ("x86_64-apple-darwin", "darwin-x64"),
     ("aarch64-apple-darwin", "darwin-arm64"),
@@ -84,8 +86,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn uv_host_slug_covers_all_eight_shapes() {
+    fn uv_host_slug_covers_all_canonical_triples() {
         assert_eq!(host_slug_for("x86_64-pc-windows-msvc"), Some("windows-x64"));
+        assert_eq!(host_slug_for("x86_64-pc-windows-gnu"), Some("windows-x64"));
         assert_eq!(
             host_slug_for("x86_64-unknown-linux-musl"),
             Some("linux-x64-musl"),
@@ -96,7 +99,7 @@ mod tests {
             Some("linux-arm64-musl")
         );
         assert_eq!(host_slug_for("wasm32-unknown-unknown"), None);
-        assert_eq!(UV_TOOL_HOSTS.len(), 8);
+        assert_eq!(UV_TOOL_HOSTS.len(), 9);
     }
 
     #[test]

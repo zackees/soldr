@@ -1,5 +1,8 @@
 name: Autonomous Release
 
+# canonical Windows GNU target uses the shipped Windows x64 host artifact;
+# it is a supported cross-build ABI, not a ninth host-distribution archive.
+
 on:
   push:
     branches:

@@ -19,9 +19,16 @@ fn every_canonical_target_has_a_stable_capability_plan() {
         assert_eq!(plan.schema_version, 1);
         assert_eq!(plan.canonical_target, *target);
         assert!(plan.canonical_alias.is_some(), "{target}");
-        assert_eq!(
-            plan.supported_operations,
-            [
+        let expected = if *target == "x86_64-pc-windows-gnu" {
+            vec![
+                "prepare",
+                "build",
+                "clippy",
+                "test-no-run",
+                "nextest-archive",
+            ]
+        } else {
+            vec![
                 "prepare",
                 "build",
                 "clippy",
@@ -30,7 +37,8 @@ fn every_canonical_target_has_a_stable_capability_plan() {
                 "pep517-wheel",
                 "pep517-sdist",
             ]
-        );
+        };
+        assert_eq!(plan.supported_operations, expected);
         assert!(
             plan.environment
                 .keys
@@ -129,10 +137,9 @@ fn the_reported_linux_plans_match_the_catalogue_lifecycle() {
 // every musl target takes the catalogue path asserted just above.
 
 #[test]
-fn noncanonical_targets_do_not_advertise_blessed_operations() {
-    let plan = plan("x86_64-pc-windows-gnu").unwrap();
-    assert!(!plan.canonical);
-    assert!(plan.supported_operations.is_empty());
+fn unsupported_noncanonical_targets_have_no_capability_plan() {
+    let error = plan("i686-unknown-linux-gnu").unwrap_err();
+    assert!(error.to_string().contains("i686"));
 }
 
 #[test]

@@ -45,6 +45,7 @@ alias, CI, release, and catalogue contract. Raw Rust triples remain accepted.
 | Alias | Rust target | CI validation | Release |
 |---|---|---|---|
 | `win-x64` | `x86_64-pc-windows-msvc` | Cross-build + native run | Shipped |
+| `win-x64-gnu` | `x86_64-pc-windows-gnu` | Cross-build + native run | Uses shipped Windows x64 host artifact |
 | `win-arm64` | `aarch64-pc-windows-msvc` | Cross-build + native run | Shipped |
 | `mac-x64` | `x86_64-apple-darwin` | Cross-build + native run | Shipped |
 | `mac-arm64` | `aarch64-apple-darwin` | Cross-build + native run | Shipped |

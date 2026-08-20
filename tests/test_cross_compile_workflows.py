@@ -192,7 +192,7 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
     assert '"$NEXTEST_BIN" nextest run' in target_run
     assert 'echo "SOLDR_BIN=$soldr_bin"' in target_run
     assert (
-        "case '${{ inputs.target }}' in *-pc-windows-msvc) suffix=\".exe\""
+        "case '${{ inputs.target }}' in *-pc-windows-*) suffix=\".exe\""
         in target_run
     )
     assert "artifact/package/soldr$suffix" in target_run
@@ -657,10 +657,24 @@ def test_linux_arm64_release_uses_matching_supported_hosts() -> None:
         (REPO_ROOT / "ci" / "canonical-targets.json").read_text(encoding="utf-8")
     )
     build = {
-        entry["triple"]: entry["release"]["build"] for entry in contract["targets"]
+        entry["triple"]: entry["release"]["build"]
+        for entry in contract["targets"]
+        if entry["release"]["status"] == "included"
     }
     assert build["aarch64-unknown-linux-gnu"]["runner"] == "ubuntu-24.04"
     assert build["aarch64-unknown-linux-musl"]["runner"] == "ubuntu-24.04-arm"
+
+
+def test_windows_gnu_artifacts_keep_the_exe_suffix_across_build_and_replay() -> None:
+    cross_build = (
+        REPO_ROOT / ".github" / "workflows" / "_ci-cross-build-linux.yml"
+    ).read_text(encoding="utf-8")
+    target_run = (
+        REPO_ROOT / ".github" / "workflows" / "_ci-target-run.yml"
+    ).read_text(encoding="utf-8")
+
+    assert cross_build.count('case "$target" in *-pc-windows-*) suffix=".exe"') == 2
+    assert "case '${{ inputs.target }}' in *-pc-windows-*) suffix=\".exe\"" in target_run
 
 
 def test_release_wheels_use_setup_soldr_target_hooks_without_zig_or_xwin() -> None:

@@ -1,4 +1,4 @@
-# soldr#1051 / #1038: consolidated linux cross-build for all 8 targets.
+# soldr#1051 / #1038 / #2336: consolidated Linux cross-build for all 9 targets.
 #
 # One ubuntu-24.04 job per target triple that does the whole every-commit
 # pipeline for that target in a single runner spin-up. Target dispatch
@@ -408,7 +408,7 @@ jobs:
           soldr build --profile "$ci_profile" --target "$target" \
             --package soldr-cli --bin soldr
           suffix=""
-          case "$target" in *-pc-windows-msvc) suffix=".exe" ;; esac
+          case "$target" in *-pc-windows-*) suffix=".exe" ;; esac
           binary="target/$target/$ci_profile/soldr$suffix"
           # Cargo normally places cross-target binaries under the
           # target-qualified profile directory.  Keep the producer strict,
@@ -643,7 +643,7 @@ jobs:
           target='${{ inputs.target }}'
           ci_profile="ci-nextest"
           suffix=""
-          case "$target" in *-pc-windows-msvc) suffix=".exe" ;; esac
+          case "$target" in *-pc-windows-*) suffix=".exe" ;; esac
           mkdir -p dist/package
           cp "target/$target/$ci_profile/soldr$suffix" "dist/package/soldr$suffix"
           cp "dist/package/soldr$suffix" "dist/package/soldr-daemon$suffix"

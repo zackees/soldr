@@ -96,7 +96,7 @@ jobs:
         run: |
           set -euo pipefail
           suffix=""
-          case '${{ inputs.target }}' in *-pc-windows-msvc) suffix=".exe" ;; esac
+          case '${{ inputs.target }}' in *-pc-windows-*) suffix=".exe" ;; esac
           soldr_bin="$GITHUB_WORKSPACE/artifact/package/soldr$suffix"
           daemon_bin="$GITHUB_WORKSPACE/artifact/package/soldr-daemon$suffix"
           nextest_bin="$GITHUB_WORKSPACE/artifact/package/tools/cargo-nextest$suffix"
