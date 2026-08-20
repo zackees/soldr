@@ -21,6 +21,7 @@ mod lifecycle_event_tests {
         let claim = DaemonProcess {
             pid,
             exe_hash: [0; 32],
+            legacy_exe_sha256: [0; 32],
             exe_path: exe_path.to_path_buf(),
             boot_id: "test-boot".to_string(),
             ipc_endpoint: endpoint,
