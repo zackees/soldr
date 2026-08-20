@@ -6,7 +6,11 @@ extern "C" {
 }
 
 fn main() {
+    // SAFETY: the C implementation is compiled by this fixture's build.rs,
+    // and the declared `extern "C"` signature exactly matches it.
     let sum = unsafe { soldr_fixture_add(40, 2) };
+    // SAFETY: the C++ implementation is compiled by this fixture's build.rs;
+    // the byte string is NUL-terminated and stays live for the call.
     let len = unsafe { soldr_fixture_len(b"soldr\0".as_ptr()) };
     println!("sum={sum} len={len}");
     assert_eq!(sum, 42);

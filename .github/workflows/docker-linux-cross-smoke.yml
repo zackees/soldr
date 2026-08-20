@@ -1,0 +1,37 @@
+name: Windows Docker Linux cross smoke
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 7 * * 3"
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.95.0
+          targets: x86_64-unknown-linux-gnu
+      - uses: zackees/setup-soldr@40320d277ba4946e38d4b3c02e6c7a15a29c3f3f
+        with:
+          version: 0.9.1
+          toolchain: 1.95.0
+          cache: false
+      - name: Build soldr from this checkout
+        shell: pwsh
+        run: soldr cargo build -p soldr-cli --bin soldr
+      - name: Build C/C++ fixture through Docker Linux
+        shell: pwsh
+        run: >-
+          python .github/scripts/docker_linux_cross_smoke.py
+          --soldr target/debug/soldr.exe
+          --fixture ci/fixtures/docker-cross-c
+          --summary $env:GITHUB_STEP_SUMMARY
