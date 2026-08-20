@@ -47,6 +47,17 @@ test-group = 'soldr-runtime'
 filter = 'binary(cli_broker_resurrection) + binary(cli_broker_routes) + binary(cli_broker_single_instance) + binary(cli_broker_status) + binary(cli_broker_stop) + binary(cli_build_alias_parity) + binary(cli_build_fetch_overlap) + binary(cli_kill_matrix)'
 test-group = 'soldr-runtime'
 
+# These binaries run real Cargo front doors from isolated homes. On hosted
+# Windows, launching several of their cold builds at once has produced clusters
+# of 120s timeouts while neighboring tests complete (soldr#2697). Keep their
+# shared pressure serial without coupling them to broker/daemon lifecycle tests.
+[test-groups.soldr-cargo-cold-builds]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = 'binary(cli_cargo_linker) + binary(cli_cargo_run_trampoline)'
+test-group = 'soldr-cargo-cold-builds'
+
 [scripts.wrapper.timeout-diagnostics]
 command = { command-line = ".github/scripts/nextest_timeout_wrapper.py", relative-to = "workspace-root" }
 target-runner = "within-wrapper"
