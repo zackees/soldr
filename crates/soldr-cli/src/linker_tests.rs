@@ -218,6 +218,12 @@ fn fast_on_windows_msvc_uses_rust_lld_directly() {
     assert!(i.rustflags.is_none());
 }
 
+#[test]
+fn fast_on_windows_gnu_keeps_the_managed_gcc_linker() {
+    let i = resolve_for_target_with_probe(LinkerChoice::Fast, WIN_GNU, &always_false).unwrap();
+    assert_eq!(i, LinkerInjection::default());
+}
+
 // soldr#1992 / soldr#1999 rule 1. When the standard-linker retry also
 // fails, the user's last screen is that second build's output -- carrying
 // rustc's "the Visual Studio build tools may need to be repaired" note.

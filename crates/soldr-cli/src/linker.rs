@@ -225,9 +225,13 @@ pub fn resolve_for_target_with_probe(
             // Apple clang and silently dropping to the platform default
             // keeps `SOLDR_LINKER=fast` portable across hosts (issue #509).
             TargetKind::Apple => Ok(LinkerInjection::apple_fast_linker()),
-            TargetKind::WindowsGnu | TargetKind::Other => {
-                Ok(LinkerInjection::clang_with_fuse("lld"))
-            }
+            // The blessed Windows GNU lifecycle provisions a relocatable GCC
+            // bundle together with its matching binutils. Appending
+            // `-fuse-ld=lld` leaves GCC as the driver but makes collect2 look
+            // for an unbundled `ld`, so the portable fast choice is the
+            // bundle's own linker.
+            TargetKind::WindowsGnu => Ok(LinkerInjection::none()),
+            TargetKind::Other => Ok(LinkerInjection::clang_with_fuse("lld")),
         },
     }
 }
