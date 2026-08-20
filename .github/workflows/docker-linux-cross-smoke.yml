@@ -1,26 +1,16 @@
 name: Windows Docker Linux cross smoke
 
 on:
-  pull_request:
-    paths:
-      - ".github/scripts/docker_linux_cross_smoke.py"
-      - ".github/scripts/ensure_linux_docker.py"
-      - ".github/workflows/docker-linux-cross-smoke.yml"
-      - "ci/fixtures/docker-cross-c/**"
-      - "crates/soldr-cli/**"
-      - "crates/soldr-fetch/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
   workflow_dispatch:
-  schedule:
-    - cron: "17 7 * * 3"
 
 permissions:
   contents: read
 
 jobs:
   smoke:
-    runs-on: windows-2025
+    # GitHub-hosted Windows runners have only the Windows-container engine.
+    # This HIL lane needs Docker Desktop configured for Linux containers.
+    runs-on: [self-hosted, Windows, docker-linux]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
