@@ -55,7 +55,7 @@ test-group = 'soldr-runtime'
 max-threads = 1
 
 [[profile.default.overrides]]
-filter = 'binary(cli_cargo_linker) + binary(cli_cargo_run_trampoline)'
+filter = 'binary(cli_cargo_linker) + binary(cli_cargo_run_trampoline) + binary(cli_cargo_wrappers)'
 test-group = 'soldr-cargo-cold-builds'
 
 [scripts.wrapper.timeout-diagnostics]

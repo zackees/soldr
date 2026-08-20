@@ -168,7 +168,8 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
     assert config.count("test-group = 'soldr-runtime'") == 2
     assert "[test-groups.soldr-cargo-cold-builds]" in config
     assert (
-        "binary(cli_cargo_linker) + binary(cli_cargo_run_trampoline)" in config
+        "binary(cli_cargo_linker) + binary(cli_cargo_run_trampoline)"
+        " + binary(cli_cargo_wrappers)" in config
     )
     assert config.count("test-group = 'soldr-cargo-cold-builds'") == 1
     assert "binary(cli_build_alias_parity)" in config
