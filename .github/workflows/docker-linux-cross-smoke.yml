@@ -32,6 +32,9 @@ jobs:
       - name: Install published Soldr bootstrapper
         shell: pwsh
         run: python -m pip install soldr==0.9.1
+      - name: Select Linux Docker containers
+        shell: pwsh
+        run: '& "$env:ProgramFiles\Docker\Docker\DockerCli.exe" -SwitchLinuxEngine'
       - name: Build soldr from this checkout
         shell: pwsh
         run: soldr cargo build -p soldr-cli --bin soldr --target x86_64-pc-windows-msvc
