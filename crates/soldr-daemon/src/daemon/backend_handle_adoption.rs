@@ -439,13 +439,16 @@ pub fn broker_route_claim_path(paths: &SoldrPaths) -> PathBuf {
 }
 
 pub fn publish_broker_route_claim(paths: &SoldrPaths, daemon: &DaemonProcess) -> io::Result<()> {
-    use prost::Message as _;
     use std::io::Write as _;
 
     let directory = soldr_daemon_dir(paths);
     std::fs::create_dir_all(&directory)?;
     let mut temporary = tempfile::NamedTempFile::new_in(&directory)?;
-    temporary.write_all(&daemon.to_proto().encode_to_vec())?;
+    let mut encoded = Vec::new();
+    daemon
+        .encode_probe_identity(&mut encoded)
+        .map_err(io::Error::other)?;
+    temporary.write_all(&encoded)?;
     temporary.as_file().sync_all()?;
     let temporary = temporary
         .into_temp_path()
@@ -539,8 +542,20 @@ fn soldr_daemon_endpoint(paths: &SoldrPaths) -> Endpoint {
 mod tests {
     use super::*;
     use crate::cache_lib::soldr_daemon_dir;
+    use prost::Message as _;
     use running_process::broker::backend_sdk::MuxPoll;
     use tempfile::TempDir;
+
+    /// The daemon identity shape decoded by brokers released before BLAKE3.
+    #[derive(Clone, PartialEq, prost::Message)]
+    struct LegacyDaemonProcess {
+        #[prost(uint32, tag = "1")]
+        pid: u32,
+        #[prost(string, tag = "2")]
+        exe_path: String,
+        #[prost(bytes = "vec", tag = "3")]
+        exe_sha256: Vec<u8>,
+    }
 
     fn claim_for(paths: &SoldrPaths, exe_path: &Path) -> DaemonProcess {
         let endpoint = if crate::platform::host::facts::os()
@@ -670,6 +685,28 @@ mod tests {
             *expected.as_bytes(),
             "Soldr's broker route claim must carry the running-process BLAKE3 identity"
         );
+    }
+
+    #[test]
+    fn broker_route_claim_dual_writes_legacy_sha256_identity() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("root"));
+        let daemon = current_daemon_process(&paths, Some(30)).expect("daemon identity");
+        publish_broker_route_claim(&paths, &daemon).expect("publish claim");
+
+        let encoded = std::fs::read(broker_route_claim_path(&paths)).expect("read claim bytes");
+        let current = read_broker_route_claim(&paths)
+            .expect("read current claim")
+            .expect("current claim exists");
+        let legacy = LegacyDaemonProcess::decode(encoded.as_slice())
+            .expect("stable broker decodes persisted claim");
+
+        assert_eq!(current.exe_hash, daemon.exe_hash);
+        assert_eq!(current.ipc_endpoint, daemon.ipc_endpoint);
+        assert_eq!(legacy.pid, daemon.pid);
+        assert_eq!(legacy.exe_path, daemon.exe_path.to_string_lossy());
+        assert_eq!(legacy.exe_sha256, daemon.legacy_exe_sha256);
+        assert_eq!(legacy.exe_sha256.len(), 32);
     }
 
     #[test]
