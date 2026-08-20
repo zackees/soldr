@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import struct
 import subprocess
 import sys
@@ -34,7 +35,13 @@ def main() -> int:
     args = parser.parse_args()
 
     fixture = args.fixture.resolve()
-    soldr = Path(args.soldr).resolve()
+    soldr_arg = Path(args.soldr)
+    if soldr_arg.parent == Path("."):
+        soldr = shutil.which(args.soldr)
+        if soldr is None:
+            parser.error(f"--soldr command not found on PATH: {args.soldr}")
+    else:
+        soldr = str(soldr_arg.resolve())
     command = [str(soldr), "--no-cache", "build", "--target", args.target]
     print(f"$ {' '.join(command)}  (cwd={fixture})", flush=True)
     result = subprocess.run(command, cwd=fixture, check=False)
