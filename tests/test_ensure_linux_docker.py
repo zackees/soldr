@@ -18,8 +18,9 @@ def test_docker_info_command_checks_server_os() -> None:
 
 
 def test_docker_cli_path_uses_program_files() -> None:
-    assert module.docker_cli_path(r"C:\\Program Files") == Path(
-        r"C:\\Program Files\\Docker\\Docker\\DockerCli.exe"
+    program_files = Path(r"C:\\Program Files")
+    assert module.docker_cli_path(str(program_files)) == (
+        program_files / "Docker" / "Docker" / "DockerCli.exe"
     )
 
 
