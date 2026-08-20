@@ -34,11 +34,11 @@ jobs:
         run: python -m pip install soldr==0.9.1
       - name: Build soldr from this checkout
         shell: pwsh
-        run: soldr cargo build -p soldr-cli --bin soldr
+        run: soldr cargo build -p soldr-cli --bin soldr --target x86_64-pc-windows-msvc
       - name: Build C/C++ fixture through Docker Linux
         shell: pwsh
         run: >-
           python .github/scripts/docker_linux_cross_smoke.py
-          --soldr target/debug/soldr.exe
+          --soldr target/x86_64-pc-windows-msvc/debug/soldr.exe
           --fixture ci/fixtures/docker-cross-c
           --summary $env:GITHUB_STEP_SUMMARY
