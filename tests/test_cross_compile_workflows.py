@@ -225,6 +225,7 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
     assert "SOLDR_GITHUB_TOKEN: ${{ github.token }}" in target_run
     assert 'SOLDR_TARGET_WARN_FREE_GB: "1"' in target_run
     assert 'SOLDR_TARGET_BLOCK_FREE_GB: "1"' in target_run
+    assert 'SOLDR_USE_SYSTEM_CMAKE: "1"' in target_run
     assert "SOLDR_TARGET_AUTO_PRUNE_ENABLED" not in target_run
     assert "actions/setup-python@" in target_run
     assert 'python-version: "3.13"' in target_run

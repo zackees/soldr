@@ -67,6 +67,11 @@ jobs:
       # the warn-tier auto-prune path during normal archive replay.
       SOLDR_TARGET_WARN_FREE_GB: "1"
       SOLDR_TARGET_BLOCK_FREE_GB: "1"
+      # Archive tests deliberately isolate SOLDR_CACHE_DIR. Reusing the
+      # runner-provided CMake/Ninja avoids downloading identical managed host
+      # tools into hundreds of fixture roots (soldr#2704). Dedicated managed-
+      # tooling tests remove this escape hatch before asserting injection.
+      SOLDR_USE_SYSTEM_CMAKE: "1"
     steps:
       # Nextest archive replay needs the workspace manifest. Several contract
       # tests also inspect vendored sources, so preserve complete source context.
