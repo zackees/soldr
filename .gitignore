@@ -167,3 +167,9 @@ uv.lock
 
 # Dependent-repo checkouts coordinated via the clud-extern-repos convention.
 .extern-repos/
+
+# `ci/perf_local.py` copies debug traces out of the Linux runner into
+# `.perf-local/` inside the repository mount (see `--debug-trace`), and agents
+# park scratch logs beside them. It is per-developer runtime output, never
+# repository content.
+.perf-local/
