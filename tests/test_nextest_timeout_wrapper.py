@@ -204,6 +204,8 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
     for cold_member in (
         "test(=cargo_without_timeout_allows_progress_cpu_and_lock_waits)",
         "test(=cargo_front_door_forces_msvc_target_even_with_polluted_path)",
+        # soldr#2720: same family, named on a docs-only PR.
+        "test(=exec_cargo_build_routes_through_child_shims_and_zccache)",
     ):
         assert cold_member in cold_override
     assert 'threads-required = "num-cpus"' in cold_override
