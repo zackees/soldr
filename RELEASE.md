@@ -55,9 +55,13 @@ The intentional authorization step is the reviewed version-bump merge. PyPI is t
 
 These are the one-time controls that make the unattended flow work.
 
-### 1. Keep `main` Protected
+### 1. Protect `main` — not configured today
 
-Desired branch policy:
+**This control is not in place.** `main` has no branch protection and the
+repository has no rulesets (re-verified 2026-08-21: the protection API returns
+404 and `/rulesets` returns `[]`). Restoring it is tracked in soldr#2469.
+
+The target branch policy:
 
 - no direct human pushes
 - pull-request-only updates
@@ -66,7 +70,10 @@ Desired branch policy:
 - deletions disabled
 - required checks enabled
 
-The release workflow assumes that any version bump reaching `main` has already passed the required validation gate.
+Until that is configured, nothing mechanically prevents a version bump from
+reaching `main` without passing CI. The release workflow does not re-run the
+validation gates itself, so a bump merged past red checks is releasable. The
+reviewed merge is the only authorization step, and it is a human one.
 
 ### 2. Register PyPI Trusted Publisher
 
@@ -92,7 +99,11 @@ Before changing the release workflow:
 1. Read this file.
 2. Audit the live GitHub-side controls before trusting the checked-in docs.
 3. Confirm the PyPI Trusted Publisher for `release-auto.yml` is still registered.
-4. Confirm `main` still requires pull requests and the expected validation checks.
+4. Check whether `main` is branch-protected. It is **not** today, so the
+   expected result is a 404 from the protection API and an empty ruleset
+   list — finding protection in place is the change worth reporting, and
+   means §1 above and the claims in SECURITY.md and
+   docs/RELEASE_VERIFICATION.md all need updating together.
 5. Confirm tag protection (if any) still permits `github-actions` to mint `v*.*.*` tags.
 6. Confirm that `Cargo.toml` workspace version is still the trigger surface — do not reintroduce `workflow_dispatch` or environment approval boundaries without explicit owner instruction.
 
