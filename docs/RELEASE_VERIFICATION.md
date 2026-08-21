@@ -29,7 +29,11 @@ For a normal `soldr` release:
   integration, or e2e jobs for that commit before publishing; the only
   validation is what ran on the PR (target state: soldr#2469 Phase 1)
 - release archives are built from that exact commit
-- final publication happens in the `release` environment
+- only the **npm** publication runs in the `release` environment; the
+  GitHub Release and PyPI publications do not declare an environment, and
+  the `release` environment itself has no protection rules or deployment
+  branch policy today, so it is not an approval gate for any surface
+  (verified 2026-08-21; soldr#2469 Phase 4 is the target state)
 - the version tag is created through the release workflow path; no
   repository rulesets protect tags today (soldr#2469)
 - the published GitHub Release is immutable once published
