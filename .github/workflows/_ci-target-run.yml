@@ -43,7 +43,7 @@ on:
       replay_partitions:
         type: string
         required: false
-        default: '[{"label":"all","value":"","run_followup":true}]'
+        default: '[{"label":"all","value":"hash:1/1","run_followup":true}]'
         description: >-
           JSON matrix of nextest partition labels and values. Multiple shards
           run on fresh workers so fixture-local caches stay disk-bounded while
@@ -228,15 +228,11 @@ jobs:
 
           archive="artifact/${{ inputs.artifact_name }}-tests.tar.zst"
           test -f "$archive"
-          partition_args=()
-          if [ -n "$REPLAY_PARTITION" ]; then
-            partition_args=(--partition "$REPLAY_PARTITION")
-          fi
           "$NEXTEST_BIN" nextest list \
             --archive-file "$archive" \
             --workspace-remap "$GITHUB_WORKSPACE" \
             --profile target-run \
-            "${partition_args[@]}" \
+            --partition "$REPLAY_PARTITION" \
             --message-format json-pretty > "$NEXTEST_LIST_JSON"
           python .github/scripts/target_run_summary.py \
             --target '${{ inputs.target }} (${{ matrix.replay.label }})' \
@@ -248,7 +244,7 @@ jobs:
             --archive-file "$archive" \
             --workspace-remap "$GITHUB_WORKSPACE" \
             --profile target-run \
-            "${partition_args[@]}" \
+            --partition "$REPLAY_PARTITION" \
             --max-fail 3:immediate
           run_status=$?
           set -e

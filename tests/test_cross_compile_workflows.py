@@ -162,7 +162,8 @@ def test_windows_gnu_target_run_is_bounded_and_disk_safe() -> None:
         {"label": "3-of-3", "value": "hash:3/3", "run_followup": False},
     ]
     assert "fromJSON(inputs.replay_partitions)" in target_run
-    assert target_run.count('"${partition_args[@]}"') == 2
+    assert target_run.count('--partition "$REPLAY_PARTITION"') == 2
+    assert "partition_args" not in target_run
     assert "nextest list" in target_run
     assert "nextest run" in target_run
     assert "matrix.replay.label }}-diagnostics" in target_run
