@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib.util
 import subprocess
 import sys
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parents[1]
@@ -34,17 +35,25 @@ def load_module():
 MODULE = load_module()
 
 
-class FakeRunner:
-    """Replays scripted exit codes and records the argv it was given."""
+def fake_runner(
+    codes: list[int],
+) -> tuple[Callable[[Sequence[str]], subprocess.CompletedProcess], list[list[str]]]:
+    """A runner replaying scripted exit codes, plus the list it records into.
 
-    def __init__(self, codes: list[int]) -> None:
-        self.codes = list(codes)
-        self.calls: list[list[str]] = []
+    Returns the pair rather than a callable with a `.calls` attribute: a
+    one-method class trips pylint's `too-few-public-methods`, and hanging an
+    attribute off the closure trips mypy's `attr-defined`. An explicit tuple
+    is what both accept, and it reads no worse at the call site.
+    """
+    remaining = list(codes)
+    calls: list[list[str]] = []
 
-    def __call__(self, args) -> subprocess.CompletedProcess:
-        self.calls.append(list(args))
-        code = self.codes.pop(0) if self.codes else 0
+    def run(args: Sequence[str]) -> subprocess.CompletedProcess:
+        calls.append(list(args))
+        code = remaining.pop(0) if remaining else 0
         return subprocess.CompletedProcess(list(args), code, "", "")
+
+    return run, calls
 
 
 def make_dist(tmp_path: Path, names=("a.tar.zst", "b.whl")) -> Path:
@@ -95,15 +104,15 @@ def test_directories_inside_dist_are_not_uploaded(tmp_path: Path) -> None:
 
 
 def test_an_existing_tag_is_a_skip_not_a_failure() -> None:
-    run = FakeRunner([0])  # `gh api refs/tags/<tag>` succeeds
+    run, calls = fake_runner([0])  # `gh api refs/tags/<tag>` succeeds
     assert MODULE.ensure_tag(REPO, TAG, SHA, run) == 0
-    assert len(run.calls) == 1, "an existing tag must not attempt a create"
+    assert len(calls) == 1, "an existing tag must not attempt a create"
 
 
 def test_a_missing_tag_is_created_at_the_requested_sha() -> None:
-    run = FakeRunner([1, 0])  # lookup fails, create succeeds
+    run, calls = fake_runner([1, 0])  # lookup fails, create succeeds
     assert MODULE.ensure_tag(REPO, TAG, SHA, run) == 0
-    create = run.calls[1]
+    create = calls[1]
     assert f"ref=refs/tags/{TAG}" in create
     assert f"sha={SHA}" in create
     assert "POST" in create
@@ -112,7 +121,7 @@ def test_a_missing_tag_is_created_at_the_requested_sha() -> None:
 def test_a_tag_create_failure_exits_one(monkeypatch, tmp_path: Path) -> None:
     summary = tmp_path / "summary.md"
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
-    run = FakeRunner([1, 1])
+    run, _calls = fake_runner([1, 1])
     assert MODULE.ensure_tag(REPO, TAG, SHA, run) == 1
     text = summary.read_text(encoding="utf-8")
     assert "Manual release recovery needed (tag)" in text
@@ -128,10 +137,13 @@ def test_a_new_release_is_created_as_a_draft(monkeypatch, tmp_path: Path) -> Non
     output = tmp_path / "out.txt"
     monkeypatch.setenv("GITHUB_OUTPUT", str(output))
     dist = make_dist(tmp_path)
-    run = FakeRunner([1, 0])  # view fails (absent), create succeeds
+    run, calls = fake_runner([1, 0])  # view fails (absent), create succeeds
 
-    assert MODULE.create_draft_release(REPO, TAG, SHA, RUN_ID, dist, run) == 0
-    create = run.calls[1]
+    assert (
+        MODULE.create_draft_release(REPO, TAG, SHA, run_id=RUN_ID, dist=dist, run=run)
+        == 0
+    )
+    create = calls[1]
     # Draft is the whole point: soldr#2469 step 4.2 verifies the asset set
     # before publication, which is impossible once a release is immutable.
     assert "--draft" in create
@@ -147,10 +159,13 @@ def test_an_existing_release_re_uploads_with_clobber(
     output = tmp_path / "out.txt"
     monkeypatch.setenv("GITHUB_OUTPUT", str(output))
     dist = make_dist(tmp_path)
-    run = FakeRunner([0, 0])  # view succeeds (present), upload succeeds
+    run, calls = fake_runner([0, 0])  # view succeeds (present), upload succeeds
 
-    assert MODULE.create_draft_release(REPO, TAG, SHA, RUN_ID, dist, run) == 0
-    upload = run.calls[1]
+    assert (
+        MODULE.create_draft_release(REPO, TAG, SHA, run_id=RUN_ID, dist=dist, run=run)
+        == 0
+    )
+    upload = calls[1]
     assert upload[:3] == ["gh", "release", "upload"]
     assert "--clobber" in upload
     assert output.read_text(encoding="utf-8").strip() == "created=true"
@@ -165,9 +180,12 @@ def test_a_failed_re_upload_does_not_report_success(
     monkeypatch.setenv("GITHUB_OUTPUT", str(output))
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
     dist = make_dist(tmp_path)
-    run = FakeRunner([0, 1])  # view succeeds, upload fails
+    run, _calls = fake_runner([0, 1])  # view succeeds, upload fails
 
-    assert MODULE.create_draft_release(REPO, TAG, SHA, RUN_ID, dist, run) == 1
+    assert (
+        MODULE.create_draft_release(REPO, TAG, SHA, run_id=RUN_ID, dist=dist, run=run)
+        == 1
+    )
     assert output.read_text(encoding="utf-8").strip() == "created=false"
     assert "Manual release recovery needed" in summary.read_text(encoding="utf-8")
 
@@ -180,9 +198,12 @@ def test_a_failed_create_sets_created_false_and_emits_recovery(
     monkeypatch.setenv("GITHUB_OUTPUT", str(output))
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
     dist = make_dist(tmp_path)
-    run = FakeRunner([1, 1])  # view fails, create fails
+    run, _calls = fake_runner([1, 1])  # view fails, create fails
 
-    assert MODULE.create_draft_release(REPO, TAG, SHA, RUN_ID, dist, run) == 1
+    assert (
+        MODULE.create_draft_release(REPO, TAG, SHA, run_id=RUN_ID, dist=dist, run=run)
+        == 1
+    )
     assert output.read_text(encoding="utf-8").strip() == "created=false"
     text = summary.read_text(encoding="utf-8")
     assert f"gh run download {RUN_ID} --repo {REPO}" in text
@@ -193,9 +214,9 @@ def test_every_asset_is_passed_to_gh(monkeypatch, tmp_path: Path) -> None:
     """The shell used to expand `dist/*`; the script must pass them all."""
     monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "out.txt"))
     dist = make_dist(tmp_path, ("one.whl", "two.whl", "three.tar.zst"))
-    run = FakeRunner([1, 0])
-    MODULE.create_draft_release(REPO, TAG, SHA, RUN_ID, dist, run)
-    create = run.calls[1]
+    run, calls = fake_runner([1, 0])
+    MODULE.create_draft_release(REPO, TAG, SHA, run_id=RUN_ID, dist=dist, run=run)
+    create = calls[1]
     for name in ("one.whl", "two.whl", "three.tar.zst"):
         assert any(arg.endswith(name) for arg in create), name
 

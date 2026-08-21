@@ -130,7 +130,7 @@ def ensure_tag(repo: str, tag: str, sha: str, run: Runner) -> int:
 
 
 def create_draft_release(
-    repo: str, tag: str, sha: str, run_id: str, dist: Path, run: Runner
+    repo: str, tag: str, sha: str, *, run_id: str, dist: Path, run: Runner
 ) -> int:
     """Create the draft release, or re-upload assets if it already exists."""
     assets = release_assets(dist)
@@ -204,9 +204,9 @@ def main(argv: list[str] | None = None) -> int:
             args.repo,
             args.tag,
             args.sha,
-            args.run_id,
-            Path(args.dist),
-            default_runner,
+            run_id=args.run_id,
+            dist=Path(args.dist),
+            run=default_runner,
         )
     except FileNotFoundError as error:
         print(f"::error::{error}", file=sys.stderr)
