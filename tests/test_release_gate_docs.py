@@ -102,3 +102,30 @@ def test_every_publishing_job_still_exists() -> None:
     jobs = set(workflow_jobs())
     for name in PUBLISHING_JOBS:
         assert name in jobs, f"publishing job {name!r} disappeared from the workflow"
+def test_release_md_owner_setup_does_not_present_protection_as_configured() -> None:
+    """RELEASE.md must not contradict itself about branch protection.
+
+    Its intro already says `main` is not branch-protected, but the "Owner
+    Setup" section listed protection among "the one-time controls that make
+    the unattended flow work" and then stated the workflow "assumes that any
+    version bump reaching `main` has already passed the required validation
+    gate". Nothing enforces that gate, so the sentence described a guarantee
+    the repository does not provide -- in the one section an owner reads to
+    find out what is configured.
+    """
+    text = flowed(RELEASE_MD)
+    assert "has already passed the required validation gate" not in text
+    assert "### 1. Protect `main` — not configured today" in text
+
+
+def test_future_agent_instructions_expect_the_unprotected_state() -> None:
+    """The audit checklist must not presuppose the control it is auditing.
+
+    "Confirm `main` still requires pull requests and the expected validation
+    checks" sends a reader looking for something that is not there, and the
+    section ends by telling them to stop and report drift -- turning the
+    known, tracked absence into a false alarm every time.
+    """
+    text = flowed(RELEASE_MD)
+    assert "Confirm `main` still requires pull requests" not in text
+    assert "It is **not** today" in text
