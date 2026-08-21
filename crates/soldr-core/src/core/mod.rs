@@ -49,7 +49,8 @@ pub use paths::{
 };
 pub use target_triple::{Arch, Env, Os, TargetTriple};
 pub use temp::{
-    ensure_temp_root, ensure_temp_root_for, temp_root, temp_root_for, SOLDR_TMPDIR_ENV_VAR,
+    ensure_temp_root, ensure_temp_root_for, replace_file_with_dir, temp_root, temp_root_for,
+    SOLDR_TMPDIR_ENV_VAR,
 };
 pub use toolchain_manifest::{
     read_rust_toolchain_manifest, PluginSpec, RustToolchainManifest, SoldrCookManifest,

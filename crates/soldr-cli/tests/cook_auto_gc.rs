@@ -288,8 +288,8 @@ fn cook_unlink_failure_retains_the_index_for_retry() {
     let (_guard, paths) = fresh_paths("unlink-failure");
     let entry = make_entry(0x77, 1, 0, None);
     let artifact = seed_entries(&paths, &[(1, entry)])[0].clone();
-    std::fs::remove_file(&artifact).unwrap();
-    std::fs::create_dir(&artifact).unwrap();
+    soldr_cli::core::replace_file_with_dir(&artifact, Duration::from_secs(10))
+        .expect("swap the artifact file for an unlinkable directory");
     let report = cook_evict_pass(
         &paths,
         &CookConfig {
