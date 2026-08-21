@@ -236,6 +236,7 @@ jobs:
             --message-format json-pretty > "$NEXTEST_LIST_JSON"
           python .github/scripts/target_run_summary.py \
             --target '${{ inputs.target }} (${{ matrix.replay.label }})' \
+            --partition "$REPLAY_PARTITION" \
             --output "$TARGET_RUN_SUMMARY" \
             --list-json "$NEXTEST_LIST_JSON"
 
@@ -251,6 +252,7 @@ jobs:
           summary_status=0
           python .github/scripts/target_run_summary.py \
             --target '${{ inputs.target }} (${{ matrix.replay.label }})' \
+            --partition "$REPLAY_PARTITION" \
             --output "$TARGET_RUN_SUMMARY" \
             --list-json "$NEXTEST_LIST_JSON" \
             --junit "$GITHUB_WORKSPACE/target/nextest/target-run/junit.xml" \

@@ -68,6 +68,7 @@ class TargetRunSummaryTests(unittest.TestCase):
             {
                 "schema_version": 1,
                 "target": "x86_64-unknown-linux-musl",
+                "partition": None,
                 "phase": "completed",
                 "discovered": 4,
                 "ignored": 1,
@@ -133,6 +134,22 @@ class TargetRunSummaryTests(unittest.TestCase):
                 target_run_summary.build_summary(
                     "aarch64-unknown-linux-gnu", test_list, junit
                 )
+
+    def test_hash_shard_allows_a_bounded_subset(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_temp:
+            temp = Path(raw_temp)
+            test_list = temp / "list.json"
+            junit = temp / "junit.xml"
+            self.write_list(test_list, discovered=9, ignored=1)
+            junit.write_text('<testsuite tests="3" />', encoding="utf-8")
+            summary = target_run_summary.build_summary(
+                "x86_64-pc-windows-gnu",
+                test_list,
+                junit,
+                partition="hash:1/3",
+            )
+        self.assertEqual(summary["partition"], "hash:1/3")
+        self.assertEqual(summary["executed"], 3)
 
     def test_boolean_discovered_count_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as raw_temp:
