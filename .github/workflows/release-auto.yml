@@ -836,36 +836,9 @@ jobs:
         shell: bash
         env:
           PYPI_VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          set -euo pipefail
-          # Tag-style version is `vX.Y.Z`; PyPI keys releases by `X.Y.Z`.
-          pypi_version="${PYPI_VERSION#v}"
-          # Expected wheel count == number of PyPI wheel matrix rows in the
-          # `build` job: two architectures for glibc, musl, macOS, and Windows.
-          expected=8
-          deadline=$(( $(date +%s) + 1800 ))
-          attempts=0
-          max_attempts=60
-          while :; do
-            attempts=$((attempts + 1))
-            count="$(curl -fsSL --max-time 30 --connect-timeout 10 "https://pypi.org/pypi/soldr/${pypi_version}/json" \
-              | python3 -c 'import json,sys; print(len(json.load(sys.stdin).get("urls",[])))' 2>/dev/null \
-              || echo 0)"
-            echo "PyPI reports ${count}/${expected} files for soldr==${pypi_version}"
-            if [ "$count" -ge "$expected" ]; then
-              echo "All ${expected} wheels visible on PyPI; verification complete."
-              exit 0
-            fi
-            if [ "$attempts" -ge "$max_attempts" ]; then
-              echo "Timed out after ${max_attempts} attempts waiting for ${expected} wheels for soldr==${pypi_version}" >&2
-              exit 1
-            fi
-            if [ "$(date +%s)" -ge "$deadline" ]; then
-              echo "Timed out waiting for ${expected} wheels for soldr==${pypi_version}" >&2
-              exit 1
-            fi
-            sleep 15
-          done
+        run: >-
+          python3 .github/scripts/verify_pypi_wheels.py
+          --version "$PYPI_VERSION"
 
   publish-npm:
     name: Publish npm package
