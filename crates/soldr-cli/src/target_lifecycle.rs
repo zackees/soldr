@@ -150,19 +150,9 @@ pub(crate) async fn prepare_target(
         && crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows
         && attrs.os == TargetOs::Linux
     {
-        return Err(SoldrError::UnsupportedPlatform(format!(
-            concat!(
-                "Windows-hosted cross-builds for `{target}` are not supported: ",
-                "the catalogue toolchain for Linux targets ships Linux ELF ",
-                "compilers that cannot execute on Windows (soldr#2437). Build ",
-                "on a Linux host or the Docker Linux harness (`uv run ",
-                "--no-project python ci/perf_local.py cargo build --target ",
-                "{target} ...`), or use the explicit legacy passthrough ",
-                "(`soldr cargo zigbuild --target {target}`) if a ",
-                "Windows-hosted build is unavoidable."
-            ),
-            target = target
-        )));
+        return Err(SoldrError::UnsupportedPlatform(
+            windows_linux_guard_message(target, attrs.abi),
+        ));
     }
 
     let gnu_uses_catalogue_toolchain =
@@ -227,6 +217,52 @@ pub(crate) async fn prepare_target(
         prep.env.extend(env);
     }
     Ok(prep)
+}
+
+/// The soldr#2437 guard's diagnostic, split by target ABI (soldr#2722).
+///
+/// One message for both ABIs was wrong once soldr#2319 landed: `soldr build`
+/// delegates `*-unknown-linux-gnu` to Docker Linux before this guard is
+/// reached, so for GNU the supported path is one verb away and the old text
+/// never mentioned it -- it pointed at `ci/perf_local.py`, a repo-internal CI
+/// harness rather than a user-facing command. musl has no delegation
+/// (`should_delegate_to_docker` claims only the `-gnu` suffix), so it is a
+/// genuine stop, but a user who lands there still needs to know that GNU is
+/// handled automatically, which is the difference between "soldr cannot do
+/// this" and "pick the other ABI".
+fn windows_linux_guard_message(target: &str, abi: Option<TargetAbi>) -> String {
+    let root_cause = format!(
+        concat!(
+            "Windows-hosted cross-builds for `{target}` are not supported: the ",
+            "catalogue toolchain for Linux targets ships Linux ELF compilers ",
+            "that cannot execute on Windows (soldr#2437)."
+        ),
+        target = target
+    );
+    match abi {
+        Some(TargetAbi::Gnu) => format!(
+            concat!(
+                "{root_cause} Use `soldr build --target {target}`, which ",
+                "delegates GNU/Linux targets to Docker Linux automatically ",
+                "(soldr#2319) and needs a running Linux Docker engine. You are ",
+                "seeing this because `soldr prepare` does not delegate, or ",
+                "because delegation is disabled."
+            ),
+            root_cause = root_cause,
+            target = target
+        ),
+        _ => format!(
+            concat!(
+                "{root_cause} Unlike GNU/Linux targets, musl is not delegated ",
+                "to Docker Linux, so there is no Windows-hosted path: build on ",
+                "a Linux host. If the ABI is not load-bearing, ",
+                "`soldr build --target {gnu_target}` works from Windows today ",
+                "(soldr#2319)."
+            ),
+            root_cause = root_cause,
+            gnu_target = target.replace("-musl", "-gnu")
+        ),
+    }
 }
 
 fn add_link_self_contained_flag(prep: &mut BlessedPrep, base: &str, upper: &str) {
