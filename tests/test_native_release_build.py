@@ -108,3 +108,95 @@ def test_host_tool_environment_strips_musl_cross_state() -> None:
         "CARGO_BUILD_JOBS": "2",
         "SOLDR_JOBS": "2",
     }
+
+
+def test_matrix_driver_is_exe_suffixed_on_windows(monkeypatch) -> None:
+    monkeypatch.setenv("RUNNER_OS", "Windows")
+    assert MODULE.matrix_driver().name == "soldr.exe"
+    monkeypatch.setenv("RUNNER_OS", "Linux")
+    assert MODULE.matrix_driver().name == "soldr"
+    monkeypatch.delenv("RUNNER_OS", raising=False)
+    assert MODULE.matrix_driver().name == "soldr"
+
+
+def _record_matrix_build(monkeypatch, target: str, *, github_env: str | None):
+    """Run `build_matrix_binary` with every subprocess captured."""
+    commands: list[list[str]] = []
+
+    def fake_run(command, env=None):  # `run` helper: check=True calls
+        commands.append(list(command))
+
+    def fake_subprocess_run(command, **_kwargs):  # best-effort calls
+        commands.append(list(command))
+
+    monkeypatch.setattr(MODULE, "run", fake_run)
+    monkeypatch.setattr(MODULE.subprocess, "run", fake_subprocess_run)
+    if github_env is None:
+        monkeypatch.delenv("GITHUB_ENV", raising=False)
+    else:
+        monkeypatch.setenv("GITHUB_ENV", github_env)
+    MODULE.build_matrix_binary(Path("target/release/soldr"), target)
+    return commands
+
+
+def test_matrix_build_uses_the_blessed_build_surface(monkeypatch) -> None:
+    """Not `rustup run cargo build`: this lane drives `soldr build`.
+
+    The distinction is why this path is extracted separately from
+    `build_binary` rather than merged with it.
+    """
+    commands = _record_matrix_build(
+        monkeypatch, "x86_64-pc-windows-msvc", github_env=None
+    )
+    build = [c for c in commands if "build" in c and "clean" not in c]
+    assert len(build) == 1
+    assert build[0][1:4] == ["--no-cache", "build", "--release"]
+    assert "rustup" not in build[0]
+    # `--locked` is deliberately absent here; adding it is a behavior change.
+    assert "--locked" not in build[0]
+
+
+def test_matrix_build_restores_manifests_before_building(monkeypatch) -> None:
+    commands = _record_matrix_build(
+        monkeypatch, "x86_64-unknown-linux-musl", github_env=None
+    )
+    assert commands[0][:2] == ["git", "restore"]
+    assert "Cargo.lock" in commands[0]
+
+
+def test_gnu_linux_runs_prepare_and_other_targets_do_not(monkeypatch) -> None:
+    gnu = _record_matrix_build(
+        monkeypatch, "x86_64-unknown-linux-gnu", github_env="/tmp/env"
+    )
+    assert any("prepare" in c for c in gnu)
+
+    msvc = _record_matrix_build(
+        monkeypatch, "x86_64-pc-windows-msvc", github_env="/tmp/env"
+    )
+    assert not any("prepare" in c for c in msvc)
+
+
+def test_prepare_is_skipped_when_github_env_is_absent(monkeypatch) -> None:
+    """Outside Actions there is no file to write; the build must still run."""
+    commands = _record_matrix_build(
+        monkeypatch, "x86_64-unknown-linux-gnu", github_env=None
+    )
+    assert not any("prepare" in c for c in commands)
+    assert any("build" in c and "clean" not in c for c in commands)
+
+
+def test_the_workflow_invokes_matrix_binary_and_keeps_the_profile_env() -> None:
+    workflow = (
+        Path(__file__).parents[1] / ".github" / "workflows" / "release-auto.yml"
+    ).read_text(encoding="utf-8")
+    assert "native_release_build.py matrix-binary" in workflow
+    # The profile values are matrix expressions and must stay in YAML --
+    # moving them into Python would mean reimplementing the matrix there.
+    assert "CARGO_PROFILE_RELEASE_LTO: ${{ contains(matrix.target," in workflow
+    # The inline implementation must be gone, not merely bypassed.
+    assert (
+        'case "$RUNNER_OS" in'
+        not in workflow.split("Build ARM64 musl")[0].split(
+            "Build release binary (soldr-driven)"
+        )[-1]
+    )

@@ -167,9 +167,9 @@ def test_windows_gnu_target_run_is_bounded_and_disk_safe() -> None:
     assert "nextest list" in target_run
     assert "nextest run" in target_run
     assert "matrix.replay.label }}-diagnostics" in target_run
-    assert target_run.count(
-        "inputs.run_pep517_smoke && matrix.replay.run_followup"
-    ) == 4
+    assert (
+        target_run.count("inputs.run_pep517_smoke && matrix.replay.run_followup") == 4
+    )
 
 
 def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
@@ -221,8 +221,7 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
     assert '"$NEXTEST_BIN" nextest run' in target_run
     assert 'echo "SOLDR_BIN=$soldr_bin"' in target_run
     assert (
-        "case '${{ inputs.target }}' in *-pc-windows-*) suffix=\".exe\""
-        in target_run
+        "case '${{ inputs.target }}' in *-pc-windows-*) suffix=\".exe\"" in target_run
     )
     assert "artifact/package/soldr$suffix" in target_run
     assert "artifact/package/soldr-daemon$suffix" in target_run
@@ -453,8 +452,7 @@ def test_pep517_platform_smokes_run_on_pull_requests() -> None:
     ]:
         step = _step_block(target_run, step_name)
         assert (
-            "if: ${{ inputs.run_pep517_smoke && matrix.replay.run_followup }}"
-            in step
+            "if: ${{ inputs.run_pep517_smoke && matrix.replay.run_followup }}" in step
         )
     # The smoke must run after (and never gate) the archive replay.
     assert target_run.index(
@@ -472,9 +470,9 @@ def test_n_minus_one_build_uses_clean_paired_toolchain_homes() -> None:
 
     assert 'echo "CARGO_HOME=$RUNNER_TEMP/soldr-cargo" >> "$GITHUB_ENV"' in isolation
     assert 'echo "RUSTUP_HOME=$RUNNER_TEMP/soldr-rustup" >> "$GITHUB_ENV"' in isolation
-    assert build_all.index("      - name: Isolate N-1 toolchain homes\n") < build_all.index(
-        "      - name: Install Rust toolchain + cross target\n"
-    )
+    assert build_all.index(
+        "      - name: Isolate N-1 toolchain homes\n"
+    ) < build_all.index("      - name: Install Rust toolchain + cross target\n")
     assert "          components: rustfmt, clippy\n" in toolchain
     assert "export CARGO_HOME=" not in build
     assert "export RUSTUP_HOME=" not in build
@@ -664,7 +662,11 @@ def test_mac_x64_distribution_uses_pinned_setup_soldr_on_intel() -> None:
     # pinned in test_canonical_target_contract.py against release.build.
     assert "include: ${{ fromJSON(needs.prepare.outputs.build_matrix) }}" in release
     assert '"x86_64-apple-darwin": {"os": "darwin", "arch": "x86_64"}' in support_fetch
-    assert 'prepare --target "$target" --github-env "$GITHUB_ENV"' in release
+    # soldr#2469 step 2.2: the GNU-Linux `soldr prepare` hook moved into
+    # `native_release_build.py matrix-binary`. The invariant is unchanged --
+    # a GNU release build must still export its prepared target env -- so the
+    # assertion follows the logic rather than being dropped.
+    assert _matrix_binary_source_prepares_gnu_linux()
     assert (
         "uses: zackees/setup-soldr@40320d277ba4946e38d4b3c02e6c7a15a29c3f3f" in release
     )
@@ -716,19 +718,33 @@ def test_windows_gnu_artifacts_keep_the_exe_suffix_across_build_and_replay() -> 
     cross_build = (
         REPO_ROOT / ".github" / "workflows" / "_ci-cross-build-linux.yml"
     ).read_text(encoding="utf-8")
-    target_run = (
-        REPO_ROOT / ".github" / "workflows" / "_ci-target-run.yml"
-    ).read_text(encoding="utf-8")
+    target_run = (REPO_ROOT / ".github" / "workflows" / "_ci-target-run.yml").read_text(
+        encoding="utf-8"
+    )
 
     assert cross_build.count('case "$target" in *-pc-windows-*) suffix=".exe"') == 2
-    assert "case '${{ inputs.target }}' in *-pc-windows-*) suffix=\".exe\"" in target_run
+    assert (
+        "case '${{ inputs.target }}' in *-pc-windows-*) suffix=\".exe\"" in target_run
+    )
+
+
+def _matrix_binary_source_prepares_gnu_linux() -> bool:
+    """True when the matrix release build still runs `soldr prepare` for GNU."""
+    source = (REPO_ROOT / ".github" / "scripts" / "native_release_build.py").read_text(
+        encoding="utf-8"
+    )
+    return (
+        '"-unknown-linux-gnu"' in source
+        and '"prepare"' in source
+        and '"--github-env"' in source
+    )
 
 
 def test_release_wheels_use_setup_soldr_target_hooks_without_zig_or_xwin() -> None:
     """PEP 517 runs inside setup-soldr's prepared target environment."""
     release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
 
-    assert '"$driver" prepare --target "$target" --github-env "$GITHUB_ENV"' in release
+    assert _matrix_binary_source_prepares_gnu_linux()
     assert (
         "uses: zackees/setup-soldr@40320d277ba4946e38d4b3c02e6c7a15a29c3f3f" in release
     )
@@ -857,12 +873,18 @@ def test_windows_wheel_does_not_reuse_archive_executable_output() -> None:
     assert "--target-dir target" not in wheel_step
     assert "!contains(matrix.target, 'pc-windows-msvc')" in wheel_smoke
 
-    for step_name in [
-        "Restore executable bit on bootstrap driver",
-        "Build release binary (soldr-driven)",
-    ]:
-        step = _step_block(release, step_name)
-        assert 'case "$RUNNER_OS" in' in step
+    # The bootstrap-driver step still resolves the suffix inline; the release
+    # build step's copy moved into `native_release_build.matrix_driver()`
+    # (soldr#2469 step 2.2). Both must still be Windows-aware, so each is
+    # asserted where its logic actually lives.
+    assert 'case "$RUNNER_OS" in' in _step_block(
+        release, "Restore executable bit on bootstrap driver"
+    )
+    native_builder = (
+        REPO_ROOT / ".github" / "scripts" / "native_release_build.py"
+    ).read_text(encoding="utf-8")
+    assert 'RUNNER_OS") == "Windows"' in native_builder
+    assert 'f"soldr{suffix}"' in native_builder
 
     wheel_preparer = (
         REPO_ROOT / ".github" / "scripts" / "prepare_release_wheel.py"
