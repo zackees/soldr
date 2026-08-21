@@ -22,6 +22,7 @@ use serde::Serialize;
 mod auto;
 mod cargo_native;
 mod delete_diagnosis;
+mod discovery;
 pub(crate) mod disk;
 mod holding_process;
 mod purge;

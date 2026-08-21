@@ -215,6 +215,7 @@ fn sweep_stale_scratch(paths: &SoldrPaths, now_ms: i64) -> u64 {
 
 fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::PathBuf) {
     use crate::cache_lib::auto_gc::DiskFreeProbe as _;
+    use crate::cache_lib::auto_gc::VolumeProbe as _;
     let start = std::time::Instant::now();
     let paths = SoldrPaths::with_root(paths_root);
 
@@ -490,12 +491,12 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
             .target_free_gb
             .saturating_mul(crate::cache_lib::auto_gc::GIB);
 
-        // Tier 2: soldr target purge (only if volume holds workspace
+        // Tier 2: soldr target purge (only if the volume holds workspace
         // targets and we're still under target).
         if has_policy_action("workspace_targets")
             && crate::cache_lib::auto_gc::next_tier(free_bytes, target_bytes, last_tier).is_some()
         {
-            let workspace_targets: Vec<_> = plan
+            let mut workspace_targets: Vec<_> = plan
                 .paths
                 .iter()
                 .filter(|p| {
@@ -506,10 +507,60 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
                 })
                 .map(|p| p.path.clone())
                 .collect();
-            if !workspace_targets.is_empty() {
+            let registry_rows_on_volume = workspace_targets.len();
+
+            // soldr#2700: the registry alone is not a complete picture of
+            // what is on disk. It is written only when a build goes
+            // through soldr's cargo front door or the wrapper's
+            // fire-and-forget daemon touch, so plain-`cargo` builds —
+            // dylint drivers, vendored `.extern-repos/` checkouts, agent
+            // worktrees — never appear, and tier 2 kept no-opping while
+            // 106.4 GB of them filled the volume. Walk the allowlisted
+            // dev roots for the rest.
+            //
+            // Only here, never in `enumerate_auto_gc_paths`: this is a
+            // sized walk of the whole tree, and running it on every
+            // sweeper firing would put that I/O in front of builds that
+            // are not under pressure at all. Reaching tier 2 already
+            // means tier 1 ran and the volume is still short.
+            let discovery_roots = resolve_gc_dev_roots(&paths).unwrap_or_default();
+            let known: Vec<_> = workspace_targets
+                .iter()
+                .map(|path| crate::cache_lib::target_registry::TargetRow {
+                    path: path.clone(),
+                    last_used: 0,
+                })
+                .collect();
+            let discovered_rows: Vec<_> = super::discovery::discovered_target_rows(
+                &discovery_roots,
+                super::discovery::AUTO_GC_DISCOVERY_MAX_DEPTH,
+                &known,
+            )
+            .into_iter()
+            .filter(|row| probe.volume_key(&row.path).as_deref() == Some(&plan.volume_key))
+            .collect();
+            let discovered_on_volume = discovered_rows.len();
+            workspace_targets.extend(discovered_rows.iter().map(|row| row.path.clone()));
+
+            if workspace_targets.is_empty() {
+                // soldr#2700: previously this branch wrote nothing at
+                // all, so "tier 2 had no candidates" and "tier 2 never
+                // ran" were the same empty log — the exact ambiguity
+                // #1286 removed one level up. Always say it.
+                let _ = append_auto_gc_log_line(
+                    &log_path,
+                    &format!(
+                        "tier=2 volume={} skipped=true reason=no_workspace_targets \
+                         registry_rows_on_volume=0 discovered_on_volume=0 roots={}",
+                        plan.volume_key,
+                        discovery_roots.len(),
+                    ),
+                );
+            } else {
                 let tier2 = run_soldr_target_purge_background(
                     &paths,
                     &workspace_targets,
+                    discovered_rows,
                     validated.min_age_secs,
                 );
                 last_tier = 2;
@@ -519,19 +570,21 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
                 // pre-delete" so the next time someone hits 0-byte
                 // tier-2 reclaim, they can immediately see WHERE
                 // candidates went. registry_rows_on_volume is the
-                // pre-scan view; candidates is the post-threshold +
-                // post-guard view; on_volume_matched is the after-
-                // intersect-with-affected-volumes view.
+                // pre-scan view; discovered_on_volume is what the
+                // #2700 walk added on top of it; candidates is the
+                // post-threshold + post-guard view; on_volume_matched
+                // is the after-intersect-with-affected-volumes view.
                 let _ = append_auto_gc_log_line(
                     &log_path,
                     &format!(
                         "tier=2 volume={} reclaimed_bytes={} free_gib={:.2} \
-                         registry_rows_on_volume={} candidates={} skipped={} \
+                         registry_rows_on_volume={registry_rows_on_volume} \
+                         discovered_on_volume={discovered_on_volume} \
+                         candidates={} skipped={} \
                          dropped_missing={} on_volume_matched={}",
                         plan.volume_key,
                         tier2.reclaimed,
                         (free_bytes as f64) / (crate::cache_lib::auto_gc::GIB as f64),
-                        workspace_targets.len(),
                         tier2.candidates,
                         tier2.skipped,
                         tier2.dropped_missing,
@@ -785,6 +838,7 @@ pub(super) const BLOCK_TIER_PRUNE_BUDGET: std::time::Duration = std::time::Durat
 fn run_soldr_target_purge_background(
     paths: &SoldrPaths,
     workspace_targets: &[std::path::PathBuf],
+    discovered_rows: Vec<crate::cache_lib::target_registry::TargetRow>,
     min_age_secs: u64,
 ) -> Tier2Outcome {
     use crate::cache_lib::gc::{parse_size, GcOptions};
@@ -804,7 +858,13 @@ fn run_soldr_target_purge_background(
         },
         dry_run: false,
     };
-    let report = match super::daemon_gc_scan(paths, &options) {
+    // soldr#2700: scan the registry *and* the rows the caller discovered on
+    // the filesystem. Both go through the same snapshot scan, so the size
+    // and age thresholds and every safety guard — the `dev_roots`
+    // allowlist included — apply to a discovered target exactly as they do
+    // to a registered one.
+    let report = match super::discovery::daemon_gc_scan_with_rows(paths, &options, discovered_rows)
+    {
         Ok(r) => r,
         Err(_) => return Tier2Outcome::default(),
     };
