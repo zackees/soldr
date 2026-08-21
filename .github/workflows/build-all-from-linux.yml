@@ -94,6 +94,10 @@ jobs:
         with:
           toolchain: 1.95.0
           targets: ${{ matrix.target }}
+          # Install the manifest components in the same fresh-toolchain
+          # transaction. Adding rustfmt after the minimal toolchain is present
+          # conflicts with the cargo-fmt path shipped by Rust 1.95 (#2703).
+          components: rustfmt, clippy
 
       # The pinned driver — the ONLY way soldr enters this workflow.
       # A venv sidesteps PEP 668 and exposes soldr's console entry point.
