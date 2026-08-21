@@ -102,6 +102,8 @@ def test_every_publishing_job_still_exists() -> None:
     jobs = set(workflow_jobs())
     for name in PUBLISHING_JOBS:
         assert name in jobs, f"publishing job {name!r} disappeared from the workflow"
+
+
 def test_release_md_owner_setup_does_not_present_protection_as_configured() -> None:
     """RELEASE.md must not contradict itself about branch protection.
 
