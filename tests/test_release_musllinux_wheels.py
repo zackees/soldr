@@ -1,5 +1,19 @@
+import importlib.util
 import json
 from pathlib import Path
+
+
+def _load_release_completeness():
+    """Load the contract helper by path; `.github/scripts` is not a package."""
+    path = Path(__file__).parents[1] / ".github" / "scripts" / "release_completeness.py"
+    spec = importlib.util.spec_from_file_location("release_completeness", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+release_completeness = _load_release_completeness()
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-auto.yml"
@@ -63,7 +77,24 @@ def test_release_workflow_builds_and_publishes_musllinux_wheels() -> None:
         in musllinux_smoke
     )
     assert "uv pip install --python .venv dist/*.whl" not in musllinux_smoke
-    assert "expected=8" in workflow
+    # soldr#2469 step 2.2: the PyPI wheel gate moved to
+    # `.github/scripts/verify_pypi_wheels.py`, and its expected count is now
+    # derived from the contract instead of the literal `expected=8` that used
+    # to live here. Assert the derived value, which is the property this line
+    # always cared about -- and a stronger one, because the gate now checks
+    # wheel *names* rather than just how many files PyPI reports.
+    assert "verify_pypi_wheels.py" in workflow
+    assert "expected=8" not in workflow
+    wheel_gate = (
+        REPO_ROOT / ".github" / "scripts" / "verify_pypi_wheels.py"
+    ).read_text(encoding="utf-8")
+    assert "RELEASE_COMPLETENESS.expected_pypi_files" in wheel_gate
+    expected_wheels = release_completeness.expected_pypi_files(
+        "v1.2.3", release_completeness.included_triples()
+    )
+    assert len(expected_wheels) == 8, expected_wheels
+    assert any("musllinux_1_2_x86_64" in name for name in expected_wheels)
+    assert any("musllinux_1_2_aarch64" in name for name in expected_wheels)
 
     stale_markers = [
         "PyPI wheel build is gnu-only for now",
