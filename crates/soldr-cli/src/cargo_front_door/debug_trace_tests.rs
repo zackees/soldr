@@ -130,3 +130,70 @@ fn observed_spawn_round_trips_non_unicode_argv() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// soldr#2658 item 2, environment half: the argv test above proves
+/// arguments survive the observed spawn; the acceptance item is
+/// "argv/env", and the environment travels a different `Command` setter.
+/// `Command::env` takes `AsRef<OsStr>` for both halves, so a non-UTF-8
+/// value has no more reason to be lossy than a non-UTF-8 argument -- but
+/// "no reason to break" is what a proof is for, and this is the pair that
+/// a `String`-typed convenience wrapper would silently mangle first.
+#[test]
+fn observed_spawn_round_trips_non_unicode_env() {
+    if matches!(
+        crate::platform::host::facts::os(),
+        crate::platform::host::facts::HostOs::Windows
+    ) {
+        // Windows environment blocks are UTF-16 at the OS boundary;
+        // arbitrary-byte values are a Unix concern. Same split as the
+        // argv test above.
+        return;
+    }
+    let _lock = crate::TEST_PROCESS_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = crate::EnvVarGuard::set(DEBUG_TRACE_ENV_VAR, "1");
+
+    let dir = std::env::temp_dir().join(format!(
+        "non-unicode-env-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+    let script = dir.join("echo-env.sh");
+    let out_path = dir.join("env.bin");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf '%s' \"$SOLDR_NON_UNICODE_FIXTURE\" > \"{}\"\n",
+            out_path.display()
+        ),
+    )
+    .expect("write script");
+    crate::platform::fs::permissions::make_executable(&script).expect("chmod script");
+
+    // Same construction and the same safety argument as the argv test:
+    // 0xFF cannot appear in well-formed UTF-8, on Unix an OS string is
+    // arbitrary bytes, and the Windows early-return keeps this off the
+    // platform whose WTF-8 encoding it would violate. The
+    // encoding-neutral constructor keeps `std::os::unix` out of this
+    // crate (platform-cfg boundary ratchet).
+    let raw = unsafe { std::ffi::OsStr::from_encoded_bytes_unchecked(b"weird\xFFvalue") };
+    let mut command = std::process::Command::new(&script);
+    command.env("SOLDR_NON_UNICODE_FIXTURE", raw);
+    let status = run_observed_inheriting_stdio(
+        &mut command,
+        "non-unicode env fixture",
+        Some(std::time::Duration::from_secs(30)),
+        std::time::Duration::from_secs(10),
+    )
+    .expect("observed spawn must run the fixture");
+    assert!(status.success(), "fixture exited nonzero");
+
+    let echoed = std::fs::read(&out_path).expect("fixture env capture");
+    assert_eq!(
+        echoed, b"weird\xffvalue",
+        "environment bytes must survive the observed spawn unchanged"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
