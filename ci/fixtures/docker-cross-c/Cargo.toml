@@ -1,0 +1,18 @@
+# soldr#2319 fixture: a crate with a C dependency (cc-built build.rs) plus a
+# C++ translation unit, used to prove the Windows-host -> Linux-gnu Docker
+# delegation actually links native C/C++ objects into a glibc-2.17 ELF.
+#
+# Standalone (not a workspace member) so `soldr build` inside the container
+# builds only this crate.
+[package]
+name = "docker-cross-c"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+
+[build-dependencies]
+cc = "1"

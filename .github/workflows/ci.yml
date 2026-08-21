@@ -185,7 +185,7 @@ jobs:
           # toolchain asset query) and this step used to run `tests/` only, so
           # those 29 tests never executed in CI. Tests that exist but never run
           # are worse than none -- they rot silently while implying coverage.
-          uv run --no-project --with pytest python -m pytest tests/ .github/scripts/ -q
+          uv run --no-project --with pytest --with pyyaml python -m pytest tests/ .github/scripts/ -q
 
       - name: Cache rustup 1.95.0 in ~/.rustup
         id: rustup_cache

@@ -15,11 +15,18 @@ def test_release_workflow_builds_and_publishes_musllinux_wheels() -> None:
     # the generator instead of carrying inline name lists. The prepare-side
     # gate now imports the generator instead of shelling to it — its step
     # moved into release_detect.py — so only one CLI call remains in YAML.
-    assert workflow.count("--list-expected-github-assets") == 1
+    assert "verify_github_release_assets.py" in workflow
+    asset_verifier = (
+        REPO_ROOT / ".github" / "scripts" / "verify_github_release_assets.py"
+    ).read_text(encoding="utf-8")
+    assert "RELEASE_COMPLETENESS.expected_github_assets" in asset_verifier
+    assert "release_completeness.py" in asset_verifier
     assert "expected_github_assets" in (
         REPO_ROOT / ".github" / "scripts" / "release_detect.py"
     ).read_text(encoding="utf-8")
-    assert "uses: zackees/setup-soldr@40320d277ba4946e38d4b3c02e6c7a15a29c3f3f" in workflow
+    assert (
+        "uses: zackees/setup-soldr@40320d277ba4946e38d4b3c02e6c7a15a29c3f3f" in workflow
+    )
     assert "version: 0.8.44" in workflow
     assert "cross-targets: ${{ matrix.setup_target }}" in workflow
     assert "target-wheel-hook" in workflow
@@ -33,7 +40,8 @@ def test_release_workflow_builds_and_publishes_musllinux_wheels() -> None:
     musl_triples = {
         entry["triple"]
         for entry in contract["targets"]
-        if entry["triple"].endswith("-musl") and entry["release"]["status"] == "included"
+        if entry["triple"].endswith("-musl")
+        and entry["release"]["status"] == "included"
     }
     assert musl_triples == {
         "x86_64-unknown-linux-musl",
@@ -45,9 +53,9 @@ def test_release_workflow_builds_and_publishes_musllinux_wheels() -> None:
     assert "wheel_filename_lints.py musllinux" in workflow
     assert "Smoke test musllinux wheel on Alpine" in workflow
     assert ".github/scripts/smoke_musllinux_wheel.py" in workflow
-    musllinux_smoke = (REPO_ROOT / ".github" / "scripts" / "smoke_musllinux_wheel.py").read_text(
-        encoding="utf-8"
-    )
+    musllinux_smoke = (
+        REPO_ROOT / ".github" / "scripts" / "smoke_musllinux_wheel.py"
+    ).read_text(encoding="utf-8")
     assert "alpine:3.20" in musllinux_smoke
     assert "--only-binary=:all:" in musllinux_smoke
     assert (

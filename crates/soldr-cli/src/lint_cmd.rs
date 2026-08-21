@@ -327,7 +327,23 @@ fn wait_for_parallel_children(children: &mut [(String, Child)]) -> Result<i32, S
                     let failed_id = child.id();
                     for (other_label, other) in children.iter_mut() {
                         if other.id() != failed_id {
-                            let _ = cargo_front_door::kill_cargo_process_tree(other);
+                            // soldr#2605: this outcome used to be discarded. A
+                            // cancellation that only reached the direct child
+                            // leaves a descendant running -- and holding the
+                            // stdio it inherited -- while this loop still
+                            // reports a clean cancel. Five sightings produced
+                            // no evidence beyond a wall-clock number because
+                            // nothing here ever said which kind of kill it got.
+                            match cargo_front_door::kill_cargo_process_tree(other) {
+                                Ok(kind) => eprintln!(
+                                    "soldr: lint deps: `{other_label}` (pid {}) {kind}",
+                                    other.id()
+                                ),
+                                Err(error) => eprintln!(
+                                    "soldr: lint deps: `{other_label}` (pid {}) could not be                                      terminated: {error}",
+                                    other.id()
+                                ),
+                            }
                             if let Ok(other_status) = other.wait() {
                                 eprintln!(
                                     "soldr: lint deps: `{other_label}` (pid {}) canceled with {other_status}",

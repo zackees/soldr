@@ -1,0 +1,179 @@
+//! Tests for Windows process-tree termination.
+//!
+//! A sibling file rather than an inline `#[cfg(test)]` block: these tests
+//! spawn real `cmd`/`ping` trees, and `.github/scripts/spawn_path_guard.py`
+//! counts `.spawn()` per FILE without stripping cfg(test). Inline, the test
+//! spawns would have to be allowlisted as if they were sanctioned production
+//! spawn sites -- exactly the misrepresentation the guard exists to prevent.
+//! The guard already skips `*_tests.rs` siblings for this reason.
+
+use super::*;
+
+/// Liveness by exit code, not handle existence: a terminated
+/// process stays openable while any handle survives, so a
+/// handle-existence check would report a successful kill as failed.
+fn is_alive(pid: u32) -> bool {
+    crate::process::inspect::is_alive(pid)
+}
+
+#[test]
+fn descendants_are_ordered_parents_before_children() {
+    // 100 -> 200 -> 300, plus an unrelated 400.
+    let edges = [(200, 100), (300, 200), (400, 1)];
+    assert_eq!(collect_descendants(&edges, 100), vec![200, 300]);
+}
+
+#[test]
+fn unrelated_processes_are_never_collected() {
+    let edges = [(200, 100), (400, 1), (500, 400)];
+    assert_eq!(collect_descendants(&edges, 100), vec![200]);
+}
+
+#[test]
+fn a_leaf_root_has_no_descendants() {
+    let edges = [(200, 100), (300, 200)];
+    assert!(collect_descendants(&edges, 300).is_empty());
+}
+
+#[test]
+fn a_self_parenting_process_does_not_loop() {
+    // Recycled pids can produce a self-edge; the walk must still finish.
+    let edges = [(100, 100), (200, 100)];
+    assert_eq!(collect_descendants(&edges, 100), vec![200]);
+}
+
+#[test]
+fn a_cycle_back_to_the_root_does_not_loop() {
+    // 100 -> 200 -> 300 -> 100. The root is pre-seeded as seen, so the edge
+    // closing the cycle is ignored rather than revisited forever.
+    let edges = [(200, 100), (300, 200), (100, 300)];
+    assert_eq!(collect_descendants(&edges, 100), vec![200, 300]);
+}
+
+/// Spawn `cmd -> ping` and return `(child, grandchild pids)` once the
+/// grandchild exists. Killing before `ping` spawns would prove nothing.
+///
+/// `zombie_processes` cannot follow a `Child` handed back to a caller, so
+/// it reads the success path as a leak. It is not: ownership transfers,
+/// and both callers reap (one via `child.kill()` + `wait()`, the other via
+/// `terminate_tree` + `wait()`). The timeout path reaps here before it
+/// panics, so no path leaves the pair running.
+#[allow(clippy::zombie_processes)]
+fn spawn_cmd_with_ping_grandchild() -> (std::process::Child, Vec<u32>) {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    let mut child = Command::new("cmd")
+        .args(["/C", "ping -n 30 127.0.0.1 > nul"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn cmd wrapper");
+    let root = child.id();
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let found = descendants_of(root).expect("snapshot");
+        if !found.is_empty() {
+            return (child, found);
+        }
+        if Instant::now() >= deadline {
+            // Reap before unwinding: a panic here would otherwise leave a
+            // 30s `cmd`/`ping` pair behind for every run of the suite.
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("ping grandchild never appeared under cmd pid {root}");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Pins the negative result that shaped this module.
+///
+/// The obvious explanation for soldr#2605 is that a grandchild becomes
+/// unreachable once its parent dies, so a kill-time tree walk cannot find
+/// it. That is false on Windows, and this test is here so nobody (including
+/// a future reader of the commit that introduced it) re-derives the wrong
+/// mechanism: a process entry keeps its `th32ParentProcessID` after the
+/// parent exits, so the walk still resolves.
+///
+/// Which is why `terminate_tree` does not rest on enumeration order alone
+/// -- it verifies. If this test ever starts failing, the walk has become
+/// order-sensitive after all and the snapshot-first ordering becomes
+/// load-bearing rather than merely tidy.
+#[test]
+fn a_dead_root_still_exposes_its_grandchildren() {
+    use std::time::{Duration, Instant};
+
+    let (mut child, grandchildren) = spawn_cmd_with_ping_grandchild();
+    let root = child.id();
+
+    // Kill ONLY the root, the way the old fallback path did.
+    child.kill().expect("kill root");
+    let _ = child.wait();
+
+    let survivors: Vec<u32> = grandchildren
+        .iter()
+        .copied()
+        .filter(|pid| is_alive(*pid))
+        .collect();
+    assert!(
+        !survivors.is_empty(),
+        "fixture invalid: the grandchild died with the root, so there is              nothing for a post-kill walk to find"
+    );
+
+    let after = descendants_of(root).expect("snapshot");
+    assert!(
+        after.iter().any(|pid| survivors.contains(pid)),
+        "a walk rooted at the dead pid {root} lost the still-live              grandchildren {survivors:?} (walk returned {after:?}). If this              fails, kill-time enumeration IS unsound on this host and the              snapshot-first ordering is what saves us."
+    );
+
+    // Clean up the orphan the fixture deliberately created.
+    for pid in survivors {
+        let _ = signal_pid(pid, true);
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while grandchildren.iter().any(|pid| is_alive(*pid)) {
+        assert!(Instant::now() < deadline, "orphaned ping outlived cleanup");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn a_real_grandchild_tree_is_killed_whole() {
+    // The soldr#2605 shape: soldr -> cmd.exe -> ping.exe. Assert the
+    // grandchild is gone, not merely the root -- a kill that reaches only the
+    // direct child is precisely the outcome that left `ping` holding the
+    // inherited stderr pipe for its full sleep.
+    use std::time::{Duration, Instant};
+
+    let (mut child, grandchildren) = spawn_cmd_with_ping_grandchild();
+    let root = child.id();
+
+    assert_eq!(
+        terminate_tree(&mut child).expect("terminate tree"),
+        TreeKill::TreeKilled
+    );
+    let _ = child.wait();
+
+    // Poll: TerminateProcess is asynchronous, so a pid can linger briefly.
+    // `is_alive` reads the exit code rather than merely opening a handle --
+    // a terminated process stays openable while any handle survives, so a
+    // handle-existence check would report the kill as failed.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let survivors: Vec<u32> = grandchildren
+            .iter()
+            .copied()
+            .filter(|pid| is_alive(*pid))
+            .collect();
+        if survivors.is_empty() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "descendants {survivors:?} of cmd pid {root} outlived the tree kill"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}

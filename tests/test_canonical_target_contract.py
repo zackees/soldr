@@ -203,10 +203,12 @@ def test_release_inclusions_and_exclusions_match_contract() -> None:
     # gates derive from the contract), not the call syntax: checking only the
     # CLI flag would have quietly passed a rewrite that hardcoded the list in
     # Python instead.
-    assert workflow.count("--list-expected-github-assets") == 1, (
-        "the verify_github_release gate must still generate its expected "
-        "list from ci/canonical-targets.json via release_completeness.py"
-    )
+    assert "verify_github_release_assets.py" in workflow
+    asset_verifier = (
+        ROOT / ".github" / "scripts" / "verify_github_release_assets.py"
+    ).read_text(encoding="utf-8")
+    assert "expected_github_assets" in asset_verifier
+    assert "release_completeness.py" in asset_verifier
     detector = (ROOT / ".github" / "scripts" / "release_detect.py").read_text(
         encoding="utf-8"
     )

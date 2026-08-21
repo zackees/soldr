@@ -799,39 +799,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
-        run: |
-          set -euo pipefail
-          tag='${{ needs.prepare.outputs.version }}'
-          cargo_version="${tag#v}"
-          release_json="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets,isDraft)"
-          if [[ "$(jq -r '.isDraft' <<< "$release_json")" != "false" ]]; then
-            echo "GitHub release $tag is still a draft" >&2
-            exit 1
-          fi
-          # Contract-generated (soldr#2469 step 2.2) — see the prepare job.
-          expected_asset_list="$(python3 .github/scripts/release_completeness.py --version "$tag" --list-expected-github-assets)"
-          expected_assets=()
-          while IFS= read -r asset; do
-            expected_assets+=("$asset")
-          done <<< "$expected_asset_list"
-          missing=()
-          for asset in "${expected_assets[@]}"; do
-            size="$(jq --arg name "$asset" -r '.assets[] | select(.name == $name) | .size' <<< "$release_json" | head -n1)"
-            if [[ -z "$size" || "$size" == "null" ]]; then
-              missing+=("$asset")
-              continue
-            fi
-            if (( size <= 0 )); then
-              echo "GitHub release asset $asset has invalid size $size" >&2
-              exit 1
-            fi
-          done
-          if (( ${#missing[@]} > 0 )); then
-            printf 'GitHub release %s is missing expected assets:\n' "$tag" >&2
-            printf ' - %s\n' "${missing[@]}" >&2
-            exit 1
-          fi
-          echo "GitHub release $tag has all ${#expected_assets[@]} expected assets."
+        run: python3 .github/scripts/verify_github_release_assets.py --version "${{ needs.prepare.outputs.version }}"
 
   publish-pypi:
     name: Publish hardened PyPI wheels

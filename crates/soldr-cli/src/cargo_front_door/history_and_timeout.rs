@@ -818,7 +818,10 @@ pub(crate) fn kill_cargo_process_tree(
     use crate::platform::process::terminate::TreeKill;
     match crate::platform::process::terminate::terminate_tree(child)? {
         TreeKill::TreeKilled => Ok("killed child process tree"),
-        TreeKill::ProcessKilled => Ok("killed child process"),
+        // soldr#2605: name the weaker outcome instead of letting it read as a
+        // clean kill. This arm means the tree could not be enumerated, or
+        // descendants were still alive when the verification budget ran out.
+        TreeKill::ProcessKilled => Ok("killed child process (descendants may have survived)"),
     }
 }
 

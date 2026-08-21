@@ -62,7 +62,14 @@ pub(crate) fn reclaim_target_dirs_for_block(build_volume: &std::path::Path) -> u
         return 0;
     }
     let (validated, _) = crate::cache_lib::auto_gc::validate_config(&config.auto_gc);
-    run_soldr_target_purge_background(&paths, &targets, validated.min_age_secs).reclaimed
+    // soldr#2700 deliberately does NOT add the filesystem discovery walk
+    // here. This path runs synchronously in front of a build that is
+    // already blocked on disk space, under `BLOCK_TIER_PRUNE_BUDGET`; a
+    // sized walk of every dev root costs far more than the budget it is
+    // trying to spend on deleting. The background sweeper's tier 2 does
+    // the discovery, so a blocked build still benefits from it on the
+    // next firing.
+    run_soldr_target_purge_background(&paths, &targets, Vec::new(), validated.min_age_secs).reclaimed
 }
 
 /// Whether `candidate` is the build's own `target/` (or contains it).

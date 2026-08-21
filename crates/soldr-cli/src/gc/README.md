@@ -11,6 +11,7 @@ automatic sweeper that runs alongside builds.
 | `disk.rs` | Free-space probing that decides which pressure tier applies |
 | `cargo_native.rs` | `cargo`-native GC (`registry/src`, git checkouts) and `gc sweep` |
 | `target_walker.rs`, `walks.rs` | Directory traversal used to size and prune `target/` trees |
+| `discovery.rs` | Bridges the `target_walker` into registry-shaped rows so auto-GC sees targets the registry never recorded |
 | `tests.rs` | Shared unit tests for the module |
 
 ## Auto-GC ordering

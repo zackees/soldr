@@ -12,6 +12,20 @@ async fn run_blessed_build(
     full_args.extend(args);
     target_alias::normalize_target_aliases_in_args(&mut full_args);
 
+    // soldr#2319 (Approach C): the catalogue Linux GNU compiler is an ELF
+    // binary, so a Windows host cannot execute it. Delegate this supported
+    // Windows-host × Linux-GNU surface to Linux Docker before any native
+    // toolchain preparation attempts to run that compiler.
+    if let Some(target_triple) = extract_target_from_args(&full_args) {
+        if crate::docker_cross::should_delegate_to_docker(
+            crate::docker_cross::Host::current(),
+            &target_triple,
+            &crate::docker_cross::EnvSnapshot::from_process(),
+        ) {
+            guarded_exit(crate::docker_cross::run(&target_triple, &full_args).await?);
+        }
+    }
+
     // Try to recognize a target from argv so we can prep
     // before invoking cargo. If the user didn't pass `--target`,
     // only the host-side prep (managed cmake/ninja) runs and we
