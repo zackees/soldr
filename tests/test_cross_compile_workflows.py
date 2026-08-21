@@ -143,6 +143,17 @@ def test_windows_target_runner_pairs_share_their_producer_artifacts() -> None:
         assert _job_input(run, "runs_on") == runner
 
 
+def test_windows_gnu_target_run_gets_a_bounded_extended_replay_budget() -> None:
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    target_run = (WORKFLOWS / "_ci-target-run.yml").read_text(encoding="utf-8")
+    gnu_run = _job_block(ci, "e2e-windows-x64-gnu", "e2e-windows-arm64-build")
+
+    assert "timeout_minutes:" in target_run
+    assert "default: 30" in target_run
+    assert "inputs.run_pep517_smoke && 65 || inputs.timeout_minutes" in target_run
+    assert _job_input(gnu_run, "timeout_minutes") == "45"
+
+
 def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
     cross = (WORKFLOWS / "_ci-cross-build-linux.yml").read_text(encoding="utf-8")

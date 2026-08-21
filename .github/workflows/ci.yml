@@ -1084,6 +1084,9 @@ jobs:
       runs_on: windows-2025
       target: x86_64-pc-windows-gnu
       artifact_name: soldr-ci-e2e-windows-x64-gnu
+      # The full native GNU archive replay needs more than the shared 30-minute
+      # target-run default after cold Cargo front doors are serialized (#2701).
+      timeout_minutes: 45
 
   # ---------- Windows ARM64 ----------
   # soldr#1524: the managed ARM64 xwin cache and zlib-ng catalogue row
