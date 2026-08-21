@@ -202,6 +202,12 @@ impl Harness {
             // on Windows lanes too; disable the host-cross guard so the
             // machinery under test stays reachable.
             .env("SOLDR_WINDOWS_LINUX_CROSS_GUARD", "off")
+            // soldr#2319: the same reasoning applies to the Windows-host ->
+            // Linux-GNU Docker delegation. This suite asserts the fetch/build
+            // overlap ordering against a fake cargo on the host; handing the
+            // build to a container would test nothing here (and Windows CI
+            // runners have no Docker Desktop), so opt out of delegation.
+            .env("SOLDR_NO_DOCKER_CROSS", "1")
             // Isolate from any outer environment that would change the
             // overlap decision.
             .env_remove("CARGO_NET_OFFLINE")
