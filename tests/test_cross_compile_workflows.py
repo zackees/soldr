@@ -450,10 +450,11 @@ def test_n_minus_one_build_pairs_the_callers_rustup_and_cargo_homes() -> None:
     )
 
     cargo_home_export = 'export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"'
-    rustup_home_export = 'export RUSTUP_HOME="$(soldr rustup show home)"'
+    rustup_home_export = 'export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"'
     build_command = "ZCCACHE_DISABLE=1 soldr build --release"
     assert cargo_home_export in build
     assert rustup_home_export in build
+    assert "soldr rustup show home" not in build
     assert build.index(cargo_home_export) < build.index(rustup_home_export)
     assert build.index(rustup_home_export) < build.index(build_command)
 

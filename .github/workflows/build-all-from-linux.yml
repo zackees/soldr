@@ -112,7 +112,7 @@ jobs:
           # with the caller CARGO_HOME; otherwise its managed-home discovery
           # can collide with the host Rustup proxy entries (#2703/#836).
           export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
-          export RUSTUP_HOME="$(soldr rustup show home)"
+          export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
           # The pinned wheel predates the vendored zccache cross-target output
           # fix; disable only its compile cache here so this bootstrap lane
           # validates the released driver and artifact layout deterministically.
