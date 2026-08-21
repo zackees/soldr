@@ -269,6 +269,17 @@ pub(crate) async fn run(target: &str, full_args: &[String]) -> Result<i32, Soldr
         argv.join(" ")
     );
 
+    // soldr#2718: `status()` hands this process's stdio to `docker run`, so
+    // every diagnostic the container's soldr writes -- compile errors, a
+    // missing rust-toolchain.toml, an unresolved dependency -- reaches the
+    // user through our streams. That is exactly the "spawns a child that
+    // inherits stdio" case `exit_guard` asks callers to record. Without it
+    // the delegation site's `guarded_exit` sees `spoke() == false` and
+    // appends "soldr emitted no diagnostic and ran no child process ...
+    // this is a fault in soldr itself", directly under the container's
+    // perfectly good explanation. Marked before the spawn, not after, so it
+    // holds no matter how the child fares or which exit path runs next.
+    crate::exit_guard::mark_spoke();
     let status = tokio::process::Command::new("docker")
         .args(&argv)
         .status()
