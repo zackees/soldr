@@ -52,6 +52,12 @@ jobs:
     timeout-minutes: ${{ inputs.run_pep517_smoke && 65 || 30 }}
     env:
       SOLDR_GITHUB_TOKEN: ${{ github.token }}
+      # The extracted full-suite archive legitimately leaves hosted Windows
+      # below Soldr's 5 GiB workstation floor (soldr#2699). Equal 1 GiB
+      # warn/block thresholds retain the emergency backstop without entering
+      # the warn-tier auto-prune path during normal archive replay.
+      SOLDR_TARGET_WARN_FREE_GB: "1"
+      SOLDR_TARGET_BLOCK_FREE_GB: "1"
     steps:
       # Nextest archive replay needs the workspace manifest. Several contract
       # tests also inspect vendored sources, so preserve complete source context.
