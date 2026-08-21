@@ -32,22 +32,19 @@
 //! after dispatch, on paths whose arguments soldr has already seen; this is the
 //! one that must survive whatever the OS hands it.
 
-use std::path::Path;
+mod common;
 
 /// The one file that must never reintroduce the panicking form.
 const ENTRY_POINT: &str = "crates/soldr-cli/src/soldr_main.rs";
 
-fn workspace_root() -> &'static Path {
-    // `CARGO_MANIFEST_DIR` is `crates/soldr-cli`; the workspace is two up.
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("workspace root above crates/soldr-cli")
-}
-
 #[test]
 fn the_cli_entry_point_does_not_use_env_args() {
-    let path = workspace_root().join(ENTRY_POINT);
+    // `common::workspace_root()` resolves at *runtime*. `CARGO_MANIFEST_DIR`
+    // would bake this machine's path into the binary, which breaks the
+    // nextest-archive replay on the target-run lanes (they remap the workspace
+    // on a different host). `test_archived_source_tests_use_only_runtime_
+    // workspace_resolution` enforces that, and caught this file.
+    let path = common::workspace_root().join(ENTRY_POINT);
     let source = std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
 
