@@ -168,11 +168,20 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
     assert config.count("test-group = 'soldr-runtime'") == 2
     assert "test(=gc_list_json_reports_built_project_target_dir)" in config
     assert "[test-groups.soldr-cargo-cold-builds]" in config
+    cold_overrides = [
+        block
+        for block in config.split("[[profile.default.overrides]]")[1:]
+        if "test-group = 'soldr-cargo-cold-builds'" in block
+    ]
+    assert len(cold_overrides) == 1
+    cold_override = cold_overrides[0]
     assert (
         "binary(cli_cargo_linker) + binary(cli_cargo_run_trampoline)"
-        " + binary(cli_cargo_wrappers)" in config
+        " + binary(cli_cargo_wrappers)"
+        " + test(=cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled)"
+        in cold_override
     )
-    assert config.count("test-group = 'soldr-cargo-cold-builds'") == 1
+    assert 'threads-required = "num-cpus"' in cold_override
     assert "binary(cli_build_alias_parity)" in config
     assert "binary(cli_build_fetch_overlap)" in config
     for binary in (
@@ -193,7 +202,7 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
     # without updating the config (soldr#2553 fallout).
     for deleted in ("cli_daemon_tombstone", "session_multiprocess_smoke"):
         assert f"binary({deleted})" not in config
-    assert 'threads-required = "num-cpus"' in config
+    assert config.count('threads-required = "num-cpus"') == 2
     # 6 = the default profile + five measured per-test overrides (the
     # soldr#2624 cargo-fmt double-cold-start entry is the sixth block).
     # 7 = the default profile + six measured override blocks (soldr#2624's

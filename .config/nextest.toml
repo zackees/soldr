@@ -51,12 +51,15 @@ test-group = 'soldr-runtime'
 # Windows, launching several of their cold builds at once has produced clusters
 # of 120s timeouts while neighboring tests complete (soldr#2697). Keep their
 # shared pressure serial without coupling them to broker/daemon lifecycle tests.
+# Reserving every nextest thread makes each member globally exclusive: a
+# one-thread group alone still runs beside unrelated test groups (soldr#2697).
 [test-groups.soldr-cargo-cold-builds]
 max-threads = 1
 
 [[profile.default.overrides]]
-filter = 'binary(cli_cargo_linker) + binary(cli_cargo_run_trampoline) + binary(cli_cargo_wrappers)'
+filter = 'binary(cli_cargo_linker) + binary(cli_cargo_run_trampoline) + binary(cli_cargo_wrappers) + test(=cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled)'
 test-group = 'soldr-cargo-cold-builds'
+threads-required = "num-cpus"
 
 [scripts.wrapper.timeout-diagnostics]
 command = { command-line = ".github/scripts/nextest_timeout_wrapper.py", relative-to = "workspace-root" }
