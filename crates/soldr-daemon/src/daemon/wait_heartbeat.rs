@@ -466,9 +466,42 @@ mod tests {
             Some(Arc::clone(&progress)),
             move |msg| sink_target.lock().unwrap().push(msg),
         );
-        std::thread::sleep(Duration::from_millis(250));
+        // Wait for each beat to be *observed* rather than assuming one lands
+        // inside a fixed sleep. This used to sleep 250ms before recording the
+        // chunk, which at a 10ms interval looks like ~25 beats of margin --
+        // but the margin is on thread startup, not on the interval. On a
+        // contended runner the heartbeat thread's first beat can arrive after
+        // the sleep and after `record_chunk`, making `hits[0]` a post-chunk
+        // "progressing" message and failing the assertion below. Polling the
+        // sink makes the ordering the test actually cares about explicit, and
+        // finishes in milliseconds instead of half a second.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while emitted.lock().unwrap().is_empty() {
+            assert!(
+                Instant::now() < deadline,
+                "no heartbeat was emitted within 10s"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
         progress.record_chunk();
-        std::thread::sleep(Duration::from_millis(250));
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let seen = emitted
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|m| m.contains("progressing"));
+            if seen {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "no progressing beat within 10s of the chunk"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
         drop(guard);
 
         let hits = emitted.lock().unwrap();
