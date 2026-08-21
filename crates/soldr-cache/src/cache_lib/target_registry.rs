@@ -403,8 +403,43 @@ fn canonicalize_or_self(path: &Path) -> PathBuf {
     }
 }
 
+/// Registry key for `path`.
+///
+/// soldr#2700: normalize away the Windows verbatim prefix (`\\?\`) before
+/// the key is formed. `std::fs::canonicalize` returns verbatim paths on
+/// Windows while the cargo front door records the plain form, so the same
+/// `target/` dir landed in the registry twice — once as `C:\...`, once as
+/// `\\?\C:\...`. Two rows for one directory double-count its size in the
+/// GC report and let a delete target a path form the other row still
+/// claims is live.
+///
+/// Stripping is purely lexical and only applies to the drive-letter form
+/// (`\\?\C:\...`). UNC verbatim paths (`\\?\UNC\server\share`) are left
+/// alone: `\\?\UNC\` does not round-trip to `\\server\share` by prefix
+/// removal alone, so rewriting them would produce a path that does not
+/// resolve.
 fn path_to_string(path: &Path) -> String {
-    path.to_string_lossy().to_string()
+    let raw = path.to_string_lossy().to_string();
+    strip_verbatim_prefix(&raw).to_string()
+}
+
+/// Lexically remove a `\\?\` prefix from a drive-letter path. Returns the
+/// input unchanged when the prefix is absent or the remainder is not a
+/// `<letter>:` path (notably the `UNC\` form).
+fn strip_verbatim_prefix(raw: &str) -> &str {
+    let Some(rest) = raw.strip_prefix(r"\\?\") else {
+        return raw;
+    };
+    let mut chars = rest.chars();
+    let is_drive_path = matches!(
+        (chars.next(), chars.next()),
+        (Some(letter), Some(':')) if letter.is_ascii_alphabetic()
+    );
+    if is_drive_path {
+        rest
+    } else {
+        raw
+    }
 }
 
 /// Current unix timestamp in seconds.
@@ -879,5 +914,67 @@ mod tests {
             workspace_root_for_target(&target),
             PathBuf::from("/home/me/repo")
         );
+    }
+
+    #[test]
+    fn verbatim_and_plain_windows_paths_collapse_to_one_row() {
+        // soldr#2700: `std::fs::canonicalize` hands back `\\?\C:\...` on
+        // Windows while the cargo front door records `C:\...`. Before
+        // normalization the registry held both, double-counting the
+        // directory's size and letting a delete of one form leave the
+        // other claiming the target is still live.
+        let registry = TargetRegistry::open_in_memory().unwrap();
+        registry
+            .upsert_with_time(Path::new(r"C:\Users\dev\proj\target"), 100)
+            .unwrap();
+        registry
+            .upsert_with_time(Path::new(r"\\?\C:\Users\dev\proj\target"), 200)
+            .unwrap();
+
+        let rows = registry.list().unwrap();
+        assert_eq!(rows.len(), 1, "expected one row, got {rows:?}");
+        assert_eq!(rows[0].path, PathBuf::from(r"C:\Users\dev\proj\target"));
+        assert_eq!(rows[0].last_used, 200, "later touch should win");
+    }
+
+    #[test]
+    fn verbatim_path_is_readable_and_removable_through_the_plain_key() {
+        // The normalization has to apply to every accessor, not just
+        // upsert -- otherwise a row written one way is unreachable the
+        // other way and `dropped_missing` can never clear it.
+        let registry = TargetRegistry::open_in_memory().unwrap();
+        registry
+            .upsert_with_time(Path::new(r"\\?\C:\Users\dev\proj\target"), 55)
+            .unwrap();
+
+        let found = registry
+            .get(Path::new(r"C:\Users\dev\proj\target"))
+            .unwrap()
+            .expect("row should be reachable via the plain form");
+        assert_eq!(found.last_used, 55);
+        assert!(registry
+            .remove(Path::new(r"\\?\C:\Users\dev\proj\target"))
+            .unwrap());
+        assert!(registry.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn strip_verbatim_prefix_leaves_unc_and_plain_paths_alone() {
+        // `\\?\UNC\server\share` does not become `\\server\share` by
+        // dropping the prefix, so rewriting it would yield a path that
+        // resolves to nothing. Leave it exactly as it came in.
+        assert_eq!(
+            strip_verbatim_prefix(r"\\?\UNC\server\share\target"),
+            r"\\?\UNC\server\share\target"
+        );
+        assert_eq!(
+            strip_verbatim_prefix(r"C:\plain\target"),
+            r"C:\plain\target"
+        );
+        assert_eq!(
+            strip_verbatim_prefix("/unix/style/target"),
+            "/unix/style/target"
+        );
+        assert_eq!(strip_verbatim_prefix(r"\\?\D:\x"), r"D:\x");
     }
 }
