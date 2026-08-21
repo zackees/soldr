@@ -56,6 +56,13 @@ jobs:
     name: ${{ matrix.alias }} (${{ matrix.target }})
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    # The hosted image's pre-existing toolchain can contain an untracked
+    # cargo-fmt binary that conflicts with rustfmt component preparation
+    # (#2703/#836). Establish a fresh pair before rust-toolchain runs so the
+    # action and the pinned N-1 driver own the same clean toolchain state.
+    env:
+      CARGO_HOME: ${{ runner.temp }}/soldr-cargo
+      RUSTUP_HOME: ${{ runner.temp }}/soldr-rustup
     strategy:
       fail-fast: false
       matrix:
@@ -107,12 +114,6 @@ jobs:
         run: |
           set -euo pipefail
           echo "::group::soldr build --target ${{ matrix.input || matrix.alias }} (${{ matrix.target }})"
-          # soldr 0.9.2 predates the one-canonical-home-pair fix (#1799).
-          # Pin its component preparation to the caller Rustup home paired
-          # with the caller CARGO_HOME; otherwise its managed-home discovery
-          # can collide with the host Rustup proxy entries (#2703/#836).
-          export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
-          export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
           # The pinned wheel predates the vendored zccache cross-target output
           # fix; disable only its compile cache here so this bootstrap lane
           # validates the released driver and artifact layout deterministically.
