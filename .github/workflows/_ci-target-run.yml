@@ -40,6 +40,14 @@ on:
           Give a slow native archive replay a 55-minute job budget instead of
           the 30-minute default. The PEP 517 smoke keeps its larger combined
           budget below.
+      replay_partitions:
+        type: string
+        required: false
+        default: '[{"label":"all","value":"","run_followup":true}]'
+        description: >-
+          JSON matrix of nextest partition labels and values. Multiple shards
+          run on fresh workers so fixture-local caches stay disk-bounded while
+          the union still replays the complete archive.
 
 permissions:
   contents: read
@@ -53,8 +61,12 @@ env:
 
 jobs:
   target-run:
-    name: target-run ${{ inputs.target }}
+    name: target-run ${{ inputs.target }} (${{ matrix.replay.label }})
     runs-on: ${{ inputs.runs_on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        replay: ${{ fromJSON(inputs.replay_partitions) }}
     # The PEP 517 smoke adds native wheel compilation plus 3m/15m inner smoke
     # limits on top of its replay budget (soldr#2615). A target may request a
     # larger bounded replay budget when native archive execution proves slower.
@@ -72,6 +84,8 @@ jobs:
       # tools into hundreds of fixture roots (soldr#2704). Dedicated managed-
       # tooling tests remove this escape hatch before asserting injection.
       SOLDR_USE_SYSTEM_CMAKE: "1"
+      REPLAY_PARTITION: ${{ matrix.replay.value }}
+      REPLAY_PARTITION_LABEL: ${{ matrix.replay.label }}
     steps:
       # Nextest archive replay needs the workspace manifest. Several contract
       # tests also inspect vendored sources, so preserve complete source context.
@@ -214,13 +228,18 @@ jobs:
 
           archive="artifact/${{ inputs.artifact_name }}-tests.tar.zst"
           test -f "$archive"
+          partition_args=()
+          if [ -n "$REPLAY_PARTITION" ]; then
+            partition_args=(--partition "$REPLAY_PARTITION")
+          fi
           "$NEXTEST_BIN" nextest list \
             --archive-file "$archive" \
             --workspace-remap "$GITHUB_WORKSPACE" \
             --profile target-run \
+            "${partition_args[@]}" \
             --message-format json-pretty > "$NEXTEST_LIST_JSON"
           python .github/scripts/target_run_summary.py \
-            --target '${{ inputs.target }}' \
+            --target '${{ inputs.target }} (${{ matrix.replay.label }})' \
             --output "$TARGET_RUN_SUMMARY" \
             --list-json "$NEXTEST_LIST_JSON"
 
@@ -229,12 +248,13 @@ jobs:
             --archive-file "$archive" \
             --workspace-remap "$GITHUB_WORKSPACE" \
             --profile target-run \
+            "${partition_args[@]}" \
             --max-fail 3:immediate
           run_status=$?
           set -e
           summary_status=0
           python .github/scripts/target_run_summary.py \
-            --target '${{ inputs.target }}' \
+            --target '${{ inputs.target }} (${{ matrix.replay.label }})' \
             --output "$TARGET_RUN_SUMMARY" \
             --list-json "$NEXTEST_LIST_JSON" \
             --junit "$GITHUB_WORKSPACE/target/nextest/target-run/junit.xml" \
@@ -252,13 +272,13 @@ jobs:
       # soldr#1438/#1479 rationale for the cache key shape is unchanged from
       # the standalone job; the key is target-triple-scoped now.
       - name: Restore cargo + target caches for wheel build
-        if: ${{ inputs.run_pep517_smoke }}
+        if: ${{ inputs.run_pep517_smoke && matrix.replay.run_followup }}
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           shared-key: pep517-${{ inputs.target }}-ci-release-v2
 
       - name: Build soldr wheel under test
-        if: ${{ inputs.run_pep517_smoke }}
+        if: ${{ inputs.run_pep517_smoke && matrix.replay.run_followup }}
         shell: bash
         run: |
           set -euo pipefail
@@ -277,7 +297,7 @@ jobs:
           maturin build --profile ci-release --out dist
 
       - name: Run downstream PEP 517 daemon smoke
-        if: ${{ inputs.run_pep517_smoke }}
+        if: ${{ inputs.run_pep517_smoke && matrix.replay.run_followup }}
         shell: bash
         env:
           SOLDR_DAEMON_REQUIRED: "1"
@@ -289,7 +309,7 @@ jobs:
           --log-dir "${{ runner.temp }}/pep517-soldr-logs"
 
       - name: Upload PEP 517 Soldr logs
-        if: ${{ always() && inputs.run_pep517_smoke }}
+        if: ${{ always() && inputs.run_pep517_smoke && matrix.replay.run_followup }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: pep517-soldr-logs-${{ inputs.target }}
@@ -301,7 +321,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: target-run-${{ inputs.target }}-diagnostics
+          name: target-run-${{ inputs.target }}-${{ matrix.replay.label }}-diagnostics
           path: |
             ${{ runner.temp }}/soldr-toolchain-ensure.json
             ${{ runner.temp }}/soldr-toolchain-link.json

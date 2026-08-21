@@ -143,7 +143,7 @@ def test_windows_target_runner_pairs_share_their_producer_artifacts() -> None:
         assert _job_input(run, "runs_on") == runner
 
 
-def test_windows_gnu_target_run_gets_a_bounded_extended_replay_budget() -> None:
+def test_windows_gnu_target_run_is_bounded_and_disk_safe() -> None:
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
     target_run = (WORKFLOWS / "_ci-target-run.yml").read_text(encoding="utf-8")
     gnu_run = _job_block(ci, "e2e-windows-x64-gnu", "e2e-windows-arm64-build")
@@ -155,6 +155,20 @@ def test_windows_gnu_target_run_gets_a_bounded_extended_replay_budget() -> None:
         in target_run
     )
     assert _job_input(gnu_run, "extended_replay") == "true"
+    partitions = json.loads(_job_input(gnu_run, "replay_partitions").strip("'"))
+    assert partitions == [
+        {"label": "1-of-3", "value": "hash:1/3", "run_followup": False},
+        {"label": "2-of-3", "value": "hash:2/3", "run_followup": False},
+        {"label": "3-of-3", "value": "hash:3/3", "run_followup": False},
+    ]
+    assert "fromJSON(inputs.replay_partitions)" in target_run
+    assert target_run.count('"${partition_args[@]}"') == 2
+    assert "nextest list" in target_run
+    assert "nextest run" in target_run
+    assert "matrix.replay.label }}-diagnostics" in target_run
+    assert target_run.count(
+        "inputs.run_pep517_smoke && matrix.replay.run_followup"
+    ) == 4
 
 
 def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
@@ -437,7 +451,10 @@ def test_pep517_platform_smokes_run_on_pull_requests() -> None:
         "Run downstream PEP 517 daemon smoke",
     ]:
         step = _step_block(target_run, step_name)
-        assert "if: ${{ inputs.run_pep517_smoke }}" in step
+        assert (
+            "if: ${{ inputs.run_pep517_smoke && matrix.replay.run_followup }}"
+            in step
+        )
     # The smoke must run after (and never gate) the archive replay.
     assert target_run.index(
         "      - name: Run complete pre-built test archive\n"
