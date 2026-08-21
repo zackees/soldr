@@ -22,22 +22,24 @@ TOP_LEVEL_KEY = re.compile(r"^    ([A-Za-z0-9_-]+):(?:\s*(.*))?$")
 INTEGER = re.compile(r"^[0-9]+$")
 # soldr#2615: a reusable workflow may size its budget by a boolean input
 # (`run_pep517_smoke` grows the target-run job only when the wheel smoke
-# rides along). Both branches are static integers, so the bound is still
-# fully verifiable here — arbitrary expressions remain rejected.
+# rides along). Additional boolean gates may select other static integer
+# budgets (#2701), so every outcome remains fully verifiable while arbitrary
+# expressions stay rejected.
 CONDITIONAL = re.compile(
-    r"^\$\{\{\s*inputs\.[A-Za-z0-9_-]+\s*&&\s*([0-9]+)\s*\|\|\s*([0-9]+)\s*\}\}$"
+    r"^\$\{\{\s*(?:inputs\.[A-Za-z0-9_-]+\s*&&\s*[0-9]+\s*\|\|\s*)+"
+    r"[0-9]+\s*\}\}$"
 )
 
 
 def _timeout_value_is_valid(value: str) -> bool:
-    """A literal 1..360 integer, or an inputs-gated choice between two."""
+    """A literal 1..360 integer, or boolean-input gates over static values."""
 
     if INTEGER.fullmatch(value):
         return 1 <= int(value) <= 360
-    conditional = CONDITIONAL.fullmatch(value)
-    return conditional is not None and all(
-        1 <= int(branch) <= 360 for branch in conditional.groups()
-    )
+    if CONDITIONAL.fullmatch(value) is None:
+        return False
+    branches = re.findall(r"(?:&&|\|\|)\s*([0-9]+)", value)
+    return bool(branches) and all(1 <= int(branch) <= 360 for branch in branches)
 
 
 def _job_blocks(workflow: str) -> list[tuple[str, list[str]]]:

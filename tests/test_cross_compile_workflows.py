@@ -148,10 +148,13 @@ def test_windows_gnu_target_run_gets_a_bounded_extended_replay_budget() -> None:
     target_run = (WORKFLOWS / "_ci-target-run.yml").read_text(encoding="utf-8")
     gnu_run = _job_block(ci, "e2e-windows-x64-gnu", "e2e-windows-arm64-build")
 
-    assert "timeout_minutes:" in target_run
-    assert "default: 30" in target_run
-    assert "inputs.run_pep517_smoke && 65 || inputs.timeout_minutes" in target_run
-    assert _job_input(gnu_run, "timeout_minutes") == "55"
+    assert "extended_replay:" in target_run
+    assert "default: false" in target_run
+    assert (
+        "inputs.run_pep517_smoke && 65 || inputs.extended_replay && 55 || 30"
+        in target_run
+    )
+    assert _job_input(gnu_run, "extended_replay") == "true"
 
 
 def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
