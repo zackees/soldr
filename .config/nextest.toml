@@ -65,11 +65,19 @@ test-group = 'soldr-runtime'
 # shared pressure serial without coupling them to broker/daemon lifecycle tests.
 # Reserving every nextest thread makes each member globally exclusive: a
 # one-thread group alone still runs beside unrelated test groups (soldr#2697).
+#
+# The second windows-gnu replay named two more members of the same family
+# (run 32470380389): `cargo_without_timeout_allows_progress_cpu_and_lock_waits`
+# runs three back-to-back isolated-HOME front doors, and
+# `cargo_front_door_forces_msvc_target_even_with_polluted_path` runs a real
+# fixture build with a scrubbed PATH. Both timed out at exactly 120s while
+# 852 siblings passed, so they join the reservation rather than getting a
+# larger private budget.
 [test-groups.soldr-cargo-cold-builds]
 max-threads = 1
 
 [[profile.default.overrides]]
-filter = 'binary(cli_cargo_linker) + binary(cli_cargo_run_trampoline) + binary(cli_cargo_wrappers) + test(=cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled)'
+filter = 'binary(cli_cargo_linker) + binary(cli_cargo_run_trampoline) + binary(cli_cargo_wrappers) + test(=cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled) + test(=cargo_without_timeout_allows_progress_cpu_and_lock_waits) + test(=cargo_front_door_forces_msvc_target_even_with_polluted_path)'
 test-group = 'soldr-cargo-cold-builds'
 threads-required = "num-cpus"
 

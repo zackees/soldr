@@ -198,6 +198,14 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
         " + test(=cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled)"
         in cold_override
     )
+    # soldr#2697, second windows-gnu replay: these two cold front-door tests
+    # timed out at exactly 120s beside 852 passing siblings. They belong to the
+    # reservation, not to a larger private timeout budget.
+    for cold_member in (
+        "test(=cargo_without_timeout_allows_progress_cpu_and_lock_waits)",
+        "test(=cargo_front_door_forces_msvc_target_even_with_polluted_path)",
+    ):
+        assert cold_member in cold_override
     assert 'threads-required = "num-cpus"' in cold_override
     assert "binary(cli_build_alias_parity)" in config
     assert "binary(cli_build_fetch_overlap)" in config
