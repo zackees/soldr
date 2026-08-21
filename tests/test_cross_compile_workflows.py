@@ -445,14 +445,16 @@ def test_pep517_platform_smokes_run_on_pull_requests() -> None:
 
 def test_n_minus_one_build_uses_clean_paired_toolchain_homes() -> None:
     build_all = (WORKFLOWS / "build-all-from-linux.yml").read_text(encoding="utf-8")
-    job = build_all.split("  build-all:\n", 1)[1].split("    steps:\n", 1)[0]
+    isolation = _step_block(build_all, "Isolate N-1 toolchain homes")
     build = _step_block(
         build_all, "Build soldr — soldr build --release --target ${{ matrix.alias }}"
     )
 
-    assert "CARGO_HOME: ${{ runner.temp }}/soldr-cargo" in job
-    assert "RUSTUP_HOME: ${{ runner.temp }}/soldr-rustup" in job
-    assert job.index("    env:\n") < job.index("    strategy:\n")
+    assert 'echo "CARGO_HOME=$RUNNER_TEMP/soldr-cargo" >> "$GITHUB_ENV"' in isolation
+    assert 'echo "RUSTUP_HOME=$RUNNER_TEMP/soldr-rustup" >> "$GITHUB_ENV"' in isolation
+    assert build_all.index("      - name: Isolate N-1 toolchain homes\n") < build_all.index(
+        "      - name: Install Rust toolchain + cross target\n"
+    )
     assert "export CARGO_HOME=" not in build
     assert "export RUSTUP_HOME=" not in build
     assert "soldr rustup show home" not in build

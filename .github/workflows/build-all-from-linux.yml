@@ -56,13 +56,6 @@ jobs:
     name: ${{ matrix.alias }} (${{ matrix.target }})
     runs-on: ubuntu-24.04
     timeout-minutes: 90
-    # The hosted image's pre-existing toolchain can contain an untracked
-    # cargo-fmt binary that conflicts with rustfmt component preparation
-    # (#2703/#836). Establish a fresh pair before rust-toolchain runs so the
-    # action and the pinned N-1 driver own the same clean toolchain state.
-    env:
-      CARGO_HOME: ${{ runner.temp }}/soldr-cargo
-      RUSTUP_HOME: ${{ runner.temp }}/soldr-rustup
     strategy:
       fail-fast: false
       matrix:
@@ -83,6 +76,16 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           submodules: recursive
+
+      # The hosted image's pre-existing toolchain can contain an untracked
+      # cargo-fmt binary that conflicts with rustfmt component preparation
+      # (#2703/#836). Establish a fresh pair before rust-toolchain runs so the
+      # action and the pinned N-1 driver own the same clean toolchain state.
+      - name: Isolate N-1 toolchain homes
+        shell: bash
+        run: |
+          echo "CARGO_HOME=$RUNNER_TEMP/soldr-cargo" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=$RUNNER_TEMP/soldr-rustup" >> "$GITHUB_ENV"
 
       # Rust std for the cross target. (This is the rust toolchain, not
       # a cross C toolchain — soldr provisions the latter itself.)
