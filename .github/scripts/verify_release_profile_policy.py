@@ -73,6 +73,19 @@ RELEASE_FLAG = re.compile(r"(?<![\w-])--release(?![\w-])")
 PROFILE_RELEASE = re.compile(r"--profile[=\s]+release(?![\w-])")
 
 
+SCRIPT_REFERENCE = re.compile(r"\.github/scripts/([A-Za-z0-9_.-]+\.py)")
+
+
+def referenced_scripts(text: str, scripts_dir: Path) -> list[Path]:
+    """Existing `.github/scripts/*.py` files a workflow invokes."""
+    found = []
+    for name in sorted(set(SCRIPT_REFERENCE.findall(text))):
+        candidate = scripts_dir / name
+        if candidate.is_file():
+            found.append(candidate)
+    return found
+
+
 def uses_release_profile(line: str) -> bool:
     """True when *line* asks cargo for the `release` profile, either spelling."""
     return bool(RELEASE_FLAG.search(line) or PROFILE_RELEASE.search(line))
@@ -165,9 +178,21 @@ def unused_allowlist_entries(workflows_dir: Path) -> list[str]:
             stale.append(f"{name} (no such workflow)")
             continue
         text = path.read_text(encoding="utf-8")
+        # Follow delegation. soldr#2469 step 2.2 is moving release logic out of
+        # YAML into `.github/scripts/*.py`, so an allowlisted workflow can stop
+        # containing `--release` while still being the thing that builds the
+        # shipped binaries -- release-auto.yml did exactly that when its matrix
+        # build moved to `native_release_build.py`. Reading only the YAML would
+        # report the entry stale and invite someone to delete a live exemption.
+        sources = [text]
+        sources.extend(
+            script.read_text(encoding="utf-8")
+            for script in referenced_scripts(text, path.parent.parent / "scripts")
+        )
         if not any(
             uses_release_profile(line)
-            for line in text.splitlines()
+            for source in sources
+            for line in source.splitlines()
             if not is_comment(line)
         ):
             stale.append(f"{name} (no longer uses --release)")
