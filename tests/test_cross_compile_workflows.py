@@ -443,6 +443,21 @@ def test_pep517_platform_smokes_run_on_pull_requests() -> None:
     ) < target_run.index("      - name: Build soldr wheel under test\n")
 
 
+def test_n_minus_one_build_pairs_the_callers_rustup_and_cargo_homes() -> None:
+    build_all = (WORKFLOWS / "build-all-from-linux.yml").read_text(encoding="utf-8")
+    build = _step_block(
+        build_all, "Build soldr — soldr build --release --target ${{ matrix.alias }}"
+    )
+
+    cargo_home_export = 'export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"'
+    rustup_home_export = 'export RUSTUP_HOME="$(soldr rustup show home)"'
+    build_command = "ZCCACHE_DISABLE=1 soldr build --release"
+    assert cargo_home_export in build
+    assert rustup_home_export in build
+    assert build.index(cargo_home_export) < build.index(rustup_home_export)
+    assert build.index(rustup_home_export) < build.index(build_command)
+
+
 def test_manual_cross_compile_workflows_use_blessed_supported_targets() -> None:
     build_all = (WORKFLOWS / "build-all-from-linux.yml").read_text(encoding="utf-8")
     cross_all = (WORKFLOWS / "cross-compile-all-targets.yml").read_text(
