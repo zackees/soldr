@@ -654,8 +654,8 @@ mod tests {
                 .expect("queue event");
             assert!(batcher.flush().await.is_err(), "file parent must fail");
 
-            std::fs::remove_file(&parent).expect("remove blocking parent");
-            std::fs::create_dir(&parent).expect("create db parent");
+            crate::core::replace_file_with_dir(&parent, Duration::from_secs(10))
+                .expect("swap blocking parent for the real directory");
             crate::daemon::db::ensure_initialized(&path).expect("init");
             batcher.flush().await.expect("retry flush");
             let (count, _, _) = aggregate_session(&path, 101).expect("aggregate");

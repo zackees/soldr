@@ -32,8 +32,9 @@
 //! with `tempfile::Builder::new().tempdir_in(...)` so cleanup stays RAII —
 //! `tempfile` is deliberately not a runtime dependency of this crate.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use super::paths::SoldrPaths;
 
@@ -119,9 +120,91 @@ pub fn ensure_temp_root_for(paths: &SoldrPaths) -> PathBuf {
     }
 }
 
+/// Replace an existing file with a directory at the same path.
+///
+/// Tests use this to park an unusable path in front of code that expects a
+/// directory, then hand the real directory over and assert the retry
+/// succeeds. The naive `remove_file` + `create_dir` pair is **not atomic on
+/// Windows** and has no safe non-retrying form.
+///
+/// `DeleteFileW` does not remove a name. It marks the file delete-pending;
+/// the name stays in its parent directory until the last open handle closes.
+/// Anything holding the file open with `FILE_SHARE_DELETE` — which is exactly
+/// how Defender's real-time scanner opens a file it is inspecting — keeps that
+/// name alive after `remove_file` has already returned `Ok`. The immediately
+/// following `create_dir` then collides with the surviving name and fails with
+/// `ERROR_ALREADY_EXISTS` (183), reported as [`std::io::ErrorKind::AlreadyExists`].
+///
+/// So the removal is retried until the name is genuinely gone, bounded by
+/// `deadline`. On Unix the first attempt always succeeds and the loop costs
+/// nothing, so there is no `cfg` split.
+///
+/// See soldr#2714, where this failed a `.gitignore`-only PR on the
+/// windows-msvc target-run lane.
+pub fn replace_file_with_dir(path: &Path, deadline: Duration) -> std::io::Result<()> {
+    std::fs::remove_file(path)?;
+    let give_up_at = Instant::now() + deadline;
+    loop {
+        match std::fs::create_dir(path) {
+            Ok(()) => return Ok(()),
+            // The only recoverable case: the deleted name has not vanished
+            // yet. Every other error is reported immediately -- a retry loop
+            // that swallows, say, PermissionDenied would just stall until the
+            // deadline and then blame the wrong thing.
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                if Instant::now() >= give_up_at {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::AlreadyExists,
+                        format!(
+                            concat!(
+                                "{} was still delete-pending after {:?}; ",
+                                "some process is holding the removed file open"
+                            ),
+                            path.display(),
+                            deadline
+                        ),
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replacing_a_file_with_a_dir_leaves_a_directory() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let path = dir.path().join("blocking");
+        std::fs::write(&path, "not a directory").expect("seed file");
+
+        replace_file_with_dir(&path, Duration::from_secs(10)).expect("swap");
+
+        assert!(path.is_dir(), "the path must end up a directory");
+    }
+
+    // The retry loop must not become a catch-all. Only AlreadyExists means
+    // "the delete has not landed yet"; anything else has to surface at once
+    // instead of stalling until the deadline and then blaming delete-pending.
+    #[test]
+    fn a_missing_file_fails_immediately_rather_than_looping() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let path = dir.path().join("absent");
+
+        let started = Instant::now();
+        let err = replace_file_with_dir(&path, Duration::from_secs(30))
+            .expect_err("removing a file that is not there must fail");
+
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the error must be reported without waiting out the deadline"
+        );
+    }
 
     // Two properties that pull against each other, so one test each.
     //
