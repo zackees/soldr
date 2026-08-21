@@ -616,18 +616,10 @@ def test_mac_x64_distribution_uses_pinned_setup_soldr_on_intel() -> None:
     assert "version: 0.8.44" in release
     assert "cross-targets: ${{ matrix.setup_target }}" in release
     assert "target-wheel-hook" in release
-    # soldr#2469 step 2.2: asset names are generated from
-    # ci/canonical-targets.json via release_completeness.py, not inlined.
-    # The mac-x64 archive + intel-wheel guarantees these greps used to pin
-    # now live in the contract itself (test_release_completeness.py pins
-    # x86_64-apple-darwin -> macosx_10_12_x86_64, making a fabricated
-    # 11_0 intel tag impossible); here we pin that both release asset
-    # gates actually invoke the generator.
-    # soldr#2469 step 2.2: one gate still calls the generator from YAML; the
-    # prepare-side gate now imports it (release_detect.py). Both still derive
-    # from ci/canonical-targets.json — asserted in
-    # tests/test_canonical_target_contract.py.
-    assert release.count("--list-expected-github-assets") == 1
+    # soldr#2469 step 2.2: the GitHub gate delegates both release lookup
+    # and contract asset generation to a unit-tested script; the
+    # prepare-side gate imports the same generator (release_detect.py).
+    assert "verify_github_release_assets.py" in release
 
     sdk_step = _step_block(release, "Restore the native macOS SDK root")
     assert "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" in sdk_step
@@ -745,7 +737,7 @@ def test_release_target_prepare_retries_transient_setup_failure() -> None:
     assert '--github-env "$GITHUB_ENV"' in retry
     assert "Get-Command soldr -ErrorAction Stop" in materialize
     assert ".github/scripts/prepare_release_wheel.py" in wheel
-    assert '--wheel-hook \'${{ steps.setup_soldr.outputs.target-wheel-hook }}\'' in wheel
+    assert "--wheel-hook '${{ steps.setup_soldr.outputs.target-wheel-hook }}'" in wheel
 
 
 def test_release_supports_isolated_npm_recovery_from_an_immutable_ref() -> None:
@@ -807,7 +799,9 @@ def test_windows_wheel_does_not_reuse_archive_executable_output() -> None:
         REPO_ROOT / ".github" / "scripts" / "prepare_release_wheel.py"
     ).read_text(encoding="utf-8")
     assert "runner_binary_suffix(runner_os)" in wheel_preparer
-    package_archive = _step_block(release, "Package combined archive (tar.zst level 19)")
+    package_archive = _step_block(
+        release, "Package combined archive (tar.zst level 19)"
+    )
     archive_packager = (
         REPO_ROOT / ".github" / "scripts" / "package_release_archive.py"
     ).read_text(encoding="utf-8")
