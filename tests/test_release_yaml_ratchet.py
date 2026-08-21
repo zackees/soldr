@@ -22,10 +22,11 @@ WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "release-auto.y
 # Measured 2026-08-17 (soldr#2469 step 2.2 ratchet start) at 187, then:
 #   160 — PyPI wheel-visibility poll -> `.github/scripts/verify_pypi_wheels.py`
 #   117 — tag pre-create + draft-release create -> `.github/scripts/release_publish.py`
+#    97 — matrix release-binary build -> `native_release_build.py matrix-binary`
 # Lower this number in the same PR whenever extraction shrinks the workflow;
 # never raise it — new release logic belongs in a `ci/*.py` or
 # `.github/scripts/*.py` script with unit tests, invoked from a one-line `run:`.
-INLINE_RUN_LINE_CEILING = 117
+INLINE_RUN_LINE_CEILING = 97
 
 
 def count_inline_run_lines(text: str) -> int:

@@ -195,30 +195,9 @@ jobs:
           # defense. These lanes previously ran unbounded on a 4-vCPU runner.
           CARGO_BUILD_JOBS: "2"
           SOLDR_JOBS: "2"
-        run: |
-          set -euo pipefail
-          git restore -- Cargo.toml Cargo.lock crates/soldr-cli/Cargo.toml || true
-          target='${{ matrix.target }}'
-          case "$RUNNER_OS" in
-            Windows) driver="target/release/soldr.exe" ;;
-            *) driver="target/release/soldr" ;;
-          esac
-          "$driver" cargo clean -p soldr-cli --target "$target" --release 2>/dev/null || true
-          # Avoid the resident embedded daemon that caused the old
-          # Linux-hosted cross-build memory collision.
-          soldr_build_args=(--no-cache)
-          "$driver" \
-            "${soldr_build_args[@]}" \
-            build --release --target "$target" \
-            --package soldr-cli \
-            --bin soldr
-
-          if [[ "$target" == *-unknown-linux-gnu ]]; then
-            "$driver" prepare --target "$target" --github-env "$GITHUB_ENV"
-          fi
-          echo "=== post-build diagnostic: target/$target/release/ ==="
-          ls -la "target/$target/release/" 2>&1 | head -20 || true
-          echo "==================================================="
+        run: >-
+          python3 .github/scripts/native_release_build.py matrix-binary
+          --target '${{ matrix.target }}'
 
       - name: Build ARM64 musl release binary natively
         if: matrix.target == 'aarch64-unknown-linux-musl'
