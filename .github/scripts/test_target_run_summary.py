@@ -135,6 +135,48 @@ class TargetRunSummaryTests(unittest.TestCase):
                     "aarch64-unknown-linux-gnu", test_list, junit
                 )
 
+    def test_early_stop_with_failures_is_not_a_coverage_hole(self) -> None:
+        """soldr#2724: `--max-fail 3:immediate` leaves tests unexecuted.
+
+        The lane stops on its third failure by design, so under-execution
+        *with* failures is the bounded stop, not a partition quietly
+        skipping tests. Before this, the summary raised here -- so a lane
+        that failed the way it was configured to fail reported a Python
+        ValueError about counts instead of the tests that failed, and wrote
+        no summary artifact at all.
+        """
+        with tempfile.TemporaryDirectory() as raw_temp:
+            temp = Path(raw_temp)
+            test_list = temp / "list.json"
+            junit = temp / "junit.xml"
+            self.write_list(test_list, discovered=8, ignored=1)
+            junit.write_text('<testsuite tests="4" failures="2" />', encoding="utf-8")
+            summary = target_run_summary.build_summary(
+                "x86_64-pc-windows-msvc", test_list, junit
+            )
+        self.assertEqual(summary["phase"], "completed")
+        self.assertEqual(summary["discovered"], 8)
+        self.assertEqual(summary["executed"], 4)
+        self.assertEqual(summary["failed"], 2)
+
+    def test_over_execution_still_raises_even_with_failures(self) -> None:
+        """An early stop can only ever run *fewer* tests.
+
+        Running more than were discovered is unexplained by `--max-fail`, so
+        the presence of failures must not excuse it -- otherwise the
+        soldr#2724 allowance would blank the guard for any failing run.
+        """
+        with tempfile.TemporaryDirectory() as raw_temp:
+            temp = Path(raw_temp)
+            test_list = temp / "list.json"
+            junit = temp / "junit.xml"
+            self.write_list(test_list, discovered=8, ignored=1)
+            junit.write_text('<testsuite tests="10" failures="1" />', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "coverage counts disagree"):
+                target_run_summary.build_summary(
+                    "x86_64-pc-windows-msvc", test_list, junit
+                )
+
     def test_hash_shard_allows_a_bounded_subset(self) -> None:
         with tempfile.TemporaryDirectory() as raw_temp:
             temp = Path(raw_temp)
