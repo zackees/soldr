@@ -1,4 +1,4 @@
-"""Parity guard for soldr's canonical eight-target contract (issue #1695)."""
+"""Parity guard for soldr's canonical target contract (issues #1695/#2336)."""
 
 from __future__ import annotations
 
@@ -19,9 +19,9 @@ def contract_targets() -> list[dict]:
     payload = json.loads(CONTRACT.read_text(encoding="utf-8"))
     assert payload["schema_version"] == 1
     targets = payload["targets"]
-    assert len(targets) == 8, "canonical contract must contain exactly eight targets"
-    assert len({row["triple"] for row in targets}) == 8, "duplicate canonical triple"
-    assert len({row["alias"] for row in targets}) == 8, "duplicate canonical alias"
+    assert len(targets) == 9, "canonical contract must contain exactly nine targets"
+    assert len({row["triple"] for row in targets}) == 9, "duplicate canonical triple"
+    assert len({row["alias"] for row in targets}) == 9, "duplicate canonical alias"
     return targets
 
 
@@ -183,8 +183,12 @@ def test_ci_and_blessed_alias_workflow_cover_every_target() -> None:
         matrix == expected
     ), "blessed build alias matrix drifted from canonical-targets.json"
     assert (
-        '--target "${{ matrix.alias }}"' in blessed
-    ), "workflow no longer exercises aliases through soldr build"
+        '--target "${{ matrix.input || matrix.alias }}"' in blessed
+    ), "workflow no longer exercises canonical build inputs through soldr build"
+    assert "input: x86_64-pc-windows-gnu" in blessed, (
+        "the N-1 bootstrap must use the GNU triple until a released soldr "
+        "contains the new canonical alias"
+    )
 
 
 def test_release_inclusions_and_exclusions_match_contract() -> None:
@@ -257,8 +261,20 @@ def test_catalogue_mappings_cover_every_target() -> None:
     for filename, constant in syslib_tables.items():
         mapping = rust_tuple_table(fetch / filename, constant)
         for row in rows:
+            exclusions = set(row["catalogue"].get("syslib_exclusions", []))
+            if filename in exclusions:
+                assert row["triple"] not in mapping, (
+                    f"{constant} unexpectedly covers explicitly excluded "
+                    f"target {row['triple']}"
+                )
+                continue
+            expected_slug = (
+                row["catalogue"].get("host_tool_slug", row["catalogue"]["syslib_slug"])
+                if filename == "uv_tool.rs"
+                else row["catalogue"]["syslib_slug"]
+            )
             assert (
-                mapping.get(row["triple"]) == row["catalogue"]["syslib_slug"]
+                mapping.get(row["triple"]) == expected_slug
             ), f"{constant} mapping drifted for {row['triple']}"
 
 

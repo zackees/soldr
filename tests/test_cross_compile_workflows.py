@@ -143,6 +143,35 @@ def test_windows_target_runner_pairs_share_their_producer_artifacts() -> None:
         assert _job_input(run, "runs_on") == runner
 
 
+def test_windows_gnu_target_run_is_bounded_and_disk_safe() -> None:
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    target_run = (WORKFLOWS / "_ci-target-run.yml").read_text(encoding="utf-8")
+    gnu_run = _job_block(ci, "e2e-windows-x64-gnu", "e2e-windows-arm64-build")
+
+    assert "extended_replay:" in target_run
+    assert "default: false" in target_run
+    assert (
+        "inputs.run_pep517_smoke && 65 || inputs.extended_replay && 55 || 30"
+        in target_run
+    )
+    assert _job_input(gnu_run, "extended_replay") == "true"
+    partitions = json.loads(_job_input(gnu_run, "replay_partitions").strip("'"))
+    assert partitions == [
+        {"label": "1-of-3", "value": "hash:1/3", "run_followup": False},
+        {"label": "2-of-3", "value": "hash:2/3", "run_followup": False},
+        {"label": "3-of-3", "value": "hash:3/3", "run_followup": False},
+    ]
+    assert "fromJSON(inputs.replay_partitions)" in target_run
+    assert target_run.count('--partition "$REPLAY_PARTITION"') == 4
+    assert "partition_args" not in target_run
+    assert "nextest list" in target_run
+    assert "nextest run" in target_run
+    assert "matrix.replay.label }}-diagnostics" in target_run
+    assert (
+        target_run.count("inputs.run_pep517_smoke && matrix.replay.run_followup") == 4
+    )
+
+
 def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
     cross = (WORKFLOWS / "_ci-cross-build-linux.yml").read_text(encoding="utf-8")
@@ -192,8 +221,7 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
     assert '"$NEXTEST_BIN" nextest run' in target_run
     assert 'echo "SOLDR_BIN=$soldr_bin"' in target_run
     assert (
-        "case '${{ inputs.target }}' in *-pc-windows-msvc) suffix=\".exe\""
-        in target_run
+        "case '${{ inputs.target }}' in *-pc-windows-*) suffix=\".exe\"" in target_run
     )
     assert "artifact/package/soldr$suffix" in target_run
     assert "artifact/package/soldr-daemon$suffix" in target_run
@@ -209,6 +237,10 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
     assert "artifact/package/tools/cargo-nextest$suffix" in target_run
     assert 'echo "SOLDR_TEST_WORKSPACE_ROOT=$GITHUB_WORKSPACE"' in target_run
     assert "SOLDR_GITHUB_TOKEN: ${{ github.token }}" in target_run
+    assert 'SOLDR_TARGET_WARN_FREE_GB: "1"' in target_run
+    assert 'SOLDR_TARGET_BLOCK_FREE_GB: "1"' in target_run
+    assert 'SOLDR_USE_SYSTEM_CMAKE: "1"' in target_run
+    assert "SOLDR_TARGET_AUTO_PRUNE_ENABLED" not in target_run
     assert "actions/setup-python@" in target_run
     assert 'python-version: "3.13"' in target_run
     assert "python3 .github/scripts/target_run_summary.py" not in target_run
@@ -419,11 +451,32 @@ def test_pep517_platform_smokes_run_on_pull_requests() -> None:
         "Run downstream PEP 517 daemon smoke",
     ]:
         step = _step_block(target_run, step_name)
-        assert "if: ${{ inputs.run_pep517_smoke }}" in step
+        assert (
+            "if: ${{ inputs.run_pep517_smoke && matrix.replay.run_followup }}" in step
+        )
     # The smoke must run after (and never gate) the archive replay.
     assert target_run.index(
         "      - name: Run complete pre-built test archive\n"
     ) < target_run.index("      - name: Build soldr wheel under test\n")
+
+
+def test_n_minus_one_build_uses_clean_paired_toolchain_homes() -> None:
+    build_all = (WORKFLOWS / "build-all-from-linux.yml").read_text(encoding="utf-8")
+    isolation = _step_block(build_all, "Isolate N-1 toolchain homes")
+    toolchain = _step_block(build_all, "Install Rust toolchain + cross target")
+    build = _step_block(
+        build_all, "Build soldr — soldr build --release --target ${{ matrix.alias }}"
+    )
+
+    assert 'echo "CARGO_HOME=$RUNNER_TEMP/soldr-cargo" >> "$GITHUB_ENV"' in isolation
+    assert 'echo "RUSTUP_HOME=$RUNNER_TEMP/soldr-rustup" >> "$GITHUB_ENV"' in isolation
+    assert build_all.index(
+        "      - name: Isolate N-1 toolchain homes\n"
+    ) < build_all.index("      - name: Install Rust toolchain + cross target\n")
+    assert "          components: rustfmt, clippy\n" in toolchain
+    assert "export CARGO_HOME=" not in build
+    assert "export RUSTUP_HOME=" not in build
+    assert "soldr rustup show home" not in build
 
 
 def test_manual_cross_compile_workflows_use_blessed_supported_targets() -> None:
@@ -653,10 +706,26 @@ def test_linux_arm64_release_uses_matching_supported_hosts() -> None:
         (REPO_ROOT / "ci" / "canonical-targets.json").read_text(encoding="utf-8")
     )
     build = {
-        entry["triple"]: entry["release"]["build"] for entry in contract["targets"]
+        entry["triple"]: entry["release"]["build"]
+        for entry in contract["targets"]
+        if entry["release"]["status"] == "included"
     }
     assert build["aarch64-unknown-linux-gnu"]["runner"] == "ubuntu-24.04"
     assert build["aarch64-unknown-linux-musl"]["runner"] == "ubuntu-24.04-arm"
+
+
+def test_windows_gnu_artifacts_keep_the_exe_suffix_across_build_and_replay() -> None:
+    cross_build = (
+        REPO_ROOT / ".github" / "workflows" / "_ci-cross-build-linux.yml"
+    ).read_text(encoding="utf-8")
+    target_run = (REPO_ROOT / ".github" / "workflows" / "_ci-target-run.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert cross_build.count('case "$target" in *-pc-windows-*) suffix=".exe"') == 2
+    assert (
+        "case '${{ inputs.target }}' in *-pc-windows-*) suffix=\".exe\"" in target_run
+    )
 
 
 def _matrix_binary_source_prepares_gnu_linux() -> bool:

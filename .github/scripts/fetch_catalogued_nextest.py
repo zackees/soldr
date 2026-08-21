@@ -35,6 +35,9 @@ def query_for_target(target: str) -> tuple[str, str, str | None]:
         "x86_64-apple-darwin": ("mac", "x86", None),
         "aarch64-apple-darwin": ("mac", "arm", None),
         "x86_64-pc-windows-msvc": ("windows", "x86", "msvc"),
+        # nextest is a host tool. The published Windows x64 executable runs
+        # the GNU-target test archive just as it runs the MSVC-target archive.
+        "x86_64-pc-windows-gnu": ("windows", "x86", "msvc"),
         "aarch64-pc-windows-msvc": ("windows", "arm", "msvc"),
     }
     try:

@@ -165,7 +165,48 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
     assert 'platform = { host = "cfg(unix)" }' not in config
     assert "[test-groups.soldr-runtime]" in config
     assert "binary(cli_broker_resurrection) + binary(cli_broker_routes)" in config
-    assert config.count("test-group = 'soldr-runtime'") == 2
+    # Three override blocks, one group. The count is the point: broker
+    # cold-start tests must land in the SAME group, because separate
+    # one-thread groups still run concurrently and contend for the bounded
+    # route-start path (soldr#2336).
+    assert config.count("test-group = 'soldr-runtime'") == 3
+    assert "test(=gc_list_json_reports_built_project_target_dir)" in config
+    runtime_overrides = [
+        block
+        for block in config.split("[[profile.default.overrides]]")[1:]
+        if "test-group = 'soldr-runtime'" in block
+    ]
+    assert len(runtime_overrides) == 3
+    runtime_members = "".join(runtime_overrides)
+    for cold_start_test in (
+        "test(=toolchain_link_writes_every_routed_tool_into_shim_dir)",
+        "test(=toolchain_link_is_idempotent_when_rerun_with_same_soldr_binary)",
+        "test(=cargo_fmt_host_toolchain_does_not_mix_in_managed_rustup_home)",
+    ):
+        assert cold_start_test in runtime_members
+    assert "[test-groups.soldr-cargo-cold-builds]" in config
+    cold_overrides = [
+        block
+        for block in config.split("[[profile.default.overrides]]")[1:]
+        if "test-group = 'soldr-cargo-cold-builds'" in block
+    ]
+    assert len(cold_overrides) == 1
+    cold_override = cold_overrides[0]
+    assert (
+        "binary(cli_cargo_linker) + binary(cli_cargo_run_trampoline)"
+        " + binary(cli_cargo_wrappers)"
+        " + test(=cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled)"
+        in cold_override
+    )
+    # soldr#2697, second windows-gnu replay: these two cold front-door tests
+    # timed out at exactly 120s beside 852 passing siblings. They belong to the
+    # reservation, not to a larger private timeout budget.
+    for cold_member in (
+        "test(=cargo_without_timeout_allows_progress_cpu_and_lock_waits)",
+        "test(=cargo_front_door_forces_msvc_target_even_with_polluted_path)",
+    ):
+        assert cold_member in cold_override
+    assert 'threads-required = "num-cpus"' in cold_override
     assert "binary(cli_build_alias_parity)" in config
     assert "binary(cli_build_fetch_overlap)" in config
     for binary in (
@@ -186,12 +227,12 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
     # without updating the config (soldr#2553 fallout).
     for deleted in ("cli_daemon_tombstone", "session_multiprocess_smoke"):
         assert f"binary({deleted})" not in config
-    assert 'threads-required = "num-cpus"' in config
-    # 6 = the default profile + five measured per-test overrides (the
-    # soldr#2624 cargo-fmt double-cold-start entry is the sixth block).
-    # 7 = the default profile + six measured override blocks (soldr#2624's
-    # cargo-fmt entry and soldr#2442's kill-matrix binary are the newest).
-    assert config.count('grace-period = "30s"') == 7
+    assert config.count('threads-required = "num-cpus"') == 2
+    # 8 = the default profile + seven measured per-test override blocks. Every
+    # raised budget carries the same explicit grace period, so this count is
+    # what stops one being added without one. Newest: soldr#2336's toolchain
+    # link / cargo-fmt-home-boundary cold-start trio.
+    assert config.count('grace-period = "30s"') == 8
 
 
 def test_every_binary_named_in_nextest_filters_is_a_real_test_target() -> None:

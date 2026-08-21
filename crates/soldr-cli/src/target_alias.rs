@@ -34,10 +34,11 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-/// Canonical alias → Rust target triple table. 8 entries; matches
+/// Canonical alias → Rust target triple table. 9 entries; matches
 /// `crate::core::canonical_targets::CANONICAL_TARGETS` 1:1.
 pub const CANONICAL_ALIASES: &[(&str, &str)] = &[
     ("win-x64", "x86_64-pc-windows-msvc"),
+    ("win-x64-gnu", "x86_64-pc-windows-gnu"),
     ("win-arm64", "aarch64-pc-windows-msvc"),
     ("mac-x64", "x86_64-apple-darwin"),
     ("mac-arm64", "aarch64-apple-darwin"),
@@ -133,6 +134,8 @@ const SYNONYMS: &[(&str, &str)] = &[
     ("windows-x64", "win-x64"),
     ("windows-x86_64", "win-x64"),
     ("windows-amd64", "win-x64"),
+    ("windows-x64-gnu", "win-x64-gnu"),
+    ("windows-x86_64-gnu", "win-x64-gnu"),
     ("win-aarch64", "win-arm64"),
     ("windows-arm64", "win-arm64"),
     ("windows-aarch64", "win-arm64"),

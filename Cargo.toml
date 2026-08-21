@@ -51,6 +51,7 @@ homepage = "https://github.com/zackees/soldr"
 prefer_newer_global = true
 targets = [
     "x86_64-pc-windows-msvc",
+    "x86_64-pc-windows-gnu",
     "aarch64-pc-windows-msvc",
     "x86_64-apple-darwin",
     "aarch64-apple-darwin",

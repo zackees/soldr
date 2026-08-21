@@ -94,6 +94,7 @@ def build_summary(
     junit: Path | None = None,
     *,
     require_junit: bool = False,
+    partition: str | None = None,
 ) -> dict[str, Any]:
     discovered, ignored = read_test_list(list_json)
     run = read_junit(junit)
@@ -101,7 +102,13 @@ def build_summary(
         raise ValueError(f"required JUnit report is missing: {junit}")
     if run is not None and discovered is not None and ignored is not None:
         accounted = run["executed"] + ignored
-        if accounted != discovered:
+        is_complete_partition = partition in (None, "hash:1/1")
+        counts_disagree = (
+            accounted != discovered
+            if is_complete_partition
+            else run["executed"] > discovered
+        )
+        if counts_disagree:
             raise ValueError(
                 "nextest coverage counts disagree: "
                 f"discovered={discovered}, executed={run['executed']}, "
@@ -116,6 +123,7 @@ def build_summary(
     return {
         "schema_version": SCHEMA_VERSION,
         "target": target,
+        "partition": partition,
         "phase": phase,
         "discovered": discovered,
         "ignored": ignored,
@@ -154,6 +162,7 @@ def main() -> int:
     parser.add_argument("--list-json", type=Path)
     parser.add_argument("--junit", type=Path)
     parser.add_argument("--require-junit", action="store_true")
+    parser.add_argument("--partition")
     parser.add_argument("--github-summary", type=Path)
     args = parser.parse_args()
 
@@ -162,6 +171,7 @@ def main() -> int:
         args.list_json,
         args.junit,
         require_junit=args.require_junit,
+        partition=args.partition,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")

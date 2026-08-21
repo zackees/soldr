@@ -149,10 +149,14 @@ mod tests {
         for (triple, _slug) in PYTHON_SYSROOT_TARGETS {
             assert!(
                 crate::core::canonical_targets::is_canonical(triple),
-                "{triple} not in canonical 8-target list"
+                "{triple} not in canonical target list"
             );
         }
         for canonical in crate::core::canonical_targets::canonical_targets() {
+            if *canonical == "x86_64-pc-windows-gnu" {
+                assert!(catalogue_slug_for(canonical).is_none());
+                continue;
+            }
             assert!(
                 catalogue_slug_for(canonical).is_some(),
                 "canonical target {canonical} has no python sysroot row"

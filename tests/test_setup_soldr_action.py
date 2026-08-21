@@ -172,6 +172,18 @@ def test_setup_soldr_smoke_tests_disable_nested_cache() -> None:
     assert "[System.IO.Path]::GetFullPath($env:SOLDR_CACHE_DIR)" in workflow
 
 
+def test_setup_soldr_smoke_exports_strict_reentrancy_guard() -> None:
+    workflow = (
+        REPO_ROOT / ".github" / "workflows" / "setup-soldr-action.yml"
+    ).read_text(encoding="utf-8")
+    job_env = re.search(
+        r"(?ms)^  smoke:.*?^    env:\n(?P<body>(?:      [^\n]*\n)+)", workflow
+    )
+
+    assert job_env is not None
+    assert "SOLDR_REENTRANCY_GUARD: strict" in job_env.group("body")
+
+
 def test_cache_delta_experiment_quiesces_before_packaging() -> None:
     setup_action = (
         REPO_ROOT / ".github" / "actions" / "cache-delta-experiment" / "action.yml"

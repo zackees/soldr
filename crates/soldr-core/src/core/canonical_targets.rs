@@ -1,11 +1,11 @@
-//! Single source of truth for soldr's canonical 8-target list (#941).
+//! Single source of truth for soldr's canonical 9-target list (#941, #2336).
 //!
 //! These are the Rust target triples soldr ships full cross-compile
 //! support for:
 //!
 //! - Linux x86_64-musl / aarch64-musl / x86_64-gnu / aarch64-gnu
 //! - macOS x86_64 / aarch64
-//! - Windows MSVC x86_64 / aarch64
+//! - Windows MSVC x86_64 / aarch64 and Windows GNU x86_64
 //!
 //! 32-bit triples (i686-*, armv7-*) and tier-2/tier-3 targets
 //! (freebsd, wasm32, android, …) are deliberately omitted from this
@@ -29,10 +29,11 @@
 //! test in `tests/canonical_targets_parity.rs` asserts the two
 //! lists agree byte-for-byte at build time so they cannot drift.
 
-/// Soldr's canonical 8-target list. Order is stable — callers may
+/// Soldr's canonical 9-target list. Order is stable — callers may
 /// iterate it deterministically.
 pub const CANONICAL_TARGETS: &[&str] = &[
     "x86_64-pc-windows-msvc",
+    "x86_64-pc-windows-gnu",
     "aarch64-pc-windows-msvc",
     "x86_64-apple-darwin",
     "aarch64-apple-darwin",
@@ -42,7 +43,7 @@ pub const CANONICAL_TARGETS: &[&str] = &[
     "aarch64-unknown-linux-musl",
 ];
 
-/// Borrowed accessor — the canonical 8-target list as `&'static [&'static str]`.
+/// Borrowed accessor — the canonical 9-target list as `&'static [&'static str]`.
 /// Use this from any soldr call site that today queries
 /// `[workspace.metadata.soldr].targets` so the same byte-identical
 /// list is returned in every context (with or without a workspace
@@ -52,7 +53,7 @@ pub fn canonical_targets() -> &'static [&'static str] {
 }
 
 /// Returns `true` iff `triple` is in [`CANONICAL_TARGETS`].
-/// Cheap linear scan over 8 entries.
+/// Cheap linear scan over 9 entries.
 pub fn is_canonical(triple: &str) -> bool {
     CANONICAL_TARGETS.contains(&triple)
 }
@@ -62,8 +63,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn canonical_targets_length_is_8() {
-        assert_eq!(CANONICAL_TARGETS.len(), 8);
+    fn canonical_targets_length_is_9() {
+        assert_eq!(CANONICAL_TARGETS.len(), 9);
     }
 
     #[test]

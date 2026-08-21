@@ -603,7 +603,18 @@ fn plan_for_host(target: &str, _host: &str) -> Result<TargetPlan, SoldrError> {
             path_prepend: true,
             keys,
         },
-        supported_operations: if canonical {
+        supported_operations: if canonical && target == "x86_64-pc-windows-gnu" {
+            // The canonical GNU target has compiler, linker, sysroot, and
+            // native replay coverage. It deliberately has no GNU-compatible
+            // Python sysroot, so PEP 517 surfaces must not be advertised.
+            vec![
+                "prepare",
+                "build",
+                "clippy",
+                "test-no-run",
+                "nextest-archive",
+            ]
+        } else if canonical {
             vec![
                 "prepare",
                 "build",

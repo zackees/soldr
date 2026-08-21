@@ -43,6 +43,8 @@ class TestTargetPlatformMapping:
     def test_every_release_target_has_an_exact_toolchain_mapping(self) -> None:
         targets = json.loads(CONTRACT.read_text(encoding="utf-8"))["targets"]
         for target in targets:
+            if target["release"]["status"] != "included":
+                continue
             mapping = support.platform_for_target(target["triple"])
             assert mapping["os"]
             assert mapping["arch"]

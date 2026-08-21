@@ -110,6 +110,31 @@ fn run_cold(project: &Path, extra_args: &[&str]) -> std::process::Output {
     run_soldr(project, &[], argv)
 }
 
+/// Assert a seed/cold build succeeded, printing what it actually said.
+///
+/// soldr#2336: every one of these assertions used to be
+/// `assert!(cold.status.success(), "seed build failed")`, which discards both
+/// pipes. When the new windows-gnu replay lane went red, three of them failed
+/// in ~0.3s -- far too fast to be a compile -- and the retained output said
+/// only "seed build failed". A build that dies that quickly has a reason and
+/// prints it; there was simply nowhere for it to go. Neighbouring assertions
+/// in this file already interpolate stderr, so this only makes the seed builds
+/// as diagnosable as the warm ones.
+#[track_caller]
+fn assert_build_ok(output: &std::process::Output, context: &str) {
+    assert!(
+        output.status.success(),
+        "{context} (exit {:?})
+stdout:
+{}
+stderr:
+{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
 /// Return the effective `target/<triple?>/<profile>/` directory that the
 /// soldr cargo front door will land artifacts in. On Windows soldr
 /// injects `CARGO_BUILD_TARGET=<host>` by default, so artifacts live
@@ -223,7 +248,7 @@ fn warm_invocation_skips_cargo_and_execs_binary() {
 fn edit_source_forces_fall_through() {
     let project = make_project("trampoline-edit");
     let cold = run_cold(&project, &[]);
-    assert!(cold.status.success(), "seed build failed");
+    assert_build_ok(&cold, "seed build failed");
 
     // Bump mtime/size of main.rs by appending a no-op comment.
     let main_rs = project.join("src").join("main.rs");
@@ -254,7 +279,7 @@ fn edit_source_forces_fall_through() {
 fn no_trampoline_flag_forces_fall_through_to_cargo() {
     let project = make_project("trampoline-flag-opt-out");
     let cold = run_cold(&project, &[]);
-    assert!(cold.status.success(), "seed build failed");
+    assert_build_ok(&cold, "seed build failed");
 
     let stub_dir = unique_temp_dir("trampoline-flag-stub");
     let broken = broken_cargo_stub(&stub_dir);
@@ -274,7 +299,7 @@ fn no_trampoline_flag_forces_fall_through_to_cargo() {
 fn env_var_opt_out_forces_fall_through() {
     let project = make_project("trampoline-env-opt-out");
     let cold = run_cold(&project, &[]);
-    assert!(cold.status.success(), "seed build failed");
+    assert_build_ok(&cold, "seed build failed");
 
     let stub_dir = unique_temp_dir("trampoline-env-stub");
     let broken = broken_cargo_stub(&stub_dir);
@@ -297,7 +322,7 @@ fn env_var_opt_out_forces_fall_through() {
 fn features_change_forces_fall_through() {
     let project = make_project("trampoline-features");
     let cold = run_cold(&project, &[]);
-    assert!(cold.status.success(), "seed build failed");
+    assert_build_ok(&cold, "seed build failed");
 
     let stub_dir = unique_temp_dir("trampoline-features-stub");
     let broken = broken_cargo_stub(&stub_dir);
@@ -317,7 +342,7 @@ fn features_change_forces_fall_through() {
 fn rustflags_change_forces_fall_through() {
     let project = make_project("trampoline-rustflags");
     let cold = run_cold(&project, &[]);
-    assert!(cold.status.success(), "seed build failed");
+    assert_build_ok(&cold, "seed build failed");
 
     let stub_dir = unique_temp_dir("trampoline-rustflags-stub");
     let broken = broken_cargo_stub(&stub_dir);
@@ -382,10 +407,10 @@ fn release_profile_has_distinct_sidecar() {
     let project = make_project("trampoline-release");
     // Cold debug build.
     let cold_debug = run_cold(&project, &[]);
-    assert!(cold_debug.status.success(), "cold debug build failed");
+    assert_build_ok(&cold_debug, "cold debug build failed");
     // Cold release build.
     let cold_release = run_cold(&project, &["--release"]);
-    assert!(cold_release.status.success(), "cold release build failed");
+    assert_build_ok(&cold_release, "cold release build failed");
 
     let debug_sidecar = project_sidecar(&project, "trampoline_demo", "debug");
     let release_sidecar = project_sidecar(&project, "trampoline_demo", "release");
@@ -422,7 +447,7 @@ fn release_profile_has_distinct_sidecar() {
 fn binary_missing_falls_through() {
     let project = make_project("trampoline-no-bin");
     let cold = run_cold(&project, &[]);
-    assert!(cold.status.success(), "seed build failed");
+    assert_build_ok(&cold, "seed build failed");
 
     // Remove the binary but keep the sidecar.
     let binary = project_binary(&project, "trampoline_demo", "debug");
@@ -447,7 +472,7 @@ fn binary_missing_falls_through() {
 fn stale_fingerprint_falls_through() {
     let project = make_project("trampoline-stale-fp");
     let cold = run_cold(&project, &[]);
-    assert!(cold.status.success(), "seed build failed");
+    assert_build_ok(&cold, "seed build failed");
 
     // Corrupt the sidecar's fingerprint by hand.
     let sidecar = project_sidecar(&project, "trampoline_demo", "debug");
@@ -474,7 +499,7 @@ fn stale_fingerprint_falls_through() {
 fn missing_dep_info_falls_through_silently() {
     let project = make_project("trampoline-no-dep");
     let cold = run_cold(&project, &[]);
-    assert!(cold.status.success(), "seed build failed");
+    assert_build_ok(&cold, "seed build failed");
 
     let sidecar = project_sidecar(&project, "trampoline_demo", "debug");
     fs::remove_file(&sidecar).expect("remove sidecar");
@@ -520,7 +545,7 @@ fn content_edit_with_spoofed_old_mtime_forces_fall_through() {
     // unchanged stat; content-hash oracle MUST detect the change.
     let project = make_project("trampoline-spoofed-old-mtime");
     let cold = run_cold(&project, &[]);
-    assert!(cold.status.success(), "seed build failed");
+    assert_build_ok(&cold, "seed build failed");
 
     // Read the sidecar's recorded mtime BEFORE we edit so we can
     // restore it exactly.
@@ -570,7 +595,7 @@ fn mtime_epoch_restore_with_unchanged_content_still_hits_trampoline() {
     // self-heal the sidecar with the new mtimes.
     let project = make_project("trampoline-mtime-epoch");
     let cold = run_cold(&project, &[]);
-    assert!(cold.status.success(), "seed build failed");
+    assert_build_ok(&cold, "seed build failed");
 
     let main_rs = project.join("src").join("main.rs");
     let binary = project_binary(&project, "trampoline_demo", "debug");
@@ -619,7 +644,7 @@ fn binary_swap_with_matching_mtime_size_is_detected() {
     // content-hash oracle MUST detect via binary_hash mismatch.
     let project = make_project("trampoline-binary-swap");
     let cold = run_cold(&project, &[]);
-    assert!(cold.status.success(), "seed build failed");
+    assert_build_ok(&cold, "seed build failed");
 
     let binary = project_binary(&project, "trampoline_demo", "debug");
     let bin_meta = fs::metadata(&binary).expect("stat binary");
@@ -662,7 +687,7 @@ fn legacy_sidecar_without_content_hash_forces_rewrite() {
     // confirming the sidecar regains the fields on the rebuild.
     let project = make_project("trampoline-legacy-sidecar");
     let cold = run_cold(&project, &[]);
-    assert!(cold.status.success(), "seed build failed");
+    assert_build_ok(&cold, "seed build failed");
 
     let sidecar = project_sidecar(&project, "trampoline_demo", "debug");
     let text = fs::read_to_string(&sidecar).expect("read sidecar");
@@ -695,7 +720,7 @@ fn legacy_sidecar_without_content_hash_forces_rewrite() {
 fn trailing_args_pass_through_to_binary() {
     let project = make_project("trampoline-trailing-args");
     let cold = run_cold(&project, &["--", "alpha", "beta"]);
-    assert!(cold.status.success(), "cold trailing-args failed");
+    assert_build_ok(&cold, "cold trailing-args failed");
     let stdout = String::from_utf8_lossy(&cold.stdout);
     assert!(
         stdout.contains("hello alpha beta"),

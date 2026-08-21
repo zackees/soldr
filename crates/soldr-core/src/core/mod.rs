@@ -17,7 +17,7 @@ use std::time::Duration;
 use thiserror::Error;
 use wait_timeout::ChildExt;
 
-/// soldr#941 — single-source-of-truth for the canonical 8-target list.
+/// soldr#941/#2336 — single-source-of-truth for the canonical 9-target list.
 /// Mirror of `[workspace.metadata.soldr].targets` in the root
 /// `Cargo.toml`; a parity test enforces byte-equality.
 pub mod canonical_targets;

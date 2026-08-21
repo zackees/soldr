@@ -64,6 +64,18 @@ jobs:
     assert VERIFY.find_timeout_violations(workflow) == []
 
 
+def test_multiple_input_gates_with_static_integer_outcomes_are_accepted() -> None:
+    workflow = """\
+jobs:
+  direct:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.run_smoke && 65 || inputs.extended && 55 || 30 }}
+    steps:
+      - run: echo ok
+"""
+    assert VERIFY.find_timeout_violations(workflow) == []
+
+
 def test_conditional_with_out_of_range_branch_is_rejected() -> None:
     for value in (
         "${{ inputs.flag && 361 || 30 }}",

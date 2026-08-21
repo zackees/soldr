@@ -88,6 +88,8 @@ class TestNativeArchGate:
             ("macOS", "arm64"),
         ]
         for entry in contract["targets"]:
+            if entry["release"]["status"] != "included":
+                continue
             triple = entry["triple"]
             assert any(
                 smoke.native_arch_match(os_name, arch, triple) for os_name, arch in runners

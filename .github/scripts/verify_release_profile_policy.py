@@ -41,7 +41,7 @@ ALLOWLIST: dict[str, str] = {
     # opt-in (workflow_dispatch) quick/debug cross-compile validation sweep,
     # so it needs no exemption and must not be a stale allowlist entry.
     "build-all-from-linux.yml": (
-        "exists to prove `soldr build --release --target X` works for all 8 targets"
+        "exists to prove `soldr build --release --target X` works for all 9 targets"
     ),
     "perf-matrix.yml": "measures the shipped profile; a cheaper one measures nothing",
     "perf-cold-warm.yml": "same — --release is the profile under measurement",

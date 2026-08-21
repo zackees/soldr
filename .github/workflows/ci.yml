@@ -1061,6 +1061,37 @@ jobs:
       target: x86_64-pc-windows-msvc
       artifact_name: soldr-ci-e2e-windows-x64
 
+  # ---------- Windows x64 (GNU) ----------
+  # soldr#2336: the Linux-hosted MinGW bundle is a blessed canonical target.
+  # Replay the resulting PE binaries on the same native Windows runner class
+  # as MSVC; the ABI is a build-toolchain choice, not a separate host class.
+  e2e-windows-x64-gnu-build:
+    name: cross-build x86_64-pc-windows-gnu (linux host)
+    needs: [e2e-cross-bootstrap-soldr, windows-e2e-policy]
+    if: ${{ needs.windows-e2e-policy.outputs.run_windows_e2e == 'true' }}
+    uses: ./.github/workflows/_ci-cross-build-linux.yml
+    with:
+      target: x86_64-pc-windows-gnu
+      artifact_name: soldr-ci-e2e-windows-x64-gnu
+      source_ref: ${{ github.sha }}
+      bootstrap_artifact_name: soldr-ci-bootstrap-linux-gnu
+
+  e2e-windows-x64-gnu:
+    name: target-run x86_64-pc-windows-gnu
+    needs: e2e-windows-x64-gnu-build
+    uses: ./.github/workflows/_ci-target-run.yml
+    with:
+      runs_on: windows-2025
+      target: x86_64-pc-windows-gnu
+      artifact_name: soldr-ci-e2e-windows-x64-gnu
+      # The full native GNU archive replay needs more than the shared 30-minute
+      # target-run default after cold Cargo front doors are serialized (#2701).
+      extended_replay: true
+      # Fixture-local cache roots persist for a test process lifetime. Three
+      # fresh workers keep each shard below hosted Windows disk capacity while
+      # hash partitioning still covers the complete archive exactly once (#2704).
+      replay_partitions: '[{"label":"1-of-3","value":"hash:1/3","run_followup":false},{"label":"2-of-3","value":"hash:2/3","run_followup":false},{"label":"3-of-3","value":"hash:3/3","run_followup":false}]'
+
   # ---------- Windows ARM64 ----------
   # soldr#1524: the managed ARM64 xwin cache and zlib-ng catalogue row
   # make this the same blessed build + nextest archive path as x64 MSVC.
