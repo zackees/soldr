@@ -888,3 +888,14 @@ fn relaying_empty_child_output_still_flushes() {
 
     assert!(out.flushed_after_last_write && err.flushed_after_last_write);
 }
+
+#[test]
+fn utf8_args_are_collected_unchanged() {
+    let args = ["soldr", "cargo", "build", "--release"]
+        .into_iter()
+        .map(std::ffi::OsString::from);
+    assert_eq!(
+        collect_utf8_args(args).expect("utf-8 argv"),
+        vec!["soldr", "cargo", "build", "--release"]
+    );
+}

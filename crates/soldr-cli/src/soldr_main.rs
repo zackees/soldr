@@ -112,10 +112,69 @@ pub(crate) const WARM_RESTORE_MAX_AGE_SECONDS: u64 = 5 * 60;
 /// `--as <version>` flag takes precedence over this env var.
 const SOLDR_AS_ENV_VAR: &str = "SOLDR_AS";
 
+/// Collect argv as UTF-8, reporting a non-UTF-8 argument instead of panicking.
+///
+/// soldr#2658 item 2: this used to be `std::env::args().collect()`, and
+/// `std::env::args` *panics* mid-iteration on an argument that is not valid
+/// Unicode. On Unix that is reachable with ordinary input -- paths are bytes,
+/// so `soldr cargo build --manifest-path <non-utf8-path>` was a raw Rust
+/// panic at `std/src/env.rs` with a backtrace note and no mention of soldr.
+///
+/// Verified on the Docker Linux runner before this change:
+///
+/// ```text
+/// $ soldr $'--ÿþ-not-utf8'
+/// thread 'soldr-cli' panicked at library/std/src/env.rs:864:51:
+/// called `Result::unwrap()` on an `Err` value: "--ÿþ-not-utf8"
+/// ```
+///
+/// The rest of the CLI is `&str`-typed -- clap parsing, shim-identity and
+/// wrapper-invocation checks, the re-entrancy guard's argv classification --
+/// so genuinely carrying `OsString` end to end is a separate change. Lossy
+/// conversion would be worse than either: soldr mostly *forwards* argv to
+/// cargo, and a silently mangled path would produce a wrong build rather than
+/// a failed one. So this refuses, names the offending position, and shows the
+/// bytes.
+///
+/// Note the asymmetry with the environment, which was measured at the same
+/// time and needs no such handling: non-UTF-8 env var *values and names* both
+/// round-trip cleanly, because soldr inherits the environment rather than
+/// parsing it.
+fn collect_utf8_args(
+    args: impl Iterator<Item = std::ffi::OsString>,
+) -> Result<Vec<String>, String> {
+    let mut collected = Vec::new();
+    for (index, arg) in args.enumerate() {
+        match arg.into_string() {
+            Ok(value) => collected.push(value),
+            Err(raw) => {
+                return Err(format!(
+                    concat!(
+                        "soldr: argument {index} is not valid UTF-8: {raw:?}
+",
+                        "soldr: arguments must be UTF-8; this one cannot be ",
+                        "forwarded to cargo without corrupting it (soldr#2658).",
+                    ),
+                    index = index,
+                    raw = raw,
+                ));
+            }
+        }
+    }
+    Ok(collected)
+}
+
 /// Full soldr CLI entry — the `src/main.rs` shim calls this and never
 /// returns control flow decisions of its own (#1490 Phase 1).
 pub fn run() -> std::process::ExitCode {
-    let raw_args: Vec<String> = std::env::args().collect();
+    let raw_args = match collect_utf8_args(std::env::args_os()) {
+        Ok(args) => args,
+        Err(message) => {
+            eprintln!("{message}");
+            exit_guard::mark_spoke();
+            return std::process::ExitCode::from(1);
+        }
+    };
     // soldr#1934: a trampoline shim cannot set argv[0], so it passes its own
     // path in the environment. Restoring it here — before anything reads argv
     // — is what makes the trampoline and hardlink shapes the same program.
