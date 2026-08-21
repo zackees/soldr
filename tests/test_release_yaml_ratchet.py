@@ -19,13 +19,13 @@ from pathlib import Path
 
 WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "release-auto.yml"
 
-# Measured 2026-08-17 (soldr#2469 step 2.2 ratchet start) at 187; lowered to
-# 160 on 2026-08-21 when the PyPI wheel-visibility poll moved to
-# `.github/scripts/verify_pypi_wheels.py`. Lower this number in the same PR
-# whenever extraction shrinks the workflow; never raise it — new release logic
-# belongs in a `ci/*.py` or `.github/scripts/*.py` script with unit tests,
-# invoked from a one-line `run:`.
-INLINE_RUN_LINE_CEILING = 160
+# Measured 2026-08-17 (soldr#2469 step 2.2 ratchet start) at 187, then:
+#   160 — PyPI wheel-visibility poll -> `.github/scripts/verify_pypi_wheels.py`
+#   117 — tag pre-create + draft-release create -> `.github/scripts/release_publish.py`
+# Lower this number in the same PR whenever extraction shrinks the workflow;
+# never raise it — new release logic belongs in a `ci/*.py` or
+# `.github/scripts/*.py` script with unit tests, invoked from a one-line `run:`.
+INLINE_RUN_LINE_CEILING = 117
 
 
 def count_inline_run_lines(text: str) -> int:
