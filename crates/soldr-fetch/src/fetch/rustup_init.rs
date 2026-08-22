@@ -133,7 +133,7 @@ pub fn auto_bootstrap_if_missing_blocking(
         paths.bin.display(),
         NO_BOOTSTRAP_ENV_VAR
     );
-    let report = bootstrap_rustup_blocking(paths)?;
+    let report = with_bootstrap_lock(paths, || bootstrap_rustup_blocking(paths))?;
     eprintln!("soldr: rustup bootstrap complete");
     Ok(AutoBootstrapOutcome::Installed(report))
 }
@@ -161,7 +161,17 @@ pub async fn auto_bootstrap_if_missing(
         paths.bin.display(),
         NO_BOOTSTRAP_ENV_VAR
     );
-    let report = bootstrap_rustup(paths).await?;
+    // The lock is blocking, so hop off the async worker for it. The bootstrap
+    // it guards is a download plus a toolchain install -- already far too long
+    // to hold a runtime thread.
+    let report = {
+        let paths_clone = SoldrPaths::with_root(paths.root.clone());
+        tokio::task::spawn_blocking(move || {
+            with_bootstrap_lock(&paths_clone, || bootstrap_rustup_blocking(&paths_clone))
+        })
+        .await
+        .map_err(|e| SoldrError::Other(format!("rustup bootstrap task failed: {e}")))??
+    };
     eprintln!("soldr: rustup bootstrap complete");
     Ok(AutoBootstrapOutcome::Installed(report))
 }
@@ -242,6 +252,122 @@ pub async fn bootstrap_rustup(paths: &SoldrPaths) -> Result<BootstrapReport, Sol
 pub fn bootstrap_rustup_blocking(paths: &SoldrPaths) -> Result<BootstrapReport, SoldrError> {
     let paths_clone = SoldrPaths::with_root(paths.root.clone());
     run_blocking(async move { bootstrap_rustup(&paths_clone).await })
+}
+
+/// How long a losing bootstrapper waits for the winner before installing
+/// anyway. Generous because the thing being waited on is a real download plus
+/// a toolchain install; abandoning early would just recreate the collision
+/// this lock exists to prevent.
+const BOOTSTRAP_LOCK_BUDGET: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Serialize concurrent bootstraps of the same soldr home (soldr#2728).
+///
+/// `discover_rustup` returning `None` is not a promise that no one else is
+/// installing. `soldr lint deps` fans out three child soldr processes against
+/// one home, and on a home with no rustup yet all three miss the discovery
+/// check at the same instant and install into the same `bin/` concurrently.
+/// On Windows the losers do not benignly overwrite — they get
+/// `ERROR_SHARING_VIOLATION` (os error 32) copying over a `rustup.exe` that
+/// another process holds open — and the "fall back to rustup on PATH" recovery
+/// cannot help, because the point of a soldr-managed home is that PATH's
+/// rustup is not the one wanted. The failure surfaced three layers away as
+/// `rustup which rustc: program not found`.
+///
+/// Runs `install` under an exclusive file lock, and re-checks discovery after
+/// acquiring it: the winner does the work, and everyone who queued behind it
+/// finds rustup already present and returns it instead of installing a second
+/// copy. That double-check is the point — a lock alone would merely serialize
+/// three identical downloads.
+fn with_bootstrap_lock<F>(paths: &SoldrPaths, install: F) -> Result<BootstrapReport, SoldrError>
+where
+    F: FnOnce() -> Result<BootstrapReport, SoldrError>,
+{
+    with_bootstrap_lock_using(paths, discover_rustup, install)
+}
+
+/// [`with_bootstrap_lock`] with the discovery probe injected.
+///
+/// Production passes [`discover_rustup`], which consults `PATH` before the
+/// managed home. That is right for the real call path — it is only reached
+/// once discovery has already returned `None` — but it makes the post-lock
+/// re-check untestable directly: on any machine with rustup on `PATH` the
+/// re-check short-circuits and the install never runs, so the test would
+/// assert about the developer's machine rather than about this function.
+/// Injecting the probe tests the logic instead of the environment.
+fn with_bootstrap_lock_using<D, F>(
+    paths: &SoldrPaths,
+    discover: D,
+    install: F,
+) -> Result<BootstrapReport, SoldrError>
+where
+    D: Fn(&SoldrPaths) -> Option<PathBuf>,
+    F: FnOnce() -> Result<BootstrapReport, SoldrError>,
+{
+    use fs2::FileExt as _;
+
+    let _ = std::fs::create_dir_all(&paths.bin);
+    let lock_path = paths.bin.join(".rustup-bootstrap.lock");
+    let lock = match std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+    {
+        Ok(file) => file,
+        // A home we cannot create a lock file in is a home we cannot
+        // serialize on. Installing unlocked is what happened before this
+        // existed, so degrade to it rather than failing the build outright.
+        Err(_) => return install(),
+    };
+
+    let started = std::time::Instant::now();
+    let deadline = started + BOOTSTRAP_LOCK_BUDGET;
+    let mut waited = false;
+    loop {
+        match lock.try_lock_exclusive() {
+            Ok(()) => break,
+            Err(_) => {
+                if !waited {
+                    waited = true;
+                    // Never wait silently: an unexplained multi-minute pause
+                    // is indistinguishable from a hang.
+                    eprintln!(
+                        "soldr: another process is bootstrapping rustup into {}; waiting",
+                        paths.bin.display()
+                    );
+                }
+                if std::time::Instant::now() >= deadline {
+                    eprintln!(
+                        "soldr: rustup bootstrap lock still held after {}s; installing directly",
+                        started.elapsed().as_secs()
+                    );
+                    return install();
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+        }
+    }
+
+    // The winner may already have finished while we queued. Re-check before
+    // spending a second download on a rustup that is now present.
+    if let Some(path) = discover(paths) {
+        if waited {
+            eprintln!(
+                "soldr: rustup bootstrapped by another process after {}ms",
+                started.elapsed().as_millis()
+            );
+        }
+        let _ = fs2::FileExt::unlock(&lock);
+        return Ok(BootstrapReport {
+            rustup_path: path,
+            already_installed: true,
+            source_url: None,
+        });
+    }
+
+    let result = install();
+    let _ = fs2::FileExt::unlock(&lock);
+    result
 }
 
 /// Path the bootstrap routine copies `rustup` to (under the soldr-managed `bin/`).
@@ -649,5 +775,101 @@ mod tests {
                 None => std::env::remove_var(&self.key),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod bootstrap_lock_tests {
+    use super::*;
+
+    fn temp_paths(label: &str) -> (tempfile::TempDir, SoldrPaths) {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let root = dir.path().join(label);
+        std::fs::create_dir_all(&root).expect("root");
+        let paths = SoldrPaths::with_root(root);
+        (dir, paths)
+    }
+
+    /// Stand-in for "no rustup anywhere". The real `discover_rustup` consults
+    /// `PATH` first, so using it here would make these tests assert about
+    /// whatever machine they run on -- which is exactly how the first version
+    /// of them passed on Windows and failed on every Unix target-run lane.
+    fn absent(_paths: &SoldrPaths) -> Option<PathBuf> {
+        None
+    }
+
+    /// The lock must not change the uncontended path: one caller installs.
+    #[test]
+    fn an_uncontended_bootstrap_runs_the_install() {
+        let (_dir, paths) = temp_paths("uncontended");
+        let ran = std::sync::atomic::AtomicUsize::new(0);
+
+        let report = with_bootstrap_lock_using(&paths, absent, || {
+            ran.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(BootstrapReport {
+                rustup_path: paths.bin.join("rustup"),
+                already_installed: false,
+                source_url: None,
+            })
+        })
+        .expect("uncontended bootstrap");
+
+        assert_eq!(ran.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(!report.already_installed);
+    }
+
+    /// soldr#2728's whole point: the caller that loses the race must find the
+    /// winner's rustup and return it, not install a second copy over the top.
+    /// A lock that merely serialized three identical downloads would pass a
+    /// "did it collide" test while still doing the work three times.
+    #[test]
+    fn a_caller_that_finds_rustup_already_present_does_not_install_again() {
+        let (_dir, paths) = temp_paths("already-there");
+        std::fs::create_dir_all(&paths.bin).expect("bin");
+        // Stands in for the winner's completed install.
+        let installed = managed_rustup_path(&paths);
+        std::fs::write(&installed, b"#!/bin/sh\n").expect("seed rustup");
+        let found = installed.clone();
+
+        let ran = std::sync::atomic::AtomicUsize::new(0);
+        let report = with_bootstrap_lock_using(
+            &paths,
+            move |_paths| Some(found.clone()),
+            || {
+                ran.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                panic!("must not install when rustup is already present");
+            },
+        )
+        .expect("second caller");
+
+        assert_eq!(
+            ran.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the install closure must not run"
+        );
+        assert!(report.already_installed);
+        assert_eq!(report.rustup_path, installed);
+    }
+
+    /// A home the lock file cannot be created in must still bootstrap --
+    /// unlocked is what happened before this existed, and is strictly better
+    /// than refusing to build.
+    #[test]
+    fn an_unlockable_home_degrades_to_an_unlocked_install() {
+        let (_dir, paths) = temp_paths("unlockable");
+        // Occupy `bin` with a file so `create_dir_all` and the lock open both
+        // fail, without permissions games that differ per platform.
+        std::fs::write(&paths.bin, b"not a directory").expect("block bin");
+
+        let report = with_bootstrap_lock_using(&paths, absent, || {
+            Ok(BootstrapReport {
+                rustup_path: paths.bin.join("rustup"),
+                already_installed: false,
+                source_url: None,
+            })
+        })
+        .expect("degraded bootstrap still runs");
+
+        assert!(!report.already_installed);
     }
 }
