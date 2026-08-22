@@ -74,6 +74,17 @@ test-group = 'soldr-runtime'
 # 852 siblings passed, so they join the reservation rather than getting a
 # larger private budget.
 #
+# soldr#2737 promoted `cli_cargo_basic` from a per-test entry to the whole
+# binary: 19 of its 21 tests drive `isolated_soldr_command`, so it has the
+# same profile as the three binaries above rather than being a mixed bag with
+# a few cold builds in it. Three separate rounds had already added its tests
+# one at a time (soldr#2696, then two more timing out at 120s on
+# job 97088274620) -- that drip was the signal. The subsumed per-test entry
+# for `cargo_without_timeout_allows_progress_cpu_and_lock_waits` is gone with
+# it. The remaining `test(=...)` entries stay per-test on purpose: they live
+# in binaries that are NOT predominantly cold front doors, and a fast test
+# added to one of those should not inherit a whole-runner reservation.
+#
 # soldr#2720 named the next one on a docs-only PR (run 32530365077):
 # `exec_cargo_build_routes_through_child_shims_and_zccache` drives
 # `isolated_soldr_command` for `soldr exec cargo build`, so it cold-starts
@@ -86,7 +97,7 @@ test-group = 'soldr-runtime'
 max-threads = 1
 
 [[profile.default.overrides]]
-filter = 'binary(cli_cargo_linker) + binary(cli_cargo_run_trampoline) + binary(cli_cargo_wrappers) + test(=cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled) + test(=cargo_without_timeout_allows_progress_cpu_and_lock_waits) + test(=cargo_front_door_forces_msvc_target_even_with_polluted_path) + test(=exec_cargo_build_routes_through_child_shims_and_zccache)'
+filter = 'binary(cli_cargo_basic) + binary(cli_cargo_linker) + binary(cli_cargo_run_trampoline) + binary(cli_cargo_wrappers) + test(=cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled) + test(=cargo_front_door_forces_msvc_target_even_with_polluted_path) + test(=exec_cargo_build_routes_through_child_shims_and_zccache)'
 test-group = 'soldr-cargo-cold-builds'
 threads-required = "num-cpus"
 
