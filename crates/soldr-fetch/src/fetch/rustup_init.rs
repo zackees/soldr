@@ -282,6 +282,27 @@ fn with_bootstrap_lock<F>(paths: &SoldrPaths, install: F) -> Result<BootstrapRep
 where
     F: FnOnce() -> Result<BootstrapReport, SoldrError>,
 {
+    with_bootstrap_lock_using(paths, discover_rustup, install)
+}
+
+/// [`with_bootstrap_lock`] with the discovery probe injected.
+///
+/// Production passes [`discover_rustup`], which consults `PATH` before the
+/// managed home. That is right for the real call path — it is only reached
+/// once discovery has already returned `None` — but it makes the post-lock
+/// re-check untestable directly: on any machine with rustup on `PATH` the
+/// re-check short-circuits and the install never runs, so the test would
+/// assert about the developer's machine rather than about this function.
+/// Injecting the probe tests the logic instead of the environment.
+fn with_bootstrap_lock_using<D, F>(
+    paths: &SoldrPaths,
+    discover: D,
+    install: F,
+) -> Result<BootstrapReport, SoldrError>
+where
+    D: Fn(&SoldrPaths) -> Option<PathBuf>,
+    F: FnOnce() -> Result<BootstrapReport, SoldrError>,
+{
     use fs2::FileExt as _;
 
     let _ = std::fs::create_dir_all(&paths.bin);
@@ -329,7 +350,7 @@ where
 
     // The winner may already have finished while we queued. Re-check before
     // spending a second download on a rustup that is now present.
-    if let Some(path) = discover_rustup(paths) {
+    if let Some(path) = discover(paths) {
         if waited {
             eprintln!(
                 "soldr: rustup bootstrapped by another process after {}ms",
@@ -769,13 +790,21 @@ mod bootstrap_lock_tests {
         (dir, paths)
     }
 
+    /// Stand-in for "no rustup anywhere". The real `discover_rustup` consults
+    /// `PATH` first, so using it here would make these tests assert about
+    /// whatever machine they run on -- which is exactly how the first version
+    /// of them passed on Windows and failed on every Unix target-run lane.
+    fn absent(_paths: &SoldrPaths) -> Option<PathBuf> {
+        None
+    }
+
     /// The lock must not change the uncontended path: one caller installs.
     #[test]
     fn an_uncontended_bootstrap_runs_the_install() {
         let (_dir, paths) = temp_paths("uncontended");
         let ran = std::sync::atomic::AtomicUsize::new(0);
 
-        let report = with_bootstrap_lock(&paths, || {
+        let report = with_bootstrap_lock_using(&paths, absent, || {
             ran.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(BootstrapReport {
                 rustup_path: paths.bin.join("rustup"),
@@ -789,23 +818,28 @@ mod bootstrap_lock_tests {
         assert!(!report.already_installed);
     }
 
-    /// soldr#2728's whole point: the second caller must find the winner's
-    /// rustup and return it, not install a second copy over the top. A lock
-    /// that merely serialized three identical downloads would pass a
+    /// soldr#2728's whole point: the caller that loses the race must find the
+    /// winner's rustup and return it, not install a second copy over the top.
+    /// A lock that merely serialized three identical downloads would pass a
     /// "did it collide" test while still doing the work three times.
     #[test]
     fn a_caller_that_finds_rustup_already_present_does_not_install_again() {
         let (_dir, paths) = temp_paths("already-there");
         std::fs::create_dir_all(&paths.bin).expect("bin");
-        // Stand in for the winner's completed install.
+        // Stands in for the winner's completed install.
         let installed = managed_rustup_path(&paths);
         std::fs::write(&installed, b"#!/bin/sh\n").expect("seed rustup");
+        let found = installed.clone();
 
         let ran = std::sync::atomic::AtomicUsize::new(0);
-        let report = with_bootstrap_lock(&paths, || {
-            ran.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            panic!("must not install when rustup is already present");
-        })
+        let report = with_bootstrap_lock_using(
+            &paths,
+            move |_paths| Some(found.clone()),
+            || {
+                ran.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                panic!("must not install when rustup is already present");
+            },
+        )
         .expect("second caller");
 
         assert_eq!(
@@ -824,10 +858,10 @@ mod bootstrap_lock_tests {
     fn an_unlockable_home_degrades_to_an_unlocked_install() {
         let (_dir, paths) = temp_paths("unlockable");
         // Occupy `bin` with a file so `create_dir_all` and the lock open both
-        // fail, without needing permissions games that differ per platform.
+        // fail, without permissions games that differ per platform.
         std::fs::write(&paths.bin, b"not a directory").expect("block bin");
 
-        let report = with_bootstrap_lock(&paths, || {
+        let report = with_bootstrap_lock_using(&paths, absent, || {
             Ok(BootstrapReport {
                 rustup_path: paths.bin.join("rustup"),
                 already_installed: false,
