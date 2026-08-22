@@ -292,6 +292,17 @@ fn run_dependency_steps(
         command.arg("cargo").args(args);
         cargo_front_door::configure_cargo_child_for_timeout(&mut command);
         command.env(cargo_front_door::INHERIT_PARENT_PROCESS_GROUP_ENV, "1");
+        // soldr#2726: these children inherit soldr's stdio, so whatever they
+        // report -- an advisory from `cargo audit`, a denied licence from
+        // `cargo deny` -- reaches the user through our streams, and
+        // `wait_for_parallel_children` adds a per-leg pid + exit status of
+        // its own. That is the "spawns a child that inherits stdio" case
+        // `exit_guard` asks callers to record. Without it every ordinary
+        // `lint deps` failure was followed by "soldr emitted no diagnostic
+        // and ran no child process ... this is a fault in soldr itself",
+        // directly under lines naming three child pids. Marked at the spawn
+        // rather than on the exit code, matching soldr#2718.
+        crate::exit_guard::mark_spoke();
         let child = command.spawn().map_err(|error| {
             SoldrError::Other(format!(
                 "lint deps: failed to start child Soldr process for `{label}`: {error}"
