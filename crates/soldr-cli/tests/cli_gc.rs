@@ -313,6 +313,32 @@ fn gc_purge_all_json_reports_error_log_path_and_keeps_failed_row() {
     );
 }
 
+/// The front-door phase lines from a captured poll's stderr (soldr#2624).
+///
+/// Only the `soldr front-door:` lines matter here; a contended runner also
+/// emits broker warnings, bootstrap notices and cache chatter, and burying the
+/// timing breakdown in that is how the two diagnoses stayed indistinguishable.
+/// Bounded, because a panic message is read in a CI log: the tail is kept
+/// rather than the head, since the phases that dominate a slow start
+/// (`broker_image_hash`, `broker_spawn_wait`) come last.
+fn startup_trace_tail(stderr: &str) -> String {
+    const MAX_LINES: usize = 20;
+    let phases: Vec<&str> = stderr
+        .lines()
+        .filter(|line| line.contains("soldr front-door:"))
+        .collect();
+    if phases.is_empty() {
+        return "(no front-door trace lines — soldr exited before the front door)".to_string();
+    }
+    let skipped = phases.len().saturating_sub(MAX_LINES);
+    let mut rendered = String::new();
+    if skipped > 0 {
+        rendered.push_str(&format!("... {skipped} earlier phase line(s) omitted\n"));
+    }
+    rendered.push_str(&phases[skipped..].join("\n"));
+    rendered
+}
+
 #[test]
 fn gc_list_json_reports_built_project_target_dir() {
     let cache_root = unique_temp_dir("gc-list-build");
@@ -394,6 +420,9 @@ fn gc_list_json_reports_built_project_target_dir() {
     let poll_started = Instant::now();
     let deadline = poll_started + GC_TOUCH_POLL_BUDGET;
     let mut attempts = 0usize;
+    // Assigned on every iteration before the assertion can read it, so no
+    // initializer -- an initial value here would be dead.
+    let mut last_poll_trace: String;
     let json: Value = loop {
         attempts += 1;
         let output = soldr_command(&soldr_bin)
@@ -402,8 +431,15 @@ fn gc_list_json_reports_built_project_target_dir() {
             .env_remove(soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR)
             .env("CARGO_HOME", &sandbox_cargo_home)
             .env("RUSTUP_HOME", &sandbox_rustup_home)
+            // soldr#2624: the assertion below offers two diagnoses and could
+            // not tell them apart. This trace is what separates them — it
+            // breaks the poll's wall time into front-door phases. Free on the
+            // passing path: the test asserts on stdout, and this only writes
+            // stderr, which is captured either way.
+            .env(soldr_cli::startup_trace::STARTUP_TRACE_ENV_VAR, "1")
             .output()
             .expect("failed to run soldr gc list --json");
+        last_poll_trace = String::from_utf8_lossy(&output.stderr).into_owned();
 
         assert!(
             output.status.success(),
@@ -426,11 +462,17 @@ fn gc_list_json_reports_built_project_target_dir() {
             attempts < GC_TOUCH_MIN_POLLS || Instant::now() < deadline,
             "no tracked target dir after {attempts} `gc list` polls over \
              {elapsed:?} (~{:?} per poll; budget {GC_TOUCH_POLL_BUDGET:?}, \
-             floor {GC_TOUCH_MIN_POLLS} polls). The per-poll cost above is the \
-             diagnosis: seconds means a contended runner spending the budget on \
-             process startup (soldr#2624), milliseconds means the touch \
-             genuinely never converged (soldr#2561).",
+             floor {GC_TOUCH_MIN_POLLS} polls).\n\n\
+             Which of the two it is, from the last poll's front-door trace \
+             below: phases summing to most of the per-poll cost — \
+             `broker_image_hash`, `broker_spawn_wait` — mean a contended \
+             runner spending the budget on process startup (soldr#2624). A \
+             trace totalling a few tens of ms means startup was fine and the \
+             registry row genuinely never landed (soldr#2561). An empty trace \
+             means soldr exited before the front door, so neither diagnosis \
+             applies.\n\nlast poll trace:\n{}",
             elapsed / u32::try_from(attempts).unwrap_or(1),
+            startup_trace_tail(&last_poll_trace),
         );
         std::thread::sleep(Duration::from_millis(100));
     };
