@@ -73,11 +73,20 @@ test-group = 'soldr-runtime'
 # fixture build with a scrubbed PATH. Both timed out at exactly 120s while
 # 852 siblings passed, so they join the reservation rather than getting a
 # larger private budget.
+#
+# soldr#2720 named the next one on a docs-only PR (run 32530365077):
+# `exec_cargo_build_routes_through_child_shims_and_zccache` drives
+# `isolated_soldr_command` for `soldr exec cargo build`, so it cold-starts
+# its own broker and daemon. Its cargo/rustc/zccache are fake scripts, so
+# the 120.208s was soldr cold-start under contention, not tool work.
+# Test-scoped rather than `binary(cli_exec)`: that binary holds one test
+# today, but a fast test added to it later should not inherit a
+# whole-runner reservation.
 [test-groups.soldr-cargo-cold-builds]
 max-threads = 1
 
 [[profile.default.overrides]]
-filter = 'binary(cli_cargo_linker) + binary(cli_cargo_run_trampoline) + binary(cli_cargo_wrappers) + test(=cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled) + test(=cargo_without_timeout_allows_progress_cpu_and_lock_waits) + test(=cargo_front_door_forces_msvc_target_even_with_polluted_path)'
+filter = 'binary(cli_cargo_linker) + binary(cli_cargo_run_trampoline) + binary(cli_cargo_wrappers) + test(=cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled) + test(=cargo_without_timeout_allows_progress_cpu_and_lock_waits) + test(=cargo_front_door_forces_msvc_target_even_with_polluted_path) + test(=exec_cargo_build_routes_through_child_shims_and_zccache)'
 test-group = 'soldr-cargo-cold-builds'
 threads-required = "num-cpus"
 
