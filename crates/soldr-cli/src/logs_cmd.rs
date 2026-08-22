@@ -344,8 +344,9 @@ fn collect_log_path_entries(paths: &SoldrPaths) -> Vec<LogPathEntry> {
         (
             "soldr-compile-daemon-fallback-log",
             compile_daemon_fallback_log,
-            "Durable JSONL record of compile-daemon cache-bypass fallbacks, including \
-             build-session correlation and the terminal startup failure.",
+            "Historical JSONL record of pre-cutover compile-daemon cache-bypass \
+             fallbacks, including build-session correlation and the terminal \
+             startup failure. Nothing appends here any more (soldr#2424).",
         ),
         (
             "soldr-compile-delivery-log",

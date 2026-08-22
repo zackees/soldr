@@ -1,13 +1,22 @@
 //! Read-only rollup of compile-daemon fallback events for `soldr doctor`
 //! (soldr#1838 Phase 4).
 //!
-//! When a cacheable compile cannot reach the daemon it degrades to direct
-//! rustc and appends a JSONL record to `logs/compile-daemon-fallbacks.jsonl`
-//! (`compile_dispatch::append_compile_daemon_fallback_event`). Nothing ever
-//! surfaced that journal, so a build silently running uncached -- the exact
-//! "quietly 10-50x slower, indefinitely" failure #1838 calls out -- was
-//! invisible unless you already knew to open that file. This summarises it
-//! into `soldr doctor`, next to the timeout section from Phase 3.
+//! **The mechanism this summarises no longer exists.** Before the mandatory
+//! broker cutover, a cacheable compile that could not reach the daemon
+//! degraded to direct rustc and appended a JSONL record to
+//! `logs/compile-daemon-fallbacks.jsonl`. Nothing surfaced that journal, so a
+//! build silently running uncached -- the exact "quietly 10-50x slower,
+//! indefinitely" failure soldr#1838 calls out -- was invisible unless you
+//! already knew to open the file. This summarised it into `soldr doctor`.
+//!
+//! Post-cutover, cacheable compiler work never silently bypasses the
+//! broker/daemon: infrastructure errors hard-fail instead, and
+//! `compile_dispatch` no longer has a writer at all (its absence is enforced
+//! by `daemon_console_policy_guard`). So every record this can find is
+//! historical, written by an older soldr and kept only so upgrading does not
+//! erase diagnostic history. The reader stays because those records are still
+//! worth reading; what changed is that a non-zero count is a fact about the
+//! past, not a condition to recover from (soldr#2424).
 //!
 //! Strictly read-only: it never writes the journal, and every parse failure
 //! degrades to "skip that line", so a truncated or corrupt journal can never
@@ -106,30 +115,52 @@ fn format_age(ts_ms: u64, now_ms: u64) -> String {
     }
 }
 
-/// Human section shared by `soldr doctor` and `soldr status`. The wording
-/// is context-neutral so it reads correctly in both (doctor prints the
-/// timeout table too; status does not).
-pub(crate) fn print_section(rollup: &FallbackRollup) {
+/// Human section shared by `soldr doctor` and `soldr status`, as lines.
+///
+/// Pure so the wording is unit-testable without capturing stdout, matching
+/// `startup_trace::render_line`. The framing is the point and is easy to rot
+/// back: these records describe pre-cutover runs, so the section must not
+/// read as a live condition or offer a recovery for one (soldr#2424).
+///
+/// The wording is context-neutral so it reads correctly in both callers
+/// (doctor prints the timeout table too; status does not).
+fn render_section(rollup: &FallbackRollup, now_ms: u64) -> Vec<String> {
     if rollup.total == 0 {
-        println!("compile-daemon fallbacks: none recorded (the compile cache was never bypassed)");
-        return;
+        return vec![
+            "compile-daemon fallbacks: none recorded (the compile cache was never bypassed)"
+                .to_string(),
+        ];
     }
+    let mut lines = vec![format!(
+        "compile-daemon fallbacks: {} historical record(s) -- these builds ran UNCACHED via \
+         direct rustc (soldr#1838) under a pre-cutover soldr. Nothing appends here any more; \
+         cacheable work now hard-fails instead of silently bypassing the daemon",
+        rollup.total
+    )];
+    lines.extend(
+        rollup
+            .recent
+            .iter()
+            .map(|entry| format!("  - {}: {}", format_age(entry.ts_ms, now_ms), entry.reason)),
+    );
+    lines.push(
+        "  nothing to recover: this is a record of past runs, not a current condition. For a \
+         wedged cache now, see `soldr doctor` / `soldr status` / `soldr logs paths`, then \
+         `soldr daemon stop` followed by `soldr daemon start`"
+            .to_string(),
+    );
+    lines
+}
+
+/// Human section shared by `soldr doctor` and `soldr status`.
+pub(crate) fn print_section(rollup: &FallbackRollup) {
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
-    println!(
-        "compile-daemon fallbacks: {} recorded -- these builds ran UNCACHED via direct rustc \
-         (soldr#1838); a persistent count here is the silent-slowdown symptom",
-        rollup.total
-    );
-    for entry in &rollup.recent {
-        println!("  - {}: {}", format_age(entry.ts_ms, now_ms), entry.reason);
+    for line in render_section(rollup, now_ms) {
+        println!("{line}");
     }
-    println!(
-        "  recover: `soldr --no-cache cargo ...` bypasses the wrapper cleanly; a wedged daemon \
-         is cleared by `soldr daemon stop`. `soldr doctor` shows the active timeout bounds."
-    );
 }
 
 #[cfg(test)]
@@ -194,5 +225,54 @@ mod tests {
         assert_eq!(format_age(now - 600_000, now), "10m ago");
         assert_eq!(format_age(now - 7_200_000, now), "2h ago");
         assert_eq!(format_age(now - 259_200_000, now), "3d ago");
+    }
+
+    /// soldr#2424: the section must not present historical records as a
+    /// live condition, nor offer a recovery for one. This is wording, and
+    /// wording rots -- pin the three claims that carry the meaning.
+    #[test]
+    fn a_non_empty_rollup_reads_as_history_not_as_a_live_condition() {
+        let rollup = FallbackRollup {
+            total: 2,
+            recent: vec![FallbackEntry {
+                ts_ms: 1_000,
+                reason: "daemon unreachable".into(),
+            }],
+        };
+
+        let rendered = render_section(&rollup, 61_000).join("\n");
+
+        assert!(
+            rendered.contains("historical record(s)"),
+            "must be framed as history: {rendered}"
+        );
+        assert!(
+            rendered.contains("Nothing appends here any more"),
+            "must say the mechanism is gone: {rendered}"
+        );
+        assert!(
+            rendered.contains("nothing to recover"),
+            "must not offer a recovery for a past run: {rendered}"
+        );
+        // The pre-cutover advice was to bypass the cache. That is exactly
+        // the stale advice soldr#2424 asks to purge, and the current
+        // recovery story is doctor/status/logs + a daemon restart.
+        assert!(
+            !rendered.contains("--no-cache"),
+            "must not recommend bypassing the cache: {rendered}"
+        );
+        assert!(
+            rendered.contains("soldr daemon stop"),
+            "must point at the current recovery: {rendered}"
+        );
+        // The entry itself still has to be readable.
+        assert!(rendered.contains("daemon unreachable"), "{rendered}");
+    }
+
+    #[test]
+    fn an_empty_rollup_still_reads_as_healthy() {
+        let rendered = render_section(&FallbackRollup::default(), 0).join("\n");
+        assert!(rendered.contains("none recorded"), "{rendered}");
+        assert!(!rendered.contains("nothing to recover"), "{rendered}");
     }
 }
