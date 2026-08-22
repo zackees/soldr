@@ -17,7 +17,7 @@ pub const TOKIO_CONSOLE_PUBLISH_INTERVAL_MS_ENV_VAR: &str =
 
 fn tokio_console_requested() -> bool {
     std::env::var(TOKIO_CONSOLE_ENV_VAR)
-        .map(|v| !v.is_empty() && v != "0")
+        .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "" | "0" | "false" | "no" | "off"))
         .unwrap_or(false)
 }
 

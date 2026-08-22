@@ -63,13 +63,27 @@ pub(crate) struct EnvSnapshot {
     pub(crate) disabled: bool,
 }
 
+/// Does this `SOLDR_NO_DOCKER_CROSS` value mean "disabled"?
+///
+/// Pure so the test exercises *this* function rather than a copy of it
+/// (soldr#2740). The previous test re-implemented the expression inline, so
+/// it validated a duplicate and could not catch a drift between the two.
+///
+/// Denylist, not allowlist: anything that is not a recognised falsy spelling
+/// disables. The falsy set is the full one -- the earlier version omitted
+/// `no` and `off`, so `SOLDR_NO_DOCKER_CROSS=off` disabled Docker delegation,
+/// the exact opposite of what someone writing `off` means.
+pub(crate) fn disable_value_means_disabled(raw: &str) -> bool {
+    !matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "" | "0" | "false" | "no" | "off"
+    )
+}
+
 impl EnvSnapshot {
     pub(crate) fn from_process() -> Self {
         let disabled = std::env::var(DISABLE_ENV)
-            .map(|v| {
-                let v = v.trim();
-                !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false")
-            })
+            .map(|v| disable_value_means_disabled(&v))
             .unwrap_or(false);
         EnvSnapshot { disabled }
     }
@@ -346,22 +360,31 @@ mod tests {
         ));
     }
 
+    /// soldr#2740: exercises the real parser, not a copy of it, and covers
+    /// the two spellings that used to invert.
     #[test]
     fn env_snapshot_parses_disable_values() {
-        // Only the truthy spellings disable; "0"/"false"/empty do not.
         for (raw, want) in [
             ("1", true),
             ("true", true),
             ("yes", true),
+            ("enabled", true),
             ("0", false),
             ("false", false),
+            ("FALSE", false),
+            // These two disabled Docker delegation before soldr#2740 --
+            // the opposite of what someone writing them means.
+            ("no", false),
+            ("off", false),
+            ("OFF", false),
+            (" off ", false),
             ("", false),
         ] {
-            let disabled = {
-                let v = raw.trim();
-                !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false")
-            };
-            assert_eq!(disabled, want, "disable parse for {raw:?}");
+            assert_eq!(
+                disable_value_means_disabled(raw),
+                want,
+                "disable parse for {raw:?}"
+            );
         }
     }
 

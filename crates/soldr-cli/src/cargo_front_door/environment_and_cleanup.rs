@@ -75,7 +75,11 @@ fn env_flag_truthy(key: &str) -> bool {
         .map(|v| {
             let s = v.to_string_lossy();
             let t = s.trim();
-            !t.is_empty() && !t.eq_ignore_ascii_case("0") && !t.eq_ignore_ascii_case("false")
+            !t.is_empty()
+                && !matches!(
+                    t.to_ascii_lowercase().as_str(),
+                    "0" | "false" | "no" | "off"
+                )
         })
         .unwrap_or(false)
 }
