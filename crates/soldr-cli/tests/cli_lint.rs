@@ -36,14 +36,56 @@ fn strings(values: &[&str]) -> Vec<String> {
 /// are killed almost immediately — and only lengthens an already-failing run.
 const SIBLING_SLEEP_SECS: u32 = 30;
 
-/// Wall-clock budget for the whole `lint deps` invocation once the dependency
-/// failure has cancelled its siblings.
+/// Budget for `lint deps` spawn + fail + cancel, with front-door startup
+/// already subtracted (soldr#2605).
 ///
-/// Must stay well under [`SIBLING_SLEEP_SECS`] to remain a real assertion,
-/// while leaving room for soldr startup, the metadata probe, three fake-script
-/// spawns, and teardown. The previous 5 s against a 10 s sleep was only a 2x
-/// margin and flaked on `target-run x86_64-pc-windows-msvc` at 5.247 s.
+/// It used to bound the *whole* invocation, startup included, and so had to
+/// "leave room for soldr startup" -- but startup is the dominant and most
+/// variable term. Measured on a Windows host: 5.9s warm, 13.7s on a cold
+/// broker/daemon start, and over 15s when the run also paid a rustup
+/// bootstrap, all with cancellation working correctly. The budget was mostly
+/// reporting runner weather.
+///
+/// Excluding startup makes the number mean one thing. The work it now bounds
+/// runs ~1-2s normally and would run ~[`SIBLING_SLEEP_SECS`] if cancellation
+/// regressed, so this sits between two outcomes rather than inside the spread
+/// of one. The previous 5 s against a 10 s sleep flaked on
+/// `target-run x86_64-pc-windows-msvc` at 5.247 s.
 const SIBLING_CANCEL_BUDGET_SECS: u64 = 15;
+
+/// Front-door startup time, from the child's `SOLDR_STARTUP_TRACE` lines
+/// (soldr#2605).
+///
+/// `soldr_exited` is the parent's *whole* runtime: getting soldr running,
+/// plus the `lint deps` work this test actually bounds. Measured on a Windows
+/// host, the first half alone ran 5.9s warm, 13.7s on a cold broker/daemon
+/// start, and past 15s when the run also paid a rustup bootstrap — against a
+/// 15s budget. So the budget was mostly measuring how busy the runner was,
+/// and a slow-start failure was indistinguishable from the cancellation
+/// regression this test exists to catch.
+///
+/// Subtracting this leaves spawn + fail + cancel, which is the quantity the
+/// budget was always meant to bound. Returns zero when no trace line is
+/// present — soldr died before the front door, and the assertion falls back
+/// to bounding the whole run, which is the old behaviour.
+///
+/// Scope: the traced window ends at `clap_parse`, so this covers front-door
+/// startup *including* broker bringup — `broker_image_hash` alone reached
+/// 9.5s and a front-door total of 15.9s on CI job 97063065040 — but not a
+/// rustup bootstrap, which the children pay later during toolchain
+/// resolution. CI hosts arrive with rustup installed, so broker bringup is
+/// the term that actually contaminates this budget there.
+fn front_door_startup(stderr: &str) -> Duration {
+    stderr
+        .lines()
+        .filter(|line| line.contains("soldr front-door:"))
+        .filter_map(|line| line.rsplit_once("total_ms="))
+        .filter_map(|(_, tail)| tail.split_whitespace().next())
+        .filter_map(|value| value.parse::<u64>().ok())
+        .max()
+        .map(Duration::from_millis)
+        .unwrap_or_default()
+}
 
 fn dependency_failure_script() -> &'static str {
     // `ping -n <N>` waits N-1 intervals, so N = SIBLING_SLEEP_SECS + 1.
@@ -306,6 +348,10 @@ fn dependency_failure_cancels_sibling_lint_children() {
         .env("SOLDR_CACHE_DIR", root.join("cache"))
         .env("SOLDR_TEST_CARGO_BIN", cargo)
         .env("PATH", prepend_to_path(&tools))
+        // soldr#2605: lets the assertions below subtract startup from
+        // the measured window. Same mechanism cli_daemon_lifecycle.rs
+        // already uses; costs a few stderr lines this test captures anyway.
+        .env(soldr_cli::startup_trace::STARTUP_TRACE_ENV_VAR, "1")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -350,20 +396,33 @@ fn dependency_failure_cancels_sibling_lint_children() {
     // still holding the pipe". Both produced the same panic, so five
     // sightings could not be told apart. Measured separately, the failure
     // names itself.
+    // soldr#2605: bound the work, not the startup. `soldr_exited` includes
+    // getting soldr running, which measured 5.9s warm and 13.7s cold on a
+    // Windows host — up to 91% of the budget with cancellation working
+    // perfectly. Subtracting it makes the gap real in both directions:
+    // spawn+fail+cancel runs ~1-2s normally and ~30s if cancellation
+    // regresses, so a 15s bound now sits between two outcomes instead of
+    // inside the noise of one.
+    let startup = front_door_startup(&stderr);
+    let cancel_window = soldr_exited.saturating_sub(startup);
     assert!(
-        soldr_exited < Duration::from_secs(SIBLING_CANCEL_BUDGET_SECS),
-        "dependency failure must cancel sibling lint children promptly: soldr \
-         itself ran {soldr_exited:?}, and an uncancelled sibling would have \
-         slept {SIBLING_SLEEP_SECS}s (soldr#1876). This is the cancellation \
-         path failing, not a leaked descendant.\nstderr:\n{stderr}"
+        cancel_window < Duration::from_secs(SIBLING_CANCEL_BUDGET_SECS),
+        "dependency failure must cancel sibling lint children promptly: \
+         spawn+fail+cancel took {cancel_window:?} (soldr ran {soldr_exited:?} \
+         total, of which {startup:?} was front-door startup), and an \
+         uncancelled sibling would have slept {SIBLING_SLEEP_SECS}s \
+         (soldr#1876). Startup is already excluded, so this is the \
+         cancellation path failing, not a slow runner and not a leaked \
+         descendant.\nstderr:\n{stderr}"
     );
     assert!(
-        last_holder < Duration::from_secs(SIBLING_CANCEL_BUDGET_SECS),
+        last_holder.saturating_sub(startup) < Duration::from_secs(SIBLING_CANCEL_BUDGET_SECS),
         "soldr exited in {soldr_exited:?} but its inherited stdio stayed open \
-         for {last_holder:?}: cancellation returned while a descendant \
-         outlived it holding the pipe (soldr#2605). The sibling's fake cargo \
-         redirects only stdout, so its `sleep`/`ping` grandchild inherits this \
-         stderr for the full {SIBLING_SLEEP_SECS}s. Look for a descendant \
-         outside the killed tree, not at the cancellation logic.\nstderr:\n{stderr}"
+         for {last_holder:?} ({startup:?} of that was front-door startup): \
+         cancellation returned while a descendant outlived it holding the \
+         pipe (soldr#2605). The sibling's fake cargo redirects only stdout, \
+         so its `sleep`/`ping` grandchild inherits this stderr for the full \
+         {SIBLING_SLEEP_SECS}s. Look for a descendant outside the killed \
+         tree, not at the cancellation logic.\nstderr:\n{stderr}"
     );
 }
