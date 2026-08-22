@@ -204,6 +204,16 @@ jobs:
             echo "- Package manager: \`$package_manager_version\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # soldr#2734: the only reading of runner disk anywhere in this lane.
+      # soldr#2699 pinned the warn/block thresholds together at 1 GiB so the
+      # watchdog never prunes mid-run, which also means soldr says nothing
+      # until the disk is effectively gone -- a shard exhausted it and three
+      # tests died on a raw `os error 112` with no clue where it went.
+      - name: Report free disk space (before)
+        if: always()
+        shell: bash
+        run: python .github/scripts/report_free_space.py --label before
+
       - name: Run complete pre-built test archive
         shell: bash
         run: |
@@ -262,6 +272,13 @@ jobs:
             exit "$run_status"
           fi
           exit "$summary_status"
+
+      # Taken with `always()` on purpose: the reading that matters most is
+      # the one after a run that just failed (soldr#2734).
+      - name: Report free disk space (after)
+        if: always()
+        shell: bash
+        run: python .github/scripts/report_free_space.py --label after
 
       # soldr#2615: the PEP 517 wheel smoke rides this allocation instead of a
       # second VM of the identical image. Wheel compilation routes through the
