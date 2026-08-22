@@ -197,6 +197,55 @@ branch, not a second working tree.
 - **Always report the merge URL**: The final user-facing summary must include the PR URL the user should open to review and merge the work.
 - **Fallback if PR creation is blocked**: If the GitHub integration cannot open the PR directly, the agent must still push the branch and provide the exact GitHub URL the user needs to open or complete the PR manually.
 
+## Agent Code-Smell Reporting Rule (issue #2741)
+
+**Significant code smells get an issue, not a shrug.** When you find code where
+the *same idea has several conflicting implementations*, or where the intended
+behaviour cannot be determined from the code, file an issue — even when it is
+outside the task you were given.
+
+- **Title states the research request**, not just the observation:
+  `research: N conflicting implementations of X — which is canonical?`
+- **Body carries the evidence**: every implementation with `file:line`, how they
+  differ (a table once there are more than two), and what the difference costs
+  in observable behaviour.
+- **Do not fix it inline as a side quest, and do not silently pick one.** File,
+  cross-reference from the issue you were actually working, and continue.
+
+### The bar — all three, or it is not an issue
+
+1. **Multiplicity or ambiguity** — the same concept implemented more than once
+   with differing behaviour, or behaviour you cannot determine without running it.
+2. **Observable consequence** — the divergence changes what the program does for
+   some real input.
+3. **Not locally fixable** — resolving it needs a decision about which behaviour
+   is correct, i.e. a design question rather than a typo.
+
+Duplication that behaves identically is a refactor, not an issue. One ugly
+function is not an issue. A `TODO` is not an issue. This rule dies the moment it
+becomes noise.
+
+### Triggers worth noticing while reading
+
+Each of these was present in soldr#2740, the worked example, and each is cheap
+to spot:
+
+- N implementations of the same predicate or parser in different modules.
+- A test that **re-implements** the logic it is testing instead of calling it —
+  it validates a copy and cannot catch drift.
+- A comment describing behaviour the code does not implement.
+- Two names for the same concept with different semantics.
+
+### Why this rule exists
+
+soldr#2740 found five hand-rolled environment-variable truthy parsers plus two
+inline spellings, mutually disagreeing. `SOLDR_USE_SYSTEM_CMAKE=false` *enabled*
+a switch that routes around the pinned, sha256-verified SDK; `ZCCACHE_DISABLE=off`
+*disabled* the cache. Every parser looked correct in isolation — the defect
+existed only **between** them, so agents read adjacent code for months and moved
+on. It surfaced only because a user asked a follow-up question that forced a
+comparison. That is too fragile a mechanism for finding this class.
+
 ## Release Publishing Rules
 
 - **Release PRs must bump the package version**: A release is triggered by merging a PR to `main` that bumps `[workspace.package].version` in `Cargo.toml` and the matching `"version"` in `package.json` to a version that is not already published.
