@@ -251,3 +251,66 @@ fn all_compiling_cargo_surfaces_enter_the_lifecycle() {
     let clean = ["clean", "--target", "linux-arm64"].map(str::to_string);
     assert!(!cargo_operation_requires_prep(&clean));
 }
+
+/// soldr#2722: the soldr#2437 guard must not give GNU and musl the same
+/// remedy. `soldr build` delegates GNU to Docker Linux (soldr#2319) before
+/// the guard is reached, so for GNU there is a working path one verb away;
+/// musl has no delegation at all. One shared message described neither.
+#[test]
+fn the_gnu_guard_message_names_the_delegated_build_that_works() {
+    let message = windows_linux_guard_message("x86_64-unknown-linux-gnu", Some(TargetAbi::Gnu));
+
+    assert!(
+        message.contains("soldr build --target x86_64-unknown-linux-gnu"),
+        "GNU remedy must name the verb that delegates: {message}"
+    );
+    assert!(
+        message.contains("soldr#2319"),
+        "GNU remedy must cite the delegation issue: {message}"
+    );
+    // `ci/perf_local.py` is a repo-internal CI harness, not something to
+    // hand a user as the fix for their build.
+    assert!(
+        !message.contains("perf_local.py"),
+        "no user-facing diagnostic should recommend the CI harness: {message}"
+    );
+}
+
+#[test]
+fn the_musl_guard_message_says_gnu_is_delegated_instead() {
+    let message = windows_linux_guard_message("x86_64-unknown-linux-musl", Some(TargetAbi::Musl));
+
+    // The whole point: a user stopped on musl cannot otherwise discover that
+    // the sibling ABI is handled automatically.
+    assert!(
+        message.contains("x86_64-unknown-linux-gnu"),
+        "musl remedy must point at the GNU triple that works: {message}"
+    );
+    assert!(
+        message.contains("not delegated"),
+        "musl remedy must say why it differs from GNU: {message}"
+    );
+    assert!(
+        !message.contains("perf_local.py"),
+        "no user-facing diagnostic should recommend the CI harness: {message}"
+    );
+}
+
+/// Both branches keep the root cause, which is what soldr#2437 documents.
+#[test]
+fn both_guard_messages_keep_the_elf_compiler_root_cause() {
+    for (target, abi) in [
+        ("x86_64-unknown-linux-gnu", TargetAbi::Gnu),
+        ("aarch64-unknown-linux-musl", TargetAbi::Musl),
+    ] {
+        let message = windows_linux_guard_message(target, Some(abi));
+        assert!(
+            message.contains("soldr#2437") && message.contains("Linux ELF"),
+            "{target} lost the root-cause explanation: {message}"
+        );
+        assert!(
+            message.contains(target),
+            "{target} must be named in its own diagnostic: {message}"
+        );
+    }
+}
