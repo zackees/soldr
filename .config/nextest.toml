@@ -56,7 +56,7 @@ test-group = 'soldr-runtime'
 # on soldr's own "broker route start timed out" -- a starvation failure no
 # nextest budget can fix, because the deadline that expired was soldr's.
 [[profile.default.overrides]]
-filter = 'test(=toolchain_link_writes_every_routed_tool_into_shim_dir) + test(=toolchain_link_is_idempotent_when_rerun_with_same_soldr_binary) + test(=cargo_fmt_host_toolchain_does_not_mix_in_managed_rustup_home)'
+filter = 'test(=toolchain_link_writes_every_routed_tool_into_shim_dir) + test(=toolchain_link_is_idempotent_when_rerun_with_same_soldr_binary) + test(=toolchain_link_emits_schema_v1_json_payload) + test(=toolchain_link_force_overwrites_user_modified_shim) + test(=cargo_fmt_host_toolchain_does_not_mix_in_managed_rustup_home)'
 test-group = 'soldr-runtime'
 
 # These binaries run real Cargo front doors from isolated homes. On hosted
@@ -73,11 +73,20 @@ test-group = 'soldr-runtime'
 # fixture build with a scrubbed PATH. Both timed out at exactly 120s while
 # 852 siblings passed, so they join the reservation rather than getting a
 # larger private budget.
+#
+# soldr#2720 named the next one on a docs-only PR (run 32530365077):
+# `exec_cargo_build_routes_through_child_shims_and_zccache` drives
+# `isolated_soldr_command` for `soldr exec cargo build`, so it cold-starts
+# its own broker and daemon. Its cargo/rustc/zccache are fake scripts, so
+# the 120.208s was soldr cold-start under contention, not tool work.
+# Test-scoped rather than `binary(cli_exec)`: that binary holds one test
+# today, but a fast test added to it later should not inherit a
+# whole-runner reservation.
 [test-groups.soldr-cargo-cold-builds]
 max-threads = 1
 
 [[profile.default.overrides]]
-filter = 'binary(cli_cargo_linker) + binary(cli_cargo_run_trampoline) + binary(cli_cargo_wrappers) + test(=cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled) + test(=cargo_without_timeout_allows_progress_cpu_and_lock_waits) + test(=cargo_front_door_forces_msvc_target_even_with_polluted_path)'
+filter = 'binary(cli_cargo_linker) + binary(cli_cargo_run_trampoline) + binary(cli_cargo_wrappers) + test(=cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled) + test(=cargo_without_timeout_allows_progress_cpu_and_lock_waits) + test(=cargo_front_door_forces_msvc_target_even_with_polluted_path) + test(=exec_cargo_build_routes_through_child_shims_and_zccache)'
 test-group = 'soldr-cargo-cold-builds'
 threads-required = "num-cpus"
 
@@ -139,8 +148,15 @@ slow-timeout = { period = "60s", terminate-after = 4, grace-period = "30s" }
 # `toolchain_link_is_idempotent_when_rerun_with_same_soldr_binary` timed out
 # at exactly 120s. Their env-plumbing neighbours in the same binaries finished
 # in 1.8s and 3.0s, so this is cold-start cost on the slowest lane, not a hang.
+#
+# soldr#2729: the same lane later named the other two members of that
+# binary on `main` itself (run 32536450196) --
+# `toolchain_link_emits_schema_v1_json_payload` at 120.251s and
+# `toolchain_link_force_overwrites_user_modified_shim` at 120.223s. Same
+# `isolated_soldr_command` cold start, same treatment: they were simply
+# not among the two observed when the pair above was measured.
 [[profile.default.overrides]]
-filter = 'test(=toolchain_link_writes_every_routed_tool_into_shim_dir) + test(=toolchain_link_is_idempotent_when_rerun_with_same_soldr_binary) + test(=cargo_fmt_host_toolchain_does_not_mix_in_managed_rustup_home)'
+filter = 'test(=toolchain_link_writes_every_routed_tool_into_shim_dir) + test(=toolchain_link_is_idempotent_when_rerun_with_same_soldr_binary) + test(=toolchain_link_emits_schema_v1_json_payload) + test(=toolchain_link_force_overwrites_user_modified_shim) + test(=cargo_fmt_host_toolchain_does_not_mix_in_managed_rustup_home)'
 slow-timeout = { period = "60s", terminate-after = 4, grace-period = "30s" }
 
 # 240s: the soldr#2442 kill-matrix — each test cold-starts a broker and

@@ -181,9 +181,35 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
     for cold_start_test in (
         "test(=toolchain_link_writes_every_routed_tool_into_shim_dir)",
         "test(=toolchain_link_is_idempotent_when_rerun_with_same_soldr_binary)",
+        # soldr#2729: the other two members of the same binary, measured
+        # timing out on `main` itself once the first pair was treated.
+        "test(=toolchain_link_emits_schema_v1_json_payload)",
+        "test(=toolchain_link_force_overwrites_user_modified_shim)",
         "test(=cargo_fmt_host_toolchain_does_not_mix_in_managed_rustup_home)",
     ):
         assert cold_start_test in runtime_members
+    # soldr#2729: group membership alone is not the whole treatment. The four
+    # `toolchain link` tests also need the 240s budget their measured siblings
+    # got -- a test that only checked the group would pass while two of them
+    # kept dying at the 120s default.
+    budget_overrides = [
+        block
+        for block in config.split("[[profile.default.overrides]]")[1:]
+        # Match the filter line, not the block text: splitting on the
+        # override marker leaves each block carrying the *next* one's
+        # leading comment, which mentions toolchain_link too.
+        if "terminate-after = 4" in block
+        and "filter = 'test(=toolchain_link_writes" in block
+    ]
+    assert len(budget_overrides) == 1
+    for linked in (
+        "test(=toolchain_link_writes_every_routed_tool_into_shim_dir)",
+        "test(=toolchain_link_is_idempotent_when_rerun_with_same_soldr_binary)",
+        "test(=toolchain_link_emits_schema_v1_json_payload)",
+        "test(=toolchain_link_force_overwrites_user_modified_shim)",
+    ):
+        assert linked in budget_overrides[0]
+
     assert "[test-groups.soldr-cargo-cold-builds]" in config
     cold_overrides = [
         block
@@ -204,6 +230,8 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
     for cold_member in (
         "test(=cargo_without_timeout_allows_progress_cpu_and_lock_waits)",
         "test(=cargo_front_door_forces_msvc_target_even_with_polluted_path)",
+        # soldr#2720: same family, named on a docs-only PR.
+        "test(=exec_cargo_build_routes_through_child_shims_and_zccache)",
     ):
         assert cold_member in cold_override
     assert 'threads-required = "num-cpus"' in cold_override

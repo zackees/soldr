@@ -108,7 +108,19 @@ def build_summary(
             if is_complete_partition
             else run["executed"] > discovered
         )
-        if counts_disagree:
+        # soldr#2724: the lane runs `--max-fail 3:immediate`, so a run that
+        # hits its third failure stops with tests still unexecuted -- by
+        # design, and reported as such by nextest. Under-execution *with*
+        # failures is that intentional early stop; under-execution with zero
+        # failures is the coverage hole this check exists to catch (a
+        # partition quietly skipping tests). Discriminating on the observed
+        # failure count keeps the guard without threading `--max-fail`'s
+        # value from the workflow into this script.
+        #
+        # Over-execution is never explained by an early stop, so it still
+        # raises regardless: more tests ran than were discovered.
+        stopped_early = run["failed"] > 0 and accounted < discovered
+        if counts_disagree and not stopped_early:
             raise ValueError(
                 "nextest coverage counts disagree: "
                 f"discovered={discovered}, executed={run['executed']}, "
