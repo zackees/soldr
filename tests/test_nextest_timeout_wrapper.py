@@ -219,18 +219,24 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
     assert len(cold_overrides) == 1
     cold_override = cold_overrides[0]
     assert (
-        "binary(cli_cargo_linker) + binary(cli_cargo_run_trampoline)"
+        "binary(cli_cargo_basic) + binary(cli_cargo_linker)"
+        " + binary(cli_cargo_run_trampoline)"
         " + binary(cli_cargo_wrappers)"
         " + test(=cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled)"
         in cold_override
     )
-    # soldr#2697, second windows-gnu replay: these two cold front-door tests
-    # timed out at exactly 120s beside 852 passing siblings. They belong to the
-    # reservation, not to a larger private timeout budget.
+    # soldr#2737: `cli_cargo_basic` is binary-scoped because 19 of its 21
+    # tests drive `isolated_soldr_command`. Its per-test entry is subsumed and
+    # must not come back alongside the binary one -- two entries covering the
+    # same tests is how the list stopped being readable.
+    assert (
+        "test(=cargo_without_timeout_allows_progress_cpu_and_lock_waits)"
+        not in cold_override
+    )
+    # These stay per-test on purpose: they live in binaries that are not
+    # predominantly cold front doors (soldr#2697, soldr#2720).
     for cold_member in (
-        "test(=cargo_without_timeout_allows_progress_cpu_and_lock_waits)",
         "test(=cargo_front_door_forces_msvc_target_even_with_polluted_path)",
-        # soldr#2720: same family, named on a docs-only PR.
         "test(=exec_cargo_build_routes_through_child_shims_and_zccache)",
     ):
         assert cold_member in cold_override
