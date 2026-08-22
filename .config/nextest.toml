@@ -56,7 +56,7 @@ test-group = 'soldr-runtime'
 # on soldr's own "broker route start timed out" -- a starvation failure no
 # nextest budget can fix, because the deadline that expired was soldr's.
 [[profile.default.overrides]]
-filter = 'test(=toolchain_link_writes_every_routed_tool_into_shim_dir) + test(=toolchain_link_is_idempotent_when_rerun_with_same_soldr_binary) + test(=cargo_fmt_host_toolchain_does_not_mix_in_managed_rustup_home)'
+filter = 'test(=toolchain_link_writes_every_routed_tool_into_shim_dir) + test(=toolchain_link_is_idempotent_when_rerun_with_same_soldr_binary) + test(=toolchain_link_emits_schema_v1_json_payload) + test(=toolchain_link_force_overwrites_user_modified_shim) + test(=cargo_fmt_host_toolchain_does_not_mix_in_managed_rustup_home)'
 test-group = 'soldr-runtime'
 
 # These binaries run real Cargo front doors from isolated homes. On hosted
@@ -139,8 +139,15 @@ slow-timeout = { period = "60s", terminate-after = 4, grace-period = "30s" }
 # `toolchain_link_is_idempotent_when_rerun_with_same_soldr_binary` timed out
 # at exactly 120s. Their env-plumbing neighbours in the same binaries finished
 # in 1.8s and 3.0s, so this is cold-start cost on the slowest lane, not a hang.
+#
+# soldr#2729: the same lane later named the other two members of that
+# binary on `main` itself (run 32536450196) --
+# `toolchain_link_emits_schema_v1_json_payload` at 120.251s and
+# `toolchain_link_force_overwrites_user_modified_shim` at 120.223s. Same
+# `isolated_soldr_command` cold start, same treatment: they were simply
+# not among the two observed when the pair above was measured.
 [[profile.default.overrides]]
-filter = 'test(=toolchain_link_writes_every_routed_tool_into_shim_dir) + test(=toolchain_link_is_idempotent_when_rerun_with_same_soldr_binary) + test(=cargo_fmt_host_toolchain_does_not_mix_in_managed_rustup_home)'
+filter = 'test(=toolchain_link_writes_every_routed_tool_into_shim_dir) + test(=toolchain_link_is_idempotent_when_rerun_with_same_soldr_binary) + test(=toolchain_link_emits_schema_v1_json_payload) + test(=toolchain_link_force_overwrites_user_modified_shim) + test(=cargo_fmt_host_toolchain_does_not_mix_in_managed_rustup_home)'
 slow-timeout = { period = "60s", terminate-after = 4, grace-period = "30s" }
 
 # 240s: the soldr#2442 kill-matrix — each test cold-starts a broker and
