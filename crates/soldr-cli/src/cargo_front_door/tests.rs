@@ -1364,7 +1364,11 @@ fn force_managed_cargo_subcommands_parses_falsey_strings_as_false() {
 fn force_managed_cargo_subcommands_parses_truthy_strings_as_true() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let prev = std::env::var_os(FORCE_MANAGED_CARGO_SUBCOMMANDS_ENV_VAR);
-    for truthy in ["1", "true", "yes", "on", "anything-else"] {
+    // soldr#2740: an owned switch takes the allowlist rule, so an
+    // unrecognised value no longer forces. `anything-else` used to be
+    // truthy here; that is the defect this issue removed -- a typo must
+    // never turn a soldr switch on.
+    for truthy in ["1", "true", "yes", "on", "TRUE", " on "] {
         unsafe {
             std::env::set_var(FORCE_MANAGED_CARGO_SUBCOMMANDS_ENV_VAR, truthy);
         }

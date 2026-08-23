@@ -115,10 +115,7 @@ pub(crate) fn run_gc_auto_sweep_command() -> Result<(), crate::core::SoldrError>
 
 fn auto_gc_env_disabled() -> bool {
     match std::env::var(AUTO_GC_DISABLE_ENV_VAR) {
-        Ok(value) => !matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "" | "0" | "false" | "no" | "off"
-        ),
+        Ok(value) => crate::core::flag_value(&value),
         Err(_) => false,
     }
 }

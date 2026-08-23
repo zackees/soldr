@@ -229,7 +229,7 @@ pub fn auto_hydrate_enabled(manifest_dir: &Path, global: &CookConfig) -> bool {
         let s = val.to_string_lossy();
         let trimmed = s.trim().to_ascii_lowercase();
         if !trimmed.is_empty() {
-            return matches!(trimmed.as_str(), "1" | "true" | "yes" | "on");
+            return crate::core::flag_value(&trimmed);
         }
     }
     if let Ok(manifest) = read_rust_toolchain_manifest(manifest_dir) {

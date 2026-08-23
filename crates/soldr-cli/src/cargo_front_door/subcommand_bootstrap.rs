@@ -7,15 +7,15 @@ fn suggest_cargo_subcommand_typo(sub: &str) -> Option<String> {
 }
 
 /// Env var name for the PATH-first override (issue #816). Reads as truthy
-/// when set to any value except an empty string or `0`/`false`/`no`.
+/// when set to a recognised on-spelling (`1`/`true`/`yes`/`on`). An
+/// unrecognised value does not force (soldr#2740).
 pub(crate) const FORCE_MANAGED_CARGO_SUBCOMMANDS_ENV_VAR: &str =
     "SOLDR_FORCE_MANAGED_CARGO_SUBCOMMANDS";
 
 fn force_managed_cargo_subcommands() -> bool {
     match std::env::var(FORCE_MANAGED_CARGO_SUBCOMMANDS_ENV_VAR) {
         Ok(value) => {
-            let trimmed = value.trim();
-            !matches!(trimmed, "" | "0" | "false" | "no" | "off")
+            crate::core::flag_value(&value)
         }
         Err(_) => false,
     }

@@ -134,10 +134,10 @@ pub fn cache_enabled_env_value(enabled: bool) -> &'static str {
 pub fn cache_enabled_from_env_var(value: Option<&OsStr>) -> bool {
     match value.and_then(OsStr::to_str) {
         None => true,
-        Some(value) => !matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "" | "0" | "false" | "no" | "off"
-        ),
+        // soldr#2740: default-ON switch -- absent means enabled, so the
+        // owned allowlist would invert it and disable the cache on an
+        // unrecognised value.
+        Some(value) => !soldr_core::core::is_off_value(value),
     }
 }
 

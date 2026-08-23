@@ -73,8 +73,7 @@ pub(crate) fn should_install_shims() -> bool {
         return false;
     }
     if let Some(raw) = std::env::var_os(SOLDR_DISABLE_CHILD_SHIMS_ENV_VAR) {
-        let lowered = raw.to_string_lossy().trim().to_ascii_lowercase();
-        if !matches!(lowered.as_str(), "" | "0" | "false" | "no" | "off") {
+        if crate::core::flag_value(&raw.to_string_lossy()) {
             return false;
         }
     }

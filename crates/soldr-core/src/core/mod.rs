@@ -22,6 +22,7 @@ use wait_timeout::ChildExt;
 /// `Cargo.toml`; a parity test enforces byte-equality.
 pub mod canonical_targets;
 pub mod cpu_topology;
+pub mod env_flag;
 pub mod git;
 pub mod installer_watchdog;
 /// soldr#1761 — soldr-owned compile concurrency limit, resolved once
@@ -36,6 +37,7 @@ mod toolchain_resolve;
 pub mod wire;
 
 pub use canonical_targets::{canonical_targets, is_canonical, CANONICAL_TARGETS};
+pub use env_flag::{flag, flag_value, foreign_flag, foreign_flag_value, is_off_value};
 pub use installer_watchdog::{
     installer_safety_timeout, installer_stall_timeout, run_installer_command,
     InstallerWatchdogConfig, DEFAULT_INSTALLER_SAFETY_TIMEOUT_SECS,

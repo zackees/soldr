@@ -155,7 +155,7 @@ pub(super) fn emit_session_log_summary(logs: &SessionLogs) {
 fn use_color() -> bool {
     use std::io::IsTerminal;
 
-    !super::env_flag_truthy("GITHUB_ACTIONS")
+    !super::foreign_env_flag("GITHUB_ACTIONS")
         && std::env::var_os("NO_COLOR").is_none()
         && std::io::stderr().is_terminal()
 }

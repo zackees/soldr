@@ -34,7 +34,7 @@ pub(crate) fn exe_path_is_ephemeral(path: &str) -> bool {
 
 pub(crate) fn ephemeral_displacement_blocked() -> bool {
     if std::env::var(ALLOW_EPHEMERAL_DISPLACE_ENV_VAR)
-        .map(|value| matches!(value.trim(), "1" | "true" | "yes" | "on"))
+        .map(|value| crate::core::flag_value(&value))
         .unwrap_or(false)
     {
         return false;

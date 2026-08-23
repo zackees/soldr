@@ -342,7 +342,7 @@ pub(crate) async fn prepare(
 ) -> Result<DylintToolchainPlan, SoldrError> {
     if non_empty_env(TOOLCHAIN_ENV_VAR).is_none()
         && plan_from_configured_environment()?.is_none()
-        && !truthy_env(REVERIFY_ENV_VAR)
+        && !crate::core::flag(REVERIFY_ENV_VAR)
     {
         let requested = requested_toolchain_channel(requested_channel, workspace_root)?;
         if requested
@@ -524,12 +524,6 @@ fn prepare_ttl() -> Duration {
         .and_then(|value| value.parse::<u64>().ok())
         .map(Duration::from_secs)
         .unwrap_or(DEFAULT_PREPARE_TTL)
-}
-
-fn truthy_env(key: &str) -> bool {
-    non_empty_env(key)
-        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
 }
 
 /// Production entry point for the warm-path marker lookup: resolves the

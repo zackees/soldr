@@ -30,7 +30,7 @@ pub(crate) fn environment_mentions_zthreads() -> bool {
 }
 
 pub(crate) fn plan_from_environment() -> Option<FallbackPlan> {
-    if super::env_flag_truthy(ATTEMPTED_ENV) || super::env_flag_truthy("RUSTC_BOOTSTRAP") {
+    if super::env_flag_truthy(ATTEMPTED_ENV) || super::foreign_env_flag("RUSTC_BOOTSTRAP") {
         return None;
     }
 

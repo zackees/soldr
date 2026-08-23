@@ -17,7 +17,7 @@ pub const TOKIO_CONSOLE_PUBLISH_INTERVAL_MS_ENV_VAR: &str =
 
 fn tokio_console_requested() -> bool {
     std::env::var(TOKIO_CONSOLE_ENV_VAR)
-        .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "" | "0" | "false" | "no" | "off"))
+        .map(|v| crate::core::flag_value(&v))
         .unwrap_or(false)
 }
 

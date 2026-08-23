@@ -74,10 +74,7 @@ pub(crate) struct EnvSnapshot {
 /// `no` and `off`, so `SOLDR_NO_DOCKER_CROSS=off` disabled Docker delegation,
 /// the exact opposite of what someone writing `off` means.
 pub(crate) fn disable_value_means_disabled(raw: &str) -> bool {
-    !matches!(
-        raw.trim().to_ascii_lowercase().as_str(),
-        "" | "0" | "false" | "no" | "off"
-    )
+    crate::core::flag_value(raw)
 }
 
 impl EnvSnapshot {
@@ -368,7 +365,10 @@ mod tests {
             ("1", true),
             ("true", true),
             ("yes", true),
-            ("enabled", true),
+            // soldr#2740: an owned switch takes the allowlist rule, so an
+            // unrecognised value no longer disables delegation.
+            ("enabled", false),
+            ("maybe", false),
             ("0", false),
             ("false", false),
             ("FALSE", false),

@@ -20,6 +20,6 @@ pub const QUIET_DIAGNOSTICS_ENV_VAR: &str = "SOLDR_INTERNAL_QUIET_DIAGNOSTICS";
 /// Should progress diagnostics be suppressed in this process?
 pub fn diagnostics_suppressed() -> bool {
     std::env::var(QUIET_DIAGNOSTICS_ENV_VAR)
-        .map(|value| matches!(value.trim(), "1" | "true" | "yes" | "on"))
+        .map(|value| super::flag_value(&value))
         .unwrap_or(false)
 }
