@@ -25,8 +25,8 @@ import importlib
 import json
 import os
 import re
-import signal
 import shutil
+import signal
 import subprocess
 import sys
 import sysconfig
@@ -631,6 +631,12 @@ def _signal_name(signum: int) -> str:
         return f"signal {signum}"
 
 
+_COMPILE_REPLY_TIMEOUT_ENV = "SOLDR_COMPILE_REPLY_TIMEOUT_SECS"
+
+# Mirrors the Rust-side backstop documented in docs/DAEMON_TIMEOUTS.md. Only
+# used to render advice; soldr-cli owns the real default.
+_COMPILE_REPLY_TIMEOUT_DEFAULT_SECS = 1800
+
 _PEP517_TERMINATED_HINT = (
     "soldr: the build process was terminated rather than failing on its own."
     " Something outside soldr stopped it -- a harness or hook timeout, a"
@@ -640,6 +646,42 @@ _PEP517_TERMINATED_HINT = (
     " itself, set SOLDR_COMPILE_REPLY_TIMEOUT_SECS below the caller's"
     " timeout.\n"
 )
+
+
+def _effective_compile_reply_timeout(env: "dict[str, str]") -> "int | None":
+    """The compile-reply backstop this build ran under, for advice only.
+
+    ``None`` when the caller set something unparseable -- soldr-cli falls
+    back to its documented default there, but saying so from here would be
+    asserting behaviour this module does not own.
+    """
+    raw = env.get(_COMPILE_REPLY_TIMEOUT_ENV, "").strip()
+    if not raw:
+        return _COMPILE_REPLY_TIMEOUT_DEFAULT_SECS
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _pep517_terminated_hint(env: "dict[str, str]") -> str:
+    """The termination hint, naming the deadline the reader has to beat.
+
+    soldr#2742: the advice was "set SOLDR_COMPILE_REPLY_TIMEOUT_SECS below
+    the caller's timeout", which is only actionable if you know what it is
+    now. The surprising part is that the default is thirty minutes, so a
+    caller with any shorter budget is guaranteed to lose the race and see a
+    bare kill instead of soldr's own diagnosis.
+    """
+    effective = _effective_compile_reply_timeout(env)
+    if effective is None:
+        return _PEP517_TERMINATED_HINT
+    return _PEP517_TERMINATED_HINT.replace(
+        "set SOLDR_COMPILE_REPLY_TIMEOUT_SECS below the caller's timeout.",
+        f"set SOLDR_COMPILE_REPLY_TIMEOUT_SECS (currently {effective}s) below"
+        " the caller's timeout.",
+    )
 
 
 def _pep517_exit_was_termination(returncode: int) -> bool:
@@ -1110,7 +1152,7 @@ def _run_pep517_streaming(cmd: "list[str]", env: "dict[str, str]") -> None:
         # mid-compile usually HAS output, and that output is the last
         # known state rather than the cause (soldr#2742).
         if _pep517_exit_was_termination(returncode):
-            summary += _PEP517_TERMINATED_HINT
+            summary += _pep517_terminated_hint(env)
         if log_path is not None:
             qualifier = "full " if relays_complete else "possibly incomplete "
             summary += f"soldr: {qualifier}PEP 517 build log: {log_path}\n"
