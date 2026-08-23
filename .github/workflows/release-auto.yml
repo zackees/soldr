@@ -658,6 +658,15 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      # soldr#2763: this job runs a script out of .github/scripts, so it needs
+      # the repo on disk. It previously made inline `gh` API calls and needed
+      # no checkout; the extraction to a script (soldr#2469) introduced the
+      # dependency without adding one, and the v0.9.3 release died here with
+      # "can't open file .../release_publish.py".
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ needs.prepare.outputs.commit_sha }}
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: dist
@@ -771,6 +780,15 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      # soldr#2763: this job runs a script out of .github/scripts, so it needs
+      # the repo on disk. It previously made inline `gh` API calls and needed
+      # no checkout; the extraction to a script (soldr#2469) introduced the
+      # dependency without adding one, and the v0.9.3 release died here with
+      # "can't open file .../release_publish.py".
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ needs.prepare.outputs.commit_sha }}
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: dist
