@@ -321,12 +321,7 @@ fn resolve_for_target(
         });
     let raw_dylib_disabled = std::env::var("PYO3_USE_RAW_DYLIB")
         .ok()
-        .is_some_and(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "0" | "false" | "no" | "off"
-            )
-        });
+        .is_some_and(|value| crate::core::is_off_value(&value));
     let mut detected = detected;
     if let Some(kind) = build_kind_override() {
         if let Some(value) = &mut detected {

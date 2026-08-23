@@ -47,8 +47,13 @@
 /// Spellings that turn an owned switch on. Nothing else does.
 const OWNED_ON: &[&str] = &["1", "true", "yes", "on"];
 
-/// Spellings that turn a foreign variable off. Everything else turns it on.
-const FOREIGN_OFF: &[&str] = &["", "0", "false", "no", "off"];
+/// Spellings that explicitly turn something off.
+///
+/// The empty string is deliberately NOT here. `VAR=` means *absent*, not
+/// *explicitly off* -- `SOLDR_MSVC_DISCOVERY=` must not read as "the user
+/// opted out of discovery". Callers that do want empty to count as off say
+/// so themselves, via [`foreign_flag_value`].
+const EXPLICIT_OFF: &[&str] = &["0", "false", "no", "off"];
 
 /// Is `value` an "on" spelling for a soldr-owned switch?
 ///
@@ -77,7 +82,7 @@ pub fn flag_value(value: &str) -> bool {
 #[must_use]
 pub fn is_off_value(value: &str) -> bool {
     let value = value.trim().to_ascii_lowercase();
-    FOREIGN_OFF.contains(&value.as_str())
+    EXPLICIT_OFF.contains(&value.as_str())
 }
 
 /// Is `value` an "on" spelling for a foreign variable?
@@ -87,7 +92,7 @@ pub fn is_off_value(value: &str) -> bool {
 /// defines what its values mean.
 #[must_use]
 pub fn foreign_flag_value(value: &str) -> bool {
-    !is_off_value(value)
+    !value.trim().is_empty() && !is_off_value(value)
 }
 
 /// Read a soldr-owned switch. Absent or unrecognised is off.
@@ -166,6 +171,24 @@ mod tests {
         assert!(foreign_flag_value("1"));
         // ...but an explicit falsy spelling still turns it off.
         assert!(!foreign_flag_value("0"));
+    }
+
+    /// Empty is absent, not "explicitly off".
+    ///
+    /// `SOLDR_MSVC_DISCOVERY=` must not read as "the user opted out of
+    /// discovery" -- an opt-out check asks whether they said *off*, and an
+    /// empty value says nothing. A caller that does want empty to count as
+    /// off uses `foreign_flag_value`, which spells that out.
+    #[test]
+    fn empty_is_absent_not_explicitly_off() {
+        assert!(!is_off_value(""), "empty is not an explicit off");
+        assert!(!is_off_value("   "), "blank is not an explicit off");
+        for value in ["0", "false", "no", "off", "OFF", " off "] {
+            assert!(is_off_value(value), "{value:?} is an explicit off");
+        }
+        // ...and it still does not enable anything.
+        assert!(!flag_value(""));
+        assert!(!foreign_flag_value(""));
     }
 
     #[test]

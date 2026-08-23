@@ -82,10 +82,7 @@ impl SegmentedDownloadConfig {
 /// `msvc_host::opted_out`'s value parsing (`SOLDR_MSVC_DISCOVERY=off`).
 fn opted_out(var: &str) -> bool {
     match std::env::var(var) {
-        Ok(v) => {
-            let lower = v.trim().to_lowercase();
-            matches!(lower.as_str(), "off" | "0" | "false" | "no")
-        }
+        Ok(v) => crate::core::is_off_value(&v),
         Err(_) => false,
     }
 }

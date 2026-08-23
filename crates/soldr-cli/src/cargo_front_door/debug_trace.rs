@@ -22,10 +22,7 @@ pub(crate) const DEBUG_TRACE_ENV_VAR: &str = "SOLDR_DEBUG_TRACE";
 
 pub(crate) fn enabled() -> bool {
     match std::env::var(DEBUG_TRACE_ENV_VAR) {
-        Ok(value) => {
-            let value = value.trim().to_ascii_lowercase();
-            !(value.is_empty() || matches!(value.as_str(), "0" | "false" | "no" | "off"))
-        }
+        Ok(value) => crate::core::flag_value(&value),
         Err(_) => false,
     }
 }

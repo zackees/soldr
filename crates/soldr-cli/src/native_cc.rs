@@ -136,10 +136,7 @@ fn env_is_falsy(value: Option<&OsStr>) -> bool {
     let Some(raw) = value else { return false };
     let Some(s) = raw.to_str() else { return false };
     let t = s.trim();
-    matches!(
-        t.to_ascii_lowercase().as_str(),
-        "0" | "false" | "off" | "no"
-    )
+    crate::core::is_off_value(t)
 }
 
 /// Inject `CC` / `CXX` (and matching target-specific variants if the

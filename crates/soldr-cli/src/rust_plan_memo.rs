@@ -116,10 +116,7 @@ impl WorkspaceFileHashes {
 
 pub(super) fn prep_memo_enabled() -> bool {
     let raw = std::env::var(RUST_PLAN_MEMO_ENV_VAR).unwrap_or_default();
-    !matches!(
-        raw.trim().to_ascii_lowercase().as_str(),
-        "off" | "0" | "false" | "no"
-    )
+    !crate::core::is_off_value(&raw)
 }
 
 /// Identity of one toolchain binary: resolved path + size + mtime. The

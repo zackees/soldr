@@ -90,10 +90,7 @@ pub(crate) fn warm_restore_target_marker_path(
 ///   tolerated as "enabled" rather than silently disabling the feature.
 pub(crate) fn warm_restore_skip_enabled() -> bool {
     match std::env::var(SKIP_WARM_RESTORE_ENV_VAR) {
-        Ok(value) => {
-            let trimmed = value.trim().to_ascii_lowercase();
-            !matches!(trimmed.as_str(), "0" | "false" | "no" | "off" | "")
-        }
+        Ok(value) => crate::core::flag_value(&value),
         Err(_) => true,
     }
 }

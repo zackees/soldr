@@ -625,10 +625,7 @@ fn linker_is_rust_lld(linker: &str) -> bool {
 /// `false`. Anything else (including missing) keeps discovery on.
 pub fn opted_out() -> bool {
     match std::env::var(SOLDR_MSVC_DISCOVERY_ENV_VAR) {
-        Ok(v) => {
-            let lower = v.trim().to_lowercase();
-            matches!(lower.as_str(), "off" | "0" | "false" | "no")
-        }
+        Ok(v) => crate::core::is_off_value(&v),
         Err(_) => false,
     }
 }

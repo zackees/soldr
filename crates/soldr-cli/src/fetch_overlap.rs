@@ -211,10 +211,7 @@ pub(crate) fn plan_prefetch(
 fn overlap_enabled(env_value: Option<&str>) -> bool {
     match env_value {
         None => true,
-        Some(value) => {
-            let value = value.trim().to_ascii_lowercase();
-            !matches!(value.as_str(), "0" | "false" | "no" | "off")
-        }
+        Some(value) => !crate::core::is_off_value(value),
     }
 }
 
@@ -224,10 +221,9 @@ fn overlap_enabled(env_value: Option<&str>) -> bool {
 fn cargo_net_offline(env_value: Option<&str>) -> bool {
     match env_value {
         None => false,
-        Some(value) => {
-            let value = value.trim().to_ascii_lowercase();
-            !value.is_empty() && !matches!(value.as_str(), "0" | "false" | "no" | "off")
-        }
+        // CARGO_NET_OFFLINE is Cargo's variable, not ours, so it takes the
+        // foreign rule: any value Cargo would read as set means offline.
+        Some(value) => crate::core::foreign_flag_value(value),
     }
 }
 

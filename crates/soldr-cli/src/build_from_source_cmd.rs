@@ -169,10 +169,7 @@ pub fn resolve_plan(
 pub(crate) const SOURCE_BUILD_CACHE_ENV_VAR: &str = "SOLDR_SOURCE_BUILD_CACHE";
 
 fn source_build_cache_disabled() -> bool {
-    let falsy = |value: std::ffi::OsString| {
-        let value = value.to_string_lossy().trim().to_ascii_lowercase();
-        matches!(value.as_str(), "0" | "false" | "no" | "off")
-    };
+    let falsy = |value: std::ffi::OsString| crate::core::is_off_value(&value.to_string_lossy());
     if std::env::var_os(SOURCE_BUILD_CACHE_ENV_VAR).is_some_and(falsy) {
         return true;
     }

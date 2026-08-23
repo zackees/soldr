@@ -137,7 +137,9 @@ pub fn cache_enabled_from_env_var(value: Option<&OsStr>) -> bool {
         // soldr#2740: default-ON switch -- absent means enabled, so the
         // owned allowlist would invert it and disable the cache on an
         // unrecognised value.
-        Some(value) => !soldr_core::core::is_off_value(value),
+        // Present-and-not-disabling: this variable treats `VAR=` as off,
+        // which is exactly foreign_flag_value's shape.
+        Some(value) => soldr_core::core::foreign_flag_value(value),
     }
 }
 
