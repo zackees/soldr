@@ -35,13 +35,6 @@ concurrency:
   group: baseline-zero-deps-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# soldr#2566: strict re-entrancy enforcement in every soldr CI lane — an
-# unsanctioned soldr -> tool -> soldr re-entry exits 1 with a diagnostic
-# instead of shipping as a mystery hang. Canary:
-# crates/soldr-cli/tests/cli_reentrancy_guard_canary.rs
-env:
-  SOLDR_REENTRANCY_GUARD: strict
-
 jobs:
   # soldr#1978 item 5. Both `build-soldr` legs used to run this identical
   # x86_64-unknown-linux-gnu build (~305s each). The existing cache could not

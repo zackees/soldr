@@ -627,11 +627,9 @@ def create_command(runner: Runner, image_id: str) -> list[str]:
             # Python process can always start under the full smoke suite.
             "-e",
             "NEXTEST_TEST_THREADS=2",
-            # soldr#2566: local agent Docker loops enforce the same strict
-            # re-entrancy invariant as every soldr CI lane. Takes effect on
-            # the next --reset-runner for an existing container.
-            "-e",
-            "SOLDR_REENTRANCY_GUARD=strict",
+            # soldr#2739 removed the explicit SOLDR_REENTRANCY_GUARD=strict
+            # export here: enforcement is the default now, so the runner gets
+            # the same invariant as every CI lane without opting in.
             "-w",
             "/repo",
             IMAGE,

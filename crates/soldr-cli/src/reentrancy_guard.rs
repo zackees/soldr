@@ -9,18 +9,58 @@
 //! shim identities, and internal spawn edges that already carry their own
 //! marker variables.
 //!
-//! Enforcement is opt-in for now: `SOLDR_REENTRANCY_GUARD=strict` turns an
-//! unsanctioned re-entry into an immediate diagnostic + exit 1 instead of a
-//! silent recursive process tree. soldr's own CI flips the switch
-//! (soldr#2566); the default-on rollout is soldr#2547's endgame. Marker
-//! stamping happens unconditionally so a strict child can always judge its
-//! parentage, whichever mode the parent ran under.
+//! **Enforcement is on by default** (soldr#2739, closing soldr#2547's
+//! endgame): an unsanctioned re-entry is an immediate diagnostic + exit 1
+//! rather than a silent recursive process tree. Marker stamping happens
+//! unconditionally so a child can always judge its parentage, whichever mode
+//! the parent ran under.
+//!
+//! Per-lane opt-in was fragile in exactly the way default-on fixes.
+//! soldr#2566 enabled the guard by exporting `strict` from eleven workflows;
+//! soldr#2698 then found a lane that had escaped that sweep, i.e. the
+//! configuration silently did not apply where it was most needed. A default
+//! cannot be missed off a new workflow.
+//!
+//! `SOLDR_REENTRANCY_GUARD=off` is the single escape hatch, and it is
+//! emergency-only: it exists so a user blocked by a false positive can make
+//! progress while the false positive is reported, not as a supported
+//! configuration. **An unrecognised value is a hard error**, never a silent
+//! fallback in either direction — a typo like `SOLDR_REENTRANCY_GUARD=strck`
+//! must not quietly disable a safety check, and under the old opt-in default
+//! it would have.
+//!
+//! ### Why the role set is three, not seven
+//!
+//! soldr#2547 item 2 sketched seven roles; [`Role`] implements three
+//! (`FrontDoor`, `Wrapper`, `Broker`). This is deliberate and is the final
+//! shape for the default-on flip. A role is only meaningful if some process
+//! can *set* it: `soldr-daemon` is a separate binary that never reaches
+//! [`enforce_and_mark`], so a `Daemon` variant would be a label nothing could
+//! produce. The remaining three — version-probe, version-trampoline and
+//! self-relocate — are *edges*, not identities: they describe how a single
+//! process was entered, they already carry their own marker variables, and
+//! they are matched as such by [`SANCTIONED_EDGE_ENV_VARS`]. Modelling them
+//! as roles would mean a process claiming to *be* a trampoline, which is not
+//! a thing that outlives the exec.
+
+mod mode;
+
+pub use mode::GuardMode;
 
 /// Marker every Soldr process exports for its children.
 pub const IN_SOLDR_PID_ENV: &str = "IN_SOLDR_PID";
 
-/// Opt-in enforcement switch: `strict` rejects unsanctioned re-entry.
+/// Enforcement switch. Enforcing unless explicitly set to [`GUARD_MODE_OFF`];
+/// see [`GuardMode`] for why an unrecognised value is an error.
 pub const GUARD_MODE_ENV: &str = "SOLDR_REENTRANCY_GUARD";
+
+/// The one spelling that disables enforcement.
+pub const GUARD_MODE_OFF: &str = "off";
+
+/// Spellings that select enforcement explicitly. `strict` is the historical
+/// name and stays accepted: soldr#2566 put it in eleven workflows and in
+/// `ci/perf_local.py`, and those exports are now redundant rather than wrong.
+pub const GUARD_MODE_ENFORCING: &[&str] = &["strict", "on"];
 
 /// Role this process exports for its children, beside [`IN_SOLDR_PID_ENV`].
 ///
@@ -41,6 +81,17 @@ const SANCTIONED_EDGE_ENV_VARS: &[&str] = &[
     "SOLDR_INTERNAL_INHERIT_PROCESS_GROUP",
     "SOLDR_TRAMPOLINING",
     GLOBAL_DELEGATION_EDGE,
+    // soldr#2739: self-relocation re-runs soldr from `~/.soldr/runtime/` and
+    // is a *spawn*, not an exec -- the child has its own pid, so the same-pid
+    // self-exec rule cannot recognise it and it read as an unsanctioned
+    // front-door entry. Latent until enforcement became the default; it is
+    // the gap the flip surfaced.
+    //
+    // Deliberately the one-hop marker, not the persistent `SOLDR_RELOCATED_EXE`
+    // that `relocation_guard_active` reads: that one is inherited by every
+    // descendant, so sanctioning on it would exempt the whole subtree beneath
+    // a relocated soldr. This one is consumed below, right after judgment.
+    soldr_core::self_relocate::SELF_SPAWN_EDGE_ENV_VAR,
 ];
 
 /// What kind of Soldr process this is, as far as the guard needs to care.
@@ -150,6 +201,23 @@ impl RejectReason {
     }
 }
 
+/// Whether an inherited marker names a process that still exists.
+///
+/// soldr#2739 required this be checked or explicitly ruled out, because a
+/// stale marker under default-on enforcement means `exit 1` on a machine
+/// where nothing is wrong. It is checked: a marker can outlive its writer
+/// whenever a Soldr-spawned process outlives the Soldr that spawned it (a
+/// build script, a backgrounded shell) and then re-enters Soldr. The parent
+/// is gone, so that entry is not re-entrancy at all.
+///
+/// PID recycling can make a dead parent look alive, which only ever costs a
+/// missed rejection -- the same outcome as before this check existed. It
+/// cannot manufacture one, so the check is safe in the direction that
+/// matters for a default-on flip.
+fn inherited_process_is_alive(pid: u32) -> bool {
+    crate::platform::process::inspect::is_alive(pid)
+}
+
 /// Pure decision core, unit-tested exhaustively.
 pub(crate) fn decide(
     strict: bool,
@@ -201,11 +269,34 @@ pub(crate) fn decide(
 /// Enforce (when strict) and stamp the marker. Returns `Some(exit_code)`
 /// when the process must terminate instead of dispatching.
 pub(crate) fn enforce_and_mark(raw_args: &[String]) -> Option<i32> {
-    let strict = std::env::var(GUARD_MODE_ENV)
-        .map(|value| value.trim().eq_ignore_ascii_case("strict"))
-        .unwrap_or(false);
-    let inherited = std::env::var(IN_SOLDR_PID_ENV).ok();
+    let strict = match GuardMode::from_env_value(std::env::var(GUARD_MODE_ENV).ok().as_deref()) {
+        Ok(mode) => mode.is_enforcing(),
+        Err(value) => {
+            // Loud, not silent. Guessing either way is worse than stopping:
+            // reading a typo as "off" disables a safety check the operator
+            // believed they had, and reading it as "on" hides their mistake.
+            eprintln!(
+                "soldr: {GUARD_MODE_ENV}={value:?} is not a recognised value; \
+                 expected one of {:?} to enforce, or {GUARD_MODE_OFF:?} to \
+                 disable (soldr#2739)",
+                GUARD_MODE_ENFORCING
+            );
+            return Some(1);
+        }
+    };
     let current_pid = std::process::id();
+    // Drop a marker whose writer has exited, so `decide` sees it as absent.
+    // The liveness probe lives here rather than in `decide` to keep that
+    // function pure and exhaustively unit-testable; see
+    // `inherited_process_is_alive` for why a stale marker is not re-entrancy.
+    let inherited =
+        std::env::var(IN_SOLDR_PID_ENV)
+            .ok()
+            .filter(|value| match value.trim().parse::<u32>() {
+                Ok(pid) => pid == current_pid || inherited_process_is_alive(pid),
+                // Unparseable: leave it for `decide`'s cooperative-signal rule.
+                Err(_) => true,
+            });
     let shim_identity = raw_args
         .first()
         .is_some_and(|argv0| crate::multicall::is_shim_identity(argv0));
@@ -239,6 +330,11 @@ pub(crate) fn enforce_and_mark(raw_args: &[String]) -> Option<i32> {
         emit_rejection(inherited_pid, current_pid, raw_args, reason, parent_role);
         return Some(1);
     }
+
+    // Consume the one-hop relocation edge (soldr#2739). It authorized *this*
+    // entry; leaving it set would hand the same exemption to every descendant,
+    // since env vars are inherited transitively.
+    std::env::remove_var(soldr_core::self_relocate::SELF_SPAWN_EDGE_ENV_VAR);
 
     // Stamp unconditionally, after judgment: children inherit OUR pid, and
     // a wrapper-shaped entry refreshes ownership to itself exactly as
@@ -433,9 +529,109 @@ mod tests {
 
     #[test]
     fn non_strict_always_allows() {
+        // Reached only via the explicit hatch since soldr#2739, but the hatch
+        // exists, so the permissive path still needs coverage.
         assert_eq!(
             decide(false, Some("123"), 456, false, false, &[], None),
             GuardDecision::Allow
+        );
+    }
+
+    #[test]
+    fn a_relocated_self_is_a_sanctioned_edge() {
+        // soldr#2739: the relocated child runs from ~/.soldr/runtime/ with a
+        // fresh pid and no other edge variable. Before this it was rejected as
+        // an ordinary front-door re-entry, which broke every fixture that
+        // exercises relocation the moment enforcement became the default.
+        assert_eq!(
+            decide(
+                true,
+                Some("123"),
+                456,
+                false,
+                false,
+                &[soldr_core::self_relocate::SELF_SPAWN_EDGE_ENV_VAR],
+                Some(Role::FrontDoor),
+            ),
+            GuardDecision::Allow
+        );
+    }
+
+    #[test]
+    fn a_broker_may_still_relocate_itself() {
+        // Only the global-version probe is role-restricted; relocation is a
+        // first-party hand-off any role may perform.
+        assert_eq!(
+            decide(
+                true,
+                Some("123"),
+                456,
+                false,
+                false,
+                &[soldr_core::self_relocate::SELF_SPAWN_EDGE_ENV_VAR],
+                Some(Role::Broker),
+            ),
+            GuardDecision::Allow
+        );
+    }
+
+    /// soldr#2739: every first-party `Command::new(current_exe())` site must
+    /// carry the edge marker, or default-on enforcement rejects it.
+    ///
+    /// Found the hard way. The flip broke 25 tests; relocation was the
+    /// obvious culprit and fixing it left four still failing, all retries.
+    /// The list exists so the next self-spawn site is added deliberately
+    /// rather than discovered by a red suite.
+    #[test]
+    fn every_first_party_self_spawn_site_is_covered() {
+        // Sites, and the sentinel that already bounds each against recursion:
+        //   self_relocate::maybe_reexec_from_runtime   SOLDR_RELOCATED_EXE
+        //   output_capture::retry_zthreads_without_flag
+        //                        SOLDR_INTERNAL_ZTHREADS_FALLBACK_ATTEMPTED
+        //   history_and_timeout::retry_timed_out_cargo_without_cache
+        //                        CARGO_TIMEOUT_RETRY_DISABLE_ENV_VAR
+        // All three pass the same one-hop edge marker, so one entry covers
+        // them; the sentinels stay distinct because they mean different things.
+        assert!(
+            SANCTIONED_EDGE_ENV_VARS.contains(&soldr_core::self_relocate::SELF_SPAWN_EDGE_ENV_VAR),
+            "the self-spawn edge must stay sanctioned or every internal retry \
+             and relocation is rejected under default-on enforcement"
+        );
+    }
+
+    #[test]
+    fn the_persistent_relocation_marker_is_not_an_edge() {
+        // Regression guard for a bug introduced and caught while writing
+        // soldr#2739. `SOLDR_RELOCATED_EXE` is deliberately persistent so
+        // `relocation_guard_active` will not relocate twice, which means every
+        // descendant inherits it. Sanctioning on it exempted the entire
+        // subtree beneath a relocated soldr, and the canary caught it by
+        // exiting 0 where it must exit 1.
+        assert!(
+            !SANCTIONED_EDGE_ENV_VARS.contains(&"SOLDR_RELOCATED_EXE"),
+            "the persistent relocation marker must never sanction an edge; \
+             use the one-hop SELF_SPAWN_EDGE_ENV_VAR, which is consumed after \
+             judgment"
+        );
+        // `decide` trusts its caller to have filtered the environment against
+        // SANCTIONED_EDGE_ENV_VARS, so the membership check above is the real
+        // guarantee. What it buys is this: a process carrying only the
+        // persistent marker presents `decide` with an *empty* edge list, and
+        // an empty list rejects.
+        assert_eq!(
+            decide(
+                true,
+                Some("123"),
+                456,
+                false,
+                false,
+                &[],
+                Some(Role::FrontDoor)
+            ),
+            GuardDecision::Reject {
+                inherited_pid: 123,
+                reason: RejectReason::UnsanctionedEntry,
+            }
         );
     }
 

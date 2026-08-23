@@ -34,6 +34,10 @@ fn retry_zthreads_without_flag(
     let mut command = std::process::Command::new(exe);
     command.args(context.cli_args());
     command.env(zthreads_fallback::ATTEMPTED_ENV, "1");
+    // soldr#2739: this is a soldr -> soldr spawn with a fresh pid, so the
+    // re-entrancy guard needs the edge marker to tell it apart from an
+    // unsanctioned nested entry. Bounded by ATTEMPTED_ENV above.
+    command.env(soldr_core::self_relocate::SELF_SPAWN_EDGE_ENV_VAR, "1");
     if let Some(toolchain) = explicit_toolchain {
         command.env("RUSTUP_TOOLCHAIN", toolchain);
     }
