@@ -19,6 +19,7 @@ Usage (CI):
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -47,8 +48,13 @@ def first_directory(directory: Path, names: list[str]) -> Path | None:
 
 def copy_or_link(source: Path, destination: Path) -> None:
     """Prefer a hardlink for the daemon sidecar, then preserve portability."""
+    # os.link rather than Path.hardlink_to: the latter is Python 3.10+, and a
+    # release runner that shipped an older python3 broke the v0.9.3 macOS
+    # ARM64 lane with AttributeError (soldr#2763). The workflow now pins the
+    # interpreter, but the staging boundary must not depend on that to be
+    # correct. Note the argument order inverts: os.link(src, dst) creates dst.
     try:
-        destination.hardlink_to(source)
+        os.link(source, destination)
     except OSError:
         shutil.copy2(source, destination)
 
