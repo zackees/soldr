@@ -121,8 +121,12 @@ jobs:
       - name: Build soldr CLI
         run: soldr cargo build -p soldr-cli
 
-      - name: Use soldr under test
-        run: echo "${{ github.workspace }}/target/debug" >> "$GITHUB_PATH"
+      - name: Use soldr under test with an isolated runtime root
+        run: |
+          echo "${{ github.workspace }}/target/debug" >> "$GITHUB_PATH"
+          echo "SOLDR_BINARY=${{ github.workspace }}/target/debug/soldr" >> "$GITHUB_ENV"
+          echo "SOLDR_CACHE_DIR=${{ runner.temp }}/thin-v2-soldr" >> "$GITHUB_ENV"
+          echo "ZCCACHE_CACHE_DIR=${{ runner.temp }}/thin-v2-soldr/cache/zccache" >> "$GITHUB_ENV"
 
       - name: Synthesize verification fixture
         working-directory: ${{ runner.temp }}

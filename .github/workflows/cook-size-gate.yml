@@ -102,8 +102,8 @@ jobs:
           # fully cold, and unbounded parallel ci-release rustc OOM-killed on
           # the hosted runner (the soldr#2453 signature). Same bounded-jobs
           # remedy as the release wheel lanes.
-          CARGO_BUILD_JOBS: "2"
-          SOLDR_JOBS: "2"
+          CARGO_BUILD_JOBS: "1"
+          SOLDR_JOBS: "1"
         run: soldr cargo build -p soldr-cli --profile ci-release
 
       - name: Checkout zccache fixture
