@@ -644,18 +644,34 @@ mod tests {
         let rt = Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
             let dir = TempDir::new().expect("tempdir");
-            let parent = dir.path().join("file-parent");
-            let path = parent.join("state.sqlite3");
-            std::fs::write(&parent, "not a directory").expect("create blocking parent");
+            let path = dir.path().join("state.sqlite3");
+
+            // soldr#2714: the subject here is *batch retention*, not filesystem
+            // semantics, so reach the failed-then-recovered state without ever
+            // unlinking anything. This used to block the flush with a file
+            // where the parent directory belonged and then swap it for a real
+            // directory, which on Windows needs the deleted name to stop being
+            // delete-pending -- and any process holding a transient handle (a
+            // scanner, on CI) makes that unbounded. It timed out at 10s and
+            // failed a test that has nothing to do with unlink timing.
+            //
+            // Content, not path shape: a file that is not a database fails the
+            // open, and truncating it in place makes it a valid empty one
+            // (sqlite treats zero length as a fresh database). Both steps are
+            // in-place writes, so no name is ever deleted.
+            std::fs::write(&path, b"this file is not a sqlite database")
+                .expect("seed an unreadable database");
             let batcher = EventBatcher::start(path.clone());
             batcher
                 .record(sample_event(101, "retained", Some(7)))
                 .await
                 .expect("queue event");
-            assert!(batcher.flush().await.is_err(), "file parent must fail");
+            assert!(
+                batcher.flush().await.is_err(),
+                "an unreadable database must fail the flush"
+            );
 
-            crate::core::replace_file_with_dir(&parent, Duration::from_secs(10))
-                .expect("swap blocking parent for the real directory");
+            std::fs::write(&path, b"").expect("truncate to an empty database");
             crate::daemon::db::ensure_initialized(&path).expect("init");
             batcher.flush().await.expect("retry flush");
             let (count, _, _) = aggregate_session(&path, 101).expect("aggregate");
