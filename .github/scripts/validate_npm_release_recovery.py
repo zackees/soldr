@@ -8,12 +8,27 @@ import json
 import os
 import re
 import subprocess
-import tomllib
+import sys
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
+
+# soldr#2763: the npm recovery lane pins Python 3.13, but this script is also
+# run by hand during an incident, where the interpreter is whatever the operator
+# has. Fail with an actionable message instead of an ImportError traceback.
+try:
+    import tomllib as _toml  # 3.11+
+except ImportError:  # pragma: no cover -- older Pythons
+    try:
+        import tomli as _toml  # type: ignore[import,no-redef]
+    except ImportError:
+        sys.stderr.write(
+            "validate_npm_release_recovery.py: needs Python 3.11+ (tomllib) "
+            "or `pip install tomli`\n"
+        )
+        sys.exit(2)
 
 
 class ValidationError(RuntimeError):
@@ -55,9 +70,9 @@ def git_output(source_dir: Path, arguments: Sequence[str]) -> str:
 def _versions(source_dir: Path) -> tuple[str, str, str]:
     package = json.loads((source_dir / "package.json").read_text(encoding="utf-8"))
     with (source_dir / "Cargo.toml").open("rb") as stream:
-        cargo = tomllib.load(stream)
+        cargo = _toml.load(stream)
     with (source_dir / "Cargo.lock").open("rb") as stream:
-        lock = tomllib.load(stream)
+        lock = _toml.load(stream)
 
     npm_version = package["version"]
     cargo_version = cargo["workspace"]["package"]["version"]

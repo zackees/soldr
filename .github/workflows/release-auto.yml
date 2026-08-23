@@ -66,6 +66,14 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
+      # soldr#2763: pin the interpreter this job's scripts run under. The
+      # runner image's `python3` drifts per platform -- v0.9.3 died on macOS
+      # ARM64, whose python3 predates `Path.hardlink_to` (3.10+).
+      - name: Setup Python 3.13
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
       # Contract-generated (soldr#2469 step 2.1): the build job's matrix
       # comes from ci/canonical-targets.json, so the matrix and the
       # completeness contract cannot drift apart separately again.
@@ -698,6 +706,14 @@ jobs:
         with:
           subject-checksums: dist/soldr-${{ needs.prepare.outputs.version }}-SHA256SUMS.txt
 
+      # soldr#2763: pin the interpreter this job's scripts run under. The
+      # runner image's `python3` drifts per platform -- v0.9.3 died on macOS
+      # ARM64, whose python3 predates `Path.hardlink_to` (3.10+).
+      - name: Setup Python 3.13
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
       # Pre-create the tag via the git refs API instead of letting
       # `gh release create --target <sha>` create it implicitly.
       # Rationale: on workflow_dispatch runs (vs push) the GITHUB_TOKEN
@@ -760,6 +776,14 @@ jobs:
       # Needed since soldr#2469 step 2.2: the expected-asset list is
       # generated from ci/canonical-targets.json by a repo script.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      # soldr#2763: pin the interpreter this job's scripts run under. The
+      # runner image's `python3` drifts per platform -- v0.9.3 died on macOS
+      # ARM64, whose python3 predates `Path.hardlink_to` (3.10+).
+      - name: Setup Python 3.13
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
       - name: Verify expected release assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -807,6 +831,14 @@ jobs:
           packages-dir: dist
           skip-existing: true
 
+      # soldr#2763: pin the interpreter this job's scripts run under. The
+      # runner image's `python3` drifts per platform -- v0.9.3 died on macOS
+      # ARM64, whose python3 predates `Path.hardlink_to` (3.10+).
+      - name: Setup Python 3.13
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
       - name: Verify all wheels visible on PyPI
         # Poll until all sequential uploads are visible so downstream
         # resolvers cannot cache a transient "no compatible wheel" result.
@@ -845,6 +877,14 @@ jobs:
           submodules: recursive
           ref: ${{ inputs.npm_release_ref != '' && format('refs/tags/{0}', inputs.npm_release_ref) || needs.prepare.outputs.commit_sha }}
           path: release-source
+      # soldr#2763: pin the interpreter this job's scripts run under. The
+      # runner image's `python3` drifts per platform -- v0.9.3 died on macOS
+      # ARM64, whose python3 predates `Path.hardlink_to` (3.10+).
+      - name: Setup Python 3.13
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
       - name: Validate immutable npm recovery release
         if: github.event_name == 'workflow_dispatch' && inputs.npm_release_ref != ''
         env:
@@ -887,6 +927,14 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      # soldr#2763: pin the interpreter this job's scripts run under. The
+      # runner image's `python3` drifts per platform -- v0.9.3 died on macOS
+      # ARM64, whose python3 predates `Path.hardlink_to` (3.10+).
+      - name: Setup Python 3.13
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
       - name: Verify every public release surface is complete
         env:
           GH_TOKEN: ${{ github.token }}
