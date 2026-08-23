@@ -11,6 +11,25 @@ use std::{
 };
 
 pub(crate) const RELOCATED_EXE_ENV_VAR: &str = "SOLDR_RELOCATED_EXE";
+
+/// One-hop marker for a first-party soldr-spawns-soldr edge (soldr#2739).
+///
+/// Distinct from [`RELOCATED_EXE_ENV_VAR`] on purpose. That one is
+/// deliberately *persistent* -- `relocation_guard_active` reads it to
+/// avoid relocating a second time -- so it is inherited by every
+/// descendant. Sanctioning the guard on it would exempt the entire
+/// process subtree beneath a relocated soldr, permanently.
+///
+/// This marker is consumed by the re-entrancy guard immediately after
+/// it judges the entry, so it authorizes exactly the one hop it
+/// describes and never reaches a grandchild.
+///
+/// Shared by every bounded first-party self-spawn: relocation, the
+/// `-Zthreads` fallback retry, and the cargo-timeout no-cache retry. Each
+/// site keeps its own recursion sentinel (`SOLDR_RELOCATED_EXE`,
+/// `SOLDR_INTERNAL_ZTHREADS_FALLBACK_ATTEMPTED`, the timeout-retry
+/// disable flag); this one says only *how* the child was entered.
+pub const SELF_SPAWN_EDGE_ENV_VAR: &str = "SOLDR_INTERNAL_SELF_SPAWN_EDGE";
 pub const ORIGINAL_EXE_ENV_VAR: &str = "SOLDR_ORIGINAL_EXE";
 pub(crate) const FORCE_RELOCATION_ENV_VAR: &str = "SOLDR_TEST_SELF_RELOCATE_FORCE";
 
@@ -69,6 +88,7 @@ pub fn maybe_reexec_from_runtime(raw_args: &[String]) -> Result<Option<i32>, Sol
     command
         .args(raw_args.iter().skip(1))
         .env(RELOCATED_EXE_ENV_VAR, "1")
+        .env(SELF_SPAWN_EDGE_ENV_VAR, "1")
         .env(ORIGINAL_EXE_ENV_VAR, &current_exe);
     suppress_windows_console_window(&mut command);
     let status = command.status()?;

@@ -172,16 +172,30 @@ def test_setup_soldr_smoke_tests_disable_nested_cache() -> None:
     assert "[System.IO.Path]::GetFullPath($env:SOLDR_CACHE_DIR)" in workflow
 
 
-def test_setup_soldr_smoke_exports_strict_reentrancy_guard() -> None:
-    workflow = (
-        REPO_ROOT / ".github" / "workflows" / "setup-soldr-action.yml"
-    ).read_text(encoding="utf-8")
-    job_env = re.search(
-        r"(?ms)^  smoke:.*?^    env:\n(?P<body>(?:      [^\n]*\n)+)", workflow
-    )
+def test_no_workflow_opts_out_of_the_reentrancy_guard() -> None:
+    """soldr#2739 inverted this check.
 
-    assert job_env is not None
-    assert "SOLDR_REENTRANCY_GUARD: strict" in job_env.group("body")
+    It used to assert that the smoke job *exported*
+    ``SOLDR_REENTRANCY_GUARD: strict``. Enforcement is the default now, so
+    that export is redundant and requiring it would recreate the fragility
+    soldr#2698 exposed, where a new lane escaped the sweep and ran unguarded.
+
+    The live risk runs the other way: a lane can only lose enforcement by
+    actively opting out, so that is what is pinned.
+    """
+    workflows = (REPO_ROOT / ".github" / "workflows").glob("*.yml")
+    offenders = [
+        path.name
+        for path in workflows
+        if re.search(
+            r"SOLDR_REENTRANCY_GUARD\s*[:=]\s*[\"']?off",
+            path.read_text(encoding="utf-8"),
+        )
+    ]
+    assert not offenders, (
+        "these workflows disable the re-entrancy guard; the hatch is "
+        f"emergency-only and must not be committed: {offenders}"
+    )
 
 
 def test_cache_delta_experiment_quiesces_before_packaging() -> None:

@@ -22,16 +22,25 @@ A long compile prints a progressive heartbeat rather than remaining silent.
 The heartbeat names the operation, elapsed time, deadline, and the active
 timeout override.
 
-**Looks like a hang → check for a re-entrancy diagnostic first** (soldr#2566).
-Months of "hang" incidents were actually unsanctioned `soldr -> tool -> soldr`
-re-entry multiplying startup work per build unit. With
-`SOLDR_REENTRANCY_GUARD=strict` (exported in every soldr CI lane and the
-`ci/perf_local.py` runner), such an entry exits 1 immediately and prints a
-bounded stderr diagnostic naming both processes (`inherited IN_SOLDR_PID=...,
-this pid=...`), the argv head, and the routing variables — grep the failing
-step's stderr for `unsanctioned Soldr re-entrancy`. Without strict mode the
-same shape presents as silence; suspect it whenever a "hang" reproduces only
-under nesting.
+**Looks like a hang → check for a re-entrancy diagnostic first** (soldr#2566,
+default-on since soldr#2739). Months of "hang" incidents were actually
+unsanctioned `soldr -> tool -> soldr` re-entry multiplying startup work per
+build unit. Enforcement now needs no opt-in anywhere: such an entry exits 1
+immediately and prints a bounded stderr diagnostic naming both processes
+(`inherited IN_SOLDR_PID=..., this pid=...`), the argv head, and the routing
+variables — grep the failing step's stderr for `unsanctioned Soldr
+re-entrancy`.
+
+A marker whose writing process has already exited is ignored, so a
+Soldr-spawned build script that outlives its parent and re-enters Soldr is not
+reported as re-entrancy.
+
+`SOLDR_REENTRANCY_GUARD=off` disables the check. It is emergency-only — for
+unblocking a false positive while you report it, not a supported
+configuration, and it should never be committed to a workflow. Any other
+value is a hard error rather than a silent fallback, so a typo cannot quietly
+disable the check. With the guard off the same shape presents as silence;
+suspect it whenever a "hang" reproduces only under nesting.
 
 ## Timeout surface
 

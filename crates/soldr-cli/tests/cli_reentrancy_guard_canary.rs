@@ -17,32 +17,54 @@ mod common;
 
 use std::process::Command;
 
+/// soldr#2739 inverted this canary.
+///
+/// soldr#2566's version asserted every lane *exported* `strict`. That
+/// invariant died with the default-on flip: the exports are redundant now,
+/// and requiring them would re-create the very fragility soldr#2698 exposed,
+/// where a new lane escaped the sweep and silently ran unguarded.
+///
+/// The remaining risk runs the other way. With enforcement on by default,
+/// the only way a lane loses it is by actively opting out, so that is what
+/// this pins — in CI *and* locally, since the default now applies everywhere.
 #[test]
-fn ci_lane_exports_strict_reentrancy_guard() {
-    if std::env::var_os("GITHUB_ACTIONS").is_none() {
-        // Local run: enforcement is opt-in (soldr#2547 owns the default-on
-        // rollout); the canary only pins soldr's own CI lanes.
-        return;
+fn no_lane_opts_out_of_the_reentrancy_guard() {
+    let raw = std::env::var("SOLDR_REENTRANCY_GUARD").ok();
+    let Some(value) = raw else {
+        return; // Unset is the enforcing default. Nothing to check.
+    };
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return; // Empty expresses no preference; the default applies.
     }
-    let mode = std::env::var("SOLDR_REENTRANCY_GUARD").unwrap_or_default();
-    assert_eq!(
-        mode.trim().to_ascii_lowercase(),
-        "strict",
-        "soldr#2566: this CI lane does not export SOLDR_REENTRANCY_GUARD=strict — \
-         a workflow refactor dropped the switch (add it to the workflow-level env block)"
+    assert_ne!(
+        normalized,
+        soldr_cli::reentrancy_guard::GUARD_MODE_OFF,
+        "soldr#2739: this lane disables the re-entrancy guard. The hatch is \
+         emergency-only and must not be committed to a workflow; remove the \
+         SOLDR_REENTRANCY_GUARD=off export."
+    );
+    assert!(
+        soldr_cli::reentrancy_guard::GuardMode::from_env_value(Some(&value)).is_ok(),
+        "soldr#2739: SOLDR_REENTRANCY_GUARD={value:?} is not a recognised \
+         value, so soldr will refuse to start in this lane"
     );
 }
 
 #[test]
 fn unsanctioned_nested_entry_exits_one_with_diagnostic() {
     let soldr = common::soldr_bin();
-    // A foreign pid that cannot be this process (pid 1..=2 are init/kthreadd
-    // shaped on Unix and never a test harness; any value != child pid works
-    // because the child compares against its own pid).
+    // This test process: alive, and necessarily a different pid from the
+    // child it spawns. soldr#2566 used the literal `1` on the reasoning that
+    // init is never a test harness -- true on Unix, but since soldr#2739 the
+    // guard ignores markers whose writer has exited, and pid 1 is not a live
+    // process on Windows. That would have made this canary pass vacuously on
+    // the Windows lanes, which is precisely what a canary must never do.
+    let foreign_pid = std::process::id();
     let output = Command::new(&soldr)
         .arg("status")
         .env("SOLDR_REENTRANCY_GUARD", "strict")
-        .env("IN_SOLDR_PID", "1")
+        .env("IN_SOLDR_PID", foreign_pid.to_string())
         // Scrub every sanctioned-edge variable a surrounding soldr (or this
         // suite's own harness) may have exported, so the entry is judged
         // purely as an unsanctioned re-entry.
@@ -68,7 +90,7 @@ fn unsanctioned_nested_entry_exits_one_with_diagnostic() {
         "diagnostic must name the rejection: {stderr}"
     );
     assert!(
-        stderr.contains("IN_SOLDR_PID=1"),
+        stderr.contains(&format!("IN_SOLDR_PID={foreign_pid}")),
         "diagnostic must name the inherited marker: {stderr}"
     );
 }
@@ -78,10 +100,14 @@ fn sanctioned_edge_still_enters_under_strict() {
     let soldr = common::soldr_bin();
     // The same nested shape, but carrying a sanctioned internal edge marker:
     // strict mode must let it through (exit 0 from `soldr --version`).
+    //
+    // The marker must name a *live* process (soldr#2739): with a dead pid the
+    // guard would ignore the marker entirely, so this would pass without ever
+    // exercising the sanctioned-edge path it exists to cover.
     let output = Command::new(&soldr)
         .arg("--version")
         .env("SOLDR_REENTRANCY_GUARD", "strict")
-        .env("IN_SOLDR_PID", "1")
+        .env("IN_SOLDR_PID", std::process::id().to_string())
         .env("SOLDR_TRAMPOLINING", "1")
         .output()
         .expect("spawn soldr --version");

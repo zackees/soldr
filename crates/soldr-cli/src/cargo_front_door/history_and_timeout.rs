@@ -94,6 +94,9 @@ fn retry_timed_out_cargo_without_cache(
         command.env("RUSTUP_TOOLCHAIN", toolchain);
     }
     command.env(CARGO_TIMEOUT_RETRY_DISABLE_ENV_VAR, "1");
+    // soldr#2739: same as the -Zthreads retry -- a fresh-pid soldr -> soldr
+    // spawn needs the edge marker. Bounded by the disable flag above.
+    command.env(soldr_core::self_relocate::SELF_SPAWN_EDGE_ENV_VAR, "1");
     suppress_windows_console_window(&mut command);
     configure_cargo_child_for_timeout(&mut command);
     let mut child = debug_trace::spawn_traced(&mut command, "soldr no-cache cargo retry")
