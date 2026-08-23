@@ -25,7 +25,9 @@ permissions:
 
 # soldr#1985 - stop superseded runs from holding runner slots.
 concurrency:
-  group: lint-docs-shim-${{ github.ref }}
+  # run_id fallback on non-PR events: GitHub keeps at most ONE pending run
+  # per group, so a ref-only group silently cancels queued main-push SHAs.
+  group: lint-docs-shim-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
