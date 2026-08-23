@@ -45,7 +45,9 @@ permissions:
 # Pushes to main are never cancelled: release-auto.yml triggers on push-to-main
 # (Cargo.toml / package.json), so every commit that lands must stay fully tested.
 concurrency:
-  group: ci-${{ github.ref }}
+  # run_id fallback on non-PR events: GitHub keeps at most ONE pending run
+  # per group, so a ref-only group silently cancels queued main-push SHAs.
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
