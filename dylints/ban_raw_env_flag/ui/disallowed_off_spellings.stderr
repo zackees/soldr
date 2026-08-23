@@ -1,0 +1,12 @@
+error: hand-rolled environment-flag parsing: off-spelling alternation "0"|"false", "false"|"no", "no"|"off" written locally. Use `soldr_core::core::env_flag` -- `flag` for an owned switch that defaults off, `!is_off_value(..)` for one that defaults on, `foreign_flag` for a variable another project defines (soldr#2740)
+  --> $DIR/disallowed_off_spellings.rs:5:1
+   |
+LL | / fn disabled(value: &str) -> bool {
+LL | |     matches!(value.trim(), "0" | "false" | "no" | "off")
+LL | | }
+   | |_^
+   |
+   = note: `#[deny(ban_raw_env_flag)]` on by default
+
+error: aborting due to 1 previous error
+

@@ -89,6 +89,17 @@ target/
 /.cargo/.package-cache
 /.cargo/.package-cache-mutate
 
+# Same caches, one level down. Every dylint crate carries its own
+# `.cargo/config.toml` (it selects the `dylint-link` linker), and running its
+# test suite fills that directory with a registry cache -- 141 MB for a single
+# `cargo test` run, none of it ignored by the root-anchored rules above. The
+# tracked `config.toml` stays; only the caches are ignored (soldr#2749).
+dylints/*/.cargo/registry/
+dylints/*/.cargo/git/
+dylints/*/.cargo/.global-cache
+dylints/*/.cargo/.package-cache
+dylints/*/.cargo/.package-cache-mutate
+
 # Jupyter Notebook
 .ipynb_checkpoints
 

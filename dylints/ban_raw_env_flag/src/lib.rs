@@ -154,7 +154,7 @@ fn hand_rolled_spelling_sets(source: &str) -> Vec<String> {
             .collect();
         if !hits.is_empty() {
             found.push(format!(
-                "{} -spelling alternation {} written locally",
+                "{}-spelling alternation {} written locally",
                 label,
                 hits.join(", ")
             ));
@@ -241,4 +241,13 @@ let x = 1;";
         assert!(!in_scope("crates/soldr-core/src/core/env_flag.rs"));
         assert!(in_scope("crates/soldr-cli/src/wrapper.rs"));
     }
+}
+
+/// soldr#2749: the unit tests above exercise the detection helpers directly.
+/// This drives the whole lint through dylint's machinery -- registration,
+/// item walk, and the emitted diagnostic -- which is the part a helper test
+/// cannot reach, and which every sibling boundary lint already covers.
+#[test]
+fn ui() {
+    dylint_testing::ui_test(env!("CARGO_PKG_NAME"), "ui");
 }
