@@ -33,6 +33,7 @@
 //! `tempfile` is deliberately not a runtime dependency of this crate.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -141,7 +142,47 @@ pub fn ensure_temp_root_for(paths: &SoldrPaths) -> PathBuf {
 ///
 /// See soldr#2714, where this failed a `.gitignore`-only PR on the
 /// windows-msvc target-run lane.
+/// A unique sibling name for [`replace_file_with_dir`] to park the displaced
+/// file under. Unique per call, because two calls in one process must not
+/// collide -- and because a previous call's displaced file may still be
+/// delete-pending under its own name.
+fn displaced_sibling(path: &Path) -> PathBuf {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".displaced-{}-{}", std::process::id(), n));
+    path.with_file_name(name)
+}
+
 pub fn replace_file_with_dir(path: &Path, deadline: Duration) -> std::io::Result<()> {
+    // Preferred route: rename the file out of the way. A rename frees the
+    // name *atomically*, so `create_dir` below has nothing to wait for even
+    // while a scanner still holds the file open -- the handle follows the
+    // file to its new name, and delete-pending never applies to `path`.
+    //
+    // This is what makes the deadline stop mattering in practice. The retry
+    // loop underneath is a bounded wait on a third party, and a third party
+    // is not bounded: soldr#2714 timed out at 10s and failed a test that had
+    // nothing to do with unlink timing. Anything that could hold the handle
+    // open long enough to defeat the unlink is equally invisible to a rename.
+    //
+    // Rename needs the same DELETE access the unlink needed, so a holder that
+    // permits one permits the other. If it fails anyway, fall through to the
+    // historical unlink-and-retry path rather than failing outright.
+    let displaced = displaced_sibling(path);
+    match std::fs::rename(path, &displaced) {
+        Ok(()) => {
+            // Best effort: this name is ours and unique, so if it lingers
+            // delete-pending it collides with nothing.
+            let _ = std::fs::remove_file(&displaced);
+            return std::fs::create_dir(path);
+        }
+        // Preserve the fail-fast contract: a path that is not there is a
+        // caller error, not something to wait out.
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Err(err),
+        Err(_) => {}
+    }
+
     std::fs::remove_file(path)?;
     let give_up_at = Instant::now() + deadline;
     loop {
@@ -185,6 +226,55 @@ mod tests {
         replace_file_with_dir(&path, Duration::from_secs(10)).expect("swap");
 
         assert!(path.is_dir(), "the path must end up a directory");
+    }
+
+    // soldr#2714 — the failing shape: something else holds the file open
+    // while the swap runs. Rust's `File` opens with `FILE_SHARE_DELETE`, so
+    // on Windows this reproduces exactly what Defender's scanner does: the
+    // unlink succeeds, the *name* survives until the handle closes, and the
+    // create_dir underneath collides with it.
+    //
+    // The deadline is deliberately tiny. The old unlink-first implementation
+    // could only wait it out and then fail; renaming the file away frees the
+    // name at once, so no wait is needed and the budget is never consulted.
+    //
+    // On Unix the swap always worked, so this asserts the behaviour is now
+    // the same on both -- the point being that the test is portable while the
+    // defect was not.
+    #[test]
+    fn an_open_handle_does_not_block_the_swap() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let path = dir.path().join("held-open");
+        std::fs::write(&path, "not a directory").expect("seed file");
+
+        let held = std::fs::File::open(&path).expect("hold a handle open");
+
+        replace_file_with_dir(&path, Duration::from_millis(50))
+            .expect("an open handle must not prevent the swap");
+        assert!(path.is_dir(), "the path must end up a directory");
+
+        drop(held);
+    }
+
+    // The displaced file is an implementation detail and must not survive as
+    // litter next to the directory it made room for.
+    #[test]
+    fn the_swap_leaves_no_sibling_behind() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let path = dir.path().join("blocking");
+        std::fs::write(&path, "not a directory").expect("seed file");
+
+        replace_file_with_dir(&path, Duration::from_secs(10)).expect("swap");
+
+        let entries: Vec<String> = std::fs::read_dir(dir.path())
+            .expect("read temp dir")
+            .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            entries,
+            vec!["blocking".to_string()],
+            "only the swapped directory may remain"
+        );
     }
 
     // The retry loop must not become a catch-all. Only AlreadyExists means
