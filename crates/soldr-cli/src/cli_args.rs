@@ -494,14 +494,15 @@ pub(crate) enum Commands {
     },
     /// Bundle a build cache + source mtimes into a .tar.zst
     #[command(
-        long_about = "Bundle a build-cache directory plus a content-verified snapshot of source-file mtimes into a single `.tar.zst` archive. The output is consumed by `soldr load` to restore both the cache and Cargo-friendly source mtimes on a fresh checkout."
+        long_about = "Bundle a build-cache directory plus a content-verified snapshot of source-file mtimes into a single `.tar.zst` archive. The output is consumed by `soldr hydrate` (historical alias: `soldr load`) to restore both the cache and Cargo-friendly source mtimes on a fresh checkout."
     )]
     Save(save_load::SaveArgs),
-    /// Restore a soldr-save archive on a fresh checkout
+    /// Hydrate a soldr-save archive on a fresh checkout
     #[command(
-        long_about = "Restore an archive produced by `soldr save`: unpack the cache to the destination directory and replay each source-file mtime, but only when the current file's size and BLAKE3 hash still match the snapshot so soldr cannot underbuild after a real source change."
+        visible_alias = "load",
+        long_about = "Hydrate an archive produced by `soldr save`: rematerialize the cache in the destination directory and replay each source-file mtime, but only when the current file's size and BLAKE3 hash still match the snapshot so soldr cannot underbuild after a real source change. The historical `soldr load` spelling remains an alias."
     )]
-    Load(save_load::LoadArgs),
+    Hydrate(save_load::LoadArgs),
 
     /// Bundle or extract a soldr release .tar.zst archive
     #[command(

@@ -23,3 +23,13 @@ def test_verifier_runs_when_embedded_zccache_or_its_contract_tests_change() -> N
 
     assert workflow.count('- "_vender/zccache"') == 2
     assert workflow.count('- "tests/test_thin_v2_verify_workflow.py"') == 2
+
+
+def test_verifier_switches_binary_and_runtime_root_together() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    switch = workflow.index("Use soldr under test with an isolated runtime root")
+    switched = workflow[switch:]
+    assert "SOLDR_BINARY=${{ github.workspace }}/target/debug/soldr" in switched
+    assert "SOLDR_CACHE_DIR=${{ runner.temp }}/thin-v2-soldr" in switched
+    assert "ZCCACHE_CACHE_DIR=${{ runner.temp }}/thin-v2-soldr/cache/zccache" in switched

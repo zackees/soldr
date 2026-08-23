@@ -136,6 +136,40 @@ fn save_minimal_alias_selects_ci_profile() {
 }
 
 #[test]
+fn hydrate_primary_and_load_alias_restore_the_same_archive() {
+    let (ws, cache, archive) = fixture("hydrate-alias");
+    let root = archive.parent().expect("archive parent");
+    let hydrated = root.join("hydrated");
+    let loaded = root.join("loaded");
+
+    let mut save = soldr_command(&["save", "--json", "--zstd-level", "1"]);
+    save.arg("--cache-dir")
+        .arg(&cache)
+        .arg("--workspace")
+        .arg(&ws)
+        .arg("--out")
+        .arg(&archive);
+    run_command(save, "soldr save hydrate fixture");
+
+    for (verb, destination) in [("hydrate", &hydrated), ("load", &loaded)] {
+        let mut restore = soldr_command(&[verb, "--json"]);
+        restore
+            .arg("--archive")
+            .arg(&archive)
+            .arg("--cache-dir")
+            .arg(destination)
+            .arg("--workspace")
+            .arg(&ws);
+        run_command(restore, &format!("soldr {verb} archive"));
+    }
+
+    assert_eq!(
+        fs::read(hydrated.join("ab/cd/object.bin")).expect("read hydrated payload"),
+        fs::read(loaded.join("ab/cd/object.bin")).expect("read load-alias payload"),
+    );
+}
+
+#[test]
 fn save_profile_env_selects_ci_when_flag_absent() {
     let (ws, cache, archive) = fixture("save-ci-env-json");
     let output = Command::new(common::soldr_bin())

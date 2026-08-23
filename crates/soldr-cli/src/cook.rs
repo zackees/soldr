@@ -461,8 +461,9 @@ pub(crate) async fn run_cook(args: &[String], cache_enabled: bool) -> Result<i32
 
     // Phase 3: post-cook target/ trim (issue #459). Cargo-chef cook
     // leaves cargo-recreatable noise (incremental state, the synthetic
-    // stub binary, build-script binaries, large stderr blobs) under
-    // target/ that the downstream consumer never reads. Trimming here
+    // stub binary, large stderr blobs, and debug sidecars) under target/.
+    // Build-script executables stay because Cargo needs them to preserve
+    // dependency freshness after rematerialization. Trimming here
     // shrinks the tarball setup-soldr et al ship across CI runners.
     if !parsed.no_trim {
         run_cook_target_trim(&ctx.manifest_dir);

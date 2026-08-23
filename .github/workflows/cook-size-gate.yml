@@ -29,6 +29,7 @@ on:
       - 'crates/soldr-cache/src/cache_lib/strip_target.rs'
       - 'crates/soldr-cache/**'
       - '.github/workflows/cook-size-gate.yml'
+      - 'tests/test_cook_size_gate_workflow.py'
   push:
     branches: [main]
     paths:
@@ -36,6 +37,7 @@ on:
       - 'crates/soldr-cache/src/cache_lib/strip_target.rs'
       - 'crates/soldr-cache/**'
       - '.github/workflows/cook-size-gate.yml'
+      - 'tests/test_cook_size_gate_workflow.py'
   workflow_dispatch:
     inputs:
       max_compressed_mb:
@@ -102,8 +104,8 @@ jobs:
           # fully cold, and unbounded parallel ci-release rustc OOM-killed on
           # the hosted runner (the soldr#2453 signature). Same bounded-jobs
           # remedy as the release wheel lanes.
-          CARGO_BUILD_JOBS: "2"
-          SOLDR_JOBS: "2"
+          CARGO_BUILD_JOBS: "1"
+          SOLDR_JOBS: "1"
         run: soldr cargo build -p soldr-cli --profile ci-release
 
       - name: Checkout zccache fixture
@@ -134,6 +136,12 @@ jobs:
         working-directory: zccache-fixture
         env:
           SOLDR_GITHUB_TOKEN: ${{ github.token }}
+          SOLDR_BINARY: ${{ github.workspace }}/soldr/target/ci-release/soldr
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/cook-size-soldr
+          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/cook-size-soldr/cache/zccache
+          ZCCACHE_DISABLE: "1"
+          CARGO_BUILD_JOBS: "1"
+          SOLDR_JOBS: "1"
         run: |
           set -euo pipefail
           # cargo-chef happens in-process via soldr's bundled chef; using
