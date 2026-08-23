@@ -7,10 +7,10 @@ LL |     let _windows = "resolved-pipe".to_ns_name::<GenericNamespaced>();
    = note: `#[deny(ban_raw_local_socket_name)]` on by default
 
 error: interprocess `to_fs_name` can normalize an endpoint differently at bind and dial; use `running_process::broker::server::singleton_bind::wrap_socket_name`
-  --> $DIR/disallowed_raw_conversions.rs:9:17
+  --> $DIR/disallowed_raw_conversions.rs:16:17
    |
-LL |     let _unix = "$TEST_BUILD_DIR/resolved.sock".to_fs_name::<GenericFilePath>();
-   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+LL |     let _unix = "resolved.sock".to_fs_name::<GenericFilePath>();
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 error: aborting due to 2 previous errors
 
