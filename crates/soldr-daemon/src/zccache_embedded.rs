@@ -267,6 +267,13 @@ impl SoldrZccacheService {
         // Kept for the failure path: `cwd` is moved into the request below,
         // and soldr#2781's detector resolves relative source paths against it.
         let compile_cwd = cwd.as_path().to_path_buf();
+        // soldr#2781: say so on the way IN, not only in the post-mortem. If
+        // this process is killed for memory, the user needs to know which
+        // file the compiler was holding -- and by then the compile is gone.
+        if let Some(notice) = crate::amalgamation::compile_notice(&req.args, &compile_cwd) {
+            eprintln!("{notice}");
+        }
+
         let audit = default_audit_context();
         let zreq = ZccacheCompileRequest {
             audit,

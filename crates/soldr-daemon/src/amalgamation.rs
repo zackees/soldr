@@ -91,6 +91,31 @@ fn measure(path: &Path) -> Option<Amalgamation> {
     })
 }
 
+/// The line soldr emits *before* handing an amalgamation to the compiler.
+///
+/// Forewarning is the point. The post-mortem in `compiler_exit` can only
+/// speak once the process has already been killed, and if the machine is
+/// tight enough the user watches a build sit still and then die with no idea
+/// which file was in the compiler's hands. This says so on the way in.
+///
+/// `eprintln!` rather than `tracing::info!`, for the reason `compile_limit`
+/// records: the daemon installs its subscriber at `Level::WARN`, so an info
+/// record is dropped and reaches nobody -- which would reproduce exactly the
+/// undiscoverability this exists to fix. The detached daemon redirects stderr
+/// into its log file, and `daemon start --foreground` shows it live.
+pub(crate) fn compile_notice(args: &[String], cwd: &Path) -> Option<String> {
+    detect(args, cwd).map(|unit| {
+        format!(
+            "soldr-daemon: INFO: compiling {} -- an amalgamated translation \
+             unit, an entire library in one file. One compiler process holds \
+             all of it, so this needs far more memory than an ordinary unit; \
+             a build killed here is usually killed for memory, and lowering \
+             CARGO_BUILD_JOBS / SOLDR_JOBS is what gives it room (soldr#2781).",
+            unit.describe()
+        )
+    })
+}
+
 fn has_source_extension(arg: &str) -> bool {
     Path::new(arg)
         .extension()
@@ -180,5 +205,85 @@ mod tests {
         let args = vec!["-c".into(), "libbig.a".into()];
 
         assert_eq!(detect(&args, dir.path()), None);
+    }
+
+    // ---- the pre-compile notice (soldr#2781) ----------------------------
+    //
+    // These matter more than the post-mortem's: this is the line a user sees
+    // *while* a 255,000-line translation unit is in the compiler, and it is
+    // the only warning they get before an OOM kill takes the build with no
+    // indication of which file was responsible.
+
+    #[test]
+    fn the_notice_names_the_file_and_its_size() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write(dir.path(), "sqlite3.c", 8_400_000);
+        let args = vec!["-O3".into(), "-c".into(), "sqlite3.c".into()];
+
+        let notice = compile_notice(&args, dir.path()).expect("an amalgamation must announce");
+
+        assert!(notice.contains("sqlite3.c"), "{notice}");
+        assert!(notice.contains("8.4 MB"), "{notice}");
+    }
+
+    #[test]
+    fn the_notice_gives_the_cause_and_the_remedy() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write(dir.path(), "sqlite3.c", 8_400_000);
+        let args = vec!["-c".to_string(), "sqlite3.c".into()];
+
+        let notice = compile_notice(&args, dir.path()).expect("notice");
+
+        // Reading this mid-build, the two questions are "why is this slow /
+        // why did it die" and "what do I do".
+        assert!(notice.contains("memory"), "{notice}");
+        assert!(notice.contains("CARGO_BUILD_JOBS"), "{notice}");
+        assert!(notice.contains("SOLDR_JOBS"), "{notice}");
+        assert!(notice.contains("INFO"), "{notice}");
+    }
+
+    #[test]
+    fn an_ordinary_compile_says_nothing() {
+        // A notice on every `cc` invocation would be noise, and noise is how
+        // the one that matters gets skipped.
+        let dir = tempfile::tempdir().expect("tempdir");
+        write(dir.path(), "util.c", 3_000);
+        let args = vec!["-c".to_string(), "util.c".into()];
+
+        assert_eq!(compile_notice(&args, dir.path()), None);
+    }
+
+    #[test]
+    fn a_rustc_invocation_says_nothing() {
+        // The daemon compiles rustc units through the same path. rustc splits
+        // work across codegen units inside one invocation, so a large .rs is
+        // not the single-process spike a large .c is -- and a notice here
+        // would fire on ordinary Rust builds.
+        let dir = tempfile::tempdir().expect("tempdir");
+        write(dir.path(), "lib.rs", 4_000_000);
+        let args = vec!["--edition=2021".to_string(), "lib.rs".into()];
+
+        assert_eq!(compile_notice(&args, dir.path()), None);
+    }
+
+    // The notice is worthless if it arrives after the compile it describes.
+    // `compile()` must call it before handing work to zccache -- the whole
+    // point is forewarning, and a post-mortem already exists in
+    // `compiler_exit`. Checked against the source because the emission is an
+    // `eprintln!` that no stable in-process API can capture.
+    #[test]
+    fn the_compile_path_announces_before_dispatching() {
+        let src = include_str!("zccache_embedded.rs");
+        let announce = src
+            .find("compile_notice(")
+            .expect("compile() must ask for the notice");
+        let dispatch = src
+            .find("self.inner.compile(")
+            .expect("compile() must dispatch to zccache");
+        assert!(
+            announce < dispatch,
+            "the notice must be emitted before the compile it describes, \
+             not after it returns"
+        );
     }
 }
