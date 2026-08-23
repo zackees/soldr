@@ -201,8 +201,6 @@ impl RejectReason {
     }
 }
 
-/// Pure decision core, unit-tested exhaustively.
-
 /// Whether an inherited marker names a process that still exists.
 ///
 /// soldr#2739 required this be checked or explicitly ruled out, because a
@@ -220,6 +218,7 @@ fn inherited_process_is_alive(pid: u32) -> bool {
     crate::platform::process::inspect::is_alive(pid)
 }
 
+/// Pure decision core, unit-tested exhaustively.
 pub(crate) fn decide(
     strict: bool,
     inherited: Option<&str>,
