@@ -648,4 +648,6 @@ fn extract_target_arg(args: &[String]) -> Option<&str> {
 }
 
 #[cfg(test)]
+mod scrub_pool_tests;
+#[cfg(test)]
 mod tests;

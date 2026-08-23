@@ -34,7 +34,7 @@ fn workspace_target_dir_candidates(workspace: &Path) -> Vec<PathBuf> {
     out
 }
 
-fn walk_parallelism(threads: Option<usize>) -> jwalk::Parallelism {
+pub fn walk_parallelism(threads: Option<usize>) -> jwalk::Parallelism {
     // Never `RayonDefaultPool` (jwalk's default), for two compounding
     // reasons (soldr#2760).
     //
