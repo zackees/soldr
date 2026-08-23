@@ -78,7 +78,7 @@ pub(crate) fn enabled() -> bool {
 pub(crate) fn use_color() -> bool {
     use std::io::IsTerminal;
     std::env::var_os("NO_COLOR").is_none()
-        && (std::io::stderr().is_terminal() || super::env_flag_truthy("GITHUB_ACTIONS"))
+        && (std::io::stderr().is_terminal() || super::foreign_env_flag("GITHUB_ACTIONS"))
 }
 
 fn paint(text: &str, color: &str, use_color: bool) -> String {

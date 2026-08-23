@@ -552,6 +552,19 @@ jobs:
           "${GITHUB_WORKSPACE}/target/dylint/libraries/nightly-2026-05-28-x86_64-unknown-linux-gnu"
           --profile release  # allow-release: cargo-dylint --no-build below loads these driver cdylibs from the release-profile target path
 
+      - name: Build env-flag boundary lint
+        working-directory: dylints/ban_raw_env_flag
+        env:
+          RUSTUP_TOOLCHAIN: nightly-2026-05-28-x86_64-unknown-linux-gnu
+          SOLDR_LINKER: default
+        run: >-
+          soldr rustup run
+          nightly-2026-05-28-x86_64-unknown-linux-gnu
+          cargo build
+          --target-dir
+          "${GITHUB_WORKSPACE}/target/dylint/libraries/nightly-2026-05-28-x86_64-unknown-linux-gnu"
+          --profile release  # allow-release: cargo-dylint --no-build below loads these driver cdylibs from the release-profile target path
+
       - name: Enforce daemon process-creation boundary
         env:
           # setup-soldr currently provides v0.8.23, whose post-command target
@@ -584,6 +597,18 @@ jobs:
           "${GITHUB_WORKSPACE}/target/dylint/libraries/nightly-2026-05-28-x86_64-unknown-linux-gnu/release/libban_raw_local_socket_name@nightly-2026-05-28-x86_64-unknown-linux-gnu.so"
           --manifest-path _vender/running-process/Cargo.toml
           -- --workspace --lib --bins
+
+      - name: Test env-flag boundary lint
+        working-directory: dylints/ban_raw_env_flag
+        env:
+          RUSTUP_TOOLCHAIN: nightly-2026-05-28-x86_64-unknown-linux-gnu
+          SOLDR_NO_GC_TARGET: "1"
+          SOLDR_LINKER: default
+        run: >-
+          soldr rustup run
+          nightly-2026-05-28-x86_64-unknown-linux-gnu
+          cargo test
+          --manifest-path Cargo.toml
 
       - name: Test daemon process-creation boundary lint
         working-directory: dylints/ban_raw_process_creation

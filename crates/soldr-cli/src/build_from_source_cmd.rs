@@ -169,18 +169,13 @@ pub fn resolve_plan(
 pub(crate) const SOURCE_BUILD_CACHE_ENV_VAR: &str = "SOLDR_SOURCE_BUILD_CACHE";
 
 fn source_build_cache_disabled() -> bool {
-    let falsy = |value: std::ffi::OsString| {
-        let value = value.to_string_lossy().trim().to_ascii_lowercase();
-        matches!(value.as_str(), "0" | "false" | "no" | "off")
-    };
+    let falsy = |value: std::ffi::OsString| crate::core::is_off_value(&value.to_string_lossy());
     if std::env::var_os(SOURCE_BUILD_CACHE_ENV_VAR).is_some_and(falsy) {
         return true;
     }
     // ZCCACHE_DISABLE is truthy-to-disable (opposite polarity).
-    std::env::var_os("ZCCACHE_DISABLE").is_some_and(|value| {
-        let value = value.to_string_lossy().trim().to_ascii_lowercase();
-        matches!(value.as_str(), "1" | "true" | "yes" | "on")
-    })
+    std::env::var_os("ZCCACHE_DISABLE")
+        .is_some_and(|value| crate::core::flag_value(&value.to_string_lossy()))
 }
 
 /// Route the source-build `cargo install`'s rustc invocations through
@@ -445,7 +440,7 @@ pub(crate) const FORBID_SOURCE_BUILD_ENV_VAR: &str = "SOLDR_TEST_FORBID_SOURCE_B
 
 pub(crate) fn forbid_source_build_tripwire(chokepoint: &str) -> Result<(), SoldrError> {
     let tripped = std::env::var(FORBID_SOURCE_BUILD_ENV_VAR)
-        .map(|value| matches!(value.trim(), "1" | "true" | "yes" | "on"))
+        .map(|value| crate::core::flag_value(&value))
         .unwrap_or(false);
     if tripped {
         return Err(SoldrError::Other(format!(

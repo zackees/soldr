@@ -307,17 +307,17 @@ fn truthy_env_bypasses_marker_lookup() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
     {
         let _env = EnvVarGuard::set(REVERIFY_ENV_VAR, "1");
-        assert!(truthy_env(REVERIFY_ENV_VAR));
+        assert!(crate::core::flag(REVERIFY_ENV_VAR));
     }
     {
         let _env = EnvVarGuard::set(REVERIFY_ENV_VAR, "true");
-        assert!(truthy_env(REVERIFY_ENV_VAR));
+        assert!(crate::core::flag(REVERIFY_ENV_VAR));
     }
     {
         let _env = EnvVarGuard::set(REVERIFY_ENV_VAR, "0");
-        assert!(!truthy_env(REVERIFY_ENV_VAR));
+        assert!(!crate::core::flag(REVERIFY_ENV_VAR));
     }
-    assert!(!truthy_env(REVERIFY_ENV_VAR));
+    assert!(!crate::core::flag(REVERIFY_ENV_VAR));
 }
 
 #[test]

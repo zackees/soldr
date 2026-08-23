@@ -89,10 +89,7 @@ pub(crate) fn ttl_secs(config_days: u64) -> u64 {
 
 /// True when the sweep is disabled by env.
 pub(crate) fn gc_disabled() -> bool {
-    std::env::var_os(NO_GC_ENV_VAR).is_some_and(|v| {
-        let v = v.to_string_lossy().trim().to_ascii_lowercase();
-        matches!(v.as_str(), "1" | "true" | "yes" | "on")
-    })
+    std::env::var_os(NO_GC_ENV_VAR).is_some_and(|v| crate::core::flag_value(&v.to_string_lossy()))
 }
 
 /// Pure eviction predicate: an entry is expired when its effective age

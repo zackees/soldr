@@ -70,18 +70,24 @@ impl Drop for FreshSoldrWorkspaceEnvGuard {
     }
 }
 
-fn env_flag_truthy(key: &str) -> bool {
-    std::env::var_os(key)
-        .map(|v| {
-            let s = v.to_string_lossy();
-            let t = s.trim();
-            !t.is_empty()
-                && !matches!(
-                    t.to_ascii_lowercase().as_str(),
-                    "0" | "false" | "no" | "off"
-                )
-        })
-        .unwrap_or(false)
+/// Read a soldr-owned switch (soldr#2740).
+///
+/// Thin alias kept because the name is used at a dozen call sites; the rule
+/// itself lives in `soldr_core::core::env_flag`. Every caller here is a
+/// `SOLDR_*` / `ZCCACHE_*` variable, so they all take the *owned* allowlist:
+/// an unrecognised value must never enable a `NO_*` / `*_DISABLE` switch.
+/// The two foreign variables this module also reads -- `GITHUB_ACTIONS` and
+/// `RUSTC_BOOTSTRAP` -- use `foreign_env_flag` instead.
+pub(super) fn env_flag_truthy(key: &str) -> bool {
+    crate::core::flag(key)
+}
+
+/// Read a variable defined outside soldr (soldr#2740).
+///
+/// `RUSTC_BOOTSTRAP`'s real convention is `1` *or a crate name*, so the
+/// owned allowlist would read `RUSTC_BOOTSTRAP=serde` as unset.
+pub(super) fn foreign_env_flag(key: &str) -> bool {
+    crate::core::foreign_flag(key)
 }
 
 /// Issue #1364: a truthy `ZCCACHE_DISABLE` in the caller's environment is

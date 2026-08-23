@@ -32,13 +32,7 @@ pub(crate) const PRIVATE_SESSION_CACHE_DIR_NAME: &str = ".zccache";
 /// `yes`, `on` (case-insensitive, trimmed). Anything else (including
 /// `0`, `false`, empty, unset) is falsy.
 pub(crate) fn parse_private_session_flag(value: Option<&str>) -> bool {
-    let Some(trimmed) = value.map(str::trim).filter(|v| !v.is_empty()) else {
-        return false;
-    };
-    matches!(
-        trimmed.to_ascii_lowercase().as_str(),
-        "1" | "true" | "yes" | "on"
-    )
+    value.is_some_and(crate::core::flag_value)
 }
 
 /// True when `SOLDR_ZCCACHE_PRIVATE` resolves truthy in the current env.

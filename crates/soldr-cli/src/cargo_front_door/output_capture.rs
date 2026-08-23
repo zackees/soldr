@@ -15,7 +15,7 @@ fn resolved_toolchain_is_nightly(explicit_toolchain: Option<&str>) -> bool {
 fn emit_zthreads_fallback_warning(value: &str) {
     use std::io::IsTerminal;
 
-    let github_actions = env_flag_truthy("GITHUB_ACTIONS");
+    let github_actions = foreign_env_flag("GITHUB_ACTIONS");
     let use_color = !github_actions
         && std::env::var_os("NO_COLOR").is_none()
         && std::io::stderr().is_terminal();

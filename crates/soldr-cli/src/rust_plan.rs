@@ -569,8 +569,7 @@ fn force_restore_enabled() -> bool {
     let Some(raw) = std::env::var_os(SOLDR_FORCE_RESTORE_ENV_VAR) else {
         return false;
     };
-    let lowered = raw.to_string_lossy().trim().to_ascii_lowercase();
-    !matches!(lowered.as_str(), "" | "0" | "false" | "no" | "off")
+    crate::core::flag_value(&raw.to_string_lossy())
 }
 
 /// Count `.fingerprint/` directories under `root` (up to `max_depth` levels)

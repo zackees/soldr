@@ -52,8 +52,14 @@ def test_required_ci_runs_root_dylint_policy() -> None:
     ) in workflow
     assert "Test daemon process-creation boundary lint" in workflow
     assert "working-directory: dylints/ban_raw_process_creation" in workflow
-    # All five boundary lints build and test in the required CI lane.
-    assert workflow.count("soldr rustup run") == 6
+    # soldr#2740 added the env-flag boundary lint, so its build and test
+    # steps must be wired beside the others.
+    assert "Build env-flag boundary lint" in workflow
+    assert "Test env-flag boundary lint" in workflow
+    assert "working-directory: dylints/ban_raw_env_flag" in workflow
+    # All boundary lints build and test in the required CI lane. Six for the
+    # original five (one shares a build), plus two for soldr#2740's.
+    assert workflow.count("soldr rustup run") == 8
     assert (
         "nightly-2026-05-28-x86_64-unknown-linux-gnu\n"
         "          cargo test\n"
@@ -61,8 +67,10 @@ def test_required_ci_runs_root_dylint_policy() -> None:
     ) in workflow
     assert "--manifest-path Cargo.toml" in workflow
     assert "RUSTUP_TOOLCHAIN: nightly-2026-05-28-x86_64-unknown-linux-gnu" in workflow
-    assert workflow.count('SOLDR_NO_GC_TARGET: "1"') == 7
-    assert workflow.count("SOLDR_LINKER: default") == 13
+    # Seven for the original lints, plus soldr#2740's test step.
+    assert workflow.count('SOLDR_NO_GC_TARGET: "1"') == 8
+    # Thirteen for the original lints, plus soldr#2740's build and test.
+    assert workflow.count("SOLDR_LINKER: default") == 15
     dylint_config = (
         ROOT / "dylints" / "ban_raw_process_creation" / ".cargo" / "config.toml"
     ).read_text(encoding="utf-8")

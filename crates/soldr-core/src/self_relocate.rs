@@ -398,25 +398,11 @@ fn relocation_requested() -> bool {
     // the daemon writes to it, so self-update must copy first. Unix can
     // replace the in-place binary and relocates only on explicit request.
     crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows
-        || truthy_env(FORCE_RELOCATION_ENV_VAR)
+        || crate::core::flag(FORCE_RELOCATION_ENV_VAR)
 }
 
 fn relocation_guard_active() -> bool {
     std::env::var_os(RELOCATED_EXE_ENV_VAR).is_some()
-}
-
-fn truthy_env(name: &str) -> bool {
-    std::env::var(name)
-        .ok()
-        .map(|value| {
-            let value = value.trim();
-            !(value.is_empty()
-                || value == "0"
-                || value.eq_ignore_ascii_case("false")
-                || value.eq_ignore_ascii_case("no")
-                || value.eq_ignore_ascii_case("off"))
-        })
-        .unwrap_or(false)
 }
 
 fn ensure_relocated_exe_in(runtime_root: &Path, current_exe: &Path) -> Result<PathBuf, SoldrError> {

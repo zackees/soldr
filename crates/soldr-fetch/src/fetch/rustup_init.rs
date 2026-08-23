@@ -549,7 +549,7 @@ fn which_on_path(tool: &str) -> Option<PathBuf> {
 
 fn no_bootstrap_opt_out() -> bool {
     match std::env::var(NO_BOOTSTRAP_ENV_VAR) {
-        Ok(value) => is_truthy(&value),
+        Ok(value) => crate::core::flag_value(&value),
         Err(_) => false,
     }
 }
@@ -563,13 +563,6 @@ fn run_rustup_init(
         &format!("bootstrap: rustup-init ({})", installer.display()),
         "bootstrap",
         InstallerWatchdogConfig::from_env(RUSTUP_INIT_TIMEOUT_ENV_VAR),
-    )
-}
-
-fn is_truthy(value: &str) -> bool {
-    matches!(
-        value.trim().to_ascii_lowercase().as_str(),
-        "1" | "true" | "yes" | "on"
     )
 }
 
@@ -663,13 +656,17 @@ mod tests {
         );
     }
 
+    /// soldr#2740: SOLDR_NO_BOOTSTRAP is soldr-owned, so it takes the
+    /// allowlist rule. `maybe` reading as "on" would leave a user with no
+    /// toolchain, which is why unknown-is-off is the right default here.
+    /// The spelling matrix itself is owned by `soldr_core::core::env_flag`.
     #[test]
-    fn is_truthy_accepts_canonical_values_only() {
+    fn no_bootstrap_uses_the_owned_flag_rule() {
         for v in ["1", "true", "TRUE", "Yes", "on", " 1 "] {
-            assert!(is_truthy(v), "expected {v:?} to be truthy");
+            assert!(crate::core::flag_value(v), "expected {v:?} to be truthy");
         }
         for v in ["0", "false", "no", "off", "", "maybe"] {
-            assert!(!is_truthy(v), "expected {v:?} to be falsy");
+            assert!(!crate::core::flag_value(v), "expected {v:?} to be falsy");
         }
     }
 

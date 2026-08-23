@@ -216,10 +216,7 @@ pub(crate) fn detect_ci() -> Option<&'static str> {
 
 fn env_truthy(key: &str) -> bool {
     match std::env::var(key) {
-        Ok(value) => !matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "" | "0" | "false" | "no" | "off"
-        ),
+        Ok(value) => crate::core::flag_value(&value),
         Err(_) => false,
     }
 }

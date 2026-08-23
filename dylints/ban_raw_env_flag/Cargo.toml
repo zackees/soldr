@@ -1,0 +1,26 @@
+[package]
+name = "ban_raw_env_flag"
+version = "0.1.0"
+description = "Keep environment-flag parsing inside soldr-core::core::env_flag"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+dylint_linting = "6.0.1"
+
+[dev-dependencies]
+dylint_testing = "=6.0.3"
+
+[package.metadata.rust-analyzer]
+rustc_private = true
+
+[workspace]
+
+[profile.release]
+opt-level = 0
+lto = false
+codegen-units = 16
+strip = "none"

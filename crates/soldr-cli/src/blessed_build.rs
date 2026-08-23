@@ -514,12 +514,7 @@ pub const USE_SYSTEM_CMAKE_ENV_VAR: &str = "SOLDR_USE_SYSTEM_CMAKE";
 
 fn system_cmake_opt_out() -> bool {
     std::env::var(USE_SYSTEM_CMAKE_ENV_VAR)
-        .map(|v| {
-            !matches!(
-                v.trim().to_ascii_lowercase().as_str(),
-                "" | "0" | "false" | "no" | "off"
-            )
-        })
+        .map(|v| crate::core::flag_value(&v))
         .unwrap_or(false)
 }
 
@@ -731,12 +726,7 @@ pub const USE_LEGACY_VENDORED_SYS_ENV_VAR: &str = "SOLDR_USE_LEGACY_VENDORED_SYS
 
 fn legacy_vendored_sys_opt_out() -> bool {
     std::env::var(USE_LEGACY_VENDORED_SYS_ENV_VAR)
-        .map(|v| {
-            !matches!(
-                v.trim().to_ascii_lowercase().as_str(),
-                "" | "0" | "false" | "no" | "off"
-            )
-        })
+        .map(|v| crate::core::flag_value(&v))
         .unwrap_or(false)
 }
 

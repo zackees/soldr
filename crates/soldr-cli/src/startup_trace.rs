@@ -109,13 +109,14 @@ static CLOCK: OnceLock<Option<Mutex<TraceClock>>> = OnceLock::new();
 /// Whether `value` turns the trace on. Presence alone is not enough: a CI
 /// matrix that exports `SOLDR_STARTUP_TRACE=0` for its quiet lanes must get
 /// silence. Mirrors `cargo_front_door::debug_trace::enabled`.
+/// Does `value` turn the trace on? (soldr#2740)
+///
+/// `SOLDR_STARTUP_TRACE` is soldr-owned, so it takes the allowlist rule from
+/// `soldr_core::core::env_flag` -- an unrecognised value is off. Presence
+/// alone is still not enough: a CI matrix that exports
+/// `SOLDR_STARTUP_TRACE=0` for its quiet lanes must get silence.
 fn value_enables(value: &str) -> bool {
-    let value = value.trim();
-    !value.is_empty()
-        && !matches!(
-            value.to_ascii_lowercase().as_str(),
-            "0" | "false" | "no" | "off"
-        )
+    crate::core::flag_value(value)
 }
 
 fn clock() -> Option<&'static Mutex<TraceClock>> {
@@ -193,7 +194,9 @@ mod tests {
 
     #[test]
     fn only_enabling_values_switch_the_trace_on() {
-        for value in ["1", "true", "yes", "on", "verbose"] {
+        // soldr#2740: `SOLDR_STARTUP_TRACE` is soldr-owned, so it takes the
+        // allowlist rule -- `verbose` used to enable and no longer does.
+        for value in ["1", "true", "yes", "on", "TRUE", " 1 "] {
             assert!(value_enables(value), "{value} should enable");
         }
         // Explicitly-off spellings and blanks stay silent, so a lane can export

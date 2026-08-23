@@ -380,12 +380,7 @@ pub fn run_load(args: LoadArgs) -> i32 {
     };
     let env_profile = std::env::var("SOLDR_PROFILE_EXTRACT")
         .ok()
-        .map(|v| {
-            !matches!(
-                v.trim().to_ascii_lowercase().as_str(),
-                "" | "0" | "false" | "no" | "off"
-            )
-        })
+        .map(|v| crate::core::flag_value(&v))
         .unwrap_or(false);
     let opts = LoadOptions {
         archive: &args.archive,

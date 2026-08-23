@@ -142,7 +142,7 @@ fn allow_dylint_driver_build() -> bool {
     std::env::var(ALLOW_DYLINT_DRIVER_BUILD_ENV_VAR)
         .map(|value| {
             let value = value.trim().to_ascii_lowercase();
-            matches!(value.as_str(), "1" | "true" | "yes" | "on")
+            crate::core::flag_value(&value)
         })
         .unwrap_or(false)
 }
