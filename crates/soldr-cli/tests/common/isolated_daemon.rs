@@ -45,11 +45,47 @@ pub(crate) fn isolated_daemon_executable(source: &Path, root: &Path) -> PathBuf 
     );
     if !super::files_equal(source, &executable) {
         let _ = std::fs::remove_file(&executable);
-        if std::fs::hard_link(source, &executable).is_err() {
+        if let Err(error) = std::fs::hard_link(source, &executable) {
+            report_daemon_copy_fallback(source, &executable, &error);
             std::fs::copy(source, &executable).expect("copy isolated test daemon");
         }
     }
     executable
+}
+
+/// Say, once per process, that the hard link did not apply.
+///
+/// soldr#2734: the `hard_link` above is the cheap path and the `copy` is meant
+/// to be the exception. A hard link cannot cross volumes, so when the daemon
+/// binary and the test root are on different ones the exception becomes the
+/// rule -- every isolated-daemon test writes a *full* daemon binary into the
+/// test root, and nextest runs them concurrently. On the win-gnu target-run
+/// lane that shows up as `Os { code: 112, kind: StorageFull }` from the
+/// `.expect` below, with nothing saying where the space went.
+///
+/// The Docker harness does not hit this, and the reason is the fix: it sets
+/// `TMPDIR=/target/tmp`, putting the test root on the same device as the
+/// build output, so the link applies. `_ci-target-run.yml` now does the
+/// equivalent with `RUNNER_TEMP`.
+///
+/// Reported once rather than per test: the condition is a property of the two
+/// paths, so it holds for every test in the process, and one line per test
+/// would bury it. The size is included because attributing the consumption is
+/// the open question on that issue.
+fn report_daemon_copy_fallback(source: &Path, destination: &Path, error: &std::io::Error) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static REPORTED: AtomicBool = AtomicBool::new(false);
+    if REPORTED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    let bytes = std::fs::metadata(source).map(|m| m.len()).unwrap_or(0);
+    eprintln!(
+        "soldr test: hard link failed ({error}); copying {bytes} bytes of daemon \
+         per isolated test instead.\n  from: {}\n  to:   {}\n  \
+         Different volumes make the copy unconditional -- see soldr#2734.",
+        source.display(),
+        destination.display(),
+    );
 }
 
 fn configure_direct_daemon_endpoints(command: &mut Command, executable: &Path) {
