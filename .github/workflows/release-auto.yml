@@ -109,6 +109,16 @@ jobs:
           submodules: recursive
           ref: ${{ needs.prepare.outputs.commit_sha }}
 
+      # soldr#2763: these jobs run .github/scripts/*.py and ci/*.py through
+      # bare `python3`. Without pinning they inherit the runner image's
+      # interpreter, which on macOS is old enough to lack Python 3.10+ APIs
+      # -- that broke the v0.9.3 macOS ARM64 release lane. Pin the same 3.13
+      # the scripts are developed and unit-tested against.
+      - name: Setup Python 3.13
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
+
       - name: Install native musl build tools
         if: contains(matrix.target, 'musl')
         shell: bash
@@ -555,6 +565,16 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           ref: ${{ needs.prepare.outputs.commit_sha }}
+
+      # soldr#2763: these jobs run .github/scripts/*.py and ci/*.py through
+      # bare `python3`. Without pinning they inherit the runner image's
+      # interpreter, which on macOS is old enough to lack Python 3.10+ APIs
+      # -- that broke the v0.9.3 macOS ARM64 release lane. Pin the same 3.13
+      # the scripts are developed and unit-tested against.
+      - name: Setup Python 3.13
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
