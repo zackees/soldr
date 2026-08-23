@@ -264,6 +264,9 @@ impl SoldrZccacheService {
     ) -> Result<CompileResponseBody, EmbeddedServiceError> {
         let (compiler, rustc_args) = split_compiler_and_args(&req.args)?;
         let cwd: NormalizedPath = std::path::PathBuf::from(req.cwd).into();
+        // Kept for the failure path: `cwd` is moved into the request below,
+        // and soldr#2781's detector resolves relative source paths against it.
+        let compile_cwd = cwd.as_path().to_path_buf();
         let audit = default_audit_context();
         let zreq = ZccacheCompileRequest {
             audit,
@@ -285,7 +288,12 @@ impl SoldrZccacheService {
         } else {
             zresp.stderr
         };
-        let stderr = crate::compiler_exit::annotate_signal_termination(zresp.exit_code, stderr);
+        let stderr = crate::compiler_exit::annotate_signal_termination(
+            zresp.exit_code,
+            stderr,
+            &req.args,
+            &compile_cwd,
+        );
         Ok(CompileResponseBody {
             exit_code: zresp.exit_code,
             stdout: zresp.stdout,
