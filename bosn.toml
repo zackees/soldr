@@ -1,0 +1,84 @@
+[stack.cook]
+dockerfile = "docker/cook-shared-cache/Dockerfile"
+family = "soldr-rematerialization"
+default = true
+
+[stack.cook.volumes]
+target = { scope = "stack", destination = "/target" }
+cargo-home = { scope = "stack", destination = "/root/.cargo" }
+soldr-home = { scope = "stack", destination = "/root/.soldr" }
+tools = { scope = "machine", destination = "/tools" }
+artifact = { scope = "machine", destination = "/artifact" }
+
+[stack.cook.mounts]
+repo = { source = ".", destination = "/repo" }
+
+[stack.seed]
+dockerfile = "docker/cook-shared-cache/Dockerfile"
+family = "soldr-rematerialization"
+
+[stack.seed.volumes]
+cargo-home = { scope = "stack", destination = "/root/.cargo" }
+soldr-home = { scope = "stack", destination = "/root/.soldr" }
+tools = { scope = "machine", destination = "/tools" }
+artifact = { scope = "machine", destination = "/artifact" }
+
+[stack.seed.mounts]
+repo = { source = ".", destination = "/repo", readonly = true }
+
+[stack.warm]
+dockerfile = "docker/cook-shared-cache/Dockerfile"
+family = "soldr-rematerialization"
+
+[stack.warm.volumes]
+cargo-home = { scope = "stack", destination = "/root/.cargo" }
+soldr-home = { scope = "stack", destination = "/root/.soldr" }
+tools = { scope = "machine", destination = "/tools" }
+artifact = { scope = "machine", destination = "/artifact" }
+
+[stack.warm.mounts]
+repo = { source = ".", destination = "/repo", readonly = true }
+
+[task.strip-rematerialization-test]
+stack = "cook"
+cmd = "cd /repo && CARGO_TARGET_DIR=/target soldr cargo test -p soldr-cache cook_preset_preserves_build_script_binaries_for_rematerialization --lib"
+
+[task.test]
+stack = "cook"
+cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test --workspace"
+
+[task.lint]
+stack = "cook"
+cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo fmt --all -- --check && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo clippy --workspace --all-targets -- -D warnings"
+
+[task.format]
+stack = "cook"
+cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo fmt --all"
+
+[task.hydrate-alias-test]
+stack = "cook"
+cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-cli --test cli_save hydrate_primary_and_load_alias_restore_the_same_archive"
+
+[task.test-rematerialization]
+stack = "cook"
+cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-cache --lib && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo test -p soldr-cli --test cli_save"
+
+[task.clippy-rematerialization]
+stack = "cook"
+cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo clippy -p soldr-cache -p soldr-cli --all-targets -- -D warnings"
+
+[task.build-rematerialization-tool]
+stack = "cook"
+cmd = "bash /repo/ci/cook_rematerialization/build_tool.sh"
+
+[task.generate-rematerialization-lock]
+stack = "cook"
+cmd = "bash /repo/ci/cook_rematerialization/generate_lock.sh"
+
+[task.seed-rematerialization]
+stack = "seed"
+cmd = "bash /repo/ci/cook_rematerialization/seed.sh"
+
+[task.verify-rematerialization]
+stack = "warm"
+cmd = "bash /repo/ci/cook_rematerialization/verify_warm.sh"

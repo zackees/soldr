@@ -752,22 +752,23 @@ deterministic builds, commit `Cargo.lock` (libraries should still ship
 normally `.gitignore`s lockfiles in library crates).
 
 **Companion automation.** [`zackees/setup-soldr#110`](https://github.com/zackees/setup-soldr/issues/110)
-proposes a GitHub Action that key-tarballs the resulting `target/` by
-`Cargo.lock` hash; with `soldr cook` available as a primitive that
-action's implementation reduces to: hash `Cargo.lock` → restore tarball
-→ on miss, `soldr cook` + tar + save.
+proposes a GitHub Action that keys the complete dependency closure by
+`Cargo.lock`: the cooked `target/` plus Cargo registry/git sources. With
+`soldr cook` available as a primitive, the action restores both archives and
+runs cook only when the dependency base is absent.
 
-### `soldr save` / `soldr load`
+### `soldr save` / `soldr hydrate` (`soldr load` alias)
 
 Bundle a build-cache directory plus a content-verified snapshot of
 source-file mtimes into a single `.tar.zst` archive (`save`), then
-restore it on a fresh checkout (`load`). Intended for CI cache layers
+rematerialize it on a fresh checkout (`hydrate`). The historical `load`
+spelling remains a compatibility alias. Intended for CI cache layers
 that need stable Cargo fingerprints across `actions/checkout` runs
 without resorting to mtime-rewrite tricks.
 
 ```bash
 soldr save --cache-dir <dir> --workspace <dir> --out cache.tar.zst
-soldr load --archive cache.tar.zst --cache-dir <dir> --workspace <dir>
+soldr hydrate --archive cache.tar.zst --cache-dir <dir> --workspace <dir>
 ```
 
 Recognised `soldr save` flags:
@@ -797,7 +798,7 @@ snapshot. This intentionally stops the daemon; the next compile-like command
 starts a fresh generation. An unrelated `--cache-dir` does not flush, stop, or
 otherwise depend on the ambient Soldr daemon.
 
-Recognised `soldr load` flags (issue #575):
+Recognised `soldr hydrate` / `soldr load` flags (issue #575):
 
 - `--archive <FILE>` — input archive produced by `soldr save`.
 - `--cache-dir <DIR>` — destination cache directory; created if absent.
@@ -817,8 +818,9 @@ Recognised `soldr load` flags (issue #575):
   ```
   Also enabled when `SOLDR_PROFILE_EXTRACT=1` is set in the environment.
   Useful for tuning the parallel-extract worker count against real
-  workloads (issue #575). The line lands on **stderr**; the existing
-  `soldr load:` machine-readable status line on stdout is untouched.
+  workloads (issue #575). The line lands on **stderr** and retains the
+  historical `soldr load:` prefix for log-parser compatibility; the existing
+  machine-readable status line on stdout is untouched.
 - `--auto-defender-exclude` — on Windows + admin, briefly add
   `--cache-dir` to Defender's exclusion list for the duration of the
   load (issue #596). Never UAC-prompts: no-op on non-Windows or when
@@ -2000,7 +2002,7 @@ Commands:
 | `SOLDR_RELOCATED_EXE` | Internal recursion guard set after Windows self-relocation | unset |
 | `SOLDR_ORIGINAL_EXE` | Internal path to the original executable when Windows self-relocation is active | unset |
 | `SOLDR_ZCCACHE_SESSION_DIR` | Internal session/report directory passed from `soldr cargo ...` into wrapper mode | unset |
-| `SOLDR_ZCCACHE_PRIVATE` | Opt-in private auxiliary session/rust-plan root. When truthy (`1`/`true`/`yes`/`on`), `soldr cargo ...` routes that state to `<cwd>/.zccache` and `soldr save`/`soldr load` default `--cache-dir` to the same path when omitted. It does **not** relocate the compiler-artifact service embedded in `soldr-daemon`; use `SOLDR_CACHE_DIR` for a fully isolated embedded compiler store. Explicit `ZCCACHE_CACHE_DIR` (front door) or `--cache-dir` (save/load) always wins. | unset |
+| `SOLDR_ZCCACHE_PRIVATE` | Opt-in private auxiliary session/rust-plan root. When truthy (`1`/`true`/`yes`/`on`), `soldr cargo ...` routes that state to `<cwd>/.zccache` and `soldr save`/`soldr hydrate` (`load` alias) default `--cache-dir` to the same path when omitted. It does **not** relocate the compiler-artifact service embedded in `soldr-daemon`; use `SOLDR_CACHE_DIR` for a fully isolated embedded compiler store. Explicit `ZCCACHE_CACHE_DIR` (front door) or `--cache-dir` (save/load) always wins. | unset |
 | `SOLDR_SAVE_PROFILE` | Default payload profile for `soldr save` when `--ci` / `--minimal` is not passed. Values: `full`/`default`/`complete` for historical all-files archives, or `ci`/`minimal` for the CI/minimal profile that excludes runtime-only files, zccache runtime binaries, and reports `excluded_files` / `excluded_bytes`. CLI flags win over the env var. | `full` |
 | `ZCCACHE_CACHE_DIR` | Auxiliary zccache front-door/session, rust-plan, and direct-rustfmt cache-root override. It does not relocate the compiler service embedded in `soldr-daemon`; use `SOLDR_CACHE_DIR` for that. `soldr cargo ...` ignores inherited values by default so stale workspace state from setup/action wrappers cannot bleed across projects; pass `--trust-inherited-soldr-env` or set `SOLDR_TRUST_INHERITED_ENV=1` only when intentionally injecting this state. | unset |
 | `ZCCACHE_SESSION_ID` | Per-build zccache session identifier set by soldr | unset |
@@ -2037,8 +2039,8 @@ Commands:
 | `SOLDR_GC_TARGET_ROOT` | Default walk root for `soldr gc target` (issue #574). The `--root <PATH>` flag always takes precedence. | `~/dev` |
 | `SOLDR_TEST_DISK_FREE_BYTES` | Test seam for the watchdog: when set to a `u64` byte count (or `error`), overrides the real `fs2::available_space` probe so tests can drive every threshold edge. Internal — never set this in production. | unset |
 | `SOLDR_TEST_FORBID_SOURCE_BUILD` | Test-only tripwire (soldr#2436): truthy values make every source-build chokepoint (`build-from-source` cargo install, toolchain plugin install) error with a distinctive message instead of spawning cargo, so containment tests can prove no implicit compile path is reached. Never set in production. | unset |
-| `SOLDR_PROFILE_EXTRACT` | Env-var equivalent of `soldr load --profile-extract` (issue #575). Any non-empty value other than `0` enables the per-phase profile line on stderr after a load (`zstd_decode`, `tar_parse`, `extract_total`, per-worker job counts, per-file `p50`/`p95`/`p99`). Useful for tuning the parallel-extract worker count against real workloads. | unset |
-| `SOLDR_LOAD_WORKERS` | Cap on the parallel-extract worker pool used by `soldr load` (issue #575). Positive integer; wins over the explicit `--threads` flag. When unset, `--threads` (or rayon's `num_cpus` default) is used. | unset |
+| `SOLDR_PROFILE_EXTRACT` | Env-var equivalent of `soldr hydrate --profile-extract` (`load` alias) (issue #575). Any non-empty value other than `0` enables the per-phase profile line on stderr after a load (`zstd_decode`, `tar_parse`, `extract_total`, per-worker job counts, per-file `p50`/`p95`/`p99`). Useful for tuning the parallel-extract worker count against real workloads. | unset |
+| `SOLDR_LOAD_WORKERS` | Cap on the parallel-extract worker pool used by `soldr hydrate` (`load` alias) (issue #575). Positive integer; wins over the explicit `--threads` flag. When unset, `--threads` (or rayon's `num_cpus` default) is used. | unset |
 
 **Windows: keep `SOLDR_CACHE_DIR` short.** Under the cache root soldr appends a
 fixed staging suffix of roughly 143 characters

@@ -137,12 +137,11 @@ impl StripTargetOptions {
     }
 
     /// Preset for `soldr cook` post-build trim (issue #459). Strips
-    /// the cargo-recreatable noise that a downstream `cargo build`
-    /// against a different project never reads — incremental state
-    /// (invalidated by source changes), the synthetic stub binary
-    /// (different name than the user's real binary), build-script
-    /// binaries and large stderr blobs, debug sidecars, and the
-    /// per-profile `examples/`, `doc/`, `tests/` subdirs.
+    /// cargo-recreatable noise that does not participate in dependency
+    /// freshness — incremental state, the synthetic stub binary, large stderr
+    /// blobs, debug sidecars, and the per-profile `examples/`, `doc/`, `tests/`
+    /// subdirs. Build-script executables are deliberately retained: Cargo
+    /// requires them as part of a fully rematerialized dependency closure.
     ///
     /// Dry-run defaults to `false` because the caller is `cook` —
     /// the trim is part of the cook contract, not a manual audit.
@@ -151,7 +150,7 @@ impl StripTargetOptions {
             target_dir,
             dry_run: false,
             strip_large_stderr: true,
-            strip_build_script_binaries: true,
+            strip_build_script_binaries: false,
             strip_examples_doc_tests: true,
             strip_debug_sidecars: true,
             strip_incremental: true,
@@ -911,6 +910,28 @@ mod tests {
         assert!(target.join("release/deps").exists());
         assert!(target.join("release/build").exists());
         assert!(target.join("release/examples").exists());
+    }
+
+    #[test]
+    fn cook_preset_preserves_build_script_binaries_for_rematerialization() {
+        let temp = tempdir().unwrap();
+        let target = temp.path().to_path_buf();
+        let build_script = target.join("release/build/native-sys-aaaa/build-script-build");
+        let build_output = target.join("release/build/native-sys-aaaa/output");
+        write_bytes(&build_script, b"build script executable");
+        write_bytes(&build_output, b"cargo:rerun-if-changed=native.c\n");
+
+        let opts = StripTargetOptions::cook(target);
+        strip_target(&opts).unwrap();
+
+        assert!(
+            build_script.exists(),
+            "a rematerialized target must retain Cargo's build-script executable"
+        );
+        assert!(
+            build_output.exists(),
+            "build-script output must also survive"
+        );
     }
 
     #[test]

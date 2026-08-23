@@ -146,7 +146,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
         Commands::Save(args) => {
             guarded_exit(save_load::run_save(args));
         }
-        Commands::Load(args) => {
+        Commands::Hydrate(args) => {
             guarded_exit(save_load::run_load(args));
         }
         Commands::Archive {
