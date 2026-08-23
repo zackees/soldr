@@ -689,6 +689,103 @@ def _pep517_exit_was_termination(returncode: int) -> bool:
     return returncode < 0 or returncode >= 0xC0000000 or returncode == 0xFFFFFFFF
 
 
+def _backend_termination_signals() -> "list[int]":
+    """Signals a harness sends before resorting to an uncatchable kill.
+
+    SIGTERM is the POSIX convention. SIGBREAK is its Windows counterpart --
+    Ctrl-Break, which is what a Windows harness typically sends first.
+    SIGINT covers a Ctrl-C delivered to us rather than to the child.
+    """
+    found = []
+    for name in ("SIGTERM", "SIGBREAK", "SIGINT"):
+        number = getattr(signal, name, None)
+        if number is not None:
+            found.append(number)
+    return found
+
+
+def _backend_termination_message(
+    signum: int, cmd: "list[str]", env: "dict[str, str]", elapsed: float
+) -> str:
+    """What we print when the backend itself is signalled.
+
+    Split out from the handler so it can be asserted on directly: the
+    handler's last act is to re-raise the signal, so a test cannot call it
+    and live to inspect the result.
+    """
+    return (
+        f"\nsoldr: terminated by {_signal_name(signum)} after "
+        f"{elapsed:.0f}s while running `{' '.join(cmd)}`.\n"
+        + _pep517_terminated_hint(env)
+    )
+
+
+@contextmanager
+def _explain_backend_termination(
+    cmd: "list[str]", env: "dict[str, str]", started_at: float
+) -> Iterator[None]:
+    """Say why we died when *we* are signalled, not just when the child is.
+
+    soldr#2744 named a terminated **child**. This is the other half of
+    soldr#2742: the backend process itself being killed by whatever invoked
+    it, which is what produced the reported bare ``exit code: 0xffffffff``.
+    uv only ever sees our exit status, so a silent death is a number, and a
+    number is not a diagnosis.
+
+    This deliberately does **not** pre-empt the kill by shortening any
+    deadline -- shortening the per-unit compile budget would fail builds that
+    are merely large. It only makes the kill self-describing.
+
+    Its limit is worth stating plainly: a hard ``TerminateProcess`` on
+    Windows, or ``SIGKILL``, cannot be caught by anyone, so this helps only
+    when the harness signals first. Harnesses that escalate straight to an
+    uncatchable kill are unchanged, and for those the hint's advice to lower
+    ``SOLDR_COMPILE_REPLY_TIMEOUT_SECS`` remains the only route.
+    """
+    previous: "list[tuple[int, Any]]" = []
+    reported = threading.Event()
+
+    def _report(signum: int, _frame: Any) -> None:
+        # Signals coalesce badly: a harness often sends SIGTERM then SIGKILL,
+        # and re-entering here would interleave two copies of the message.
+        if not reported.is_set():
+            reported.set()
+            _write_pep517_text(
+                sys.stderr,
+                _backend_termination_message(
+                    signum, cmd, env, time.perf_counter() - started_at
+                ),
+            )
+            try:
+                sys.stderr.flush()
+            except (ValueError, OSError):
+                pass
+        # Restore the default disposition and re-raise, so our exit status
+        # still reports the signal. Reporting must not change what the
+        # caller observes -- only explain it.
+        try:
+            signal.signal(signum, signal.SIG_DFL)
+            os.kill(os.getpid(), signum)
+        except (OSError, ValueError, RuntimeError):
+            os._exit(1)  # pylint: disable=protected-access
+
+    for number in _backend_termination_signals():
+        try:
+            previous.append((number, signal.signal(number, _report)))
+        except (ValueError, OSError, RuntimeError):
+            # Not the main thread, or the platform refuses this signal.
+            # A missing diagnostic must never break a working build.
+            continue
+    try:
+        yield
+    finally:
+        for number, handler in previous:
+            try:
+                signal.signal(number, handler)
+            except (ValueError, OSError, RuntimeError):
+                pass
+
+
 def _write_pep517_text(sink: TextIO, text: str) -> None:
     """Write decoded child text using the parent stream's encoding."""
     if not text:
@@ -1194,7 +1291,11 @@ def _maturin_pep517(
         session_id = None
     cmd = ["soldr", "maturin", "pep517", subcommand, *args]
     try:
-        _run_pep517_streaming(cmd, env=env)
+        # soldr#2742: a terminated *child* is named by the CalledProcessError
+        # path below; this names a terminated *backend*, which is what uv
+        # reported as a bare `exit code: 0xffffffff`.
+        with _explain_backend_termination(cmd, env, started_at):
+            _run_pep517_streaming(cmd, env=env)
     except subprocess.TimeoutExpired as exc:
         if session_id is not None:
             _session_command("session-end", env, "--id", session_id)

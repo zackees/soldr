@@ -11,6 +11,9 @@ so the exit code alone is not a diagnosis.
 
 from __future__ import annotations
 
+import signal
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -116,3 +119,120 @@ def test_effective_timeout_prefers_the_callers_value(backend) -> None:
         )
         is None
     )
+
+
+# soldr#2742, second half: a terminated *child* was named by #2744, but the
+# incident that opened the issue was the *backend* being killed by a hook. uv
+# reports only our exit status, so dying silently gives the reader a number.
+
+
+def test_termination_signals_include_the_ones_a_harness_sends(backend) -> None:
+    numbers = backend._backend_termination_signals()
+    assert signal.SIGTERM in numbers, "SIGTERM is the POSIX convention"
+    assert signal.SIGINT in numbers, "a Ctrl-C may reach us rather than the child"
+    if hasattr(signal, "SIGBREAK"):
+        assert signal.SIGBREAK in numbers, "SIGBREAK is what Windows harnesses send"
+    # Nothing invented: every entry must be a real signal on this platform.
+    for number in numbers:
+        assert signal.Signals(number)
+
+
+def test_the_message_names_signal_elapsed_and_command(backend) -> None:
+    message = backend._backend_termination_message(
+        signal.SIGTERM, ["soldr", "maturin", "pep517", "build-wheel"], {}, 412.7
+    )
+    assert "SIGTERM" in message
+    # The reader needs to know it ran a long time, not that it failed fast.
+    assert "413s" in message
+    assert "`soldr maturin pep517 build-wheel`" in message
+
+
+def test_the_message_carries_the_termination_hint(backend) -> None:
+    """The diagnosis is the hint; this path must not invent a second one."""
+    message = backend._backend_termination_message(
+        signal.SIGTERM, ["soldr"], {"SOLDR_COMPILE_REPLY_TIMEOUT_SECS": "90"}, 1.0
+    )
+    assert "terminated rather than failing on its own" in message
+    assert "currently 90s" in message
+
+
+def test_handlers_are_installed_and_restored(backend) -> None:
+    """A diagnostic must not leave the caller's signal disposition changed."""
+    before = {n: signal.getsignal(n) for n in backend._backend_termination_signals()}
+
+    with backend._explain_backend_termination(["soldr"], {}, 0.0):
+        during = {
+            n: signal.getsignal(n) for n in backend._backend_termination_signals()
+        }
+        assert during != before, "the handler must actually be installed"
+
+    after = {n: signal.getsignal(n) for n in backend._backend_termination_signals()}
+    assert after == before, "the previous handlers must be restored"
+
+
+def test_a_refused_signal_never_breaks_the_build(backend, monkeypatch) -> None:
+    """Installing the diagnostic is best-effort, always.
+
+    `signal.signal` raises off the main thread, and a build backend is not
+    guaranteed to be on it. A missing diagnostic is acceptable; a build that
+    fails because we tried to add one is not.
+    """
+
+    def _refuse(_number, _handler):
+        raise ValueError("signal only works in main thread")
+
+    monkeypatch.setattr(backend.signal, "signal", _refuse)
+    with backend._explain_backend_termination(["soldr"], {}, 0.0):
+        pass
+
+
+# The tests above prove the handler is *installed*. This one proves it
+# *fires* -- which is the whole claim -- by signalling a real process and
+# reading what it printed on the way out.
+#
+# POSIX only, and the reason is the same limitation the implementation
+# documents: on Windows `os.kill(pid, SIGTERM)` is `TerminateProcess`, which
+# no handler can intercept. That is not a gap in the test, it is the platform
+# behaviour that makes this a best-effort diagnostic rather than a guarantee.
+CHILD = """
+import importlib.util, signal, sys, time
+spec = importlib.util.spec_from_file_location("soldr_backend_child", sys.argv[1])
+backend = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(backend)
+with backend._explain_backend_termination(["soldr", "maturin", "pep517"], {}, 0.0):
+    sys.stdout.write("READY\\n")
+    sys.stdout.flush()
+    time.sleep(30)
+"""
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="os.kill(SIGTERM) is TerminateProcess on Windows and cannot be caught",
+)
+def test_a_real_sigterm_prints_the_diagnosis_before_exiting(tmp_path) -> None:
+    script = tmp_path / "child.py"
+    script.write_text(CHILD, encoding="utf-8")
+
+    with subprocess.Popen(
+        [sys.executable, str(script), str(BACKEND)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    ) as child:
+        try:
+            assert child.stdout is not None
+            assert child.stdout.readline().strip() == "READY", "child never armed"
+            child.send_signal(signal.SIGTERM)
+            _, stderr = child.communicate(timeout=30)
+        finally:
+            if child.poll() is None:  # pragma: no cover - only on a hang
+                child.kill()
+                child.communicate()
+
+    assert "terminated by SIGTERM" in stderr, stderr
+    assert "`soldr maturin pep517`" in stderr, stderr
+    assert "terminated rather than failing on its own" in stderr, stderr
+    # Explaining the death must not disguise it: the exit status still has to
+    # report the signal, or a caller's own error handling changes meaning.
+    assert child.returncode == -signal.SIGTERM, child.returncode
