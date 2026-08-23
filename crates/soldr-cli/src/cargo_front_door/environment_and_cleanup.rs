@@ -297,9 +297,9 @@ fn augment_aborted_cargo_error(
     ));
     if timeout {
         message.push_str(
-            "; if the next build still stalls, run `soldr --no-cache cargo clean -p <crate>` \
+            "; if the next build still stalls, run `ZCCACHE_DISABLE=1 soldr cargo clean -p <crate>` \
              or remove the affected target/*/incremental directory, then retry the same command \
-             as `soldr --no-cache cargo <same args>` or with `ZCCACHE_DISABLE=1`; use \
+             as `ZCCACHE_DISABLE=1 soldr cargo <same args>`; use \
              `soldr logs paths` to inspect durable logs, and lower \
              `SOLDR_CARGO_WAIT_TIMEOUT_SECS` or `SOLDR_COMPILE_REPLY_TIMEOUT_SECS` while diagnosing",
         );

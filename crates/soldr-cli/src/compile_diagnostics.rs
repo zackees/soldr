@@ -96,7 +96,7 @@ pub(crate) fn maxpath_headroom_warning(cache_root: &std::path::Path) -> Option<S
          leaves no room for staged compile paths under Windows' {limit}-character MAX_PATH \
          limit (projected {projected}). Linking can fail with LNK1104 naming a file \
          inside soldr's cache -- see soldr#2188. Point SOLDR_CACHE_DIR at a shorter \
-         root, or run `soldr --no-cache cargo ...`."
+         root, or run `ZCCACHE_DISABLE=1 soldr cargo ...`."
     ))
 }
 
@@ -205,7 +205,7 @@ impl<W: Write> SilenceDetectingWriter<W> {
                             "soldr#2188.\n",
                             "soldr: point SOLDR_CACHE_DIR at a shorter root (the default ",
                             "~/.soldr works because it is short), or run ",
-                            "`soldr --no-cache cargo ...` to bypass the cache entirely."
+                            "`ZCCACHE_DISABLE=1 soldr cargo ...` to bypass the cache entirely."
                         ),
                         limit = LEGACY_MAX_PATH,
                         len = self.longest_cache_path,
@@ -220,7 +220,7 @@ impl<W: Write> SilenceDetectingWriter<W> {
                             "soldr: an intermediate can be reclaimed while a slow link is still ",
                             "reading it -- see soldr#1969.
 ",
-                            "soldr: retrying usually succeeds; `soldr --no-cache cargo ...` ",
+                            "soldr: retrying usually succeeds; `ZCCACHE_DISABLE=1 soldr cargo ...` ",
                             "bypasses the cache entirely."
                         )
                     );
@@ -234,8 +234,8 @@ impl<W: Write> SilenceDetectingWriter<W> {
             "soldr: rustc exited {exit_code} without emitting any diagnostics.\n\
              soldr: the compile was dispatched to soldr-daemon and failed before it \
              could report a reason — see soldr#1857.\n\
-             soldr: retrying usually succeeds; `soldr --no-cache cargo ...` bypasses \
-             the daemon entirely."
+             soldr: retrying usually succeeds; `ZCCACHE_DISABLE=1 soldr cargo ...` \
+             bypasses the daemon entirely."
         );
         let _ = self.inner.flush();
     }
@@ -292,8 +292,16 @@ mod tests {
 {text}"
         );
         assert!(
-            text.contains("--no-cache"),
+            text.contains("ZCCACHE_DISABLE=1"),
             "expected the documented bypass; got:
+{text}"
+        );
+        // soldr#2424: `--no-cache` is deprecated and hidden, so a reader
+        // cannot find it in `soldr --help`. Advice names the supported
+        // kill-switch only.
+        assert!(
+            !text.contains("--no-cache"),
+            "advice must not name the deprecated flag; got:
 {text}"
         );
     }
@@ -568,7 +576,7 @@ mod tests {
                 "must point at the issue: {warning}"
             );
             assert!(
-                warning.contains("SOLDR_CACHE_DIR") && warning.contains("--no-cache"),
+                warning.contains("SOLDR_CACHE_DIR") && warning.contains("ZCCACHE_DISABLE=1"),
                 "must give both remedies: {warning}"
             );
         } else {
