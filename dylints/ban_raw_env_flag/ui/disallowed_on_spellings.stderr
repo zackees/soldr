@@ -1,0 +1,12 @@
+error: hand-rolled environment-flag parsing: on-spelling alternation "1"|"true", "true"|"yes", "yes"|"on" written locally. Use `soldr_core::core::env_flag` -- `flag` for an owned switch that defaults off, `!is_off_value(..)` for one that defaults on, `foreign_flag` for a variable another project defines (soldr#2740)
+  --> $DIR/disallowed_on_spellings.rs:4:1
+   |
+LL | / fn enabled(value: &str) -> bool {
+LL | |     matches!(value.trim(), "1" | "true" | "yes" | "on")
+LL | | }
+   | |_^
+   |
+   = note: `#[deny(ban_raw_env_flag)]` on by default
+
+error: aborting due to 1 previous error
+
