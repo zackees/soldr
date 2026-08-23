@@ -144,6 +144,16 @@ jobs:
           set -euo pipefail
           python3 .github/scripts/loc_ceiling.py
 
+      # soldr#2753 — the `.proto` files are the documented source of truth for
+      # the wire format, but soldr runs no prost-build, so nothing read them
+      # and they had drifted: wire.proto referenced a message it never defined
+      # (invalid protobuf), and the rust_plan mirror understated its tag space
+      # by two fields. Compares (message, field, tag) triples on both sides.
+      - name: Protobuf schema drift
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/check_proto_drift.py
+
       # soldr#2360/#2363 — the broker-fronted daemon design deliberately
       # keeps the wire at protocol_v2/client_v2, broken in place; a
       # protocol_v3/client_v3 module would mean two wire majors coexisting,

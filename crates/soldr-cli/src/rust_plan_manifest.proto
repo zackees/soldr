@@ -17,6 +17,11 @@ message RustArtifactPlanV1 {
   string journal_log_path = 12;
   string cache_profile = 13;
   repeated uint32 dropped_artifact_classes = 14;
+  // soldr#2753: serialized by RustArtifactPlanV1 in rust_plan_proto.rs since
+  // they were added upstream, but this mirror was never updated -- so tags 15
+  // and 16 read as free here. Same failure mode as soldr#1838.
+  repeated string cargo_artifact_paths = 15;
+  bool cargo_artifacts_complete = 16;
 }
 
 message RustToolchainIdentity {
@@ -71,4 +76,6 @@ message RustBundledArtifact {
   uint64 size = 3;
   string content_hash = 4;
   uint64 mtime_unix_nanos = 5;
+  // soldr#2753: present upstream; this mirror had understated the tag space.
+  uint32 owner = 6;
 }
