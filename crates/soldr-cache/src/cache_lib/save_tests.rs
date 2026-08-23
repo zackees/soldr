@@ -698,3 +698,80 @@ mod etxtbsy_tests {
         assert_eq!(status.code(), Some(7));
     }
 }
+
+// soldr#2760 — the save walks run *inside* a rayon pool: `save()` does
+// `pool.install(|| rayon::join(|| workspace_files_for_save(..), ..))`.
+// jwalk's default parallelism is `RayonDefaultPool { busy_timeout: 1s }`,
+// and `rayon::spawn` from inside a pool context targets *that* pool. When
+// the pool's threads are already occupied by the join, the walk cannot be
+// scheduled, and after one second jwalk aborts it with
+//
+//     rayon thread-pool too busy or dependency loop detected
+//
+// which surfaces as `SaveLoadError::Walk` — a hard save failure, not a
+// slow save. On the emulated aarch64-msvc runner that is the whole flake.
+//
+// A one-thread pool makes the race deterministic: the calling closure IS
+// the only worker, so a walk that spawns onto the ambient pool can never
+// make progress. `Parallelism::RayonNewPool` / `Serial` return
+// `timeout() == None` and are immune, which is the fix.
+#[test]
+fn walk_workspace_files_survives_a_saturated_ambient_pool() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/lib.rs"), b"pub fn noop() {}").unwrap();
+    std::fs::write(root.join("Cargo.toml"), b"[package]\nname='x'\n").unwrap();
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .unwrap();
+
+    let files = pool
+        .install(|| walk_workspace_files(root, None))
+        .expect("walk must not abort when the ambient rayon pool is saturated");
+
+    let rel: Vec<String> = files
+        .iter()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .collect();
+    assert!(rel.contains(&"src/lib.rs".to_string()), "got: {rel:?}");
+}
+
+// soldr#2760 — `RayonDefaultPool` is the one variant that can abort a walk
+// (it is the only one whose `timeout()` is `Some`). No caller argument may
+// select it, including the `None` and `Some(0)` shapes that used to fall
+// through to jwalk's default.
+#[test]
+fn walk_parallelism_is_never_the_aborting_default() {
+    for threads in [None, Some(0), Some(1), Some(8)] {
+        assert!(
+            matches!(
+                walk_parallelism(threads),
+                jwalk::Parallelism::RayonNewPool(_)
+            ),
+            "threads={threads:?} must select a dedicated pool"
+        );
+    }
+}
+
+// soldr#2760 — the original defect was one walker *silently missing* the
+// call: `cargo_input_inventory`'s metadata walk had no `.parallelism(..)`,
+// so it used the aborting default even when the caller passed an explicit
+// `--threads` that its sibling walks honoured. Nothing failed loudly; the
+// walk just kept a 1-second abort nobody had chosen.
+//
+// Counting the two constructs keeps that specific mistake from recurring:
+// a walker added without a pool leaves the counts unequal.
+#[test]
+fn every_jwalk_walker_in_this_module_selects_its_own_pool() {
+    let src = include_str!("save_inventory.rs");
+    let walkers = src.matches("jwalk::WalkDir::new").count();
+    let pooled = src.matches("parallelism(walk_parallelism").count();
+    assert_eq!(
+        walkers, pooled,
+        "every jwalk walker must go through walk_parallelism(): \
+         found {walkers} walkers but {pooled} parallelism() calls"
+    );
+}
