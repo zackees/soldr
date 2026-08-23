@@ -125,6 +125,10 @@ pub(crate) const SOLDR_BUILTIN_VERBS: &[&str] = &[
     "session-start",
     "session-end",
     "save",
+    // `Commands::Hydrate` is the primary spelling; `load` is its
+    // `visible_alias`. Both are live surfaces, so both belong here — the
+    // fuzzy-match path only knows what this const lists.
+    "hydrate",
     "load",
     "archive",
     "prepare",
