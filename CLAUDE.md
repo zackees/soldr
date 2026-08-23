@@ -286,6 +286,54 @@ soldr#1368 removed the externally-downloaded managed zccache binary: the zccache
 > zccache keyed on the vendored crate's version — see
 > "Bumping the vendored zccache pin" below before moving the submodule.
 
+## The vendored crates ARE published — vendoring is about leading the release
+
+Both submodules are real, published crates.io crates. Vendoring exists so soldr
+can run **ahead of** their releases, not because publishing does not exist.
+
+| Crate | crates.io | soldr's pin |
+|---|---|---|
+| `zccache` | published | usually **ahead of** the last tag |
+| `running-process` | published | at or ahead of the last tag |
+
+Check the relationship before reasoning about either one:
+
+```bash
+git -C _vender/zccache describe --tags          # e.g. 1.13.5-34-g15f278a2
+git -C _vender/running-process describe --tags  # e.g. 4.10.6
+```
+
+A bare tag means the pin **is** the published release, so that submodule could
+be swapped for a crates.io dependency with no behaviour change. A
+`<tag>-<n>-g<sha>` describe means the pin carries `n` commits that have never
+been released, and de-vendoring would silently roll soldr back.
+
+### Two traps that have already cost time
+
+**1. `publish = false` on the internals does not mean nothing is published.**
+21 of zccache's 22 crates are `publish = false`, and `running-process` marks 6
+of 11. They are **amalgamated** into a single published crate by
+`_vender/zccache/ci/publish_amalgamate.py` (which has its own tests). Reading
+the internal manifests and concluding "this project does not publish" is wrong
+— check crates.io, and check the amalgamation script.
+
+This is also why CLAUDE.md describes soldr's own split as "the zccache pattern,
+**no amalgamation**": soldr borrowed the `publish = false` internals *without*
+the amalgamating publish step, which is why soldr genuinely publishes no crates
+and zccache genuinely does.
+
+**2. The crates.io API returns 403 without a User-Agent.** Their data-access
+policy rejects anonymous clients, and the body is an error object rather than a
+404 — so a naive `curl | jq .crate.version` fails and reads as "crate does not
+exist". Always send one and always check the status code:
+
+```bash
+curl -s -H "User-Agent: <name> (<contact>)" \
+     -w '\nHTTP=%{http_code}\n' https://crates.io/api/v1/crates/zccache
+```
+
+A 403 means *you were blocked*, not that the crate is missing.
+
 ## Bumping the vendored zccache pin
 
 soldr#1368 deleted the `MANAGED_ZCCACHE_VERSION` managed-binary download.
