@@ -463,10 +463,14 @@ fn scrub_cached_fallback_diagnostics_once(
     };
 
     let mut scrubbed = 0;
+    // soldr#2760: never jwalk's default pool. It aborts the walk after one
+    // second when the ambient rayon pool cannot serve it, which on a loaded
+    // machine turns a correct scrub into `Io(ThreadpoolBusy)`.
     for entry in jwalk::WalkDir::new(target_dir)
         .follow_links(false)
         .max_depth(6)
         .skip_hidden(false)
+        .parallelism(crate::cache_lib::save::walk_parallelism(None))
     {
         let entry = entry.map_err(std::io::Error::other)?;
         if !entry.file_type().is_file()
