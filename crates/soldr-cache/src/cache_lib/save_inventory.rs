@@ -34,6 +34,31 @@ fn workspace_target_dir_candidates(workspace: &Path) -> Vec<PathBuf> {
     out
 }
 
+fn walk_parallelism(threads: Option<usize>) -> jwalk::Parallelism {
+    // Never `RayonDefaultPool` (jwalk's default), for two compounding
+    // reasons (soldr#2760).
+    //
+    // 1. It spawns via `rayon::spawn`, which targets the *ambient* pool,
+    //    not the global one, whenever it is called from inside a pool.
+    //    `save()` calls these walks from `pool.install(|| rayon::join(..))`,
+    //    so the walk lands on the very pool whose threads the join is
+    //    already occupying.
+    // 2. It carries a 1-second `busy_timeout` and *aborts the walk* when
+    //    the pool cannot serve it in time — surfacing as
+    //    `SaveLoadError::Walk("rayon thread-pool too busy or dependency
+    //    loop detected")`, i.e. a hard save failure rather than a slow save.
+    //
+    // Together those make a correct save fail purely because the machine was
+    // busy, which is what the emulated aarch64-msvc lane kept hitting.
+    // `RayonNewPool` reports `timeout() == None`, so the abort cannot fire,
+    // and the traversal no longer contends with the hashing work.
+    //
+    // `RayonNewPool(0)` means "a new pool, rayon's default size" — the cost
+    // is one pool per walk, against a walk that is already doing syscalls
+    // per directory.
+    jwalk::Parallelism::RayonNewPool(threads.filter(|n| *n > 0).unwrap_or(0))
+}
+
 /// Walk a workspace and return every regular file's repo-relative POSIX
 /// path. We deliberately do NOT shell out to `git ls-files` — soldr's
 /// users include sandboxed CI jobs and local-dev runs that don't always
@@ -48,6 +73,9 @@ fn workspace_target_dir_candidates(workspace: &Path) -> Vec<PathBuf> {
 /// Uses jwalk for a parallel walk; on a 1000-file workspace this is
 /// ~4x faster than walkdir at the directory-traversal level. The walk
 /// itself is the cheap part — caller still has to hash each file.
+///
+/// Every walk in this module runs on a pool of its own — see
+/// [`walk_parallelism`] for why the default is not usable here.
 fn walk_workspace_files(workspace: &Path, threads: Option<usize>) -> Result<Vec<PathBuf>> {
     let target_dirs = workspace_target_dir_candidates(workspace);
     let walker = jwalk::WalkDir::new(workspace)
@@ -71,10 +99,7 @@ fn walk_workspace_files(workspace: &Path, threads: Option<usize>) -> Result<Vec<
                 Err(_) => true,
             });
         });
-    let walker = match threads {
-        Some(n) if n > 0 => walker.parallelism(jwalk::Parallelism::RayonNewPool(n)),
-        _ => walker,
-    };
+    let walker = walker.parallelism(walk_parallelism(threads));
     let mut out = Vec::new();
     for entry in walker {
         let entry = entry.map_err(|err| SaveLoadError::Walk {
@@ -126,10 +151,7 @@ fn cargo_input_inventory(
     let walker = jwalk::WalkDir::new(target_dir)
         .follow_links(false)
         .skip_hidden(false);
-    let walker = match threads {
-        Some(n) if n > 0 => walker.parallelism(jwalk::Parallelism::RayonNewPool(n)),
-        _ => walker,
-    };
+    let walker = walker.parallelism(walk_parallelism(threads));
     for entry in walker {
         let entry = entry.map_err(|err| SaveLoadError::Walk {
             path: target_dir.to_path_buf(),
@@ -207,6 +229,10 @@ fn cargo_input_inventory(
                 Err(_) => true,
             });
         });
+    // soldr#2760: this walk had no `.parallelism(..)` at all, so it stayed on
+    // jwalk's aborting default even when the caller passed an explicit
+    // `--threads`, which the sibling walks honoured.
+    let metadata_walker = metadata_walker.parallelism(walk_parallelism(threads));
     for entry in metadata_walker {
         let entry = entry.map_err(|err| SaveLoadError::Walk {
             path: workspace.to_path_buf(),
@@ -306,10 +332,7 @@ fn walk_cache_files(
     let walker = jwalk::WalkDir::new(cache_dir)
         .follow_links(false)
         .skip_hidden(false);
-    let walker = match threads {
-        Some(n) if n > 0 => walker.parallelism(jwalk::Parallelism::RayonNewPool(n)),
-        _ => walker,
-    };
+    let walker = walker.parallelism(walk_parallelism(threads));
     let mut files = Vec::new();
     let mut symlinks = Vec::new();
     for entry in walker {
