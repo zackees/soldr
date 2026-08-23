@@ -212,6 +212,30 @@ def extract_binary(archive: Path, *, tool: str, target: str, output_dir: Path) -
     return output
 
 
+# `link.exe` prints this banner before doing anything else, including before
+# rejecting an option it does not understand.
+MSVC_LINKER_BANNER = "Microsoft (R) Incremental Linker"
+
+
+def _delegated_to_msvc_linker(tool: str, output: str) -> bool:
+    """True when `dylint-link` reached MSVC's linker, whatever it exited with.
+
+    `dylint-link` is a linker *wrapper*: it forwards its arguments to the
+    platform linker. On Unix that is `cc`, which accepts `--version`. On MSVC
+    it is `link.exe`, which does not -- it warns `LNK4044: unrecognized option
+    '/-version'` and then fails `LNK1561: entry point must be defined`,
+    because it was asked to link a program with no inputs.
+
+    So requiring exit 0 here can never pass on Windows: the install aborts and
+    leaves the tool uninstalled, which is why `dylint-link` could not be
+    installed on an MSVC host at all. The banner is the real signal -- it says
+    the wrapper resolved and handed off to a genuine linker, which is all this
+    smoke can establish for a tool that has no version surface of its own.
+    (The version string is already not checked for `dylint-link` below.)
+    """
+    return tool == "dylint-link" and MSVC_LINKER_BANNER in output
+
+
 def smoke_version(binary: Path, *, tool: str, version: str, target: str) -> str:
     arguments = [str(binary), "--version"]
     if tool == "cargo-dylint":
@@ -228,6 +252,8 @@ def smoke_version(binary: Path, *, tool: str, version: str, target: str) -> str:
         timeout=SMOKE_TIMEOUT_SECS,
     )
     output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part)
+    if _delegated_to_msvc_linker(tool, output):
+        return output
     wrong_version = tool != "dylint-link" and version.removeprefix("v") not in output
     if result.returncode != 0 or wrong_version:
         raise SystemExit(

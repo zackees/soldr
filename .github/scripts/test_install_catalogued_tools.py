@@ -147,5 +147,44 @@ class InstallCataloguedToolsTests(unittest.TestCase):
             self.assertEqual(installed.read_bytes(), payload)
 
 
+class MsvcLinkerSmokeTest(unittest.TestCase):
+    """`dylint-link` on MSVC has no version surface of its own.
+
+    It forwards to `link.exe`, which rejects `--version` and exits non-zero,
+    so an exit-code-only smoke can never pass on Windows -- the install
+    aborts and the tool is left uninstalled.
+    """
+
+    MSVC_FAILURE = "\n".join(
+        (
+            "Microsoft (R) Incremental Linker Version 14.51.36252.0",
+            "LINK : warning LNK4044: unrecognized option '/-version'; ignored",
+            "LINK : fatal error LNK1561: entry point must be defined",
+        )
+    )
+
+    def test_reaching_the_msvc_linker_counts_as_smoked(self) -> None:
+        self.assertTrue(
+            script._delegated_to_msvc_linker("dylint-link", self.MSVC_FAILURE)
+        )
+
+    def test_only_dylint_link_gets_the_exemption(self) -> None:
+        """A real tool failing must never be excused by linker output."""
+        self.assertFalse(
+            script._delegated_to_msvc_linker("cargo-dylint", self.MSVC_FAILURE)
+        )
+
+    def test_unrecognisable_output_is_still_a_failure(self) -> None:
+        """The banner is the evidence; without it nothing was established."""
+        for output in ("", "command not found", "Segmentation fault"):
+            self.assertFalse(script._delegated_to_msvc_linker("dylint-link", output))
+
+    def test_unix_dylint_link_is_unaffected(self) -> None:
+        """On Unix it forwards to `cc`, which answers `--version` properly."""
+        self.assertFalse(
+            script._delegated_to_msvc_linker("dylint-link", "cc (GCC) 13.2.0")
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
