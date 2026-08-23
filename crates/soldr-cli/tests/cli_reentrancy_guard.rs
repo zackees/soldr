@@ -206,7 +206,10 @@ fn an_empty_guard_value_still_enforces() {
 fn a_stale_marker_from_a_dead_parent_is_allowed() {
     let dead = reaped_child_pid();
     let output = common::isolated_soldr_command()
-        .env(soldr_cli::reentrancy_guard::IN_SOLDR_PID_ENV, dead.to_string())
+        .env(
+            soldr_cli::reentrancy_guard::IN_SOLDR_PID_ENV,
+            dead.to_string(),
+        )
         .arg("--version")
         .output()
         .expect("spawn soldr");

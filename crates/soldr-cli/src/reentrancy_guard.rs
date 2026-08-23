@@ -290,13 +290,14 @@ pub(crate) fn enforce_and_mark(raw_args: &[String]) -> Option<i32> {
     // The liveness probe lives here rather than in `decide` to keep that
     // function pure and exhaustively unit-testable; see
     // `inherited_process_is_alive` for why a stale marker is not re-entrancy.
-    let inherited = std::env::var(IN_SOLDR_PID_ENV)
-        .ok()
-        .filter(|value| match value.trim().parse::<u32>() {
-            Ok(pid) => pid == current_pid || inherited_process_is_alive(pid),
-            // Unparseable: leave it for `decide`'s cooperative-signal rule.
-            Err(_) => true,
-        });
+    let inherited =
+        std::env::var(IN_SOLDR_PID_ENV)
+            .ok()
+            .filter(|value| match value.trim().parse::<u32>() {
+                Ok(pid) => pid == current_pid || inherited_process_is_alive(pid),
+                // Unparseable: leave it for `decide`'s cooperative-signal rule.
+                Err(_) => true,
+            });
     let shim_identity = raw_args
         .first()
         .is_some_and(|argv0| crate::multicall::is_shim_identity(argv0));
@@ -593,8 +594,7 @@ mod tests {
         // All three pass the same one-hop edge marker, so one entry covers
         // them; the sentinels stay distinct because they mean different things.
         assert!(
-            SANCTIONED_EDGE_ENV_VARS
-                .contains(&soldr_core::self_relocate::SELF_SPAWN_EDGE_ENV_VAR),
+            SANCTIONED_EDGE_ENV_VARS.contains(&soldr_core::self_relocate::SELF_SPAWN_EDGE_ENV_VAR),
             "the self-spawn edge must stay sanctioned or every internal retry \
              and relocation is rejected under default-on enforcement"
         );
@@ -620,19 +620,21 @@ mod tests {
         // persistent marker presents `decide` with an *empty* edge list, and
         // an empty list rejects.
         assert_eq!(
-            decide(true, Some("123"), 456, false, false, &[], Some(Role::FrontDoor)),
+            decide(
+                true,
+                Some("123"),
+                456,
+                false,
+                false,
+                &[],
+                Some(Role::FrontDoor)
+            ),
             GuardDecision::Reject {
                 inherited_pid: 123,
                 reason: RejectReason::UnsanctionedEntry,
             }
         );
     }
-
-
-
-
-
-
 
     #[test]
     fn strict_without_marker_allows() {
