@@ -179,15 +179,18 @@ fn strip_line_comments(source: &str) -> String {
 
 fn source_filename(cx: &EarlyContext<'_>, span: Span) -> String {
     match cx.sess().source_map().span_to_filename(span) {
-        FileName::Real(name) => name
+        FileName::Real(real_filename) => real_filename
             .local_path()
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_else(|| {
-                name.path(RemapPathScopeComponents::DIAGNOSTICS)
+                real_filename
+                    .path(RemapPathScopeComponents::DIAGNOSTICS)
                     .to_string_lossy()
                     .into_owned()
             }),
-        other => other.prefer_local().to_string(),
+        filename => filename
+            .display(RemapPathScopeComponents::DIAGNOSTICS)
+            .to_string(),
     }
 }
 
