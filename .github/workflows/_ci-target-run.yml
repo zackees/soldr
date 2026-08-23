@@ -215,18 +215,28 @@ jobs:
       # was unconditional: every isolated-daemon test wrote a whole daemon
       # binary, concurrently, until the shard died on `os error 112`.
       #
-      # `RUNNER_TEMP` is on the workspace volume (`D:\a\_temp`), which also
-      # happens to be the roomier disk -- 143 GiB free against 31 GiB in the
-      # failing run. This is the same thing the Docker harness already does
-      # with `TMPDIR=/target/tmp`.
+      # `RUNNER_TEMP` is on the workspace volume (`D:\a\_temp` on win-gnu,
+      # `C:\a\_temp` on aarch64-msvc -- it tracks the workspace drive on both),
+      # which on win-gnu is also the roomier disk: 143 GiB free against 31 GiB
+      # in the failing run. Same thing the Docker harness does with
+      # `TMPDIR=/target/tmp`.
+      #
+      # A *subdirectory* of it, not `RUNNER_TEMP` itself. The workflow already
+      # keeps state there -- `TOOLCHAIN_SHIM_DIR`, the toolchain-ensure and
+      # nextest-list JSON, the run summary -- and pointing every test's scratch
+      # space at the same directory put ~2,600 tests' temp trees on top of the
+      # shims that make `cargo` resolvable. The aarch64-msvc lane then failed
+      # with `rustup could not choose a version of cargo to run`, on a lane
+      # whose volumes were already identical so it had nothing to gain.
       - name: Run complete pre-built test archive
         shell: bash
         env:
-          TMPDIR: ${{ runner.temp }}
-          TMP: ${{ runner.temp }}
-          TEMP: ${{ runner.temp }}
+          TMPDIR: ${{ runner.temp }}/target-run-scratch
+          TMP: ${{ runner.temp }}/target-run-scratch
+          TEMP: ${{ runner.temp }}/target-run-scratch
         run: |
           set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/target-run-scratch"
           test -f "$SOLDR_BIN"
           test -f "$NEXTEST_BIN"
           echo "SOLDR_BIN=$SOLDR_BIN"
