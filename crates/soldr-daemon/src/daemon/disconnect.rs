@@ -268,10 +268,10 @@ mod cancel_on_disconnect_tests {
     //!   1. When the IPC reader sees EOF, the inner future is dropped
     //!      synchronously at the `select!` boundary (proven by a
     //!      drop-tracker that flips an atomic from inside `Drop`).
-    //!   2. Detection latency is bounded — well under 500ms in practice
-    //!      and asserted here at 250ms so that a regression that
-    //!      reintroduces a wait-for-timeout style cancellation fails
-    //!      the test loudly instead of just running slow.
+    //!   2. Detection latency is bounded — see [`DETECTION_BUDGET`]. This
+    //!      is a latency bound only; the cancellation contract in (1) is
+    //!      what proves the behaviour, and a serialized probe could not
+    //!      produce a late number at all (soldr#2775).
     //!
     //! These two properties together are what makes daemon-side
     //! cancellation actually useful: if the cancellation either took
@@ -413,6 +413,14 @@ mod cancel_on_disconnect_tests {
         });
     }
 
+    /// How long disconnect detection may take before the test fails.
+    ///
+    /// soldr#2775: this used to be a bare `500` in the assertion with the
+    /// number repeated in prose in two places, and they had already drifted
+    /// -- the module doc claimed 250ms. One constant, referenced everywhere,
+    /// so the budget and the text describing it cannot disagree again.
+    const DETECTION_BUDGET: Duration = Duration::from_millis(500);
+
     /// A future that flips `aborted` to `true` if it is dropped before
     /// completing. Lets the test prove the helper actually cancelled
     /// the in-flight work, not merely stopped polling it.
@@ -509,13 +517,24 @@ mod cancel_on_disconnect_tests {
                      tested on a never-started future, which does not match \
                      production reality."
             );
+            // soldr#2775: this is a *latency* budget and nothing else. The
+            // concurrency and cancellation contracts are established by the
+            // assertions around it -- `ClientDisconnected` above, and
+            // `aborted` below -- and by the inner future's one-hour sleep: a
+            // probe that ran serially behind it would not return late, it
+            // would not return at all, and nextest would kill the test. So
+            // any finite elapsed time here already proves the probe was
+            // concurrent, and only the size of the number is in question.
             assert!(
-                elapsed < Duration::from_millis(500),
-                "disconnect detection took {elapsed:?}; the contract is \
-                     'instantly' (<500ms including the 50ms scheduled delay \
-                     before the disconnect). A regression here usually means \
-                     the helper is no longer running the disconnect probe \
-                     concurrently with the inner future."
+                elapsed < DETECTION_BUDGET,
+                "disconnect detection took {elapsed:?}, over the \
+                     {DETECTION_BUDGET:?} budget (which includes the 50ms \
+                     scheduled delay before the disconnect). This is a latency \
+                     bound, NOT the concurrency contract -- that is proven by \
+                     the assertions around this one, and returning at all rules \
+                     out a serialized probe against a 3600s inner sleep. A \
+                     loaded runner is the usual cause; see soldr#2775 before \
+                     investigating the helper."
             );
             assert!(
                 aborted.load(Ordering::SeqCst),
