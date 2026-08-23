@@ -30,6 +30,34 @@ dylint_linting::impl_pre_expansion_lint! {
     /// Inspection happens pre-expansion, so cfg'd-away code cannot hide.
     /// Integration tests, examples, benches, and inline test modules are
     /// scanned as part of the same boundary.
+    ///
+    /// ### Second-order effect: single-platform CI is sufficient
+    ///
+    /// This lint is why the other boundary lints can be trusted despite CI
+    /// linting exactly one target. Four of the six (`ban_raw_process_creation`,
+    /// `ban_raw_network_access`, `ban_raw_ipc_transport`,
+    /// `ban_raw_local_socket_name`) are **late-pass**: they see only what
+    /// actually compiles for the target being checked, and `ci.yml` runs every
+    /// dylint step under `nightly-…-x86_64-unknown-linux-gnu`. Taken alone,
+    /// that would leave `#[cfg(windows)]` code permanently unlinted by exactly
+    /// the lints guarding raw process, socket, and IPC construction.
+    ///
+    /// It does not, because this lint runs *pre-expansion* and forbids host
+    /// `#[cfg]` outside `soldr-platform`. Host-specific code can therefore only
+    /// exist inside the platform crate — which is precisely where raw platform
+    /// APIs are legitimate and where the raw-API lints already expect to find
+    /// them. There is no third place for an unlinted Windows-only `Command::new`
+    /// to live.
+    ///
+    /// Verified empirically (soldr#2758/#2761 made the toolchain installable on
+    /// Windows): building all six lints for `x86_64-pc-windows-msvc` and running
+    /// `cargo dylint --all -- --workspace --all-targets` on a Windows host
+    /// reports **zero** findings, and `crates/` outside `soldr-platform`
+    /// contains zero real `#[cfg(windows)]` attributes.
+    ///
+    /// The practical consequence: adding a second dylint lane for another host
+    /// would buy no coverage. If this lint is ever relaxed, that stops being
+    /// true and the raw-API lints silently lose a platform.
     pub BAN_PLATFORM_CFG_OUTSIDE_BOUNDARY,
     Deny,
     "keep host-platform selection inside soldr-platform's cfg_select boundary",
