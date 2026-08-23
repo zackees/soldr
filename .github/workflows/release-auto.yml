@@ -658,6 +658,17 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      # soldr#2469 2.2 moved this job's tag/release logic into
+      # `.github/scripts/release_publish.py`, but this job never checked the
+      # repository out -- it only downloads artifacts. So `Pre-create release
+      # tag` died with `can't open file '.../release_publish.py'` and took the
+      # 0.9.3 release with it, after every build and smoke lane had passed.
+      #
+      # Checkout must stay FIRST: `actions/checkout` cleans the workspace, so
+      # running it after the downloads would delete the artifacts this job
+      # exists to publish.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: dist
@@ -771,6 +782,15 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      # Same defect as the `publish` job above: `Verify all wheels visible on
+      # PyPI` runs `.github/scripts/verify_pypi_wheels.py`, which is only on
+      # disk if the repository was checked out. Fixed here too rather than one
+      # job at a time -- otherwise the 0.9.3 failure simply moves downstream
+      # and costs another full release cycle to discover.
+      #
+      # First, for the same reason: checkout cleans the workspace.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: dist
