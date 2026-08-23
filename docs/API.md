@@ -2284,6 +2284,63 @@ infrastructure-attributed diagnostic. `soldr doctor`, `soldr status`, and
 `soldr logs paths` provide the route, process, timeout, and log evidence. See
 [docs/DAEMON_TIMEOUTS.md](DAEMON_TIMEOUTS.md) for bounded recovery steps.
 
+## A restored source file can run a stale binary (soldr#2773)
+
+Restoring a source file so its modification time moves **backwards** makes
+`soldr cargo` run the previously compiled binary instead of the source on
+disk — no `Compiling` line, no warning, exit 0:
+
+```bash
+cp -p src/main.rs main.rs.bak    # backup keeps the OLD mtime
+# ... edit src/main.rs, build, observe the new behaviour ...
+mv main.rs.bak src/main.rs       # restore; mtime goes backwards
+soldr cargo run                  # runs the artifact from the EDITED source
+```
+
+The build result and the source tree disagree, and nothing says so.
+
+**Why.** Cargo decides freshness by comparing a source's mtime against its
+artifact's. A source that becomes *older* than the artifact looks fresh, so
+rustc is never invoked — which means soldr never sees the compile either.
+Nothing in soldr's cache is wrong here; the unit is skipped above soldr.
+
+**Which operations do this.** Anything that writes a file with a preserved
+timestamp rather than the current time:
+
+| Operation | Moves mtime backwards? |
+|---|---|
+| `mv` of a `cp -p` / `rsync -a` backup | **yes** |
+| `tar -x` (preserves mtimes by default) | **yes** |
+| `git checkout` of an older commit | no — sets mtime to now |
+| an editor save | no |
+
+So the exposure is concentrated in bisect-style work, stash/restore loops, and
+comparing a fix against a backup — exactly the situations where a wrong result
+is most likely to be believed.
+
+**Recovering.** Either of these forces the unit to rebuild:
+
+```bash
+touch src/main.rs                # cheapest; restores a forward mtime
+soldr cargo clean -p <package>   # discards the stale artifact
+```
+
+Disabling the compilation cache does **not** help, and it is worth knowing
+why: `ZCCACHE_DISABLE=1` (and the deprecated `--no-cache`) govern what happens
+*once cargo decides to compile a unit*. Here cargo decides not to, so the unit
+never reaches the cache in the first place. Both commands above work because
+they change cargo's freshness answer — one by making the source newer than the
+artifact, the other by removing the artifact.
+
+**Recognising it.** The tell is a build that prints *no* `Compiling` line when
+you expect one, and results that match a version of the source you no longer
+have. Diagnostics from the stale artifact are the strongest signal — a warning
+naming an import that the file on disk uses, or a test failure that the current
+source cannot produce, means the running binary corresponds to no file in the
+tree.
+
+Automatic detection is tracked by soldr#2773.
+
 ## Summary
 
 The key design rule is simple:
