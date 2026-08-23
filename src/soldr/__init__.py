@@ -25,6 +25,7 @@ import importlib
 import json
 import os
 import re
+import signal
 import shutil
 import subprocess
 import sys
@@ -595,6 +596,57 @@ def _pep517_idle_timeout(env: "dict[str, str]") -> "float | None":
     return None if value <= 0 else value
 
 
+def _describe_pep517_exit(returncode: int) -> str:
+    """Render an exit code, naming termination when that is what it is.
+
+    soldr#2742: a build killed by an external harness surfaced through uv as
+    ``Call to `soldr.build_editable` failed (exit code: 0xffffffff)`` with
+    nothing to say the process had been *terminated* rather than having
+    failed to compile. A reader cannot act on that: "killed by my hook's
+    timeout" and "your code does not compile" need opposite responses.
+
+    Two spellings, because the platforms disagree. POSIX reports a signalled
+    child as a negative return code carrying the signal number. Windows has
+    no signals here; ``TerminateProcess`` exit codes surface as large
+    unsigned values, of which ``0xffffffff`` is the one this issue observed.
+    Neither is distinguishable from a compiler exit code by magnitude alone,
+    so both are named explicitly.
+    """
+    if returncode < 0:
+        name = _signal_name(-returncode)
+        return f"terminated by {name} (exit code {returncode})"
+    if returncode >= 0xC0000000 or returncode == 0xFFFFFFFF:
+        return (
+            f"terminated (exit code {returncode} / 0x{returncode:08x}) -- "
+            "an exit code in this range is a Windows termination or fault "
+            "status, not a compiler exit code"
+        )
+    return f"exit code {returncode}"
+
+
+def _signal_name(signum: int) -> str:
+    try:
+        return signal.Signals(signum).name
+    except (ValueError, AttributeError):
+        return f"signal {signum}"
+
+
+_PEP517_TERMINATED_HINT = (
+    "soldr: the build process was terminated rather than failing on its own."
+    " Something outside soldr stopped it -- a harness or hook timeout, a"
+    " Ctrl-C, or the OOM killer. Diagnostics above (if any) are from before"
+    " that point, so a queued-daemon warning there is the last known state,"
+    " not the cause of this exit. To make soldr give up first and explain"
+    " itself, set SOLDR_COMPILE_REPLY_TIMEOUT_SECS below the caller's"
+    " timeout.\n"
+)
+
+
+def _pep517_exit_was_termination(returncode: int) -> bool:
+    """True when the child was killed rather than exiting on its own."""
+    return returncode < 0 or returncode >= 0xC0000000 or returncode == 0xFFFFFFFF
+
+
 def _write_pep517_text(sink: TextIO, text: str) -> None:
     """Write decoded child text using the parent stream's encoding."""
     if not text:
@@ -1042,7 +1094,7 @@ def _run_pep517_streaming(cmd: "list[str]", env: "dict[str, str]") -> None:
     assert returncode is not None
     if returncode != 0:
         excerpt = _pep517_failure_excerpt(tails["stdout"], tails["stderr"])
-        summary = f"\nsoldr: PEP 517 build failed (exit code {returncode})"
+        summary = f"\nsoldr: PEP 517 build failed ({_describe_pep517_exit(returncode)})"
         if excerpt:
             summary += f"; relevant diagnostics:\n{excerpt}\n"
         else:
@@ -1054,6 +1106,11 @@ def _run_pep517_streaming(cmd: "list[str]", env: "dict[str, str]") -> None:
                 " and produced no diagnostics at all -- the build failed before"
                 " it could explain why (soldr#1878).\n"
             )
+        # Applies whether or not there were diagnostics: a build killed
+        # mid-compile usually HAS output, and that output is the last
+        # known state rather than the cause (soldr#2742).
+        if _pep517_exit_was_termination(returncode):
+            summary += _PEP517_TERMINATED_HINT
         if log_path is not None:
             qualifier = "full " if relays_complete else "possibly incomplete "
             summary += f"soldr: {qualifier}PEP 517 build log: {log_path}\n"
