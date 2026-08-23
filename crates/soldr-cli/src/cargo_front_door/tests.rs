@@ -396,7 +396,7 @@ fn timeout_error_mentions_cleanup_and_recovery() {
         "timeout message should summarize cleanup: {msg}"
     );
     assert!(
-        msg.contains("soldr --no-cache cargo clean -p <crate>"),
+        msg.contains("ZCCACHE_DISABLE=1 soldr cargo clean -p <crate>"),
         "timeout message should include actionable recovery: {msg}"
     );
     assert!(
@@ -404,7 +404,7 @@ fn timeout_error_mentions_cleanup_and_recovery() {
         "timeout message should point at fail-fast compile diagnostics: {msg}"
     );
     assert!(
-        msg.contains("soldr --no-cache cargo <same args>"),
+        msg.contains("ZCCACHE_DISABLE=1 soldr cargo <same args>"),
         "timeout message should point at the cache bypass retry: {msg}"
     );
     assert!(

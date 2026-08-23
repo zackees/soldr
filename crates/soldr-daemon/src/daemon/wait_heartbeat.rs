@@ -296,7 +296,7 @@ pub(crate) fn heartbeat_message(
     format!(
         "soldr: {operation} still waiting after {}s ({deadline}); \
          if this is a wedged cache rather than slow work, \
-         `soldr --no-cache cargo ...` or ZCCACHE_DISABLE=1 bypasses the daemon",
+         `ZCCACHE_DISABLE=1 soldr cargo ...` bypasses the daemon",
         elapsed.as_secs(),
     )
 }
@@ -365,8 +365,11 @@ mod tests {
             Duration::from_secs(1800),
             Some("SOLDR_COMPILE_REPLY_TIMEOUT_SECS"),
         );
-        assert!(msg.contains("--no-cache"), "{msg}");
         assert!(msg.contains("ZCCACHE_DISABLE=1"), "{msg}");
+        // soldr#2424: `--no-cache` is deprecated and `hide = true`, so a
+        // reader cannot find it in `soldr --help`. Advice must name only the
+        // supported kill-switch.
+        assert!(!msg.contains("--no-cache"), "{msg}");
     }
 
     #[test]
