@@ -39,15 +39,32 @@ The release flow is unattended and PyPI-centric:
 1. A reviewed PR bumps the workspace version in `Cargo.toml`.
 2. That PR is merged to `main` (not currently branch-protected — see
    Current State above).
-3. `.github/workflows/release-auto.yml` triggers from that push (it is filtered to `paths: Cargo.toml`).
+3. `.github/workflows/release-auto.yml` triggers from that push. It is
+   filtered to `paths: [Cargo.toml, package.json]`, so a change touching
+   neither — including a change to the release workflow itself — does not
+   start a release, and has to be dispatched by hand.
 4. The `prepare` job derives `vX.Y.Z` from `Cargo.toml`, looks up the latest version on PyPI, and sets `should_release=true` only when the Cargo version is strictly greater. It also records `tag_exists` for the catch-up case.
 5. The release workflow does **not** re-run lint/test/e2e gates on the
    merged commit today; the only validation before publication is what
    ran on the PR itself. Restoring release-time gates is soldr#2469's
    target state.
-6. The `build` and `build-pypi` jobs produce the platform archives and hardened wheel set.
+6. The `build` matrix produces the platform archives and the hardened wheel
+   set. `smoke_macos_arm64` and `smoke_windows` then exercise those exact
+   artifacts before anything is published.
 7. The `publish` job — gated on `tag_exists == 'false'` — uses the workflow's built-in `GITHUB_TOKEN` to create the `vX.Y.Z` GitHub Release with `SHA256SUMS.txt` and a build provenance attestation.
-8. The `publish-pypi` job uploads the wheel set through `pypa/gh-action-pypi-publish` using OIDC.
+8. `verify_github_release` checks the published asset set against the target
+   contract before any other registry is touched.
+9. `publish-pypi` uploads the wheel set through `pypa/gh-action-pypi-publish`
+   using OIDC, then `publish-npm` publishes the npm package.
+10. `release-completeness` fails the run if any public surface ended up
+    incomplete, so a partial release cannot report green (soldr#2469 step 1.1).
+
+Those are `needs:` edges, not conventions, and the ordering they impose is
+worth stating plainly: **GitHub Release → verification → PyPI → npm →
+completeness gate.** No registry is written until the GitHub assets exist and
+have been verified, and the run is not green until every surface is complete.
+The v0.9.3 release exercised all of it: 8 build lanes, 3 smokes, and the five
+publication/verification jobs, ending with 17 assets and 8 wheels.
 
 The intentional authorization step is the reviewed version-bump merge. PyPI is the source of truth for "have we already shipped this," which means a Cargo bump that is ahead of PyPI but behind the latest GitHub tag still publishes to PyPI without re-creating the GitHub Release.
 
