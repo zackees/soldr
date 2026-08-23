@@ -87,6 +87,13 @@ message WireBuildLogHistoryUpdate {
 
 message WireUnit {}
 
+// soldr#2753: referenced by WireResponse.cargo_debug_warning (tag 16) since
+// v19 but never defined here, which made this file invalid protobuf. The
+// Rust type is `WireCargoDebugWarning` in wire_proto.rs.
+message WireCargoDebugWarning {
+  bool emit = 1;
+}
+
 message WireRecordTargetTouch {
   string path = 1;
   int64 unix_seconds = 2;
