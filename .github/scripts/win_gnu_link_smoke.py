@@ -113,6 +113,51 @@ def resolve_soldr(raw: str) -> str:
     return os.path.abspath(raw)
 
 
+def print_ascii(text: str) -> None:
+    """`print`, but never dependent on the console's codec.
+
+    soldr#2819: a U+2705 verdict was printed and the windows-host lane died with
+    `UnicodeEncodeError: 'charmap' codec can't encode character` -- *after* the
+    cross-build had succeeded and the PE check had passed. Python encodes stdout
+    with the locale codepage on Windows, so any non-ASCII byte is a gamble on
+    the runner's locale.
+
+    Escaping here rather than choosing an ASCII rendering at each call site: a
+    call site can be changed back, and the failure only appears on one platform
+    that no PR exercises. This holds however it is called.
+    """
+    print(text.encode("ascii", "backslashreplace").decode("ascii"))
+
+
+def render_summary(target: str, exe: str, ok: bool, reason: str, *, marks: bool) -> str:
+    """The smoke's verdict, with or without Unicode verdict marks.
+
+    soldr#2819: the verdict used U+2705 / U+274C and was `print`ed. The step
+    summary file is opened with `encoding="utf-8"` and was fine; **stdout is
+    not** -- on Windows, Python encodes it with the locale codepage, so the
+    windows-host lane died with
+
+        UnicodeEncodeError: 'charmap' codec can't encode character '\u2705'
+
+    *after* the cross-build had succeeded and the PE check had passed. The lane
+    was one `print` away from green.
+
+    Rather than reconfiguring global stdio, the marks stay in the file that
+    renders them. Nothing this script prints needs to be non-ASCII, so nothing
+    it prints depends on the console's codec.
+    """
+    if marks:
+        verdict = ("\u2705 " if ok else "\u274c ") + reason
+    else:
+        verdict = ("PASS: " if ok else "FAIL: ") + reason
+    return (
+        f"## win-gnu link smoke ({target})\n\n"
+        f"- build: `soldr --no-cache build --target {target}`\n"
+        f"- output: `{os.path.basename(exe)}`\n"
+        f"- verdict: {verdict}\n"
+    )
+
+
 def cmd_smoke(args: argparse.Namespace) -> int:
     soldr = resolve_soldr(args.soldr)
     if not os.path.isfile(soldr):
@@ -128,23 +173,18 @@ def cmd_smoke(args: argparse.Namespace) -> int:
     with tempfile.TemporaryDirectory() as tmp:
         crate = _write_fixture(tmp)
         cmd = [soldr, "--no-cache", "build", "--target", args.target]
-        print(f"$ {' '.join(cmd)}  (cwd={crate})", flush=True)
+        print_ascii(f"$ {' '.join(cmd)}  (cwd={crate})")
         proc = subprocess.run(cmd, cwd=crate, check=False)
         if proc.returncode != 0:
             print(f"FAIL: soldr build exited {proc.returncode}", file=sys.stderr)
             return proc.returncode or 1
         exe = _output_exe(crate, args.target)
         ok, reason = is_pe_amd64(exe)
-        summary = (
-            f"## win-gnu link smoke ({args.target})\n\n"
-            f"- build: `soldr --no-cache build --target {args.target}`\n"
-            f"- output: `{os.path.basename(exe)}`\n"
-            f"- verdict: {'✅ ' if ok else '❌ '}{reason}\n"
-        )
         if args.summary:
             with open(args.summary, "a", encoding="utf-8") as fh:
-                fh.write(summary)
-        print(summary)
+                fh.write(render_summary(args.target, exe, ok, reason, marks=True))
+        # ASCII to stdout: see render_summary.
+        print_ascii(render_summary(args.target, exe, ok, reason, marks=False))
         if not ok:
             print(f"FAIL: {reason}", file=sys.stderr)
             return 1
