@@ -93,11 +93,18 @@ jobs:
       # for authenticated GitHub Releases lookups (5,000/hr) instead of
       # unauthenticated (60/hr per runner IP). Follow-up to #1319 / #1323.
       SOLDR_GITHUB_TOKEN: ${{ github.token }}
+      # Building the published zccache crate bootstraps before this checkout's
+      # Rust-side exclusivity gate exists.
+      SOLDR_JOBS: "1"
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           submodules: recursive
+
+      - name: Enlarge swap (OOM headroom)
+        shell: bash
+        run: bash .github/scripts/setup_ci_swap.sh
 
       - name: Setup soldr build cache
         uses: zackees/setup-soldr@40320d277ba4946e38d4b3c02e6c7a15a29c3f3f

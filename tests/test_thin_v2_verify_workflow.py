@@ -34,3 +34,10 @@ def test_verifier_switches_binary_and_runtime_root_together() -> None:
     assert "SOLDR_BINARY=${{ github.workspace }}/target/debug/soldr" in switched
     assert "SOLDR_CACHE_DIR=${{ runner.temp }}/thin-v2-soldr" in switched
     assert "ZCCACHE_CACHE_DIR=${{ runner.temp }}/thin-v2-soldr/cache/zccache" in switched
+
+
+def test_bootstrap_serializes_the_external_zccache_unit() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert 'SOLDR_JOBS: "1"' in workflow
+    assert "Enlarge swap (OOM headroom)" in workflow
