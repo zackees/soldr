@@ -1,6 +1,17 @@
 [toolchain]
-# Dylint 6.0.1's upstream template pins this isolated matching nightly.
-# Soldr observes its rustc release + commit and includes both in cache keys.
-channel = "nightly-2026-04-16"
+# Must match the nightly every `dylints/*/rust-toolchain.toml` pins, and it is
+# not free to drift from them: soldr fetches a *prebuilt* Dylint driver keyed on
+# `<dylint-version>-<nightly>` and refuses to build one from source, so a
+# fixture on its own nightly has no driver to find.
+#
+# soldr#2817: this said `nightly-2026-04-16` while every real dylint in the tree
+# had moved to `nightly-2026-05-28`, and the acceptance lane failed every
+# scheduled run with
+#
+#   Dylint v6.0.3 is not built for this machine ... missing or unusable
+#   component: dylint-driver for nightly-2026-04-16
+#
+# `tests/test_dylint_nightly_agreement.py` now fails if they diverge again.
+channel = "nightly-2026-05-28"
 components = ["rustc-dev", "rust-src", "llvm-tools-preview"]
 profile = "minimal"
