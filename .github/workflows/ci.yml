@@ -94,7 +94,8 @@ jobs:
       DYLINT_VERSION: 6.0.3
       DYLINT_DRIVER_PATH: ${{ github.workspace }}/target/dylint/drivers
       # The published zccache crate is one large compilation unit. Give it
-      # exclusive access to the embedded compiler service on hosted runners.
+      # exclusive access both in Cargo and the embedded compiler service.
+      CARGO_BUILD_JOBS: "1"
       SOLDR_JOBS: "1"
 
     steps:

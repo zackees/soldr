@@ -85,7 +85,7 @@ jobs:
       # platforms. Bound both Cargo's producer queue and zccache's admission
       # gate at one: the published zccache crate is a single large compilation
       # unit and needs exclusive service access on the hosted runner.
-      CARGO_BUILD_JOBS: "2"
+      CARGO_BUILD_JOBS: "1"
       SOLDR_JOBS: "1"
       # Keep the developer-facing profile default responsive while reducing
       # LLVM worker fan-out for this memory-constrained CI-only build.

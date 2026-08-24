@@ -39,5 +39,6 @@ def test_verifier_switches_binary_and_runtime_root_together() -> None:
 def test_bootstrap_serializes_the_external_zccache_unit() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
+    assert 'CARGO_BUILD_JOBS: "1"' in workflow
     assert 'SOLDR_JOBS: "1"' in workflow
     assert "Enlarge swap (OOM headroom)" in workflow

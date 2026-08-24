@@ -49,6 +49,7 @@ jobs:
       # Use soldr's explicit opt-in token env so release metadata requests
       # are authenticated without weakening the generic GITHUB_TOKEN guard.
       SOLDR_GITHUB_TOKEN: ${{ github.token }}
+      CARGO_BUILD_JOBS: "1"
       SOLDR_JOBS: "1"
     strategy:
       fail-fast: false

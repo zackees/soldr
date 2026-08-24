@@ -95,6 +95,7 @@ jobs:
       SOLDR_GITHUB_TOKEN: ${{ github.token }}
       # Building the published zccache crate bootstraps before this checkout's
       # Rust-side exclusivity gate exists.
+      CARGO_BUILD_JOBS: "1"
       SOLDR_JOBS: "1"
 
     steps:
