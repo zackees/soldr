@@ -228,3 +228,19 @@ fn externalized_dependencies_are_exact_and_consistent() {
         }
     }
 }
+
+#[test]
+fn external_zccache_profiles_bound_internal_codegen_parallelism() {
+    let root = repo_root();
+    let manifest = fs::read_to_string(root.join("Cargo.toml")).expect("read workspace manifest");
+
+    for profile in ["dev", "test", "ci-nextest"] {
+        let section = format!("profile.{profile}.package.zccache");
+        let lines = read_section_lines(&root.join("Cargo.toml"), &section);
+        assert!(
+            lines.iter().any(|line| line == "codegen-units = 1"),
+            "[{section}] must keep the amalgamated zccache unit single-codegen"
+        );
+    }
+    assert!(manifest.contains("[profile.dev.package.zccache]"));
+}

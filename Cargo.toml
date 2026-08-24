@@ -176,6 +176,17 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 debug = false
 
+# The crates.io zccache package folds its upstream workspace into one large
+# rustc unit. Keep its internal LLVM fan-out to one without slowing ordinary
+# dependencies, which retain the wildcard profile above.
+[profile.dev.package.zccache]
+debug = false
+codegen-units = 1
+
+[profile.test.package.zccache]
+debug = false
+codegen-units = 1
+
 [profile.release]
 # Drop symbol table + debuginfo from the shipped binary. Biggest
 # single contributor to size (~30–50%). For deep debugging via
@@ -250,6 +261,10 @@ strip = "none"
 # without losing the soldr#1168 line-table backtrace target.
 [profile.ci-nextest.package."*"]
 debug = false
+
+[profile.ci-nextest.package.zccache]
+debug = false
+codegen-units = 1
 
 [workspace.lints.rust]
 unused_mut = "deny"
