@@ -12,7 +12,13 @@ use std::process::Command;
 
 use semver::Version;
 
-const GLOBAL_DELEGATION_ENV_VAR: &str = "SOLDR_GLOBAL_DELEGATING";
+/// Set by soldr on the probe/delegate child so a delegated invocation does
+/// not delegate again.
+///
+/// Public since soldr#2785 so the integration harness can set it too. A test
+/// wants to exercise the binary it built, and the delegation policy exists to
+/// hand work to a *different* one — see `scrub_outer_soldr_env`.
+pub const GLOBAL_DELEGATION_ENV_VAR: &str = "SOLDR_GLOBAL_DELEGATING";
 
 /// Hand this invocation to a newer globally-installed soldr when the current
 /// project opted in. Returns `Some(exit_code)` only when delegation occurred
