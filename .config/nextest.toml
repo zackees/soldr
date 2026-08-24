@@ -44,7 +44,7 @@ filter = 'binary(agent_worktree_share) + binary(cli_daemon_builds) + binary(cli_
 test-group = 'soldr-runtime'
 
 [[profile.default.overrides]]
-filter = 'binary(cli_broker_resurrection) + binary(cli_broker_routes) + binary(cli_broker_single_instance) + binary(cli_broker_status) + binary(cli_broker_stop) + binary(cli_build_alias_parity) + binary(cli_build_fetch_overlap) + binary(cli_kill_matrix) + test(=gc_list_json_reports_built_project_target_dir)'
+filter = 'binary(cli_broker_resurrection) + binary(cli_broker_routes) + binary(cli_broker_single_instance) + binary(cli_broker_status) + binary(cli_broker_stop) + binary(cli_build_alias_parity) + binary(cli_build_fetch_overlap) + binary(cli_jobs_routing) + binary(cli_kill_matrix) + test(=gc_list_json_reports_built_project_target_dir)'
 test-group = 'soldr-runtime'
 
 # soldr#2336: these three drive `isolated_soldr_command`, which scrubs every
