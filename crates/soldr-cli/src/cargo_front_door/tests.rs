@@ -2221,7 +2221,7 @@ fn compile_journal_tail_archive_drops_partial_trailing_line() {
 #[test]
 fn compile_journal_history_reuses_upstream_secret_fixture() {
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../_vender/zccache/crates/zccache-daemon-core/src/daemon/compile_journal/tests/compile_journal_env_security_v1.json"
+        "../../../../tests/fixtures/zccache/compile_journal_env_security_v1.json"
     ))
     .unwrap();
     let temp = tempfile::tempdir().unwrap();

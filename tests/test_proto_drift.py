@@ -212,55 +212,16 @@ def test_agreeing_pair_reports_nothing() -> None:
 
 
 # --------------------------------------------------------------------------
-# Cross-repo types and mirrored schemas.
+# Cross-repo types.
 # --------------------------------------------------------------------------
 
 
 def test_cross_repo_entries_name_where_the_type_lives() -> None:
-    """An exception must point at a real file, or it is just a silencer."""
+    """An exception must identify the released external implementation."""
     for messages in drift.CROSS_REPO_MESSAGES.values():
         for message, location in messages.items():
-            assert (ROOT / location).is_file(), f"{message} -> {location}"
-
-
-def test_mirrored_schema_matches_its_vendored_origin() -> None:
-    """The stale mirror is what caused soldr#2753's second drift."""
-    for proto_rel, origin_rel in drift.MIRRORED_SCHEMAS.items():
-        if not (ROOT / origin_rel).exists():
-            continue  # submodule not checked out
-        text = (ROOT / proto_rel).read_text(encoding="utf-8")
-        assert drift.mirror_problems(proto_rel, text, ROOT) == []
-
-
-def test_mirror_check_detects_a_stale_copy(tmp_path: Path) -> None:
-    origin = tmp_path / "vendor" / "schema.proto"
-    origin.parent.mkdir(parents=True)
-    origin.write_text(
-        "message M {\n  string a = 1;\n  bool added_upstream = 2;\n}\n",
-        encoding="utf-8",
-    )
-    stale = "message M {\n  string a = 1;\n}\n"
-    saved = dict(drift.MIRRORED_SCHEMAS)
-    try:
-        drift.MIRRORED_SCHEMAS.clear()
-        drift.MIRRORED_SCHEMAS["mirror.proto"] = "vendor/schema.proto"
-        problems = drift.mirror_problems("mirror.proto", stale, tmp_path)
-    finally:
-        drift.MIRRORED_SCHEMAS.clear()
-        drift.MIRRORED_SCHEMAS.update(saved)
-    assert any("out of sync" in p for p in problems)
-    assert any("added_upstream" in p for p in problems)
-
-
-def test_mirror_check_skips_when_submodule_absent(tmp_path: Path) -> None:
-    saved = dict(drift.MIRRORED_SCHEMAS)
-    try:
-        drift.MIRRORED_SCHEMAS.clear()
-        drift.MIRRORED_SCHEMAS["mirror.proto"] = "not/checked/out.proto"
-        assert drift.mirror_problems("mirror.proto", "message M {}", tmp_path) == []
-    finally:
-        drift.MIRRORED_SCHEMAS.clear()
-        drift.MIRRORED_SCHEMAS.update(saved)
+            assert message
+            assert "zccache 1.13.7" in location
 
 
 # --------------------------------------------------------------------------

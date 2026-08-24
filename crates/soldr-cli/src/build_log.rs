@@ -705,8 +705,7 @@ fn build_download_step(items: Vec<fetch_timing::FetchTiming>) -> DownloadStep {
 /// Read the compile journal tail starting at `start_offset` and map
 /// `crate_name -> "hit" | "miss" | "unknown"`. Later lines win on a
 /// duplicate crate name (last-outcome-wins). Field names mirror the
-/// zccache journal schema documented at
-/// `_vender/zccache/docs/journal-schema.md`: `outcome` (one of `hit`,
+/// zccache journal schema: `outcome` (one of `hit`,
 /// `miss`, `error`, `cached_error`, `link_hit`, `link_miss`) and
 /// `crate_name` (present only when the session opted into
 /// `--profile` journaling). Unparseable lines or lines missing

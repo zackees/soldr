@@ -59,10 +59,9 @@ for them; they are out of scope for `debug_info`.
 
 ## Local debugging without release sidecars
 
-zccache is linked into the locally built `soldr-daemon`, so build Soldr from a
-checkout whose `_vender/zccache` submodule contains the code under test. There
-is no external zccache daemon or `SOLDR_ZCCACHE_LOCAL_DIR` symbol-copy path in
-the embedded architecture.
+zccache is linked into the locally built `soldr-daemon` from the exact
+published crate version in the lockfile. There is no external zccache daemon
+or `SOLDR_ZCCACHE_LOCAL_DIR` symbol-copy path in the embedded architecture.
 
 On Windows, cached builds retain the `.pdb`: `rustc_expected_output_paths` in
 the vendored `zccache-daemon-core/src/daemon/server/rustc.rs` declares

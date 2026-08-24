@@ -5,7 +5,7 @@
 //! (`Request::Compile`); a standalone `zccache-daemon` process must
 //! never spawn. The in-process `soldr zccache` entrypoint
 //! (`src/zccache_entry.rs`) is the single gated entry into the
-//! vendored zccache CLI. This lint walks every `.rs` file under
+//! embedded zccache CLI. This lint walks every `.rs` file under
 //! `crates/soldr-cli/src/` (like `tests/no_timed_test_guard.rs`) and
 //! asserts the source-level invariants that keep the contract:
 //!

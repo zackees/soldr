@@ -20,7 +20,7 @@ interprocess = { version = "2", features = ["tokio"] }
 widestring = "1"
 prost = { workspace = true }
 
-running-process = { version = "4.10.1", git = "https://github.com/zackees/running-process.git", rev = "d45c90d278318e667652e1f16711dc79573e5ee8", default-features = false, features = ["client"] }
+running-process = { version = "=4.10.6", default-features = false, features = ["client"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
@@ -32,11 +32,11 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-appender = { workspace = true }
 console-subscriber = { workspace = true, optional = true }
-zccache = { version = "1.13.0", path = "../../_vender/zccache/crates/zccache", default-features = false, features = ["cli"] }
+zccache = { version = "=1.13.7", default-features = false, features = ["cli"] }
 
 [dev-dependencies]
 filetime = { workspace = true }
-zccache = { version = "1.13.0", path = "../../_vender/zccache/crates/zccache", default-features = false, features = ["test-support"] }
+zccache = { version = "=1.13.7", default-features = false, features = ["test-support"] }
 
 [features]
 # Opt-in tokio-console support for the daemon and embedded zccache

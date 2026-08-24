@@ -21,7 +21,8 @@ def test_verifier_restores_into_an_empty_target_without_sentinel_bypass() -> Non
 def test_verifier_runs_when_embedded_zccache_or_its_contract_tests_change() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
-    assert workflow.count('- "_vender/zccache"') == 2
+    assert workflow.count('- "Cargo.lock"') == 2
+    assert workflow.count('- "crates/soldr-cli/Cargo.toml"') == 2
     assert workflow.count('- "tests/test_thin_v2_verify_workflow.py"') == 2
 
 

@@ -178,7 +178,7 @@ impl SoldrZccacheService {
             audit,
             // soldr#1761: soldr owns the compile-concurrency limit now.
             // This used to be `ServiceLimits::default()`, i.e.
-            // `max_parallel_compiles: None`, so the vendored zccache
+            // `max_parallel_compiles: None`, so zccache
             // default always governed and the only way to influence it
             // was to get `ZCCACHE_MAX_PARALLEL_COMPILES` into the
             // long-lived daemon's inherited environment. Resolving here
@@ -538,7 +538,7 @@ mod journal_migration_tests {
     #[test]
     fn startup_scrubs_live_and_rotated_pre_redaction_journals() {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../_vender/zccache/crates/zccache-daemon-core/src/daemon/compile_journal/tests/compile_journal_env_security_v1.json"
+            "../../../tests/fixtures/zccache/compile_journal_env_security_v1.json"
         ))
         .unwrap();
         let legacy = serde_json::to_string(&fixture["legacy_record"]).unwrap();

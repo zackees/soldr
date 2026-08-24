@@ -11,7 +11,7 @@ The soldr command-line interface and its multicall aliases.
   zccache compile service.
 - `soldr zccache <args>` dispatches the allowlisted zccache CLI surface
   in-process through `zccache::cli::commands::run_with_args()` from the
-  in-tree `_vender/zccache` library dep; no zccache executable is shipped,
+  published `zccache` crate; no zccache executable is shipped,
   materialized, or spawned (soldr#1593).
 
 Toolchain shims (`cargo`, `rustc`, `rustfmt`, `clippy-driver`, `rustdoc`),

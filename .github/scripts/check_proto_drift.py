@@ -57,10 +57,10 @@ PAIRS = [
 CROSS_REPO_MESSAGES = {
     "crates/soldr-cli/src/rust_plan_manifest.proto": {
         "RustArtifactBundleManifest": (
-            "_vender/zccache/crates/zccache-artifact/src/rust_plan/proto.rs"
+            "zccache 1.13.7 amalgamated crate: artifact::rust_plan::proto"
         ),
         "RustBundledArtifact": (
-            "_vender/zccache/crates/zccache-artifact/src/rust_plan/proto.rs"
+            "zccache 1.13.7 amalgamated crate: artifact::rust_plan::proto"
         ),
     },
 }
@@ -69,11 +69,6 @@ CROSS_REPO_MESSAGES = {
 # to its origin is the whole point -- soldr#2753's second drift was this
 # mirror going stale after the upstream gained two fields, which left tags 15
 # and 16 reading as free on soldr's side.
-MIRRORED_SCHEMAS = {
-    "crates/soldr-cli/src/rust_plan_manifest.proto": (
-        "_vender/zccache/crates/zccache-artifact/src/rust_plan_manifest.proto"
-    ),
-}
 
 
 @dataclass
@@ -272,41 +267,6 @@ def undefined_references(text, defined):
     return sorted(referenced - defined)
 
 
-def mirror_problems(proto_rel, proto_text, root):
-    """Compare a mirrored schema against the vendored copy it is copied from.
-
-    Skipped when the submodule is not checked out -- a fresh clone without
-    `git submodule update --init` should not fail this check.
-    """
-    origin_rel = MIRRORED_SCHEMAS.get(proto_rel)
-    if origin_rel is None:
-        return []
-    origin_path = root / origin_rel
-    if not origin_path.exists():
-        return []
-
-    def significant(text):
-        lines = []
-        for line in strip_comments(text).splitlines():
-            stripped = line.strip()
-            if stripped:
-                lines.append(stripped)
-        return lines
-
-    ours = significant(proto_text)
-    theirs = significant(origin_path.read_text(encoding="utf-8"))
-    if ours == theirs:
-        return []
-    only_theirs = [line for line in theirs if line not in ours]
-    only_ours = [line for line in ours if line not in theirs]
-    problems = [f"this file mirrors {origin_rel} and has gone out of sync with it"]
-    for line in only_theirs:
-        problems.append(f"  upstream has, mirror lacks: {line}")
-    for line in only_ours:
-        problems.append(f"  mirror has, upstream lacks: {line}")
-    return problems
-
-
 def check_pair(proto_rel, rust_rel, root):
     proto_path = root / proto_rel
     rust_path = root / rust_rel
@@ -329,7 +289,6 @@ def check_pair(proto_rel, rust_rel, root):
     for name in elsewhere:
         proto.pop(name, None)
     problems.extend(compare(proto, rust))
-    problems.extend(mirror_problems(proto_rel, proto_text, root))
     return problems
 
 

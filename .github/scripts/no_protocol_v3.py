@@ -10,13 +10,12 @@ running-process's Hello handler) refusing below-floor peers at connect --
 never via a parallel v3 module that would let old and new wires coexist.
 
 This is a guard against reintroducing exactly the thing the design ruled
-out: a `protocol_v3` or `client_v3` module (in soldr or in the vendored
-`_vender/running-process` submodule) would mean two wire majors live side
+out: a `protocol_v3` or `client_v3` module in soldr would mean two wire majors live side
 by side, which defeats the whole point of the floor -- so this check fails
 loudly rather than let it land unnoticed in a large PR.
 
 Usage:
-    no_protocol_v3.py [--roots crates _vender/running-process/crates]
+    no_protocol_v3.py [--roots crates]
 """
 
 from __future__ import annotations
@@ -26,7 +25,7 @@ import re
 import sys
 from pathlib import Path
 
-DEFAULT_ROOTS = ("crates", "_vender/running-process/crates")
+DEFAULT_ROOTS = ("crates",)
 
 # Matches a module path, type, or identifier segment named exactly
 # `protocol_v3` or `client_v3` (case-sensitive, word-bounded so

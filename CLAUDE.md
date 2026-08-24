@@ -39,21 +39,6 @@ The split is **a surface contract, not an implementation contract**. `soldr buil
 
 Friendly target aliases (`win-x64`, `mac-arm64`, etc.) are accepted by both verbs and resolve identically.
 
-### Fresh source checkouts
-
-After cloning or creating a fresh worktree, initialize Soldr's required
-zccache submodule before invoking build commands through Soldr:
-
-```bash
-git submodule update --init _vender/zccache
-```
-
-Soldr detects this specific incomplete source-checkout state and prints the
-same remedy before the build tool can report a less actionable
-missing-manifest error. It deliberately does not initialize the submodule
-automatically, because that would perform an unexpected network fetch during a
-build.
-
 ## Build Commands
 
 ```bash
@@ -157,9 +142,9 @@ Anything not registered falls through the generic External subcommand, which res
 - **Parent-cache sharing is default-on**: For managed-zccache builds soldr seeds `ZCCACHE_PATH_REMAP=auto` on the child cargo (issue #352, Tier L1.x). zccache then normalizes absolute source paths inside compiled artifacts so two git worktrees of the same repo serve each other's cache hits via hardlinks. Escape hatch: `SOLDR_PATH_REMAP=off` suppresses the injection; setting `ZCCACHE_PATH_REMAP` yourself wins. Works for non-git checkouts too: since zccache#353, `ZCCACHE_PATH_REMAP=auto` with no `.git/` ancestor falls back to the cwd as the remap root and still injects `--remap-path-prefix=<cwd>=.`, so tarball/zip/git-archive checkouts produce path-independent artifacts and share hits (the `.git/` walk is only how the preferred worktree root is discovered).
 - **Integrity is default**: every fetch records sha256. Pins are opt-in via `SOLDR_CHECKSUMS_FILE`; `SOLDR_TRUST_MODE=strict` refuses unpinned fetches.
 - **Version independence**: Users install once and forget. CI should pin: `pip install soldr==X.Y.Z`.
-- **Local zccache development**: Edit the `_vender/zccache` submodule and
-  rebuild Soldr; the resulting Soldr binaries contain that source and its
-  symbols. `SOLDR_ZCCACHE_LOCAL_DIR` and `SOLDR_ZCCACHE_BIN` are legacy
+- **Local zccache development**: Soldr consumes an exact released zccache
+  crate. Test unreleased work upstream, publish it, then update Soldr's pin.
+  `SOLDR_ZCCACHE_LOCAL_DIR` and `SOLDR_ZCCACHE_BIN` are legacy
   compatibility names and do not replace the embedded service on the normal
   path. To deliberately test an external compiler wrapper, set
   `SOLDR_RUSTC_WRAPPER=/path/to/zccache` (or another wrapper) explicitly.
@@ -278,13 +263,21 @@ A pre-merge `cargo metadata --frozen` would also catch the trap (it refuses to r
 
 ### zccache is embedded (no managed-version pin)
 
-soldr#1368 removed the externally-downloaded managed zccache binary: the zccache CLI now ships as a compiled-in soldr `[[bin]]` built from the `_vender/zccache` submodule library dep. There is no longer a `MANAGED_ZCCACHE_VERSION` pin to keep in lockstep — the only zccache pin *in soldr's source* is the `_vender/zccache` submodule commit.
+soldr#1368 removed the externally-downloaded managed zccache binary: the
+zccache CLI ships compiled into Soldr from the exact released crate version in
+the lockfile. soldr#2765 retired the zccache and running-process submodules.
 
 > [!IMPORTANT]
 > That is true of the compiled-in library and of what `soldr status` reports.
 > It is **not** true of release staging, which still downloads a prebuilt
-> zccache keyed on the vendored crate's version — see
-> "Bumping the vendored zccache pin" below before moving the submodule.
+> zccache keyed on the locked crate version. The asset guard must pass before
+> that version can move.
+
+## Historical vendoring notes (retired by soldr#2765)
+
+> [!CAUTION]
+> The procedures below describe the retired submodule design. They are retained
+> only as historical context; current builds use published crates.
 
 ## The vendored crates ARE published — vendoring is about leading the release
 
@@ -379,6 +372,13 @@ to keep in lockstep. `zccache::core::VERSION` (the vendored crate's own
 version) is what `soldr status` / `soldr doctor` / `soldr cache` report, and
 is also the string the asset query above uses. The crgx / cargo-chef managed
 pins are unaffected.
+
+## Updating the external zccache and running-process pins
+
+Update every exact dependency requirement together, refresh the lockfile, and
+run `.github/scripts/check_zccache_asset.py`. The locked zccache version must
+have all six prebuilt platform assets in the soldr-toolchain catalogue because
+release staging uses that same version.
 
 ## Reference Docs
 

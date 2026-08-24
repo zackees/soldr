@@ -2099,16 +2099,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pyo3-build-config"
-version = "0.23.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94f6cbe86ef3bf18998d9df6e0f3fc1050a8c5efa409bf712e661a4366e010fb"
-dependencies = [
- "once_cell",
- "target-lexicon",
-]
-
-[[package]]
 name = "quinn"
 version = "0.11.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2401,6 +2391,8 @@ dependencies = [
 [[package]]
 name = "running-process"
 version = "4.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7368c4807d16fce675d432ac06b57c9012c50f3489e655d6c5df723d6aced042"
 dependencies = [
  "anyhow",
  "blake3",
@@ -2431,6 +2423,8 @@ dependencies = [
 [[package]]
 name = "running-process-platform-internal"
 version = "4.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b9fe3f046648a8f529d231663e550809fe7cad48540fe39e81b173b1e4353f2"
 dependencies = [
  "interprocess",
  "libc",
@@ -3024,12 +3018,6 @@ dependencies = [
  "libc",
  "xattr",
 ]
-
-[[package]]
-name = "target-lexicon"
-version = "0.12.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61c41af27dd6d1e27b1b16b489db798443478cef1f06a660c96db617ba5de3b1"
 
 [[package]]
 name = "tempfile"
@@ -3965,7 +3953,9 @@ dependencies = [
 
 [[package]]
 name = "zccache"
-version = "1.13.5"
+version = "1.13.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4591073101c4d3c2b17aea758d6bb33ece1b73a1ebd94b2f1827e5d92c48e099"
 dependencies = [
  "arc-swap",
  "bincode",
@@ -3984,110 +3974,24 @@ dependencies = [
  "interprocess",
  "jwalk",
  "libc",
+ "lzma-rs",
  "memmap2",
  "notify",
  "prost",
+ "prost-build",
+ "protoc-bin-vendored",
  "rayon",
  "reflink-copy",
  "regex",
  "reqwest",
  "rkyv",
- "running-process",
- "serde",
- "serde_json",
- "sysinfo",
- "tar",
- "tempfile",
- "thiserror",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "windows-sys 0.61.2",
- "zccache-artifact",
- "zccache-audit",
- "zccache-cli-core",
- "zccache-compile-trace",
- "zccache-compiler",
- "zccache-core",
- "zccache-daemon-core",
- "zccache-depgraph",
- "zccache-download",
- "zccache-download-protocol",
- "zccache-fingerprint",
- "zccache-fscache",
- "zccache-gha",
- "zccache-hash",
- "zccache-ipc",
- "zccache-platform",
- "zccache-protocol",
- "zccache-symbols",
- "zccache-watcher",
-]
-
-[[package]]
-name = "zccache-artifact"
-version = "1.13.5"
-dependencies = [
- "bincode",
- "blake3",
- "dashmap",
- "flate2",
- "fs2",
- "prost",
- "rayon",
- "reflink-copy",
- "serde",
- "serde_json",
- "tar",
- "tempfile",
- "thiserror",
- "tokio",
- "tracing",
- "zccache-core",
- "zccache-gha",
- "zccache-hash",
- "zccache-platform",
-]
-
-[[package]]
-name = "zccache-audit"
-version = "1.13.5"
-dependencies = [
- "serde",
- "serde_json",
- "zccache-core",
-]
-
-[[package]]
-name = "zccache-cli-core"
-version = "1.13.5"
-dependencies = [
- "bincode",
- "blake3",
- "bytes",
- "clap",
- "crash-handler",
- "dashmap",
- "filetime",
- "flate2",
- "fs2",
- "futures",
- "interprocess",
- "jwalk",
- "lzma-rs",
- "memmap2",
- "prost",
- "rayon",
- "regex",
- "reqwest",
  "running-process",
  "ruzstd",
  "serde",
  "serde_json",
  "sevenz-rust",
  "sha2",
+ "sysinfo",
  "tar",
  "tempfile",
  "thiserror",
@@ -4095,269 +3999,9 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
- "zccache-artifact",
- "zccache-audit",
- "zccache-compile-trace",
- "zccache-compiler",
- "zccache-core",
- "zccache-daemon-core",
- "zccache-depgraph",
- "zccache-download",
- "zccache-download-protocol",
- "zccache-fingerprint",
- "zccache-gha",
- "zccache-hash",
- "zccache-ipc",
- "zccache-platform",
- "zccache-protocol",
- "zccache-symbols",
- "zip",
-]
-
-[[package]]
-name = "zccache-compile-trace"
-version = "1.13.5"
-dependencies = [
- "zccache-audit",
-]
-
-[[package]]
-name = "zccache-compiler"
-version = "1.13.5"
-dependencies = [
- "clang",
- "serde_json",
- "thiserror",
- "zccache-core",
- "zccache-hash",
- "zccache-platform",
-]
-
-[[package]]
-name = "zccache-core"
-version = "1.13.5"
-dependencies = [
- "crash-handler",
- "serde",
- "serde_json",
- "thiserror",
- "tracing",
- "zccache-platform",
-]
-
-[[package]]
-name = "zccache-daemon-core"
-version = "1.13.5"
-dependencies = [
- "arc-swap",
- "bincode",
- "blake3",
- "bytes",
- "clang",
- "clap",
- "console-subscriber",
- "crash-handler",
- "dashmap",
- "filetime",
- "fs2",
- "globset",
- "jwalk",
- "memmap2",
- "notify",
- "prost",
- "rayon",
- "reflink-copy",
- "regex",
- "rkyv",
- "running-process",
- "serde",
- "serde_json",
- "sysinfo",
- "tempfile",
- "thiserror",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
  "uuid",
- "zccache-artifact",
- "zccache-audit",
- "zccache-compile-trace",
- "zccache-compiler",
- "zccache-core",
- "zccache-depgraph",
- "zccache-fingerprint",
- "zccache-fscache",
- "zccache-hash",
- "zccache-ipc",
- "zccache-platform",
- "zccache-protocol",
- "zccache-watcher",
-]
-
-[[package]]
-name = "zccache-depgraph"
-version = "1.13.5"
-dependencies = [
- "bincode",
- "blake3",
- "dashmap",
- "rayon",
- "rkyv",
- "serde",
- "serde_json",
- "thiserror",
- "tracing",
- "uuid",
- "zccache-compiler",
- "zccache-core",
- "zccache-hash",
- "zccache-platform",
-]
-
-[[package]]
-name = "zccache-download"
-version = "1.13.5"
-dependencies = [
- "blake3",
- "futures",
- "reqwest",
- "serde",
- "thiserror",
- "tokio",
- "tokio-util",
- "zccache-core",
-]
-
-[[package]]
-name = "zccache-download-protocol"
-version = "1.13.5"
-dependencies = [
- "bincode",
- "bytes",
- "serde",
- "zccache-core",
- "zccache-download",
- "zccache-platform",
-]
-
-[[package]]
-name = "zccache-fingerprint"
-version = "1.13.5"
-dependencies = [
- "fs2",
- "globset",
- "jwalk",
- "pyo3-build-config",
- "rayon",
- "serde",
- "serde_json",
- "thiserror",
- "tracing",
- "zccache-core",
- "zccache-hash",
-]
-
-[[package]]
-name = "zccache-fscache"
-version = "1.13.5"
-dependencies = [
- "bincode",
- "dashmap",
- "rayon",
- "serde",
- "tokio",
- "tracing",
- "zccache-core",
- "zccache-hash",
-]
-
-[[package]]
-name = "zccache-gha"
-version = "1.13.5"
-dependencies = [
- "reqwest",
- "serde",
- "sha2",
- "thiserror",
- "tracing",
-]
-
-[[package]]
-name = "zccache-hash"
-version = "1.13.5"
-dependencies = [
- "blake3",
- "memmap2",
- "serde",
-]
-
-[[package]]
-name = "zccache-ipc"
-version = "1.13.5"
-dependencies = [
- "bytes",
- "dashmap",
- "interprocess",
- "prost",
- "running-process",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "tracing",
- "zccache-core",
- "zccache-platform",
- "zccache-protocol",
-]
-
-[[package]]
-name = "zccache-platform"
-version = "1.13.5"
-dependencies = [
- "crash-handler",
- "interprocess",
- "libc",
- "tokio",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "zccache-protocol"
-version = "1.13.5"
-dependencies = [
- "bincode",
- "bytes",
- "prost",
- "prost-build",
- "protoc-bin-vendored",
- "running-process",
- "serde",
- "thiserror",
- "zccache-core",
- "zccache-depgraph",
-]
-
-[[package]]
-name = "zccache-symbols"
-version = "1.13.5"
-dependencies = [
- "zccache-core",
-]
-
-[[package]]
-name = "zccache-watcher"
-version = "1.13.5"
-dependencies = [
- "globset",
- "jwalk",
- "notify",
- "pyo3-build-config",
- "rayon",
- "tokio",
- "tracing",
- "zccache-core",
- "zccache-fscache",
+ "zip",
 ]
 
 [[package]]

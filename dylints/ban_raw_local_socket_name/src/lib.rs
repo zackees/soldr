@@ -75,12 +75,8 @@ fn filename_is_in_scope(filename: &str) -> bool {
         || filename.starts_with("crates/soldr-cli/src/")
         || filename.contains("/crates/soldr-daemon/src/")
         || filename.starts_with("crates/soldr-daemon/src/");
-    let is_running_process = filename
-        .contains("/_vender/running-process/crates/running-process/src/")
-        || filename.starts_with("_vender/running-process/crates/running-process/src/");
     let is_test_module = filename.ends_with("/tests.rs") || filename.contains("/tests/");
-    let is_canonical_boundary = filename.ends_with("/broker/server/singleton_bind.rs");
-    !is_test_module && (is_soldr || (is_running_process && !is_canonical_boundary))
+    !is_test_module && is_soldr
 }
 
 fn source_filename(cx: &LateContext<'_>, span: rustc_span::Span) -> String {
@@ -106,14 +102,11 @@ fn ui() {
 }
 
 #[test]
-fn scope_covers_running_process_production_but_not_its_raw_conversion_fixtures() {
+fn scope_covers_soldr_production_but_not_test_fixtures() {
     assert!(filename_is_in_scope(
-        "/src/_vender/running-process/crates/running-process/src/broker/client_v2.rs"
+        "/src/crates/soldr-daemon/src/daemon/server.rs"
     ));
     assert!(!filename_is_in_scope(
-        "/src/_vender/running-process/crates/running-process/src/broker/session_relay/tests.rs"
-    ));
-    assert!(!filename_is_in_scope(
-        "/src/_vender/running-process/crates/running-process/src/broker/server/singleton_bind.rs"
+        "/src/crates/soldr-daemon/src/daemon/tests.rs"
     ));
 }
