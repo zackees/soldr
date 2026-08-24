@@ -39,4 +39,10 @@ def test_ci_enforces_the_thousand_line_ceiling() -> None:
         encoding="utf-8"
     )
     assert "1000-line production ceiling" in workflow
-    assert "python3 .github/scripts/loc_ceiling.py" in workflow
+    # soldr#2763: the Lint job runs its guards through `uv run --python 3.13`
+    # so the interpreter is pinned rather than inherited from the runner image.
+    assert ".github/scripts/loc_ceiling.py" in workflow
+    assert (
+        "uv run --no-project --python 3.13 python .github/scripts/loc_ceiling.py"
+        in workflow
+    )

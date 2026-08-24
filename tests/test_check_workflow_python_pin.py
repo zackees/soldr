@@ -270,3 +270,40 @@ jobs:
     # The message has to say what to do; a guard that only says "no" gets
     # worked around rather than satisfied.
     assert "setup-uv" in out
+
+
+def test_uv_must_be_installed_before_it_is_used(guard, tmp_path):
+    """A job that sets up uv *after* using it is not pinned, it is broken.
+
+    soldr#2763: the guard passed a Lint job whose first `uv run` was step 1
+    while `setup-uv` was step 8 -- every one of those steps would have died on
+    `uv: command not found`. Reporting that job as pinned is worse than not
+    checking, because it certifies a job that cannot run.
+    """
+    write_workflow(
+        tmp_path,
+        "late.yml",
+        f"""
+jobs:
+  build:
+    steps:
+      - run: uv run --python 3.13 python ci/first.py
+      - uses: {SETUP_UV}
+""",
+    )
+    assert guard.unpinned_jobs(tmp_path) == {("late.yml", "build")}
+
+
+def test_uv_installed_before_use_is_accepted(guard, tmp_path):
+    write_workflow(
+        tmp_path,
+        "early.yml",
+        f"""
+jobs:
+  build:
+    steps:
+      - uses: {SETUP_UV}
+      - run: uv run --python 3.13 python ci/first.py
+""",
+    )
+    assert guard.unpinned_jobs(tmp_path) == set()
