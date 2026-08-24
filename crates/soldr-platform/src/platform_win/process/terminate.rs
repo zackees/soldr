@@ -43,23 +43,59 @@ pub fn terminate_tree(child: &mut Child) -> io::Result<TreeKill> {
     // Windows cannot recycle `root` out from under the walk.
     let enumerated = descendants_of(root);
 
+    // Every descendant ever seen, with the creation time it had when first
+    // seen.
+    //
+    // soldr#2806, second half: each sweep re-derives reachability from a fresh
+    // snapshot, and a process that has exited is no longer in that snapshot. So
+    // once the intermediate `cmd.exe` dies, its surviving `ping.exe` grandchild
+    // still names it as parent but that parent is not a node any more -- the
+    // walk from `root` cannot reach the orphan, the sweep reports `Clear`, and
+    // `terminate_tree` returns `TreeKilled` while the grandchild runs on. That
+    // is precisely the case the verification loop was added to catch, and the
+    // one observed in #2806.
+    //
+    // Remembering the set makes the orphan keep being watched after the link to
+    // it is gone.
+    //
+    // Windows reuses pids freely, so a remembered pid is not an identity on its
+    // own -- the identity is (pid, creation time), the same pairing
+    // `broker_lease`'s start token stands for. Captured here, while the
+    // descendants are still alive to be asked.
+    //
+    // A descendant whose creation time cannot be read is deliberately **not**
+    // remembered. Without a captured identity there is no way to prove later
+    // that the pid still holds the same process, and acting on it anyway is how
+    // a stranger gets killed. It is still terminated below and still found by
+    // the walk while it remains reachable; only the after-the-link-is-gone
+    // guarantee is given up, which is the honest trade.
+    let mut known: Vec<(u32, u64)> = enumerated
+        .iter()
+        .flatten()
+        .filter_map(|pid| creation_time(*pid).map(|started| (*pid, started)))
+        .collect();
+
     if let Some(descendants) = &enumerated {
         // Leaves first. Killing a parent before its child is exactly the
         // orphaning this function exists to avoid -- and while the snapshot
         // already pins the set, bottom-up also stops a shell from spawning one
         // more child in the window before its own termination lands.
+        //
+        // No identity constraint: these came from a snapshot taken moments ago,
+        // which is the evidence. The constraint applies to remembered pids,
+        // whose snapshot has since gone stale.
         for pid in descendants.iter().rev() {
-            terminate_descendant(*pid, root);
+            terminate_descendant(*pid, root, None);
         }
     }
 
     child.kill()?;
 
-    let Some(_) = enumerated else {
+    if enumerated.is_none() {
         // The snapshot failed, so descendants (if any) were never named. Report
         // the weaker guarantee rather than claiming a tree kill we did not do.
         return Ok(TreeKill::ProcessKilled);
-    };
+    }
 
     // Verification sweep. TerminateProcess is asynchronous, and a shell can
     // spawn one more child in the window between the snapshot and its own
@@ -67,7 +103,7 @@ pub fn terminate_tree(child: &mut Child) -> io::Result<TreeKill> {
     // whatever is still standing until nothing is, or the budget expires.
     let deadline = std::time::Instant::now() + VERIFY_BUDGET;
     loop {
-        let sweep = classify_sweep(surviving_descendants(root));
+        let sweep = classify_sweep(surviving_descendants(root, &known));
         let survivors = match sweep {
             Sweep::Clear => return Ok(TreeKill::TreeKilled),
             // The snapshot failed, so this sweep saw nothing -- which is not the
@@ -77,6 +113,9 @@ pub fn terminate_tree(child: &mut Child) -> io::Result<TreeKill> {
             Sweep::Unknown => Vec::new(),
             Sweep::Survivors(pids) => pids,
         };
+        // A shell can spawn one more child in the window before its own
+        // termination lands, so the set grows as well as shrinks.
+        remember(&mut known, &survivors);
         if std::time::Instant::now() >= deadline {
             // Out of budget with survivors still live, or never able to look.
             // Say so: the whole point of soldr#2605 is that this case used to
@@ -84,10 +123,51 @@ pub fn terminate_tree(child: &mut Child) -> io::Result<TreeKill> {
             return Ok(TreeKill::ProcessKilled);
         }
         for pid in survivors.iter().rev() {
-            terminate_descendant(*pid, root);
+            terminate_descendant(*pid, root, recorded_start(&known, *pid));
         }
         std::thread::sleep(VERIFY_POLL);
     }
+}
+
+/// Track any pid not already known, stamping it with its creation time.
+///
+/// A pid whose creation time cannot be read is skipped, for the reason
+/// `terminate_tree` gives: an identity that was never captured cannot be
+/// checked later.
+fn remember(known: &mut Vec<(u32, u64)>, pids: &[u32]) {
+    for pid in pids {
+        if known.iter().any(|(tracked, _)| tracked == pid) {
+            continue;
+        }
+        if let Some(started) = creation_time(*pid) {
+            known.push((*pid, started));
+        }
+    }
+}
+
+/// The creation time captured for `pid`, or `None` if it is not remembered.
+fn recorded_start(known: &[(u32, u64)], pid: u32) -> Option<u64> {
+    known
+        .iter()
+        .find(|(tracked, _)| *tracked == pid)
+        .map(|(_, started)| *started)
+}
+
+/// Is the process at `pid` now the same one whose identity we captured?
+///
+/// Windows reuses pids freely and `known` deliberately outlives the processes
+/// in it, so `pid` alone proves nothing. `(pid, creation time)` is the identity
+/// -- the same pairing `broker_lease`'s start token stands for, at
+/// `GetProcessTimes` resolution rather than sysinfo's whole seconds.
+///
+/// **An unreadable time answers `false`.** It means the process exited, or
+/// refuses the query, and neither establishes that this is still our
+/// descendant. The consequence of a wrong `true` here is terminating an
+/// unrelated process that happens to hold a recycled pid; the consequence of a
+/// wrong `false` is reporting `ProcessKilled` instead of `TreeKilled`, which is
+/// the weaker claim this module already makes when it cannot verify.
+fn is_same_process(recorded: u64, current: Option<u64>) -> bool {
+    current == Some(recorded)
 }
 
 /// What one verification sweep established.
@@ -137,13 +217,47 @@ const VERIFY_POLL: std::time::Duration = std::time::Duration::from_millis(25);
 /// Private on purpose: the cross-platform facade exports only the four
 /// termination entry points, and adding a fifth would oblige Linux and macOS
 /// to grow an equivalent for a diagnostic only Windows needs today.
-fn surviving_descendants(root: u32) -> Option<Vec<u32>> {
-    Some(
-        descendants_of(root)?
-            .into_iter()
-            .filter(|pid| crate::process::inspect::is_alive(*pid))
-            .collect(),
-    )
+fn surviving_descendants(root: u32, known: &[(u32, u64)]) -> Option<Vec<u32>> {
+    let reachable = descendants_of(root)?;
+    Some(live_descendants(
+        &reachable,
+        known,
+        |pid| crate::process::inspect::is_alive(pid),
+        creation_time,
+    ))
+}
+
+/// Which candidates are still alive *and* still the processes we tracked.
+///
+/// Split from the snapshot for the same reason `collect_descendants` is: the
+/// judgement is here, and it has to be testable without spawning a real tree.
+/// The probes are injected so a test can describe a host -- including the case
+/// that matters, a remembered pid the walk can no longer reach.
+///
+/// The two sources are **not** treated alike, and that asymmetry is the point:
+///
+/// - `reachable` came from a snapshot taken moments ago, which is itself the
+///   evidence that these are descendants. Liveness is all that is asked.
+/// - `known` is a memory of a snapshot that has since gone stale, so a pid from
+///   it must still prove it holds the same process. Windows recycles pids, and
+///   a recycled one would otherwise be reported as a survivor -- blocking
+///   `Clear` forever and aiming a kill at a stranger.
+fn live_descendants(
+    reachable: &[u32],
+    known: &[(u32, u64)],
+    alive: impl Fn(u32) -> bool,
+    started_now: impl Fn(u32) -> Option<u64>,
+) -> Vec<u32> {
+    let mut survivors: Vec<u32> = reachable.iter().copied().filter(|pid| alive(*pid)).collect();
+    for (pid, recorded) in known {
+        if survivors.contains(pid) || !alive(*pid) {
+            continue;
+        }
+        if is_same_process(*recorded, started_now(*pid)) {
+            survivors.push(*pid);
+        }
+    }
+    survivors
 }
 
 /// Terminate one descendant, refusing pids that cannot belong to the root tree.
@@ -153,11 +267,21 @@ fn surviving_descendants(root: u32) -> Option<Vec<u32>> {
 /// descendant cannot have started before its ancestor, so a candidate that
 /// predates `root` is a recycled pid and is left alone. `taskkill` performed no
 /// such check.
-fn terminate_descendant(pid: u32, root: u32) {
+fn terminate_descendant(pid: u32, root: u32, expected_start: Option<u64>) {
     if pid == root || pid == 0 {
         return;
     }
-    if let (Some(child_started), Some(root_started)) = (creation_time(pid), creation_time(root)) {
+    let current_start = creation_time(pid);
+    // A remembered pid must still prove its identity. Windows recycles pids,
+    // and `known` outlives the processes in it, so without this the kill can
+    // land on whatever holds the pid now (soldr#2806). Callers pass `None` for
+    // pids taken from a fresh snapshot, where the snapshot is the evidence.
+    if let Some(recorded) = expected_start {
+        if !is_same_process(recorded, current_start) {
+            return;
+        }
+    }
+    if let (Some(child_started), Some(root_started)) = (current_start, creation_time(root)) {
         if child_started < root_started {
             return;
         }
