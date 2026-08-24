@@ -43,17 +43,31 @@ fn xwin_msvc_cflags(cache_dir: &std::path::Path) -> String {
         .join(" ")
 }
 
-/// Build the rustc lld-link + dynamic CRT flags and
-/// `-C link-arg=/LIBPATH:<path>` chain for the xwin-cache. Explicitly
-/// select the UCRT/VCRuntime import libraries: the same bundle also ships
-/// static `libucrt.lib`, which cannot satisfy `__declspec(dllimport)`
-/// references emitted by clang-cl's default `/MD` mode.
+/// Build the rustc lld-link + CRT flags and `-C link-arg=/LIBPATH:<path>`
+/// chain for the xwin-cache.
+///
+/// By default this selects the UCRT/VCRuntime **import** libraries: the same
+/// bundle also ships static `libucrt.lib`, which cannot satisfy
+/// `__declspec(dllimport)` references emitted by clang-cl's default `/MD`
+/// mode.
+///
+/// When `linkage` is [`CrtLinkage::Static`] the choice is mirrored — the
+/// static archives are selected and the import libraries excluded. soldr#2794:
+/// the dynamic set used to be unconditional, so a caller passing
+/// `-C target-feature=+crt-static` got rustc's `/defaultlib:libcmt` *and*
+/// soldr's import libraries on one link line, and lld-link failed on duplicate
+/// symbols. The linkage is a policy that belongs to the caller; only the
+/// linker flavor and the library search paths are soldr's plumbing.
 ///
 /// The xwin tarball lays libs out per-arch as `crt/lib/<arch>/` and
 /// `sdk/lib/{um,ucrt}/<arch>/` where `<arch>` is the MS arch name
 /// (`x64`, `arm64`) — matching xwin's `--preserve-ms-arch-notation`
 /// flag in the upstream recipe.
-fn xwin_msvc_link_args(cache_dir: &std::path::Path, target_triple: &str) -> String {
+fn xwin_msvc_link_args(
+    cache_dir: &std::path::Path,
+    target_triple: &str,
+    linkage: CrtLinkage,
+) -> String {
     if !target_triple.ends_with("-pc-windows-msvc") {
         return String::new();
     }
@@ -64,16 +78,35 @@ fn xwin_msvc_link_args(cache_dir: &std::path::Path, target_triple: &str) -> Stri
     } else {
         return String::new();
     };
-    let mut args = vec![
-        "-C".to_string(),
-        "linker-flavor=lld-link".to_string(),
-        "-C".to_string(),
-        "link-arg=/NODEFAULTLIB:libucrt.lib".to_string(),
-        "-C".to_string(),
-        "link-arg=/DEFAULTLIB:ucrt.lib".to_string(),
-        "-C".to_string(),
-        "link-arg=/DEFAULTLIB:vcruntime.lib".to_string(),
-    ];
+    // Exclude the CRT we are not using and name the one we are, for both the
+    // UCRT and the VCRuntime. Naming without excluding is not enough: the
+    // unwanted archive still arrives via another object's default-lib
+    // directive, which is how the duplicate-symbol failure in soldr#2794
+    // reached the linker in the first place.
+    //
+    // The dynamic arm is byte-for-byte what soldr shipped before soldr#2794.
+    // Widening it (say, adding a symmetric `/NODEFAULTLIB:libvcruntime.lib`)
+    // would be harmless in principle and is still a change to every existing
+    // consumer's link line, which the issue explicitly rules out.
+    let crt_args: &[&str] = match linkage {
+        CrtLinkage::Dynamic => &[
+            "link-arg=/NODEFAULTLIB:libucrt.lib",
+            "link-arg=/DEFAULTLIB:ucrt.lib",
+            "link-arg=/DEFAULTLIB:vcruntime.lib",
+        ],
+        CrtLinkage::Static => &[
+            "link-arg=/NODEFAULTLIB:ucrt.lib",
+            "link-arg=/NODEFAULTLIB:vcruntime.lib",
+            "link-arg=/DEFAULTLIB:libucrt.lib",
+            "link-arg=/DEFAULTLIB:libvcruntime.lib",
+        ],
+    };
+    let mut args = vec!["-C".to_string(), "linker-flavor=lld-link".to_string()];
+    args.extend(
+        crt_args
+            .iter()
+            .flat_map(|arg| ["-C".to_string(), (*arg).to_string()]),
+    );
     args.extend(
         arch_dirs
             .iter()

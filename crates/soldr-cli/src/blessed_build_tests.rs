@@ -388,7 +388,7 @@ fn xwin_link_args_picks_correct_arch_subdir() {
         std::fs::create_dir_all(root.join("sdk").join("lib").join("ucrt").join(arch)).unwrap();
     }
 
-    let aarch64 = xwin_msvc_link_args(root, "aarch64-pc-windows-msvc");
+    let aarch64 = xwin_msvc_link_args(root, "aarch64-pc-windows-msvc", CrtLinkage::Dynamic);
     assert!(
         aarch64.contains("/arm64") || aarch64.contains("\\arm64"),
         "aarch64 must hit arm64 subdir: {aarch64}"
@@ -398,7 +398,7 @@ fn xwin_link_args_picks_correct_arch_subdir() {
         "aarch64 link args leaked x64 path: {aarch64}"
     );
 
-    let x86 = xwin_msvc_link_args(root, "x86_64-pc-windows-msvc");
+    let x86 = xwin_msvc_link_args(root, "x86_64-pc-windows-msvc", CrtLinkage::Dynamic);
     assert!(
         x86.contains("/x64") || x86.contains("\\x64"),
         "x86_64 must hit x64 subdir: {x86}"
@@ -413,7 +413,7 @@ fn xwin_link_args_picks_correct_arch_subdir() {
 fn xwin_link_args_unknown_arch_returns_empty() {
     let tmp = tempfile::tempdir().expect("tmpdir");
     // Non-MSVC triple → empty link args.
-    let out = xwin_msvc_link_args(tmp.path(), "x86_64-unknown-linux-gnu");
+    let out = xwin_msvc_link_args(tmp.path(), "x86_64-unknown-linux-gnu", CrtLinkage::Dynamic);
     assert!(
         out.is_empty(),
         "non-msvc triple must yield empty link args, got: {out:?}"
@@ -428,7 +428,7 @@ fn xwin_link_args_accepts_cargo_xwin_arch_names() {
     std::fs::create_dir_all(root.join("sdk").join("lib").join("um").join("x86_64")).unwrap();
     std::fs::create_dir_all(root.join("sdk").join("lib").join("ucrt").join("x86_64")).unwrap();
 
-    let out = xwin_msvc_link_args(root, "x86_64-pc-windows-msvc");
+    let out = xwin_msvc_link_args(root, "x86_64-pc-windows-msvc", CrtLinkage::Dynamic);
     assert!(
         out.contains("/x86_64") || out.contains("\\x86_64"),
         "cargo-xwin-style x86_64 lib dirs must be accepted: {out}"
@@ -448,7 +448,7 @@ fn xwin_link_args_accepts_cargo_xwin_aarch64_arch_names() {
     std::fs::create_dir_all(root.join("sdk").join("lib").join("um").join("aarch64")).unwrap();
     std::fs::create_dir_all(root.join("sdk").join("lib").join("ucrt").join("aarch64")).unwrap();
 
-    let out = xwin_msvc_link_args(root, "aarch64-pc-windows-msvc");
+    let out = xwin_msvc_link_args(root, "aarch64-pc-windows-msvc", CrtLinkage::Dynamic);
     assert!(
         out.contains("/aarch64") || out.contains("\\aarch64"),
         "cargo-xwin-style aarch64 lib dirs must be accepted: {out}"
@@ -469,7 +469,7 @@ fn xwin_link_args_format_uses_c_link_arg_pairs() {
     let root = tmp.path();
     std::fs::create_dir_all(root.join("crt").join("lib").join("arm64")).unwrap();
 
-    let out = xwin_msvc_link_args(root, "aarch64-pc-windows-msvc");
+    let out = xwin_msvc_link_args(root, "aarch64-pc-windows-msvc", CrtLinkage::Dynamic);
     let tokens = out.split_whitespace().collect::<Vec<_>>();
     let libpath_indexes = tokens
         .iter()
@@ -492,7 +492,7 @@ fn xwin_link_args_select_dynamic_crt_import_libraries() {
     std::fs::create_dir_all(root.join("crt").join("lib").join("arm64")).unwrap();
     std::fs::create_dir_all(root.join("sdk").join("lib").join("ucrt").join("arm64")).unwrap();
 
-    let out = xwin_msvc_link_args(root, "aarch64-pc-windows-msvc");
+    let out = xwin_msvc_link_args(root, "aarch64-pc-windows-msvc", CrtLinkage::Dynamic);
     assert!(out.contains("linker-flavor=lld-link"), "{out}");
     assert!(out.contains("link-arg=/NODEFAULTLIB:libucrt.lib"), "{out}");
     assert!(out.contains("link-arg=/DEFAULTLIB:ucrt.lib"), "{out}");
