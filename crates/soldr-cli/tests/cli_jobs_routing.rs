@@ -39,7 +39,9 @@ fn run(args: &[&str], env: Option<(&str, &str)>) -> String {
     let dir = fixture();
     let mut cmd = Command::new(common::soldr_bin());
     common::scrub_outer_soldr_env(&mut cmd);
-    cmd.args(args).current_dir(&dir).env("SOLDR_ALLOW_UNPINNED", "1");
+    cmd.args(args)
+        .current_dir(&dir)
+        .env("SOLDR_ALLOW_UNPINNED", "1");
     if let Some((k, v)) = env {
         cmd.env(k, v);
     }
@@ -81,7 +83,10 @@ fn long_jobs_is_soldrs_at_every_position() {
 #[test]
 fn short_j_reaches_cargo() {
     let text = run(&["build", "-j", "notanumber"], None);
-    assert!(rejected_by_cargo(&text), "`-j` must reach cargo; got:\n{text}");
+    assert!(
+        rejected_by_cargo(&text),
+        "`-j` must reach cargo; got:\n{text}"
+    );
 }
 
 #[test]
@@ -107,7 +112,10 @@ fn cargo_build_jobs_env_reaches_cargo() {
 // between the two surfaces visible.
 #[test]
 fn cargo_front_door_honours_the_env_too() {
-    let text = run(&["cargo", "build"], Some(("CARGO_BUILD_JOBS", "notanumber")));
+    let text = run(
+        &["cargo", "build"],
+        Some(("CARGO_BUILD_JOBS", "notanumber")),
+    );
     assert!(
         rejected_by_cargo(&text),
         "`soldr cargo build` must honour CARGO_BUILD_JOBS; got:\n{text}"
