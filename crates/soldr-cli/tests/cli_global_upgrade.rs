@@ -48,6 +48,12 @@ fn project_policy_delegates_to_newer_global_soldr() {
     write_fake_script(&global_soldr, &fake_global_soldr(&log));
 
     let output = isolated_soldr_command()
+        // soldr#2785: the harness disables the delegation probe for every
+        // other fixture. This file is the policy's own coverage, so it opts
+        // back in -- otherwise the two negative tests below would pass
+        // vacuously, asserting "no delegation" while the harness had turned
+        // delegation off entirely.
+        .env_remove(soldr_cli::global_upgrade::GLOBAL_DELEGATION_DISABLE_ENV_VAR)
         .arg("status")
         .current_dir(&fixture)
         .env("PATH", prepend_to_path(&global_bin_dir))
@@ -101,6 +107,12 @@ fn broker_status_in_opted_in_checkout_neither_probes_nor_spawns() {
     std::fs::create_dir_all(&home).expect("create isolated home");
 
     let output = isolated_soldr_command()
+        // soldr#2785: the harness disables the delegation probe for every
+        // other fixture. This file is the policy's own coverage, so it opts
+        // back in -- otherwise the two negative tests below would pass
+        // vacuously, asserting "no delegation" while the harness had turned
+        // delegation off entirely.
+        .env_remove(soldr_cli::global_upgrade::GLOBAL_DELEGATION_DISABLE_ENV_VAR)
         .args(["broker", "status"])
         .current_dir(&fixture)
         .env("PATH", prepend_to_path(&global_bin_dir))
@@ -180,6 +192,12 @@ fn wrapper_invocations_never_delegate_to_newer_global_soldr() {
     write_fake_script(&fake_rustc, body);
 
     let output = isolated_soldr_command()
+        // soldr#2785: the harness disables the delegation probe for every
+        // other fixture. This file is the policy's own coverage, so it opts
+        // back in -- otherwise the two negative tests below would pass
+        // vacuously, asserting "no delegation" while the harness had turned
+        // delegation off entirely.
+        .env_remove(soldr_cli::global_upgrade::GLOBAL_DELEGATION_DISABLE_ENV_VAR)
         .arg(&fake_rustc)
         .arg("--print")
         .arg("sysroot")

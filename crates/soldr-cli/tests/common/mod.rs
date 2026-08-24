@@ -280,6 +280,29 @@ pub(crate) fn scrub_outer_soldr_env(command: &mut Command) -> &mut Command {
         // CI flips SOLDR_REENTRANCY_GUARD=strict (soldr#2566). Scrub both.
         .env_remove(soldr_cli::reentrancy_guard::IN_SOLDR_PID_ENV)
         .env_remove(soldr_cli::reentrancy_guard::GUARD_MODE_ENV)
+        // soldr#2785: never let a fixture delegate to a globally-installed
+        // soldr. `global_upgrade::maybe_delegate` walks ancestors for
+        // `[workspace.metadata.soldr] prefer_newer_global`, which THIS
+        // checkout sets, and these tests run with cargo's cwd inside it. On a
+        // hit it runs `<global soldr> --version` as a child process -- and per
+        // its own doc that child "stages a broker image under the inherited
+        // HOME and spawns `broker serve`", which is what made the
+        // broker-absent tests find a broker in their isolated homes
+        // (soldr#2521 D).
+        //
+        // Two costs, both unwanted here. The probe is a process spawn per
+        // invocation: it is 143-271ms of the 151/209/280ms front-door traces
+        // in the soldr#2785 failures, i.e. nearly the whole startup. And if
+        // the installed soldr were ever NEWER than the one under test, the
+        // fixture would silently exercise the installed binary instead of the
+        // branch's -- a test that passes by testing the wrong thing.
+        //
+        // `cli_global_upgrade.rs` deliberately does not use this helper, so
+        // the delegation policy keeps its own coverage.
+        .env(
+            soldr_cli::global_upgrade::GLOBAL_DELEGATION_DISABLE_ENV_VAR,
+            "1",
+        )
         .env_remove("RUSTC_WORKSPACE_WRAPPER")
         .env_remove("SOLDR_LINKER")
         .env_remove("CARGO_BUILD_TARGET")

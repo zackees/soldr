@@ -934,4 +934,27 @@ mod tests {
             );
         }
     }
+
+    // soldr#2785: the test harness needs the global-delegation *probe* off,
+    // and the obvious lever -- setting `SOLDR_GLOBAL_DELEGATING` -- also
+    // appears in SANCTIONED_EDGE_ENV_VARS above. Setting it suite-wide
+    // exempted every fixture from re-entrancy enforcement, which is the whole
+    // point of soldr#2566. Two guard tests caught it.
+    //
+    // The opt-out therefore has its own variable, and this pins the
+    // separation: sanctioning must never be a side effect of asking soldr not
+    // to probe.
+    #[test]
+    fn the_delegation_opt_out_is_not_a_sanctioned_edge() {
+        assert!(
+            !SANCTIONED_EDGE_ENV_VARS
+                .contains(&crate::global_upgrade::GLOBAL_DELEGATION_DISABLE_ENV_VAR),
+            "opting out of the delegation probe must not sanction re-entrancy"
+        );
+        assert_ne!(
+            crate::global_upgrade::GLOBAL_DELEGATION_DISABLE_ENV_VAR,
+            GLOBAL_DELEGATION_EDGE,
+            "the opt-out and the edge marker must stay distinct variables"
+        );
+    }
 }

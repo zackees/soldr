@@ -12,7 +12,22 @@ use std::process::Command;
 
 use semver::Version;
 
+/// Set by soldr on the probe/delegate child so a delegated invocation does
+/// not delegate again.
 const GLOBAL_DELEGATION_ENV_VAR: &str = "SOLDR_GLOBAL_DELEGATING";
+
+/// Opt out of the delegation probe without claiming to be a delegated child.
+///
+/// soldr#2785: the integration harness needs the probe off — it costs a
+/// process spawn per invocation and stages a broker into the fixture's home.
+/// Setting [`GLOBAL_DELEGATION_ENV_VAR`] would do that, but it means a second
+/// thing: `reentrancy_guard` lists it in `SANCTIONED_EDGE_ENV_VARS`, so every
+/// fixture would also be exempted from re-entrancy enforcement. That guard is
+/// the whole point of soldr#2566, and blanket-exempting the suite from it to
+/// save a process spawn is not a trade worth making.
+///
+/// This carries the first meaning only.
+pub const GLOBAL_DELEGATION_DISABLE_ENV_VAR: &str = "SOLDR_NO_GLOBAL_DELEGATION";
 
 /// Hand this invocation to a newer globally-installed soldr when the current
 /// project opted in. Returns `Some(exit_code)` only when delegation occurred
@@ -21,6 +36,7 @@ const GLOBAL_DELEGATION_ENV_VAR: &str = "SOLDR_GLOBAL_DELEGATING";
 pub fn maybe_delegate(raw_args: &[String]) -> Option<i32> {
     if is_delegation_exempt(raw_args)
         || std::env::var_os(GLOBAL_DELEGATION_ENV_VAR).is_some()
+        || std::env::var_os(GLOBAL_DELEGATION_DISABLE_ENV_VAR).is_some()
         || !crate::cargo_metadata_soldr::prefer_newer_global_from_cwd()
     {
         return None;
