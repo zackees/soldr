@@ -48,8 +48,13 @@ pub(crate) fn isolated_daemon_executable(source: &Path, root: &Path) -> PathBuf 
         if let Err(error) = std::fs::hard_link(source, &executable) {
             // Cross-volume. Link from a single shared copy that lives on the
             // *destination's* volume instead of copying per test (soldr#2734).
-            let linked = shared_daemon_copy(source, root)
-                .is_some_and(|shared| std::fs::hard_link(&shared, &executable).is_ok());
+            let linked = shared_daemon_copy(source, root).is_some_and(|shared| {
+                let linked = std::fs::hard_link(&shared, &executable).is_ok();
+                if linked {
+                    report_shared_copy_in_use(&shared);
+                }
+                linked
+            });
             if !linked {
                 report_daemon_copy_fallback(source, &executable, &error);
                 std::fs::copy(source, &executable).expect("copy isolated test daemon");
@@ -119,6 +124,32 @@ pub(crate) fn shared_daemon_copy(source: &Path, root: &Path) -> Option<PathBuf> 
         return super::files_equal(source, &shared).then_some(shared);
     }
     Some(shared)
+}
+
+/// Say, once per process, that the cross-volume staging is carrying the run.
+///
+/// Without this the fix is invisible when it works: the only output on this
+/// path was the fallback warning, so a lane could report nothing whether the
+/// staging applied or the direct link did, and the two are the difference
+/// between one daemon copy and one per test. soldr#2734 was diagnosed from disk
+/// deltas across a whole shard precisely because nothing said which path ran.
+///
+/// One line per process, for the same reason as the fallback below: the
+/// condition is a property of the two volumes, so it holds for every test in
+/// the process.
+fn report_shared_copy_in_use(shared: &Path) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static REPORTED: AtomicBool = AtomicBool::new(false);
+    if REPORTED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    let bytes = std::fs::metadata(shared).map(|m| m.len()).unwrap_or(0);
+    eprintln!(
+        "soldr test: hard link crossed volumes; every isolated test daemon in \
+         this process links from one shared {bytes}-byte copy instead of \
+         copying per test (soldr#2734).\n  shared: {}",
+        shared.display(),
+    );
 }
 
 /// Say, once per process, that the hard link did not apply.
