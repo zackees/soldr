@@ -75,6 +75,15 @@ pub mod phase {
     pub const GLOBAL_UPGRADE: &str = "global_upgrade";
     pub const TOKIO_RUNTIME: &str = "tokio_runtime";
     pub const CLAP_PARSE: &str = "clap_parse";
+    /// The command body itself -- everything `run_cli` does.
+    ///
+    /// soldr#2785: without this the trace stops at `clap_parse`, so the last
+    /// line of a wedged or slow process names argument parsing no matter where
+    /// the time actually went. A `gc list` poll measured at ~278ms reported 5ms
+    /// of traced startup and nothing to account for the rest, and the natural
+    /// reading of that trace -- the one I made -- was that startup was the
+    /// cost.
+    pub const COMMAND_DISPATCH: &str = "command_dispatch";
 
     // Broker readiness (`broker_spawn::ensure_stable_broker_ready`).
     pub const BROKER_ENDPOINT_RESOLVE: &str = "broker_endpoint_resolve";

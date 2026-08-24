@@ -116,3 +116,58 @@ fn help_flag_starts_and_prints() {
         "help output must contain a usage line: {text}"
     );
 }
+
+/// soldr#2785: the trace must attribute the command body, not stop at parsing.
+///
+/// `--version` exits inside clap and never reaches `run_cli`, so the phase
+/// under test cannot appear there -- this uses a real subcommand. The
+/// distinction matters: a trace that ends at `clap_parse` reports the same last
+/// line whether the command took 5ms or 5s, and the natural reading is that
+/// startup was the cost. A `gc list` poll measured at ~278ms showed 5ms of
+/// traced startup and no line accounting for the remainder.
+#[test]
+fn startup_trace_attributes_the_command_body() {
+    let output = std::process::Command::new(common::soldr_bin())
+        .arg("version")
+        .env(soldr_cli::startup_trace::STARTUP_TRACE_ENV_VAR, "1")
+        .output()
+        .expect("spawn soldr");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    let dispatch = soldr_cli::startup_trace::phase::COMMAND_DISPATCH;
+    assert!(
+        stderr.contains(&format!("soldr front-door: startup phase={dispatch} ms=")),
+        "trace must attribute the command body; stderr was:\n{stderr}"
+    );
+
+    // And it must come last: it closes the run, so anything after it would mean
+    // the phase boundary is in the wrong place.
+    let phases: Vec<&str> = stderr
+        .lines()
+        .filter(|line| line.contains("soldr front-door: startup phase="))
+        .collect();
+    assert!(
+        phases
+            .last()
+            .is_some_and(|line| line.contains(&format!("phase={dispatch} "))),
+        "the command body must be the final phase; trace was:\n{}",
+        phases.join("\n")
+    );
+}
+
+/// The flag form still exits inside clap, so it must NOT claim to have
+/// dispatched a command -- otherwise the phase would be meaningless.
+#[test]
+fn a_clap_handled_flag_does_not_report_a_command_body() {
+    let output = std::process::Command::new(common::soldr_bin())
+        .arg("--version")
+        .env(soldr_cli::startup_trace::STARTUP_TRACE_ENV_VAR, "1")
+        .output()
+        .expect("spawn soldr");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let dispatch = soldr_cli::startup_trace::phase::COMMAND_DISPATCH;
+    assert!(
+        !stderr.contains(&format!("phase={dispatch} ")),
+        "`--version` never reaches run_cli, so it must not report a command body; stderr was:\n{stderr}"
+    );
+}
