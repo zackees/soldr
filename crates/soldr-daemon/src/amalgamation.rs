@@ -64,7 +64,14 @@ impl Amalgamation {
 /// A path that cannot be measured is not an amalgamation — this runs on a
 /// failure path and must not turn a compile error into an I/O error.
 pub(crate) fn detect(args: &[String], cwd: &Path) -> Option<Amalgamation> {
+    // `args[0]` is the compiler, not an input: both callers pass
+    // `CompileRequest::args`, whose first element is the compiler path and
+    // whose remainder is the compiler's own argv. Skipping it keeps a
+    // pathological compiler path from being reported as the translation
+    // unit, which would name the wrong file and leave the real amalgamation
+    // unannounced.
     args.iter()
+        .skip(1)
         .filter(|arg| !arg.starts_with('-'))
         .filter(|arg| has_source_extension(arg))
         .find_map(|arg| measure(&resolve(arg, cwd)))
@@ -284,6 +291,54 @@ mod tests {
             announce < dispatch,
             "the notice must be emitted before the compile it describes, \
              not after it returns"
+        );
+    }
+
+    // The shape the daemon actually receives: `CompileRequest::args` carries
+    // the compiler at [0] and the compiler's own arguments after it, and the
+    // cwd arrives as a String. Every other test here passes bare flags, so
+    // this is the one that would catch the detector being fed the wrong slice
+    // -- `rustc_args` (args[1..]) instead of `args`, say, or a compiler path
+    // being mistaken for an input.
+    #[test]
+    fn a_request_shaped_argv_finds_the_input_not_the_compiler() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write(dir.path(), "sqlite3.c", 8_400_000);
+        let args: Vec<String> = [
+            "/usr/bin/cc",
+            "-O3",
+            "-DSQLITE_CORE",
+            "-c",
+            "sqlite3.c",
+            "-o",
+            "sqlite3.o",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+
+        let found = detect(&args, dir.path()).expect("the input must be found");
+        assert_eq!(found.path.file_name().unwrap(), "sqlite3.c");
+        assert!(compile_notice(&args, dir.path()).is_some());
+    }
+
+    // A compiler whose own path ends in a source extension must not be
+    // mistaken for the translation unit. Contrived, but the detector scans
+    // args[0] too and the failure would be silent: the notice would name the
+    // compiler and the real amalgamation would go unannounced.
+    #[test]
+    fn a_compiler_path_is_not_the_translation_unit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write(dir.path(), "cc.c", 9_000_000);
+        write(dir.path(), "real.c", 2_000_000);
+        let compiler = dir.path().join("cc.c").display().to_string();
+        let args = vec![compiler, "-c".to_string(), "real.c".to_string()];
+
+        let found = detect(&args, dir.path()).expect("the real input is found");
+        assert_eq!(
+            found.path.file_name().unwrap(),
+            "real.c",
+            "args[0] is the compiler and must never be reported as the unit"
         );
     }
 }
