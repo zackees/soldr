@@ -349,11 +349,45 @@ pub(crate) fn build_cook_context(
     ))
 }
 
+/// Exit code for a cook that was skipped because the workspace is not
+/// cookable (soldr#2788).
+///
+/// Non-zero on purpose, and the reason is the consumer rather than taste:
+/// `setup-soldr/cook` sets `cookRan = runRes.exitCode === 0` and saves a cache
+/// layer when it is true. Returning 0 for a skip would make it save a layer
+/// holding nothing, poisoning the key for every later run -- strictly worse
+/// than the silent no-op this replaces. Non-zero keeps today's behaviour
+/// (`ran=false`, no layer saved); all that changes is that it now costs
+/// milliseconds and explains itself.
+const COOK_SKIPPED_UNCOOKABLE_WORKSPACE: i32 = 3;
+
 /// Top-level dispatch. Invoked from `Commands::Cook` in `main.rs`.
 pub(crate) async fn run_cook(args: &[String], cache_enabled: bool) -> Result<i32, SoldrError> {
     let parsed = parse_cook_args(args)?;
     let cwd = std::env::current_dir()
         .map_err(|e| SoldrError::Other(format!("soldr cook: failed to read cwd: {e}")))?;
+    // soldr#2788 preflight. cargo-chef cannot cook a workspace whose path
+    // dependencies resolve outside it: the recipe skeleton never materialises
+    // the sibling members those dependencies need, and the cook dies partway
+    // through with `extern location ... does not exist` after minutes of work.
+    // Detect it and say so instead of paying for the discovery every run.
+    //
+    // `--prepare-only` is exempt: that mode stops before the cook, and the
+    // recipe itself builds fine.
+    if !parsed.prepare_only {
+        let manifest_dir = resolve_manifest_dir(&cwd)?;
+        let external = crate::cook_workspace::external_path_dependencies(&manifest_dir);
+        if !external.is_empty() {
+            eprint!("{}", crate::cook_workspace::skip_message(&external));
+            // The skip message IS the explanation, so tell the exit guard
+            // (soldr#2024) that something spoke. Without this it annotates the
+            // non-zero exit as an unexplained soldr fault and asks the user to
+            // file a bug -- for a deliberate, fully-described skip.
+            crate::exit_guard::mark_spoke();
+            return Ok(COOK_SKIPPED_UNCOOKABLE_WORKSPACE);
+        }
+    }
+
     let (ctx, _tempdir_guard) = build_cook_context(&cwd, &parsed)?;
 
     // Phase 1: prepare. Cheap, deterministic, reads only the manifest tree.
