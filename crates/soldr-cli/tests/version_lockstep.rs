@@ -184,7 +184,9 @@ fn cargo_toml_cargo_lock_and_package_json_share_one_version() {
 #[test]
 fn externalized_dependencies_are_exact_and_consistent() {
     let root = repo_root();
-    let lock = fs::read_to_string(root.join("Cargo.lock")).expect("read Cargo.lock");
+    let lock = fs::read_to_string(root.join("Cargo.lock"))
+        .expect("read Cargo.lock")
+        .replace("\r\n", "\n");
 
     for (dependency, version, manifests) in [
         (
