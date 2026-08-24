@@ -104,7 +104,9 @@ fn sanitize_cargo_chef_recipe(recipe_path: &Path) -> Result<usize, SoldrError> {
 /// manifest's `exclude` rather than its `members` -- gets compiled during cook
 /// with an `--extern` pointing at artifacts nothing produced:
 ///
-///     error: extern location for zccache_cli_core does not exist
+/// ```text
+/// error: extern location for zccache_cli_core does not exist
+/// ```
 ///
 /// Cook then degrades with "continuing without cooked deps", so the BUILD
 /// STILL PASSES while no cache layer is saved and every later run repeats the
