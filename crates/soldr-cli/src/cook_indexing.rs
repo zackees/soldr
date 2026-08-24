@@ -94,6 +94,101 @@ fn sanitize_cargo_chef_recipe(recipe_path: &Path) -> Result<usize, SoldrError> {
     Ok(removed)
 }
 
+/// Path dependencies the recipe skeleton never materializes (soldr#2788).
+///
+/// Returns `(dependency, depending crate)` pairs.
+///
+/// cargo-chef's skeleton lists the manifests it intends to stub. A crate that
+/// depends on a path OUTSIDE that set -- typically a sibling repo vendored as
+/// a git submodule with its own `[workspace]`, so it sits in the root
+/// manifest's `exclude` rather than its `members` -- gets compiled during cook
+/// with an `--extern` pointing at artifacts nothing produced:
+///
+///     error: extern location for zccache_cli_core does not exist
+///
+/// Cook then degrades with "continuing without cooked deps", so the BUILD
+/// STILL PASSES while no cache layer is saved and every later run repeats the
+/// full cold dependency build. Detecting the layout up front converts ~190s of
+/// silent waste into one honest line.
+///
+/// The deeper fix -- actually cooking these workspaces -- is soldr#2791.
+pub(crate) fn unmaterializable_path_deps(recipe: &serde_json::Value) -> Vec<(String, String)> {
+    let Some(manifests) = recipe
+        .get("skeleton")
+        .and_then(|s| s.get("manifests"))
+        .and_then(|m| m.as_array())
+    else {
+        return Vec::new();
+    };
+
+    let present: std::collections::HashSet<String> = manifests
+        .iter()
+        .filter_map(|m| m.get("relative_path").and_then(|p| p.as_str()))
+        .map(manifest_dir_of)
+        .collect();
+
+    let mut found = Vec::new();
+    for manifest in manifests {
+        let Some(rel) = manifest.get("relative_path").and_then(|p| p.as_str()) else {
+            continue;
+        };
+        let Some(contents) = manifest.get("contents").and_then(|c| c.as_str()) else {
+            continue;
+        };
+        let Ok(doc) = contents.parse::<toml::Value>() else {
+            continue;
+        };
+        let owner_dir = manifest_dir_of(rel);
+        for table in ["dependencies", "dev-dependencies", "build-dependencies"] {
+            let Some(deps) = doc.get(table).and_then(|d| d.as_table()) else {
+                continue;
+            };
+            for (name, spec) in deps {
+                let Some(path) = spec.get("path").and_then(|p| p.as_str()) else {
+                    continue;
+                };
+                let resolved = join_manifest_relative(&owner_dir, path);
+                if !present.contains(&resolved) {
+                    found.push((name.clone(), rel.to_string()));
+                }
+            }
+        }
+    }
+    found.sort();
+    found.dedup();
+    found
+}
+
+/// `crates\soldr-cli\Cargo.toml` -> `crates/soldr-cli`; root -> `""`.
+fn manifest_dir_of(relative_path: &str) -> String {
+    let unified = relative_path.replace('\\', "/");
+    unified
+        .strip_suffix("Cargo.toml")
+        .unwrap_or(&unified)
+        .trim_end_matches('/')
+        .to_string()
+}
+
+/// Resolve a manifest-relative `path = "../../x"` against its owner directory.
+fn join_manifest_relative(owner_dir: &str, path: &str) -> String {
+    let mut parts: Vec<&str> = if owner_dir.is_empty() {
+        Vec::new()
+    } else {
+        owner_dir.split('/').collect()
+    };
+    let unified_path = path.replace('\\', "/");
+    for segment in unified_path.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            other => parts.push(other),
+        }
+    }
+    parts.join("/")
+}
+
 fn strip_generated_plugin_lines(contents: &str) -> (String, usize) {
     let mut out = String::with_capacity(contents.len());
     let mut removed = 0usize;
