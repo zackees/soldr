@@ -7,14 +7,15 @@
 //! is not "a longer compile"; it is a categorically different resource event,
 //! and it is the one the OOM killer reaches for first under concurrent load.
 //!
-//! This module answers only "is this compile one of those?". It does not
-//! schedule anything. The barrier soldr#2781 proposes needs the *compile*
-//! semaphore, which lives in the embedded zccache service rather than here —
-//! `compile_limit` sizes it, but the waiting happens inside zccache. Landing
-//! detection first means the failure can at least name its cause today, and
-//! the scheduler has something to ask when it exists.
+//! Published Rust crates can have the same shape even when their root source
+//! is small: the registry form of zccache folds a multi-crate workspace into
+//! one large rustc unit. The resource gate below lets ordinary units compile
+//! concurrently while either kind of oversized unit gets exclusive access.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 
 /// Sources at least this large are treated as amalgamations.
 ///
@@ -33,6 +34,10 @@ const AMALGAMATION_BYTES: u64 = 1_000_000;
 /// whose size sits under the threshold on one version and over it on the
 /// next.
 const KNOWN_AMALGAMATIONS: &[&str] = &["sqlite3.c", "zstd.c", "rocksdb.cc"];
+
+/// Published Rust crates known to collapse a much more granular source
+/// workspace into one rustc compilation unit.
+const KNOWN_RUST_AMALGAMATIONS: &[&str] = &["zccache"];
 
 /// Extensions that name a C/C++ translation unit on a compiler command line.
 const SOURCE_EXTENSIONS: &[&str] = &["c", "cc", "cpp", "cxx", "c++", "m", "mm"];
@@ -54,6 +59,53 @@ impl Amalgamation {
             .unwrap_or_else(|| self.path.display().to_string());
         format!("{name} ({:.1} MB)", self.bytes as f64 / 1_000_000.0)
     }
+}
+
+/// Fair shared/exclusive admission around the embedded compile service.
+///
+/// Tokio's write-preferring lock prevents a stream of ordinary compiles from
+/// starving an oversized unit once it reaches the queue.
+#[derive(Clone, Default)]
+pub(crate) struct CompileResourceGate {
+    inner: Arc<RwLock<()>>,
+}
+
+pub(crate) enum CompileResourcePermit {
+    Shared { _guard: OwnedRwLockReadGuard<()> },
+    Exclusive { _guard: OwnedRwLockWriteGuard<()> },
+}
+
+impl CompileResourceGate {
+    pub(crate) async fn acquire(&self, exclusive: bool) -> CompileResourcePermit {
+        if exclusive {
+            CompileResourcePermit::Exclusive {
+                _guard: self.inner.clone().write_owned().await,
+            }
+        } else {
+            CompileResourcePermit::Shared {
+                _guard: self.inner.clone().read_owned().await,
+            }
+        }
+    }
+}
+
+/// Whether this request must run without another compiler process beside it.
+pub(crate) fn requires_exclusive_access(args: &[String], cwd: &Path) -> bool {
+    detect(args, cwd).is_some()
+        || rust_crate_name(args).is_some_and(|name| KNOWN_RUST_AMALGAMATIONS.contains(&name))
+}
+
+fn rust_crate_name(args: &[String]) -> Option<&str> {
+    let mut args = args.iter().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--crate-name" {
+            return args.next().map(String::as_str);
+        }
+        if let Some(name) = arg.strip_prefix("--crate-name=") {
+            return Some(name);
+        }
+    }
+    None
 }
 
 /// The amalgamated source in `args`, if there is one.
@@ -339,6 +391,64 @@ mod tests {
             found.path.file_name().unwrap(),
             "real.c",
             "args[0] is the compiler and must never be reported as the unit"
+        );
+    }
+
+    #[test]
+    fn the_published_zccache_crate_requires_exclusive_access() {
+        let args = vec![
+            "/toolchain/bin/rustc".to_string(),
+            "--crate-name".to_string(),
+            "zccache".to_string(),
+            "/registry/zccache/src/lib.rs".to_string(),
+        ];
+
+        assert!(requires_exclusive_access(&args, Path::new(".")));
+    }
+
+    #[test]
+    fn an_ordinary_rust_crate_keeps_shared_access() {
+        let args = vec![
+            "/toolchain/bin/rustc".to_string(),
+            "--crate-name=small_crate".to_string(),
+            "/registry/small-crate/src/lib.rs".to_string(),
+        ];
+
+        assert!(!requires_exclusive_access(&args, Path::new(".")));
+    }
+
+    #[tokio::test]
+    async fn an_exclusive_unit_waits_for_all_shared_units() {
+        let gate = CompileResourceGate::default();
+        let shared = gate.acquire(false).await;
+        let waiting_gate = gate.clone();
+        let mut waiting = tokio::spawn(async move { waiting_gate.acquire(true).await });
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut waiting)
+                .await
+                .is_err(),
+            "exclusive access must wait while an ordinary compile is active"
+        );
+        drop(shared);
+        tokio::time::timeout(std::time::Duration::from_secs(1), waiting)
+            .await
+            .expect("exclusive access is granted after readers leave")
+            .expect("gate task completes");
+    }
+
+    #[test]
+    fn compile_dispatch_acquires_the_resource_gate_before_the_backend() {
+        let src = include_str!("zccache_embedded.rs");
+        let acquire = src
+            .find("compile_resource_gate.acquire(")
+            .expect("compile() must acquire the resource gate");
+        let dispatch = src
+            .find("self.inner.compile(")
+            .expect("compile() must dispatch to zccache");
+        assert!(
+            acquire < dispatch,
+            "resource admission must precede dispatch"
         );
     }
 }
