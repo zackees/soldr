@@ -46,11 +46,79 @@ pub(crate) fn isolated_daemon_executable(source: &Path, root: &Path) -> PathBuf 
     if !super::files_equal(source, &executable) {
         let _ = std::fs::remove_file(&executable);
         if let Err(error) = std::fs::hard_link(source, &executable) {
-            report_daemon_copy_fallback(source, &executable, &error);
-            std::fs::copy(source, &executable).expect("copy isolated test daemon");
+            // Cross-volume. Link from a single shared copy that lives on the
+            // *destination's* volume instead of copying per test (soldr#2734).
+            let linked = shared_daemon_copy(source, root)
+                .is_some_and(|shared| std::fs::hard_link(&shared, &executable).is_ok());
+            if !linked {
+                report_daemon_copy_fallback(source, &executable, &error);
+                std::fs::copy(source, &executable).expect("copy isolated test daemon");
+            }
         }
     }
     executable
+}
+
+/// One daemon copy per volume, shared by every isolated-daemon test.
+///
+/// soldr#2734: on the win-gnu target-run lane the workspace is `D:` and the
+/// test roots are on `C:`. A hard link cannot cross volumes, so the `copy`
+/// fallback above stopped being a fallback -- it ran for *every* isolated-daemon
+/// test, and nextest runs them concurrently. Measured on that lane: the
+/// workspace volume did not move (143.40 GiB free before and after) while temp
+/// went from 31.03 GiB to 13.60 GiB. **17.4 GiB, all of it duplicate copies of
+/// one binary**, ending in `Os { code: 112, kind: StorageFull }`.
+///
+/// Staging one copy on the destination volume makes the link apply again,
+/// because both ends are then on that volume. N copies become 1 plus N
+/// directory entries.
+///
+/// ## Why not move the tests' temp root instead
+///
+/// That was tried and reverted. Pointing `RUNNER_TEMP` at the build volume is
+/// the more obvious fix and it broke Windows toolchain resolution on both msvc
+/// lanes -- `rustup could not choose a version of cargo to run` -- for reasons
+/// that were never explained, including after moving the redirect into a
+/// dedicated subdirectory. This change stays inside the test harness and does
+/// not touch the OS temp root, so it cannot reproduce that.
+///
+/// Returns `None` if a shared copy cannot be established, leaving the caller on
+/// the per-test copy path. Degrading to today's behaviour is always correct
+/// here; failing a test over a caching optimisation would not be.
+pub(crate) fn shared_daemon_copy(source: &Path, root: &Path) -> Option<PathBuf> {
+    // A sibling of the per-test root, so it is on the same volume as the root
+    // (which is what makes the link possible) but outside it (so it outlives
+    // the `TempDir` that every test drops).
+    let directory = root.parent()?.join("soldr-shared-test-daemon");
+    std::fs::create_dir_all(&directory).ok()?;
+
+    // Keyed by the source's identity, so a rebuilt daemon gets a new name
+    // rather than racing to replace one that concurrent tests hold links to.
+    let metadata = std::fs::metadata(source).ok()?;
+    let stamp = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |since| since.as_nanos());
+    let shared = directory.join(format!("soldr-daemon-{}-{stamp}", metadata.len()));
+
+    if super::files_equal(source, &shared) {
+        return Some(shared);
+    }
+
+    // Publish atomically: copy aside, then rename into place. A half-written
+    // file under the shared name would be linked by every later test in the
+    // shard -- the failure this staging exists to prevent, made permanent.
+    let pending = directory.join(format!("pending-{}", std::process::id()));
+    std::fs::copy(source, &pending).ok()?;
+    if std::fs::rename(&pending, &shared).is_err() {
+        // Windows refuses a rename onto an existing file, so the usual cause
+        // is another test process publishing the same content first. Its copy
+        // is as good as ours.
+        let _ = std::fs::remove_file(&pending);
+        return super::files_equal(source, &shared).then_some(shared);
+    }
+    Some(shared)
 }
 
 /// Say, once per process, that the hard link did not apply.
@@ -63,10 +131,14 @@ pub(crate) fn isolated_daemon_executable(source: &Path, root: &Path) -> PathBuf 
 /// lane that shows up as `Os { code: 112, kind: StorageFull }` from the
 /// `.expect` below, with nothing saying where the space went.
 ///
-/// The Docker harness does not hit this, and the reason is the fix: it sets
-/// `TMPDIR=/target/tmp`, putting the test root on the same device as the
-/// build output, so the link applies. `_ci-target-run.yml` now does the
-/// equivalent with `RUNNER_TEMP`.
+/// This now fires only when [`shared_daemon_copy`] *also* failed, so reaching
+/// it means neither the direct link nor the shared-copy link applied and the
+/// per-test copy is genuinely unavoidable. That is the state the issue
+/// described, and it should now be rare rather than routine.
+///
+/// The Docker harness does not hit the cross-volume case at all: it sets
+/// `TMPDIR=/target/tmp`, putting the test root on the same device as the build
+/// output, so the direct link applies and neither fallback runs.
 ///
 /// Reported once rather than per test: the condition is a property of the two
 /// paths, so it holds for every test in the process, and one line per test
@@ -81,7 +153,7 @@ fn report_daemon_copy_fallback(source: &Path, destination: &Path, error: &std::i
     let bytes = std::fs::metadata(source).map(|m| m.len()).unwrap_or(0);
     eprintln!(
         "soldr test: hard link failed ({error}); copying {bytes} bytes of daemon \
-         per isolated test instead.\n  from: {}\n  to:   {}\n  \
+         per isolated test instead (the shared-copy path did not apply either).\n  from: {}\n  to:   {}\n  \
          Different volumes make the copy unconditional -- see soldr#2734.",
         source.display(),
         destination.display(),
