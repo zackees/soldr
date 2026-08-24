@@ -301,8 +301,12 @@ jobs:
       - name: Install Rust components
         run: rustup component add rustfmt clippy
 
-      # Explicit `-p` per workspace member, not `--all` — `cargo fmt --all`
-      # walks the `_vender/zccache` path-dep submodule. See soldr#1066.
+      # Explicit `-p` per workspace member, not `--all`. The original reason
+      # (soldr#1066: `cargo fmt --all` walked the `_vender/zccache` path-dep
+      # submodule) went away with soldr#2837, which made zccache a registry
+      # dependency — there is no nested workspace for `--all` to walk now.
+      # The list is kept because the reason below still holds, not because
+      # the original one does.
       # Keep this list in sync with `[workspace].members` in Cargo.toml;
       # a crate missing here drifts unformatted forever (soldr-daemon and
       # soldr-fetch both had, when only `-p soldr-cli` was checked).

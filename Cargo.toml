@@ -13,19 +13,18 @@ members = [
     "crates/soldr-fetch",
     "crates/soldr-platform",
 ]
-# The zccache submodule has its own [workspace] declaration and its
-# own `[workspace.dependencies]` (arc-swap, etc.). Excluding it here
-# keeps cargo from trying to fold its crates into soldr's workspace —
-# the path-dep in `crates/soldr-cli/Cargo.toml` still resolves the
-# specific `_vender/zccache/crates/zccache` crate we link against.
+# soldr#2837 removed the two entries this list used to exist for. zccache and
+# running-process were `_vender/` submodules with their own [workspace]
+# declarations, and each needed excluding so cargo would not fold its crates
+# into soldr's workspace and mis-version them. They are exact crates.io
+# dependencies now (`zccache = { version = "=1.13.7" }`,
+# `running-process = { version = "=4.10.6" }`), so there is no nested
+# workspace left to exclude and no `[patch]` pointing at either.
 #
-# Same for the vendored running-process submodule: it is its own
-# workspace (`version.workspace = true` -> 4.8.x). Without this exclude,
-# cargo folds `_vender/running-process/crates/running-process` into
-# soldr's workspace and mis-versions it as soldr's 0.8.44, so the
-# `[patch]` to the vendored path is dropped ("patch not used"). Excluding
-# it lets the crate inherit running-process's own 4.8.x version, which
-# satisfies the `^4.8.1` requirement and makes the patch apply.
+# `tests/test_externalized_dependency_sources.py` fails if a path dep, a
+# `[patch]` redirect, or a gitlink puts them back: the only other symptom
+# would be 19 packages returning to the lockfile and every fresh checkout
+# recompiling them, which reads as ordinary CI slowness.
 exclude = [
     ".extern-repos/soldr-maturin",
 ]
