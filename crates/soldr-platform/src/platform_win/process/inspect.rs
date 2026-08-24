@@ -26,6 +26,24 @@ pub struct ProcessHolder {
 }
 
 /// True while `pid` names a live Windows process.
+///
+/// # The 259 ambiguity
+///
+/// `GetExitCodeProcess` reports `STILL_ACTIVE` (259) for a running process --
+/// and also for one that has exited with code **259**, because the sentinel is
+/// drawn from the same value space as real exit codes. On that reading alone a
+/// process that returned 259 stays "alive" forever.
+///
+/// soldr#2806 is why this is not left as a footnote: a tree-kill test reported
+/// a grandchild surviving a 10s poll, and the exit-code check is the only thing
+/// that observation rests on. The reading is almost certainly correct there --
+/// `ping.exe` documents exits of 0 and 1 -- but "almost certainly" is the wrong
+/// standard for the predicate 41 call sites and the reentrancy guard depend on.
+///
+/// So a `STILL_ACTIVE` answer is corroborated: a process handle becomes
+/// **signalled** when the process terminates, and that has no sentinel
+/// collision. If the wait says signalled, the process is gone and 259 was a
+/// real exit code.
 pub fn is_alive(pid: u32) -> bool {
     use std::os::windows::raw::HANDLE;
     #[allow(clippy::upper_case_acronyms)]
@@ -51,7 +69,45 @@ pub fn is_alive(pid: u32) -> bool {
     let mut code: DWORD = 0;
     let ok = unsafe { GetExitCodeProcess(handle, &mut code) };
     unsafe { CloseHandle(handle) };
-    ok != 0 && code == STILL_ACTIVE
+    if ok == 0 || code != STILL_ACTIVE {
+        return false;
+    }
+    !exited_with_the_sentinel_code(pid)
+}
+
+/// Did `pid` actually terminate, despite reporting the `STILL_ACTIVE` sentinel?
+///
+/// Answered by whether the process handle is signalled, which happens only on
+/// termination and cannot collide with an exit code.
+///
+/// **Returns `false` whenever it cannot tell.** This runs only to *downgrade* an
+/// already-`STILL_ACTIVE` answer, so an inconclusive result must leave that
+/// answer standing. In particular the `SYNCHRONIZE` open is expected to fail
+/// under the restricted tokens the caller's comment describes -- and reporting
+/// "exited" there would resurrect exactly the every-process-reads-as-dead bug
+/// that made the caller avoid `SYNCHRONIZE` in the first place.
+fn exited_with_the_sentinel_code(pid: u32) -> bool {
+    use std::os::windows::raw::HANDLE;
+    #[allow(clippy::upper_case_acronyms)]
+    type DWORD = u32;
+    #[allow(clippy::upper_case_acronyms)]
+    type BOOL = i32;
+    const SYNCHRONIZE: DWORD = 0x0010_0000;
+    const WAIT_OBJECT_0: DWORD = 0;
+    extern "system" {
+        fn OpenProcess(desired_access: DWORD, inherit: BOOL, pid: DWORD) -> HANDLE;
+        fn WaitForSingleObject(h: HANDLE, millis: DWORD) -> DWORD;
+        fn CloseHandle(h: HANDLE) -> BOOL;
+    }
+    // SAFETY: same pid the caller just opened; the wait is non-blocking and
+    // touches no caller memory.
+    let handle = unsafe { OpenProcess(SYNCHRONIZE, 0, pid) };
+    if handle.is_null() {
+        return false;
+    }
+    let waited = unsafe { WaitForSingleObject(handle, 0) };
+    unsafe { CloseHandle(handle) };
+    waited == WAIT_OBJECT_0
 }
 
 /// Windows reaps exited processes immediately; there is no zombie state to
@@ -179,5 +235,58 @@ mod tests {
     #[test]
     fn windows_liveness_reports_current_process_alive() {
         assert!(is_alive(std::process::id()));
+    }
+
+    /// The sentinel collision, exercised rather than reasoned about.
+    ///
+    /// `GetExitCodeProcess` cannot distinguish "running" from "exited with
+    /// 259", so before soldr#2806 a process that returned 259 read as alive
+    /// forever. The exit code here is chosen to be exactly the sentinel.
+    #[test]
+    fn a_process_that_exits_with_the_sentinel_code_is_not_alive() {
+        let mut child = std::process::Command::new("cmd")
+            .args(["/c", "exit", "259"])
+            .spawn()
+            .expect("spawn cmd");
+        let pid = child.id();
+        let status = child.wait().expect("wait for cmd");
+        assert_eq!(
+            status.code(),
+            Some(259),
+            "the fixture must actually exit with the sentinel value"
+        );
+        assert!(
+            !is_alive(pid),
+            "pid {pid} exited with 259 and must not read as alive"
+        );
+    }
+
+    /// The ordinary case still works, so the fix is not "report dead more
+    /// often" -- a liveness check that under-reports would make the reentrancy
+    /// guard admit a live process.
+    #[test]
+    fn a_process_that_exits_normally_is_not_alive() {
+        let mut child = std::process::Command::new("cmd")
+            .args(["/c", "exit", "0"])
+            .spawn()
+            .expect("spawn cmd");
+        let pid = child.id();
+        child.wait().expect("wait for cmd");
+        assert!(!is_alive(pid), "pid {pid} exited cleanly and is not alive");
+    }
+
+    /// A running process must still read as alive after the extra probe --
+    /// the corroboration only ever downgrades a `STILL_ACTIVE` answer, and a
+    /// long-lived child is the case every caller actually depends on.
+    #[test]
+    fn a_running_child_still_reads_as_alive() {
+        let mut child = std::process::Command::new("cmd")
+            .args(["/c", "ping", "-n", "30", "127.0.0.1"])
+            .spawn()
+            .expect("spawn cmd");
+        let pid = child.id();
+        assert!(is_alive(pid), "a running child must read as alive");
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
