@@ -67,6 +67,31 @@ fn parse_cook_args_parses_profile_in_both_forms() {
 }
 
 #[test]
+fn cook_target_dir_honors_absolute_and_relative_cargo_target_dir() {
+    let manifest_dir = Path::new("/workspace");
+    let args = parse_cook_args(&argv(&["--release", "--target=x86_64-unknown-linux-gnu"])).unwrap();
+
+    assert_eq!(
+        resolve_cook_target_dir_with_env(
+            manifest_dir,
+            Path::new("/invocation/subdir"),
+            &args,
+            Some(std::ffi::OsStr::new("/cache"))
+        ),
+        Path::new("/cache/x86_64-unknown-linux-gnu/release")
+    );
+    assert_eq!(
+        resolve_cook_target_dir_with_env(
+            manifest_dir,
+            Path::new("/invocation/subdir"),
+            &args,
+            Some(std::ffi::OsStr::new("out"))
+        ),
+        Path::new("/invocation/subdir/out/x86_64-unknown-linux-gnu/release")
+    );
+}
+
+#[test]
 fn parse_cook_args_collects_packages() {
     let parsed = parse_cook_args(&argv(&["-p", "a", "--package", "b", "--package=c"])).unwrap();
     assert_eq!(parsed.packages, vec!["a", "b", "c"]);
@@ -241,6 +266,50 @@ fn build_chef_cook_args_packages_are_repeated() {
 }
 
 #[test]
+fn build_exact_cook_args_replays_the_original_selection() {
+    let args = parse_cook_args(&argv(&[
+        "--release",
+        "--target=x86_64-unknown-linux-gnu",
+        "-p",
+        "app",
+        "--",
+        "--features",
+        "vendored",
+    ]))
+    .unwrap();
+
+    assert_eq!(
+        build_exact_cook_args(&args),
+        argv(&[
+            "build",
+            "--release",
+            "--target",
+            "x86_64-unknown-linux-gnu",
+            "--package",
+            "app",
+            "--features",
+            "vendored",
+        ])
+    );
+}
+
+#[test]
+fn cook_selection_hash_distinguishes_scope_and_features() {
+    let narrow = parse_cook_args(&argv(&["-p", "app"])).unwrap();
+    let broad = parse_cook_args(&argv(&["--workspace"])).unwrap();
+    let featured = parse_cook_args(&argv(&["-p", "app", "--", "--features", "vendored"])).unwrap();
+
+    assert_ne!(
+        cook_selection_sha256(&narrow),
+        cook_selection_sha256(&broad)
+    );
+    assert_ne!(
+        cook_selection_sha256(&narrow),
+        cook_selection_sha256(&featured)
+    );
+}
+
+#[test]
 fn resolve_manifest_dir_walks_up_to_find_cargo_toml() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
@@ -365,17 +434,110 @@ fn sanitize_cargo_chef_recipe_removes_generated_plugin_lines_from_manifests() {
     });
     std::fs::write(&recipe_path, serde_json::to_vec(&recipe).unwrap()).unwrap();
 
-    let removed = sanitize_cargo_chef_recipe(&recipe_path).unwrap();
+    let report = sanitize_cargo_chef_recipe(&recipe_path).unwrap();
     let updated: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&recipe_path).unwrap()).unwrap();
     let manifests = updated["skeleton"]["manifests"].as_array().unwrap();
     let first = manifests[0]["contents"].as_str().unwrap();
     let second = manifests[1]["contents"].as_str().unwrap();
 
-    assert_eq!(removed, 4);
+    assert_eq!(report.plugin_keys_removed, 4);
+    assert_eq!(report.path_dependencies_rewritten, 0);
+    assert_eq!(report.patches_removed, 0);
     assert!(!first.contains("plugin = false"));
     assert!(first.contains("proc-macro = false"));
     assert!(second.contains("plugin = \"user-data\""));
+}
+
+#[test]
+fn sanitize_cargo_chef_recipe_redirects_excluded_sibling_workspaces() {
+    let tmp = tempfile::tempdir().unwrap();
+    let recipe_path = tmp.path().join("recipe.json");
+    let recipe = serde_json::json!({
+        "skeleton": {
+          "lock_file": "version = 4\n[[package]]\nname=\"zccache\"\nversion=\"1.13.5\"\n",
+          "manifests": [
+            { "relative_path": "Cargo.toml", "contents": "[workspace]\nmembers=[\"crates/a\"]\nexclude=[\"_vender/zccache\",\"_vender/running-process\"]\n[patch.crates-io.running-process]\npath=\"_vender/running-process/crates/running-process\"\n[patch.crates-io.notify]\npath=\"_vender/notify\"\n" },
+            { "relative_path": "crates/a/Cargo.toml", "contents": "[package]\nname=\"a\"\nversion=\"0.0.1\"\n[dependencies.zccache]\nversion=\"1.13\"\npath=\"../../_vender/zccache/crates/zccache\"\n[dependencies.local]\npath=\"../local\"\n" },
+            { "relative_path": "crates/local/Cargo.toml", "contents": "[package]\nname=\"local\"\nversion=\"0.0.1\"\n" }
+        ]}
+    });
+    std::fs::write(&recipe_path, serde_json::to_vec(&recipe).unwrap()).unwrap();
+
+    let report = sanitize_cargo_chef_recipe(&recipe_path).unwrap();
+    let updated: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&recipe_path).unwrap()).unwrap();
+    let root = updated["skeleton"]["manifests"][0]["contents"]
+        .as_str()
+        .unwrap();
+    let member = updated["skeleton"]["manifests"][1]["contents"]
+        .as_str()
+        .unwrap();
+
+    assert_eq!(report.path_dependencies_rewritten, 1);
+    assert_eq!(report.patches_removed, 1);
+    assert!(!member.contains("_vender/zccache"), "{member}");
+    assert!(member.contains("version = \"=1.13.5\""), "{member}");
+    assert!(member.contains("path = \"../local\""), "{member}");
+    assert!(
+        !root.contains("[patch.crates-io.running-process]"),
+        "{root}"
+    );
+    assert!(root.contains("_vender/notify"), "{root}");
+    assert!(
+        unmaterializable_path_deps(&updated).is_empty(),
+        "published fallback should make the prepared recipe cookable"
+    );
+}
+
+#[test]
+fn sanitize_recipe_handles_aliases_and_rejects_ambiguous_or_missing_locks() {
+    let tmp = tempfile::tempdir().unwrap();
+    let recipe_path = tmp.path().join("recipe.json");
+    let recipe = serde_json::json!({
+        "skeleton": {
+          "lock_file": "version = 4\n[[package]]\nname=\"actual-name\"\nversion=\"1.2.3\"\n[[package]]\nname=\"duplicate\"\nversion=\"2.0.0\"\n[[package]]\nname=\"duplicate\"\nversion=\"2.1.0\"\n",
+          "manifests": [
+            { "relative_path": "Cargo.toml", "contents": "[workspace]\nmembers=[\"crates/a\"]\nexclude=[\"vendor\"]\n" },
+            { "relative_path": "crates/a/Cargo.toml", "contents": "[package]\nname=\"a\"\nversion=\"0.0.1\"\n[dependencies.alias]\npackage=\"actual-name\"\nversion=\"1\"\npath=\"../../vendor/actual\"\n[dependencies.duplicate]\nversion=\"2\"\npath=\"../../vendor/duplicate\"\n[dependencies.missing]\nversion=\"3\"\npath=\"../../vendor/missing\"\n" }
+        ]}
+    });
+    std::fs::write(&recipe_path, serde_json::to_vec(&recipe).unwrap()).unwrap();
+
+    let report = sanitize_cargo_chef_recipe(&recipe_path).unwrap();
+    let updated: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&recipe_path).unwrap()).unwrap();
+    let member = updated["skeleton"]["manifests"][1]["contents"]
+        .as_str()
+        .unwrap();
+
+    assert_eq!(report.path_dependencies_rewritten, 1);
+    assert!(member.contains("version = \"=1.2.3\""), "{member}");
+    assert!(!member.contains("vendor/actual"), "{member}");
+    assert!(member.contains("vendor/duplicate"), "{member}");
+    assert!(member.contains("vendor/missing"), "{member}");
+    assert_eq!(unmaterializable_path_deps(&updated).len(), 2);
+}
+
+#[test]
+fn patch_only_recipe_still_requires_the_exact_supplemental_build() {
+    let tmp = tempfile::tempdir().unwrap();
+    let recipe_path = tmp.path().join("recipe.json");
+    let recipe = serde_json::json!({
+        "skeleton": {
+          "lock_file": "version = 4\n",
+          "manifests": [
+            { "relative_path": "Cargo.toml", "contents": "[workspace]\nmembers=[\"crates/a\"]\nexclude=[\"vendor/patched\"]\n[patch.crates-io.patched]\npath=\"vendor/patched\"\n" },
+            { "relative_path": "crates/a/Cargo.toml", "contents": "[package]\nname=\"a\"\nversion=\"0.0.1\"\n[dependencies]\npatched=\"1\"\n" }
+        ]}
+    });
+    std::fs::write(&recipe_path, serde_json::to_vec(&recipe).unwrap()).unwrap();
+
+    let report = sanitize_cargo_chef_recipe(&recipe_path).unwrap();
+
+    assert_eq!(report.path_dependencies_rewritten, 0);
+    assert_eq!(report.patches_removed, 1);
+    assert!(report.needs_exact_build());
 }
 
 // #693: this test sets up a git repo fixture and was failing reliably on
@@ -509,6 +671,19 @@ fn snapshot_restore_undoes_cargo_chef_in_place_skeleton() {
     assert!(root.join(".git/HEAD").exists());
 }
 
+#[test]
+fn restore_project_source_reports_failure_instead_of_allowing_success() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("src/lib.rs")).unwrap();
+    let snapshot = ProjectSourceSnapshot {
+        files: vec![(PathBuf::from("src/lib.rs"), b"pub fn real() {}\n".to_vec())],
+    };
+
+    let error = restore_project_source(root, &snapshot).unwrap_err();
+    assert!(error.to_string().contains("failed to restore"));
+}
+
 // ---------------------------------------------------------------------------
 // #621 warm-cook marker round-trip
 // ---------------------------------------------------------------------------
@@ -520,6 +695,7 @@ fn cook_marker_round_trip_preserves_fields() {
     let marker = CookMarker {
         version: COOK_MARKER_VERSION,
         recipe_sha256: "deadbeef".repeat(8),
+        selection_sha256: "cafebabe".repeat(8),
         rustc_version: "rustc 1.94.1 (abc 2025-12-25)".to_string(),
         soldr_version: "0.7.99".to_string(),
     };
@@ -535,6 +711,7 @@ fn cook_marker_read_returns_none_for_version_mismatch() {
     let body = serde_json::json!({
         "version": 999, // wrong version
         "recipe_sha256": "x",
+        "selection_sha256": "x",
         "rustc_version": "x",
         "soldr_version": "x",
     });
@@ -551,7 +728,7 @@ fn cook_marker_read_returns_none_for_missing_field() {
     let path = dir.path().join(".soldr-cook-marker.json");
     let body = serde_json::json!({
         "version": COOK_MARKER_VERSION,
-        // missing recipe_sha256, rustc_version, soldr_version
+        // missing recipe_sha256, selection_sha256, rustc_version, soldr_version
     });
     std::fs::write(&path, body.to_string()).unwrap();
     assert!(read_cook_marker(&path).is_none());
@@ -569,18 +746,26 @@ fn cook_marker_inequality_when_any_field_differs() {
     let a = CookMarker {
         version: COOK_MARKER_VERSION,
         recipe_sha256: "a".into(),
+        selection_sha256: "selection-a".into(),
         rustc_version: "rustc 1".into(),
         soldr_version: "0.7.50".into(),
     };
     let mut b = CookMarker {
         version: a.version,
         recipe_sha256: a.recipe_sha256.clone(),
+        selection_sha256: a.selection_sha256.clone(),
         rustc_version: a.rustc_version.clone(),
         soldr_version: a.soldr_version.clone(),
     };
     b.recipe_sha256 = "b".into();
     assert_ne!(a, b, "different recipe must NOT warm-skip");
     b.recipe_sha256 = a.recipe_sha256.clone();
+    b.selection_sha256 = "selection-b".into();
+    assert_ne!(
+        a, b,
+        "different package/feature selection must NOT warm-skip"
+    );
+    b.selection_sha256 = a.selection_sha256.clone();
     b.rustc_version = "rustc 2".into();
     assert_ne!(a, b, "different rustc must NOT warm-skip");
     b.rustc_version = a.rustc_version.clone();

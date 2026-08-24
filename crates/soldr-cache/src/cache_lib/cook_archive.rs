@@ -124,9 +124,7 @@ pub fn pack_cook_archive(
             .file_name()
             .map(|n| n.to_owned())
             .unwrap_or_else(|| "cook".into());
-        tar_builder
-            .append_dir_all(prefix_name, source_dir)
-            .map_err(io_err)?;
+        append_tree_with_precise_mtimes(&mut tar_builder, source_dir, Path::new(&prefix_name))?;
         tar_builder.finish().map_err(io_err)?;
     }
     encoder.finish().map_err(io_err)?;
@@ -152,6 +150,73 @@ pub fn pack_cook_archive(
         sha256,
         size_bytes,
     })
+}
+
+/// Append a tree with a POSIX pax `mtime` record before every entry.
+///
+/// A traditional tar header stores mtimes as whole seconds. Cargo fingerprints
+/// compare dependency outputs at nanosecond precision, so rounding a cooked
+/// target tree can reverse files that were produced a few milliseconds apart
+/// and turn a hydrate into a broad rebuild. Pax fractional mtimes retain that
+/// ordering while keeping the artifact a normal tar stream.
+fn append_tree_with_precise_mtimes<W: std::io::Write>(
+    builder: &mut tar::Builder<W>,
+    source_root: &Path,
+    archive_root: &Path,
+) -> Result<(), RegistryError> {
+    let mut pending = vec![(source_root.to_path_buf(), archive_root.to_path_buf())];
+    while let Some((source, archived)) = pending.pop() {
+        let metadata = std::fs::symlink_metadata(&source)?;
+        if let Ok(modified) = metadata.modified() {
+            if let Ok(since_epoch) = modified.duration_since(std::time::UNIX_EPOCH) {
+                let value = format!(
+                    "{}.{:09}",
+                    since_epoch.as_secs(),
+                    since_epoch.subsec_nanos()
+                );
+                builder
+                    .append_pax_extensions([("mtime", value.as_bytes())])
+                    .map_err(io_err)?;
+            }
+        }
+        builder
+            .append_path_with_name(&source, &archived)
+            .map_err(io_err)?;
+
+        if metadata.is_dir() {
+            let mut children = std::fs::read_dir(&source)?.collect::<Result<Vec<_>, _>>()?;
+            children.sort_by_key(|entry| entry.file_name());
+            for child in children.into_iter().rev() {
+                pending.push((child.path(), archived.join(child.file_name())));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn pax_mtime(entry: &mut tar::Entry<'_, impl Read>) -> Option<filetime::FileTime> {
+    let extensions = entry.pax_extensions().ok()??;
+    for extension in extensions.flatten() {
+        if extension.key().ok()? != "mtime" {
+            continue;
+        }
+        let raw = extension.value().ok()?;
+        let (seconds, fraction) = raw.split_once('.').unwrap_or((raw, ""));
+        let seconds = seconds.parse::<i64>().ok()?;
+        let mut nanos = fraction
+            .as_bytes()
+            .iter()
+            .take(9)
+            .try_fold(0u32, |acc, byte| {
+                byte.is_ascii_digit()
+                    .then_some(acc.saturating_mul(10).saturating_add((byte - b'0') as u32))
+            })?;
+        for _ in fraction.len().min(9)..9 {
+            nanos = nanos.saturating_mul(10);
+        }
+        return Some(filetime::FileTime::from_unix_time(seconds, nanos));
+    }
+    None
 }
 
 fn hash_file(path: &Path) -> Result<([u8; 32], u64), RegistryError> {
@@ -504,6 +569,7 @@ pub fn extract_skip_existing(
             report.files_skipped = report.files_skipped.saturating_add(1);
             continue;
         }
+        let precise_mtime = pax_mtime(&mut entry);
         if let Some(parent) = dest.parent() {
             if !parent.is_dir() {
                 std::fs::create_dir_all(parent)?;
@@ -532,6 +598,9 @@ pub fn extract_skip_existing(
         // file rather than racing our own open descriptor.
         drop(out);
         crate::platform::fs::permissions::restore_mode(&dest, mode_bits)?;
+        if let Some(mtime) = precise_mtime {
+            filetime::set_file_mtime(&dest, mtime)?;
+        }
         report.files_written = report.files_written.saturating_add(1);
     }
     Ok(report)
@@ -823,6 +892,30 @@ mod tests {
         let restored_foo = std::fs::read(dest.join("release").join("deps").join("libfoo-abc.rlib"))
             .expect("read foo");
         assert_eq!(restored_foo, b"foo\n");
+    }
+
+    #[test]
+    fn extract_preserves_fractional_mtime_for_cargo_fingerprints() {
+        let dir = TempDir::new().expect("tempdir");
+        let source = dir.path().join("release");
+        let artifact = source.join("deps").join("libfoo-abc.rlib");
+        write_file(&artifact, b"foo\n");
+        let expected = filetime::FileTime::from_unix_time(1_700_000_000, 123_456_700);
+        filetime::set_file_mtime(&artifact, expected).expect("set source mtime");
+
+        let cook = dir.path().join("cook");
+        let packed = pack_cook_archive(&source, &cook).expect("pack");
+        let dest = dir.path().join("target");
+        extract_skip_existing(&packed.path, &dest).expect("extract");
+
+        let restored = filetime::FileTime::from_last_modification_time(
+            &std::fs::metadata(dest.join("release/deps/libfoo-abc.rlib"))
+                .expect("restored metadata"),
+        );
+        assert_eq!(
+            restored, expected,
+            "tar hydration must not round to seconds"
+        );
     }
 
     // #1880: cargo's `build-script-build` binaries must come back

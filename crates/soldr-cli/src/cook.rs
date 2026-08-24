@@ -366,28 +366,6 @@ pub(crate) async fn run_cook(args: &[String], cache_enabled: bool) -> Result<i32
     let parsed = parse_cook_args(args)?;
     let cwd = std::env::current_dir()
         .map_err(|e| SoldrError::Other(format!("soldr cook: failed to read cwd: {e}")))?;
-    // soldr#2788 preflight. cargo-chef cannot cook a workspace whose path
-    // dependencies resolve outside it: the recipe skeleton never materialises
-    // the sibling members those dependencies need, and the cook dies partway
-    // through with `extern location ... does not exist` after minutes of work.
-    // Detect it and say so instead of paying for the discovery every run.
-    //
-    // `--prepare-only` is exempt: that mode stops before the cook, and the
-    // recipe itself builds fine.
-    if !parsed.prepare_only {
-        let manifest_dir = resolve_manifest_dir(&cwd)?;
-        let external = crate::cook_workspace::external_path_dependencies(&manifest_dir);
-        if !external.is_empty() {
-            eprint!("{}", crate::cook_workspace::skip_message(&external));
-            // The skip message IS the explanation, so tell the exit guard
-            // (soldr#2024) that something spoke. Without this it annotates the
-            // non-zero exit as an unexplained soldr fault and asks the user to
-            // file a bug -- for a deliberate, fully-described skip.
-            crate::exit_guard::mark_spoke();
-            return Ok(COOK_SKIPPED_UNCOOKABLE_WORKSPACE);
-        }
-    }
-
     let (ctx, _tempdir_guard) = build_cook_context(&cwd, &parsed)?;
 
     // Phase 1: prepare. Cheap, deterministic, reads only the manifest tree.
@@ -398,67 +376,76 @@ pub(crate) async fn run_cook(args: &[String], cache_enabled: bool) -> Result<i32
         if code != 0 {
             return Ok(code);
         }
-        let stripped = sanitize_cargo_chef_recipe(&ctx.recipe_path)?;
-        if stripped > 0 {
-            eprintln!(
-                "soldr cook: removed {stripped} generated cargo-chef plugin manifest keys from recipe"
-            );
-        }
-        if parsed.prepare_only {
-            eprintln!(
-                "soldr cook: wrote recipe to {} (--prepare-only)",
-                ctx.recipe_path.display()
-            );
-            return Ok(0);
-        }
+    }
 
-        // soldr#2788: refuse a cook that cannot succeed, instead of spending
-        // ~190s discovering it. A crate depending on a path outside the
-        // skeleton (a sibling repo vendored as a submodule with its own
-        // `[workspace]`, so it lands in `exclude` rather than `members`) is
-        // compiled against an `--extern` nothing produced. Cook then degrades
-        // with "continuing without cooked deps" -- the build passes, no layer
-        // is saved, and every later run repeats the full cold build. Silent.
-        //
-        // Skipping with a named reason keeps the loss visible. Actually
-        // cooking these workspaces is soldr#2791.
-        if let Ok(raw) = std::fs::read_to_string(&ctx.recipe_path) {
-            if let Ok(recipe) = serde_json::from_str::<serde_json::Value>(&raw) {
-                let blocked = unmaterializable_path_deps(&recipe);
-                if !blocked.is_empty() {
-                    let parts: Vec<String> = blocked
-                        .iter()
-                        .map(|(dep, owner)| format!("{dep} (required by {owner})"))
-                        .collect();
-                    let detail = parts.join(", ");
-                    let plural = if blocked.len() == 1 { "y" } else { "ies" };
-                    let count = blocked.len();
-                    eprintln!(
+    let sanitized = sanitize_cargo_chef_recipe(&ctx.recipe_path)?;
+    if sanitized.plugin_keys_removed > 0 {
+        eprintln!(
+            "soldr cook: removed {} generated cargo-chef plugin manifest keys from recipe",
+            sanitized.plugin_keys_removed
+        );
+    }
+    if sanitized.path_dependencies_rewritten + sanitized.patches_removed > 0 {
+        eprintln!(
+            "soldr cook: redirected {} excluded path dependencies and {} patches to their published sources for dependency cooking",
+            sanitized.path_dependencies_rewritten,
+            sanitized.patches_removed
+        );
+    }
+    if parsed.prepare_only {
+        eprintln!(
+            "soldr cook: wrote recipe to {} (--prepare-only)",
+            ctx.recipe_path.display()
+        );
+        return Ok(0);
+    }
+
+    // soldr#2788: refuse a cook that still cannot succeed, instead of spending
+    // ~190s discovering it. A crate depending on a path outside the
+    // skeleton (a sibling repo vendored as a submodule with its own
+    // `[workspace]`, so it lands in `exclude` rather than `members`) is
+    // compiled against an `--extern` nothing produced. Cook then degrades
+    // with "continuing without cooked deps" -- the build passes, no layer
+    // is saved, and every later run repeats the full cold build. Silent.
+    //
+    // Skipping with a named reason keeps the loss visible. Actually
+    // cooking these workspaces is soldr#2791.
+    if let Ok(raw) = std::fs::read_to_string(&ctx.recipe_path) {
+        if let Ok(recipe) = serde_json::from_str::<serde_json::Value>(&raw) {
+            let blocked = unmaterializable_path_deps(&recipe);
+            if !blocked.is_empty() {
+                let parts: Vec<String> = blocked
+                    .iter()
+                    .map(|(dep, owner)| format!("{dep} (required by {owner})"))
+                    .collect();
+                let detail = parts.join(", ");
+                let plural = if blocked.len() == 1 { "y" } else { "ies" };
+                let count = blocked.len();
+                eprintln!(
                         "soldr cook: skipped - workspace depends on {count} path dependenc{plural} the cargo-chef recipe cannot materialize: {detail}. \
 Dependencies were NOT prebuilt and no cache layer was saved; the build \
 proceeds uncached. See https://github.com/zackees/soldr/issues/2791"
                     );
-                    // soldr#2802: the same code the layout preflight returns.
-                    //
-                    // This used to be `Ok(0)`, which contradicted the line
-                    // directly above it. `setup-soldr/cook` derives the save
-                    // decision from the exit code --
-                    //
-                    //   cookRan   = runRes.exitCode === 0;
-                    //   saveLayer = cookRan ? (baseReady ? "delta" : "base") : "none";
-                    //
-                    // -- so exit 0 saves a layer holding nothing cooked and
-                    // poisons that key for every later run, while the message
-                    // claims no layer was saved. Non-zero yields `saveLayer =
-                    // "none"`, which is what the message describes.
-                    //
-                    // `fail-on-error` defaults to false in that action, so this
-                    // does not fail the step; a consumer who opts into it gets a
-                    // hard failure on a deliberate skip, which is the same trade
-                    // the layout preflight already makes.
-                    crate::exit_guard::mark_spoke();
-                    return Ok(COOK_SKIPPED_UNCOOKABLE_WORKSPACE);
-                }
+                // soldr#2802: the same code the layout preflight returns.
+                //
+                // This used to be `Ok(0)`, which contradicted the line
+                // directly above it. `setup-soldr/cook` derives the save
+                // decision from the exit code --
+                //
+                //   cookRan   = runRes.exitCode === 0;
+                //   saveLayer = cookRan ? (baseReady ? "delta" : "base") : "none";
+                //
+                // -- so exit 0 saves a layer holding nothing cooked and
+                // poisons that key for every later run, while the message
+                // claims no layer was saved. Non-zero yields `saveLayer =
+                // "none"`, which is what the message describes.
+                //
+                // `fail-on-error` defaults to false in that action, so this
+                // does not fail the step; a consumer who opts into it gets a
+                // hard failure on a deliberate skip, which is the same trade
+                // the layout preflight already makes.
+                crate::exit_guard::mark_spoke();
+                return Ok(COOK_SKIPPED_UNCOOKABLE_WORKSPACE);
             }
         }
     }
@@ -499,12 +486,7 @@ proceeds uncached. See https://github.com/zackees/soldr/issues/2791"
         // Restore source before returning — same invariant as the
         // normal post-cook path (project tree must be pristine for
         // downstream cargo build).
-        if let Err(e) = restore_project_source(&ctx.manifest_dir, &source_snapshot) {
-            eprintln!(
-                "soldr cook: warning: failed to restore project source after warm-skip \
-                 (project may be left in cargo-chef's stub state): {e}"
-            );
-        }
+        restore_project_source(&ctx.manifest_dir, &source_snapshot)?;
         return Ok(0);
     }
 
@@ -516,16 +498,29 @@ proceeds uncached. See https://github.com/zackees/soldr/issues/2791"
 
     // Restore the project to its pre-cook state regardless of how cook exited,
     // so the tree is pristine for every subsequent build step (#566).
-    if let Err(e) = restore_project_source(&ctx.manifest_dir, &source_snapshot) {
-        eprintln!(
-            "soldr cook: warning: failed to restore project source after cook \
-             (project may be left in cargo-chef's stub state): {e}"
-        );
-    }
+    // Restoration is a correctness boundary: never run the exact build or
+    // persist/index a successful cook against cargo-chef's synthetic source.
+    restore_project_source(&ctx.manifest_dir, &source_snapshot)?;
 
     let code = cook_result?;
     if code != 0 {
         return Ok(code);
+    }
+
+    // The portable recipe cooks published versions of excluded sibling
+    // workspaces. A vendored checkout can still have local patches or unit
+    // variants that do not exist in that package, so populate those exact
+    // units after restoring the user's real manifests and sources.
+    if sanitized.needs_exact_build() {
+        eprintln!(
+            "soldr cook: supplementing portable dependency cook with the exact vendored dependency graph"
+        );
+        let exact_args = build_exact_cook_args(&parsed);
+        let exact_code =
+            cargo_front_door::run_cargo_front_door(&exact_args, cache_enabled, false).await?;
+        if exact_code != 0 {
+            return Ok(exact_code);
+        }
     }
 
     // #621: persist the warm-cook marker so the next run with the same
@@ -603,8 +598,28 @@ fn green_indexed_prefix() -> &'static str {
 /// flag → `debug` (the "dev" profile), `--profile=<name>` → `<name>`.
 /// With `--target X` the artifacts land under `target/X/<profile>/`.
 fn resolve_cook_target_dir(manifest_dir: &Path, args: &CookArgs) -> PathBuf {
+    let configured = std::env::var_os("CARGO_TARGET_DIR").filter(|value| !value.is_empty());
+    let invocation_dir = std::env::current_dir().unwrap_or_else(|_| manifest_dir.to_path_buf());
+    resolve_cook_target_dir_with_env(manifest_dir, &invocation_dir, args, configured.as_deref())
+}
+
+fn resolve_cook_target_dir_with_env(
+    manifest_dir: &Path,
+    invocation_dir: &Path,
+    args: &CookArgs,
+    configured: Option<&std::ffi::OsStr>,
+) -> PathBuf {
     let profile = resolve_profile_dir_name(args);
-    let mut root = manifest_dir.join("target");
+    let mut root = configured
+        .map(PathBuf::from)
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                invocation_dir.join(path)
+            }
+        })
+        .unwrap_or_else(|| manifest_dir.join("target"));
     if let Some(triple) = args.target.as_deref() {
         root = root.join(triple);
     }
@@ -651,6 +666,10 @@ struct CookMarker {
     version: u32,
     /// SHA-256 hex of the post-`sanitize_cargo_chef_recipe` recipe.json.
     recipe_sha256: String,
+    /// SHA-256 of the exact Cargo selection (workspace/packages/features and
+    /// other passthrough flags). A narrower cook must never warm-skip a later
+    /// broader invocation that shares the same cargo-chef recipe.
+    selection_sha256: String,
     /// `rustc -V` first line.
     rustc_version: String,
     /// `soldr --version` (CARGO_PKG_VERSION). A different soldr could
@@ -658,7 +677,7 @@ struct CookMarker {
     soldr_version: String,
 }
 
-const COOK_MARKER_VERSION: u32 = 1;
+const COOK_MARKER_VERSION: u32 = 3;
 
 /// Read + parse the warm-cook marker at `path`. Any error (missing
 /// file, malformed JSON, missing field, version mismatch) returns
@@ -673,6 +692,7 @@ fn read_cook_marker(path: &Path) -> Option<CookMarker> {
     Some(CookMarker {
         version,
         recipe_sha256: value.get("recipe_sha256")?.as_str()?.to_string(),
+        selection_sha256: value.get("selection_sha256")?.as_str()?.to_string(),
         rustc_version: value.get("rustc_version")?.as_str()?.to_string(),
         soldr_version: value.get("soldr_version")?.as_str()?.to_string(),
     })
@@ -686,6 +706,7 @@ fn write_cook_marker(path: &Path, marker: &CookMarker) -> std::io::Result<()> {
     let body = serde_json::json!({
         "version": marker.version,
         "recipe_sha256": &marker.recipe_sha256,
+        "selection_sha256": &marker.selection_sha256,
         "rustc_version": &marker.rustc_version,
         "soldr_version": &marker.soldr_version,
     });
@@ -696,19 +717,31 @@ fn write_cook_marker(path: &Path, marker: &CookMarker) -> std::io::Result<()> {
 /// Returns `None` when any required input can't be resolved (recipe
 /// file missing — shouldn't happen post-Phase-1, but if it does we
 /// simply skip the optimization).
-fn compute_cook_marker(ctx: &CookContext, _parsed: &CookArgs) -> Option<CookMarker> {
+fn compute_cook_marker(ctx: &CookContext, parsed: &CookArgs) -> Option<CookMarker> {
     use sha2::{Digest, Sha256};
     let recipe_bytes = std::fs::read(&ctx.recipe_path).ok()?;
     let mut h = Sha256::new();
     h.update(&recipe_bytes);
     let recipe_sha256 = hex_lower(&h.finalize());
+    let selection_sha256 = cook_selection_sha256(parsed);
     let rustc_version = rustc_version_string(&ctx.manifest_dir).unwrap_or_default();
     Some(CookMarker {
         version: COOK_MARKER_VERSION,
         recipe_sha256,
+        selection_sha256,
         rustc_version,
         soldr_version: env!("CARGO_PKG_VERSION").to_string(),
     })
+}
+
+fn cook_selection_sha256(args: &CookArgs) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    for arg in build_exact_cook_args(args) {
+        h.update(arg.as_bytes());
+        h.update([0]);
+    }
+    hex_lower(&h.finalize())
 }
 
 /// Lower-case hex helper (`crate::cache_lib::cook_archive::sha_abbrev` truncates).
