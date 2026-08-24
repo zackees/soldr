@@ -153,6 +153,17 @@ jobs:
           set -euo pipefail
           python3 .github/scripts/check_proto_drift.py
 
+      # soldr#2752 Rule A — the manifest half of the `soldr-deps` gateway,
+      # landed first because it needs no facade and no source churn. Adding a
+      # third-party dependency now means amending a checked-in inventory in
+      # the same PR, so the edge shows up in review instead of as one line in
+      # a manifest nobody diffs. Fails in both directions, like loc_ratchet:
+      # an unlisted dependency, and a listed one that is gone.
+      - name: Third-party dependency inventory
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/check_dependency_inventory.py
+
       # soldr#2360/#2363 — the broker-fronted daemon design deliberately
       # keeps the wire at protocol_v2/client_v2, broken in place; a
       # protocol_v3/client_v3 module would mean two wire majors coexisting,
