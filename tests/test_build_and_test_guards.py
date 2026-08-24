@@ -83,3 +83,4 @@ def test_hosted_runner_compile_concurrency_is_memory_bounded() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     assert 'CARGO_BUILD_JOBS: "1"' in workflow
     assert 'SOLDR_JOBS: "1"' in workflow
+    assert "Enlarge swap (OOM headroom)" in workflow

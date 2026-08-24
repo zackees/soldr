@@ -603,11 +603,23 @@ def test_all_miss_cross_builds_bound_compile_concurrency() -> None:
     cross_job = _job_block(cross, "cross-build", "")
     wheel_job = _job_block(ci, "wheel-cross-verify")
     assert 'CARGO_BUILD_JOBS: "2"' in cross_job
-    assert 'SOLDR_JOBS: "2"' in cross_job
+    assert 'SOLDR_JOBS: "1"' in cross_job
+    assert "Enlarge swap (OOM headroom)" in cross_job
     assert "CARGO_BUILD_JOBS: ${{ matrix.jobs }}" in wheel_job
     assert "SOLDR_JOBS: ${{ matrix.jobs }}" in wheel_job
     assert 'CARGO_PROFILE_CI_NEXTEST_CODEGEN_UNITS: "4"' in cross_job
     assert "shared-key: cross-build-${{ inputs.target }}-v7" in cross_job
+
+
+def test_external_zccache_bootstraps_get_exclusive_service_access() -> None:
+    bootstrap = (WORKFLOWS / "_bootstrap-e2e.yml").read_text(encoding="utf-8")
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+
+    assert 'SOLDR_JOBS: "1"' in bootstrap
+    assert "Enlarge swap (OOM headroom)" in bootstrap
+    lint_job = _job_block(ci, "lint")
+    assert 'SOLDR_JOBS: "1"' in lint_job
+    assert "Enlarge swap (OOM headroom)" in lint_job
 
 
 def test_gnu_catalogue_fixture_is_part_of_both_gnu_ci_lanes() -> None:

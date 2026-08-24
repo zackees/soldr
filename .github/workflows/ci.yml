@@ -93,6 +93,9 @@ jobs:
       # Soldr-owned driver resolver exercised below.
       DYLINT_VERSION: 6.0.3
       DYLINT_DRIVER_PATH: ${{ github.workspace }}/target/dylint/drivers
+      # The published zccache crate is one large compilation unit. Give it
+      # exclusive access to the embedded compiler service on hosted runners.
+      SOLDR_JOBS: "1"
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -101,6 +104,10 @@ jobs:
           # soldr#1966: the line-ceiling ratchet below needs `git merge-base`,
           # which the default depth-1 checkout cannot compute.
           fetch-depth: 0
+
+      - name: Enlarge swap (OOM headroom)
+        shell: bash
+        run: bash .github/scripts/setup_ci_swap.sh
 
       # soldr#1248/#2 follow-up: cache + soldr-cook stay disabled on
       # Lint while target/profile-shaped cook restore is reintroduced in
