@@ -299,7 +299,10 @@ pub(crate) fn scrub_outer_soldr_env(command: &mut Command) -> &mut Command {
         //
         // `cli_global_upgrade.rs` deliberately does not use this helper, so
         // the delegation policy keeps its own coverage.
-        .env(soldr_cli::global_upgrade::GLOBAL_DELEGATION_ENV_VAR, "1")
+        .env(
+            soldr_cli::global_upgrade::GLOBAL_DELEGATION_DISABLE_ENV_VAR,
+            "1",
+        )
         .env_remove("RUSTC_WORKSPACE_WRAPPER")
         .env_remove("SOLDR_LINKER")
         .env_remove("CARGO_BUILD_TARGET")

@@ -53,7 +53,7 @@ fn project_policy_delegates_to_newer_global_soldr() {
         // back in -- otherwise the two negative tests below would pass
         // vacuously, asserting "no delegation" while the harness had turned
         // delegation off entirely.
-        .env_remove(soldr_cli::global_upgrade::GLOBAL_DELEGATION_ENV_VAR)
+        .env_remove(soldr_cli::global_upgrade::GLOBAL_DELEGATION_DISABLE_ENV_VAR)
         .arg("status")
         .current_dir(&fixture)
         .env("PATH", prepend_to_path(&global_bin_dir))
@@ -112,7 +112,7 @@ fn broker_status_in_opted_in_checkout_neither_probes_nor_spawns() {
         // back in -- otherwise the two negative tests below would pass
         // vacuously, asserting "no delegation" while the harness had turned
         // delegation off entirely.
-        .env_remove(soldr_cli::global_upgrade::GLOBAL_DELEGATION_ENV_VAR)
+        .env_remove(soldr_cli::global_upgrade::GLOBAL_DELEGATION_DISABLE_ENV_VAR)
         .args(["broker", "status"])
         .current_dir(&fixture)
         .env("PATH", prepend_to_path(&global_bin_dir))
@@ -197,7 +197,7 @@ fn wrapper_invocations_never_delegate_to_newer_global_soldr() {
         // back in -- otherwise the two negative tests below would pass
         // vacuously, asserting "no delegation" while the harness had turned
         // delegation off entirely.
-        .env_remove(soldr_cli::global_upgrade::GLOBAL_DELEGATION_ENV_VAR)
+        .env_remove(soldr_cli::global_upgrade::GLOBAL_DELEGATION_DISABLE_ENV_VAR)
         .arg(&fake_rustc)
         .arg("--print")
         .arg("sysroot")
