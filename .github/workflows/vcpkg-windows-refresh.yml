@@ -176,16 +176,22 @@ jobs:
         # this repo (zackees/soldr). The default `GITHUB_TOKEN` has
         # write access to current-repo releases, so this avoids the
         # cross-repo PAT (`SOLDR_TOOLCHAIN_PUSH_TOKEN`) the previous
-        # design needed. The soldr-side `fetch/vcpkg.rs` consumer
-        # resolves bundles via the release-asset URL:
+        # design needed.
         #
-        #   https://github.com/zackees/soldr/releases/download/
-        #     vcpkg-bundles-latest/
-        #     vcpkg-{triplet}-{baseline}.tar.zst
+        # soldr#2814 — two corrections to what this comment used to say,
+        # because both sent a reader looking for things that are not there:
         #
-        # Each refresh rotates the release tag forward so historical
-        # baselines remain accessible via the per-tag pinning
-        # mechanism (release_baseline field on consumer side).
+        #   * it named a `fetch/vcpkg.rs` consumer that resolves these
+        #     assets. No such file exists and none ever has (`git log --all`
+        #     on that path is empty, and `crates/` contains no reference to
+        #     vcpkg at all). Whether anything OUTSIDE this repo consumes the
+        #     URLs is the open question on that issue.
+        #   * it said each refresh "rotates the release tag forward so
+        #     historical baselines remain accessible". The tag is the
+        #     constant `vcpkg-bundles-latest`, so nothing rotates and no
+        #     historical baseline is retained. The per-run baseline survives
+        #     only inside the asset NAME
+        #     (`vcpkg-{triplet}-{baseline}.tar.zst`).
         shell: bash
         run: |
           set -euo pipefail
@@ -201,12 +207,30 @@ jobs:
             echo "${baseline}" > "staging/vcpkg-${triplet}-baseline.txt"
             ls -lh "$staged"
           done
-          # Recreate the rolling tag at HEAD.
+          # Never delete the published bundles in order to replace them.
+          #
+          # soldr#2814: this used to `gh release delete --cleanup-tag` and then
+          # `gh release create`. The create fails under immutable releases --
+          #
+          #     tag_name was used by an immutable release
+          #     Cannot create ref due to creations being restricted.
+          #
+          # -- so every scheduled run destroyed the release and could not put
+          # it back. The tag is now permanently burned and the release is gone.
+          # A publish step must not remove the current artifact before its
+          # replacement is durable; that is the 0.9.0 lesson from soldr#2469.
+          #
+          # Updating assets in place also fails on an immutable release, but it
+          # fails without taking anything with it, which is the difference that
+          # matters here.
           if gh release view "$TAG" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            gh release delete "$TAG" --repo "${GITHUB_REPOSITORY}" --yes --cleanup-tag
+            gh release upload "$TAG" staging/* \
+                --repo "${GITHUB_REPOSITORY}" \
+                --clobber
+          else
+            gh release create "$TAG" \
+                --repo "${GITHUB_REPOSITORY}" \
+                --title "vcpkg bundles (latest baseline)" \
+                --notes "Auto-published by .github/workflows/vcpkg-windows-refresh.yml. Bundles built fresh against vcpkg master HEAD at workflow run time." \
+                staging/*
           fi
-          gh release create "$TAG" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --title "vcpkg bundles (latest baseline)" \
-              --notes "Auto-published by .github/workflows/vcpkg-windows-refresh.yml. Bundles built fresh against vcpkg master HEAD at workflow run time." \
-              staging/*
