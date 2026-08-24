@@ -177,3 +177,36 @@ fn a_real_grandchild_tree_is_killed_whole() {
         std::thread::sleep(Duration::from_millis(50));
     }
 }
+
+/// A sweep that could not look must not read as a sweep that found nothing
+/// (soldr#2806).
+///
+/// `surviving_descendants` used to map a failed `CreateToolhelp32Snapshot` to
+/// an empty vector, and an empty vector is the success condition -- so a
+/// snapshot that could not be taken returned `TreeKilled`: a *verified* kill
+/// that verified nothing. `terminate_tree`'s initial enumeration already
+/// refuses to do this and says why, so the verification loop doing the opposite
+/// was an asymmetry rather than a judgement call.
+///
+/// Pure, because the failure it guards is a transient Windows API error this
+/// host does not reproduce -- `CreateToolhelp32Snapshot` returns
+/// `ERROR_BAD_LENGTH` when the process list shifts under it, which is likelier
+/// on the loaded runner where soldr#2806 was seen.
+#[test]
+fn a_failed_snapshot_is_not_an_empty_tree() {
+    assert_eq!(classify_sweep(None), Sweep::Unknown);
+    assert_eq!(classify_sweep(Some(Vec::new())), Sweep::Clear);
+    assert_ne!(
+        classify_sweep(None),
+        classify_sweep(Some(Vec::new())),
+        "could-not-enumerate and nothing-survived must stay distinct: only the          second may end the verification loop with TreeKilled"
+    );
+}
+
+#[test]
+fn a_sweep_that_finds_survivors_names_them() {
+    assert_eq!(
+        classify_sweep(Some(vec![200, 300])),
+        Sweep::Survivors(vec![200, 300])
+    );
+}

@@ -67,19 +67,58 @@ pub fn terminate_tree(child: &mut Child) -> io::Result<TreeKill> {
     // whatever is still standing until nothing is, or the budget expires.
     let deadline = std::time::Instant::now() + VERIFY_BUDGET;
     loop {
-        let survivors = surviving_descendants(root);
-        if survivors.is_empty() {
-            return Ok(TreeKill::TreeKilled);
-        }
+        let sweep = classify_sweep(surviving_descendants(root));
+        let survivors = match sweep {
+            Sweep::Clear => return Ok(TreeKill::TreeKilled),
+            // The snapshot failed, so this sweep saw nothing -- which is not the
+            // same as nothing being there. Retry within the budget; on expiry
+            // report the weaker guarantee, exactly as the enumeration above
+            // does when it cannot name the set.
+            Sweep::Unknown => Vec::new(),
+            Sweep::Survivors(pids) => pids,
+        };
         if std::time::Instant::now() >= deadline {
-            // Out of budget with survivors still live. Say so: the whole point
-            // of soldr#2605 is that this case used to report success.
+            // Out of budget with survivors still live, or never able to look.
+            // Say so: the whole point of soldr#2605 is that this case used to
+            // report success.
             return Ok(TreeKill::ProcessKilled);
         }
         for pid in survivors.iter().rev() {
             terminate_descendant(*pid, root);
         }
         std::thread::sleep(VERIFY_POLL);
+    }
+}
+
+/// What one verification sweep established.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Sweep {
+    /// The tree was enumerated and nothing was left alive.
+    Clear,
+    /// The tree was enumerated and these are still alive.
+    Survivors(Vec<u32>),
+    /// The tree could not be enumerated, so this sweep proves nothing.
+    Unknown,
+}
+
+/// Classify a sweep, keeping "could not look" distinct from "nothing there".
+///
+/// soldr#2806: these used to collapse. `surviving_descendants` mapped a failed
+/// `CreateToolhelp32Snapshot` to an empty vector, and an empty vector is the
+/// success condition -- so a snapshot that could not be taken returned
+/// `TreeKilled`, a *verified* kill that verified nothing. The initial
+/// enumeration in `terminate_tree` already refuses to do this and says why; the
+/// verification loop did not, which is the asymmetry rather than a judgement
+/// call.
+///
+/// `CreateToolhelp32Snapshot` fails transiently with `ERROR_BAD_LENGTH` when
+/// the process list changes underneath it -- likelier on a loaded runner, which
+/// is where soldr#2806 was seen and where this host never reproduces it.
+fn classify_sweep(enumerated: Option<Vec<u32>>) -> Sweep {
+    match enumerated {
+        None => Sweep::Unknown,
+        Some(pids) if pids.is_empty() => Sweep::Clear,
+        Some(pids) => Sweep::Survivors(pids),
     }
 }
 
@@ -92,15 +131,19 @@ const VERIFY_POLL: std::time::Duration = std::time::Duration::from_millis(25);
 
 /// Descendants of `root` that are still alive, parents before children.
 ///
+/// `None` when the process list could not be snapshotted -- distinct from
+/// `Some(vec![])`, which means the tree really is empty (soldr#2806).
+///
 /// Private on purpose: the cross-platform facade exports only the four
 /// termination entry points, and adding a fifth would oblige Linux and macOS
 /// to grow an equivalent for a diagnostic only Windows needs today.
-fn surviving_descendants(root: u32) -> Vec<u32> {
-    descendants_of(root)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|pid| crate::process::inspect::is_alive(*pid))
-        .collect()
+fn surviving_descendants(root: u32) -> Option<Vec<u32>> {
+    Some(
+        descendants_of(root)?
+            .into_iter()
+            .filter(|pid| crate::process::inspect::is_alive(*pid))
+            .collect(),
+    )
 }
 
 /// Terminate one descendant, refusing pids that cannot belong to the root tree.
