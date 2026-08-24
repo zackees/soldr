@@ -58,14 +58,40 @@ report_warm_misses() {
     echo "## warm miss detail unavailable: /tmp/warm-build.log missing" >&2
     return 0
   fi
+  # NOT sort -u: the counts below need the duplicates. Collapsing here made
+  # `uniq -c` report 1 for every unit -- a "most-missed" list that was all
+  # ones. The distinct count is taken separately, just below.
   local units
   units="$(grep -oE 'soldr\[cache\] [A-Za-z0-9_]+ .*MISS' /tmp/warm-build.log \
-    | sed -E 's/soldr\[cache\] ([A-Za-z0-9_]+) .*/\1/' | sort -u)"
+    | sed -E 's/soldr\[cache\] ([A-Za-z0-9_]+) .*/\1/' | sort)"
   local count
-  count="$(printf '%s\n' "$units" | grep -c . || true)"
-  echo "## warm-run misses by unit ($count distinct)" >&2
-  printf '%s\n' "$units" | sed 's/^/  /' >&2
-  echo "## the per-unit reason is in the compile journal named above" >&2
+  count="$(printf '%s\n' "$units" | sort -u | grep -c . || true)"
+  echo "## warm-run misses by unit ($count distinct, most-missed first)" >&2
+  # Counts, not just names: a unit that misses once is a keying question, and
+  # one that misses repeatedly in a single run is a different question.
+  printf '%s\n' "$units" | sort | uniq -c | sort -rn | sed 's/^/  /' >&2
+}
+
+explain_report() {
+  # soldr#2824: the miss *list* was added in soldr#2825 and closed with the
+  # line "the per-unit reason is in the compile journal named above". No
+  # journal was named anywhere in this harness, so that sentence pointed at
+  # nothing and the group under it printed only its own header.
+  #
+  # The reason was never missing -- it was being discarded. `soldr cache
+  # report --json` already carries the journal's path, zccache's own analysis
+  # of it, the staged counters (plan_unsupported, publication_failure,
+  # publication_conflict, salvage_failure, materialize_failure ...) and any
+  # diagnoses. This harness captured the whole report and read four integers
+  # out of it.
+  #
+  # The cold report matters as much as the warm one: publication happens on
+  # the cold run, so a unit that missed warm most often failed to *publish*
+  # cold, and only the cold report can say that.
+  local label="$1"
+  local report="$2"
+  python3 /work/ci/assert_nextest_archive_cacheability.py \
+    --explain-report "$label" "$report" >&2 || true
 }
 
 print_daemon_diagnostics() {
@@ -230,17 +256,132 @@ echo "CACHEABILITY_RESULT $result"
 
 if (( warm_hits <= 0 )); then
   echo "CACHEABILITY_FAILURE warm run reported zero hits" >&2
+  explain_report cold /tmp/cold-report.json
+  explain_report warm /tmp/warm-report.json
   exit 2
 fi
 if (( warm_misses != 0 )); then
   echo "CACHEABILITY_FAILURE warm run had misses; expected zero" >&2
   report_warm_misses
+  explain_report cold /tmp/cold-report.json
+  explain_report warm /tmp/warm-report.json
   exit 3
 fi
 
 echo "CACHEABILITY_OK warm run had hits and zero misses"
 echo "TIMING_MS cold=$((cold_end - cold_start)) warm=$((warm_end - warm_start))"
 """
+
+
+def _counter_lines(report: dict[str, Any]) -> list[str]:
+    """Non-zero staged counters, largest first.
+
+    These are the closest thing the pipeline has to a per-unit reason:
+    `plan_unsupported` says a unit was never eligible, `publication_failure`
+    and `publication_conflict` say it compiled but never became durable, and
+    `materialize_failure` says it was found and could not be placed.
+
+    Read defensively at every level. The `last_session` value is passed
+    through verbatim from zccache and its shape moves across protocol
+    versions -- `cache/report.rs` says so explicitly, and this is a diagnostic
+    printed while something is already failing. It must degrade to a note
+    rather than raise a second error on top of the first.
+    """
+    session = report.get("last_session")
+    if not isinstance(session, dict):
+        return ["  (no last_session in the report)"]
+    profile = session.get("phase_profile")
+    staged = profile.get("staged") if isinstance(profile, dict) else None
+    counters = staged.get("counters") if isinstance(staged, dict) else None
+    if not isinstance(counters, dict):
+        return ["  (no phase_profile.staged.counters -- the shape may have moved)"]
+    nonzero = [
+        (name, value)
+        for name, value in counters.items()
+        if isinstance(value, (int, float)) and value
+    ]
+    if not nonzero:
+        return ["  (every counter is zero)"]
+    nonzero.sort(key=lambda entry: (-entry[1], entry[0]))
+    return [f"  {name} = {value}" for name, value in nonzero]
+
+
+def _diagnosis_lines(report: dict[str, Any]) -> list[str]:
+    entries = report.get("diagnoses")
+    if not isinstance(entries, list) or not entries:
+        return ["  (none)"]
+    lines = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            lines.append(f"  {entry}")
+            continue
+        severity = entry.get("severity", "?")
+        kind = entry.get("kind", "?")
+        message = entry.get("message", "")
+        lines.append(f"  [{severity}] {kind}: {message}")
+    return lines
+
+
+def explain_report(label: str, report: dict[str, Any]) -> list[str]:
+    """The reasons a cacheability failure has, rendered for a CI log.
+
+    soldr#2824/#2825: the harness printed which units missed and then said the
+    reason was "in the compile journal named above" -- naming no journal, and
+    printing nothing. Every field below was already in the report the harness
+    captured; none of it was being read.
+    """
+    lines = [f"## {label} report evidence"]
+
+    journal = report.get("journal_path") or "(absent)"
+    present = report.get("journal_present")
+    lines.append(f"  journal_path: {journal}")
+    lines.append(f"  journal_present: {present}")
+
+    lines.append(f"## {label} staged counters (non-zero)")
+    lines.extend(_counter_lines(report))
+
+    lines.append(f"## {label} diagnoses")
+    lines.extend(_diagnosis_lines(report))
+
+    notes = report.get("notes")
+    lines.append(f"## {label} notes")
+    if isinstance(notes, list) and notes:
+        lines.extend(f"  {note}" for note in notes)
+    else:
+        lines.append("  (none)")
+
+    rollups = report.get("rollups")
+    lines.append(f"## {label} rollups (zccache analyze over that journal)")
+    if rollups is None:
+        # Distinguished from "absent" on purpose: a null rollups with a note
+        # explaining why is a different failure from a missing key.
+        lines.append("  null -- see notes above")
+    else:
+        rendered = json.dumps(rollups, indent=2, sort_keys=True, default=str)
+        # Capped: this runs inside an already-failing job and an unbounded
+        # dump of an evolving structure would bury the counters above it.
+        capped = rendered.splitlines()[:40]
+        lines.extend(f"  {line}" for line in capped)
+        if len(rendered.splitlines()) > len(capped):
+            lines.append("  ... (truncated)")
+
+    return lines
+
+
+def emit_report_explanation(label: str, path: str) -> int:
+    """Load a `cache report --json` file and print what it says about misses."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            report = json.load(handle)
+    except (OSError, json.JSONDecodeError) as error:
+        print(f"## {label} evidence unavailable: {path}: {error}")
+        return 0
+    if not isinstance(report, dict):
+        print(f"## {label} evidence unavailable: {path} is not an object")
+        return 0
+    for line in explain_report(label, report):
+        print(line)
+    return 0
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -264,6 +405,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--suffix",
         default=None,
         help="override the Docker volume suffix; default is timestamp + pid",
+    )
+    parser.add_argument(
+        "--explain-report",
+        nargs=2,
+        metavar=("LABEL", "PATH"),
+        default=None,
+        help=(
+            "print why a `soldr cache report --json` shows misses, and exit. "
+            "Used by the harness from inside the container; runs no Docker."
+        ),
     )
     return parser.parse_args(argv)
 
@@ -458,6 +609,11 @@ def remove_volumes(volumes: list[str]) -> None:
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
+    if args.explain_report is not None:
+        # Before the Docker check: this runs *inside* the container, where
+        # there is no Docker daemon to reach.
+        label, path = args.explain_report
+        return emit_report_explanation(label, path)
     if not docker_available():
         print(
             "error: docker is not available or the daemon is not reachable",
