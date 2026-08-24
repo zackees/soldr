@@ -21,10 +21,13 @@ is that query, run by CI instead of by memory.
 
 ## What is checked
 
-1. `_vender/zccache/Cargo.toml`'s version agrees with `Cargo.lock`'s. They can
-   drift — the release seds the manifest while the build resolves the lock — and
-   a disagreement means the release would stage a different zccache than the one
-   that was tested.
+1. That the resolved zccache version can be read from `Cargo.lock` at all.
+
+   This used to also compare `_vender/zccache/Cargo.toml`'s version against the
+   lock's, because the release seds the manifest while the build resolves the
+   lock and the two could drift. soldr#2837 removed that manifest — zccache is
+   an exact crates.io dependency now, so the lock is the only source and there
+   is nothing left to disagree with it.
 2. That version has a published asset for **every** platform release staging
    asks for. `cross-compile-all-targets.yml` maps six target triples onto asset
    queries; a version missing any one of them breaks that lane, so checking only
