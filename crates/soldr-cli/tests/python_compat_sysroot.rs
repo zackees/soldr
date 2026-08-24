@@ -26,6 +26,22 @@ fn test_bundle() -> Vec<u8> {
         .expect("finish zstd")
 }
 
+/// Backstop so `server.join()` cannot hang forever if the code under test stops
+/// fetching. It is not a service budget, and sizing it like one is what broke.
+///
+/// It was 10s, which the fixture spent racing *the test's own setup*: the clock
+/// starts when the server is spawned, but the first request is not issued until
+/// after a tokio runtime build, a tempdir, two `resolve_policy` calls and an
+/// entire no-op `materialize_compatibility`. On a contended Windows target-run
+/// runner that exceeds 10s, so the listener was already dropped by the time the
+/// client connected -- and the client's 5s/10s/20s retry backoff then dialled a
+/// closed port three more times before giving up.
+///
+/// Sized against nextest's budget instead: comfortably under the 120s
+/// terminate-after, so a genuine regression still fails with this test's own
+/// message rather than an anonymous kill.
+const FIXTURE_SERVER_BACKSTOP: std::time::Duration = std::time::Duration::from_secs(60);
+
 fn serve_fixture(bundle: Vec<u8>) -> (String, Arc<Mutex<Vec<String>>>, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind fixture server");
     let origin = format!("http://{}", listener.local_addr().expect("address"));
@@ -47,7 +63,7 @@ fn serve_fixture(bundle: Vec<u8>) -> (String, Arc<Mutex<Vec<String>>>, thread::J
         listener
             .set_nonblocking(true)
             .expect("nonblocking listener");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + FIXTURE_SERVER_BACKSTOP;
         while seen.lock().expect("request log").len() < 2 && std::time::Instant::now() < deadline {
             let (mut stream, _) = match listener.accept() {
                 Ok(value) => value,
