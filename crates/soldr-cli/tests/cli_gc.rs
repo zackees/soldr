@@ -392,7 +392,24 @@ fn gc_list_json_reports_built_project_target_dir() {
     let soldr_bin = common::soldr_bin();
     let cargo = rustup_which("cargo");
 
+    // soldr#2785: run from the fixture project, not the inherited cwd.
+    // These tests execute with cargo's cwd inside this checkout, and the
+    // workspace manifest sets `[workspace.metadata.soldr] prefer_newer_global
+    // = true`. `global_upgrade::maybe_delegate` walks ancestors for that flag
+    // and, on a hit, runs `<global soldr> --version` as a CHILD PROCESS -- per
+    // its own doc, a released soldr's front door "stages a broker image under
+    // the inherited HOME and spawns `broker serve` before it prints its
+    // version", which is what made the broker-absent tests find a broker in
+    // their isolated homes (soldr#2521 D).
+    //
+    // So every invocation here was paying a process spawn, and the poll loop
+    // below was paying one per iteration: `global_upgrade` dominates the
+    // front-door trace in all three recorded failures (143ms, 201ms, 271ms of
+    // totals 151/209/280). The fixture project lives under the OS temp dir,
+    // whose ancestors carry no such manifest, so the gate is false and the
+    // probe never runs.
     let start = soldr_command(&soldr_bin)
+        .current_dir(&project_dir)
         .args(["daemon", "start"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         // A dogfooded outer `soldr cargo test` exports its installed
@@ -457,6 +474,7 @@ fn gc_list_json_reports_built_project_target_dir() {
     let json: Value = loop {
         attempts += 1;
         let output = soldr_command(&soldr_bin)
+            .current_dir(&project_dir)
             .args(["gc", "list", "--json"])
             .env("SOLDR_CACHE_DIR", &cache_root)
             .env_remove(soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR)
@@ -583,6 +601,7 @@ fn gc_list_json_reports_built_project_target_dir() {
     }
 
     let stop = soldr_command(&soldr_bin)
+        .current_dir(&project_dir)
         .args(["daemon", "stop"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .output()
