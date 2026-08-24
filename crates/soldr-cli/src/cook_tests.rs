@@ -646,3 +646,25 @@ fn unmaterializable_path_deps_ignores_registry_dependencies() {
 
     assert!(unmaterializable_path_deps(&recipe).is_empty());
 }
+
+/// A cook skip must not report success (soldr#2802).
+///
+/// `setup-soldr/cook` derives the cache decision from the exit code alone:
+///
+/// ```js
+/// cookRan   = runRes.exitCode === 0;
+/// saveLayer = cookRan ? (baseReady ? "delta" : "base") : "none";
+/// ```
+///
+/// So a skip returning 0 saves a layer holding nothing cooked and poisons that
+/// key for every later run -- strictly worse than the silent no-op the skip
+/// replaced, because the empty layer then hides the problem behind a cache hit.
+/// Both skip paths in `run_cook` return this constant; the test pins the one
+/// property that makes either of them correct.
+#[test]
+fn the_uncookable_skip_code_is_not_success() {
+    assert_ne!(
+        COOK_SKIPPED_UNCOOKABLE_WORKSPACE, 0,
+        "a skip reported as success makes setup-soldr save an empty cache layer"
+    );
+}

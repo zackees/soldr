@@ -438,7 +438,26 @@ pub(crate) async fn run_cook(args: &[String], cache_enabled: bool) -> Result<i32
 Dependencies were NOT prebuilt and no cache layer was saved; the build \
 proceeds uncached. See https://github.com/zackees/soldr/issues/2791"
                     );
-                    return Ok(0);
+                    // soldr#2802: the same code the layout preflight returns.
+                    //
+                    // This used to be `Ok(0)`, which contradicted the line
+                    // directly above it. `setup-soldr/cook` derives the save
+                    // decision from the exit code --
+                    //
+                    //   cookRan   = runRes.exitCode === 0;
+                    //   saveLayer = cookRan ? (baseReady ? "delta" : "base") : "none";
+                    //
+                    // -- so exit 0 saves a layer holding nothing cooked and
+                    // poisons that key for every later run, while the message
+                    // claims no layer was saved. Non-zero yields `saveLayer =
+                    // "none"`, which is what the message describes.
+                    //
+                    // `fail-on-error` defaults to false in that action, so this
+                    // does not fail the step; a consumer who opts into it gets a
+                    // hard failure on a deliberate skip, which is the same trade
+                    // the layout preflight already makes.
+                    crate::exit_guard::mark_spoke();
+                    return Ok(COOK_SKIPPED_UNCOOKABLE_WORKSPACE);
                 }
             }
         }
