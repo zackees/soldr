@@ -338,7 +338,16 @@ async fn run_with_args(prog: &str, args: &[String]) -> Result<i32, SoldrError> {
     // invocation path's UX exactly.
     let cli = Cli::parse_from(argv);
     startup_trace::phase(startup_trace::phase::CLAP_PARSE);
-    Box::pin(run_cli(cli)).await.map(|_| 0)
+    let outcome = Box::pin(run_cli(cli)).await.map(|_| 0);
+    // soldr#2785: attribute the command body. Everything above this line is
+    // startup; without a mark here the trace's last entry is `clap_parse` for
+    // every invocation, so a slow command reads as slow argument parsing.
+    //
+    // A command that never returns -- an `exec` onto a fetched tool, or a
+    // genuine wedge -- leaves no line, which is the same "entered but never
+    // finished" signal the rest of this trace relies on.
+    startup_trace::phase(startup_trace::phase::COMMAND_DISPATCH);
+    outcome
 }
 
 async fn run_dylint_command(
