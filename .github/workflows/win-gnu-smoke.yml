@@ -53,10 +53,8 @@ jobs:
         include:
           - name: linux-host → win-gnu (conda cross gcc)
             runner: ubuntu-24.04
-            soldr_bin: ./target/debug/soldr
           - name: windows-host → win-gnu (WinLibs gcc)
             runner: windows-2025
-            soldr_bin: ./target/debug/soldr.exe
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -77,15 +75,33 @@ jobs:
           toolchain: 1.95.0
           cache: false
 
+      # soldr#2813 follow-up: read the output path from cargo instead of
+      # assuming `target/debug/`. `soldr cargo build` injects
+      # CARGO_BUILD_TARGET on Windows and nowhere else, so cargo writes
+      # `target/<triple>/debug/soldr.exe` there and `target/debug/soldr` on
+      # Linux -- which is exactly why the windows-host lane never found the
+      # binary it had just built while the linux-host lane did.
       - name: Build soldr from this checkout
         shell: bash
-        run: soldr cargo build -p soldr-cli --bin soldr
+        run: |
+          set -euo pipefail
+          soldr cargo build -p soldr-cli --bin soldr \
+            --message-format=json-render-diagnostics | tee build-artifacts.json
+
+      - name: Locate the built soldr
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOLDR_BIN="$(python3 .github/scripts/win_gnu_link_smoke.py locate \
+            --build-log build-artifacts.json --name soldr)"
+          echo "smoke_soldr_bin=${SOLDR_BIN}" >> "$GITHUB_ENV"
+          echo "built soldr: ${SOLDR_BIN}"
 
       - name: win-gnu link smoke
         shell: bash
         run: |
           set -euo pipefail
           python3 .github/scripts/win_gnu_link_smoke.py smoke \
-            --soldr "${{ matrix.soldr_bin }}" \
+            --soldr "${{ env.smoke_soldr_bin }}" \
             --target x86_64-pc-windows-gnu \
             --summary "$GITHUB_STEP_SUMMARY"

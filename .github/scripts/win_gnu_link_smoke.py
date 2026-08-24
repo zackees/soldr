@@ -30,6 +30,7 @@ Subcommands
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import struct
 import subprocess
@@ -151,6 +152,67 @@ def cmd_smoke(args: argparse.Namespace) -> int:
         return 0
 
 
+def locate_executable(build_log: str, name: str) -> str | None:
+    """The path cargo says it wrote for binary `name`.
+
+    `cargo build --message-format=json-render-diagnostics` emits one
+    `compiler-artifact` record per unit, and the ones that produced a binary
+    carry an absolute `executable`. Reading it is the only way to know the
+    output path without re-deriving cargo's layout.
+
+    Guessing `target/debug/<name>` is wrong on Windows: `soldr cargo build`
+    injects `CARGO_BUILD_TARGET` there and nowhere else --
+
+        // cargo_front_door/target.rs
+        if host_os != Windows || !should_inject_windows_target(..) {
+            return Ok(None);
+        }
+        Ok(Some(TargetTriple::detect()?.triple()))
+
+    -- so cargo writes `target/<triple>/debug/<name>.exe` on Windows and
+    `target/debug/<name>` on Linux. The smoke's windows-host lane hardcoded the
+    Linux shape and never found the binary it had just built.
+
+    Deliberately not re-deriving the triple here: that would be a second
+    implementation of soldr's host-target rule, free to disagree with the first.
+    """
+    found = None
+    with open(build_log, encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if record.get("reason") != "compiler-artifact":
+                continue
+            executable = record.get("executable")
+            if not executable:
+                continue
+            stem = os.path.splitext(os.path.basename(executable))[0]
+            if stem == name:
+                # Later records win: a rebuild in the same log supersedes.
+                found = executable
+    return found
+
+
+def cmd_locate(args: argparse.Namespace) -> int:
+    executable = locate_executable(args.build_log, args.name)
+    if executable is None:
+        print(
+            f"FAIL: no compiler-artifact record for {args.name!r} in "
+            f"{args.build_log}.\n"
+            "  The build must run with --message-format=json-render-diagnostics "
+            "for its output path to be readable.",
+            file=sys.stderr,
+        )
+        return 1
+    print(executable)
+    return 0
+
+
 def cmd_assert_pe(args: argparse.Namespace) -> int:
     ok, reason = is_pe_amd64(args.path)
     print(reason)
@@ -166,6 +228,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_smoke.add_argument("--target", default=TARGET)
     p_smoke.add_argument("--summary", default=None)
     p_smoke.set_defaults(func=cmd_smoke)
+
+    p_locate = sub.add_parser(
+        "locate",
+        help="print the executable path cargo recorded for a binary",
+    )
+    p_locate.add_argument(
+        "--build-log", required=True, help="cargo --message-format=json output"
+    )
+    p_locate.add_argument("--name", default="soldr", help="binary name")
+    p_locate.set_defaults(func=cmd_locate)
 
     p_pe = sub.add_parser("assert-pe", help="assert a file is a PE32+ x86-64 image")
     p_pe.add_argument("--path", required=True)
