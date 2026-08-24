@@ -269,7 +269,7 @@ mod cancel_on_disconnect_tests {
     //!      synchronously at the `select!` boundary (proven by a
     //!      drop-tracker that flips an atomic from inside `Drop`).
     //!   2. Detection latency is bounded — see [`DETECTION_BUDGET`]. This
-    //!      is a latency bound only; the cancellation contract in (1) is
+    //!      is a liveness bound only; the cancellation contract in (1) is
     //!      what proves the behaviour, and a serialized probe could not
     //!      produce a late number at all (soldr#2775).
     //!
@@ -419,7 +419,33 @@ mod cancel_on_disconnect_tests {
     /// number repeated in prose in two places, and they had already drifted
     /// -- the module doc claimed 250ms. One constant, referenced everywhere,
     /// so the budget and the text describing it cannot disagree again.
-    const DETECTION_BUDGET: Duration = Duration::from_millis(500);
+    /// It was 500ms, and a loaded win-gnu runner produced 597ms with every
+    /// other assertion in the test passing. Widened, because the tight value
+    /// could not have been buying anything: [`race_against_disconnect`] is a
+    /// bare `tokio::select!` over `reader.read()` with **no timer anywhere in
+    /// the path**, so a regression cannot make detection merely *slow*. It has
+    /// exactly two reachable states --
+    ///
+    ///   * still readiness-driven, in which case the elapsed time is tokio
+    ///     scheduler noise plus this test's deliberate 50ms head-start; or
+    ///   * serialized behind the inner future, in which case it waits out a
+    ///     3600s sleep, never returns, and nextest kills the test.
+    ///
+    /// There is no intermediate mode -- no poll interval to lengthen, no
+    /// backoff to misconfigure -- so every budget strictly between "scheduler
+    /// noise" and "one hour" discriminates identically, and the only thing a
+    /// tight one changes is how often a busy runner fails a test that found no
+    /// defect. Verified by mutation: serializing the probe hangs the test
+    /// outright rather than producing a large number.
+    ///
+    /// Note too that this harness measures `tokio::io::duplex`, an in-memory
+    /// pipe. It never touches the named pipe or Unix socket the daemon really
+    /// serves, so the figure is not the product's disconnect latency and
+    /// cannot stand in for an SLO on it. No such SLO is documented in-tree.
+    ///
+    /// If a timer is ever introduced into that path, an intermediate mode
+    /// becomes reachable and this constant should be tightened to bound it.
+    const DETECTION_BUDGET: Duration = Duration::from_secs(5);
 
     /// A future that flips `aborted` to `true` if it is dropped before
     /// completing. Lets the test prove the helper actually cancelled
@@ -527,14 +553,21 @@ mod cancel_on_disconnect_tests {
             // concurrent, and only the size of the number is in question.
             assert!(
                 elapsed < DETECTION_BUDGET,
-                "disconnect detection took {elapsed:?}, over the \
-                     {DETECTION_BUDGET:?} budget (which includes the 50ms \
-                     scheduled delay before the disconnect). This is a latency \
-                     bound, NOT the concurrency contract -- that is proven by \
-                     the assertions around this one, and returning at all rules \
-                     out a serialized probe against a 3600s inner sleep. A \
-                     loaded runner is the usual cause; see soldr#2775 before \
-                     investigating the helper."
+                concat!(
+                    "disconnect detection took {:?}, over the ",
+                    "{:?} budget (which includes the 50ms scheduled ",
+                    "delay before the disconnect). This is a liveness bound, NOT the ",
+                    "concurrency contract -- that is proven by the assertions around ",
+                    "this one, and returning at all rules out a serialized probe ",
+                    "against a 3600s inner sleep. The budget is wide because the ",
+                    "select! has no timer in it and so cannot be made merely slow ",
+                    "(soldr#2775); nominal here is tens of milliseconds. Exceeding it ",
+                    "by this much means the task went unscheduled for seconds -- look ",
+                    "for a blocking call on the runtime, not a latency regression in ",
+                    "the helper."
+                ),
+                elapsed,
+                DETECTION_BUDGET
             );
             assert!(
                 aborted.load(Ordering::SeqCst),
