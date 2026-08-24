@@ -27,8 +27,6 @@ members = [
 # it lets the crate inherit running-process's own 4.8.x version, which
 # satisfies the `^4.8.1` requirement and makes the patch apply.
 exclude = [
-    "_vender/zccache",
-    "_vender/running-process",
     ".extern-repos/soldr-maturin",
 ]
 
@@ -126,15 +124,6 @@ url = "2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 
 [patch.crates-io]
-# soldr#2031: one process-creation implementation across Soldr and its embedded
-# zccache graph. Vendored as a submodule at `_vender/running-process` (same
-# pattern as `_vender/zccache`) so running-process can be iterated on locally
-# without waiting for a crates.io/git release. Both patch tables below redirect
-# to the vendored path: `[patch.crates-io]` covers the crates.io-sourced dep
-# (soldr-cli), and the `[patch."…git"]` table covers the git-sourced deps
-# (soldr-daemon + the vendored zccache submodule) — so every consumer resolves
-# to the one vendored copy.
-running-process = { path = "_vender/running-process/crates/running-process" }
 # soldr#2406: use the vendored notify with bumped windows-sys (0.52→0.61)
 # and HANDLE type fixes for 0.59+ API to converge the dependency graph.
 notify = { path = "_vender/notify" }
@@ -155,9 +144,6 @@ petgraph = { path = "_vender/petgraph" }
 protox-parse = { path = "_vender/protox-parse" }
 # soldr#2406: bump hashlink hashbrown 0.14→0.17 to converge.
 hashlink = { path = "_vender/hashlink" }
-[patch."https://github.com/zackees/running-process.git"]
-running-process = { path = "_vender/running-process/crates/running-process" }
-
 # Release profile size optimization (#920). soldr ships as a template
 # binary that every CI consumer downloads via setup-soldr / actions/
 # cache@v4 / cross-build-artifact passing — leaner binary = faster
@@ -189,6 +175,17 @@ debug = "line-tables-only"
 # unchanged; only frames inside third-party crates lose file:line.
 [profile.dev.package."*"]
 debug = false
+
+# The crates.io zccache package folds its upstream workspace into one large
+# rustc unit. Keep its internal LLVM fan-out to one without slowing ordinary
+# dependencies, which retain the wildcard profile above.
+[profile.dev.package.zccache]
+debug = false
+codegen-units = 1
+
+[profile.test.package.zccache]
+debug = false
+codegen-units = 1
 
 [profile.release]
 # Drop symbol table + debuginfo from the shipped binary. Biggest
@@ -264,6 +261,10 @@ strip = "none"
 # without losing the soldr#1168 line-table backtrace target.
 [profile.ci-nextest.package."*"]
 debug = false
+
+[profile.ci-nextest.package.zccache]
+debug = false
+codegen-units = 1
 
 [workspace.lints.rust]
 unused_mut = "deny"

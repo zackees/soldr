@@ -18,7 +18,6 @@
 //! gets its own process, no race with other lib tests touching env)
 //! and runs on every `cargo test` invocation.
 
-use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -133,16 +132,6 @@ fn read_section_lines(manifest: &Path, section: &str) -> Vec<String> {
     lines
 }
 
-fn read_dependency_names(manifest: &Path) -> BTreeSet<String> {
-    read_section_lines(manifest, "dependencies")
-        .into_iter()
-        .filter_map(|line| {
-            let (name, _) = line.split_once('=')?;
-            Some(name.trim().to_string())
-        })
-        .collect()
-}
-
 fn dependency_line(manifest: &Path, section: &str, dep: &str) -> Option<String> {
     read_section_lines(manifest, section)
         .into_iter()
@@ -166,40 +155,6 @@ fn extract_dependency_version(line: &str) -> Option<String> {
     let stripped = version_rhs.strip_prefix('"')?;
     let end = stripped.find('"')?;
     Some(stripped[..end].to_string())
-}
-
-fn workspace_dependency_version(repo_root: &Path, dep: &str) -> Option<String> {
-    let manifest = repo_root.join("Cargo.toml");
-    dependency_line(&manifest, "workspace.dependencies", dep)
-        .and_then(|line| extract_dependency_version(&line))
-}
-
-fn crate_dependency_version(repo_root: &Path, crate_manifest: &Path, dep: &str) -> Option<String> {
-    let line = dependency_line(crate_manifest, "dependencies", dep)?;
-    if line.contains("workspace") && line.contains("true") {
-        workspace_dependency_version(repo_root, dep)
-    } else {
-        extract_dependency_version(&line)
-    }
-}
-
-fn semver_compatibility_family(version: &str) -> Option<String> {
-    let first = version.split(',').next()?.trim();
-    let first = first.trim_start_matches(['^', '~', '=', '>', '<', ' ']);
-    let mut parts = first.split('.');
-    let major = parts.next()?.trim();
-    if major.is_empty() {
-        return None;
-    }
-    if major == "0" {
-        let minor = parts.next()?.trim();
-        if minor.is_empty() {
-            return None;
-        }
-        Some(format!("{major}.{minor}"))
-    } else {
-        Some(major.to_string())
-    }
 }
 
 #[test]
@@ -227,45 +182,67 @@ fn cargo_toml_cargo_lock_and_package_json_share_one_version() {
 }
 
 #[test]
-fn soldr_cli_and_embedded_zccache_shared_direct_deps_are_compatible() {
+fn externalized_dependencies_are_exact_and_consistent() {
     let root = repo_root();
-    let soldr_cli_manifest = root.join("crates/soldr-cli/Cargo.toml");
-    let zccache_root = root.join("_vender/zccache");
-    let zccache_manifest = zccache_root.join("crates/zccache/Cargo.toml");
+    let lock = fs::read_to_string(root.join("Cargo.lock"))
+        .expect("read Cargo.lock")
+        .replace("\r\n", "\n");
 
-    let soldr_deps = read_dependency_names(&soldr_cli_manifest);
-    let zccache_deps = read_dependency_names(&zccache_manifest);
-    // No intentional splits today (the redb split retired with the
-    // redb→SQLite state-store migration).
-    let intentionally_split: [&str; 0] = [];
-    let mut checked = Vec::new();
-
-    for dep in soldr_deps.intersection(&zccache_deps) {
-        if intentionally_split.contains(&dep.as_str()) {
-            continue;
-        }
-        let soldr_version = crate_dependency_version(&root, &soldr_cli_manifest, dep)
-            .unwrap_or_else(|| panic!("soldr-cli dependency {dep} must carry a version"));
-        let zccache_version = crate_dependency_version(&zccache_root, &zccache_manifest, dep)
-            .unwrap_or_else(|| panic!("embedded zccache dependency {dep} must carry a version"));
-        let soldr_family = semver_compatibility_family(&soldr_version).unwrap_or_else(|| {
-            panic!("soldr-cli dependency {dep} has unsupported version {soldr_version:?}")
-        });
-        let zccache_family = semver_compatibility_family(&zccache_version).unwrap_or_else(|| {
-            panic!("embedded zccache dependency {dep} has unsupported version {zccache_version:?}")
-        });
-        assert_eq!(
-            soldr_family, zccache_family,
-            "soldr#1356 dependency drift: shared direct dependency {dep} must stay \
-                 semver-compatible between soldr-cli ({soldr_version}) and embedded zccache \
-                 ({zccache_version}). If a split is intentional, document it in \
-                 intentionally_split in this test."
+    for (dependency, version, manifests) in [
+        (
+            "zccache",
+            "1.13.7",
+            &[
+                "crates/soldr-cli/Cargo.toml",
+                "crates/soldr-cache/Cargo.toml",
+                "crates/soldr-daemon/Cargo.toml",
+            ][..],
+        ),
+        (
+            "running-process",
+            "4.10.6",
+            &[
+                "crates/soldr-cli/Cargo.toml",
+                "crates/soldr-daemon/Cargo.toml",
+                "crates/soldr-platform/Cargo.toml",
+            ][..],
+        ),
+    ] {
+        let locked = format!("name = \"{dependency}\"\nversion = \"{version}\"");
+        assert!(
+            lock.contains(&locked),
+            "Cargo.lock must resolve {dependency} {version}"
         );
-        checked.push(dep.clone());
+        for relative in manifests {
+            let manifest = root.join(relative);
+            let line = dependency_line(&manifest, "dependencies", dependency)
+                .unwrap_or_else(|| panic!("{relative} must depend on {dependency}"));
+            let expected = format!("={version}");
+            assert_eq!(
+                extract_dependency_version(&line).as_deref(),
+                Some(expected.as_str()),
+                "{relative} must pin the exact released {dependency} version"
+            );
+            assert!(
+                !line.contains("path") && !line.contains("git"),
+                "{relative} must resolve {dependency} from the registry: {line}"
+            );
+        }
     }
+}
 
-    assert!(
-        checked.len() >= 10,
-        "dependency drift guard checked too few shared deps: {checked:?}"
-    );
+#[test]
+fn external_zccache_profiles_bound_internal_codegen_parallelism() {
+    let root = repo_root();
+    let manifest = fs::read_to_string(root.join("Cargo.toml")).expect("read workspace manifest");
+
+    for profile in ["dev", "test", "ci-nextest"] {
+        let section = format!("profile.{profile}.package.zccache");
+        let lines = read_section_lines(&root.join("Cargo.toml"), &section);
+        assert!(
+            lines.iter().any(|line| line == "codegen-units = 1"),
+            "[{section}] must keep the amalgamated zccache unit single-codegen"
+        );
+    }
+    assert!(manifest.contains("[profile.dev.package.zccache]"));
 }

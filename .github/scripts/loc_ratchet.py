@@ -40,8 +40,8 @@ import sys
 from dataclasses import dataclass
 
 DEFAULT_CEILING = 1500
-# Only source we own. The vendored zccache submodule has its own guard, and
-# generated files are not something a PR author can reasonably split.
+# Only source we own; generated files are not something a PR author can
+# reasonably split.
 DEFAULT_ROOTS = ("crates",)
 SUFFIX = ".rs"
 EXEMPT_NAMES = {"mod.rs"}

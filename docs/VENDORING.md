@@ -1,5 +1,10 @@
 # Vendoring zccache into `_vender/` for fast iteration
 
+> [!NOTE]
+> No zccache or running-process vendor is active. soldr#2765 retired both
+> submodules; production builds resolve exact published crate versions. This
+> document applies only if a future, explicitly time-bounded vendor is started.
+
 > **Audience:** soldr contributors investigating a bug that spans
 > soldr and zccache. The canonical example: the cold-build IPC
 > regression tracked in soldr#981 — fixing it requires changes

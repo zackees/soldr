@@ -53,7 +53,11 @@ ARCHIVE_COMPRESSION_LEVEL = 19
 # (source file, regex, human name) for each pinned version the manifest
 # reports. Read from the tree rather than passed in, so the manifest cannot
 # disagree with the source it was built from.
-ZCCACHE_VERSION = ("_vender/zccache/Cargo.toml", r'^version = "(.*)"', "zccache")
+ZCCACHE_VERSION = (
+    "Cargo.lock",
+    r'(?ms)^\[\[package\]\]\nname = "zccache"\nversion = "([^"]+)"',
+    "zccache",
+)
 CRGX_VERSION = (
     "crates/soldr-fetch/src/fetch/mod.rs",
     r'MANAGED_CRGX_VERSION: &str = "(.*)";',

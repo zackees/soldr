@@ -41,23 +41,6 @@ def test_detects_protocol_v3_module_path(tmp_path: Path) -> None:
     assert findings[0][1] == 1
 
 
-def test_detects_client_v3_in_vendored_running_process(tmp_path: Path) -> None:
-    _write(
-        tmp_path
-        / "_vender"
-        / "running-process"
-        / "crates"
-        / "running-process"
-        / "src"
-        / "lib.rs",
-        "use crate::broker::client_v3::connect;\n",
-    )
-    findings = no_protocol_v3.scan(
-        ("crates", "_vender/running-process/crates"), tmp_path
-    )
-    assert len(findings) == 1
-
-
 def test_does_not_false_positive_on_near_miss_identifiers(tmp_path: Path) -> None:
     _write(
         tmp_path / "crates" / "soldr-daemon" / "src" / "broker.rs",

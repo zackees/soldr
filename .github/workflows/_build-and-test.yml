@@ -65,6 +65,11 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Enlarge swap (OOM headroom)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash .github/scripts/setup_ci_swap.sh
+
       # soldr#1178 — dropped the dtolnay/rust-toolchain step: setup-soldr
       # below installs the same 1.95.0 toolchain, so running dtolnay
       # first duplicated ~8 s of install work per CI run. The host target

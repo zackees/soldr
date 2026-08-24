@@ -210,8 +210,7 @@ jobs:
       - name: Fetch matched zccache release for linux-x86
         run: |
           set -euo pipefail
-          zccache_version=$(sed -n 's/^version = "\(.*\)"/\1/p' \
-            _vender/zccache/Cargo.toml | head -n1)
+          zccache_version=$(python3 .github/scripts/zccache_version.py)
           # zccache ships musl-only for Linux x64 (static; runs on
           # glibc). The soldr-toolchain catalogue resolves both the URL
           # and the version pinning.
@@ -262,8 +261,7 @@ jobs:
           set -euo pipefail
           version="${{ steps.read_version.outputs.version }}"
           commit_sha=$(git rev-parse HEAD)
-          zccache_version=$(sed -n 's/^version = "\(.*\)"/\1/p' \
-            _vender/zccache/Cargo.toml | head -n1)
+          zccache_version=$(python3 .github/scripts/zccache_version.py)
           crgx_version=$(sed -n 's/.*MANAGED_CRGX_VERSION: &str = "\(.*\)";/\1/p' \
             crates/soldr-fetch/src/fetch/mod.rs | head -n1)
           cargo_chef_version=$(sed -n 's/.*CARGO_CHEF_PINNED_VERSION: &str = "\(.*\)";/\1/p' \
@@ -494,8 +492,7 @@ jobs:
       - name: Fetch matched zccache release
         run: |
           set -euo pipefail
-          zccache_version=$(sed -n 's/^version = "\(.*\)"/\1/p' \
-            _vender/zccache/Cargo.toml | head -n1)
+          zccache_version=$(python3 .github/scripts/zccache_version.py)
           # Map the rust target triple to toolchain asset query CLI args. zccache
           # ships linux as musl-only (static, glibc-compatible).
           case "${{ matrix.target }}" in
@@ -583,8 +580,7 @@ jobs:
           set -euo pipefail
           version="${{ needs.bootstrap-and-linux-x86.outputs.version }}"
           commit_sha=$(git rev-parse HEAD)
-          zccache_version=$(sed -n 's/^version = "\(.*\)"/\1/p' \
-            _vender/zccache/Cargo.toml | head -n1)
+          zccache_version=$(python3 .github/scripts/zccache_version.py)
           crgx_version=$(sed -n 's/.*MANAGED_CRGX_VERSION: &str = "\(.*\)";/\1/p' \
             crates/soldr-fetch/src/fetch/mod.rs | head -n1)
           cargo_chef_version=$(sed -n 's/.*CARGO_CHEF_PINNED_VERSION: &str = "\(.*\)";/\1/p' \

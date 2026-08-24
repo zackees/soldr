@@ -75,6 +75,7 @@ use crate::daemon::protocol::{
 #[derive(Clone)]
 pub struct SoldrZccacheService {
     inner: Arc<ZccacheService>,
+    compile_resource_gate: crate::amalgamation::CompileResourceGate,
     identity: HostIdentity,
     cache_root: PathBuf,
     disk_policy: EmbeddedDiskPolicy,
@@ -178,7 +179,7 @@ impl SoldrZccacheService {
             audit,
             // soldr#1761: soldr owns the compile-concurrency limit now.
             // This used to be `ServiceLimits::default()`, i.e.
-            // `max_parallel_compiles: None`, so the vendored zccache
+            // `max_parallel_compiles: None`, so zccache
             // default always governed and the only way to influence it
             // was to get `ZCCACHE_MAX_PARALLEL_COMPILES` into the
             // long-lived daemon's inherited environment. Resolving here
@@ -211,6 +212,7 @@ impl SoldrZccacheService {
         .map_err(|e| EmbeddedServiceError::Start(e.to_string()))?;
         Ok(Self {
             inner: Arc::new(svc),
+            compile_resource_gate: crate::amalgamation::CompileResourceGate::default(),
             identity,
             cache_root,
             disk_policy,
@@ -267,6 +269,8 @@ impl SoldrZccacheService {
         // Kept for the failure path: `cwd` is moved into the request below,
         // and soldr#2781's detector resolves relative source paths against it.
         let compile_cwd = cwd.as_path().to_path_buf();
+        let exclusive = crate::amalgamation::requires_exclusive_access(&req.args, &compile_cwd);
+        let _resource_permit = self.compile_resource_gate.acquire(exclusive).await;
         // soldr#2781: say so on the way IN, not only in the post-mortem. If
         // this process is killed for memory, the user needs to know which
         // file the compiler was holding -- and by then the compile is gone.
@@ -538,7 +542,7 @@ mod journal_migration_tests {
     #[test]
     fn startup_scrubs_live_and_rotated_pre_redaction_journals() {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../_vender/zccache/crates/zccache-daemon-core/src/daemon/compile_journal/tests/compile_journal_env_security_v1.json"
+            "../../../tests/fixtures/zccache/compile_journal_env_security_v1.json"
         ))
         .unwrap();
         let legacy = serde_json::to_string(&fixture["legacy_record"]).unwrap();

@@ -170,6 +170,9 @@ def test_setup_soldr_smoke_tests_disable_nested_cache() -> None:
     assert "& $soldr.Source zccache stop" in workflow
     assert "ACTION_CACHE_DIR: ${{ steps.setup.outputs.cache-dir }}" not in workflow
     assert "[System.IO.Path]::GetFullPath($env:SOLDR_CACHE_DIR)" in workflow
+    assert 'CARGO_BUILD_JOBS: "1"' in workflow
+    assert 'SOLDR_JOBS: "1"' in workflow
+    assert "Enlarge swap (OOM headroom)" in workflow
 
 
 def test_no_workflow_opts_out_of_the_reentrancy_guard() -> None:

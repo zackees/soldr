@@ -49,6 +49,8 @@ jobs:
       # Use soldr's explicit opt-in token env so release metadata requests
       # are authenticated without weakening the generic GITHUB_TOKEN guard.
       SOLDR_GITHUB_TOKEN: ${{ github.token }}
+      CARGO_BUILD_JOBS: "1"
+      SOLDR_JOBS: "1"
     strategy:
       fail-fast: false
       matrix:
@@ -62,6 +64,11 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           submodules: recursive
+
+      - name: Enlarge swap (OOM headroom)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash .github/scripts/setup_ci_swap.sh
 
       # soldr#2131. install.sh was executed by nothing -- it appeared in the
       # workflows only inside `paths:` triggers -- so a bash 4.0 builtin sat in

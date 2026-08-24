@@ -41,7 +41,7 @@ Before pushing ANY change to:
 
 * `.github/workflows/release-auto.yml`'s Linux ARM64 (musl) lane
 * `.github/workflows/_bootstrap-e2e.yml` musl env vars
-* Crates dependencies that pull `tikv-jemalloc-sys` (`_vender/zccache`)
+* Crate dependencies that pull `tikv-jemalloc-sys` (including zccache)
 * `Cargo.toml` workspace lints / profile settings
 
 A green run here means the GHA equivalent should also pass.

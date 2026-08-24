@@ -83,10 +83,10 @@ jobs:
       # embedded cache's resident artifact state on a 4-vCPU hosted runner.
       # The resulting Unix signal exits moved between unrelated crates and
       # platforms. Bound both Cargo's producer queue and zccache's admission
-      # gate at two: enough parallelism for the runner while retaining memory
-      # headroom during the all-miss nextest archive build.
-      CARGO_BUILD_JOBS: "2"
-      SOLDR_JOBS: "2"
+      # gate at one: the published zccache crate is a single large compilation
+      # unit and needs exclusive service access on the hosted runner.
+      CARGO_BUILD_JOBS: "1"
+      SOLDR_JOBS: "1"
       # Keep the developer-facing profile default responsive while reducing
       # LLVM worker fan-out for this memory-constrained CI-only build.
       CARGO_PROFILE_CI_NEXTEST_CODEGEN_UNITS: "4"

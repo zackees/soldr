@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
-"""The vendored zccache version must have a published release asset.
+"""The locked zccache version must have a published release asset.
 
-soldr#2164 moved the `_vender/zccache` pin to a version with no published
+soldr#2164 moved the zccache pin to a version with no published
 release. Every local signal stayed green — builds, ~1460 tests, clippy,
-`verify_vendor_state.py`, `loc_ratchet` — because **none of them exercise that
+`loc_ratchet` — because **none of them exercise that
 fetch**. `bootstrap + linux-x86` went red on `main` instead.
 
-That is not an oversight in any of those checks. The vendored crate is compiled
+That is not an oversight in any of those checks. The crate is compiled
 *into* soldr, so a source-level bump needs nothing from the network; but release
-staging separately **downloads a prebuilt zccache keyed on the vendored crate's
+staging separately **downloads a prebuilt zccache keyed on the locked crate's
 version**:
 
 ```bash
-zccache_version=$(sed -n 's/^version = "\\(.*\\)"/\\1/p' \\
-  _vender/zccache/Cargo.toml | head -n1)
+zccache_version=$(python3 .github/scripts/zccache_version.py)
 ```
 
 So the pin cannot lead the release, and nothing enforced that. CLAUDE.md
@@ -65,7 +64,6 @@ from toolchain_asset_query import (
 )
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-VENDORED_MANIFEST = pathlib.Path("_vender/zccache/Cargo.toml")
 
 # Mirrors the target -> query mapping in `cross-compile-all-targets.yml`. zccache
 # ships linux as musl-only (static, glibc-compatible), hence no gnu row.
@@ -77,21 +75,6 @@ REQUIRED_PLATFORMS: tuple[tuple[str, str, str | None], ...] = (
     ("windows", "x86", "msvc"),
     ("windows", "arm", "msvc"),
 )
-
-
-def vendored_version(repo_root: pathlib.Path) -> str | None:
-    """The version release staging will key its download on.
-
-    Deliberately the same first-`version =`-wins reading as the workflow's
-    `sed ... | head -n1`, so this cannot disagree with what CI does.
-    """
-    path = repo_root / VENDORED_MANIFEST
-    try:
-        contents = path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    match = re.search(r'^version = "([^"]+)"', contents, re.MULTILINE)
-    return match.group(1) if match else None
 
 
 def locked_version(repo_root: pathlib.Path, package: str = "zccache") -> str | None:
@@ -150,25 +133,11 @@ def main() -> int:
     parser.add_argument("--origin", default=DEFAULT_ORIGIN)
     args = parser.parse_args()
 
-    version = vendored_version(args.repo_root)
+    version = locked_version(args.repo_root)
     if version is None:
         print(
-            f"error: could not read a version from {VENDORED_MANIFEST}.\n"
-            "If the submodule is not checked out, run\n"
-            "  git submodule update --init _vender/zccache"
-        )
-        return 1
-
-    locked = locked_version(args.repo_root)
-    if locked is not None and locked != version:
-        print(
-            f"error: vendored zccache version disagrees with Cargo.lock.\n"
-            f"  {VENDORED_MANIFEST}: {version}\n"
-            f"  Cargo.lock:               {locked}\n\n"
-            "Release staging keys its prebuilt download on the manifest while\n"
-            "the build resolves the lock, so these two disagreeing means the\n"
-            "release would ship a different zccache than the one under test.\n"
-            "Refresh the lock with a no-op build and commit it."
+            "error: could not read the resolved zccache version from Cargo.lock.\n"
+            "Refresh the lock through Soldr and commit it."
         )
         return 1
 
@@ -178,11 +147,11 @@ def main() -> int:
             payload = json.loads(response.read().decode("utf-8"))
     except (urllib.error.URLError, OSError, ValueError) as exc:
         # Not a failure: see the network policy in this module's docstring.
-        print(f"check_vendored_zccache_asset: skipped, cannot reach {url} ({exc})")
+        print(f"check_zccache_asset: skipped, cannot reach {url} ({exc})")
         return 0
 
     if not isinstance(payload, dict):
-        print(f"check_vendored_zccache_asset: skipped, {url} is not a JSON object")
+        print(f"check_zccache_asset: skipped, {url} is not a JSON object")
         return 0
 
     try:
@@ -190,7 +159,7 @@ def main() -> int:
     except SystemExit:
         available = published_versions(payload)
         print(
-            f"error: vendored zccache is {version}, which has no published "
+            f"error: locked zccache is {version}, which has no published "
             f"release in the tool manifest.\n\n"
             "The pin cannot lead the release: `cross-compile-all-targets.yml`\n"
             "downloads a prebuilt zccache keyed on this exact version, so a\n"
@@ -215,7 +184,7 @@ def main() -> int:
         return 1
 
     print(
-        f"check_vendored_zccache_asset: zccache {version} has assets for all "
+        f"check_zccache_asset: zccache {version} has assets for all "
         f"{len(REQUIRED_PLATFORMS)} required platforms."
     )
     return 0

@@ -53,6 +53,10 @@ jobs:
       # Use soldr's explicit opt-in token env so release metadata requests
       # are authenticated without weakening the generic GITHUB_TOKEN guard.
       SOLDR_GITHUB_TOKEN: ${{ github.token }}
+      # The published zccache crate is one large compilation unit. Give it
+      # exclusive access both in Cargo and the embedded compiler service.
+      CARGO_BUILD_JOBS: "1"
+      SOLDR_JOBS: "1"
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -60,6 +64,11 @@ jobs:
           submodules: recursive
           ref: ${{ inputs.source_ref }}
           path: soldr
+
+      - name: Enlarge swap (OOM headroom)
+        shell: bash
+        working-directory: soldr
+        run: bash .github/scripts/setup_ci_swap.sh
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:

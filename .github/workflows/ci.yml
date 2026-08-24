@@ -93,6 +93,10 @@ jobs:
       # Soldr-owned driver resolver exercised below.
       DYLINT_VERSION: 6.0.3
       DYLINT_DRIVER_PATH: ${{ github.workspace }}/target/dylint/drivers
+      # The published zccache crate is one large compilation unit. Give it
+      # exclusive access both in Cargo and the embedded compiler service.
+      CARGO_BUILD_JOBS: "1"
+      SOLDR_JOBS: "1"
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -101,6 +105,10 @@ jobs:
           # soldr#1966: the line-ceiling ratchet below needs `git merge-base`,
           # which the default depth-1 checkout cannot compute.
           fetch-depth: 0
+
+      - name: Enlarge swap (OOM headroom)
+        shell: bash
+        run: bash .github/scripts/setup_ci_swap.sh
 
       # soldr#1248/#2 follow-up: cache + soldr-cook stay disabled on
       # Lint while target/profile-shaped cook restore is reintroduced in
@@ -209,9 +217,9 @@ jobs:
           set -euo pipefail
           uv run --no-project --python 3.13 --with pyyaml python .github/scripts/check_workflow_python_pin.py
 
-      # soldr#2765/#2164 -- the vendored zccache is compiled into soldr, but
+      # soldr#2765/#2164 -- zccache is compiled into soldr, but
       # release staging separately downloads a PREBUILT zccache keyed on the
-      # vendored crate's version. So a pin can lead the release: #2164 moved it
+      # locked crate's version. So a pin can lead the release: #2164 moved it
       # to a version with no published asset, every local signal stayed green
       # (builds, ~1460 tests, clippy, verify_vendor_state.py, loc_ratchet --
       # none of them exercise that fetch), and main went red.
@@ -220,10 +228,10 @@ jobs:
       # bumping. This runs it. An unreachable manifest is skipped rather than
       # failed: this is on every PR, and failing on a Pages blip would teach
       # people to ignore it.
-      - name: Vendored zccache has a published release asset
+      - name: Locked zccache has a published release asset
         run: |
           set -euo pipefail
-          uv run --no-project --python 3.13 python .github/scripts/check_vendored_zccache_asset.py
+          uv run --no-project --python 3.13 python .github/scripts/check_zccache_asset.py
 
       # soldr#2013 — nothing ran `tests/` on CI, so it decayed silently: a test
       # asserting on a workflow #1982 deleted, two lints that scanned nothing
@@ -657,25 +665,6 @@ jobs:
           "${CARGO_HOME}/bin/cargo-dylint"
           dylint --no-build --all
           -- --workspace --all-targets
-
-      - name: Enforce running-process local-socket name boundary
-        env:
-          RUSTUP_TOOLCHAIN: nightly-2026-05-28-x86_64-unknown-linux-gnu
-          SOLDR_NO_GC_TARGET: "1"
-          SOLDR_LINKER: default
-        # `--lib --bins`, not `--all-targets` (soldr#2644): the vendored
-        # workspace's test targets read `env!("CARGO_BIN_EXE_…")` for bins
-        # the dylint check plan does not provide, so a cold cache fails
-        # compiling tests this boundary lint never needed — the raw
-        # local-socket-name surface it guards lives in library and binary
-        # sources.
-        run: >-
-          "${CARGO_HOME}/bin/cargo-dylint"
-          dylint --no-build
-          --lib-path
-          "${GITHUB_WORKSPACE}/target/dylint/libraries/nightly-2026-05-28-x86_64-unknown-linux-gnu/release/libban_raw_local_socket_name@nightly-2026-05-28-x86_64-unknown-linux-gnu.so"
-          --manifest-path _vender/running-process/Cargo.toml
-          -- --workspace --lib --bins
 
       - name: Test env-flag boundary lint
         working-directory: dylints/ban_raw_env_flag

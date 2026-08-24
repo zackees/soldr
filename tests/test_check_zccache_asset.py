@@ -1,4 +1,4 @@
-"""The vendored-zccache asset guard must catch a pin that leads the release.
+"""The zccache asset guard must catch a locked version that leads the release.
 
 soldr#2164 is the incident: the pin moved to a version with no published
 release, every local signal stayed green because none of them exercise that
@@ -34,13 +34,28 @@ SCRIPT = (
     Path(__file__).resolve().parents[1]
     / ".github"
     / "scripts"
-    / "check_vendored_zccache_asset.py"
+    / "check_zccache_asset.py"
 )
 
 
 @pytest.fixture(scope="module")
 def guard():
-    return load_script_module(SCRIPT, "check_vendored_zccache_asset")
+    return load_script_module(SCRIPT, "check_zccache_asset")
+
+
+def test_release_version_reader_uses_the_lockfile(tmp_path):
+    reader = load_script_module(SCRIPTS_DIR / "zccache_version.py", "zccache_version")
+    write_repo(tmp_path, "1.13.7")
+    assert reader.locked_zccache_version(tmp_path) == "1.13.7"
+
+
+def test_release_version_reader_rejects_an_ambiguous_lockfile(tmp_path):
+    reader = load_script_module(SCRIPTS_DIR / "zccache_version.py", "zccache_version_bad")
+    write_repo(tmp_path, "1.13.7")
+    lock = tmp_path / "Cargo.lock"
+    lock.write_text(lock.read_text(encoding="utf-8") * 2, encoding="utf-8")
+    with pytest.raises(ValueError, match="exactly one"):
+        reader.locked_zccache_version(tmp_path)
 
 
 def platform_entry(os_key: str, arch: str, **rest) -> dict:
@@ -74,14 +89,7 @@ def manifest(version: str, platforms: list[dict]) -> dict:
 # ------------------------------- reading versions ------------------------------
 
 
-def write_repo(tmp_path: Path, vendored: str | None, locked: str | None) -> Path:
-    if vendored is not None:
-        manifest_path = tmp_path / "_vender" / "zccache" / "Cargo.toml"
-        manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        manifest_path.write_text(
-            f'[package]\nname = "zccache"\nversion = "{vendored}"\n',
-            encoding="utf-8",
-        )
+def write_repo(tmp_path: Path, locked: str | None) -> Path:
     if locked is not None:
         (tmp_path / "Cargo.lock").write_text(
             f'[[package]]\nname = "zccache"\nversion = "{locked}"\n',
@@ -90,31 +98,8 @@ def write_repo(tmp_path: Path, vendored: str | None, locked: str | None) -> Path
     return tmp_path
 
 
-def test_vendored_version_is_read_from_the_submodule_manifest(guard, tmp_path):
-    write_repo(tmp_path, "1.13.5", None)
-    assert guard.vendored_version(tmp_path) == "1.13.5"
-
-
-def test_the_first_version_key_wins_like_the_workflows_sed(guard, tmp_path):
-    """The workflow does `sed ... | head -n1`; a workspace manifest can carry
-    more than one `version =`, and disagreeing with CI here would make the
-    guard check a version release staging never requests."""
-    path = tmp_path / "_vender" / "zccache" / "Cargo.toml"
-    path.parent.mkdir(parents=True)
-    path.write_text(
-        '[package]\nname = "zccache"\nversion = "1.13.5"\n\n'
-        '[dependencies.serde]\nversion = "1.0.200"\n',
-        encoding="utf-8",
-    )
-    assert guard.vendored_version(tmp_path) == "1.13.5"
-
-
-def test_an_absent_submodule_reads_as_none(guard, tmp_path):
-    assert guard.vendored_version(tmp_path) is None
-
-
 def test_locked_version_is_read_from_cargo_lock(guard, tmp_path):
-    write_repo(tmp_path, "1.13.5", "1.13.5")
+    write_repo(tmp_path, "1.13.5")
     assert guard.locked_version(tmp_path) == "1.13.5"
 
 
@@ -171,22 +156,11 @@ def test_an_unpublished_version_raises_rather_than_reporting_gaps(guard):
 # --------------------------------- exit codes ----------------------------------
 
 
-def test_a_version_lock_disagreement_fails(guard, tmp_path, monkeypatch, capsys):
-    write_repo(tmp_path, "1.14.0", "1.13.5")
+def test_a_missing_lock_entry_fails(guard, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("sys.argv", ["check", "--repo-root", str(tmp_path)])
     assert guard.main() == 1
     out = capsys.readouterr().out
-    assert "1.14.0" in out and "1.13.5" in out
     assert "Cargo.lock" in out
-
-
-def test_a_missing_submodule_fails_with_the_init_command(
-    guard, tmp_path, monkeypatch, capsys
-):
-    monkeypatch.setattr("sys.argv", ["check", "--repo-root", str(tmp_path)])
-    assert guard.main() == 1
-    out = capsys.readouterr().out
-    assert "git submodule update --init _vender/zccache" in out
 
 
 def test_an_unreachable_manifest_is_skipped_not_failed(
@@ -194,7 +168,7 @@ def test_an_unreachable_manifest_is_skipped_not_failed(
 ):
     """Every PR runs this. Failing them all on a Pages blip teaches people to
     ignore it, which costs more than the check is worth."""
-    write_repo(tmp_path, "1.13.5", "1.13.5")
+    write_repo(tmp_path, "1.13.5")
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -228,12 +202,12 @@ def serve(guard, monkeypatch, payload: dict) -> None:
 
 
 def test_the_2164_incident_fails_the_guard(guard, tmp_path, monkeypatch, capsys):
-    """The pin leads the release: vendored 1.14.0, nothing published for it.
+    """The pin leads the release: locked 1.14.0, nothing published for it.
 
     This is the case that shipped green through builds, ~1460 tests, clippy,
-    verify_vendor_state.py and loc_ratchet, and went red on main.
+    loc_ratchet and went red on main.
     """
-    write_repo(tmp_path, "1.14.0", "1.14.0")
+    write_repo(tmp_path, "1.14.0")
     serve(guard, monkeypatch, manifest("1.13.5", complete_platforms()))
     monkeypatch.setattr("sys.argv", ["check", "--repo-root", str(tmp_path)])
 
@@ -247,7 +221,7 @@ def test_the_2164_incident_fails_the_guard(guard, tmp_path, monkeypatch, capsys)
 def test_a_published_but_incomplete_version_fails_naming_the_gaps(
     guard, tmp_path, monkeypatch, capsys
 ):
-    write_repo(tmp_path, "1.13.5", "1.13.5")
+    write_repo(tmp_path, "1.13.5")
     serve(
         guard,
         monkeypatch,
@@ -262,7 +236,7 @@ def test_a_published_but_incomplete_version_fails_naming_the_gaps(
 
 
 def test_a_complete_version_passes(guard, tmp_path, monkeypatch):
-    write_repo(tmp_path, "1.13.5", "1.13.5")
+    write_repo(tmp_path, "1.13.5")
     serve(guard, monkeypatch, manifest("1.13.5", complete_platforms()))
     monkeypatch.setattr("sys.argv", ["check", "--repo-root", str(tmp_path)])
     assert guard.main() == 0

@@ -5,19 +5,6 @@ operating system. This keeps the Linux development loop fast without replacing
 filesystem, process, or platform behavior with mocks that cannot prove the
 assumption in question.
 
-## Fresh checkout prerequisite
-
-The repository embeds zccache as a required submodule. After cloning or
-creating a fresh worktree, run this before any Soldr build command:
-
-```bash
-git submodule update --init _vender/zccache
-```
-
-Soldr will report this exact remedy if it detects the missing submodule. It
-never initializes it itself, so a build does not unexpectedly fetch from the
-network.
-
 ## Portable logic first
 
 Keep platform-independent parsing, planning, and policy logic in ordinary unit

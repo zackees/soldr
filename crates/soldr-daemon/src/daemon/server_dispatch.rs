@@ -582,7 +582,7 @@ where
 // already-published `compile_service.compile_streaming(req,
 // |chunk| …)` API, whose producer side will start emitting chunks
 // incrementally once `zccache#937` (cross-cutting daemon-pipeline
-// streaming) lands in `_vender/zccache/`. The consumer surface is
+// streaming) lands upstream in zccache. The consumer surface is
 // already in place: this function chunks output identically to what
 // `compile_streaming` emits today, so the migration is mechanical
 // and the wire bytes don't change.

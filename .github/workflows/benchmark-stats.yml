@@ -152,11 +152,8 @@ jobs:
           zccache-seed-strict: true
 
       # Benchmark Stats is a per-commit trend: measure the commit under
-      # test, not setup-soldr's released default. The #1487 attempt used
-      # setup-soldr's `ref:` mode, but that downloads a GitHub source
-      # zipball, which omits the `_vender/zccache` submodule the workspace
-      # needs, so the from-source build fails before it starts. Build from
-      # this job's submodule-complete checkout instead (through the
+      # test, not setup-soldr's released default. Build from this job's
+      # checkout (through the
       # released soldr wrapper installed above, so the build is
       # cache-accelerated) and prepend the result to PATH so every later
       # bench step resolves the current-commit binaries.

@@ -36,7 +36,7 @@ def test_required_ci_runs_root_dylint_policy() -> None:
     assert "Configure Dylint driver Cargo shim" not in workflow
     assert "Build daemon process-creation boundary lint" in workflow
     assert "Build local-socket name boundary lint" in workflow
-    assert "Enforce running-process local-socket name boundary" in workflow
+    assert "Enforce running-process local-socket name boundary" not in workflow
     assert "Test local-socket name boundary lint" in workflow
     assert "nightly-2026-05-28-x86_64-unknown-linux-gnu" in workflow
     # soldr#2303: the driver cdylibs still build in the release profile (dylint
@@ -46,10 +46,6 @@ def test_required_ci_runs_root_dylint_policy() -> None:
     assert '"${CARGO_HOME}/bin/cargo-dylint"' in workflow
     assert "dylint --no-build --all" in workflow
     assert "-- --workspace --all-targets" in workflow
-    assert "--manifest-path _vender/running-process/Cargo.toml" in workflow
-    assert (
-        "libban_raw_local_socket_name@" "nightly-2026-05-28-x86_64-unknown-linux-gnu.so"
-    ) in workflow
     assert "Test daemon process-creation boundary lint" in workflow
     assert "working-directory: dylints/ban_raw_process_creation" in workflow
     # soldr#2740 added the env-flag boundary lint, so its build and test
@@ -68,9 +64,9 @@ def test_required_ci_runs_root_dylint_policy() -> None:
     assert "--manifest-path Cargo.toml" in workflow
     assert "RUSTUP_TOOLCHAIN: nightly-2026-05-28-x86_64-unknown-linux-gnu" in workflow
     # Seven for the original lints, plus soldr#2740's test step.
-    assert workflow.count('SOLDR_NO_GC_TARGET: "1"') == 8
+    assert workflow.count('SOLDR_NO_GC_TARGET: "1"') == 7
     # Thirteen for the original lints, plus soldr#2740's build and test.
-    assert workflow.count("SOLDR_LINKER: default") == 15
+    assert workflow.count("SOLDR_LINKER: default") == 14
     dylint_config = (
         ROOT / "dylints" / "ban_raw_process_creation" / ".cargo" / "config.toml"
     ).read_text(encoding="utf-8")
