@@ -3,7 +3,7 @@
 //! Consumes the soldr-toolchain `recipes/zstd-<platform>/` catalogue
 //! rows. Each row ships:
 //!
-//! ```
+//! ```text
 //! lib/libzstd.{a,lib}
 //! lib/pkgconfig/libzstd.pc
 //! include/{zstd.h, zdict.h, zstd_errors.h}

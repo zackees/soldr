@@ -3,7 +3,7 @@
 //! Consumes the soldr-toolchain `recipes/bzip2-<platform>/` catalogue
 //! rows. Each row ships:
 //!
-//! ```
+//! ```text
 //! lib/libbz2.{a,lib}
 //! lib/pkgconfig/bzip2.pc
 //! include/bzlib.h

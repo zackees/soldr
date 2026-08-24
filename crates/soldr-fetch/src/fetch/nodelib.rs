@@ -7,7 +7,9 @@
 //! Node.js dist `headers.tar.gz` + the matching per-arch `node.lib`,
 //! and the soldr-toolchain ingest pipeline republishes them under
 //!
-//!     nodelib/<node-version>/<slug>/bundle.tar.zst
+//! ```text
+//! nodelib/<node-version>/<slug>/bundle.tar.zst
+//! ```
 //!
 //! This module's `ensure_nodelib_sysroot` materializes the bundle and
 //! returns the directory containing `include/` + `lib/node.lib`. The

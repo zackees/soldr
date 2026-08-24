@@ -3,7 +3,7 @@
 //! Consumes the soldr-toolchain `recipes/mimalloc-<platform>/`
 //! catalogue rows. Each row ships:
 //!
-//! ```
+//! ```text
 //! lib/libmimalloc.{a,lib}
 //! include/mimalloc.h
 //! ```

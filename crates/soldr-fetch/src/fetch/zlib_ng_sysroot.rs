@@ -3,7 +3,7 @@
 //! Consumes the soldr-toolchain `recipes/zlib-ng-<platform>/`
 //! catalogue rows. Each row ships:
 //!
-//! ```
+//! ```text
 //! lib/libz-ng.{a,lib}
 //! lib/pkgconfig/zlib-ng.pc
 //! include/zlib-ng.h
