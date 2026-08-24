@@ -164,6 +164,20 @@ jobs:
           set -euo pipefail
           python3 .github/scripts/check_dependency_inventory.py
 
+      # soldr#2763 -- the v0.9.3 release died on macOS ARM64 because a release
+      # script ran under the runner image's own python3, which predated the
+      # 3.10 API it used. The interpreter floor was a per-file convention that
+      # nothing enforced. A ratchet, like loc_ratchet: the 23 jobs already in
+      # that state are baselined, and no new one may join them.
+      #
+      # Routed through `uv run` because the guard needs PyYAML, and because a
+      # guard about pinning interpreters should not be exempt from its own
+      # rule.
+      - name: Workflow Python interpreter pin
+        run: |
+          set -euo pipefail
+          uv run --no-project --with pyyaml python .github/scripts/check_workflow_python_pin.py
+
       # soldr#2360/#2363 — the broker-fronted daemon design deliberately
       # keeps the wire at protocol_v2/client_v2, broken in place; a
       # protocol_v3/client_v3 module would mean two wire majors coexisting,
