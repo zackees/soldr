@@ -35,6 +35,13 @@ const GC_TOUCH_POLL_BUDGET: Duration = Duration::from_secs(10);
 /// the binary's 120 s nextest budget (the failing run's whole test was 42 s).
 const GC_TOUCH_MIN_POLLS: usize = 8;
 
+/// Pause between `gc list` polls.
+///
+/// Named because it is a third of the per-poll cost in the soldr#2785 sighting
+/// (100ms of ~278ms), and a message reporting only "per poll" invites reading
+/// all of it as work.
+const GC_TOUCH_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
 fn soldr_command(soldr_bin: &Path) -> Command {
     let mut command = Command::new(soldr_bin);
     common::scrub_outer_soldr_env(&mut command);
@@ -321,6 +328,26 @@ fn gc_purge_all_json_reports_error_log_path_and_keeps_failed_row() {
 /// Bounded, because a panic message is read in a CI log: the tail is kept
 /// rather than the head, since the phases that dominate a slow start
 /// (`broker_image_hash`, `broker_spawn_wait`) come last.
+/// The child's own `total_ms=` from its last front-door phase line.
+///
+/// soldr#2785: the assertion below used to print the trace and leave the reader
+/// to compare it against the per-poll cost. That is a step people get wrong --
+/// I got it wrong myself, reading the message's list of suspect phases as if it
+/// were the measurement, when the trace printed directly beneath said startup
+/// was 5ms of a 278ms poll. So the arithmetic is done here instead of being
+/// left as an exercise.
+fn front_door_total_ms(stderr: &str) -> Option<u64> {
+    stderr
+        .lines()
+        .filter(|line| line.contains("soldr front-door:"))
+        .filter_map(|line| {
+            line.split_whitespace()
+                .find_map(|token| token.strip_prefix("total_ms="))
+                .and_then(|value| value.parse::<u64>().ok())
+        })
+        .max()
+}
+
 fn startup_trace_tail(stderr: &str) -> String {
     const MAX_LINES: usize = 20;
     let phases: Vec<&str> = stderr
@@ -471,8 +498,13 @@ fn gc_list_json_reports_built_project_target_dir() {
     // Assigned on every iteration before the assertion can read it, so no
     // initializer -- an initial value here would be dead.
     let mut last_poll_trace: String;
+    // Wall time of the child alone, so the assertion can separate it from the
+    // deliberate sleep between polls (soldr#2785). No initializer, for the
+    // same reason `last_poll_trace` has none.
+    let mut last_child_wall: Duration;
     let json: Value = loop {
         attempts += 1;
+        let child_started = Instant::now();
         let output = soldr_command(&soldr_bin)
             .current_dir(&project_dir)
             .args(["gc", "list", "--json"])
@@ -488,6 +520,7 @@ fn gc_list_json_reports_built_project_target_dir() {
             .env(soldr_cli::startup_trace::STARTUP_TRACE_ENV_VAR, "1")
             .output()
             .expect("failed to run soldr gc list --json");
+        last_child_wall = child_started.elapsed();
         last_poll_trace = String::from_utf8_lossy(&output.stderr).into_owned();
 
         assert!(
@@ -512,14 +545,15 @@ fn gc_list_json_reports_built_project_target_dir() {
             "no tracked target dir after {attempts} `gc list` polls over \
              {elapsed:?} (~{:?} per poll; budget {GC_TOUCH_POLL_BUDGET:?}, \
              floor {GC_TOUCH_MIN_POLLS} polls).\n\n\
-             Which of the two it is, from the last poll's front-door trace \
-             below: phases summing to most of the per-poll cost — \
-             `broker_image_hash`, `broker_spawn_wait` — mean a contended \
-             runner spending the budget on process startup (soldr#2624). A \
-             trace totalling a few tens of ms means startup was fine and the \
-             registry row genuinely never landed (soldr#2561). An empty trace \
-             means soldr exited before the front door, so neither diagnosis \
-             applies.\n\n\
+             Where the last poll went: {:?} wall in the child, {}, and \
+             {GC_TOUCH_POLL_INTERVAL:?} sleeping between polls. Startup \
+             dominating means a contended runner spending the budget on \
+             process startup (soldr#2624); startup being a small fraction \
+             means startup was fine and the registry row genuinely never \
+             landed (soldr#2561) -- and the remainder is process creation \
+             plus the `gc list` query itself, which the front-door trace does \
+             not cover because it begins after the process is already \
+             running.\n\n\
              soldr#2785: if the row never landed, the daemon already says why \
              — the touch's write half logs `target-touch dropped` when the \
              store cannot be opened within its 2s retry budget, and \
@@ -528,10 +562,15 @@ fn gc_list_json_reports_built_project_target_dir() {
              written and `gc list` cannot see it, which are different \
              bugs.\n\ndaemon target-touch lines:\n{}\n\nlast poll trace:\n{}",
             elapsed / u32::try_from(attempts).unwrap_or(1),
+            last_child_wall,
+            match front_door_total_ms(&last_poll_trace) {
+                Some(ms) => format!("of which {ms}ms was in-process startup"),
+                None => "with no front-door total (soldr exited before the front door)".to_string(),
+            },
             daemon_target_touch_lines(&cache_root),
             startup_trace_tail(&last_poll_trace),
         );
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(GC_TOUCH_POLL_INTERVAL);
     };
 
     let entries = json["entries"].as_array().expect("entries array");
