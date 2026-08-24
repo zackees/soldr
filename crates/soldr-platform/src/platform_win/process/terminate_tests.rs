@@ -101,6 +101,13 @@ fn spawn_cmd_with_ping_grandchild() -> (std::process::Child, Vec<u32>) {
 /// -- it verifies. If this test ever starts failing, the walk has become
 /// order-sensitive after all and the snapshot-first ordering becomes
 /// load-bearing rather than merely tidy.
+///
+/// **Scope, narrowed by soldr#2806 follow-up.** What this pins is that a dead
+/// *root* still exposes its children: the fixture is `cmd -> ping`, so the
+/// grandchild's parent is the root itself, and edges are matched by parent pid
+/// rather than walked through parent nodes. It does not extend to a dead
+/// *intermediate* one level further down, which really is unreachable --
+/// see `the_walk_cannot_bridge_a_dead_intermediate`.
 #[test]
 fn a_dead_root_still_exposes_its_grandchildren() {
     use std::time::{Duration, Instant};
@@ -208,5 +215,158 @@ fn a_sweep_that_finds_survivors_names_them() {
     assert_eq!(
         classify_sweep(Some(vec![200, 300])),
         Sweep::Survivors(vec![200, 300])
+    );
+}
+
+// ---- soldr#2806: the orphaned grandchild ----------------------------------
+
+/// The gap this fix closes, and the exact boundary of the negative result
+/// pinned by `a_dead_root_still_exposes_its_grandchildren` above.
+///
+/// That test proves the walk survives a **dead root**, and it does: entries
+/// keep their `th32ParentProcessID`, and `collect_descendants` matches edges by
+/// parent pid, so `root` never has to be a node for its own children to be
+/// found. Its fixture is `cmd -> ping` where `ping`'s parent *is* the root, so
+/// "its parent dies" and "the root dies" are the same event there.
+///
+/// One level deeper they are not. With `root -> A -> B`, an `A` that has exited
+/// is absent from the snapshot entirely: nothing has `ppid == root`, and `B`'s
+/// edge names a pid that is not a node, so there is no way to bridge it. The
+/// walk returns empty while `B` runs on.
+///
+/// This is **not** the failure recorded in soldr#2806 -- that one was a failed
+/// snapshot reported as an empty tree, fixed in #2812. It is a second way the
+/// same verification can conclude "clean" over a live descendant, found while
+/// checking whether #2806 was fully closed.
+#[test]
+fn the_walk_cannot_bridge_a_dead_intermediate() {
+    // root 100 -> A 200 -> B 300, with A exited and so absent from the snapshot.
+    let orphaned = vec![(300u32, 200u32)];
+    assert!(
+        collect_descendants(&orphaned, 100).is_empty(),
+        "nothing has ppid == root, and B's parent is not a node to walk through"
+    );
+
+    // A direct child of a dead root is still found -- the case the negative
+    // result above pins, kept here so the boundary is visible in one place.
+    let direct = vec![(300u32, 100u32)];
+    assert_eq!(collect_descendants(&direct, 100), vec![300]);
+
+    // With the intermediate alive the same walk finds both.
+    let intact = vec![(200u32, 100u32), (300u32, 200u32)];
+    assert_eq!(collect_descendants(&intact, 100), vec![200, 300]);
+}
+
+#[test]
+fn remembered_start_times_are_looked_up_by_pid() {
+    let known = vec![(200u32, 10u64), (300u32, 42u64)];
+    assert_eq!(recorded_start(&known, 200), Some(10));
+    assert_eq!(recorded_start(&known, 300), Some(42));
+    assert_eq!(
+        recorded_start(&known, 999),
+        None,
+        "a pid that was never remembered carries no identity to check"
+    );
+}
+
+/// The behaviour the whole change rests on: a descendant the walk can no
+/// longer reach is still checked, because it is still remembered.
+///
+/// Written against injected probes rather than a real tree -- the shape it
+/// describes (a dead intermediate, an orphan still running) is the one that
+/// takes a loaded CI host to produce naturally.
+#[test]
+fn a_remembered_pid_the_walk_lost_is_still_reported_alive() {
+    let known = vec![(300u32, 10u64)];
+    let survivors = live_descendants(
+        // The walk reaches nothing: the intermediate has exited.
+        &[],
+        &known,
+        |pid| pid == 300,
+        |_| Some(10),
+    );
+    assert_eq!(
+        survivors,
+        vec![300],
+        "an orphan is exactly what the verification sweep must not miss"
+    );
+}
+
+#[test]
+fn a_remembered_pid_that_has_died_is_not_a_survivor() {
+    let known = vec![(300u32, 10u64)];
+    assert!(live_descendants(&[], &known, |_| false, |_| Some(10)).is_empty());
+}
+
+/// A recycled pid must not keep the sweep from reporting `Clear`, and must not
+/// be handed to `terminate_descendant`.
+#[test]
+fn a_remembered_pid_now_held_by_a_stranger_is_not_a_survivor() {
+    let known = vec![(300u32, 10u64)];
+    let survivors = live_descendants(
+        &[],
+        &known,
+        // Something is alive at that pid...
+        |pid| pid == 300,
+        // ...but it started later, so it is not the process we tracked.
+        |_| Some(99),
+    );
+    assert!(
+        survivors.is_empty(),
+        "a stranger holding a recycled pid is not our descendant"
+    );
+}
+
+#[test]
+fn reachable_and_remembered_are_both_checked_without_duplication() {
+    let known = vec![(300u32, 10u64)];
+    let survivors = live_descendants(&[200, 300], &known, |_| true, |_| Some(10));
+    assert_eq!(survivors, vec![200, 300]);
+}
+
+/// The hole an earlier draft of this change had, kept as a regression test.
+///
+/// That draft treated an unreadable creation time as "same process", on the
+/// reasoning `terminate_descendant` already applies to a *fresh* pid. It does
+/// not carry over to a remembered one: a pid we can no longer identify has, as
+/// far as we can prove, been handed to somebody else -- and a wrong answer here
+/// terminates that somebody. Reporting `ProcessKilled` instead of `TreeKilled`
+/// is the cheaper mistake, and is the claim this module already falls back to.
+#[test]
+fn a_remembered_pid_whose_identity_cannot_be_read_is_not_a_survivor() {
+    let known = vec![(300u32, 10u64)];
+    let survivors = live_descendants(
+        &[],
+        &known,
+        // Something is alive at that pid...
+        |pid| pid == 300,
+        // ...but its creation time cannot be read, so it cannot be shown to be
+        // the descendant we recorded.
+        |_| None,
+    );
+    assert!(
+        survivors.is_empty(),
+        "an unprovable identity must not authorise a kill"
+    );
+}
+
+/// A pid the walk still reaches needs no recorded identity: the snapshot it
+/// came from is itself the evidence, which is why the two sources differ.
+#[test]
+fn a_reachable_pid_needs_no_recorded_identity() {
+    let survivors = live_descendants(&[200], &[], |_| true, |_| None);
+    assert_eq!(survivors, vec![200]);
+}
+
+#[test]
+fn identity_is_pid_and_creation_time_together() {
+    assert!(is_same_process(10, Some(10)));
+    assert!(
+        !is_same_process(10, Some(11)),
+        "same pid, different start: a recycled pid, not our descendant"
+    );
+    assert!(
+        !is_same_process(10, None),
+        "unreadable start proves nothing, so it cannot prove sameness"
     );
 }
