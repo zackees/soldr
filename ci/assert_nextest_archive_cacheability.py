@@ -50,6 +50,24 @@ mkdir -p "$CACHE" "$ARCHIVE_DIR"
 
 export CARGO_TARGET_DIR=/work/target
 
+report_warm_misses() {
+  # soldr#2824: "107 misses" is a number, not a diagnosis. The build log names
+  # every unit it missed, so print the distinct set -- that is what turns
+  # "cacheability regressed" into "these units regressed".
+  if [[ ! -f /tmp/warm-build.log ]]; then
+    echo "## warm miss detail unavailable: /tmp/warm-build.log missing" >&2
+    return 0
+  fi
+  local units
+  units="$(grep -oE 'soldr\[cache\] [A-Za-z0-9_]+ .*MISS' /tmp/warm-build.log \
+    | sed -E 's/soldr\[cache\] ([A-Za-z0-9_]+) .*/\1/' | sort -u)"
+  local count
+  count="$(printf '%s\n' "$units" | grep -c . || true)"
+  echo "## warm-run misses by unit ($count distinct)" >&2
+  printf '%s\n' "$units" | sed 's/^/  /' >&2
+  echo "## the per-unit reason is in the compile journal named above" >&2
+}
+
 print_daemon_diagnostics() {
   echo "## soldr daemon diagnostics" >&2
   cat "$DIAGNOSTICS_DIR/soldr-daemon-status.json" >&2 || true
@@ -157,11 +175,14 @@ echo "## warm nextest archive build after cargo clean and daemon restart"
 clean_target
 ensure_soldr_daemon
 warm_start=$(date +%s%3N)
+# Tee'd so a failure can say WHICH units missed. soldr#2824: this reported
+# "warm run had misses; expected zero" and nothing else, so three weeks of red
+# runs carried no evidence about what was uncacheable.
 CARGO_PROFILE_TEST_DEBUG=line-tables-only \
   "$SOLDR_BIN" cargo nextest archive --workspace \
   --cargo-profile ci-nextest \
   --archive-file "$ARCHIVE_DIR/warm-tests.tar.zst" \
-  --archive-format tar-zst
+  --archive-format tar-zst 2>&1 | tee /tmp/warm-build.log
 warm_end=$(date +%s%3N)
 "$SOLDR_BIN" cache flush --json
 "$SOLDR_BIN" cache report --json > /tmp/warm-report.json
@@ -213,6 +234,7 @@ if (( warm_hits <= 0 )); then
 fi
 if (( warm_misses != 0 )); then
   echo "CACHEABILITY_FAILURE warm run had misses; expected zero" >&2
+  report_warm_misses
   exit 3
 fi
 
