@@ -170,3 +170,82 @@ def test_the_workflow_asks_cargo_rather_than_hardcoding_a_path():
     assert (
         "./target/debug/soldr" not in workflow
     ), "the hardcoded path is what broke both lanes"
+
+
+# --------------------------- reporting the verdict ----------------------------
+
+
+def test_the_printed_summary_is_ascii_encodable(smoke):
+    """soldr#2819: the lane died printing its own success.
+
+    The step-summary file is opened with `encoding="utf-8"`, but stdout is
+    encoded with the locale codepage on Windows, so a U+2705 verdict raised
+
+        UnicodeEncodeError: 'charmap' codec can't encode character
+
+    *after* the cross-build had succeeded and the PE check had passed.
+
+    cp1252 is the encoding the runner actually used; ASCII is the stricter
+    property and implies it.
+    """
+    for ok in (True, False):
+        printed = smoke.render_summary(
+            "x86_64-pc-windows-gnu", "/w/wg_smoke.exe", ok, "PE32+ x86-64", marks=False
+        )
+        printed.encode("ascii")
+        printed.encode("cp1252")
+
+
+def test_the_file_summary_keeps_the_verdict_marks(smoke):
+    """The marks are worth keeping where they render: GitHub's step summary."""
+    passed = smoke.render_summary(
+        "x86_64-pc-windows-gnu", "/w/wg_smoke.exe", True, "PE32+ x86-64", marks=True
+    )
+    failed = smoke.render_summary(
+        "x86_64-pc-windows-gnu", "/w/wg_smoke.exe", False, "not a PE", marks=True
+    )
+    assert "\u2705" in passed
+    assert "\u274c" in failed
+    passed.encode("utf-8")
+
+
+def test_both_renderings_agree_on_the_verdict(smoke):
+    """The ASCII form must not quietly report the opposite outcome."""
+    args = ("x86_64-pc-windows-gnu", "/w/wg_smoke.exe")
+    ascii_pass = smoke.render_summary(*args, True, "PE32+ x86-64", marks=False)
+    ascii_fail = smoke.render_summary(*args, False, "not a PE", marks=False)
+    assert "PASS" in ascii_pass and "FAIL" not in ascii_pass
+    assert "FAIL" in ascii_fail and "PASS" not in ascii_fail
+
+
+def test_print_ascii_survives_non_ascii_input(smoke, capsys):
+    """The property has to hold however it is called, not only when the call
+    site remembers to pass the ASCII rendering.
+
+    My first version of this test asserted `render_summary(marks=False)` was
+    ASCII and that no `print(` *line* contained a mark. Flipping the call site
+    to `marks=True` passed both -- the line stays ASCII while the runtime output
+    does not. So the guarantee moved into the printer, where a call site cannot
+    undo it.
+    """
+    smoke.print_ascii("verdict: \u2705 PE32+ x86-64")
+    printed = capsys.readouterr().out
+    printed.encode("ascii")
+    printed.encode("cp1252")
+    assert "PE32+ x86-64" in printed, "the message must survive, only escaped"
+
+
+def test_print_ascii_leaves_ordinary_text_alone(smoke, capsys):
+    smoke.print_ascii("$ soldr --no-cache build --target x86_64-pc-windows-gnu")
+    assert (
+        capsys.readouterr().out.strip()
+        == "$ soldr --no-cache build --target x86_64-pc-windows-gnu"
+    )
+
+
+def test_the_smoke_prints_through_the_ascii_printer(smoke):
+    """A bare `print` of the summary is the exact shape that broke the lane."""
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert "print_ascii(render_summary(" in source, (
+        "the verdict must go through print_ascii; a bare print re-opens " "soldr#2819"
+    )
