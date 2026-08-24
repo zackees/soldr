@@ -192,6 +192,22 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
 
+      # soldr#2763 -- the v0.9.3 release died on macOS ARM64 because a release
+      # script ran under the runner image's own python3, which predated the
+      # 3.10 API it used. The interpreter floor was a per-file convention that
+      # nothing enforced. A ratchet, like loc_ratchet: the 23 jobs already in
+      # that state are baselined, and no new one may join them.
+      #
+      # Routed through `uv run` because the guard needs PyYAML, and because a
+      # guard about pinning interpreters should not be exempt from its own
+      # rule. That is also why it sits *after* the uv setup above rather than
+      # with the other guards earlier in the job -- placed before it, the step died on
+      # `uv: command not found`.
+      - name: Workflow Python interpreter pin
+        run: |
+          set -euo pipefail
+          uv run --no-project --with pyyaml python .github/scripts/check_workflow_python_pin.py
+
       # soldr#2013 — nothing ran `tests/` on CI, so it decayed silently: a test
       # asserting on a workflow #1982 deleted, two lints that scanned nothing
       # and reported clean (#2008), and a manifest-coupled assertion (#2004).
