@@ -47,8 +47,9 @@ const DYNAMIC_FEATURE: &str = "-crt-static";
 /// Decide the linkage from one flag string.
 ///
 /// Returns `None` when the string says nothing about `crt-static`, which is
-/// what lets [`crt_linkage_from_sources`] fall through to the next source
-/// rather than treating silence as a decision.
+/// what lets [`crt_linkage_from_merge`] fall back to the dynamic default and
+/// [`declared_config_linkage`] skip to the next config table, rather than
+/// either treating silence as a decision.
 ///
 /// Within a single string the **last** mention wins, matching how rustc
 /// accumulates `-C target-feature` — `+crt-static ... -crt-static` really does
@@ -69,21 +70,45 @@ fn crt_linkage_in(flags: &str) -> Option<CrtLinkage> {
     }
 }
 
-/// Decide the linkage from flag sources listed **highest precedence first**.
+/// Decide the linkage from flag sources listed in **soldr's own append order**,
+/// lowest precedence first.
 ///
-/// The first source that mentions `crt-static` decides; the rest are not
-/// consulted. This mirrors Cargo, where the winning rustflags source replaces
-/// the others outright rather than merging with them — so a `RUSTFLAGS` that
-/// says nothing about the CRT does not veto a `.cargo/config.toml` that does.
-pub(crate) fn crt_linkage_from_sources<I, S>(sources: I) -> CrtLinkage
+/// soldr#2830: this used to model Cargo's rule -- four mutually exclusive
+/// sources, first one set wins -- which is not the rule that applies here.
+/// soldr never lets Cargo do that selection. It merges every source into a
+/// single value and exports the encoded form
+/// (`target_lifecycle::merge_encoded_rustflags`), appending
+/// `CARGO_ENCODED_RUSTFLAGS`, then soldr's own flags, then
+/// `CARGO_TARGET_<T>_RUSTFLAGS`, then `RUSTFLAGS`. rustc then resolves the
+/// concatenation with its own last-wins rule, so `RUSTFLAGS` is the strongest
+/// source and ambient `CARGO_ENCODED_RUSTFLAGS` the weakest -- the exact
+/// reverse of what the old order assumed.
+///
+/// Joining the sources and deferring to [`crt_linkage_in`] reproduces that by
+/// construction, which is why this deletes the parallel precedence model rather
+/// than correcting it: there is now one place where "last mention wins" lives.
+pub(crate) fn crt_linkage_from_merge<I, S>(sources: I) -> CrtLinkage
 where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
-    sources
+    let merged = sources
         .into_iter()
-        .find_map(|source| crt_linkage_in(source.as_ref()))
-        .unwrap_or(CrtLinkage::Dynamic)
+        .map(|source| source.as_ref().to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
+    crt_linkage_in(&merged).unwrap_or(CrtLinkage::Dynamic)
+}
+
+/// The linkage a `.cargo/config.toml` asks for, under Cargo's *config*
+/// specificity: `target.<triple>` before `build`, first mention winning.
+///
+/// This is only ever used to warn. Config rustflags do not reach rustc on this
+/// path at all (see [`warn_if_config_crt_is_inert`]), so this must not feed the
+/// decision -- but knowing a preference was expressed is what lets soldr say so
+/// instead of ignoring it in silence.
+fn declared_config_linkage(sources: &[String]) -> Option<CrtLinkage> {
+    sources.iter().find_map(|source| crt_linkage_in(source))
 }
 
 /// `rustflags` entries from a `.cargo/config.toml` under `root`, most specific
@@ -134,8 +159,8 @@ fn flatten_rustflags(value: &toml::Value) -> Option<String> {
     (!text.trim().is_empty()).then_some(text)
 }
 
-/// The linkage the caller has asked for, reading the environment and the
-/// project's Cargo config in Cargo's own precedence order.
+/// The linkage the caller has asked for, reading the environment in the
+/// order soldr merges it (soldr#2830).
 ///
 /// ## Why this is read here and not at `soldr prepare` time
 ///
@@ -149,26 +174,62 @@ fn flatten_rustflags(value: &toml::Value) -> Option<String> {
 ///
 /// A caller who sets the flag *after* `soldr prepare` still gets the dynamic
 /// default. That case is not fixable from here — nothing can read a variable
-/// that does not exist yet — and it is why the Cargo-config sources are
-/// consulted too: a `.cargo/config.toml` is on disk before either step runs.
+/// that does not exist yet. A `.cargo/config.toml` is on disk before either
+/// step runs, but it cannot stand in for that, because Cargo does not read it
+/// on this path at all; see [`warn_if_config_crt_is_inert`].
 pub(crate) fn requested_crt_linkage(target_triple: &str) -> CrtLinkage {
     let target_key = format!(
         "CARGO_TARGET_{}_RUSTFLAGS",
         target_triple.to_uppercase().replace('-', "_")
     );
-    let mut sources = vec![
-        // Cargo's precedence order for rustflags, highest first.
+    // soldr's own append order, weakest first. See `crt_linkage_from_merge`.
+    let linkage = crt_linkage_from_merge([
         std::env::var("CARGO_ENCODED_RUSTFLAGS")
             .unwrap_or_default()
             .replace('\u{1f}', " "),
         std::env::var(&target_key).unwrap_or_default(),
         std::env::var("RUSTFLAGS").unwrap_or_default(),
-    ];
-    if let Ok(current) = std::env::current_dir() {
-        let root = project_root_for_crt(&current);
-        sources.extend(cargo_config_rustflags(&root, target_triple));
-    }
-    crt_linkage_from_sources(sources)
+    ]);
+    warn_if_config_crt_is_inert(target_triple);
+    linkage
+}
+
+/// Say so when a `.cargo/config.toml` CRT preference cannot take effect.
+///
+/// soldr#2798 read this file into the decision, on the reasoning that a config
+/// is on disk before either step runs. It is -- but Cargo never reads it here.
+/// soldr exports `CARGO_ENCODED_RUSTFLAGS`, Cargo's highest-precedence
+/// rustflags source, and Cargo's sources are mutually exclusive, so config
+/// rustflags are suppressed outright; soldr does not fold them into the merge
+/// either. Measured with a probe crate: with the encoded variable set, a
+/// `build.rustflags` entry reaches rustc zero times.
+///
+/// Honouring it anyway is what this fix removes, because it desynchronizes the
+/// link line in the direction soldr#2794 exists to prevent -- soldr emits the
+/// static archives while rustc still emits `/defaultlib:msvcrt`. But ignoring
+/// it in silence is its own failure: the binary comes out dynamically linked
+/// after the project asked for static, and nothing says why. So it is ignored
+/// loudly, with the remedy named.
+fn warn_if_config_crt_is_inert(target_triple: &str) {
+    let Ok(current) = std::env::current_dir() else {
+        return;
+    };
+    let root = project_root_for_crt(&current);
+    let declared = cargo_config_rustflags(&root, target_triple);
+    let Some(linkage) = declared_config_linkage(&declared) else {
+        return;
+    };
+    let asked = match linkage {
+        CrtLinkage::Static => "+crt-static",
+        CrtLinkage::Dynamic => "-crt-static",
+    };
+    eprintln!(
+        "soldr build: {} asks for {asked}, but Cargo ignores config rustflags here",
+        root.join(".cargo/config.toml").display()
+    );
+    eprintln!(
+        "soldr build: soldr exports CARGO_ENCODED_RUSTFLAGS, which outranks them; set RUSTFLAGS=\"-C target-feature={asked}\" instead (soldr#2830)"
+    );
 }
 
 /// Nearest ancestor holding a `Cargo.toml`, falling back to `start`.

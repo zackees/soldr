@@ -5,7 +5,10 @@
 //! under one barrier, and `RUSTFLAGS` already has two; keeping the decision
 //! logic pure means these tests cannot participate in that race at all.
 
-use super::{cargo_config_rustflags, crt_linkage_from_sources, xwin_msvc_link_args, CrtLinkage};
+use super::{
+    cargo_config_rustflags, crt_linkage_from_merge, declared_config_linkage, xwin_msvc_link_args,
+    CrtLinkage,
+};
 
 /// An xwin cache laid out the way the real tarball is.
 fn xwin_cache() -> tempfile::TempDir {
@@ -24,12 +27,12 @@ fn xwin_cache() -> tempfile::TempDir {
 #[test]
 fn no_mention_of_crt_static_keeps_the_dynamic_default() {
     assert_eq!(
-        crt_linkage_from_sources(["-C opt-level=3", "-Dwarnings"]),
+        crt_linkage_from_merge(["-C opt-level=3", "-Dwarnings"]),
         CrtLinkage::Dynamic,
         "silence must not be read as a request to change linkage"
     );
     assert_eq!(
-        crt_linkage_from_sources(Vec::<String>::new()),
+        crt_linkage_from_merge(Vec::<String>::new()),
         CrtLinkage::Dynamic
     );
 }
@@ -37,7 +40,7 @@ fn no_mention_of_crt_static_keeps_the_dynamic_default() {
 #[test]
 fn plus_crt_static_selects_static() {
     assert_eq!(
-        crt_linkage_from_sources(["-C target-feature=+crt-static"]),
+        crt_linkage_from_merge(["-C target-feature=+crt-static"]),
         CrtLinkage::Static
     );
 }
@@ -45,7 +48,7 @@ fn plus_crt_static_selects_static() {
 #[test]
 fn minus_crt_static_is_an_explicit_dynamic_request() {
     assert_eq!(
-        crt_linkage_from_sources(["-C target-feature=-crt-static"]),
+        crt_linkage_from_merge(["-C target-feature=-crt-static"]),
         CrtLinkage::Dynamic
     );
 }
@@ -56,34 +59,66 @@ fn minus_crt_static_is_an_explicit_dynamic_request() {
 #[test]
 fn within_one_source_the_last_mention_wins() {
     assert_eq!(
-        crt_linkage_from_sources(["-C target-feature=+crt-static,-crt-static"]),
+        crt_linkage_from_merge(["-C target-feature=+crt-static,-crt-static"]),
         CrtLinkage::Dynamic
     );
     assert_eq!(
-        crt_linkage_from_sources(["-C target-feature=-crt-static,+crt-static"]),
+        crt_linkage_from_merge(["-C target-feature=-crt-static,+crt-static"]),
         CrtLinkage::Static
     );
 }
 
-/// Cargo replaces rustflags sources rather than merging them, so a source that
-/// is silent about the CRT must not veto a lower-precedence one that is not.
+/// A source saying nothing about the CRT must not veto one that does, whichever
+/// side of it that source sits on.
 #[test]
-fn a_silent_high_precedence_source_defers_to_a_lower_one() {
+fn a_silent_source_does_not_veto_a_speaking_one() {
     assert_eq!(
-        crt_linkage_from_sources(["-Dwarnings", "-C target-feature=+crt-static"]),
+        crt_linkage_from_merge(["-Dwarnings", "-C target-feature=+crt-static"]),
+        CrtLinkage::Static
+    );
+    assert_eq!(
+        crt_linkage_from_merge(["-C target-feature=+crt-static", "-Dwarnings"]),
         CrtLinkage::Static
     );
 }
 
+/// soldr#2830: the direction this asserts is the whole bug. soldr concatenates
+/// every rustflags source and lets rustc's last-wins rule settle it, so the
+/// source appended **last** is the strongest. The old model asserted the
+/// opposite and produced a link line whose two halves disagreed.
 #[test]
-fn the_first_source_that_mentions_the_crt_decides() {
+fn the_last_source_wins_because_soldr_concatenates() {
     assert_eq!(
-        crt_linkage_from_sources([
+        crt_linkage_from_merge([
             "-C target-feature=-crt-static",
             "-C target-feature=+crt-static",
         ]),
-        CrtLinkage::Dynamic,
-        "a lower-precedence source must not override a higher one"
+        CrtLinkage::Static,
+        "a later-appended source must override an earlier one"
+    );
+}
+
+/// The append order `requested_crt_linkage` uses, spelled out with the real
+/// variable names so a reordering of that list fails here.
+///
+/// `merge_encoded_rustflags` appends ambient `CARGO_ENCODED_RUSTFLAGS`, then
+/// soldr's own flags, then `CARGO_TARGET_<T>_RUSTFLAGS`, then `RUSTFLAGS`.
+#[test]
+fn rustflags_outranks_the_target_key_which_outranks_ambient_encoded() {
+    let ambient_encoded = "-C target-feature=-crt-static";
+    let target_key = "-C link-arg=/LIBPATH:xwin";
+    let rustflags = "-C target-feature=+crt-static";
+    assert_eq!(
+        crt_linkage_from_merge([ambient_encoded, target_key, rustflags]),
+        CrtLinkage::Static,
+        "RUSTFLAGS is appended last and must win"
+    );
+
+    let target_key_static = "-C target-feature=+crt-static";
+    assert_eq!(
+        crt_linkage_from_merge([ambient_encoded, target_key_static, ""]),
+        CrtLinkage::Static,
+        "the target key must outrank ambient CARGO_ENCODED_RUSTFLAGS"
     );
 }
 
@@ -100,9 +135,9 @@ fn cargo_config_rustflags_reads_target_and_build_tables() {
     .unwrap();
     let flags = cargo_config_rustflags(tmp.path(), "x86_64-pc-windows-msvc");
     assert_eq!(
-        crt_linkage_from_sources(flags),
-        CrtLinkage::Static,
-        "build.rustflags must be consulted"
+        declared_config_linkage(&flags),
+        Some(CrtLinkage::Static),
+        "build.rustflags must still be read, to warn about"
     );
 }
 
@@ -117,7 +152,11 @@ fn cargo_config_target_table_is_more_specific_than_build() {
     )
     .unwrap();
     let flags = cargo_config_rustflags(tmp.path(), "x86_64-pc-windows-msvc");
-    assert_eq!(crt_linkage_from_sources(flags), CrtLinkage::Static);
+    assert!(
+        flags[0].contains("+crt-static"),
+        "the target table must be listed before build: {flags:?}"
+    );
+    assert_eq!(declared_config_linkage(&flags), Some(CrtLinkage::Static));
 }
 
 /// This feeds a link-flag choice that has a working default, so a broken or
@@ -142,10 +181,35 @@ fn another_targets_rustflags_are_not_borrowed() {
     )
     .unwrap();
     let flags = cargo_config_rustflags(tmp.path(), "x86_64-pc-windows-msvc");
+    assert!(
+        flags.is_empty(),
+        "a sibling target's flags must not be borrowed: {flags:?}"
+    );
+    assert_eq!(declared_config_linkage(&flags), None);
+}
+
+/// soldr#2830: a config-declared preference must not reach the decision.
+///
+/// `requested_crt_linkage` builds its source list from three environment
+/// variables and nothing else, so a config can only ever produce a warning.
+/// Asserting that here rather than through the real function keeps this test
+/// off the process environment, which is what the module header requires:
+/// `RUSTFLAGS` is already mutated under two other test barriers, and
+/// `tests/env_lock_lint.rs` wants one barrier per variable.
+#[test]
+fn a_config_preference_cannot_change_the_decision() {
+    let config_says_static = "-C target-feature=+crt-static";
+    // The environment is silent, exactly as it is for a project that puts the
+    // flag only in `.cargo/config.toml`.
     assert_eq!(
-        crt_linkage_from_sources(flags),
+        crt_linkage_from_merge(["", "", ""]),
         CrtLinkage::Dynamic,
-        "a sibling target's flags must not select this target's CRT"
+        "a silent environment is dynamic regardless of what a config says"
+    );
+    // ...and the config's own reading is still available, for the warning.
+    assert_eq!(
+        declared_config_linkage(&[config_says_static.to_string()]),
+        Some(CrtLinkage::Static)
     );
 }
 
