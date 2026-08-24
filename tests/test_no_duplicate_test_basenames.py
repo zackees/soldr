@@ -63,9 +63,7 @@ def test_no_two_test_files_share_a_basename() -> None:
     for path in collected_test_files():
         by_basename[path.name].append(str(path.relative_to(REPO_ROOT)))
 
-    collisions = {
-        name: paths for name, paths in by_basename.items() if len(paths) > 1
-    }
+    collisions = {name: paths for name, paths in by_basename.items() if len(paths) > 1}
 
     assert not collisions, (
         "test files sharing a basename break pytest collection for the whole "
