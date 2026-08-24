@@ -208,6 +208,22 @@ jobs:
           set -euo pipefail
           uv run --no-project --with pyyaml python .github/scripts/check_workflow_python_pin.py
 
+      # soldr#2765/#2164 -- the vendored zccache is compiled into soldr, but
+      # release staging separately downloads a PREBUILT zccache keyed on the
+      # vendored crate's version. So a pin can lead the release: #2164 moved it
+      # to a version with no published asset, every local signal stayed green
+      # (builds, ~1460 tests, clippy, verify_vendor_state.py, loc_ratchet --
+      # none of them exercise that fetch), and main went red.
+      #
+      # CLAUDE.md documents the pre-flight query a human is meant to run before
+      # bumping. This runs it. An unreachable manifest is skipped rather than
+      # failed: this is on every PR, and failing on a Pages blip would teach
+      # people to ignore it.
+      - name: Vendored zccache has a published release asset
+        run: |
+          set -euo pipefail
+          uv run --no-project python .github/scripts/check_vendored_zccache_asset.py
+
       # soldr#2013 — nothing ran `tests/` on CI, so it decayed silently: a test
       # asserting on a workflow #1982 deleted, two lints that scanned nothing
       # and reported clean (#2008), and a manifest-coupled assertion (#2004).
@@ -444,7 +460,6 @@ jobs:
           uv run --no-project --with 'mypy>=1.18,<2' --with 'pytest>=8.0'
           --with types-PyYAML
           python -m mypy src tests .github/scripts .github/actions ci tools .claude/hooks
-
 
       # soldr#1978 item 6 names this step as duplicating build-linux-x64's
       # compile of the same workspace + test targets on a second runner.
