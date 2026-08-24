@@ -203,6 +203,7 @@ pub mod compile_diagnostics;
 pub mod compile_dispatch;
 pub mod compile_fallback_rollup;
 pub mod cook;
+pub(crate) mod cook_workspace;
 pub mod daemon_entry;
 /// soldr#2360 — actionable attribution for a daemon-unavailable compile
 /// dispatch failure, split out of `compile_dispatch.rs` (over the #1966
