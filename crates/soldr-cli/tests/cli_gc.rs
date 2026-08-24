@@ -339,6 +339,37 @@ fn startup_trace_tail(stderr: &str) -> String {
     rendered
 }
 
+/// The daemon's own account of the touch's write half (soldr#2785).
+///
+/// The front-door trace above says whether *startup* ate the budget. It
+/// cannot say anything about the write, because the write is fire-and-forget
+/// — the client is acked before the store is touched and never learns the
+/// outcome. The daemon does log both failures (`target-touch dropped` after
+/// its 2s open-retry budget, `target-touch upsert failed` on a write error),
+/// but into its own stderr log, which no assertion here was reading. So a
+/// missing row and a dropped touch looked identical from the test.
+///
+/// Best-effort by construction: this runs inside a panic message on a lane
+/// that is already failing, so an unreadable or absent log reports itself
+/// rather than replacing the real failure with an I/O error.
+fn daemon_target_touch_lines(cache_root: &Path) -> String {
+    let log = cache_root.join("daemon-spawn.log");
+    let Ok(text) = fs::read_to_string(&log) else {
+        return format!("(no readable daemon log at {})", log.display());
+    };
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|line| line.contains("target-touch"))
+        .collect();
+    if lines.is_empty() {
+        return format!(
+            "(none in {} — the daemon logged no drop and no upsert failure)",
+            log.display()
+        );
+    }
+    lines.join("\n")
+}
+
 #[test]
 fn gc_list_json_reports_built_project_target_dir() {
     let cache_root = unique_temp_dir("gc-list-build");
@@ -470,8 +501,16 @@ fn gc_list_json_reports_built_project_target_dir() {
              trace totalling a few tens of ms means startup was fine and the \
              registry row genuinely never landed (soldr#2561). An empty trace \
              means soldr exited before the front door, so neither diagnosis \
-             applies.\n\nlast poll trace:\n{}",
+             applies.\n\n\
+             soldr#2785: if the row never landed, the daemon already says why \
+             — the touch's write half logs `target-touch dropped` when the \
+             store cannot be opened within its 2s retry budget, and \
+             `target-touch upsert failed` when the write itself errors. \
+             Silence there means the touch was never delivered or the row was \
+             written and `gc list` cannot see it, which are different \
+             bugs.\n\ndaemon target-touch lines:\n{}\n\nlast poll trace:\n{}",
             elapsed / u32::try_from(attempts).unwrap_or(1),
+            daemon_target_touch_lines(&cache_root),
             startup_trace_tail(&last_poll_trace),
         );
         std::thread::sleep(Duration::from_millis(100));
