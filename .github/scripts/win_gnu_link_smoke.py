@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -192,6 +193,22 @@ def cmd_smoke(args: argparse.Namespace) -> int:
         return 0
 
 
+def _basename_either_separator(path: str) -> str:
+    r"""The final component, splitting on `/` and `\` regardless of host.
+
+    `os.path.basename` only knows the separators of the interpreter it runs on,
+    so on Linux it reads `D:\a\soldr\target\...\soldr.exe` as one long component
+    and finds no match at all. That made this parser depend on the OS running
+    it rather than on the log it was handed -- which is backwards, because the
+    log records whatever host produced the build.
+
+    In practice the smoke locates on the same host that built, so both spellings
+    resolve correctly today; the host-dependence was invisible until the test
+    covering the Windows shape actually ran on Linux (soldr#2823).
+    """
+    return re.split(r"[\\/]", path)[-1]
+
+
 def locate_executable(build_log: str, name: str) -> str | None:
     """The path cargo says it wrote for binary `name`.
 
@@ -231,7 +248,7 @@ def locate_executable(build_log: str, name: str) -> str | None:
             executable = record.get("executable")
             if not executable:
                 continue
-            stem = os.path.splitext(os.path.basename(executable))[0]
+            stem = os.path.splitext(_basename_either_separator(executable))[0]
             if stem == name:
                 # Later records win: a rebuild in the same log supersedes.
                 found = executable

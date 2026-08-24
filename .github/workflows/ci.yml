@@ -418,10 +418,18 @@ jobs:
         # pytest in the ephemeral env for the same reason as the mypy step
         # below: 22 test files import it, and pylint reports import-error for
         # what it cannot resolve.
+        #
+        # pyyaml for the same reason, on the three invocations that reach a
+        # file importing it (five under tests/, plus check_workflow_python_pin
+        # under .github/scripts). mypy already carries types-PyYAML; pylint
+        # needs the real package, because E0401 is about importability rather
+        # than typing. This was masked for as long as it existed: the Python
+        # tests step runs first, and it had been failing on a collection error
+        # since #2823, so pylint never got to report.
         run: |
           set -euo pipefail
           uv run --no-project --with 'pylint>=4.0,<5' --with 'pytest>=8.0'             python -m pylint src
-          uv run --no-project --with 'pylint>=4.0,<5' --with 'pytest>=8.0'             python -m pylint --rcfile=tests/.pylintrc tests
+          uv run --no-project --with 'pylint>=4.0,<5' --with 'pytest>=8.0' --with 'pyyaml>=6,<7'             python -m pylint --rcfile=tests/.pylintrc tests
           # pylint gets `.github/actions/setup-soldr` rather than the parent
           # `.github/actions`: ensure_soldr.py imports its sibling module, which
           # only resolves when pylint has that leaf directory on its path.
@@ -431,8 +439,8 @@ jobs:
           # Two surfaces here for the same reason src/ and tests/ are split:
           # `test_*.py` in this directory are pytest suites, so they take the
           # tests/ ruleset, and everything else takes the default one.
-          uv run --no-project --with 'pylint>=4.0,<5' --with 'pytest>=8.0'             python -m pylint .github/scripts .github/actions/setup-soldr ci tools .claude/hooks --ignore-patterns='test_.*\.py'
-          uv run --no-project --with 'pylint>=4.0,<5' --with 'pytest>=8.0'             python -m pylint --rcfile=tests/.pylintrc .github/scripts/test_*.py
+          uv run --no-project --with 'pylint>=4.0,<5' --with 'pytest>=8.0' --with 'pyyaml>=6,<7'             python -m pylint .github/scripts .github/actions/setup-soldr ci tools .claude/hooks --ignore-patterns='test_.*\.py'
+          uv run --no-project --with 'pylint>=4.0,<5' --with 'pytest>=8.0' --with 'pyyaml>=6,<7'             python -m pylint --rcfile=tests/.pylintrc .github/scripts/test_*.py
 
       # All four directories. `.github/scripts` and `ci` are the scripts CI
       # itself runs, so a type error in them breaks a lane rather than a
