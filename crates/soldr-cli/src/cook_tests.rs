@@ -587,3 +587,62 @@ fn cook_marker_inequality_when_any_field_differs() {
     b.soldr_version = "0.7.51".into();
     assert_ne!(a, b, "different soldr must NOT warm-skip");
 }
+
+/// soldr#2788: a path dependency the skeleton never materializes must be
+/// detected, because cook's exit code stays 0 when it hits one. Asserting on
+/// the exit code would pass against the unfixed build -- the whole defect is
+/// that it fails silently and saves no layer.
+#[test]
+fn unmaterializable_path_deps_flags_a_dep_outside_the_skeleton() {
+    let recipe = serde_json::json!({
+        "skeleton": { "manifests": [
+            { "relative_path": "Cargo.toml", "contents": "[workspace]\nmembers = [\"crates/a\"]\n" },
+            { "relative_path": "crates/a/Cargo.toml",
+              "contents": "[package]\nname = \"a\"\n[dependencies.zccache]\npath = \"../../_vender/zccache/crates/zccache\"\n" }
+        ]}
+    });
+
+    let blocked = unmaterializable_path_deps(&recipe);
+
+    assert_eq!(
+        blocked.len(),
+        1,
+        "the vendored path dep must be flagged: {blocked:?}"
+    );
+    assert_eq!(blocked[0].0, "zccache");
+    assert_eq!(blocked[0].1, "crates/a/Cargo.toml");
+}
+
+/// The mirror case: an in-workspace path dep IS materialized, so cooking is
+/// fine and must not be skipped. Without this, a detector that flagged
+/// everything would pass the test above and disable cook everywhere.
+#[test]
+fn unmaterializable_path_deps_allows_a_sibling_the_skeleton_carries() {
+    let recipe = serde_json::json!({
+        "skeleton": { "manifests": [
+            { "relative_path": "Cargo.toml", "contents": "[workspace]\nmembers = [\"crates/a\", \"crates/b\"]\n" },
+            { "relative_path": "crates/a/Cargo.toml",
+              "contents": "[package]\nname = \"a\"\n[dependencies.b]\npath = \"../b\"\n" },
+            { "relative_path": "crates/b/Cargo.toml", "contents": "[package]\nname = \"b\"\n" }
+        ]}
+    });
+
+    assert!(
+        unmaterializable_path_deps(&recipe).is_empty(),
+        "an in-workspace sibling is materialized and must not block cook"
+    );
+}
+
+/// Registry dependencies carry no `path`, so they can never block a cook.
+#[test]
+fn unmaterializable_path_deps_ignores_registry_dependencies() {
+    let recipe = serde_json::json!({
+        "skeleton": { "manifests": [
+            { "relative_path": "Cargo.toml", "contents": "[workspace]\nmembers = [\"crates/a\"]\n" },
+            { "relative_path": "crates/a/Cargo.toml",
+              "contents": "[package]\nname = \"a\"\n[dependencies]\nserde = \"1\"\n" }
+        ]}
+    });
+
+    assert!(unmaterializable_path_deps(&recipe).is_empty());
+}

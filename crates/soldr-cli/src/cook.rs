@@ -377,6 +377,37 @@ pub(crate) async fn run_cook(args: &[String], cache_enabled: bool) -> Result<i32
             );
             return Ok(0);
         }
+
+        // soldr#2788: refuse a cook that cannot succeed, instead of spending
+        // ~190s discovering it. A crate depending on a path outside the
+        // skeleton (a sibling repo vendored as a submodule with its own
+        // `[workspace]`, so it lands in `exclude` rather than `members`) is
+        // compiled against an `--extern` nothing produced. Cook then degrades
+        // with "continuing without cooked deps" -- the build passes, no layer
+        // is saved, and every later run repeats the full cold build. Silent.
+        //
+        // Skipping with a named reason keeps the loss visible. Actually
+        // cooking these workspaces is soldr#2791.
+        if let Ok(raw) = std::fs::read_to_string(&ctx.recipe_path) {
+            if let Ok(recipe) = serde_json::from_str::<serde_json::Value>(&raw) {
+                let blocked = unmaterializable_path_deps(&recipe);
+                if !blocked.is_empty() {
+                    let parts: Vec<String> = blocked
+                        .iter()
+                        .map(|(dep, owner)| format!("{dep} (required by {owner})"))
+                        .collect();
+                    let detail = parts.join(", ");
+                    let plural = if blocked.len() == 1 { "y" } else { "ies" };
+                    let count = blocked.len();
+                    eprintln!(
+                        "soldr cook: skipped - workspace depends on {count} path dependenc{plural} the cargo-chef recipe cannot materialize: {detail}. \
+Dependencies were NOT prebuilt and no cache layer was saved; the build \
+proceeds uncached. See https://github.com/zackees/soldr/issues/2791"
+                    );
+                    return Ok(0);
+                }
+            }
+        }
     }
 
     // Snapshot the project's source-defining files (manifests + Rust sources)
