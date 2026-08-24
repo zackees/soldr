@@ -356,24 +356,50 @@ mod tests {
     // and `running-process` under `_vender/`, both `[workspace] exclude`d and
     // both depended on by path -- so the detector must fire here, or the fix
     // does nothing for the workspace that motivated it.
+    //
+    // Resolved at RUNTIME by walking up from the working directory, never from
+    // `CARGO_MANIFEST_DIR`: these tests also run from a nextest archive on a
+    // machine that has no source tree, and `test_archived_source_tests_use_
+    // only_runtime_workspace_resolution` enforces that. When the checkout is
+    // not present the test has nothing to assert and says so by skipping.
     #[test]
     fn soldrs_own_workspace_is_detected() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(Path::parent)
-            .expect("repo root")
-            .to_path_buf();
-        assert!(root.join("Cargo.toml").is_file(), "{}", root.display());
+        let Some(root) = soldr_checkout_root() else {
+            eprintln!("skipping: no soldr checkout above the working directory");
+            return;
+        };
 
         let found = external_path_dependencies(&root);
         let names: Vec<&str> = found.iter().map(|d| d.name.as_str()).collect();
         assert!(
             names.contains(&"zccache"),
-            "expected the vendored zccache path dep; got {names:?}"
+            "expected the vendored zccache path dep in {}; got {names:?}",
+            root.display()
         );
         assert!(
             found.iter().all(|d| d.reason == ExternalReason::Excluded),
             "these are excluded, not outside the root: {found:?}"
         );
+    }
+
+    /// The nearest ancestor that is soldr's own workspace, if any.
+    ///
+    /// Identified by content rather than location: a root manifest that
+    /// excludes `_vender/zccache`. That is the property under test, so a
+    /// checkout laid out differently still matches and an unrelated workspace
+    /// never does.
+    fn soldr_checkout_root() -> Option<PathBuf> {
+        let mut dir = std::env::current_dir().ok()?;
+        loop {
+            let manifest = dir.join("Cargo.toml");
+            if let Ok(text) = std::fs::read_to_string(&manifest) {
+                if text.contains("_vender/zccache") && text.contains("[workspace]") {
+                    return Some(dir);
+                }
+            }
+            if !dir.pop() {
+                return None;
+            }
+        }
     }
 }
