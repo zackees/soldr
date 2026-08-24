@@ -75,6 +75,27 @@ jobs:
           toolchain: 1.95.0
           cache: false
 
+      # soldr#2822 — `dtolnay/rust-toolchain` adds the cross target to the
+      # runner's own rustup home, but setup-soldr switches the build to a
+      # managed one:
+      #
+      #   Runner rustup home /home/runner/.rustup is missing requested
+      #   components for 1.95.0: rustfmt, clippy; using managed RUSTUP_HOME
+      #
+      # so the target is installed in one home and looked for in another. The
+      # lane passed only when the managed home happened to already carry
+      # `rust-std` for the target, and failed with
+      #
+      #   error[E0463]: can't find crate for `std`
+      #   note: the `x86_64-pc-windows-gnu` target may not be installed
+      #
+      # when it did not. Routing through soldr puts it where the build looks.
+      - name: Add the cross target to the toolchain soldr will use
+        shell: bash
+        run: |
+          set -euo pipefail
+          soldr rustup target add x86_64-pc-windows-gnu
+
       # soldr#2813 follow-up: read the output path from cargo instead of
       # assuming `target/debug/`. `soldr cargo build` injects
       # CARGO_BUILD_TARGET on Windows and nowhere else, so cargo writes

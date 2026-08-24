@@ -249,3 +249,44 @@ def test_the_smoke_prints_through_the_ascii_printer(smoke):
     assert "print_ascii(render_summary(" in source, (
         "the verdict must go through print_ascii; a bare print re-opens " "soldr#2819"
     )
+
+
+# ------------------- the target must land where the build looks -------------------
+
+
+def workflow_steps() -> list[dict]:
+    import yaml
+
+    doc = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    steps: list[dict] = []
+    for job in doc["jobs"].values():
+        steps.extend(job.get("steps", []))
+    return steps
+
+
+def test_the_cross_target_is_added_through_soldr():
+    """soldr#2822: two rustup homes, and the target went to the wrong one.
+
+    `dtolnay/rust-toolchain` installs into the runner's own rustup home, but
+    setup-soldr switches the build to a managed one, so the target was installed
+    in one place and looked for in another. The lane passed only when the
+    managed home happened to already carry `rust-std` for the target.
+    """
+    runs = "\n".join(step.get("run", "") or "" for step in workflow_steps())
+    assert "soldr rustup target add x86_64-pc-windows-gnu" in runs, (
+        "the cross target must be added through soldr, or it lands in a rustup "
+        "home the build does not use"
+    )
+
+
+def test_the_target_is_added_after_soldr_sets_the_managed_home():
+    """Ordering is the whole point: before `Setup soldr`, the managed
+    RUSTUP_HOME is not in the environment yet and the add goes to the wrong
+    home again -- silently, since `rustup target add` succeeds either way."""
+    names = [str(step.get("name", "")) for step in workflow_steps()]
+    setup = next(i for i, n in enumerate(names) if n == "Setup soldr")
+    add = next(i for i, n in enumerate(names) if "cross target" in n and "soldr" in n)
+    build = next(i for i, n in enumerate(names) if n.startswith("Build soldr"))
+    assert (
+        setup < add < build
+    ), f"expected Setup soldr -> add target -> build; got {names}"
