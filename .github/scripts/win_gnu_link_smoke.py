@@ -95,10 +95,38 @@ def _output_exe(crate: str, target: str) -> str:
     return os.path.join(base, target, "debug", "wg_smoke.exe")
 
 
+def resolve_soldr(raw: str) -> str:
+    """Absolute path to the soldr binary, resolved against the *invocation* cwd.
+
+    The smoke runs soldr with `cwd` set to a throwaway fixture crate, so a
+    relative `--soldr` -- which is what the workflow passes
+    (`./target/debug/soldr`) -- would otherwise be resolved against that
+    temporary directory instead of the checkout. Every scheduled run of this
+    lane on record died that way:
+
+        FileNotFoundError: [Errno 2] No such file or directory:
+            './target/debug/soldr'
+
+    even though the preceding build step had just succeeded.
+    """
+    return os.path.abspath(raw)
+
+
 def cmd_smoke(args: argparse.Namespace) -> int:
+    soldr = resolve_soldr(args.soldr)
+    if not os.path.isfile(soldr):
+        # A named error beats a traceback: this lane is scheduled-only, so
+        # whoever reads the failure is doing so days later with no context.
+        print(
+            f"FAIL: soldr binary not found at {soldr}\n"
+            f"  (--soldr was {args.soldr!r}, resolved against {os.getcwd()})\n"
+            "  The build step must produce it before this step runs.",
+            file=sys.stderr,
+        )
+        return 1
     with tempfile.TemporaryDirectory() as tmp:
         crate = _write_fixture(tmp)
-        cmd = [args.soldr, "--no-cache", "build", "--target", args.target]
+        cmd = [soldr, "--no-cache", "build", "--target", args.target]
         print(f"$ {' '.join(cmd)}  (cwd={crate})", flush=True)
         proc = subprocess.run(cmd, cwd=crate, check=False)
         if proc.returncode != 0:
