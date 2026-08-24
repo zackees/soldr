@@ -118,6 +118,13 @@ jobs:
       # threshold: 13 files are already over, and blocking every PR that
       # touches them would be worse than the drift. Runs before the
       # expensive toolchain setup so an oversized diff fails in seconds.
+      # soldr#2763: uv must exist before the first step that uses it. The
+      # guard steps below run through `uv run --python 3.13` so the Lint job
+      # has one pinned interpreter rather than whatever `python3` the runner
+      # image ships; installing uv here is what makes that possible.
+      - name: Install uv
+        uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+
       - name: Line-ceiling ratchet
         if: github.event_name == 'pull_request'
         run: |
@@ -132,7 +139,7 @@ jobs:
           # skipped itself into uselessness for exactly that reason), hence
           # fetch-depth: 0 on the checkout above.
           git fetch --no-tags origin "$GITHUB_BASE_REF"
-          python3 .github/scripts/loc_ratchet.py --base-ref "origin/$GITHUB_BASE_REF"
+          uv run --no-project --python 3.13 python .github/scripts/loc_ratchet.py --base-ref "origin/$GITHUB_BASE_REF"
 
       # soldr#2493 — the 1000-line absolute ceiling for production sources.
       # Unlike the 1500-line ratchet above, this is a hard threshold: every
@@ -141,7 +148,7 @@ jobs:
         if: github.event_name == 'pull_request'
         run: |
           set -euo pipefail
-          python3 .github/scripts/loc_ceiling.py
+          uv run --no-project --python 3.13 python .github/scripts/loc_ceiling.py
 
       # soldr#2753 — the `.proto` files are the documented source of truth for
       # the wire format, but soldr runs no prost-build, so nothing read them
@@ -151,7 +158,7 @@ jobs:
       - name: Protobuf schema drift
         run: |
           set -euo pipefail
-          python3 .github/scripts/check_proto_drift.py
+          uv run --no-project --python 3.13 python .github/scripts/check_proto_drift.py
 
       # soldr#2752 Rule A — the manifest half of the `soldr-deps` gateway,
       # landed first because it needs no facade and no source churn. Adding a
@@ -162,7 +169,7 @@ jobs:
       - name: Third-party dependency inventory
         run: |
           set -euo pipefail
-          python3 .github/scripts/check_dependency_inventory.py
+          uv run --no-project --python 3.13 python .github/scripts/check_dependency_inventory.py
 
       # soldr#2360/#2363 — the broker-fronted daemon design deliberately
       # keeps the wire at protocol_v2/client_v2, broken in place; a
@@ -170,27 +177,21 @@ jobs:
       # which defeats the minimum-version floor the design relies on to force
       # upgrades. Cheap static grep, no build required.
       - name: No protocol_v3 policy
-        run: python3 .github/scripts/no_protocol_v3.py
+        run: uv run --no-project --python 3.13 python .github/scripts/no_protocol_v3.py
 
       # soldr#1981 — `--release` costs thin-LTO + single-CU codegen, and paying
       # that on a job whose output never ships is pure waste. soldr#1982 removed
       # the offenders; this keeps them gone. Runs before the toolchain setup so
       # a regression fails in seconds rather than after a full build.
       - name: Release-profile policy
-        run: python3 .github/scripts/verify_release_profile_policy.py
+        run: uv run --no-project --python 3.13 python .github/scripts/verify_release_profile_policy.py
 
       # soldr#2442 slice 4 — tree-level raw process-spawn guard: a new raw
       # `.spawn()` site in any production crate fails here by name until it
       # is routed through a sanctioned module or allowlisted with a
       # justification. Complements the soldr-daemon dylint boundary.
       - name: Spawn-path guard
-        run: python3 .github/scripts/spawn_path_guard.py
-
-      # Same pinned action benchmark-stats.yml already uses. `uv run --with`
-      # builds an ephemeral env, which sidesteps the PEP 668 / system-python
-      # friction that workflow hit with `uv pip install --system`.
-      - name: Install uv
-        uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+        run: uv run --no-project --python 3.13 python .github/scripts/spawn_path_guard.py
 
       # soldr#2763 -- the v0.9.3 release died on macOS ARM64 because a release
       # script ran under the runner image's own python3, which predated the
@@ -206,7 +207,7 @@ jobs:
       - name: Workflow Python interpreter pin
         run: |
           set -euo pipefail
-          uv run --no-project --with pyyaml python .github/scripts/check_workflow_python_pin.py
+          uv run --no-project --python 3.13 --with pyyaml python .github/scripts/check_workflow_python_pin.py
 
       # soldr#2765/#2164 -- the vendored zccache is compiled into soldr, but
       # release staging separately downloads a PREBUILT zccache keyed on the
@@ -222,7 +223,7 @@ jobs:
       - name: Vendored zccache has a published release asset
         run: |
           set -euo pipefail
-          uv run --no-project python .github/scripts/check_vendored_zccache_asset.py
+          uv run --no-project --python 3.13 python .github/scripts/check_vendored_zccache_asset.py
 
       # soldr#2013 — nothing ran `tests/` on CI, so it decayed silently: a test
       # asserting on a workflow #1982 deleted, two lints that scanned nothing
@@ -239,7 +240,7 @@ jobs:
           # toolchain asset query) and this step used to run `tests/` only, so
           # those 29 tests never executed in CI. Tests that exist but never run
           # are worse than none -- they rot silently while implying coverage.
-          uv run --no-project --with pytest --with pyyaml python -m pytest tests/ .github/scripts/ -q
+          uv run --no-project --python 3.13 --with pytest --with pyyaml python -m pytest tests/ .github/scripts/ -q
 
       - name: Cache rustup 1.95.0 in ~/.rustup
         id: rustup_cache
@@ -311,7 +312,7 @@ jobs:
         run: node scripts/test-npm-package.js
 
       - name: Verify direct CI job timeouts
-        run: python3 .github/scripts/verify_ci_job_timeouts.py
+        run: uv run --no-project --python 3.13 python .github/scripts/verify_ci_job_timeouts.py
 
       # Three lanes assert the glibc floor of a binary soldr builds, and
       # they arrived in three separate PRs with nothing tying them
@@ -319,14 +320,14 @@ jobs:
       # also covers crgx / cargo-chef, which soldr fetches prebuilt at
       # 2.39, so it legitimately differs (soldr#2170).
       - name: Verify the per-PR glibc ceilings agree
-        run: python3 .github/scripts/check_glibc_ceilings.py
+        run: uv run --no-project --python 3.13 python .github/scripts/check_glibc_ceilings.py
 
       # A `paths:` filter that matches nothing leaves its workflow silently
       # dark: it never runs, so it can never go red. `crates/soldr-cli/src/
       # cache_lib/**` moved to crates/soldr-cache in #1490 Phase 4, and
       # thin-v2-verify + cook-size-gate kept watching the old location.
       - name: Verify workflow path filters still match
-        run: python3 .github/scripts/verify_workflow_paths.py
+        run: uv run --no-project --python 3.13 python .github/scripts/verify_workflow_paths.py
 
       # soldr#2102. `./lint` runs six Python tools and CI ran none of them, so
       # lint drift accumulated unnoticed for months. flake8 is the one that can

@@ -71,7 +71,6 @@ RATCHET = frozenset(
         # `python3`. It is ubuntu-only so the blast radius is small, and pinning
         # it changes the job every PR depends on -- worth doing, not worth doing
         # in a release-lane fix.
-        ("ci.yml", "lint"),
         ("ci.yml", "windows-e2e-policy"),
         ("ci.yml", "wheel-cross-policy"),
         ("cross-compile-all-targets.yml", "bootstrap-and-linux-x86"),

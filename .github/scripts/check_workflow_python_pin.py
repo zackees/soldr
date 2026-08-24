@@ -26,7 +26,7 @@ this repo were already on the wrong side of.
 
 ## Why a ratchet, and not a threshold
 
-Twenty-three jobs are unpinned today across eighteen workflow files. Failing all
+Twenty-two jobs are unpinned today across eighteen workflow files. Failing all
 of them at once would block every PR on a sweep through lanes that cannot be
 validated locally, so those jobs are baselined in `BASELINE` below: they may
 stay as they are, but no *new* unpinned job may appear. Same bargain
@@ -72,10 +72,9 @@ BASELINE: frozenset[tuple[str, str]] = frozenset(
         ("baseline-zero-deps.yml", "build-soldr"),
         ("baseline-zero-deps.yml", "docker-baseline"),
         ("benchmark-stats.yml", "gate"),
-        # These two set up uv and then call bare `python3` anyway, so the uv
-        # step buys them nothing. Listed for the same reason as the rest: the
-        # fix is a real change to a lane, not a rename.
-        ("ci.yml", "lint"),
+        # soldr#2763: `ci.yml: lint` left this list when its scripts moved to
+        # `uv run --python 3.13`. `setup-soldr-action.yml: smoke` still sets up
+        # uv and then calls bare `python3`, so the uv step buys it nothing.
         ("setup-soldr-action.yml", "smoke"),
         ("ci.yml", "windows-e2e-policy"),
         ("ci.yml", "wheel-cross-policy"),
@@ -143,7 +142,36 @@ def job_pins_interpreter(job: dict) -> bool:
         return False
     # Every repo-script invocation must go through `uv run`, not merely one.
     runs = job_run_text(job)
-    return len(UV_RUN_PATTERN.findall(runs)) == len(SCRIPT_PATTERN.findall(runs))
+    if len(UV_RUN_PATTERN.findall(runs)) != len(SCRIPT_PATTERN.findall(runs)):
+        return False
+    # ...and uv must exist before the first step that uses it.
+    #
+    # soldr#2763: this check was missing, and the guard passed a Lint job whose
+    # first `uv run` was step 1 while `setup-uv` was step 8 -- every one of
+    # those steps would have died on `uv: command not found`. A guard that
+    # reports a job pinned when it cannot run at all is worse than no guard.
+    return uv_is_installed_before_use(job)
+
+
+def uv_is_installed_before_use(job: dict) -> bool:
+    """Does `astral-sh/setup-uv` run before the first step invoking `uv`?
+
+    Ordering is invisible to a "does this job set up uv" check and fatal at
+    runtime: `uv run` in a step before the setup fails with
+    `uv: command not found`, which is how soldr#2800's first attempt broke.
+    """
+    setup_at: int | None = None
+    first_use: int | None = None
+    for index, step in enumerate(job.get("steps") or []):
+        if not isinstance(step, dict):
+            continue
+        if setup_at is None and SETUP_UV_PATTERN.search(step.get("uses") or ""):
+            setup_at = index
+        if first_use is None and "uv run" in (step.get("run") or ""):
+            first_use = index
+    if first_use is None:
+        return True
+    return setup_at is not None and setup_at < first_use
 
 
 def unpinned_jobs(workflow_dir: pathlib.Path) -> set[tuple[str, str]]:
