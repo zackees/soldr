@@ -178,7 +178,10 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
                 // Each /LIBPATH: entry becomes a `-C link-arg=...` so
                 // rustc passes it through to lld-link. Whitespace-
                 // separated rustflags is cargo's documented contract.
-                let link_args = xwin_msvc_link_args(&cache_dir, target_triple);
+                // soldr#2794: read the CRT policy off the caller here, at
+                // dispatch, rather than baking dynamic into preparation.
+                let linkage = requested_crt_linkage(target_triple);
+                let link_args = xwin_msvc_link_args(&cache_dir, target_triple, linkage);
                 if !link_args.is_empty() {
                     prep.env.push((
                         format!("CARGO_TARGET_{target_u_upper}_RUSTFLAGS"),
@@ -921,6 +924,11 @@ fn install_clang_shim(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
 }
 
 include!("blessed_build_xwin.rs");
+include!("blessed_build_crt.rs");
 #[cfg(test)]
 #[path = "blessed_build_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "blessed_build_crt_tests.rs"]
+mod crt_tests;
