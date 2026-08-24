@@ -169,7 +169,9 @@ same embedded service. To use an external cache wrapper, set\n\
 
 Equivalent to SOLDR_JOBS=N, and takes the same top precedence: above `[jobs].max_parallel_compiles` in config.toml, and above the legacy ZCCACHE_MAX_PARALLEL_COMPILES. Left unset, the default leaves one logical CPU free, and on an SMT machine additionally caps at (physical cores + 2) so a build cannot saturate every hardware thread — 10 on an 8-core/16-thread host. A machine without SMT keeps all its slots, and if the CPU topology cannot be read the limit falls back to one less than the logical CPU count.
 
-This governs the daemon, not cargo — it is not forwarded as cargo's own `-j`.
+This governs the daemon, not cargo. `--jobs` is soldr's own flag at every position, so `soldr build --jobs 1` caps the daemon and leaves cargo's parallelism at its default (soldr#2786).
+
+To cap cargo instead, any of these reach it: `soldr build -j 1` (the short form is not soldr's), `soldr build -- --jobs 1`, or `CARGO_BUILD_JOBS=1`. Use one of those when a build is being OOM-killed — capping the daemon does not reduce the number of rustc children cargo spawns.
 
 Applies to a daemon this invocation starts. A daemon already running keeps the limit it started with, so run `soldr daemon stop` first to change it."
     )]
