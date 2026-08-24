@@ -9,7 +9,7 @@
 //! that bundles the same upstream LLVM 20.1.7 release archive
 //! whitelist-extracted to just the binutils we actually need:
 //!
-//! ```
+//! ```text
 //! bin/{clang, clang++, clang-cl, lld, lld-link, llvm-lib, llvm-rc,
 //!      llvm-dlltool, llvm-strip, llvm-objcopy, llvm-ar, llvm-readobj}
 //! lib/libLLVM.so.<ver>

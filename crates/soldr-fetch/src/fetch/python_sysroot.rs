@@ -54,7 +54,9 @@ pub fn catalogue_slug_for(triple: &str) -> Option<&'static str> {
 /// asset. The catalogue producer pipeline (forge-conan.yml → ingest)
 /// publishes under this layout:
 ///
-///     python/<py-version>/<slug>/bundle.tar.zst
+/// ```text
+/// python/<py-version>/<slug>/bundle.tar.zst
+/// ```
 ///
 /// `media.githubusercontent.com/media/` is used (not `raw`) so LFS-
 /// tracked blobs follow their pointer files to the actual bytes —

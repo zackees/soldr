@@ -3,7 +3,7 @@
 //! Consumes the soldr-toolchain `recipes/lzma-<platform>/` catalogue
 //! rows. Each row ships:
 //!
-//! ```
+//! ```text
 //! lib/liblzma.{a,lib}
 //! lib/pkgconfig/liblzma.pc
 //! include/lzma.h

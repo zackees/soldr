@@ -498,6 +498,25 @@ jobs:
           soldr cargo clippy --workspace --all-targets
           --target x86_64-unknown-linux-gnu -- -D warnings
 
+      # soldr#2810 -- nothing ran `--doc`, so ten doctests rotted unnoticed and
+      # `cargo test --workspace` was red on main for anyone who ran the
+      # documented command locally. All ten were asset layouts in unlabelled
+      # fences: rustdoc defaults an unlabelled fence to Rust and compiles it.
+      #
+      # A source guard cannot replace this. A bare ``` fence is the *idiomatic*
+      # way to write a real Rust doctest, so "every fence must carry a language"
+      # would reject correct code; deciding whether a block is Rust is exactly
+      # what compiling it does.
+      #
+      # Measured at 16s warm locally (5.6s of it compilation) against a job
+      # whose own timing table puts clippy at 39s and the dylint pipeline at
+      # ~230s. If CI shows it materially worse, moving or dropping this is one
+      # line.
+      - name: Doctests
+        run: >-
+          soldr cargo test --workspace --doc
+          --target x86_64-unknown-linux-gnu
+
       # soldr#2413: duplicate-dependency ratchet. deny.toml skips the known
       # upstream-blocked survivors (each with its blocker documented); any
       # NEW multiple-version crate fails here instead of silently regressing

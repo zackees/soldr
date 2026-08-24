@@ -3,7 +3,7 @@
 //! Consumes the soldr-toolchain `recipes/sqlite-<platform>/` catalogue
 //! rows. Each row ships:
 //!
-//! ```
+//! ```text
 //! lib/libsqlite3.{a,lib}
 //! lib/pkgconfig/sqlite3.pc
 //! include/{sqlite3.h, sqlite3ext.h}

@@ -4,7 +4,7 @@
 //! Consumes the `recipes/openssl-windows-{x64,arm64}/` catalogue rows.
 //! Each row ships:
 //!
-//! ```
+//! ```text
 //! bin/{libssl-3-x64.dll, libcrypto-3-x64.dll, openssl.exe}
 //! lib/{libssl.lib, libcrypto.lib}      ← MSVC import libs
 //! include/openssl/*.h
