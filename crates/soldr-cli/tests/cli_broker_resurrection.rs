@@ -115,9 +115,10 @@ fn spawn_simulated_old_image_broker(home: &Path, instance: &str) -> Child {
         .env("SOLDR_INTERNAL_BROKER_INSTANCE_ID", instance)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn simulated old-image broker")
+        .stderr(Stdio::null());
+    // soldr#2854: the image was staged moments ago, so this spawn can lose the
+    // fork/exec race with another thread's copy and answer ETXTBSY.
+    common::spawn_staged(&mut incumbent_command).expect("spawn simulated old-image broker")
 }
 
 fn wait_for_broker_instance(home: &Path, instance: &str) -> String {

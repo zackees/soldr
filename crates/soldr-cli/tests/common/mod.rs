@@ -1699,3 +1699,81 @@ pub(crate) fn isolated_test_path() -> std::ffi::OsString {
         std::ffi::OsString::from("/usr/bin:/bin")
     }
 }
+
+/// How long to keep retrying a spawn that answers `ETXTBSY`.
+///
+/// Generous relative to the window it covers -- the fork/exec gap is
+/// microseconds -- because the cost of being wrong is asymmetric: a few wasted
+/// milliseconds against an intermittent failure of the whole Linux suite.
+const ETXTBSY_RETRY_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+const ETXTBSY_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// Retry `attempt` while it reports the executable as busy.
+///
+/// Matched through `ErrorKind::ExecutableFileBusy` rather than a raw errno and
+/// a `#[cfg(unix)]` pair. Two reasons, and the second is the load-bearing one:
+/// the errno is `ETXTBSY` on Linux but `26` means something unrelated on
+/// Windows, and a host `#[cfg]` outside `crates/soldr-platform` is a
+/// boundary-ratchet violation (`platform_cfg_boundary_ratchet.py`). The kind
+/// is portable, so there is nothing to gate -- on a platform that never
+/// produces it, this is a plain passthrough.
+fn retry_while_text_file_busy<T>(
+    mut attempt: impl FnMut() -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    let deadline = std::time::Instant::now() + ETXTBSY_RETRY_BUDGET;
+    loop {
+        match attempt() {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(ETXTBSY_RETRY_INTERVAL);
+            }
+            other => return other,
+        }
+    }
+}
+
+/// Spawn a command whose program was just materialized by this test run.
+///
+/// soldr#2854: staging an executable and immediately spawning it intermittently
+/// fails on Linux with
+///
+/// ```text
+/// Os { code: 26, kind: ExecutableFileBusy, message: "Text file busy" }
+/// ```
+///
+/// The window is Rust's fork -> exec gap. Between the two the child holds a
+/// copy of every descriptor the parent had -- `CLOEXEC` only takes effect *at*
+/// exec -- so while one thread is still inside `fs::copy` with a write
+/// descriptor open, another thread's forked child transiently holds that
+/// descriptor too, and the kernel refuses to exec a file anybody can write.
+///
+/// ## Why this retries instead of staging more carefully
+///
+/// The tidier fix is to materialize to a sibling and rename into place, which
+/// this repo already does in `materialize_runtime_alias` and `isolated_daemon`.
+/// It was measured and **it does not close this window** -- rename republishes
+/// the *same inode* the write descriptor refers to. Under a stress harness of
+/// 40 rounds x 16 threads on the Linux runner:
+///
+/// ```text
+/// plain copy (before)          ETXTBSY = 97
+/// copy aside + atomic rename   ETXTBSY = 66
+/// bounded retry                ETXTBSY =  0
+/// ```
+///
+/// Recorded so the better-reading fix is not proposed again on its looks.
+///
+/// Only the busy condition is retried. Every other spawn failure returns
+/// immediately and unchanged, so a missing binary still fails fast with its own
+/// diagnostic.
+pub fn spawn_staged(command: &mut Command) -> std::io::Result<std::process::Child> {
+    retry_while_text_file_busy(|| command.spawn())
+}
+
+/// `output()` form of [`spawn_staged`], for fixtures that run the staged image
+/// to completion instead of holding a handle.
+pub fn output_staged(command: &mut Command) -> std::io::Result<std::process::Output> {
+    retry_while_text_file_busy(|| command.output())
+}
