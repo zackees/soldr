@@ -26,7 +26,10 @@ this repo were already on the wrong side of.
 
 ## Why a ratchet, and not a threshold
 
-Twenty-two jobs are unpinned today across eighteen workflow files. Failing all
+Eighteen jobs are unpinned today. soldr#2763 converts them in slices; the
+    four acceptance lanes left this list together because they share a
+    shape: one stdlib-only repo script, invoked once, with no other Python
+    in the job. Failing all
 of them at once would block every PR on a sweep through lanes that cannot be
 validated locally, so those jobs are baselined in `BASELINE` below: they may
 stay as they are, but no *new* unpinned job may appear. Same bargain
@@ -84,13 +87,9 @@ BASELINE: frozenset[tuple[str, str]] = frozenset(
         ("cross-compile-stress.yml", "cross-build"),
         ("cross-compile-stress.yml", "summarize"),
         ("docker-linux-cross-smoke.yml", "smoke"),
-        ("dylint-cache-acceptance.yml", "dylint-cache"),
-        ("dylint-cook-acceptance.yml", "dylint-cook"),
-        ("nextest-cacheability.yml", "nextest-cacheability"),
         ("perf-matrix.yml", "gate"),
         ("thin-v2-verify.yml", "verify"),
         ("vcpkg-windows-refresh.yml", "resolve-matrix"),
-        ("win-gnu-smoke.yml", "link-smoke"),
     }
 )
 

@@ -49,10 +49,18 @@ jobs:
         with:
           submodules: recursive
 
+      # soldr#2763: uv must exist before the first step that uses it.
+      - name: Install uv
+        uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+
+      # The acceptance re-invokes itself through `sys.executable`, so pinning
+      # the interpreter here pins the whole chain rather than just the entry
+      # point. The script is stdlib-only; the pin is about the runner image's
+      # Python being reproducible.
       - name: Run Docker acceptance and benchmarks
         env:
           SOLDR_PERF_LOCAL_PTRACE: "1"
-        run: python3 .github/scripts/dylint_cook_acceptance.py
+        run: uv run --no-project --python 3.13 python .github/scripts/dylint_cook_acceptance.py
 
       - name: Upload watchdog stacks and Tokio recording
         if: ${{ always() }}

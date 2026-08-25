@@ -79,13 +79,9 @@ RATCHET = frozenset(
         ("cross-compile-stress.yml", "resolve-matrix"),
         ("cross-compile-stress.yml", "summarize"),
         ("docker-linux-cross-smoke.yml", "smoke"),
-        ("dylint-cache-acceptance.yml", "dylint-cache"),
-        ("dylint-cook-acceptance.yml", "dylint-cook"),
-        ("nextest-cacheability.yml", "nextest-cacheability"),
         ("perf-matrix.yml", "gate"),
         ("setup-soldr-action.yml", "smoke"),
         ("vcpkg-windows-refresh.yml", "resolve-matrix"),
-        ("win-gnu-smoke.yml", "link-smoke"),
     }
 )
 
