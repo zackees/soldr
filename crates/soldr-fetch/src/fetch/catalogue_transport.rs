@@ -712,7 +712,7 @@ pub(crate) async fn download_catalogue_part_response(
     range: Option<(u64, u64)>,
     file: &mut std::fs::File,
 ) -> Result<(u64, bool), SoldrError> {
-    let client = super::stream_download::asset_http_client("catalogue part download")?;
+    let client = super::stream_download::asset_http_client_no_redirect("catalogue part download")?;
     let mut request = super::stream_download::get_request(&client, url)
         .header(reqwest::header::ACCEPT_ENCODING, "identity");
     if let Some((start, end)) = range {
@@ -746,8 +746,9 @@ pub(crate) async fn download_catalogue_part_tail(
         return Err(TailFailure::RestartWhole);
     }
     let end = expected_bytes - 1;
-    let client = super::stream_download::asset_http_client("catalogue part tail resume")
-        .map_err(TailFailure::Retry)?;
+    let client =
+        super::stream_download::asset_http_client_no_redirect("catalogue part tail resume")
+            .map_err(TailFailure::Retry)?;
     let response = super::stream_download::send_asset_request(
         super::stream_download::get_request(&client, url)
             .header(reqwest::header::ACCEPT_ENCODING, "identity")

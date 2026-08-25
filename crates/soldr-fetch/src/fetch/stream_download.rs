@@ -314,6 +314,19 @@ pub(crate) fn asset_http_client(purpose: &str) -> Result<reqwest::Client, SoldrE
     asset_http_client_with_protocol(purpose, AssetProtocol::Negotiated)
 }
 
+/// Construct an asset client that exposes redirects as non-success responses.
+/// Canonical multipart catalogue URLs are publication-state-bound to an exact
+/// ordinary-Git branch path, so following a redirect would escape that proof.
+pub(crate) fn asset_http_client_no_redirect(purpose: &str) -> Result<reqwest::Client, SoldrError> {
+    super::net_guard::ensure_network_allowed(purpose)?;
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(format!("soldr/{}", crate::core::version()))
+        .build()
+        .map_err(|error| SoldrError::Network(error.to_string()))
+}
+
 /// Construct the sole asset client, optionally retaining a documented
 /// compatibility restriction for a particular host.
 pub(crate) fn asset_http_client_with_protocol(

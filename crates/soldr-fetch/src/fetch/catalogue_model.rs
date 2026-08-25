@@ -399,6 +399,7 @@ pub(super) fn publication_entries_match_state(
                 let provenance = &logical.provenance;
                 if logical.source_path != *source_path
                     || !publication_asset_identity_matches(entry, logical, source_path)
+                    || !publication_part_urls_match(entry, state)
                     || logical.source_oid_sha256 != entry.sha256
                     || logical.source_size_bytes != entry.size_bytes
                     || provenance.len() != 4
@@ -419,6 +420,26 @@ pub(super) fn publication_entries_match_state(
         }
     }
     logical_keys.len() == state.logical_assets.len()
+}
+
+fn publication_part_urls_match(entry: &WireV2Entry, state: &PublicationState) -> bool {
+    let Some(wire_parts) = entry.parts.as_ref() else {
+        return false;
+    };
+    let Some(published) = state.assets_by_sha256.get(&entry.sha256) else {
+        return false;
+    };
+    wire_parts.len() == published.parts.len()
+        && wire_parts.iter().zip(&published.parts).all(|(wire, part)| {
+            let expected_url = format!(
+                "https://raw.githubusercontent.com/zackees/soldr-toolchain/{}/{}",
+                state.active.slot, part.path
+            );
+            wire.number == part.number
+                && wire.sha256 == part.sha256
+                && wire.size_bytes == part.size_bytes
+                && wire.urls.as_slice() == [expected_url]
+        })
 }
 
 fn publication_asset_identity_matches(
