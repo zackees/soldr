@@ -24,6 +24,18 @@ pub struct ManifestEntry {
     pub source_path: Option<String>,
 }
 
+impl ManifestEntry {
+    /// Match the pre-v2 repository URL used by pinned callers to the same
+    /// logical catalogue row after its transport is rewritten to multipart.
+    pub fn matches_legacy_url(&self, expected: &str) -> bool {
+        self.transport.direct_url() == Some(expected)
+            || self
+                .source_path
+                .as_ref()
+                .is_some_and(|path| expected.ends_with(&format!("/assets/{path}")))
+    }
+}
+
 /// Transport details deliberately kept separate from an asset's logical hash.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AssetTransport {

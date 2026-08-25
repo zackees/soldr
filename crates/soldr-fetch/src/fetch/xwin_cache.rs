@@ -122,14 +122,7 @@ pub async fn ensure_xwin_cache(
         "soldr: fetching xwin-cache v{MANAGED_XWIN_CACHE_VERSION} for {target_triple} from {resolved_url}..."
     );
 
-    // soldr#2132: retry the download. The sha256 comparison below stays
-    // outside it -- the catalogue blob being replaced is exactly the case that
-    // must fail on the first try.
-    let downloaded = super::retry::with_asset_backoff(
-        &format!("xwin-cache v{MANAGED_XWIN_CACHE_VERSION} for {target_triple}"),
-        || manifest_lookup::download_manifest_entry(&entry),
-    )
-    .await?;
+    let downloaded = manifest_lookup::materialize_catalogue_entry(&entry).await?;
 
     let digest = downloaded.sha256();
     if digest != expected_sha256 {

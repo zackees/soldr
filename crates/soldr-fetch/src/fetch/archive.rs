@@ -134,62 +134,6 @@ async fn download_and_extract_with_pin_inner(
         }
     };
 
-    finish_download_and_extract(
-        paths,
-        cache_name,
-        version,
-        target,
-        binary_names,
-        DownloadedArchive {
-            source: url,
-            manifest_pin,
-            downloaded,
-        },
-    )
-}
-
-pub(super) async fn download_and_extract_catalogue_entry(
-    paths: &SoldrPaths,
-    cache_name: &str,
-    version: &str,
-    entry: &super::manifest_lookup::ManifestEntry,
-    target: &TargetTriple,
-    binary_names: &[&str],
-) -> Result<PathBuf, SoldrError> {
-    let downloaded = super::manifest_lookup::download_manifest_entry(entry).await?;
-    finish_download_and_extract(
-        paths,
-        cache_name,
-        version,
-        target,
-        binary_names,
-        DownloadedArchive {
-            source: &entry.asset,
-            manifest_pin: Some((&entry.asset, &entry.sha256)),
-            downloaded,
-        },
-    )
-}
-
-struct DownloadedArchive<'a> {
-    source: &'a str,
-    manifest_pin: Option<(&'a str, &'a str)>,
-    downloaded: super::stream_download::DownloadedAsset,
-}
-
-fn finish_download_and_extract(
-    paths: &SoldrPaths,
-    cache_name: &str,
-    version: &str,
-    target: &TargetTriple,
-    binary_names: &[&str],
-    archive: DownloadedArchive<'_>,
-) -> Result<PathBuf, SoldrError> {
-    let DownloadedArchive {
-        source: url,
-        manifest_pin,
-        downloaded,
-    } = archive;
     // Integrity + trust enforcement (issue #42). Compute sha256 and consult
     // the pinned-checksum store before writing anything to disk.
     let asset_name = source_name
