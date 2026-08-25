@@ -97,19 +97,12 @@ jobs:
         if: steps.rustup_cache.outputs.cache-hit != 'true'
         run: rustup toolchain install 1.95.0 --profile minimal --no-self-update
 
-      # soldr#1799: pin the soldr that builds us. The action's `version`
-      # input still defaults to 0.8.23, which predates #1820 ("retire
-      # automatic target pruning", first released in v0.8.25). Under 0.8.23
-      # soldr GC'd ~90 hash families out of target/ after every build, so the
-      # NEXT build recompiled the whole workspace -- 163 crates on an
-      # immediately-repeated build, forever. Nothing failed; CI was just
-      # silently rebuilding the world, which is exactly the #1799 symptom.
-      # Dogfooding should run the release we actually ship, not whatever the
-      # action defaults to.
+      # soldr#1799: pin the soldr that builds us. This prevents action-default
+      # drift from changing build or catalogue behavior between lanes.
       - name: Setup soldr build cache
-        uses: zackees/setup-soldr@40320d277ba4946e38d4b3c02e6c7a15a29c3f3f
+        uses: zackees/setup-soldr@9c75e87c4a93e62b6ce5d123f497fba19307fa58
         with:
-          version: 0.9.1
+          version: 0.9.6
           toolchain: 1.95.0
           # soldr#2451: disable every setup-soldr reuse layer, not just the
           # `cache` umbrella (soldr-mini / solo-toolchain / build-cache each
@@ -230,7 +223,7 @@ jobs:
             --managed-root "$HOME/.soldr" --managed-root "$HOME/.soldr-dev"
 
       - name: Stop setup-soldr builder cache before tests
-        uses: zackees/setup-soldr/cleanup@40320d277ba4946e38d4b3c02e6c7a15a29c3f3f
+        uses: zackees/setup-soldr/cleanup@9c75e87c4a93e62b6ce5d123f497fba19307fa58
 
       # soldr#1324/#1703 — run every workspace library and integration binary
       # in one invocation. This includes the internal crates extracted after
@@ -239,8 +232,8 @@ jobs:
       # soldr#2493 — the suite runs under nextest, which owns the per-test
       # timeouts in `.config/nextest.toml` now that the watchdog macro is gone.
       #
-      # soldr#2521 A1 resolved: the pinned setup-soldr release (0.9.1) is the
-      # first release that can drive this suite -- it carries the nextest
+      # soldr#2521 A1 resolved: the pinned setup-soldr release can drive this
+      # suite -- it carries the nextest
       # `--config` placement fix (#2518 train) and the daemon root-ownership
       # grace (#2564) that broke 0.8.44 on the cook-size-gate and thin-v2
       # lanes. Driving the PATH soldr again keeps the tree the build step

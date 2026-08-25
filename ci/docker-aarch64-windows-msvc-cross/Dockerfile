@@ -9,8 +9,7 @@
 # diagnosed with per-line elapsed-second prefixes (run_with_ts.py).
 #
 # Toolchain stack:
-#   - soldr v0.7.66 (the just-released bundle that fixes both #1032
-#     bugs: zig 0.14.1 extraction + clang-shim packaging)
+#   - soldr v0.9.6 (a catalogue-v2-capable published bootstrap)
 #   - clang on PATH (the blessed `soldr build` surface installs
 #     soldr-managed clang shims ahead of system clang so ring 0.17.x's
 #     hardcoded `c.compiler("clang")` routes to clang-cl for MSVC)
@@ -68,14 +67,14 @@ ENV PATH=/root/.cargo/bin:$PATH \
     RUSTUP_HOME=/root/.rustup \
     CARGO_HOME=/root/.cargo
 
-# Install soldr v0.7.66 from the just-published GitHub release. The
+# Install the catalogue-v2-capable soldr v0.9.6 GitHub release. The
 # blessed `soldr build --target aarch64-pc-windows-msvc` surface
 # installs clang shim names so ring's hardcoded `clang` invocations
 # route to clang-cl.
-ENV SOLDR_VERSION=0.7.66 \
-    SOLDR_ASSET_URL=https://github.com/zackees/soldr/releases/download/v0.7.66/soldr-v0.7.66-x86_64-unknown-linux-gnu.tar.zst \
-    SOLDR_ASSET_SHA256=f27fb36d3e000465f8860fcdfd7da01b7e9cf3a1bbaea58c7c29a7ebcc221b84 \
-    SOLDR_ASSET_SIZE=18065931
+ENV SOLDR_VERSION=0.9.6 \
+    SOLDR_ASSET_URL=https://github.com/zackees/soldr/releases/download/v0.9.6/soldr-v0.9.6-x86_64-unknown-linux-gnu.tar.zst \
+    SOLDR_ASSET_SHA256=d10b34b52f39be291de6e367ce355709ca9b8dff41a6d912462ddd8afdd5454c \
+    SOLDR_ASSET_SIZE=22377859
 
 RUN set -eu; \
     echo "fetching soldr ${SOLDR_VERSION}"; \

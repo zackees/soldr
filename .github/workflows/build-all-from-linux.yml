@@ -12,9 +12,9 @@ name: Build all targets from Linux (pinned soldr, zero host toolchain)
 # llvm musl-tools`. soldr is a bootstrapping tool: the runner brings
 # only rust + the pinned soldr wheel.
 #
-# The pin MUST be >= 0.9.2: it contains the Linux-hosted win-gnu blessed
-# path. That release predates only the new `win-x64-gnu` alias, so the GNU
-# matrix row temporarily supplies its Rust triple as the N-1 build input.
+# The pin MUST be >= 0.9.5: it contains catalogue v2 support required by the
+# non-LFS multipart asset publication. The GNU matrix row supplies its Rust
+# triple directly as the N-1 build input.
 #
 # Dry-run: builds + format-verifies each binary; no packaging/publish.
 #
@@ -26,9 +26,9 @@ on:
   workflow_dispatch:
     inputs:
       soldr_version:
-        description: "Pinned soldr version from PyPI (>= 0.9.2)"
+        description: "Pinned soldr version from PyPI (>= 0.9.5)"
         required: false
-        default: "0.9.2"
+        default: "0.9.6"
         type: string
   pull_request:
     paths:
@@ -69,8 +69,7 @@ jobs:
           - { alias: mac-x64,         target: x86_64-apple-darwin,         exe_suffix: "" }
           - { alias: mac-arm64,       target: aarch64-apple-darwin,        exe_suffix: "" }
           - { alias: win-x64,         target: x86_64-pc-windows-msvc,      exe_suffix: ".exe" }
-          # v0.9.2 has the blessed GNU path but predates the canonical alias.
-          # Use the triple until the next released driver carries win-x64-gnu.
+          # Use the Rust triple directly for the GNU N-1 build input.
           - { alias: win-x64-gnu,     target: x86_64-pc-windows-gnu,       input: x86_64-pc-windows-gnu, exe_suffix: ".exe" }
           - { alias: win-arm64,       target: aarch64-pc-windows-msvc,     exe_suffix: ".exe" }
 
@@ -107,7 +106,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          soldr_version="${{ inputs.soldr_version || '0.9.2' }}"
+          soldr_version="${{ inputs.soldr_version || '0.9.6' }}"
           echo "pinned soldr driver: $soldr_version"
           python3 -m venv "$RUNNER_TEMP/soldr-venv"
           "$RUNNER_TEMP/soldr-venv/bin/pip" install --disable-pip-version-check \

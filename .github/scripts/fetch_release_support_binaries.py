@@ -47,6 +47,7 @@ CARGO_CHEF_VERSION = (
     "crates/soldr-fetch/src/fetch/known_tools.rs",
     "CARGO_CHEF_PINNED_VERSION",
 )
+MAX_PART_BYTES = 95 * 1024 * 1024
 
 
 class SupportBinaryError(RuntimeError):
@@ -123,6 +124,63 @@ def download_verified(urls: list[object], expected_sha: str, destination: Path) 
             )
         return source
     raise SupportBinaryError(f"all catalogue URLs failed: {last_error}")
+
+
+def download_catalogued_asset(asset: dict, destination: Path) -> str:
+    """Download a direct asset or reconstruct a catalogue-v2 multipart asset."""
+    expected_sha = str(asset.get("sha256", "")).lower()
+    if not is_sha256(expected_sha):
+        raise SupportBinaryError("catalogued asset has no valid sha256")
+    declared_size = asset.get("size_bytes")
+    if type(declared_size) is not int or declared_size <= 0:
+        raise SupportBinaryError(f"catalogued asset has invalid size_bytes {declared_size!r}")
+
+    urls = asset.get("urls") or []
+    parts = asset.get("parts") or []
+    if urls and parts:
+        raise SupportBinaryError("catalogued asset mixes direct URLs and multipart data")
+    if urls:
+        source = download_verified(urls, expected_sha, destination)
+    elif parts:
+        sources: list[str] = []
+        with destination.open("wb") as output:
+            for expected_number, part in enumerate(parts, start=1):
+                number = part.get("number")
+                if type(number) is not int or number != expected_number:
+                    raise SupportBinaryError("catalogued multipart asset has non-contiguous parts")
+                size = part.get("size_bytes")
+                if type(size) is not int or not 1 <= size <= MAX_PART_BYTES:
+                    raise SupportBinaryError(
+                        f"catalogued part {expected_number} has invalid size_bytes {size!r}"
+                    )
+                part_path = destination.with_name(f"{destination.name}.part-{expected_number:04d}")
+                source = download_verified(
+                    part.get("urls") or [], str(part.get("sha256", "")).lower(), part_path
+                )
+                if part_path.stat().st_size != size:
+                    raise SupportBinaryError(
+                        f"catalogued part {expected_number} size mismatch: "
+                        f"expected {size}, got {part_path.stat().st_size}"
+                    )
+                with part_path.open("rb") as part_input:
+                    shutil.copyfileobj(part_input, output)
+                part_path.unlink()
+                sources.append(source)
+        source = f"{sources[0]} ({len(sources)} multipart chunk(s))"
+    else:
+        raise SupportBinaryError("catalogued asset has neither direct URLs nor multipart data")
+
+    if destination.stat().st_size != declared_size:
+        raise SupportBinaryError(
+            f"catalogued asset size mismatch: expected {declared_size}, "
+            f"got {destination.stat().st_size}"
+        )
+    actual_sha = sha256_file(destination)
+    if actual_sha != expected_sha:
+        raise SupportBinaryError(
+            f"reconstructed asset sha256 mismatch: expected {expected_sha}, got {actual_sha}"
+        )
+    return source
 
 
 def load_tool_catalog(origin: str, index: dict, tool: str, issue_url: str) -> tuple[str, dict]:
@@ -259,17 +317,10 @@ def fetch_tool(
             f"support coverage is tracked in {issue_url}"
         )
     asset = platform_entry["asset"]
-    urls = asset.get("urls") or []
-    expected_sha = str(asset.get("sha256", "")).lower()
-    if not urls or not is_sha256(expected_sha):
-        raise SupportBinaryError(
-            f"{catalog_url} release {release_version} asset for {target} lacks url/sha256"
-        )
-
     with tempfile.TemporaryDirectory(prefix=f"{tool}-support-") as temp_dir:
         temporary = Path(temp_dir)
         archive = temporary / asset["filename"]
-        source_url = download_verified(urls, expected_sha, archive)
+        source_url = download_catalogued_asset(asset, archive)
         print(f"fetched {tool} {release_version} for {target}: {source_url}")
         extract_dir = temporary / "extract"
         extract_dir.mkdir()
