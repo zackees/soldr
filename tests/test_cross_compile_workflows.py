@@ -791,9 +791,13 @@ def test_release_wheels_use_setup_soldr_target_hooks_without_zig_or_xwin() -> No
     assert (
         "if: ${{ !contains(matrix.target, 'unknown-linux-musl') }}" in target_hook_wheel
     )
+    assert 'CARGO_BUILD_JOBS: "1"' in target_hook_wheel
+    assert 'SOLDR_JOBS: "1"' in target_hook_wheel
 
     native_arm_wheel = _step_block(release, "Build musl wheel in an explicit uv venv")
     assert "CC_aarch64_unknown_linux_musl: musl-gcc" in native_arm_wheel
+    assert 'CARGO_BUILD_JOBS: "1"' in native_arm_wheel
+    assert 'SOLDR_JOBS: "1"' in native_arm_wheel
     assert ".github/scripts/native_release_build.py musl-wheel" in native_arm_wheel
     assert '--target "${{ matrix.target }}"' in native_arm_wheel
 

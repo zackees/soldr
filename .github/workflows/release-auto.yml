@@ -442,6 +442,11 @@ jobs:
         env:
           EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
           SOLDR_RELEASE_CI: "1"
+          # Release/LTO wheel builds were signal-terminated under concurrent
+          # resource pressure when Cargo and Soldr admitted multiple compiler
+          # processes (run 32823371747).
+          CARGO_BUILD_JOBS: "1"
+          SOLDR_JOBS: "1"
           CC_aarch64_unknown_linux_musl: ${{ matrix.target == 'aarch64-unknown-linux-musl' && 'musl-gcc' || '' }}
           CXX_aarch64_unknown_linux_musl: ${{ matrix.target == 'aarch64-unknown-linux-musl' && 'musl-gcc' || '' }}
           AR_aarch64_unknown_linux_musl: ${{ matrix.target == 'aarch64-unknown-linux-musl' && 'ar' || '' }}
@@ -458,7 +463,8 @@ jobs:
           CARGO_PROFILE_RELEASE_DEBUG: "0"
           CARGO_PROFILE_RELEASE_LTO: thin
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
-          CARGO_BUILD_JOBS: "2"
+          CARGO_BUILD_JOBS: "1"
+          SOLDR_JOBS: "1"
           CC_aarch64_unknown_linux_musl: musl-gcc
           CXX_aarch64_unknown_linux_musl: musl-gcc
           AR_aarch64_unknown_linux_musl: ar
