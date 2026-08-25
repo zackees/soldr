@@ -110,9 +110,10 @@ pub async fn ensure_syslib_bundle(
         }
     };
     let expected_sha256 = entry.sha256.clone();
+    let resolved_url = manifest_lookup::resolved_download_label(&entry);
 
     if !crate::core::quiet::diagnostics_suppressed() {
-        eprintln!("soldr: fetching syslib {lib}/{version}/{slug} from {url}...");
+        eprintln!("soldr: fetching syslib {lib}/{version}/{slug} from {resolved_url}...");
     }
 
     // soldr#2132: retry the download itself. A truncated body here surfaced as

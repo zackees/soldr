@@ -100,10 +100,6 @@ pub async fn ensure_xwin_cache(
         std::fs::remove_file(&stamp)?;
     }
 
-    eprintln!(
-        "soldr: fetching xwin-cache v{MANAGED_XWIN_CACHE_VERSION} for {target_triple} from {url}..."
-    );
-
     let entry = manifest_lookup::get_or_fetch()
         .await
         .entries
@@ -121,6 +117,10 @@ pub async fn ensure_xwin_cache(
             entry.sha256
         )));
     }
+    let resolved_url = manifest_lookup::resolved_download_label(&entry);
+    eprintln!(
+        "soldr: fetching xwin-cache v{MANAGED_XWIN_CACHE_VERSION} for {target_triple} from {resolved_url}..."
+    );
 
     // soldr#2132: retry the download. The sha256 comparison below stays
     // outside it -- the catalogue blob being replaced is exactly the case that

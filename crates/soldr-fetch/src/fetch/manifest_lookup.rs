@@ -484,6 +484,15 @@ impl ManifestEntry {
     }
 }
 
+/// Return the URL Soldr will actually request for this catalogue entry.
+///
+/// Callers may use a legacy source URL only as an identity key when resolving
+/// an entry. Progress output must use this label so a multipart download never
+/// misleadingly reports that it is fetching the old Git LFS object.
+pub fn resolved_download_label(entry: &ManifestEntry) -> &str {
+    entry.display_url()
+}
+
 /// Parsed shape of the published asset index. Kept deliberately flat â€”
 /// a `Vec` scan is fine at the call rate (one lookup per `fetch_tool`
 /// call) and lets us drop a `serde_json::from_str` straight onto the
