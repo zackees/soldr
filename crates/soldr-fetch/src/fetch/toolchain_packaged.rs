@@ -75,7 +75,9 @@ pub(super) async fn try_binary(
         paths,
         cache_name,
         bare_version,
-        entry,
+        entry.transport.direct_url().ok_or_else(|| {
+            SoldrError::Other("multipart catalogue assets require Phase 2 materialization".into())
+        })?,
         target,
         binary_names,
     )

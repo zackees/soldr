@@ -66,6 +66,7 @@ use std::time::Duration;
 use sha2::{Digest, Sha256};
 
 use serde::Deserialize;
+use url::Url;
 
 use crate::core::SoldrError;
 
@@ -90,8 +91,17 @@ pub const TOOLCHAIN_CATALOGUE_URL_ENV_VAR: &str = "SOLDR_TOOLCHAIN_CATALOGUE_URL
 /// Catalogue document name. Producers on `zackees/soldr-toolchain`
 /// emit this filename under the configured origin; consumers GET
 /// `{origin}/{CATALOGUE_DOC_NAME}`.
-pub const CATALOGUE_DOC_NAME: &str = "catalogue.v2.json";
-pub const LEGACY_CATALOGUE_DOC_NAME: &str = "catalogue.v1.json";
+pub const CATALOGUE_DOC_NAME: &str = "catalogue.v1.json";
+/// Canonical multipart-aware catalogue document, tried before v1.
+pub const CATALOGUE_V2_DOC_NAME: &str = "catalogue.v2.json";
+/// Explicit v2 endpoint override.  The legacy URL override remains v1-only.
+pub const TOOLCHAIN_CATALOGUE_V2_URL_ENV_VAR: &str = "SOLDR_TOOLCHAIN_CATALOGUE_V2_URL";
+/// Highest catalogue transport capability implemented by this Soldr build.
+pub const CATALOGUE_CAPABILITY: u32 = 2;
+pub const MAX_CATALOGUE_PARTS: usize = 4096;
+pub const MAX_CATALOGUE_ASSET_BYTES: u64 = 8 * 1024 * 1024 * 1024 * 1024;
+pub const MAX_CATALOGUE_PART_BYTES: u64 = 95 * 1024 * 1024;
+pub const MAX_CATALOGUE_URL_BYTES: usize = 8192;
 
 /// Env var that, when set to a non-empty value other than `0`,
 /// disables the catalogue lookup entirely. Resolution skips straight
@@ -124,7 +134,10 @@ pub async fn fetch_verified_catalogue_asset(
                 "catalogue has no asset row for {owner}/{repo} {tag}/{asset}"
             ))
         })?;
-    let downloaded = download_manifest_entry(&entry).await?;
+    let url = entry.transport.direct_url().ok_or_else(|| {
+        SoldrError::Other("multipart catalogue assets are not materialized until Phase 2".into())
+    })?;
+    let downloaded = download_catalogue_asset(url).await?;
     if verify_catalogue_asset_sha256(&entry, downloaded.sha256()).is_ok() {
         return std::fs::read(downloaded.path()).map_err(SoldrError::from);
     }
@@ -133,14 +146,26 @@ pub async fn fetch_verified_catalogue_asset(
     // but CDN edges can briefly serve generations from opposite sides of that
     // commit. Refetch both objects once with cache-busters and require the new
     // catalogue digest; unverified bytes are never returned.
-    let refreshed_url = cache_busted_url(&resolve_catalogue_url());
-    let refreshed = fetch_index_from(&refreshed_url).await?;
+    let refreshed = match get_or_fetch().await.source {
+        // Once a v2 generation supplied the pin, only a refreshed v2
+        // generation may replace it.  Never turn a CDN mismatch into a v1
+        // request, which could mix publication generations.
+        CatalogueSource::CanonicalV2 => {
+            fetch_v2_index_from(&cache_busted_url(&resolve_catalogue_v2_url())).await?
+        }
+        CatalogueSource::LegacyV1 => {
+            fetch_v1_index_from(&cache_busted_url(&resolve_catalogue_url())).await?
+        }
+    };
     let refreshed_entry = refreshed.lookup(owner, repo, tag, asset).ok_or_else(|| {
         SoldrError::Other(format!(
             "refreshed catalogue has no asset row for {owner}/{repo} {tag}/{asset}"
         ))
     })?;
-    let refreshed = download_manifest_entry(refreshed_entry).await?;
+    let url = refreshed_entry.transport.direct_url().ok_or_else(|| {
+        SoldrError::Other("multipart catalogue assets are not materialized until Phase 2".into())
+    })?;
+    let refreshed = download_catalogue_asset(&cache_busted_url(url)).await?;
     verify_catalogue_asset_sha256(refreshed_entry, refreshed.sha256())?;
     std::fs::read(refreshed.path()).map_err(SoldrError::from)
 }
@@ -345,26 +370,620 @@ fn verify_catalogue_asset_sha256(entry: &ManifestEntry, actual: &str) -> Result<
 }
 
 /// One row in the published asset index.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManifestEntry {
     pub owner: String,
     pub repo: String,
     pub tag: String,
     pub asset: String,
-    #[serde(default)]
-    pub url: Option<String>,
-    #[serde(default)]
-    pub urls: Vec<String>,
-    #[serde(default)]
-    pub parts: Vec<ManifestPart>,
-    #[serde(default)]
-    pub size_bytes: Option<u64>,
-    #[serde(default)]
-    pub source_path: Option<String>,
-    #[serde(default)]
-    pub min_client_version: Option<u32>,
+    pub transport: AssetTransport,
     pub sha256: String,
+    pub size_bytes: u64,
+    pub min_client_version: Option<u32>,
+}
+
+/// Transport details deliberately kept separate from an asset's logical hash.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AssetTransport {
+    Direct { urls: Vec<String> },
+    Multipart { parts: Vec<Part> },
+}
+
+impl AssetTransport {
+    pub fn direct_url(&self) -> Option<&str> {
+        match self {
+            Self::Direct { urls } => urls.first().map(String::as_str),
+            Self::Multipart { .. } => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Part {
+    pub number: u32,
+    pub size_bytes: u64,
+    pub sha256: String,
+    pub urls: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct WireV1Catalogue {
+    #[serde(default)]
+    entries: Vec<WireV1Entry>,
+}
+
+#[derive(Deserialize)]
+struct WireV1Entry {
+    owner: String,
+    repo: String,
+    tag: String,
+    asset: String,
+    url: String,
+    sha256: String,
+}
+
+/// V2 has a deliberately closed wire contract.  Additions require a new
+/// schema version so old clients never reinterpret a transport field.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireV2Catalogue {
+    schema_version: u32,
+    generation: String,
+    publication_state: PublicationStateBinding,
+    #[serde(default)]
+    generated_at: Option<String>,
+    #[serde(default)]
+    origin: Option<String>,
+    entries: Vec<WireV2Entry>,
+}
+
+/// The v2 root is bound to the immutable publication generation.  The
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PublicationStateBinding {
+    generation: String,
+    url: String,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireV2Entry {
+    owner: String,
+    repo: String,
+    tag: String,
+    asset: String,
+    size_bytes: u64,
+    sha256: String,
+    urls: Option<Vec<String>>,
+    parts: Option<Vec<WirePart>>,
+    #[serde(default)]
+    min_client_version: Option<u32>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PublicationState {
+    schema_version: u32,
+    generation: String,
+    source: GitObject,
+    www: GitObject,
+    active: PublicationSlot,
+    previous: PublicationSlot,
+    catalogue_sha256: String,
+    assets_by_sha256: std::collections::BTreeMap<String, PublishedAsset>,
+    logical_assets: std::collections::BTreeMap<String, LogicalAsset>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GitObject {
+    commit: String,
+    tree: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PublicationSlot {
+    slot: String,
+    commit: String,
+    tree: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PublishedAsset {
+    size_bytes: u64,
+    partitioner: Partitioner,
+    parts: Vec<PublishedPart>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Partitioner {
+    version: u32,
+    target_bytes: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PublishedPart {
+    number: u32,
+    sha256: String,
+    size_bytes: u64,
+    path: String,
+    git_blob: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LogicalAsset {
+    source_path: String,
+    asset: String,
+    source_oid_sha256: String,
+    source_size_bytes: u64,
+    metadata_fingerprint: String,
+    provenance: serde_json::Map<String, serde_json::Value>,
+}
+
+fn write_canonical_json(value: &serde_json::Value, out: &mut Vec<u8>) -> Option<()> {
+    match value {
+        serde_json::Value::Null => out.extend_from_slice(b"null"),
+        serde_json::Value::Bool(value) => {
+            out.extend_from_slice(if *value { b"true" } else { b"false" })
+        }
+        serde_json::Value::Number(value) => out.extend_from_slice(value.to_string().as_bytes()),
+        serde_json::Value::String(value) => out.extend_from_slice(&serde_json::to_vec(value).ok()?),
+        serde_json::Value::Array(values) => {
+            out.push(b'[');
+            for (index, value) in values.iter().enumerate() {
+                if index != 0 {
+                    out.push(b',');
+                }
+                write_canonical_json(value, out)?;
+            }
+            out.push(b']');
+        }
+        serde_json::Value::Object(values) => {
+            let mut keys: Vec<_> = values.keys().collect();
+            keys.sort_unstable();
+            out.push(b'{');
+            for (index, key) in keys.into_iter().enumerate() {
+                if index != 0 {
+                    out.push(b',');
+                }
+                out.extend_from_slice(&serde_json::to_vec(key).ok()?);
+                out.push(b':');
+                write_canonical_json(values.get(key)?, out)?;
+            }
+            out.push(b'}');
+        }
+    }
+    Some(())
+}
+
+fn canonical_catalogue_sha256(body: &str) -> Option<String> {
+    reject_duplicate_json_keys(body).ok()?;
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    let mut canonical = Vec::new();
+    write_canonical_json(&value, &mut canonical)?;
+    Some(super::trust::sha256_of(&canonical))
+}
+
+async fn bind_v2_publication_state(body: &str) -> Result<(), SoldrError> {
+    reject_duplicate_json_keys(body).map_err(SoldrError::Other)?;
+    let catalogue: WireV2Catalogue = serde_json::from_str(body).map_err(|error| {
+        SoldrError::Other(format!("canonical v2 catalogue did not parse: {error}"))
+    })?;
+    let digest = canonical_catalogue_sha256(body).ok_or_else(|| {
+        SoldrError::Other("canonical v2 catalogue could not be canonicalized".into())
+    })?;
+    let state_url = &catalogue.publication_state.url;
+    let client =
+        super::stream_download::control_http_client("the soldr-toolchain publication state")?;
+    let response = super::stream_download::send_control_request_with_timeout(
+        super::stream_download::get_request(&client, state_url),
+        state_url,
+        MANIFEST_FETCH_TIMEOUT,
+    )
+    .await?;
+    if !response.status().is_success() {
+        return Err(SoldrError::Network(format!(
+            "publication-state fetch {state_url} returned HTTP {}",
+            response.status()
+        )));
+    }
+    let state_body =
+        super::stream_download::read_control_text(response, state_url, MANIFEST_FETCH_TIMEOUT)
+            .await?;
+    validate_publication_state_body(&state_body, &catalogue.generation, &digest)
+}
+
+fn publication_state_matches(state: &PublicationState, generation: &str, digest: &str) -> bool {
+    state.schema_version == 1
+        && state.generation == generation
+        && valid_sha256(&state.catalogue_sha256)
+        && state.catalogue_sha256 == digest
+        && valid_git_object(&state.source.commit)
+        && valid_git_object(&state.source.tree)
+        && valid_git_object(&state.www.commit)
+        && valid_git_object(&state.www.tree)
+        && valid_git_object(&state.active.commit)
+        && valid_git_object(&state.active.tree)
+        && valid_git_object(&state.previous.commit)
+        && valid_git_object(&state.previous.tree)
+        && state.active.slot != state.previous.slot
+        && matches!(state.active.slot.as_str(), "public-a" | "public-b")
+        && matches!(state.previous.slot.as_str(), "public-a" | "public-b")
+        && state
+            .assets_by_sha256
+            .iter()
+            .all(|(sha256, asset)| valid_published_asset(sha256, asset))
+        && state.logical_assets.iter().all(|(key, logical)| {
+            !key.is_empty()
+                && valid_logical_asset(logical)
+                && state
+                    .assets_by_sha256
+                    .get(&logical.source_oid_sha256)
+                    .is_some_and(|asset| asset.size_bytes == logical.source_size_bytes)
+        })
+}
+
+fn valid_git_object(value: &str) -> bool {
+    value.len() == 40
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn valid_published_asset(sha256: &str, asset: &PublishedAsset) -> bool {
+    if !valid_sha256(sha256)
+        || asset.size_bytes == 0
+        || asset.size_bytes > MAX_CATALOGUE_ASSET_BYTES
+        || asset.partitioner.version != 1
+        || asset.partitioner.target_bytes == 0
+        || asset.partitioner.target_bytes > MAX_CATALOGUE_PART_BYTES
+        || asset.parts.is_empty()
+        || asset.parts.len() > MAX_CATALOGUE_PARTS
+    {
+        return false;
+    }
+    let mut total = 0_u64;
+    for (offset, part) in asset.parts.iter().enumerate() {
+        let expected = (offset + 1) as u32;
+        if part.number != expected
+            || !valid_sha256(&part.sha256)
+            || part.size_bytes == 0
+            || part.size_bytes > MAX_CATALOGUE_PART_BYTES
+            || (offset + 1 < asset.parts.len() && part.size_bytes != asset.partitioner.target_bytes)
+            || (offset + 1 == asset.parts.len() && part.size_bytes > asset.partitioner.target_bytes)
+            || part.path != format!("sha256/{sha256}/{expected:04}-{}.part", part.sha256)
+            || !valid_git_object(&part.git_blob)
+        {
+            return false;
+        }
+        let Some(next) = total.checked_add(part.size_bytes) else {
+            return false;
+        };
+        total = next;
+    }
+    total == asset.size_bytes
+}
+
+fn valid_logical_asset(logical: &LogicalAsset) -> bool {
+    !logical.source_path.is_empty()
+        && !logical.asset.is_empty()
+        && !logical.metadata_fingerprint.is_empty()
+        && valid_sha256(&logical.source_oid_sha256)
+        && logical.source_size_bytes > 0
+        && logical.source_size_bytes <= MAX_CATALOGUE_ASSET_BYTES
+        && !logical.provenance.is_empty()
+        && logical.provenance.keys().all(|key| !key.is_empty())
+}
+
+fn parse_publication_state(body: &str) -> Result<PublicationState, SoldrError> {
+    reject_duplicate_json_keys(body).map_err(SoldrError::Other)?;
+    serde_json::from_str(body)
+        .map_err(|error| SoldrError::Other(format!("publication state did not parse: {error}")))
+}
+
+fn validate_publication_state_body(
+    body: &str,
+    generation: &str,
+    digest: &str,
+) -> Result<(), SoldrError> {
+    let state = parse_publication_state(body)?;
+    if publication_state_matches(&state, generation, digest) {
+        Ok(())
+    } else {
+        Err(SoldrError::Other(
+            "publication state does not bind this catalogue generation".into(),
+        ))
+    }
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WirePart {
+    number: u32,
+    size_bytes: u64,
+    sha256: String,
+    urls: Vec<String>,
+}
+
+/// True when a published release requires a newer transport-capable client.
+pub fn supports_min_client_version(required: Option<u32>) -> bool {
+    required.unwrap_or(0) <= CATALOGUE_CAPABILITY
+}
+
+fn valid_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+fn validate_url(value: &str) -> Result<(), String> {
+    if value.is_empty() || value.len() > MAX_CATALOGUE_URL_BYTES {
+        return Err("invalid URL length".into());
+    }
+    let parsed = Url::parse(value).map_err(|_| "URL is not absolute".to_string())?;
+    if parsed.scheme() != "https"
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
+        return Err("URL must be credential-free absolute HTTPS".into());
+    }
+    Ok(())
+}
+fn valid_generation(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 256
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
+}
+
+fn validate_publication_state_url(value: &str, generation: &str) -> Result<(), String> {
+    validate_url(value)?;
+    let parsed = Url::parse(value).map_err(|_| "URL is not absolute".to_string())?;
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err("publication-state URL must not have query or fragment".into());
+    }
+    let expected = format!("/generations/{generation}/publish-state.v1.json");
+    if !parsed.path().ends_with(&expected)
+        || parsed
+            .path()
+            .split('/')
+            .any(|part| part == "." || part == "..")
+    {
+        return Err("publication-state URL is not generation-qualified".into());
+    }
+    Ok(())
+}
+fn validate_urls(
+    urls: &[String],
+    all_urls: &mut std::collections::BTreeSet<String>,
+) -> Result<(), String> {
+    if urls.is_empty() {
+        return Err("transport has no URLs".into());
+    }
+    for url in urls {
+        validate_url(url)?;
+        if !all_urls.insert(url.clone()) {
+            return Err("duplicate URL".into());
+        }
+    }
+    Ok(())
+}
+
+fn validate_unique_logical_rows(entries: &[ManifestEntry]) -> Result<(), String> {
+    let mut seen = std::collections::BTreeSet::new();
+    for entry in entries {
+        if !seen.insert((&entry.owner, &entry.repo, &entry.tag, &entry.asset)) {
+            return Err("duplicate logical catalogue row".into());
+        }
+    }
+    Ok(())
+}
+
+/// serde_json intentionally keeps the final member of a duplicate-key object.
+/// Catalogue documents are signed/publication-bound input, so accepting that
+/// ambiguity would let different readers resolve different assets.  Walk the
+/// raw JSON once before typed deserialization and reject every duplicate key
+/// at every nesting level.
+fn reject_duplicate_json_keys(body: &str) -> Result<(), String> {
+    use serde::de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor};
+    use std::fmt;
+
+    struct Seed;
+    impl<'de> DeserializeSeed<'de> for Seed {
+        type Value = ();
+        fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            deserializer.deserialize_any(RejectVisitor)
+        }
+    }
+    struct RejectVisitor;
+    impl<'de> Visitor<'de> for RejectVisitor {
+        type Value = ();
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("JSON without duplicate object keys")
+        }
+        fn visit_bool<E>(self, _: bool) -> Result<(), E>
+        where
+            E: de::Error,
+        {
+            Ok(())
+        }
+        fn visit_i64<E>(self, _: i64) -> Result<(), E>
+        where
+            E: de::Error,
+        {
+            Ok(())
+        }
+        fn visit_u64<E>(self, _: u64) -> Result<(), E>
+        where
+            E: de::Error,
+        {
+            Ok(())
+        }
+        fn visit_f64<E>(self, _: f64) -> Result<(), E>
+        where
+            E: de::Error,
+        {
+            Ok(())
+        }
+        fn visit_str<E>(self, _: &str) -> Result<(), E>
+        where
+            E: de::Error,
+        {
+            Ok(())
+        }
+        fn visit_string<E>(self, _: String) -> Result<(), E>
+        where
+            E: de::Error,
+        {
+            Ok(())
+        }
+        fn visit_none<E>(self) -> Result<(), E>
+        where
+            E: de::Error,
+        {
+            Ok(())
+        }
+        fn visit_unit<E>(self) -> Result<(), E>
+        where
+            E: de::Error,
+        {
+            Ok(())
+        }
+        fn visit_seq<A>(self, mut sequence: A) -> Result<(), A::Error>
+        where
+            A: SeqAccess<'de>,
+        {
+            while sequence.next_element_seed(Seed)?.is_some() {}
+            Ok(())
+        }
+        fn visit_map<A>(self, mut map: A) -> Result<(), A::Error>
+        where
+            A: MapAccess<'de>,
+        {
+            let mut keys = std::collections::BTreeSet::new();
+            while let Some(key) = map.next_key::<String>()? {
+                if !keys.insert(key.clone()) {
+                    return Err(de::Error::custom(format!("duplicate JSON key {key:?}")));
+                }
+                map.next_value_seed(Seed)?;
+            }
+            Ok(())
+        }
+    }
+
+    let mut deserializer = serde_json::Deserializer::from_str(body);
+    Seed.deserialize(&mut deserializer)
+        .map_err(|error| error.to_string())?;
+    deserializer.end().map_err(|error| error.to_string())
+}
+
+fn entry_from_v1_wire(
+    entry: WireV1Entry,
+    all_urls: &mut std::collections::BTreeSet<String>,
+) -> Result<ManifestEntry, String> {
+    if !valid_sha256(&entry.sha256) {
+        return Err("asset SHA-256 must be lowercase 64-hex".into());
+    }
+    let urls = vec![entry.url];
+    validate_urls(&urls, all_urls)?;
+    Ok(ManifestEntry {
+        owner: entry.owner,
+        repo: entry.repo,
+        tag: entry.tag,
+        asset: entry.asset,
+        transport: AssetTransport::Direct { urls },
+        sha256: entry.sha256,
+        size_bytes: 0,
+        min_client_version: None,
+    })
+}
+
+fn entry_from_v2_wire(
+    entry: WireV2Entry,
+    all_urls: &mut std::collections::BTreeSet<String>,
+) -> Result<ManifestEntry, String> {
+    if [&entry.owner, &entry.repo, &entry.tag, &entry.asset]
+        .iter()
+        .any(|value| value.is_empty())
+    {
+        return Err("catalogue identity fields must be nonempty".into());
+    }
+    if !valid_sha256(&entry.sha256) {
+        return Err("asset SHA-256 must be lowercase 64-hex".into());
+    }
+    if entry.size_bytes == 0 || entry.size_bytes > MAX_CATALOGUE_ASSET_BYTES {
+        return Err("invalid asset size_bytes".into());
+    }
+    if entry
+        .min_client_version
+        .is_some_and(|version| version != CATALOGUE_CAPABILITY)
+    {
+        return Err("min_client_version must equal this client capability".into());
+    }
+    let transport = match (entry.urls, entry.parts) {
+        (Some(urls), None) => {
+            validate_urls(&urls, all_urls)?;
+            AssetTransport::Direct { urls }
+        }
+        (None, Some(wire_parts)) => {
+            if entry.min_client_version != Some(CATALOGUE_CAPABILITY) {
+                return Err("multipart assets require this client capability".into());
+            }
+            if wire_parts.is_empty() || wire_parts.len() > MAX_CATALOGUE_PARTS {
+                return Err("too many parts".into());
+            }
+            let mut total = 0u64;
+            let mut parts = Vec::with_capacity(wire_parts.len());
+            let mut identities = std::collections::BTreeSet::new();
+            for (offset, part) in wire_parts.into_iter().enumerate() {
+                if part.number != (offset + 1) as u32
+                    || part.size_bytes == 0
+                    || part.size_bytes > MAX_CATALOGUE_PART_BYTES
+                    || !valid_sha256(&part.sha256)
+                {
+                    return Err("invalid or non-contiguous part".into());
+                }
+                validate_urls(&part.urls, all_urls)?;
+                if !identities.insert((part.number, part.sha256.clone())) {
+                    return Err("duplicate part".into());
+                }
+                total = total
+                    .checked_add(part.size_bytes)
+                    .ok_or("part size overflow")?;
+                parts.push(Part {
+                    number: part.number,
+                    size_bytes: part.size_bytes,
+                    sha256: part.sha256,
+                    urls: part.urls,
+                });
+            }
+            if total != entry.size_bytes {
+                return Err("part sizes do not equal asset size".into());
+            }
+            AssetTransport::Multipart { parts }
+        }
+        _ => return Err("asset must contain exactly one transport field".into()),
+    };
+    Ok(ManifestEntry {
+        owner: entry.owner,
+        repo: entry.repo,
+        tag: entry.tag,
+        asset: entry.asset,
+        transport,
+        sha256: entry.sha256,
+        size_bytes: entry.size_bytes,
+        min_client_version: entry.min_client_version,
+    })
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -497,28 +1116,35 @@ pub fn resolved_download_label(entry: &ManifestEntry) -> &str {
 /// a `Vec` scan is fine at the call rate (one lookup per `fetch_tool`
 /// call) and lets us drop a `serde_json::from_str` straight onto the
 /// downloaded body with no post-processing.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PublicationState {
-    pub generation: String,
-    pub url: String,
+#[derive(Debug, Clone, Default)]
+pub struct ManifestIndex {
+    pub entries: Vec<ManifestEntry>,
+    /// A syntactically present v2 document was unsafe. Callers must not turn
+    /// this into a legacy/live-API fallback.
+    pub fail_closed: bool,
+    source: CatalogueSource,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ManifestIndex {
-    #[serde(default)]
-    pub schema_version: Option<u32>,
-    #[serde(default)]
-    pub generation: Option<String>,
-    #[serde(default)]
-    pub publication_state: Option<PublicationState>,
-    #[serde(default)]
-    pub generated_at: Option<String>,
-    #[serde(default)]
-    pub origin: Option<String>,
-    #[serde(default)]
-    pub entries: Vec<ManifestEntry>,
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum CatalogueSource {
+    #[default]
+    LegacyV1,
+    CanonicalV2,
+}
+
+fn fail_closed_v2_index() -> ManifestIndex {
+    ManifestIndex {
+        entries: vec![],
+        fail_closed: true,
+        source: CatalogueSource::CanonicalV2,
+    }
+}
+
+fn authoritative_v2_index(parsed: Option<ManifestIndex>, state_bound: bool) -> ManifestIndex {
+    match (parsed, state_bound) {
+        (Some(index), true) => index,
+        _ => fail_closed_v2_index(),
+    }
 }
 
 impl ManifestIndex {
@@ -533,48 +1159,65 @@ impl ManifestIndex {
     /// an empty index â€” a malformed remote manifest must never wedge a
     /// build.
     pub fn from_json(body: &str) -> Option<Self> {
-        let parsed = serde_json::from_str::<Self>(body).ok()?;
-        if !matches!(parsed.schema_version, None | Some(1) | Some(2)) {
+        let value: serde_json::Value = serde_json::from_str(body).ok()?;
+        if value
+            .get("schema_version")
+            .and_then(serde_json::Value::as_u64)
+            == Some(2)
+        {
+            Self::from_v2_json(body)
+        } else {
+            Self::from_v1_json(body)
+        }
+    }
+
+    fn from_v1_json(body: &str) -> Option<Self> {
+        reject_duplicate_json_keys(body).ok()?;
+        let wire: WireV1Catalogue = serde_json::from_str(body).ok()?;
+        let mut all_urls = std::collections::BTreeSet::new();
+        let mut entries = Vec::with_capacity(wire.entries.len());
+        for entry in wire.entries {
+            entries.push(entry_from_v1_wire(entry, &mut all_urls).ok()?);
+        }
+        validate_unique_logical_rows(&entries).ok()?;
+        Some(Self {
+            entries,
+            fail_closed: false,
+            source: CatalogueSource::LegacyV1,
+        })
+    }
+
+    /// Parse only the canonical v2 wire contract.  Unlike `from_json`, this
+    /// never accepts an absent, v1, or unknown schema version.
+    fn from_v2_json(body: &str) -> Option<Self> {
+        reject_duplicate_json_keys(body).ok()?;
+        let wire: WireV2Catalogue = serde_json::from_str(body).ok()?;
+        if wire.schema_version != 2
+            || !valid_generation(&wire.generation)
+            || wire.publication_state.generation != wire.generation
+        {
             return None;
         }
-        if parsed.schema_version == Some(2) {
-            let generation = parsed.generation.as_deref()?;
-            let publication = parsed.publication_state.as_ref()?;
-            if generation.is_empty()
-                || generation.len() > 256
-                || !generation
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
-                || publication.generation != generation
-            {
-                return None;
-            }
-            let state_url = url::Url::parse(&publication.url).ok()?;
-            if state_url.scheme() != "https"
-                || !state_url.has_host()
-                || !state_url.username().is_empty()
-                || state_url.password().is_some()
-                || state_url.query().is_some()
-                || state_url.fragment().is_some()
-                || !state_url
-                    .path()
-                    .ends_with(&format!("/generations/{generation}/publish-state.v1.json"))
-            {
-                return None;
-            }
-        } else if parsed.generation.is_some() || parsed.publication_state.is_some() {
+        validate_publication_state_url(&wire.publication_state.url, &wire.generation).ok()?;
+        if wire
+            .origin
+            .as_deref()
+            .is_some_and(|origin| validate_url(origin).is_err())
+        {
             return None;
         }
-        let mut identities = HashSet::new();
-        parsed
-            .entries
-            .iter()
-            .all(|entry| {
-                entry.valid_transport(parsed.schema_version)
-                    && (parsed.schema_version != Some(2)
-                        || identities.insert((&entry.owner, &entry.repo, &entry.tag, &entry.asset)))
-            })
-            .then_some(parsed)
+        let mut all_urls = std::collections::BTreeSet::new();
+        all_urls.insert(wire.publication_state.url);
+        let mut entries = Vec::with_capacity(wire.entries.len());
+        for entry in wire.entries {
+            entries.push(entry_from_v2_wire(entry, &mut all_urls).ok()?);
+        }
+        validate_unique_logical_rows(&entries).ok()?;
+        Some(Self {
+            entries,
+            fail_closed: false,
+            source: CatalogueSource::CanonicalV2,
+        })
     }
 
     /// Look up the manifest entry for `(owner, repo, tag, asset)`.
@@ -667,6 +1310,23 @@ pub fn resolve_catalogue_url() -> String {
     format!("{}/{}", resolve_toolchain_origin(), CATALOGUE_DOC_NAME)
 }
 
+fn has_legacy_catalogue_url_override() -> bool {
+    std::env::var(TOOLCHAIN_CATALOGUE_URL_ENV_VAR)
+        .ok()
+        .is_some_and(|value| !value.trim().is_empty())
+}
+
+/// The canonical v2 endpoint; unlike the legacy override this must not
+/// reinterpret an explicit v1 URL as a v2 document.
+pub fn resolve_catalogue_v2_url() -> String {
+    if let Ok(value) = std::env::var(TOOLCHAIN_CATALOGUE_V2_URL_ENV_VAR) {
+        if !value.trim().is_empty() {
+            return value.trim().to_string();
+        }
+    }
+    format!("{}/{}", resolve_toolchain_origin(), CATALOGUE_V2_DOC_NAME)
+}
+
 /// Fetch the manifest body once, caching the parsed index in
 /// [`MANIFEST_CACHE`]. On any error (disable env var, HTTP failure,
 /// network failure, timeout, parse failure) caches an empty index so
@@ -727,29 +1387,40 @@ pub async fn get_or_fetch() -> &'static ManifestIndex {
 /// silently to an empty index so the resolver falls through to the
 /// live GitHub Releases API.
 async fn fetch_once() -> Result<ManifestIndex, SoldrError> {
-    let url = resolve_catalogue_url();
-    match fetch_index_from(&url).await {
-        Ok(index) => Ok(index),
-        Err(primary)
-            if std::env::var(TOOLCHAIN_CATALOGUE_URL_ENV_VAR)
-                .ok()
-                .is_none_or(|value| value.trim().is_empty())
-                && (primary.to_string().contains("HTTP 404")
-                    || primary.to_string().contains("HTTP 410")) =>
-        {
-            let legacy = format!(
-                "{}/{}",
-                resolve_toolchain_origin(),
-                LEGACY_CATALOGUE_DOC_NAME
-            );
-            fetch_index_from(&legacy).await.map_err(|fallback| {
-                SoldrError::Network(format!(
-                    "catalogue v2 failed ({primary}); compatibility v1 failed ({fallback})"
-                ))
-            })
-        }
-        Err(error) => Err(error),
+    // This override is intentionally *only* a v1 override.  Existing
+    // air-gapped and test callers must not have their explicit URL
+    // reinterpreted as a v2 endpoint.
+    if has_legacy_catalogue_url_override() {
+        return fetch_v1_index_from(&resolve_catalogue_url()).await;
     }
+    let v2_url = resolve_catalogue_v2_url();
+    let client = super::stream_download::control_http_client("the soldr-toolchain catalogue")?;
+    let resp = super::stream_download::send_control_request_with_timeout(
+        super::stream_download::get_request(&client, &v2_url),
+        &v2_url,
+        MANIFEST_FETCH_TIMEOUT,
+    )
+    .await?;
+    match resp.status().as_u16() {
+        status if should_fallback_to_v1(status) => {
+            fetch_v1_index_from(&resolve_catalogue_url()).await
+        }
+        status if (200..300).contains(&status) => {
+            let body =
+                super::stream_download::read_control_text(resp, &v2_url, MANIFEST_FETCH_TIMEOUT)
+                    .await?;
+            // A present v2 response is authoritative: malformed, unknown, or
+            // semantically invalid data must never silently revive v1/live API.
+            let parsed = ManifestIndex::from_v2_json(&body);
+            let state_bound = parsed.is_some() && bind_v2_publication_state(&body).await.is_ok();
+            Ok(authoritative_v2_index(parsed, state_bound))
+        }
+        _ => Ok(fail_closed_v2_index()),
+    }
+}
+
+fn should_fallback_to_v1(status: u16) -> bool {
+    matches!(status, 404 | 410)
 }
 
 /// HTTP-GET + JSON-parse a single index URL. Shared by both the v1
@@ -757,7 +1428,7 @@ async fn fetch_once() -> Result<ManifestIndex, SoldrError> {
 /// `ManifestIndex` deserializer ignores unknown top-level fields
 /// (e.g. v1's `schema_version`, `generated_at`, `origin`), so the
 /// same struct cleanly absorbs both shapes.
-async fn fetch_index_from(url: &str) -> Result<ManifestIndex, SoldrError> {
+async fn fetch_v1_index_from(url: &str) -> Result<ManifestIndex, SoldrError> {
     let client = super::stream_download::control_http_client("the soldr-toolchain catalogue")?;
     let resp = super::stream_download::send_control_request_with_timeout(
         super::stream_download::get_request(&client, url),
@@ -772,11 +1443,36 @@ async fn fetch_index_from(url: &str) -> Result<ManifestIndex, SoldrError> {
         )));
     }
     let body = super::stream_download::read_control_text(resp, url, MANIFEST_FETCH_TIMEOUT).await?;
-    ManifestIndex::from_json(&body)
+    ManifestIndex::from_v1_json(&body)
         .ok_or_else(|| SoldrError::Other(format!("manifest {url} did not parse as JSON")))
 }
 
-/// soldr#988 Phase 2 â€” `soldr toolchain catalogue` verb. Fetches
+/// Fetch a canonical v2 document.  This never falls through to v1: it is
+/// used after a v2-selected pin mismatch to keep catalogue and payload bound
+/// to one publication generation.
+async fn fetch_v2_index_from(url: &str) -> Result<ManifestIndex, SoldrError> {
+    let client = super::stream_download::control_http_client("the soldr-toolchain catalogue")?;
+    let resp = super::stream_download::send_control_request_with_timeout(
+        super::stream_download::get_request(&client, url),
+        url,
+        MANIFEST_FETCH_TIMEOUT,
+    )
+    .await?;
+    if !resp.status().is_success() {
+        return Err(SoldrError::Network(format!(
+            "manifest fetch {url} returned HTTP {}",
+            resp.status()
+        )));
+    }
+    let body = super::stream_download::read_control_text(resp, url, MANIFEST_FETCH_TIMEOUT).await?;
+    let index = ManifestIndex::from_v2_json(&body).ok_or_else(|| {
+        SoldrError::Other(format!("canonical v2 manifest {url} did not validate"))
+    })?;
+    bind_v2_publication_state(&body).await?;
+    Ok(index)
+}
+
+/// soldr#988 Phase 2 — `soldr toolchain catalogue` verb. Fetches
 /// the catalogue's HEAD-equivalent metadata (one cheap GET, body
 /// streamed only as needed for the entry count) and prints either a
 /// human-readable summary or the stable JSON form.
@@ -890,5 +1586,722 @@ fn print_catalogue_error(url: &str, reason: &str, json: bool) {
 // exercise the cache one-shot per binary.
 
 #[cfg(test)]
-#[path = "manifest_lookup_tests.rs"]
-mod tests;
+mod tests {
+    use super::*;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    fn sample_json() -> &'static str {
+        r#"{
+            "entries": [
+                {
+                    "owner": "zackees",
+                    "repo": "zccache",
+                    "tag": "1.12.9",
+                    "asset": "zccache-x86_64-pc-windows-msvc.zip",
+                    "url": "https://github.com/zackees/zccache/releases/download/1.12.9/zccache-x86_64-pc-windows-msvc.zip",
+                    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+                },
+                {
+                    "owner": "LukeMathWalker",
+                    "repo": "cargo-chef",
+                    "tag": "v0.1.73",
+                    "asset": "cargo-chef-x86_64-pc-windows-msvc.tar.gz",
+                    "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.73/cargo-chef-x86_64-pc-windows-msvc.tar.gz",
+                    "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+                }
+            ]
+        }"#
+    }
+
+    #[test]
+    fn parses_well_formed_manifest() {
+        let idx = ManifestIndex::from_json(sample_json()).expect("parse ok");
+        assert_eq!(idx.entries.len(), 2);
+        assert_eq!(idx.entries[0].owner, "zackees");
+        assert_eq!(idx.entries[1].repo, "cargo-chef");
+    }
+
+    #[test]
+    fn from_json_returns_none_on_malformed_input() {
+        assert!(ManifestIndex::from_json("not-json").is_none());
+        assert!(ManifestIndex::from_json("{}").is_some()); // empty entries field is fine
+    }
+
+    #[test]
+    fn lookup_finds_exact_match() {
+        let idx = ManifestIndex::from_json(sample_json()).unwrap();
+        let hit = idx
+            .lookup(
+                "zackees",
+                "zccache",
+                "1.12.9",
+                "zccache-x86_64-pc-windows-msvc.zip",
+            )
+            .expect("should hit");
+        assert!(hit.transport.direct_url().unwrap().contains("zccache"));
+        assert_eq!(hit.sha256.len(), 64);
+    }
+
+    #[test]
+    fn lookup_misses_on_unknown_tuple() {
+        let idx = ManifestIndex::from_json(sample_json()).unwrap();
+        assert!(idx
+            .lookup("zackees", "zccache", "1.12.9", "not-an-asset.zip")
+            .is_none());
+        assert!(idx
+            .lookup(
+                "zackees",
+                "zccache",
+                "1.12.8",
+                "zccache-x86_64-pc-windows-msvc.zip"
+            )
+            .is_none());
+        assert!(idx
+            .lookup(
+                "other",
+                "zccache",
+                "1.12.9",
+                "zccache-x86_64-pc-windows-msvc.zip"
+            )
+            .is_none());
+    }
+
+    #[test]
+    fn empty_index_lookup_always_misses() {
+        let idx = ManifestIndex::empty();
+        assert!(idx.lookup("a", "b", "c", "d").is_none());
+        assert!(idx.lookup_release("a", "b", "c").is_empty());
+    }
+
+    #[test]
+    fn lookup_release_returns_every_asset_for_a_tag() {
+        let idx = ManifestIndex::from_json(sample_json()).unwrap();
+        let hits = idx.lookup_release("zackees", "zccache", "1.12.9");
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].asset.contains("zccache"));
+    }
+
+    #[test]
+    fn lookup_asset_finds_toolchain_owned_repackages() {
+        let idx = ManifestIndex::from_json(sample_json()).unwrap();
+        let hits = idx.lookup_asset("cargo-chef-x86_64-pc-windows-msvc.tar.gz");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].repo, "cargo-chef");
+    }
+
+    #[test]
+    fn catalogue_asset_digest_is_mandatory() {
+        let bytes = br#"{"schema_version":1}"#;
+        let entry = ManifestEntry {
+            owner: "zackees".into(),
+            repo: "soldr-toolchain".into(),
+            tag: "assets".into(),
+            asset: "rust-nightly-versions.v1.json".into(),
+            transport: AssetTransport::Direct {
+                urls: vec!["https://example.invalid/map.json".into()],
+            },
+            sha256: super::super::trust::sha256_of(bytes),
+            size_bytes: bytes.len() as u64,
+            min_client_version: Some(CATALOGUE_CAPABILITY),
+        };
+        assert!(
+            verify_catalogue_asset_sha256(&entry, &super::super::trust::sha256_of(bytes)).is_ok()
+        );
+        assert!(
+            verify_catalogue_asset_sha256(&entry, &super::super::trust::sha256_of(b"changed"))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn catalogue_asset_body_keeps_a_response_wide_deadline() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build test runtime");
+        runtime.block_on(async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind server");
+            let address = listener.local_addr().expect("server address");
+            tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.expect("accept client");
+                let mut request = [0_u8; 1024];
+                let _ = socket.read(&mut request).await;
+                socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\npartial")
+                    .await
+                    .expect("write partial body");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            });
+            let url = format!("http://{address}/catalogue-asset");
+            let client = super::super::stream_download::asset_http_client("test catalogue asset")
+                .expect("build test client");
+            let response = super::super::stream_download::send_asset_request(
+                super::super::stream_download::get_request(&client, &url),
+                &url,
+                Duration::from_secs(1),
+            )
+            .await
+            .expect("GET");
+            let error = stream_catalogue_asset_body(response, &url, Duration::from_millis(20))
+                .await
+                .expect_err("trickling metadata body must hit the total deadline");
+            assert!(super::super::retry::is_transient(&error));
+            assert!(error.to_string().contains("body read timed out"), "{error}");
+        });
+    }
+
+    #[test]
+    fn cache_buster_preserves_existing_query_parameters() {
+        let plain = cache_busted_url("https://example.invalid/map.json");
+        assert!(plain.starts_with("https://example.invalid/map.json?soldr_refresh="));
+        let queried = cache_busted_url("https://example.invalid/map.json?mirror=1");
+        assert!(queried.starts_with("https://example.invalid/map.json?mirror=1&soldr_refresh="));
+    }
+
+    // soldr#988 Phase 2: catalogue origin resolution.
+
+    #[test]
+    fn catalogue_url_defaults_to_pages_origin() {
+        // Caller may have SOLDR_TOOLCHAIN_ORIGIN set in their env;
+        // exercise the public string-shape via the pure helper that
+        // does not read env: build the URL from the default origin.
+        let url = format!("{}/{}", DEFAULT_TOOLCHAIN_ORIGIN, CATALOGUE_DOC_NAME);
+        assert_eq!(
+            url,
+            "https://zackees.github.io/soldr-toolchain/catalogue.v1.json"
+        );
+    }
+
+    #[test]
+    fn catalogue_v1_json_parses_through_manifest_index() {
+        // Phase 2 must accept the v1 wire shape transparently — the
+        // top-level extras (schema_version, generated_at, origin)
+        // are unknown fields ManifestIndex must ignore.
+        let v1 = r#"{
+            "schema_version": 1,
+            "generated_at": "2026-06-27T00:00:00Z",
+            "origin": "https://zackees.github.io/soldr-toolchain/catalogue.v1.json",
+            "entries": [
+                {
+                    "owner": "zackees",
+                    "repo": "zccache",
+                    "tag": "1.12.11",
+                    "asset": "zccache-v1.12.11-x86_64-pc-windows-msvc.zip",
+                    "url": "https://github.com/zackees/zccache/releases/download/1.12.11/zccache-v1.12.11-x86_64-pc-windows-msvc.zip",
+                    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+                }
+            ]
+        }"#;
+        let idx = ManifestIndex::from_json(v1).expect("v1 catalogue must parse");
+        assert_eq!(idx.entries.len(), 1);
+        assert_eq!(idx.entries[0].owner, "zackees");
+        assert_eq!(idx.entries[0].tag, "1.12.11");
+    }
+
+    #[test]
+    fn catalogue_v2_fixture_preserves_direct_and_multipart_transports() {
+        let json = include_str!("../../tests/fixtures/catalogue.v2.json");
+        let index = ManifestIndex::from_json(json).expect("v2 fixture is valid");
+        assert!(matches!(
+            index.entries[0].transport,
+            AssetTransport::Direct { .. }
+        ));
+        assert!(matches!(
+            index.entries[1].transport,
+            AssetTransport::Multipart { .. }
+        ));
+        assert_eq!(index.entries[1].size_bytes, 6);
+    }
+
+    #[test]
+    fn catalogue_v2_rejects_ambiguous_and_invalid_transport() {
+        let invalid = r#"{"schema_version":2,"entries":[{"owner":"o","repo":"r","tag":"t","asset":"a","size_bytes":1,"sha256":"0000000000000000000000000000000000000000000000000000000000000000","urls":["https://example.invalid/a"],"parts":[{"number":1,"size_bytes":1,"sha256":"0000000000000000000000000000000000000000000000000000000000000000","urls":["https://example.invalid/p"]}]}]}"#;
+        assert!(ManifestIndex::from_json(invalid).is_none());
+        assert!(!supports_min_client_version(Some(CATALOGUE_CAPABILITY + 1)));
+    }
+
+    fn valid_hash() -> String {
+        "a".repeat(64)
+    }
+
+    fn v2_entry() -> WireV2Entry {
+        WireV2Entry {
+            owner: "owner".into(),
+            repo: "repo".into(),
+            tag: "tag".into(),
+            asset: "asset".into(),
+            size_bytes: 1,
+            sha256: valid_hash(),
+            urls: Some(vec!["https://example.invalid/asset".into()]),
+            parts: None,
+            min_client_version: Some(CATALOGUE_CAPABILITY),
+        }
+    }
+
+    fn parse_v2_entry(entry: WireV2Entry) -> Result<ManifestEntry, String> {
+        entry_from_v2_wire(entry, &mut std::collections::BTreeSet::new())
+    }
+
+    #[test]
+    fn canonical_v2_rejects_absent_v1_and_unknown_schema() {
+        assert!(ManifestIndex::from_v2_json(r#"{"entries":[]}"#).is_none());
+        assert!(ManifestIndex::from_v2_json(r#"{"schema_version":1,"entries":[]}"#).is_none());
+        assert!(ManifestIndex::from_v2_json(r#"{"schema_version":3,"entries":[]}"#).is_none());
+    }
+
+    #[test]
+    fn only_absent_canonical_catalogues_select_v1() {
+        assert!(should_fallback_to_v1(404));
+        assert!(should_fallback_to_v1(410));
+        for status in [200, 204, 301, 400, 401, 403, 409, 500] {
+            assert!(
+                !should_fallback_to_v1(status),
+                "{status} must not select v1"
+            );
+        }
+    }
+
+    #[test]
+    fn v2_rejects_unknown_fields_and_duplicate_json_keys() {
+        let fixture = include_str!("../../tests/fixtures/catalogue.v2.json");
+        assert!(ManifestIndex::from_v2_json(&fixture.replacen(
+            "\"generation\": \"canary-0001\",",
+            "\"generation\": \"canary-0001\",\n  \"unexpected\": true,",
+            1,
+        ))
+        .is_none());
+        assert!(ManifestIndex::from_v2_json(&fixture.replacen(
+            "\"asset\": \"direct.bin\",",
+            "\"asset\": \"direct.bin\", \"asset\": \"other.bin\",",
+            1,
+        ))
+        .is_none());
+        assert!(ManifestIndex::from_v2_json(&fixture.replacen(
+            "\"urls\": [\"https://example.invalid/direct.bin\"]",
+            "\"url\": \"https://example.invalid/legacy.bin\",",
+            1,
+        ))
+        .is_none());
+    }
+
+    #[test]
+    fn v2_rejects_duplicate_rows_and_bad_publication_binding() {
+        let fixture = include_str!("../../tests/fixtures/catalogue.v2.json");
+        assert!(ManifestIndex::from_v2_json(&fixture.replace(
+            "\"url\": \"https://example.invalid/generations/canary-0001/publish-state.v1.json\"",
+            "\"url\": \"https://example.invalid/generations/other/publish-state.v1.json\"",
+        ))
+        .is_none());
+        assert!(ManifestIndex::from_v2_json(
+            &fixture.replace("\"asset\": \"multipart.bin\"", "\"asset\": \"direct.bin\"",)
+        )
+        .is_none());
+        assert!(ManifestIndex::from_v2_json(&fixture.replace(
+            "    \"generation\": \"canary-0001\",\n    \"url\"",
+            "    \"generation\": \"wrong-generation\",\n    \"url\"",
+        ))
+        .is_none());
+    }
+
+    #[test]
+    fn paired_cross_repository_contract_fixture_is_accepted_and_bound() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/catalogue-v2-contract.json"
+        ))
+        .expect("paired fixture is JSON");
+        let catalogue = fixture["catalogue"].to_string();
+        assert!(ManifestIndex::from_v2_json(&catalogue).is_some());
+        assert_eq!(
+            canonical_catalogue_sha256(&catalogue).as_deref(),
+            fixture["publication_state"]["catalogue_sha256"].as_str()
+        );
+    }
+
+    #[test]
+    fn v2_matches_producer_optional_and_global_url_rules() {
+        let fixture = include_str!("../../tests/fixtures/catalogue.v2.json");
+        assert!(ManifestIndex::from_v2_json(&fixture.replacen(
+            "\"generation\": \"canary-0001\",",
+            "\"generation\": \"canary-0001\",\n  \"generated_at\": \"\",",
+            1,
+        ))
+        .is_some());
+        assert!(ManifestIndex::from_v2_json(&fixture.replace(
+            "\"https://example.invalid/direct.bin\"",
+            "\"https://example.invalid/generations/canary-0001/publish-state.v1.json\"",
+        ))
+        .is_none());
+        let supported = ManifestIndex::from_v2_json(&fixture.replacen(
+            "\"size_bytes\": 6,",
+            "\"size_bytes\": 6, \"min_client_version\": 2,",
+            1,
+        ));
+        assert_eq!(supported.unwrap().entries[0].min_client_version, Some(2));
+        assert!(ManifestIndex::from_v2_json(&fixture.replacen(
+            "\"size_bytes\": 6,",
+            "\"size_bytes\": 6, \"min_client_version\": 3,",
+            1,
+        ))
+        .is_none());
+        assert!(ManifestIndex::from_v2_json(&fixture.replacen(
+            "\"size_bytes\": 6,",
+            "\"size_bytes\": 6, \"min_client_version\": true,",
+            1,
+        ))
+        .is_none());
+    }
+
+    #[test]
+    fn canonical_writer_sorts_nested_object_keys() {
+        let a = canonical_catalogue_sha256(r#"{"z":{"b":1,"a":2},"a":3}"#);
+        let b = canonical_catalogue_sha256(r#"{"a":3,"z":{"a":2,"b":1}}"#);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn publication_state_mismatches_fail_closed() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/catalogue-v2-contract.json"
+        ))
+        .unwrap();
+        let generation = fixture["catalogue"]["generation"].as_str().unwrap();
+        let digest = fixture["publication_state"]["catalogue_sha256"]
+            .as_str()
+            .unwrap();
+        let state = parse_publication_state(&fixture["publication_state"].to_string()).unwrap();
+        assert!(publication_state_matches(&state, generation, digest));
+        assert!(!publication_state_matches(&state, "other", digest));
+        assert!(!publication_state_matches(
+            &state,
+            generation,
+            &"0".repeat(64)
+        ));
+    }
+
+    #[test]
+    fn publication_state_requires_full_valid_identity_document() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/catalogue-v2-contract.json"
+        ))
+        .unwrap();
+        let state = fixture["publication_state"].clone();
+        assert!(parse_publication_state(&state.to_string()).is_ok());
+
+        for (field, replacement) in [
+            ("source", serde_json::json!(null)),
+            ("assets_by_sha256", serde_json::json!([])),
+            ("logical_assets", serde_json::json!(false)),
+        ] {
+            let mut invalid = state.clone();
+            invalid[field] = replacement;
+            assert!(
+                parse_publication_state(&invalid.to_string()).is_err(),
+                "{field}"
+            );
+        }
+        let generation = fixture["catalogue"]["generation"].as_str().unwrap();
+        let digest = state["catalogue_sha256"].as_str().unwrap();
+        assert!(validate_publication_state_body(&state.to_string(), generation, digest).is_ok());
+        let mut invalid = state.clone();
+        invalid["active"]["slot"] = serde_json::json!("public-c");
+        let parsed = parse_publication_state(&invalid.to_string()).unwrap();
+        assert!(!publication_state_matches(&parsed, generation, digest));
+        assert!(validate_publication_state_body(&invalid.to_string(), generation, digest).is_err());
+        let mut invalid = state.clone();
+        invalid["source"]["commit"] = serde_json::json!("A".repeat(40));
+        let parsed = parse_publication_state(&invalid.to_string()).unwrap();
+        assert!(!publication_state_matches(&parsed, generation, digest));
+        assert!(parse_publication_state(r#"{"schema_version":1,"schema_version":1}"#).is_err());
+    }
+
+    #[test]
+    fn publication_state_rejects_malformed_ledger_rows_and_unknown_fields() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/catalogue-v2-contract.json"
+        ))
+        .unwrap();
+        let generation = fixture["catalogue"]["generation"].as_str().unwrap();
+        let digest = fixture["publication_state"]["catalogue_sha256"]
+            .as_str()
+            .unwrap();
+        let full = "a".repeat(64);
+        let part = "b".repeat(64);
+        let mut state = fixture["publication_state"].clone();
+        state["assets_by_sha256"] = serde_json::json!({
+            full.clone(): {
+                "size_bytes": 3,
+                "partitioner": {"version": 1, "target_bytes": 3},
+                "parts": [{
+                    "number": 1,
+                    "sha256": part.clone(),
+                    "size_bytes": 3,
+                    "path": format!("sha256/{full}/0001-{part}.part"),
+                    "git_blob": "c".repeat(40),
+                }],
+            }
+        });
+        state["logical_assets"] = serde_json::json!({
+            "asset-key": {
+                "source_path": "source.tar.zst",
+                "asset": "published.tar.zst",
+                "source_oid_sha256": full.clone(),
+                "source_size_bytes": 3,
+                "metadata_fingerprint": "metadata",
+                "provenance": {"producer": "test"},
+            }
+        });
+        assert!(validate_publication_state_body(&state.to_string(), generation, digest).is_ok());
+
+        for (path, value) in [
+            ("assets_by_sha256", serde_json::json!({"not-a-sha": {}})),
+            ("logical_assets", serde_json::json!({"": {}})),
+        ] {
+            let mut invalid = state.clone();
+            invalid[path] = value;
+            assert!(
+                validate_publication_state_body(&invalid.to_string(), generation, digest).is_err()
+            );
+        }
+        let mut invalid = state.clone();
+        invalid["assets_by_sha256"][&full]["parts"][0]["path"] = serde_json::json!("not/canonical");
+        assert!(validate_publication_state_body(&invalid.to_string(), generation, digest).is_err());
+        let mut invalid = state.clone();
+        invalid["logical_assets"]["asset-key"]["source_size_bytes"] = serde_json::json!(4);
+        assert!(validate_publication_state_body(&invalid.to_string(), generation, digest).is_err());
+        let mut invalid = state.clone();
+        invalid["unknown"] = serde_json::json!(true);
+        assert!(parse_publication_state(&invalid.to_string()).is_err());
+        let mut invalid = state.clone();
+        invalid["assets_by_sha256"][&full]["parts"][0]["unknown"] = serde_json::json!(true);
+        assert!(parse_publication_state(&invalid.to_string()).is_err());
+    }
+
+    #[test]
+    fn authoritative_v2_failure_never_becomes_a_legacy_empty_index() {
+        let malformed = authoritative_v2_index(None, false);
+        assert!(malformed.fail_closed);
+        assert_eq!(malformed.source, CatalogueSource::CanonicalV2);
+        let state_failure = authoritative_v2_index(Some(ManifestIndex::empty()), false);
+        assert!(state_failure.fail_closed);
+        // A canonical endpoint's non-success status takes this same branch.
+        assert!(fail_closed_v2_index().fail_closed);
+    }
+
+    #[test]
+    fn generation_uses_only_the_producer_ascii_alphabet() {
+        for generation in ["ready_1.2:3-4", "A"] {
+            assert!(valid_generation(generation));
+        }
+        for generation in [
+            "",
+            "with space",
+            "slash/name",
+            "percent%",
+            "café",
+            "newline\n",
+        ] {
+            assert!(!valid_generation(generation), "{generation:?}");
+        }
+    }
+
+    #[test]
+    fn v2_hostile_numeric_and_url_boundaries_are_rejected() {
+        let mut entry = v2_entry();
+        entry.size_bytes = MAX_CATALOGUE_ASSET_BYTES + 1;
+        assert!(parse_v2_entry(entry).is_err());
+
+        let mut entry = v2_entry();
+        entry.urls = Some(vec![format!(
+            "https://example.invalid/{}",
+            "a".repeat(MAX_CATALOGUE_URL_BYTES)
+        )]);
+        assert!(parse_v2_entry(entry).is_err());
+
+        let mut entry = v2_entry();
+        entry.urls = None;
+        entry.parts = Some(
+            (1..=(MAX_CATALOGUE_PARTS + 1))
+                .map(|number| WirePart {
+                    number: number as u32,
+                    size_bytes: 1,
+                    sha256: valid_hash(),
+                    urls: vec![format!("https://example.invalid/{number}")],
+                })
+                .collect(),
+        );
+        assert!(parse_v2_entry(entry).is_err());
+
+        let mut entry = v2_entry();
+        entry.urls = None;
+        entry.parts = Some(vec![
+            WirePart {
+                number: 1,
+                size_bytes: u64::MAX,
+                sha256: valid_hash(),
+                urls: vec!["https://example.invalid/1".into()],
+            },
+            WirePart {
+                number: 2,
+                size_bytes: 1,
+                sha256: valid_hash(),
+                urls: vec!["https://example.invalid/2".into()],
+            },
+        ]);
+        assert!(parse_v2_entry(entry).is_err());
+    }
+
+    #[test]
+    fn v2_part_count_and_transport_invariants_hold_at_the_boundary() {
+        let mut entry = v2_entry();
+        entry.size_bytes = MAX_CATALOGUE_PARTS as u64;
+        entry.urls = None;
+        entry.parts = Some(
+            (1..=MAX_CATALOGUE_PARTS)
+                .map(|number| WirePart {
+                    number: number as u32,
+                    size_bytes: 1,
+                    sha256: valid_hash(),
+                    urls: vec![format!("https://example.invalid/{number}")],
+                })
+                .collect(),
+        );
+        assert!(matches!(
+            parse_v2_entry(entry),
+            Ok(ManifestEntry {
+                transport: AssetTransport::Multipart { .. },
+                ..
+            })
+        ));
+
+        let mut entry = v2_entry();
+        entry.urls = Some(vec![
+            "https://example.invalid/asset".into(),
+            "https://example.invalid/asset".into(),
+        ]);
+        assert!(parse_v2_entry(entry).is_err());
+
+        let mut entry = v2_entry();
+        entry.urls = None;
+        entry.size_bytes = 2;
+        entry.parts = Some(vec![
+            WirePart {
+                number: 1,
+                size_bytes: 1,
+                sha256: valid_hash(),
+                urls: vec!["https://example.invalid/one".into()],
+            },
+            WirePart {
+                number: 1,
+                size_bytes: 1,
+                sha256: valid_hash(),
+                urls: vec!["https://example.invalid/two".into()],
+            },
+        ]);
+        assert!(parse_v2_entry(entry).is_err());
+
+        let mut entry = v2_entry();
+        entry.urls = None;
+        entry.parts = Some(vec![WirePart {
+            number: 1,
+            size_bytes: 2,
+            sha256: valid_hash(),
+            urls: vec!["https://example.invalid/one".into()],
+        }]);
+        assert!(parse_v2_entry(entry).is_err());
+    }
+
+    #[test]
+    fn v2_json_types_are_not_coerced() {
+        let fixture = include_str!("../../tests/fixtures/catalogue.v2.json");
+        assert!(ManifestIndex::from_v2_json(&fixture.replacen(
+            "\"size_bytes\": 6",
+            "\"size_bytes\": true",
+            1
+        ))
+        .is_none());
+        assert!(ManifestIndex::from_v2_json(&fixture.replacen(
+            "\"number\": 1",
+            "\"number\": \"1\"",
+            1
+        ))
+        .is_none());
+    }
+
+    #[test]
+    fn disabled_via_env_handles_truthy_and_falsy_values() {
+        // Test the parser directly via the same shape disabled_via_env
+        // uses, since touching the process env in unit tests is racy.
+        let check = |value: Option<&str>| match value {
+            None => false,
+            Some(v) => {
+                let n = v.trim().to_ascii_lowercase();
+                !n.is_empty() && n != "0" && n != "false" && n != "no"
+            }
+        };
+        assert!(!check(None));
+        assert!(!check(Some("")));
+        assert!(!check(Some("0")));
+        assert!(!check(Some("false")));
+        assert!(!check(Some("no")));
+        assert!(check(Some("1")));
+        assert!(check(Some("true")));
+        assert!(check(Some("yes")));
+        assert!(check(Some("anything-else")));
+    }
+
+    // Back-compat guard for issue #861: after schema v6 lands beside
+    // the flat-array shape this module owns, an old flat manifest
+    // body must keep parsing through `ManifestIndex::from_json`. This
+    // proves the dispatch isn't accidentally captured by the new v6
+    // parser — the two shapes are disjoint on the wire (`entries: []`
+    // vs. `schema_version: 6, tools: {...}`) and must stay so.
+    #[test]
+    fn flat_schema_v5_still_parses_for_back_compat() {
+        let flat = r#"{
+            "entries": [
+                {
+                    "owner": "zackees",
+                    "repo": "zccache",
+                    "tag": "1.12.9",
+                    "asset": "zccache-x86_64-pc-windows-msvc.zip",
+                    "url": "https://example.com/zccache.zip",
+                    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+                }
+            ]
+        }"#;
+        let idx = ManifestIndex::from_json(flat).expect("flat parse ok");
+        assert_eq!(idx.entries.len(), 1);
+        // And the v6 parser must reject this same flat body, proving
+        // the two are routed disjointly.
+        assert!(
+            super::super::manifest_v6::ManifestV6::from_json(flat).is_none(),
+            "v6 parser must reject the flat-array shape"
+        );
+    }
+
+    #[test]
+    fn default_toolchain_origin_is_pages() {
+        // soldr#988 Phase 5: legacy manifest-branch URL constant is
+        // gone. The default catalogue origin is the soldr-toolchain
+        // Pages site.
+        assert_eq!(
+            DEFAULT_TOOLCHAIN_ORIGIN,
+            "https://zackees.github.io/soldr-toolchain"
+        );
+    }
+
+    #[test]
+    fn catalogue_url_override_takes_precedence() {
+        // The full-URL override is the one the integration tests use
+        // when they spawn a local HTTP listener on a random port —
+        // they can't fit that under the `origin + /catalogue.v1.json`
+        // composition because the listener path is fixed.
+        // Verify the override is recognized via the public const name.
+        assert_eq!(
+            TOOLCHAIN_CATALOGUE_URL_ENV_VAR,
+            "SOLDR_TOOLCHAIN_CATALOGUE_URL"
+        );
+    }
+}

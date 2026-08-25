@@ -8,6 +8,11 @@ async fn try_manifest_first(
     target: &TargetTriple,
 ) -> Result<Option<FetchResult>, SoldrError> {
     let manifest = manifest_lookup::get_or_fetch().await;
+    if manifest.fail_closed {
+        return Err(SoldrError::Other(
+            "catalogue.v2.json was present but invalid; refusing legacy/live fallback".into(),
+        ));
+    }
     let candidates = manifest.lookup_release(&repo.owner, &repo.repo, tag);
     // Tag normalization: known_tools may resolve a tag prefix like
     // `cargo-audit/v0.21.0`, so try the bare tag first and the
@@ -36,7 +41,7 @@ async fn try_manifest_first(
         .iter()
         .map(|entry| github::AssetInfo {
             name: entry.asset.clone(),
-            download_url: entry.display_url().to_string(),
+            download_url: entry.transport.direct_url().unwrap_or_default().to_string(),
         })
         .collect();
     let asset = match github::match_asset_for_binaries(&asset_infos, target, binary_names) {
@@ -48,7 +53,9 @@ async fn try_manifest_first(
     }
     let matched_entry = candidates
         .iter()
-        .find(|e| e.asset == asset.name)
+        .find(|e| {
+            e.asset == asset.name && e.transport.direct_url() == Some(asset.download_url.as_str())
+        })
         .copied()
         .ok_or_else(|| {
             SoldrError::Other(format!(
@@ -87,7 +94,9 @@ async fn try_manifest_first(
         paths,
         cache_name,
         &version,
-        matched_entry,
+        matched_entry.transport.direct_url().ok_or_else(|| {
+            SoldrError::Other("multipart catalogue assets require Phase 2 materialization".into())
+        })?,
         target,
         binary_names,
     )

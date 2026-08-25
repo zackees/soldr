@@ -1,0 +1,24 @@
+{
+  "description": "Cross-repository Soldr catalogue-v2/publication-state contract fixture. catalogue is bound by publication_state.catalogue_sha256 over canonical JSON bytes.",
+  "catalogue": {
+    "schema_version": 2,
+    "generation": "2026-08-24T00:00:00Z-source0001",
+    "publication_state": {
+      "generation": "2026-08-24T00:00:00Z-source0001",
+      "url": "https://zackees.github.io/soldr-toolchain/generations/2026-08-24T00:00:00Z-source0001/publish-state.v1.json"
+    },
+    "origin": "https://zackees.github.io/soldr-toolchain/catalogue.v2.json",
+    "entries": [{"owner":"zackees","repo":"soldr-toolchain","tag":"assets","asset":"sdk.tar.zstd","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size_bytes":3,"min_client_version":2,"parts":[{"number":1,"sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","size_bytes":3,"urls":["https://raw.githubusercontent.com/zackees/soldr-toolchain/public-a/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/0001-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.part"]}]}]
+  },
+  "publication_state": {
+    "schema_version": 1,
+    "generation": "2026-08-24T00:00:00Z-source0001",
+    "source": {"commit": "1111111111111111111111111111111111111111", "tree": "2222222222222222222222222222222222222222"},
+    "www": {"commit": "3333333333333333333333333333333333333333", "tree": "4444444444444444444444444444444444444444"},
+    "active": {"slot": "public-a", "commit": "5555555555555555555555555555555555555555", "tree": "6666666666666666666666666666666666666666"},
+    "previous": {"slot": "public-b", "commit": "7777777777777777777777777777777777777777", "tree": "8888888888888888888888888888888888888888"},
+    "catalogue_sha256": "0007654bba916b207f78ad3f11369d0a06b593a4fde39ed4ee8f4adbda384dfe",
+    "assets_by_sha256": {},
+    "logical_assets": {}
+  }
+}

@@ -1,5 +1,10 @@
 {
   "schema_version": 2,
+  "generation": "canary-0001",
+  "publication_state": {
+    "generation": "canary-0001",
+    "url": "https://example.invalid/generations/canary-0001/publish-state.v1.json"
+  },
   "entries": [
     {
       "owner": "zackees",
@@ -8,8 +13,7 @@
       "asset": "direct.bin",
       "size_bytes": 6,
       "sha256": "bef57ec7f53a6d40beb640a780a639c83bc29ac8a9816f1fc6c5c6dcd93c4721",
-      "urls": ["https://example.invalid/direct.bin"],
-      "parts": []
+      "urls": ["https://example.invalid/direct.bin"]
     },
     {
       "owner": "zackees",
@@ -18,7 +22,7 @@
       "asset": "multipart.bin",
       "size_bytes": 6,
       "sha256": "bef57ec7f53a6d40beb640a780a639c83bc29ac8a9816f1fc6c5c6dcd93c4721",
-      "urls": [],
+      "min_client_version": 2,
       "parts": [
         {
           "number": 1,

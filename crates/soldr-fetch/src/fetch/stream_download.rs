@@ -254,6 +254,32 @@ use sha2::{Digest, Sha256};
 pub(crate) const ASSET_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 pub(crate) const ASSET_HEADER_TIMEOUT: Duration = Duration::from_secs(120);
 pub(crate) const CONTROL_HEADER_TIMEOUT: Duration = Duration::from_secs(120);
+/// Catalogue and asset redirects are bounded independently of reqwest's
+/// changing default.  Reqwest strips sensitive headers on cross-origin hops.
+pub(crate) const MAX_REDIRECT_HOPS: usize = 5;
+
+fn safe_redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if !may_follow_redirect(
+            attempt.previous().len(),
+            attempt
+                .previous()
+                .iter()
+                .any(|previous| previous.scheme() == "https"),
+            attempt.url(),
+        ) {
+            return attempt.stop();
+        }
+        attempt.follow()
+    })
+}
+
+fn may_follow_redirect(redirects_followed: usize, followed_https: bool, target: &url::Url) -> bool {
+    redirects_followed < MAX_REDIRECT_HOPS
+        && (!followed_https || target.scheme() == "https")
+        && target.username().is_empty()
+        && target.password().is_none()
+}
 /// A final circuit breaker for an otherwise-progressing asset download.
 ///
 /// An idle watchdog alone would permit a server to trickle bytes forever. The
@@ -276,6 +302,7 @@ pub(crate) fn control_http_client(purpose: &str) -> Result<reqwest::Client, Sold
     super::net_guard::ensure_network_allowed(purpose)?;
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
+        .redirect(safe_redirect_policy())
         .timeout(CONTROL_HEADER_TIMEOUT)
         .user_agent(format!("soldr/{}", crate::core::version()))
         .build()
@@ -296,7 +323,7 @@ pub(crate) fn asset_http_client_with_protocol(
     super::net_guard::ensure_network_allowed(purpose)?;
     let mut builder = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
-        .redirect(reqwest::redirect::Policy::limited(5))
+        .redirect(safe_redirect_policy())
         .user_agent(format!("soldr/{}", crate::core::version()));
     if matches!(protocol, AssetProtocol::Http1Only) {
         builder = builder.http1_only();
@@ -687,3 +714,23 @@ pub(crate) use super::segmented_download::{
     bulk_pool, parse_quick_threshold, quick_pool, segmentable_total_len, try_segmented_download,
     SegmentedDownloadConfig, SegmentedFailure, SocketPool,
 };
+
+#[cfg(test)]
+mod redirect_tests {
+    use super::*;
+
+    #[test]
+    fn auto_redirect_limit_accepts_five_and_rejects_six() {
+        let target = url::Url::parse("https://example.invalid/next").unwrap();
+        assert!(may_follow_redirect(4, true, &target));
+        assert!(!may_follow_redirect(5, true, &target));
+    }
+
+    #[test]
+    fn auto_redirect_rejects_https_downgrade_and_credentials() {
+        let downgrade = url::Url::parse("http://example.invalid/next").unwrap();
+        assert!(!may_follow_redirect(0, true, &downgrade));
+        let credentialed = url::Url::parse("https://user:secret@example.invalid/next").unwrap();
+        assert!(!may_follow_redirect(0, false, &credentialed));
+    }
+}

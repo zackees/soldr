@@ -45,7 +45,7 @@ const DEFAULT_QUICK_THRESHOLD_BYTES: u64 = 256;
 /// Redirect-hop ceiling for the segmented client's manual redirect
 /// following (see module docs "Three clocks"). Matches reqwest's own
 /// default auto-redirect limit.
-const MAX_REDIRECT_HOPS: u32 = 10;
+const MAX_REDIRECT_HOPS: u32 = 5;
 /// If a whole-operation deadline (`SOLDR_DOWNLOAD_TIMEOUT_SECS`) expires
 /// with less than this much budget left, a single-stream fallback attempt
 /// is not "meaningful" -- surface a clear timeout error instead of
@@ -478,10 +478,17 @@ fn segmented_http_client(
 }
 
 fn resolve_redirect_url(current: &str, location: &str) -> Result<String, String> {
-    let base = url::Url::parse(current).map_err(|e| format!("bad current url {current:?}: {e}"))?;
+    let base = url::Url::parse(current).map_err(|_| "invalid current redirect URL".to_string())?;
     let next = base
         .join(location)
-        .map_err(|e| format!("bad redirect location {location:?}: {e}"))?;
+        .map_err(|_| "invalid redirect target".to_string())?;
+    if (base.scheme() == "https" && next.scheme() != "https")
+        || next.host_str().is_none()
+        || !next.username().is_empty()
+        || next.password().is_some()
+    {
+        return Err("unsafe redirect target".to_string());
+    }
     Ok(next.to_string())
 }
 
@@ -502,14 +509,17 @@ async fn send_with_hop_timeout(
     connect_timeout: Duration,
 ) -> Result<reqwest::Response, String> {
     let mut url = initial_url.to_string();
-    for _hop in 0..MAX_REDIRECT_HOPS {
+    for redirects_followed in 0..=MAX_REDIRECT_HOPS {
         let req = build_request(client, &url);
         let resp = match tokio::time::timeout(connect_timeout, req.send()).await {
             Ok(Ok(r)) => r,
-            Ok(Err(e)) => return Err(format!("connect/send failed: {e}")),
+            Ok(Err(_)) => return Err("connect/send failed".to_string()),
             Err(_) => return Err(format!("connect/TTFB exceeded {connect_timeout:?}")),
         };
         if resp.status().is_redirection() {
+            if redirects_followed == MAX_REDIRECT_HOPS {
+                return Err(format!("exceeded {MAX_REDIRECT_HOPS} redirect hops"));
+            }
             let location = resp
                 .headers()
                 .get(reqwest::header::LOCATION)
@@ -530,7 +540,7 @@ async fn send_with_hop_timeout(
         }
         return Ok(resp);
     }
-    Err(format!("exceeded {MAX_REDIRECT_HOPS} redirect hops"))
+    unreachable!("the redirect loop returns on every iteration")
 }
 
 /// Attempt N-way Range segmentation. `response` is used only for its

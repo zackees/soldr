@@ -195,7 +195,7 @@ async fn catalogue_entry_for_url(url: &str) -> Option<manifest_lookup::ManifestE
     index
         .entries
         .iter()
-        .find(|e| e.matches_legacy_url(url))
+        .find(|e| e.transport.direct_url() == Some(url))
         .cloned()
 }
 

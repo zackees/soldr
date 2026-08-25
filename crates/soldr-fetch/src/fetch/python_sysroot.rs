@@ -101,10 +101,9 @@ fn newest_catalogue_version_for_slug(index: &ManifestIndex, slug: &str) -> Optio
         .iter()
         .filter_map(|entry| {
             entry
-                .source_path
-                .as_deref()
-                .or_else(|| entry.direct_url())
-                .and_then(|value| catalogue_version_from_url(value, slug))
+                .transport
+                .direct_url()
+                .and_then(|url| catalogue_version_from_url(url, slug))
         })
         .filter_map(|version| version_key(version).map(|key| (key, version)))
         .max_by_key(|(key, _)| *key)
