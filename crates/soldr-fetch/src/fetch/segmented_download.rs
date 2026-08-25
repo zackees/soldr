@@ -989,21 +989,6 @@ fn compute_segments(total: u64, n: u32) -> Vec<(u64, u64)> {
     segments
 }
 
-/// Set segmented-download env knobs from inside a held `ENV_LOCK` critical
-/// section (see the test module's `ENV_LOCK` / `clear_segmented_env`). Lives
-/// on the module that defines these env-var constants so both the test file
-/// and its sibling `_extra` module route their writes through one place,
-/// keeping every mutation of these vars behind the single test barrier
-/// (soldr#1663) — the write still happens under the caller's held lock.
-/// Takes the key as a variable so it registers no var name of its own,
-/// exactly like `clear_segmented_env`'s `remove_var(var)`.
-#[cfg(test)]
-pub(crate) fn set_segmented_env(pairs: &[(&str, &str)]) {
-    for (key, value) in pairs {
-        std::env::set_var(key, value);
-    }
-}
-
 #[cfg(test)]
 #[path = "segmented_download_tests.rs"]
 mod tests;

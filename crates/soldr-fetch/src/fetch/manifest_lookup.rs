@@ -3,6 +3,8 @@
 //! The implementation is split by concern: model/binding validation,
 //! multipart transport and cache materialization, and network lookup.
 
+#[path = "catalogue_json.rs"]
+mod catalogue_json;
 #[path = "catalogue_lookup.rs"]
 mod catalogue_lookup;
 #[path = "catalogue_model.rs"]

@@ -1,6 +1,8 @@
-use super::{clear_segmented_env, runtime, serve_range_tracking_concurrency, ENV_LOCK};
+use super::{
+    clear_segmented_env, runtime, serve_range_tracking_concurrency, set_segmented_env, ENV_LOCK,
+};
 use crate::fetch::segmented_download::{
-    set_segmented_env, SocketPool, SEGMENTED_DOWNLOAD_ENV_VAR, SEGMENTED_DOWNLOAD_N_ENV_VAR,
+    SocketPool, SEGMENTED_DOWNLOAD_ENV_VAR, SEGMENTED_DOWNLOAD_N_ENV_VAR,
 };
 use crate::fetch::stream_download::{
     send_control_request_with_pool, stream_response_to_temp_file_with_pool, ASSET_SAFETY_TIMEOUT,

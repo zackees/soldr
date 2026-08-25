@@ -60,6 +60,12 @@ pub(super) fn clear_segmented_env() {
     }
 }
 
+pub(super) fn set_segmented_env(pairs: &[(&str, &str)]) {
+    for (key, value) in pairs {
+        std::env::set_var(key, value);
+    }
+}
+
 #[test]
 fn healthy_chunks_reset_the_idle_watchdog() {
     runtime().block_on(async {
