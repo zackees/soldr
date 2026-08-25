@@ -86,7 +86,9 @@ class ToolchainAssetQueryTests(unittest.TestCase):
                 },
             }
         ).encode()
-        with mock.patch.object(taq, "fetch_bytes", side_effect=[index, catalog]) as fetch:
+        with mock.patch.object(
+            taq, "fetch_bytes", side_effect=[index, catalog]
+        ) as fetch:
             metadata = taq.resolve_metadata(
                 tool="demo",
                 origin="https://example.test/catalogue",
@@ -118,7 +120,7 @@ class ToolchainAssetQueryTests(unittest.TestCase):
                             "sha256": "0" * 64,
                         }
                     }
-                }
+                },
             }
         ).encode()
         with (

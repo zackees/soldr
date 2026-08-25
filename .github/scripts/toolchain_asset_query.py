@@ -35,6 +35,7 @@ RETRY_BASE_DELAY_SECS = 0.5
 class NetworkFetchError(SystemExit):
     """A catalogue fetch exhausted retries without receiving bytes."""
 
+
 OS_ALIASES: dict[str, str] = {
     "linux": "linux",
     "mac": "darwin",
