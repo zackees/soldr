@@ -71,14 +71,13 @@ pub(super) async fn try_binary(
     );
     let download_started_at_ms = current_unix_ms();
     let download_started = std::time::Instant::now();
-    let binary_path = archive::download_and_extract_with_pin(
+    let binary_path = archive::download_and_extract_catalogue_entry(
         paths,
         cache_name,
         bare_version,
-        &entry.url,
+        entry,
         target,
         binary_names,
-        Some((&entry.asset, &entry.sha256)),
     )
     .await?;
     if cache_name != "dylint-driver" {

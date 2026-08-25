@@ -85,7 +85,9 @@ fn version_key(version: &str) -> Option<(u64, u64, u64)> {
 }
 
 fn catalogue_version_from_url<'a>(url: &'a str, slug: &str) -> Option<&'a str> {
-    let (_, suffix) = url.split_once("/python/")?;
+    let suffix = url
+        .strip_prefix("python/")
+        .or_else(|| url.split_once("/python/").map(|(_, suffix)| suffix))?;
     let mut parts = suffix.split('/');
     let version = parts.next()?;
     let row_slug = parts.next()?;
@@ -97,7 +99,13 @@ fn newest_catalogue_version_for_slug(index: &ManifestIndex, slug: &str) -> Optio
     index
         .entries
         .iter()
-        .filter_map(|entry| catalogue_version_from_url(&entry.url, slug))
+        .filter_map(|entry| {
+            entry
+                .source_path
+                .as_deref()
+                .or_else(|| entry.direct_url())
+                .and_then(|value| catalogue_version_from_url(value, slug))
+        })
         .filter_map(|version| version_key(version).map(|key| (key, version)))
         .max_by_key(|(key, _)| *key)
         .map(|(_, version)| version.to_string())
@@ -229,9 +237,9 @@ mod tests {
     fn newest_version_is_selected_from_target_catalogue_rows() {
         let index = super::super::manifest_lookup::ManifestIndex::from_json(
             r#"{"entries":[
-                {"owner":"zackees","repo":"soldr-toolchain","tag":"3.12.7","asset":"bundle.tar.zst","url":"https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets/python/3.12.7/windows-x64/bundle.tar.zst","sha256":"aa"},
-                {"owner":"zackees","repo":"soldr-toolchain","tag":"3.13.14","asset":"bundle.tar.zst","url":"https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets/python/3.13.14/windows-x64/bundle.tar.zst","sha256":"bb"},
-                {"owner":"zackees","repo":"soldr-toolchain","tag":"9.9.9","asset":"bundle.tar.zst","url":"https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets/python/9.9.9/darwin-arm64/bundle.tar.zst","sha256":"cc"}
+                {"owner":"zackees","repo":"soldr-toolchain","tag":"3.12.7","asset":"bundle.tar.zst","url":"https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets/python/3.12.7/windows-x64/bundle.tar.zst","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+                {"owner":"zackees","repo":"soldr-toolchain","tag":"3.13.14","asset":"bundle.tar.zst","url":"https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets/python/3.13.14/windows-x64/bundle.tar.zst","sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+                {"owner":"zackees","repo":"soldr-toolchain","tag":"9.9.9","asset":"bundle.tar.zst","url":"https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets/python/9.9.9/darwin-arm64/bundle.tar.zst","sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
             ]}"#,
         )
         .unwrap();

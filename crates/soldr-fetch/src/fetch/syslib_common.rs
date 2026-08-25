@@ -30,10 +30,6 @@
 use std::path::{Path, PathBuf};
 
 use super::manifest_lookup;
-use super::stream_download::{
-    asset_http_client_with_protocol, get_request, send_asset_request, stream_response_to_temp_file,
-    AssetProtocol, DownloadedAsset, ASSET_HEADER_TIMEOUT, ASSET_IDLE_TIMEOUT,
-};
 use crate::core::{SoldrError, SoldrPaths};
 
 pub const SYSLIB_ASSET_ORIGIN_ENV_VAR: &str = "SOLDR_SYSLIB_ASSET_ORIGIN";
@@ -125,7 +121,7 @@ pub async fn ensure_syslib_bundle(
     // std` -- an error naming the wrong thing entirely.
     let downloaded =
         super::retry::with_asset_backoff(&format!("syslib {lib}/{version}/{slug}"), || {
-            download_syslib_bundle(&url)
+            manifest_lookup::download_manifest_entry(&entry)
         })
         .await?;
 
@@ -159,22 +155,6 @@ pub async fn ensure_syslib_bundle(
         eprintln!("soldr: extracted syslib to {}", sysroot.display());
     }
     Ok(sysroot)
-}
-
-/// One attempt at downloading a syslib bundle. Every failure mode here is
-/// [`SoldrError::Network`], which is exactly what [`super::retry`] retries;
-/// sha256 verification is deliberately *outside* this function so an integrity
-/// failure stays fatal on the first try.
-async fn download_syslib_bundle(url: &str) -> Result<DownloadedAsset, SoldrError> {
-    let client =
-        asset_http_client_with_protocol("a *-sys catalogue bundle", AssetProtocol::Http1Only)?;
-    let resp = send_asset_request(
-        get_request(&client, url).header(reqwest::header::ACCEPT_ENCODING, "identity"),
-        url,
-        ASSET_HEADER_TIMEOUT,
-    )
-    .await?;
-    stream_response_to_temp_file(resp, url, ASSET_IDLE_TIMEOUT).await
 }
 
 /// Acquire a **blocking** exclusive cross-process lock for an install
@@ -211,7 +191,11 @@ pub(crate) fn acquire_install_lock(
 /// been ingested yet.
 async fn catalogue_entry_for_url(url: &str) -> Option<manifest_lookup::ManifestEntry> {
     let index = manifest_lookup::get_or_fetch().await;
-    index.entries.iter().find(|e| e.url == url).cloned()
+    index
+        .entries
+        .iter()
+        .find(|e| e.matches_legacy_url(url))
+        .cloned()
 }
 
 /// The error for a syslib bundle with no catalogue entry.
