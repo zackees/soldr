@@ -11,6 +11,57 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Explicit Git configuration that can write CRLF into a working tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CrlfCheckoutSetting {
+    /// `core.autocrlf=true` converts text files to CRLF on checkout.
+    AutoCrlf,
+    /// `core.eol=crlf` selects CRLF for files governed by Git's text rules.
+    CoreEol,
+}
+
+/// Return the effective explicit CRLF checkout setting for `workspace_root`.
+///
+/// This is deliberately configuration-based instead of walking tracked files:
+/// the cargo front door calls it once per build, so its cost is one small Git
+/// subprocess and never scales with repository size. `core.autocrlf=input`
+/// wins over `core.eol=crlf` because input mode performs no checkout conversion.
+pub fn crlf_checkout_setting(workspace_root: &Path) -> Option<CrlfCheckoutSetting> {
+    let repo_root = find_git_worktree_root(workspace_root)?;
+    let output = run_git(
+        &repo_root,
+        ["config", "--get-regexp", r"^core\.(autocrlf|eol)$"],
+    )?;
+    let mut autocrlf = None;
+    let mut eol = None;
+    for line in output.lines() {
+        let mut fields = line.splitn(2, char::is_whitespace);
+        let Some(key) = fields.next() else {
+            continue;
+        };
+        let value = fields.next().unwrap_or("").trim().to_ascii_lowercase();
+        match key.to_ascii_lowercase().as_str() {
+            "core.autocrlf" => autocrlf = Some(value),
+            "core.eol" => eol = Some(value),
+            _ => {}
+        }
+    }
+
+    match autocrlf.as_deref() {
+        Some("input") => return None,
+        Some(value) if git_config_bool_is_true(value) => {
+            return Some(CrlfCheckoutSetting::AutoCrlf);
+        }
+        _ => {}
+    }
+    (eol.as_deref() == Some("crlf")).then_some(CrlfCheckoutSetting::CoreEol)
+}
+
+fn git_config_bool_is_true(value: &str) -> bool {
+    matches!(value, "" | "true" | "yes" | "on")
+        || value.parse::<i64>().is_ok_and(|number| number != 0)
+}
+
 /// Walk up from `start` looking for a `.git` directory **or** file.
 /// Git worktrees use a `.git` file that points at the real gitdir, so
 /// both shapes count.  Mirrors `zccache::find_git_worktree_root`
@@ -228,6 +279,70 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn set_local_git_config(repo: &Path, key: &str, value: &str) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["config", "--local", key, value])
+            .status()
+            .expect("git config");
+        assert!(status.success());
+    }
+
+    fn init_test_repo() -> tempfile::TempDir {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(["init", "-q"])
+            .status()
+            .expect("git init");
+        assert!(status.success());
+        repo
+    }
+
+    #[test]
+    fn crlf_checkout_setting_detects_autocrlf_true() {
+        let repo = init_test_repo();
+        set_local_git_config(repo.path(), "core.autocrlf", "true");
+        set_local_git_config(repo.path(), "core.eol", "lf");
+
+        assert_eq!(
+            crlf_checkout_setting(repo.path()),
+            Some(CrlfCheckoutSetting::AutoCrlf)
+        );
+    }
+
+    #[test]
+    fn crlf_checkout_setting_treats_autocrlf_input_as_lf_checkout() {
+        let repo = init_test_repo();
+        set_local_git_config(repo.path(), "core.autocrlf", "input");
+        set_local_git_config(repo.path(), "core.eol", "crlf");
+
+        assert_eq!(crlf_checkout_setting(repo.path()), None);
+    }
+
+    #[test]
+    fn crlf_checkout_setting_detects_explicit_core_eol_crlf() {
+        let repo = init_test_repo();
+        set_local_git_config(repo.path(), "core.autocrlf", "false");
+        set_local_git_config(repo.path(), "core.eol", "crlf");
+
+        assert_eq!(
+            crlf_checkout_setting(repo.path()),
+            Some(CrlfCheckoutSetting::CoreEol)
+        );
+    }
+
+    #[test]
+    fn crlf_checkout_setting_ignores_lf_configuration() {
+        let repo = init_test_repo();
+        set_local_git_config(repo.path(), "core.autocrlf", "false");
+        set_local_git_config(repo.path(), "core.eol", "lf");
+
+        assert_eq!(crlf_checkout_setting(repo.path()), None);
+    }
 
     #[test]
     fn rewrite_scp_style_canonicalizes_ssh_shorthand() {

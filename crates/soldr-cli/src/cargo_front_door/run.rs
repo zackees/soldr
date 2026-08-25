@@ -91,6 +91,13 @@ pub(crate) async fn run_cargo_front_door(
         (None, None) => args,
     };
 
+    let build_like_cargo = cargo_args_are_cacheable(args);
+    if build_like_cargo {
+        let repo_root = profile_debug::cargo_invocation_repo_path(args);
+        line_endings::maybe_emit_crlf_warning(&repo_root);
+    }
+    profile.mark("crlf_warning");
+
     // soldr#2334: the bare `soldr cargo build --target <foreign>`
     // passthrough is contractually verbatim (CLAUDE.md two-build-paths),
     // so it does NOT route C dependencies through the managed target
@@ -287,7 +294,6 @@ pub(crate) async fn run_cargo_front_door(
 
     emit_zig_cross_linker_preflight(&command, args)?;
 
-    let build_like_cargo = cargo_args_are_cacheable(args);
     // Issue #824 follow-up: always engage RUSTC_WRAPPER + the zccache
     // session when caching is enabled, regardless of whether the cargo
     // subcommand is in our known-compiling set. The previous policy
