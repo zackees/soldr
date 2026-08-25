@@ -9,8 +9,10 @@
 //!
 //! Published Rust crates can have the same shape even when their root source
 //! is small: the registry form of zccache folds a multi-crate workspace into
-//! one large rustc unit. The resource gate below lets ordinary units compile
-//! concurrently while either kind of oversized unit gets exclusive access.
+//! one large rustc unit, while `kernal-api` centralizes the formerly separate
+//! platform/profiling implementations. The resource gate below lets ordinary
+//! units compile concurrently while either kind of oversized unit gets
+//! exclusive access.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -37,7 +39,7 @@ const KNOWN_AMALGAMATIONS: &[&str] = &["sqlite3.c", "zstd.c", "rocksdb.cc"];
 
 /// Published Rust crates known to collapse a much more granular source
 /// workspace into one rustc compilation unit.
-const KNOWN_RUST_AMALGAMATIONS: &[&str] = &["zccache"];
+const KNOWN_RUST_AMALGAMATIONS: &[&str] = &["kernal_api", "zccache"];
 
 /// Extensions that name a C/C++ translation unit on a compiler command line.
 const SOURCE_EXTENSIONS: &[&str] = &["c", "cc", "cpp", "cxx", "c++", "m", "mm"];
@@ -395,15 +397,20 @@ mod tests {
     }
 
     #[test]
-    fn the_published_zccache_crate_requires_exclusive_access() {
-        let args = vec![
-            "/toolchain/bin/rustc".to_string(),
-            "--crate-name".to_string(),
-            "zccache".to_string(),
-            "/registry/zccache/src/lib.rs".to_string(),
-        ];
+    fn published_workspace_amalgamations_require_exclusive_access() {
+        for crate_name in ["kernal_api", "zccache"] {
+            let args = vec![
+                "/toolchain/bin/rustc".to_string(),
+                "--crate-name".to_string(),
+                crate_name.to_string(),
+                format!("/registry/{crate_name}/src/lib.rs"),
+            ];
 
-        assert!(requires_exclusive_access(&args, Path::new(".")));
+            assert!(
+                requires_exclusive_access(&args, Path::new(".")),
+                "{crate_name} must receive the oversized-unit resource gate"
+            );
+        }
     }
 
     #[test]

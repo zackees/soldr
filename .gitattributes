@@ -1,2 +1,4 @@
+* text=auto eol=lf
+
 # compiletest snapshots preserve rustc's final blank diagnostic separator.
 dylints/**/*.stderr -whitespace
