@@ -35,9 +35,9 @@ import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path, PureWindowsPath
+from typing import TypeGuard
 from urllib.parse import urljoin
 
-from typing import TypeGuard
 from release_artifacts import binary_suffix
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
