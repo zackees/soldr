@@ -19,7 +19,8 @@ import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, TypeVar
 
-DEFAULT_CATALOGUE_URL = "https://zackees.github.io/soldr-toolchain/catalogue.v1.json"
+from toolchain_asset_query import DEFAULT_ORIGIN, resolve_metadata
+
 SUPPORTED_TARGETS = {
     "x86_64-pc-windows-msvc",
     "aarch64-pc-windows-msvc",
@@ -29,6 +30,16 @@ SUPPORTED_TARGETS = {
     "aarch64-unknown-linux-gnu",
     "x86_64-unknown-linux-musl",
     "aarch64-unknown-linux-musl",
+}
+TARGET_QUERIES = {
+    "x86_64-pc-windows-msvc": ("windows", "x86_64", "msvc"),
+    "aarch64-pc-windows-msvc": ("windows", "aarch64", "msvc"),
+    "x86_64-apple-darwin": ("darwin", "x86_64", None),
+    "aarch64-apple-darwin": ("darwin", "aarch64", None),
+    "x86_64-unknown-linux-gnu": ("linux", "x86_64", "gnu"),
+    "aarch64-unknown-linux-gnu": ("linux", "aarch64", "gnu"),
+    "x86_64-unknown-linux-musl": ("linux", "x86_64", "musl"),
+    "aarch64-unknown-linux-musl": ("linux", "aarch64", "musl"),
 }
 DOWNLOAD_TIMEOUT_SECS = 120
 SMOKE_TIMEOUT_SECS = 30
@@ -62,6 +73,33 @@ def asset_name(tool: str, version: str, target: str) -> str:
         raise SystemExit(f"unsupported catalogue target: {target}")
     bare_version = version.removeprefix("v")
     return f"{tool}-{bare_version}-{target}.tar.gz"
+
+
+def catalogued_entry(
+    *, origin: str, tool: str, version: str, target: str
+) -> dict[str, Any]:
+    """Resolve one exact tool through the root index's verified descriptor."""
+    try:
+        platform, arch, extra = TARGET_QUERIES[target]
+    except KeyError as exc:
+        raise SystemExit(f"unsupported catalogue target: {target}") from exc
+    metadata = resolve_metadata(
+        tool=tool,
+        origin=origin,
+        tool_manifest_url_override=None,
+        platform=platform,
+        arch=arch,
+        extra=extra,
+        version=version,
+    )
+    urls = metadata.get("urls")
+    if not isinstance(urls, list) or not urls:
+        raise SystemExit(f"catalogued asset for {tool} has no download URL")
+    return {
+        "asset": metadata.get("filename"),
+        "url": urls[0],
+        "sha256": metadata.get("sha256"),
+    }
 
 
 def valid_sha256(value: object) -> bool:
@@ -305,11 +343,23 @@ def main() -> int:
     parser.add_argument("--target", required=True)
     parser.add_argument("--version", required=True)
     parser.add_argument("--output-dir", required=True, type=Path)
-    parser.add_argument("--catalogue-url", default=DEFAULT_CATALOGUE_URL)
+    parser.add_argument("--origin", default=DEFAULT_ORIGIN)
     args = parser.parse_args()
 
+    catalogue = {
+        "schema_version": 1,
+        "entries": [
+            catalogued_entry(
+                origin=args.origin,
+                tool=tool,
+                version=args.version,
+                target=args.target,
+            )
+            for tool in args.tools
+        ],
+    }
     result = install_tools(
-        catalogue=fetch_catalogue(args.catalogue_url),
+        catalogue=catalogue,
         tools=args.tools,
         version=args.version,
         target=args.target,

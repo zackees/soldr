@@ -17,10 +17,12 @@ Exit status is non-zero when the requested tool/version/platform is absent.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import urllib.error
 import urllib.request
 from typing import Any
+from urllib.parse import urljoin
 
 DEFAULT_ORIGIN = "https://zackees.github.io/soldr-toolchain"
 
@@ -45,18 +47,75 @@ ARCH_ALIASES: dict[str, str] = {
 }
 
 
-def fetch_json(url: str) -> Any:
+def fetch_bytes(url: str) -> bytes:
     try:
         with urllib.request.urlopen(url, timeout=30) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            return resp.read()
     except urllib.error.HTTPError as exc:
         raise SystemExit(f"HTTP {exc.code} fetching {url}") from exc
     except urllib.error.URLError as exc:
         raise SystemExit(f"network error fetching {url}: {exc}") from exc
 
 
-def tool_manifest_url(origin: str, tool: str) -> str:
-    return f"{origin.rstrip('/')}/{tool}/manifest.json"
+def decode_json(raw: bytes, url: str) -> Any:
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"invalid UTF-8 JSON at {url}: {exc}") from exc
+
+
+def fetch_json(url: str) -> Any:
+    return decode_json(fetch_bytes(url), url)
+
+
+def load_tool_manifest(origin: str, tool: str) -> tuple[str, dict[str, Any]]:
+    """Follow and verify a tool descriptor from the published root index."""
+    root = f"{origin.rstrip('/')}/manifest.json"
+    index = decode_json(fetch_bytes(root), root)
+    if not isinstance(index, dict) or index.get("schema_version") != 1:
+        raise SystemExit(f"catalogue index at {root} is not a schema_version 1 object")
+    tools = index.get("tools")
+    if not isinstance(tools, dict):
+        raise SystemExit(f"catalogue index at {root} has no tools object")
+    entry = tools.get(tool)
+    if not isinstance(entry, dict):
+        raise SystemExit(f"catalogue index has no entry for {tool}")
+    descriptor = entry.get("descriptor")
+    if not isinstance(descriptor, dict):
+        raise SystemExit(f"catalogue index has no descriptor for {tool}")
+    relative_url = descriptor.get("url")
+    if not isinstance(relative_url, str) or not relative_url:
+        raise SystemExit(f"catalogue index has no descriptor URL for {tool}")
+    expected_sha = str(descriptor.get("sha256", "")).lower()
+    if len(expected_sha) != 64 or any(
+        character not in "0123456789abcdef" for character in expected_sha
+    ):
+        raise SystemExit(f"catalogue descriptor for {tool} has no valid sha256")
+    expected_size = descriptor.get("size_bytes")
+    if (
+        not isinstance(expected_size, int)
+        or isinstance(expected_size, bool)
+        or expected_size <= 0
+    ):
+        raise SystemExit(f"catalogue descriptor for {tool} has invalid size_bytes")
+
+    url = urljoin(f"{origin.rstrip('/')}/", relative_url)
+    raw = fetch_bytes(url)
+    if len(raw) != expected_size:
+        raise SystemExit(
+            f"catalogue descriptor size mismatch for {tool}: "
+            f"expected {expected_size}, got {len(raw)}"
+        )
+    actual_sha = hashlib.sha256(raw).hexdigest()
+    if actual_sha != expected_sha:
+        raise SystemExit(
+            f"catalogue descriptor sha256 mismatch for {tool}: "
+            f"expected {expected_sha}, got {actual_sha}"
+        )
+    payload = decode_json(raw, url)
+    if not isinstance(payload, dict):
+        raise SystemExit(f"tool manifest at {url} is not a JSON object")
+    return url, payload
 
 
 def normalize_os(value: str) -> str:
@@ -179,6 +238,15 @@ def find_asset(
                 continue
             if platform_matches(platform, candidate):
                 urls = asset.get("urls")
+                parts = asset.get("parts")
+                if not urls and isinstance(parts, list) and len(parts) == 1:
+                    part = parts[0] if isinstance(parts[0], dict) else {}
+                    if (
+                        part.get("number") == 1
+                        and part.get("size_bytes") == asset.get("size_bytes")
+                        and part.get("sha256") == asset.get("sha256")
+                    ):
+                        urls = part.get("urls")
                 if isinstance(urls, list) and urls:
                     digest = str(asset.get("sha256", "")).lower()
                     if require_sha256 and (
@@ -229,8 +297,11 @@ def resolve_url(
     extra: str | None,
     version: str,
 ) -> str:
-    url = tool_manifest_url_override or tool_manifest_url(origin, tool)
-    payload = fetch_json(url)
+    if tool_manifest_url_override:
+        url = tool_manifest_url_override
+        payload = fetch_json(url)
+    else:
+        url, payload = load_tool_manifest(origin, tool)
     if not isinstance(payload, dict):
         raise SystemExit(f"tool manifest at {url} is not a JSON object")
     release = find_release(payload, version)
@@ -250,8 +321,11 @@ def resolve_metadata(
     extra: str | None,
     version: str,
 ) -> dict[str, Any]:
-    url = tool_manifest_url_override or tool_manifest_url(origin, tool)
-    payload = fetch_json(url)
+    if tool_manifest_url_override:
+        url = tool_manifest_url_override
+        payload = fetch_json(url)
+    else:
+        url, payload = load_tool_manifest(origin, tool)
     if not isinstance(payload, dict):
         raise SystemExit(f"tool manifest at {url} is not a JSON object")
     release = find_release(payload, version)

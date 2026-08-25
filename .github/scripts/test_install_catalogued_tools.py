@@ -29,6 +29,32 @@ TARGETS = [
 
 
 class InstallCataloguedToolsTests(unittest.TestCase):
+    def test_catalogued_entry_uses_verified_tool_descriptor(self) -> None:
+        metadata = {
+            "filename": "cargo-dylint-6.0.3-x86_64-unknown-linux-gnu.tar.gz",
+            "urls": ["https://example.test/cargo-dylint.tar.gz"],
+            "sha256": "a" * 64,
+        }
+        with mock.patch.object(script, "resolve_metadata", return_value=metadata) as resolve:
+            entry = script.catalogued_entry(
+                origin="https://example.test/catalogue",
+                tool="cargo-dylint",
+                version="6.0.3",
+                target="x86_64-unknown-linux-gnu",
+            )
+
+        self.assertEqual(entry["asset"], metadata["filename"])
+        self.assertEqual(entry["url"], metadata["urls"][0])
+        resolve.assert_called_once_with(
+            tool="cargo-dylint",
+            origin="https://example.test/catalogue",
+            tool_manifest_url_override=None,
+            platform="linux",
+            arch="x86_64",
+            extra="gnu",
+            version="6.0.3",
+        )
+
     def test_catalogue_fetch_retries_a_transient_failure(self) -> None:
         response = io.BytesIO(b'{"schema_version": 1, "entries": []}')
         with (

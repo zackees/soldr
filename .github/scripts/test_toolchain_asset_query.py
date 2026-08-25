@@ -3,8 +3,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from _script_loader import load_script_module
 
@@ -66,6 +69,82 @@ def sample_manifest() -> dict:
 
 
 class ToolchainAssetQueryTests(unittest.TestCase):
+    def test_resolve_metadata_follows_verified_root_descriptor(self) -> None:
+        catalog = json.dumps(sample_manifest()).encode()
+        index = json.dumps(
+            {
+                "kind": "Index",
+                "schema_version": 1,
+                "tools": {
+                    "demo": {
+                        "descriptor": {
+                            "url": "generations/source-test/demo/manifest.json",
+                            "size_bytes": len(catalog),
+                            "sha256": hashlib.sha256(catalog).hexdigest(),
+                        }
+                    }
+                },
+            }
+        ).encode()
+        with mock.patch.object(taq, "fetch_bytes", side_effect=[index, catalog]) as fetch:
+            metadata = taq.resolve_metadata(
+                tool="demo",
+                origin="https://example.test/catalogue",
+                tool_manifest_url_override=None,
+                platform="linux",
+                arch="x86_64",
+                extra="gnu",
+                version="1.2.3",
+            )
+
+        self.assertEqual(
+            [call.args[0] for call in fetch.call_args_list],
+            [
+                "https://example.test/catalogue/manifest.json",
+                "https://example.test/catalogue/generations/source-test/demo/manifest.json",
+            ],
+        )
+        self.assertEqual(metadata["sha256"], "0" * 64)
+
+    def test_root_descriptor_digest_mismatch_fails_closed(self) -> None:
+        index = json.dumps(
+            {
+                "schema_version": 1,
+                "tools": {
+                    "demo": {
+                        "descriptor": {
+                            "url": "demo/manifest.json",
+                            "size_bytes": 2,
+                            "sha256": "0" * 64,
+                        }
+                    }
+                }
+            }
+        ).encode()
+        with (
+            mock.patch.object(taq, "fetch_bytes", side_effect=[index, b"{}"]),
+            self.assertRaisesRegex(SystemExit, "sha256 mismatch"),
+        ):
+            taq.load_tool_manifest("https://example.test", "demo")
+
+    def test_single_multipart_chunk_is_a_direct_download_equivalent(self) -> None:
+        release = taq.find_release(sample_manifest(), "latest")
+        asset = release["platforms"][0]["asset"]
+        asset["parts"] = [
+            {
+                "number": 1,
+                "size_bytes": asset["size_bytes"],
+                "sha256": asset["sha256"],
+                "urls": ["https://example.test/part"],
+            }
+        ]
+        del asset["urls"]
+
+        selected = taq.find_asset(
+            release, taq.platform_candidates("linux", "x86_64", "gnu")
+        )
+        self.assertEqual(selected["urls"], ["https://example.test/part"])
+
     def test_latest_uses_channel(self) -> None:
         release = taq.find_release(sample_manifest(), "latest")
         self.assertEqual(release["version"], "v1.2.3")
