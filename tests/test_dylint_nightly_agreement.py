@@ -37,9 +37,11 @@ TARGET_GUARD = load_script_module(
     "verify_dylint_target_dirs",
 )
 
+
 def pinned_channel(path: Path) -> str | None:
     match = CHANNEL.search(path.read_text(encoding="utf-8"))
     return match.group(1) if match else None
+
 
 def dylint_toolchain_files() -> list[Path]:
     """Every first-party Dylint crate's pin, plus the acceptance fixture.
