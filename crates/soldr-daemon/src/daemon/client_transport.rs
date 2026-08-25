@@ -18,6 +18,39 @@ pub fn submit_request_with_timeout(
     }
 }
 
+/// Note a hot-path submission whose receipt ack never arrived.
+///
+/// soldr#2785 asks which of two things happened when a target-registry row is
+/// missing: the touch was never delivered, or it was delivered and the write
+/// half dropped it. The daemon already answers the second -- it prints
+/// `target-touch dropped` or `target-touch upsert failed` to its own stderr,
+/// and `cli_gc` reads those lines back on failure. The first had no signal at
+/// all: the ack exists to prove receipt, and both platforms discarded its
+/// outcome, so "never acked" and "acked then lost the row" were identical
+/// silence. A failing msvc run showed exactly that -- no drop, no upsert
+/// failure, and no way to tell whether the frame ever arrived.
+///
+/// Still best-effort. A missing ack must not fail the call: an older daemon
+/// that never acks is still delivering the touch everywhere it always did,
+/// which is why soldr#2558 made the wait bounded rather than required. It
+/// only stops being invisible.
+fn note_missing_ack(req: &Request, reason: &str) {
+    // Named rather than `{req:?}`: the Debug of a touch carries the full
+    // target path, which is the one thing a reader already knows and the one
+    // thing that makes the line long.
+    let request = match req {
+        Request::RecordTargetTouch { .. } => "RecordTargetTouch",
+        Request::CookTouch { .. } => "CookTouch",
+        _ => "other",
+    };
+    tracing::warn!(
+        event = "hot_path_ack_missing",
+        request,
+        reason,
+        "daemon did not acknowledge receipt within the bounded wait;          delivery is unconfirmed (soldr#2785)"
+    );
+}
+
 /// Wrapper-side target touch. State is daemon-owned: an unavailable daemon
 /// leaves the touch unrecorded rather than opening `state.sqlite3` in this process.
 pub fn record_target_touch_or_fallback(paths: &SoldrPaths, target: &Path) {
@@ -146,11 +179,27 @@ fn submit_fire_and_forget_windows(sock_path: &Path, req: &Request) -> Result<(),
                     })??;
                 // Best-effort receipt ack (soldr#2558); an old daemon that
                 // never acks costs only this bounded wait.
-                let _ = timeout(
+                //
+                // soldr#2785: still best-effort, but no longer silent. The ack
+                // is what proves the frame arrived, so discarding its outcome
+                // made "never delivered" indistinguishable from "delivered and
+                // the write half lost it" -- the two answers that issue is
+                // trying to separate.
+                match timeout(
                     HOT_PATH_ACK_TIMEOUT,
                     read_frame_async::<_, Response>(&mut stream),
                 )
-                .await;
+                .await
+                {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(error)) => {
+                        note_missing_ack(&req, &format!("{error}"));
+                    }
+                    Err(_) => note_missing_ack(
+                        &req,
+                        &format!("no ack within {HOT_PATH_ACK_TIMEOUT:?}"),
+                    ),
+                }
                 Ok::<(), std::io::Error>(())
             })
         },
