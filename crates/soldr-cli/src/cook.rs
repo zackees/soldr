@@ -28,6 +28,7 @@ use crate::core::{
 use crate::daemon::client::{self, CookLookupOutcome};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Instant;
 
 /// Parsed `soldr cook` invocation surface. Mirrors the relevant subset of
 /// `cargo build` knobs plus the cargo-chef-specific recipe controls.
@@ -492,6 +493,7 @@ proceeds uncached. See https://github.com/zackees/soldr/issues/2791"
 
     // Phase 2: cook. Heavy — compiles every transitive dep against a stub
     // project. Output lands in `target/`.
+    let compile_started = Instant::now();
     let cook_args = build_chef_cook_args(&ctx, &parsed);
     let cook_result =
         cargo_front_door::run_cargo_front_door(&cook_args, cache_enabled, false).await;
@@ -523,6 +525,8 @@ proceeds uncached. See https://github.com/zackees/soldr/issues/2791"
         }
     }
 
+    let compile_duration_ms = elapsed_ms(compile_started);
+
     // #621: persist the warm-cook marker so the next run with the same
     // recipe + rustc can short-circuit Phase 2. Best-effort — if the
     // write fails, the only impact is the next run pays the full
@@ -552,7 +556,7 @@ proceeds uncached. See https://github.com/zackees/soldr/issues/2791"
     // `~/.soldr/cache/cook/` (issue #577, meta #579). Best-effort;
     // any failure here surfaces as a warning but never fails the
     // user's cook command — the local `target/` is still valid.
-    if let Err(err) = index_cooked_artifact(&ctx, &parsed) {
+    if let Err(err) = index_cooked_artifact(&ctx, &parsed, compile_duration_ms) {
         eprintln!("{} {err}", yellow_warning_prefix());
     }
 
@@ -784,15 +788,26 @@ fn resolve_target_triple(manifest_dir: &Path, args: &CookArgs) -> Option<String>
 /// shared `~/.soldr/cache/cook/` (issue #577) and register the
 /// artifact with the daemon via `CookRecord`. Best-effort: a failure
 /// here surfaces as a warning but never fails the cook command.
-fn index_cooked_artifact(ctx: &CookContext, args: &CookArgs) -> Result<(), SoldrError> {
+fn index_cooked_artifact(
+    ctx: &CookContext,
+    args: &CookArgs,
+    compile_duration_ms: u64,
+) -> Result<(), SoldrError> {
     let paths = SoldrPaths::new()?;
-    index_cooked_artifact_with_packer(ctx, args, &paths, cook_archive::pack_cook_archive)
+    index_cooked_artifact_with_packer(
+        ctx,
+        args,
+        &paths,
+        compile_duration_ms,
+        cook_archive::pack_cook_archive,
+    )
 }
 
 fn index_cooked_artifact_with_packer<F>(
     ctx: &CookContext,
     args: &CookArgs,
     paths: &SoldrPaths,
+    compile_duration_ms: u64,
     packer: F,
 ) -> Result<(), SoldrError>
 where
@@ -923,14 +938,16 @@ where
     };
 
     // 5. Pack the trimmed target/<profile>/ tree.
+    let save_started = Instant::now();
     let packed = packer(&target_dir, &cook_dir)
         .map_err(|e| SoldrError::Other(format!("soldr cook: failed to pack cook archive: {e}")))?;
+    let save_elapsed_ms = elapsed_ms(save_started);
 
     // 6. Register with the daemon. If the daemon is unreachable we
     //    still keep the on-disk artifact for the next PR-3 hydrate
     //    attempt, but warn so the user knows sharing is one-sided.
     let cook_cmd_summary = build_cook_cmd_summary(args);
-    let register = client::cook_record_with_branch(
+    let register = client::cook_record_with_branch_timing(
         &sock,
         recipe_hash,
         triple.clone(),
@@ -942,6 +959,8 @@ where
         origin.clone(),
         branch_name,
         cook_cmd_summary,
+        compile_duration_ms,
+        save_elapsed_ms,
     );
     if let Err(e) = register {
         eprintln!(
@@ -959,8 +978,17 @@ where
     }
 
     // 8. Green success line.
-    emit_indexed_line(&packed, origin.as_deref());
+    emit_indexed_line(
+        &packed,
+        origin.as_deref(),
+        compile_duration_ms,
+        save_elapsed_ms,
+    );
     Ok(())
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 include!("cook_indexing.rs");

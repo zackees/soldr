@@ -307,6 +307,8 @@ fn cook_record_round_trips_with_sha_validation() {
         origin_url_normalized: None,
         branch_name: Some("main".into()),
         cook_cmd_summary: "cook --release".into(),
+        compile_duration_ms: 123_000,
+        save_elapsed_ms: 4_000,
     };
     let bytes = encode_request(&req);
     let Request::CookRecord {
@@ -314,6 +316,8 @@ fn cook_record_round_trips_with_sha_validation() {
         sha256,
         size_bytes,
         branch_name,
+        compile_duration_ms,
+        save_elapsed_ms,
         ..
     } = decode_request(&bytes).expect("decode")
     else {
@@ -323,6 +327,8 @@ fn cook_record_round_trips_with_sha_validation() {
     assert_eq!(sha256, [0xAA; 32]);
     assert_eq!(size_bytes, 4_096);
     assert_eq!(branch_name.as_deref(), Some("main"));
+    assert_eq!(compile_duration_ms, 123_000);
+    assert_eq!(save_elapsed_ms, 4_000);
 }
 
 #[test]
@@ -425,6 +431,8 @@ fn cook_hit_response_round_trips() {
         matched_recipe_hash: Some([0x11; 32]),
         exact_recipe_match: false,
         branch_name: Some("main".into()),
+        compile_duration_ms: 123_000,
+        save_elapsed_ms: 4_000,
     };
     let bytes = encode_response(&resp);
     match decode_response(&bytes).expect("decode") {
@@ -436,6 +444,8 @@ fn cook_hit_response_round_trips() {
             matched_recipe_hash,
             exact_recipe_match,
             branch_name,
+            compile_duration_ms,
+            save_elapsed_ms,
         } => {
             assert_eq!(sha256, [0xCC; 32]);
             assert!(path.ends_with(".tar.zst"));
@@ -447,6 +457,8 @@ fn cook_hit_response_round_trips() {
             assert_eq!(matched_recipe_hash, Some([0x11; 32]));
             assert!(!exact_recipe_match);
             assert_eq!(branch_name.as_deref(), Some("main"));
+            assert_eq!(compile_duration_ms, 123_000);
+            assert_eq!(save_elapsed_ms, 4_000);
         }
         other => panic!("unexpected variant: {other:?}"),
     }

@@ -25,8 +25,10 @@
 //! SQLite open; orphaned cook artifacts under `~/.soldr/cache/cook/`
 //! re-index on the next `soldr cook`).
 //!
-//! A future schema change MUST land as `cook_index_v3` rather than
-//! mutating v2 in place.
+//! A breaking schema change MUST land as `cook_index_v3` rather than
+//! mutating v2 in place. Additive protobuf tags are forward-compatible;
+//! their zero defaults deliberately mean "observation unavailable" to the
+//! cook cost gate.
 
 use crate::cache_lib::state_store::{open_state_db, StateDbHandle};
 use crate::cache_lib::target_registry::RegistryError;
@@ -66,6 +68,11 @@ pub struct CookEntry {
     /// Best-effort local branch name recorded at cook time. Used only
     /// to rank same-origin fallback hydration candidates.
     pub branch_name: Option<String>,
+    /// Wall time of the compile that produced this artifact. A zero value is
+    /// an old row and deliberately cannot pass the restore cost gate.
+    pub compile_duration_ms: u64,
+    /// Observed archive-save wall time for this exact cook key.
+    pub save_elapsed_ms: u64,
 }
 
 fn prost_decode_err(e: prost::DecodeError) -> RegistryError {
@@ -129,6 +136,8 @@ fn cook_entry_to_wire(entry: &CookEntry) -> proto::WireCookEntry {
         origin_url_normalized: entry.origin_url_normalized.clone(),
         cook_cmd_summary: entry.cook_cmd_summary.clone(),
         branch_name: entry.branch_name.clone(),
+        compile_duration_ms: entry.compile_duration_ms,
+        save_elapsed_ms: entry.save_elapsed_ms,
     }
 }
 
@@ -146,6 +155,8 @@ fn cook_entry_from_wire(wire: proto::WireCookEntry) -> Result<CookEntry, WireDec
         origin_url_normalized: wire.origin_url_normalized,
         cook_cmd_summary: wire.cook_cmd_summary,
         branch_name: wire.branch_name,
+        compile_duration_ms: wire.compile_duration_ms,
+        save_elapsed_ms: wire.save_elapsed_ms,
     })
 }
 
@@ -443,6 +454,8 @@ mod tests {
             origin_url_normalized: origin.map(str::to_owned),
             cook_cmd_summary: "cook --release".into(),
             branch_name: None,
+            compile_duration_ms: 60_000,
+            save_elapsed_ms: 5_000,
         }
     }
 

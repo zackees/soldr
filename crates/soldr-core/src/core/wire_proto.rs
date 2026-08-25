@@ -202,6 +202,10 @@ pub struct WireCookRecord {
     pub cook_cmd_summary: String,
     #[prost(string, optional, tag = "10")]
     pub branch_name: Option<String>,
+    #[prost(uint64, tag = "11")]
+    pub compile_duration_ms: u64,
+    #[prost(uint64, tag = "12")]
+    pub save_elapsed_ms: u64,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -505,6 +509,10 @@ pub struct WireCookHit {
     pub exact_recipe_match: bool,
     #[prost(string, optional, tag = "7")]
     pub branch_name: Option<String>,
+    #[prost(uint64, tag = "8")]
+    pub compile_duration_ms: u64,
+    #[prost(uint64, tag = "9")]
+    pub save_elapsed_ms: u64,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -701,4 +709,8 @@ pub struct WireCookEntry {
     pub cook_cmd_summary: String,
     #[prost(string, optional, tag = "7")]
     pub branch_name: Option<String>,
+    #[prost(uint64, tag = "8")]
+    pub compile_duration_ms: u64,
+    #[prost(uint64, tag = "9")]
+    pub save_elapsed_ms: u64,
 }

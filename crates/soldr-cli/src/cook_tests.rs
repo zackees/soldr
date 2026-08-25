@@ -577,7 +577,7 @@ fn index_cooked_artifact_skips_archive_pack_when_daemon_unavailable() {
     };
     let mut packer_called = false;
 
-    index_cooked_artifact_with_packer(&ctx, &args, &paths, |_, _| {
+    index_cooked_artifact_with_packer(&ctx, &args, &paths, 1, |_, _| {
         packer_called = true;
         panic!("packer must not run when CookLookup cannot reach the daemon")
     })
@@ -852,4 +852,20 @@ fn the_uncookable_skip_code_is_not_success() {
         COOK_SKIPPED_UNCOOKABLE_WORKSPACE, 0,
         "a skip reported as success makes setup-soldr save an empty cache layer"
     );
+}
+
+#[test]
+fn indexed_success_line_reports_raw_bytes_elapsed_and_decision() {
+    let packed = PackedCookArchive {
+        path: PathBuf::from("artifact.tar.zst"),
+        sha256: [0xAB; 32],
+        size_bytes: 1_234_567,
+    };
+
+    let line = format_indexed_line(&packed, Some("origin"), 60_000, 5_000);
+
+    assert!(line.contains("size_bytes=1234567"));
+    assert!(line.contains("elapsed_ms=5000"));
+    assert!(line.contains("compile_elapsed_ms=60000"));
+    assert!(line.contains("decision=save"));
 }

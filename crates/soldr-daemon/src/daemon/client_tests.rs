@@ -4,6 +4,14 @@
 use super::*;
 
 #[test]
+fn shutdown_compat_starts_with_the_immediately_previous_protocol() {
+    assert_eq!(
+        SHUTDOWN_COMPAT_PROTOCOL_VERSIONS.first().copied(),
+        Some(crate::daemon::protocol::PROTOCOL_VERSION - 1)
+    );
+}
+
+#[test]
 fn reply_timeout_defaults_to_30_min() {
     // Unset / empty / non-numeric / zero all fall back to the generous
     // default so a legitimate slow release compile is never cut off.

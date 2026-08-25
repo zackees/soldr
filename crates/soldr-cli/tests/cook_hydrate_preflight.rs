@@ -27,7 +27,7 @@ use soldr_cli::cache_lib::cook_archive::{
 };
 use soldr_cli::core::{probe_toolchain_binary, TargetTriple};
 use soldr_cli::daemon::client::{
-    self, cook_lookup, cook_record, cook_record_with_branch, CookLookupOutcome,
+    self, cook_lookup, cook_record, cook_record_with_branch_timing, CookLookupOutcome,
 };
 
 mod common;
@@ -505,7 +505,7 @@ marker = "main"
     );
     let packed = pack_cook_archive(&debug_dir, &cook_dir).expect("pack main artifact");
 
-    cook_record_with_branch(
+    cook_record_with_branch_timing(
         &sock,
         main_recipe,
         target_triple,
@@ -517,6 +517,8 @@ marker = "main"
         Some(origin.to_string()),
         Some("main".to_string()),
         "synthetic main cook".to_string(),
+        60_000,
+        5_000,
     )
     .expect("record main cook artifact");
 
@@ -573,6 +575,14 @@ marker = "feature"
     assert!(
         stderr.contains("soldr cook: auto-hydrate activated"),
         "expected auto-hydrate line\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!("size_bytes={}", packed.size_bytes)),
+        "expected raw archive bytes in hydrate line\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("decision=restore"),
+        "expected restore decision in hydrate line\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
         stderr.contains("match=fallback"),

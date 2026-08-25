@@ -80,9 +80,9 @@ const REPLY_TIMEOUT: Duration = Duration::from_millis(2_000);
 /// longer than the generic status/shutdown request timeout.
 const CACHE_FLUSH_REPLY_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// Historical protocols that must remain able to retire their daemon during
-/// an in-place upgrade. v21 is the immediately preceding released daemon;
+/// an in-place upgrade. v22 is the immediately preceding released daemon;
 /// v17 is the last protocol whose shutdown acknowledgement lacked identity.
-const SHUTDOWN_COMPAT_PROTOCOL_VERSIONS: &[u32] = &[21, 17];
+const SHUTDOWN_COMPAT_PROTOCOL_VERSIONS: &[u32] = &[22, 17];
 
 /// Default compile-dispatch timeout — rustc may take minutes for a release
 /// build of a large crate, so the default stays generous (30 minutes): a
@@ -641,6 +641,8 @@ pub fn cook_lookup_with_branch_lineage(
             matched_recipe_hash,
             exact_recipe_match,
             branch_name,
+            compile_duration_ms,
+            save_elapsed_ms,
         } => Ok(CookLookupOutcome::Hit {
             sha256,
             path,
@@ -649,6 +651,8 @@ pub fn cook_lookup_with_branch_lineage(
             matched_recipe_hash,
             exact_recipe_match,
             branch_name,
+            compile_duration_ms,
+            save_elapsed_ms,
         }),
         Response::CookMiss {
             previous_origin_recipe_hashes,
@@ -673,6 +677,8 @@ pub enum CookLookupOutcome {
         matched_recipe_hash: Option<[u8; 32]>,
         exact_recipe_match: bool,
         branch_name: Option<String>,
+        compile_duration_ms: u64,
+        save_elapsed_ms: u64,
     },
     Miss {
         previous_origin_recipe_hashes: Vec<[u8; 32]>,
@@ -726,6 +732,42 @@ pub fn cook_record_with_branch(
     branch_name: Option<String>,
     cook_cmd_summary: String,
 ) -> Result<(), ClientError> {
+    cook_record_with_branch_timing(
+        sock_path,
+        recipe_hash,
+        target_triple,
+        profile,
+        channel,
+        rustc_version,
+        sha256,
+        size_bytes,
+        origin_url_normalized,
+        branch_name,
+        cook_cmd_summary,
+        0,
+        0,
+    )
+}
+
+/// Register a cook artifact with the wall-time observations used by the
+/// restore cost gate. The compatibility wrapper above intentionally leaves
+/// these at zero for old callers, which makes hydration skip conservatively.
+#[allow(clippy::too_many_arguments)]
+pub fn cook_record_with_branch_timing(
+    sock_path: &Path,
+    recipe_hash: [u8; 32],
+    target_triple: String,
+    profile: String,
+    channel: String,
+    rustc_version: String,
+    sha256: [u8; 32],
+    size_bytes: u64,
+    origin_url_normalized: Option<String>,
+    branch_name: Option<String>,
+    cook_cmd_summary: String,
+    compile_duration_ms: u64,
+    save_elapsed_ms: u64,
+) -> Result<(), ClientError> {
     let req = Request::CookRecord {
         recipe_hash,
         target_triple,
@@ -737,6 +779,8 @@ pub fn cook_record_with_branch(
         origin_url_normalized,
         branch_name,
         cook_cmd_summary,
+        compile_duration_ms,
+        save_elapsed_ms,
     };
     match submit_request(sock_path, &req)? {
         Response::Ack => Ok(()),
