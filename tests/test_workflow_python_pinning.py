@@ -75,13 +75,9 @@ RATCHET = frozenset(
         ("ci.yml", "wheel-cross-policy"),
         ("cross-compile-all-targets.yml", "bootstrap-and-linux-x86"),
         ("cross-compile-all-targets.yml", "cross-compile"),
-        ("cross-compile-stress.yml", "cross-build"),
-        ("cross-compile-stress.yml", "resolve-matrix"),
-        ("cross-compile-stress.yml", "summarize"),
         ("docker-linux-cross-smoke.yml", "smoke"),
         ("perf-matrix.yml", "gate"),
         ("setup-soldr-action.yml", "smoke"),
-        ("vcpkg-windows-refresh.yml", "resolve-matrix"),
     }
 )
 
