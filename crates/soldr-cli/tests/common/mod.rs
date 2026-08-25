@@ -191,11 +191,15 @@ pub(crate) fn materialize_executable(source: &Path, destination: &Path) -> std::
     // Unix rename replaces atomically, which is the guarantee this helper
     // exists to provide. Windows cannot rename over an existing destination;
     // ETXTBSY is Unix-specific, so remove first on that platform.
-    #[cfg(windows)]
-    if let Err(error) = std::fs::remove_file(destination) {
-        if error.kind() != std::io::ErrorKind::NotFound {
-            let _ = std::fs::remove_file(&pending);
-            return Err(error);
+    if matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        if let Err(error) = std::fs::remove_file(destination) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                let _ = std::fs::remove_file(&pending);
+                return Err(error);
+            }
         }
     }
     if let Err(error) = std::fs::rename(&pending, destination) {
@@ -214,8 +218,10 @@ pub(crate) fn retry_linux_etxtbsy<T>(
     loop {
         match operation() {
             Err(error)
-                if cfg!(target_os = "linux")
-                    && error.raw_os_error() == Some(26)
+                if matches!(
+                    soldr_platform::host::facts::os(),
+                    soldr_platform::host::facts::HostOs::Linux
+                ) && error.raw_os_error() == Some(26)
                     && std::time::Instant::now() < deadline =>
             {
                 std::thread::sleep(std::time::Duration::from_millis(10));
