@@ -9,6 +9,7 @@ import tarfile
 import urllib.error
 import zipfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 from conftest import load_script_module
@@ -252,7 +253,7 @@ class TestStaging:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        asset = {
+        asset: dict[str, Any] = {
             "filename": "crgx.zip",
             "sha256": "0" * 64,
             "size_bytes": 1,
