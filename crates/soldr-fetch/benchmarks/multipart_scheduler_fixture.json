@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "description": "Deterministic scheduler model: two assets, 32 parts each, one-tick parts, round-robin admission, and global Bulk cap 16. The congestion lane injects one 429 after the first adaptive completion.",
+  "assets": [
+    { "name": "alpha", "parts": 32, "latency_ticks": 1 },
+    { "name": "beta", "parts": 32, "latency_ticks": 1 }
+  ],
+  "bulk_cap": 16,
+  "windows": [1, 4, 16, "adaptive"]
+}

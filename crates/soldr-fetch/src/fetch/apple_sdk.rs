@@ -312,14 +312,21 @@ async fn fetch_managed_sdk(
     }
 
     let url = asset_url_for(&selection.version, selection.shape);
-    let entry = catalogue_entry_for_url(&url).await.ok_or_else(|| {
-        SoldrError::Other(format!(
-            "Apple SDK {}/{} not found in the soldr-toolchain catalogue. Expected URL: {url}",
-            selection.version,
-            selection.shape.catalogue_slug()
-        ))
-    })?;
-    let expected_sha256 = entry.sha256.clone();
+    let source_path = format!(
+        "apple-sdk/{}/{}/{}",
+        catalogue_version_segment(&selection.version),
+        selection.shape.catalogue_slug(),
+        sdk_archive_name(&selection.version)
+    );
+    let entry = catalogue_entry_for_source_path(&source_path)
+        .await
+        .ok_or_else(|| {
+            SoldrError::Other(format!(
+                "Apple SDK {}/{} not found in the soldr-toolchain catalogue. Expected URL: {url}",
+                selection.version,
+                selection.shape.catalogue_slug()
+            ))
+        })?;
     let resolved_url = manifest_lookup::resolved_download_label(&entry);
 
     eprintln!(
@@ -328,36 +335,8 @@ async fn fetch_managed_sdk(
         selection.shape.catalogue_slug()
     );
 
-    // soldr#2132: retry the download. This is the last fetcher doing its own
-    // unprotected network I/O -- the eight modules that go through
-    // `syslib_common::ensure_syslib_bundle` inherited retry from that one
-    // wrapper, and this one only borrows its install lock. It is also a large
-    // body on the darwin cross-build path, which is the shape that failed two
-    // lanes of the v0.8.30 release.
-    //
-    // The sha256 comparison stays OUTSIDE the closure deliberately: a digest
-    // mismatch is `SoldrError::Other`, which `is_transient` does not match, but
-    // keeping it outside means a corrupt-but-stable blob cannot be re-fetched
-    // three more times in the hope of a different answer.
-    let downloaded = super::retry::with_asset_backoff(
-        &format!(
-            "Apple SDK {}/{}",
-            selection.version,
-            selection.shape.catalogue_slug()
-        ),
-        || manifest_lookup::download_manifest_entry(&entry),
-    )
-    .await?;
-
+    let downloaded = manifest_lookup::materialize_catalogue_entry(&entry).await?;
     let digest = downloaded.sha256();
-    if digest != expected_sha256 {
-        return Err(SoldrError::Other(format!(
-            "Apple SDK sha256 mismatch for {}/{}: expected {expected_sha256}, got {digest} \
-             (catalogue blob may have been replaced - refusing to extract)",
-            selection.version,
-            selection.shape.catalogue_slug()
-        )));
-    }
     eprintln!(
         "soldr: trust: verified Apple SDK {}/{} sha256={digest}",
         selection.version,
@@ -419,12 +398,14 @@ async fn fetch_managed_sdk(
     Ok(sdk_dir)
 }
 
-async fn catalogue_entry_for_url(url: &str) -> Option<manifest_lookup::ManifestEntry> {
+async fn catalogue_entry_for_source_path(
+    source_path: &str,
+) -> Option<manifest_lookup::ManifestEntry> {
     let index = manifest_lookup::get_or_fetch().await;
     index
         .entries
         .iter()
-        .find(|e| e.transport.direct_url() == Some(url))
+        .find(|e| e.source_path.as_deref() == Some(source_path))
         .cloned()
 }
 

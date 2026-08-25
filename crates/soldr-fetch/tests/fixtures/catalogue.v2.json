@@ -20,6 +20,7 @@
       "repo": "soldr-toolchain",
       "tag": "canary",
       "asset": "multipart.bin",
+      "source_path": "fixture/canary/multipart.bin",
       "size_bytes": 6,
       "sha256": "bef57ec7f53a6d40beb640a780a639c83bc29ac8a9816f1fc6c5c6dcd93c4721",
       "min_client_version": 2,

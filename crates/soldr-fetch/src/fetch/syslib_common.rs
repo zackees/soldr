@@ -93,7 +93,8 @@ pub async fn ensure_syslib_bundle(
     // Resolve sha256 from the toolchain catalogue. The catalogue is
     // process-cached; the first call inside soldr's run fetches the
     // document, subsequent ones hit the OnceLock.
-    let entry = match catalogue_entry_for_url(&url).await {
+    let source_path = format!("{lib}/{version}/{slug}/bundle.tar.zst");
+    let entry = match catalogue_entry_for_source_path(&source_path).await {
         Some(entry) => entry,
         None => {
             // soldr#2132 item 4: two very different causes used to produce the
@@ -109,30 +110,14 @@ pub async fn ensure_syslib_bundle(
             )));
         }
     };
-    let expected_sha256 = entry.sha256.clone();
     let resolved_url = manifest_lookup::resolved_download_label(&entry);
 
     if !crate::core::quiet::diagnostics_suppressed() {
         eprintln!("soldr: fetching syslib {lib}/{version}/{slug} from {resolved_url}...");
     }
 
-    // soldr#2132: retry the download itself. A truncated body here surfaced as
-    // `managed cmake unavailable ... network error: error decoding response
-    // body` and then, a hundred log lines later, as `can't find crate for
-    // std` -- an error naming the wrong thing entirely.
-    let downloaded =
-        super::retry::with_asset_backoff(&format!("syslib {lib}/{version}/{slug}"), || {
-            manifest_lookup::download_manifest_entry(&entry)
-        })
-        .await?;
-
+    let downloaded = manifest_lookup::materialize_catalogue_entry(&entry).await?;
     let digest = downloaded.sha256();
-    if digest != expected_sha256 {
-        return Err(SoldrError::Other(format!(
-            "syslib bundle sha256 mismatch for {lib}/{version}/{slug}: \
-             expected {expected_sha256}, got {digest}"
-        )));
-    }
     if !crate::core::quiet::diagnostics_suppressed() {
         eprintln!("soldr: trust: verified syslib {lib}/{version}/{slug} sha256={digest}");
     }
@@ -190,12 +175,14 @@ pub(crate) fn acquire_install_lock(
 /// so we filter by URL substring instead. Returns `None` when the
 /// catalogue is empty (network failure / disabled) or the URL hasn't
 /// been ingested yet.
-async fn catalogue_entry_for_url(url: &str) -> Option<manifest_lookup::ManifestEntry> {
+async fn catalogue_entry_for_source_path(
+    source_path: &str,
+) -> Option<manifest_lookup::ManifestEntry> {
     let index = manifest_lookup::get_or_fetch().await;
     index
         .entries
         .iter()
-        .find(|e| e.transport.direct_url() == Some(url))
+        .find(|e| e.source_path.as_deref() == Some(source_path))
         .cloned()
 }
 

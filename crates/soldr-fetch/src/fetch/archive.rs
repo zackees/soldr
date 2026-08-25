@@ -2,6 +2,8 @@
 //!
 //! Extracted from `fetch/mod.rs` during the >1k-LOC refactor.
 
+use sha2::Digest;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::core::{SoldrError, SoldrPaths, TargetTriple};
@@ -51,11 +53,76 @@ pub(super) async fn download_and_extract_with_pin(
     binary_names: &[&str],
     manifest_pin: Option<(&str, &str)>,
 ) -> Result<PathBuf, SoldrError> {
-    let client = asset_http_client("release asset download")?;
+    download_and_extract_with_pin_inner(
+        paths,
+        cache_name,
+        version,
+        url,
+        target,
+        binary_names,
+        manifest_pin,
+        None,
+    )
+    .await
+}
 
-    let resp = send_asset_request(get_request(&client, url), url, ASSET_HEADER_TIMEOUT).await?;
+/// Extract an already verified catalogue object.  Keeping extraction here
+/// ensures direct and multipart transports share the exact same archive and
+/// trust path; only transport materialization differs.
+pub(super) async fn extract_catalogue_asset_with_pin(
+    paths: &SoldrPaths,
+    cache_name: &str,
+    version: &str,
+    asset_name: &str,
+    source: &Path,
+    target: &TargetTriple,
+    binary_names: &[&str],
+    manifest_pin: (&str, &str),
+) -> Result<PathBuf, SoldrError> {
+    download_and_extract_with_pin_inner(
+        paths,
+        cache_name,
+        version,
+        asset_name,
+        target,
+        binary_names,
+        Some(manifest_pin),
+        Some(source),
+    )
+    .await
+}
 
-    let downloaded = stream_response_to_temp_file(resp, url, ASSET_IDLE_TIMEOUT).await?;
+async fn download_and_extract_with_pin_inner(
+    paths: &SoldrPaths,
+    cache_name: &str,
+    version: &str,
+    url: &str,
+    target: &TargetTriple,
+    binary_names: &[&str],
+    manifest_pin: Option<(&str, &str)>,
+    source: Option<&Path>,
+) -> Result<PathBuf, SoldrError> {
+    let downloaded = match source {
+        Some(source) => {
+            let mut file = tempfile::NamedTempFile::new_in(soldr_core::core::ensure_temp_root())?;
+            let mut input = std::fs::File::open(source)?;
+            let mut hasher = sha2::Sha256::new();
+            let bytes = copy_and_hash(&mut input, &mut file, &mut hasher)?;
+            file.flush()?;
+            let digest = hex::encode(hasher.finalize());
+            super::stream_download::DownloadedAsset {
+                file,
+                sha256: digest,
+                bytes,
+            }
+        }
+        None => {
+            let client = asset_http_client("release asset download")?;
+            let resp =
+                send_asset_request(get_request(&client, url), url, ASSET_HEADER_TIMEOUT).await?;
+            stream_response_to_temp_file(resp, url, ASSET_IDLE_TIMEOUT).await?
+        }
+    };
 
     finish_download_and_extract(
         paths,
@@ -154,24 +221,28 @@ fn finish_download_and_extract(
 
     let tool_dir = paths.bin.join(format!("{cache_name}-{version}"));
     let desired_binaries = desired_binary_names(binary_names, target);
-    std::fs::create_dir_all(&tool_dir)?;
+    std::fs::create_dir_all(&paths.bin)?;
+    let staging = tempfile::Builder::new()
+        .prefix(&format!(".{cache_name}-{version}.staging-"))
+        .tempdir_in(&paths.bin)?;
+    let staging_dir = staging.path();
 
     let main_binary_name = desired_binaries
         .first()
         .cloned()
         .ok_or_else(|| SoldrError::Other(format!("no binary names configured for {cache_name}")))?;
-    let binary_path = tool_dir.join(&main_binary_name);
+    let staged_binary_path = staging_dir.join(&main_binary_name);
 
     if url.ends_with(".zip") {
         extract_zip(
             std::fs::File::open(downloaded.path())?,
-            &tool_dir,
+            staging_dir,
             &desired_binaries,
         )?;
     } else if url.ends_with(".tar.gz") || url.ends_with(".tgz") {
         extract_tar_gz(
             std::fs::File::open(downloaded.path())?,
-            &tool_dir,
+            staging_dir,
             &desired_binaries,
         )?;
     } else if url.ends_with(".tar.xz") || url.ends_with(".txz") {
@@ -182,7 +253,7 @@ fn finish_download_and_extract(
         // syntax error described in #809.
         extract_tar_xz(
             std::fs::File::open(downloaded.path())?,
-            &tool_dir,
+            staging_dir,
             &desired_binaries,
         )?;
     } else {
@@ -192,16 +263,67 @@ fn finish_download_and_extract(
                 "cannot extract multiple binaries from raw asset for {cache_name}"
             )));
         }
-        std::fs::copy(downloaded.path(), &binary_path)?;
+        std::fs::copy(downloaded.path(), &staged_binary_path)?;
     }
 
     // Make executable (no-op where the filesystem has no exec bits).
     for binary_name in &desired_binaries {
-        let binary_path = tool_dir.join(binary_name);
+        let binary_path = staging_dir.join(binary_name);
+        if !binary_path.is_file() {
+            return Err(SoldrError::Archive(format!(
+                "archive for {cache_name} did not produce required binary {binary_name}"
+            )));
+        }
         crate::platform::fs::permissions::make_executable(&binary_path)?;
     }
 
-    Ok(binary_path)
+    promote_staged_tool_dir(staging_dir, &tool_dir)?;
+    Ok(tool_dir.join(main_binary_name))
+}
+
+/// Promote a completely verified sibling directory while preserving an
+/// existing installation if the final rename fails. Callers hold the normal
+/// per-tool install lock; no partial extraction ever uses the canonical name.
+fn promote_staged_tool_dir(staging: &Path, destination: &Path) -> Result<(), SoldrError> {
+    let parent = destination
+        .parent()
+        .ok_or_else(|| SoldrError::Archive("tool install path has no parent".into()))?;
+    if !destination.exists() {
+        std::fs::rename(staging, destination)?;
+        return Ok(());
+    }
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let backup = parent.join(format!(".previous-{}-{nonce}", std::process::id()));
+    std::fs::rename(destination, &backup)?;
+    if let Err(error) = std::fs::rename(staging, destination) {
+        let _ = std::fs::rename(&backup, destination);
+        return Err(error.into());
+    }
+    let _ = std::fs::remove_dir_all(backup);
+    Ok(())
+}
+
+fn copy_and_hash<W: Write>(
+    input: &mut std::fs::File,
+    output: &mut W,
+    hasher: &mut sha2::Sha256,
+) -> Result<u64, SoldrError> {
+    use std::io::Read;
+    let mut total = 0u64;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let count = input.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        output.write_all(&buffer[..count])?;
+        hasher.update(&buffer[..count]);
+        total = total.saturating_add(count as u64);
+    }
+    Ok(total)
 }
 
 pub(crate) fn desired_binary_names(binary_names: &[&str], target: &TargetTriple) -> Vec<String> {
@@ -402,5 +524,32 @@ mod tests {
                 "tar.xz dispatch suffix coverage missed {url}",
             );
         }
+    }
+
+    #[test]
+    fn staged_tool_promotion_replaces_only_complete_directory() {
+        let parent = tempfile::tempdir().expect("tempdir");
+        let destination = parent.path().join("tool-1");
+        let staging = parent.path().join("staging");
+        std::fs::create_dir_all(&destination).unwrap();
+        std::fs::write(destination.join("tool"), b"old").unwrap();
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(staging.join("tool"), b"new").unwrap();
+
+        promote_staged_tool_dir(&staging, &destination).expect("promote");
+        assert_eq!(std::fs::read(destination.join("tool")).unwrap(), b"new");
+        assert!(!staging.exists());
+    }
+
+    #[test]
+    fn failed_stage_promotion_restores_existing_installation() {
+        let parent = tempfile::tempdir().expect("tempdir");
+        let destination = parent.path().join("tool-1");
+        std::fs::create_dir_all(&destination).unwrap();
+        std::fs::write(destination.join("tool"), b"old").unwrap();
+        let absent_staging = parent.path().join("absent-staging");
+
+        assert!(promote_staged_tool_dir(&absent_staging, &destination).is_err());
+        assert_eq!(std::fs::read(destination.join("tool")).unwrap(), b"old");
     }
 }

@@ -211,6 +211,14 @@ pub(crate) fn bulk_pool() -> Arc<SocketPool> {
     }))
 }
 
+/// The admission ceiling used by the catalogue multipart coordinator.  It is
+/// intentionally the same parsed setting as the Bulk socket pool; the
+/// coordinator supplies fair *start order*, while `SocketPool` remains the
+/// authority that owns and releases actual socket permits.
+pub(crate) fn bulk_pool_capacity() -> Option<usize> {
+    parse_max_sockets()
+}
+
 /// The process-wide Quick pool for control-plane requests and small
 /// downloads. See module docs "Two connection pools" and "Three
 /// switches" (`0` == unconditional).
@@ -553,6 +561,7 @@ pub(crate) async fn try_segmented_download(
     config: SegmentedDownloadConfig,
     pool: Arc<SocketPool>,
 ) -> Result<DownloadedAsset, SegmentedFailure> {
+    let safe_url = super::stream_download::safe_asset_url(url);
     // Protocol inheritance -- see module docs "Protocol inheritance".
     let protocol = if response.version() >= reqwest::Version::HTTP_2 {
         AssetProtocol::Negotiated
@@ -607,7 +616,7 @@ pub(crate) async fn try_segmented_download(
                     } else {
                         Err(SegmentedFailure::Timeout(format!(
                             "asset download exceeded {GLOBAL_TIMEOUT_ENV_VAR}={gt:?} with no \
-                             meaningful budget left to fall back to single-stream: {url}"
+                             meaningful budget left to fall back to single-stream: {safe_url}"
                         )))
                     };
                 }
@@ -817,6 +826,18 @@ async fn fetch_segment_once(
         );
     }
 
+    // A 206 alone is not enough evidence that this is the tail we asked
+    // for.  In particular, after a stalled first attempt `start` may be in
+    // the middle of a segment.  Accepting a stale `Content-Range` then would
+    // overwrite the already verified prefix at the wrong file offset.  Treat
+    // every absent, malformed, shifted, or differently-sized range as a
+    // protocol failure; the enclosing segmented attempt abandons its whole
+    // temporary file and drains the original full response instead.
+    let cap = end_inclusive.saturating_sub(start) + 1;
+    if let Err(reason) = validate_content_range(&resp, start, end_inclusive, cap) {
+        return SegmentAttemptOutcome::Failed(0, reason);
+    }
+
     // First payload byte is imminent: PENDING -> STREAMING, permanently
     // non-preemptible from here (module docs "Permit preemption").
     permit.mark_streaming();
@@ -826,7 +847,6 @@ async fn fetch_segment_once(
     // misbehaving server can never spill bytes into a neighbouring
     // segment's region. `start <= end_inclusive` always holds (resume
     // never advances past the segment end), so `cap >= 1`.
-    let cap = end_inclusive.saturating_sub(start) + 1;
     let mut offset = start;
     let mut written = 0u64;
     loop {
@@ -860,6 +880,49 @@ async fn fetch_segment_once(
     // `permit` drops here on every path (RAII) -- this is the permit-leak
     // guarantee for stall-watchdog kills, preemption, and normal returns
     // alike.
+}
+
+fn validate_content_range(
+    response: &reqwest::Response,
+    expected_start: u64,
+    expected_end: u64,
+    expected_len: u64,
+) -> Result<(), String> {
+    let raw = response
+        .headers()
+        .get(reqwest::header::CONTENT_RANGE)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| "206 response missing or malformed Content-Range".to_string())?;
+    let raw = raw
+        .strip_prefix("bytes ")
+        .ok_or_else(|| format!("invalid Content-Range {raw:?}"))?;
+    let (range, total) = raw
+        .split_once('/')
+        .ok_or_else(|| format!("invalid Content-Range {raw:?}"))?;
+    let (start, end) = range
+        .split_once('-')
+        .ok_or_else(|| format!("invalid Content-Range {raw:?}"))?;
+    let start = start
+        .parse::<u64>()
+        .map_err(|_| format!("invalid Content-Range {raw:?}"))?;
+    let end = end
+        .parse::<u64>()
+        .map_err(|_| format!("invalid Content-Range {raw:?}"))?;
+    let total = total
+        .parse::<u64>()
+        .map_err(|_| format!("invalid Content-Range {raw:?}"))?;
+    if start != expected_start || end != expected_end || total <= end {
+        return Err(format!(
+            "Content-Range bytes {start}-{end}/{total} does not match requested bytes {expected_start}-{expected_end}"
+        ));
+    }
+    if response.content_length() != Some(expected_len) {
+        return Err(format!(
+            "Content-Length {:?} does not match requested range length {expected_len}",
+            response.content_length()
+        ));
+    }
+    Ok(())
 }
 
 fn sha256_of_file(file: &std::fs::File) -> std::io::Result<String> {

@@ -71,15 +71,16 @@ pub(super) async fn try_binary(
     );
     let download_started_at_ms = current_unix_ms();
     let download_started = std::time::Instant::now();
-    let binary_path = archive::download_and_extract_catalogue_entry(
+    let downloaded = manifest_lookup::materialize_catalogue_entry(entry).await?;
+    let binary_path = archive::extract_catalogue_asset_with_pin(
         paths,
         cache_name,
         bare_version,
-        entry.transport.direct_url().ok_or_else(|| {
-            SoldrError::Other("multipart catalogue assets require Phase 2 materialization".into())
-        })?,
+        &entry.asset,
+        downloaded.path(),
         target,
         binary_names,
+        (&entry.asset, &entry.sha256),
     )
     .await?;
     if cache_name != "dylint-driver" {

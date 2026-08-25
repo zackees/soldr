@@ -399,6 +399,93 @@ pub(crate) async fn stream_response_to_temp_file(
     .await
 }
 
+/// Drain one already-logical catalogue part.  Catalogue parts are immutable
+/// content-addressed objects, not byte ranges of an asset, so segmenting them
+/// again creates nested Range fanout.  Keep this separate from the legacy
+/// archive path: direct release downloads retain their Range behaviour.
+pub(crate) async fn stream_catalogue_part_to_temp_file(
+    response: reqwest::Response,
+    url: &str,
+    idle_timeout: Duration,
+) -> Result<DownloadedAsset, SoldrError> {
+    let safe_url = safe_asset_url(url);
+    if !response.status().is_success() {
+        let retry_after = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| format!(" Retry-After: {value}"))
+            .unwrap_or_default();
+        return Err(SoldrError::Network(format!(
+            "catalogue part download {safe_url} failed: HTTP {}{retry_after}",
+            response.status(),
+        )));
+    }
+    stream_response_to_temp_file_inner_direct(
+        response,
+        &safe_url,
+        idle_timeout,
+        ASSET_SAFETY_TIMEOUT,
+        bulk_pool(),
+    )
+    .await
+}
+
+/// Drain exactly one catalogue-part response into a caller-owned unverified
+/// file.  This is deliberately a single-stream primitive: multipart retry
+/// code may append one validated Range tail, but must never re-enter the
+/// segmented asset downloader.  On an interrupted read the bytes already
+/// written remain in `file`; callers decide whether their validated resume
+/// state permits keeping or deleting that prefix.
+pub(crate) async fn stream_catalogue_part_into_file(
+    mut response: reqwest::Response,
+    url: &str,
+    file: &mut std::fs::File,
+) -> Result<u64, SoldrError> {
+    let safe_url = safe_asset_url(url);
+    if !response.status().is_success() {
+        let retry_after = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .map(|seconds| format!(" Retry-After: {seconds}"))
+            .unwrap_or_default();
+        return Err(SoldrError::Network(format!(
+            "catalogue part download {safe_url} failed: HTTP {}{retry_after}",
+            response.status(),
+        )));
+    }
+    let mut permit = bulk_pool().acquire().await;
+    permit.mark_streaming();
+    let started = tokio::time::Instant::now();
+    let mut written = 0u64;
+    loop {
+        let remaining = ASSET_SAFETY_TIMEOUT.saturating_sub(started.elapsed());
+        let wait = ASSET_IDLE_TIMEOUT.min(remaining);
+        let chunk = tokio::time::timeout(wait, response.chunk())
+            .await
+            .map_err(|_| stalled_download_error(&safe_url, written, ASSET_IDLE_TIMEOUT))?
+            .map_err(|error| interrupted_download_error(&safe_url, written, error))?;
+        let Some(chunk) = chunk else { break };
+        file.write_all(&chunk)?;
+        written = written.saturating_add(chunk.len() as u64);
+    }
+    file.flush()?;
+    Ok(written)
+}
+
+pub(crate) fn safe_asset_url(raw: &str) -> String {
+    let Ok(mut url) = url::Url::parse(raw) else {
+        return "[invalid asset URL]".into();
+    };
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.set_query(None);
+    url.set_fragment(None);
+    url.to_string()
+}
+
 /// Stream an archive response to a temporary file, incrementally hashing every
 /// chunk while enforcing independent idle-progress and total-safety deadlines.
 ///
@@ -494,7 +581,7 @@ impl StreamPolicy {
 }
 
 async fn stream_response_to_temp_file_inner(
-    mut response: reqwest::Response,
+    response: reqwest::Response,
     url: &str,
     idle_timeout: Duration,
     safety_timeout: Duration,
@@ -502,13 +589,10 @@ async fn stream_response_to_temp_file_inner(
     quick: Arc<SocketPool>,
     policy: StreamPolicy,
 ) -> Result<DownloadedAsset, SoldrError> {
-    let StreamPolicy {
-        allow_segmentation,
-        expected_bytes,
-    } = policy;
+    let safe_url = safe_asset_url(url);
     if !response.status().is_success() {
         return Err(SoldrError::Network(format!(
-            "asset download {url} failed: HTTP {}",
+            "asset download {safe_url} failed: HTTP {}",
             response.status()
         )));
     }
@@ -532,7 +616,7 @@ async fn stream_response_to_temp_file_inner(
                     safety_timeout_override,
                 }) => {
                     eprintln!(
-                        "soldr: segmented download for {url} fell back to single-stream: {reason}"
+                        "soldr: segmented download for {safe_url} fell back to single-stream: {reason}"
                     );
                     if let Some(bound) = safety_timeout_override {
                         effective_safety_timeout = effective_safety_timeout.min(bound);
@@ -557,6 +641,26 @@ async fn stream_response_to_temp_file_inner(
         Some(total) if total <= threshold => quick,
         _ => bulk,
     };
+    stream_response_to_temp_file_inner_direct(
+        response,
+        &safe_url,
+        idle_timeout,
+        safety_timeout,
+        pool,
+    )
+    .await
+}
+
+/// The common single-request drain.  Kept below the segmented decision so a
+/// catalogue part can opt into exactly this code without ever creating a
+/// nested Range request.
+async fn stream_response_to_temp_file_inner_direct(
+    mut response: reqwest::Response,
+    url: &str,
+    idle_timeout: Duration,
+    safety_timeout: Duration,
+    pool: Arc<SocketPool>,
+) -> Result<DownloadedAsset, SoldrError> {
     let mut permit = pool.acquire().await;
     permit.mark_streaming();
 
@@ -621,14 +725,15 @@ pub(crate) async fn send_asset_request(
     url: &str,
     header_timeout: Duration,
 ) -> Result<reqwest::Response, SoldrError> {
+    let safe_url = safe_asset_url(url);
     tokio::time::timeout(header_timeout, request.send())
         .await
         .map_err(|_| {
             SoldrError::Network(format!(
-                "asset request timed out waiting for headers: {url}"
+                "asset request timed out waiting for headers: {safe_url}"
             ))
         })?
-        .map_err(|error| SoldrError::Network(error.to_string()))
+        .map_err(|error| request_failure("asset", &safe_url, &error))
 }
 
 /// Send a small metadata/API request with the control-plane header deadline.
@@ -669,6 +774,7 @@ async fn send_control_request_with_pool_inner(
     header_timeout: Duration,
     pool: Arc<SocketPool>,
 ) -> Result<reqwest::Response, SoldrError> {
+    let safe_url = safe_asset_url(url);
     // Quick permits skip PENDING/preemption entirely -- see module docs.
     let mut permit = pool.acquire().await;
     permit.mark_streaming();
@@ -676,10 +782,10 @@ async fn send_control_request_with_pool_inner(
         .await
         .map_err(|_| {
             SoldrError::Network(format!(
-                "control request timed out waiting for headers: {url}"
+                "control request timed out waiting for headers: {safe_url}"
             ))
         })?
-        .map_err(|error| SoldrError::Network(error.to_string()))
+        .map_err(|error| request_failure("control", &safe_url, &error))
     // `permit` drops once headers are back; the (small, fast) body read
     // that follows via `read_control_text` is intentionally ungated.
 }
@@ -690,10 +796,26 @@ pub(crate) async fn read_control_text(
     url: &str,
     body_timeout: Duration,
 ) -> Result<String, SoldrError> {
+    let safe_url = safe_asset_url(url);
     tokio::time::timeout(body_timeout, response.text())
         .await
-        .map_err(|_| SoldrError::Network(format!("control response body timed out: {url}")))?
-        .map_err(|error| SoldrError::Network(error.to_string()))
+        .map_err(|_| SoldrError::Network(format!("control response body timed out: {safe_url}")))?
+        .map_err(|error| request_failure("control response body", &safe_url, &error))
+}
+
+fn request_failure(kind: &str, safe_url: &str, error: &reqwest::Error) -> SoldrError {
+    let category = if error.is_timeout() {
+        "timed out"
+    } else if error.is_connect() {
+        "connection failed"
+    } else if error.is_body() {
+        "body transfer failed"
+    } else if error.is_decode() {
+        "decode failed"
+    } else {
+        "request failed"
+    };
+    SoldrError::Network(format!("{kind} {category}: {safe_url}"))
 }
 
 fn stalled_download_error(url: &str, bytes: u64, idle_timeout: Duration) -> SoldrError {
@@ -703,8 +825,13 @@ fn stalled_download_error(url: &str, bytes: u64, idle_timeout: Duration) -> Sold
 }
 
 fn interrupted_download_error(url: &str, bytes: u64, error: reqwest::Error) -> SoldrError {
+    let category = if error.is_timeout() {
+        "timeout"
+    } else {
+        "transport error"
+    };
     SoldrError::Network(format!(
-        "asset download interrupted after {bytes} bytes: {url}: {error}"
+        "asset download interrupted after {bytes} bytes ({category}): {url}"
     ))
 }
 

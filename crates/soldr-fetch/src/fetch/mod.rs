@@ -24,7 +24,7 @@ pub mod rustup_init;
 /// soldr#2310 — GitHub ref/release resolution for `soldr install`.
 pub mod install_api;
 mod net_guard;
-mod retry;
+pub(crate) mod retry;
 pub(crate) mod segmented_download;
 /// soldr#2310 — whole-source-tree acquisition via GitHub codeload zips.
 pub mod source_zip;

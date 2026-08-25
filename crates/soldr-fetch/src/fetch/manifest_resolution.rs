@@ -53,9 +53,7 @@ async fn try_manifest_first(
     }
     let matched_entry = candidates
         .iter()
-        .find(|e| {
-            e.asset == asset.name && e.transport.direct_url() == Some(asset.download_url.as_str())
-        })
+        .find(|e| e.asset == asset.name)
         .copied()
         .ok_or_else(|| {
             SoldrError::Other(format!(
@@ -90,15 +88,16 @@ async fn try_manifest_first(
     // download.
     let download_started_at_ms = current_unix_ms();
     let download_started = std::time::Instant::now();
-    let binary_path = archive::download_and_extract_catalogue_entry(
+    let downloaded = manifest_lookup::materialize_catalogue_entry(matched_entry).await?;
+    let binary_path = archive::extract_catalogue_asset_with_pin(
         paths,
         cache_name,
         &version,
-        matched_entry.transport.direct_url().ok_or_else(|| {
-            SoldrError::Other("multipart catalogue assets require Phase 2 materialization".into())
-        })?,
+        &matched_entry.asset,
+        downloaded.path(),
         target,
         binary_names,
+        (&matched_entry.asset, &matched_entry.sha256),
     )
     .await?;
     soldr_core::build_log_meta::fetch_timing::record(
