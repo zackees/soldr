@@ -60,11 +60,15 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
+      # soldr#2763: uv must exist before the first step that uses it.
+      - name: Install uv
+        uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+
       - name: Resolve cells
         id: resolve
         shell: bash
         run: |
-          python3 .github/scripts/cross_stress_matrix.py matrix \
+          uv run --no-project --python 3.13 python .github/scripts/cross_stress_matrix.py matrix \
             --host-arch "${{ inputs.host_arch }}" \
             --include-known-gaps "${{ inputs.include_known_gaps }}" \
             --output "$GITHUB_OUTPUT"
@@ -117,11 +121,15 @@ jobs:
             --bin soldr
           echo "::endgroup::"
 
+      # soldr#2763: uv must exist before the first step that uses it.
+      - name: Install uv
+        uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+
       - name: Record result
         if: always()
         shell: bash
         run: |
-          python3 .github/scripts/cross_stress_matrix.py verify-binary \
+          uv run --no-project --python 3.13 python .github/scripts/cross_stress_matrix.py verify-binary \
             --host-os "${{ matrix.host_os }}" \
             --host-arch "${{ matrix.host_arch }}" \
             --target "${{ matrix.target }}" \
@@ -154,10 +162,14 @@ jobs:
           pattern: result-*
           merge-multiple: true
 
+      # soldr#2763: uv must exist before the first step that uses it.
+      - name: Install uv
+        uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+
       # Exits non-zero if any NON-gap cell failed — that is the regression gate.
       - name: Render grid + gate on unexpected failures
         shell: bash
         run: |
-          python3 .github/scripts/cross_stress_matrix.py summarize \
+          uv run --no-project --python 3.13 python .github/scripts/cross_stress_matrix.py summarize \
             --results-dir results \
             --output "$GITHUB_STEP_SUMMARY"

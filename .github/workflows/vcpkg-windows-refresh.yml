@@ -71,11 +71,15 @@ jobs:
       - name: Check out soldr (for the resolver script)
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
+      # soldr#2763: uv must exist before the first step that uses it.
+      - name: Install uv
+        uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+
       - name: Resolve requested triplets
         id: resolve
         shell: bash
         run: |
-          python3 .github/scripts/vcpkg_triplet_matrix.py \
+          uv run --no-project --python 3.13 python .github/scripts/vcpkg_triplet_matrix.py \
             --triplets "${{ inputs.triplets }}" \
             --output "$GITHUB_OUTPUT"
 
