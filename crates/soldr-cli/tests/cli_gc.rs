@@ -320,6 +320,93 @@ fn gc_purge_all_json_reports_error_log_path_and_keeps_failed_row() {
     );
 }
 
+/// One `soldr front-door:` phase line, split into its name and its numbers.
+///
+/// `phase=<name> ms=<own> total_ms=<cumulative>` -- `ms` is that phase's own
+/// duration, `total_ms` is everything up to and including it.
+struct PhaseLine {
+    name: String,
+    own_ms: u64,
+    total_ms: u64,
+}
+
+fn phase_lines(stderr: &str) -> Vec<PhaseLine> {
+    stderr
+        .lines()
+        .filter(|line| line.contains("soldr front-door:"))
+        .filter_map(|line| {
+            let mut name = None;
+            let mut own_ms = None;
+            let mut total_ms = None;
+            for token in line.split_whitespace() {
+                if let Some(value) = token.strip_prefix("phase=") {
+                    name = Some(value.to_string());
+                } else if let Some(value) = token.strip_prefix("total_ms=") {
+                    total_ms = value.parse::<u64>().ok();
+                } else if let Some(value) = token.strip_prefix("ms=") {
+                    own_ms = value.parse::<u64>().ok();
+                }
+            }
+            Some(PhaseLine {
+                name: name?,
+                own_ms: own_ms?,
+                total_ms: total_ms?,
+            })
+        })
+        .collect()
+}
+
+/// How the child's traced time divides into *reaching* the command and
+/// *running* it: `(startup_ms, command_body_ms)`.
+///
+/// soldr#2785 added the `command_dispatch` phase precisely so the trace would
+/// not stop at `clap_parse` and leave the command body unaccounted for -- and
+/// then read the cumulative `total_ms` of the *last* line, which is now that
+/// same command body, and printed it as "in-process startup". Observed on
+/// run 32897362298: `command_dispatch ms=238 total_ms=246` was reported as
+/// "246ms was in-process startup", so the message sent the reader to
+/// soldr#2624's contended-startup branch when startup was 8ms and the `gc
+/// list` query itself was 238ms. The two diagnoses this arithmetic exists to
+/// separate were being merged back together by it.
+///
+/// Startup is therefore the largest cumulative total among the phases that are
+/// *not* the command body. The body is its own `ms=`. A trace from a binary
+/// without the phase yields `None` for the body rather than silently folding
+/// it in.
+fn front_door_split(stderr: &str) -> Option<(u64, Option<u64>)> {
+    let lines = phase_lines(stderr);
+    if lines.is_empty() {
+        return None;
+    }
+    const BODY: &str = "command_dispatch";
+    let body_ms = lines
+        .iter()
+        .find(|line| line.name == BODY)
+        .map(|line| line.own_ms);
+    let startup_ms = lines
+        .iter()
+        .filter(|line| line.name != BODY)
+        .map(|line| line.total_ms)
+        .max()
+        .unwrap_or(0);
+    Some((startup_ms, body_ms))
+}
+
+/// The `(startup, body)` split rendered for the assertion message.
+fn front_door_cost_summary(stderr: &str) -> String {
+    match front_door_split(stderr) {
+        Some((startup_ms, Some(body_ms))) => format!(
+            "of which {startup_ms}ms was in-process startup and {body_ms}ms \
+             was the `gc list` command body"
+        ),
+        Some((startup_ms, None)) => format!(
+            "of which {startup_ms}ms was in-process startup (the trace has no \
+             `command_dispatch` phase, so the command body is unaccounted for)"
+        ),
+        None => "with no front-door trace (soldr exited before the front door)".to_string(),
+    }
+}
+
 /// The front-door phase lines from a captured poll's stderr (soldr#2624).
 ///
 /// Only the `soldr front-door:` lines matter here; a contended runner also
@@ -328,26 +415,6 @@ fn gc_purge_all_json_reports_error_log_path_and_keeps_failed_row() {
 /// Bounded, because a panic message is read in a CI log: the tail is kept
 /// rather than the head, since the phases that dominate a slow start
 /// (`broker_image_hash`, `broker_spawn_wait`) come last.
-/// The child's own `total_ms=` from its last front-door phase line.
-///
-/// soldr#2785: the assertion below used to print the trace and leave the reader
-/// to compare it against the per-poll cost. That is a step people get wrong --
-/// I got it wrong myself, reading the message's list of suspect phases as if it
-/// were the measurement, when the trace printed directly beneath said startup
-/// was 5ms of a 278ms poll. So the arithmetic is done here instead of being
-/// left as an exercise.
-fn front_door_total_ms(stderr: &str) -> Option<u64> {
-    stderr
-        .lines()
-        .filter(|line| line.contains("soldr front-door:"))
-        .filter_map(|line| {
-            line.split_whitespace()
-                .find_map(|token| token.strip_prefix("total_ms="))
-                .and_then(|value| value.parse::<u64>().ok())
-        })
-        .max()
-}
-
 fn startup_trace_tail(stderr: &str) -> String {
     const MAX_LINES: usize = 20;
     let phases: Vec<&str> = stderr
@@ -548,12 +615,12 @@ fn gc_list_json_reports_built_project_target_dir() {
              Where the last poll went: {:?} wall in the child, {}, and \
              {GC_TOUCH_POLL_INTERVAL:?} sleeping between polls. Startup \
              dominating means a contended runner spending the budget on \
-             process startup (soldr#2624); startup being a small fraction \
-             means startup was fine and the registry row genuinely never \
-             landed (soldr#2561) -- and the remainder is process creation \
-             plus the `gc list` query itself, which the front-door trace does \
-             not cover because it begins after the process is already \
-             running.\n\n\
+             process startup (soldr#2624); the command body dominating means \
+             startup was fine and `gc list` itself is slow; both being small \
+             means the poll was cheap and the registry row genuinely never \
+             landed (soldr#2561). Whatever the three do not account for is \
+             process creation, which the front-door trace cannot cover \
+             because it begins after the process is already running.\n\n\
              soldr#2785: if the row never landed, the daemon already says why \
              — the touch's write half logs `target-touch dropped` when the \
              store cannot be opened within its 2s retry budget, and \
@@ -563,10 +630,7 @@ fn gc_list_json_reports_built_project_target_dir() {
              bugs.\n\ndaemon target-touch lines:\n{}\n\nlast poll trace:\n{}",
             elapsed / u32::try_from(attempts).unwrap_or(1),
             last_child_wall,
-            match front_door_total_ms(&last_poll_trace) {
-                Some(ms) => format!("of which {ms}ms was in-process startup"),
-                None => "with no front-door total (soldr exited before the front door)".to_string(),
-            },
+            front_door_cost_summary(&last_poll_trace),
             daemon_target_touch_lines(&cache_root),
             startup_trace_tail(&last_poll_trace),
         );
@@ -778,4 +842,81 @@ fn gc_flat_all_is_rejected_with_purge_hint() {
         stderr.contains("soldr gc purge --all"),
         "error should point to the new purge command: {stderr}"
     );
+}
+
+/// The exact trace from run 32897362298's msvc failure -- the one the old
+/// arithmetic reported as "246ms was in-process startup".
+const OBSERVED_TRACE: &str = "\
+soldr front-door: startup phase=reentrancy_guard ms=0 total_ms=0
+soldr front-door: startup phase=clap_parse ms=3 total_ms=8
+soldr front-door: startup phase=command_dispatch ms=238 total_ms=246
+";
+
+#[test]
+fn the_command_body_is_not_counted_as_startup() {
+    // The regression this exists for: `command_dispatch` was added by
+    // soldr#2785 so the command body would stop hiding, and then the
+    // cumulative total of that very line was printed as startup. On the run
+    // above that turned 8ms of startup into "246ms", which is the difference
+    // between soldr#2624's branch and soldr#2561's.
+    let (startup_ms, body_ms) = front_door_split(OBSERVED_TRACE).expect("a trace was present");
+    assert_eq!(startup_ms, 8);
+    assert_eq!(body_ms, Some(238));
+}
+
+#[test]
+fn the_summary_names_both_halves_separately() {
+    let summary = front_door_cost_summary(OBSERVED_TRACE);
+    assert!(summary.contains("8ms was in-process startup"), "{summary}");
+    assert!(
+        summary.contains("238ms was the `gc list` command body"),
+        "{summary}"
+    );
+    // The old message would have said this, and it was the wrong number.
+    assert!(
+        !summary.contains("246ms was in-process startup"),
+        "{summary}"
+    );
+}
+
+#[test]
+fn a_trace_without_the_body_phase_says_so_rather_than_folding_it_in() {
+    // An older soldr, or a process that died mid-command, emits no
+    // `command_dispatch`. Reporting its startup as if it covered the whole
+    // poll is exactly the error being fixed, so the gap is named instead.
+    let trace = "soldr front-door: startup phase=clap_parse ms=3 total_ms=8\n";
+    assert_eq!(front_door_split(trace), Some((8, None)));
+    let summary = front_door_cost_summary(trace);
+    assert!(summary.contains("8ms was in-process startup"), "{summary}");
+    assert!(summary.contains("unaccounted for"), "{summary}");
+}
+
+#[test]
+fn a_slow_startup_phase_still_dominates_when_it_should() {
+    // The other branch has to keep working: a genuinely contended start
+    // (soldr#2624) must still read as startup-dominated.
+    let trace = "\
+soldr front-door: startup phase=broker_spawn_wait ms=900 total_ms=910
+soldr front-door: startup phase=command_dispatch ms=4 total_ms=914
+";
+    assert_eq!(front_door_split(trace), Some((910, Some(4))));
+}
+
+#[test]
+fn non_front_door_noise_is_ignored() {
+    // A contended runner interleaves broker warnings and cache chatter; a
+    // parser that picked up `ms=` from those would report a fabricated split.
+    let trace = "\
+soldr wrapper: startup phase=command_dispatch ms=999 total_ms=999
+soldr front-door: startup phase=clap_parse ms=3 total_ms=8
+random line with no numbers
+soldr front-door: startup phase=command_dispatch ms=238 total_ms=246
+";
+    assert_eq!(front_door_split(trace), Some((8, Some(238))));
+}
+
+#[test]
+fn no_trace_at_all_is_distinguished_from_a_zero_cost_trace() {
+    assert_eq!(front_door_split("nothing here\n"), None);
+    assert!(front_door_cost_summary("nothing here\n").contains("no front-door trace"));
 }
