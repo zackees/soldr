@@ -45,7 +45,7 @@ const DEFAULT_QUICK_THRESHOLD_BYTES: u64 = 256;
 /// Redirect-hop ceiling for the segmented client's manual redirect
 /// following (see module docs "Three clocks"). Matches reqwest's own
 /// default auto-redirect limit.
-const MAX_REDIRECT_HOPS: u32 = 10;
+const MAX_REDIRECT_HOPS: u32 = 5;
 /// If a whole-operation deadline (`SOLDR_DOWNLOAD_TIMEOUT_SECS`) expires
 /// with less than this much budget left, a single-stream fallback attempt
 /// is not "meaningful" -- surface a clear timeout error instead of
@@ -209,6 +209,14 @@ pub(crate) fn bulk_pool() -> Arc<SocketPool> {
         Some(n) => SocketPool::new(n),
         None => SocketPool::unbounded(),
     }))
+}
+
+/// The admission ceiling used by the catalogue multipart coordinator.  It is
+/// intentionally the same parsed setting as the Bulk socket pool; the
+/// coordinator supplies fair *start order*, while `SocketPool` remains the
+/// authority that owns and releases actual socket permits.
+pub(crate) fn bulk_pool_capacity() -> Option<usize> {
+    parse_max_sockets()
 }
 
 /// The process-wide Quick pool for control-plane requests and small
@@ -478,10 +486,17 @@ fn segmented_http_client(
 }
 
 fn resolve_redirect_url(current: &str, location: &str) -> Result<String, String> {
-    let base = url::Url::parse(current).map_err(|e| format!("bad current url {current:?}: {e}"))?;
+    let base = url::Url::parse(current).map_err(|_| "invalid current redirect URL".to_string())?;
     let next = base
         .join(location)
-        .map_err(|e| format!("bad redirect location {location:?}: {e}"))?;
+        .map_err(|_| "invalid redirect target".to_string())?;
+    if (base.scheme() == "https" && next.scheme() != "https")
+        || next.host_str().is_none()
+        || !next.username().is_empty()
+        || next.password().is_some()
+    {
+        return Err("unsafe redirect target".to_string());
+    }
     Ok(next.to_string())
 }
 
@@ -502,14 +517,17 @@ async fn send_with_hop_timeout(
     connect_timeout: Duration,
 ) -> Result<reqwest::Response, String> {
     let mut url = initial_url.to_string();
-    for _hop in 0..MAX_REDIRECT_HOPS {
+    for redirects_followed in 0..=MAX_REDIRECT_HOPS {
         let req = build_request(client, &url);
         let resp = match tokio::time::timeout(connect_timeout, req.send()).await {
             Ok(Ok(r)) => r,
-            Ok(Err(e)) => return Err(format!("connect/send failed: {e}")),
+            Ok(Err(_)) => return Err("connect/send failed".to_string()),
             Err(_) => return Err(format!("connect/TTFB exceeded {connect_timeout:?}")),
         };
         if resp.status().is_redirection() {
+            if redirects_followed == MAX_REDIRECT_HOPS {
+                return Err(format!("exceeded {MAX_REDIRECT_HOPS} redirect hops"));
+            }
             let location = resp
                 .headers()
                 .get(reqwest::header::LOCATION)
@@ -530,7 +548,7 @@ async fn send_with_hop_timeout(
         }
         return Ok(resp);
     }
-    Err(format!("exceeded {MAX_REDIRECT_HOPS} redirect hops"))
+    unreachable!("the redirect loop returns on every iteration")
 }
 
 /// Attempt N-way Range segmentation. `response` is used only for its
@@ -543,6 +561,7 @@ pub(crate) async fn try_segmented_download(
     config: SegmentedDownloadConfig,
     pool: Arc<SocketPool>,
 ) -> Result<DownloadedAsset, SegmentedFailure> {
+    let safe_url = super::stream_download::safe_asset_url(url);
     // Protocol inheritance -- see module docs "Protocol inheritance".
     let protocol = if response.version() >= reqwest::Version::HTTP_2 {
         AssetProtocol::Negotiated
@@ -597,7 +616,7 @@ pub(crate) async fn try_segmented_download(
                     } else {
                         Err(SegmentedFailure::Timeout(format!(
                             "asset download exceeded {GLOBAL_TIMEOUT_ENV_VAR}={gt:?} with no \
-                             meaningful budget left to fall back to single-stream: {url}"
+                             meaningful budget left to fall back to single-stream: {safe_url}"
                         )))
                     };
                 }
@@ -807,6 +826,18 @@ async fn fetch_segment_once(
         );
     }
 
+    // A 206 alone is not enough evidence that this is the tail we asked
+    // for.  In particular, after a stalled first attempt `start` may be in
+    // the middle of a segment.  Accepting a stale `Content-Range` then would
+    // overwrite the already verified prefix at the wrong file offset.  Treat
+    // every absent, malformed, shifted, or differently-sized range as a
+    // protocol failure; the enclosing segmented attempt abandons its whole
+    // temporary file and drains the original full response instead.
+    let cap = end_inclusive.saturating_sub(start) + 1;
+    if let Err(reason) = validate_content_range(&resp, start, end_inclusive, cap) {
+        return SegmentAttemptOutcome::Failed(0, reason);
+    }
+
     // First payload byte is imminent: PENDING -> STREAMING, permanently
     // non-preemptible from here (module docs "Permit preemption").
     permit.mark_streaming();
@@ -816,7 +847,6 @@ async fn fetch_segment_once(
     // misbehaving server can never spill bytes into a neighbouring
     // segment's region. `start <= end_inclusive` always holds (resume
     // never advances past the segment end), so `cap >= 1`.
-    let cap = end_inclusive.saturating_sub(start) + 1;
     let mut offset = start;
     let mut written = 0u64;
     loop {
@@ -850,6 +880,49 @@ async fn fetch_segment_once(
     // `permit` drops here on every path (RAII) -- this is the permit-leak
     // guarantee for stall-watchdog kills, preemption, and normal returns
     // alike.
+}
+
+fn validate_content_range(
+    response: &reqwest::Response,
+    expected_start: u64,
+    expected_end: u64,
+    expected_len: u64,
+) -> Result<(), String> {
+    let raw = response
+        .headers()
+        .get(reqwest::header::CONTENT_RANGE)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| "206 response missing or malformed Content-Range".to_string())?;
+    let raw = raw
+        .strip_prefix("bytes ")
+        .ok_or_else(|| format!("invalid Content-Range {raw:?}"))?;
+    let (range, total) = raw
+        .split_once('/')
+        .ok_or_else(|| format!("invalid Content-Range {raw:?}"))?;
+    let (start, end) = range
+        .split_once('-')
+        .ok_or_else(|| format!("invalid Content-Range {raw:?}"))?;
+    let start = start
+        .parse::<u64>()
+        .map_err(|_| format!("invalid Content-Range {raw:?}"))?;
+    let end = end
+        .parse::<u64>()
+        .map_err(|_| format!("invalid Content-Range {raw:?}"))?;
+    let total = total
+        .parse::<u64>()
+        .map_err(|_| format!("invalid Content-Range {raw:?}"))?;
+    if start != expected_start || end != expected_end || total <= end {
+        return Err(format!(
+            "Content-Range bytes {start}-{end}/{total} does not match requested bytes {expected_start}-{expected_end}"
+        ));
+    }
+    if response.content_length() != Some(expected_len) {
+        return Err(format!(
+            "Content-Length {:?} does not match requested range length {expected_len}",
+            response.content_length()
+        ));
+    }
+    Ok(())
 }
 
 fn sha256_of_file(file: &std::fs::File) -> std::io::Result<String> {
@@ -914,21 +987,6 @@ fn compute_segments(total: u64, n: u32) -> Vec<(u64, u64)> {
         cursor += len;
     }
     segments
-}
-
-/// Set segmented-download env knobs from inside a held `ENV_LOCK` critical
-/// section (see the test module's `ENV_LOCK` / `clear_segmented_env`). Lives
-/// on the module that defines these env-var constants so both the test file
-/// and its sibling `_extra` module route their writes through one place,
-/// keeping every mutation of these vars behind the single test barrier
-/// (soldr#1663) — the write still happens under the caller's held lock.
-/// Takes the key as a variable so it registers no var name of its own,
-/// exactly like `clear_segmented_env`'s `remove_var(var)`.
-#[cfg(test)]
-pub(crate) fn set_segmented_env(pairs: &[(&str, &str)]) {
-    for (key, value) in pairs {
-        std::env::set_var(key, value);
-    }
 }
 
 #[cfg(test)]

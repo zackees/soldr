@@ -83,6 +83,23 @@ pub async fn ensure_xwin_cache(
         .join("xwin")
         .join(MANAGED_XWIN_CACHE_VERSION);
     let stamp = install_dir.join(".complete");
+    if stamp.is_file() {
+        if let Some(cache_dir) = resolve_xwin_cache_dir(&install_dir) {
+            let aliases = ensure_xwin_case_aliases(&cache_dir)?;
+            if aliases > 0 {
+                eprintln!("soldr: added {aliases} xwin-cache case aliases");
+            }
+            return Ok(cache_dir);
+        }
+    }
+
+    let install_parent = install_dir
+        .parent()
+        .ok_or_else(|| SoldrError::Archive("xwin-cache install path has no parent".into()))?;
+    let _install_lock = super::syslib_common::acquire_install_lock(
+        install_parent,
+        &format!("xwin-cache-{MANAGED_XWIN_CACHE_VERSION}"),
+    )?;
 
     if stamp.is_file() {
         if let Some(cache_dir) = resolve_xwin_cache_dir(&install_dir) {
@@ -122,14 +139,7 @@ pub async fn ensure_xwin_cache(
         "soldr: fetching xwin-cache v{MANAGED_XWIN_CACHE_VERSION} for {target_triple} from {resolved_url}..."
     );
 
-    // soldr#2132: retry the download. The sha256 comparison below stays
-    // outside it -- the catalogue blob being replaced is exactly the case that
-    // must fail on the first try.
-    let downloaded = super::retry::with_asset_backoff(
-        &format!("xwin-cache v{MANAGED_XWIN_CACHE_VERSION} for {target_triple}"),
-        || manifest_lookup::download_manifest_entry(&entry),
-    )
-    .await?;
+    let downloaded = manifest_lookup::materialize_catalogue_entry(&entry).await?;
 
     let digest = downloaded.sha256();
     if digest != expected_sha256 {
@@ -144,23 +154,22 @@ pub async fn ensure_xwin_cache(
          for {target_triple} sha256={digest}"
     );
 
-    if install_dir.exists() {
-        std::fs::remove_dir_all(&install_dir)?;
-    }
-    std::fs::create_dir_all(&install_dir)?;
-    extract_tar_zst_tree(std::fs::File::open(downloaded.path())?, &install_dir)?;
+    let staging = tempfile::Builder::new()
+        .prefix(".xwin-cache.staging-")
+        .tempdir_in(install_parent)?;
+    extract_tar_zst_tree(std::fs::File::open(downloaded.path())?, staging.path())?;
 
-    let cache_dir = resolve_xwin_cache_dir(&install_dir).ok_or_else(|| {
+    let staged_cache_dir = resolve_xwin_cache_dir(staging.path()).ok_or_else(|| {
         SoldrError::Archive(format!(
             "xwin-cache extract did not produce a crt/sdk root under {} \
              (checked xwin/, package/, and the extraction root)",
-            install_dir.display()
+            staging.path().display()
         ))
     })?;
-    if !cache_dir.is_dir() {
+    if !staged_cache_dir.is_dir() {
         return Err(SoldrError::Archive(format!(
             "xwin-cache extract did not produce expected directory {}",
-            cache_dir.display()
+            staged_cache_dir.display()
         )));
     }
 
@@ -171,12 +180,15 @@ pub async fn ensure_xwin_cache(
     // file on disk is `driverspecs.h`). On the case-sensitive Linux CI
     // filesystems that include fails fatally. Materialize the aliases
     // both directions before declaring the cache usable.
-    let aliases = ensure_xwin_case_aliases(&cache_dir)?;
+    let aliases = ensure_xwin_case_aliases(&staged_cache_dir)?;
     if aliases > 0 {
         eprintln!("soldr: added {aliases} xwin-cache case aliases");
     }
 
-    std::fs::write(&stamp, MANAGED_XWIN_CACHE_VERSION)?;
+    std::fs::write(staging.path().join(".complete"), MANAGED_XWIN_CACHE_VERSION)?;
+    super::archive::promote_staged_tool_dir(staging.path(), &install_dir)?;
+    let cache_dir = resolve_xwin_cache_dir(&install_dir)
+        .ok_or_else(|| SoldrError::Archive("xwin-cache vanished after atomic promotion".into()))?;
     eprintln!(
         "soldr: extracted xwin-cache to {} (set XWIN_CACHE_DIR there)",
         cache_dir.display()

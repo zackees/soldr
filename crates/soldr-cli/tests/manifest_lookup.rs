@@ -23,7 +23,7 @@
 
 use std::sync::Arc;
 
-use soldr_cli::fetch::manifest_lookup::{ManifestEntry, ManifestIndex};
+use soldr_cli::fetch::manifest_lookup::{AssetTransport, ManifestEntry, ManifestIndex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
@@ -99,7 +99,7 @@ fn manifest_hit_returns_pinned_url() {
         )
         .expect("manifest hit");
     assert_eq!(
-        hit.direct_url(),
+        hit.transport.direct_url(),
         Some("https://example.invalid/zccache.zip")
     );
     assert_eq!(
@@ -169,13 +169,13 @@ fn manifest_sha256_mismatch_is_hard_error() {
         tag: "1.12.9".into(),
         asset: "payload.zip".into(),
         // Intentionally wrong — does not match sha256("wrong-payload").
-        url: Some(String::new()), // filled in after we spin up the server
-        urls: Vec::new(),
-        parts: Vec::new(),
-        size_bytes: None,
-        source_path: None,
-        min_client_version: None,
+        transport: AssetTransport::Direct {
+            urls: vec!["https://example.invalid/payload.zip".into()],
+        },
         sha256: "ff".repeat(32),
+        size_bytes: 0,
+        min_client_version: None,
+        source_path: None,
     };
 
     let rt = rt();
@@ -183,7 +183,9 @@ fn manifest_sha256_mismatch_is_hard_error() {
         let payload = b"wrong-payload".to_vec();
         let url = spawn_one_shot_payload_server(payload).await;
         let mut entry = entry;
-        entry.url = Some(url.clone());
+        entry.transport = AssetTransport::Direct {
+            urls: vec![url.clone()],
+        };
 
         // Use the same trust verifier the manifest-first path uses.
         // We compute the actual sha256 of what the server returns,

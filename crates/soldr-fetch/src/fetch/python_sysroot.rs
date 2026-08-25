@@ -84,10 +84,10 @@ fn version_key(version: &str) -> Option<(u64, u64, u64)> {
     parts.next().is_none().then_some((major, minor, patch))
 }
 
-fn catalogue_version_from_url<'a>(url: &'a str, slug: &str) -> Option<&'a str> {
-    let suffix = url
+fn catalogue_version_from_location<'a>(location: &'a str, slug: &str) -> Option<&'a str> {
+    let suffix = location
         .strip_prefix("python/")
-        .or_else(|| url.split_once("/python/").map(|(_, suffix)| suffix))?;
+        .or_else(|| location.split_once("/python/").map(|(_, suffix)| suffix))?;
     let mut parts = suffix.split('/');
     let version = parts.next()?;
     let row_slug = parts.next()?;
@@ -103,8 +103,8 @@ fn newest_catalogue_version_for_slug(index: &ManifestIndex, slug: &str) -> Optio
             entry
                 .source_path
                 .as_deref()
-                .or_else(|| entry.direct_url())
-                .and_then(|value| catalogue_version_from_url(value, slug))
+                .or_else(|| entry.transport.direct_url())
+                .and_then(|location| catalogue_version_from_location(location, slug))
         })
         .filter_map(|version| version_key(version).map(|key| (key, version)))
         .max_by_key(|(key, _)| *key)
@@ -246,6 +246,13 @@ mod tests {
         assert_eq!(
             newest_catalogue_version_for_slug(&index, "windows-x64").as_deref(),
             Some("3.13.14")
+        );
+        assert_eq!(
+            catalogue_version_from_location(
+                "python/3.14.1/windows-x64/bundle.tar.zst",
+                "windows-x64"
+            ),
+            Some("3.14.1")
         );
     }
 }

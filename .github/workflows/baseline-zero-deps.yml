@@ -201,11 +201,9 @@ jobs:
                      "${query_args[@]}" --json cargo-zigbuild; })
           asset_filename=$(printf '%s' "$asset_metadata" | \
             python3 -c 'import json,sys; print(json.load(sys.stdin)["filename"])')
-          expected_sha=$(printf '%s' "$asset_metadata" | \
-            python3 -c 'import json,sys; print(json.load(sys.stdin)["sha256"])')
-          bash .github/scripts/download_large_asset.sh \
-            --url "$(printf '%s' "$asset_metadata" | python3 -c 'import json,sys; print(json.load(sys.stdin)["urls"][0])')" \
-            --output "/tmp/${asset_filename}" --sha256 "$expected_sha"
+          python3 .github/scripts/download_catalogued_asset.py \
+            "${query_args[@]}" cargo-zigbuild \
+            --output "/tmp/${asset_filename}"
           extract_tmp=$(mktemp -d)
           tar -xaf "/tmp/${asset_filename}" -C "$extract_tmp"
           binary_src=$(find "$extract_tmp" -type f -name cargo-zigbuild -print -quit)

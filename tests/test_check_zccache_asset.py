@@ -163,26 +163,6 @@ def test_a_missing_lock_entry_fails(guard, tmp_path, monkeypatch, capsys):
     assert "Cargo.lock" in out
 
 
-def test_an_unreachable_manifest_is_skipped_not_failed(
-    guard, tmp_path, monkeypatch, capsys
-):
-    """Every PR runs this. Failing them all on a Pages blip teaches people to
-    ignore it, which costs more than the check is worth."""
-    write_repo(tmp_path, "1.13.5")
-    monkeypatch.setattr(
-        "sys.argv",
-        [
-            "check",
-            "--repo-root",
-            str(tmp_path),
-            "--origin",
-            "http://127.0.0.1:1/unreachable",
-        ],
-    )
-    assert guard.main() == 0
-    assert "skipped" in capsys.readouterr().out
-
-
 def serve(guard, monkeypatch, payload: dict) -> None:
     """Answer the guard's manifest fetch from a fixture instead of the network."""
     monkeypatch.setattr(

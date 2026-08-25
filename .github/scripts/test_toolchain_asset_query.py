@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -59,6 +60,28 @@ def sample_manifest() -> dict:
                             "sha256": "3" * 64,
                             "urls": [
                                 "https://example.test/demo-darwin-universal2.tar.gz"
+                            ],
+                        },
+                    },
+                    {
+                        "platform": {"os": "darwin", "arch": "aarch64"},
+                        "asset": {
+                            "filename": "demo-darwin-arm64.tar.gz",
+                            "size_bytes": 3,
+                            "sha256": "4" * 64,
+                            "parts": [
+                                {
+                                    "number": 1,
+                                    "size_bytes": 1,
+                                    "sha256": "5" * 64,
+                                    "urls": ["https://example.test/part-1"],
+                                },
+                                {
+                                    "number": 2,
+                                    "size_bytes": 2,
+                                    "sha256": "6" * 64,
+                                    "urls": ["https://example.test/part-2"],
+                                },
                             ],
                         },
                     },
@@ -129,7 +152,7 @@ class ToolchainAssetQueryTests(unittest.TestCase):
         ):
             taq.load_tool_manifest("https://example.test", "demo")
 
-    def test_single_multipart_chunk_is_a_direct_download_equivalent(self) -> None:
+    def test_single_multipart_chunk_preserves_multipart_transport(self) -> None:
         release = taq.find_release(sample_manifest(), "latest")
         asset = release["platforms"][0]["asset"]
         asset["parts"] = [
@@ -145,7 +168,8 @@ class ToolchainAssetQueryTests(unittest.TestCase):
         selected = taq.find_asset(
             release, taq.platform_candidates("linux", "x86_64", "gnu")
         )
-        self.assertEqual(selected["urls"], ["https://example.test/part"])
+        self.assertEqual(selected["urls"], [])
+        self.assertEqual(selected["parts"][0]["urls"], ["https://example.test/part"])
 
     def test_latest_uses_channel(self) -> None:
         release = taq.find_release(sample_manifest(), "latest")
@@ -176,7 +200,7 @@ class ToolchainAssetQueryTests(unittest.TestCase):
     def test_darwin_arch_can_fallback_to_universal2(self) -> None:
         release = taq.find_release(sample_manifest(), "latest")
         url = taq.find_asset_url(
-            release, taq.platform_candidates("darwin", "aarch64", None)
+            release, taq.platform_candidates("darwin", "x86_64", None)
         )
         self.assertTrue(url.endswith("demo-darwin-universal2.tar.gz"))
 
@@ -187,6 +211,60 @@ class ToolchainAssetQueryTests(unittest.TestCase):
         )
         self.assertEqual(metadata["sha256"], "0" * 64)
         self.assertEqual(metadata["platform"]["libc"], "glibc")
+
+    def test_json_metadata_preserves_multipart_transport(self) -> None:
+        metadata = taq.find_asset(
+            taq.find_release(sample_manifest(), "latest"),
+            taq.platform_candidates("darwin", "aarch64", None),
+        )
+        self.assertEqual(metadata["urls"], [])
+        self.assertEqual([part["number"] for part in metadata["parts"]], [1, 2])
+        with self.assertRaisesRegex(SystemExit, "multipart"):
+            taq.find_asset_url(
+                taq.find_release(sample_manifest(), "latest"),
+                taq.platform_candidates("darwin", "aarch64", None),
+            )
+
+    def test_metadata_rejects_filename_escape_shapes(self) -> None:
+        release = taq.find_release(sample_manifest(), "latest")
+        asset = release["platforms"][0]["asset"]
+        for filename in (
+            "../outside.tar.gz",
+            "/tmp/outside.tar.gz",
+            "nested/outside.tar.gz",
+            "nested\\outside.zip",
+            "C:\\outside.zip",
+            ".",
+            "..",
+        ):
+            asset["filename"] = filename
+            with self.assertRaisesRegex(SystemExit, "unsafe filename"):
+                taq.find_asset(
+                    release,
+                    taq.platform_candidates("linux", "x86_64", "gnu"),
+                )
+
+    def test_manifest_fetch_rejects_unsafe_url_before_network(self) -> None:
+        for url in (
+            "http://example.test/manifest.json",
+            "https://user:secret@example.test/manifest.json",
+        ):
+            with self.assertRaisesRegex(SystemExit, "credential-free absolute HTTPS"):
+                taq.fetch_json(url)
+
+    def test_manifest_fetch_error_redacts_signed_query(self) -> None:
+        secret = "manifest-token-must-not-leak"
+        url = f"https://example.test/manifest.json?token={secret}"
+        with (
+            mock.patch.object(
+                taq,
+                "open_url",
+                side_effect=urllib.error.URLError(f"transport included {secret}"),
+            ),
+            self.assertRaisesRegex(SystemExit, "network error") as raised,
+        ):
+            taq.fetch_json(url)
+        self.assertNotIn(secret, str(raised.exception))
 
 
 if __name__ == "__main__":

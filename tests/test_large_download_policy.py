@@ -1,4 +1,4 @@
-"""Keep CI/Docker artifact transfers on the shared stall-aware policy."""
+"""Keep CI/Docker artifact transfers on shared verified download policies."""
 
 from pathlib import Path
 
@@ -33,6 +33,7 @@ def test_audited_large_downloads_use_shared_helper_and_not_short_deadlines() -> 
         assert (
             source.count("download-large-asset")
             + source.count("download_large_asset.sh")
+            + source.count("download_catalogued_asset.py")
             >= minimum_invocations
         ), path
         assert "--max-time 120" not in source, path

@@ -91,9 +91,8 @@ if catalogue_json=$(python3 .github/scripts/toolchain_asset_query.py \
     echo "catalogue asset verification failed for $tool $version $target" >&2
     exit 1
   fi
-  asset_url=$(printf '%s' "$catalogue_json" | python3 -c \
-    'import json,sys; print(json.load(sys.stdin)["urls"][0])')
-  echo "catalogue hit: $tool $version $target -> $asset_url (sha256 verified)"
+  asset_url="verified"
+  echo "catalogue hit: $tool $version $target (sha256 verified)"
 fi
 
 if [ -n "$asset_url" ]; then

@@ -78,7 +78,7 @@ pub async fn ensure_syslib_bundle(
 
     // Cross-process install guard: cargo fans out build scripts and CI
     // fans out jobs, so several soldr processes can miss the stamp
-    // simultaneously and race the remove_dir_all + extract below.
+    // simultaneously and race the staged promotion below.
     // Blocking exclusive lock — the winner installs, waiters re-check
     // the stamp after acquiring and short-circuit. Held (via the
     // returned handle) until this function returns.
@@ -93,7 +93,8 @@ pub async fn ensure_syslib_bundle(
     // Resolve sha256 from the toolchain catalogue. The catalogue is
     // process-cached; the first call inside soldr's run fetches the
     // document, subsequent ones hit the OnceLock.
-    let entry = match catalogue_entry_for_url(&url).await {
+    let source_path = format!("{lib}/{version}/{slug}/bundle.tar.zst");
+    let entry = match catalogue_entry_for_source_path(&source_path).await {
         Some(entry) => entry,
         None => {
             // soldr#2132 item 4: two very different causes used to produce the
@@ -109,49 +110,40 @@ pub async fn ensure_syslib_bundle(
             )));
         }
     };
-    let expected_sha256 = entry.sha256.clone();
     let resolved_url = manifest_lookup::resolved_download_label(&entry);
 
     if !crate::core::quiet::diagnostics_suppressed() {
         eprintln!("soldr: fetching syslib {lib}/{version}/{slug} from {resolved_url}...");
     }
 
-    // soldr#2132: retry the download itself. A truncated body here surfaced as
-    // `managed cmake unavailable ... network error: error decoding response
-    // body` and then, a hundred log lines later, as `can't find crate for
-    // std` -- an error naming the wrong thing entirely.
-    let downloaded =
-        super::retry::with_asset_backoff(&format!("syslib {lib}/{version}/{slug}"), || {
-            manifest_lookup::download_manifest_entry(&entry)
-        })
-        .await?;
-
+    let downloaded = manifest_lookup::materialize_catalogue_entry(&entry).await?;
     let digest = downloaded.sha256();
-    if digest != expected_sha256 {
-        return Err(SoldrError::Other(format!(
-            "syslib bundle sha256 mismatch for {lib}/{version}/{slug}: \
-             expected {expected_sha256}, got {digest}"
-        )));
-    }
     if !crate::core::quiet::diagnostics_suppressed() {
         eprintln!("soldr: trust: verified syslib {lib}/{version}/{slug} sha256={digest}");
     }
 
-    if install_root.exists() {
-        std::fs::remove_dir_all(&install_root)?;
-    }
-    std::fs::create_dir_all(&install_root)?;
-    extract_tar_zst(std::fs::File::open(downloaded.path())?, &install_root)?;
+    let install_parent = install_root
+        .parent()
+        .ok_or_else(|| SoldrError::Archive("syslib install path has no parent".into()))?;
+    std::fs::create_dir_all(install_parent)?;
+    let staging = tempfile::Builder::new()
+        .prefix(&format!(".{lib}-{version}-{slug}.staging-"))
+        .tempdir_in(install_parent)?;
+    extract_tar_zst(std::fs::File::open(downloaded.path())?, staging.path())?;
 
-    if !sysroot.is_dir() {
+    let staged_sysroot = staging.path().join("package");
+    if !staged_sysroot.is_dir() {
         return Err(SoldrError::Archive(format!(
             "syslib extract for {lib}/{version}/{slug} did not produce expected \
-             {} (forge artifact layout drift?)",
-            sysroot.display()
+             package/ directory (forge artifact layout drift?)"
         )));
     }
 
-    std::fs::write(&stamp, format!("{lib} {version} {slug}"))?;
+    std::fs::write(
+        staging.path().join(".complete"),
+        format!("{lib} {version} {slug}"),
+    )?;
+    super::archive::promote_staged_tool_dir(staging.path(), &install_root)?;
     if !crate::core::quiet::diagnostics_suppressed() {
         eprintln!("soldr: extracted syslib to {}", sysroot.display());
     }
@@ -190,12 +182,14 @@ pub(crate) fn acquire_install_lock(
 /// so we filter by URL substring instead. Returns `None` when the
 /// catalogue is empty (network failure / disabled) or the URL hasn't
 /// been ingested yet.
-async fn catalogue_entry_for_url(url: &str) -> Option<manifest_lookup::ManifestEntry> {
+async fn catalogue_entry_for_source_path(
+    source_path: &str,
+) -> Option<manifest_lookup::ManifestEntry> {
     let index = manifest_lookup::get_or_fetch().await;
     index
         .entries
         .iter()
-        .find(|e| e.matches_legacy_url(url))
+        .find(|e| e.source_path.as_deref() == Some(source_path))
         .cloned()
 }
 

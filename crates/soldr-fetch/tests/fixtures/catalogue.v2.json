@@ -1,0 +1,43 @@
+{
+  "schema_version": 2,
+  "generation": "canary-0001",
+  "publication_state": {
+    "generation": "canary-0001",
+    "url": "https://example.invalid/generations/canary-0001/publish-state.v1.json"
+  },
+  "entries": [
+    {
+      "owner": "zackees",
+      "repo": "soldr-toolchain",
+      "tag": "canary",
+      "asset": "direct.bin",
+      "size_bytes": 6,
+      "sha256": "bef57ec7f53a6d40beb640a780a639c83bc29ac8a9816f1fc6c5c6dcd93c4721",
+      "urls": ["https://example.invalid/direct.bin"]
+    },
+    {
+      "owner": "zackees",
+      "repo": "soldr-toolchain",
+      "tag": "canary",
+      "asset": "multipart.bin",
+      "source_path": "fixture/canary/multipart.bin",
+      "size_bytes": 6,
+      "sha256": "bef57ec7f53a6d40beb640a780a639c83bc29ac8a9816f1fc6c5c6dcd93c4721",
+      "min_client_version": 2,
+      "parts": [
+        {
+          "number": 1,
+          "size_bytes": 3,
+          "sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+          "urls": ["https://example.invalid/0001.part"]
+        },
+        {
+          "number": 2,
+          "size_bytes": 3,
+          "sha256": "cb8379ac2098aa165029e3938a51da0bcecfc008fd6795f401178647f96c5b34",
+          "urls": ["https://example.invalid/0002.part"]
+        }
+      ]
+    }
+  ]
+}
