@@ -185,20 +185,11 @@ def test_an_unreachable_manifest_is_skipped_not_failed(
 
 def serve(guard, monkeypatch, payload: dict) -> None:
     """Answer the guard's manifest fetch from a fixture instead of the network."""
-
-    class Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_):
-            return False
-
-        def read(self):
-            import json as _json
-
-            return _json.dumps(payload).encode("utf-8")
-
-    monkeypatch.setattr(guard.urllib.request, "urlopen", lambda *a, **k: Response())
+    monkeypatch.setattr(
+        guard,
+        "load_tool_manifest",
+        lambda *_: ("https://example.test/generation/zccache/manifest.json", payload),
+    )
 
 
 def test_the_2164_incident_fails_the_guard(guard, tmp_path, monkeypatch, capsys):

@@ -19,7 +19,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, TypeVar
 
-from toolchain_asset_query import DEFAULT_ORIGIN, resolve_metadata
+import toolchain_asset_query
 
 SUPPORTED_TARGETS = {
     "x86_64-pc-windows-msvc",
@@ -83,7 +83,7 @@ def catalogued_entry(
         platform, arch, extra = TARGET_QUERIES[target]
     except KeyError as exc:
         raise SystemExit(f"unsupported catalogue target: {target}") from exc
-    metadata = resolve_metadata(
+    metadata = toolchain_asset_query.resolve_metadata(
         tool=tool,
         origin=origin,
         tool_manifest_url_override=None,
@@ -343,7 +343,7 @@ def main() -> int:
     parser.add_argument("--target", required=True)
     parser.add_argument("--version", required=True)
     parser.add_argument("--output-dir", required=True, type=Path)
-    parser.add_argument("--origin", default=DEFAULT_ORIGIN)
+    parser.add_argument("--origin", default=toolchain_asset_query.DEFAULT_ORIGIN)
     args = parser.parse_args()
 
     catalogue = {

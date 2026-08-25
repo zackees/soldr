@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import tarfile
 import tempfile
 import unittest
@@ -35,7 +36,9 @@ class InstallCataloguedToolsTests(unittest.TestCase):
             "urls": ["https://example.test/cargo-dylint.tar.gz"],
             "sha256": "a" * 64,
         }
-        with mock.patch.object(script, "resolve_metadata", return_value=metadata) as resolve:
+        with mock.patch.object(
+            script.toolchain_asset_query, "resolve_metadata", return_value=metadata
+        ) as resolve:
             entry = script.catalogued_entry(
                 origin="https://example.test/catalogue",
                 tool="cargo-dylint",
@@ -54,6 +57,71 @@ class InstallCataloguedToolsTests(unittest.TestCase):
             extra="gnu",
             version="6.0.3",
         )
+
+    def test_catalogued_entry_retries_transient_root_fetch(self) -> None:
+        asset = {
+            "filename": "cargo-dylint-6.0.3-x86_64-unknown-linux-gnu.tar.gz",
+            "size_bytes": 123,
+            "sha256": "a" * 64,
+            "urls": ["https://example.test/cargo-dylint.tar.gz"],
+        }
+        catalog = json.dumps(
+            {
+                "schema_version": 1,
+                "releases": [
+                    {
+                        "version": "v6.0.3",
+                        "platforms": [
+                            {
+                                "platform": {
+                                    "os": "linux",
+                                    "arch": "x86_64",
+                                    "libc": "glibc",
+                                },
+                                "asset": asset,
+                            }
+                        ],
+                    }
+                ],
+            }
+        ).encode()
+        index = json.dumps(
+            {
+                "schema_version": 1,
+                "tools": {
+                    "cargo-dylint": {
+                        "descriptor": {
+                            "url": "generation/catalog.json",
+                            "size_bytes": len(catalog),
+                            "sha256": hashlib.sha256(catalog).hexdigest(),
+                        }
+                    }
+                },
+            }
+        ).encode()
+        query = script.toolchain_asset_query
+        with (
+            mock.patch.object(
+                query.urllib.request,
+                "urlopen",
+                side_effect=[
+                    urllib.error.URLError("reset"),
+                    io.BytesIO(index),
+                    io.BytesIO(catalog),
+                ],
+            ) as urlopen,
+            mock.patch.object(query.time, "sleep") as sleep,
+        ):
+            entry = script.catalogued_entry(
+                origin="https://example.test",
+                tool="cargo-dylint",
+                version="6.0.3",
+                target="x86_64-unknown-linux-gnu",
+            )
+
+        self.assertEqual(entry["sha256"], "a" * 64)
+        self.assertEqual(urlopen.call_count, 3)
+        sleep.assert_called_once_with(query.RETRY_BASE_DELAY_SECS)
 
     def test_catalogue_fetch_retries_a_transient_failure(self) -> None:
         response = io.BytesIO(b'{"schema_version": 1, "entries": []}')

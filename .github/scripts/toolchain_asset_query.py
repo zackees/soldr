@@ -7,8 +7,9 @@ query script exposed:
     python3 .github/scripts/toolchain_asset_query.py \
         --platform linux --arch x86 --extra gnu cargo-zigbuild
 
-It reads ``https://zackees.github.io/soldr-toolchain/<tool>/manifest.json``,
-selects a release, matches a platform entry, and prints one URL on stdout.
+It reads ``https://zackees.github.io/soldr-toolchain/manifest.json``, follows
+and verifies the selected tool descriptor, matches a release/platform entry,
+and prints one URL on stdout.
 With ``--json`` it emits the selected version/platform/filename/digest
 metadata used by deterministic CI packaging.
 Exit status is non-zero when the requested tool/version/platform is absent.
@@ -18,13 +19,17 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
+import time
 import urllib.error
 import urllib.request
 from typing import Any
 from urllib.parse import urljoin
 
 DEFAULT_ORIGIN = "https://zackees.github.io/soldr-toolchain"
+FETCH_ATTEMPTS = 3
+RETRY_BASE_DELAY_SECS = 0.5
 
 OS_ALIASES: dict[str, str] = {
     "linux": "linux",
@@ -48,13 +53,22 @@ ARCH_ALIASES: dict[str, str] = {
 
 
 def fetch_bytes(url: str) -> bytes:
-    try:
-        with urllib.request.urlopen(url, timeout=30) as resp:
-            return resp.read()
-    except urllib.error.HTTPError as exc:
-        raise SystemExit(f"HTTP {exc.code} fetching {url}") from exc
-    except urllib.error.URLError as exc:
-        raise SystemExit(f"network error fetching {url}: {exc}") from exc
+    for attempt in range(1, FETCH_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=30) as resp:
+                return resp.read()
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            ConnectionError,
+            http.client.IncompleteRead,
+        ) as exc:
+            if attempt == FETCH_ATTEMPTS:
+                if isinstance(exc, urllib.error.HTTPError):
+                    raise SystemExit(f"HTTP {exc.code} fetching {url}") from exc
+                raise SystemExit(f"network error fetching {url}: {exc}") from exc
+            time.sleep(RETRY_BASE_DELAY_SECS * (2 ** (attempt - 1)))
+    raise AssertionError("retry loop exhausted without returning or raising")
 
 
 def decode_json(raw: bytes, url: str) -> Any:
