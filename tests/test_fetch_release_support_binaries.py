@@ -59,6 +59,29 @@ class TestTargetPlatformMapping:
 
 
 class TestCatalogueIntegrity:
+    def test_signed_download_failure_never_logs_query_token(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        secret = "release-token-must-not-leak"
+        url = f"https://example.invalid/tool.zip?token={secret}"
+
+        def failed_read(_url: str, timeout: int) -> bytes:
+            del timeout
+            raise urllib.error.URLError(f"transport included {secret}")
+
+        monkeypatch.setattr(support, "read_url", failed_read)
+
+        with pytest.raises(support.SupportBinaryError) as raised:
+            support.download_verified([url], "0" * 64, tmp_path / "tool.zip")
+
+        output = capsys.readouterr()
+        assert secret not in output.out
+        assert secret not in output.err
+        assert secret not in str(raised.value)
+
     def test_descriptor_digest_mismatch_is_rejected_before_json_is_trusted(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

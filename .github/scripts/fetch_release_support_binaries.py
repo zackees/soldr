@@ -37,6 +37,7 @@ import zipfile
 from pathlib import Path, PureWindowsPath
 from urllib.parse import urljoin
 
+from catalogue_http import display_url, open_url, validate_https_url
 from release_artifacts import binary_suffix
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -93,8 +94,13 @@ def read_pinned_version(root: Path, spec: tuple[str, str]) -> str:
 
 
 def read_url(url: str, timeout: int) -> bytes:
-    with urllib.request.urlopen(url, timeout=timeout) as response:
-        return response.read()
+    try:
+        validate_https_url(url, label="soldr-toolchain URL")
+        request = urllib.request.Request(url, headers={"Accept-Encoding": "identity"})
+        with open_url(request, timeout=timeout) as response:
+            return response.read()
+    except SystemExit as error:
+        raise SupportBinaryError(str(error)) from None
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -126,16 +132,20 @@ def download_verified(urls: list[object], expected_sha: str, destination: Path) 
             destination.write_bytes(read_url(source, timeout=600))
         except urllib.error.URLError as error:
             last_error = error
-            print(f"could not fetch {source}: {error}; trying the next catalogue URL")
+            print(
+                f"could not fetch {display_url(source)}: {type(error).__name__}; "
+                "trying the next catalogue URL"
+            )
             continue
         actual_sha = sha256_file(destination)
         if actual_sha != expected_sha:
             raise SupportBinaryError(
-                f"catalogued asset sha256 mismatch from {source}: "
+                f"catalogued asset sha256 mismatch from {display_url(source)}: "
                 f"expected {expected_sha}, got {actual_sha}"
             )
         return source
-    raise SupportBinaryError(f"all catalogue URLs failed: {last_error}")
+    error_kind = type(last_error).__name__ if last_error is not None else "unknown"
+    raise SupportBinaryError(f"all catalogue URLs failed: {error_kind}")
 
 
 def download_catalogued_asset(asset: dict, destination: Path) -> str:
@@ -229,24 +239,26 @@ def load_tool_catalog(
     descriptor_url = descriptor.get("url")
     if not descriptor_url:
         raise SupportBinaryError(
-            f"{index_url} has no descriptor URL for {tool}; support coverage is tracked in {issue_url}"
+            f"{display_url(index_url)} has no descriptor URL for {tool}; "
+            f"support coverage is tracked in {issue_url}"
         )
     catalog_url = urljoin(f"{origin}/", descriptor_url)
     expected_sha = str(descriptor.get("sha256") or "").lower()
     if not is_sha256(expected_sha):
         raise SupportBinaryError(
-            f"{index_url} descriptor for {tool} lacks a valid sha256"
+            f"{display_url(index_url)} descriptor for {tool} lacks a valid sha256"
         )
     raw = read_url(catalog_url, timeout=60)
     if sha256_bytes(raw) != expected_sha:
         raise SupportBinaryError(
-            f"{catalog_url} sha256 mismatch against {index_url} descriptor"
+            f"{display_url(catalog_url)} sha256 mismatch against "
+            f"{display_url(index_url)} descriptor"
         )
     try:
         return catalog_url, json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise SupportBinaryError(
-            f"invalid tool catalogue at {catalog_url}: {error}"
+            f"invalid tool catalogue at {display_url(catalog_url)}: {error}"
         ) from error
 
 
@@ -360,7 +372,8 @@ def fetch_tool(
     )
     if release is None:
         raise SupportBinaryError(
-            f"{catalog_url} has no release {release_version}; support coverage is tracked in {issue_url}"
+            f"{display_url(catalog_url)} has no release {release_version}; "
+            f"support coverage is tracked in {issue_url}"
         )
     platform = platform_for_target(target)
     platform_entry = next(
@@ -373,7 +386,8 @@ def fetch_tool(
     )
     if platform_entry is None:
         raise SupportBinaryError(
-            f"{catalog_url} release {release_version} has no asset for {target} ({platform}); "
+            f"{display_url(catalog_url)} release {release_version} has no asset "
+            f"for {target} ({platform}); "
             f"support coverage is tracked in {issue_url}"
         )
     asset = platform_entry["asset"]
@@ -381,7 +395,10 @@ def fetch_tool(
         temporary = Path(temp_dir)
         archive = temporary / asset["filename"]
         source_url = download_catalogued_asset(asset, archive)
-        print(f"fetched {tool} {release_version} for {target}: {source_url}")
+        print(
+            f"fetched {tool} {release_version} for {target}: "
+            f"{display_url(source_url)}"
+        )
         extract_dir = temporary / "extract"
         extract_dir.mkdir()
         extract_archive(archive, extract_dir, target, driver)
@@ -414,7 +431,7 @@ def stage_support_binaries(args: argparse.Namespace) -> None:
         index = json.loads(read_url(index_url, timeout=60).decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise SupportBinaryError(
-            f"invalid toolchain index at {index_url}: {error}"
+            f"invalid toolchain index at {display_url(index_url)}: {error}"
         ) from error
 
     versions = {
