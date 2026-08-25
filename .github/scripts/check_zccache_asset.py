@@ -55,6 +55,7 @@ import sys
 # is how the sibling scripts here import it too.
 from toolchain_asset_query import (
     DEFAULT_ORIGIN,
+    NetworkFetchError,
     find_asset,
     find_release,
     load_tool_manifest,
@@ -143,7 +144,7 @@ def main() -> int:
 
     try:
         url, payload = load_tool_manifest(args.origin, "zccache")
-    except (OSError, ValueError, SystemExit) as exc:
+    except (OSError, NetworkFetchError) as exc:
         # Not a failure: see the network policy in this module's docstring.
         print(f"check_zccache_asset: skipped, cannot resolve zccache manifest ({exc})")
         return 0

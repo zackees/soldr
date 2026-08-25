@@ -192,6 +192,30 @@ def serve(guard, monkeypatch, payload: dict) -> None:
     )
 
 
+def test_network_failure_skips_but_descriptor_failure_blocks(
+    guard, tmp_path, monkeypatch, capsys
+):
+    write_repo(tmp_path, "1.13.5")
+    monkeypatch.setattr(
+        guard,
+        "load_tool_manifest",
+        lambda *_: (_ for _ in ()).throw(guard.NetworkFetchError("reset")),
+    )
+    monkeypatch.setattr(
+        "sys.argv", ["check_zccache_asset.py", "--repo-root", str(tmp_path)]
+    )
+    assert guard.main() == 0
+    assert "skipped" in capsys.readouterr().out
+
+    monkeypatch.setattr(
+        guard,
+        "load_tool_manifest",
+        lambda *_: (_ for _ in ()).throw(SystemExit("descriptor sha256 mismatch")),
+    )
+    with pytest.raises(SystemExit, match="descriptor sha256 mismatch"):
+        guard.main()
+
+
 def test_the_2164_incident_fails_the_guard(guard, tmp_path, monkeypatch, capsys):
     """The pin leads the release: locked 1.14.0, nothing published for it.
 

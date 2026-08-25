@@ -31,6 +31,10 @@ DEFAULT_ORIGIN = "https://zackees.github.io/soldr-toolchain"
 FETCH_ATTEMPTS = 3
 RETRY_BASE_DELAY_SECS = 0.5
 
+
+class NetworkFetchError(SystemExit):
+    """A catalogue fetch exhausted retries without receiving bytes."""
+
 OS_ALIASES: dict[str, str] = {
     "linux": "linux",
     "mac": "darwin",
@@ -65,8 +69,8 @@ def fetch_bytes(url: str) -> bytes:
         ) as exc:
             if attempt == FETCH_ATTEMPTS:
                 if isinstance(exc, urllib.error.HTTPError):
-                    raise SystemExit(f"HTTP {exc.code} fetching {url}") from exc
-                raise SystemExit(f"network error fetching {url}: {exc}") from exc
+                    raise NetworkFetchError(f"HTTP {exc.code} fetching {url}") from exc
+                raise NetworkFetchError(f"network error fetching {url}: {exc}") from exc
             time.sleep(RETRY_BASE_DELAY_SECS * (2 ** (attempt - 1)))
     raise AssertionError("retry loop exhausted without returning or raising")
 
