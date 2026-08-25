@@ -132,7 +132,7 @@ def download_catalogued_asset(asset: dict, destination: Path) -> str:
     if not is_sha256(expected_sha):
         raise SupportBinaryError("catalogued asset has no valid sha256")
     declared_size = asset.get("size_bytes")
-    if type(declared_size) is not int or declared_size <= 0:
+    if not isinstance(declared_size, int) or isinstance(declared_size, bool) or declared_size <= 0:
         raise SupportBinaryError(f"catalogued asset has invalid size_bytes {declared_size!r}")
 
     urls = asset.get("urls") or []
@@ -146,10 +146,10 @@ def download_catalogued_asset(asset: dict, destination: Path) -> str:
         with destination.open("wb") as output:
             for expected_number, part in enumerate(parts, start=1):
                 number = part.get("number")
-                if type(number) is not int or number != expected_number:
+                if not isinstance(number, int) or isinstance(number, bool) or number != expected_number:
                     raise SupportBinaryError("catalogued multipart asset has non-contiguous parts")
                 size = part.get("size_bytes")
-                if type(size) is not int or not 1 <= size <= MAX_PART_BYTES:
+                if not isinstance(size, int) or isinstance(size, bool) or not 1 <= size <= MAX_PART_BYTES:
                     raise SupportBinaryError(
                         f"catalogued part {expected_number} has invalid size_bytes {size!r}"
                     )
