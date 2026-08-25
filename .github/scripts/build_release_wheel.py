@@ -174,13 +174,9 @@ def source_build_environment(base: Mapping[str, str]) -> dict[str, str]:
             env.pop(key, None)
         elif key.startswith("CARGO_TARGET_"):
             env.pop(key, None)
-    env.update(
-        {
-            "CARGO_BUILD_JOBS": "2",
-            "RUSTUP_TOOLCHAIN": SOLDR_TOOLCHAIN,
-            "SOLDR_JOBS": "2",
-        }
-    )
+    env.setdefault("CARGO_BUILD_JOBS", "2")
+    env.setdefault("SOLDR_JOBS", "2")
+    env["RUSTUP_TOOLCHAIN"] = SOLDR_TOOLCHAIN
     return env
 
 

@@ -79,6 +79,16 @@ def test_wheel_environment_points_maturin_at_soldr_cargo_bridge() -> None:
     }
 
 
+def test_wheel_environment_preserves_concurrency_limits() -> None:
+    env = MODULE.wheel_environment(
+        {"CARGO_BUILD_JOBS": "1", "SOLDR_JOBS": "1"},
+        driver=Path("release-tools") / "soldr",
+        cargo_bridge=Path("release-tools") / "cargo-via-soldr",
+    )
+    assert env["CARGO_BUILD_JOBS"] == "1"
+    assert env["SOLDR_JOBS"] == "1"
+
+
 def test_host_tool_environment_strips_musl_cross_state() -> None:
     driver = Path("release-tools") / "soldr"
     cargo_bridge = Path("release-tools") / "cargo-via-soldr"
@@ -108,6 +118,17 @@ def test_host_tool_environment_strips_musl_cross_state() -> None:
         "CARGO_BUILD_JOBS": "2",
         "SOLDR_JOBS": "2",
     }
+
+
+def test_host_tool_environment_preserves_stricter_concurrency_limits() -> None:
+    env = MODULE.host_tool_environment(
+        {"CARGO_BUILD_JOBS": "1", "SOLDR_JOBS": "1"},
+        driver=Path("release-tools") / "soldr",
+        cargo_bridge=Path("release-tools") / "cargo-via-soldr",
+        rustc=Path("toolchains") / "1.95.0" / "bin" / "rustc",
+    )
+    assert env["CARGO_BUILD_JOBS"] == "1"
+    assert env["SOLDR_JOBS"] == "1"
 
 
 def test_matrix_driver_is_exe_suffixed_on_windows(monkeypatch) -> None:

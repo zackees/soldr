@@ -247,8 +247,10 @@ def host_tool_environment(
     env["PATH"] = f"{rustc.parent}{os.pathsep}{env.get('PATH', '')}"
     env["RUSTC"] = str(rustc)
     env["RUSTUP_TOOLCHAIN"] = TOOLCHAIN
-    env["CARGO_BUILD_JOBS"] = "2"
-    env["SOLDR_JOBS"] = "2"
+    # Preserve stricter limits supplied by constrained release lanes. The
+    # defaults retain normal local/CI throughput when no caller limit exists.
+    env.setdefault("CARGO_BUILD_JOBS", "2")
+    env.setdefault("SOLDR_JOBS", "2")
     return env
 
 
