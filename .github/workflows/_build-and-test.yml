@@ -225,6 +225,27 @@ jobs:
       - name: Stop setup-soldr builder cache before tests
         uses: zackees/setup-soldr/cleanup@68ce266ed86b75ccfb332b084ba1a64d619bfe53
 
+      # soldr#2864: dev -> test is the transition that previously rebuilt the
+      # workspace. A mismatched profile setting invalidates every shared
+      # fingerprint. Exercise nextest's compile-only path with the exact cache
+      # environment used below and fail the canonical Linux lane if Cargo
+      # reports any compiling/checking unit. This is deliberately separate
+      # from the dev -> dev guard above: both transitions must remain warm.
+      - name: Assert build-to-nextest transition recompiles nothing (soldr#2864)
+        if: success()
+        continue-on-error: ${{ !contains(inputs.target, 'linux-gnu') }}
+        shell: bash
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-self-tests/${{ inputs.target }}
+          SOLDR_CACHE_LIFECYCLE: command
+          SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
+          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/soldr-self-tests/${{ inputs.target }}/cache/zccache
+        run: |
+          soldr cargo nextest run --no-run --workspace --lib --tests \
+            --target ${{ inputs.target }} > warm-nextest.log 2>&1
+          tail -n 20 warm-nextest.log
+          python3 .github/scripts/check_warm_rebuild.py warm-nextest.log
+
       # soldr#1324/#1703 — run every workspace library and integration binary
       # in one invocation. This includes the internal crates extracted after
       # the original single-crate optimization was written.

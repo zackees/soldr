@@ -26,13 +26,16 @@ a dependency here, and a guard that skips when a module is missing is the
 failure mode these very steps exist to prevent.
 """
 
+import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "_build-and-test.yml"
+CARGO_TOML = REPO_ROOT / "Cargo.toml"
 
 GUARD_1799 = "Assert managed toolchain homes did not leak (soldr#1799)"
 GUARD_1838 = "Assert the build did not silently run uncached (soldr#1838)"
+GUARD_2864 = "Assert build-to-nextest transition recompiles nothing (soldr#2864)"
 
 
 def _step_body(workflow: str, step_name: str) -> str:
@@ -84,3 +87,27 @@ def test_hosted_runner_compile_concurrency_is_memory_bounded() -> None:
     assert 'CARGO_BUILD_JOBS: "1"' in workflow
     assert 'SOLDR_JOBS: "1"' in workflow
     assert "Enlarge swap (OOM headroom)" in workflow
+
+
+def test_dev_and_test_profiles_share_all_host_ci_compile_settings() -> None:
+    # The warm-up path drives dev and nextest drives test. They share
+    # target/<triple>/debug, so a setting delta makes every unit stale at the
+    # handoff. Keep all dev overrides mirrored in test unless that handoff is
+    # deliberately removed from the workflow.
+    manifest = tomllib.loads(CARGO_TOML.read_text(encoding="utf-8"))
+    profiles = manifest["profile"]
+    assert profiles["test"] == profiles["dev"]
+
+
+def test_dev_to_nextest_transition_is_hard_guarded_on_linux() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    body = _step_body(workflow, GUARD_2864)
+    assert "continue-on-error" in body
+    assert "linux-gnu" in body
+    assert "soldr cargo nextest run --no-run" in body
+    assert "--workspace --lib --tests" in body
+    assert "check_warm_rebuild.py warm-nextest.log" in body
+    assert "SOLDR_CACHE_DIR" in body
+    assert workflow.index("Stop setup-soldr builder cache before tests") < workflow.index(
+        GUARD_2864
+    )
