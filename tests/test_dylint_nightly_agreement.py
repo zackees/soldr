@@ -22,13 +22,46 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from conftest import load_script_module
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CHANNEL = re.compile(r'^\s*channel\s*=\s*"([^"]+)"', re.MULTILINE)
+TARGET_GUARD = load_script_module(
+    REPO_ROOT / ".github" / "scripts" / "verify_dylint_target_dirs.py",
+    "verify_dylint_target_dirs",
+)
+
+BUILD_STEPS = (
+    "Build daemon process-creation boundary lint",
+    "Build fetch network boundary lint",
+    "Build local-socket name boundary lint",
+    "Build raw IPC transport boundary lint",
+    "Build platform-cfg directory boundary lint",
+    "Build env-flag boundary lint",
+)
+TEST_STEPS = (
+    "Test env-flag boundary lint",
+    "Test daemon process-creation boundary lint",
+    "Test fetch network boundary lint",
+    "Test local-socket name boundary lint",
+    "Test raw IPC transport boundary lint",
+    "Test platform-cfg directory boundary lint",
+)
 
 
 def pinned_channel(path: Path) -> str | None:
     match = CHANNEL.search(path.read_text(encoding="utf-8"))
     return match.group(1) if match else None
+
+
+def ci_step(ci: str, name: str) -> str:
+    match = re.search(
+        rf"^      - name: {re.escape(name)}\n(?P<body>.*?)(?=^      - name: |\Z)",
+        ci,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert match, f"ci.yml has no {name!r} step"
+    return match.group("body")
 
 
 def dylint_toolchain_files() -> list[Path]:
@@ -85,3 +118,43 @@ def test_the_ci_dylint_toolchain_matches_the_pins():
         f"ci.yml does not mention {pinned}; the Dylint steps install a nightly "
         "that the dylint crates do not pin"
     )
+
+
+def test_ci_dylint_build_and_test_steps_use_one_soldr_cargo_style():
+    """The nightly env chooses the toolchain; every lint uses Soldr's cargo front door."""
+    ci = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    for name in BUILD_STEPS:
+        step = ci_step(ci, name)
+        assert "RUSTUP_TOOLCHAIN: nightly-2026-05-28-x86_64-unknown-linux-gnu" in step
+        assert "soldr cargo build" in step
+        assert "soldr rustup run" not in step
+    for name in TEST_STEPS:
+        step = ci_step(ci, name)
+        assert "RUSTUP_TOOLCHAIN: nightly-2026-05-28-x86_64-unknown-linux-gnu" in step
+        assert "soldr cargo test" in step
+        assert "soldr rustup run" not in step
+
+
+def test_ci_dylint_tests_share_one_nightly_keyed_target_directory():
+    """Six standalone manifests share test deps without clobbering driver cdylibs."""
+    ci = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    shared = (
+        '"${GITHUB_WORKSPACE}/target/dylint/tests/'
+        'nightly-2026-05-28-x86_64-unknown-linux-gnu"'
+    )
+    for name in TEST_STEPS:
+        step = ci_step(ci, name)
+        assert "--target-dir" in step
+        assert shared in step
+    assert "verify_dylint_target_dirs.py" in ci
+
+
+def test_implicit_dylint_target_guard_reports_each_lint_target(tmp_path: Path):
+    (tmp_path / "dylints" / "one" / "target").mkdir(parents=True)
+    (tmp_path / "dylints" / "two" / "target").mkdir(parents=True)
+    (tmp_path / "dylints" / "three").mkdir(parents=True)
+
+    assert TARGET_GUARD.implicit_dylint_target_dirs(tmp_path) == [
+        tmp_path / "dylints" / "one" / "target",
+        tmp_path / "dylints" / "two" / "target",
+    ]
