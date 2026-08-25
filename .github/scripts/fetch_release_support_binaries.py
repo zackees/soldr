@@ -58,9 +58,17 @@ def platform_for_target(target: str) -> dict[str, str]:
     """Translate Soldr's target triple to a soldr-toolchain platform object."""
     table = {
         "x86_64-unknown-linux-gnu": {"os": "linux", "arch": "x86_64", "libc": "glibc"},
-        "aarch64-unknown-linux-gnu": {"os": "linux", "arch": "aarch64", "libc": "glibc"},
+        "aarch64-unknown-linux-gnu": {
+            "os": "linux",
+            "arch": "aarch64",
+            "libc": "glibc",
+        },
         "x86_64-unknown-linux-musl": {"os": "linux", "arch": "x86_64", "libc": "musl"},
-        "aarch64-unknown-linux-musl": {"os": "linux", "arch": "aarch64", "libc": "musl"},
+        "aarch64-unknown-linux-musl": {
+            "os": "linux",
+            "arch": "aarch64",
+            "libc": "musl",
+        },
         "x86_64-apple-darwin": {"os": "darwin", "arch": "x86_64"},
         "aarch64-apple-darwin": {"os": "darwin", "arch": "aarch64"},
         "x86_64-pc-windows-msvc": {"os": "windows", "arch": "x86_64", "abi": "msvc"},
@@ -69,7 +77,9 @@ def platform_for_target(target: str) -> dict[str, str]:
     try:
         return table[target]
     except KeyError as error:
-        raise SupportBinaryError(f"no soldr-toolchain platform mapping for {target}") from error
+        raise SupportBinaryError(
+            f"no soldr-toolchain platform mapping for {target}"
+        ) from error
 
 
 def read_pinned_version(root: Path, spec: tuple[str, str]) -> str:
@@ -100,7 +110,9 @@ def sha256_file(path: Path) -> str:
 
 
 def is_sha256(value: str) -> bool:
-    return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
+    return len(value) == 64 and all(
+        character in "0123456789abcdef" for character in value
+    )
 
 
 def download_verified(urls: list[object], expected_sha: str, destination: Path) -> str:
@@ -132,13 +144,21 @@ def download_catalogued_asset(asset: dict, destination: Path) -> str:
     if not is_sha256(expected_sha):
         raise SupportBinaryError("catalogued asset has no valid sha256")
     declared_size = asset.get("size_bytes")
-    if type(declared_size) is not int or declared_size <= 0:
-        raise SupportBinaryError(f"catalogued asset has invalid size_bytes {declared_size!r}")
+    if (
+        not isinstance(declared_size, int)
+        or isinstance(declared_size, bool)
+        or declared_size <= 0
+    ):
+        raise SupportBinaryError(
+            f"catalogued asset has invalid size_bytes {declared_size!r}"
+        )
 
     urls = asset.get("urls") or []
     parts = asset.get("parts") or []
     if urls and parts:
-        raise SupportBinaryError("catalogued asset mixes direct URLs and multipart data")
+        raise SupportBinaryError(
+            "catalogued asset mixes direct URLs and multipart data"
+        )
     if urls:
         source = download_verified(urls, expected_sha, destination)
     elif parts:
@@ -146,16 +166,30 @@ def download_catalogued_asset(asset: dict, destination: Path) -> str:
         with destination.open("wb") as output:
             for expected_number, part in enumerate(parts, start=1):
                 number = part.get("number")
-                if type(number) is not int or number != expected_number:
-                    raise SupportBinaryError("catalogued multipart asset has non-contiguous parts")
+                if (
+                    not isinstance(number, int)
+                    or isinstance(number, bool)
+                    or number != expected_number
+                ):
+                    raise SupportBinaryError(
+                        "catalogued multipart asset has non-contiguous parts"
+                    )
                 size = part.get("size_bytes")
-                if type(size) is not int or not 1 <= size <= MAX_PART_BYTES:
+                if (
+                    not isinstance(size, int)
+                    or isinstance(size, bool)
+                    or not 1 <= size <= MAX_PART_BYTES
+                ):
                     raise SupportBinaryError(
                         f"catalogued part {expected_number} has invalid size_bytes {size!r}"
                     )
-                part_path = destination.with_name(f"{destination.name}.part-{expected_number:04d}")
+                part_path = destination.with_name(
+                    f"{destination.name}.part-{expected_number:04d}"
+                )
                 source = download_verified(
-                    part.get("urls") or [], str(part.get("sha256", "")).lower(), part_path
+                    part.get("urls") or [],
+                    str(part.get("sha256", "")).lower(),
+                    part_path,
                 )
                 if part_path.stat().st_size != size:
                     raise SupportBinaryError(
@@ -168,7 +202,9 @@ def download_catalogued_asset(asset: dict, destination: Path) -> str:
                 sources.append(source)
         source = f"{sources[0]} ({len(sources)} multipart chunk(s))"
     else:
-        raise SupportBinaryError("catalogued asset has neither direct URLs nor multipart data")
+        raise SupportBinaryError(
+            "catalogued asset has neither direct URLs nor multipart data"
+        )
 
     if destination.stat().st_size != declared_size:
         raise SupportBinaryError(
@@ -183,7 +219,9 @@ def download_catalogued_asset(asset: dict, destination: Path) -> str:
     return source
 
 
-def load_tool_catalog(origin: str, index: dict, tool: str, issue_url: str) -> tuple[str, dict]:
+def load_tool_catalog(
+    origin: str, index: dict, tool: str, issue_url: str
+) -> tuple[str, dict]:
     """Load a per-tool catalogue after verifying its index-recorded digest."""
     index_url = f"{origin}/manifest.json"
     entry = (index.get("tools") or {}).get(tool)
@@ -196,14 +234,20 @@ def load_tool_catalog(origin: str, index: dict, tool: str, issue_url: str) -> tu
     catalog_url = urljoin(f"{origin}/", descriptor_url)
     expected_sha = str(descriptor.get("sha256") or "").lower()
     if not is_sha256(expected_sha):
-        raise SupportBinaryError(f"{index_url} descriptor for {tool} lacks a valid sha256")
+        raise SupportBinaryError(
+            f"{index_url} descriptor for {tool} lacks a valid sha256"
+        )
     raw = read_url(catalog_url, timeout=60)
     if sha256_bytes(raw) != expected_sha:
-        raise SupportBinaryError(f"{catalog_url} sha256 mismatch against {index_url} descriptor")
+        raise SupportBinaryError(
+            f"{catalog_url} sha256 mismatch against {index_url} descriptor"
+        )
     try:
         return catalog_url, json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise SupportBinaryError(f"invalid tool catalogue at {catalog_url}: {error}") from error
+        raise SupportBinaryError(
+            f"invalid tool catalogue at {catalog_url}: {error}"
+        ) from error
 
 
 def validate_archive_member(name: str) -> None:
@@ -234,14 +278,18 @@ def validate_tar_members(contents: tarfile.TarFile) -> None:
     for member in contents.getmembers():
         validate_archive_member(member.name)
         if member.issym() or member.islnk():
-            raise SupportBinaryError(f"link in support archive is not allowed: {member.name!r}")
+            raise SupportBinaryError(
+                f"link in support archive is not allowed: {member.name!r}"
+            )
         if not (member.isfile() or member.isdir()):
             raise SupportBinaryError(
                 f"special entry in support archive is not allowed: {member.name!r}"
             )
 
 
-def extract_archive(archive: Path, extract_dir: Path, target: str, driver: Path) -> None:
+def extract_archive(
+    archive: Path, extract_dir: Path, target: str, driver: Path
+) -> None:
     """Extract a verified support archive through the matching supported route."""
     name = archive.name
     if name.endswith(".tar.zst"):
@@ -251,9 +299,13 @@ def extract_archive(archive: Path, extract_dir: Path, target: str, driver: Path)
             Path(f"target/{target}/release/soldr{binary_suffix(target)}"),
             Path(f"target/release/soldr{binary_suffix(target)}"),
         ]
-        actual_driver = next((path for path in driver_candidates if path.is_file()), None)
+        actual_driver = next(
+            (path for path in driver_candidates if path.is_file()), None
+        )
         if actual_driver is None:
-            raise SupportBinaryError(f"no soldr driver found; tried {driver_candidates}")
+            raise SupportBinaryError(
+                f"no soldr driver found; tried {driver_candidates}"
+            )
         subprocess.run(
             [
                 str(actual_driver),
@@ -299,7 +351,11 @@ def fetch_tool(
     release_version = version if version.startswith("v") else f"v{version}"
     catalog_url, catalog = load_tool_catalog(origin, index, tool, issue_url)
     release = next(
-        (entry for entry in catalog.get("releases", []) if entry.get("version") == release_version),
+        (
+            entry
+            for entry in catalog.get("releases", [])
+            if entry.get("version") == release_version
+        ),
         None,
     )
     if release is None:
@@ -308,7 +364,11 @@ def fetch_tool(
         )
     platform = platform_for_target(target)
     platform_entry = next(
-        (entry for entry in release.get("platforms", []) if entry.get("platform") == platform),
+        (
+            entry
+            for entry in release.get("platforms", [])
+            if entry.get("platform") == platform
+        ),
         None,
     )
     if platform_entry is None:
@@ -328,9 +388,15 @@ def fetch_tool(
         binary_name = f"{tool}{binary_suffix(target)}"
         matches = [path for path in extract_dir.rglob(binary_name) if path.is_file()]
         if not matches:
-            raise SupportBinaryError(f"{tool} support archive did not contain {binary_name}")
+            raise SupportBinaryError(
+                f"{tool} support archive did not contain {binary_name}"
+            )
         matches.sort(
-            key=lambda path: (0 if path.parent.name == "bin" else 1, len(path.parts), str(path))
+            key=lambda path: (
+                0 if path.parent.name == "bin" else 1,
+                len(path.parts),
+                str(path),
+            )
         )
         destination = output_dir / binary_name
         shutil.copy2(matches[0], destination)
@@ -347,7 +413,9 @@ def stage_support_binaries(args: argparse.Namespace) -> None:
     try:
         index = json.loads(read_url(index_url, timeout=60).decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise SupportBinaryError(f"invalid toolchain index at {index_url}: {error}") from error
+        raise SupportBinaryError(
+            f"invalid toolchain index at {index_url}: {error}"
+        ) from error
 
     versions = {
         "crgx": read_pinned_version(args.repo_root, CRGX_VERSION),
