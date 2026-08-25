@@ -215,7 +215,9 @@ impl From<std::io::Error> for ClientError {
 pub fn submit_fire_and_forget(sock_path: &Path, req: &Request) -> Result<(), ClientError> {
     if let Some(mut stream) = connect_through_override(sock_path, HOT_PATH_TIMEOUT)? {
         write_frame_sync(&mut stream, req)?;
-        let _ = read_frame_sync::<_, Response>(&mut stream);
+        if let Err(error) = read_frame_sync::<_, Response>(&mut stream) {
+            note_missing_ack(req, &format!("{error}"));
+        }
         return Ok(());
     }
     if crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows {
@@ -227,7 +229,9 @@ pub fn submit_fire_and_forget(sock_path: &Path, req: &Request) -> Result<(), Cli
         // daemon.
         let mut stream = connect(sock_path, HOT_PATH_TIMEOUT)?;
         write_frame_sync(&mut stream, req)?;
-        let _ = read_frame_sync::<_, Response>(&mut stream);
+        if let Err(error) = read_frame_sync::<_, Response>(&mut stream) {
+            note_missing_ack(req, &format!("{error}"));
+        }
         Ok(())
     }
 }

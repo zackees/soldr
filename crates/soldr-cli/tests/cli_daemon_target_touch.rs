@@ -306,3 +306,59 @@ fn daemon_path_writes_via_ipc_when_available() {
     );
     assert_eq!(row, Some(1_700_000_000));
 }
+
+/// A peer that receives the frame and never acks must still be reported as
+/// submitted (soldr#2785).
+///
+/// The ack is best-effort by construction: #2558 added it so a macOS
+/// connection closed before the accept could not discard the buffered frame,
+/// and made the wait bounded precisely so an older daemon that never acks
+/// keeps working. Observing the missing ack must not quietly promote it to a
+/// failure -- that would turn every pre-#2558 daemon into a hard error on a
+/// path whose whole contract is that the caller does not learn the outcome.
+///
+/// Unix-only because it stands up a `UnixListener` directly; the Windows leg
+/// of the same code takes the named-pipe branch, which needs a different stub.
+#[cfg(unix)]
+#[test]
+fn a_peer_that_never_acks_is_still_a_successful_submit() {
+    use std::io::Read;
+    use std::os::unix::net::UnixListener;
+
+    let dir = unique_temp_dir("touch-noack");
+    let sock = dir.join("daemon.sock");
+    let listener = UnixListener::bind(&sock).expect("bind stub daemon socket");
+
+    // Accept, drain what the client wrote, and deliberately never reply.
+    let accepted = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let mut buffer = [0_u8; 1024];
+        // One read is enough to prove the frame arrived; the client is not
+        // waiting on us for anything else.
+        let read = stream.read(&mut buffer).unwrap_or(0);
+        // Hold the connection open past the client's bounded ack wait, so the
+        // client times out rather than seeing a clean EOF.
+        std::thread::sleep(Duration::from_millis(400));
+        read
+    });
+
+    let result = client::submit_fire_and_forget(
+        &sock,
+        &Request::RecordTargetTouch {
+            path: dir.display().to_string(),
+            unix_seconds: 1_700_000_000,
+        },
+    );
+    assert!(
+        result.is_ok(),
+        "a missing ack must stay best-effort, not become an error: {result:?}"
+    );
+
+    let bytes_read = accepted.join().expect("stub thread");
+    assert!(
+        bytes_read > 0,
+        "the stub should have received the request frame"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
