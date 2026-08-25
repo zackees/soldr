@@ -25,8 +25,8 @@ pub(crate) use catalogue_transport::materialize_catalogue_entry;
 /// Callers may use a legacy source URL only as an identity key when resolving
 /// an entry. Progress output must use this label so a multipart download never
 /// misleadingly reports that it is fetching the old Git LFS object.
-pub fn resolved_download_label(entry: &ManifestEntry) -> &str {
-    entry.display_url()
+pub fn resolved_download_label(entry: &ManifestEntry) -> String {
+    super::stream_download::safe_asset_url(entry.display_url())
 }
 
 #[cfg(test)]

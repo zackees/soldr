@@ -26,6 +26,23 @@ pub struct ManifestEntry {
 }
 
 impl ManifestEntry {
+    pub fn direct_url(&self) -> Option<&str> {
+        self.transport.direct_url()
+    }
+
+    /// Return the first URL the transport will request for progress output.
+    pub fn display_url(&self) -> &str {
+        self.direct_url()
+            .or_else(|| match &self.transport {
+                AssetTransport::Direct { .. } => None,
+                AssetTransport::Multipart { parts } => parts
+                    .first()
+                    .and_then(|part| part.urls.first())
+                    .map(String::as_str),
+            })
+            .unwrap_or("multipart catalogue asset")
+    }
+
     /// Match the pre-v2 repository URL used by pinned callers to the same
     /// logical catalogue row after its transport is rewritten to multipart.
     pub fn matches_legacy_url(&self, expected: &str) -> bool {
@@ -643,15 +660,12 @@ fn validate_unique_logical_rows(entries: &[ManifestEntry]) -> Result<(), String>
     Ok(())
 }
 
-fn entry_from_v1_wire(
-    entry: WireV1Entry,
-    all_urls: &mut std::collections::BTreeSet<String>,
-) -> Result<ManifestEntry, String> {
+fn entry_from_v1_wire(entry: WireV1Entry) -> Result<ManifestEntry, String> {
     if !valid_sha256(&entry.sha256) {
         return Err("asset SHA-256 must be lowercase 64-hex".into());
     }
+    validate_url(&entry.url)?;
     let urls = vec![entry.url];
-    validate_urls(&urls, all_urls)?;
     Ok(ManifestEntry {
         owner: entry.owner,
         repo: entry.repo,
@@ -830,12 +844,10 @@ impl ManifestIndex {
     pub(crate) fn from_v1_json(body: &str) -> Option<Self> {
         reject_duplicate_json_keys(body).ok()?;
         let wire: WireV1Catalogue = serde_json::from_str(body).ok()?;
-        let mut all_urls = std::collections::BTreeSet::new();
         let mut entries = Vec::with_capacity(wire.entries.len());
         for entry in wire.entries {
-            entries.push(entry_from_v1_wire(entry, &mut all_urls).ok()?);
+            entries.push(entry_from_v1_wire(entry).ok()?);
         }
-        validate_unique_logical_rows(&entries).ok()?;
         Some(Self {
             entries,
             fail_closed: false,

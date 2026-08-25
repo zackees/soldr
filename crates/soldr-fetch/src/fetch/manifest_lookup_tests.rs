@@ -2,6 +2,7 @@ use crate::core::SoldrError;
 use crate::fetch::manifest_lookup::catalogue_lookup::*;
 use crate::fetch::manifest_lookup::catalogue_model::*;
 use crate::fetch::manifest_lookup::catalogue_transport::*;
+use crate::fetch::manifest_lookup::resolved_download_label;
 use sha2::Digest;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
@@ -277,7 +278,7 @@ fn catalogue_v1_preserves_duplicate_identity_compatibility() {
                     "repo": "soldr-toolchain",
                     "tag": "1",
                     "asset": "bundle.tar.zst",
-                    "url": "https://example.com/first.tar.zst",
+                    "url": "https://example.com/first.tar.zst?token=secret#fragment",
                     "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
                 },
                 {
@@ -294,8 +295,24 @@ fn catalogue_v1_preserves_duplicate_identity_compatibility() {
     let index = ManifestIndex::from_json(v1).expect("legacy duplicate rows must still parse");
     assert_eq!(index.entries.len(), 2);
     assert_eq!(
+        index.entries[0].direct_url(),
+        Some("https://example.com/first.tar.zst?token=secret#fragment")
+    );
+    assert_eq!(
         resolved_download_label(&index.entries[0]),
         "https://example.com/first.tar.zst"
+    );
+
+    let shared_url = v1.replace(
+        "https://example.com/second.tar.zst",
+        "https://example.com/first.tar.zst?token=secret#fragment",
+    );
+    assert_eq!(
+        ManifestIndex::from_json(&shared_url)
+            .expect("legacy duplicate URLs must still parse")
+            .entries
+            .len(),
+        2
     );
 }
 
@@ -315,7 +332,7 @@ fn catalogue_v2_multipart_union_is_strict_and_path_addressable() {
             "size_bytes":3,
             "min_client_version":2,
             "parts":[
-              {"number":1,"sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","size_bytes":2,"urls":["https://example.test/1"]},
+              {"number":1,"sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","size_bytes":2,"urls":["https://example.test/1?token=secret#fragment"]},
               {"number":2,"sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","size_bytes":1,"urls":["https://example.test/2"]}
             ]
           }]
@@ -323,6 +340,13 @@ fn catalogue_v2_multipart_union_is_strict_and_path_addressable() {
     let index = ManifestIndex::from_json(v2).expect("v2 multipart parses");
     let entry = &index.entries[0];
     assert!(entry.direct_url().is_none());
+    let AssetTransport::Multipart { parts } = &entry.transport else {
+        panic!("expected multipart transport");
+    };
+    assert_eq!(
+        parts[0].urls[0],
+        "https://example.test/1?token=secret#fragment"
+    );
     assert_eq!(resolved_download_label(entry), "https://example.test/1");
     assert!(entry.matches_legacy_url("https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets/python/1/linux-x64/bundle.tar.zst"));
 }
