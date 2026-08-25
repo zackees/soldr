@@ -65,12 +65,12 @@ def test_required_ci_runs_root_dylint_policy() -> None:
     # artifacts into the project's Rust 1.95 target tree.
     dylint_steps = workflow.split(
         "      - name: Build daemon process-creation boundary lint", 1
-    )[1].split("      - name: Assert Dylint tests used the shared target directory", 1)[0]
+    )[1].split("      - name: Assert Dylint tests used the shared target directory", 1)[
+        0
+    ]
     assert dylint_steps.count("soldr cargo build") == 6
     assert dylint_steps.count("soldr cargo test") == 6
-    library_target = (
-        f'"${{GITHUB_WORKSPACE}}/target/dylint/libraries/{DYLINT_NIGHTLY}"'
-    )
+    library_target = f'"${{GITHUB_WORKSPACE}}/target/dylint/libraries/{DYLINT_NIGHTLY}"'
     test_target = f'"${{GITHUB_WORKSPACE}}/target/dylint/tests/{DYLINT_NIGHTLY}"'
     for name in DYLINT_BUILD_STEPS:
         step = workflow_step(workflow, name)
