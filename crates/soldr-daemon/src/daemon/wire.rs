@@ -528,6 +528,8 @@ impl From<&Request> for proto::WireRequest {
                 origin_url_normalized,
                 branch_name,
                 cook_cmd_summary,
+                compile_duration_ms,
+                save_elapsed_ms,
             } => proto::WireRequestKind::CookRecord(proto::WireCookRecord {
                 recipe_hash: sha_to_vec(recipe_hash),
                 target_triple: target_triple.clone(),
@@ -539,6 +541,8 @@ impl From<&Request> for proto::WireRequest {
                 origin_url_normalized: origin_url_normalized.clone(),
                 cook_cmd_summary: cook_cmd_summary.clone(),
                 branch_name: branch_name.clone(),
+                compile_duration_ms: *compile_duration_ms,
+                save_elapsed_ms: *save_elapsed_ms,
             }),
             Request::CookTouch { sha256 } => {
                 proto::WireRequestKind::CookTouch(proto::WireCookTouch {
@@ -674,6 +678,8 @@ impl TryFrom<proto::WireRequest> for Request {
                 origin_url_normalized: m.origin_url_normalized,
                 branch_name: m.branch_name,
                 cook_cmd_summary: m.cook_cmd_summary,
+                compile_duration_ms: m.compile_duration_ms,
+                save_elapsed_ms: m.save_elapsed_ms,
             },
             proto::WireRequestKind::CookTouch(m) => Request::CookTouch {
                 sha256: vec_to_sha(&m.sha256)?,
@@ -738,6 +744,8 @@ impl From<&Response> for proto::WireResponse {
                 matched_recipe_hash,
                 exact_recipe_match,
                 branch_name,
+                compile_duration_ms,
+                save_elapsed_ms,
             } => proto::WireResponseKind::CookHit(proto::WireCookHit {
                 sha256: sha_to_vec(sha256),
                 path: path.clone(),
@@ -749,6 +757,8 @@ impl From<&Response> for proto::WireResponse {
                     .unwrap_or_default(),
                 exact_recipe_match: *exact_recipe_match,
                 branch_name: branch_name.clone(),
+                compile_duration_ms: *compile_duration_ms,
+                save_elapsed_ms: *save_elapsed_ms,
             }),
             Response::CookMiss {
                 previous_origin_recipe_hashes,
@@ -854,6 +864,8 @@ impl TryFrom<proto::WireResponse> for Response {
                 matched_recipe_hash: vec_to_optional_sha(&m.matched_recipe_hash)?,
                 exact_recipe_match: m.exact_recipe_match,
                 branch_name: m.branch_name,
+                compile_duration_ms: m.compile_duration_ms,
+                save_elapsed_ms: m.save_elapsed_ms,
             },
             proto::WireResponseKind::CookMiss(m) => {
                 let mut hashes = Vec::with_capacity(m.previous_origin_recipe_hashes.len());

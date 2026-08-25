@@ -24,11 +24,96 @@ use crate::core::{
 use crate::daemon::client::{self, CookLookupOutcome};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Instant;
 
 /// Env var that overrides both file-level settings. `0`/`false`/`no`/
 /// `off` disables; anything else (including unset → fall through to
 /// the config files) leaves the choice to the next layer.
 pub const SOLDR_COOK_AUTO_HYDRATE_ENV: &str = "SOLDR_COOK_AUTO_HYDRATE";
+
+/// Conservative decision for a cooked-artifact restore. Unknown historical
+/// values always skip instead of gambling CI wall time on a nominal hit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CookRestoreDecision {
+    Restore {
+        estimated_transport_ms: u64,
+    },
+    Skip {
+        estimated_transport_ms: Option<u64>,
+        reason: &'static str,
+    },
+}
+
+#[derive(Debug)]
+enum TimedRestoreOutcome<T> {
+    Restored(T),
+    ShaMismatch,
+    Failed,
+}
+
+/// Verify and extract under one wall timer. Verification reads the complete
+/// archive, so excluding it would under-report the restore cost precisely for
+/// the large artifacts this gate exists to police.
+fn timed_verified_extract<T, E>(
+    verify: impl FnOnce() -> Result<bool, E>,
+    extract: impl FnOnce() -> Option<T>,
+) -> (TimedRestoreOutcome<T>, u64) {
+    let restore_started = Instant::now();
+    let outcome = match verify() {
+        Ok(true) => extract().map_or(TimedRestoreOutcome::Failed, TimedRestoreOutcome::Restored),
+        Ok(false) => TimedRestoreOutcome::ShaMismatch,
+        Err(_) => TimedRestoreOutcome::Failed,
+    };
+    let restore_elapsed_ms =
+        u64::try_from(restore_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    (outcome, restore_elapsed_ms)
+}
+
+fn decide_cook_restore(
+    archive_bytes: u64,
+    compile_duration_ms: u64,
+    save_elapsed_ms: u64,
+) -> CookRestoreDecision {
+    if archive_bytes == 0 {
+        return CookRestoreDecision::Skip {
+            estimated_transport_ms: None,
+            reason: "archive has no recorded bytes",
+        };
+    }
+    if compile_duration_ms == 0 {
+        return CookRestoreDecision::Skip {
+            estimated_transport_ms: None,
+            reason: "no prior compile duration is recorded",
+        };
+    }
+    if save_elapsed_ms == 0 {
+        return CookRestoreDecision::Skip {
+            estimated_transport_ms: None,
+            reason: "no observed archive bandwidth is recorded",
+        };
+    }
+
+    // The save measurement is the only durable same-key bandwidth sample
+    // available before a restore. Charge the observed save and one equally
+    // sized restore; this is intentionally a conservative transport estimate.
+    let observed_bytes_per_ms = archive_bytes.div_ceil(save_elapsed_ms).max(1);
+    let estimated_restore_ms = archive_bytes.div_ceil(observed_bytes_per_ms);
+    let estimated_transport_ms = save_elapsed_ms.saturating_add(estimated_restore_ms);
+    if estimated_transport_ms >= compile_duration_ms {
+        CookRestoreDecision::Skip {
+            estimated_transport_ms: Some(estimated_transport_ms),
+            reason: "estimated transport is not cheaper than the avoided compile",
+        }
+    } else {
+        CookRestoreDecision::Restore {
+            estimated_transport_ms,
+        }
+    }
+}
+
+fn is_cook_performance_miss(restore_elapsed_ms: u64, compile_duration_ms: u64) -> bool {
+    compile_duration_ms > 0 && restore_elapsed_ms >= compile_duration_ms
+}
 
 /// Run the pre-flight. Best-effort across the board — any error
 /// (missing manifest, missing Cargo.lock, daemon down, parse failure,
@@ -126,15 +211,47 @@ fn try_hydrate(args: &[String], paths: &SoldrPaths, rustc: &Path) -> Option<()> 
         matched_recipe_hash,
         exact_recipe_match,
         branch_name,
+        compile_duration_ms,
+        save_elapsed_ms,
     } = outcome
     else {
         return None;
     };
 
+    let estimated_transport_ms = match decide_cook_restore(
+        size_bytes,
+        compile_duration_ms,
+        save_elapsed_ms,
+    ) {
+        CookRestoreDecision::Restore {
+            estimated_transport_ms,
+        } => estimated_transport_ms,
+        CookRestoreDecision::Skip {
+            estimated_transport_ms,
+            reason,
+        } => {
+            let estimate = estimated_transport_ms
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            eprintln!(
+                "soldr cook: decision=skip  size_bytes={size_bytes}  estimated_transport_ms={estimate}  compile_elapsed_ms={compile_duration_ms}  reason={reason}"
+            );
+            return None;
+        }
+    };
+
     let artifact = PathBuf::from(&path);
-    match verify_sha256(&artifact, &sha256) {
-        Ok(true) => {}
-        Ok(false) => {
+    let target_dir = resolve_target_dir(&manifest_dir, args);
+    let (restore_outcome, restore_elapsed_ms) = timed_verified_extract(
+        || verify_sha256(&artifact, &sha256),
+        || {
+            std::fs::create_dir_all(&target_dir).ok()?;
+            extract_skip_existing(&artifact, &target_dir).ok()
+        },
+    );
+    let report = match restore_outcome {
+        TimedRestoreOutcome::Restored(report) => report,
+        TimedRestoreOutcome::ShaMismatch => {
             let abbrev = sha_abbrev(&sha256);
             if let Ok(quarantined) = quarantine_artifact(&artifact) {
                 eprintln!(
@@ -150,41 +267,59 @@ fn try_hydrate(args: &[String], paths: &SoldrPaths, rustc: &Path) -> Option<()> 
             }
             return None;
         }
-        Err(_) => return None,
-    }
-
-    let target_dir = resolve_target_dir(&manifest_dir, args);
-    if std::fs::create_dir_all(&target_dir).is_err() {
-        return None;
-    }
-
-    let report = extract_skip_existing(&artifact, &target_dir).ok()?;
+        TimedRestoreOutcome::Failed => return None,
+    };
 
     // Fire-and-forget touch so the auto-GC pass prefers entries that
     // are actually serving traffic.
     let _ = client::cook_touch(&sock, sha256);
 
-    emit_hydrate_line(
-        &sha256,
+    emit_hydrate_line(HydrateLog {
+        sha256: &sha256,
         size_bytes,
-        origin_url_normalized.as_deref(),
-        matched_recipe_hash.as_ref(),
+        origin_hint: origin_url_normalized.as_deref(),
+        matched_recipe_hash: matched_recipe_hash.as_ref(),
         exact_recipe_match,
-        branch_name.as_deref(),
-        &report,
-    );
+        branch_name: branch_name.as_deref(),
+        restore_elapsed_ms,
+        compile_duration_ms,
+        estimated_transport_ms,
+        report: &report,
+    });
+    if is_cook_performance_miss(restore_elapsed_ms, compile_duration_ms) {
+        eprintln!(
+            "soldr cook: performance miss  decision=restore  size_bytes={size_bytes}  elapsed_ms={restore_elapsed_ms}  compile_elapsed_ms={compile_duration_ms}"
+        );
+    }
     Some(())
 }
 
-fn emit_hydrate_line(
-    sha256: &[u8; 32],
+struct HydrateLog<'a> {
+    sha256: &'a [u8; 32],
     size_bytes: u64,
-    origin_hint: Option<&str>,
-    matched_recipe_hash: Option<&[u8; 32]>,
+    origin_hint: Option<&'a str>,
+    matched_recipe_hash: Option<&'a [u8; 32]>,
     exact_recipe_match: bool,
-    branch_name: Option<&str>,
-    report: &cook_archive::ExtractReport,
-) {
+    branch_name: Option<&'a str>,
+    restore_elapsed_ms: u64,
+    compile_duration_ms: u64,
+    estimated_transport_ms: u64,
+    report: &'a cook_archive::ExtractReport,
+}
+
+fn emit_hydrate_line(log: HydrateLog<'_>) {
+    let HydrateLog {
+        sha256,
+        size_bytes,
+        origin_hint,
+        matched_recipe_hash,
+        exact_recipe_match,
+        branch_name,
+        restore_elapsed_ms,
+        compile_duration_ms,
+        estimated_transport_ms,
+        report,
+    } = log;
     let mib = size_bytes as f64 / 1024.0 / 1024.0;
     let origin = origin_hint.unwrap_or("none");
     let match_kind = if exact_recipe_match {
@@ -197,7 +332,7 @@ fn emit_hydrate_line(
         .unwrap_or_else(|| "unknown".to_string());
     let branch = branch_name.unwrap_or("unknown");
     eprintln!(
-        "{}  sha256={}  size={mib:.1} MiB  origin-hint={origin}  match={match_kind} recipe={matched} branch={branch}  (files +{} ={})",
+        "{}  sha256={}  size_bytes={size_bytes}  size={mib:.1} MiB  elapsed_ms={restore_elapsed_ms}  estimated_transport_ms={estimated_transport_ms}  compile_elapsed_ms={compile_duration_ms}  decision=restore  origin-hint={origin}  match={match_kind} recipe={matched} branch={branch}  (files +{} ={})",
         green_hydrate_prefix(),
         sha_abbrev(sha256),
         report.files_written,
@@ -413,5 +548,69 @@ mod tests {
         assert_eq!(profile_dir_name("dev"), "debug");
         assert_eq!(profile_dir_name("release"), "release");
         assert_eq!(profile_dir_name("ci"), "ci");
+    }
+
+    #[test]
+    fn cook_cost_gate_restores_when_observed_transport_is_cheaper() {
+        assert_eq!(
+            decide_cook_restore(500 * 1024 * 1024, 120_000, 5_000),
+            CookRestoreDecision::Restore {
+                estimated_transport_ms: 10_000
+            }
+        );
+    }
+
+    #[test]
+    fn cook_cost_gate_skips_when_transport_would_lose() {
+        assert_eq!(
+            decide_cook_restore(500 * 1024 * 1024, 9_000, 5_000),
+            CookRestoreDecision::Skip {
+                estimated_transport_ms: Some(10_000),
+                reason: "estimated transport is not cheaper than the avoided compile",
+            }
+        );
+    }
+
+    #[test]
+    fn cook_cost_gate_skips_without_prior_observations() {
+        assert!(matches!(
+            decide_cook_restore(1, 0, 5_000),
+            CookRestoreDecision::Skip {
+                reason: "no prior compile duration is recorded",
+                ..
+            }
+        ));
+        assert!(matches!(
+            decide_cook_restore(1, 5_000, 0),
+            CookRestoreDecision::Skip {
+                reason: "no observed archive bandwidth is recorded",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn cook_performance_miss_is_an_honest_wall_time_comparison() {
+        assert!(is_cook_performance_miss(10_000, 10_000));
+        assert!(is_cook_performance_miss(10_001, 10_000));
+        assert!(!is_cook_performance_miss(9_999, 10_000));
+        assert!(!is_cook_performance_miss(10_000, 0));
+    }
+
+    #[test]
+    fn cook_restore_elapsed_includes_archive_verification() {
+        let (outcome, elapsed_ms) = timed_verified_extract(
+            || {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+                Ok::<_, ()>(true)
+            },
+            || Some(()),
+        );
+
+        assert!(matches!(outcome, TimedRestoreOutcome::Restored(())));
+        assert!(
+            elapsed_ms >= 20,
+            "verification delay was excluded from restore elapsed time: {elapsed_ms} ms"
+        );
     }
 }

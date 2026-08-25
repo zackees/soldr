@@ -104,7 +104,9 @@ use serde::{Deserialize, Serialize};
 ///   `SOLDR_JOBS` used to be a silent no-op; publishing the applied value is
 ///   what lets a client notice and say so.
 /// * v22 (soldr#2251): daemon-owned target registry snapshot/removal IPC.
-pub const PROTOCOL_VERSION: u32 = 22;
+/// * v23 (soldr#2866): cook record/hit messages carry the prior compile and
+///   archive-save timings used by the conservative restore cost gate.
+pub const PROTOCOL_VERSION: u32 = 23;
 
 /// Wire-chunk granularity for the streaming Compile reply (#983 Phase
 /// 5b). 64 KiB is the same buffer size cargo's own pipe readers use
@@ -207,6 +209,10 @@ pub enum Request {
         origin_url_normalized: Option<String>,
         branch_name: Option<String>,
         cook_cmd_summary: String,
+        /// Wall time of the compile this artifact can avoid; zero is unknown.
+        compile_duration_ms: u64,
+        /// Observed local archive-save wall time; zero is unknown.
+        save_elapsed_ms: u64,
     },
     /// Fire-and-forget: bump the `last_used_unix_ms` field for the
     /// row whose `sha256` matches.
@@ -386,6 +392,8 @@ pub enum Response {
         matched_recipe_hash: Option<[u8; 32]>,
         exact_recipe_match: bool,
         branch_name: Option<String>,
+        compile_duration_ms: u64,
+        save_elapsed_ms: u64,
     },
     /// Reply to [`Request::CookLookup`] when neither an exact nor
     /// fallback artifact is available. `previous_origin_recipe_hashes`
@@ -684,8 +692,8 @@ mod tests {
     // soldr#2023 renamed this from the v20 spelling when the daemon began
     // publishing its applied compile limit.
     #[test]
-    fn protocol_version_is_v22_after_adding_target_registry_ipc() {
-        assert_eq!(PROTOCOL_VERSION, 22);
+    fn protocol_version_is_v23_after_adding_cook_cost_observations() {
+        assert_eq!(PROTOCOL_VERSION, 23);
     }
 
     #[test]

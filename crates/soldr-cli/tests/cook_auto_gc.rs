@@ -47,6 +47,8 @@ fn make_entry(sha_byte: u8, size: u64, last_used: u64, origin: Option<&str>) -> 
         origin_url_normalized: origin.map(str::to_owned),
         cook_cmd_summary: "cook --release".into(),
         branch_name: None,
+        compile_duration_ms: 60_000,
+        save_elapsed_ms: 5_000,
     }
 }
 

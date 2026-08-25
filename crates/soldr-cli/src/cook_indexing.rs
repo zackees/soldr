@@ -4,14 +4,37 @@ enum DriftSignal {
     AlreadyIndexed(#[allow(dead_code)] [u8; 32]),
 }
 
-fn emit_indexed_line(packed: &PackedCookArchive, origin: Option<&str>) {
+fn emit_indexed_line(
+    packed: &PackedCookArchive,
+    origin: Option<&str>,
+    compile_duration_ms: u64,
+    save_elapsed_ms: u64,
+) {
+    eprintln!(
+        "{}",
+        format_indexed_line(
+            packed,
+            origin,
+            compile_duration_ms,
+            save_elapsed_ms
+        )
+    );
+}
+
+fn format_indexed_line(
+    packed: &PackedCookArchive,
+    origin: Option<&str>,
+    compile_duration_ms: u64,
+    save_elapsed_ms: u64,
+) -> String {
     let mib = packed.size_bytes as f64 / 1024.0 / 1024.0;
     let origin_field = origin.unwrap_or("none");
-    eprintln!(
-        "{}  sha256={}  size={mib:.1} MiB  origin={origin_field}",
+    format!(
+        "{}  sha256={}  size_bytes={}  size={mib:.1} MiB  elapsed_ms={save_elapsed_ms}  compile_elapsed_ms={compile_duration_ms}  decision=save  origin={origin_field}",
         green_indexed_prefix(),
         sha_abbrev(&packed.sha256),
-    );
+        packed.size_bytes,
+    )
 }
 
 fn build_cook_cmd_summary(args: &CookArgs) -> String {

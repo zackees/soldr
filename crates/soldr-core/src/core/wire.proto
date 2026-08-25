@@ -145,6 +145,11 @@ message WireCookRecord {
   optional string origin_url_normalized = 8;
   string cook_cmd_summary = 9;
   optional string branch_name = 10;
+  // v23 / soldr#2866: wall time of the compile this archive can avoid. Zero
+  // means an older client did not record it, so consumers skip restore.
+  uint64 compile_duration_ms = 11;
+  // v23 / soldr#2866: observed local archive-save wall time for this key.
+  uint64 save_elapsed_ms = 12;
 }
 
 message WireCookTouch {
@@ -347,6 +352,8 @@ message WireCookHit {
   bytes matched_recipe_hash = 5;  // empty when unavailable
   bool exact_recipe_match = 6;
   optional string branch_name = 7;
+  uint64 compile_duration_ms = 8;  // v23 / soldr#2866; zero means unknown
+  uint64 save_elapsed_ms = 9;      // v23 / soldr#2866; zero means unknown
 }
 
 message WireCookMiss {
@@ -469,4 +476,6 @@ message WireCookEntry {
   optional string origin_url_normalized = 5;
   string cook_cmd_summary = 6;
   optional string branch_name = 7;
+  uint64 compile_duration_ms = 8;  // v23 / soldr#2866; zero means unknown
+  uint64 save_elapsed_ms = 9;      // v23 / soldr#2866; zero means unknown
 }

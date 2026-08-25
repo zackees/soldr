@@ -182,6 +182,15 @@ debug = false
 debug = false
 codegen-units = 1
 
+# The host CI warm-up and nextest invocation share target/<triple>/debug.
+# Mirror dev's effective codegen settings here so their fingerprints remain
+# reusable across that handoff (soldr#2864).
+[profile.test]
+debug = "line-tables-only"
+
+[profile.test.package."*"]
+debug = false
+
 [profile.test.package.zccache]
 debug = false
 codegen-units = 1

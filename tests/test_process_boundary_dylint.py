@@ -1,5 +1,12 @@
 from pathlib import Path
 
+from conftest import (
+    DYLINT_BUILD_STEPS,
+    DYLINT_NIGHTLY,
+    DYLINT_TEST_STEPS,
+    workflow_step,
+)
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -53,16 +60,49 @@ def test_required_ci_runs_root_dylint_policy() -> None:
     assert "Build env-flag boundary lint" in workflow
     assert "Test env-flag boundary lint" in workflow
     assert "working-directory: dylints/ban_raw_env_flag" in workflow
-    # All boundary lints build and test in the required CI lane. Six for the
-    # original five (one shares a build), plus two for soldr#2740's.
-    assert workflow.count("soldr rustup run") == 8
-    assert (
-        "nightly-2026-05-28-x86_64-unknown-linux-gnu\n"
-        "          cargo test\n"
-        "          --manifest-path Cargo.toml"
-    ) in workflow
+    # Dylint intentionally keeps its pinned nightly toolchain. All six lint
+    # crates share one nightly-keyed test target, without mixing those
+    # artifacts into the project's Rust 1.95 target tree.
+    dylint_steps = workflow.split(
+        "      - name: Build daemon process-creation boundary lint", 1
+    )[1].split("      - name: Assert Dylint tests used the shared target directory", 1)[
+        0
+    ]
+    assert dylint_steps.count("soldr cargo build") == 6
+    assert dylint_steps.count("soldr cargo test") == 6
+    library_target = f'"${{GITHUB_WORKSPACE}}/target/dylint/libraries/{DYLINT_NIGHTLY}"'
+    test_target = f'"${{GITHUB_WORKSPACE}}/target/dylint/tests/{DYLINT_NIGHTLY}"'
+    test_target_env = (
+        f"${{{{ github.workspace }}}}/target/dylint/tests/{DYLINT_NIGHTLY}"
+    )
+    for name in DYLINT_BUILD_STEPS:
+        step = workflow_step(workflow, name)
+        assert step.count("soldr cargo build") == 1, name
+        assert "soldr cargo test" not in step, name
+        assert step.count("RUSTUP_TOOLCHAIN:") == 1, name
+        assert f"RUSTUP_TOOLCHAIN: {DYLINT_NIGHTLY}" in step, name
+        assert step.count("--target-dir") == 1, name
+        assert library_target in step, name
+        assert test_target not in step, name
+    for name in DYLINT_TEST_STEPS:
+        step = workflow_step(workflow, name)
+        assert step.count("soldr cargo test") == 1, name
+        assert "soldr cargo build" not in step, name
+        assert step.count("RUSTUP_TOOLCHAIN:") == 1, name
+        assert f"RUSTUP_TOOLCHAIN: {DYLINT_NIGHTLY}" in step, name
+        assert step.count("--target-dir") == 1, name
+        assert test_target in step, name
+        assert step.count("CARGO_TARGET_DIR:") == 1, name
+        assert f"CARGO_TARGET_DIR: {test_target_env}" in step, name
+        assert library_target not in step, name
+    target_guard_step = workflow_step(
+        workflow, "Assert Dylint tests used the shared target directory"
+    )
+    assert "verify_dylint_target_dirs.py" in target_guard_step
+    assert "--shared-target" in target_guard_step
+    assert test_target in target_guard_step
     assert "--manifest-path Cargo.toml" in workflow
-    assert "RUSTUP_TOOLCHAIN: nightly-2026-05-28-x86_64-unknown-linux-gnu" in workflow
+    assert f"RUSTUP_TOOLCHAIN: {DYLINT_NIGHTLY}" in workflow
     # Seven for the original lints, plus soldr#2740's test step.
     assert workflow.count('SOLDR_NO_GC_TARGET: "1"') == 7
     # Thirteen for the original lints, plus soldr#2740's build and test.

@@ -413,6 +413,8 @@ where
                             matched_recipe_hash: Some(recipe_hash),
                             exact_recipe_match: true,
                             branch_name: entry.branch_name,
+                            compile_duration_ms: entry.compile_duration_ms,
+                            save_elapsed_ms: entry.save_elapsed_ms,
                         }
                     }
                     Ok(None) => {
@@ -435,6 +437,8 @@ where
                                     matched_recipe_hash: Some(matched_key.recipe_hash),
                                     exact_recipe_match: false,
                                     branch_name: entry.branch_name,
+                                    compile_duration_ms: entry.compile_duration_ms,
+                                    save_elapsed_ms: entry.save_elapsed_ms,
                                 }
                             }
                             Ok(None) => {
@@ -470,6 +474,8 @@ where
             origin_url_normalized,
             branch_name,
             cook_cmd_summary,
+            compile_duration_ms,
+            save_elapsed_ms,
         } => {
             let key = CookKey {
                 recipe_hash,
@@ -487,6 +493,8 @@ where
                 origin_url_normalized,
                 cook_cmd_summary,
                 branch_name,
+                compile_duration_ms,
+                save_elapsed_ms,
             };
             let result = cook_index::upsert(&state.db_path, &key, &entry);
             match result {
