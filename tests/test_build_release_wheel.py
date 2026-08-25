@@ -41,6 +41,15 @@ def test_environment_preserves_unrelated_caller_arguments() -> None:
     assert env["SOLDR_JOBS"] == "2"
 
 
+def test_environment_preserves_stricter_concurrency_limits() -> None:
+    env = wheel.build_environment(
+        "aarch64-unknown-linux-gnu",
+        {"CARGO_BUILD_JOBS": "1", "SOLDR_JOBS": "1"},
+    )
+    assert env["CARGO_BUILD_JOBS"] == "1"
+    assert env["SOLDR_JOBS"] == "1"
+
+
 def test_release_environment_forces_soldr_maturin_off_xwin() -> None:
     env = wheel.build_environment("x86_64-pc-windows-msvc", {"MATURIN_USE_XWIN": "1"})
     assert env["MATURIN_USE_XWIN"] == "0"
@@ -105,6 +114,14 @@ def test_source_build_environment_removes_cross_target_state() -> None:
         "RUSTUP_TOOLCHAIN": "1.95.0",
         "SOLDR_JOBS": "2",
     }
+
+
+def test_source_build_environment_preserves_stricter_concurrency_limits() -> None:
+    env = wheel.source_build_environment(
+        {"CARGO_BUILD_JOBS": "1", "SOLDR_JOBS": "1"}
+    )
+    assert env["CARGO_BUILD_JOBS"] == "1"
+    assert env["SOLDR_JOBS"] == "1"
 
 
 @pytest.mark.parametrize(
