@@ -68,7 +68,7 @@ struct WireV1Entry {
 /// schema version so old clients never reinterpret a transport field.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct WireV2Catalogue {
+pub(super) struct WireV2Catalogue {
     schema_version: u32,
     generation: String,
     publication_state: PublicationStateBinding,
@@ -76,7 +76,7 @@ struct WireV2Catalogue {
     generated_at: Option<String>,
     #[serde(default)]
     origin: Option<String>,
-    entries: Vec<WireV2Entry>,
+    pub(super) entries: Vec<WireV2Entry>,
 }
 
 /// The v2 root is bound to the immutable publication generation.  The
@@ -89,24 +89,24 @@ struct PublicationStateBinding {
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct WireV2Entry {
-    owner: String,
-    repo: String,
-    tag: String,
-    asset: String,
-    size_bytes: u64,
-    sha256: String,
-    urls: Option<Vec<String>>,
-    parts: Option<Vec<WirePart>>,
+pub(super) struct WireV2Entry {
+    pub(super) owner: String,
+    pub(super) repo: String,
+    pub(super) tag: String,
+    pub(super) asset: String,
+    pub(super) size_bytes: u64,
+    pub(super) sha256: String,
+    pub(super) urls: Option<Vec<String>>,
+    pub(super) parts: Option<Vec<WirePart>>,
     #[serde(default)]
-    min_client_version: Option<u32>,
+    pub(super) min_client_version: Option<u32>,
     #[serde(default)]
-    source_path: Option<String>,
+    pub(super) source_path: Option<String>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PublicationState {
+pub(super) struct PublicationState {
     schema_version: u32,
     generation: String,
     source: SourceGitObject,
@@ -238,7 +238,7 @@ fn write_canonical_json(value: &serde_json::Value, out: &mut Vec<u8>) -> Option<
     Some(())
 }
 
-fn canonical_catalogue_sha256(body: &str) -> Option<String> {
+pub(super) fn canonical_catalogue_sha256(body: &str) -> Option<String> {
     reject_duplicate_json_keys(body).ok()?;
     let value: serde_json::Value = serde_json::from_str(body).ok()?;
     let mut canonical = Vec::new();
@@ -284,7 +284,11 @@ pub(crate) async fn bind_v2_publication_state(body: &str) -> Result<(), SoldrErr
     }
 }
 
-fn publication_state_matches(state: &PublicationState, generation: &str, digest: &str) -> bool {
+pub(super) fn publication_state_matches(
+    state: &PublicationState,
+    generation: &str,
+    digest: &str,
+) -> bool {
     state.schema_version == 1
         && state.generation == generation
         && valid_sha256(&state.catalogue_sha256)
@@ -342,7 +346,10 @@ fn publication_state_matches(state: &PublicationState, generation: &str, digest:
         && valid_part_index(&state.assets_by_sha256, &state.parts_by_sha256)
 }
 
-fn publication_entries_match_state(entries: &[WireV2Entry], state: &PublicationState) -> bool {
+pub(super) fn publication_entries_match_state(
+    entries: &[WireV2Entry],
+    state: &PublicationState,
+) -> bool {
     let mut source_paths = std::collections::BTreeSet::new();
     let mut logical_keys = std::collections::BTreeSet::new();
     for entry in entries {
@@ -477,13 +484,13 @@ fn valid_source_path(path: &str) -> bool {
             .any(|p| p.is_empty() || p == "." || p == "..")
 }
 
-fn parse_publication_state(body: &str) -> Result<PublicationState, SoldrError> {
+pub(super) fn parse_publication_state(body: &str) -> Result<PublicationState, SoldrError> {
     reject_duplicate_json_keys(body).map_err(SoldrError::Other)?;
     serde_json::from_str(body)
         .map_err(|error| SoldrError::Other(format!("publication state did not parse: {error}")))
 }
 
-fn validate_publication_state_body(
+pub(super) fn validate_publication_state_body(
     body: &str,
     generation: &str,
     digest: &str,
@@ -500,11 +507,11 @@ fn validate_publication_state_body(
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct WirePart {
-    number: u32,
-    size_bytes: u64,
-    sha256: String,
-    urls: Vec<String>,
+pub(super) struct WirePart {
+    pub(super) number: u32,
+    pub(super) size_bytes: u64,
+    pub(super) sha256: String,
+    pub(super) urls: Vec<String>,
 }
 
 /// True when a published release requires a newer transport-capable client.
@@ -532,7 +539,7 @@ fn validate_url(value: &str) -> Result<(), String> {
     }
     Ok(())
 }
-fn valid_generation(value: &str) -> bool {
+pub(super) fn valid_generation(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 256
         && value
@@ -746,7 +753,7 @@ fn entry_from_v1_wire(
     })
 }
 
-fn entry_from_v2_wire(
+pub(super) fn entry_from_v2_wire(
     entry: WireV2Entry,
     all_urls: &mut std::collections::BTreeSet<String>,
     part_urls: &mut std::collections::BTreeMap<String, (String, u64)>,
@@ -1000,12 +1007,3 @@ impl ManifestIndex {
             .collect()
     }
 }
-
-/// Process-wide one-shot cache of the parsed manifest. Stores
-/// `Some(ManifestIndex)` after a successful fetch+parse and
-/// `Some(ManifestIndex::empty())` on any failure (so subsequent calls
-/// don't re-try the network within the same process).
-
-#[cfg(test)]
-#[path = "manifest_lookup_tests.rs"]
-mod tests;

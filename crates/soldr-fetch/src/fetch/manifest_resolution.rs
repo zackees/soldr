@@ -93,11 +93,10 @@ async fn try_manifest_first(
         paths,
         cache_name,
         &version,
-        &matched_entry.asset,
+        matched_entry,
         downloaded.path(),
         target,
         binary_names,
-        (&matched_entry.asset, &matched_entry.sha256),
     )
     .await?;
     soldr_core::build_log_meta::fetch_timing::record(

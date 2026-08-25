@@ -14,6 +14,11 @@ use super::stream_download::{
 };
 use super::trust;
 
+enum ArchiveSource<'a> {
+    Url(&'a str),
+    VerifiedFile { asset_name: &'a str, path: &'a Path },
+}
+
 // soldr#2132: deliberately NOT wrapped in `super::retry::with_backoff`.
 //
 // Every call site here -- `download_and_extract` at mod.rs:579 and
@@ -57,11 +62,10 @@ pub(super) async fn download_and_extract_with_pin(
         paths,
         cache_name,
         version,
-        url,
+        ArchiveSource::Url(url),
         target,
         binary_names,
         manifest_pin,
-        None,
     )
     .await
 }
@@ -73,21 +77,22 @@ pub(super) async fn extract_catalogue_asset_with_pin(
     paths: &SoldrPaths,
     cache_name: &str,
     version: &str,
-    asset_name: &str,
+    entry: &super::manifest_lookup::ManifestEntry,
     source: &Path,
     target: &TargetTriple,
     binary_names: &[&str],
-    manifest_pin: (&str, &str),
 ) -> Result<PathBuf, SoldrError> {
     download_and_extract_with_pin_inner(
         paths,
         cache_name,
         version,
-        asset_name,
+        ArchiveSource::VerifiedFile {
+            asset_name: &entry.asset,
+            path: source,
+        },
         target,
         binary_names,
-        Some(manifest_pin),
-        Some(source),
+        Some((&entry.asset, &entry.sha256)),
     )
     .await
 }
@@ -96,31 +101,36 @@ async fn download_and_extract_with_pin_inner(
     paths: &SoldrPaths,
     cache_name: &str,
     version: &str,
-    url: &str,
+    source: ArchiveSource<'_>,
     target: &TargetTriple,
     binary_names: &[&str],
     manifest_pin: Option<(&str, &str)>,
-    source: Option<&Path>,
 ) -> Result<PathBuf, SoldrError> {
-    let downloaded = match source {
-        Some(source) => {
+    let (source_name, downloaded) = match source {
+        ArchiveSource::VerifiedFile { asset_name, path } => {
             let mut file = tempfile::NamedTempFile::new_in(soldr_core::core::ensure_temp_root())?;
-            let mut input = std::fs::File::open(source)?;
+            let mut input = std::fs::File::open(path)?;
             let mut hasher = sha2::Sha256::new();
             let bytes = copy_and_hash(&mut input, &mut file, &mut hasher)?;
             file.flush()?;
             let digest = hex::encode(hasher.finalize());
-            super::stream_download::DownloadedAsset {
-                file,
-                sha256: digest,
-                bytes,
-            }
+            (
+                asset_name,
+                super::stream_download::DownloadedAsset {
+                    file,
+                    sha256: digest,
+                    bytes,
+                },
+            )
         }
-        None => {
+        ArchiveSource::Url(url) => {
             let client = asset_http_client("release asset download")?;
             let resp =
                 send_asset_request(get_request(&client, url), url, ASSET_HEADER_TIMEOUT).await?;
-            stream_response_to_temp_file(resp, url, ASSET_IDLE_TIMEOUT).await?
+            (
+                url,
+                stream_response_to_temp_file(resp, url, ASSET_IDLE_TIMEOUT).await?,
+            )
         }
     };
 
@@ -182,11 +192,11 @@ fn finish_download_and_extract(
     } = archive;
     // Integrity + trust enforcement (issue #42). Compute sha256 and consult
     // the pinned-checksum store before writing anything to disk.
-    let asset_name = url
+    let asset_name = source_name
         .rsplit('/')
         .next()
         .filter(|s| !s.is_empty())
-        .unwrap_or(url);
+        .unwrap_or(source_name);
     let digest = downloaded.sha256();
 
     if let Some((pinned_asset, expected_sha)) = manifest_pin {
@@ -194,7 +204,7 @@ fn finish_download_and_extract(
         let actual = digest.to_ascii_lowercase();
         if expected != actual {
             return Err(SoldrError::Other(format!(
-                "manifest-first: pinned sha256 mismatch for {cache_name} v{version} asset {pinned_asset}\n  expected: {expected}\n  actual:   {actual}\n  source:   {url}",
+                "manifest-first: pinned sha256 mismatch for {cache_name} v{version} asset {pinned_asset}\n  expected: {expected}\n  actual:   {actual}\n  source:   {source_name}",
             )));
         }
         eprintln!(
@@ -233,19 +243,19 @@ fn finish_download_and_extract(
         .ok_or_else(|| SoldrError::Other(format!("no binary names configured for {cache_name}")))?;
     let staged_binary_path = staging_dir.join(&main_binary_name);
 
-    if url.ends_with(".zip") {
+    if source_name.ends_with(".zip") {
         extract_zip(
             std::fs::File::open(downloaded.path())?,
             staging_dir,
             &desired_binaries,
         )?;
-    } else if url.ends_with(".tar.gz") || url.ends_with(".tgz") {
+    } else if source_name.ends_with(".tar.gz") || source_name.ends_with(".tgz") {
         extract_tar_gz(
             std::fs::File::open(downloaded.path())?,
             staging_dir,
             &desired_binaries,
         )?;
-    } else if url.ends_with(".tar.xz") || url.ends_with(".txz") {
+    } else if source_name.ends_with(".tar.xz") || source_name.ends_with(".txz") {
         // cargo-zigbuild and other rust-cross prebuilts ship their
         // per-triple binary tarballs in xz. Without this branch the
         // fall-through "raw binary" path below wrote the compressed

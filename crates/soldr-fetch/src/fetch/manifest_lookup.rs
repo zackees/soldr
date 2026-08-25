@@ -12,8 +12,6 @@ mod catalogue_transport;
 
 // Historical test paths remain crate-private while implementation concerns
 // live in their own sibling modules.
-#[cfg(test)]
-pub(crate) use super::manifest_v6;
 pub(crate) use super::{retry, segmented_download, stream_download, trust};
 
 pub use catalogue_lookup::*;

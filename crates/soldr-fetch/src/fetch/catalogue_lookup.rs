@@ -321,7 +321,7 @@ async fn fetch_once() -> Result<ManifestIndex, SoldrError> {
     }
 }
 
-fn should_fallback_to_v1(status: u16) -> bool {
+pub(super) fn should_fallback_to_v1(status: u16) -> bool {
     matches!(status, 404 | 410)
 }
 

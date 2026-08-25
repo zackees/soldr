@@ -342,10 +342,10 @@ impl MultipartWindow {
             cooldown: Duration::ZERO,
         }
     }
-    fn healthy(&mut self) {
+    pub(super) fn healthy(&mut self) {
         self.current = (self.current + 1).min(MULTIPART_MAX_WINDOW);
     }
-    fn congested(&mut self) {
+    pub(super) fn congested(&mut self) {
         self.current = (self.current / 2).max(1);
         self.cooldown = Duration::from_millis(250);
     }
@@ -446,12 +446,7 @@ pub(crate) async fn materialize_catalogue_parts(
 pub(crate) fn retry_after(error: &SoldrError) -> Option<Duration> {
     let text = error.to_string();
     let (_, value) = text.split_once("Retry-After:")?;
-    let seconds = value
-        .trim()
-        .split_whitespace()
-        .next()?
-        .parse::<u64>()
-        .ok()?;
+    let seconds = value.split_whitespace().next()?.parse::<u64>().ok()?;
     Some(Duration::from_secs(seconds).min(MAX_MULTIPART_RETRY_AFTER))
 }
 
@@ -562,7 +557,11 @@ pub(crate) fn copy_and_hash<W: Write>(
     Ok(bytes)
 }
 
-fn promote_cached_asset(dir: &Path, name: &str, source: &Path) -> Result<(), SoldrError> {
+pub(super) fn promote_cached_asset(
+    dir: &Path,
+    name: &str,
+    source: &Path,
+) -> Result<(), SoldrError> {
     let mut temp = tempfile::NamedTempFile::new_in(dir)?;
     std::io::copy(&mut std::fs::File::open(source)?, &mut temp)?;
     temp.flush()?;
@@ -592,6 +591,7 @@ impl CacheLock {
         let lock_path = object.with_extension("lock");
         let file = OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(lock_path)?;
@@ -660,7 +660,7 @@ pub(crate) async fn download_catalogue_asset_once(
     stream_catalogue_asset_body(response, url, MANIFEST_FETCH_TIMEOUT).await
 }
 
-async fn download_catalogue_part(
+pub(super) async fn download_catalogue_part(
     url: &str,
     object: &Path,
     expected_bytes: u64,

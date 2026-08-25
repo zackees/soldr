@@ -17,11 +17,28 @@
     "active": {"slot": "public-a", "commit": "5555555555555555555555555555555555555555", "tree": "6666666666666666666666666666666666666666"},
     "previous": {"slot": "public-b", "commit": "7777777777777777777777777777777777777777", "tree": "8888888888888888888888888888888888888888"},
     "catalogue_sha256": "c565cf30d7621d037d55cabc8aa0714c4d0fb8e2dba3d102ccf62ee80e4a2abf",
-    "assets_by_sha256": {},
-    "logical_assets": {}
+    "assets_by_sha256": {
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
+        "size_bytes": 3,
+        "partitioner": {"version": 1, "target_bytes": 3},
+        "parts": [{"number": 1, "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "size_bytes": 3, "path": "sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/0001-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.part", "git_blob": "cccccccccccccccccccccccccccccccccccccccc"}]
+      }
+    },
+    "logical_assets": {
+      "zackees\u0000soldr-toolchain\u0000assets\u0000sdk.tar.zstd": {
+        "source_path": "apple-sdk/14.5/darwin-universal2/sdk.tar.zst",
+        "asset": "sdk.tar.zstd",
+        "source_oid_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_size_bytes": 3,
+        "metadata_fingerprint": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "provenance": {"owner": "zackees", "repo": "soldr-toolchain", "tag": "assets", "asset": "sdk.tar.zstd"}
+      }
+    }
     ,"partitioner_default": {"version": 1, "target_bytes": 3, "max_bytes": 99614720}
     ,"published_at": 1
     ,"retained_generations": [{"generation": "2026-08-24T00-00-00Z-source0001", "published_at": 1}]
-    ,"parts_by_sha256": {}
+    ,"parts_by_sha256": {
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": {"size_bytes": 3, "git_blob": "cccccccccccccccccccccccccccccccccccccccc"}
+    }
   }
 }

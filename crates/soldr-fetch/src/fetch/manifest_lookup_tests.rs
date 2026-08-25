@@ -1,6 +1,9 @@
-use super::catalogue_lookup::*;
-use super::catalogue_transport::*;
-use super::*;
+use crate::core::SoldrError;
+use crate::fetch::manifest_lookup::catalogue_lookup::*;
+use crate::fetch::manifest_lookup::catalogue_model::*;
+use crate::fetch::manifest_lookup::catalogue_transport::*;
+use sha2::Digest;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -698,7 +701,7 @@ fn publication_state_rejects_malformed_ledger_rows_and_unknown_fields() {
             "asset": "published.tar.zst",
             "source_oid_sha256": full.clone(),
             "source_size_bytes": 3,
-            "metadata_fingerprint": "metadata",
+            "metadata_fingerprint": "d".repeat(64),
             "provenance": {"producer": "test"},
         }
     });
@@ -804,6 +807,7 @@ fn v2_hostile_numeric_and_url_boundaries_are_rejected() {
 fn v2_part_count_and_transport_invariants_hold_at_the_boundary() {
     let mut entry = v2_entry();
     entry.size_bytes = MAX_CATALOGUE_PARTS as u64;
+    entry.source_path = Some("tool/version/platform/asset.tar.zst".into());
     entry.urls = None;
     entry.parts = Some(
         (1..=MAX_CATALOGUE_PARTS)
@@ -1198,12 +1202,12 @@ fn multipart_http_429_preserves_capped_retry_after_without_url_credentials() {
                 socket.write_all(b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 999999\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
             });
             let url = format!("http://{address}/part?access_token=must-not-leak");
-            let client = super::stream_download::asset_http_client("retry-after test").unwrap();
-            let response = super::stream_download::send_asset_request(
-                super::stream_download::get_request(&client, &url), &url, Duration::from_secs(1)
+            let client = super::super::stream_download::asset_http_client("retry-after test").unwrap();
+            let response = super::super::stream_download::send_asset_request(
+                super::super::stream_download::get_request(&client, &url), &url, Duration::from_secs(1)
             ).await.unwrap();
             let mut file = tempfile::NamedTempFile::new().unwrap();
-            let error = super::stream_download::stream_catalogue_part_into_file(response, &url, file.as_file_mut())
+            let error = super::super::stream_download::stream_catalogue_part_into_file(response, &url, file.as_file_mut())
                 .await.expect_err("429 must remain a scheduler-visible error");
             let text = error.to_string();
             assert!(text.contains("HTTP 429") && text.contains("Retry-After: 999999"));

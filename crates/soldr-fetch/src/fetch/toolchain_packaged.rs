@@ -76,11 +76,10 @@ pub(super) async fn try_binary(
         paths,
         cache_name,
         bare_version,
-        &entry.asset,
+        entry,
         downloaded.path(),
         target,
         binary_names,
-        (&entry.asset, &entry.sha256),
     )
     .await?;
     if cache_name != "dylint-driver" {
