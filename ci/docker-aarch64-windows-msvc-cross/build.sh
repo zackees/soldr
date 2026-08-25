@@ -40,7 +40,7 @@ ls -la /opt/soldr/ || true
 echo "::endgroup::"
 
 echo "::group::Build soldr-cli for $TARGET via soldr build (blessed surface)"
-# `soldr build --target ...` is the v0.7.66+ blessed surface. It
+# `soldr build --target ...` is the blessed surface. It
 # installs clang shim names ahead of system clang on PATH so ring 0.17.x's
 # hardcoded `c.compiler("clang")` (build.rs:563) routes to clang-cl for
 # *-pc-windows-msvc targets. cargo-xwin is also installed

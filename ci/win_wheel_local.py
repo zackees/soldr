@@ -56,7 +56,7 @@ RUST_TOOLCHAIN = "1.95.0"
 # hanging in its own MSVC CRT download the way the 0.8.44 driver did.
 # (0.9.0 stays unusable as a driver: its broker cannot dial its daemon
 # route -- that is what wedged the host this harness exists to rescue.)
-SOLDR_VERSION = "0.9.1"
+SOLDR_VERSION = "0.9.6"
 
 # `soldr wheel` refuses this workspace ("could not read Cargo metadata, so
 # soldr cannot prove this workspace is abi3-safe") even though `soldr cargo
@@ -200,9 +200,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.wipe:
         return run(["docker", "volume", "rm", "--force", *volume_names().values()])
 
-    before = (
-        {path.name for path in OUT_DIR.glob("*.whl")} if OUT_DIR.is_dir() else set()
-    )
+    before = {path.name for path in OUT_DIR.glob("*.whl")} if OUT_DIR.is_dir() else set()
 
     code = build_image(rebuild=args.rebuild_image)
     if code != 0:

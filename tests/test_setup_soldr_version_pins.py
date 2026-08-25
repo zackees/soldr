@@ -1,6 +1,6 @@
 """Every lane that builds with soldr must pin which soldr (soldr#1799).
 
-`zackees/setup-soldr`'s `version` input defaults to **0.8.23**, which predates
+Historically, setup-soldr defaulted to 0.8.23, which predates
 `3dc25a94 fix(gc): retire automatic target pruning (#1820)` — first released in
 0.8.24. Under 0.8.23 soldr garbage-collects live artifacts out of `target/`
 after every build, so the *next* build recompiles the whole workspace.
@@ -32,9 +32,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-WORKFLOWS = sorted(
-    (Path(__file__).resolve().parents[1] / ".github" / "workflows").glob("*.y*ml")
-)
+WORKFLOWS = sorted((Path(__file__).resolve().parents[1] / ".github" / "workflows").glob("*.y*ml"))
 
 # A `uses:` KEY. A comment merely mentioning the action is not a call site --
 # getting this wrong is how the first version of this audit invented call sites
@@ -49,11 +47,6 @@ EXEMPT = {
     # action's own default. Pinning it would make it stop testing the thing it
     # is named for.
     "setup-soldr-action.yml": "tests the action's default resolution",
-    # Deliberate: release CI runs the *checked-out* soldr as the build driver,
-    # because the previously released soldr can lack the cross-build behaviour
-    # needed to build the next release. setup-soldr stays in passthrough mode
-    # here and only provisions Rust. Pinning would contradict that design.
-    "release-auto.yml": "passthrough mode; the checked-out CLI is the driver",
     # A measurement baseline, pinned to 0.7.28 on purpose so the cache-delta
     # numbers stay comparable across runs. It is pinned, just not to our
     # version, so it is exempt from the agreement check rather than from
@@ -114,18 +107,33 @@ def test_pinned_versions_agree() -> None:
     )
 
 
-def test_the_pin_is_new_enough_to_have_the_gc_fix() -> None:
-    # The whole point. 0.8.24 is the first release containing #1820; anything
-    # below it reintroduces the silent rebuild this test documents.
+def test_the_pin_is_new_enough_for_catalogue_v2() -> None:
     for name, line, version in _call_sites():
         if version is None or name in EXEMPT:
             continue
         parts = tuple(int(p) for p in version.split("."))
-        assert parts >= (0, 8, 24), (
-            f"{name}:{line} pins soldr {version}, which predates #1820 "
-            "('retire automatic target pruning', first released in 0.8.24). "
-            "That version deletes live target/ artifacts after every build."
+        assert parts >= (0, 9, 5), (
+            f"{name}:{line} pins soldr {version}, which predates catalogue v2. "
+            "The live non-LFS publication intentionally has no catalogue.v1.json."
         )
+
+
+def test_non_action_bootstraps_are_catalogue_v2_capable() -> None:
+    root = Path(__file__).resolve().parents[1]
+    expected = "0.9.6"
+    assert f'"soldr=={expected}"' in (root / "pyproject.toml").read_text(encoding="utf-8")
+    assert f'SOLDR_VERSION = "{expected}"' in (root / "ci/win_wheel_local.py").read_text(
+        encoding="utf-8"
+    )
+    assert f"ENV SOLDR_VERSION={expected}" in (
+        root / "ci/docker-aarch64-windows-msvc-cross/Dockerfile"
+    ).read_text(encoding="utf-8")
+    assert f"soldr=={expected}" in (
+        root / ".github/workflows/docker-linux-cross-smoke.yml"
+    ).read_text(encoding="utf-8")
+    build_all = (root / ".github/workflows/build-all-from-linux.yml").read_text(encoding="utf-8")
+    assert f'default: "{expected}"' in build_all
+    assert f"inputs.soldr_version || '{expected}'" in build_all
 
 
 def test_the_scan_finds_the_call_sites() -> None:

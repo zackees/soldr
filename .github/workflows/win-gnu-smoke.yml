@@ -77,9 +77,9 @@ jobs:
       # Pinned soldr as the build DRIVER only; the freshly built binary is what
       # exercises the win-gnu behaviour. cache:false — this is a rare lane.
       - name: Setup soldr
-        uses: zackees/setup-soldr@40320d277ba4946e38d4b3c02e6c7a15a29c3f3f
+        uses: zackees/setup-soldr@9c75e87c4a93e62b6ce5d123f497fba19307fa58
         with:
-          version: 0.9.1
+          version: 0.9.6
           toolchain: 1.95.0
           cache: false
 

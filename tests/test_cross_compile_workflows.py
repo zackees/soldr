@@ -285,7 +285,7 @@ def test_native_linux_runs_the_complete_workspace_suite() -> None:
     # now that the `timed_test!` watchdog is gone. Plain `cargo test` here
     # would leave a hung test unbounded.
     #
-    # soldr#2521 A1: driven by the pinned PATH soldr again. 0.9.1 is the
+    # soldr#2521 A1: driven by the pinned PATH soldr again. The pin includes the
     # first release carrying both the nextest `--config` placement fix and
     # the daemon root-ownership grace (#2564), so the just-built-binary
     # detour (which forced a full recompile per run) is retired.
@@ -682,7 +682,7 @@ def test_mac_x64_distribution_uses_pinned_setup_soldr_on_intel() -> None:
     # assertion follows the logic rather than being dropped.
     assert _matrix_binary_source_prepares_gnu_linux()
     assert (
-        "uses: zackees/setup-soldr@40320d277ba4946e38d4b3c02e6c7a15a29c3f3f" in release
+        "uses: zackees/setup-soldr@9c75e87c4a93e62b6ce5d123f497fba19307fa58" in release
     )
     assert "version: 0.9.6" in release
     assert "cross-targets: ${{ matrix.setup_target }}" in release
@@ -760,7 +760,7 @@ def test_release_wheels_use_setup_soldr_target_hooks_without_zig_or_xwin() -> No
 
     assert _matrix_binary_source_prepares_gnu_linux()
     assert (
-        "uses: zackees/setup-soldr@40320d277ba4946e38d4b3c02e6c7a15a29c3f3f" in release
+        "uses: zackees/setup-soldr@9c75e87c4a93e62b6ce5d123f497fba19307fa58" in release
     )
     assert "version: 0.9.6" in release
     assert "cross-targets: ${{ matrix.setup_target }}" in release

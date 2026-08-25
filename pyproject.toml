@@ -7,14 +7,15 @@
 # default (`--profile dev`, opt-level 0, lto=false,
 # debug=line-tables-only) — 0.8.18 and older pass no --profile, so
 # maturin silently falls back to a full RELEASE build (~15 min cold vs
-# seconds). 0.8.20 is the newest release with both properties. When
+# seconds). 0.9.6 is the validated backend with both properties plus
+# catalogue-v2 multipart support. When
 # bumping the pin, verify `uv pip install .` from a clean venv builds
 # the dev profile before merging. Bootstrap-cycle history:
 # soldr#1264/#1269. See README "Use soldr as your PEP 517 build
 # backend".
 [build-system]
 requires = [
-    "soldr==0.8.44",
+    "soldr==0.9.6",
     # Maturin repairs Linux bin-binding wheels with patchelf when a linked
     # shared library (liblzma for soldr) must be bundled. The managed maturin
     # executable does not carry its Python `patchelf` extra, so provision the
