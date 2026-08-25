@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 import shutil
 import subprocess
 import sys
@@ -57,6 +58,40 @@ WORKSPACE_CRATES = [
     "soldr-cache",
     "soldr-daemon",
 ]
+
+# Canonical Dylint CI policy shared by the nightly-agreement and process-
+# boundary guards. The full rustup toolchain key is also the target-directory
+# key, keeping nightly artifacts separate from the project's Rust 1.95 tree.
+DYLINT_NIGHTLY = "nightly-2026-05-28-x86_64-unknown-linux-gnu"
+DYLINT_BUILD_STEPS = (
+    "Build daemon process-creation boundary lint",
+    "Build fetch network boundary lint",
+    "Build local-socket name boundary lint",
+    "Build raw IPC transport boundary lint",
+    "Build platform-cfg directory boundary lint",
+    "Build env-flag boundary lint",
+)
+DYLINT_TEST_STEPS = (
+    "Test env-flag boundary lint",
+    "Test daemon process-creation boundary lint",
+    "Test fetch network boundary lint",
+    "Test local-socket name boundary lint",
+    "Test raw IPC transport boundary lint",
+    "Test platform-cfg directory boundary lint",
+)
+
+
+def workflow_step(workflow: str, name: str) -> str:
+    """Return one named GitHub Actions step body from a workflow string."""
+
+    match = re.search(
+        rf"^      - name: {re.escape(name)}\n(?P<body>.*?)(?=^      - name: |\Z)",
+        workflow,
+        re.MULTILINE | re.DOTALL,
+    )
+    if match is None:
+        raise AssertionError(f"workflow has no {name!r} step")
+    return match.group("body")
 
 
 def docker_available() -> bool:

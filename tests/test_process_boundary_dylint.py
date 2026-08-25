@@ -1,30 +1,13 @@
 from pathlib import Path
 
+from conftest import (
+    DYLINT_BUILD_STEPS,
+    DYLINT_NIGHTLY,
+    DYLINT_TEST_STEPS,
+    workflow_step,
+)
+
 ROOT = Path(__file__).resolve().parents[1]
-NIGHTLY = "nightly-2026-05-28-x86_64-unknown-linux-gnu"
-BUILD_STEPS = (
-    "Build daemon process-creation boundary lint",
-    "Build fetch network boundary lint",
-    "Build local-socket name boundary lint",
-    "Build raw IPC transport boundary lint",
-    "Build platform-cfg directory boundary lint",
-    "Build env-flag boundary lint",
-)
-TEST_STEPS = (
-    "Test env-flag boundary lint",
-    "Test daemon process-creation boundary lint",
-    "Test fetch network boundary lint",
-    "Test local-socket name boundary lint",
-    "Test raw IPC transport boundary lint",
-    "Test platform-cfg directory boundary lint",
-)
-
-
-def _step_body(workflow: str, name: str) -> str:
-    marker = f"      - name: {name}\n"
-    start = workflow.index(marker)
-    end = workflow.find("\n      - name: ", start + len(marker))
-    return workflow[start : end if end != -1 else len(workflow)]
 
 
 def test_root_workspace_loads_process_boundary_dylint() -> None:
@@ -85,28 +68,30 @@ def test_required_ci_runs_root_dylint_policy() -> None:
     )[1].split("      - name: Assert Dylint tests used the shared target directory", 1)[0]
     assert dylint_steps.count("soldr cargo build") == 6
     assert dylint_steps.count("soldr cargo test") == 6
-    library_target = f'"${{GITHUB_WORKSPACE}}/target/dylint/libraries/{NIGHTLY}"'
-    test_target = f'"${{GITHUB_WORKSPACE}}/target/dylint/tests/{NIGHTLY}"'
-    for name in BUILD_STEPS:
-        step = _step_body(workflow, name)
+    library_target = (
+        f'"${{GITHUB_WORKSPACE}}/target/dylint/libraries/{DYLINT_NIGHTLY}"'
+    )
+    test_target = f'"${{GITHUB_WORKSPACE}}/target/dylint/tests/{DYLINT_NIGHTLY}"'
+    for name in DYLINT_BUILD_STEPS:
+        step = workflow_step(workflow, name)
         assert step.count("soldr cargo build") == 1, name
         assert "soldr cargo test" not in step, name
         assert step.count("RUSTUP_TOOLCHAIN:") == 1, name
-        assert f"RUSTUP_TOOLCHAIN: {NIGHTLY}" in step, name
+        assert f"RUSTUP_TOOLCHAIN: {DYLINT_NIGHTLY}" in step, name
         assert step.count("--target-dir") == 1, name
         assert library_target in step, name
         assert test_target not in step, name
-    for name in TEST_STEPS:
-        step = _step_body(workflow, name)
+    for name in DYLINT_TEST_STEPS:
+        step = workflow_step(workflow, name)
         assert step.count("soldr cargo test") == 1, name
         assert "soldr cargo build" not in step, name
         assert step.count("RUSTUP_TOOLCHAIN:") == 1, name
-        assert f"RUSTUP_TOOLCHAIN: {NIGHTLY}" in step, name
+        assert f"RUSTUP_TOOLCHAIN: {DYLINT_NIGHTLY}" in step, name
         assert step.count("--target-dir") == 1, name
         assert test_target in step, name
         assert library_target not in step, name
     assert "--manifest-path Cargo.toml" in workflow
-    assert f"RUSTUP_TOOLCHAIN: {NIGHTLY}" in workflow
+    assert f"RUSTUP_TOOLCHAIN: {DYLINT_NIGHTLY}" in workflow
     # Seven for the original lints, plus soldr#2740's test step.
     assert workflow.count('SOLDR_NO_GC_TARGET: "1"') == 7
     # Thirteen for the original lints, plus soldr#2740's build and test.
