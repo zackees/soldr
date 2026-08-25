@@ -1,6 +1,6 @@
 //! Restart warmth end-to-end for soldr#2436 phase 6.
 //!
-//! Phase 5 vendored zccache's durability work: the dependency graph is
+//! Phase 5 embedded zccache durability work: the dependency graph is
 //! saved on a registration-count trigger and drained on graceful daemon
 //! shutdown, so a daemon restart must not orphan the contexts the previous
 //! generation learned. This test proves it through the real front door:
@@ -355,7 +355,7 @@ fn u64_field(stats: &Value, key: &str) -> u64 {
 
 /// soldr#2645 (deferred from #2436 phase 6): SIGKILL loss bound.
 ///
-/// The vendored zccache saves the dependency graph once ≥32 new contexts
+/// The embedded zccache saves the dependency graph once ≥32 new contexts
 /// have registered (DEPGRAPH_SAVE_BATCH, polled every 5s), so a hard kill
 /// may orphan at most one save batch. A fixture with 30+ compile units is
 /// what makes the bound falsifiable: pre-phase-5, a kill after any wait

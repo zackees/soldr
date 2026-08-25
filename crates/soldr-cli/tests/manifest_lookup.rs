@@ -98,7 +98,10 @@ fn manifest_hit_returns_pinned_url() {
             "zccache-x86_64-pc-windows-msvc.zip",
         )
         .expect("manifest hit");
-    assert_eq!(hit.url, "https://example.invalid/zccache.zip");
+    assert_eq!(
+        hit.direct_url(),
+        Some("https://example.invalid/zccache.zip")
+    );
     assert_eq!(
         hit.sha256,
         "deadbeef00000000000000000000000000000000000000000000000000000000"
@@ -166,7 +169,12 @@ fn manifest_sha256_mismatch_is_hard_error() {
         tag: "1.12.9".into(),
         asset: "payload.zip".into(),
         // Intentionally wrong — does not match sha256("wrong-payload").
-        url: String::new(), // filled in after we spin up the server
+        url: Some(String::new()), // filled in after we spin up the server
+        urls: Vec::new(),
+        parts: Vec::new(),
+        size_bytes: None,
+        source_path: None,
+        min_client_version: None,
         sha256: "ff".repeat(32),
     };
 
@@ -175,7 +183,7 @@ fn manifest_sha256_mismatch_is_hard_error() {
         let payload = b"wrong-payload".to_vec();
         let url = spawn_one_shot_payload_server(payload).await;
         let mut entry = entry;
-        entry.url = url.clone();
+        entry.url = Some(url.clone());
 
         // Use the same trust verifier the manifest-first path uses.
         // We compute the actual sha256 of what the server returns,

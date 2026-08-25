@@ -179,7 +179,7 @@ pub(crate) fn print_doctor_section() {
 /// Deliberately not exhaustive of every bound in #1838's table: it covers
 /// the ones with an env override, which are the ones a user can get wrong
 /// and the ones `doctor` can say something actionable about. The untimed
-/// publication barrier and the vendored zccache drains have no override to
+/// publication barrier and the embedded zccache drains have no override to
 /// report and are tracked separately on #1838.
 fn entries() -> Vec<TimeoutEntry> {
     vec![

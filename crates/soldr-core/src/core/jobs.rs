@@ -83,7 +83,7 @@ pub struct ResolvedJobs {
 
 /// Default concurrency when nothing is configured.
 ///
-/// Deliberately unchanged from what the vendored zccache semaphore
+/// Deliberately unchanged from what the embedded zccache semaphore
 /// already used (`available_parallelism() - 1`), so this module is a
 /// no-op for anyone who sets nothing. #1761 also floats a
 /// physical-core-aware default (`min(logical - 1, physical + 2)`) to

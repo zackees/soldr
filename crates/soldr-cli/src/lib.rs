@@ -298,9 +298,6 @@ pub mod version_trampoline;
 /// soldr#2139 gap 1 — the `soldr wheel --target <triple>` surface. Thin,
 /// abi3-only front end over the existing `soldr maturin ...` execution path.
 pub mod wheel_cmd;
-/// Detects an uninitialized vendored zccache submodule before Cargo renders
-/// its opaque missing-manifest error.
-pub(crate) mod worktree_submodule;
 pub mod wrapper;
 pub mod wrapper_identity;
 /// `wrapper_target` holds the wrapper hot-path target-registry routing

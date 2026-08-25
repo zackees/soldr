@@ -24,9 +24,10 @@ is that query, run by CI instead of by memory.
 1. That the resolved zccache version can be read from `Cargo.lock` at all.
 
    This used to also compare `_vender/zccache/Cargo.toml`'s version against the
-   lock's, because release staging and the build can otherwise drift. The
-   `version_lockstep` Rust test enforces that agreement for the active
-   submodule.
+   lock's, because the release read the manifest while the build resolved the
+   lock and the two could drift. soldr#2837 removed that manifest — zccache is
+   an exact crates.io dependency now, so the lock is the only source and there
+   is nothing left to disagree with it.
 2. That version has a published asset for **every** platform release staging
    asks for. `cross-compile-all-targets.yml` maps six target triples onto asset
    queries; a version missing any one of them breaks that lane, so checking only
