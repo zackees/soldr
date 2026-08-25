@@ -68,6 +68,12 @@ def fetch_bytes(url: str) -> bytes:
         try:
             with open_url(request, timeout=30) as resp:
                 return resp.read()
+        except urllib.error.HTTPError as exc:
+            if attempt == FETCH_ATTEMPTS:
+                raise NetworkFetchError(
+                    f"HTTP {exc.code} fetching {shown_url}"
+                ) from None
+            time.sleep(RETRY_BASE_DELAY_SECS * (2 ** (attempt - 1)))
         except (
             urllib.error.URLError,
             TimeoutError,
@@ -75,10 +81,6 @@ def fetch_bytes(url: str) -> bytes:
             http.client.IncompleteRead,
         ) as exc:
             if attempt == FETCH_ATTEMPTS:
-                if isinstance(exc, urllib.error.HTTPError):
-                    raise NetworkFetchError(
-                        f"HTTP {exc.code} fetching {shown_url}"
-                    ) from None
                 raise NetworkFetchError(
                     f"network error fetching {shown_url}: {type(exc).__name__}"
                 ) from None
