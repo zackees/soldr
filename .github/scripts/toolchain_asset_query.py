@@ -17,9 +17,11 @@ Exit status is non-zero when the requested tool/version/platform is absent.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 DEFAULT_ORIGIN = "https://zackees.github.io/soldr-toolchain"
@@ -178,8 +180,21 @@ def find_asset(
             if not isinstance(platform, dict) or not isinstance(asset, dict):
                 continue
             if platform_matches(platform, candidate):
-                urls = asset.get("urls")
-                if isinstance(urls, list) and urls:
+                raw_urls = asset.get("urls")
+                raw_parts = asset.get("parts")
+                # Bound as concrete lists rather than truthiness flags: mypy
+                # does not narrow `Any | None` through a separate boolean.
+                urls: list[Any] = raw_urls if isinstance(raw_urls, list) else []
+                parts: list[Any] = raw_parts if isinstance(raw_parts, list) else []
+                has_urls = bool(urls)
+                has_parts = bool(parts)
+                # soldr#2850's catalogue v2: an asset carries EITHER direct
+                # urls OR parts. Requiring `urls` here rejected every
+                # multipart row, which today is nearly all of them -- the
+                # published cargo-nextest assets have `parts` and no `urls`
+                # at all, so this raised "matched asset has no URL" for an
+                # asset that was present and resolvable.
+                if has_urls or has_parts:
                     digest = str(asset.get("sha256", "")).lower()
                     if require_sha256 and (
                         len(digest) != 64
@@ -190,10 +205,11 @@ def find_asset(
                         "platform": platform,
                         "filename": asset.get("filename"),
                         "urls": [str(url) for url in urls],
+                        "parts": list(parts),
                         "sha256": digest,
                         "size_bytes": asset.get("size_bytes"),
                     }
-                raise SystemExit("matched asset has no URL")
+                raise SystemExit("matched asset has neither URLs nor parts")
 
     wanted = " or ".join(
         "-".join(
@@ -267,6 +283,7 @@ def resolve_metadata(
         "platform": asset["platform"],
         "filename": asset["filename"],
         "urls": asset["urls"],
+        "parts": asset.get("parts", []),
         "sha256": asset["sha256"],
         "size_bytes": asset.get("size_bytes"),
         "manifest_url": url,
@@ -323,3 +340,69 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+# --------------------------- asset materialization ---------------------------
+#
+# soldr#2850's catalogue v2 publishes most assets as ordered parts rather than
+# a single URL. Reconstructing them is the same job for every consumer, so it
+# lives here rather than being copied into each script -- there are three
+# (`fetch_catalogued_nextest`, `download_catalogued_asset`,
+# `install_catalogued_tools`) and three copies would drift.
+
+MAX_PART_BYTES = 64 * 1024 * 1024
+
+
+def _read_all(url: str, *, timeout: int = 120) -> bytes:
+    request = urllib.request.Request(url, headers={"Accept-Encoding": "identity"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return bytes(response.read())
+
+
+def write_multipart_asset(parts: list[dict[str, Any]], destination: Path) -> None:
+    """Reassemble an ordered multipart asset, verifying each part as it lands.
+
+    Per-part verification is not redundant with the caller's whole-file check:
+    it names the part that is wrong, where a whole-file mismatch alone says
+    only that something in a multi-hundred-megabyte reassembly is off.
+    """
+    with destination.open("wb") as handle:
+        for expected_number, part in enumerate(parts, start=1):
+            number = part.get("number")
+            if not isinstance(number, int) or isinstance(number, bool):
+                raise SystemExit("multipart asset has a non-integer part number")
+            if number != expected_number:
+                raise SystemExit(
+                    "multipart asset has non-contiguous parts: "
+                    f"expected {expected_number}, found {number}"
+                )
+            size = part.get("size_bytes")
+            if (
+                not isinstance(size, int)
+                or isinstance(size, bool)
+                or not 1 <= size <= MAX_PART_BYTES
+            ):
+                raise SystemExit(
+                    f"multipart part {expected_number} has invalid size_bytes {size!r}"
+                )
+            digest = str(part.get("sha256", "")).lower()
+            if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
+                raise SystemExit(
+                    f"multipart part {expected_number} has no valid sha256"
+                )
+            urls = part.get("urls")
+            if not isinstance(urls, list) or not urls:
+                raise SystemExit(f"multipart part {expected_number} has no URLs")
+            payload = _read_all(str(urls[0]))
+            if len(payload) != size:
+                raise SystemExit(
+                    f"multipart part {expected_number} is {len(payload)} bytes, "
+                    f"the manifest says {size}"
+                )
+            actual = hashlib.sha256(payload).hexdigest()
+            if actual != digest:
+                raise SystemExit(
+                    f"multipart part {expected_number} sha256 mismatch: "
+                    f"expected {digest}, got {actual}"
+                )
+            handle.write(payload)

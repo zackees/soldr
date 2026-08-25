@@ -19,13 +19,13 @@ import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, TypeVar
 
+# Reassembly is shared with the other catalogue consumers rather than
+# copied here -- three scripts read this data and three copies would drift.
+from toolchain_asset_query import write_multipart_asset  # noqa: E402
+
 DEFAULT_CATALOGUE_URL = "https://zackees.github.io/soldr-toolchain/catalogue.v2.json"
 CATALOGUE_SCHEMA_VERSION = 2
 
-# A single part is a GitHub raw blob; the publisher splits well below this.
-# Present so a malformed `size_bytes` cannot ask this script to buffer an
-# arbitrary amount, matching `fetch_release_support_binaries.py`.
-MAX_PART_BYTES = 64 * 1024 * 1024
 SUPPORTED_TARGETS = {
     "x86_64-pc-windows-msvc",
     "aarch64-pc-windows-msvc",
@@ -151,65 +151,6 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def read_url_bytes(url: str) -> bytes:
-    def read() -> bytes:
-        request = urllib.request.Request(url, headers={"Accept-Encoding": "identity"})
-        with urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT_SECS) as response:
-            return response.read()
-
-    return retry_network(read, label=f"download {url}")
-
-
-def write_multipart(parts: list[dict[str, Any]], temporary: Path) -> None:
-    """Reconstruct a v2 multipart asset, verifying every part as it lands.
-
-    Each part is checked against its own sha256 before it is written, so a
-    corrupt part is named directly rather than surfacing later as a whole-file
-    digest mismatch with nothing to point at. The caller still verifies the
-    reassembled file, which is what actually pins the artifact.
-    """
-    temporary.unlink(missing_ok=True)
-    with temporary.open("wb") as handle:
-        for expected_number, part in enumerate(parts, start=1):
-            number = part.get("number")
-            if not isinstance(number, int) or isinstance(number, bool):
-                raise SystemExit("catalogued multipart asset has a non-integer part")
-            if number != expected_number:
-                raise SystemExit(
-                    "catalogued multipart asset has non-contiguous parts: "
-                    f"expected {expected_number}, found {number}"
-                )
-            size = part.get("size_bytes")
-            if (
-                not isinstance(size, int)
-                or isinstance(size, bool)
-                or not 1 <= size <= MAX_PART_BYTES
-            ):
-                raise SystemExit(
-                    f"catalogued part {expected_number} has invalid size_bytes {size!r}"
-                )
-            if not valid_sha256(part.get("sha256")):
-                raise SystemExit(
-                    f"catalogued part {expected_number} has no valid sha256"
-                )
-            urls = part.get("urls")
-            if not isinstance(urls, list) or not urls:
-                raise SystemExit(f"catalogued part {expected_number} has no URLs")
-            payload = read_url_bytes(str(urls[0]))
-            if len(payload) != size:
-                raise SystemExit(
-                    f"catalogued part {expected_number} is {len(payload)} bytes, "
-                    f"catalogue says {size}"
-                )
-            actual = hashlib.sha256(payload).hexdigest()
-            if actual != str(part["sha256"]).lower():
-                raise SystemExit(
-                    f"catalogued part {expected_number} sha256 mismatch: "
-                    f"expected {part['sha256']}, got {actual}"
-                )
-            handle.write(payload)
-
-
 def download_verified(entry: dict[str, Any], output: Path) -> None:
     expected = str(entry["sha256"]).lower()
     temporary = output.with_suffix(output.suffix + ".part")
@@ -230,7 +171,7 @@ def download_verified(entry: dict[str, Any], output: Path) -> None:
         if urls:
             retry_network(transfer, label=f"download {urls[0]}")
         else:
-            write_multipart(multipart_parts(entry), temporary)
+            write_multipart_asset(multipart_parts(entry), temporary)
         actual = sha256(temporary)
         if actual != expected:
             raise SystemExit(

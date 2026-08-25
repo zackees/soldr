@@ -16,8 +16,9 @@ import shutil
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import Any
 
-from toolchain_asset_query import resolve_metadata
+from toolchain_asset_query import resolve_metadata, write_multipart_asset
 
 
 def sha256(path: Path) -> str:
@@ -32,9 +33,35 @@ def download_verified(metadata: dict, output: Path) -> dict:
     expected = str(metadata.get("sha256", "")).lower()
     if len(expected) != 64 or any(char not in "0123456789abcdef" for char in expected):
         raise SystemExit("catalogued asset has no valid sha256")
-    urls = metadata.get("urls")
-    if not isinstance(urls, list) or not urls:
-        raise SystemExit("catalogued asset has no download URL")
+    raw_urls = metadata.get("urls")
+    raw_parts = metadata.get("parts")
+    # Concrete lists, not truthiness flags: mypy does not narrow `Any | None`
+    # through a separate boolean.
+    urls: list[Any] = raw_urls if isinstance(raw_urls, list) else []
+    parts: list[dict[str, Any]] = raw_parts if isinstance(raw_parts, list) else []
+    has_urls = bool(urls)
+    has_parts = bool(parts)
+    if not has_urls and not has_parts:
+        raise SystemExit("catalogued asset has neither a download URL nor parts")
+
+    # Multipart is the common shape under catalogue v2 (soldr#2850); the
+    # reassembly lives in `toolchain_asset_query` so this script, the nextest
+    # fetcher and the tool installer share one implementation.
+    if not has_urls:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        temporary = output.with_suffix(output.suffix + ".part")
+        try:
+            write_multipart_asset(parts, temporary)
+            actual = sha256(temporary)
+            if actual != expected:
+                raise SystemExit(
+                    f"catalogued asset sha256 mismatch: expected {expected}, "
+                    f"got {actual}"
+                )
+            temporary.replace(output)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return metadata
 
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_suffix(output.suffix + ".part")

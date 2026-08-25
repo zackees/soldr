@@ -21,7 +21,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-from toolchain_asset_query import resolve_metadata
+from toolchain_asset_query import resolve_metadata, write_multipart_asset
 
 CARGO_NEXTEST_RELEASE_PREFIX = "cargo-nextest-"
 
@@ -126,6 +126,20 @@ def download_verified(metadata: dict, destination: Path) -> Path:
     expected = metadata["sha256"]
     with tempfile.TemporaryDirectory(prefix="soldr-nextest-download-") as temp:
         archive = Path(temp) / str(metadata["filename"])
+
+        # Catalogue v2 publishes cargo-nextest as ordered parts with no single
+        # URL (soldr#2850). Reassembly is shared with the other catalogue
+        # consumers rather than reimplemented here.
+        parts = metadata.get("parts")
+        if not metadata.get("urls") and isinstance(parts, list) and parts:
+            write_multipart_asset(list(parts), archive)
+            actual = sha256(archive)
+            if actual != expected:
+                raise SystemExit(
+                    f"cargo-nextest sha256 mismatch: expected {expected}, got {actual}"
+                )
+            return extract_verified(archive, destination)
+
         last_error: Exception | None = None
         for url in metadata["urls"]:
             try:

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -15,6 +16,12 @@ from unittest import mock
 from _script_loader import load_sibling_script
 
 script = load_sibling_script("install_catalogued_tools")
+# The multipart reassembly lives in the shared query module (soldr#2850),
+# so the network stub belongs there rather than on this script. Resolved
+# through the imported function's own module rather than loaded again:
+# `install_catalogued_tools` imported it by value, so a second load would
+# be a different object and the patch would not be seen.
+query = sys.modules[script.write_multipart_asset.__module__]
 
 TARGETS = [
     "x86_64-pc-windows-msvc",
@@ -214,8 +221,8 @@ class MultipartCatalogueTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as temp,
             mock.patch.object(
-                script,
-                "read_url_bytes",
+                query,
+                "_read_all",
                 side_effect=lambda url: chunks[int(url.rsplit("/", 1)[1]) - 1],
             ),
         ):
@@ -236,8 +243,8 @@ class MultipartCatalogueTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as temp,
             mock.patch.object(
-                script,
-                "read_url_bytes",
+                query,
+                "_read_all",
                 # Part 2 comes back wrong.
                 side_effect=lambda url: (
                     chunks[0] if url.endswith("/1") else b"tampered"
@@ -255,7 +262,7 @@ class MultipartCatalogueTests(unittest.TestCase):
         }
         with (
             tempfile.TemporaryDirectory() as temp,
-            mock.patch.object(script, "read_url_bytes", return_value=b"a"),
+            mock.patch.object(query, "_read_all", return_value=b"a"),
             self.assertRaisesRegex(SystemExit, "non-contiguous"),
         ):
             script.download_verified(entry, Path(temp) / "asset.tar.gz")
