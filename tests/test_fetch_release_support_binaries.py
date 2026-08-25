@@ -88,7 +88,11 @@ class TestCatalogueIntegrity:
             lambda url, timeout: pytest.fail(f"unexpected download: {url} ({timeout})"),
         )
         index = {
-            "tools": {"crgx": {"descriptor": {"url": "catalogues/crgx.json", "sha256": digest}}}
+            "tools": {
+                "crgx": {
+                    "descriptor": {"url": "catalogues/crgx.json", "sha256": digest}
+                }
+            }
         }
 
         with pytest.raises(support.SupportBinaryError, match="lacks a valid sha256"):
@@ -173,7 +177,9 @@ class TestStaging:
                     "version": "v1.2.3",
                     "platforms": [
                         {
-                            "platform": support.platform_for_target("x86_64-unknown-linux-gnu"),
+                            "platform": support.platform_for_target(
+                                "x86_64-unknown-linux-gnu"
+                            ),
                             "asset": asset,
                         }
                     ],
@@ -228,7 +234,9 @@ class TestStaging:
         monkeypatch.setattr(
             support,
             "read_url",
-            lambda *_args: pytest.fail("oversized part must be rejected before download"),
+            lambda *_args: pytest.fail(
+                "oversized part must be rejected before download"
+            ),
         )
 
         with pytest.raises(support.SupportBinaryError, match="invalid size_bytes"):
@@ -252,25 +260,28 @@ class TestStaging:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        asset = {
+        # The part is bound and mutated directly rather than reached through
+        # `asset["parts"][0]`. mypy infers `dict[str, object]` from the mixed
+        # value types, so that subscript is "object is not indexable" -- which
+        # is what fails the mypy gate on main (soldr#2850 added this test).
+        part: dict[str, object] = {
+            "number": 1,
+            "sha256": "1" * 64,
+            "size_bytes": 1,
+            "urls": ["https://parts.invalid/1"],
+        }
+        asset: dict[str, object] = {
             "filename": "crgx.zip",
             "sha256": "0" * 64,
             "size_bytes": 1,
-            "parts": [
-                {
-                    "number": 1,
-                    "sha256": "1" * 64,
-                    "size_bytes": 1,
-                    "urls": ["https://parts.invalid/1"],
-                }
-            ],
+            "parts": [part],
         }
         if field == "asset_size":
             asset["size_bytes"] = value
         elif field == "part_number":
-            asset["parts"][0]["number"] = value
+            part["number"] = value
         else:
-            asset["parts"][0]["size_bytes"] = value
+            part["size_bytes"] = value
         monkeypatch.setattr(
             support,
             "read_url",
@@ -346,7 +357,8 @@ class TestStaging:
             "https://fallback.invalid/crgx.zip",
         ]
         assert (
-            github_env.read_text(encoding="utf-8") == "CRGX_SOURCE_COMMIT=soldr-toolchain:v1.2.3\n"
+            github_env.read_text(encoding="utf-8")
+            == "CRGX_SOURCE_COMMIT=soldr-toolchain:v1.2.3\n"
         )
 
     def test_cargo_chef_provenance_uses_its_distinct_environment_variable(
@@ -364,7 +376,9 @@ class TestStaging:
 
 
 class TestArchiveSafety:
-    def test_zip_path_traversal_is_rejected_before_extraction(self, tmp_path: Path) -> None:
+    def test_zip_path_traversal_is_rejected_before_extraction(
+        self, tmp_path: Path
+    ) -> None:
         archive = tmp_path / "malicious.zip"
         archive.write_bytes(zip_with("../outside", b"not allowed"))
         extract_dir = tmp_path / "extract"
@@ -380,7 +394,9 @@ class TestArchiveSafety:
 
         assert not (tmp_path / "outside").exists()
 
-    def test_tar_path_traversal_is_rejected_before_extraction(self, tmp_path: Path) -> None:
+    def test_tar_path_traversal_is_rejected_before_extraction(
+        self, tmp_path: Path
+    ) -> None:
         archive = tmp_path / "malicious.tar.gz"
         archive.write_bytes(tar_with("../outside", b"not allowed"))
         extract_dir = tmp_path / "extract"
