@@ -142,8 +142,10 @@ Anything not registered falls through the generic External subcommand, which res
 - **Parent-cache sharing is default-on**: For managed-zccache builds soldr seeds `ZCCACHE_PATH_REMAP=auto` on the child cargo (issue #352, Tier L1.x). zccache then normalizes absolute source paths inside compiled artifacts so two git worktrees of the same repo serve each other's cache hits via hardlinks. Escape hatch: `SOLDR_PATH_REMAP=off` suppresses the injection; setting `ZCCACHE_PATH_REMAP` yourself wins. Works for non-git checkouts too: since zccache#353, `ZCCACHE_PATH_REMAP=auto` with no `.git/` ancestor falls back to the cwd as the remap root and still injects `--remap-path-prefix=<cwd>=.`, so tarball/zip/git-archive checkouts produce path-independent artifacts and share hits (the `.git/` walk is only how the preferred worktree root is discovered).
 - **Integrity is default**: every fetch records sha256. Pins are opt-in via `SOLDR_CHECKSUMS_FILE`; `SOLDR_TRUST_MODE=strict` refuses unpinned fetches.
 - **Version independence**: Users install once and forget. CI should pin: `pip install soldr==X.Y.Z`.
-- **Local zccache development**: Soldr consumes an exact released zccache
-  crate. Test unreleased work upstream, publish it, then update Soldr's pin.
+- **Local zccache development**: Edit the `_vender/zccache` submodule and
+  rebuild Soldr; the resulting binaries contain that source and its symbols.
+  Before updating Soldr's recorded pin, publish the target zccache release and
+  confirm its release assets are present in the soldr-toolchain catalogue.
   `SOLDR_ZCCACHE_LOCAL_DIR` and `SOLDR_ZCCACHE_BIN` are legacy
   compatibility names and do not replace the embedded service on the normal
   path. To deliberately test an external compiler wrapper, set
@@ -264,8 +266,9 @@ A pre-merge `cargo metadata --frozen` would also catch the trap (it refuses to r
 ### zccache is embedded (no managed-version pin)
 
 soldr#1368 removed the externally-downloaded managed zccache binary: the
-zccache CLI ships compiled into Soldr from the exact released crate version in
-the lockfile. soldr#2765 retired the zccache and running-process submodules.
+zccache CLI ships compiled into Soldr from the `_vender/zccache` submodule.
+The lockfile records that vendored crate's released version; running-process
+remains an exact crates.io dependency.
 
 > [!IMPORTANT]
 > That is true of the compiled-in library and of what `soldr status` reports.
@@ -273,33 +276,34 @@ the lockfile. soldr#2765 retired the zccache and running-process submodules.
 > zccache keyed on the locked crate version. The asset guard must pass before
 > that version can move.
 
-## Historical vendoring notes (retired by soldr#2765)
+## Vendored zccache source
 
-> [!CAUTION]
-> The procedures below describe the retired submodule design. They are retained
-> only as historical context; current builds use published crates.
+> [!IMPORTANT]
+> zccache is pinned as `_vender/zccache`; running-process remains an exact
+> crates.io dependency. The submodule must point at an already-published
+> zccache release so Soldr's release staging can fetch matching assets.
 
-## The vendored crates ARE published — vendoring is about leading the release
+## The vendored crate is published
 
-Both submodules are real, published crates.io crates. Vendoring exists so soldr
-can run **ahead of** their releases, not because publishing does not exist.
+Both dependencies are real, published crates.io crates. The zccache submodule
+keeps its source directly editable and auditable in Soldr while the release
+prerequisite prevents the pin from running ahead of published assets.
 
 | Crate | crates.io | soldr's pin |
 |---|---|---|
-| `zccache` | published | usually **ahead of** the last tag |
-| `running-process` | published | at or ahead of the last tag |
+| `zccache` | published | exact released submodule commit |
+| `running-process` | published | exact crates.io version |
 
 Check the relationship before reasoning about either one:
 
 ```bash
 git -C _vender/zccache describe --tags          # e.g. 1.13.5-34-g15f278a2
-git -C _vender/running-process describe --tags  # e.g. 4.10.6
 ```
 
-A bare tag means the pin **is** the published release, so that submodule could
-be swapped for a crates.io dependency with no behaviour change. A
-`<tag>-<n>-g<sha>` describe means the pin carries `n` commits that have never
-been released, and de-vendoring would silently roll soldr back.
+A bare tag confirms the pin is the required published release. A
+`<tag>-<n>-g<sha>` describe means the pin carries unpublished commits and must
+not ship in Soldr; publish zccache first, refresh the catalogue, then move the
+submodule to the release commit.
 
 ### Two traps that have already cost time
 
@@ -373,12 +377,10 @@ version) is what `soldr status` / `soldr doctor` / `soldr cache` report, and
 is also the string the asset query above uses. The crgx / cargo-chef managed
 pins are unaffected.
 
-## Updating the external zccache and running-process pins
+## Updating the external running-process pin
 
-Update every exact dependency requirement together, refresh the lockfile, and
-run `.github/scripts/check_zccache_asset.py`. The locked zccache version must
-have all six prebuilt platform assets in the soldr-toolchain catalogue because
-release staging uses that same version.
+Update every exact running-process dependency requirement together and refresh
+the lockfile. zccache follows the released-submodule procedure above.
 
 ## Reference Docs
 

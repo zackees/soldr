@@ -182,32 +182,44 @@ fn cargo_toml_cargo_lock_and_package_json_share_one_version() {
 }
 
 #[test]
-fn externalized_dependencies_are_exact_and_consistent() {
+fn dependency_sources_are_exact_and_consistent() {
     let root = repo_root();
     let lock = fs::read_to_string(root.join("Cargo.lock"))
         .expect("read Cargo.lock")
         .replace("\r\n", "\n");
 
-    for (dependency, version, manifests) in [
-        (
-            "zccache",
-            "1.13.7",
-            &[
-                "crates/soldr-cli/Cargo.toml",
-                "crates/soldr-cache/Cargo.toml",
-                "crates/soldr-daemon/Cargo.toml",
-            ][..],
-        ),
-        (
-            "running-process",
-            "4.10.6",
-            &[
-                "crates/soldr-cli/Cargo.toml",
-                "crates/soldr-daemon/Cargo.toml",
-                "crates/soldr-platform/Cargo.toml",
-            ][..],
-        ),
+    let zccache_version = "1.13.11";
+    assert!(lock.contains(&format!(
+        "name = \"zccache\"\nversion = \"{zccache_version}\""
+    )));
+    for relative in [
+        "crates/soldr-cli/Cargo.toml",
+        "crates/soldr-cache/Cargo.toml",
+        "crates/soldr-daemon/Cargo.toml",
     ] {
+        let line = dependency_line(&root.join(relative), "dependencies", "zccache")
+            .unwrap_or_else(|| panic!("{relative} must depend on zccache"));
+        assert_eq!(
+            extract_dependency_version(&line).as_deref(),
+            Some(zccache_version),
+            "{relative} must match the released vendored zccache version"
+        );
+        assert!(
+            line.contains("path = \"../../_vender/zccache/crates/zccache\"")
+                && !line.contains("git"),
+            "{relative} must resolve zccache from the pinned submodule: {line}"
+        );
+    }
+
+    for (dependency, version, manifests) in [(
+        "running-process",
+        "4.10.6",
+        &[
+            "crates/soldr-cli/Cargo.toml",
+            "crates/soldr-daemon/Cargo.toml",
+            "crates/soldr-platform/Cargo.toml",
+        ][..],
+    )] {
         let locked = format!("name = \"{dependency}\"\nversion = \"{version}\"");
         assert!(
             lock.contains(&locked),

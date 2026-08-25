@@ -3,6 +3,8 @@ pub(crate) async fn run_cargo_front_door(
     cache_enabled: bool,
     trust_inherited_soldr_env: bool,
 ) -> Result<i32, SoldrError> {
+    crate::worktree_submodule::ensure_zccache_submodule_initialized(args)?;
+
     // Time the front door (#1843); a warm no-op does not invoke a rustc
     // wrapper. Zero-cost unless SOLDR_PROFILE_STARTUP is set.
     let mut profile = crate::startup_profile::WrapperProfile::new();

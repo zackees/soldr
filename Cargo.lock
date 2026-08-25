@@ -3953,9 +3953,7 @@ dependencies = [
 
 [[package]]
 name = "zccache"
-version = "1.13.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4591073101c4d3c2b17aea758d6bb33ece1b73a1ebd94b2f1827e5d92c48e099"
+version = "1.13.11"
 dependencies = [
  "arc-swap",
  "bincode",
@@ -3974,23 +3972,17 @@ dependencies = [
  "interprocess",
  "jwalk",
  "libc",
- "lzma-rs",
  "memmap2",
  "notify",
  "prost",
- "prost-build",
- "protoc-bin-vendored",
  "rayon",
  "reflink-copy",
  "regex",
  "reqwest",
  "rkyv",
  "running-process",
- "ruzstd",
  "serde",
  "serde_json",
- "sevenz-rust",
- "sha2",
  "sysinfo",
  "tar",
  "tempfile",
@@ -4001,7 +3993,357 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "windows-sys 0.61.2",
+ "zccache-artifact",
+ "zccache-audit",
+ "zccache-cli-core",
+ "zccache-compile-trace",
+ "zccache-compiler",
+ "zccache-core",
+ "zccache-daemon-core",
+ "zccache-depgraph",
+ "zccache-download",
+ "zccache-download-protocol",
+ "zccache-fingerprint",
+ "zccache-fscache",
+ "zccache-gha",
+ "zccache-hash",
+ "zccache-ipc",
+ "zccache-platform",
+ "zccache-protocol",
+ "zccache-symbols",
+ "zccache-watcher",
+]
+
+[[package]]
+name = "zccache-artifact"
+version = "1.13.11"
+dependencies = [
+ "bincode",
+ "blake3",
+ "dashmap",
+ "flate2",
+ "fs2",
+ "prost",
+ "rayon",
+ "reflink-copy",
+ "serde",
+ "serde_json",
+ "tar",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "zccache-core",
+ "zccache-gha",
+ "zccache-hash",
+ "zccache-platform",
+]
+
+[[package]]
+name = "zccache-audit"
+version = "1.13.11"
+dependencies = [
+ "serde",
+ "serde_json",
+ "zccache-core",
+]
+
+[[package]]
+name = "zccache-cli-core"
+version = "1.13.11"
+dependencies = [
+ "bincode",
+ "blake3",
+ "bytes",
+ "clap",
+ "crash-handler",
+ "dashmap",
+ "filetime",
+ "flate2",
+ "fs2",
+ "futures",
+ "interprocess",
+ "jwalk",
+ "lzma-rs",
+ "memmap2",
+ "prost",
+ "rayon",
+ "regex",
+ "reqwest",
+ "running-process",
+ "ruzstd",
+ "serde",
+ "serde_json",
+ "sevenz-rust",
+ "sha2",
+ "tar",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "zccache-artifact",
+ "zccache-audit",
+ "zccache-compile-trace",
+ "zccache-compiler",
+ "zccache-core",
+ "zccache-daemon-core",
+ "zccache-depgraph",
+ "zccache-download",
+ "zccache-download-protocol",
+ "zccache-fingerprint",
+ "zccache-gha",
+ "zccache-hash",
+ "zccache-ipc",
+ "zccache-platform",
+ "zccache-protocol",
+ "zccache-symbols",
  "zip",
+]
+
+[[package]]
+name = "zccache-compile-trace"
+version = "1.13.11"
+dependencies = [
+ "zccache-audit",
+]
+
+[[package]]
+name = "zccache-compiler"
+version = "1.13.11"
+dependencies = [
+ "clang",
+ "serde_json",
+ "thiserror",
+ "zccache-core",
+ "zccache-hash",
+ "zccache-platform",
+]
+
+[[package]]
+name = "zccache-core"
+version = "1.13.11"
+dependencies = [
+ "crash-handler",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tracing",
+ "zccache-platform",
+]
+
+[[package]]
+name = "zccache-daemon-core"
+version = "1.13.11"
+dependencies = [
+ "arc-swap",
+ "bincode",
+ "blake3",
+ "bytes",
+ "clang",
+ "clap",
+ "console-subscriber",
+ "crash-handler",
+ "dashmap",
+ "filetime",
+ "fs2",
+ "globset",
+ "jwalk",
+ "memmap2",
+ "notify",
+ "prost",
+ "rayon",
+ "reflink-copy",
+ "regex",
+ "rkyv",
+ "running-process",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "zccache-artifact",
+ "zccache-audit",
+ "zccache-compile-trace",
+ "zccache-compiler",
+ "zccache-core",
+ "zccache-depgraph",
+ "zccache-fingerprint",
+ "zccache-fscache",
+ "zccache-hash",
+ "zccache-ipc",
+ "zccache-platform",
+ "zccache-protocol",
+ "zccache-watcher",
+]
+
+[[package]]
+name = "zccache-depgraph"
+version = "1.13.11"
+dependencies = [
+ "bincode",
+ "blake3",
+ "dashmap",
+ "rayon",
+ "rkyv",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tracing",
+ "uuid",
+ "zccache-compiler",
+ "zccache-core",
+ "zccache-hash",
+ "zccache-platform",
+]
+
+[[package]]
+name = "zccache-download"
+version = "1.13.11"
+dependencies = [
+ "blake3",
+ "futures",
+ "reqwest",
+ "serde",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "zccache-core",
+]
+
+[[package]]
+name = "zccache-download-protocol"
+version = "1.13.11"
+dependencies = [
+ "bincode",
+ "bytes",
+ "serde",
+ "zccache-core",
+ "zccache-download",
+ "zccache-platform",
+]
+
+[[package]]
+name = "zccache-fingerprint"
+version = "1.13.11"
+dependencies = [
+ "fs2",
+ "globset",
+ "jwalk",
+ "rayon",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tracing",
+ "zccache-core",
+ "zccache-hash",
+]
+
+[[package]]
+name = "zccache-fscache"
+version = "1.13.11"
+dependencies = [
+ "bincode",
+ "dashmap",
+ "rayon",
+ "serde",
+ "tokio",
+ "tracing",
+ "zccache-core",
+ "zccache-hash",
+]
+
+[[package]]
+name = "zccache-gha"
+version = "1.13.11"
+dependencies = [
+ "reqwest",
+ "serde",
+ "sha2",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
+name = "zccache-hash"
+version = "1.13.11"
+dependencies = [
+ "blake3",
+ "memmap2",
+ "serde",
+]
+
+[[package]]
+name = "zccache-ipc"
+version = "1.13.11"
+dependencies = [
+ "bytes",
+ "dashmap",
+ "interprocess",
+ "prost",
+ "running-process",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "zccache-core",
+ "zccache-platform",
+ "zccache-protocol",
+]
+
+[[package]]
+name = "zccache-platform"
+version = "1.13.11"
+dependencies = [
+ "crash-handler",
+ "interprocess",
+ "libc",
+ "tokio",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "zccache-protocol"
+version = "1.13.11"
+dependencies = [
+ "bincode",
+ "bytes",
+ "prost",
+ "prost-build",
+ "protoc-bin-vendored",
+ "running-process",
+ "serde",
+ "thiserror",
+ "zccache-core",
+ "zccache-depgraph",
+]
+
+[[package]]
+name = "zccache-symbols"
+version = "1.13.11"
+dependencies = [
+ "zccache-core",
+]
+
+[[package]]
+name = "zccache-watcher"
+version = "1.13.11"
+dependencies = [
+ "globset",
+ "jwalk",
+ "notify",
+ "rayon",
+ "tokio",
+ "tracing",
+ "zccache-core",
+ "zccache-fscache",
 ]
 
 [[package]]

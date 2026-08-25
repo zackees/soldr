@@ -13,19 +13,13 @@ members = [
     "crates/soldr-fetch",
     "crates/soldr-platform",
 ]
-# soldr#2837 removed the two entries this list used to exist for. zccache and
-# running-process were `_vender/` submodules with their own [workspace]
-# declarations, and each needed excluding so cargo would not fold its crates
-# into soldr's workspace and mis-version them. They are exact crates.io
-# dependencies now (`zccache = { version = "=1.13.7" }`,
-# `running-process = { version = "=4.10.6" }`), so there is no nested
-# workspace left to exclude and no `[patch]` pointing at either.
-#
-# `tests/test_externalized_dependency_sources.py` fails if a path dep, a
-# `[patch]` redirect, or a gitlink puts them back: the only other symptom
-# would be 19 packages returning to the lockfile and every fresh checkout
-# recompiling them, which reads as ordinary CI slowness.
+# The zccache submodule has its own [workspace] declaration and its
+# own `[workspace.dependencies]` (arc-swap, etc.). Excluding it here
+# keeps cargo from trying to fold its crates into soldr's workspace —
+# the path-dep in `crates/soldr-cli/Cargo.toml` still resolves the
+# specific `_vender/zccache/crates/zccache` crate we link against.
 exclude = [
+    "_vender/zccache",
     ".extern-repos/soldr-maturin",
 ]
 
