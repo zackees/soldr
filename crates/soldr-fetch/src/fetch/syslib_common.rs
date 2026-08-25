@@ -94,7 +94,7 @@ pub async fn ensure_syslib_bundle(
     // process-cached; the first call inside soldr's run fetches the
     // document, subsequent ones hit the OnceLock.
     let source_path = format!("{lib}/{version}/{slug}/bundle.tar.zst");
-    let entry = match catalogue_entry_for_source_path(&source_path).await {
+    let entry = match catalogue_entry_for_source_path(&source_path, &url).await {
         Some(entry) => entry,
         None => {
             // soldr#2132 item 4: two very different causes used to produce the
@@ -184,12 +184,16 @@ pub(crate) fn acquire_install_lock(
 /// been ingested yet.
 async fn catalogue_entry_for_source_path(
     source_path: &str,
+    legacy_url: &str,
 ) -> Option<manifest_lookup::ManifestEntry> {
     let index = manifest_lookup::get_or_fetch().await;
     index
         .entries
         .iter()
-        .find(|e| e.source_path.as_deref() == Some(source_path))
+        .find(|entry| {
+            entry.source_path.as_deref() == Some(source_path)
+                || entry.matches_legacy_url(legacy_url)
+        })
         .cloned()
 }
 

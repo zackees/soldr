@@ -573,12 +573,17 @@ fn validate_url(value: &str) -> Result<(), String> {
         return Err("invalid URL length".into());
     }
     let parsed = Url::parse(value).map_err(|_| "URL is not absolute".to_string())?;
-    if parsed.scheme() != "https"
+    let loopback_http = parsed.scheme() == "http"
+        && parsed
+            .host_str()
+            .and_then(|host| host.parse::<std::net::IpAddr>().ok())
+            .is_some_and(|address| address.is_loopback());
+    if (parsed.scheme() != "https" && !loopback_http)
         || parsed.host_str().is_none()
         || !parsed.username().is_empty()
         || parsed.password().is_some()
     {
-        return Err("URL must be credential-free absolute HTTPS".into());
+        return Err("URL must be credential-free absolute HTTPS (or loopback HTTP)".into());
     }
     Ok(())
 }
