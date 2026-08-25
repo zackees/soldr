@@ -19,7 +19,13 @@ import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, TypeVar
 
-DEFAULT_CATALOGUE_URL = "https://zackees.github.io/soldr-toolchain/catalogue.v1.json"
+DEFAULT_CATALOGUE_URL = "https://zackees.github.io/soldr-toolchain/catalogue.v2.json"
+CATALOGUE_SCHEMA_VERSION = 2
+
+# A single part is a GitHub raw blob; the publisher splits well below this.
+# Present so a malformed `size_bytes` cannot ask this script to buffer an
+# arbitrary amount, matching `fetch_release_support_binaries.py`.
+MAX_PART_BYTES = 64 * 1024 * 1024
 SUPPORTED_TARGETS = {
     "x86_64-pc-windows-msvc",
     "aarch64-pc-windows-msvc",
@@ -84,10 +90,33 @@ def select_entry(
     entry = matches[0]
     if not valid_sha256(entry.get("sha256")):
         raise SystemExit(f"catalogue row {expected} has no valid sha256")
-    url = entry.get("url")
-    if not isinstance(url, str) or not url:
-        raise SystemExit(f"catalogue row {expected} has no download URL")
+    # A v2 row carries EITHER direct urls OR parts. Requiring `url` here is what
+    # this script used to do, and it is wrong against v2: of the 152 published
+    # rows, 150 are multipart and carry no single URL at all.
+    if not direct_urls(entry) and not multipart_parts(entry):
+        raise SystemExit(
+            f"catalogue row {expected} has neither a download URL nor parts"
+        )
     return entry
+
+
+def direct_urls(entry: dict[str, Any]) -> list[str]:
+    """Single-request download locations, newest spelling first.
+
+    `urls` is the v2 form; `url` is the v1 singular that some rows still carry.
+    """
+    urls = entry.get("urls")
+    if isinstance(urls, list):
+        found = [url for url in urls if isinstance(url, str) and url]
+        if found:
+            return found
+    url = entry.get("url")
+    return [url] if isinstance(url, str) and url else []
+
+
+def multipart_parts(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    parts = entry.get("parts")
+    return parts if isinstance(parts, list) and parts else []
 
 
 def fetch_catalogue(url: str) -> dict[str, Any]:
@@ -103,8 +132,14 @@ def fetch_catalogue(url: str) -> dict[str, Any]:
         raise SystemExit(
             f"toolchain catalogue {url} is not valid UTF-8 JSON: {error}"
         ) from error
-    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
-        raise SystemExit("toolchain catalogue is not a schema_version 1 object")
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version") != CATALOGUE_SCHEMA_VERSION
+    ):
+        raise SystemExit(
+            "toolchain catalogue is not a schema_version "
+            f"{CATALOGUE_SCHEMA_VERSION} object"
+        )
     return payload
 
 
@@ -116,14 +151,74 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def read_url_bytes(url: str) -> bytes:
+    def read() -> bytes:
+        request = urllib.request.Request(url, headers={"Accept-Encoding": "identity"})
+        with urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT_SECS) as response:
+            return response.read()
+
+    return retry_network(read, label=f"download {url}")
+
+
+def write_multipart(parts: list[dict[str, Any]], temporary: Path) -> None:
+    """Reconstruct a v2 multipart asset, verifying every part as it lands.
+
+    Each part is checked against its own sha256 before it is written, so a
+    corrupt part is named directly rather than surfacing later as a whole-file
+    digest mismatch with nothing to point at. The caller still verifies the
+    reassembled file, which is what actually pins the artifact.
+    """
+    temporary.unlink(missing_ok=True)
+    with temporary.open("wb") as handle:
+        for expected_number, part in enumerate(parts, start=1):
+            number = part.get("number")
+            if not isinstance(number, int) or isinstance(number, bool):
+                raise SystemExit("catalogued multipart asset has a non-integer part")
+            if number != expected_number:
+                raise SystemExit(
+                    "catalogued multipart asset has non-contiguous parts: "
+                    f"expected {expected_number}, found {number}"
+                )
+            size = part.get("size_bytes")
+            if (
+                not isinstance(size, int)
+                or isinstance(size, bool)
+                or not 1 <= size <= MAX_PART_BYTES
+            ):
+                raise SystemExit(
+                    f"catalogued part {expected_number} has invalid size_bytes {size!r}"
+                )
+            if not valid_sha256(part.get("sha256")):
+                raise SystemExit(
+                    f"catalogued part {expected_number} has no valid sha256"
+                )
+            urls = part.get("urls")
+            if not isinstance(urls, list) or not urls:
+                raise SystemExit(f"catalogued part {expected_number} has no URLs")
+            payload = read_url_bytes(str(urls[0]))
+            if len(payload) != size:
+                raise SystemExit(
+                    f"catalogued part {expected_number} is {len(payload)} bytes, "
+                    f"catalogue says {size}"
+                )
+            actual = hashlib.sha256(payload).hexdigest()
+            if actual != str(part["sha256"]).lower():
+                raise SystemExit(
+                    f"catalogued part {expected_number} sha256 mismatch: "
+                    f"expected {part['sha256']}, got {actual}"
+                )
+            handle.write(payload)
+
+
 def download_verified(entry: dict[str, Any], output: Path) -> None:
     expected = str(entry["sha256"]).lower()
     temporary = output.with_suffix(output.suffix + ".part")
+    urls = direct_urls(entry)
 
     def transfer() -> None:
         temporary.unlink(missing_ok=True)
         request = urllib.request.Request(
-            str(entry["url"]), headers={"Accept-Encoding": "identity"}
+            urls[0], headers={"Accept-Encoding": "identity"}
         )
         with (
             urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT_SECS) as response,
@@ -132,7 +227,10 @@ def download_verified(entry: dict[str, Any], output: Path) -> None:
             shutil.copyfileobj(response, handle)
 
     try:
-        retry_network(transfer, label=f"download {entry['url']}")
+        if urls:
+            retry_network(transfer, label=f"download {urls[0]}")
+        else:
+            write_multipart(multipart_parts(entry), temporary)
         actual = sha256(temporary)
         if actual != expected:
             raise SystemExit(

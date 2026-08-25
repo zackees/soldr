@@ -30,7 +30,7 @@ TARGETS = [
 
 class InstallCataloguedToolsTests(unittest.TestCase):
     def test_catalogue_fetch_retries_a_transient_failure(self) -> None:
-        response = io.BytesIO(b'{"schema_version": 1, "entries": []}')
+        response = io.BytesIO(b'{"schema_version": 2, "entries": []}')
         with (
             mock.patch.object(
                 script.urllib.request,
@@ -41,7 +41,7 @@ class InstallCataloguedToolsTests(unittest.TestCase):
         ):
             catalogue = script.fetch_catalogue("https://example.test/catalogue.json")
 
-        self.assertEqual(catalogue["schema_version"], 1)
+        self.assertEqual(catalogue["schema_version"], 2)
         self.assertEqual(urlopen.call_count, 2)
         sleep.assert_called_once_with(script.RETRY_BASE_DELAY_SECS)
 
@@ -88,7 +88,7 @@ class InstallCataloguedToolsTests(unittest.TestCase):
         }
         self.assertEqual(
             script.select_entry(
-                {"schema_version": 1, "entries": [row]},
+                {"schema_version": 2, "entries": [row]},
                 tool="dylint-link",
                 version="6.0.3",
                 target="x86_64-unknown-linux-gnu",
@@ -97,14 +97,14 @@ class InstallCataloguedToolsTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(SystemExit, "exactly one"):
             script.select_entry(
-                {"schema_version": 1, "entries": []},
+                {"schema_version": 2, "entries": []},
                 tool="dylint-link",
                 version="6.0.3",
                 target="x86_64-unknown-linux-gnu",
             )
         with self.assertRaisesRegex(SystemExit, "valid sha256"):
             script.select_entry(
-                {"schema_version": 1, "entries": [{**row, "sha256": "bad"}]},
+                {"schema_version": 2, "entries": [{**row, "sha256": "bad"}]},
                 tool="dylint-link",
                 version="6.0.3",
                 target="x86_64-unknown-linux-gnu",
@@ -188,3 +188,95 @@ class MsvcLinkerSmokeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MultipartCatalogueTests(unittest.TestCase):
+    """soldr#2850's catalogue v2 migration: 150 of the 152 published rows are
+    multipart and carry no single URL, so this path is the normal one now."""
+
+    @staticmethod
+    def _part(number: int, payload: bytes) -> dict[str, object]:
+        return {
+            "number": number,
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "size_bytes": len(payload),
+            "urls": [f"https://parts.test/{number}"],
+        }
+
+    def test_a_multipart_row_is_reassembled_in_order(self) -> None:
+        chunks = [b"first-half-", b"second-half"]
+        whole = b"".join(chunks)
+        entry = {
+            "asset": "cargo-dylint-6.0.3-x86_64-unknown-linux-gnu.tar.gz",
+            "sha256": hashlib.sha256(whole).hexdigest(),
+            "parts": [self._part(i, c) for i, c in enumerate(chunks, start=1)],
+        }
+        with (
+            tempfile.TemporaryDirectory() as temp,
+            mock.patch.object(
+                script,
+                "read_url_bytes",
+                side_effect=lambda url: chunks[int(url.rsplit("/", 1)[1]) - 1],
+            ),
+        ):
+            output = Path(temp) / "asset.tar.gz"
+            script.download_verified(entry, output)
+            self.assertEqual(output.read_bytes(), whole)
+
+    def test_a_corrupt_part_is_named_rather_than_surfacing_as_a_whole_file_miss(
+        self,
+    ) -> None:
+        chunks = [b"good-part-", b"bad-part"]
+        whole = b"".join(chunks)
+        entry = {
+            "asset": "cargo-dylint-6.0.3-x86_64-unknown-linux-gnu.tar.gz",
+            "sha256": hashlib.sha256(whole).hexdigest(),
+            "parts": [self._part(i, c) for i, c in enumerate(chunks, start=1)],
+        }
+        with (
+            tempfile.TemporaryDirectory() as temp,
+            mock.patch.object(
+                script,
+                "read_url_bytes",
+                # Part 2 comes back wrong.
+                side_effect=lambda url: (
+                    chunks[0] if url.endswith("/1") else b"tampered"
+                ),
+            ),
+            self.assertRaisesRegex(SystemExit, "part 2 sha256 mismatch"),
+        ):
+            script.download_verified(entry, Path(temp) / "asset.tar.gz")
+
+    def test_non_contiguous_parts_are_refused(self) -> None:
+        entry = {
+            "asset": "cargo-dylint-6.0.3-x86_64-unknown-linux-gnu.tar.gz",
+            "sha256": "a" * 64,
+            "parts": [self._part(1, b"a"), self._part(3, b"b")],
+        }
+        with (
+            tempfile.TemporaryDirectory() as temp,
+            mock.patch.object(script, "read_url_bytes", return_value=b"a"),
+            self.assertRaisesRegex(SystemExit, "non-contiguous"),
+        ):
+            script.download_verified(entry, Path(temp) / "asset.tar.gz")
+
+    def test_a_row_with_neither_urls_nor_parts_is_refused_at_selection(self) -> None:
+        expected = script.asset_name("dylint-link", "6.0.3", "x86_64-unknown-linux-gnu")
+        with self.assertRaisesRegex(SystemExit, "neither a download URL nor parts"):
+            script.select_entry(
+                {
+                    "schema_version": 2,
+                    "entries": [{"asset": expected, "sha256": "a" * 64}],
+                },
+                tool="dylint-link",
+                version="6.0.3",
+                target="x86_64-unknown-linux-gnu",
+            )
+
+    def test_the_v2_urls_list_is_preferred_over_the_v1_singular(self) -> None:
+        entry = {"urls": ["https://new.test/a"], "url": "https://old.test/a"}
+        self.assertEqual(script.direct_urls(entry), ["https://new.test/a"])
+        self.assertEqual(
+            script.direct_urls({"url": "https://old.test/a"}), ["https://old.test/a"]
+        )
+        self.assertEqual(script.direct_urls({}), [])
