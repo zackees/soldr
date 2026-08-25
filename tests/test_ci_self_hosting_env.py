@@ -98,6 +98,12 @@ def test_pep517_failure_summary_has_searchable_log_markers() -> None:
     assert "exited 1" in summary
 
 
+def test_source_wheel_smoke_uses_the_wheel_under_test_as_backend() -> None:
+    source = (SCRIPTS / "source_wheel_shim_smoke.py").read_text(encoding="utf-8")
+    assert '"--no-build-isolation"' in source
+    assert source.index('"--no-build-isolation"') < source.index('"--no-cache-dir"')
+
+
 def test_temporary_root_teardown_stops_the_daemon_before_the_broker() -> None:
     """The rmtree race is the daemon's, not the broker's (soldr#2521 B2).
 
