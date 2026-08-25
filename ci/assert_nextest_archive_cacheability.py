@@ -31,9 +31,21 @@ export CARGO_TERM_COLOR=always
 export RUST_BACKTRACE=1
 export SOLDR_DAEMON_SPAWN_RETRY_BUDGET_MS="${SOLDR_DAEMON_SPAWN_RETRY_BUDGET_MS:-120000}"
 
+report_memory_pressure() {
+  # soldr#2781/#2817: this lane keeps dying to "compiler process was
+  # terminated by a Unix signal ... can indicate an OOM/resource-limit kill",
+  # and every triage has stopped at "can indicate". The container's own cgroup
+  # counts OOM kills, so the question is answerable right here -- in both
+  # directions, which is the point: a zero rules memory out rather than
+  # merely failing to confirm it.
+  python3 /work/ci/assert_nextest_archive_cacheability.py \
+    --memory-pressure "$1" >&2 || true
+}
+
 echo "## environment"
 rustc --version
 cargo --version
+report_memory_pressure startup
 
 echo "## bootstrap soldr"
 export CARGO_TARGET_DIR=/root/.soldr/bootstrap-target
@@ -95,6 +107,11 @@ explain_report() {
 }
 
 print_daemon_diagnostics() {
+  # The sentinel PhaseTracker watches for. Everything below announces itself
+  # with a `##` marker too, so without it the last marker before the stream
+  # ends is a diagnostic section rather than the phase that actually failed.
+  echo "## post-failure diagnostics" >&2
+  report_memory_pressure failure
   echo "## soldr daemon diagnostics" >&2
   cat "$DIAGNOSTICS_DIR/soldr-daemon-status.json" >&2 || true
   cat "$DIAGNOSTICS_DIR/soldr-daemon-status.err" >&2 || true
@@ -384,6 +401,156 @@ def emit_report_explanation(label: str, path: str) -> int:
     return 0
 
 
+CGROUP_ROOT = Path("/sys/fs/cgroup")
+MEMINFO = Path("/proc/meminfo")
+
+# Env vars that decide how many of these oversized units run at once. Printed
+# beside the limits because the pair is what a reader needs: a 7.8 GiB ceiling
+# is fine at one job and marginal at two.
+CONCURRENCY_VARS = ("SOLDR_JOBS", "CARGO_BUILD_JOBS", "ZCCACHE_MAX_PARALLEL_COMPILES")
+
+
+def _read_text(path: Path) -> str | None:
+    """Contents of ``path``, or None if it cannot be read.
+
+    Every caller here is a diagnostic running while something else is already
+    failing, so an unreadable file is a fact to report, never an exception to
+    raise on top of the original failure.
+    """
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+
+
+def _human_bytes(value: int) -> str:
+    step = 1024.0
+    size = float(value)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if size < step or unit == "TiB":
+            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
+        size /= step
+    return f"{size:.1f} TiB"
+
+
+def _bytes_line(label: str, raw: str | None) -> str:
+    if raw is None:
+        return f"  {label}: (unreadable)"
+    if raw == "max":
+        # cgroup v2 spells "no limit" as the literal string, not a number.
+        return f"  {label}: max (no cgroup limit)"
+    try:
+        value = int(raw)
+    except ValueError:
+        return f"  {label}: {raw}"
+    return f"  {label}: {_human_bytes(value)} ({value})"
+
+
+def parse_memory_events(raw: str | None) -> dict[str, int]:
+    """``memory.events`` as a mapping. Unparsable lines are skipped.
+
+    The file is ``<key> <count>`` per line. ``oom_kill`` is the one that
+    settles the question this harness keeps asking: cgroup v2 counts every
+    process in the cgroup killed by *any* OOM killer, so a zero there rules
+    memory out rather than merely failing to confirm it.
+    """
+    events: dict[str, int] = {}
+    if not raw:
+        return events
+    for line in raw.splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        try:
+            events[parts[0]] = int(parts[1])
+        except ValueError:
+            continue
+    return events
+
+
+def _meminfo_line(label: str, raw: str | None) -> str:
+    if raw is None:
+        return f"  {label}: (unreadable)"
+    for line in raw.splitlines():
+        if line.startswith(f"{label}:"):
+            return f"  {line.split(':', 1)[1].strip()}  <- {label}"
+    return f"  {label}: (absent)"
+
+
+def oom_verdict(events: dict[str, int], events_readable: bool) -> str:
+    """The one line worth reading, stated as a determination.
+
+    soldr#2781/#2817: soldr's own message says a signal kill "can indicate an
+    OOM/resource-limit kill", and every triage of this lane has stopped there
+    -- the owner's #2781 report notes `dmesg` had no OOM record, which is not
+    the same question as whether the *cgroup* recorded one. This answers the
+    question that is actually answerable inside the container.
+    """
+    if not events_readable:
+        return (
+            "  VERDICT: unknown -- memory.events is unreadable, so this run "
+            "cannot say whether an OOM kill happened"
+        )
+    killed = events.get("oom_kill", 0) + events.get("oom_group_kill", 0)
+    if killed:
+        return (
+            f"  VERDICT: the kernel OOM-killed {killed} process(es) in this "
+            "cgroup -- a signal-killed compile here IS a memory kill"
+        )
+    return (
+        "  VERDICT: no OOM kill recorded in this cgroup -- a signal-killed "
+        "compile here is NOT the memory limit; look elsewhere"
+    )
+
+
+def memory_pressure_lines(
+    label: str,
+    cgroup_root: Path = CGROUP_ROOT,
+    meminfo: Path = MEMINFO,
+    environ: dict[str, str] | None = None,
+) -> list[str]:
+    """Host/container memory facts, plus whether the kernel OOM-killed here."""
+    env = os.environ if environ is None else environ
+    lines = [f"## {label} memory pressure"]
+
+    memory_max = cgroup_root / "memory.max"
+    if not memory_max.exists():
+        lines.append(f"  cgroup: no memory.max under {cgroup_root} (not cgroup v2?)")
+    else:
+        lines.append(f"  cgroup: v2 at {cgroup_root}")
+    lines.append(_bytes_line("memory.max", _read_text(memory_max)))
+    lines.append(_bytes_line("memory.high", _read_text(cgroup_root / "memory.high")))
+    # memory.peak is the high-water mark for the whole run, so it survives the
+    # death of whatever process reached it -- which is the only reason this is
+    # readable at all after the compile that spiked is gone.
+    lines.append(_bytes_line("memory.peak", _read_text(cgroup_root / "memory.peak")))
+
+    raw_events = _read_text(cgroup_root / "memory.events")
+    events = parse_memory_events(raw_events)
+    if events:
+        rendered = " ".join(f"{k}={v}" for k, v in sorted(events.items()))
+    else:
+        rendered = "(unreadable)" if raw_events is None else "(empty)"
+    lines.append(f"  memory.events: {rendered}")
+
+    meminfo_raw = _read_text(meminfo)
+    lines.append(_meminfo_line("MemTotal", meminfo_raw))
+    lines.append(_meminfo_line("MemAvailable", meminfo_raw))
+    lines.append(_meminfo_line("SwapTotal", meminfo_raw))
+    lines.append(f"  nproc: {os.cpu_count()}")
+    for name in CONCURRENCY_VARS:
+        lines.append(f"  {name}: {env.get(name, '(unset)')}")
+
+    lines.append(oom_verdict(events, raw_events is not None))
+    return lines
+
+
+def emit_memory_pressure(label: str) -> int:
+    for line in memory_pressure_lines(label):
+        print(line)
+    return 0
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -416,6 +583,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "Used by the harness from inside the container; runs no Docker."
         ),
     )
+    parser.add_argument(
+        "--memory-pressure",
+        metavar="LABEL",
+        default=None,
+        help=(
+            "print the cgroup memory limits, peak, and OOM-kill count, and "
+            "exit. Used by the harness from inside the container."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -440,12 +616,23 @@ class PhaseTracker:
 
     MARKER = "## "
 
+    # soldr#2817: everything the failure trap prints is itself announced with
+    # a `##` marker, so the last marker before the stream ended was always the
+    # last *diagnostic* section -- run 32893551296 died in `cold nextest
+    # archive build` and reported `failed during phase: retained diagnostic
+    # files`. The docstring above calls the open phase "the single most useful
+    # fact"; it was being overwritten by the code printed to explain it.
+    # The trap announces itself with this sentinel first, and everything after
+    # it is still grouped for readability but can no longer claim the blame.
+    DIAGNOSTICS_MARKER = "post-failure diagnostics"
+
     def __init__(self, clock=time.monotonic, emit_groups: bool = False) -> None:
         self._clock = clock
         self._emit_groups = emit_groups
         self._started_at: float | None = None
         self.current: str | None = None
         self.phases: list[tuple[str, float]] = []
+        self.failed: str | None = None
 
     def feed(self, line: str) -> str | None:
         """Consume one harness line; return a control line to print, if any."""
@@ -454,6 +641,9 @@ class PhaseTracker:
         name = line[len(self.MARKER) :].strip()
         if not name:
             return None
+        if name.lower() == self.DIAGNOSTICS_MARKER and self.failed is None:
+            # Captured before _close() clears it.
+            self.failed = self.current
         closing = self._close()
         self.current = name
         self._started_at = self._clock()
@@ -614,6 +804,9 @@ def main(argv: list[str]) -> int:
         # there is no Docker daemon to reach.
         label, path = args.explain_report
         return emit_report_explanation(label, path)
+    if args.memory_pressure is not None:
+        # Same reason as above: inside the container, no Docker to reach.
+        return emit_memory_pressure(args.memory_pressure)
     if not docker_available():
         print(
             "error: docker is not available or the daemon is not reachable",
@@ -660,7 +853,7 @@ def main(argv: list[str]) -> int:
         # here rather than on the success path: `failed_phase` names the
         # stage that was still open, which is the fact a single opaque step
         # could never give you.
-        failed_phase = tracker.current
+        failed_phase = tracker.failed or tracker.current
         tracker.finish()
         write_step_summary(tracker.summary_markdown(failed_phase))
         if failed_phase:
