@@ -99,7 +99,7 @@ jobs:
 
       # soldr#1799: pin the soldr that builds us. This prevents action-default
       # drift from changing build or catalogue behavior between lanes.
-      - name: Setup soldr build cache
+      - name: Setup pinned soldr toolchain
         uses: zackees/setup-soldr@68ce266ed86b75ccfb332b084ba1a64d619bfe53
         with:
           version: 0.9.6
@@ -115,6 +115,19 @@ jobs:
           soldr-mini-cache: false
           solo-toolchain-cache: false
           zccache-seed-strict: true
+
+      # Keep every host-side invocation in one isolated Soldr domain. The
+      # setup action selects its own cache root while it installs the pinned
+      # builder; exporting this before the first workspace build makes the
+      # build, warm checks, status, cleanup, nextest, and final shutdown use
+      # one wrapper path and one compiler cache.
+      - name: Select canonical host CI cache domain
+        shell: bash
+        run: |
+          echo "SOLDR_CACHE_DIR=${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}" >> "$GITHUB_ENV"
+          echo "ZCCACHE_CACHE_DIR=${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/cache/zccache" >> "$GITHUB_ENV"
+          echo "SOLDR_CACHE_LIFECYCLE=command" >> "$GITHUB_ENV"
+          echo "SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS=30" >> "$GITHUB_ENV"
 
       # soldr#1241 — cache ~/.cargo/{registry,git} + target/ so
       # `Build workspace + tests`, `Run library tests`, `Run CLI
@@ -219,10 +232,10 @@ jobs:
         if: success()
         shell: bash
         run: |
-          python3 .github/scripts/check_toolchain_homes.py "$HOME/.soldr/logs/builds" \
+          python3 .github/scripts/check_toolchain_homes.py "$SOLDR_CACHE_DIR/logs/builds" \
             --managed-root "$HOME/.soldr" --managed-root "$HOME/.soldr-dev"
 
-      - name: Stop setup-soldr builder cache before tests
+      - name: Stop canonical host CI cache before nextest
         uses: zackees/setup-soldr/cleanup@68ce266ed86b75ccfb332b084ba1a64d619bfe53
 
       # soldr#2864: dev -> test is the transition that previously rebuilt the
@@ -235,11 +248,6 @@ jobs:
         if: success()
         continue-on-error: ${{ !contains(inputs.target, 'linux-gnu') }}
         shell: bash
-        env:
-          SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-self-tests/${{ inputs.target }}
-          SOLDR_CACHE_LIFECYCLE: command
-          SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
-          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/soldr-self-tests/${{ inputs.target }}/cache/zccache
         run: |
           soldr cargo nextest run --no-run --workspace --lib --tests \
             --target ${{ inputs.target }} > warm-nextest.log 2>&1
@@ -263,14 +271,9 @@ jobs:
       # fingerprints.
       - name: Run library + CLI smoke tests
         shell: bash
-        env:
-          SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-self-tests/${{ inputs.target }}
-          SOLDR_CACHE_LIFECYCLE: command
-          SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
-          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/soldr-self-tests/${{ inputs.target }}/cache/zccache
         run: |
           set -euo pipefail
-          echo "Using isolated test SOLDR_CACHE_DIR=$SOLDR_CACHE_DIR"
+          echo "Using canonical host CI SOLDR_CACHE_DIR=$SOLDR_CACHE_DIR"
           echo "Driving the suite with the pinned PATH soldr ($(soldr version))"
           python3 .github/scripts/step_duration.py \
             --label "${{ inputs.target }} / Library + smoke tests" \
@@ -283,21 +286,17 @@ jobs:
       # target). Running it twice wasted ~40 s per CI run for zero
       # additional coverage.
 
-      - name: Stop isolated test cache
+      - name: Stop canonical host CI cache
         if: always()
         continue-on-error: true
         shell: bash
-        env:
-          SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-self-tests/${{ inputs.target }}
-          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/soldr-self-tests/${{ inputs.target }}/cache/zccache
         run: |
           soldr cache shutdown --shutdown-timeout-seconds 30 || soldr zccache stop
 
       # soldr#1799 — surface the per-build XML logs and the JSONL compile
       # journals from CI compiles so toolchain-home leakage and warm-run
-      # recompile storms are diagnosable. Roots covered: the default soldr
-      # homes (~/.soldr, ~/.soldr-dev) used by the build step, and the
-      # isolated SOLDR_CACHE_DIR tree used by the test steps.
+      # recompile storms are diagnosable. The canonical SOLDR_CACHE_DIR tree
+      # covers every build and test step in this host lane.
       #
       # These used to `Get-Content` every matching file into the job console.
       # A compile journal is one JSON object per compile unit, so a full
@@ -311,9 +310,7 @@ jobs:
         shell: bash
         run: |
           python3 .github/scripts/index_build_logs.py \
-            --root "$HOME/.soldr" \
-            --root "$HOME/.soldr-dev" \
-            --root "${{ runner.temp }}/soldr-self-tests" \
+            --root "$SOLDR_CACHE_DIR" \
             --artifact-name "build-logs-${{ inputs.target }}"
 
       - name: Upload build log artifacts
@@ -330,23 +327,10 @@ jobs:
           # root — all three were silently missing from this artifact, which
           # is why a broker that failed to come up left no downloadable trace.
           path: |
-            ~/.soldr/logs/
-            ~/.soldr-dev/logs/
-            ~/.soldr/cache/zccache/logs/
-            ~/.soldr-dev/cache/zccache/logs/
-            ~/.soldr/cache/zccache/history/**/*.json
-            ~/.soldr/cache/zccache/history/**/*.jsonl
-            ~/.soldr-dev/cache/zccache/history/**/*.json
-            ~/.soldr-dev/cache/zccache/history/**/*.jsonl
-            ~/.soldr/*-spawn.log
-            ~/.soldr-dev/*-spawn.log
-            ~/.soldr/broker/*.log
-            ~/.soldr-dev/broker/*.log
-            ~/.soldr/broker/*.jsonl
-            ~/.soldr-dev/broker/*.jsonl
-            ${{ runner.temp }}/soldr-self-tests/**/logs/
-            ${{ runner.temp }}/soldr-self-tests/**/history/**/*.json
-            ${{ runner.temp }}/soldr-self-tests/**/history/**/*.jsonl
-            ${{ runner.temp }}/soldr-self-tests/**/*-spawn.log
-            ${{ runner.temp }}/soldr-self-tests/**/broker/*.log
-            ${{ runner.temp }}/soldr-self-tests/**/broker/*.jsonl
+            ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/logs/
+            ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/cache/zccache/logs/
+            ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/cache/zccache/history/**/*.json
+            ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/cache/zccache/history/**/*.jsonl
+            ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/*-spawn.log
+            ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/broker/*.log
+            ${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}/broker/*.jsonl

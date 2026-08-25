@@ -26,6 +26,7 @@ a dependency here, and a guard that skips when a module is missing is the
 failure mode these very steps exist to prevent.
 """
 
+import re
 import tomllib
 from pathlib import Path
 
@@ -36,6 +37,13 @@ CARGO_TOML = REPO_ROOT / "Cargo.toml"
 GUARD_1799 = "Assert managed toolchain homes did not leak (soldr#1799)"
 GUARD_1838 = "Assert the build did not silently run uncached (soldr#1838)"
 GUARD_2864 = "Assert build-to-nextest transition recompiles nothing (soldr#2864)"
+CANONICAL_CACHE = "Select canonical host CI cache domain"
+FINAL_CACHE_STOP = "Stop canonical host CI cache"
+CACHE_ENV_VARS = ("SOLDR_CACHE_DIR", "ZCCACHE_CACHE_DIR")
+CACHE_SHELL_ASSIGNMENT = re.compile(
+    r"^(?:(?:export|env)\s+)?(?:SOLDR_CACHE_DIR|ZCCACHE_CACHE_DIR)\s*="
+    r"|^\$env:(?:SOLDR_CACHE_DIR|ZCCACHE_CACHE_DIR)\s*="
+)
 
 
 def _step_body(workflow: str, step_name: str) -> str:
@@ -107,7 +115,53 @@ def test_dev_to_nextest_transition_is_hard_guarded_on_linux() -> None:
     assert "soldr cargo nextest run --no-run" in body
     assert "--workspace --lib --tests" in body
     assert "check_warm_rebuild.py warm-nextest.log" in body
-    assert "SOLDR_CACHE_DIR" in body
-    assert workflow.index("Stop setup-soldr builder cache before tests") < workflow.index(
-        GUARD_2864
+    assert workflow.index(
+        "Stop canonical host CI cache before nextest"
+    ) < workflow.index(GUARD_2864)
+
+
+def test_canonical_cache_domain_precedes_every_host_build_and_test() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    domain = _step_body(workflow, CANONICAL_CACHE)
+    assert workflow.count(f"- name: {CANONICAL_CACHE}") == 1
+    setup_end = workflow.find(
+        "\n      - name: ", workflow.index("Setup pinned soldr toolchain") + 1
     )
+    assert workflow.startswith(f"\n      - name: {CANONICAL_CACHE}", setup_end)
+    assert (
+        'echo "SOLDR_CACHE_DIR=${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}" '
+        '>> "$GITHUB_ENV"'
+    ) in domain
+    assert (
+        'echo "ZCCACHE_CACHE_DIR=${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}'
+        '/cache/zccache" >> "$GITHUB_ENV"'
+    ) in domain
+    assert workflow.index(CANONICAL_CACHE) < workflow.index("Build workspace + tests")
+    assert workflow.index(CANONICAL_CACHE) < workflow.index(GUARD_1838)
+    assert workflow.index(CANONICAL_CACHE) < workflow.index(GUARD_1799)
+    assert workflow.index(CANONICAL_CACHE) < workflow.index(
+        "Stop canonical host CI cache before nextest"
+    )
+    assert workflow.index(CANONICAL_CACHE) < workflow.index(GUARD_2864)
+    assert workflow.index(CANONICAL_CACHE) < workflow.index(
+        "Run library + CLI smoke tests"
+    )
+    assert workflow.index(CANONICAL_CACHE) < workflow.index(
+        f"- name: {FINAL_CACHE_STOP}\n"
+    )
+
+
+def test_no_later_host_step_switches_the_canonical_cache_domain() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    domain = _step_body(workflow, CANONICAL_CACHE)
+    later = workflow[workflow.index(domain) + len(domain) :]
+    later_lines = [line.lstrip() for line in later.splitlines()]
+    assert not any(line.startswith("SOLDR_CACHE_DIR:") for line in later_lines)
+    assert not any(line.startswith("ZCCACHE_CACHE_DIR:") for line in later_lines)
+    assert not any(CACHE_SHELL_ASSIGNMENT.match(line) for line in later_lines)
+    assert not any(
+        "GITHUB_ENV" in line
+        and any(f"{variable}=" in line for variable in CACHE_ENV_VARS)
+        for line in later_lines
+    )
+    assert 'check_toolchain_homes.py "$SOLDR_CACHE_DIR/logs/builds"' in workflow
