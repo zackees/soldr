@@ -100,7 +100,7 @@ jobs:
       # soldr#1799: pin the soldr that builds us. This prevents action-default
       # drift from changing build or catalogue behavior between lanes.
       - name: Setup soldr build cache
-        uses: zackees/setup-soldr@9c75e87c4a93e62b6ce5d123f497fba19307fa58
+        uses: zackees/setup-soldr@68ce266ed86b75ccfb332b084ba1a64d619bfe53
         with:
           version: 0.9.6
           toolchain: 1.95.0
@@ -223,7 +223,7 @@ jobs:
             --managed-root "$HOME/.soldr" --managed-root "$HOME/.soldr-dev"
 
       - name: Stop setup-soldr builder cache before tests
-        uses: zackees/setup-soldr/cleanup@9c75e87c4a93e62b6ce5d123f497fba19307fa58
+        uses: zackees/setup-soldr/cleanup@68ce266ed86b75ccfb332b084ba1a64d619bfe53
 
       # soldr#1324/#1703 — run every workspace library and integration binary
       # in one invocation. This includes the internal crates extracted after
