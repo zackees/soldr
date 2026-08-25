@@ -163,42 +163,37 @@ def test_a_missing_lock_entry_fails(guard, tmp_path, monkeypatch, capsys):
     assert "Cargo.lock" in out
 
 
-def test_an_unreachable_manifest_is_skipped_not_failed(
+def serve(guard, monkeypatch, payload: dict) -> None:
+    """Answer the guard's manifest fetch from a fixture instead of the network."""
+    monkeypatch.setattr(
+        guard,
+        "load_tool_manifest",
+        lambda *_: ("https://example.test/generation/zccache/manifest.json", payload),
+    )
+
+
+def test_network_failure_skips_but_descriptor_failure_blocks(
     guard, tmp_path, monkeypatch, capsys
 ):
-    """Every PR runs this. Failing them all on a Pages blip teaches people to
-    ignore it, which costs more than the check is worth."""
     write_repo(tmp_path, "1.13.5")
     monkeypatch.setattr(
-        "sys.argv",
-        [
-            "check",
-            "--repo-root",
-            str(tmp_path),
-            "--origin",
-            "http://127.0.0.1:1/unreachable",
-        ],
+        guard,
+        "load_tool_manifest",
+        lambda *_: (_ for _ in ()).throw(guard.NetworkFetchError("reset")),
+    )
+    monkeypatch.setattr(
+        "sys.argv", ["check_zccache_asset.py", "--repo-root", str(tmp_path)]
     )
     assert guard.main() == 0
     assert "skipped" in capsys.readouterr().out
 
-
-def serve(guard, monkeypatch, payload: dict) -> None:
-    """Answer the guard's manifest fetch from a fixture instead of the network."""
-
-    class Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_):
-            return False
-
-        def read(self):
-            import json as _json
-
-            return _json.dumps(payload).encode("utf-8")
-
-    monkeypatch.setattr(guard.urllib.request, "urlopen", lambda *a, **k: Response())
+    monkeypatch.setattr(
+        guard,
+        "load_tool_manifest",
+        lambda *_: (_ for _ in ()).throw(SystemExit("descriptor sha256 mismatch")),
+    )
+    with pytest.raises(SystemExit, match="descriptor sha256 mismatch"):
+        guard.main()
 
 
 def test_the_2164_incident_fails_the_guard(guard, tmp_path, monkeypatch, capsys):

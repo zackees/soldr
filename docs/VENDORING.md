@@ -1,10 +1,9 @@
-# Vendoring zccache into `_vender/`
+# Vendoring zccache into `_vender/` for fast iteration
 
-> [!IMPORTANT]
-> `_vender/zccache` is an active git submodule pinned to an already-published
-> zccache release. Soldr compiles its embedded service from that path. The
-> time-bounded flat-copy workflow documented below is historical and applies
-> only if a future local-only hotfix temporarily replaces the clean submodule.
+> [!NOTE]
+> No zccache or running-process vendor is active. soldr#2765 retired both
+> submodules; production builds resolve exact published crate versions. This
+> document applies only if a future, explicitly time-bounded vendor is started.
 
 > **Audience:** soldr contributors investigating a bug that spans
 > soldr and zccache. The canonical example: the cold-build IPC

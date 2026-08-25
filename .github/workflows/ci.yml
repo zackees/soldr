@@ -264,7 +264,7 @@ jobs:
       - name: Setup soldr build cache
         # SHA pin resolved from setup-soldr@v0 on 2026-08-11; the pin guard
         # verifies this remains current when the upstream tag advances.
-        uses: zackees/setup-soldr@9c75e87c4a93e62b6ce5d123f497fba19307fa58
+        uses: zackees/setup-soldr@68ce266ed86b75ccfb332b084ba1a64d619bfe53
         with:
           # soldr#1799: pin the soldr that builds us -- the action's default
           # (0.8.23) predates #1820 and GCs live target/ artifacts after every
@@ -795,7 +795,7 @@ jobs:
         run: rustup toolchain install 1.95.0 --profile minimal --no-self-update
 
       - name: Setup soldr build cache
-        uses: zackees/setup-soldr@9c75e87c4a93e62b6ce5d123f497fba19307fa58
+        uses: zackees/setup-soldr@68ce266ed86b75ccfb332b084ba1a64d619bfe53
         with:
           # soldr#1799: pin the soldr that builds us -- the action's default
           # (0.8.23) predates #1820 and GCs live target/ artifacts after every

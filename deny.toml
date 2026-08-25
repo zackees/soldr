@@ -33,7 +33,7 @@ skip = [
     # sha2 0.10 holds cpufeatures 0.2 (negligible).
     { name = "cpufeatures" },
     # errno/rustix/tempfile still cap at 0.52, reached only through
-    # prost-build's build-dependency tree (vendored zccache-protocol and
+    # prost-build's build-dependency tree (amalgamated zccache-protocol and
     # running-process). The #2406 convergence covered the runtime tree;
     # this build-dep tail waits on upstream bumps.
     { name = "windows-sys" },

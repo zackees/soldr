@@ -7,25 +7,37 @@ query script exposed:
     python3 .github/scripts/toolchain_asset_query.py \
         --platform linux --arch x86 --extra gnu cargo-zigbuild
 
-It reads ``https://zackees.github.io/soldr-toolchain/<tool>/manifest.json``,
-selects a release, matches a platform entry, and prints one direct URL on
-stdout. With ``--json`` it emits transport-polymorphic metadata (``urls`` XOR
-``parts``) used by deterministic CI packaging.
+It reads ``https://zackees.github.io/soldr-toolchain/manifest.json``, follows
+and verifies the selected tool descriptor, then selects a release/platform
+entry. With ``--json`` it emits
+transport-polymorphic metadata (``urls`` XOR ``parts``) used by deterministic
+CI packaging.
 Exit status is non-zero when the requested tool/version/platform is absent.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
+import http.client
 import json
+import time
 import urllib.error
 import urllib.request
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any
+from urllib.parse import urljoin
 
 from catalogue_http import display_url, open_url, validate_https_url
 
 DEFAULT_ORIGIN = "https://zackees.github.io/soldr-toolchain"
+FETCH_ATTEMPTS = 3
+RETRY_BASE_DELAY_SECS = 0.5
+
+
+class NetworkFetchError(SystemExit):
+    """A catalogue fetch exhausted retries without receiving bytes."""
+
 
 OS_ALIASES: dict[str, str] = {
     "linux": "linux",
@@ -48,23 +60,93 @@ ARCH_ALIASES: dict[str, str] = {
 }
 
 
-def fetch_json(url: str) -> Any:
+def fetch_bytes(url: str) -> bytes:
     validate_https_url(url, label="tool manifest")
     shown_url = display_url(url)
     request = urllib.request.Request(url, headers={"Accept-Encoding": "identity"})
+    for attempt in range(1, FETCH_ATTEMPTS + 1):
+        try:
+            with open_url(request, timeout=30) as resp:
+                return resp.read()
+        except urllib.error.HTTPError as exc:
+            if attempt == FETCH_ATTEMPTS:
+                raise NetworkFetchError(
+                    f"HTTP {exc.code} fetching {shown_url}"
+                ) from None
+            time.sleep(RETRY_BASE_DELAY_SECS * (2 ** (attempt - 1)))
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            ConnectionError,
+            http.client.IncompleteRead,
+        ) as exc:
+            if attempt == FETCH_ATTEMPTS:
+                raise NetworkFetchError(
+                    f"network error fetching {shown_url}: {type(exc).__name__}"
+                ) from None
+            time.sleep(RETRY_BASE_DELAY_SECS * (2 ** (attempt - 1)))
+    raise AssertionError("retry loop exhausted without returning or raising")
+
+
+def decode_json(raw: bytes, url: str) -> Any:
     try:
-        with open_url(request, timeout=30) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        raise SystemExit(f"HTTP {exc.code} fetching {shown_url}") from None
-    except urllib.error.URLError as exc:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"invalid UTF-8 JSON at {url}: {exc}") from exc
+
+
+def fetch_json(url: str) -> Any:
+    return decode_json(fetch_bytes(url), url)
+
+
+def load_tool_manifest(origin: str, tool: str) -> tuple[str, dict[str, Any]]:
+    """Follow and verify a tool descriptor from the published root index."""
+    root = f"{origin.rstrip('/')}/manifest.json"
+    index = decode_json(fetch_bytes(root), root)
+    if not isinstance(index, dict) or index.get("schema_version") != 1:
+        raise SystemExit(f"catalogue index at {root} is not a schema_version 1 object")
+    tools = index.get("tools")
+    if not isinstance(tools, dict):
+        raise SystemExit(f"catalogue index at {root} has no tools object")
+    entry = tools.get(tool)
+    if not isinstance(entry, dict):
+        raise SystemExit(f"catalogue index has no entry for {tool}")
+    descriptor = entry.get("descriptor")
+    if not isinstance(descriptor, dict):
+        raise SystemExit(f"catalogue index has no descriptor for {tool}")
+    relative_url = descriptor.get("url")
+    if not isinstance(relative_url, str) or not relative_url:
+        raise SystemExit(f"catalogue index has no descriptor URL for {tool}")
+    expected_sha = str(descriptor.get("sha256", "")).lower()
+    if len(expected_sha) != 64 or any(
+        character not in "0123456789abcdef" for character in expected_sha
+    ):
+        raise SystemExit(f"catalogue descriptor for {tool} has no valid sha256")
+    expected_size = descriptor.get("size_bytes")
+    if (
+        not isinstance(expected_size, int)
+        or isinstance(expected_size, bool)
+        or expected_size <= 0
+    ):
+        raise SystemExit(f"catalogue descriptor for {tool} has invalid size_bytes")
+
+    url = urljoin(f"{origin.rstrip('/')}/", relative_url)
+    raw = fetch_bytes(url)
+    if len(raw) != expected_size:
         raise SystemExit(
-            f"network error fetching {shown_url}: {type(exc).__name__}"
-        ) from None
-
-
-def tool_manifest_url(origin: str, tool: str) -> str:
-    return f"{origin.rstrip('/')}/{tool}/manifest.json"
+            f"catalogue descriptor size mismatch for {tool}: "
+            f"expected {expected_size}, got {len(raw)}"
+        )
+    actual_sha = hashlib.sha256(raw).hexdigest()
+    if actual_sha != expected_sha:
+        raise SystemExit(
+            f"catalogue descriptor sha256 mismatch for {tool}: "
+            f"expected {expected_sha}, got {actual_sha}"
+        )
+    payload = decode_json(raw, url)
+    if not isinstance(payload, dict):
+        raise SystemExit(f"tool manifest at {url} is not a JSON object")
+    return url, payload
 
 
 def normalize_os(value: str) -> str:
@@ -306,8 +388,11 @@ def resolve_url(
     extra: str | None,
     version: str,
 ) -> str:
-    url = tool_manifest_url_override or tool_manifest_url(origin, tool)
-    payload = fetch_json(url)
+    if tool_manifest_url_override:
+        url = tool_manifest_url_override
+        payload = fetch_json(url)
+    else:
+        url, payload = load_tool_manifest(origin, tool)
     if not isinstance(payload, dict):
         raise SystemExit(f"tool manifest at {display_url(url)} is not a JSON object")
     release = find_release(payload, version)
@@ -327,8 +412,11 @@ def resolve_metadata(
     extra: str | None,
     version: str,
 ) -> dict[str, Any]:
-    url = tool_manifest_url_override or tool_manifest_url(origin, tool)
-    payload = fetch_json(url)
+    if tool_manifest_url_override:
+        url = tool_manifest_url_override
+        payload = fetch_json(url)
+    else:
+        url, payload = load_tool_manifest(origin, tool)
     if not isinstance(payload, dict):
         raise SystemExit(f"tool manifest at {display_url(url)} is not a JSON object")
     release = find_release(payload, version)

@@ -142,10 +142,8 @@ Anything not registered falls through the generic External subcommand, which res
 - **Parent-cache sharing is default-on**: For managed-zccache builds soldr seeds `ZCCACHE_PATH_REMAP=auto` on the child cargo (issue #352, Tier L1.x). zccache then normalizes absolute source paths inside compiled artifacts so two git worktrees of the same repo serve each other's cache hits via hardlinks. Escape hatch: `SOLDR_PATH_REMAP=off` suppresses the injection; setting `ZCCACHE_PATH_REMAP` yourself wins. Works for non-git checkouts too: since zccache#353, `ZCCACHE_PATH_REMAP=auto` with no `.git/` ancestor falls back to the cwd as the remap root and still injects `--remap-path-prefix=<cwd>=.`, so tarball/zip/git-archive checkouts produce path-independent artifacts and share hits (the `.git/` walk is only how the preferred worktree root is discovered).
 - **Integrity is default**: every fetch records sha256. Pins are opt-in via `SOLDR_CHECKSUMS_FILE`; `SOLDR_TRUST_MODE=strict` refuses unpinned fetches.
 - **Version independence**: Users install once and forget. CI should pin: `pip install soldr==X.Y.Z`.
-- **Local zccache development**: Edit the `_vender/zccache` submodule and
-  rebuild Soldr; the resulting binaries contain that source and its symbols.
-  Before updating Soldr's recorded pin, publish the target zccache release and
-  confirm its release assets are present in the soldr-toolchain catalogue.
+- **Local zccache development**: Soldr consumes an exact released zccache
+  crate. Test unreleased work upstream, publish it, then update Soldr's pin.
   `SOLDR_ZCCACHE_LOCAL_DIR` and `SOLDR_ZCCACHE_BIN` are legacy
   compatibility names and do not replace the embedded service on the normal
   path. To deliberately test an external compiler wrapper, set
@@ -266,9 +264,8 @@ A pre-merge `cargo metadata --frozen` would also catch the trap (it refuses to r
 ### zccache is embedded (no managed-version pin)
 
 soldr#1368 removed the externally-downloaded managed zccache binary: the
-zccache CLI ships compiled into Soldr from the `_vender/zccache` submodule.
-The lockfile records that vendored crate's released version; running-process
-remains an exact crates.io dependency.
+zccache CLI ships compiled into Soldr from the exact released crate version in
+the lockfile. soldr#2765 retired the zccache and running-process submodules.
 
 > [!IMPORTANT]
 > That is true of the compiled-in library and of what `soldr status` reports.
@@ -276,111 +273,28 @@ remains an exact crates.io dependency.
 > zccache keyed on the locked crate version. The asset guard must pass before
 > that version can move.
 
-## Vendored zccache source
+## Published zccache amalgamation
 
-> [!IMPORTANT]
-> zccache is pinned as `_vender/zccache`; running-process remains an exact
-> crates.io dependency. The submodule must point at an already-published
-> zccache release so Soldr's release staging can fetch matching assets.
+zccache publishes its internal `publish = false` workspace as one amalgamated
+`zccache` crate. Soldr consumes that crate through an exact crates.io pin; it
+does not carry a zccache submodule or path override. Since zccache 1.13.11, the
+embedded service grants known Rust amalgamation crates and large C/C++ units
+exclusive compiler admission, so a setup-soldr 0.9.6+ bootstrap can build a
+fresh Soldr checkout without parallel amalgamation compiles exhausting a GHA
+worker.
 
-## The vendored crate is published
+Do not move the pin ahead of a published zccache release. Besides the crate,
+Soldr release staging needs all six platform support archives. Run
+`.github/scripts/check_zccache_asset.py` before updating the exact dependency;
+`crates/soldr-cli/tests/version_lockstep.rs` enforces manifest/lock agreement
+and the single-codegen profile for the amalgamated crate.
 
-Both dependencies are real, published crates.io crates. The zccache submodule
-keeps its source directly editable and auditable in Soldr while the release
-prerequisite prevents the pin from running ahead of published assets.
+## Updating the external zccache and running-process pins
 
-| Crate | crates.io | soldr's pin |
-|---|---|---|
-| `zccache` | published | exact released submodule commit |
-| `running-process` | published | exact crates.io version |
-
-Check the relationship before reasoning about either one:
-
-```bash
-git -C _vender/zccache describe --tags          # e.g. 1.13.5-34-g15f278a2
-```
-
-A bare tag confirms the pin is the required published release. A
-`<tag>-<n>-g<sha>` describe means the pin carries unpublished commits and must
-not ship in Soldr; publish zccache first, refresh the catalogue, then move the
-submodule to the release commit.
-
-### Two traps that have already cost time
-
-**1. `publish = false` on the internals does not mean nothing is published.**
-21 of zccache's 22 crates are `publish = false`, and `running-process` marks 6
-of 11. They are **amalgamated** into a single published crate by
-`_vender/zccache/ci/publish_amalgamate.py` (which has its own tests). Reading
-the internal manifests and concluding "this project does not publish" is wrong
-— check crates.io, and check the amalgamation script.
-
-This is also why CLAUDE.md describes soldr's own split as "the zccache pattern,
-**no amalgamation**": soldr borrowed the `publish = false` internals *without*
-the amalgamating publish step, which is why soldr genuinely publishes no crates
-and zccache genuinely does.
-
-**2. The crates.io API returns 403 without a User-Agent.** Their data-access
-policy rejects anonymous clients, and the body is an error object rather than a
-404 — so a naive `curl | jq .crate.version` fails and reads as "crate does not
-exist". Always send one and always check the status code:
-
-```bash
-curl -s -H "User-Agent: <name> (<contact>)" \
-     -w '\nHTTP=%{http_code}\n' https://crates.io/api/v1/crates/zccache
-```
-
-A 403 means *you were blocked*, not that the crate is missing.
-
-## Bumping the vendored zccache pin
-
-soldr#1368 deleted the `MANAGED_ZCCACHE_VERSION` managed-binary download.
-The zccache CLI (`zccache`, and the daemon/fingerprint helpers) is compiled
-into soldr from the `_vender/zccache` submodule via the
-`zccache = { path = "../../_vender/zccache/crates/zccache" }` dep. To move to a
-newer zccache, bump the submodule commit:
-
-```bash
-cd _vender/zccache && git fetch && git checkout <commit>
-cd - && git add _vender/zccache
-```
-
-**Prerequisite: the target version must already be published as a zccache
-release.** `cross-compile-all-targets.yml` reads the version straight out of
-the vendored manifest and demands a matching prebuilt asset, which it stages
-into the release archive:
-
-```bash
-zccache_version=$(sed -n 's/^version = "\(.*\)"/\1/p' \
-  _vender/zccache/Cargo.toml | head -n1)
-asset_metadata=$(python3 .github/scripts/toolchain_asset_query.py \
-    --platform linux --arch x86 --extra musl \
-    --version "$zccache_version" --json zccache)
-```
-
-So the pin cannot lead the release. Check before bumping — this fails fast
-and names the versions that do exist:
-
-```bash
-uv run --no-project python .github/scripts/toolchain_asset_query.py \
-  --platform linux --arch x86 --extra musl --version <new-version> --json zccache
-```
-
-If it prints `no release '<version>' in tool manifest`, publish zccache
-first. soldr#2164 moved the pin to a version with no asset; every local
-signal was green — builds, ~1460 tests, clippy, `verify_vendor_state.py`,
-`loc_ratchet` — because **none of them exercise that fetch**, and
-`bootstrap + linux-x86` went red on main instead.
-
-There is no separate managed-version constant or contract `managed_version`
-to keep in lockstep. `zccache::core::VERSION` (the vendored crate's own
-version) is what `soldr status` / `soldr doctor` / `soldr cache` report, and
-is also the string the asset query above uses. The crgx / cargo-chef managed
-pins are unaffected.
-
-## Updating the external running-process pin
-
-Update every exact running-process dependency requirement together and refresh
-the lockfile. zccache follows the released-submodule procedure above.
+Update every exact dependency requirement together, refresh the lockfile, and
+run `.github/scripts/check_zccache_asset.py`. The locked zccache version must
+have all six prebuilt platform assets in the soldr-toolchain catalogue because
+release staging uses that same version.
 
 ## Reference Docs
 

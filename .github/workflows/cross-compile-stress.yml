@@ -96,7 +96,7 @@ jobs:
       # toolchain). SHA + version kept in step with every other build lane; the
       # setup-soldr pin guards assert both stay current.
       - name: Setup soldr
-        uses: zackees/setup-soldr@9c75e87c4a93e62b6ce5d123f497fba19307fa58
+        uses: zackees/setup-soldr@68ce266ed86b75ccfb332b084ba1a64d619bfe53
         with:
           version: 0.9.6
           toolchain: 1.95.0

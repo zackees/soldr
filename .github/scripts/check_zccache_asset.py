@@ -24,9 +24,10 @@ is that query, run by CI instead of by memory.
 1. That the resolved zccache version can be read from `Cargo.lock` at all.
 
    This used to also compare `_vender/zccache/Cargo.toml`'s version against the
-   lock's, because release staging and the build can otherwise drift. The
-   `version_lockstep` Rust test enforces that agreement for the active
-   submodule.
+   lock's, because the release read the manifest while the build resolved the
+   lock and the two could drift. soldr#2837 removed that manifest — zccache is
+   an exact crates.io dependency now, so the lock is the only source and there
+   is nothing left to disagree with it.
 2. That version has a published asset for **every** platform release staging
    asks for. `cross-compile-all-targets.yml` maps six target triples onto asset
    queries; a version missing any one of them breaks that lane, so checking only
@@ -43,12 +44,9 @@ and it is not transient.
 from __future__ import annotations
 
 import argparse
-import json
 import pathlib
 import re
 import sys
-import urllib.error
-import urllib.request
 
 # Reuse the selection logic rather than restating it: a second implementation of
 # "does this manifest offer that asset" could disagree with the one release
@@ -57,12 +55,13 @@ import urllib.request
 # is how the sibling scripts here import it too.
 from toolchain_asset_query import (
     DEFAULT_ORIGIN,
+    NetworkFetchError,
     find_asset,
     find_release,
+    load_tool_manifest,
     normalize_arch,
     normalize_os,
     platform_candidates,
-    tool_manifest_url,
 )
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -143,13 +142,11 @@ def main() -> int:
         )
         return 1
 
-    url = tool_manifest_url(args.origin, "zccache")
     try:
-        with urllib.request.urlopen(url, timeout=30) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, OSError, ValueError) as exc:
+        url, payload = load_tool_manifest(args.origin, "zccache")
+    except (OSError, NetworkFetchError) as exc:
         # Not a failure: see the network policy in this module's docstring.
-        print(f"check_zccache_asset: skipped, cannot reach {url} ({exc})")
+        print(f"check_zccache_asset: skipped, cannot resolve zccache manifest ({exc})")
         return 0
 
     if not isinstance(payload, dict):
