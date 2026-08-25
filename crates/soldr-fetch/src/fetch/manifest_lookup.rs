@@ -181,6 +181,21 @@ async fn download_catalogue_asset_once(
 pub(crate) async fn download_manifest_entry(
     entry: &ManifestEntry,
 ) -> Result<super::stream_download::DownloadedAsset, SoldrError> {
+    download_manifest_entry_with_redirects(entry, true).await
+}
+
+/// Materialize a multipart entry without following HTTP redirects.
+/// The caller is responsible for validating every initial mirror URL.
+pub(crate) async fn download_manifest_entry_no_redirect(
+    entry: &ManifestEntry,
+) -> Result<super::stream_download::DownloadedAsset, SoldrError> {
+    download_manifest_entry_with_redirects(entry, false).await
+}
+
+async fn download_manifest_entry_with_redirects(
+    entry: &ManifestEntry,
+    follow_redirects: bool,
+) -> Result<super::stream_download::DownloadedAsset, SoldrError> {
     // Entries are schema-validated when the catalogue is parsed.  Recheck the
     // transport-independent invariants here because this helper is also used
     // directly by focused tests.
@@ -191,6 +206,12 @@ pub(crate) async fn download_manifest_entry(
         )));
     }
     if let Some(url) = entry.direct_url() {
+        if !follow_redirects {
+            return Err(SoldrError::Other(format!(
+                "no-redirect catalogue transport requires multipart data for {}/{}",
+                entry.owner, entry.asset
+            )));
+        }
         return download_catalogue_asset(url).await;
     }
 
@@ -201,7 +222,7 @@ pub(crate) async fn download_manifest_entry(
     loop {
         while running.len() < window {
             let Some(part) = pending.next() else { break };
-            running.spawn(download_manifest_part(part));
+            running.spawn(download_manifest_part(part, follow_redirects));
         }
         let Some(joined) = running.join_next().await else {
             break;
@@ -252,11 +273,12 @@ pub(crate) async fn download_manifest_entry(
 
 async fn download_manifest_part(
     part: ManifestPart,
+    follow_redirects: bool,
 ) -> Result<(u32, super::stream_download::DownloadedAsset), SoldrError> {
     let mut last_error = None;
     for url in &part.urls {
         let attempt = super::retry::with_asset_backoff(url, || {
-            download_manifest_part_url(url, part.size_bytes)
+            download_manifest_part_url(url, part.size_bytes, follow_redirects)
         })
         .await;
         match attempt {
@@ -290,8 +312,13 @@ async fn download_manifest_part(
 async fn download_manifest_part_url(
     url: &str,
     expected_bytes: u64,
+    follow_redirects: bool,
 ) -> Result<super::stream_download::DownloadedAsset, SoldrError> {
-    let client = super::stream_download::asset_http_client("catalogue multipart part")?;
+    let client = if follow_redirects {
+        super::stream_download::asset_http_client("catalogue multipart part")?
+    } else {
+        super::stream_download::asset_http_client_no_redirect("catalogue multipart part")?
+    };
     let response = super::stream_download::send_asset_request(
         super::stream_download::get_request(&client, url)
             .header(reqwest::header::ACCEPT_ENCODING, "identity"),

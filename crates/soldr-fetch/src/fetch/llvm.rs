@@ -22,9 +22,9 @@
 //!   1. `SOLDR_LLVM_DIR` env var pointing at an existing directory →
 //!      use it verbatim (escape hatch for advanced users + reproducibility
 //!      pin in CI lanes that build LLVM from source).
-//!   2. Managed fetch from
-//!      `https://media.githubusercontent.com/media/zackees/clang-tool-chain-bins/main/assets/clang/<plat>/<arch>/llvm-<ver>-<plat>-<arch>.tar.zst`,
-//!      sha256-pinned, cached at
+//!   2. Managed fetch through the verified soldr-toolchain v2 catalogue,
+//!      matched against the sha256-pinned legacy clang-tool-chain-bins
+//!      identity and served as ordinary-Git multipart data, cached at
 //!      `~/.soldr/bin/llvm-<MANAGED_LLVM_VERSION>/`.
 //!
 //! Supported managed hosts (see `host_llvm_asset`):
@@ -51,14 +51,10 @@
 //! non-cross build.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use crate::core::{SoldrError, SoldrPaths};
 
-use super::stream_download::{
-    asset_http_client_with_protocol, get_request, send_asset_request, stream_response_to_temp_file,
-    AssetProtocol, DownloadedAsset, ASSET_HEADER_TIMEOUT, ASSET_IDLE_TIMEOUT,
-};
+use super::manifest_lookup;
 
 /// Pinned LLVM version that soldr's managed bootstrap ships for the
 /// xwin lane. 21.1.5 is the latest release on
@@ -75,21 +71,6 @@ pub const MANAGED_LLVM_VERSION: &str = "21.1.5";
 /// / `llvm-lib` — i.e. the same shape this module returns from
 /// `ensure_llvm_toolchain` after a managed fetch.
 const LLVM_DIR_ENV_VAR: &str = "SOLDR_LLVM_DIR";
-/// soldr#2132 called `mod.rs`, `llvm.rs` and `zig.rs` "three near-identical
-/// copies" of the retry loop. They are near-identical in the retrying; they
-/// differ exactly where it matters, in what happens once attempts run out:
-///
-/// * `mod.rs` falls back to the newest cached tool for `VersionSpec::Latest`
-///   (#1879) so a rate-limited release API does not turn into a red build;
-/// * `zig.rs` has target-specific archive extraction;
-/// * this one simply fails, which is what `retry::with_backoff` does.
-///
-/// Only this one could move to the shared helper. Folding either of the others
-/// would silently delete a fallback, so they keep their loops.
-const LLVM_DOWNLOAD_ATTEMPTS: u32 = 4;
-const LLVM_DOWNLOAD_INITIAL_BACKOFF: Duration = Duration::from_secs(5);
-const _: () = assert!(LLVM_DOWNLOAD_ATTEMPTS >= 2);
-
 /// Asset descriptor for one host triple. Hard-coded URL + sha256
 /// because the upstream `manifest.json`s are not versioned per-archive
 /// (a tampered manifest would let an attacker swap binaries silently).
@@ -203,12 +184,30 @@ async fn fetch_managed_llvm(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
         return Ok(bin_dir);
     }
 
+    let entry = catalogue_entry_for_url(asset.url).await.ok_or_else(|| {
+        SoldrError::Other(format!(
+            "LLVM v{MANAGED_LLVM_VERSION} {} not found in the verified soldr-toolchain catalogue. Expected legacy identity: {}",
+            asset.plat_arch, asset.url
+        ))
+    })?;
+    if entry.sha256 != asset.sha256 {
+        return Err(SoldrError::Other(format!(
+            "LLVM catalogue sha256 mismatch for {}: pinned {}, catalogue {}",
+            asset.plat_arch, asset.sha256, entry.sha256
+        )));
+    }
+    let resolved_url = manifest_lookup::resolved_download_label(&entry);
+
     eprintln!(
-        "soldr: fetching LLVM v{MANAGED_LLVM_VERSION} ({}) from {}...",
-        asset.plat_arch, asset.url,
+        "soldr: fetching LLVM v{MANAGED_LLVM_VERSION} ({}) from {resolved_url}...",
+        asset.plat_arch,
     );
 
-    let downloaded = download_llvm_asset(asset).await?;
+    let downloaded = super::retry::with_asset_backoff(
+        &format!("LLVM v{MANAGED_LLVM_VERSION} {}", asset.plat_arch),
+        || manifest_lookup::download_manifest_entry_no_redirect(&entry),
+    )
+    .await?;
 
     // Integrity check is mandatory — the upstream archive is large
     // (~95 MiB) and a tampered blob would silently install a hostile
@@ -246,36 +245,94 @@ async fn fetch_managed_llvm(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
     Ok(bin_dir)
 }
 
-async fn download_llvm_asset(asset: &LlvmAsset) -> Result<DownloadedAsset, SoldrError> {
-    // soldr#2132 step 1: this loop was one of three hand-rolled copies. It is
-    // the only one that folds onto the shared helper without losing anything --
-    // see the note on `LLVM_DOWNLOAD_ATTEMPTS` for why the other two stay.
-    //
-    // The old guard retried on *any* error rather than testing transience.
-    // That is not a behaviour change here: every error `download_llvm_asset_once`
-    // can produce is `SoldrError::Network`, which `retry::is_transient` matches,
-    // so the set of retried failures is identical.
-    let client = asset_http_client_with_protocol("managed LLVM", AssetProtocol::Http1Only)?;
-    super::retry::with_asset_backoff_params(
-        &format!("LLVM v{MANAGED_LLVM_VERSION} {}", asset.plat_arch),
-        LLVM_DOWNLOAD_ATTEMPTS,
-        LLVM_DOWNLOAD_INITIAL_BACKOFF,
-        || download_llvm_asset_once(&client, asset),
-    )
-    .await
+async fn catalogue_entry_for_url(url: &str) -> Option<manifest_lookup::ManifestEntry> {
+    catalogue_entry_from_index(manifest_lookup::get_or_fetch().await, url)
 }
 
-async fn download_llvm_asset_once(
-    client: &reqwest::Client,
-    asset: &LlvmAsset,
-) -> Result<DownloadedAsset, SoldrError> {
-    let resp = send_asset_request(
-        get_request(client, asset.url).header(reqwest::header::ACCEPT_ENCODING, "identity"),
-        asset.url,
-        ASSET_HEADER_TIMEOUT,
+fn catalogue_entry_from_index(
+    index: &manifest_lookup::ManifestIndex,
+    url: &str,
+) -> Option<manifest_lookup::ManifestEntry> {
+    if index.schema_version != Some(2) {
+        return None;
+    }
+    let source_path = url.split_once("/assets/")?.1;
+    let asset_name = source_path.rsplit('/').next()?;
+    index
+        .entries
+        .iter()
+        .find(|entry| {
+            entry.owner == "zackees"
+                && entry.repo == "clang-tool-chain-bins"
+                && entry.tag == "main"
+                && entry.asset == asset_name
+                && entry.source_path.as_deref() == Some(source_path)
+                && entry.min_client_version == Some(2)
+                && entry.size_bytes.is_some()
+                && entry.direct_url().is_none()
+                && !entry.parts.is_empty()
+                && entry.parts.iter().all(|part| {
+                    !part.urls.is_empty()
+                        && part.urls.iter().all(|part_url| {
+                            is_managed_llvm_part_url(
+                                part_url,
+                                &entry.sha256,
+                                part.number,
+                                &part.sha256,
+                            )
+                        })
+                })
+                && entry.matches_legacy_url(url)
+        })
+        .cloned()
+}
+
+fn is_managed_llvm_part_url(
+    raw: &str,
+    asset_sha256: &str,
+    part_number: u32,
+    part_sha256: &str,
+) -> bool {
+    if raw.contains('%')
+        || !(1..=9999).contains(&part_number)
+        || asset_sha256.len() != 64
+        || part_sha256.len() != 64
+        || !asset_sha256
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        || !part_sha256
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    {
+        return false;
+    }
+    let Ok(parsed) = url::Url::parse(raw) else {
+        return false;
+    };
+    // Require the catalogue spelling to already be canonical. This rejects
+    // literal and percent-encoded dot segments before reqwest can normalize
+    // them into a different branch path.
+    if parsed.as_str() != raw
+        || parsed.scheme() != "https"
+        || parsed.host_str() != Some("raw.githubusercontent.com")
+        || parsed.port().is_some()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return false;
+    }
+    let Some(segments) = parsed.path_segments() else {
+        return false;
+    };
+    let segments = segments.collect::<Vec<_>>();
+    let expected_part_name = format!("{part_number:04}-{part_sha256}.part");
+    matches!(
+        segments.as_slice(),
+        ["zackees", "soldr-toolchain", "public-a" | "public-b", "sha256", full_sha, part_name]
+            if *full_sha == asset_sha256 && *part_name == expected_part_name
     )
-    .await?;
-    stream_response_to_temp_file(resp, asset.url, ASSET_IDLE_TIMEOUT).await
 }
 
 fn extract_tar_zst_tree<R: std::io::Read>(reader: R, dest: &Path) -> Result<(), SoldrError> {
@@ -382,6 +439,113 @@ mod tests {
             assert!(
                 !asset.plat_arch.is_empty(),
                 "{triple}: plat_arch must be non-empty",
+            );
+        }
+    }
+
+    #[test]
+    fn multipart_catalogue_entry_matches_pinned_legacy_identity() {
+        let asset = &LLVM_ASSETS[0].1;
+        let part_sha256 = "b".repeat(64);
+        let source_path = asset
+            .url
+            .split_once("/assets/")
+            .expect("pinned LLVM URL has assets path")
+            .1;
+        let index = manifest_lookup::ManifestIndex {
+            schema_version: Some(2),
+            entries: vec![manifest_lookup::ManifestEntry {
+                owner: "zackees".into(),
+                repo: "clang-tool-chain-bins".into(),
+                tag: "main".into(),
+                asset: source_path.rsplit('/').next().expect("asset name").into(),
+                url: None,
+                urls: Vec::new(),
+                parts: vec![manifest_lookup::ManifestPart {
+                    number: 1,
+                    sha256: part_sha256.clone(),
+                    size_bytes: 1,
+                    urls: vec![format!(
+                        "https://raw.githubusercontent.com/zackees/soldr-toolchain/public-b/sha256/{}/0001-{part_sha256}.part",
+                        asset.sha256
+                    )],
+                }],
+                size_bytes: Some(1),
+                source_path: Some(source_path.into()),
+                min_client_version: Some(2),
+                sha256: asset.sha256.into(),
+            }],
+            ..manifest_lookup::ManifestIndex::empty()
+        };
+
+        let entry = catalogue_entry_from_index(&index, asset.url).expect("LLVM entry");
+        assert!(entry.direct_url().is_none());
+        assert_eq!(entry.sha256, asset.sha256);
+        assert!(manifest_lookup::resolved_download_label(&entry).contains("/public-b/"));
+
+        let valid_part_url = &entry.parts[0].urls[0];
+        assert!(is_managed_llvm_part_url(
+            valid_part_url,
+            asset.sha256,
+            1,
+            &part_sha256,
+        ));
+        for malformed_url in [
+            format!("{valid_part_url}/extra"),
+            valid_part_url.replace("/0001-", "/1-"),
+            valid_part_url.replace("/0001-", "/0002-"),
+            valid_part_url.replace(asset.sha256, &asset.sha256.to_ascii_uppercase()),
+            valid_part_url.replace(&part_sha256, &"c".repeat(64)),
+            valid_part_url.replace(
+                "raw.githubusercontent.com",
+                "raw.githubusercontent.com.evil",
+            ),
+            valid_part_url.replace("https://", "https://user@"),
+            format!("{valid_part_url}?download=1"),
+            format!("{valid_part_url}#fragment"),
+        ] {
+            assert!(
+                !is_managed_llvm_part_url(&malformed_url, asset.sha256, 1, &part_sha256),
+                "malformed managed LLVM URL must be rejected: {malformed_url}",
+            );
+        }
+        assert!(!is_managed_llvm_part_url(
+            valid_part_url,
+            asset.sha256,
+            10_000,
+            &part_sha256,
+        ));
+
+        let mut v1 = index.clone();
+        v1.schema_version = Some(1);
+        assert!(catalogue_entry_from_index(&v1, asset.url).is_none());
+
+        let mut direct = index;
+        direct.entries[0].urls = vec![asset.url.into()];
+        direct.entries[0].parts.clear();
+        assert!(catalogue_entry_from_index(&direct, asset.url).is_none());
+
+        let mut media_part = direct;
+        media_part.entries[0].urls.clear();
+        media_part.entries[0].parts = vec![manifest_lookup::ManifestPart {
+            number: 1,
+            sha256: "b".repeat(64),
+            size_bytes: 1,
+            urls: vec![asset.url.into()],
+        }];
+        assert!(catalogue_entry_from_index(&media_part, asset.url).is_none());
+
+        for traversal_url in [
+            "https://raw.githubusercontent.com/zackees/soldr-toolchain/public-a/../main/part",
+            "https://raw.githubusercontent.com/zackees/soldr-toolchain/public-a/%2e%2e/main/part",
+            "https://raw.githubusercontent.com/zackees/soldr-toolchain/public-b/%2E%2E/main/part",
+            "https://raw.githubusercontent.com/zackees/soldr-toolchain/public-b/sha256/%2Fmain/part",
+            "https://raw.githubusercontent.com/zackees/soldr-toolchain/public-b/sha256/%5cmain/part",
+        ] {
+            media_part.entries[0].parts[0].urls = vec![traversal_url.into()];
+            assert!(
+                catalogue_entry_from_index(&media_part, asset.url).is_none(),
+                "normalized traversal URL must be rejected: {traversal_url}",
             );
         }
     }

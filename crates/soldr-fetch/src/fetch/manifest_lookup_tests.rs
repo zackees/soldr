@@ -362,7 +362,7 @@ fn multipart_materializes_verified_parts_without_nested_ranges() {
         second_server.await.expect("second server");
 
         let (oversized_url, oversized_server) = serve(b"abcdef").await;
-        let error = download_manifest_part_url(&oversized_url, 3)
+        let error = download_manifest_part_url(&oversized_url, 3, true)
             .await
             .expect_err("declared part size must bound the body before draining");
         assert!(
@@ -370,6 +370,34 @@ fn multipart_materializes_verified_parts_without_nested_ranges() {
             "{error}"
         );
         oversized_server.await.expect("oversized server");
+    });
+}
+
+#[test]
+fn multipart_no_redirect_transport_refuses_the_first_redirect_hop() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    runtime.block_on(async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("address");
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut request = vec![0_u8; 4096];
+            socket.read(&mut request).await.expect("read request");
+            socket
+                .write_all(
+                    b"HTTP/1.1 302 Found\r\nLocation: https://media.githubusercontent.com/media/zackees/clang-tool-chain-bins/main/asset\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .expect("redirect response");
+        });
+        let error = download_manifest_part_url(&format!("http://{address}/part"), 0, false)
+            .await
+            .expect_err("strict multipart transport must not follow redirects");
+        assert!(error.to_string().contains("HTTP 302"), "{error}");
+        server.await.expect("server");
     });
 }
 
