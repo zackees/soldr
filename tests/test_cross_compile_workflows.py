@@ -685,7 +685,7 @@ def test_mac_x64_distribution_uses_pinned_setup_soldr_on_intel() -> None:
     # assertion follows the logic rather than being dropped.
     assert _matrix_binary_source_prepares_gnu_linux()
     assert (
-        "uses: zackees/setup-soldr@9c75e87c4a93e62b6ce5d123f497fba19307fa58" in release
+        "uses: zackees/setup-soldr@68ce266ed86b75ccfb332b084ba1a64d619bfe53" in release
     )
     assert "version: 0.9.6" in release
     assert "cross-targets: ${{ matrix.setup_target }}" in release
@@ -763,7 +763,7 @@ def test_release_wheels_use_setup_soldr_target_hooks_without_zig_or_xwin() -> No
 
     assert _matrix_binary_source_prepares_gnu_linux()
     assert (
-        "uses: zackees/setup-soldr@9c75e87c4a93e62b6ce5d123f497fba19307fa58" in release
+        "uses: zackees/setup-soldr@68ce266ed86b75ccfb332b084ba1a64d619bfe53" in release
     )
     assert "version: 0.9.6" in release
     assert "cross-targets: ${{ matrix.setup_target }}" in release
