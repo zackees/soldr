@@ -66,6 +66,14 @@ jobs:
           toolchain: 1.95.0
           targets: x86_64-pc-windows-gnu
 
+      # soldr#2763: uv must exist before the first step that uses it. This lane
+      # runs on both a linux and a windows host, and `python3` means something
+      # different on each; the pin makes the smoke's interpreter the same one
+      # in both matrix legs. The script is stdlib-only, so this is about
+      # reproducibility rather than dependencies.
+      - name: Install uv
+        uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+
       # Pinned soldr as the build DRIVER only; the freshly built binary is what
       # exercises the win-gnu behaviour. cache:false — this is a rare lane.
       - name: Setup soldr
@@ -113,7 +121,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          SOLDR_BIN="$(python3 .github/scripts/win_gnu_link_smoke.py locate \
+          SOLDR_BIN="$(uv run --no-project --python 3.13 python .github/scripts/win_gnu_link_smoke.py locate \
             --build-log build-artifacts.json --name soldr)"
           echo "smoke_soldr_bin=${SOLDR_BIN}" >> "$GITHUB_ENV"
           echo "built soldr: ${SOLDR_BIN}"
@@ -122,7 +130,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 .github/scripts/win_gnu_link_smoke.py smoke \
+          uv run --no-project --python 3.13 python .github/scripts/win_gnu_link_smoke.py smoke \
             --soldr "${{ env.smoke_soldr_bin }}" \
             --target x86_64-pc-windows-gnu \
             --summary "$GITHUB_STEP_SUMMARY"
