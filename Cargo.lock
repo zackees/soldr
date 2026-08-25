@@ -2756,7 +2756,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-cache"
-version = "0.9.8"
+version = "0.9.9"
 dependencies = [
  "filetime",
  "fs2",
@@ -2781,7 +2781,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-cli"
-version = "0.9.8"
+version = "0.9.9"
 dependencies = [
  "blake3",
  "cap-fs-ext",
@@ -2830,7 +2830,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-core"
-version = "0.9.8"
+version = "0.9.9"
 dependencies = [
  "fs2",
  "libc",
@@ -2849,7 +2849,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-daemon"
-version = "0.9.8"
+version = "0.9.9"
 dependencies = [
  "console-subscriber",
  "filetime",
@@ -2879,7 +2879,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-fetch"
-version = "0.9.8"
+version = "0.9.9"
 dependencies = [
  "flate2",
  "fs2",
@@ -2905,7 +2905,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-platform"
-version = "0.9.8"
+version = "0.9.9"
 dependencies = [
  "blake3",
  "fs2",
