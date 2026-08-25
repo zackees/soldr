@@ -148,7 +148,7 @@ jobs:
         uses: zackees/setup-soldr@40320d277ba4946e38d4b3c02e6c7a15a29c3f3f
         with:
           enable: true
-          version: 0.8.44
+          version: 0.9.6
           toolchain: 1.95.0
           cross-targets: ${{ matrix.setup_target }}
           linker: platform-default
@@ -231,7 +231,7 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: |
           set -euo pipefail
-          # The catalogue ARM64-musl compiler shipped for soldr 0.8.44 is an
+          # The catalogue ARM64-musl compiler is an
           # i386-hosted cross compiler. It cannot execute on the native ARM64
           # runner, so bypass target preparation while still routing Cargo
           # through the pinned Soldr and rustup toolchain.
@@ -244,7 +244,7 @@ jobs:
         run: |
           set -euo pipefail
           # Native macOS already has the correct Xcode SDK and clang. Soldr
-          # 0.8.44's blessed build path adds its prepared SDK directory as a
+          # The blessed build path adds its prepared SDK directory as a
           # bare linker input, so invoke Cargo through pinned Soldr/rustup
           # without repeating target preparation.
           python3 .github/scripts/native_release_build.py binary \
