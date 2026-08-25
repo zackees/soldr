@@ -235,6 +235,10 @@ fn catalogue_v1_preserves_duplicate_identity_compatibility() {
 
     let index = ManifestIndex::from_json(v1).expect("legacy duplicate rows must still parse");
     assert_eq!(index.entries.len(), 2);
+    assert_eq!(
+        resolved_download_label(&index.entries[0]),
+        "https://example.com/first.tar.zst"
+    );
 }
 
 #[test]
@@ -261,6 +265,7 @@ fn catalogue_v2_multipart_union_is_strict_and_path_addressable() {
     let index = ManifestIndex::from_json(v2).expect("v2 multipart parses");
     let entry = &index.entries[0];
     assert!(entry.direct_url().is_none());
+    assert_eq!(resolved_download_label(entry), "https://example.test/1");
     assert!(entry.matches_legacy_url("https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets/python/1/linux-x64/bundle.tar.zst"));
 
     for mutation in [

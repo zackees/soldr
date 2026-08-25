@@ -320,9 +320,10 @@ async fn fetch_managed_sdk(
         ))
     })?;
     let expected_sha256 = entry.sha256.clone();
+    let resolved_url = manifest_lookup::resolved_download_label(&entry);
 
     eprintln!(
-        "soldr: fetching Apple SDK {}/{} from {url}...",
+        "soldr: fetching Apple SDK {}/{} from {resolved_url}...",
         selection.version,
         selection.shape.catalogue_slug()
     );
