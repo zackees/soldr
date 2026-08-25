@@ -20,6 +20,7 @@ use std::{
 };
 
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+static EXECUTABLE_STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
 static ALIAS_LOCK: Mutex<()> = Mutex::new(());
 static MATERIALIZED_ALIAS_PAIRS: Mutex<Vec<(PathBuf, PathBuf)>> = Mutex::new(Vec::new());
 
@@ -157,6 +158,76 @@ fn files_equal(left: &Path, right: &Path) -> bool {
             return true;
         }
     }
+}
+
+/// Copy an executable through a closed sibling inode, then publish it at its
+/// final path.
+///
+/// soldr#2854: Linux can reject `execve` with `ETXTBSY` while any process
+/// still holds the executable's inode open for writing. Writing directly to
+/// the final fixture path therefore leaves an observable copy-then-exec race.
+/// The temporary file's writer is closed before rename, so the inode exposed
+/// at `destination` has never had a live writer under that name.
+pub(crate) fn materialize_executable(source: &Path, destination: &Path) -> std::io::Result<()> {
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let sequence = EXECUTABLE_STAGING_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let name = destination
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "executable".to_string());
+    let pending = destination.with_file_name(format!(
+        ".{name}.soldr-exec-tmp-{}-{sequence}",
+        std::process::id()
+    ));
+
+    let _ = std::fs::remove_file(&pending);
+    if let Err(error) = std::fs::copy(source, &pending) {
+        let _ = std::fs::remove_file(&pending);
+        return Err(error);
+    }
+
+    // Unix rename replaces atomically, which is the guarantee this helper
+    // exists to provide. Windows cannot rename over an existing destination;
+    // ETXTBSY is Unix-specific, so remove first on that platform.
+    #[cfg(windows)]
+    if let Err(error) = std::fs::remove_file(destination) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            let _ = std::fs::remove_file(&pending);
+            return Err(error);
+        }
+    }
+    if let Err(error) = std::fs::rename(&pending, destination) {
+        let _ = std::fs::remove_file(&pending);
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// Retry a test-fixture operation only for Linux's transient ETXTBSY.
+/// Every other error is returned from its first attempt.
+pub(crate) fn retry_linux_etxtbsy<T>(
+    mut operation: impl FnMut() -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    loop {
+        match operation() {
+            Err(error)
+                if cfg!(target_os = "linux")
+                    && error.raw_os_error() == Some(26)
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            result => return result,
+        }
+    }
+}
+
+/// Spawn an executable fixture with the narrowly bounded soldr#2854 retry.
+pub(crate) fn spawn_test_command(command: &mut Command) -> std::io::Result<std::process::Child> {
+    retry_linux_etxtbsy(|| command.spawn())
 }
 
 /// Resolve the runtime checkout used by source-coupled archived tests.

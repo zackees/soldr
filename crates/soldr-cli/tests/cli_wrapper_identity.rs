@@ -22,7 +22,8 @@ fn wrapper_invocation() -> (Command, String) {
     ));
     std::fs::create_dir_all(&dir).expect("fixture dir");
     let rustc_path = dir.join(soldr_platform::executable::name::native("rustc"));
-    std::fs::copy(common::soldr_bin(), &rustc_path).expect("materialize rustc shim");
+    common::materialize_executable(&common::soldr_bin(), &rustc_path)
+        .expect("materialize rustc shim");
     let rustc_like = rustc_path.display().to_string();
     let mut cmd = common::isolated_soldr_command();
     cmd.arg(&rustc_like).arg("--version");

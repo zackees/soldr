@@ -57,7 +57,8 @@ pub(crate) fn isolated_daemon_executable(source: &Path, root: &Path) -> PathBuf 
             });
             if !linked {
                 report_daemon_copy_fallback(source, &executable, &error);
-                std::fs::copy(source, &executable).expect("copy isolated test daemon");
+                super::materialize_executable(source, &executable)
+                    .expect("copy isolated test daemon");
             }
         }
     }

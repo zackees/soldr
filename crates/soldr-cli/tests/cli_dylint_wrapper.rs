@@ -495,7 +495,7 @@ fn shim_dispatch_failure_is_not_annotated_as_silent() {
     let root = unique_temp_dir("dylint-shim-spoke");
     let shim = root.join("soldr-dylint");
     std::fs::hard_link(common::soldr_bin(), &shim)
-        .or_else(|_| std::fs::copy(common::soldr_bin(), &shim).map(|_| ()))
+        .or_else(|_| common::materialize_executable(&common::soldr_bin(), &shim))
         .expect("materialize soldr-dylint shim name");
     soldr_platform::fs::permissions::make_executable(&shim).expect("chmod shim");
 

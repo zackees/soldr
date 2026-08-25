@@ -258,7 +258,8 @@ fn cargo_multicall_shim_routes_rustc_through_cargo_front_door() {
         },
     );
     let soldr = common::soldr_bin();
-    fs::copy(&soldr, &cargo_shim).expect("copy soldr as cargo multicall shim");
+    common::materialize_executable(&soldr, &cargo_shim)
+        .expect("copy soldr as cargo multicall shim");
     let cargo = install_logging_fake_cargo(&log_path);
 
     let mut command = Command::new(&cargo_shim);
@@ -1137,7 +1138,7 @@ fn windows_worktree_copy_relocates_wrapper_and_original_dir_can_be_removed() {
     let source_dir = worktree.join("target").join("debug");
     fs::create_dir_all(&source_dir).expect("failed to create copied exe dir");
     let copied_soldr = source_dir.join("soldr.exe");
-    fs::copy(common::soldr_bin(), &copied_soldr)
+    common::materialize_executable(&common::soldr_bin(), &copied_soldr)
         .expect("failed to copy soldr exe into temporary worktree");
 
     let log_path = cache_root.join("tool.log");

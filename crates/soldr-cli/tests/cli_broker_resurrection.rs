@@ -21,7 +21,8 @@ fn stage_incumbent_broker(home: &Path) -> std::path::PathBuf {
             "soldr-broker"
         },
     );
-    std::fs::copy(common::soldr_bin(), &broker).expect("stage incumbent broker image");
+    common::materialize_executable(&common::soldr_bin(), &broker)
+        .expect("stage incumbent broker image");
     broker
 }
 
@@ -115,9 +116,101 @@ fn spawn_simulated_old_image_broker(home: &Path, instance: &str) -> Child {
         .env("SOLDR_INTERNAL_BROKER_INSTANCE_ID", instance)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn simulated old-image broker")
+        .stderr(Stdio::null());
+    common::spawn_test_command(&mut incumbent_command).expect("spawn simulated old-image broker")
+}
+
+/// soldr#2854: publishing an executable directly at its final path leaves
+/// Linux able to observe the writer's inode and reject an immediate exec with
+/// ETXTBSY. Atomic staging must replace that busy inode with a quiescent one,
+/// even while representative fixture concurrency is present.
+#[test]
+fn issue_2854_atomic_staging_detaches_busy_executable_inodes() {
+    if !matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Linux
+    ) {
+        return;
+    }
+
+    let source = common::soldr_bin();
+    let workers: Vec<_> = (0..8)
+        .map(|worker| {
+            let source = source.clone();
+            std::thread::spawn(move || {
+                let home = common::unique_temp_dir(&format!("etxtbsy-staging-{worker}"));
+                let executable = home.join("soldr-fixture");
+                std::fs::copy(&source, &executable).expect("seed busy executable inode");
+                let writer = std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&executable)
+                    .expect("hold executable inode open for writing");
+
+                let direct_error = Command::new(&executable)
+                    .arg("--help")
+                    .spawn()
+                    .expect_err("Linux must reject exec of an inode open for writing");
+                assert_eq!(
+                    direct_error.raw_os_error(),
+                    Some(26),
+                    "the deterministic race fixture must fail specifically with ETXTBSY"
+                );
+
+                common::materialize_executable(&source, &executable)
+                    .expect("atomically publish executable fixture");
+                let release_writer = std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(30));
+                    drop(writer);
+                });
+                let mut command = Command::new(&executable);
+                common::scrub_outer_soldr_env(&mut command);
+                command
+                    // Parse-only CLI output proves exec succeeded without
+                    // starting another broker that could perturb the lifecycle
+                    // tests running concurrently in this integration binary.
+                    .arg("--help")
+                    .env("HOME", &home)
+                    .env("USERPROFILE", &home)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+                let output = common::spawn_test_command(&mut command)
+                    .expect("spawn atomically published executable");
+                let output = output
+                    .wait_with_output()
+                    .expect("wait for atomically published executable");
+                release_writer.join().expect("writer release panicked");
+                assert!(
+                    output.status.success(),
+                    "atomically published executable failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            })
+        })
+        .collect();
+
+    for worker in workers {
+        worker.join().expect("ETXTBSY staging worker panicked");
+    }
+}
+
+#[test]
+fn issue_2854_non_etxtbsy_errors_are_not_retried() {
+    let attempts = std::sync::atomic::AtomicUsize::new(0);
+    let error = common::retry_linux_etxtbsy(|| {
+        attempts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Err::<(), _>(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "sentinel non-ETXTBSY failure",
+        ))
+    })
+    .expect_err("sentinel failure must be returned");
+
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    assert_eq!(
+        attempts.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "non-ETXTBSY failures must return after their first attempt"
+    );
 }
 
 fn wait_for_broker_instance(home: &Path, instance: &str) -> String {
