@@ -3,7 +3,7 @@
 
 The pinned Soldr remains the Rust front door, but ``soldr rustup run ...
 cargo`` deliberately avoids repeating blessed target preparation. This is
-required for native macOS (where 0.8.44 adds its SDK directory as a bare
+required for native macOS (where the blessed path adds its SDK directory as a bare
 linker input) and native ARM64 musl (whose catalogue compiler is i386-hosted).
 """
 
