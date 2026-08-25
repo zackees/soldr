@@ -49,13 +49,13 @@ xz2 = { workspace = true }
 zip = { workspace = true }
 zstd = { workspace = true }
 
-# In-process zccache service (issue #977 / #980 L1), sourced from the
-# released amalgamated crate. The exact pin must have matching prebuilt
-# assets in the soldr-toolchain catalogue before it can move.
+# In-process zccache service (issue #977 / #980 L1), sourced from the pinned
+# upstream submodule. The pinned commit must be a published release with
+# matching prebuilt assets in the soldr-toolchain catalogue before it can move.
 # soldr#1368: there is no longer a separately-downloaded managed zccache
 # binary. soldr#1592 exposes the compiled-in CLI by materializing the main
 # `soldr` executable under the `zccache` multicall name.
-zccache = { version = "=1.13.7", default-features = false, features = ["cli"] }
+zccache = { version = "1.13.9", path = "../../_vender/zccache/crates/zccache", default-features = false, features = ["cli"] }
 
 # libc powers the daemon's Unix-only PID-liveness probe (kill(pid, 0))
 # and detached spawn (setsid). On Windows the equivalent
