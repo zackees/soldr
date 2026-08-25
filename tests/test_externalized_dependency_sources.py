@@ -69,7 +69,9 @@ def test_zccache_manifests_use_released_path_dependency() -> None:
     offenders = [
         f"{path.relative_to(REPO_ROOT)}: {line}"
         for path, line in specs
-        if ZCCACHE_PATH not in line or 'version = "1.13.9"' not in line or "git" in line
+        if ZCCACHE_PATH not in line
+        or 'version = "1.13.11"' not in line
+        or "git" in line
     ]
     assert not offenders, "zccache source/version drift:\n" + "\n".join(offenders)
 

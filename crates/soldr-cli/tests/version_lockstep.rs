@@ -188,7 +188,7 @@ fn dependency_sources_are_exact_and_consistent() {
         .expect("read Cargo.lock")
         .replace("\r\n", "\n");
 
-    let zccache_version = "1.13.9";
+    let zccache_version = "1.13.11";
     assert!(lock.contains(&format!(
         "name = \"zccache\"\nversion = \"{zccache_version}\""
     )));
