@@ -175,6 +175,7 @@ fn manifest_sha256_mismatch_is_hard_error() {
         sha256: "ff".repeat(32),
         size_bytes: 0,
         min_client_version: None,
+        source_path: None,
     };
 
     let rt = rt();

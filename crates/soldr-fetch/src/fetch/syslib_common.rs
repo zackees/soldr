@@ -78,7 +78,7 @@ pub async fn ensure_syslib_bundle(
 
     // Cross-process install guard: cargo fans out build scripts and CI
     // fans out jobs, so several soldr processes can miss the stamp
-    // simultaneously and race the remove_dir_all + extract below.
+    // simultaneously and race the staged promotion below.
     // Blocking exclusive lock — the winner installs, waiters re-check
     // the stamp after acquiring and short-circuit. Held (via the
     // returned handle) until this function returns.
@@ -122,21 +122,28 @@ pub async fn ensure_syslib_bundle(
         eprintln!("soldr: trust: verified syslib {lib}/{version}/{slug} sha256={digest}");
     }
 
-    if install_root.exists() {
-        std::fs::remove_dir_all(&install_root)?;
-    }
-    std::fs::create_dir_all(&install_root)?;
-    extract_tar_zst(std::fs::File::open(downloaded.path())?, &install_root)?;
+    let install_parent = install_root
+        .parent()
+        .ok_or_else(|| SoldrError::Archive("syslib install path has no parent".into()))?;
+    std::fs::create_dir_all(install_parent)?;
+    let staging = tempfile::Builder::new()
+        .prefix(&format!(".{lib}-{version}-{slug}.staging-"))
+        .tempdir_in(install_parent)?;
+    extract_tar_zst(std::fs::File::open(downloaded.path())?, staging.path())?;
 
-    if !sysroot.is_dir() {
+    let staged_sysroot = staging.path().join("package");
+    if !staged_sysroot.is_dir() {
         return Err(SoldrError::Archive(format!(
             "syslib extract for {lib}/{version}/{slug} did not produce expected \
-             {} (forge artifact layout drift?)",
-            sysroot.display()
+             package/ directory (forge artifact layout drift?)"
         )));
     }
 
-    std::fs::write(&stamp, format!("{lib} {version} {slug}"))?;
+    std::fs::write(
+        staging.path().join(".complete"),
+        format!("{lib} {version} {slug}"),
+    )?;
+    super::archive::promote_staged_tool_dir(staging.path(), &install_root)?;
     if !crate::core::quiet::diagnostics_suppressed() {
         eprintln!("soldr: extracted syslib to {}", sysroot.display());
     }

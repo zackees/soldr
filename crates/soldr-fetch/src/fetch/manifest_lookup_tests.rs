@@ -479,6 +479,27 @@ fn parse_v2_entry(entry: WireV2Entry) -> Result<ManifestEntry, String> {
 }
 
 #[test]
+fn multipart_entry_matches_legacy_pinned_assets_url_by_source_path() {
+    let entry = ManifestEntry {
+        owner: "zackees".into(),
+        repo: "soldr-toolchain".into(),
+        tag: "assets".into(),
+        asset: "xwin-cache.tar.zst".into(),
+        transport: AssetTransport::Multipart { parts: Vec::new() },
+        sha256: valid_hash(),
+        size_bytes: 1,
+        min_client_version: Some(CATALOGUE_CAPABILITY),
+        source_path: Some("xwin-cache/2026-06-22/windows-x86_64-msvc/xwin-cache.tar.zst".into()),
+    };
+    assert!(entry.matches_legacy_url(
+        "https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets/xwin-cache/2026-06-22/windows-x86_64-msvc/xwin-cache.tar.zst"
+    ));
+    assert!(!entry.matches_legacy_url(
+        "https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets/xwin-cache/other/xwin-cache.tar.zst"
+    ));
+}
+
+#[test]
 fn v1_unknown_size_sentinel_still_requires_sha_but_accepts_actual_length() {
     let dir = tempfile::tempdir().expect("cache dir");
     let bytes = b"legacy v1 asset with no advertised size";

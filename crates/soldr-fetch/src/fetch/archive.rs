@@ -238,7 +238,10 @@ async fn download_and_extract_with_pin_inner(
 /// Promote a completely verified sibling directory while preserving an
 /// existing installation if the final rename fails. Callers hold the normal
 /// per-tool install lock; no partial extraction ever uses the canonical name.
-fn promote_staged_tool_dir(staging: &Path, destination: &Path) -> Result<(), SoldrError> {
+pub(super) fn promote_staged_tool_dir(
+    staging: &Path,
+    destination: &Path,
+) -> Result<(), SoldrError> {
     let parent = destination
         .parent()
         .ok_or_else(|| SoldrError::Archive("tool install path has no parent".into()))?;
