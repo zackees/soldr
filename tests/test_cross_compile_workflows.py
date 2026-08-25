@@ -379,11 +379,14 @@ def test_catalogue_download_consumers_require_sha256_metadata() -> None:
     ).read_text(encoding="utf-8")
 
     assert cross.count("--json") >= 2
-    assert cross.count("download_large_asset.sh") >= 2
+    assert cross.count("download_catalogued_asset.py") >= 2
     assert "--json cargo-zigbuild" in baseline
-    assert "download_large_asset.sh" in baseline
+    assert "download_catalogued_asset.py" in baseline
     assert "download_catalogued_asset.py" in fetch
+    assert 'asset_url="verified"' in fetch
+    assert "-> $asset_url" not in fetch
     assert "sha256 mismatch" in downloader
+    assert 'metadata.get("parts")' in downloader
 
 
 def test_linux_zig_cross_lanes_use_current_checkout_soldr_bootstrap() -> None:

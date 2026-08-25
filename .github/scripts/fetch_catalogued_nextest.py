@@ -16,11 +16,10 @@ import os
 import shutil
 import tarfile
 import tempfile
-import urllib.error
-import urllib.request
 import zipfile
 from pathlib import Path
 
+from download_catalogued_asset import download_verified as materialize_asset
 from toolchain_asset_query import resolve_metadata
 
 CARGO_NEXTEST_RELEASE_PREFIX = "cargo-nextest-"
@@ -123,30 +122,10 @@ def extract_verified(archive: Path, destination: Path) -> Path:
 
 
 def download_verified(metadata: dict, destination: Path) -> Path:
-    expected = metadata["sha256"]
     with tempfile.TemporaryDirectory(prefix="soldr-nextest-download-") as temp:
         archive = Path(temp) / str(metadata["filename"])
-        last_error: Exception | None = None
-        for url in metadata["urls"]:
-            try:
-                request = urllib.request.Request(
-                    str(url), headers={"Accept-Encoding": "identity"}
-                )
-                with (
-                    urllib.request.urlopen(request, timeout=120) as response,
-                    archive.open("wb") as handle,
-                ):
-                    shutil.copyfileobj(response, handle)
-                actual = sha256(archive)
-                if actual != expected:
-                    raise SystemExit(
-                        f"cargo-nextest sha256 mismatch: expected {expected}, got {actual}"
-                    )
-                return extract_verified(archive, destination)
-            except urllib.error.URLError as exc:
-                last_error = exc
-                continue
-        raise SystemExit(f"all catalog URLs failed: {last_error}")
+        materialize_asset(metadata, archive)
+        return extract_verified(archive, destination)
 
 
 def main() -> int:

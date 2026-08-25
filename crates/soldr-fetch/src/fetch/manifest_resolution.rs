@@ -8,6 +8,11 @@ async fn try_manifest_first(
     target: &TargetTriple,
 ) -> Result<Option<FetchResult>, SoldrError> {
     let manifest = manifest_lookup::get_or_fetch().await;
+    if manifest.fail_closed {
+        return Err(SoldrError::Other(
+            "catalogue.v2.json was present but invalid; refusing legacy/live fallback".into(),
+        ));
+    }
     let candidates = manifest.lookup_release(&repo.owner, &repo.repo, tag);
     // Tag normalization: known_tools may resolve a tag prefix like
     // `cargo-audit/v0.21.0`, so try the bare tag first and the
@@ -36,7 +41,7 @@ async fn try_manifest_first(
         .iter()
         .map(|entry| github::AssetInfo {
             name: entry.asset.clone(),
-            download_url: entry.display_url().to_string(),
+            download_url: entry.transport.direct_url().unwrap_or_default().to_string(),
         })
         .collect();
     let asset = match github::match_asset_for_binaries(&asset_infos, target, binary_names) {
@@ -83,11 +88,13 @@ async fn try_manifest_first(
     // download.
     let download_started_at_ms = current_unix_ms();
     let download_started = std::time::Instant::now();
-    let binary_path = archive::download_and_extract_catalogue_entry(
+    let downloaded = manifest_lookup::materialize_catalogue_entry(matched_entry).await?;
+    let binary_path = archive::extract_catalogue_asset_with_pin(
         paths,
         cache_name,
         &version,
         matched_entry,
+        downloaded.path(),
         target,
         binary_names,
     )

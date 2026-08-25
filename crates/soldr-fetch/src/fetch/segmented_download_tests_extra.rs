@@ -1,6 +1,8 @@
-use super::{clear_segmented_env, runtime, serve_range_tracking_concurrency, ENV_LOCK};
+use super::{
+    clear_segmented_env, runtime, serve_range_tracking_concurrency, set_segmented_env, ENV_LOCK,
+};
 use crate::fetch::segmented_download::{
-    set_segmented_env, SocketPool, SEGMENTED_DOWNLOAD_ENV_VAR, SEGMENTED_DOWNLOAD_N_ENV_VAR,
+    SocketPool, SEGMENTED_DOWNLOAD_ENV_VAR, SEGMENTED_DOWNLOAD_N_ENV_VAR,
 };
 use crate::fetch::stream_download::{
     send_control_request_with_pool, stream_response_to_temp_file_with_pool, ASSET_SAFETY_TIMEOUT,
@@ -10,6 +12,101 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+
+async fn serve_redirect_chain(redirects: u32) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind redirect chain");
+    let address = listener.local_addr().expect("redirect chain address");
+    let url = format!("http://{address}/asset");
+    let location = url.clone();
+    tokio::spawn(async move {
+        for hop in 0..=redirects {
+            let (mut socket, _) = listener.accept().await.expect("accept redirect chain hop");
+            let mut request = [0_u8; 1024];
+            let _ = socket.read(&mut request).await;
+            let response = if hop < redirects {
+                format!(
+                    "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+            } else {
+                "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned()
+            };
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write response");
+            let _ = socket.shutdown().await;
+        }
+    });
+    url
+}
+
+#[test]
+fn manual_redirect_limit_accepts_five_then_final_response() {
+    runtime().block_on(async {
+        let url = serve_redirect_chain(super::MAX_REDIRECT_HOPS).await;
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        let response = super::send_with_hop_timeout(
+            &client,
+            &url,
+            |client, url| client.get(url),
+            Duration::from_secs(2),
+        )
+        .await
+        .expect("five redirects followed by a final response must succeed");
+        assert!(response.status().is_success());
+    });
+}
+
+#[test]
+fn manual_redirect_limit_rejects_sixth_and_redacts_unsafe_target() {
+    runtime().block_on(async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let location = format!("http://{address}/asset?secret=redacted");
+        tokio::spawn(async move {
+            for _ in 0..=super::MAX_REDIRECT_HOPS {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 1024];
+                let _ = socket.read(&mut request).await;
+                let response = format!(
+                    "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+                let _ = socket.shutdown().await;
+            }
+        });
+        let url = format!("http://{address}/asset?token=initial");
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        let error = super::send_with_hop_timeout(
+            &client,
+            &url,
+            |client, url| client.get(url),
+            Duration::from_secs(2),
+        )
+        .await
+        .expect_err("a sixth redirect must fail");
+        assert!(error.contains("exceeded 5 redirect hops"));
+        assert!(!error.contains("token=initial"));
+        assert!(!error.contains("secret=redacted"));
+
+        let unsafe_error = super::resolve_redirect_url(
+            "https://safe.invalid/asset?token=initial",
+            "http://user:password@other.invalid/asset?secret=redacted",
+        )
+        .expect_err("HTTPS downgrade with credentials must fail");
+        assert!(!unsafe_error.contains("token=initial"));
+        assert!(!unsafe_error.contains("user:password"));
+        assert!(!unsafe_error.contains("secret=redacted"));
+    });
+}
 
 #[test]
 fn mixed_workload_never_exceeds_bulk_plus_quick_total_capacity() {

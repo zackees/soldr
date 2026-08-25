@@ -179,6 +179,11 @@ def main() -> int:
                     "wheel",
                     str(source),
                     "--no-deps",
+                    # Exercise the wheel under test as the backend. Build
+                    # isolation would install pyproject.toml's last-published
+                    # bootstrap Soldr, whose rustc shim cannot share the newer
+                    # wheel's package-version-gated broker during a release PR.
+                    "--no-build-isolation",
                     "--no-cache-dir",
                     "--verbose",
                     "--wheel-dir",

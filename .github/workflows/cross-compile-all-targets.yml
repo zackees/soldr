@@ -219,14 +219,11 @@ jobs:
               --version "$zccache_version" --json zccache)
           asset_filename=$(printf '%s' "$asset_metadata" | \
             python3 -c 'import json,sys; print(json.load(sys.stdin)["filename"])')
-          asset_url=$(printf '%s' "$asset_metadata" | \
-            python3 -c 'import json,sys; print(json.load(sys.stdin)["urls"][0])')
-          expected_sha=$(printf '%s' "$asset_metadata" | \
-            python3 -c 'import json,sys; print(json.load(sys.stdin)["sha256"])')
           echo "catalogue: zccache $zccache_version linux-x64-musl"
-          echo "         $asset_url"
-          bash .github/scripts/download_large_asset.sh \
-            --url "$asset_url" --output "/tmp/${asset_filename}" --sha256 "$expected_sha"
+          python3 .github/scripts/download_catalogued_asset.py \
+            --platform linux --arch x86 --extra musl \
+            --version "$zccache_version" zccache \
+            --output "/tmp/${asset_filename}"
           tar -xzf "/tmp/${asset_filename}" -C dist/zccache-stage
           for b in zccache zccache-daemon zccache-fp; do
             src=$(find dist/zccache-stage -type f -name "${b}" -print -quit)
@@ -508,14 +505,10 @@ jobs:
               $q --version "$zccache_version" --json zccache)
           asset_filename=$(printf '%s' "$asset_metadata" | \
             python3 -c 'import json,sys; print(json.load(sys.stdin)["filename"])')
-          asset_url=$(printf '%s' "$asset_metadata" | \
-            python3 -c 'import json,sys; print(json.load(sys.stdin)["urls"][0])')
-          expected_sha=$(printf '%s' "$asset_metadata" | \
-            python3 -c 'import json,sys; print(json.load(sys.stdin)["sha256"])')
           echo "catalogue: zccache $zccache_version ${{ matrix.target }}"
-          echo "         $asset_url"
-          bash .github/scripts/download_large_asset.sh \
-            --url "$asset_url" --output "/tmp/${asset_filename}" --sha256 "$expected_sha"
+          python3 .github/scripts/download_catalogued_asset.py \
+            $q --version "$zccache_version" zccache \
+            --output "/tmp/${asset_filename}"
           case "$asset_filename" in
             *.tar.gz)  tar -xzf "/tmp/${asset_filename}" -C dist/zccache-stage ;;
             *.zip)     sudo apt-get install -y --no-install-recommends unzip

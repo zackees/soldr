@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve a tool asset URL from the soldr-toolchain public manifests.
+"""Resolve tool asset transport metadata from soldr-toolchain manifests.
 
 The script preserves the friendly call surface the old manifest-branch
 query script exposed:
@@ -8,9 +8,9 @@ query script exposed:
         --platform linux --arch x86 --extra gnu cargo-zigbuild
 
 It reads ``https://zackees.github.io/soldr-toolchain/<tool>/manifest.json``,
-selects a release, matches a platform entry, and prints one URL on stdout.
-With ``--json`` it emits the selected version/platform/filename/digest
-metadata used by deterministic CI packaging.
+selects a release, matches a platform entry, and prints one direct URL on
+stdout. With ``--json`` it emits transport-polymorphic metadata (``urls`` XOR
+``parts``) used by deterministic CI packaging.
 Exit status is non-zero when the requested tool/version/platform is absent.
 """
 
@@ -20,7 +20,10 @@ import argparse
 import json
 import urllib.error
 import urllib.request
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any
+
+from catalogue_http import display_url, open_url, validate_https_url
 
 DEFAULT_ORIGIN = "https://zackees.github.io/soldr-toolchain"
 
@@ -46,13 +49,18 @@ ARCH_ALIASES: dict[str, str] = {
 
 
 def fetch_json(url: str) -> Any:
+    validate_https_url(url, label="tool manifest")
+    shown_url = display_url(url)
+    request = urllib.request.Request(url, headers={"Accept-Encoding": "identity"})
     try:
-        with urllib.request.urlopen(url, timeout=30) as resp:
+        with open_url(request, timeout=30) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        raise SystemExit(f"HTTP {exc.code} fetching {url}") from exc
+        raise SystemExit(f"HTTP {exc.code} fetching {shown_url}") from None
     except urllib.error.URLError as exc:
-        raise SystemExit(f"network error fetching {url}: {exc}") from exc
+        raise SystemExit(
+            f"network error fetching {shown_url}: {type(exc).__name__}"
+        ) from None
 
 
 def tool_manifest_url(origin: str, tool: str) -> str:
@@ -156,7 +164,91 @@ def platform_matches(actual: dict[str, Any], expected: dict[str, str]) -> bool:
 
 
 def find_asset_url(release: dict[str, Any], candidates: list[dict[str, str]]) -> str:
-    return str(find_asset(release, candidates, require_sha256=False)["urls"][0])
+    asset = find_asset(release, candidates, require_sha256=False)
+    if not asset["urls"]:
+        raise SystemExit("matched asset is multipart; use --json and a materializer")
+    return str(asset["urls"][0])
+
+
+def normalize_asset(
+    platform: dict[str, Any], asset: dict[str, Any], *, require_sha256: bool
+) -> dict[str, Any]:
+    urls = asset.get("urls") or []
+    parts = asset.get("parts") or []
+    if bool(urls) == bool(parts):
+        raise SystemExit("matched asset must contain exactly one transport shape")
+    filename = asset.get("filename")
+    if (
+        not isinstance(filename, str)
+        or not filename
+        or filename in {".", ".."}
+        or "/" in filename
+        or "\\" in filename
+        or ":" in filename
+        or any(ord(char) < 32 or ord(char) == 127 for char in filename)
+        or PurePosixPath(filename).name != filename
+        or PureWindowsPath(filename).name != filename
+        or PureWindowsPath(filename).drive
+        or PureWindowsPath(filename).root
+    ):
+        raise SystemExit("matched asset has unsafe filename")
+    digest = str(asset.get("sha256", "")).lower()
+    if require_sha256 and (
+        len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest)
+    ):
+        raise SystemExit("matched asset has no valid sha256")
+    normalized_parts: list[dict[str, Any]] = []
+    if parts:
+        if not isinstance(parts, list):
+            raise SystemExit("matched asset has invalid multipart data")
+        total_size = 0
+        for expected_number, part in enumerate(parts, start=1):
+            if not isinstance(part, dict):
+                raise SystemExit("matched asset has invalid multipart data")
+            part_digest = str(part.get("sha256", "")).lower()
+            part_size = part.get("size_bytes")
+            part_urls = part.get("urls") or []
+            if (
+                part.get("number") != expected_number
+                or not isinstance(part_size, int)
+                or isinstance(part_size, bool)
+                or part_size <= 0
+                or len(part_digest) != 64
+                or any(ch not in "0123456789abcdef" for ch in part_digest)
+                or not isinstance(part_urls, list)
+                or not part_urls
+            ):
+                raise SystemExit("matched asset has invalid multipart data")
+            total_size += part_size
+            normalized_urls = [
+                validate_https_url(
+                    url, label=f"matched asset part {expected_number} URL"
+                )
+                for url in part_urls
+            ]
+            normalized_parts.append(
+                {
+                    "number": expected_number,
+                    "sha256": part_digest,
+                    "size_bytes": part_size,
+                    "urls": normalized_urls,
+                }
+            )
+        if total_size != asset.get("size_bytes"):
+            raise SystemExit("matched asset multipart size mismatch")
+    if urls and not isinstance(urls, list):
+        raise SystemExit("matched asset has invalid URLs")
+    normalized_urls = [
+        validate_https_url(url, label="matched asset URL") for url in urls
+    ]
+    return {
+        "platform": platform,
+        "filename": filename,
+        "urls": normalized_urls,
+        "parts": normalized_parts,
+        "sha256": digest,
+        "size_bytes": asset.get("size_bytes"),
+    }
 
 
 def find_asset(
@@ -178,22 +270,7 @@ def find_asset(
             if not isinstance(platform, dict) or not isinstance(asset, dict):
                 continue
             if platform_matches(platform, candidate):
-                urls = asset.get("urls")
-                if isinstance(urls, list) and urls:
-                    digest = str(asset.get("sha256", "")).lower()
-                    if require_sha256 and (
-                        len(digest) != 64
-                        or any(ch not in "0123456789abcdef" for ch in digest)
-                    ):
-                        raise SystemExit("matched asset has no valid sha256")
-                    return {
-                        "platform": platform,
-                        "filename": asset.get("filename"),
-                        "urls": [str(url) for url in urls],
-                        "sha256": digest,
-                        "size_bytes": asset.get("size_bytes"),
-                    }
-                raise SystemExit("matched asset has no URL")
+                return normalize_asset(platform, asset, require_sha256=require_sha256)
 
     wanted = " or ".join(
         "-".join(
@@ -232,7 +309,7 @@ def resolve_url(
     url = tool_manifest_url_override or tool_manifest_url(origin, tool)
     payload = fetch_json(url)
     if not isinstance(payload, dict):
-        raise SystemExit(f"tool manifest at {url} is not a JSON object")
+        raise SystemExit(f"tool manifest at {display_url(url)} is not a JSON object")
     release = find_release(payload, version)
     candidates = platform_candidates(
         normalize_os(platform), normalize_arch(arch), extra
@@ -253,7 +330,7 @@ def resolve_metadata(
     url = tool_manifest_url_override or tool_manifest_url(origin, tool)
     payload = fetch_json(url)
     if not isinstance(payload, dict):
-        raise SystemExit(f"tool manifest at {url} is not a JSON object")
+        raise SystemExit(f"tool manifest at {display_url(url)} is not a JSON object")
     release = find_release(payload, version)
     os_key = normalize_os(platform)
     arch_key = normalize_arch(arch)
@@ -267,9 +344,10 @@ def resolve_metadata(
         "platform": asset["platform"],
         "filename": asset["filename"],
         "urls": asset["urls"],
+        "parts": asset["parts"],
         "sha256": asset["sha256"],
         "size_bytes": asset.get("size_bytes"),
-        "manifest_url": url,
+        "manifest_url": display_url(url),
     }
 
 

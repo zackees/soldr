@@ -17,9 +17,12 @@ import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, TypeGuard, TypeVar
+from urllib.parse import urlsplit
 
-DEFAULT_CATALOGUE_URL = "https://zackees.github.io/soldr-toolchain/catalogue.v1.json"
+from catalogue_http import display_url, open_url, validate_https_url
+
+DEFAULT_CATALOGUE_URL = "https://zackees.github.io/soldr-toolchain/catalogue.v2.json"
 SUPPORTED_TARGETS = {
     "x86_64-pc-windows-msvc",
     "aarch64-pc-windows-msvc",
@@ -34,6 +37,10 @@ DOWNLOAD_TIMEOUT_SECS = 120
 SMOKE_TIMEOUT_SECS = 30
 DOWNLOAD_ATTEMPTS = 3
 RETRY_BASE_DELAY_SECS = 0.5
+MAX_PART_BYTES = 95 * 1024 * 1024
+MAX_PARTS = 4096
+MAX_ASSET_BYTES = 8 * 1024 * 1024 * 1024 * 1024
+CATALOGUE_CAPABILITY = 2
 
 T = TypeVar("T")
 
@@ -51,8 +58,9 @@ def retry_network(action: Callable[[], T], *, label: str) -> T:
         ) as error:
             if attempt == DOWNLOAD_ATTEMPTS:
                 raise SystemExit(
-                    f"{label} failed after {DOWNLOAD_ATTEMPTS} attempts: {error}"
-                ) from error
+                    f"{label} failed after {DOWNLOAD_ATTEMPTS} attempts: "
+                    f"{type(error).__name__}"
+                ) from None
             time.sleep(RETRY_BASE_DELAY_SECS * (2 ** (attempt - 1)))
     raise AssertionError("retry loop exhausted without returning or raising")
 
@@ -65,8 +73,169 @@ def asset_name(tool: str, version: str, target: str) -> str:
 
 
 def valid_sha256(value: object) -> bool:
-    digest = str(value).lower()
-    return len(digest) == 64 and all(char in "0123456789abcdef" for char in digest)
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(char in "0123456789abcdef" for char in value)
+    )
+
+
+def positive_int(value: object) -> TypeGuard[int]:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def valid_git_object(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 40
+        and all(char in "0123456789abcdef" for char in value)
+    )
+
+
+def valid_generation(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and len(value) <= 256
+        and all(char.isascii() and (char.isalnum() or char in "._:-") for char in value)
+    )
+
+
+def strict_json_document(raw: bytes, *, label: str) -> dict[str, Any]:
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        document: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in document:
+                raise ValueError(f"duplicate JSON key {key!r}")
+            document[key] = value
+        return document
+
+    def reject_nonfinite_number(value: str) -> None:
+        raise ValueError(f"non-finite JSON number {value}")
+
+    try:
+        payload = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=reject_duplicate_keys,
+            parse_constant=reject_nonfinite_number,
+        )
+    except (UnicodeDecodeError, ValueError) as error:
+        raise SystemExit(f"{label} is not strict UTF-8 JSON: {error}") from error
+    if not isinstance(payload, dict):
+        raise SystemExit(f"{label} is not a JSON object")
+    return payload
+
+
+def canonical_json_sha256(value: object) -> str:
+    encoded = json.dumps(
+        value, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def require_exact_keys(
+    value: object, *, required: set[str], optional: set[str] | None = None, label: str
+) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise SystemExit(f"{label} is not an object")
+    keys = set(value)
+    allowed = required | (optional or set())
+    if not required <= keys or not keys <= allowed:
+        raise SystemExit(f"{label} has missing or unknown fields")
+    return value
+
+
+def safe_source_path(value: object) -> bool:
+    if not isinstance(value, str) or not value or value.startswith("/"):
+        return False
+    return not any(part in {"", ".", ".."} for part in value.split("/"))
+
+
+def validate_transport(entry: dict[str, Any], *, asset: str) -> None:
+    """Validate the catalogue-v2 direct/multipart transport union."""
+    size_bytes = entry.get("size_bytes")
+    if not positive_int(size_bytes) or size_bytes > MAX_ASSET_BYTES:
+        raise SystemExit(f"catalogue row {asset} has invalid size_bytes")
+    if not valid_sha256(entry.get("sha256")):
+        raise SystemExit(f"catalogue row {asset} has no valid sha256")
+    if any(
+        not isinstance(entry.get(field), str) or not entry[field]
+        for field in ("owner", "repo", "tag", "asset")
+    ):
+        raise SystemExit(f"catalogue row {asset} has invalid identity fields")
+
+    urls = entry.get("urls") or []
+    parts = entry.get("parts") or []
+    if bool(urls) == bool(parts):
+        raise SystemExit(
+            f"catalogue row {asset} must contain exactly one transport shape"
+        )
+    if urls:
+        if not isinstance(urls, list) or any(
+            not isinstance(url, str) or not url for url in urls
+        ):
+            raise SystemExit(f"catalogue row {asset} has invalid download URLs")
+        if entry.get("source_path") is not None:
+            raise SystemExit(f"catalogue row {asset} direct transport has source_path")
+        for url in urls:
+            validate_https_url(url, label=f"catalogue row {asset}")
+        return
+
+    if not isinstance(parts, list):
+        raise SystemExit(f"catalogue row {asset} has invalid multipart data")
+    if len(parts) > MAX_PARTS:
+        raise SystemExit(f"catalogue row {asset} has too many parts")
+    if entry.get("min_client_version") != CATALOGUE_CAPABILITY:
+        raise SystemExit(
+            f"catalogue row {asset} requires min_client_version "
+            f"{CATALOGUE_CAPABILITY}"
+        )
+    if not safe_source_path(entry.get("source_path")):
+        raise SystemExit(f"catalogue row {asset} has invalid source_path")
+    total_size = 0
+    for expected_number, part in enumerate(parts, start=1):
+        if not isinstance(part, dict):
+            raise SystemExit(f"catalogue row {asset} has invalid multipart data")
+        require_exact_keys(
+            part,
+            required={"number", "size_bytes", "sha256", "urls"},
+            label=f"catalogue row {asset} part {expected_number}",
+        )
+        part_number = part.get("number")
+        if (
+            not isinstance(part_number, int)
+            or isinstance(part_number, bool)
+            or part_number != expected_number
+        ):
+            raise SystemExit(f"catalogue row {asset} has non-contiguous parts")
+        part_size = part.get("size_bytes")
+        if not positive_int(part_size) or part_size > MAX_PART_BYTES:
+            raise SystemExit(
+                f"catalogue row {asset} part {expected_number} has invalid size_bytes"
+            )
+        if not valid_sha256(part.get("sha256")):
+            raise SystemExit(
+                f"catalogue row {asset} part {expected_number} has no valid sha256"
+            )
+        part_urls = part.get("urls") or []
+        if (
+            not isinstance(part_urls, list)
+            or not part_urls
+            or any(not isinstance(url, str) or not url for url in part_urls)
+        ):
+            raise SystemExit(
+                f"catalogue row {asset} part {expected_number} has invalid URLs"
+            )
+        for url in part_urls:
+            validate_https_url(
+                url, label=f"catalogue row {asset} part {expected_number}"
+            )
+        total_size += part_size
+    if total_size != size_bytes:
+        raise SystemExit(
+            f"catalogue row {asset} multipart size mismatch: "
+            f"expected {size_bytes}, got {total_size}"
+        )
 
 
 def select_entry(
@@ -84,27 +253,381 @@ def select_entry(
     entry = matches[0]
     if not valid_sha256(entry.get("sha256")):
         raise SystemExit(f"catalogue row {expected} has no valid sha256")
-    url = entry.get("url")
-    if not isinstance(url, str) or not url:
-        raise SystemExit(f"catalogue row {expected} has no download URL")
+    validate_transport(entry, asset=expected)
     return entry
 
 
-def fetch_catalogue(url: str) -> dict[str, Any]:
-    def read_catalogue() -> bytes:
+def fetch_bytes(url: str, *, label: str) -> bytes:
+    def read() -> bytes:
         request = urllib.request.Request(url, headers={"Accept-Encoding": "identity"})
-        with urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT_SECS) as response:
+        with open_url(request, timeout=DOWNLOAD_TIMEOUT_SECS) as response:
             return response.read()
 
-    raw = retry_network(read_catalogue, label=f"fetch toolchain catalogue {url}")
-    try:
-        payload = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+    return retry_network(read, label=label)
+
+
+def validate_publication_state_url(value: object, generation: str) -> str:
+    url = validate_https_url(value, label="catalogue publication_state")
+    parsed = urlsplit(url)
+    expected = f"/generations/{generation}/publish-state.v1.json"
+    if (
+        parsed.query
+        or parsed.fragment
+        or not parsed.path.endswith(expected)
+        or any(part in {".", ".."} for part in parsed.path.split("/"))
+    ):
         raise SystemExit(
-            f"toolchain catalogue {url} is not valid UTF-8 JSON: {error}"
-        ) from error
-    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
-        raise SystemExit("toolchain catalogue is not a schema_version 1 object")
+            "catalogue publication_state URL is not immutable and generation-qualified"
+        )
+    return url
+
+
+def validate_publication_state(
+    state: dict[str, Any], *, generation: str, catalogue_sha256: str
+) -> None:
+    require_exact_keys(
+        state,
+        required={
+            "schema_version",
+            "generation",
+            "source",
+            "active",
+            "previous",
+            "catalogue_sha256",
+            "assets_by_sha256",
+            "logical_assets",
+            "partitioner_default",
+            "published_at",
+            "retained_generations",
+            "parts_by_sha256",
+        },
+        label="publication state",
+    )
+    if (
+        state.get("schema_version") != 1
+        or state.get("generation") != generation
+        or state.get("catalogue_sha256") != catalogue_sha256
+    ):
+        raise SystemExit("publication state does not bind this catalogue generation")
+
+    source = require_exact_keys(
+        state["source"],
+        required={"branch", "commit", "tree"},
+        label="publication state source",
+    )
+    if (
+        source.get("branch") != "assets"
+        or not valid_git_object(source.get("commit"))
+        or not valid_git_object(source.get("tree"))
+    ):
+        raise SystemExit("publication state has invalid source identity")
+
+    slots: list[dict[str, Any]] = []
+    for slot_name in ("active", "previous"):
+        slot = require_exact_keys(
+            state[slot_name],
+            required={"slot", "commit", "tree"},
+            label=f"publication state {slot_name}",
+        )
+        if (
+            slot.get("slot") not in {"public-a", "public-b"}
+            or not valid_git_object(slot.get("commit"))
+            or not valid_git_object(slot.get("tree"))
+        ):
+            raise SystemExit(f"publication state has invalid {slot_name} slot")
+        slots.append(slot)
+    if slots[0]["slot"] == slots[1]["slot"]:
+        raise SystemExit("publication state active and previous slots are identical")
+
+    partitioner = require_exact_keys(
+        state["partitioner_default"],
+        required={"version", "target_bytes", "max_bytes"},
+        label="publication state partitioner_default",
+    )
+    if (
+        partitioner.get("version") != 1
+        or not positive_int(partitioner.get("target_bytes"))
+        or partitioner["target_bytes"] > MAX_PART_BYTES
+        or partitioner.get("max_bytes") != MAX_PART_BYTES
+    ):
+        raise SystemExit("publication state has invalid default partitioner")
+
+    if not positive_int(state.get("published_at")):
+        raise SystemExit("publication state has invalid published_at")
+    retained = state["retained_generations"]
+    if not isinstance(retained, list) or not retained:
+        raise SystemExit("publication state has no retained generations")
+    retained_names: set[str] = set()
+    for row in retained:
+        retained_row = require_exact_keys(
+            row,
+            required={"generation", "published_at"},
+            label="publication state retained generation",
+        )
+        name = retained_row.get("generation")
+        if (
+            not valid_generation(name)
+            or not positive_int(retained_row.get("published_at"))
+            or name in retained_names
+        ):
+            raise SystemExit("publication state has invalid retained generation")
+        retained_names.add(str(name))
+    if generation not in retained_names:
+        raise SystemExit("publication state does not retain its current generation")
+
+    assets = state["assets_by_sha256"]
+    logical_assets = state["logical_assets"]
+    part_index = state["parts_by_sha256"]
+    if not all(
+        isinstance(value, dict) for value in (assets, logical_assets, part_index)
+    ):
+        raise SystemExit("publication state identity tables are invalid")
+
+    expected_part_index: dict[str, tuple[int, str]] = {}
+    for asset_sha, raw_asset in assets.items():
+        published = require_exact_keys(
+            raw_asset,
+            required={"size_bytes", "partitioner", "parts"},
+            label=f"publication asset {asset_sha}",
+        )
+        published_partitioner = require_exact_keys(
+            published["partitioner"],
+            required={"version", "target_bytes"},
+            label=f"publication asset {asset_sha} partitioner",
+        )
+        asset_size = published.get("size_bytes")
+        target_bytes = published_partitioner.get("target_bytes")
+        parts = published.get("parts")
+        if (
+            not valid_sha256(asset_sha)
+            or not positive_int(asset_size)
+            or asset_size > MAX_ASSET_BYTES
+            or published_partitioner.get("version") != 1
+            or not positive_int(target_bytes)
+            or target_bytes > MAX_PART_BYTES
+            or not isinstance(parts, list)
+            or not parts
+            or len(parts) > MAX_PARTS
+        ):
+            raise SystemExit(f"publication asset {asset_sha} is invalid")
+        total_size = 0
+        for expected_number, raw_part in enumerate(parts, start=1):
+            part = require_exact_keys(
+                raw_part,
+                required={"number", "sha256", "size_bytes", "path", "git_blob"},
+                label=f"publication asset {asset_sha} part {expected_number}",
+            )
+            part_size = part.get("size_bytes")
+            part_sha = part.get("sha256")
+            expected_path = f"sha256/{asset_sha}/{expected_number:04d}-{part_sha}.part"
+            if (
+                part.get("number") != expected_number
+                or not valid_sha256(part_sha)
+                or not positive_int(part_size)
+                or part_size > MAX_PART_BYTES
+                or (expected_number < len(parts) and part_size != target_bytes)
+                or (expected_number == len(parts) and part_size > target_bytes)
+                or part.get("path") != expected_path
+                or not valid_git_object(part.get("git_blob"))
+            ):
+                raise SystemExit(
+                    f"publication asset {asset_sha} part {expected_number} is invalid"
+                )
+            identity = (part_size, str(part["git_blob"]))
+            previous = expected_part_index.setdefault(str(part_sha), identity)
+            if previous != identity:
+                raise SystemExit("publication state has conflicting part identities")
+            total_size += part_size
+        if total_size != asset_size:
+            raise SystemExit(f"publication asset {asset_sha} has invalid total size")
+
+    if set(part_index) != set(expected_part_index):
+        raise SystemExit("publication state part index is incomplete")
+    for part_sha, identity in expected_part_index.items():
+        row = require_exact_keys(
+            part_index[part_sha],
+            required={"size_bytes", "git_blob"},
+            label=f"publication part index {part_sha}",
+        )
+        if (row.get("size_bytes"), row.get("git_blob")) != identity:
+            raise SystemExit(f"publication part index {part_sha} is invalid")
+
+    logical_oids: set[str] = set()
+    for logical_key, raw_logical in logical_assets.items():
+        logical = require_exact_keys(
+            raw_logical,
+            required={
+                "source_path",
+                "asset",
+                "source_oid_sha256",
+                "source_size_bytes",
+                "metadata_fingerprint",
+                "provenance",
+            },
+            label=f"publication logical asset {logical_key!r}",
+        )
+        oid = logical.get("source_oid_sha256")
+        size = logical.get("source_size_bytes")
+        provenance = logical.get("provenance")
+        published = assets.get(oid)
+        if (
+            not isinstance(logical_key, str)
+            or not logical_key
+            or not safe_source_path(logical.get("source_path"))
+            or not isinstance(logical.get("asset"), str)
+            or not logical["asset"]
+            or not valid_sha256(oid)
+            or not valid_sha256(logical.get("metadata_fingerprint"))
+            or not positive_int(size)
+            or size > MAX_ASSET_BYTES
+            or not isinstance(provenance, dict)
+            or not provenance
+            or any(not isinstance(key, str) or not key for key in provenance)
+            or not isinstance(published, dict)
+            or published.get("size_bytes") != size
+        ):
+            raise SystemExit(f"publication logical asset {logical_key!r} is invalid")
+        logical_oids.add(str(oid))
+    if logical_oids != set(assets):
+        raise SystemExit("publication state logical and payload identities differ")
+
+
+def bind_catalogue_entries(catalogue: dict[str, Any], state: dict[str, Any]) -> None:
+    entries = catalogue.get("entries")
+    logical_assets = state["logical_assets"]
+    if not isinstance(entries, list):
+        raise SystemExit("catalogue has no entries list")
+    source_paths: set[str] = set()
+    logical_keys: set[str] = set()
+    logical_rows: set[tuple[str, str, str, str]] = set()
+    direct_urls: set[str] = {str(catalogue["publication_state"]["url"])}
+    part_urls: dict[str, tuple[str, int]] = {}
+
+    for offset, raw_entry in enumerate(entries):
+        entry = require_exact_keys(
+            raw_entry,
+            required={"owner", "repo", "tag", "asset", "size_bytes", "sha256"},
+            optional={"urls", "parts", "min_client_version", "source_path"},
+            label=f"catalogue entry {offset}",
+        )
+        asset = str(entry.get("asset") or f"entry {offset}")
+        min_client_version = entry.get("min_client_version")
+        if min_client_version is not None and (
+            not isinstance(min_client_version, int)
+            or isinstance(min_client_version, bool)
+            or min_client_version != CATALOGUE_CAPABILITY
+        ):
+            raise SystemExit(f"catalogue row {asset} has invalid min_client_version")
+        validate_transport(entry, asset=asset)
+
+        identity = (
+            str(entry["owner"]),
+            str(entry["repo"]),
+            str(entry["tag"]),
+            str(entry["asset"]),
+        )
+        if identity in logical_rows:
+            raise SystemExit(f"catalogue row {asset} duplicates a logical identity")
+        logical_rows.add(identity)
+
+        urls = entry.get("urls") or []
+        if urls:
+            for url in urls:
+                if url in direct_urls or url in part_urls:
+                    raise SystemExit(
+                        f"catalogue row {asset} duplicates a transport URL"
+                    )
+                direct_urls.add(url)
+            continue
+
+        for part in entry["parts"]:
+            part_identity = (str(part["sha256"]), int(part["size_bytes"]))
+            local_urls: set[str] = set()
+            for url in part["urls"]:
+                if url in local_urls or url in direct_urls:
+                    raise SystemExit(
+                        f"catalogue row {asset} duplicates a transport URL"
+                    )
+                local_urls.add(url)
+                previous = part_urls.setdefault(url, part_identity)
+                if previous != part_identity:
+                    raise SystemExit(
+                        f"catalogue row {asset} reuses a URL for different bytes"
+                    )
+
+        source_path = str(entry["source_path"])
+        if source_path in source_paths:
+            raise SystemExit(f"catalogue row {asset} duplicates source_path")
+        source_paths.add(source_path)
+        logical_key = "\0".join(identity)
+        logical = logical_assets.get(logical_key)
+        if not isinstance(logical, dict):
+            raise SystemExit(f"publication state does not bind catalogue row {asset}")
+        logical_asset = logical.get("asset")
+        provenance = logical.get("provenance")
+        identity_matches = asset == logical_asset or (
+            asset == source_path and PurePosixPath(source_path).name == logical_asset
+        )
+        if (
+            logical.get("source_path") != source_path
+            or not identity_matches
+            or logical.get("source_oid_sha256") != entry["sha256"]
+            or logical.get("source_size_bytes") != entry["size_bytes"]
+            or not isinstance(provenance, dict)
+            or provenance
+            != {
+                "owner": entry["owner"],
+                "repo": entry["repo"],
+                "tag": entry["tag"],
+                "asset": logical_asset,
+            }
+        ):
+            raise SystemExit(f"publication state does not bind catalogue row {asset}")
+        logical_keys.add(logical_key)
+
+    if logical_keys != set(logical_assets):
+        raise SystemExit("publication state has catalogue-orphan logical assets")
+
+
+def fetch_catalogue(url: str) -> dict[str, Any]:
+    validate_https_url(url, label="toolchain catalogue")
+    shown_url = display_url(url)
+    raw = fetch_bytes(url, label=f"fetch toolchain catalogue {shown_url}")
+    payload = strict_json_document(raw, label=f"toolchain catalogue {shown_url}")
+    require_exact_keys(
+        payload,
+        required={"schema_version", "generation", "publication_state", "entries"},
+        optional={"generated_at", "origin"},
+        label="toolchain catalogue",
+    )
+    generation = payload.get("generation")
+    if payload.get("schema_version") != 2 or not valid_generation(generation):
+        raise SystemExit(
+            "toolchain catalogue is not a canonical schema_version 2 object"
+        )
+    binding = require_exact_keys(
+        payload["publication_state"],
+        required={"generation", "url"},
+        label="catalogue publication_state",
+    )
+    if binding.get("generation") != generation:
+        raise SystemExit("catalogue publication_state generation does not match")
+    state_url = validate_publication_state_url(binding.get("url"), str(generation))
+    if payload.get("origin") is not None:
+        validate_https_url(payload["origin"], label="catalogue origin")
+
+    digest = canonical_json_sha256(payload)
+    shown_state_url = display_url(state_url)
+    state_raw = fetch_bytes(
+        state_url, label=f"fetch toolchain publication state {shown_state_url}"
+    )
+    state = strict_json_document(
+        state_raw, label=f"toolchain publication state {shown_state_url}"
+    )
+    validate_publication_state(
+        state, generation=str(generation), catalogue_sha256=digest
+    )
+    bind_catalogue_entries(payload, state)
     return payload
 
 
@@ -116,23 +639,77 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def download_verified(entry: dict[str, Any], output: Path) -> None:
-    expected = str(entry["sha256"]).lower()
-    temporary = output.with_suffix(output.suffix + ".part")
+def download_one_of(urls: list[object], expected: str, output: Path) -> str:
+    """Download one verified object, retrying availability failures by mirror."""
+    last_error: SystemExit | None = None
+    for raw_url in urls:
+        url = str(raw_url)
 
-    def transfer() -> None:
-        temporary.unlink(missing_ok=True)
-        request = urllib.request.Request(
-            str(entry["url"]), headers={"Accept-Encoding": "identity"}
-        )
-        with (
-            urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT_SECS) as response,
-            temporary.open("wb") as handle,
-        ):
-            shutil.copyfileobj(response, handle)
+        def transfer(source_url: str = url) -> None:
+            output.unlink(missing_ok=True)
+            request = urllib.request.Request(
+                source_url, headers={"Accept-Encoding": "identity"}
+            )
+            with (
+                open_url(request, timeout=DOWNLOAD_TIMEOUT_SECS) as response,
+                output.open("wb") as handle,
+            ):
+                shutil.copyfileobj(response, handle)
+
+        try:
+            retry_network(transfer, label=f"download {display_url(url)}")
+        except SystemExit as error:
+            last_error = error
+            continue
+        actual = sha256(output)
+        if actual != expected:
+            raise SystemExit(
+                f"catalogued asset sha256 mismatch: expected {expected}, got {actual}"
+            )
+        return url
+    if last_error is not None:
+        raise last_error
+    raise SystemExit("catalogued asset has no download URL")
+
+
+def download_verified(entry: dict[str, Any], output: Path) -> None:
+    asset = str(entry.get("asset") or output.name)
+    validate_transport(entry, asset=asset)
+    expected = str(entry["sha256"]).lower()
+    if not valid_sha256(expected):
+        raise SystemExit(f"catalogue row {asset} has no valid sha256")
+    expected_size = int(entry["size_bytes"])
+    temporary = output.with_suffix(output.suffix + ".part")
+    part_paths: list[Path] = []
 
     try:
-        retry_network(transfer, label=f"download {entry['url']}")
+        urls = entry.get("urls") or []
+        if urls:
+            download_one_of(urls, expected, temporary)
+        else:
+            with temporary.open("wb") as assembled:
+                for part in entry["parts"]:
+                    number = int(part["number"])
+                    part_path = output.with_name(f"{output.name}.part-{number:04d}")
+                    part_paths.append(part_path)
+                    download_one_of(
+                        part["urls"], str(part["sha256"]).lower(), part_path
+                    )
+                    actual_size = part_path.stat().st_size
+                    if actual_size != part["size_bytes"]:
+                        raise SystemExit(
+                            f"catalogued part {number} size mismatch: expected "
+                            f"{part['size_bytes']}, got {actual_size}"
+                        )
+                    with part_path.open("rb") as part_input:
+                        shutil.copyfileobj(part_input, assembled)
+
+        actual_size = temporary.stat().st_size
+        if actual_size != expected_size:
+            raise SystemExit(
+                f"catalogued asset size mismatch: expected {expected_size}, "
+                f"got {actual_size}"
+            )
         actual = sha256(temporary)
         if actual != expected:
             raise SystemExit(
@@ -141,6 +718,8 @@ def download_verified(entry: dict[str, Any], output: Path) -> None:
         temporary.replace(output)
     finally:
         temporary.unlink(missing_ok=True)
+        for part_path in part_paths:
+            part_path.unlink(missing_ok=True)
 
 
 def safe_member(name: str) -> bool:
