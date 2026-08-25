@@ -296,6 +296,7 @@ pub(crate) fn asset_http_client_with_protocol(
     super::net_guard::ensure_network_allowed(purpose)?;
     let mut builder = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::limited(5))
         .user_agent(format!("soldr/{}", crate::core::version()));
     if matches!(protocol, AssetProtocol::Http1Only) {
         builder = builder.http1_only();
@@ -392,6 +393,7 @@ pub(crate) async fn stream_response_to_temp_file_with_safety_timeout(
         safety_timeout,
         bulk_pool(),
         quick_pool(),
+        StreamPolicy::segmented(),
     )
     .await
 }
@@ -416,8 +418,52 @@ pub(crate) async fn stream_response_to_temp_file_with_pool(
         safety_timeout,
         Arc::clone(&pool),
         pool,
+        StreamPolicy::segmented(),
     )
     .await
+}
+
+/// Drain one already-requested multipart part without recursively applying
+/// HTTP Range segmentation. Multipart concurrency is owned by the manifest
+/// materializer; segmenting every part would multiply the global fan-out.
+pub(crate) async fn stream_multipart_part_to_temp_file(
+    response: reqwest::Response,
+    url: &str,
+    idle_timeout: Duration,
+    expected_bytes: u64,
+) -> Result<DownloadedAsset, SoldrError> {
+    stream_response_to_temp_file_inner(
+        response,
+        url,
+        idle_timeout,
+        ASSET_SAFETY_TIMEOUT,
+        bulk_pool(),
+        quick_pool(),
+        StreamPolicy::multipart(expected_bytes),
+    )
+    .await
+}
+
+#[derive(Clone, Copy)]
+struct StreamPolicy {
+    allow_segmentation: bool,
+    expected_bytes: Option<u64>,
+}
+
+impl StreamPolicy {
+    const fn segmented() -> Self {
+        Self {
+            allow_segmentation: true,
+            expected_bytes: None,
+        }
+    }
+
+    const fn multipart(expected_bytes: u64) -> Self {
+        Self {
+            allow_segmentation: false,
+            expected_bytes: Some(expected_bytes),
+        }
+    }
 }
 
 async fn stream_response_to_temp_file_inner(
@@ -427,18 +473,30 @@ async fn stream_response_to_temp_file_inner(
     safety_timeout: Duration,
     bulk: Arc<SocketPool>,
     quick: Arc<SocketPool>,
+    policy: StreamPolicy,
 ) -> Result<DownloadedAsset, SoldrError> {
+    let StreamPolicy {
+        allow_segmentation,
+        expected_bytes,
+    } = policy;
     if !response.status().is_success() {
         return Err(SoldrError::Network(format!(
             "asset download {url} failed: HTTP {}",
             response.status()
         )));
     }
+    if let (Some(expected), Some(declared)) = (expected_bytes, response.content_length()) {
+        if declared != expected {
+            return Err(SoldrError::Network(format!(
+                "asset download Content-Length mismatch for {url}: expected {expected}, got {declared}"
+            )));
+        }
+    }
 
     let threshold = parse_quick_threshold();
     let mut effective_safety_timeout = safety_timeout;
     let config = SegmentedDownloadConfig::from_env();
-    if config.enabled {
+    if allow_segmentation && config.enabled {
         if let Some(total) = segmentable_total_len(&response, threshold) {
             match try_segmented_download(&response, url, total, config, Arc::clone(&bulk)).await {
                 Ok(asset) => return Ok(asset),
@@ -503,9 +561,24 @@ async fn stream_response_to_temp_file_inner(
         let Some(chunk) = chunk else {
             break;
         };
+        let next_bytes = bytes.checked_add(chunk.len() as u64).ok_or_else(|| {
+            SoldrError::Network(format!("asset download byte count overflow: {url}"))
+        })?;
+        if expected_bytes.is_some_and(|expected| next_bytes > expected) {
+            return Err(SoldrError::Network(format!(
+                "asset download exceeded declared size after {bytes} bytes: {url}"
+            )));
+        }
         file.write_all(&chunk)?;
         hasher.update(&chunk);
-        bytes = bytes.saturating_add(chunk.len() as u64);
+        bytes = next_bytes;
+    }
+    if let Some(expected) = expected_bytes {
+        if bytes != expected {
+            return Err(SoldrError::Network(format!(
+                "asset download ended at {bytes} bytes, expected {expected}: {url}"
+            )));
+        }
     }
     file.flush()?;
 

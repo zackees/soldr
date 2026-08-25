@@ -15,10 +15,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::core::{SoldrError, SoldrPaths};
 
 use super::manifest_lookup;
-use super::stream_download::{
-    asset_http_client_with_protocol, get_request, send_asset_request, stream_response_to_temp_file,
-    AssetProtocol, DownloadedAsset, ASSET_HEADER_TIMEOUT, ASSET_IDLE_TIMEOUT,
-};
 use super::tar_extract::unpack_tar_filtered;
 
 /// Pinned macOS SDK version used when the caller does not set
@@ -348,7 +344,7 @@ async fn fetch_managed_sdk(
             selection.version,
             selection.shape.catalogue_slug()
         ),
-        || download_apple_sdk_bundle(&url),
+        || manifest_lookup::download_manifest_entry(&entry),
     )
     .await?;
 
@@ -422,23 +418,13 @@ async fn fetch_managed_sdk(
     Ok(sdk_dir)
 }
 
-/// One download attempt. Split out so [`retry::with_backoff`] can repeat it;
-/// every error it returns is `SoldrError::Network`, which is what
-/// `retry::is_transient` matches.
-async fn download_apple_sdk_bundle(url: &str) -> Result<DownloadedAsset, SoldrError> {
-    let client = asset_http_client_with_protocol("the Apple SDK bundle", AssetProtocol::Http1Only)?;
-    let resp = send_asset_request(
-        get_request(&client, url).header(reqwest::header::ACCEPT_ENCODING, "identity"),
-        url,
-        ASSET_HEADER_TIMEOUT,
-    )
-    .await?;
-    stream_response_to_temp_file(resp, url, ASSET_IDLE_TIMEOUT).await
-}
-
 async fn catalogue_entry_for_url(url: &str) -> Option<manifest_lookup::ManifestEntry> {
     let index = manifest_lookup::get_or_fetch().await;
-    index.entries.iter().find(|e| e.url == url).cloned()
+    index
+        .entries
+        .iter()
+        .find(|e| e.matches_legacy_url(url))
+        .cloned()
 }
 
 fn find_extracted_sdk_dir(install_dir: &Path, expected: &Path) -> Result<PathBuf, SoldrError> {

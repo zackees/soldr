@@ -35,11 +35,7 @@ use std::path::{Path, PathBuf};
 
 use crate::core::{SoldrError, SoldrPaths};
 
-use super::stream_download::{asset_http_client, get_request};
-use super::stream_download::{
-    send_asset_request, stream_response_to_temp_file, DownloadedAsset, ASSET_HEADER_TIMEOUT,
-    ASSET_IDLE_TIMEOUT,
-};
+use super::manifest_lookup;
 
 /// Pinned xwin-cache release date currently in the catalogue.
 /// Bump when a refreshed bundle ships from soldr-toolchain forge
@@ -108,12 +104,30 @@ pub async fn ensure_xwin_cache(
         "soldr: fetching xwin-cache v{MANAGED_XWIN_CACHE_VERSION} for {target_triple} from {url}..."
     );
 
+    let entry = manifest_lookup::get_or_fetch()
+        .await
+        .entries
+        .iter()
+        .find(|entry| entry.matches_legacy_url(url))
+        .cloned()
+        .ok_or_else(|| {
+            SoldrError::Other(format!(
+                "xwin-cache {target_triple} is absent from the soldr-toolchain catalogue"
+            ))
+        })?;
+    if entry.sha256 != expected_sha256 {
+        return Err(SoldrError::Other(format!(
+            "xwin-cache catalogue pin changed for {target_triple}: expected {expected_sha256}, got {}",
+            entry.sha256
+        )));
+    }
+
     // soldr#2132: retry the download. The sha256 comparison below stays
     // outside it -- the catalogue blob being replaced is exactly the case that
     // must fail on the first try.
     let downloaded = super::retry::with_asset_backoff(
         &format!("xwin-cache v{MANAGED_XWIN_CACHE_VERSION} for {target_triple}"),
-        || download_xwin_cache(url),
+        || manifest_lookup::download_manifest_entry(&entry),
     )
     .await?;
 
@@ -168,14 +182,6 @@ pub async fn ensure_xwin_cache(
         cache_dir.display()
     );
     Ok(cache_dir)
-}
-
-/// One download attempt. Every error is [`SoldrError::Network`], which is what
-/// [`super::retry::is_transient`] matches.
-async fn download_xwin_cache(url: &str) -> Result<DownloadedAsset, SoldrError> {
-    let client = asset_http_client("managed xwin-cache")?;
-    let resp = send_asset_request(get_request(&client, url), url, ASSET_HEADER_TIMEOUT).await?;
-    stream_response_to_temp_file(resp, url, ASSET_IDLE_TIMEOUT).await
 }
 
 fn resolve_xwin_cache_dir(install_dir: &Path) -> Option<PathBuf> {

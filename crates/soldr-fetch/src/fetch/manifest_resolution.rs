@@ -36,7 +36,7 @@ async fn try_manifest_first(
         .iter()
         .map(|entry| github::AssetInfo {
             name: entry.asset.clone(),
-            download_url: entry.url.clone(),
+            download_url: entry.display_url().to_string(),
         })
         .collect();
     let asset = match github::match_asset_for_binaries(&asset_infos, target, binary_names) {
@@ -48,7 +48,7 @@ async fn try_manifest_first(
     }
     let matched_entry = candidates
         .iter()
-        .find(|e| e.asset == asset.name && e.url == asset.download_url)
+        .find(|e| e.asset == asset.name)
         .copied()
         .ok_or_else(|| {
             SoldrError::Other(format!(
@@ -83,14 +83,13 @@ async fn try_manifest_first(
     // download.
     let download_started_at_ms = current_unix_ms();
     let download_started = std::time::Instant::now();
-    let binary_path = archive::download_and_extract_with_pin(
+    let binary_path = archive::download_and_extract_catalogue_entry(
         paths,
         cache_name,
         &version,
-        &matched_entry.url,
+        matched_entry,
         target,
         binary_names,
-        Some((&matched_entry.asset, &matched_entry.sha256)),
     )
     .await?;
     soldr_core::build_log_meta::fetch_timing::record(
