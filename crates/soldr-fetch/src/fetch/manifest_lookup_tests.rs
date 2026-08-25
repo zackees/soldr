@@ -398,6 +398,49 @@ fn canonical_publication_contract_accepts_assets_branch_and_source_path() {
 }
 
 #[test]
+fn publication_contract_accepts_source_path_identity_for_duplicate_legacy_assets() {
+    let mut fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../tests/fixtures/catalogue-v2-contract.json"
+    ))
+    .unwrap();
+    let original_key = "zackees\0soldr-toolchain\0assets\0sdk.tar.zstd";
+    let source_path = fixture["catalogue"]["entries"][0]["source_path"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    fixture["catalogue"]["entries"][0]["asset"] = serde_json::json!(source_path);
+    let mut logical = fixture["publication_state"]["logical_assets"]
+        .as_object_mut()
+        .unwrap()
+        .remove(original_key)
+        .unwrap();
+    logical["asset"] = serde_json::json!("sdk.tar.zst");
+    logical["provenance"]["asset"] = serde_json::json!("sdk.tar.zst");
+    let canonical_key = format!(
+        "zackees\0soldr-toolchain\0assets\0{}",
+        fixture["catalogue"]["entries"][0]["asset"]
+            .as_str()
+            .unwrap()
+    );
+    fixture["publication_state"]["logical_assets"][canonical_key] = logical;
+
+    let catalogue: WireV2Catalogue = serde_json::from_value(fixture["catalogue"].clone()).unwrap();
+    let state: PublicationState =
+        serde_json::from_value(fixture["publication_state"].clone()).unwrap();
+    assert!(publication_entries_match_state(&catalogue.entries, &state));
+
+    fixture["publication_state"]["logical_assets"]
+        .as_object_mut()
+        .unwrap()
+        .values_mut()
+        .next()
+        .unwrap()["asset"] = serde_json::json!("other.tar.zstd");
+    let state: PublicationState =
+        serde_json::from_value(fixture["publication_state"].clone()).unwrap();
+    assert!(!publication_entries_match_state(&catalogue.entries, &state));
+}
+
+#[test]
 fn publication_contract_rejects_unbound_or_ambiguous_source_paths() {
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
         "../../tests/fixtures/catalogue-v2-contract.json"

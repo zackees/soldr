@@ -398,7 +398,7 @@ pub(super) fn publication_entries_match_state(
                 };
                 let provenance = &logical.provenance;
                 if logical.source_path != *source_path
-                    || logical.asset != entry.asset
+                    || !publication_asset_identity_matches(entry, logical, source_path)
                     || logical.source_oid_sha256 != entry.sha256
                     || logical.source_size_bytes != entry.size_bytes
                     || provenance.len() != 4
@@ -409,7 +409,7 @@ pub(super) fn publication_entries_match_state(
                     || provenance.get("tag").and_then(serde_json::Value::as_str)
                         != Some(entry.tag.as_str())
                     || provenance.get("asset").and_then(serde_json::Value::as_str)
-                        != Some(entry.asset.as_str())
+                        != Some(logical.asset.as_str())
                 {
                     return false;
                 }
@@ -419,6 +419,19 @@ pub(super) fn publication_entries_match_state(
         }
     }
     logical_keys.len() == state.logical_assets.len()
+}
+
+fn publication_asset_identity_matches(
+    entry: &WireV2Entry,
+    logical: &LogicalAsset,
+    source_path: &str,
+) -> bool {
+    entry.asset == logical.asset
+        || (entry.asset == source_path
+            && source_path
+                .rsplit('/')
+                .next()
+                .is_some_and(|filename| filename == logical.asset))
 }
 
 fn valid_partitioner(partitioner: &Partitioner) -> bool {
