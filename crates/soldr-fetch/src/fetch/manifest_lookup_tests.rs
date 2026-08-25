@@ -468,6 +468,27 @@ fn publication_contract_rejects_unbound_or_ambiguous_source_paths() {
     wrong_size["catalogue"]["entries"][0]["size_bytes"] = serde_json::json!(4);
     assert!(!bound(&wrong_size));
 
+    let canonical_url = fixture["catalogue"]["entries"][0]["parts"][0]["urls"][0]
+        .as_str()
+        .unwrap();
+    for escaped_url in [
+        canonical_url.replace("/public-a/", "/main/"),
+        canonical_url.replace("/public-a/", "/public-a/../main/"),
+        canonical_url.replace("/public-a/", "/public-a/%2e%2e/main/"),
+        canonical_url.replace(
+            "raw.githubusercontent.com",
+            "raw.githubusercontent.com.evil",
+        ),
+        format!("{canonical_url}?download=1"),
+    ] {
+        let mut escaped = fixture.clone();
+        escaped["catalogue"]["entries"][0]["parts"][0]["urls"][0] = serde_json::json!(escaped_url);
+        assert!(
+            !bound(&escaped),
+            "publication binding must reject a noncanonical part URL"
+        );
+    }
+
     let mut direct = fixture.clone();
     let entry = direct["catalogue"]["entries"][0].as_object_mut().unwrap();
     entry.remove("parts");
@@ -1272,6 +1293,39 @@ fn multipart_part_tail_probe_accepts_exact_206_without_nested_fanout() {
                 "one tail probe is the only Range request: no nested fanout"
             );
         });
+}
+
+#[test]
+fn multipart_part_transport_refuses_redirects() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 1024];
+            let _ = socket.read(&mut request).await.unwrap();
+            socket
+                .write_all(
+                    b"HTTP/1.1 302 Found\r\nLocation: https://media.githubusercontent.com/media/zackees/clang-tool-chain-bins/main/asset\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        let error = download_catalogue_part_response(
+            &format!("http://{address}/part"),
+            None,
+            file.as_file_mut(),
+        )
+        .await
+        .expect_err("catalogue part transport must not follow redirects");
+        assert!(error.to_string().contains("HTTP 302"), "{error}");
+        server.await.unwrap();
+    });
 }
 
 #[test]

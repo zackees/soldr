@@ -22,9 +22,10 @@
 //!   1. `SOLDR_LLVM_DIR` env var pointing at an existing directory →
 //!      use it verbatim (escape hatch for advanced users + reproducibility
 //!      pin in CI lanes that build LLVM from source).
-//!   2. Managed fetch from
-//!      `https://media.githubusercontent.com/media/zackees/clang-tool-chain-bins/main/assets/clang/<plat>/<arch>/llvm-<ver>-<plat>-<arch>.tar.zst`,
-//!      sha256-pinned, cached at
+//!   2. Managed fetch through the verified v2 soldr-toolchain catalogue.
+//!      The legacy Git LFS URL remains only as the pinned logical identity;
+//!      bytes come from ordinary-Git multipart objects on the publication's
+//!      orphan `public-a` or `public-b` branch and are cached at
 //!      `~/.soldr/bin/llvm-<MANAGED_LLVM_VERSION>/`.
 //!
 //! Supported managed hosts (see `host_llvm_asset`):
@@ -51,14 +52,10 @@
 //! non-cross build.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use crate::core::{SoldrError, SoldrPaths};
 
-use super::stream_download::{
-    asset_http_client_with_protocol, get_request, send_asset_request, stream_response_to_temp_file,
-    AssetProtocol, DownloadedAsset, ASSET_HEADER_TIMEOUT, ASSET_IDLE_TIMEOUT,
-};
+use super::manifest_lookup::{self, AssetTransport, CatalogueSource, ManifestEntry, ManifestIndex};
 
 /// Pinned LLVM version that soldr's managed bootstrap ships for the
 /// xwin lane. 21.1.5 is the latest release on
@@ -75,21 +72,6 @@ pub const MANAGED_LLVM_VERSION: &str = "21.1.5";
 /// / `llvm-lib` — i.e. the same shape this module returns from
 /// `ensure_llvm_toolchain` after a managed fetch.
 const LLVM_DIR_ENV_VAR: &str = "SOLDR_LLVM_DIR";
-/// soldr#2132 called `mod.rs`, `llvm.rs` and `zig.rs` "three near-identical
-/// copies" of the retry loop. They are near-identical in the retrying; they
-/// differ exactly where it matters, in what happens once attempts run out:
-///
-/// * `mod.rs` falls back to the newest cached tool for `VersionSpec::Latest`
-///   (#1879) so a rate-limited release API does not turn into a red build;
-/// * `zig.rs` has target-specific archive extraction;
-/// * this one simply fails, which is what `retry::with_backoff` does.
-///
-/// Only this one could move to the shared helper. Folding either of the others
-/// would silently delete a fallback, so they keep their loops.
-const LLVM_DOWNLOAD_ATTEMPTS: u32 = 4;
-const LLVM_DOWNLOAD_INITIAL_BACKOFF: Duration = Duration::from_secs(5);
-const _: () = assert!(LLVM_DOWNLOAD_ATTEMPTS >= 2);
-
 /// Asset descriptor for one host triple. Hard-coded URL + sha256
 /// because the upstream `manifest.json`s are not versioned per-archive
 /// (a tampered manifest would let an attacker swap binaries silently).
@@ -203,12 +185,14 @@ async fn fetch_managed_llvm(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
         return Ok(bin_dir);
     }
 
+    let entry = catalogue_entry_for_asset(asset).await?;
+    let resolved_url = manifest_lookup::resolved_download_label(&entry);
     eprintln!(
-        "soldr: fetching LLVM v{MANAGED_LLVM_VERSION} ({}) from {}...",
-        asset.plat_arch, asset.url,
+        "soldr: fetching LLVM v{MANAGED_LLVM_VERSION} ({}) from {resolved_url}...",
+        asset.plat_arch,
     );
 
-    let downloaded = download_llvm_asset(asset).await?;
+    let downloaded = manifest_lookup::materialize_catalogue_entry(&entry).await?;
 
     // Integrity check is mandatory — the upstream archive is large
     // (~95 MiB) and a tampered blob would silently install a hostile
@@ -246,36 +230,55 @@ async fn fetch_managed_llvm(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
     Ok(bin_dir)
 }
 
-async fn download_llvm_asset(asset: &LlvmAsset) -> Result<DownloadedAsset, SoldrError> {
-    // soldr#2132 step 1: this loop was one of three hand-rolled copies. It is
-    // the only one that folds onto the shared helper without losing anything --
-    // see the note on `LLVM_DOWNLOAD_ATTEMPTS` for why the other two stay.
-    //
-    // The old guard retried on *any* error rather than testing transience.
-    // That is not a behaviour change here: every error `download_llvm_asset_once`
-    // can produce is `SoldrError::Network`, which `retry::is_transient` matches,
-    // so the set of retried failures is identical.
-    let client = asset_http_client_with_protocol("managed LLVM", AssetProtocol::Http1Only)?;
-    super::retry::with_asset_backoff_params(
-        &format!("LLVM v{MANAGED_LLVM_VERSION} {}", asset.plat_arch),
-        LLVM_DOWNLOAD_ATTEMPTS,
-        LLVM_DOWNLOAD_INITIAL_BACKOFF,
-        || download_llvm_asset_once(&client, asset),
-    )
-    .await
+async fn catalogue_entry_for_asset(asset: &LlvmAsset) -> Result<ManifestEntry, SoldrError> {
+    catalogue_entry_from_index(manifest_lookup::get_or_fetch().await, asset)
 }
 
-async fn download_llvm_asset_once(
-    client: &reqwest::Client,
+fn catalogue_entry_from_index(
+    index: &ManifestIndex,
     asset: &LlvmAsset,
-) -> Result<DownloadedAsset, SoldrError> {
-    let resp = send_asset_request(
-        get_request(client, asset.url).header(reqwest::header::ACCEPT_ENCODING, "identity"),
-        asset.url,
-        ASSET_HEADER_TIMEOUT,
-    )
-    .await?;
-    stream_response_to_temp_file(resp, asset.url, ASSET_IDLE_TIMEOUT).await
+) -> Result<ManifestEntry, SoldrError> {
+    let source_path = asset
+        .url
+        .split_once("/assets/")
+        .map(|(_, path)| path)
+        .ok_or_else(|| SoldrError::Other("managed LLVM identity has no assets path".into()))?;
+    let asset_name = source_path
+        .rsplit('/')
+        .next()
+        .ok_or_else(|| SoldrError::Other("managed LLVM identity has no asset name".into()))?;
+    if index.source != CatalogueSource::CanonicalV2 {
+        return Err(SoldrError::Other(
+            "managed LLVM requires the verified v2 catalogue".into(),
+        ));
+    }
+    let entry = index
+        .entries
+        .iter()
+        .find(|entry| {
+            entry.owner == "zackees"
+                && entry.repo == "clang-tool-chain-bins"
+                && entry.tag == "main"
+                && entry.asset == asset_name
+                && entry.source_path.as_deref() == Some(source_path)
+                && entry.min_client_version == Some(2)
+                && matches!(entry.transport, AssetTransport::Multipart { ref parts } if !parts.is_empty())
+                && entry.matches_legacy_url(asset.url)
+        })
+        .cloned()
+        .ok_or_else(|| {
+            SoldrError::Other(format!(
+                "LLVM v{MANAGED_LLVM_VERSION} {} is absent from the verified v2 multipart catalogue",
+                asset.plat_arch
+            ))
+        })?;
+    if entry.sha256 != asset.sha256 {
+        return Err(SoldrError::Other(format!(
+            "LLVM catalogue sha256 mismatch for {}: pinned {}, catalogue {}",
+            asset.plat_arch, asset.sha256, entry.sha256
+        )));
+    }
+    Ok(entry)
 }
 
 fn extract_tar_zst_tree<R: std::io::Read>(reader: R, dest: &Path) -> Result<(), SoldrError> {
@@ -384,6 +387,44 @@ mod tests {
                 "{triple}: plat_arch must be non-empty",
             );
         }
+    }
+
+    #[test]
+    fn managed_llvm_requires_v2_multipart_catalogue_identity() {
+        let asset = &LLVM_ASSETS[0].1;
+        let source_path = asset.url.split_once("/assets/").unwrap().1;
+        let asset_name = source_path.rsplit('/').next().unwrap();
+        let mut index = ManifestIndex {
+            entries: vec![ManifestEntry {
+                owner: "zackees".into(),
+                repo: "clang-tool-chain-bins".into(),
+                tag: "main".into(),
+                asset: asset_name.into(),
+                transport: AssetTransport::Multipart {
+                    parts: vec![manifest_lookup::Part {
+                        number: 1,
+                        size_bytes: 1,
+                        sha256: "b".repeat(64),
+                        urls: vec!["https://raw.githubusercontent.com/zackees/soldr-toolchain/public-a/sha256/a/part".into()],
+                    }],
+                },
+                sha256: asset.sha256.into(),
+                size_bytes: 1,
+                min_client_version: Some(2),
+                source_path: Some(source_path.into()),
+            }],
+            fail_closed: false,
+            source: CatalogueSource::CanonicalV2,
+        };
+        assert!(catalogue_entry_from_index(&index, asset).is_ok());
+
+        index.source = CatalogueSource::LegacyV1;
+        assert!(catalogue_entry_from_index(&index, asset).is_err());
+        index.source = CatalogueSource::CanonicalV2;
+        index.entries[0].transport = AssetTransport::Direct {
+            urls: vec![asset.url.into()],
+        };
+        assert!(catalogue_entry_from_index(&index, asset).is_err());
     }
 
     #[test]
