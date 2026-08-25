@@ -38,17 +38,31 @@ fn note_missing_ack(req: &Request, reason: &str) {
     // Named rather than `{req:?}`: the Debug of a touch carries the full
     // target path, which is the one thing a reader already knows and the one
     // thing that makes the line long.
+    eprintln!("{}", missing_ack_message(req, reason));
+}
+
+/// The line [`note_missing_ack`] prints.
+///
+/// Split out so it can be asserted on. The emitter cannot be: it runs in the
+/// wrapper process, and a test that captured stderr in-process would be
+/// testing the harness rather than the message.
+pub(crate) fn missing_ack_message(req: &Request, reason: &str) -> String {
+    // Named rather than `{req:?}`: the Debug of a touch carries the full
+    // target path, which is the one thing a reader already knows and the one
+    // thing that makes the line long.
     let request = match req {
         Request::RecordTargetTouch { .. } => "RecordTargetTouch",
         Request::CookTouch { .. } => "CookTouch",
         _ => "other",
     };
-    tracing::warn!(
-        event = "hot_path_ack_missing",
-        request,
-        reason,
-        "daemon did not acknowledge receipt within the bounded wait;          delivery is unconfirmed (soldr#2785)"
-    );
+    format!(
+        concat!(
+            "soldr: daemon did not acknowledge receipt of {request} within the ",
+            "bounded wait ({reason}); delivery is unconfirmed (soldr#2785)"
+        ),
+        request = request,
+        reason = reason,
+    )
 }
 
 /// Wrapper-side target touch. State is daemon-owned: an unavailable daemon
