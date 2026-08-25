@@ -99,6 +99,19 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def is_plain_int(value: object) -> bool:
+    """A real integer, not a bool.
+
+    `isinstance(True, int)` is True in Python, so a JSON `true` would satisfy a
+    plain isinstance check and sail through a size or part-number validation.
+    The original guards used `type(x) is int` to exclude that, which is correct
+    but trips pylint's `unidiomatic-typecheck` (C0123) -- and that error is what
+    turned the Lint job red on main. This keeps the behaviour and drops the
+    lint (soldr#2850).
+    """
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def is_sha256(value: str) -> bool:
     return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 
@@ -132,7 +145,7 @@ def download_catalogued_asset(asset: dict, destination: Path) -> str:
     if not is_sha256(expected_sha):
         raise SupportBinaryError("catalogued asset has no valid sha256")
     declared_size = asset.get("size_bytes")
-    if type(declared_size) is not int or declared_size <= 0:
+    if not is_plain_int(declared_size) or declared_size <= 0:
         raise SupportBinaryError(f"catalogued asset has invalid size_bytes {declared_size!r}")
 
     urls = asset.get("urls") or []
@@ -146,10 +159,10 @@ def download_catalogued_asset(asset: dict, destination: Path) -> str:
         with destination.open("wb") as output:
             for expected_number, part in enumerate(parts, start=1):
                 number = part.get("number")
-                if type(number) is not int or number != expected_number:
+                if not is_plain_int(number) or number != expected_number:
                     raise SupportBinaryError("catalogued multipart asset has non-contiguous parts")
                 size = part.get("size_bytes")
-                if type(size) is not int or not 1 <= size <= MAX_PART_BYTES:
+                if not is_plain_int(size) or not 1 <= size <= MAX_PART_BYTES:
                     raise SupportBinaryError(
                         f"catalogued part {expected_number} has invalid size_bytes {size!r}"
                     )

@@ -84,7 +84,8 @@ fn catalogue_url_override_env_var_works() {
         assert_eq!(entry.owner, "test-owner");
         assert_eq!(entry.repo, "test-repo");
         assert_eq!(entry.tag, "v0.0.1");
-        assert_eq!(entry.url, "https://example.invalid/test.zip");
+        // Accessor, not the raw field (soldr#2843).
+        assert_eq!(entry.direct_url(), Some("https://example.invalid/test.zip"));
 
         // Second call hits the cache — no network round trip means
         // no second connection on the listener (which has already
