@@ -46,6 +46,7 @@ pub(crate) mod debug_trace;
 mod disk;
 mod host_tooling;
 mod inputs;
+mod line_endings;
 mod log_summary;
 pub(crate) mod no_cache_detach;
 mod profile_debug;

@@ -1068,6 +1068,65 @@ fn cargo_build_warns_when_disk_space_is_low() {
 }
 
 #[test]
+fn cargo_build_warns_in_yellow_when_git_autocrlf_is_true() {
+    let root = unique_temp_dir("cargo-crlf-warning");
+    let repo = root.join("repo");
+    let cache_root = root.join("soldr-cache");
+    let log_path = root.join("tool.log");
+    fs::create_dir_all(&repo).expect("repo directory");
+    fs::write(
+        repo.join("Cargo.toml"),
+        "[package]\nname = \"crlf_warning\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("manifest");
+    let git_init = Command::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args(["init", "-q"])
+        .status()
+        .expect("git init");
+    assert!(git_init.success());
+    let git_config = Command::new("git")
+        .arg("-C")
+        .arg(&repo)
+        .args(["config", "--local", "core.autocrlf", "true"])
+        .status()
+        .expect("git config");
+    assert!(git_config.success());
+    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+
+    let output = common::isolated_soldr_command()
+        .args(["--no-cache", "cargo", "build"])
+        .current_dir(&repo)
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .env("SOLDR_TEST_FREE_DISK_BYTES", "100000000000")
+        .env("CARGO_TARGET_DIR", root.join("target"))
+        .env("GITHUB_ACTIONS", "true")
+        .env_remove("NO_COLOR")
+        .env_remove("SOLDR_TARGET_CACHE_MODE")
+        .env_remove("SOLDR_BUILD_CACHE_MODE")
+        .output()
+        .expect("soldr cargo build");
+
+    assert!(
+        output.status.success(),
+        "cargo build with CRLF warning failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("\x1b[33mwarning\x1b[0m: Git CRLF checkout mode"),
+        "yellow CRLF warning missing from stderr: {stderr}"
+    );
+    assert!(stderr.contains("core.autocrlf=true"), "{stderr}");
+    assert!(stderr.contains("avoidable recompiles"), "{stderr}");
+}
+
+#[test]
 fn cargo_build_ignores_disk_space_detection_failures() {
     let cache_root = unique_temp_dir("cargo-low-disk-error");
     let log_path = cache_root.join("tool.log");

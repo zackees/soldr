@@ -66,7 +66,7 @@ pub(super) fn maybe_apply_cargo_profile_debug_default(
     }
 
     command.env(default.env_var, default.value);
-    let repo_path = cargo_debug_warning_repo_path(args);
+    let repo_path = cargo_invocation_repo_path(args);
     if should_emit_cargo_debug_default_warning(paths, &repo_path) {
         eprintln!(
             "soldr: warning: Cargo profile.{}.debug is unspecified for {}; setting {}={} for this invocation. Set `debug` explicitly under `[profile.{}]` in Cargo.toml or .cargo/config.toml to override this default.",
@@ -572,7 +572,7 @@ fn cargo_manifest_declares_workspace(path: &std::path::Path) -> bool {
     value.get("workspace").is_some()
 }
 
-fn cargo_debug_warning_repo_path(args: &[String]) -> std::path::PathBuf {
+pub(super) fn cargo_invocation_repo_path(args: &[String]) -> std::path::PathBuf {
     let start_dir = cargo_profile_lookup_start_dir(args)
         .or_else(|_| std::env::current_dir().map_err(SoldrError::from))
         .unwrap_or_else(|_| std::path::PathBuf::from("."));
