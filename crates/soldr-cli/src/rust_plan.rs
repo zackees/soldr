@@ -2,16 +2,14 @@
 //! related zccache `rust-plan` integration. Extracted from `main.rs` as part
 //! of issue #339.
 
+use crate::build_cache_session::{command_stderr, BuildCacheSession};
 use crate::cargo_front_door::{
     build_env_inputs, cargo_feature_inputs, cargo_profile, cargo_target_triple,
     first_cargo_subcommand, path_string, rustflags_inputs, stable_hash_json,
     CargoProfileDebugDefault,
 };
 use crate::core::{command_output_with_timeout, suppress_windows_console_window, SoldrError};
-use crate::zccache::{
-    command_stderr, normalize_path_for_compare,
-    run_zccache_command_strings_in_cache_dir_with_daemon_name, ZccacheBuildSession,
-};
+use crate::zccache::normalize_path_for_compare;
 use crate::{
     non_empty_env_path, SKIP_WARM_RESTORE_ENV_VAR, TARGET_CACHE_BACKEND_ENV_VAR,
     TARGET_CACHE_BUNDLE_DIR_ENV_VAR, TARGET_CACHE_MODE_ENV_VAR, TARGET_CACHE_PROFILE_ENV_VAR,
@@ -139,9 +137,6 @@ pub(crate) struct RustPlanArtifactOwner {
 pub(crate) struct RustArtifactPlanContext {
     pub(crate) path: std::path::PathBuf,
     pub(crate) cache_dir: std::path::PathBuf,
-    pub(crate) zccache_daemon_cache_dir: std::path::PathBuf,
-    pub(crate) zccache_daemon_cache_dir_env: bool,
-    pub(crate) zccache_daemon_name: Option<String>,
     pub(crate) session_id: String,
     pub(crate) journal_path: std::path::PathBuf,
     pub(crate) backend: String,
@@ -182,7 +177,7 @@ pub(crate) fn maybe_prepare_rust_artifact_plan(
     cargo: &std::path::Path,
     rustc: &std::path::Path,
     args: &[String],
-    session: &ZccacheBuildSession,
+    session: &BuildCacheSession,
     cargo_profile_debug_default: Option<&CargoProfileDebugDefault>,
     toolchain_channel_override: Option<&str>,
 ) -> Result<Option<RustArtifactPlanContext>, SoldrError> {
@@ -265,10 +260,6 @@ pub(crate) fn maybe_prepare_rust_artifact_plan(
     Ok(Some(RustArtifactPlanContext {
         path: plan_path,
         cache_dir: rust_artifact_plan_cache_dir(session)?,
-        zccache_daemon_cache_dir: session.cache_dir.clone(),
-        zccache_daemon_cache_dir_env: session.cache_dir_env,
-        // soldr#1368: private managed-zccache daemons are gone.
-        zccache_daemon_name: None,
         session_id: session.session_id.clone(),
         journal_path: session.journal_path.clone(),
         backend: rust_artifact_cache_backend_from_env()?,
@@ -619,7 +610,7 @@ use env_resolvers::{
 };
 
 fn rust_artifact_plan_cache_dir(
-    session: &ZccacheBuildSession,
+    session: &BuildCacheSession,
 ) -> Result<std::path::PathBuf, SoldrError> {
     let cache_dir = non_empty_env_path(TARGET_CACHE_BUNDLE_DIR_ENV_VAR)
         .unwrap_or_else(|| session.cache_dir.join("rust-plan-cache"));
@@ -766,7 +757,7 @@ pub(crate) fn build_rust_artifact_plan(
     args: &[String],
     mode: &str,
     cache_profile: Option<&'static str>,
-    session: &ZccacheBuildSession,
+    session: &BuildCacheSession,
     cargo_profile_debug_default: Option<&CargoProfileDebugDefault>,
     file_hashes: &WorkspaceFileHashes,
 ) -> Result<RustArtifactPlan, SoldrError> {

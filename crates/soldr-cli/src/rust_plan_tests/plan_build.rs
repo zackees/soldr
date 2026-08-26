@@ -1,6 +1,7 @@
 //! Tests for [`crate::rust_plan::build_rust_artifact_plan`] and the
 //! allowed/dropped artifact-class metadata derived from `(mode, cache_profile)`.
 
+use crate::build_cache_session::BuildCacheSession;
 use crate::cargo_front_door::{cargo_profile, cargo_target_triple, selected_cargo_args};
 use crate::rust_plan::{
     allowed_artifact_classes, build_rust_artifact_plan, cargo_metadata_passthrough_args,
@@ -8,7 +9,6 @@ use crate::rust_plan::{
     CargoMetadata, CargoMetadataPackage, RustToolchainIdentity, ToolchainProbe,
     WorkspaceFileHashes,
 };
-use crate::zccache::ZccacheBuildSession;
 use crate::TARGET_CACHE_PROFILE_ENV_VAR;
 use std::sync::Mutex;
 
@@ -80,9 +80,8 @@ fn rust_artifact_plan_selects_external_packages_and_path_exclusions() {
         channel: "test".to_string(),
         host: "x86_64-unknown-test".to_string(),
     };
-    let session = ZccacheBuildSession {
+    let session = BuildCacheSession {
         cache_dir: root.join("cache"),
-        cache_dir_env: true,
         session_id: "session-1".to_string(),
         session_log_path: root.join("cache/logs/last-session.log"),
         journal_path: root.join("cache/logs/last-session.jsonl"),
@@ -278,9 +277,8 @@ fn rust_artifact_plan_bumps_cache_schema_version_for_thin_v2() {
         channel: "test".to_string(),
         host: "x86_64-unknown-test".to_string(),
     };
-    let session = ZccacheBuildSession {
+    let session = BuildCacheSession {
         cache_dir: root.join("cache"),
-        cache_dir_env: true,
         session_id: "session-thinv2".to_string(),
         session_log_path: root.join("cache/logs/last-session.log"),
         journal_path: root.join("cache/logs/last-session.jsonl"),
@@ -349,9 +347,8 @@ fn rust_artifact_plan_marks_thin_v3_zccache_all_fallback() {
         channel: "test".to_string(),
         host: "x86_64-unknown-test".to_string(),
     };
-    let session = ZccacheBuildSession {
+    let session = BuildCacheSession {
         cache_dir: root.join("cache"),
-        cache_dir_env: true,
         session_id: "session-thinv3".to_string(),
         session_log_path: root.join("cache/logs/last-session.log"),
         journal_path: root.join("cache/logs/last-session.jsonl"),

@@ -78,9 +78,6 @@ fn context_for(
     RustArtifactPlanContext {
         path: plan_path.to_path_buf(),
         cache_dir: cache_dir.to_path_buf(),
-        zccache_daemon_cache_dir: cache_dir.to_path_buf(),
-        zccache_daemon_cache_dir_env: false,
-        zccache_daemon_name: None,
         session_id: "test-session".into(),
         journal_path: cache_dir.join("journal.jsonl"),
         backend: "local".into(),

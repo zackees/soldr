@@ -115,7 +115,7 @@ struct BuildLogHistoryRequest<'a> {
     build_session_id: u64,
     repo_root: &'a Path,
     started_at_ms: i64,
-    session: &'a crate::zccache_lifecycle::ZccacheBuildSession,
+    session: &'a crate::build_cache_session::BuildCacheSession,
     compile_journal_start_len: u64,
     exit_code: i32,
     ended_at_ms: i64,
