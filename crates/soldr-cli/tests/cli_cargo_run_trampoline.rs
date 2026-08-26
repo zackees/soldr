@@ -563,15 +563,20 @@ fn content_edit_with_spoofed_old_mtime_forces_fall_through() {
     let recorded_secs = (recorded_nanos / 1_000_000_000) as u64;
 
     let main_rs = project.join("src").join("main.rs");
-    let new_body = fs::read_to_string(&main_rs).expect("read main") + "// edited\n";
+    let old_body = fs::read_to_string(&main_rs).expect("read main");
+    let new_body = old_body.replacen("hello", "hullo", 1);
+    assert_ne!(new_body, old_body, "fixture mutation must change content");
+    assert_eq!(
+        new_body.len(),
+        old_body.len(),
+        "fixture must preserve size exactly like the reported VERSION_A/VERSION_B restore"
+    );
     fs::write(&main_rs, new_body).expect("write main");
     // Restore the original mtime so a stat-only oracle would accept.
     reset_mtime_to_epoch_offset(&main_rs, recorded_secs);
 
-    // The size DID change because we appended bytes — but a real
-    // mtime+size spoofing attack could also pad to the original size.
-    // What matters is the trampoline must NOT trust an old mtime as
-    // freshness. Use a broken cargo to prove fall-through.
+    // Size and mtime now match the recorded stat shape while content differs.
+    // Use a broken cargo to prove the content oracle forced fall-through.
     let stub_dir = unique_temp_dir("trampoline-spoofed-old-mtime-stub");
     let broken = broken_cargo_stub(&stub_dir);
     let broken_str = broken.to_string_lossy().to_string();
@@ -583,6 +588,10 @@ fn content_edit_with_spoofed_old_mtime_forces_fall_through() {
     assert!(
         !out.status.success(),
         "content-edit-with-old-mtime MUST fall through to cargo; trampoline accepted stale binary"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("Cargo may run a stale artifact"),
+        "the content mismatch with an older source mtime must be visible to the caller"
     );
 }
 
