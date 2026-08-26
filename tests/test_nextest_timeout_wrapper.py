@@ -315,3 +315,80 @@ def test_every_binary_named_in_nextest_filters_is_a_real_test_target() -> None:
         "names a missing binary -- update .config/nextest.toml in the same "
         "commit that deletes or renames a test file"
     )
+
+
+def _terminate_after_budget_secs(config: str, test_name: str) -> int:
+    """Seconds nextest allows `test_name` before it kills the process.
+
+    nextest's bound is `period x terminate-after`; the grace period is what it
+    waits after SIGTERM, not extra runtime. Blocks are scanned in file order and
+    the last match wins, matching nextest's own override precedence.
+    """
+    import re
+
+    budget: int | None = None
+    for block in config.split("[[profile.default.overrides]]")[1:]:
+        if f"test(={test_name})" not in block:
+            continue
+        match = re.search(
+            r'slow-timeout\s*=\s*\{[^}]*period\s*=\s*"(\d+)s"[^}]*'
+            r"terminate-after\s*=\s*(\d+)",
+            block,
+        )
+        if match:
+            budget = int(match.group(1)) * int(match.group(2))
+    assert budget is not None, f"no terminate-after budget for {test_name}"
+    return budget
+
+
+def test_the_cache_maintenance_fixture_deadline_fits_two_cold_daemon_starts() -> None:
+    """soldr#2883, second instance: a fixture deadline below its real work.
+
+    `prod_dev_daemons_and_manual_orphan_maintenance_are_isolated` spawns two
+    daemons, then bounds four sequential waits -- two readiness polls and two
+    maintenance-status appearances -- with one deadline. At 60s the darwin x64
+    lane exhausted it during startup and failed at 62.8s, with the other 2840
+    tests in that run passing.
+
+    Two bounds, and only one of them was wrong. The deadline must:
+
+    * clear two concurrent cold embedded-service initializations with real
+      headroom -- 60s did not, which is the bug; and
+    * stay under the budget nextest grants the test, so the fixture's domain
+      message (`daemon did not become ready`) is what a reader sees rather than
+      a generic kill.
+
+    The second clause held at 60s, which is why the config alone looked fine.
+    Only reading the fixture literal against the config shows the first.
+    """
+    import re
+
+    test_name = "prod_dev_daemons_and_manual_orphan_maintenance_are_isolated"
+    fixture = (
+        REPO_ROOT / "crates" / "soldr-cli" / "tests" / "daemon_cache_maintenance.rs"
+    )
+    source = fixture.read_text(encoding="utf-8")
+    body = source.split(f"fn {test_name}", 1)
+    assert len(body) == 2, f"{fixture.name} no longer defines {test_name}"
+
+    deadlines = [
+        int(secs)
+        for secs in re.findall(
+            r"let deadline = Instant::now\(\) \+ Duration::from_secs\((\d+)\)",
+            body[1],
+        )
+    ]
+    assert deadlines, "expected the readiness phase to carry an explicit deadline"
+
+    budget = _terminate_after_budget_secs(CONFIG.read_text(encoding="utf-8"), test_name)
+    for deadline in deadlines:
+        assert deadline >= 120, (
+            f"{test_name} allows {deadline}s for two cold daemon starts plus two "
+            "maintenance writes; the darwin lane needed more than 60s of real "
+            "work, so this reproduces soldr#2883"
+        )
+        assert deadline < budget, (
+            f"{test_name} bounds itself at {deadline}s against a {budget}s nextest "
+            "budget; past it the generic kill lands first and the fixture's own "
+            "diagnosis is lost"
+        )
