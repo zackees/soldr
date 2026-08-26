@@ -233,6 +233,24 @@ timing and cache summary to stderr. `SOLDR_PEP517_STATS=off` disables it;
 second stderr line. Soldr also selects `full` when `PIP_VERBOSE` or
 `UV_VERBOSE` is set by the frontend or caller.
 
+### PEP 517 callers with a wall-clock timeout
+
+The compile-reply backstop defaults to 30 minutes so a legitimate large
+release compile is not cut off. A hook, editor, or CI harness with a shorter
+wall-clock timeout should set `SOLDR_COMPILE_REPLY_TIMEOUT_SECS` to a smaller
+value than its own timeout before invoking the PEP 517 frontend. That makes
+Soldr report an actionable daemon-timeout diagnostic before the harness kills
+the backend; it does not change the default for ordinary `pip` or `uv` builds.
+
+```bash
+# A five-minute hook timeout: leave time for Soldr to report the failure.
+SOLDR_COMPILE_REPLY_TIMEOUT_SECS=240 uv build
+```
+
+If a harness sends `SIGTERM`, `SIGBREAK`, or `SIGINT` first, the backend also
+names the interrupted command and elapsed time. A hard process kill cannot be
+intercepted, so the explicit timeout remains the reliable diagnostic boundary.
+
 For wheel and editable hooks, soldr keeps the last successful artifact under
 `<effective-soldr-root>/pep517/wheels/`. It performs a metadata-only recursive scan of the
 project (relative path, size, and modification time), staged files included,
