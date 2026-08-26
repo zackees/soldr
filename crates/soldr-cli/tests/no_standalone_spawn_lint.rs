@@ -18,8 +18,12 @@ const FORBIDDEN_ENTRY_POINTS: &[&str] = &[
     "embedded_zccache_binary",
 ];
 
-const FORBIDDEN_EXTERNAL_ZCCACHE_BINARY_ENV_VARS: &[&str] =
-    &["SOLDR_TEST_ZCCACHE_BIN", "SOLDR_ZCCACHE_BIN"];
+const FORBIDDEN_ZCCACHE_CLI_MODULE: &str = "zccache::cli";
+
+// `SOLDR_ZCCACHE_BIN` is retained only as an ignored compatibility name that
+// Soldr scrubs from child processes. The production execution bypass was the
+// test-only variable below; it must never return anywhere in workspace source.
+const FORBIDDEN_EXTERNAL_ZCCACHE_BINARY_ENV_VARS: &[&str] = &["SOLDR_TEST_ZCCACHE_BIN"];
 
 fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let entries = match fs::read_dir(dir) {
@@ -49,9 +53,17 @@ fn code_lines(body: &str) -> impl Iterator<Item = (usize, &str)> {
 
 #[test]
 fn soldr_never_enters_the_upstream_zccache_cli() {
-    let root = common::crate_root();
     let mut files = Vec::new();
-    collect_rs_files(&root.join("src"), &mut files);
+    let crate_root = common::crate_root();
+    let root = crate_root
+        .parent()
+        .expect("soldr-cli crate root lies under workspace crates/");
+    for crate_dir in fs::read_dir(root)
+        .expect("read workspace crates directory")
+        .flatten()
+    {
+        collect_rs_files(&crate_dir.path().join("src"), &mut files);
+    }
     assert!(!files.is_empty(), "lint found no source files");
 
     let mut offenders = Vec::new();
@@ -60,7 +72,7 @@ fn soldr_never_enters_the_upstream_zccache_cli() {
             continue;
         };
         let relative = file
-            .strip_prefix(&root)
+            .strip_prefix(root)
             .expect("source file lies under crate root")
             .to_string_lossy()
             .replace('\\', "/");
@@ -69,6 +81,12 @@ fn soldr_never_enters_the_upstream_zccache_cli() {
                 if line.contains(forbidden) {
                     offenders.push(format!("{relative}:{}: references {forbidden}", index + 1));
                 }
+            }
+            if line.contains(FORBIDDEN_ZCCACHE_CLI_MODULE) {
+                offenders.push(format!(
+                    "{relative}:{}: references {FORBIDDEN_ZCCACHE_CLI_MODULE}",
+                    index + 1
+                ));
             }
             for env_var in FORBIDDEN_EXTERNAL_ZCCACHE_BINARY_ENV_VARS {
                 if line.contains(env_var) {

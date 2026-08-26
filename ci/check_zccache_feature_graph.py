@@ -2,7 +2,8 @@
 
 The three crate manifests express the intended package-level requests, while
 Cargo's resolved feature tree proves feature unification did not restore an
-upstream CLI, standalone-daemon, download, or symbols capability.
+upstream CLI, standalone-daemon, download, symbols, or formatter capability
+outside Soldr's rustfmt adapter.
 """
 
 from __future__ import annotations
@@ -13,12 +14,11 @@ import sys
 import tomllib
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_FEATURES = {
     "crates/soldr-cache/Cargo.toml": [],
     "crates/soldr-daemon/Cargo.toml": [],
-    "crates/soldr-cli/Cargo.toml": ["gha"],
+    "crates/soldr-cli/Cargo.toml": ["formatter", "gha"],
 }
 FORBIDDEN_FEATURES = (
     "cli",
@@ -56,25 +56,37 @@ def _check_manifest_features() -> list[str]:
     return failures
 
 
-def _check_tree(soldr: str, package: str, require_gha: bool) -> list[str]:
+def _check_tree(
+    soldr: str,
+    package: str,
+    required_features: tuple[str, ...],
+    forbidden_features: tuple[str, ...] = FORBIDDEN_FEATURES,
+) -> list[str]:
     result = _run(soldr, "tree", "-p", package, "-e", "features", "-i", "zccache")
     if result.returncode:
         return [f"{package}: could not inspect zccache features:\n{result.stderr}"]
     failures: list[str] = []
-    for feature in FORBIDDEN_FEATURES:
+    for feature in forbidden_features:
         if f'zccache feature "{feature}"' in result.stdout:
-            failures.append(f"{package}: resolved forbidden zccache feature {feature!r}")
-    has_gha = 'zccache feature "gha"' in result.stdout
-    if has_gha != require_gha:
-        expectation = "must" if require_gha else "must not"
-        failures.append(f"{package}: {expectation} resolve zccache/gha")
+            failures.append(
+                f"{package}: resolved forbidden zccache feature {feature!r}"
+            )
+    for feature in required_features:
+        if f'zccache feature "{feature}"' not in result.stdout:
+            failures.append(f"{package}: must resolve zccache/{feature}")
     return failures
 
 
 def _check_no_normal_sevenz(soldr: str) -> list[str]:
-    result = _run(soldr, "tree", "-p", "soldr-cli", "-e", "normal", "-i", "sevenz-rust")
-    if result.returncode == 0:
-        return [f"soldr-cli has a normal dependency path to sevenz-rust:\n{result.stdout}"]
+    result = _run(soldr, "tree", "-p", "soldr-cli", "-e", "normal")
+    if result.returncode:
+        return [
+            f"soldr-cli: could not inspect normal dependency tree:\n{result.stderr}"
+        ]
+    if "sevenz-rust v" in result.stdout:
+        return [
+            f"soldr-cli has a normal dependency path to sevenz-rust:\n{result.stdout}"
+        ]
     return []
 
 
@@ -84,15 +96,32 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
 
     failures = _check_manifest_features()
-    failures.extend(_check_tree(args.soldr, "soldr-cache", require_gha=False))
-    failures.extend(_check_tree(args.soldr, "soldr-daemon", require_gha=False))
-    failures.extend(_check_tree(args.soldr, "soldr-cli", require_gha=True))
+    no_formatter = (*FORBIDDEN_FEATURES, "formatter")
+    failures.extend(
+        _check_tree(
+            args.soldr,
+            "soldr-cache",
+            required_features=(),
+            forbidden_features=no_formatter,
+        )
+    )
+    failures.extend(
+        _check_tree(
+            args.soldr,
+            "soldr-daemon",
+            required_features=(),
+            forbidden_features=no_formatter,
+        )
+    )
+    failures.extend(
+        _check_tree(args.soldr, "soldr-cli", required_features=("formatter", "gha"))
+    )
     failures.extend(_check_no_normal_sevenz(args.soldr))
     if failures:
         print("zccache feature graph guard failed:", file=sys.stderr)
         print("\n".join(f"- {failure}" for failure in failures), file=sys.stderr)
         return 1
-    print("zccache feature graph: embedded-only (gha only on soldr-cli)")
+    print("zccache feature graph: embedded-only (formatter + gha only on soldr-cli)")
     return 0
 
 

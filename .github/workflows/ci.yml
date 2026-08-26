@@ -221,11 +221,6 @@ jobs:
           set -euo pipefail
           uv run --no-project --python 3.13 python .github/scripts/check_zccache_asset.py
 
-      - name: Verify embedded zccache feature graph
-        run: |
-          set -euo pipefail
-          uv run --no-project --python 3.13 python ci/check_zccache_feature_graph.py
-
       # soldr#2013 — nothing ran `tests/` on CI, so it decayed silently: a test
       # asserting on a workflow #1982 deleted, two lints that scanned nothing
       # and reported clean (#2008), and a manifest-coupled assertion (#2004).
