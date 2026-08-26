@@ -11,6 +11,21 @@ pub(crate) fn annotate_signal_termination(
     args: &[String],
     cwd: &std::path::Path,
 ) -> Vec<u8> {
+    annotate_with_evidence(exit_code, stderr, args, cwd, crate::oom_evidence::read())
+}
+
+/// The same, with the OOM evidence supplied rather than read.
+///
+/// Split out so the message assertions stay byte-exact: reading the real
+/// cgroup would make every test's expected output depend on whether the host
+/// running the suite happens to be a Linux container.
+fn annotate_with_evidence(
+    exit_code: i32,
+    stderr: Vec<u8>,
+    args: &[String],
+    cwd: &std::path::Path,
+    evidence: crate::oom_evidence::OomEvidence,
+) -> Vec<u8> {
     let mut stderr = stderr;
     if crate::platform::process::exit::is_signal_termination(exit_code) {
         if !stderr.is_empty() && !stderr.ends_with(b"\n") {
@@ -20,6 +35,12 @@ pub(crate) fn annotate_signal_termination(
             Some(unit) => stderr.extend_from_slice(amalgamation_diagnostic(&unit).as_bytes()),
             None => stderr.extend_from_slice(signal_diagnostic(args).as_bytes()),
         }
+        // soldr#2878: both messages above guess at memory, and the generic one
+        // tells the reader to go inspect counters that soldr can read itself.
+        // Appended after, not folded in, so the guess and the measurement stay
+        // separable -- and so an unreadable cgroup adds nothing rather than
+        // adding a hedge about a hedge.
+        stderr.extend_from_slice(evidence.describe().as_bytes());
     }
     stderr
 }
@@ -94,13 +115,16 @@ fn amalgamation_diagnostic(unit: &crate::amalgamation::Amalgamation) -> String {
 mod tests {
     use super::*;
 
+    use crate::oom_evidence::OomEvidence::Unknown as UNKNOWN;
+
     // Host-neutral: the per-host classification of `-1` lives in the
     // platform crate's exit tests; here the assertion is conditional on the
     // platform's own answer so the diagnostic path is covered on Unix hosts
     // and the no-op path is covered on Windows hosts.
     #[test]
     fn signal_termination_gets_an_actionable_diagnostic() {
-        let stderr = annotate_signal_termination(-1, Vec::new(), &[], std::path::Path::new("."));
+        let stderr =
+            annotate_with_evidence(-1, Vec::new(), &[], std::path::Path::new("."), UNKNOWN);
         if crate::platform::process::exit::is_signal_termination(-1) {
             assert_eq!(stderr, signal_diagnostic(&[]).as_bytes());
         }
@@ -154,8 +178,13 @@ mod tests {
     #[test]
     fn compiler_stderr_is_preserved_before_the_diagnostic() {
         let original = b"rustc said why".to_vec();
-        let stderr =
-            annotate_signal_termination(-1, original.clone(), &[], std::path::Path::new("."));
+        let stderr = annotate_with_evidence(
+            -1,
+            original.clone(),
+            &[],
+            std::path::Path::new("."),
+            UNKNOWN,
+        );
         if crate::platform::process::exit::is_signal_termination(-1) {
             assert!(stderr.starts_with(b"rustc said why\n"));
             assert!(stderr.ends_with(signal_diagnostic(&[]).as_bytes()));
@@ -168,7 +197,7 @@ mod tests {
     fn ordinary_exit_codes_are_byte_identical() {
         let original = b"ordinary compiler error\n".to_vec();
         assert_eq!(
-            annotate_signal_termination(1, original.clone(), &[], std::path::Path::new(".")),
+            annotate_with_evidence(1, original.clone(), &[], std::path::Path::new("."), UNKNOWN),
             original
         );
     }
@@ -184,7 +213,7 @@ mod tests {
         std::fs::write(dir.path().join("sqlite3.c"), vec![b'x'; 8_000_000]).expect("fixture");
         let args = vec!["-O3".to_string(), "-c".into(), "sqlite3.c".into()];
 
-        let stderr = annotate_signal_termination(-1, Vec::new(), &args, dir.path());
+        let stderr = annotate_with_evidence(-1, Vec::new(), &args, dir.path(), UNKNOWN);
         let text = String::from_utf8_lossy(&stderr);
 
         assert!(text.contains("sqlite3.c (8.0 MB)"), "{text}");
@@ -208,8 +237,89 @@ mod tests {
         std::fs::write(dir.path().join("util.c"), vec![b'x'; 2_048]).expect("fixture");
         let args = vec!["-c".to_string(), "util.c".into()];
 
-        let stderr = annotate_signal_termination(-1, Vec::new(), &args, dir.path());
+        let stderr = annotate_with_evidence(-1, Vec::new(), &args, dir.path(), UNKNOWN);
 
         assert_eq!(stderr, signal_diagnostic(&args).as_bytes());
+    }
+
+    // soldr#2878: the two messages above name memory as the likely cause.
+    // Measured on a 4-core / 7.9 GiB container at SOLDR_JOBS=8, a cold
+    // `soldr cargo check -p soldr-cli` compiled 461 units and then died to a
+    // signal on `soldr_daemon` -- with memory.events oom_kill=0, peak cgroup
+    // usage 2.2 GiB, and MemAvailable never below 4.2 GiB. The guess was
+    // wrong, and the counters that say so were two file reads away.
+
+    #[test]
+    fn a_ruled_out_memory_kill_says_so_after_the_guess() {
+        if !crate::platform::process::exit::is_signal_termination(-1) {
+            return;
+        }
+        let stderr = annotate_with_evidence(
+            -1,
+            Vec::new(),
+            &[],
+            std::path::Path::new("."),
+            crate::oom_evidence::OomEvidence::NoKillRecorded,
+        );
+        let text = String::from_utf8_lossy(&stderr);
+        // The guess still comes first: it is what the reader has been seeing,
+        // and removing it would lose the unit name and the remedy.
+        assert!(
+            text.starts_with("soldr: compiler process was terminated"),
+            "{text}"
+        );
+        assert!(text.contains("no OOM kill"), "{text}");
+        assert!(text.contains("unlikely to help"), "{text}");
+    }
+
+    #[test]
+    fn a_recorded_kill_corroborates_the_amalgamation_story() {
+        if !crate::platform::process::exit::is_signal_termination(-1) {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("sqlite3.c"), vec![b'x'; 8_000_000]).expect("fixture");
+        let args = vec!["-O3".to_string(), "-c".into(), "sqlite3.c".into()];
+
+        let stderr = annotate_with_evidence(
+            -1,
+            Vec::new(),
+            &args,
+            dir.path(),
+            crate::oom_evidence::OomEvidence::KillsRecorded(1),
+        );
+        let text = String::from_utf8_lossy(&stderr);
+        assert!(text.contains("sqlite3.c (8.0 MB)"), "{text}");
+        assert!(text.contains("OOM-killed 1 process"), "{text}");
+    }
+
+    #[test]
+    fn an_unreadable_cgroup_adds_nothing() {
+        if !crate::platform::process::exit::is_signal_termination(-1) {
+            return;
+        }
+        // A hedge about a hedge is worse than the hedge. Off Linux this is
+        // every invocation, so the message must be byte-identical to before.
+        assert_eq!(
+            annotate_with_evidence(-1, Vec::new(), &[], std::path::Path::new("."), UNKNOWN),
+            signal_diagnostic(&[]).as_bytes()
+        );
+    }
+
+    #[test]
+    fn an_ordinary_exit_never_consults_the_cgroup() {
+        // The evidence is only meaningful for a kill. Appending it to a plain
+        // compiler error would attach a memory story to a syntax error.
+        let original = b"error[E0432]: unresolved import\n".to_vec();
+        assert_eq!(
+            annotate_with_evidence(
+                1,
+                original.clone(),
+                &[],
+                std::path::Path::new("."),
+                crate::oom_evidence::OomEvidence::NoKillRecorded,
+            ),
+            original
+        );
     }
 }
