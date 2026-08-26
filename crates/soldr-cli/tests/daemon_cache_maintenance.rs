@@ -116,7 +116,20 @@ fn prod_dev_daemons_and_manual_orphan_maintenance_are_isolated() {
     // concurrently and proves the two broker/endpoint namespaces coexist.
     let mut prod_child = spawn_daemon(&prod, &home);
     let mut dev_child = spawn_daemon(&dev, &home);
-    let deadline = Instant::now() + Duration::from_secs(60);
+    // soldr#2883: one deadline covers all four waits below, which is the right
+    // model -- the two daemons were spawned above and initialize concurrently,
+    // so what is bounded is the whole phase's wall clock, not each poll.
+    //
+    // What was wrong is its size: 60s did not cover two cold embedded-service
+    // initializations on a contended runner. The darwin x64 lane exhausted it
+    // during startup and failed at 62.8s with the other 2840 tests passing.
+    //
+    // 120s for the same reason the route budget is not measurement-plus-epsilon:
+    // a bound reached by real work is the failure, so clearing the observation
+    // by a hair just moves the cliff. It still sits under the 180s nextest
+    // grants this test, so an actual wedge fails with this fixture's own
+    // "daemon did not become ready" rather than a generic kill.
+    let deadline = Instant::now() + Duration::from_secs(120);
     let prod_status = wait_ready(&prod, &home, deadline);
     let dev_status = wait_ready(&dev, &home, deadline);
     assert_ne!(prod_status["pid"], dev_status["pid"]);

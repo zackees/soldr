@@ -91,10 +91,7 @@ fn maturin_xwin_policy_prefers_blessed_toolchain_unless_overridden() {
         None,
         "an explicit MATURIN_USE_XWIN value must remain caller-owned"
     );
-    assert_eq!(
-        maturin_xwin_policy("x86_64-unknown-linux-gnu", None),
-        None
-    );
+    assert_eq!(maturin_xwin_policy("x86_64-unknown-linux-gnu", None), None);
 }
 
 #[test]
@@ -897,5 +894,29 @@ fn utf8_args_are_collected_unchanged() {
     assert_eq!(
         collect_utf8_args(args).expect("utf-8 argv"),
         vec!["soldr", "cargo", "build", "--release"]
+    );
+}
+
+/// soldr#2883: the route budget must outlast the slowest lane's real work.
+///
+/// windows-gnu measured a 64s route start that passed at 65.2s overall, and
+/// 60.2s+ on the runs a 60s budget cut off. Sizing to "observed plus epsilon"
+/// is what put it at the cliff in the first place, so the bound is well clear
+/// of the measurement rather than just past it.
+///
+/// The upper bound matters too: this is a wait a human is sitting through, and
+/// an unbounded one would turn a genuinely wedged route into a hang instead of
+/// a diagnostic.
+#[test]
+fn the_daemon_start_route_budget_clears_the_slowest_measured_lane() {
+    let budget = DAEMON_START_ROUTE_BUDGET.as_secs();
+    assert!(
+        budget >= 120,
+        "windows-gnu measured 64s of real route start; {budget}s leaves no room \
+         for a slower host and reproduces soldr#2883"
+    );
+    assert!(
+        budget <= 300,
+        "an explicit `daemon start` still has to fail rather than hang: {budget}s"
     );
 }

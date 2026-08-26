@@ -1,3 +1,12 @@
+/// How long `soldr daemon start` waits for the broker to publish a daemon
+/// route before giving up.
+///
+/// Named rather than inline so the one test that pins it has something to
+/// name, and so the reasoning below lives with the number instead of with the
+/// call.
+pub(crate) const DAEMON_START_ROUTE_BUDGET: std::time::Duration =
+    std::time::Duration::from_secs(180);
+
 fn acquire_maturin_build_lease(
     paths: &SoldrPaths,
     args: &[String],
@@ -116,15 +125,8 @@ async fn provisioned_maturin_fetch_result(
 
 const MATURIN_USE_XWIN_ENV_VAR: &str = "MATURIN_USE_XWIN";
 
-fn maturin_xwin_policy(
-    target: &str,
-    explicit_maturin: Option<&str>,
-) -> Option<&'static str> {
-    if explicit_maturin.is_some()
-        || !target
-            .to_ascii_lowercase()
-            .ends_with("-pc-windows-msvc")
-    {
+fn maturin_xwin_policy(target: &str, explicit_maturin: Option<&str>) -> Option<&'static str> {
+    if explicit_maturin.is_some() || !target.to_ascii_lowercase().ends_with("-pc-windows-msvc") {
         return None;
     }
     Some("0")
@@ -167,8 +169,8 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
                 &installed.definition.service_name,
             );
             crate::daemon::lifecycle::preflight_displace_stale_daemon(&paths);
-            // 60s, not the SESSION path's 30s: an explicit `daemon start` on a
-            // cold root legitimately covers image staging (a multi-hundred-MB
+            // Not the SESSION path's 30s: an explicit `daemon start` on a cold
+            // root legitimately covers image staging (a multi-hundred-MB
             // copy), spawn, and the broker launcher's own 25s readiness
             // window. On slow hosts (emulated ARM target-run lanes) the whole
             // chain measures ~32s — real bounded work, not a hang — and a 30s
@@ -176,9 +178,27 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
             // launcher's more precise attribution. This is a deliberate
             // lifecycle command, not a compile hot path, so the wider bound
             // costs nothing when healthy and still fails fast enough when not.
+            //
+            // soldr#2883: 60s was still too tight for windows-gnu, which is
+            // the slowest lane by a wide margin — rustc has no debug-info
+            // sidecar for that target (`--print split-debuginfo` → `off`), so
+            // its images are ~124 MiB against msvc's ~56 MiB and every process
+            // start pays for it. Measured on the target-run lane: the same
+            // chain that msvc completes in 20.6s took 64s once (passing at
+            // 65.2s overall) and 60.2s+ on the runs that failed, always with
+            // `command_dispatch` holding the whole span and
+            // `broker_stage_image`/`broker_spawn_wait` each finishing in about
+            // a second. That is the budget clipping real, bounded work — the
+            // same shape that raised it from 30s, one lane slower.
+            //
+            // Deliberately not sized to the measurement plus epsilon: 65s
+            // observed against a 60s bound is the failure, so a 70s bound
+            // would just move the cliff. 180s is chosen to be uninteresting on
+            // a healthy host and still bounded, and the launcher keeps its own
+            // more precise attribution for anything genuinely wedged.
             let ready_route = crate::session_transport::ensure_broker_route(
                 &installed.definition.service_name,
-                std::time::Duration::from_secs(60),
+                DAEMON_START_ROUTE_BUDGET,
             )
             .map_err(|err| {
                 SoldrError::Other(format!(
