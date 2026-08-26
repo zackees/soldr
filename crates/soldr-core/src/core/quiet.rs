@@ -23,3 +23,32 @@ pub fn diagnostics_suppressed() -> bool {
         .map(|value| super::flag_value(&value))
         .unwrap_or(false)
 }
+
+/// Internal marker: this process's **stdout** carries a machine-readable
+/// payload, so nothing else may be written to it.
+///
+/// soldr#2892: distinct from [`QUIET_DIAGNOSTICS_ENV_VAR`], and the
+/// difference is the point.
+///
+/// `soldr env --json` suppresses *everything* because its callers commonly
+/// merge stdout and stderr — a heartbeat on stderr would corrupt the parse
+/// just as surely as installer output on stdout. `soldr toolchain ensure
+/// --json` is used the other way round: the target-run lane redirects stdout
+/// to a file and reads stderr as the job log, where rustup's progress and the
+/// installer heartbeat are exactly what stop someone killing a multi-minute
+/// first-time install.
+///
+/// So this marker moves child stdout to stderr rather than discarding it.
+/// The payload stays parseable and nothing is lost.
+///
+/// Suppression wins when both are set: a caller that asked for silence
+/// should not start receiving relocated output because it also asked for a
+/// clean payload.
+pub const PAYLOAD_STDOUT_ENV_VAR: &str = "SOLDR_INTERNAL_PAYLOAD_STDOUT";
+
+/// Must child stdout be kept off this process's stdout?
+pub fn stdout_carries_payload() -> bool {
+    std::env::var(PAYLOAD_STDOUT_ENV_VAR)
+        .map(|value| super::flag_value(&value))
+        .unwrap_or(false)
+}

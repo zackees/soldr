@@ -135,6 +135,33 @@ fn positive_env_duration(name: &str) -> Option<Duration> {
         .map(Duration::from_secs)
 }
 
+/// Where an installer child's stdout goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChildStdoutRoute {
+    /// Fully-quiet machine-readable mode: nothing is written anywhere.
+    Discard,
+    /// This process's stdout is a payload, but its stderr is a log
+    /// (soldr#2892).
+    Stderr,
+    /// Ordinary interactive/CI run.
+    Stdout,
+}
+
+/// Decide the route from the two process-scoped markers.
+///
+/// Suppression wins. A caller that asked for silence must not start receiving
+/// relocated child output merely because it also declared its stdout a
+/// payload -- `soldr env --json` sets only the first marker today, but the
+/// two are independent flags and the precedence has to be stated rather than
+/// implied by the order of an if-chain.
+pub(crate) fn child_stdout_route(suppress: bool, stdout_is_payload: bool) -> ChildStdoutRoute {
+    match (suppress, stdout_is_payload) {
+        (true, _) => ChildStdoutRoute::Discard,
+        (false, true) => ChildStdoutRoute::Stderr,
+        (false, false) => ChildStdoutRoute::Stdout,
+    }
+}
+
 /// Spawn and supervise a long-running installer while preserving its stdout
 /// and stderr exactly as live terminal output.
 pub fn run_installer_command(
@@ -155,12 +182,25 @@ pub fn run_installer_command(
     // terminal. The progress channel still sees every byte, so the stall
     // watchdog is unaffected.
     let suppress = super::quiet::diagnostics_suppressed();
-    let stdout_reader = child.stdout.take().map(|pipe| {
-        if suppress {
-            tee_pipe_async(pipe, std::io::sink(), progress_tx.clone())
-        } else {
-            tee_pipe_async(pipe, std::io::stdout(), progress_tx.clone())
-        }
+    // soldr#2892: a verb whose stdout is a payload must not let a child write
+    // to it. `soldr toolchain ensure --json` did, and rustup's own stdout
+    // landed in front of the JSON:
+    //
+    //     (blank)
+    //       1.95.0-x86_64-apple-darwin unchanged - rustc 1.95.0 (...)
+    //     (blank)
+    //     { "schema_version": 1, ...
+    //
+    // which `json.load` rejects with `Extra data: line 2 column 7`.
+    //
+    // Relocated to stderr rather than discarded: unlike the fully-quiet mode
+    // above, this caller reads stderr, and rustup's progress is what makes a
+    // multi-minute first-time install legible.
+    let route = child_stdout_route(suppress, super::quiet::stdout_carries_payload());
+    let stdout_reader = child.stdout.take().map(|pipe| match route {
+        ChildStdoutRoute::Discard => tee_pipe_async(pipe, std::io::sink(), progress_tx.clone()),
+        ChildStdoutRoute::Stderr => tee_pipe_async(pipe, std::io::stderr(), progress_tx.clone()),
+        ChildStdoutRoute::Stdout => tee_pipe_async(pipe, std::io::stdout(), progress_tx.clone()),
     });
     let stderr_reader = child.stderr.take().map(|pipe| {
         if suppress {
@@ -683,6 +723,49 @@ mod tests {
                 Some(value) => std::env::set_var(TEST_EXPLICIT_CEILING_ENV_VAR, value),
                 None => std::env::remove_var(TEST_EXPLICIT_CEILING_ENV_VAR),
             }
+        }
+    }
+
+    // soldr#2892: `soldr toolchain ensure --json` let its rustup child write
+    // to the stdout that carries the payload, so the JSON arrived behind
+    //
+    //     (blank)
+    //       1.95.0-x86_64-apple-darwin unchanged - rustc 1.95.0 (...)
+    //     (blank)
+    //
+    // and `json.load` rejected it with `Extra data: line 2 column 7`.
+
+    #[test]
+    fn an_ordinary_run_still_writes_child_stdout_to_stdout() {
+        assert_eq!(child_stdout_route(false, false), ChildStdoutRoute::Stdout);
+    }
+
+    #[test]
+    fn a_payload_stdout_relocates_the_child_rather_than_dropping_it() {
+        // Relocating, not discarding, is the whole difference from the
+        // fully-quiet mode: this caller reads stderr as a log, and rustup's
+        // progress is what stops a human killing a long first-time install.
+        assert_eq!(child_stdout_route(false, true), ChildStdoutRoute::Stderr);
+    }
+
+    #[test]
+    fn suppression_wins_over_relocation() {
+        // A caller that asked for silence must not start receiving relocated
+        // child output because it also declared its stdout a payload.
+        assert_eq!(child_stdout_route(true, true), ChildStdoutRoute::Discard);
+        assert_eq!(child_stdout_route(true, false), ChildStdoutRoute::Discard);
+    }
+
+    #[test]
+    fn the_payload_route_never_returns_stdout() {
+        // The one property the fix exists for: with a payload on stdout,
+        // there is no combination of markers that puts a child there.
+        for suppress in [true, false] {
+            assert_ne!(
+                child_stdout_route(suppress, true),
+                ChildStdoutRoute::Stdout,
+                "suppress={suppress}"
+            );
         }
     }
 }

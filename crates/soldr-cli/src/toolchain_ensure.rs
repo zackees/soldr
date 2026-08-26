@@ -47,6 +47,22 @@ pub(crate) struct SmokeVerify {
 pub(crate) async fn run_toolchain_ensure(json: bool) -> Result<i32, SoldrError> {
     let started = Instant::now();
 
+    // soldr#2892: in `--json` this process's stdout IS the payload, and the
+    // installer children below inherit it. They did, and rustup's stdout
+    // landed in front of the JSON -- `json.load` rejects the result with
+    // `Extra data: line 2 column 7`, which is how the target-run lane found
+    // this.
+    //
+    // Not the fully-quiet marker `env --json` uses: that also silences the
+    // stall heartbeat, on the grounds that its callers merge stdout and
+    // stderr. This verb's caller reads stderr as a log and stdout as a file,
+    // and rustup's progress is exactly what stops a human killing a
+    // multi-minute first-time install. So the child's stdout moves to stderr
+    // rather than being discarded.
+    if json {
+        std::env::set_var(crate::core::quiet::PAYLOAD_STDOUT_ENV_VAR, "1");
+    }
+
     // 1. Bootstrap rustup if missing. Auto-bootstrap respects
     //    SOLDR_NO_BOOTSTRAP=1 by silently leaving the host unchanged —
     //    `prepare` will then surface the usual "rustup not found"
