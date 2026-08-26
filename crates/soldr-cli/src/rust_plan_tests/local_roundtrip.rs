@@ -63,12 +63,7 @@ fn context_for(
 ) -> RustArtifactPlanContext {
     RustArtifactPlanContext {
         path: plan_path.to_path_buf(),
-        // Retained for struct compatibility; the in-process path never
-        // spawns it (soldr#1368).
         cache_dir: cache_dir.to_path_buf(),
-        zccache_daemon_cache_dir: cache_dir.to_path_buf(),
-        zccache_daemon_cache_dir_env: false,
-        zccache_daemon_name: None,
         session_id: "test-session".into(),
         journal_path: cache_dir.join("journal.jsonl"),
         backend: "local".into(),

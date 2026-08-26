@@ -787,7 +787,7 @@ fn incomplete_flush_message(report: &CacheFlushInfo) -> String {
 #[cfg(test)]
 mod tests {
     use super::super::report::zccache_analyze_failure_note;
-    use super::super::{zccache_output_snippet, ZCCACHE_ANALYZE_NOTE_LIMIT};
+    use super::super::{output_snippet, ANALYZE_NOTE_LIMIT};
     use super::{
         clear_session_artifacts, compilation_delta, compute_session_stats, session_baseline_path,
         validate_session_id,
@@ -893,24 +893,24 @@ mod tests {
     }
 
     #[test]
-    fn zccache_output_snippet_omits_empty_output() {
-        assert_eq!(zccache_output_snippet(b""), None);
-        assert_eq!(zccache_output_snippet(b" \n\t "), None);
+    fn output_snippet_omits_empty_output() {
+        assert_eq!(output_snippet(b""), None);
+        assert_eq!(output_snippet(b" \n\t "), None);
     }
 
     #[test]
-    fn zccache_output_snippet_compacts_whitespace() {
+    fn output_snippet_compacts_whitespace() {
         assert_eq!(
-            zccache_output_snippet(b"  first line\n\nsecond\tline  ").as_deref(),
+            output_snippet(b"  first line\n\nsecond\tline  ").as_deref(),
             Some("first line second line")
         );
     }
 
     #[test]
-    fn zccache_output_snippet_truncates_long_output() {
-        let output = "x".repeat(ZCCACHE_ANALYZE_NOTE_LIMIT + 10);
-        let snippet = zccache_output_snippet(output.as_bytes()).unwrap();
-        assert_eq!(snippet.chars().count(), ZCCACHE_ANALYZE_NOTE_LIMIT + 3);
+    fn output_snippet_truncates_long_output() {
+        let output = "x".repeat(ANALYZE_NOTE_LIMIT + 10);
+        let snippet = output_snippet(output.as_bytes()).unwrap();
+        assert_eq!(snippet.chars().count(), ANALYZE_NOTE_LIMIT + 3);
         assert!(snippet.ends_with("..."));
     }
 
