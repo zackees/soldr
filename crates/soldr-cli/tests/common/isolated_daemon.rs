@@ -70,7 +70,10 @@ impl IsolatedDaemon {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        panic!("isolated daemon never became ready under {}", self.root.display());
+        panic!(
+            "isolated daemon never became ready under {}",
+            self.root.display()
+        );
     }
 }
 
