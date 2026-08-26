@@ -328,12 +328,6 @@ pub(crate) async fn run_cargo_front_door(
     // `git branch --show-current` subprocesses, plus a daemon CookLookup.
     profile.mark("cook_hydrate");
 
-    let cargo_profile_debug_default = if build_like_cargo {
-        profile_debug::maybe_apply_cargo_profile_debug_default(&mut command, args, &paths)?
-    } else {
-        None
-    };
-
     let cargo_subcommand = first_cargo_subcommand(args);
     let pyo3_build = matches!(
         cargo_subcommand,
@@ -381,6 +375,16 @@ pub(crate) async fn run_cargo_front_door(
         command.env("CARGO_BUILD_TARGET", target);
     }
     let known_cargo_target = target::known_cargo_build_target(args, explicit_target.as_deref());
+    let cargo_profile_debug_default = if build_like_cargo {
+        profile_debug::maybe_apply_cargo_profile_debug_default(
+            &mut command,
+            args,
+            &paths,
+            known_cargo_target.as_deref(),
+        )?
+    } else {
+        None
+    };
     // soldr#1610/#1614: every cargo-backed build surface consumes the
     // same target-aware PyO3 plan. The resolver is conservative: it only
     // injects PYO3_NO_PYTHON for a proven cross ABI3 extension, never for

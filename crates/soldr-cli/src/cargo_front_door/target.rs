@@ -67,18 +67,30 @@ pub(super) fn known_cargo_build_target(
     args: &[String],
     defaulted_target: Option<&str>,
 ) -> Option<String> {
+    let env_target = std::env::var_os("CARGO_BUILD_TARGET")
+        .and_then(|target| target.to_str().map(str::to_string));
+    known_cargo_build_target_inner(args, defaulted_target, env_target.as_deref())
+}
+
+fn known_cargo_build_target_inner(
+    args: &[String],
+    defaulted_target: Option<&str>,
+    env_target: Option<&str>,
+) -> Option<String> {
+    // Cargo's explicit --target always outranks CARGO_BUILD_TARGET.
+    if let Some(target) = cargo_args_target_value(args) {
+        return Some(target);
+    }
     if let Some(target) = defaulted_target {
         return Some(target.to_string());
     }
-    if let Some(target) = std::env::var_os("CARGO_BUILD_TARGET") {
-        if let Some(s) = target.to_str() {
-            let s = s.trim();
-            if !s.is_empty() {
-                return Some(s.to_string());
-            }
+    if let Some(target) = env_target {
+        let target = target.trim();
+        if !target.is_empty() {
+            return Some(target.to_string());
         }
     }
-    cargo_args_target_value(args)
+    None
 }
 
 /// Apply the `SOLDR_LINKER` / `config.toml linker = ...` override (issue
@@ -152,18 +164,11 @@ fn resolve_active_target_triple(
     args: &[String],
     explicit_target: Option<&str>,
 ) -> Result<String, SoldrError> {
-    if let Some(target) = explicit_target {
-        return Ok(target.to_string());
-    }
-    if let Some(target) = std::env::var_os("CARGO_BUILD_TARGET") {
-        if let Some(s) = target.to_str() {
-            let s = s.trim();
-            if !s.is_empty() {
-                return Ok(s.to_string());
-            }
-        }
-    }
-    if let Some(target) = cargo_args_target_value(args) {
+    let env_target = std::env::var_os("CARGO_BUILD_TARGET")
+        .and_then(|target| target.to_str().map(str::to_string));
+    if let Some(target) =
+        known_cargo_build_target_inner(args, explicit_target, env_target.as_deref())
+    {
         return Ok(target);
     }
     Ok(crate::core::TargetTriple::detect()?.triple())
@@ -171,7 +176,10 @@ fn resolve_active_target_triple(
 
 #[cfg(test)]
 mod tests {
-    use super::should_inject_windows_target_inner as inject;
+    use super::{
+        known_cargo_build_target_inner as known_target,
+        should_inject_windows_target_inner as inject,
+    };
 
     fn args(s: &str) -> Vec<String> {
         s.split_whitespace().map(String::from).collect()
@@ -203,5 +211,17 @@ mod tests {
             false,
         ));
         assert!(!inject(&args("build"), false, true));
+    }
+
+    #[test]
+    fn explicit_target_beats_environment_target() {
+        assert_eq!(
+            known_target(
+                &args("build --target x86_64-pc-windows-msvc"),
+                None,
+                Some("x86_64-unknown-linux-gnu"),
+            ),
+            Some("x86_64-pc-windows-msvc".to_string()),
+        );
     }
 }

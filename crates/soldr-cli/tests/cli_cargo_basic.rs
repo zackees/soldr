@@ -1200,7 +1200,7 @@ fn windows_worktree_copy_relocates_wrapper_and_original_dir_can_be_removed() {
     the auto-GC sweeper introduced by #1286 / #1295 races with the second \
     invocation's StateDb::open, and profile_debug's `.unwrap_or(true)` fails open \
     by design → warning re-emitted. Root-cause investigation is tracked in #1303."]
-fn cargo_front_door_defaults_dev_debug_off_and_warns_once_per_repo() {
+fn cargo_front_door_defaults_non_msvc_dev_debug_off_and_warns_once_per_repo() {
     let cache_root = unique_temp_dir("cargo-debug-default-off");
     let repo = unique_temp_dir("cargo-debug-default-repo");
     fs::write(
@@ -1216,7 +1216,7 @@ fn cargo_front_door_defaults_dev_debug_off_and_warns_once_per_repo() {
     let cargo_home = cache_root.join("cargo-home");
 
     let first = common::isolated_soldr_command()
-        .args(["cargo", "build"])
+        .args(["cargo", "build", "--target", "x86_64-unknown-linux-gnu"])
         .current_dir(&repo)
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("CARGO_HOME", &cargo_home)
@@ -1237,7 +1237,7 @@ fn cargo_front_door_defaults_dev_debug_off_and_warns_once_per_repo() {
     );
 
     let second = common::isolated_soldr_command()
-        .args(["cargo", "build"])
+        .args(["cargo", "build", "--target", "x86_64-unknown-linux-gnu"])
         .current_dir(&repo)
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("CARGO_HOME", &cargo_home)
