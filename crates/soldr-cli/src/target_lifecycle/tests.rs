@@ -334,7 +334,7 @@ fn decide(
     base: &str,
     floor: Option<&str>,
 ) -> GnuBundleDecision {
-    decide_gnu_bundle(HostOs::Linux, arch, host, target, base, floor)
+    decide_gnu_bundle(HostOs::Linux, arch, host, target, base, floor, false)
 }
 
 #[test]
@@ -451,4 +451,26 @@ fn an_unknown_linux_architecture_is_not_assumed_runnable() {
         ),
         crate::fetch::gnu_linux_toolchain::BundleHostFitness::WrongArch
     );
+}
+
+#[test]
+fn the_existing_cross_guard_seam_still_forces_the_catalogue_path() {
+    // `cli_build_fetch_overlap` seeds a fake `linux-x64-gnu` bundle and runs
+    // with `SOLDR_WINDOWS_LINUX_CROSS_GUARD=off` so the catalogue machinery
+    // is exercised from macOS and Windows lanes. Those hosts fail the
+    // fitness check for real, so without honouring the same seam this fix
+    // would refuse and take three of that file's tests down with it -- which
+    // is exactly what the darwin lanes reported before this arm existed.
+    const MAC: &str = "aarch64-apple-darwin";
+    assert_eq!(
+        decide_gnu_bundle(HostOs::MacOs, HostArch::Aarch64, MAC, X64, X64, None, true),
+        GnuBundleDecision::UseCatalogue
+    );
+    // And it must be the seam doing it, not the host: with the seam off, a
+    // macOS host cannot execute a Linux ELF and there is no host compiler
+    // targeting a Linux triple to fall back to.
+    assert!(matches!(
+        decide_gnu_bundle(HostOs::MacOs, HostArch::Aarch64, MAC, X64, X64, None, false),
+        GnuBundleDecision::Reject(_)
+    ));
 }

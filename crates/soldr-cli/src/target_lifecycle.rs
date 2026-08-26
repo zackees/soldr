@@ -165,6 +165,7 @@ pub(crate) async fn prepare_target(
             target,
             base,
             glibc_floor.map(|(_, floor)| floor),
+            host_cross_guard_disabled,
         ) {
             GnuBundleDecision::UseCatalogue => true,
             GnuBundleDecision::UseHostCompiler => false,
@@ -263,6 +264,13 @@ pub(crate) enum GnuBundleDecision {
 /// with `Exec format error (os error 8)` hundreds of megabytes and one
 /// `-sys` crate later.
 ///
+/// `force_runnable` is the existing `SOLDR_WINDOWS_LINUX_CROSS_GUARD=off`
+/// test seam, not a second one. Its whole purpose is already "this host is
+/// pretending it can run the Linux bundle" -- `cli_build_fetch_overlap`
+/// seeds a fake `linux-x64-gnu` bundle and exercises the catalogue path from
+/// macOS and Windows lanes. That is the same claim this function makes, so
+/// it takes the same switch rather than growing a parallel one.
+///
 /// Pure, and taking the host as arguments rather than reading `cfg!`,
 /// because the host this has to be correct for is not the host soldr's tests
 /// run on. A `cfg!`-driven answer could only be checked by running on the
@@ -274,8 +282,11 @@ pub(crate) fn decide_gnu_bundle(
     target: &str,
     base: &str,
     glibc_floor: Option<&str>,
+    force_runnable: bool,
 ) -> GnuBundleDecision {
-    if crate::fetch::gnu_linux_toolchain::bundle_host_fitness(host_os, host_arch).is_runnable() {
+    if force_runnable
+        || crate::fetch::gnu_linux_toolchain::bundle_host_fitness(host_os, host_arch).is_runnable()
+    {
         return GnuBundleDecision::UseCatalogue;
     }
     if let Some(floor) = glibc_floor {
