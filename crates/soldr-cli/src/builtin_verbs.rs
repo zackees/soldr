@@ -92,6 +92,7 @@ pub(crate) const SOLDR_BUILTIN_VERBS: &[&str] = &[
     "dylint",
     "cook",
     "lint",
+    "ci-test",
     // soldr#1059 — PATH-prepending escape hatch for cargo extensions.
     "exec",
     "rustc",

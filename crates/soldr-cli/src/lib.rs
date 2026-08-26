@@ -194,6 +194,8 @@ pub mod cargo_diagnostics;
 pub mod cargo_front_door;
 pub mod cargo_metadata_soldr;
 pub mod cc_cmd;
+/// soldr#2867 — frozen host-validation plan and executor.
+pub(crate) mod ci_test;
 pub mod cli_args;
 pub mod cli_dispatch;
 /// soldr#1081 — Shared `Request::Compile` dispatch logic used by both

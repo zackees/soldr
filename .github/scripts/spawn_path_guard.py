@@ -62,6 +62,11 @@ ALLOWLIST: dict[str, tuple[int, str]] = {
         1,
         "parallel lint-deps children (soldr re-exec per dependency tool)",
     ),
+    "crates/soldr-cli/src/ci_test/execute.rs": (
+        1,
+        "prescribed ci-test DAG children; every command is a frozen soldr "
+        "re-exec and sibling process trees are cancelled on failure",
+    ),
     "crates/soldr-cli/src/dylint_toolchain.rs": (
         1,
         "dylint driver bootstrap through the managed nightly toolchain",

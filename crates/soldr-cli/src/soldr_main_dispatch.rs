@@ -61,6 +61,11 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 lint_cmd::run_lint(&args, cache_enabled, trust_inherited_soldr_env).await?,
             );
         }
+        Commands::CiTest { args } => {
+            guarded_exit(
+                crate::ci_test::run(&args, cache_enabled, trust_inherited_soldr_env).await?,
+            );
+        }
         Commands::Cook { args } => {
             guarded_exit(cook::run_cook(&args, cache_enabled).await?);
         }
@@ -655,8 +660,12 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             // `build-from-sorce`), emit a "did you mean?" hint before
             // we fire the network fetch. The fetch still runs — the
             // suggestion is advisory.
-            if let Some(suggestion) =
-                fuzzy_match::suggest_close_match(&crate_name, SOLDR_BUILTIN_VERBS)
+            // Cargo's bare built-ins are an equally real top-level shorthand.
+            // Prefer them before Soldr-native verbs: in particular `tset`
+            // must lead a user back to `soldr test` (cargo test), not the
+            // unrelated orchestration surface `soldr ci-test`.
+            if let Some(suggestion) = fuzzy_match::suggest_close_match(&crate_name, CARGO_BUILTIN_VERBS)
+                .or_else(|| fuzzy_match::suggest_close_match(&crate_name, SOLDR_BUILTIN_VERBS))
             {
                 eprintln!("soldr: '{crate_name}' is not a known built-in soldr verb.");
                 eprintln!("soldr: did you mean: {suggestion}?");

@@ -516,6 +516,58 @@ Rust and dependency suites. Compiler-bearing steps stay on the regular Soldr cac
 lifecycle; `cargo-dylint` is fetched from its Linux GNU release asset or
 source-built from the pinned registry version on Windows and macOS.
 
+### `soldr ci-test`
+
+Run Soldr's prescribed host-validation DAG with maximum artifact sharing inside
+each compatible compiler domain:
+
+```bash
+soldr ci-test
+soldr ci-test --package soldr-cli --features feature-a,feature-b
+soldr ci-test --explain-plan
+soldr ci-test --explain-plan --format json
+```
+
+The stable host chain runs formatting and `soldr lint ci`, Clippy, exactly one
+Nextest test-profile build/run, and doctests. `soldr cargo check` is not run
+because Clippy subsumes the same workspace/all-targets host scope. Dependency
+policy fans out across `soldr cargo deny check bans`, `soldr cargo audit`, and
+`soldr cargo machete`. Nextest runs from the workspace root, so
+`.config/nextest.toml` keeps its test groups, slow-test budgets, timeout grace
+period, and platform wrappers. By default the command fixes compiler work at
+one Cargo/Soldr job and one Nextest test thread. Explicit
+`CARGO_BUILD_JOBS`, `SOLDR_JOBS`, and `NEXTEST_TEST_THREADS` values are frozen
+into the plan instead; this keeps memory bounded without conflating compiler
+serialization with test-process concurrency.
+
+All six repository Dylints are retained. They intentionally use their exact
+pinned nightly rather than the stable project toolchain. The command reads all
+six lint manifests, requires their pins to agree, and rejects an environment
+override that selects another nightly. Before entering the Dylint domain it
+self-provisions the catalogue-pinned `cargo-dylint`, `dylint-link`, and matching
+prebuilt driver, so a caller does not need to install Dylint tooling separately.
+Release-profile lint libraries share
+`target/dylint/libraries/<nightly-host>`, workspace analysis uses
+`target/dylint/target/<nightly-host>`, and UI tests share
+`target/dylint/tests/<nightly-host>` through both `--target-dir` and
+`CARGO_TARGET_DIR`. The command verifies all three trees and rejects material
+artifacts in per-lint `dylints/*/target` directories. This exception preserves
+Dylint correctness without causing stable Cargo fingerprints to flip between
+toolchains.
+
+Accepted scope selectors are `--package`/`-p`, `--features`,
+`--all-features`, and `--no-default-features`. An explicit `--target` is
+accepted only when it equals the detected host. Target-directory, profile,
+toolchain, manifest, release, and cross-target overrides are rejected because
+they would create an undeclared compile domain; use `soldr cargo ...` for those
+intentional variants.
+
+`--explain-plan` performs no compiler work. Its schema-version-1 JSON freezes
+workspace metadata identity, toolchain/compiler identity, host target, target
+directories, profile, scope/features, Cargo configuration, Rust flags, wrapper
+identity, stage dependencies, resource limits, and metric slots. Human output
+is the compact diagnostic view of the same plan.
+
 ### `soldr lint ci`
 
 Statically validate the repository's executable CI/build surfaces against

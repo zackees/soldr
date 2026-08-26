@@ -7,6 +7,7 @@ default = true
 target = { scope = "stack", destination = "/target" }
 cargo-home = { scope = "stack", destination = "/root/.cargo" }
 soldr-home = { scope = "stack", destination = "/root/.soldr" }
+soldr-dev-home = { scope = "stack", destination = "/root/.soldr-dev" }
 tools = { scope = "machine", destination = "/tools" }
 artifact = { scope = "machine", destination = "/artifact" }
 
@@ -54,6 +55,14 @@ cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo
 [task.format]
 stack = "cook"
 cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo fmt --all"
+
+[task.ci-test-acceptance]
+stack = "cook"
+cmd = "cd /repo && CARGO_TARGET_DIR=/target /opt/soldr-bootstrap/bin/soldr cargo nextest run -p soldr-cli --test cli_ci_test"
+
+[task.ci-test-proof]
+stack = "cook"
+cmd = "cd /repo && CARGO_TARGET_DIR=/target CARGO_BUILD_JOBS=1 SOLDR_JOBS=1 /opt/soldr-bootstrap/bin/soldr cargo build -p soldr-cli --bin soldr && CARGO_TARGET_DIR=/target CARGO_BUILD_JOBS=1 SOLDR_JOBS=1 /target/debug/soldr ci-test"
 
 [task.hydrate-alias-test]
 stack = "cook"
