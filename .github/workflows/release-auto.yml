@@ -74,19 +74,24 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Setup uv for pinned release scripts
+        uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+        with:
+          enable-cache: false
+
       # Contract-generated (soldr#2469 step 2.1): the build job's matrix
       # comes from ci/canonical-targets.json, so the matrix and the
       # completeness contract cannot drift apart separately again.
       - name: Generate release build matrix from the target contract
         id: build_matrix
-        run: echo "matrix=$(python3 .github/scripts/release_completeness.py --build-matrix)" >> "$GITHUB_OUTPUT"
+        run: echo "matrix=$(uv run --no-project --python 3.13 .github/scripts/release_completeness.py --build-matrix)" >> "$GITHUB_OUTPUT"
 
       - name: Compare candidate version against PyPI
         id: validate
         env:
           FORCE_PYPI_PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.force_pypi_publish || false }}
           GH_TOKEN: ${{ github.token }}
-        run: python3 .github/scripts/release_detect.py --commit-sha "${{ github.sha }}"
+        run: uv run --no-project --python 3.13 .github/scripts/release_detect.py --commit-sha "${{ github.sha }}"
 
   build:
     name: ${{ matrix.name }}
@@ -127,6 +132,11 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Setup uv for pinned release scripts
+        uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+        with:
+          enable-cache: false
+
       - name: Install native musl build tools
         if: contains(matrix.target, 'musl')
         shell: bash
@@ -164,7 +174,7 @@ jobs:
       - name: Retry target preparation after setup transport failure
         if: steps.setup_soldr.outcome == 'failure' && matrix.setup_target != ''
         shell: bash
-        run: python3 .github/scripts/prepare_release_target.py --target "${{ matrix.setup_target }}" --github-env "$GITHUB_ENV"
+        run: uv run --no-project --python 3.13 .github/scripts/prepare_release_target.py --target "${{ matrix.setup_target }}" --github-env "$GITHUB_ENV"
 
       - name: Restore the native macOS SDK root
         if: contains(matrix.target, 'apple-darwin')
@@ -217,7 +227,7 @@ jobs:
           CARGO_BUILD_JOBS: "2"
           SOLDR_JOBS: "2"
         run: >-
-          python3 .github/scripts/native_release_build.py matrix-binary
+          uv run --no-project --python 3.13 .github/scripts/native_release_build.py matrix-binary
           --target '${{ matrix.target }}'
 
       - name: Build ARM64 musl release binary natively
@@ -235,7 +245,7 @@ jobs:
           # i386-hosted cross compiler. It cannot execute on the native ARM64
           # runner, so bypass target preparation while still routing Cargo
           # through the pinned Soldr and rustup toolchain.
-          python3 .github/scripts/native_release_build.py binary \
+          uv run --no-project --python 3.13 .github/scripts/native_release_build.py binary \
             --driver target/release/soldr --target aarch64-unknown-linux-musl
 
       - name: Build native macOS release binary through pinned Soldr
@@ -247,7 +257,7 @@ jobs:
           # The blessed build path adds its prepared SDK directory as a
           # bare linker input, so invoke Cargo through pinned Soldr/rustup
           # without repeating target preparation.
-          python3 .github/scripts/native_release_build.py binary \
+          uv run --no-project --python 3.13 .github/scripts/native_release_build.py binary \
             --driver target/release/soldr --target "${{ matrix.target }}"
 
       # soldr#1060 acceptance: the musl artifacts are the "runs anywhere"
@@ -261,7 +271,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 .github/scripts/verify_static_link.py \
+          uv run --no-project --python 3.13 .github/scripts/verify_static_link.py \
             "target/${{ matrix.target }}/release/${{ matrix.binary }}"
 
       # soldr#1060 names glibc 2.17 as the baseline for the -gnu artifacts,
@@ -285,13 +295,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 .github/scripts/verify_glibc_baseline.py \
+          uv run --no-project --python 3.13 .github/scripts/verify_glibc_baseline.py \
             --max-glibc 2.39 \
             "target/${{ matrix.target }}/release/${{ matrix.binary }}"
 
       - name: Stage soldr release binaries
         shell: bash
-        run: python3 .github/scripts/stage_release_binaries.py --target "${{ matrix.target }}" --package-dir dist/package
+        run: uv run --no-project --python 3.13 .github/scripts/stage_release_binaries.py --target "${{ matrix.target }}" --package-dir dist/package
 
       - name: Fetch support binaries from soldr-toolchain
         shell: bash
@@ -299,7 +309,7 @@ jobs:
           TARGET_TRIPLE: ${{ matrix.target }}
           SUPPORT_ISSUE_URL: https://github.com/zackees/soldr-toolchain/issues/47
           SOLD_DRIVER_PATH: target/release/soldr
-        run: python3 .github/scripts/fetch_release_support_binaries.py --target "$TARGET_TRIPLE" --driver "$SOLD_DRIVER_PATH" --issue-url "$SUPPORT_ISSUE_URL" --package-dir dist/package
+        run: uv run --no-project --python 3.13 .github/scripts/fetch_release_support_binaries.py --target "$TARGET_TRIPLE" --driver "$SOLD_DRIVER_PATH" --issue-url "$SUPPORT_ISSUE_URL" --package-dir dist/package
 
       # soldr#1060: the musl bundle is the "runs anywhere" artifact, but only
       # `soldr` was ever verified -- and the bundle ships four binaries. crgx
@@ -334,7 +344,7 @@ jobs:
       - name: Ratchet the Windows DLL imports (soldr#1060)
         if: contains(matrix.target, 'pc-windows-msvc')
         shell: bash
-        run: python3 .github/scripts/verify_release_bundle.py --target "${{ matrix.target }}" --check windows-imports
+        run: uv run --no-project --python 3.13 .github/scripts/verify_release_bundle.py --target "${{ matrix.target }}" --check windows-imports
 
       # soldr#1060, macOS side. A Mach-O records the oldest OS it will start
       # on, and nothing watched that value: it is whatever the toolchain and
@@ -358,12 +368,12 @@ jobs:
       - name: Ratchet the macOS minimum version (soldr#1060)
         if: contains(matrix.target, 'apple-darwin')
         shell: bash
-        run: python3 .github/scripts/verify_release_bundle.py --target "${{ matrix.target }}" --check macos-min-version
+        run: uv run --no-project --python 3.13 .github/scripts/verify_release_bundle.py --target "${{ matrix.target }}" --check macos-min-version
 
       - name: Verify every bundled musl binary is static (soldr#1060)
         if: contains(matrix.target, 'musl')
         shell: bash
-        run: python3 .github/scripts/verify_release_bundle.py --target "${{ matrix.target }}" --check static
+        run: uv run --no-project --python 3.13 .github/scripts/verify_release_bundle.py --target "${{ matrix.target }}" --check static
 
       # The gnu counterpart of the musl check above, and for the same reason
       # #2084 extended that one: the bundle ships FOUR binaries, and the
@@ -382,7 +392,7 @@ jobs:
       - name: Check glibc baseline of every bundled gnu binary (soldr#1060)
         if: contains(matrix.target, 'unknown-linux-gnu')
         shell: bash
-        run: python3 .github/scripts/verify_release_bundle.py --target "${{ matrix.target }}" --check glibc-baseline --max-glibc 2.39
+        run: uv run --no-project --python 3.13 .github/scripts/verify_release_bundle.py --target "${{ matrix.target }}" --check glibc-baseline --max-glibc 2.39
 
       - name: Write manifest.json
         # The archive's self-description: versions, target triples,
@@ -395,7 +405,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 .github/scripts/release_manifest.py \
+          uv run --no-project --python 3.13 .github/scripts/release_manifest.py \
             --version "${{ needs.prepare.outputs.version }}" \
             --commit-sha "${{ needs.prepare.outputs.commit_sha }}" \
             --target "${{ matrix.target }}" \
@@ -419,7 +429,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 .github/scripts/verify_release_manifest.py \
+          uv run --no-project --python 3.13 .github/scripts/verify_release_manifest.py \
             dist/package/manifest.json \
             --package-dir dist/package
 
@@ -428,12 +438,7 @@ jobs:
         # on a runner-local `zstd` executable. The command uses level 19
         # and all available cores.
         shell: bash
-        run: python3 .github/scripts/package_release_archive.py --version "${{ needs.prepare.outputs.version }}" --target "${{ matrix.target }}" --runner-os "$RUNNER_OS"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
-        with:
-          enable-cache: false
+        run: uv run --no-project --python 3.13 .github/scripts/package_release_archive.py --version "${{ needs.prepare.outputs.version }}" --target "${{ matrix.target }}" --runner-os "$RUNNER_OS"
 
       # ── Wheel build (soldr-driven, Linux) ──
       - name: Build wheel through setup-soldr target environment
@@ -452,7 +457,7 @@ jobs:
           AR_aarch64_unknown_linux_musl: ${{ matrix.target == 'aarch64-unknown-linux-musl' && 'ar' || '' }}
           RANLIB_aarch64_unknown_linux_musl: ${{ matrix.target == 'aarch64-unknown-linux-musl' && 'ranlib' || '' }}
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: ${{ matrix.target == 'aarch64-unknown-linux-musl' && 'musl-gcc' || '' }}
-        run: python3 .github/scripts/prepare_release_wheel.py --target "${{ matrix.target }}" --runner-os "$RUNNER_OS" --expected-version "$EXPECTED_VERSION" --wheel-hook '${{ steps.setup_soldr.outputs.target-wheel-hook }}'
+        run: uv run --no-project --python 3.13 .github/scripts/prepare_release_wheel.py --target "${{ matrix.target }}" --runner-os "$RUNNER_OS" --expected-version "$EXPECTED_VERSION" --wheel-hook '${{ steps.setup_soldr.outputs.target-wheel-hook }}'
 
       - name: Build musl wheel in an explicit uv venv
         if: contains(matrix.target, 'unknown-linux-musl')
@@ -472,7 +477,7 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: |
           set -euo pipefail
-          python3 .github/scripts/native_release_build.py musl-wheel \
+          uv run --no-project --python 3.13 .github/scripts/native_release_build.py musl-wheel \
             --driver target/release/soldr \
             --target "${{ matrix.target }}" \
             --expected-version "${EXPECTED_VERSION#v}"
@@ -480,30 +485,30 @@ jobs:
       # soldr#2469 2.2: logic lives in the unit-tested script.
       - name: Lint wheel filenames against workspace version
         run: >-
-          python3 .github/scripts/wheel_filename_lints.py version
+          uv run --no-project --python 3.13 .github/scripts/wheel_filename_lints.py version
           --expected-version "${{ needs.prepare.outputs.version }}"
 
       - name: Assert linux-gnu wheels are tagged manylinux_2_17
         if: contains(matrix.target, 'unknown-linux-gnu')
         # soldr#2469 2.2: logic lives in the unit-tested script.
-        run: python3 .github/scripts/wheel_filename_lints.py manylinux
+        run: uv run --no-project --python 3.13 .github/scripts/wheel_filename_lints.py manylinux
 
       - name: Assert linux-gnu wheel binary honours the 2.17 floor (soldr#1060)
         if: contains(matrix.target, 'unknown-linux-gnu')
         shell: bash
         run: |
           set -euo pipefail
-          python3 .github/scripts/verify_wheel_glibc.py --max-glibc 2.17 dist/*.whl
+          uv run --no-project --python 3.13 .github/scripts/verify_wheel_glibc.py --max-glibc 2.17 dist/*.whl
 
       - name: Assert linux-musl wheels are tagged musllinux_1_2
         if: contains(matrix.target, 'unknown-linux-musl')
         # soldr#2469 2.2: logic lives in the unit-tested script.
-        run: python3 .github/scripts/wheel_filename_lints.py musllinux
+        run: uv run --no-project --python 3.13 .github/scripts/wheel_filename_lints.py musllinux
 
       # soldr#2469 2.2: logic lives in the unit-tested script.
       - name: Verify wheel ships the bin script at the spec path
         run: >-
-          python3 .github/scripts/wheel_bin_script_verify.py
+          uv run --no-project --python 3.13 .github/scripts/wheel_bin_script_verify.py
           --binary "${{ matrix.binary }}"
 
       - name: Smoke test wheel
@@ -517,7 +522,7 @@ jobs:
         env:
           EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
         # soldr#2469 2.2: logic lives in the unit-tested script.
-        run: python3 .github/scripts/smoke_release_wheel.py --expected-version "$EXPECTED_VERSION"
+        run: uv run --no-project --python 3.13 .github/scripts/smoke_release_wheel.py --expected-version "$EXPECTED_VERSION"
 
       - name: Smoke test musllinux wheel on Alpine
         # Both musl lanes run on matching native-architecture Linux hosts.
@@ -526,7 +531,7 @@ jobs:
         env:
           EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
         # soldr#2469 2.2: logic lives in the unit-tested script.
-        run: python3 .github/scripts/smoke_musllinux_wheel.py --expected-version "$EXPECTED_VERSION"
+        run: uv run --no-project --python 3.13 .github/scripts/smoke_musllinux_wheel.py --expected-version "$EXPECTED_VERSION"
 
       - name: Smoke test standalone musl binary
         # The Alpine wheel smoke above verifies pip compatibility for
@@ -538,7 +543,7 @@ jobs:
         env:
           EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
         # soldr#2469 2.2: logic lives in the unit-tested script.
-        run: python3 .github/scripts/smoke_musl_binary.py --target "${{ matrix.target }}" --binary "${{ matrix.binary }}" --expected-version "$EXPECTED_VERSION"
+        run: uv run --no-project --python 3.13 .github/scripts/smoke_musl_binary.py --target "${{ matrix.target }}" --binary "${{ matrix.binary }}" --expected-version "$EXPECTED_VERSION"
 
       - name: Smoke test combined tar.zst archive
         # The last gate before an archive reaches the GitHub release.
@@ -548,7 +553,7 @@ jobs:
         # archives skip only the checks that must execute the binary.
         shell: bash
         # soldr#2469 2.2: logic lives in the unit-tested script.
-        run: python3 .github/scripts/release_archive_smoke.py --version "${{ needs.prepare.outputs.version }}" --target "${{ matrix.target }}" --binary "${{ matrix.binary }}" --runner-os "$RUNNER_OS"
+        run: uv run --no-project --python 3.13 .github/scripts/release_archive_smoke.py --version "${{ needs.prepare.outputs.version }}" --target "${{ matrix.target }}" --binary "${{ matrix.binary }}" --runner-os "$RUNNER_OS"
 
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -720,6 +725,11 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Setup uv for pinned release scripts
+        uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+        with:
+          enable-cache: false
+
       # Pre-create the tag via the git refs API instead of letting
       # `gh release create --target <sha>` create it implicitly.
       # Rationale: on workflow_dispatch runs (vs push) the GITHUB_TOKEN
@@ -742,7 +752,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: >-
-          python3 .github/scripts/release_publish.py ensure-tag
+          uv run --no-project --python 3.13 .github/scripts/release_publish.py ensure-tag
           --tag '${{ needs.prepare.outputs.version }}'
           --sha '${{ needs.prepare.outputs.commit_sha }}'
 
@@ -752,7 +762,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: >-
-          python3 .github/scripts/release_publish.py create-draft
+          uv run --no-project --python 3.13 .github/scripts/release_publish.py create-draft
           --tag '${{ needs.prepare.outputs.version }}'
           --sha '${{ needs.prepare.outputs.commit_sha }}'
 
@@ -790,11 +800,16 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Setup uv for pinned release scripts
+        uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+        with:
+          enable-cache: false
+
       - name: Verify expected release assets
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
-        run: python3 .github/scripts/verify_github_release_assets.py --version "${{ needs.prepare.outputs.version }}"
+        run: uv run --no-project --python 3.13 .github/scripts/verify_github_release_assets.py --version "${{ needs.prepare.outputs.version }}"
 
   publish-pypi:
     name: Publish hardened PyPI wheels
@@ -845,6 +860,11 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Setup uv for pinned release scripts
+        uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+        with:
+          enable-cache: false
+
       - name: Verify all wheels visible on PyPI
         # Poll until all sequential uploads are visible so downstream
         # resolvers cannot cache a transient "no compatible wheel" result.
@@ -852,7 +872,7 @@ jobs:
         env:
           PYPI_VERSION: ${{ needs.prepare.outputs.version }}
         run: >-
-          python3 .github/scripts/verify_pypi_wheels.py
+          uv run --no-project --python 3.13 .github/scripts/verify_pypi_wheels.py
           --version "$PYPI_VERSION"
 
   publish-npm:
@@ -891,12 +911,17 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Setup uv for pinned release scripts
+        uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+        with:
+          enable-cache: false
+
       - name: Validate immutable npm recovery release
         if: github.event_name == 'workflow_dispatch' && inputs.npm_release_ref != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: >-
-          python3 ../release-control/.github/scripts/validate_npm_release_recovery.py
+          uv run --no-project --python 3.13 ../release-control/.github/scripts/validate_npm_release_recovery.py
           --repository "$GITHUB_REPOSITORY"
           --release-ref "${{ inputs.npm_release_ref }}"
           --source-dir .
@@ -910,7 +935,7 @@ jobs:
       - name: Validate npm package
         run: node scripts/test-npm-package.js && npm pack --dry-run
       - name: Publish package to npm
-        run: python3 ../release-control/.github/scripts/publish_npm_package.py --source-dir .
+        run: uv run --no-project --python 3.13 ../release-control/.github/scripts/publish_npm_package.py --source-dir .
 
   # soldr#2469 step 1.1: terminal truth check. Green must mean the whole
   # public surface (17 GitHub assets from the canonical-targets contract,
@@ -941,9 +966,14 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Setup uv for pinned release scripts
+        uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+        with:
+          enable-cache: false
+
       - name: Verify every public release surface is complete
         env:
           GH_TOKEN: ${{ github.token }}
         run: >-
-          python3 .github/scripts/release_completeness.py
+          uv run --no-project --python 3.13 .github/scripts/release_completeness.py
           --version "${{ needs.prepare.outputs.version }}"

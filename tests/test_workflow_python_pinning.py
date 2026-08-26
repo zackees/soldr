@@ -1,6 +1,7 @@
 """A job that runs a repo Python script must pin the interpreter it runs under.
 
-Workflow jobs invoke `.github/scripts/*.py` and `ci/*.py` with a bare `python3`.
+Workflow jobs must not invoke `.github/scripts/*.py` and `ci/*.py` with a bare
+`python3`.
 That resolves to whatever interpreter the runner image happens to ship, which
 differs per platform and drifts as GitHub rolls images -- so a script can work
 on every lane for months and then fail on one, with nothing in the repo having
@@ -35,7 +36,8 @@ The test enforces two directions:
     a regression.
 
 `release-auto.yml` is deliberately absent from `RATCHET`: every job in the
-release lane is pinned as of soldr#2763, and none may regress.
+release lane invokes repository scripts through `uv run --no-project --python
+3.13` as of soldr#2763, and none may regress.
 """
 
 from __future__ import annotations
@@ -56,6 +58,8 @@ BARE_INVOCATION = re.compile(
     r"(?P<script>\S*(?:\.github/scripts|ci)/\S+\.py)"
 )
 SETUP_PYTHON = "actions/setup-python"
+SETUP_UV = "astral-sh/setup-uv"
+RELEASE_UV_COMMAND = "uv run --no-project --python 3.13"
 
 # Jobs that were already unpinned when this guard landed (soldr#2763).
 # Shrink this list; never grow it.
@@ -132,6 +136,34 @@ def test_ratchet_entries_all_exist():
     ), "RATCHET names jobs that no longer exist (renamed or deleted?):\n" + "\n".join(
         f"  {wf} :: {job}" for wf, job in missing
     )
+
+
+def test_release_scripts_use_pinned_uv_without_bare_python():
+    """Every release job that runs a repository script owns a uv setup step."""
+    release = yaml.safe_load(
+        (REPO / ".github" / "workflows" / "release-auto.yml").read_text(
+            encoding="utf-8"
+        )
+    )
+    for job_name, job in (release.get("jobs") or {}).items():
+        steps = job.get("steps") or []
+        script_runs = [
+            str(step.get("run") or "")
+            for step in steps
+            if ".github/scripts/" in str(step.get("run") or "")
+        ]
+        if not script_runs:
+            continue
+        assert any(SETUP_UV in str(step.get("uses") or "") for step in steps), (
+            f"release job {job_name!r} runs repository scripts without setup-uv"
+        )
+        assert not any(BARE_INVOCATION.search(run) for run in script_runs), (
+            f"release job {job_name!r} reintroduced bare Python: {script_runs}"
+        )
+        assert all(RELEASE_UV_COMMAND in run for run in script_runs), (
+            f"release job {job_name!r} must pin every repository script with "
+            f"{RELEASE_UV_COMMAND!r}: {script_runs}"
+        )
 
 
 @pytest.mark.parametrize(
