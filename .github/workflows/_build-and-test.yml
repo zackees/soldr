@@ -172,6 +172,13 @@ jobs:
         run: >-
           soldr cargo build -p soldr-cli --bin soldr
           --target ${{ inputs.target }}
+
+      - name: Verify embedded zccache feature graph
+        shell: bash
+        run: >-
+          python3 ci/check_zccache_feature_graph.py
+          --soldr "${GITHUB_WORKSPACE}/target/${{ inputs.target }}/debug/soldr"
+
       # soldr#1838 Phase 4: fail the lane when the build silently ran uncached
       # via the direct compiler. `soldr status --json` surfaces the same
       # compile-daemon fallback rollup operators see (default home = the one the
