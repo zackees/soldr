@@ -106,7 +106,7 @@ use serde::{Deserialize, Serialize};
 /// * v22 (soldr#2251): daemon-owned target registry snapshot/removal IPC.
 /// * v23 (soldr#2866): cook record/hit messages carry the prior compile and
 ///   archive-save timings used by the conservative restore cost gate.
-pub const PROTOCOL_VERSION: u32 = 23;
+pub const PROTOCOL_VERSION: u32 = 24;
 
 /// Wire-chunk granularity for the streaming Compile reply (#983 Phase
 /// 5b). 64 KiB is the same buffer size cargo's own pipe readers use
@@ -142,6 +142,18 @@ pub enum Request {
     /// Request-response: snapshot daemon-owned target-registry rows for a
     /// CLI filesystem scan. The daemon remains the only state.sqlite3 opener.
     ListTargetRegistry,
+    /// Request-response (v24, soldr#2877): occupy one compile slot for a
+    /// compiler-adjacent tool the daemon does not execute — the formatter
+    /// today.
+    ///
+    /// The daemon replies [`Response::Ack`] once admitted, then holds the
+    /// permit until this connection closes. That is the whole reason the
+    /// permit is tied to a connection rather than to a release message: a
+    /// client killed mid-run releases its slot without having to say so.
+    ///
+    /// On a full queue it replies [`Response::Backpressure`], exactly as a
+    /// compile does, and the caller retries on the same schedule.
+    AcquireToolSlot { tool: String },
     /// Request-response: remove registry rows after a CLI has confirmed its
     /// target directories are absent or successfully deleted.
     RemoveTargetRegistry { paths: Vec<String> },
@@ -693,7 +705,7 @@ mod tests {
     // publishing its applied compile limit.
     #[test]
     fn protocol_version_is_v23_after_adding_cook_cost_observations() {
-        assert_eq!(PROTOCOL_VERSION, 23);
+        assert_eq!(PROTOCOL_VERSION, 24);
     }
 
     #[test]

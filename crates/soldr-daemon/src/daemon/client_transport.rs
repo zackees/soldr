@@ -95,6 +95,16 @@ fn connect(sock_path: &Path, timeout: Duration) -> Result<UnixOrPipe, ClientErro
     Ok(UnixOrPipe(stream))
 }
 
+/// Connect for a soldr#2877 tool slot: the caller holds the returned stream
+/// for as long as it runs the tool, so the slot is released by the socket
+/// close rather than by a message that a killed tool could never send.
+pub(crate) fn connect_for_tool_slot(
+    sock_path: &Path,
+    timeout: Duration,
+) -> Result<UnixOrPipe, ClientError> {
+    connect(sock_path, timeout)
+}
+
 pub struct UnixOrPipe(crate::platform::ipc::connect::BoxedSyncStream);
 
 impl std::io::Read for UnixOrPipe {

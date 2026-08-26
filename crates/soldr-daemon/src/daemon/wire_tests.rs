@@ -775,3 +775,28 @@ fn compile_done_round_trips_with_all_fields() {
         other => panic!("unexpected variant: {other:?}"),
     }
 }
+
+/// soldr#2877: the tool-slot request must survive the prost codec, including
+/// the tool name -- a slot admitted under the wrong label would still bound
+/// concurrency but would make `daemon status` lie about what is in the queue.
+#[test]
+fn acquire_tool_slot_round_trips_with_its_tool_name() {
+    assert!(matches!(
+        decode_request(&encode_request(&Request::AcquireToolSlot {
+            tool: "fmt".into(),
+        }))
+        .expect("decode"),
+        Request::AcquireToolSlot { tool } if tool == "fmt"
+    ));
+}
+
+/// An empty tool name is legal on the wire (proto3 has no required fields),
+/// so it must decode rather than being mistaken for a different variant.
+#[test]
+fn an_unnamed_tool_slot_still_decodes_as_a_tool_slot() {
+    assert!(matches!(
+        decode_request(&encode_request(&Request::AcquireToolSlot { tool: String::new() }))
+            .expect("decode"),
+        Request::AcquireToolSlot { tool } if tool.is_empty()
+    ));
+}

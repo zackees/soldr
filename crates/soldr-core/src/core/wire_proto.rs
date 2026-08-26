@@ -13,7 +13,7 @@ use prost::{Message, Oneof};
 pub struct WireRequest {
     #[prost(
         oneof = "WireRequestKind",
-        tags = "1,2,3,4,5,7,8,9,10,11,12,13,14,15,16,17,18,19,20"
+        tags = "1,2,3,4,5,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21"
     )]
     pub kind: Option<WireRequestKind>,
 }
@@ -67,6 +67,23 @@ pub enum WireRequestKind {
     ListTargetRegistry(WireUnit),
     #[prost(message, tag = "20")]
     RemoveTargetRegistry(WireRemoveTargetRegistry),
+    /// v24 / soldr#2877 -- reserve one compile slot for a compiler-adjacent
+    /// tool the daemon does not execute (rustfmt today). The permit is held
+    /// for the lifetime of this connection, so a client that dies releases it.
+    #[prost(message, tag = "21")]
+    AcquireToolSlot(WireAcquireToolSlot),
+}
+
+/// soldr#2877: a request to occupy one compile slot on behalf of a tool the
+/// daemon does not run itself.
+///
+/// `tool` is for diagnostics only -- the scheduler treats every slot alike.
+/// Carrying it means a `soldr daemon status` that shows a full queue can say
+/// what is in it rather than implying every occupant is a rustc.
+#[derive(Clone, PartialEq, Message)]
+pub struct WireAcquireToolSlot {
+    #[prost(string, tag = "1")]
+    pub tool: String,
 }
 
 #[derive(Clone, PartialEq, Message)]

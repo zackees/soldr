@@ -705,6 +705,38 @@ where
 /// SOCK_STREAM behavior; Windows named pipes have no RST concept, so there is
 /// nothing to prevent there — and paying a shutdown/drain round trip on every
 /// rejected connection measurably slows the Windows hot path.
+
+/// Block until the peer closes its end of `stream`, or forever.
+///
+/// soldr#2877: this is how a tool slot is released. The client holds the
+/// connection open for exactly as long as it is running the tool, so a normal
+/// exit, a crash, and a kill all release the slot the same way -- through the
+/// socket close the OS performs on its behalf. A release *message* would be
+/// lost in precisely the case the slot exists to guard against.
+///
+/// Deliberately unbounded: a formatter over a large workspace legitimately
+/// runs for minutes, and any wall-clock ceiling here would silently hand its
+/// slot to someone else while it was still using the memory. The daemon's own
+/// shutdown path drops these connections.
+async fn wait_for_peer_close<S>(stream: &mut S)
+where
+    S: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::AsyncReadExt;
+    let mut scratch = [0u8; 64];
+    loop {
+        match stream.read(&mut scratch).await {
+            // EOF: the client is gone.
+            Ok(0) => return,
+            // A well-behaved client sends nothing after the request, but
+            // ignoring stray bytes is cheaper than being strict about them
+            // on a connection whose only job is to stay open.
+            Ok(_) => continue,
+            Err(_) => return,
+        }
+    }
+}
+
 async fn drain_then_close<S>(stream: &mut S)
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,

@@ -72,6 +72,46 @@ where
     state.request_count.fetch_add(1, Ordering::Relaxed);
     state.touch_activity();
     match req {
+        Request::AcquireToolSlot { tool } => {
+            // soldr#2877: the formatter is compiler-adjacent work that never
+            // reaches the compile gate, because it is not a `CompileRequest`.
+            // Measured on a 4-core / 7.9 GiB container, `soldr cargo fmt
+            // --all` runs at most two formatters totalling ~100 MiB -- small
+            // enough that bounding *it* would not have prevented the reported
+            // ENOMEM, and invisible enough that the compile scheduler was
+            // rationing everything except it. So it takes a slot in the same
+            // semaphore rather than getting a semaphore of its own.
+            //
+            // The daemon does not run the tool. It only holds the slot while
+            // the client does, which is the part that makes the total
+            // concurrency add up.
+            let admission = match state.compile_admission.try_admit() {
+                Some(permit) => permit,
+                None => {
+                    let _ = write_frame_async(
+                        &mut stream,
+                        &Response::Backpressure {
+                            retry_after_ms: IPC_BACKPRESSURE_RETRY_AFTER_MS,
+                        },
+                    )
+                    .await;
+                    return Ok(());
+                }
+            };
+            if write_frame_async(&mut stream, &Response::Ack).await.is_err() {
+                // The client vanished between admit and ack; the permit drops
+                // with `admission` at the end of this scope.
+                return Ok(());
+            }
+            tracing::debug!(%tool, "soldr-daemon: tool slot admitted");
+            // Hold until the peer closes. No release message exists on
+            // purpose: a formatter killed for any reason -- including the
+            // resource exhaustion this guards against -- must not strand a
+            // slot, and a socket close is the one signal the OS guarantees.
+            wait_for_peer_close(&mut stream).await;
+            drop(admission);
+            tracing::debug!(%tool, "soldr-daemon: tool slot released");
+        }
         Request::ListTargetRegistry => {
             let db_path = state.db_path.clone();
             let response = tokio::task::spawn_blocking(move || {

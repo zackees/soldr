@@ -368,6 +368,7 @@ pub(crate) async fn run_cargo_front_door(
         "PATH",
         disk::prepend_paths(&path_dirs, existing_path.as_deref())?,
     );
+    let _formatter_slot = maybe_acquire_formatter_slot(args, cache_enabled_for_cargo);
     let _rustfmt_shim_guard =
         maybe_apply_rustfmt_zccache_shim(&mut command, args, cache_enabled_for_cargo);
     let explicit_target = target::default_cargo_build_target(args, dylint_requested)?;
@@ -884,11 +885,9 @@ fn maybe_hint_foreign_target_passthrough(args: &[String]) {
     let Some(triple) = extract_target_arg(args) else {
         return;
     };
-    if !foreign_target_passthrough_needs_hint(
-        triple,
-        crate::pyo3_detect::host_triple(),
-        |key| std::env::var_os(key).is_some(),
-    ) {
+    if !foreign_target_passthrough_needs_hint(triple, crate::pyo3_detect::host_triple(), |key| {
+        std::env::var_os(key).is_some()
+    }) {
         return;
     }
     eprintln!(

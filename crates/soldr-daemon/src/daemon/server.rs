@@ -326,6 +326,48 @@ mod ipc_burst_tests {
         );
     }
 
+    /// soldr#2877: a tool slot occupies the same capacity a compile does.
+    ///
+    /// This is the whole claim of that change -- the formatter is not given
+    /// its own semaphore, it competes in the one the scheduler already uses.
+    /// Asserted at the admission layer rather than over a socket because the
+    /// socket adds a transport to a question that is purely about counting.
+    #[test]
+    fn a_tool_slot_consumes_the_same_capacity_a_compile_does() {
+        let admission = CompileAdmission::new(1, 1);
+        let tool = admission.try_admit().expect("tool slot admitted");
+        assert!(
+            admission.try_admit().is_none(),
+            "a compile must see the queue as full while a tool holds the slot"
+        );
+        drop(tool);
+        assert!(
+            admission.try_admit().is_some(),
+            "releasing the tool slot returns the capacity"
+        );
+    }
+
+    /// The release path that matters: no message, just a dropped permit.
+    ///
+    /// A tool killed for resource exhaustion -- the case the slot exists for
+    /// -- never gets to send a release. Tying the permit to a connection
+    /// means the OS releases it, and the daemon-side arm models that by
+    /// dropping the permit when `wait_for_peer_close` returns.
+    #[test]
+    fn a_slot_dropped_without_a_release_message_frees_capacity() {
+        let admission = CompileAdmission::new(2, 1);
+        let first = admission.try_admit().expect("first");
+        let second = admission.try_admit().expect("second");
+        assert!(admission.try_admit().is_none());
+        // Simulate the peer vanishing: the permit is dropped, nothing is sent.
+        std::mem::drop(second);
+        assert!(
+            admission.try_admit().is_some(),
+            "an abandoned connection must not strand its slot"
+        );
+        drop(first);
+    }
+
     #[test]
     fn windows_burst_policy_keeps_four_pool_sizes_fifo_and_recovers() {
         // This is intentionally platform-neutral: it exercises the exact

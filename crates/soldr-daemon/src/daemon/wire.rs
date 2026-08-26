@@ -425,6 +425,11 @@ impl From<&Request> for proto::WireRequest {
             Request::Shutdown => proto::WireRequestKind::Shutdown(proto::WireUnit {}),
             Request::FlushCaches => proto::WireRequestKind::FlushCaches(proto::WireUnit {}),
             Request::CompileStats => proto::WireRequestKind::CompileStats(proto::WireUnit {}),
+            Request::AcquireToolSlot { tool } => {
+                proto::WireRequestKind::AcquireToolSlot(proto::WireAcquireToolSlot {
+                    tool: tool.clone(),
+                })
+            }
             Request::ListTargetRegistry => {
                 proto::WireRequestKind::ListTargetRegistry(proto::WireUnit {})
             }
@@ -612,6 +617,7 @@ impl TryFrom<proto::WireRequest> for Request {
             proto::WireRequestKind::FlushCaches(_) => Request::FlushCaches,
             proto::WireRequestKind::CompileStats(_) => Request::CompileStats,
             proto::WireRequestKind::ListTargetRegistry(_) => Request::ListTargetRegistry,
+            proto::WireRequestKind::AcquireToolSlot(m) => Request::AcquireToolSlot { tool: m.tool },
             proto::WireRequestKind::RemoveTargetRegistry(m) => {
                 Request::RemoveTargetRegistry { paths: m.paths }
             }

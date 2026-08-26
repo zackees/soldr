@@ -58,11 +58,21 @@ message WireRequest {
     // v22 / soldr#2251: daemon-owned target-registry snapshot and cleanup.
     WireUnit list_target_registry = 19;
     WireRemoveTargetRegistry remove_target_registry = 20;
+    // v24 / soldr#2877: reserve one compile slot for a compiler-adjacent tool
+    // the daemon does not execute. Held for the connection lifetime, so a
+    // client that dies releases it.
+    WireAcquireToolSlot acquire_tool_slot = 21;
   }
 }
 
 message WireBuildLogInputsRequest {
   uint64 session_id = 1;
+}
+
+// soldr#2877: one compile slot for a tool the daemon does not run itself.
+// `tool` is diagnostics only; the scheduler treats every slot alike.
+message WireAcquireToolSlot {
+  string tool = 1;
 }
 
 message WireRemoveTargetRegistry {

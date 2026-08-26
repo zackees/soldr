@@ -324,6 +324,34 @@ fn scrub_inherited_soldr_workspace_env_for_child_cargo(command: &mut std::proces
     }
 }
 
+/// Occupy one compile slot for the duration of a formatting run (soldr#2877).
+///
+/// One slot for the whole `cargo fmt`, not one per formatter child. Measured
+/// on a 4-core / 7.9 GiB Linux container, `soldr cargo fmt --all` runs at most
+/// two formatters and peaks around 100 MiB of formatter RSS (170 MiB counting
+/// its own cargo and soldr) -- so the invocation, not the child, is the unit
+/// that matches what the scheduler is rationing. Taking a slot per child would
+/// also mean the shim, which is a different and much larger change for a
+/// difference of one slot.
+///
+/// Returns an unheld slot whenever anything is not available: no daemon, an
+/// older daemon, a busy queue that never drains within the budget. A format
+/// that refused to run because the compile queue was full would be a worse
+/// regression than the one this guards against.
+fn maybe_acquire_formatter_slot(
+    args: &[String],
+    cache_enabled: bool,
+) -> crate::daemon::tool_slot::ToolSlot {
+    if !cache_enabled || !cargo_args_should_apply_rustfmt_shim(args) {
+        return crate::daemon::tool_slot::ToolSlot::unheld();
+    }
+    let Ok(paths) = crate::core::SoldrPaths::new() else {
+        return crate::daemon::tool_slot::ToolSlot::unheld();
+    };
+    let sock = crate::daemon::client::default_sock_path(&paths);
+    crate::daemon::tool_slot::acquire(&sock, "fmt")
+}
+
 fn maybe_apply_rustfmt_zccache_shim(
     command: &mut std::process::Command,
     args: &[String],
