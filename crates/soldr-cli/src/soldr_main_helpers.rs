@@ -138,7 +138,7 @@ fn report_and_exit(error: SoldrError) -> i32 {
     1
 }
 
-async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError> {
+pub(crate) async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError> {
     use crate::daemon::client;
     use core::SoldrPaths;
 
