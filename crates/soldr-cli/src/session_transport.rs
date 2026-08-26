@@ -42,6 +42,13 @@ pub enum SessionHotPathOutcome {
     HardFail(io::Error),
 }
 
+/// Backend identity attested by the broker's successful route negotiation.
+#[derive(Debug)]
+pub(crate) struct ReadyRoute {
+    pub(crate) backend_pipe: String,
+    pub(crate) daemon_version: String,
+}
+
 /// Short budget for smoothing broker-to-route startup. Broker-unreachable
 /// errors return immediately; an existing broker gets a bounded window to
 /// launch or reconnect the requested daemon partition.
@@ -93,7 +100,7 @@ pub fn session_hot_path(rustc_argv: &[String]) -> SessionHotPathOutcome {
 pub(crate) fn ensure_broker_route(
     service_name: &str,
     timeout: std::time::Duration,
-) -> io::Result<()> {
+) -> io::Result<ReadyRoute> {
     let service_name = service_name.to_string();
     std::thread::scope(|scope| {
         scope
@@ -103,7 +110,7 @@ pub(crate) fn ensure_broker_route(
     })
 }
 
-fn ensure_broker_route_on_runtime(service_name: &str, timeout: Duration) -> io::Result<()> {
+fn ensure_broker_route_on_runtime(service_name: &str, timeout: Duration) -> io::Result<ReadyRoute> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -318,7 +325,7 @@ async fn establish_session(
             .map_err(SessionError::pre_output)?;
         candidate.flush().await.map_err(SessionError::pre_output)?;
         match read_negotiated(&mut candidate, request_id).await {
-            Ok(()) => break candidate,
+            Ok(_) => break candidate,
             Err(error) if hello_attempt < 3 && broker_hello_retryable(&error) => {
                 tokio::time::sleep(busy_jitter()).await;
             }
@@ -419,7 +426,7 @@ fn busy_jitter() -> std::time::Duration {
 }
 
 /// Read and validate the broker's framed `Negotiated` reply.
-async fn read_negotiated<S>(stream: &mut S, expected_request_id: u64) -> io::Result<()>
+async fn read_negotiated<S>(stream: &mut S, expected_request_id: u64) -> io::Result<ReadyRoute>
 where
     S: tokio::io::AsyncRead + Unpin,
 {
@@ -435,7 +442,7 @@ async fn read_negotiated_with_deadlines<S>(
     stream: &mut S,
     expected_request_id: u64,
     deadlines: crate::broker_server::BrokerDeadlines,
-) -> io::Result<()>
+) -> io::Result<ReadyRoute>
 where
     S: tokio::io::AsyncRead + Unpin,
 {
@@ -443,7 +450,7 @@ where
     let started = tokio::time::Instant::now();
     let route_ceiling = started + deadlines.route_ceiling;
     let mut response_deadline = started + deadlines.first_response;
-    let mut pending_handoff: Option<(Vec<u8>, u64)> = None;
+    let mut pending_handoff: Option<(Vec<u8>, u64, ReadyRoute)> = None;
     let mut last_progress_elapsed_ms = 0_u64;
     let mut buf: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 4096];
@@ -492,7 +499,8 @@ where
                 && frame.payload_protocol
                     == running_process::broker::protocol::HANDOFF_PAYLOAD_PROTOCOL
             {
-                let Some((expected_token, expected_correlation_id)) = pending_handoff.as_ref()
+                let Some((expected_token, expected_correlation_id, route)) =
+                    pending_handoff.as_ref()
                 else {
                     return Err(io::Error::other("unexpected broker handoff-ready event"));
                 };
@@ -502,7 +510,10 @@ where
                         "broker handoff event did not match its negotiation",
                     ));
                 }
-                return Ok(());
+                return Ok(ReadyRoute {
+                    backend_pipe: route.backend_pipe.clone(),
+                    daemon_version: route.daemon_version.clone(),
+                });
             }
             if FrameKind::try_from(frame.kind) != Ok(FrameKind::Response)
                 || frame.payload_protocol != CONTROL_PAYLOAD_PROTOCOL
@@ -518,6 +529,10 @@ where
             let reply = HelloReply::decode(frame.payload.as_slice()).map_err(io::Error::other)?;
             match reply.result {
                 Some(HelloReplyResult::Negotiated(negotiated)) => {
+                    let route = ReadyRoute {
+                        backend_pipe: negotiated.backend_pipe.clone(),
+                        daemon_version: negotiated.daemon_version.clone(),
+                    };
                     if negotiated.server_capabilities
                         & running_process::broker::capabilities::CAP_HANDLE_PASSING
                         != 0
@@ -526,13 +541,14 @@ where
                         pending_handoff = Some((
                             negotiated.handle_passed_token,
                             negotiated.connection_id,
+                            route,
                         ));
                         response_deadline = tokio::time::Instant::now()
                             + running_process::broker::server::DEFAULT_HANDOFF_ACK_DEADLINE
                             + std::time::Duration::from_millis(100);
                         continue;
                     }
-                    return Ok(());
+                    return Ok(route);
                 }
                 Some(HelloReplyResult::Refused(refused)) => Err(io::Error::other(format!(
                     "broker refused the daemon route: {} (code={}, retry_after_ms={}, details={:?})",

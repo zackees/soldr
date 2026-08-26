@@ -387,6 +387,18 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     if let Some(handle) = idle_handle {
         handle.abort();
     }
+    let shutdown_phase = |name| {
+        crate::daemon::lifecycle::append_lifecycle_event_with(
+            &paths,
+            name,
+            crate::daemon::lifecycle::LifecycleDetails::default().for_target_route(
+                std::process::id(),
+                state.daemon_identity.started_at_unix_ms,
+                state.daemon_identity.ipc_endpoint.path.clone(),
+            ),
+        );
+    };
+    shutdown_phase("shutdown-phase-maintenance");
     // A destructive pass that already acquired the root maintenance lease is
     // allowed to finish. In particular, await its spawn_blocking deletion
     // worker before releasing root ownership.
@@ -396,10 +408,12 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     // has staged in memory before the daemon process exits. Must run
     // BEFORE the redb file lock is released so the final write txn
     // succeeds; `shutdown()` awaits the drain task's ack.
+    shutdown_phase("shutdown-phase-event-batcher");
     let _ = state.event_batcher.shutdown().await;
 
     // Issue #977 / #980 L1: drain the embedded zccache service before
     // any other shutdown work so pending writes flush through.
+    shutdown_phase("shutdown-phase-compile-service");
     shutdown_compile_service(&state).await;
 
     // Deliberately retain the protobuf route claim and Unix socket nodes.

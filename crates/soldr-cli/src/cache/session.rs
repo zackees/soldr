@@ -594,7 +594,7 @@ pub(crate) async fn run_cache_shutdown_command(
                     std::time::Duration::ZERO
                 };
                 let outcome = crate::daemon::lifecycle::wait_for_shutdown_responder(
-                    &sock, responder, timeout,
+                    &paths, &sock, responder, timeout,
                 );
                 output.daemon_exited = outcome.is_complete();
                 output.daemon_stopped = output.daemon_exited;

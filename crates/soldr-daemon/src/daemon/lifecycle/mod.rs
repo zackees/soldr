@@ -8,7 +8,9 @@
 mod displacement_policy;
 mod journal_hygiene;
 mod legacy_endpoint;
+mod readiness;
 mod root_ownership;
+mod shutdown_wait;
 mod spawn;
 mod spawn_env;
 pub(crate) use displacement_policy::{displacement_drain_timeout, ephemeral_displacement_blocked};
@@ -16,7 +18,16 @@ pub use displacement_policy::{
     ALLOW_EPHEMERAL_DISPLACE_ENV_VAR, DISPLACEMENT_DRAIN_TIMEOUT_ENV_VAR,
 };
 pub use journal_hygiene::{detect_unclean_shutdown, rotate_lifecycle_journal};
+#[cfg(test)]
+pub(crate) use readiness::status_with_retiring_retry;
+pub use readiness::{
+    status_after_negotiated_route, status_after_route_ready, START_STATUS_READY_TIMEOUT,
+    STATUS_RETIRING_RETRY_TIMEOUT,
+};
 pub use root_ownership::{RootAcquireOutcome, RootOwnershipGuard};
+#[cfg(test)]
+pub(crate) use shutdown_wait::latest_shutdown_phase;
+pub use shutdown_wait::{wait_for_shutdown_responder, GRACEFUL_SHUTDOWN_WAIT_TIMEOUT};
 pub(crate) use spawn::*;
 pub(crate) use spawn_env::*;
 
@@ -268,17 +279,6 @@ pub(crate) fn claimed_process_live(paths: &SoldrPaths) -> Option<u32> {
 pub(crate) const SOLDR_DAEMON_DISPLACE_ENV: &str = "SOLDR_DAEMON_DISPLACE";
 
 /// Normal upper bound for an acknowledged graceful shutdown.
-///
-/// Embedded cache persistence may legitimately take minutes on a large or
-/// slow cache. Once a daemon acknowledges shutdown callers wait for that exact
-/// generation and never convert this deadline into permission to signal it.
-pub const GRACEFUL_SHUTDOWN_WAIT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-
-/// How often [`wait_for_shutdown_responder`] reports that it is still
-/// waiting (soldr#1838). Matches the compile-reply and cargo front-door
-/// cadence so every long wait in soldr ticks at the same rate.
-const SHUTDOWN_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
-
 pub(crate) fn displacement_enabled() -> bool {
     match std::env::var(SOLDR_DAEMON_DISPLACE_ENV) {
         Ok(v) => {
@@ -445,56 +445,6 @@ fn classify_shutdown_observation(
         .map(|_| ShutdownWaitOutcome::Replaced)
 }
 
-/// Wait for the exact daemon that acknowledged shutdown.
-///
-/// Endpoint unavailability alone is not success: the accept loop stops before
-/// the cache flush does. Conversely, a different status generation proves the
-/// acknowledged responder was replaced even if its PID was reused.
-pub fn wait_for_shutdown_responder(
-    sock_path: &Path,
-    responder: crate::daemon::protocol::ShutdownAck,
-    timeout: Duration,
-) -> ShutdownWaitOutcome {
-    let started = Instant::now();
-    // soldr#1838: this is the wait that #1828's macOS zombie-pid bug sat in
-    // for the full 5 minutes with a single line printed *after* it expired.
-    // It already polls, so the heartbeat is an in-loop check rather than the
-    // watchdog thread the blocking IPC waits need.
-    let mut next_heartbeat = SHUTDOWN_HEARTBEAT_INTERVAL;
-    loop {
-        if started.elapsed() >= next_heartbeat {
-            eprintln!(
-                "{}",
-                crate::daemon::wait_heartbeat::heartbeat_message(
-                    "daemon graceful shutdown",
-                    started.elapsed(),
-                    timeout,
-                    None,
-                )
-            );
-            next_heartbeat += SHUTDOWN_HEARTBEAT_INTERVAL;
-        }
-        let responder_pid_alive = pid_is_alive(responder.pid);
-        if timeout.is_zero() || started.elapsed() >= timeout {
-            return classify_shutdown_observation(responder, responder_pid_alive, None)
-                .unwrap_or(ShutdownWaitOutcome::TimedOut);
-        }
-        let endpoint_identity = crate::daemon::client::status(sock_path)
-            .ok()
-            .map(|status| (status.pid, status.generation));
-        if let Some(outcome) =
-            classify_shutdown_observation(responder, responder_pid_alive, endpoint_identity)
-        {
-            return outcome;
-        }
-        let remaining = timeout.saturating_sub(started.elapsed());
-        if remaining.is_zero() {
-            return ShutdownWaitOutcome::TimedOut;
-        }
-        std::thread::sleep(Duration::from_millis(50).min(remaining));
-    }
-}
-
 /// Displace the stale daemon currently holding the endpoint so a
 /// current-version daemon can take over (soldr#1495). Graceful IPC is always
 /// attempted first, including for historical daemons whose executable was
@@ -535,7 +485,7 @@ pub fn displace_stale_daemon(paths: &SoldrPaths, source: Option<LifecycleSource>
             // racing it was the #1814 two-daemons window that loses
             // in-memory compile contexts. On expiry, record the timeout
             // and fall through to the existing kill fallback below.
-            if wait_for_shutdown_responder(&sock, responder, displacement_drain_timeout())
+            if wait_for_shutdown_responder(paths, &sock, responder, displacement_drain_timeout())
                 .is_complete()
             {
                 return true;
@@ -836,6 +786,9 @@ pub struct LifecycleDetails {
     /// Target daemon generation, when an IPC response made it knowable.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_generation: Option<u64>,
+    /// Target daemon route endpoint, when the recording daemon owns it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_endpoint: Option<String>,
     /// Which entry point asked for this transition.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub requester_source: Option<LifecycleSource>,
@@ -906,6 +859,18 @@ impl LifecycleDetails {
     pub(crate) fn for_target_generation(mut self, pid: u32, generation: u64) -> Self {
         self.target_pid = Some(pid);
         self.target_generation = Some(generation);
+        self
+    }
+
+    pub(crate) fn for_target_route(
+        mut self,
+        pid: u32,
+        generation: u64,
+        endpoint: impl Into<String>,
+    ) -> Self {
+        self.target_pid = Some(pid);
+        self.target_generation = Some(generation);
+        self.target_endpoint = Some(endpoint.into());
         self
     }
 

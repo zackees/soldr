@@ -251,6 +251,55 @@ struct DetachedDaemonCleanup {
     home_root: PathBuf,
 }
 
+#[test]
+fn windows_stop_start_is_immediately_status_ready() {
+    if !matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
+    let cache_root = unique_temp_dir("daemon-restart-readiness-cache");
+    let home_root = unique_temp_dir("daemon-restart-readiness-home");
+    let workspace = unique_temp_dir("daemon-restart-readiness-workspace");
+    let _cleanup = DaemonCleanup {
+        cache_root: cache_root.clone(),
+        home_root: home_root.clone(),
+    };
+
+    let mut generations = Vec::new();
+    for (args, timeout) in [
+        (&["daemon", "start"][..], Duration::from_secs(90)),
+        (&["daemon", "status", "--json"][..], Duration::from_secs(15)),
+        (&["daemon", "stop"][..], Duration::from_secs(15)),
+        (&["daemon", "start"][..], Duration::from_secs(90)),
+        (&["daemon", "status", "--json"][..], Duration::from_secs(15)),
+    ] {
+        let output = run_soldr_with_timeout(args, &cache_root, &home_root, &workspace, timeout);
+        assert!(
+            output.status.success(),
+            "soldr {args:?} failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        if args.get(1) == Some(&"status") {
+            let body: Value = serde_json::from_slice(&output.stdout).expect("status JSON");
+            assert_eq!(body["running"].as_bool(), Some(true));
+            generations.push(body["generation"].as_u64().expect("status generation"));
+        }
+    }
+    assert_eq!(generations.len(), 2);
+    assert_ne!(
+        generations[0], generations[1],
+        "restart must replace generation"
+    );
+    let paths = SoldrPaths::with_root(cache_root.clone());
+    let claim = soldr_cli::daemon::backend_handle_adoption::read_broker_route_claim(&paths)
+        .expect("read route claim")
+        .expect("route claim");
+    assert_eq!(claim.started_at_unix_ms, generations[1]);
+}
+
 impl Drop for DetachedDaemonCleanup {
     fn drop(&mut self) {
         let pid = soldr_cli::daemon::lifecycle::read_route_claim_identity(&SoldrPaths::with_root(

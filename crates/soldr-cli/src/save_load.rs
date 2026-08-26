@@ -201,6 +201,7 @@ fn quiesce_embedded_state_before_save(cache_dir: &Path) -> Result<(), String> {
         }
     };
     let outcome = crate::daemon::lifecycle::wait_for_shutdown_responder(
+        &paths,
         &sock,
         responder,
         crate::daemon::lifecycle::GRACEFUL_SHUTDOWN_WAIT_TIMEOUT,
