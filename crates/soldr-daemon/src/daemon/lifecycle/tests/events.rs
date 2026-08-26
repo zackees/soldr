@@ -216,6 +216,139 @@ mod lifecycle_event_tests {
 }
 
 #[cfg(test)]
+mod status_retry_tests {
+    use crate::core::SoldrPaths;
+    use crate::daemon::client::ClientError;
+    use crate::daemon::lifecycle::{
+        append_lifecycle_event_with, latest_shutdown_phase, status_with_retiring_retry,
+        LifecycleDetails,
+    };
+    use crate::daemon::protocol::StatusInfo;
+    use std::io::{Error, ErrorKind};
+    use std::time::Duration;
+
+    fn status(pid: u32) -> StatusInfo {
+        StatusInfo {
+            version: crate::daemon::protocol::PROTOCOL_VERSION,
+            pid,
+            generation: 7,
+            uptime_secs: 1,
+            request_count: 1,
+            cook_stats: None,
+            compile_backend: crate::daemon::protocol::COMPILE_BACKEND_EMBEDDED.to_string(),
+            ipc_burst_stats: Default::default(),
+            compile_jobs: 1,
+            compile_jobs_source: "test".to_string(),
+        }
+    }
+
+    #[test]
+    fn verified_closing_pipe_is_retried_until_the_new_generation_answers() {
+        let mut attempts = 0;
+        let result = status_with_retiring_retry(
+            || {
+                attempts += 1;
+                if attempts == 1 {
+                    Err(ClientError::Io(Error::new(
+                        ErrorKind::BrokenPipe,
+                        "the pipe is being closed",
+                    )))
+                } else if attempts == 2 {
+                    Err(ClientError::Io(Error::new(
+                        ErrorKind::WouldBlock,
+                        "the route is not accepting yet",
+                    )))
+                } else {
+                    Ok(status(42))
+                }
+            },
+            || Some((42, 7)),
+            Duration::from_secs(1),
+            true,
+        )
+        .expect("replacement generation should become ready");
+        assert_eq!(result.pid, 42);
+        assert_eq!(attempts, 3);
+    }
+
+    #[test]
+    fn unverified_or_unrelated_failures_are_not_retried() {
+        let mut attempts = 0;
+        let result = status_with_retiring_retry(
+            || {
+                attempts += 1;
+                Err(ClientError::Io(Error::new(
+                    ErrorKind::BrokenPipe,
+                    "unverified pipe",
+                )))
+            },
+            || None,
+            Duration::from_secs(1),
+            false,
+        );
+        assert!(result.is_err());
+        assert_eq!(attempts, 1);
+
+        let mut attempts = 0;
+        let result = status_with_retiring_retry(
+            || {
+                attempts += 1;
+                Err(ClientError::Io(Error::new(
+                    ErrorKind::PermissionDenied,
+                    "real failure",
+                )))
+            },
+            || Some((42, 7)),
+            Duration::from_secs(1),
+            false,
+        );
+        assert!(result.is_err());
+        assert_eq!(attempts, 1);
+
+        let result =
+            status_with_retiring_retry(|| Ok(status(42)), || None, Duration::from_secs(1), true);
+        assert!(
+            result.is_err(),
+            "negotiated readiness requires identity evidence"
+        );
+    }
+
+    #[test]
+    fn shutdown_diagnostic_reports_the_latest_phase_for_the_responder() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("root"));
+        let pid = std::process::id();
+        append_lifecycle_event_with(
+            &paths,
+            "shutdown-phase-maintenance",
+            LifecycleDetails::default().for_target_route(pid, 6, "route-old"),
+        );
+        append_lifecycle_event_with(
+            &paths,
+            "shutdown-phase-compile-service",
+            LifecycleDetails::default().for_target_route(pid, 7, "route-wrong"),
+        );
+        append_lifecycle_event_with(
+            &paths,
+            "shutdown-phase-event-batcher",
+            LifecycleDetails::default().for_target_route(pid, 7, "route-current"),
+        );
+        assert_eq!(
+            latest_shutdown_phase(&paths, pid, 7, Some("route-current")).as_deref(),
+            Some("event-batcher")
+        );
+        assert_eq!(
+            latest_shutdown_phase(&paths, pid, 6, Some("route-old")).as_deref(),
+            Some("maintenance")
+        );
+        assert_eq!(
+            latest_shutdown_phase(&paths, u32::MAX, 7, Some("route-current")),
+            None
+        );
+    }
+}
+
+#[cfg(test)]
 mod root_ownership_diagnostic_tests {
     use super::lifecycle_event_tests::write_route_claim;
     use crate::core::SoldrPaths;

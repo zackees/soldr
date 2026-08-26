@@ -176,7 +176,7 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
             // launcher's more precise attribution. This is a deliberate
             // lifecycle command, not a compile hot path, so the wider bound
             // costs nothing when healthy and still fails fast enough when not.
-            crate::session_transport::ensure_broker_route(
+            let ready_route = crate::session_transport::ensure_broker_route(
                 &installed.definition.service_name,
                 std::time::Duration::from_secs(60),
             )
@@ -186,6 +186,18 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
                     installed.definition.service_name
                 ))
             })?;
+            crate::daemon::lifecycle::status_after_negotiated_route(
+                &paths,
+                &sock,
+                &ready_route.backend_pipe,
+                &ready_route.daemon_version,
+                crate::daemon::lifecycle::STATUS_RETIRING_RETRY_TIMEOUT,
+            )
+            .map_err(|err| {
+                SoldrError::Other(format!(
+                    "broker route was published but soldr-daemon did not become status-ready: {err:?}"
+                ))
+            })?;
             println!("soldr-daemon: broker route ready");
             Ok(())
         }
@@ -193,6 +205,7 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
             match client::shutdown(&sock) {
                 Ok(responder) => {
                     let outcome = crate::daemon::lifecycle::wait_for_shutdown_responder(
+                        &paths,
                         &sock,
                         responder,
                         crate::daemon::lifecycle::GRACEFUL_SHUTDOWN_WAIT_TIMEOUT,
@@ -232,21 +245,27 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
                 }
             }
         }
-        DaemonSubcommand::Status { json } => match client::status(&sock) {
-            Ok(info) => {
-                crate::daemon_status_render::render(&info, &paths, json);
-                Ok(())
-            }
-            Err(client::ClientError::NotRunning) => {
-                if json {
-                    println!("{}", serde_json::json!({"running": false}));
-                } else {
-                    println!("soldr-daemon: not running");
+        DaemonSubcommand::Status { json } => {
+            match crate::daemon::lifecycle::status_after_route_ready(
+                &paths,
+                &sock,
+                crate::daemon::lifecycle::STATUS_RETIRING_RETRY_TIMEOUT,
+            ) {
+                Ok(info) => {
+                    crate::daemon_status_render::render(&info, &paths, json);
+                    Ok(())
                 }
-                Ok(())
+                Err(client::ClientError::NotRunning) => {
+                    if json {
+                        println!("{}", serde_json::json!({"running": false}));
+                    } else {
+                        println!("soldr-daemon: not running");
+                    }
+                    Ok(())
+                }
+                Err(e) => Err(SoldrError::Other(format!("daemon status failed: {e:?}"))),
             }
-            Err(e) => Err(SoldrError::Other(format!("daemon status failed: {e:?}"))),
-        },
+        }
         DaemonSubcommand::InstallServiceDef {
             daemon_binary,
             json,
