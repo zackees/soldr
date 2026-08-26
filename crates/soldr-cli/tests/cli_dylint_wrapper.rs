@@ -122,7 +122,7 @@ echo "dylint compile diagnostic on stderr" >&2
 }
 
 fn dylint_command(root: &Path) -> std::process::Command {
-    let (cargo, rustc, zccache, driver_root) = install_dylint_toolchain(root);
+    let (cargo, rustc, _zccache, driver_root) = install_dylint_toolchain(root);
     let channel = format!(
         "nightly-2026-05-26-{}",
         soldr_cli::pyo3_detect::host_triple()
@@ -136,7 +136,6 @@ fn dylint_command(root: &Path) -> std::process::Command {
         .env("SOLDR_CACHE_DIR", root.join("cache"))
         .env("SOLDR_TEST_CARGO_BIN", cargo)
         .env("SOLDR_TEST_RUSTC_BIN", rustc)
-        .env("SOLDR_TEST_ZCCACHE_BIN", zccache)
         .env("DYLINT_DRIVER_PATH", driver_root)
         .env("SOLDR_DYLINT_CONFIGURED_TOOLCHAIN", channel)
         .env("SOLDR_DYLINT_CONFIGURED_RUSTC_RELEASE", "1.89.0-nightly")

@@ -537,7 +537,6 @@ fn gc_list_json_reports_built_project_target_dir() {
         .env_remove(soldr_cli::wrapper_target::TARGET_REGISTRY_RECORDED_ENV_VAR)
         // Cache-disable keeps this registry fixture on direct rustc after the
         // wrapper records its target directory.
-        .env_remove("SOLDR_TEST_ZCCACHE_BIN")
         .env_remove("ZCCACHE_BINARY")
         .output()
         .expect("failed to run cargo build through soldr wrapper");

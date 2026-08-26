@@ -44,7 +44,7 @@ fn direct_maturin_build_routes_nested_cargo_through_zccache() {
     }
     let cache_root = unique_temp_dir("direct-maturin-zccache");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     seed_cached_fake_maturin(&cache_root, &log_path);
 
     let output = isolated_soldr_command()
@@ -52,7 +52,6 @@ fn direct_maturin_build_routes_nested_cargo_through_zccache() {
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env_remove("CARGO")
         .env_remove("RUSTC")
         .env_remove("RUSTC_WRAPPER")

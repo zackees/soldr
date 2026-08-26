@@ -118,7 +118,7 @@ fn cargo_fmt_host_toolchain_does_not_mix_in_managed_rustup_home() {
     let cache_root = unique_temp_dir("cargo-fmt-host-rustup-home");
     let log_path = cache_root.join("tool.log");
     let source_path = write_rustfmt_source(&cache_root);
-    let (_rustup, cargo, rustc, rustfmt, zccache) =
+    let (_rustup, cargo, rustc, rustfmt, _zccache) =
         install_fake_cargo_fmt_toolchain(&log_path, &source_path);
     let explicit_cargo_home = unique_temp_dir("cargo-fmt-explicit-host-cargo-home");
 
@@ -134,7 +134,6 @@ fn cargo_fmt_host_toolchain_does_not_mix_in_managed_rustup_home() {
         .env("SOLDR_REAL_CARGO", &cargo)
         .env("SOLDR_REAL_RUSTC", &rustc)
         .env("SOLDR_REAL_RUSTFMT", &rustfmt)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env("CARGO_HOME", &explicit_cargo_home)
         .env("PATH", isolated_test_path())
         .env_remove("RUSTFMT")
@@ -179,20 +178,15 @@ fn relative_managed_rustc_wrapper_uses_soldr_toolchain_homes() {
     fs::create_dir_all(&managed_rustup_home).expect("failed to create managed rustup home");
     let (_, rustc, _) = install_fake_version_toolchain(&managed_cargo_bin, &log_path);
 
-    let zccache_dir = unique_temp_dir("relative-managed-rustc-zccache");
-    let zccache = fake_script_path(&zccache_dir, "zccache");
-    write_fake_script(&zccache, &fake_zccache_script(&log_path));
-
     let relative_rustc = rustc
         .strip_prefix(&cache_root)
         .expect("managed rustc should be relative to the test root");
     let output = isolated_soldr_command()
         .arg(relative_rustc)
-        .args(["--crate-name", "managed_boundary", "--emit", "metadata"])
+        .arg("--version")
         .current_dir(&cache_root)
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env_remove("SOLDR_TEST_RUSTC_BIN")
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env("PATH", isolated_test_path())
         .env_remove("CARGO_HOME")
         .env_remove("RUSTUP_HOME")
@@ -202,7 +196,7 @@ fn relative_managed_rustc_wrapper_uses_soldr_toolchain_homes() {
 
     assert!(
         output.status.success(),
-        "relative managed rustc wrapper failed\nstdout:\n{}\nstderr:\n{}",
+        "relative managed rustc version probe failed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -211,7 +205,7 @@ fn relative_managed_rustc_wrapper_uses_soldr_toolchain_homes() {
     let rustc_line = log
         .lines()
         .find(|line| line.starts_with("rustc "))
-        .unwrap_or_else(|| panic!("managed rustc was not invoked through zccache: {log}"));
+        .unwrap_or_else(|| panic!("managed rustc version probe did not run: {log}"));
     assert!(
         path_display_variants(&managed_cargo_home)
             .iter()

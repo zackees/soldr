@@ -842,7 +842,7 @@ fn cargo_timeout_retries_once_without_cache() {
     .expect("manifest");
     fs::write(workspace.join("src/lib.rs"), "pub fn ok() {}\n").expect("source");
     let cargo = fake_script_path(&tool_dir, "cargo");
-    let (_unused_cargo, rustc, zccache) = install_fake_toolchain(&fake_tool_log);
+    let (_unused_cargo, rustc, _zccache) = install_fake_toolchain(&fake_tool_log);
     write_fake_script(
         &cargo,
         &fake_timeout_then_success_cargo_script(&marker, &log_path),
@@ -853,7 +853,6 @@ fn cargo_timeout_retries_once_without_cache() {
         .current_dir(&workspace)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env("SOLDR_CARGO_WAIT_TIMEOUT_SECS", "1")
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env_remove("ZCCACHE_DISABLE")
@@ -932,7 +931,7 @@ fn cargo_timeout_during_no_cache_retry_does_not_recurse() {
         .expect("manifest");
     fs::write(workspace.join("src/lib.rs"), "pub fn ok() {}\n").expect("source");
     let cargo = fake_script_path(&tool_dir, "cargo");
-    let (_unused_cargo, rustc, zccache) = install_fake_toolchain(&fake_tool_log);
+    let (_unused_cargo, rustc, _zccache) = install_fake_toolchain(&fake_tool_log);
     write_fake_script(&cargo, &fake_always_slow_cargo_script(&log_path));
 
     let output = common::isolated_soldr_command()
@@ -940,7 +939,6 @@ fn cargo_timeout_during_no_cache_retry_does_not_recurse() {
         .current_dir(&workspace)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env("SOLDR_CARGO_WAIT_TIMEOUT_SECS", "1")
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env_remove("ZCCACHE_DISABLE")
@@ -999,7 +997,7 @@ fn cargo_explicit_timeout_retry_can_be_disabled() {
     .expect("manifest");
     fs::write(workspace.join("src/lib.rs"), "pub fn ok() {}\n").expect("source");
     let cargo = fake_script_path(&tool_dir, "cargo");
-    let (_unused_cargo, rustc, zccache) = install_fake_toolchain(&fake_tool_log);
+    let (_unused_cargo, rustc, _zccache) = install_fake_toolchain(&fake_tool_log);
     write_fake_script(&cargo, &fake_always_slow_cargo_script(&log_path));
 
     let output = common::isolated_soldr_command()
@@ -1007,7 +1005,6 @@ fn cargo_explicit_timeout_retry_can_be_disabled() {
         .current_dir(&workspace)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env("SOLDR_CARGO_WAIT_TIMEOUT_SECS", "1")
         .env("SOLDR_NO_CARGO_TIMEOUT_RETRY", "1")
         .env("SOLDR_CACHE_DIR", &cache_root)
@@ -1038,14 +1035,13 @@ fn cargo_explicit_timeout_retry_can_be_disabled() {
 fn cargo_build_warns_when_disk_space_is_low() {
     let cache_root = unique_temp_dir("cargo-low-disk");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
 
     let output = common::isolated_soldr_command()
         .args(["--no-cache", "cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env("SOLDR_TEST_FREE_DISK_BYTES", "1500000000")
         .env("CARGO_TARGET_DIR", cache_root.join("target"))
         .env_remove("SOLDR_TARGET_CACHE_MODE")
@@ -1075,14 +1071,13 @@ fn cargo_build_warns_when_disk_space_is_low() {
 fn cargo_build_ignores_disk_space_detection_failures() {
     let cache_root = unique_temp_dir("cargo-low-disk-error");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
 
     let output = common::isolated_soldr_command()
         .args(["--no-cache", "cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env("SOLDR_TEST_FREE_DISK_BYTES", "error")
         .env("CARGO_TARGET_DIR", cache_root.join("target"))
         .env_remove("SOLDR_TARGET_CACHE_MODE")
@@ -1141,13 +1136,12 @@ fn windows_worktree_copy_relocates_wrapper_and_original_dir_can_be_removed() {
         .expect("failed to copy soldr exe into temporary worktree");
 
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     let output = Command::new(&copied_soldr)
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env_remove("SOLDR_TARGET_CACHE_MODE")
         .env_remove("SOLDR_BUILD_CACHE_MODE")
         // Strip any relocation guard the parent process might be carrying
@@ -1212,7 +1206,7 @@ fn cargo_front_door_defaults_non_msvc_dev_debug_off_and_warns_once_per_repo() {
     fs::write(repo.join("src").join("lib.rs"), "").expect("failed to seed lib.rs");
 
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     let cargo_home = cache_root.join("cargo-home");
 
     let first = common::isolated_soldr_command()
@@ -1222,7 +1216,6 @@ fn cargo_front_door_defaults_non_msvc_dev_debug_off_and_warns_once_per_repo() {
         .env("CARGO_HOME", &cargo_home)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env_remove("CARGO_PROFILE_DEV_DEBUG")
         .env_remove("CARGO_PROFILE_TEST_DEBUG")
         .env_remove("SOLDR_TARGET_CACHE_MODE")
@@ -1243,7 +1236,6 @@ fn cargo_front_door_defaults_non_msvc_dev_debug_off_and_warns_once_per_repo() {
         .env("CARGO_HOME", &cargo_home)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env_remove("CARGO_PROFILE_DEV_DEBUG")
         .env_remove("CARGO_PROFILE_TEST_DEBUG")
         .env_remove("SOLDR_TARGET_CACHE_MODE")
@@ -1293,7 +1285,7 @@ fn cargo_front_door_respects_dev_debug_in_cargo_config_toml() {
     .expect("failed to seed .cargo/config.toml");
 
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     let output = common::isolated_soldr_command()
         .args(["cargo", "build"])
         .current_dir(&repo)
@@ -1301,7 +1293,6 @@ fn cargo_front_door_respects_dev_debug_in_cargo_config_toml() {
         .env("CARGO_HOME", cache_root.join("cargo-home"))
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env_remove("CARGO_PROFILE_DEV_DEBUG")
         .env_remove("CARGO_PROFILE_TEST_DEBUG")
         .env_remove("SOLDR_TARGET_CACHE_MODE")

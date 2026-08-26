@@ -45,14 +45,21 @@ fn log_has_any_cargo_target_env(log: &str) -> bool {
 #[test]
 fn cargo_front_door_default_linker_does_not_inject_target_env() {
     let cache_root = unique_temp_dir("cargo-default-linker");
+    let home_root = cache_root.join("home");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
-    let output = isolated_soldr_command()
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
+    let daemon = common::isolated_daemon::IsolatedDaemon::spawn(
+        &common::soldr_daemon_bin(),
+        &cache_root,
+        &home_root,
+    );
+    let mut command = isolated_soldr_command();
+    daemon.configure_client(&mut command);
+    let output = command
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env_remove("SOLDR_TARGET_CACHE_MODE")
         .env_remove("SOLDR_BUILD_CACHE_MODE")
         .env_remove("SOLDR_LINKER")
@@ -76,14 +83,21 @@ fn cargo_front_door_default_linker_does_not_inject_target_env() {
 #[test]
 fn cargo_front_door_rust_lld_injects_target_linker_env() {
     let cache_root = unique_temp_dir("cargo-rust-lld-linker");
+    let home_root = cache_root.join("home");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
-    let output = isolated_soldr_command()
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
+    let daemon = common::isolated_daemon::IsolatedDaemon::spawn(
+        &common::soldr_daemon_bin(),
+        &cache_root,
+        &home_root,
+    );
+    let mut command = isolated_soldr_command();
+    daemon.configure_client(&mut command);
+    let output = command
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env_remove("SOLDR_TARGET_CACHE_MODE")
         .env_remove("SOLDR_BUILD_CACHE_MODE")
         .env("SOLDR_LINKER", "rust-lld")
@@ -151,14 +165,21 @@ fn cargo_front_door_mold_on_non_linux_returns_clear_error() {
         return;
     }
     let cache_root = unique_temp_dir("cargo-mold-non-linux");
+    let home_root = cache_root.join("home");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
-    let output = isolated_soldr_command()
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
+    let daemon = common::isolated_daemon::IsolatedDaemon::spawn(
+        &common::soldr_daemon_bin(),
+        &cache_root,
+        &home_root,
+    );
+    let mut command = isolated_soldr_command();
+    daemon.configure_client(&mut command);
+    let output = command
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env_remove("SOLDR_TARGET_CACHE_MODE")
         .env_remove("SOLDR_BUILD_CACHE_MODE")
         .env("SOLDR_LINKER", "mold")
@@ -199,14 +220,21 @@ fn cargo_front_door_fast_picks_rust_lld_when_mold_absent() {
         return;
     }
     let cache_root = unique_temp_dir("cargo-fast-linker");
+    let home_root = cache_root.join("home");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
-    let output = isolated_soldr_command()
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
+    let daemon = common::isolated_daemon::IsolatedDaemon::spawn(
+        &common::soldr_daemon_bin(),
+        &cache_root,
+        &home_root,
+    );
+    let mut command = isolated_soldr_command();
+    daemon.configure_client(&mut command);
+    let output = command
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env_remove("SOLDR_TARGET_CACHE_MODE")
         .env_remove("SOLDR_BUILD_CACHE_MODE")
         .env("SOLDR_LINKER", "fast")

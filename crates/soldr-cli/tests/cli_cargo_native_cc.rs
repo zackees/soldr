@@ -113,122 +113,6 @@ fn skip_on_windows(test_name: &str) -> bool {
     }
 }
 
-struct FakeZccache {
-    bin: PathBuf,
-    down_marker: PathBuf,
-}
-
-fn fake_script_path(dir: &Path, name: &str) -> PathBuf {
-    if matches!(
-        soldr_platform::host::facts::os(),
-        soldr_platform::host::facts::HostOs::Windows
-    ) {
-        dir.join(format!("{name}.cmd"))
-    } else {
-        dir.join(name)
-    }
-}
-
-fn write_fake_script(path: &Path, body: &str) {
-    if matches!(
-        soldr_platform::host::facts::os(),
-        soldr_platform::host::facts::HostOs::Windows
-    ) {
-        fs::write(path, body.replace('\n', "\r\n")).expect("failed to write fake script");
-    } else {
-        fs::write(path, body).expect("failed to write fake script");
-        soldr_platform::fs::permissions::make_executable(path)
-            .expect("failed to chmod fake script");
-    }
-}
-
-fn fake_zccache_script() -> &'static str {
-    if matches!(
-        soldr_platform::host::facts::os(),
-        soldr_platform::host::facts::HostOs::Windows
-    ) {
-        r#"@echo off
-if "%~1"=="session-start" (
-  echo {"session_id":"test-session"}
-  exit /b 0
-)
-if "%~1"=="start" (
-  exit /b 0
-)
-if "%~1"=="session-end" (
-  echo {"status":"ok","session_id":"test-session","duration_ms":1,"compilations":0,"hits":0,"misses":0}
-  exit /b 0
-)
-if "%~1"=="stop" (
-  if defined SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER type nul > "%SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER%"
-  exit /b 0
-)
-if "%~1"=="status" (
-  if defined SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER if exist "%SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER%" (
-    echo daemon not running 1>&2
-    exit /b 1
-  )
-  echo hits=0
-  exit /b 0
-)
-set "rustc=%~1"
-shift /1
-set "args="
-:args_loop
-if "%~1"=="" goto run_rustc
-set args=%args% "%~1"
-shift /1
-goto args_loop
-:run_rustc
-call "%rustc%" %args%
-exit /b %ERRORLEVEL%
-"#
-    } else {
-        r#"#!/bin/sh
-case "$1" in
-  start)
-    exit 0
-    ;;
-  session-start)
-    printf '{"session_id":"test-session"}\n'
-    exit 0
-    ;;
-  session-end)
-    printf '{"status":"ok","session_id":"test-session","duration_ms":1,"compilations":0,"hits":0,"misses":0}\n'
-    exit 0
-    ;;
-  stop)
-    if [ -n "${SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER:-}" ]; then
-      : > "$SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER"
-    fi
-    exit 0
-    ;;
-  status)
-    if [ -n "${SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER:-}" ] && [ -e "$SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER" ]; then
-      echo 'daemon not running' >&2
-      exit 1
-    fi
-    echo 'hits=0'
-    exit 0
-    ;;
-esac
-rustc="$1"
-shift
-exec "$rustc" "$@"
-"#
-    }
-}
-
-fn install_fake_zccache() -> FakeZccache {
-    let dir = unique_temp_dir("native-cc-fake-zccache");
-    let zccache = fake_script_path(&dir, "zccache");
-    write_fake_script(&zccache, fake_zccache_script());
-    FakeZccache {
-        bin: zccache,
-        down_marker: dir.join("daemon-down"),
-    }
-}
-
 fn remove_inherited_native_cache_env(cmd: &mut Command) {
     for key in [
         "CC",
@@ -250,8 +134,6 @@ fn remove_inherited_native_cache_env(cmd: &mut Command) {
         "SOLDR_EFFECTIVE_RUSTC_WRAPPER",
         "SOLDR_EFFECTIVE_RUSTC_WRAPPER_ORIGIN",
         "SOLDR_NATIVE_CACHE",
-        "SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER",
-        "SOLDR_TEST_ZCCACHE_BIN",
         "SOLDR_ZCCACHE_LOCAL_DIR",
         "ZCCACHE_CACHE_DIR",
     ] {
@@ -323,19 +205,11 @@ fn run_soldr_cargo_build(project: &Path, env_overrides: &[(&str, &str)]) -> std:
     let mut cmd = Command::new(soldr_bin());
     cmd.current_dir(project);
     remove_inherited_native_cache_env(&mut cmd);
-    // Hermetic cache root per test. The fake-zccache seam never starts an
-    // embedded daemon, so keep job lifetime: command lifetime now correctly
-    // requires a complete embedded checkpoint and would reject this
-    // intentionally daemon-free fixture.
+    // Hermetic cache root per test. Cacheable work remains on Soldr's normal
+    // embedded-daemon route; no external zccache test executable is used.
     cmd.env("SOLDR_CACHE_DIR", unique_cache_dir());
     cmd.env("SOLDR_CACHE_LIFECYCLE", "job");
     cmd.env_remove("SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS");
-    let fake_zccache = install_fake_zccache();
-    cmd.env("SOLDR_TEST_ZCCACHE_BIN", &fake_zccache.bin);
-    cmd.env(
-        "SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER",
-        &fake_zccache.down_marker,
-    );
     cmd.env_remove("SOLDR_BUILD_CACHE_MODE");
     cmd.env_remove("SOLDR_TARGET_CACHE_MODE");
     for (k, v) in env_overrides {

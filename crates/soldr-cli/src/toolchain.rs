@@ -110,17 +110,6 @@ pub(crate) fn run_rustfmt(args: &[String], cache_enabled: bool) -> Result<i32, S
     }
 
     let rustfmt = resolve_dylint_scoped_binary("rustfmt")?;
-    if let Some(zccache) = crate::binaries::non_empty_env_path(crate::TEST_ZCCACHE_BIN_ENV_VAR) {
-        let mut command = std::process::Command::new(zccache);
-        command.arg(&rustfmt);
-        command.args(args);
-        crate::binaries::apply_resolved_toolchain_homes(&mut command, &rustfmt);
-        apply_zccache_child_env(&mut command)?;
-        suppress_windows_console_window(&mut command);
-        let status = run_toolchain_command(&mut command, "rustfmt zccache formatter")?;
-        return Ok(status.code().unwrap_or(1));
-    }
-
     let cache_root = if let Some(path) =
         crate::binaries::non_empty_env_path(crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR)
     {

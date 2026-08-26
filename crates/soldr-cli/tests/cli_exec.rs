@@ -55,10 +55,10 @@ fn fake_direct_rustup_cargo_script(log_path: &Path) -> String {
 }
 
 #[test]
-fn exec_cargo_build_routes_through_child_shims_and_zccache() {
+fn exec_cargo_build_routes_through_child_shims() {
     let cache_root = unique_temp_dir("exec-cargo-zccache-shims");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     write_fake_script(&cargo, &fake_exec_nested_cargo_script(&log_path));
 
     let cargo_home = cache_root.join("cargo-home");
@@ -73,7 +73,6 @@ fn exec_cargo_build_routes_through_child_shims_and_zccache() {
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env_remove("SOLDR_CHILD_SHIMS_ACTIVE")
         .env_remove("SOLDR_DISABLE_CHILD_SHIMS")
         .env_remove("SOLDR_TARGET_CACHE_MODE")
@@ -104,7 +103,7 @@ fn exec_cargo_build_routes_through_child_shims_and_zccache() {
     );
     assert!(
         log.lines()
-            .any(|line| line.contains("zccache wrapper") && line.contains("exec_demo")),
-        "nested cargo rustc call should route through zccache: {log}"
+            .any(|line| line.starts_with("rustc ") && line.contains("exec_demo")),
+        "the child shim must forward nested cargo's compiler invocation: {log}"
     );
 }

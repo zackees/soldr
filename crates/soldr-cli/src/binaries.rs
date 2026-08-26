@@ -8,7 +8,7 @@ use crate::core::{
 use crate::fetch::VersionSpec;
 use crate::{
     REAL_TOOLCHAIN_BINARY_ENV_PREFIX, TEST_CARGO_BIN_ENV_VAR, TEST_RUSTC_BIN_ENV_VAR,
-    TEST_RUSTUP_BIN_ENV_VAR, TEST_ZCCACHE_BIN_ENV_VAR,
+    TEST_RUSTUP_BIN_ENV_VAR,
 };
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;

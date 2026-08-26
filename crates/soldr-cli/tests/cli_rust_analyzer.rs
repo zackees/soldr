@@ -42,7 +42,7 @@ fn rust_analyzer_spawned_cargo_routes_through_child_shims_and_zccache() {
     }
     let cache_root = unique_temp_dir("rust-analyzer-zccache-shims");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     write_fake_script(&cargo, &fake_rust_analyzer_nested_cargo_script(&log_path));
     let rust_analyzer = install_fake_rust_analyzer(&log_path);
 
@@ -51,7 +51,6 @@ fn rust_analyzer_spawned_cargo_routes_through_child_shims_and_zccache() {
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env("SOLDR_REAL_RUST_ANALYZER", &rust_analyzer)
         .env_remove("CARGO")
         .env_remove("RUSTC")

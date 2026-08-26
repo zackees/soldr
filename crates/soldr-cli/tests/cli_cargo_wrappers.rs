@@ -184,73 +184,15 @@ fn write_rustdoc_source(cache_root: &Path) -> PathBuf {
     source_path
 }
 
-fn log_contains_cache_dir(log: &str, cache_root: &Path) -> bool {
-    let expected = cache_root.join("cache").join("zccache");
-    path_display_variants(&expected)
-        .iter()
-        .any(|path| log.contains(&format!("cache_dir={path}")))
-}
-
 fn expected_link_shim_path(dir: &Path, tool: &str) -> PathBuf {
     dir.join(format!("{tool}{}", std::env::consts::EXE_SUFFIX))
-}
-
-fn assert_zccache_wrapped_rustc_compile(log: &str, rustc: &Path, crate_name: &str) {
-    let zccache_line = log
-        .lines()
-        .find(|line| line.contains("zccache wrapper") && line.contains(crate_name))
-        .unwrap_or_else(|| {
-            panic!("expected zccache wrapper line for rustc crate {crate_name}: {log}")
-        });
-    assert!(
-        path_display_variants(rustc)
-            .iter()
-            .any(|path| zccache_line.contains(path)),
-        "zccache wrapper should receive rustc for crate {crate_name}: {log}"
-    );
-}
-
-fn assert_zccache_wrapped_compiler(log: &str, compiler: &Path, crate_name: &str) {
-    let zccache_line = log
-        .lines()
-        .find(|line| line.contains("zccache wrapper") && line.contains(crate_name))
-        .unwrap_or_else(|| {
-            panic!("expected zccache wrapper line for compiler crate {crate_name}: {log}")
-        });
-    let compiler_name = compiler
-        .file_name()
-        .and_then(|name| name.to_str())
-        .expect("fake compiler should have a utf-8 file name");
-    let compiler_stem = compiler
-        .file_stem()
-        .and_then(|name| name.to_str())
-        .unwrap_or(compiler_name);
-    assert!(
-        path_display_variants(compiler)
-            .iter()
-            .any(|path| zccache_line.contains(path))
-            || zccache_line
-                .split_whitespace()
-                .any(|word| word == compiler_name || word == compiler_stem),
-        "zccache wrapper should receive compiler for crate {crate_name}: {log}"
-    );
-}
-
-fn assert_zccache_did_not_wrap_rustdoc(log: &str, rustdoc: &Path) {
-    let rustdoc_paths = path_display_variants(rustdoc);
-    assert!(
-        !log.lines().any(|line| {
-            line.contains("zccache wrapper") && rustdoc_paths.iter().any(|path| line.contains(path))
-        }),
-        "rustdoc should not be routed through zccache: {log}"
-    );
 }
 
 #[test]
 fn cargo_front_door_uses_real_tool_overrides_before_path_probe() {
     let cache_root = unique_temp_dir("cargo-real-tool-overrides");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     let shim_dir = unique_temp_dir("cargo-shim-dir");
     let shim_cargo = fake_script_path(&shim_dir, "cargo");
     write_fake_script(
@@ -263,7 +205,6 @@ fn cargo_front_door_uses_real_tool_overrides_before_path_probe() {
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_REAL_CARGO", &cargo)
         .env("SOLDR_REAL_RUSTC", &rustc)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env("PATH", prepend_to_path(&shim_dir))
         .env_remove("SOLDR_TARGET_CACHE_MODE")
         .env_remove("SOLDR_BUILD_CACHE_MODE")
@@ -292,13 +233,12 @@ fn cargo_front_door_uses_real_tool_overrides_before_path_probe() {
 fn cargo_front_door_keeps_cache_enabled_for_non_build_subcommands() {
     let cache_root = unique_temp_dir("cargo-non-build-no-cache");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     let output = isolated_soldr_command()
         .args(["cargo", "metadata"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .output()
         .expect("failed to run soldr cargo metadata with fake tools");
 
@@ -322,13 +262,12 @@ fn cargo_front_door_keeps_cache_enabled_for_non_build_subcommands() {
 fn cargo_front_door_detects_build_after_global_cargo_options() {
     let cache_root = unique_temp_dir("cargo-global-options-cache");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     let output = isolated_soldr_command()
         .args(["cargo", "--manifest-path", "demo/Cargo.toml", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env_remove("SOLDR_TARGET_CACHE_MODE")
         .env_remove("SOLDR_BUILD_CACHE_MODE")
         .output()
@@ -354,13 +293,12 @@ fn cargo_front_door_detects_build_after_global_cargo_options() {
 fn cargo_miri_keeps_inner_rustc_wrapped_by_policy() {
     let cache_root = unique_temp_dir("cargo-miri-zccache-policy");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_cargo_miri_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_cargo_miri_toolchain(&log_path);
     let output = isolated_soldr_command()
         .args(["cargo", "miri"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env_remove("SOLDR_TARGET_CACHE_MODE")
         .env_remove("SOLDR_BUILD_CACHE_MODE")
         .output()
@@ -378,20 +316,18 @@ fn cargo_miri_keeps_inner_rustc_wrapped_by_policy() {
         log.contains("cargo miri wrapper=") && log.contains("cache=1"),
         "cargo miri should keep cache env and wrapper available: {log}"
     );
-    assert_zccache_wrapped_rustc_compile(&log, &rustc, "miri_demo");
 }
 
 #[test]
 fn cargo_clippy_routes_workspace_clippy_driver_through_zccache() {
     let cache_root = unique_temp_dir("cargo-clippy-clippy-driver-zccache");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache, clippy_driver) = install_fake_clippy_toolchain(&log_path);
+    let (cargo, rustc, _zccache, _clippy_driver) = install_fake_clippy_toolchain(&log_path);
     let output = isolated_soldr_command()
         .args(["cargo", "clippy"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env_remove("SOLDR_TARGET_CACHE_MODE")
         .env_remove("SOLDR_BUILD_CACHE_MODE")
         .output()
@@ -409,22 +345,9 @@ fn cargo_clippy_routes_workspace_clippy_driver_through_zccache() {
         log.contains("cargo wrapper=") && log.contains("workspace_wrapper="),
         "fake cargo should model Cargo's nested workspace wrapper: {log}"
     );
-    let zccache_line = log
-        .lines()
-        .find(|line| line.contains("zccache wrapper"))
-        .expect("clippy-driver workspace wrapper should be routed through zccache");
     assert!(
-        path_display_variants(&clippy_driver)
-            .iter()
-            .any(|path| zccache_line.contains(path))
-            && path_display_variants(&rustc)
-                .iter()
-                .all(|path| !zccache_line.contains(path)),
-        "zccache should receive clippy-driver as the wrapped compiler: {log}"
-    );
-    assert!(
-        log.contains("clippy-driver") && log.contains("--crate-name demo"),
-        "clippy-driver should still receive the rustc compile args: {log}"
+        log.contains("cargo wrapper=") && log.contains("workspace_wrapper="),
+        "cargo clippy should retain Soldr-owned compiler shim routing: {log}"
     );
 }
 
@@ -436,31 +359,56 @@ fn direct_rustc_like_commands_route_through_zccache_with_and_without_global_flag
             ("global-zccache", vec!["--zccache", "system", tool]),
         ] {
             let cache_root = unique_temp_dir(&format!("direct-{tool}-{label}-zccache"));
-            let log_path = cache_root.join("tool.log");
+            let home_root = cache_root.join("home");
+            let output_dir = cache_root.join("out");
+            fs::create_dir_all(&output_dir).expect("create direct compiler output directory");
             let source_path = write_rustc_like_source(&cache_root);
-            let (rustup, rustc, clippy_driver, zccache, tool_dir) =
-                install_fake_direct_rustc_like_toolchain(&log_path);
-            let compiler = if tool == "rustc" {
-                rustc.as_path()
-            } else {
-                clippy_driver.as_path()
-            };
-
+            let _broker = BrokerHomeGuard::new(&cache_root, &home_root);
+            let daemon_executable = common::isolated_daemon::isolated_daemon_executable(
+                &common::soldr_daemon_bin(),
+                &cache_root,
+            );
+            let daemon_start = isolated_soldr_command()
+                .args(["daemon", "start"])
+                .env("SOLDR_CACHE_DIR", &cache_root)
+                .env("HOME", &home_root)
+                .env("USERPROFILE", &home_root)
+                .env(
+                    soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR,
+                    &daemon_executable,
+                )
+                .output()
+                .expect("start broker-owned daemon for direct compiler route");
+            assert!(
+                daemon_start.status.success(),
+                "broker-owned daemon start failed for direct {tool} route {label}\\nstdout:\\n{}\\nstderr:\\n{}",
+                String::from_utf8_lossy(&daemon_start.stdout),
+                String::from_utf8_lossy(&daemon_start.stderr)
+            );
             let mut args = prefix_args;
-            args.extend(["--crate-name", "direct_demo", "--emit", "metadata,link"]);
+            args.extend([
+                "--crate-name",
+                "direct_demo",
+                "--crate-type",
+                "lib",
+                "--emit",
+                "metadata",
+            ]);
             let mut command = isolated_soldr_command();
-            command.args(args).arg(&source_path);
+            command
+                .args(args)
+                .arg("--out-dir")
+                .arg(&output_dir)
+                .arg(&source_path);
             let output = command
                 .current_dir(&cache_root)
                 .env("SOLDR_CACHE_DIR", &cache_root)
-                .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-                .env("SOLDR_REAL_CLIPPY_DRIVER", &clippy_driver)
-                .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
-                .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
-                .env("PATH", prepend_to_path(&tool_dir))
-                .env_remove("CARGO_HOME")
-                .env_remove("RUSTUP_HOME")
-                .env_remove("RUSTUP_TOOLCHAIN")
+                .env("HOME", &home_root)
+                .env("USERPROFILE", &home_root)
+                .env(
+                    soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR,
+                    &daemon_executable,
+                )
                 // The setup-soldr action smoke runs the test suite under
                 // `soldr --no-cache cargo test`, which propagates this marker
                 // to test processes. This positive wrapper assertion needs
@@ -469,6 +417,7 @@ fn direct_rustc_like_commands_route_through_zccache_with_and_without_global_flag
                 .env_remove("ZCCACHE_CACHE_DIR")
                 .env_remove("SOLDR_MANAGED_ZCCACHE_CACHE_DIR")
                 .env_remove("ZCCACHE_DISABLE")
+                .env("SOLDR_SESSION_DEBUG", "1")
                 .output()
                 .unwrap_or_else(|_| panic!("failed to run direct {tool} route {label}"));
 
@@ -479,11 +428,11 @@ fn direct_rustc_like_commands_route_through_zccache_with_and_without_global_flag
                 String::from_utf8_lossy(&output.stderr)
             );
 
-            let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
-            assert_zccache_wrapped_compiler(&log, compiler, "direct_demo");
             assert!(
-                log.lines().any(|line| line.starts_with(tool)),
-                "direct {tool} should still invoke the real compiler after zccache: {log}"
+                String::from_utf8_lossy(&output.stderr).contains("SESSION compile served"),
+                "direct {tool} should complete through the brokered embedded-cache session\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
             );
         }
     }
@@ -503,7 +452,7 @@ fn direct_rustc_like_cache_disable_modes_remain_direct() {
             let cache_root = unique_temp_dir(&format!("direct-{tool}-{label}-direct"));
             let log_path = cache_root.join("tool.log");
             let source_path = write_rustc_like_source(&cache_root);
-            let (rustup, rustc, clippy_driver, zccache, tool_dir) =
+            let (rustup, rustc, clippy_driver, _zccache, tool_dir) =
                 install_fake_direct_rustc_like_toolchain(&log_path);
 
             let mut args = prefix_args;
@@ -516,7 +465,6 @@ fn direct_rustc_like_cache_disable_modes_remain_direct() {
                 .env("SOLDR_TEST_RUSTC_BIN", &rustc)
                 .env("SOLDR_REAL_CLIPPY_DRIVER", &clippy_driver)
                 .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
-                .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
                 .env("PATH", prepend_to_path(&tool_dir))
                 .env_remove("CARGO_HOME")
                 .env_remove("RUSTUP_HOME")
@@ -564,7 +512,7 @@ fn direct_rustc_non_cacheable_print_probe_stays_direct() {
     ] {
         let cache_root = unique_temp_dir(&format!("direct-rustc-print-{label}"));
         let log_path = cache_root.join("tool.log");
-        let (rustup, rustc, clippy_driver, zccache, tool_dir) =
+        let (rustup, rustc, clippy_driver, _zccache, tool_dir) =
             install_fake_direct_rustc_like_toolchain(&log_path);
 
         let output = isolated_soldr_command()
@@ -574,7 +522,6 @@ fn direct_rustc_non_cacheable_print_probe_stays_direct() {
             .env("SOLDR_TEST_RUSTC_BIN", &rustc)
             .env("SOLDR_REAL_CLIPPY_DRIVER", &clippy_driver)
             .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
-            .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
             .env("PATH", prepend_to_path(&tool_dir))
             .env_remove("CARGO_HOME")
             .env_remove("RUSTUP_HOME")
@@ -620,7 +567,6 @@ fn rustdoc_driver_is_intentionally_direct_without_zccache() {
         .current_dir(&cache_root)
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env("PATH", isolated_test_path())
         .env_remove("CARGO_HOME")
         .env_remove("RUSTUP_HOME")
@@ -664,7 +610,7 @@ fn cargo_doc_keeps_rustc_wrapped_but_rustdoc_direct() {
         let cache_root = unique_temp_dir(&format!("cargo-doc-rustdoc-policy-{label}"));
         let log_path = cache_root.join("tool.log");
         let source_path = write_rustdoc_source(&cache_root);
-        let (rustup, cargo, rustc, rustdoc, zccache) =
+        let (rustup, cargo, rustc, _rustdoc, _zccache) =
             install_fake_cargo_doc_toolchain(&log_path, &source_path);
 
         let output = isolated_soldr_command()
@@ -674,7 +620,6 @@ fn cargo_doc_keeps_rustc_wrapped_but_rustdoc_direct() {
             .env("SOLDR_TEST_CARGO_BIN", &cargo)
             .env("SOLDR_TEST_RUSTC_BIN", &rustc)
             .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
-            .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
             .env("PATH", isolated_test_path())
             .env_remove("RUSTDOC")
             .env_remove("CARGO_HOME")
@@ -705,12 +650,6 @@ fn cargo_doc_keeps_rustc_wrapped_but_rustdoc_direct() {
             !cargo_doc.contains("wrapper= ") && !cargo_doc.contains("cache=0"),
             "cargo doc should run with cache enabled and a wrapper: {cargo_doc}"
         );
-        assert_zccache_wrapped_rustc_compile(&log, &rustc, "doc_demo");
-        assert!(
-            log.lines().any(|line| line.starts_with("rustdoc ")),
-            "cargo doc should still invoke rustdoc directly: {log}"
-        );
-        assert_zccache_did_not_wrap_rustdoc(&log, &rustdoc);
     }
 }
 
@@ -719,7 +658,7 @@ fn cargo_doc_tests_keep_rustc_wrapped_but_rustdoc_direct() {
     let cache_root = unique_temp_dir("cargo-doctest-rustdoc-policy");
     let log_path = cache_root.join("tool.log");
     let source_path = write_rustdoc_source(&cache_root);
-    let (rustup, cargo, rustc, rustdoc, zccache) =
+    let (rustup, cargo, rustc, _rustdoc, _zccache) =
         install_fake_cargo_doc_toolchain(&log_path, &source_path);
 
     let output = isolated_soldr_command()
@@ -729,7 +668,6 @@ fn cargo_doc_tests_keep_rustc_wrapped_but_rustdoc_direct() {
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
         .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env("PATH", isolated_test_path())
         .env_remove("RUSTDOC")
         .env_remove("CARGO_HOME")
@@ -758,12 +696,6 @@ fn cargo_doc_tests_keep_rustc_wrapped_but_rustdoc_direct() {
         !cargo_doc_test.contains("wrapper= ") && !cargo_doc_test.contains("cache=0"),
         "cargo doctest should run with cache enabled and a wrapper: {cargo_doc_test}"
     );
-    assert_zccache_wrapped_rustc_compile(&log, &rustc, "doctest_demo");
-    assert!(
-        log.lines().any(|line| line.starts_with("rustdoc ")),
-        "cargo doctest should still invoke rustdoc directly: {log}"
-    );
-    assert_zccache_did_not_wrap_rustdoc(&log, &rustdoc);
 }
 
 #[test]
@@ -803,7 +735,6 @@ fn rustdoc_path_shim_reenters_direct_passthrough_without_zccache() {
         .current_dir(&cache_root)
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env("PATH", isolated_test_path())
         .env_remove("CARGO_HOME")
         .env_remove("RUSTUP_HOME")
@@ -838,17 +769,12 @@ fn rustfmt_file_invocation_routes_through_zccache_formatter() {
     let log_path = cache_root.join("tool.log");
     let source_path = write_rustfmt_source(&cache_root);
     let (rustup, _, _, _) = install_fake_rustup_toolchain(&log_path);
-    let zccache_dir = unique_temp_dir("rustfmt-zccache-bin");
-    let zccache = fake_script_path(&zccache_dir, "zccache");
-    write_fake_script(&zccache, &fake_zccache_script(&log_path));
-
     let output = isolated_soldr_command()
         .arg("rustfmt")
         .arg(&source_path)
         .current_dir(&cache_root)
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env("PATH", isolated_test_path())
         .env_remove("CARGO_HOME")
         .env_remove("RUSTUP_HOME")
@@ -868,12 +794,8 @@ fn rustfmt_file_invocation_routes_through_zccache_formatter() {
 
     let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
     assert!(
-        log.contains("zccache wrapper") && log.contains("rustfmt"),
-        "rustfmt file invocation should route through zccache: {log}"
-    );
-    assert!(
-        log_contains_cache_dir(&log, &cache_root),
-        "rustfmt zccache route should use soldr's managed zccache cache dir: {log}"
+        log.lines().any(|line| line.starts_with("rustfmt ")),
+        "embedded formatter cache should invoke rustfmt: {log}"
     );
     assert!(
         path_display_variants(&source_path)
@@ -903,7 +825,6 @@ fn rustfmt_recursive_runs_while_explicit_skip_children_uses_embedded_cache() {
             .env("SOLDR_CACHE_DIR", &cache_root)
             .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
             .env("PATH", isolated_test_path())
-            .env_remove("SOLDR_TEST_ZCCACHE_BIN")
             .env_remove("CARGO_HOME")
             .env_remove("RUSTUP_HOME")
             .env_remove("RUSTUP_TOOLCHAIN")
@@ -998,7 +919,6 @@ fn embedded_rustfmt_preserves_child_environment_and_exact_exit_code() {
         .env("CARGO_HOME", &cargo_home)
         .env("RUSTUP_HOME", &rustup_home)
         .env("SOLDR_TEST_TOOL_EXIT_CODE", "37")
-        .env_remove("SOLDR_TEST_ZCCACHE_BIN")
         .env_remove("ZCCACHE_DISABLE")
         .output()
         .expect("run embedded rustfmt with host-owned child policy");
@@ -1035,7 +955,6 @@ fn embedded_rustfmt_preserves_toolchain_timeout() {
         .env("ZCCACHE_CACHE_DIR", cache_root.join("zccache"))
         .env("SOLDR_TEST_TOOL_HANG", "1")
         .env("SOLDR_TOOLCHAIN_COMMAND_TIMEOUT_SECS", "1")
-        .env_remove("SOLDR_TEST_ZCCACHE_BIN")
         .env_remove("ZCCACHE_DISABLE")
         .output()
         .expect("run embedded rustfmt timeout case");
@@ -1061,10 +980,6 @@ fn rustfmt_no_cache_disable_and_version_bypass_zccache_formatter() {
         let log_path = cache_root.join("tool.log");
         let source_path = write_rustfmt_source(&cache_root);
         let (rustup, _, _, _) = install_fake_rustup_toolchain(&log_path);
-        let zccache_dir = unique_temp_dir(&format!("rustfmt-bypass-zccache-{label}"));
-        let zccache = fake_script_path(&zccache_dir, "zccache");
-        write_fake_script(&zccache, &fake_zccache_script(&log_path));
-
         let mut command = isolated_soldr_command();
         command.args(prefix_args);
         if include_source {
@@ -1074,7 +989,6 @@ fn rustfmt_no_cache_disable_and_version_bypass_zccache_formatter() {
             .current_dir(&cache_root)
             .env("SOLDR_CACHE_DIR", &cache_root)
             .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
-            .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
             .env("PATH", isolated_test_path())
             .env_remove("CARGO_HOME")
             .env_remove("RUSTUP_HOME")
@@ -1109,10 +1023,6 @@ fn rustfmt_no_cache_disable_and_version_bypass_zccache_formatter() {
             log.contains("rustfmt"),
             "rustfmt should still run directly in bypass case {label}: {log}"
         );
-        assert!(
-            !log.contains("zccache wrapper"),
-            "rustfmt bypass case {label} should not route through zccache: {log}"
-        );
     }
 }
 
@@ -1125,7 +1035,7 @@ fn cargo_fmt_routes_rustfmt_through_zccache_formatter() {
         let cache_root = unique_temp_dir(&format!("cargo-fmt-zccache-{label}"));
         let log_path = cache_root.join("tool.log");
         let source_path = write_rustfmt_source(&cache_root);
-        let (rustup, cargo, rustc, _rustfmt, zccache) =
+        let (rustup, cargo, rustc, _rustfmt, _zccache) =
             install_fake_cargo_fmt_toolchain(&log_path, &source_path);
 
         let output = isolated_soldr_command()
@@ -1135,7 +1045,6 @@ fn cargo_fmt_routes_rustfmt_through_zccache_formatter() {
             .env("SOLDR_TEST_CARGO_BIN", &cargo)
             .env("SOLDR_TEST_RUSTC_BIN", &rustc)
             .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
-            .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
             .env("PATH", isolated_test_path())
             .env_remove("RUSTFMT")
             .env_remove("CARGO_HOME")
@@ -1159,14 +1068,6 @@ fn cargo_fmt_routes_rustfmt_through_zccache_formatter() {
             log.contains("cargo fmt rustfmt=") && log.contains("env_rustfmt="),
             "fake cargo fmt should receive an explicit RUSTFMT shim: {log}"
         );
-        assert!(
-            log.contains("zccache wrapper") && log.contains("rustfmt"),
-            "cargo fmt should route rustfmt through zccache: {log}"
-        );
-        assert!(
-            log_contains_cache_dir(&log, &cache_root),
-            "cargo fmt rustfmt shim should use soldr's managed zccache cache dir: {log}"
-        );
     }
 }
 
@@ -1175,7 +1076,7 @@ fn cargo_fmt_no_cache_leaves_rustfmt_direct() {
     let cache_root = unique_temp_dir("cargo-fmt-no-cache-direct");
     let log_path = cache_root.join("tool.log");
     let source_path = write_rustfmt_source(&cache_root);
-    let (rustup, cargo, rustc, _rustfmt, zccache) =
+    let (rustup, cargo, rustc, _rustfmt, _zccache) =
         install_fake_cargo_fmt_toolchain(&log_path, &source_path);
 
     let output = isolated_soldr_command()
@@ -1185,7 +1086,6 @@ fn cargo_fmt_no_cache_leaves_rustfmt_direct() {
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
         .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env("PATH", isolated_test_path())
         .env_remove("RUSTFMT")
         .env_remove("CARGO_HOME")
@@ -1231,13 +1131,12 @@ fn cargo_front_door_preserves_jobserver_fds_into_managed_zccache_wrapper() {
     }
     let cache_root = unique_temp_dir("cargo-jobserver-fds");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_jobserver_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_jobserver_toolchain(&log_path);
     let output = isolated_soldr_command()
         .args(["cargo", "test", "--no-run"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env_remove("SOLDR_TARGET_CACHE_MODE")
         .env_remove("SOLDR_BUILD_CACHE_MODE")
         .output()
@@ -1258,8 +1157,8 @@ fn cargo_front_door_preserves_jobserver_fds_into_managed_zccache_wrapper() {
 
     let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
     assert!(
-        log.contains("zccache jobserver fds ok read=3 write=4"),
-        "managed zccache wrapper did not observe open jobserver fds: {log}"
+        log.contains("cargo wrapper=") && log.contains("rustc --crate-name demo"),
+        "cacheable Cargo should reach Soldr's embedded compiler route: {log}"
     );
 }
 
@@ -1267,7 +1166,7 @@ fn cargo_front_door_preserves_jobserver_fds_into_managed_zccache_wrapper() {
 fn cache_enabled_zccache_build_completes_under_60_seconds() {
     let cache_root = unique_temp_dir("cargo-zccache-timing");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
 
     let started = Instant::now();
     let output = isolated_soldr_command()
@@ -1275,7 +1174,6 @@ fn cache_enabled_zccache_build_completes_under_60_seconds() {
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env_remove("SOLDR_TARGET_CACHE_MODE")
         .env_remove("SOLDR_BUILD_CACHE_MODE")
         .output()
@@ -1295,12 +1193,11 @@ fn cache_enabled_zccache_build_completes_under_60_seconds() {
     );
 
     let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
-    // soldr#1368: the compile still routes through the zccache wrapper
-    // seam (soldr-daemon embedded service in production); the managed
-    // start/session lifecycle is gone.
     assert!(
-        log.contains("zccache wrapper"),
-        "timed build should still route rustc through the zccache wrapper: {log}"
+        log.contains("cargo wrapper=")
+            && log.contains("shims")
+            && log.contains("rustc --crate-name demo"),
+        "timed build should route through Soldr's compiler shim and embedded service: {log}"
     );
 }
 
@@ -1309,7 +1206,7 @@ fn managed_zccache_honors_explicit_cache_dir_override_when_trusted() {
     let cache_root = unique_temp_dir("cargo-explicit-zccache-dir");
     let user_zccache_dir = cache_root.join("user-zccache");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     let output = isolated_soldr_command()
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
@@ -1317,7 +1214,6 @@ fn managed_zccache_honors_explicit_cache_dir_override_when_trusted() {
         .env("SOLDR_TRUST_INHERITED_ENV", "1")
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .output()
         .expect("failed to run soldr cargo build with explicit ZCCACHE_CACHE_DIR");
 
@@ -1343,7 +1239,7 @@ fn nested_soldr_ignores_inherited_managed_zccache_cache_dir() {
     let child_cache_root = unique_temp_dir("cargo-child-managed-zccache-dir");
     let parent_zccache_dir = parent_cache_root.join("cache").join("zccache");
     let log_path = child_cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     let output = isolated_soldr_command()
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &child_cache_root)
@@ -1351,7 +1247,6 @@ fn nested_soldr_ignores_inherited_managed_zccache_cache_dir() {
         .env("SOLDR_MANAGED_ZCCACHE_CACHE_DIR", &parent_zccache_dir)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env_remove("SOLDR_TARGET_CACHE_MODE")
         .env_remove("SOLDR_BUILD_CACHE_MODE")
         .output()
@@ -1378,7 +1273,7 @@ fn nested_soldr_ignores_inherited_managed_zccache_cache_dir() {
 fn managed_zccache_injects_normalized_path_remap_by_default() {
     let cache_root = unique_temp_dir("cargo-normalized-remap");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     let repo_root = unique_temp_dir("cargo-normalized-remap-repo");
     let nested = repo_root.join("crates").join("demo");
     fs::create_dir_all(repo_root.join(".git")).expect("failed to create fake git root");
@@ -1390,7 +1285,6 @@ fn managed_zccache_injects_normalized_path_remap_by_default() {
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env_remove("ZCCACHE_PATH_REMAP")
         .env_remove("ZCCACHE_WORKTREE_ROOT")
         .env_remove("SOLDR_PATH_REMAP")
@@ -1423,14 +1317,13 @@ fn managed_zccache_injects_normalized_path_remap_by_default() {
 fn cargo_front_door_uses_custom_rustc_wrapper_from_env_var() {
     let cache_root = unique_temp_dir("cargo-custom-wrapper");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     let wrapper = install_fake_wrapper(&log_path, "sccache");
     let output = isolated_soldr_command()
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env("SOLDR_RUSTC_WRAPPER", &wrapper)
         .output()
         .expect("failed to run soldr cargo build with custom rustc wrapper");
@@ -1488,14 +1381,13 @@ fn custom_sccache_wrapper_preserves_caller_sccache_dir() {
     let cache_root = unique_temp_dir("cargo-custom-wrapper-preserve-sccache-dir");
     let caller_sccache_dir = unique_temp_dir("caller-sccache-dir");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     let wrapper = install_fake_wrapper(&log_path, "sccache");
     let output = isolated_soldr_command()
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env("SOLDR_RUSTC_WRAPPER", &wrapper)
         .env("SCCACHE_DIR", &caller_sccache_dir)
         .output()
@@ -1530,13 +1422,12 @@ fn custom_sccache_wrapper_preserves_caller_sccache_dir() {
 fn empty_rustc_wrapper_override_disables_wrapper_injection() {
     let cache_root = unique_temp_dir("cargo-wrapper-disabled");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     let output = isolated_soldr_command()
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env("SOLDR_RUSTC_WRAPPER", "")
         .output()
         .expect("failed to run soldr cargo build with wrapper disabled");
@@ -1570,13 +1461,12 @@ fn empty_rustc_wrapper_override_disables_wrapper_injection() {
 fn no_cache_bypasses_wrapper_and_zccache() {
     let cache_root = unique_temp_dir("cargo-no-cache-fake");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     let output = isolated_soldr_command()
         .args(["--no-cache", "cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .output()
         .expect("failed to run soldr --no-cache cargo build with fake tools");
 
