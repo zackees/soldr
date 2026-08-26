@@ -1057,6 +1057,10 @@ jobs:
       runs_on: ubuntu-24.04-arm
       target: aarch64-unknown-linux-gnu
       artifact_name: soldr-ci-e2e-linux-arm64
+      # soldr#2874: this is the only native-ARM64 runner in the matrix, so it
+      # is the only place the GNU lifecycle can be prepared on the host shape
+      # it targets.
+      assert_native_gnu_prepare: true
 
   # ---------- Linux x64 (musl) ----------
   # soldr#1978 item 3. This lane had a paired `target-run` on `ubuntu-24.04`

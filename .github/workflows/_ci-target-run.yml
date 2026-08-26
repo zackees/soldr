@@ -40,6 +40,16 @@ on:
           Give a slow native archive replay a 55-minute job budget instead of
           the 30-minute default. The PEP 517 smoke keeps its larger combined
           budget below.
+      assert_native_gnu_prepare:
+        type: boolean
+        required: false
+        default: false
+        description: >-
+          soldr#2874: run the target's own lifecycle preparation on this
+          native runner and execute whatever compiler it selects. Only
+          meaningful when the runner's architecture matches the target --
+          the bug it guards is a bundle chosen by target shape and run on a
+          host of a different shape.
       replay_partitions:
         type: string
         required: false
@@ -206,6 +216,26 @@ jobs:
         if: always()
         shell: bash
         run: python .github/scripts/report_free_space.py --label before
+
+      # soldr#2874: the lane that would have caught the bug.
+      #
+      # This job already runs on a runner native to the target, and the
+      # cross-build lane that feeds it runs on x86_64 -- so nothing anywhere
+      # ran the target's own *preparation* on a native ARM64 host. Preparation
+      # succeeded there; it just chose an x86_64 compiler, and the failure
+      # surfaced hundreds of megabytes later inside a `-sys` crate as
+      # `Exec format error (os error 8)`.
+      #
+      # Before the replay, so a wrong toolchain decision is reported as
+      # itself rather than as a pile of unrelated test failures.
+      - name: Native GNU preparation selects an executable compiler (soldr#2874)
+        if: ${{ inputs.assert_native_gnu_prepare }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python .github/scripts/assert_native_gnu_prepare.py \
+            --soldr "$SOLDR_BIN" \
+            --target '${{ inputs.target }}'
 
       - name: Run complete pre-built test archive
         shell: bash

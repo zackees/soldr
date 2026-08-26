@@ -155,8 +155,27 @@ pub(crate) async fn prepare_target(
         ));
     }
 
-    let gnu_uses_catalogue_toolchain =
+    let target_wants_catalogue_gnu =
         attrs.os == TargetOs::Linux && attrs.abi == Some(TargetAbi::Gnu);
+    let gnu_uses_catalogue_toolchain = if target_wants_catalogue_gnu {
+        match decide_gnu_bundle(
+            crate::platform::host::facts::os(),
+            crate::platform::host::facts::arch(),
+            host,
+            target,
+            base,
+            glibc_floor.map(|(_, floor)| floor),
+            host_cross_guard_disabled,
+        ) {
+            GnuBundleDecision::UseCatalogue => true,
+            GnuBundleDecision::UseHostCompiler => false,
+            GnuBundleDecision::Reject(message) => {
+                return Err(SoldrError::UnsupportedPlatform(message))
+            }
+        }
+    } else {
+        false
+    };
     if gnu_uses_catalogue_toolchain {
         // Env keys come from the base triple: a dot is not legal in an
         // environment variable name, so `CC_x86_64_unknown_linux_gnu.2.17`
@@ -219,6 +238,127 @@ pub(crate) async fn prepare_target(
     Ok(prep)
 }
 
+/// What to do about the catalogue GNU/Linux bundle for one prepare call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum GnuBundleDecision {
+    /// Fetch the bundle and export its compiler/sysroot environment.
+    UseCatalogue,
+    /// The bundle cannot execute here, but the host's own GNU toolchain
+    /// already targets this triple. Export nothing and let cc-rs and rustc
+    /// find the host `cc`, exactly as they would without soldr in the
+    /// picture.
+    UseHostCompiler,
+    /// Refuse, with a message that names both shapes.
+    Reject(String),
+}
+
+/// Decide, from host shape and target shape, whether the catalogue GNU
+/// bundle applies.
+///
+/// soldr#2874: the same class of bug as soldr#2437, one level down. That
+/// guard asks whether the host *OS* can execute a Linux ELF; this asks
+/// whether the host *architecture* can. Both catalogue bundles are
+/// x86_64-hosted -- `linux-arm64-gnu` is a cross compiler that emits ARM64,
+/// not an ARM64-hosted native one -- so selecting by target shape alone
+/// handed a native `ubuntu-24.04-arm` runner an x86_64 compiler, which died
+/// with `Exec format error (os error 8)` hundreds of megabytes and one
+/// `-sys` crate later.
+///
+/// `force_runnable` is the existing `SOLDR_WINDOWS_LINUX_CROSS_GUARD=off`
+/// test seam, not a second one. Its whole purpose is already "this host is
+/// pretending it can run the Linux bundle": `cli_build_fetch_overlap` and
+/// `prepare_env_contract_tests` both seed a fake bundle out of `#!/bin/sh`
+/// stubs and exercise the catalogue path from hosts that could never execute
+/// a real one -- macOS and Windows lanes for the first, and a native ARM64
+/// runner for the second, whose fixture deliberately targets the other
+/// architecture. That is the same claim this function evaluates, so it takes
+/// the same switch rather than growing a parallel one.
+///
+/// Pure, and taking the host as arguments rather than reading `cfg!`,
+/// because the host this has to be correct for is not the host soldr's tests
+/// run on. A `cfg!`-driven answer could only be checked by running on the
+/// machine that already has the bug.
+pub(crate) fn decide_gnu_bundle(
+    host_os: crate::platform::host::facts::HostOs,
+    host_arch: crate::platform::host::facts::HostArch,
+    host_triple: &str,
+    target: &str,
+    base: &str,
+    glibc_floor: Option<&str>,
+    force_runnable: bool,
+) -> GnuBundleDecision {
+    if force_runnable
+        || crate::fetch::gnu_linux_toolchain::bundle_host_fitness(host_os, host_arch).is_runnable()
+    {
+        return GnuBundleDecision::UseCatalogue;
+    }
+    if let Some(floor) = glibc_floor {
+        // An explicit floor is a request for the pinned sysroot
+        // specifically. Building against the host's own newer glibc would
+        // produce an artifact that claims a floor it does not have, which is
+        // worse than refusing.
+        return GnuBundleDecision::Reject(gnu_bundle_host_message(
+            target,
+            host_triple,
+            Some(floor),
+        ));
+    }
+    if base == host_triple {
+        GnuBundleDecision::UseHostCompiler
+    } else {
+        // A cross-build that needs the bundle, from a host that cannot run
+        // it. Nothing stands in.
+        GnuBundleDecision::Reject(gnu_bundle_host_message(target, host_triple, None))
+    }
+}
+/// Why a host that cannot execute the catalogue GNU bundle is being told no.
+///
+/// soldr#2874 asks for a *precise* unsupported-host diagnostic rather than
+/// the `Exec format error (os error 8)` that surfaces hundreds of megabytes
+/// and one `-sys` crate later. Precise here means naming both shapes: the
+/// bundle is selected by target shape and constrained by host shape, and the
+/// whole defect was those two being conflated.
+fn gnu_bundle_host_message(target: &str, host: &str, floor: Option<&str>) -> String {
+    let root_cause = format!(
+        concat!(
+            "the catalogue GNU/Linux toolchain cannot run on this host: every ",
+            "bundle is hosted on `{bundle_host}`, and this host is `{host}` ",
+            "(soldr#2874). The bundle slug names the target shape, not the ",
+            "host shape -- `linux-arm64-gnu` is an x86_64-hosted cross ",
+            "compiler that emits ARM64, so executing it here would fail with ",
+            "`Exec format error (os error 8)`."
+        ),
+        bundle_host = crate::fetch::gnu_linux_toolchain::GNU_LINUX_TOOLCHAIN_HOST_TRIPLE,
+        host = host
+    );
+    match floor {
+        Some(floor) => format!(
+            concat!(
+                "cannot prepare `{target}`: {root_cause} The glibc {floor} ",
+                "floor comes from that bundle's pinned sysroot, so there is no ",
+                "host compiler that can stand in for it. Drop the `.{floor}` ",
+                "suffix to build natively against this host's glibc, or ",
+                "cross-build from an `{bundle_host}` host to keep the floor."
+            ),
+            target = target,
+            root_cause = root_cause,
+            floor = floor,
+            bundle_host = crate::fetch::gnu_linux_toolchain::GNU_LINUX_TOOLCHAIN_HOST_TRIPLE
+        ),
+        None => format!(
+            concat!(
+                "cannot prepare `{target}`: {root_cause} Cross-building ",
+                "`{target}` needs that bundle, and no host compiler stands in ",
+                "for it. Build on an `{bundle_host}` host, or build ",
+                "`{host}` natively on this one."
+            ),
+            target = target,
+            root_cause = root_cause,
+            bundle_host = crate::fetch::gnu_linux_toolchain::GNU_LINUX_TOOLCHAIN_HOST_TRIPLE,
+            host = host
+        ),
+    }
+}
 /// The soldr#2437 guard's diagnostic, split by target ABI (soldr#2722).
 ///
 /// One message for both ABIs was wrong once soldr#2319 landed: `soldr build`

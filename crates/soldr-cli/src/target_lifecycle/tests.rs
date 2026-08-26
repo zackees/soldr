@@ -314,3 +314,163 @@ fn both_guard_messages_keep_the_elf_compiler_root_cause() {
         );
     }
 }
+
+// ── soldr#2874: host shape vs target shape ───────────────────────────────
+//
+// Every bundle in the catalogue is x86_64-hosted; the slug names the target
+// shape. These pin the decision on hosts soldr's own CI does not run on,
+// which is the point -- the bug only appears on a native ARM64 Linux runner,
+// and a `cfg!`-driven answer could only be checked by running there.
+
+use crate::platform::host::facts::{HostArch, HostOs};
+
+const X64: &str = "x86_64-unknown-linux-gnu";
+const ARM64: &str = "aarch64-unknown-linux-gnu";
+
+fn decide(
+    arch: HostArch,
+    host: &str,
+    target: &str,
+    base: &str,
+    floor: Option<&str>,
+) -> GnuBundleDecision {
+    decide_gnu_bundle(HostOs::Linux, arch, host, target, base, floor, false)
+}
+
+#[test]
+fn an_x86_64_host_still_uses_the_catalogue_bundle_for_both_targets() {
+    // The regression guard for the fix itself: cross-building ARM64 from
+    // x86_64 is the case the bundle exists for and must stay unchanged.
+    assert_eq!(
+        decide(HostArch::X86_64, X64, ARM64, ARM64, None),
+        GnuBundleDecision::UseCatalogue
+    );
+    assert_eq!(
+        decide(HostArch::X86_64, X64, X64, X64, None),
+        GnuBundleDecision::UseCatalogue
+    );
+    assert_eq!(
+        decide(
+            HostArch::X86_64,
+            X64,
+            "x86_64-unknown-linux-gnu.2.17",
+            X64,
+            Some("2.17")
+        ),
+        GnuBundleDecision::UseCatalogue
+    );
+}
+
+#[test]
+fn a_native_arm64_host_building_arm64_uses_its_own_compiler() {
+    // soldr#2874's reproduction: `soldr cargo build --target
+    // aarch64-unknown-linux-gnu` on `ubuntu-24.04-arm`. The bundle was
+    // selected by target shape and then executed, giving `Exec format error
+    // (os error 8)`. Natively, the host toolchain already targets this
+    // triple, so the bundle was never load-bearing here.
+    assert_eq!(
+        decide(HostArch::Aarch64, ARM64, ARM64, ARM64, None),
+        GnuBundleDecision::UseHostCompiler
+    );
+}
+
+#[test]
+fn a_native_arm64_host_cross_building_x86_64_is_refused_precisely() {
+    // Nothing stands in for the bundle here: the host compiler targets
+    // ARM64, not x86_64. Refusing early beats failing inside the first
+    // `-sys` crate after a several-hundred-megabyte download.
+    let decision = decide(HostArch::Aarch64, ARM64, X64, X64, None);
+    let GnuBundleDecision::Reject(message) = decision else {
+        panic!("expected a rejection, got {decision:?}");
+    };
+    assert!(message.contains(X64), "{message}");
+    assert!(message.contains(ARM64), "{message}");
+    assert!(message.contains("soldr#2874"), "{message}");
+}
+
+#[test]
+fn an_explicit_glibc_floor_on_an_unsupported_host_is_refused_not_downgraded() {
+    // The failure mode this exists to prevent: silently building against the
+    // host's own newer glibc would produce an artifact that CLAIMS a 2.17
+    // floor it does not have. A wrong artifact is worse than a refusal.
+    let decision = decide(
+        HostArch::Aarch64,
+        ARM64,
+        "aarch64-unknown-linux-gnu.2.17",
+        ARM64,
+        Some("2.17"),
+    );
+    let GnuBundleDecision::Reject(message) = decision else {
+        panic!("expected a rejection, got {decision:?}");
+    };
+    assert!(message.contains("2.17"), "{message}");
+    // It has to say what to do instead, in both directions.
+    assert!(message.contains("Drop the `.2.17` suffix"), "{message}");
+    assert!(message.contains("cross-build from an"), "{message}");
+}
+
+#[test]
+fn the_diagnostic_names_the_host_shape_and_the_bundle_host_shape() {
+    // The defect was those two being conflated, so a message that mentions
+    // only one of them would not have prevented it.
+    let message = gnu_bundle_host_message(ARM64, ARM64, None);
+    assert!(
+        message.contains(crate::fetch::gnu_linux_toolchain::GNU_LINUX_TOOLCHAIN_HOST_TRIPLE),
+        "{message}"
+    );
+    assert!(message.contains("Exec format error"), "{message}");
+    assert!(
+        message.contains("names the target shape, not the host shape"),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_non_linux_host_is_not_treated_as_bundle_capable() {
+    // soldr#2437's guard runs earlier and owns the Windows message, but the
+    // fitness question must still have one answer -- an `x86_64` Windows
+    // host is not a host that can execute a Linux ELF.
+    assert_eq!(
+        crate::fetch::gnu_linux_toolchain::bundle_host_fitness(HostOs::Windows, HostArch::X86_64),
+        crate::fetch::gnu_linux_toolchain::BundleHostFitness::WrongOs
+    );
+    assert_eq!(
+        crate::fetch::gnu_linux_toolchain::bundle_host_fitness(HostOs::MacOs, HostArch::Aarch64),
+        crate::fetch::gnu_linux_toolchain::BundleHostFitness::WrongOs
+    );
+}
+
+#[test]
+fn an_unknown_linux_architecture_is_not_assumed_runnable() {
+    // Defaulting an unrecognised arch to "runnable" is how the original bug
+    // read: anything that was not explicitly excluded got the x86_64 ELF.
+    assert_eq!(
+        crate::fetch::gnu_linux_toolchain::bundle_host_fitness(
+            HostOs::Linux,
+            HostArch::Unknown("riscv64")
+        ),
+        crate::fetch::gnu_linux_toolchain::BundleHostFitness::WrongArch
+    );
+}
+
+#[test]
+fn the_existing_cross_guard_seam_still_forces_the_catalogue_path() {
+    // `cli_build_fetch_overlap` seeds a fake `linux-x64-gnu` bundle and runs
+    // with `SOLDR_WINDOWS_LINUX_CROSS_GUARD=off` so the catalogue machinery
+    // is exercised from macOS and Windows lanes. Those hosts fail the
+    // fitness check for real, so without honouring the same seam this fix
+    // would refuse and take three of that file's tests down with it -- which
+    // is exactly what the darwin lanes reported before this arm existed.
+    const MAC: &str = "aarch64-apple-darwin";
+    assert_eq!(
+        decide_gnu_bundle(HostOs::MacOs, HostArch::Aarch64, MAC, X64, X64, None, true),
+        GnuBundleDecision::UseCatalogue
+    );
+    // And it must be the seam doing it, not the host: with the seam off, a
+    // macOS host cannot execute a Linux ELF and there is no host compiler
+    // targeting a Linux triple to fall back to.
+    assert!(matches!(
+        decide_gnu_bundle(HostOs::MacOs, HostArch::Aarch64, MAC, X64, X64, None, false),
+        GnuBundleDecision::Reject(_)
+    ));
+}
