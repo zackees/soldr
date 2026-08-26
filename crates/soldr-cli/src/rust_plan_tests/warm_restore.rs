@@ -347,9 +347,6 @@ fn warm_restore_test_context(
     RustArtifactPlanContext {
         path: root.join("plan.json"),
         cache_dir: root.join("cache"),
-        zccache_daemon_cache_dir: root.join("daemon"),
-        zccache_daemon_cache_dir_env: true,
-        zccache_daemon_name: None,
         session_id: "session-test".to_string(),
         journal_path: root.join("journal"),
         backend: "fs".to_string(),

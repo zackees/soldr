@@ -120,7 +120,7 @@ fn resolve_target_directory_with_env(
     if !output.status.success() {
         return Err(SoldrError::Other(format!(
             "metadata failed while preparing the no-cache target directory: {}",
-            crate::zccache::command_stderr(&output),
+            crate::build_cache_session::command_stderr(&output),
         )));
     }
     let metadata: TargetDirectoryMetadata =

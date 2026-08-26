@@ -631,9 +631,6 @@ fn aborted_build_cleanup_prunes_rmetas_and_incremental_dirs() {
     let plan = crate::rust_plan::RustArtifactPlanContext {
         path: root.path().join("plan.json"),
         cache_dir: root.path().join("cache"),
-        zccache_daemon_cache_dir: root.path().join("daemon-cache"),
-        zccache_daemon_cache_dir_env: false,
-        zccache_daemon_name: None,
         session_id: "test-session".to_string(),
         journal_path: root.path().join("journal.jsonl"),
         backend: "local".to_string(),
@@ -2282,9 +2279,8 @@ fn persist_build_log_history_trusts_daemon_finalized_aggregate() {
 
     let session_dir = root.path().join("zc");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let session = crate::zccache_lifecycle::ZccacheBuildSession {
+    let session = crate::build_cache_session::BuildCacheSession {
         cache_dir: session_dir.clone(),
-        cache_dir_env: false,
         session_id: "test-session".to_string(),
         session_log_path: session_dir.join("last-session.log"),
         journal_path: session_dir.join("last-session.jsonl"),
@@ -2328,9 +2324,8 @@ fn persist_build_log_history_excludes_stale_legacy_session_files() {
     let paths = SoldrPaths::with_root(root.path().join("soldr"));
     let session_dir = root.path().join("zc");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    let session = crate::zccache_lifecycle::ZccacheBuildSession {
+    let session = crate::build_cache_session::BuildCacheSession {
         cache_dir: session_dir.clone(),
-        cache_dir_env: false,
         session_id: "stale-global-session".to_string(),
         session_log_path: session_dir.join("last-session.log"),
         journal_path: session_dir.join("last-session.jsonl"),

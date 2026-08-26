@@ -1,8 +1,6 @@
 //! CLI entry logic — everything that used to be `main.rs`'s crate root
 //! (#1490 Phase 1). The binary shim at `src/main.rs` calls [`run`]; `lib.rs`
 //! glob-re-exports this module at the crate root so historical `crate::<item>` paths keep resolving.
-#![allow(dead_code, unused_imports)]
-
 use clap::Parser;
 use std::io::Write;
 
@@ -15,7 +13,7 @@ use crate::{
     optimize_windows, prepare_cmd, pyo3_detect, release_sidecar, rust_plan, save_load,
     self_relocate, shim_dir, shim_materialize, startup_profile, startup_trace, target_alias,
     test_util, toolchain, toolchain_doctor, toolchain_ensure, toolchain_link, trampoline,
-    version_trampoline, wrapper, wrapper_target, zccache, zccache_embedded, zccache_lifecycle,
+    version_trampoline, wrapper, wrapper_target, zccache, zccache_embedded,
 };
 
 pub(crate) use crate::cli_args::{
