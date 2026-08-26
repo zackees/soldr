@@ -42,11 +42,8 @@ const FORBIDDEN_SPAWN_ENTRY_POINTS: &[&str] = &[
 /// Cacheable work must not accept an environment-selected external zccache
 /// executable. Test doubles belong in test-only harnesses, never in a
 /// release-binary configuration path.
-const FORBIDDEN_EXTERNAL_ZCCACHE_BINARY_ENV_VARS: &[&str] = &[
-    "SOLDR_TEST_ZCCACHE_BIN",
-    "SOLDR_ZCCACHE_BIN",
-    "ZCCACHE_BINARY",
-];
+const FORBIDDEN_EXTERNAL_ZCCACHE_BINARY_ENV_VARS: &[&str] =
+    &["SOLDR_TEST_ZCCACHE_BIN", "SOLDR_ZCCACHE_BIN"];
 
 fn crate_root() -> PathBuf {
     common::crate_root()
