@@ -116,3 +116,58 @@ def test_an_empty_channel_stops_the_job() -> None:
         if "toolchain_ensure_channel.py" in (step.get("run") or "")
     )
     assert 'test -n "$channel"' in step["run"], step["run"]
+
+
+# ---- the stream that actually arrives (soldr#2879) --------------------------
+#
+# `--json` does not mean "only JSON on stdout": the child rustup inherits
+# soldr's stdout, so the payload is preceded by rustup's own lines. Captured
+# verbatim from `soldr toolchain ensure --json` in the Linux runner.
+
+REAL_STREAM = (
+    "\n"
+    "  1.95.0-x86_64-unknown-linux-gnu unchanged - rustc 1.95.0 (59807616e 2026-04-14)\n"
+    "\n"
+    '{\n  "schema_version": 1,\n  "channel": "1.95.0",\n  "elapsed_ms": 1041\n}\n'
+)
+
+
+def test_a_rustup_preamble_does_not_hide_the_payload() -> None:
+    """The exact failure that made the darwin lane reject a good payload.
+
+    `json.load` on this raises `Extra data: line 2 column 7 (char 7)` — line 1
+    parses as nothing and the decoder trips on the rustup line.
+    """
+    assert reader.channel_from(reader.extract_payload(REAL_STREAM)) == "1.95.0"
+
+
+def test_the_preamble_is_what_plain_json_load_cannot_take() -> None:
+    # Pins the reason the tolerance exists. If `--json` is ever fixed to emit
+    # only JSON, this test starts failing and says so, rather than the
+    # tolerance quietly outliving its cause.
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(REAL_STREAM)
+
+
+def test_a_stream_with_no_object_is_still_an_error() -> None:
+    # Tolerant of a preamble, not of a missing payload.
+    with pytest.raises(json.JSONDecodeError):
+        reader.extract_payload("rustup said things and then stopped\n")
+
+
+def test_trailing_output_after_the_object_is_ignored() -> None:
+    # `raw_decode` stops at the end of the first object, so anything rustup
+    # prints afterwards cannot break the read either.
+    payload = reader.extract_payload(
+        '{"schema_version": 1, "channel": "1.95.0"}\ninfo: done\n'
+    )
+    assert reader.channel_from(payload) == "1.95.0"
+
+
+def test_main_reads_the_real_stream_end_to_end(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "ensure.json"
+    path.write_text(REAL_STREAM, encoding="utf-8")
+    assert reader.main([str(path)]) == 0
+    assert capsys.readouterr().out.strip() == "1.95.0"

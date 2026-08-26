@@ -29,6 +29,37 @@ import sys
 from typing import Any
 
 
+def extract_payload(text: str) -> Any:
+    """The JSON object inside `soldr toolchain ensure --json` output.
+
+    `--json` does not mean "only JSON on stdout". The child `rustup` inherits
+    soldr's stdout, so a real payload arrives preceded by rustup's own lines:
+
+        (blank)
+          1.95.0-x86_64-unknown-linux-gnu unchanged - rustc 1.95.0 (...)
+        (blank)
+        {
+          "schema_version": 1,
+          ...
+
+    A plain `json.load` fails on that with `Extra data: line 2 column 7`,
+    which is how the darwin lane rejected an otherwise correct payload.
+
+    So: skip to the first `{` and decode one object from there. That is
+    tolerant of a preamble without being tolerant of a *missing* payload —
+    anything that is not a decodable object still raises, and the caller still
+    refuses to guess a channel.
+
+    The leak itself is a soldr bug, not something to normalise here; this
+    function reads the stream that exists today.
+    """
+    start = text.find("{")
+    if start < 0:
+        raise json.JSONDecodeError("no JSON object in payload", text, 0)
+    payload, _ = json.JSONDecoder().raw_decode(text[start:])
+    return payload
+
+
 def channel_from(payload: Any) -> str | None:
     """The resolved channel, or None if the payload does not name one.
 
@@ -53,7 +84,7 @@ def main(argv: list[str]) -> int:
 
     try:
         with open(args.payload, encoding="utf-8") as handle:
-            payload = json.load(handle)
+            payload = extract_payload(handle.read())
     except (OSError, json.JSONDecodeError) as error:
         print(f"could not read {args.payload}: {error}", file=sys.stderr)
         return 1
