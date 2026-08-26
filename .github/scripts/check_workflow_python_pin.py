@@ -60,10 +60,10 @@ SCRIPT_PATTERN = re.compile(r"(?:\.github/scripts|ci)/[\w./-]+\.py")
 # `actions/setup-python` prepends its chosen interpreter to PATH, so a bare
 # `python3` in a later step resolves to it. `astral-sh/setup-uv` does not: it
 # installs uv and leaves `python3` meaning whatever the image ships. So uv pins
-# only the invocations actually routed through `uv run`.
+# only the invocations actually routed through it -- decided per invocation by
+# `unrouted_script_invocations` below, not by counting.
 SETUP_PYTHON_PATTERN = re.compile(r"actions/setup-python")
 SETUP_UV_PATTERN = re.compile(r"astral-sh/setup-uv")
-UV_RUN_PATTERN = re.compile(r"uv run[^\n]*?(?:\.github/scripts|ci)/[\w./-]+\.py")
 
 # Jobs running repo Python under an unpinned interpreter as of soldr#2763.
 # Entries are `(workflow file, job id)`. Shrink this list; never grow it.
@@ -75,12 +75,6 @@ BASELINE: frozenset[tuple[str, str]] = frozenset(
         ("baseline-zero-deps.yml", "build-soldr"),
         ("baseline-zero-deps.yml", "docker-baseline"),
         ("benchmark-stats.yml", "gate"),
-        # soldr#2763: `ci.yml: lint` left this list when its scripts moved to
-        # `uv run --python 3.13`. `setup-soldr-action.yml: smoke` still sets up
-        # uv and then calls bare `python3`, so the uv step buys it nothing.
-        ("setup-soldr-action.yml", "smoke"),
-        ("ci.yml", "windows-e2e-policy"),
-        ("ci.yml", "wheel-cross-policy"),
         ("cross-compile-all-targets.yml", "bootstrap-and-linux-x86"),
         ("cross-compile-all-targets.yml", "cross-compile"),
         ("docker-linux-cross-smoke.yml", "smoke"),
@@ -88,6 +82,38 @@ BASELINE: frozenset[tuple[str, str]] = frozenset(
         ("thin-v2-verify.yml", "verify"),
     }
 )
+
+
+# Shell line continuations, so a `run:` block that wraps a long command reads
+# the same to this guard as one that does not.
+CONTINUATION_PATTERN = re.compile(r"\\s*\n\s*")
+
+
+def unrouted_script_invocations(runs: str) -> list[str]:
+    """Repo-script invocations in `runs` that are not routed through `uv run`.
+
+    Per invocation, not by counting. The count comparison this replaces was
+    wrong in both directions:
+
+    * **False negative.** A job with one `uv run` for something else (a pytest
+      call, say) and one bare `python3 .github/scripts/x.py` had one of each,
+      compared equal, and was reported pinned -- which is precisely the state
+      the module docstring says the guard exists to catch.
+    * **False positive.** A routed call split across lines with a trailing
+      backslash did not match a single-line pattern, so wrapping a long
+      command for readability made a correctly pinned job report as unpinned.
+
+    Continuations are folded first, then each line carrying a script path must
+    have `uv run` ahead of it on that same line.
+    """
+    joined = CONTINUATION_PATTERN.sub(" ", runs)
+    unrouted = []
+    for line in joined.splitlines():
+        for match in SCRIPT_PATTERN.finditer(line):
+            if "uv run" not in line[: match.start()]:
+                unrouted.append(line.strip())
+                break
+    return unrouted
 
 
 def job_run_text(job: dict) -> str:
@@ -136,8 +162,7 @@ def job_pins_interpreter(job: dict) -> bool:
     if not SETUP_UV_PATTERN.search(uses):
         return False
     # Every repo-script invocation must go through `uv run`, not merely one.
-    runs = job_run_text(job)
-    if len(UV_RUN_PATTERN.findall(runs)) != len(SCRIPT_PATTERN.findall(runs)):
+    if unrouted_script_invocations(job_run_text(job)):
         return False
     # ...and uv must exist before the first step that uses it.
     #

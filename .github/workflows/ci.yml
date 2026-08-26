@@ -917,9 +917,12 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
+      # soldr#2763: uv must exist before the first step that uses it.
+      - name: Install uv
+        uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
       - name: Classify Windows E2E requirement
         id: policy
-        run: python3 .github/scripts/windows_e2e_policy.py
+        run: uv run --no-project --python 3.13 python .github/scripts/windows_e2e_policy.py
 
   # soldr#1248: darwin/MSVC cross-build lanes need a current in-tree
   # host soldr to drive the blessed `soldr build --target ...` surface.
@@ -1258,9 +1261,12 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
+      # soldr#2763: uv must exist before the first step that uses it.
+      - name: Install uv
+        uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
       - name: Select wheel lane matrix
         id: policy
-        run: python3 .github/scripts/wheel_lane_policy.py
+        run: uv run --no-project --python 3.13 python .github/scripts/wheel_lane_policy.py
 
   wheel-cross-verify:
     name: soldr wheel --target ${{ matrix.target }} (tag vs bytes)
