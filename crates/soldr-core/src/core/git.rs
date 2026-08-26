@@ -58,8 +58,10 @@ pub fn crlf_checkout_setting(workspace_root: &Path) -> Option<CrlfCheckoutSettin
 }
 
 fn git_config_bool_is_true(value: &str) -> bool {
-    matches!(value, "" | "true" | "yes" | "on")
-        || value.parse::<i64>().is_ok_and(|number| number != 0)
+    // Git owns this value space, so preserve its permissive handling of
+    // nonstandard truthy values through the canonical foreign-flag parser.
+    // A bare `git config core.autocrlf` is Git's spelling of true.
+    value.trim().is_empty() || crate::core::foreign_flag_value(value)
 }
 
 /// Walk up from `start` looking for a `.git` directory **or** file.
