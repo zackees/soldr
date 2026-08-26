@@ -22,12 +22,18 @@ def test_reqwest_is_owned_only_by_soldr_fetch() -> None:
 
 def test_network_dylint_and_ci_gate_exist() -> None:
     lint = ROOT / "dylints" / "ban_raw_network_access" / "src" / "lib.rs"
-    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    plan = (ROOT / "crates" / "soldr-cli" / "src" / "ci_test" / "plan.rs").read_text(
+        encoding="utf-8"
+    )
+    workflow = (ROOT / ".github" / "workflows" / "_build-and-test.yml").read_text(
+        encoding="utf-8"
+    )
     assert lint.is_file()
     assert "fetch::stream_download" in lint.read_text(encoding="utf-8")
-    assert "Build fetch network boundary lint" in workflow
-    assert "Test fetch network boundary lint" in workflow
-    assert "dylint --no-build --all" in workflow
+    assert '"ban_raw_network_access"' in plan
+    assert 'format!("dylint-test-{lint}")' in plan
+    assert workflow.count("name: Run prescribed host validation") == 1
+    assert "ci-test --target" in workflow
 
 
 def test_blessed_boundary_documents_all_timeout_layers() -> None:

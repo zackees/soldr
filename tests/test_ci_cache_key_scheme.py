@@ -93,31 +93,16 @@ def test_no_ci_key_collides_with_the_perf_purge_substring() -> None:
             )
 
 
-def test_shared_dev_namespace_is_backed_by_a_matching_target_dir() -> None:
-    """A shared key without a shared target dir would be cosmetic.
-
-    `lint` writes `target/<triple>/debug` only because its clippy step pins
-    `--target`; `_build-and-test.yml` does the same for its build. Drop
-    either flag and the two lanes silently stop sharing artifacts while
-    still claiming one namespace.
-    """
+def test_native_lane_owns_the_shared_dev_namespace_and_target_dir() -> None:
+    """The non-Rust lint lane must not claim or populate the Rust cache."""
     ci = read("ci.yml")
     build_and_test = read("_build-and-test.yml")
 
-    assert "shared-key: ws-dev-x86_64-unknown-linux-gnu" in ci
-    assert "shared-key: ws-dev-${{ inputs.target }}" in build_and_test
-
-    clippy = re.search(r"soldr cargo clippy.*?-- -D warnings", ci, re.DOTALL)
-    assert clippy, "clippy step not found in ci.yml"
-    assert "--target x86_64-unknown-linux-gnu" in clippy.group(0), (
-        "lint's clippy lost its explicit --target, so it writes "
-        "target/debug while build-linux-x64 writes "
-        "target/x86_64-unknown-linux-gnu/debug -- different directories, so "
-        "the shared ws-dev key buys nothing"
-    )
+    assert "shared-key: ws-dev-x86_64-unknown-linux-gnu" not in ci
+    assert build_and_test.count("shared-key: ws-dev-${{ inputs.target }}") == 1
     assert "--target ${{ inputs.target }}" in build_and_test, (
-        "_build-and-test.yml lost its --target, breaking the directory "
-        "match that makes the shared ws-dev namespace pay"
+        "_build-and-test.yml lost its explicit host target, so the driver and "
+        "ci-test could populate different target directories"
     )
 
 

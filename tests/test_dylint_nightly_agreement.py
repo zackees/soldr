@@ -22,13 +22,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from conftest import (
-    DYLINT_BUILD_STEPS,
-    DYLINT_NIGHTLY,
-    DYLINT_TEST_STEPS,
-    load_script_module,
-    workflow_step,
-)
+from conftest import DYLINT_NIGHTLY, load_script_module
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CHANNEL = re.compile(r'^\s*channel\s*=\s*"([^"]+)"', re.MULTILINE)
@@ -82,54 +76,35 @@ def test_every_dylint_nightly_pin_agrees():
     )
 
 
-def test_the_ci_dylint_toolchain_matches_the_pins():
-    """ci.yml installs the nightly the driver is published for.
+def test_ci_test_reads_and_requires_one_exact_dylint_nightly():
+    plan = (
+        REPO_ROOT / "crates" / "soldr-cli" / "src" / "ci_test" / "plan.rs"
+    ).read_text(encoding="utf-8")
+    host_workflow = (
+        REPO_ROOT / ".github" / "workflows" / "_build-and-test.yml"
+    ).read_text(encoding="utf-8")
 
-    If the workflow and the pins disagree, the lane prepares one driver and the
-    build asks for another — which is the same failure one level up.
-    """
-    pins = {c for c in (pinned_channel(p) for p in dylint_toolchain_files()) if c}
-    assert len(pins) == 1
-    pinned = pins.pop()
-
-    ci = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    assert pinned in ci, (
-        f"ci.yml does not mention {pinned}; the Dylint steps install a nightly "
-        "that the dylint crates do not pin"
-    )
+    assert host_workflow.count("- name: Run prescribed host validation") == 1
+    assert 'ci-test --target "${{ inputs.target }}"' in host_workflow
+    assert 'join("rust-toolchain.toml")' in plan
+    assert "Dylint toolchain pins disagree" in plan
+    assert "six lint manifests pinned to" in plan
 
 
-def test_ci_dylint_build_and_test_steps_use_one_soldr_cargo_style():
-    """The nightly env chooses the toolchain; every lint uses Soldr's cargo front door."""
-    ci = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    for name in DYLINT_BUILD_STEPS:
-        step = workflow_step(ci, name)
-        assert f"RUSTUP_TOOLCHAIN: {DYLINT_NIGHTLY}" in step
-        assert "soldr cargo build" in step
-        assert "soldr rustup run" not in step
-    for name in DYLINT_TEST_STEPS:
-        step = workflow_step(ci, name)
-        assert f"RUSTUP_TOOLCHAIN: {DYLINT_NIGHTLY}" in step
-        assert "soldr cargo test" in step
-        assert "soldr rustup run" not in step
+def test_ci_test_dylint_domains_share_nightly_keyed_target_directories():
+    plan = (
+        REPO_ROOT / "crates" / "soldr-cli" / "src" / "ci_test" / "plan.rs"
+    ).read_text(encoding="utf-8")
+    executor = (
+        REPO_ROOT / "crates" / "soldr-cli" / "src" / "ci_test" / "execute.rs"
+    ).read_text(encoding="utf-8")
 
-
-def test_ci_dylint_tests_share_one_nightly_keyed_target_directory():
-    """Six standalone manifests share outer and nested test artifacts."""
-    ci = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    shared = f'"${{GITHUB_WORKSPACE}}/target/dylint/tests/{DYLINT_NIGHTLY}"'
-    shared_env = f"${{{{ github.workspace }}}}/target/dylint/tests/{DYLINT_NIGHTLY}"
-    for name in DYLINT_TEST_STEPS:
-        step = workflow_step(ci, name)
-        assert "--target-dir" in step
-        assert shared in step
-        assert f"CARGO_TARGET_DIR: {shared_env}" in step
-    assert "verify_dylint_target_dirs.py" in ci
-    assert "--shared-target" in ci
-    guard_step = workflow_step(
-        ci, "Assert Dylint tests used the shared target directory"
-    )
-    assert shared in guard_step
+    for target in ('join("libraries")', 'join("target")', 'join("tests")'):
+        assert target in plan
+    assert '"--target-dir"' in plan
+    assert '"CARGO_TARGET_DIR"' in executor
+    assert "verify_dylint_test_targets" in executor
+    assert "verify_target_tree" in executor
 
 
 def test_dylint_target_guard_allows_known_bookkeeping(tmp_path: Path):

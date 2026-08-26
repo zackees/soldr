@@ -370,6 +370,24 @@ pub(crate) async fn prepare_rustc_wrapper_plan(
             .await
             .map(|plan| RustcWrapperPlan::ManagedZccache(Box::new(plan))),
         RustcWrapperMode::Custom(wrapper) => {
+            // `SOLDR_RUSTC_WRAPPER` is also the supported way for source CI
+            // to pin compiler re-entries to the exact Soldr binary under
+            // test. Treat that one identity as the managed embedded-cache
+            // path, not as an opaque third-party wrapper. Otherwise we omit
+            // the broker service registration and child route export that a
+            // Soldr wrapper requires. An in-place rebuild then changes the
+            // sibling `soldr-daemon` image hash, the wrapper requests that new
+            // route, and the stable broker correctly refuses it because no
+            // matching service definition was written.
+            //
+            // File identity is intentional: a basename check would mistake
+            // an unrelated executable named `soldr` for this process, while
+            // canonical path equality would miss hardlinked Soldr shims.
+            if custom_wrapper_is_current_soldr(&wrapper) {
+                let mut plan = prepare_zccache_build(paths).await?;
+                plan.wrapper_path = std::path::PathBuf::from(wrapper);
+                return Ok(RustcWrapperPlan::ManagedZccache(Box::new(plan)));
+            }
             let sccache_dir =
                 if is_sccache_wrapper(&wrapper) && std::env::var_os("SCCACHE_DIR").is_none() {
                     let sccache_dir = crate::cache_lib::sccache_dir(paths);
@@ -385,6 +403,13 @@ pub(crate) async fn prepare_rustc_wrapper_plan(
         }
         RustcWrapperMode::Disabled => Ok(RustcWrapperPlan::Disabled),
     }
+}
+
+fn custom_wrapper_is_current_soldr(wrapper: &std::ffi::OsStr) -> bool {
+    let Ok(current) = std::env::current_exe() else {
+        return false;
+    };
+    crate::platform::fs::identity::same_file(std::path::Path::new(wrapper), &current)
 }
 
 pub(crate) fn is_sccache_wrapper(wrapper: &std::ffi::OsStr) -> bool {
@@ -637,6 +662,19 @@ mod tests {
             rustc_wrapper_mode_from_env_var(Some(OsStr::new("sccache"))),
             RustcWrapperMode::Custom("sccache".into())
         );
+    }
+
+    #[test]
+    fn current_soldr_override_is_recognized_as_the_embedded_cache_front_door() {
+        let current = std::env::current_exe().expect("current test executable");
+        assert!(custom_wrapper_is_current_soldr(current.as_os_str()));
+    }
+
+    #[test]
+    fn unrelated_custom_wrapper_is_not_recognized_as_soldr() {
+        let wrapper = unique_test_dir("custom-wrapper").join("soldr");
+        std::fs::write(&wrapper, b"not the running executable").expect("fake custom wrapper");
+        assert!(!custom_wrapper_is_current_soldr(wrapper.as_os_str()));
     }
 
     #[test]

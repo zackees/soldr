@@ -36,7 +36,8 @@ CARGO_TOML = REPO_ROOT / "Cargo.toml"
 
 GUARD_1799 = "Assert managed toolchain homes did not leak (soldr#1799)"
 GUARD_1838 = "Assert the build did not silently run uncached (soldr#1838)"
-GUARD_2864 = "Assert build-to-nextest transition recompiles nothing (soldr#2864)"
+CI_TEST_DRIVER = "Build ci-test driver"
+CI_TEST_RUN = "Run prescribed host validation"
 CANONICAL_CACHE = "Select canonical host CI cache domain"
 FINAL_CACHE_STOP = "Stop canonical host CI cache"
 CACHE_ENV_VARS = ("SOLDR_CACHE_DIR", "ZCCACHE_CACHE_DIR")
@@ -107,17 +108,20 @@ def test_dev_and_test_profiles_share_all_host_ci_compile_settings() -> None:
     assert profiles["test"] == profiles["dev"]
 
 
-def test_dev_to_nextest_transition_is_hard_guarded_on_linux() -> None:
+def test_ci_test_is_the_only_host_test_orchestration_entrypoint() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    body = _step_body(workflow, GUARD_2864)
-    assert "continue-on-error" in body
-    assert "linux-gnu" in body
-    assert "soldr cargo nextest run --no-run" in body
-    assert "--workspace --lib --tests" in body
-    assert "check_warm_rebuild.py warm-nextest.log" in body
-    assert workflow.index(
-        "Stop canonical host CI cache before nextest"
-    ) < workflow.index(GUARD_2864)
+    body = _step_body(workflow, CI_TEST_RUN)
+    assert workflow.count(f"- name: {CI_TEST_RUN}") == 1
+    assert 'NEXTEST_TEST_THREADS: "1"' in workflow
+    assert 'SOLDR_RUSTC_WRAPPER="$source_soldr" "$source_soldr"' in body
+    assert "bootstrap_wrapper" not in body
+    assert workflow.count("- name: Hand off bootstrap broker to source revision") == 1
+    assert "soldr broker remove" in workflow
+    assert '"$source_soldr" daemon start' in workflow
+    assert '"$source_soldr" broker remove' in workflow
+    assert 'ci-test --target "${{ inputs.target }}"' in body
+    assert "nextest run --no-run" not in workflow
+    assert "Run library + CLI smoke tests" not in workflow
 
 
 def test_canonical_cache_domain_precedes_every_host_build_and_test() -> None:
@@ -127,7 +131,9 @@ def test_canonical_cache_domain_precedes_every_host_build_and_test() -> None:
     setup_end = workflow.find(
         "\n      - name: ", workflow.index("Setup pinned soldr toolchain") + 1
     )
-    assert workflow.startswith(f"\n      - name: {CANONICAL_CACHE}", setup_end)
+    assert workflow.startswith(
+        "\n      - name: Install ci-test Rust components", setup_end
+    )
     assert (
         'echo "SOLDR_CACHE_DIR=${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}" '
         '>> "$GITHUB_ENV"'
@@ -136,16 +142,10 @@ def test_canonical_cache_domain_precedes_every_host_build_and_test() -> None:
         'echo "ZCCACHE_CACHE_DIR=${{ runner.temp }}/soldr-host-ci/${{ inputs.target }}'
         '/cache/zccache" >> "$GITHUB_ENV"'
     ) in domain
-    assert workflow.index(CANONICAL_CACHE) < workflow.index("Build workspace + tests")
+    assert workflow.index(CANONICAL_CACHE) < workflow.index(CI_TEST_DRIVER)
     assert workflow.index(CANONICAL_CACHE) < workflow.index(GUARD_1838)
     assert workflow.index(CANONICAL_CACHE) < workflow.index(GUARD_1799)
-    assert workflow.index(CANONICAL_CACHE) < workflow.index(
-        "Stop canonical host CI cache before nextest"
-    )
-    assert workflow.index(CANONICAL_CACHE) < workflow.index(GUARD_2864)
-    assert workflow.index(CANONICAL_CACHE) < workflow.index(
-        "Run library + CLI smoke tests"
-    )
+    assert workflow.index(CANONICAL_CACHE) < workflow.index(CI_TEST_RUN)
     assert workflow.index(CANONICAL_CACHE) < workflow.index(
         f"- name: {FINAL_CACHE_STOP}\n"
     )

@@ -1,12 +1,5 @@
 from pathlib import Path
 
-from conftest import (
-    DYLINT_BUILD_STEPS,
-    DYLINT_NIGHTLY,
-    DYLINT_TEST_STEPS,
-    workflow_step,
-)
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -18,95 +11,37 @@ def test_root_workspace_loads_process_boundary_dylint() -> None:
 
 
 def test_required_ci_runs_root_dylint_policy() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    assert "Enforce daemon process-creation boundary" in workflow
-    assert "Build Soldr Dylint front door" in workflow
-    assert "Prepare catalogued Dylint components through Soldr" in workflow
-    assert "Install catalogued Dylint command binaries" in workflow
-    assert (
-        "DYLINT_DRIVER_PATH: ${{ github.workspace }}/target/dylint/drivers" in workflow
+    lint_workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
     )
-    assert (
-        '"${GITHUB_WORKSPACE}/target/x86_64-unknown-linux-gnu/debug/soldr"' in workflow
+    host_workflow = (ROOT / ".github" / "workflows" / "_build-and-test.yml").read_text(
+        encoding="utf-8"
     )
-    executable = "\n".join(
-        line for line in workflow.splitlines() if not line.lstrip().startswith("#")
+    plan = (ROOT / "crates" / "soldr-cli" / "src" / "ci_test" / "plan.rs").read_text(
+        encoding="utf-8"
     )
-    assert "cargo install cargo-dylint" not in executable
-    assert "cargo install dylint-link" not in executable
-    assert "Cache Dylint binaries" not in workflow
-    assert "Install Dylint toolchain" in workflow
-    assert "soldr rustup toolchain install" in workflow
-    assert "--component rustc-dev" in workflow
-    assert "--component llvm-tools-preview" in workflow
-    assert "--component rust-src" in workflow
-    assert "Configure Dylint driver Cargo shim" not in workflow
-    assert "Build daemon process-creation boundary lint" in workflow
-    assert "Build local-socket name boundary lint" in workflow
-    assert "Enforce running-process local-socket name boundary" not in workflow
-    assert "Test local-socket name boundary lint" in workflow
-    assert "nightly-2026-05-28-x86_64-unknown-linux-gnu" in workflow
-    # soldr#2303: the driver cdylibs still build in the release profile (dylint
-    # loads them from that path), now carrying the policy exemption marker.
-    assert "--profile release  # allow-release:" in workflow
-    assert '"${GITHUB_WORKSPACE}/target/dylint/libraries/' in workflow
-    assert '"${CARGO_HOME}/bin/cargo-dylint"' in workflow
-    assert "dylint --no-build --all" in workflow
-    assert "-- --workspace --all-targets" in workflow
-    assert "Test daemon process-creation boundary lint" in workflow
-    assert "working-directory: dylints/ban_raw_process_creation" in workflow
-    # soldr#2740 added the env-flag boundary lint, so its build and test
-    # steps must be wired beside the others.
-    assert "Build env-flag boundary lint" in workflow
-    assert "Test env-flag boundary lint" in workflow
-    assert "working-directory: dylints/ban_raw_env_flag" in workflow
-    # Dylint intentionally keeps its pinned nightly toolchain. All six lint
-    # crates share one nightly-keyed test target, without mixing those
-    # artifacts into the project's Rust 1.95 target tree.
-    dylint_steps = workflow.split(
-        "      - name: Build daemon process-creation boundary lint", 1
-    )[1].split("      - name: Assert Dylint tests used the shared target directory", 1)[
-        0
-    ]
-    assert dylint_steps.count("soldr cargo build") == 6
-    assert dylint_steps.count("soldr cargo test") == 6
-    library_target = f'"${{GITHUB_WORKSPACE}}/target/dylint/libraries/{DYLINT_NIGHTLY}"'
-    test_target = f'"${{GITHUB_WORKSPACE}}/target/dylint/tests/{DYLINT_NIGHTLY}"'
-    test_target_env = (
-        f"${{{{ github.workspace }}}}/target/dylint/tests/{DYLINT_NIGHTLY}"
-    )
-    for name in DYLINT_BUILD_STEPS:
-        step = workflow_step(workflow, name)
-        assert step.count("soldr cargo build") == 1, name
-        assert "soldr cargo test" not in step, name
-        assert step.count("RUSTUP_TOOLCHAIN:") == 1, name
-        assert f"RUSTUP_TOOLCHAIN: {DYLINT_NIGHTLY}" in step, name
-        assert step.count("--target-dir") == 1, name
-        assert library_target in step, name
-        assert test_target not in step, name
-    for name in DYLINT_TEST_STEPS:
-        step = workflow_step(workflow, name)
-        assert step.count("soldr cargo test") == 1, name
-        assert "soldr cargo build" not in step, name
-        assert step.count("RUSTUP_TOOLCHAIN:") == 1, name
-        assert f"RUSTUP_TOOLCHAIN: {DYLINT_NIGHTLY}" in step, name
-        assert step.count("--target-dir") == 1, name
-        assert test_target in step, name
-        assert step.count("CARGO_TARGET_DIR:") == 1, name
-        assert f"CARGO_TARGET_DIR: {test_target_env}" in step, name
-        assert library_target not in step, name
-    target_guard_step = workflow_step(
-        workflow, "Assert Dylint tests used the shared target directory"
-    )
-    assert "verify_dylint_target_dirs.py" in target_guard_step
-    assert "--shared-target" in target_guard_step
-    assert test_target in target_guard_step
-    assert "--manifest-path Cargo.toml" in workflow
-    assert f"RUSTUP_TOOLCHAIN: {DYLINT_NIGHTLY}" in workflow
-    # Seven for the original lints, plus soldr#2740's test step.
-    assert workflow.count('SOLDR_NO_GC_TARGET: "1"') == 7
-    # Thirteen for the original lints, plus soldr#2740's build and test.
-    assert workflow.count("SOLDR_LINKER: default") == 14
+
+    assert host_workflow.count("- name: Run prescribed host validation") == 1
+    assert 'ci-test --target "${{ inputs.target }}"' in host_workflow
+    assert "Enforce daemon process-creation boundary" not in lint_workflow
+    assert "Build Soldr Dylint front door" not in lint_workflow
+    assert "DYLINTS" in plan
+    for name in (
+        "ban_raw_process_creation",
+        "ban_raw_network_access",
+        "ban_raw_local_socket_name",
+        "ban_raw_ipc_transport",
+        "ban_platform_cfg_outside_boundary",
+        "ban_raw_env_flag",
+    ):
+        assert f'"{name}"' in plan
+
+    for target in ('join("libraries")', 'join("target")', 'join("tests")'):
+        assert target in plan
+    assert '"--no-build"' in plan
+    assert '"--workspace"' in plan
+    assert '"--all-targets"' in plan
+
     dylint_config = (
         ROOT / "dylints" / "ban_raw_process_creation" / ".cargo" / "config.toml"
     ).read_text(encoding="utf-8")
