@@ -71,10 +71,20 @@ impl BrokerLease {
         getrandom::fill(&mut nonce).map_err(BrokerLeaseError::Random)?;
         let mut recovered_corruption = false;
         let mut last_known_holder = None;
+        // The ceiling bounds *retrying*, not whether we try at all. Everything
+        // above -- the start token, host identity, the nonce -- runs inside the
+        // deadline, so a short ceiling on a slow host could be spent before a
+        // single acquisition was attempted. The caller then got `Busy` saying
+        // the database "never became readable" about a database nobody had
+        // opened: a diagnosis of the wrong thing entirely.
+        //
+        // That is how windows-gnu failed this contract's own test with the
+        // `Recovery` it should have reported replaced by that `Busy`.
+        let mut attempted = false;
 
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
+            if remaining.is_zero() && attempted {
                 return Err(BrokerLeaseError::Busy {
                     path: path.to_path_buf(),
                     waited: busy_ceiling,
@@ -82,6 +92,11 @@ impl BrokerLease {
                         .unwrap_or_else(|| "unavailable (database never became readable)".into()),
                 });
             }
+            attempted = true;
+            // A zero `remaining` here means the ceiling is already spent, so
+            // this attempt does not block -- it is one non-waiting probe, which
+            // is what lets the real error (corruption, fencing) surface instead
+            // of a timeout that describes nothing.
             match acquire_once(
                 path,
                 owner_pid,
@@ -629,6 +644,38 @@ mod tests {
         assert!(
             matches!(error, BrokerLeaseError::Recovery { .. }),
             "unexpected error: {error}"
+        );
+    }
+
+    /// soldr#2888: an already-spent ceiling must still buy one attempt.
+    ///
+    /// `acquire_with_ceiling` starts its deadline before reading the process
+    /// start token, host identity and nonce. On a slow host that setup can
+    /// outlast a short ceiling, and the loop's first act was to return `Busy`
+    /// -- reporting that the database "never became readable" when nothing had
+    /// tried to read it.
+    ///
+    /// windows-gnu hit exactly that: `held_recovery_lock_respects_the_
+    /// acquisition_deadline` got that `Busy` in place of its `Recovery`. That
+    /// reproduction is timing-dependent, which is no way to hold a contract, so
+    /// this one states it directly -- a zero ceiling is the same condition with
+    /// the race removed, and it must still surface the real error.
+    #[test]
+    fn an_expired_ceiling_still_buys_one_attempt() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("lease.sqlite3");
+        std::fs::write(&path, b"this is not sqlite").unwrap();
+
+        let error = BrokerLease::acquire_with_ceiling(&path, Duration::ZERO)
+            .expect_err("a corrupt database cannot be acquired");
+        assert!(
+            !matches!(error, BrokerLeaseError::Busy { .. }),
+            concat!(
+                "the ceiling preempted the first attempt, so the corruption ",
+                "was never seen and the error describes a wait that never ",
+                "happened: {}"
+            ),
+            error
         );
     }
 
