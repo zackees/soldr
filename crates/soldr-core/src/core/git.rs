@@ -28,40 +28,30 @@ pub enum CrlfCheckoutSetting {
 /// wins over `core.eol=crlf` because input mode performs no checkout conversion.
 pub fn crlf_checkout_setting(workspace_root: &Path) -> Option<CrlfCheckoutSetting> {
     let repo_root = find_git_worktree_root(workspace_root)?;
-    let output = run_git(
+    // Git owns its config boolean grammar. Let it canonicalize accepted
+    // spellings (including `1` and mixed case). `input` is not a boolean,
+    // but it explicitly disables checkout conversion and takes precedence
+    // over `core.eol`.
+    let raw_autocrlf = run_git(&repo_root, ["config", "--get", "core.autocrlf"]);
+    if raw_autocrlf
+        .as_deref()
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("input"))
+    {
+        return None;
+    }
+    if run_git(
         &repo_root,
-        ["config", "--get-regexp", r"^core\.(autocrlf|eol)$"],
-    )?;
-    let mut autocrlf = None;
-    let mut eol = None;
-    for line in output.lines() {
-        let mut fields = line.splitn(2, char::is_whitespace);
-        let Some(key) = fields.next() else {
-            continue;
-        };
-        let value = fields.next().unwrap_or("").trim().to_ascii_lowercase();
-        match key.to_ascii_lowercase().as_str() {
-            "core.autocrlf" => autocrlf = Some(value),
-            "core.eol" => eol = Some(value),
-            _ => {}
-        }
+        ["config", "--type=bool", "--get", "core.autocrlf"],
+    )
+    .is_some_and(|value| value.trim() == "true")
+    {
+        return Some(CrlfCheckoutSetting::AutoCrlf);
     }
 
-    match autocrlf.as_deref() {
-        Some("input") => return None,
-        Some(value) if git_config_bool_is_true(value) => {
-            return Some(CrlfCheckoutSetting::AutoCrlf);
-        }
-        _ => {}
-    }
-    (eol.as_deref() == Some("crlf")).then_some(CrlfCheckoutSetting::CoreEol)
-}
-
-fn git_config_bool_is_true(value: &str) -> bool {
-    // Git owns this value space, so preserve its permissive handling of
-    // nonstandard truthy values through the canonical foreign-flag parser.
-    // A bare `git config core.autocrlf` is Git's spelling of true.
-    value.trim().is_empty() || crate::core::foreign_flag_value(value)
+    let eol = run_git(&repo_root, ["config", "--get", "core.eol"])?;
+    eol.trim()
+        .eq_ignore_ascii_case("crlf")
+        .then_some(CrlfCheckoutSetting::CoreEol)
 }
 
 /// Walk up from `start` looking for a `.git` directory **or** file.
@@ -307,7 +297,19 @@ mod tests {
     #[test]
     fn crlf_checkout_setting_detects_autocrlf_true() {
         let repo = init_test_repo();
-        set_local_git_config(repo.path(), "core.autocrlf", "true");
+        set_local_git_config(repo.path(), "core.autocrlf", "TRUE");
+        set_local_git_config(repo.path(), "core.eol", "lf");
+
+        assert_eq!(
+            crlf_checkout_setting(repo.path()),
+            Some(CrlfCheckoutSetting::AutoCrlf)
+        );
+    }
+
+    #[test]
+    fn crlf_checkout_setting_uses_git_boolean_grammar() {
+        let repo = init_test_repo();
+        set_local_git_config(repo.path(), "core.autocrlf", "1");
         set_local_git_config(repo.path(), "core.eol", "lf");
 
         assert_eq!(
@@ -320,7 +322,7 @@ mod tests {
     fn crlf_checkout_setting_treats_autocrlf_input_as_lf_checkout() {
         let repo = init_test_repo();
         set_local_git_config(repo.path(), "core.autocrlf", "input");
-        set_local_git_config(repo.path(), "core.eol", "crlf");
+        set_local_git_config(repo.path(), "core.eol", "CRLF");
 
         assert_eq!(crlf_checkout_setting(repo.path()), None);
     }
