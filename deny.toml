@@ -32,6 +32,14 @@ skip = [
     { name = "getrandom" },
     # sha2 0.10 holds cpufeatures 0.2 (negligible).
     { name = "cpufeatures" },
+    # sevenz-rust2 0.22.2 (the maintained replacement for vulnerable
+    # sevenz-rust) requires the sha2 0.11 crypto stack, while
+    # running-process still requires sha2 0.10.  Keep these exceptions pinned
+    # to the newer side so another version remains a ratchet failure.
+    { name = "block-buffer", version = "=0.12.1" },
+    { name = "crypto-common", version = "=0.2.2" },
+    { name = "digest", version = "=0.11.3" },
+    { name = "sha2", version = "=0.11.0" },
     # errno/rustix/tempfile still cap at 0.52, reached only through
     # prost-build's build-dependency tree (amalgamated zccache-protocol and
     # running-process). The #2406 convergence covered the runtime tree;

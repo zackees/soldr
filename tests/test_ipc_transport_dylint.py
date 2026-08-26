@@ -7,7 +7,12 @@ LINT = ROOT / "dylints" / "ban_raw_ipc_transport"
 def test_raw_ipc_transport_dylint_is_wired_and_documents_blessed_adapters() -> None:
     source = (LINT / "src" / "lib.rs").read_text(encoding="utf-8")
     readme = (LINT / "README.md").read_text(encoding="utf-8")
-    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    plan = (ROOT / "crates" / "soldr-cli" / "src" / "ci_test" / "plan.rs").read_text(
+        encoding="utf-8"
+    )
+    workflow = (ROOT / ".github" / "workflows" / "_build-and-test.yml").read_text(
+        encoding="utf-8"
+    )
 
     for constructor in (
         "ListenerOptions",
@@ -32,8 +37,10 @@ def test_raw_ipc_transport_dylint_is_wired_and_documents_blessed_adapters() -> N
     ):
         assert adapter in readme
 
-    assert "Build raw IPC transport boundary lint" in workflow
-    assert "Test raw IPC transport boundary lint" in workflow
+    assert '"ban_raw_ipc_transport"' in plan
+    assert 'format!("dylint-test-{lint}")' in plan
+    assert workflow.count("name: Run prescribed host validation") == 1
+    assert "ci-test --target" in workflow
 
 
 def test_session_listener_uses_one_facade_and_explicit_platform_delegates() -> None:

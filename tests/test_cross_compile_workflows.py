@@ -282,20 +282,26 @@ def test_native_linux_runs_the_complete_workspace_suite() -> None:
     build_and_test = (WORKFLOWS / "_build-and-test.yml").read_text(encoding="utf-8")
     assert "x86_64 GNU is the canonical native exception" in ci
     assert "other seven" in ci
-    # soldr#2493: the suite runs under nextest, which owns per-test timeouts
-    # now that the `timed_test!` watchdog is gone. Plain `cargo test` here
-    # would leave a hung test unbounded.
-    #
-    # soldr#2521 A1: driven by the pinned PATH soldr again. The pin includes the
-    # first release carrying both the nextest `--config` placement fix and
-    # the daemon root-ownership grace (#2564), so the just-built-binary
-    # detour (which forced a full recompile per run) is retired.
+    # soldr#2868: the pinned PATH soldr bootstraps the source revision's CLI,
+    # then that exact binary owns the prescribed host-validation plan. The
+    # source wrapper remains explicit so compiler identity cannot flip inside
+    # the validation DAG or leak an old daemon route into nested tests.
     flattened = " ".join(build_and_test.split())
-    assert "soldr_under_test" not in flattened, (
-        "the just-built-binary detour is retired (soldr#2521 A1); "
-        "the pinned PATH soldr drives the suite"
-    )
-    assert "-- soldr cargo nextest run --workspace --lib --tests" in flattened
+    assert build_and_test.count("name: Run prescribed host validation") == 1
+    assert 'NEXTEST_TEST_THREADS: "1"' in build_and_test
+    assert 'source_soldr="${GITHUB_WORKSPACE}/target/' in flattened
+    assert 'SOLDR_RUSTC_WRAPPER="$source_soldr" "$source_soldr"' in flattened
+    assert "bootstrap_wrapper" not in flattened
+    handoff = build_and_test.index("name: Hand off bootstrap broker to source revision")
+    validation = build_and_test.index("name: Run prescribed host validation")
+    assert handoff < validation
+    assert "soldr broker remove" in build_and_test[handoff:validation]
+    assert '"$source_soldr" daemon start' in build_and_test[handoff:validation]
+    assert '"$source_soldr" broker remove || true' in build_and_test
+    assert 'target/${{ inputs.target }}/debug/soldr"' in flattened
+    assert 'ci-test --target "${{ inputs.target }}"' in flattened
+    assert "nextest run --no-run" not in build_and_test
+    assert "- name: Run CLI smoke tests" not in build_and_test
     assert "soldr cargo test" not in build_and_test
     # The lane must stay on bash; PowerShell steps were removed so the logic
     # lives in `.github/scripts/*.py` where it is testable.
@@ -618,14 +624,25 @@ def test_all_miss_cross_builds_bound_compile_concurrency() -> None:
 def test_external_zccache_bootstraps_get_exclusive_service_access() -> None:
     bootstrap = (WORKFLOWS / "_bootstrap-e2e.yml").read_text(encoding="utf-8")
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    build_and_test = (WORKFLOWS / "_build-and-test.yml").read_text(encoding="utf-8")
 
     assert 'CARGO_BUILD_JOBS: "1"' in bootstrap
     assert 'SOLDR_JOBS: "1"' in bootstrap
     assert "Enlarge swap (OOM headroom)" in bootstrap
     lint_job = _job_block(ci, "lint")
-    assert 'CARGO_BUILD_JOBS: "1"' in lint_job
-    assert 'SOLDR_JOBS: "1"' in lint_job
-    assert "Enlarge swap (OOM headroom)" in lint_job
+    assert "CARGO_BUILD_JOBS" not in lint_job
+    assert "SOLDR_JOBS" not in lint_job
+    assert 'CARGO_BUILD_JOBS: "1"' in build_and_test
+    assert 'SOLDR_JOBS: "1"' in build_and_test
+    assert 'NEXTEST_TEST_THREADS: "1"' in build_and_test
+    assert "Enlarge swap (OOM headroom)" in build_and_test
+
+
+def test_non_rust_lint_job_has_no_empty_environment_mapping() -> None:
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    lint_job = _job_block(ci, "lint")
+
+    assert "\n    env:\n    steps:" not in lint_job
 
 
 def test_gnu_catalogue_fixture_is_part_of_both_gnu_ci_lanes() -> None:

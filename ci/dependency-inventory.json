@@ -5,7 +5,6 @@
     "soldr-cache": [
       "filetime",
       "fs2",
-      "hex",
       "jwalk",
       "prost",
       "rayon",
@@ -27,7 +26,6 @@
       "cap-std",
       "clap",
       "filetime",
-      "flate2",
       "fs2",
       "getrandom",
       "hex",
@@ -50,14 +48,10 @@
       "tokio",
       "toml",
       "tracing",
-      "tracing-subscriber",
-      "url",
       "wait-timeout",
       "widestring",
       "windows-sys",
-      "xz2",
       "zccache",
-      "zip",
       "zstd"
     ],
     "soldr-core": [
@@ -91,7 +85,6 @@
       "tracing",
       "tracing-appender",
       "tracing-subscriber",
-      "widestring",
       "windows-sys",
       "zccache"
     ],
@@ -110,7 +103,6 @@
       "tokio",
       "toml",
       "url",
-      "wait-timeout",
       "xz2",
       "zip",
       "zstd"

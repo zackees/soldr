@@ -1,7 +1,7 @@
 name: _Build and Test
 
-# Reusable template that captures the per-platform "build the
-# workspace and run our smoke test suite" pattern. Callers in
+# Reusable template that bootstraps the source CLI and runs its prescribed
+# host-validation plan. Callers in
 # ci.yml materialise one top-level job per platform so each shows
 # up as its own entry in the GitHub Actions sidebar (no matrix
 # expansion, no `(arch)` suffix hidden behind a parent name).
@@ -44,7 +44,7 @@ jobs:
     name: ${{ inputs.target }}
     runs-on: ${{ inputs.runner }}
     # soldr#1985 - was inheriting GitHub's 360-minute default.
-    timeout-minutes: 45
+    timeout-minutes: 90
     env:
       GH_TOKEN: ${{ github.token }}
       # soldr still fetches managed support tools from GitHub Releases.
@@ -59,6 +59,7 @@ jobs:
       # Cargo's launch rate and the embedded compile service in this cold lane.
       CARGO_BUILD_JOBS: "1"
       SOLDR_JOBS: "1"
+      NEXTEST_TEST_THREADS: "1"
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -116,6 +117,9 @@ jobs:
           solo-toolchain-cache: false
           zccache-seed-strict: true
 
+      - name: Install ci-test Rust components
+        run: soldr rustup component add rustfmt clippy
+
       # Keep every host-side invocation in one isolated Soldr domain. The
       # setup action selects its own cache root while it installs the pinned
       # builder; exporting this before the first workspace build makes the
@@ -129,19 +133,17 @@ jobs:
           echo "SOLDR_CACHE_LIFECYCLE=command" >> "$GITHUB_ENV"
           echo "SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS=30" >> "$GITHUB_ENV"
 
-      # soldr#1241 — cache ~/.cargo/{registry,git} + target/ so
-      # `Build workspace + tests`, `Run library tests`, `Run CLI
-      # smoke tests` don't recompile ~700 deps from scratch every
-      # run. Same SHA-pinned action as #1228/#1233/#1236/#1238/#1240.
+      # soldr#1241 — cache ~/.cargo/{registry,git} + target/ so the source
+      # driver and its ci-test plan do not recompile ~700 dependencies from
+      # scratch every run. Same SHA-pinned action as
+      # #1228/#1233/#1236/#1238/#1240.
       - name: Restore cargo + target caches
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           # soldr#1978 item 6 — keyed on (profile, target), not on the job,
-          # so this lane shares one namespace with `lint` in ci.yml: both
-          # build the same dependency graph at the dev profile for the same
-          # triple. The build below passes `--target`, and lint was given a
-          # matching `--target` so both land in the same directory; without
-          # that the shared key would be cosmetic.
+          # The native validation lane exclusively owns this dev-profile,
+          # target-specific namespace. The non-Rust lint lane intentionally
+          # neither restores nor populates Rust compilation artifacts.
           shared-key: ws-dev-${{ inputs.target }}
 
       # soldr#1335 — removed `Enable Windows line-table debug symbols`
@@ -162,35 +164,14 @@ jobs:
       # deleted `target/<triple>/` right after Swatinem/rust-cache
       # (#1242) restored it. rust-cache's own restore is authoritative.
 
-      # soldr#1176 — build workspace bins AND test binaries in one pass.
-      # Downstream `Run library tests` / `Run CLI smoke tests` steps then
-      # find every artifact fresh in target/deps and skip rustc entirely
-      # (cargo's freshness check hits, no compile). Saves the redundant
-      # test-mode compile that used to happen twice (once here in non-
-      # test mode, once again in each test step in test mode).
-      - name: Build workspace + tests
+      # The pinned released Soldr is only the compiler needed to bootstrap the
+      # source revision's CLI. The validation step switches once to that source
+      # binary, then keeps its wrapper identity stable for the complete DAG.
+      - name: Build ci-test driver
         shell: bash
-        run: |
-          python3 .github/scripts/step_duration.py \
-            --label "${{ inputs.target }} / Build workspace + tests" \
-            -- soldr cargo build --workspace --tests --bins --target ${{ inputs.target }}
-
-      # soldr#1799: an immediately-repeated build must recompile nothing.
-      # Nothing changed in between, so any crate rebuilding means something
-      # invalidated cargo's fingerprints -- a toolchain-home flip or a
-      # compiler-path change -- which is the silent 10-50x slowdown this issue
-      # exists to catch. A warm repeat is sub-second, so this is cheap; if it
-      # is NOT warm the step is exactly what should report that.
-      - name: Assert a repeated build recompiles nothing (soldr#1799)
-        if: success()
-        continue-on-error: ${{ !contains(inputs.target, 'linux-gnu') }}
-        shell: bash
-        run: |
-          soldr cargo build --workspace --tests --bins \
-            --target ${{ inputs.target }} > warm-rebuild.log 2>&1
-          tail -n 20 warm-rebuild.log
-          python3 .github/scripts/check_warm_rebuild.py warm-rebuild.log
-
+        run: >-
+          soldr cargo build -p soldr-cli --bin soldr
+          --target ${{ inputs.target }}
       # soldr#1838 Phase 4: fail the lane when the build silently ran uncached
       # via the direct compiler. `soldr status --json` surfaces the same
       # compile-daemon fallback rollup operators see (default home = the one the
@@ -235,63 +216,40 @@ jobs:
           python3 .github/scripts/check_toolchain_homes.py "$SOLDR_CACHE_DIR/logs/builds" \
             --managed-root "$HOME/.soldr" --managed-root "$HOME/.soldr-dev"
 
-      - name: Stop canonical host CI cache before nextest
-        uses: zackees/setup-soldr/cleanup@68ce266ed86b75ccfb332b084ba1a64d619bfe53
-
-      # soldr#2864: dev -> test is the transition that previously rebuilt the
-      # workspace. A mismatched profile setting invalidates every shared
-      # fingerprint. Exercise nextest's compile-only path with the exact cache
-      # environment used below and fail the canonical Linux lane if Cargo
-      # reports any compiling/checking unit. This is deliberately separate
-      # from the dev -> dev guard above: both transitions must remain warm.
-      - name: Assert build-to-nextest transition recompiles nothing (soldr#2864)
-        if: success()
-        continue-on-error: ${{ !contains(inputs.target, 'linux-gnu') }}
-        shell: bash
-        run: |
-          soldr cargo nextest run --no-run --workspace --lib --tests \
-            --target ${{ inputs.target }} > warm-nextest.log 2>&1
-          tail -n 20 warm-nextest.log
-          python3 .github/scripts/check_warm_rebuild.py warm-nextest.log
-
-      # soldr#1324/#1703 — run every workspace library and integration binary
-      # in one invocation. This includes the internal crates extracted after
-      # the original single-crate optimization was written.
-      #
-      # soldr#2493 — the suite runs under nextest, which owns the per-test
-      # timeouts in `.config/nextest.toml` now that the watchdog macro is gone.
-      #
-      # soldr#2521 A1 resolved: the pinned setup-soldr release can drive this
-      # suite -- it carries the nextest
-      # `--config` placement fix (#2518 train) and the daemon root-ownership
-      # grace (#2564) that broke 0.8.44 on the cook-size-gate and thin-v2
-      # lanes. Driving the PATH soldr again keeps the tree the build step
-      # warmed; the just-built-binary detour cost a full recompile per run
-      # (~1m 27s) because cargo hashes the RUSTC_WRAPPER path into per-crate
-      # fingerprints.
-      - name: Run library + CLI smoke tests
+      # The broker is intentionally a stable singleton and never replaces
+      # itself across Soldr images. The setup action started the released
+      # bootstrap generation; retire it explicitly before the source wrapper
+      # needs its own daemon service definition.
+      - name: Hand off bootstrap broker to source revision
         shell: bash
         run: |
           set -euo pipefail
-          echo "Using canonical host CI SOLDR_CACHE_DIR=$SOLDR_CACHE_DIR"
-          echo "Driving the suite with the pinned PATH soldr ($(soldr version))"
-          python3 .github/scripts/step_duration.py \
-            --label "${{ inputs.target }} / Library + smoke tests" \
-            -- soldr cargo nextest run --workspace --lib --tests \
-            --target ${{ inputs.target }}
-      # soldr#1218 — the standalone `Run fetch integration test` step
-      # was removed; the same `tests/fetch_crgx.rs` binary already runs
-      # inside `Run CLI smoke tests` above (which invokes `cargo nextest
-      # run -p soldr-cli --tests` — `--tests` selects every integration test
-      # target). Running it twice wasted ~40 s per CI run for zero
-      # additional coverage.
+          soldr cache shutdown --shutdown-timeout-seconds 30 || soldr zccache stop
+          soldr broker remove
+          source_soldr="${GITHUB_WORKSPACE}/target/${{ inputs.target }}/debug/soldr"
+          "$source_soldr" daemon start
 
+      # soldr#2868: one source-owned verb now covers rustfmt, lint-ci, Clippy,
+      # all Dylint domains, exactly one Nextest invocation, doctests, and the
+      # dependency-policy fanout. Use the source binary as its own explicit
+      # rustc wrapper: nested tests override SOLDR_CACHE_DIR and must not inherit
+      # an older bootstrap wrapper whose daemon route is unavailable there.
+      - name: Run prescribed host validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_soldr="${GITHUB_WORKSPACE}/target/${{ inputs.target }}/debug/soldr"
+          SOLDR_RUSTC_WRAPPER="$source_soldr" "$source_soldr" \
+            ci-test --target "${{ inputs.target }}"
       - name: Stop canonical host CI cache
         if: always()
         continue-on-error: true
         shell: bash
         run: |
-          soldr cache shutdown --shutdown-timeout-seconds 30 || soldr zccache stop
+          source_soldr="${GITHUB_WORKSPACE}/target/${{ inputs.target }}/debug/soldr"
+          "$source_soldr" cache shutdown --shutdown-timeout-seconds 30 \
+            || "$source_soldr" zccache stop
+          "$source_soldr" broker remove || true
 
       # soldr#1799 — surface the per-build XML logs and the JSONL compile
       # journals from CI compiles so toolchain-home leakage and warm-run

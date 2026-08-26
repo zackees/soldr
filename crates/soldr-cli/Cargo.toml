@@ -20,7 +20,6 @@ cap-std = { workspace = true }
 blake3 = "1"
 clap = { workspace = true }
 filetime = { workspace = true }
-flate2 = { workspace = true }
 fs2 = { workspace = true }
 getrandom = "0.4"
 hex = { workspace = true }
@@ -42,11 +41,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-url = { workspace = true }
 wait-timeout = { workspace = true }
-xz2 = { workspace = true }
-zip = { workspace = true }
 zstd = { workspace = true }
 
 # In-process zccache service (issue #977 / #980 L1), sourced from the
@@ -55,7 +50,7 @@ zstd = { workspace = true }
 # soldr#1368: there is no longer a separately-downloaded managed zccache
 # binary. soldr#1592 exposes the compiled-in CLI by materializing the main
 # `soldr` executable under the `zccache` multicall name.
-zccache = { version = "=1.13.11", default-features = false, features = ["cli"] }
+zccache = { version = "=1.13.12", default-features = false, features = ["cli"] }
 
 # libc powers the daemon's Unix-only PID-liveness probe (kill(pid, 0))
 # and detached spawn (setsid). On Windows the equivalent
