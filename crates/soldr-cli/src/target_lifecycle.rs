@@ -266,10 +266,13 @@ pub(crate) enum GnuBundleDecision {
 ///
 /// `force_runnable` is the existing `SOLDR_WINDOWS_LINUX_CROSS_GUARD=off`
 /// test seam, not a second one. Its whole purpose is already "this host is
-/// pretending it can run the Linux bundle" -- `cli_build_fetch_overlap`
-/// seeds a fake `linux-x64-gnu` bundle and exercises the catalogue path from
-/// macOS and Windows lanes. That is the same claim this function makes, so
-/// it takes the same switch rather than growing a parallel one.
+/// pretending it can run the Linux bundle": `cli_build_fetch_overlap` and
+/// `prepare_env_contract_tests` both seed a fake bundle out of `#!/bin/sh`
+/// stubs and exercise the catalogue path from hosts that could never execute
+/// a real one -- macOS and Windows lanes for the first, and a native ARM64
+/// runner for the second, whose fixture deliberately targets the other
+/// architecture. That is the same claim this function evaluates, so it takes
+/// the same switch rather than growing a parallel one.
 ///
 /// Pure, and taking the host as arguments rather than reading `cfg!`,
 /// because the host this has to be correct for is not the host soldr's tests
