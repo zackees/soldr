@@ -8,7 +8,9 @@
 mod displacement_policy;
 mod journal_hygiene;
 mod legacy_endpoint;
+mod readiness;
 mod root_ownership;
+mod shutdown_wait;
 mod spawn;
 mod spawn_env;
 pub(crate) use displacement_policy::{displacement_drain_timeout, ephemeral_displacement_blocked};
@@ -16,7 +18,15 @@ pub use displacement_policy::{
     ALLOW_EPHEMERAL_DISPLACE_ENV_VAR, DISPLACEMENT_DRAIN_TIMEOUT_ENV_VAR,
 };
 pub use journal_hygiene::{detect_unclean_shutdown, rotate_lifecycle_journal};
+#[cfg(test)]
+pub(crate) use readiness::status_with_retiring_retry;
+pub use readiness::{
+    status_after_negotiated_route, status_after_route_ready, STATUS_RETIRING_RETRY_TIMEOUT,
+};
 pub use root_ownership::{RootAcquireOutcome, RootOwnershipGuard};
+#[cfg(test)]
+pub(crate) use shutdown_wait::latest_shutdown_phase;
+pub use shutdown_wait::{wait_for_shutdown_responder, GRACEFUL_SHUTDOWN_WAIT_TIMEOUT};
 pub(crate) use spawn::*;
 pub(crate) use spawn_env::*;
 
@@ -25,7 +35,7 @@ use crate::core::SoldrPaths;
 use fs2::FileExt;
 use serde::Serialize;
 use std::fs::{self, File, OpenOptions};
-use std::io::{ErrorKind, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -268,126 +278,6 @@ pub(crate) fn claimed_process_live(paths: &SoldrPaths) -> Option<u32> {
 pub(crate) const SOLDR_DAEMON_DISPLACE_ENV: &str = "SOLDR_DAEMON_DISPLACE";
 
 /// Normal upper bound for an acknowledged graceful shutdown.
-///
-/// Embedded cache persistence may legitimately take minutes on a large or
-/// slow cache. Once a daemon acknowledges shutdown callers wait for that exact
-/// generation and never convert this deadline into permission to signal it.
-pub const GRACEFUL_SHUTDOWN_WAIT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-
-/// How often [`wait_for_shutdown_responder`] reports that it is still
-/// waiting (soldr#1838). Matches the compile-reply and cargo front-door
-/// cadence so every long wait in soldr ticks at the same rate.
-const SHUTDOWN_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
-
-/// Bound for the narrow Windows transition where the broker route exists but
-/// its previous named-pipe generation is still closing.
-pub const STATUS_RETIRING_RETRY_TIMEOUT: Duration = Duration::from_secs(5);
-
-fn retiring_pipe_error(error: &crate::daemon::client::ClientError) -> bool {
-    matches!(error, crate::daemon::client::ClientError::Io(io)
-        if matches!(io.kind(), ErrorKind::BrokenPipe | ErrorKind::ConnectionReset | ErrorKind::UnexpectedEof | ErrorKind::WouldBlock))
-}
-
-fn status_with_retiring_retry<F, R>(
-    mut status: F,
-    mut retiring_route_is_verified: R,
-    timeout: Duration,
-    require_verified_identity: bool,
-) -> Result<crate::daemon::protocol::StatusInfo, crate::daemon::client::ClientError>
-where
-    F: FnMut() -> Result<crate::daemon::protocol::StatusInfo, crate::daemon::client::ClientError>,
-    R: FnMut() -> Option<(u32, u64)>,
-{
-    let started = Instant::now();
-    loop {
-        let expected = retiring_route_is_verified();
-        match status() {
-            Ok(status)
-                if expected.is_some_and(|identity| identity == (status.pid, status.generation))
-                    || (!require_verified_identity && expected.is_none()) =>
-            {
-                return Ok(status)
-            }
-            Ok(_status) if started.elapsed() < timeout => {
-                std::thread::sleep(Duration::from_millis(25));
-            }
-            Ok(status) => {
-                return Err(crate::daemon::client::ClientError::Protocol(format!(
-                    "status generation pid={} generation={} did not match the verified route claim",
-                    status.pid, status.generation
-                )))
-            }
-            Err(error)
-                if retiring_pipe_error(&error)
-                    && expected.is_some()
-                    && started.elapsed() < timeout =>
-            {
-                std::thread::sleep(Duration::from_millis(25));
-            }
-            Err(error) => return Err(error),
-        }
-    }
-}
-
-/// Query status while tolerating only an identity-verified Windows pipe-close
-/// transition. Persistent and unrelated failures remain visible.
-pub fn status_after_route_ready(
-    paths: &SoldrPaths,
-    sock_path: &Path,
-    timeout: Duration,
-) -> Result<crate::daemon::protocol::StatusInfo, crate::daemon::client::ClientError> {
-    status_with_retiring_retry(
-        || crate::daemon::client::status(sock_path),
-        || verified_route_identity(paths),
-        timeout,
-        false,
-    )
-}
-
-/// Query status for the exact backend endpoint attested by a successful broker
-/// negotiation. The route claim supplies the daemon generation while the
-/// negotiated endpoint prevents a stale claim from authorizing retries.
-pub fn status_after_negotiated_route(
-    paths: &SoldrPaths,
-    sock_path: &Path,
-    backend_pipe: &str,
-    daemon_version: &str,
-    timeout: Duration,
-) -> Result<crate::daemon::protocol::StatusInfo, crate::daemon::client::ClientError> {
-    status_with_retiring_retry(
-        || crate::daemon::client::status(sock_path),
-        || negotiated_route_identity(paths, backend_pipe, daemon_version),
-        timeout,
-        true,
-    )
-}
-
-fn negotiated_route_identity(
-    paths: &SoldrPaths,
-    backend_pipe: &str,
-    daemon_version: &str,
-) -> Option<(u32, u64)> {
-    let claim = crate::daemon::backend_handle_adoption::read_broker_route_claim(paths)
-        .ok()
-        .flatten()?;
-    (daemon_version == crate::daemon::backend_handle_adoption::SOLDR_DAEMON_SERVICE_VERSION
-        && current_version_claim_matches(paths)
-        && claim.ipc_endpoint.path == backend_pipe
-        && claim.boot_id == running_process::broker::host_identity::current().boot_id)
-        .then_some((claim.pid, claim.started_at_unix_ms))
-}
-
-fn verified_route_identity(paths: &SoldrPaths) -> Option<(u32, u64)> {
-    let claim = crate::daemon::backend_handle_adoption::read_broker_route_claim(paths)
-        .ok()
-        .flatten()?;
-    if !current_version_claim_matches(paths) {
-        return None;
-    }
-    let handle = crate::daemon::backend_handle_adoption::probe_soldr_daemon(paths)?;
-    (handle.pid() == claim.pid).then_some((claim.pid, claim.started_at_unix_ms))
-}
-
 pub(crate) fn displacement_enabled() -> bool {
     match std::env::var(SOLDR_DAEMON_DISPLACE_ENV) {
         Ok(v) => {
@@ -552,96 +442,6 @@ fn classify_shutdown_observation(
     endpoint_identity
         .filter(|identity| *identity != (responder.pid, responder.generation))
         .map(|_| ShutdownWaitOutcome::Replaced)
-}
-
-/// Wait for the exact daemon that acknowledged shutdown.
-///
-/// Endpoint unavailability alone is not success: the accept loop stops before
-/// the cache flush does. Conversely, a different status generation proves the
-/// acknowledged responder was replaced even if its PID was reused.
-pub fn wait_for_shutdown_responder(
-    paths: &SoldrPaths,
-    sock_path: &Path,
-    responder: crate::daemon::protocol::ShutdownAck,
-    timeout: Duration,
-) -> ShutdownWaitOutcome {
-    let started = Instant::now();
-    let responder_endpoint = crate::daemon::backend_handle_adoption::read_broker_route_claim(paths)
-        .ok()
-        .flatten()
-        .filter(|claim| {
-            claim.pid == responder.pid && claim.started_at_unix_ms == responder.generation
-        })
-        .map(|claim| claim.ipc_endpoint.path);
-    // soldr#1838: this is the wait that #1828's macOS zombie-pid bug sat in
-    // for the full 5 minutes with a single line printed *after* it expired.
-    // It already polls, so the heartbeat is an in-loop check rather than the
-    // watchdog thread the blocking IPC waits need.
-    let mut next_heartbeat = SHUTDOWN_HEARTBEAT_INTERVAL;
-    loop {
-        if started.elapsed() >= next_heartbeat {
-            let mut message = crate::daemon::wait_heartbeat::heartbeat_message(
-                "daemon graceful shutdown",
-                started.elapsed(),
-                timeout,
-                None,
-            );
-            if let Some(phase) = latest_shutdown_phase(
-                paths,
-                responder.pid,
-                responder.generation,
-                responder_endpoint.as_deref(),
-            ) {
-                message.push_str(&format!("; daemon phase: {phase}"));
-            }
-            eprintln!("{message}");
-            next_heartbeat += SHUTDOWN_HEARTBEAT_INTERVAL;
-        }
-        let responder_pid_alive = pid_is_alive(responder.pid);
-        if timeout.is_zero() || started.elapsed() >= timeout {
-            return classify_shutdown_observation(responder, responder_pid_alive, None)
-                .unwrap_or(ShutdownWaitOutcome::TimedOut);
-        }
-        let endpoint_identity = crate::daemon::client::status(sock_path)
-            .ok()
-            .map(|status| (status.pid, status.generation));
-        if let Some(outcome) =
-            classify_shutdown_observation(responder, responder_pid_alive, endpoint_identity)
-        {
-            return outcome;
-        }
-        let remaining = timeout.saturating_sub(started.elapsed());
-        if remaining.is_zero() {
-            return ShutdownWaitOutcome::TimedOut;
-        }
-        std::thread::sleep(Duration::from_millis(50).min(remaining));
-    }
-}
-
-fn latest_shutdown_phase(
-    paths: &SoldrPaths,
-    pid: u32,
-    responder_generation: u64,
-    responder_endpoint: Option<&str>,
-) -> Option<String> {
-    fs::read_to_string(daemon_lifecycle_log_path(paths))
-        .ok()?
-        .lines()
-        .rev()
-        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .find_map(|event| {
-            let event_pid = event.get("target_pid")?.as_u64()? as u32;
-            let generation = event.get("target_generation")?.as_u64()?;
-            let endpoint = event
-                .get("target_endpoint")
-                .and_then(|value| value.as_str());
-            let name = event.get("event")?.as_str()?;
-            (event_pid == pid
-                && generation == responder_generation
-                && responder_endpoint.is_none_or(|expected| endpoint == Some(expected))
-                && name.starts_with("shutdown-phase-"))
-            .then(|| name.trim_start_matches("shutdown-phase-").to_string())
-        })
 }
 
 /// Displace the stale daemon currently holding the endpoint so a
