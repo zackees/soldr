@@ -113,7 +113,15 @@ jobs:
         run: |
           set -euo pipefail
           ls -la artifact/ || true
-          find artifact/ -maxdepth 3 -type f | head -30 || true
+          # soldr#2883: sizes, not just names. Image size is what put the
+          # windows-gnu lane past its route-start budget -- the broker copies
+          # the daemon image per route and the OS loads it per process -- and
+          # the old listing printed paths only, so the one number that
+          # explained the lane was invisible in its own log.
+          find artifact/ -maxdepth 3 -type f -printf '%10s  %p\n' 2>/dev/null \
+            | sort -rn | head -30 \
+            || find artifact/ -maxdepth 3 -type f | head -30 \
+            || true
 
       # Artifact download uses zip and strips executable bits on POSIX workers.
       - name: Restore executable bit on artifact binaries
