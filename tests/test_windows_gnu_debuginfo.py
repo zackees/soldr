@@ -44,7 +44,7 @@ def cross_build_steps() -> list[dict]:
     doc = yaml.safe_load(CROSS_BUILD.read_text(encoding="utf-8"))
     jobs = doc["jobs"]
     assert len(jobs) == 1, f"expected one job, got {sorted(jobs)}"
-    return list(jobs.values())[0]["steps"]
+    return next(iter(jobs.values()))["steps"]
 
 
 def find_step(steps: list[dict], needle: str) -> dict:
@@ -106,7 +106,7 @@ def test_the_reason_travels_with_the_override(cross_build_steps: list[dict]) -> 
 def test_the_target_run_listing_reports_sizes() -> None:
     """The number that explains the lane must be visible in the lane's log."""
     doc = yaml.safe_load(TARGET_RUN.read_text(encoding="utf-8"))
-    steps = list(doc["jobs"].values())[0]["steps"]
+    steps = next(iter(doc["jobs"].values()))["steps"]
     listing = next(
         step for step in steps if (step.get("name") or "") == "List artifact contents"
     )
