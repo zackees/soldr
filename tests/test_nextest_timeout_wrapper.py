@@ -218,13 +218,21 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
     ]
     assert len(cold_overrides) == 1
     cold_override = cold_overrides[0]
-    assert (
-        "binary(cli_cargo_basic) + binary(cli_cargo_linker)"
-        " + binary(cli_cargo_run_trampoline)"
-        " + binary(cli_cargo_wrappers)"
-        " + test(=cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled)"
-        in cold_override
-    )
+    # Per member, not as one contiguous literal. The literal also pinned the
+    # order and pinned that nothing sat between the terms, so soldr#2887 broke
+    # this test by *adding* `binary(cli_dylint_wrapper)` in the middle -- a
+    # legitimate edit failing a guard that was only meant to check membership.
+    # What the reservation cares about is which members are in it, which the
+    # loop below states and the exclusions further down still pin.
+    for cold_binary in (
+        "binary(cli_cargo_basic)",
+        "binary(cli_cargo_linker)",
+        "binary(cli_cargo_run_trampoline)",
+        "binary(cli_cargo_wrappers)",
+        "binary(cli_dylint_wrapper)",
+        "test(=cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled)",
+    ):
+        assert cold_binary in cold_override, cold_override
     # soldr#2737: `cli_cargo_basic` is binary-scoped because 19 of its 21
     # tests drive `isolated_soldr_command`. Its per-test entry is subsumed and
     # must not come back alongside the binary one -- two entries covering the
@@ -262,11 +270,26 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
     for deleted in ("cli_daemon_tombstone", "session_multiprocess_smoke"):
         assert f"binary({deleted})" not in config
     assert config.count('threads-required = "num-cpus"') == 2
-    # 8 = the default profile + seven measured per-test override blocks. Every
-    # raised budget carries the same explicit grace period, so this count is
-    # what stops one being added without one. Newest: soldr#2336's toolchain
-    # link / cargo-fmt-home-boundary cold-start trio.
-    assert config.count('grace-period = "30s"') == 8
+    # Every raised budget must carry the explicit grace period.
+    #
+    # The count below used to be the whole check, and its comment claimed it
+    # "stops one being added without one" -- which it never did. A block added
+    # *with* no grace period leaves the count unchanged and passes; only
+    # adding one and forgetting to bump the number failed, i.e. exactly
+    # backwards from the stated intent. Verified by adding a bare
+    # `terminate-after` block: the old assertion did not notice.
+    for block in config.split("[[profile.default.overrides]]")[1:]:
+        if "terminate-after" not in block:
+            continue
+        assert (
+            'grace-period = "30s"' in block
+        ), f"a raised budget with no explicit grace period:\n{block}"
+    # Kept beside it: the count still makes an addition deliberate rather than
+    # incidental. 9 = the default profile + eight measured per-test override
+    # blocks. Newest: soldr#2887's `binary(cli_dylint_wrapper)` block, whose
+    # two fake-dylint front doors the prescribed `soldr ci-test` run measured
+    # at 121s each when they raced.
+    assert config.count('grace-period = "30s"') == 9
 
 
 def test_every_binary_named_in_nextest_filters_is_a_real_test_target() -> None:
