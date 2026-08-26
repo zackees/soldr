@@ -234,16 +234,34 @@ fn run_session_compile_for_service(
     cwd: String,
     env: Vec<SessionEnvVar>,
 ) -> Result<SessionCompileOutcome, SessionError> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(SessionError::pre_output)?
-        .block_on(run_session_compile_async(
-            service_name,
-            rustc_argv,
-            cwd,
-            env,
-        ))
+    let run = || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(SessionError::pre_output)?
+            .block_on(run_session_compile_async(
+                service_name,
+                rustc_argv,
+                cwd,
+                env,
+            ))
+    };
+
+    // A Cargo wrapper arrives before Soldr constructs its command runtime, but
+    // direct compiler commands are dispatched from that runtime. Tokio rejects
+    // nested `block_on` calls there. Move only that direct-command bridge to a
+    // short-lived ordinary thread, leaving the hot wrapper path unchanged.
+    if tokio::runtime::Handle::try_current().is_ok() {
+        std::thread::scope(|scope| {
+            scope.spawn(run).join().unwrap_or_else(|_| {
+                Err(SessionError::pre_output(std::io::Error::other(
+                    "SESSION compile worker panicked",
+                )))
+            })
+        })
+    } else {
+        run()
+    }
 }
 
 async fn run_session_compile_async(
