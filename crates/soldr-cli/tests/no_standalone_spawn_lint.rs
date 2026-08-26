@@ -39,6 +39,15 @@ const FORBIDDEN_SPAWN_ENTRY_POINTS: &[&str] = &[
     "zccache::cli::prepare_daemon_exe",
 ];
 
+/// Cacheable work must not accept an environment-selected external zccache
+/// executable. Test doubles belong in test-only harnesses, never in a
+/// release-binary configuration path.
+const FORBIDDEN_EXTERNAL_ZCCACHE_BINARY_ENV_VARS: &[&str] = &[
+    "SOLDR_TEST_ZCCACHE_BIN",
+    "SOLDR_ZCCACHE_BIN",
+    "ZCCACHE_BINARY",
+];
+
 fn crate_root() -> PathBuf {
     common::crate_root()
 }
@@ -139,6 +148,15 @@ fn zccache_cli_run_is_only_referenced_by_the_gated_trampoline() {
                     offenders.push(format!(
                         "{rel}:{}: references {pattern} (standalone-daemon spawn path, \
                          removed by soldr#1467)",
+                        idx + 1
+                    ));
+                }
+            }
+            for env_var in FORBIDDEN_EXTERNAL_ZCCACHE_BINARY_ENV_VARS {
+                if line.contains(env_var) {
+                    offenders.push(format!(
+                        "{rel}:{}: references {env_var}, an external zccache executable override \
+                         (cacheable work must use Soldr's broker/in-process route)",
                         idx + 1
                     ));
                 }

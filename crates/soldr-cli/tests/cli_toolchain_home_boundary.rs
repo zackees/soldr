@@ -118,7 +118,7 @@ fn cargo_fmt_host_toolchain_does_not_mix_in_managed_rustup_home() {
     let cache_root = unique_temp_dir("cargo-fmt-host-rustup-home");
     let log_path = cache_root.join("tool.log");
     let source_path = write_rustfmt_source(&cache_root);
-    let (_rustup, cargo, rustc, rustfmt, zccache) =
+    let (_rustup, cargo, rustc, rustfmt, _zccache) =
         install_fake_cargo_fmt_toolchain(&log_path, &source_path);
     let explicit_cargo_home = unique_temp_dir("cargo-fmt-explicit-host-cargo-home");
 
@@ -134,7 +134,6 @@ fn cargo_fmt_host_toolchain_does_not_mix_in_managed_rustup_home() {
         .env("SOLDR_REAL_CARGO", &cargo)
         .env("SOLDR_REAL_RUSTC", &rustc)
         .env("SOLDR_REAL_RUSTFMT", &rustfmt)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env("CARGO_HOME", &explicit_cargo_home)
         .env("PATH", isolated_test_path())
         .env_remove("RUSTFMT")
@@ -192,7 +191,6 @@ fn relative_managed_rustc_wrapper_uses_soldr_toolchain_homes() {
         .current_dir(&cache_root)
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env_remove("SOLDR_TEST_RUSTC_BIN")
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env("PATH", isolated_test_path())
         .env_remove("CARGO_HOME")
         .env_remove("RUSTUP_HOME")

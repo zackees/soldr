@@ -69,14 +69,13 @@ fn cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled() {
     fs::write(&metadata_path, serde_json::to_string(&metadata).unwrap())
         .expect("write metadata fixture");
 
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     let output = common::isolated_soldr_command()
         .args(["cargo", "build", "--locked"])
         .current_dir(&workspace)
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env("SOLDR_TEST_CARGO_METADATA_PATH", &metadata_path)
         .env("SOLDR_TRUST_INHERITED_ENV", "1")
         .env("SOLDR_TARGET_CACHE_MODE", "thin")

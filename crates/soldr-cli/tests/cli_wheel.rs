@@ -101,7 +101,7 @@ fn soldr_wheel_resolves_the_alias_and_tags_the_wheel() {
     }
     let cache_root = unique_temp_dir("soldr-wheel-argv");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     seed_cached_fake_maturin(&cache_root, &log_path);
     let (alias, triple) = host_alias_and_triple();
 
@@ -110,7 +110,6 @@ fn soldr_wheel_resolves_the_alias_and_tags_the_wheel() {
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env_remove("CARGO")
         .env_remove("RUSTC")
         .env_remove("RUSTC_WRAPPER")
@@ -155,7 +154,7 @@ fn soldr_wheel_forwards_extra_arguments_to_maturin() {
     }
     let cache_root = unique_temp_dir("soldr-wheel-passthrough");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     seed_cached_fake_maturin(&cache_root, &log_path);
     let (alias, _) = host_alias_and_triple();
 
@@ -164,7 +163,6 @@ fn soldr_wheel_forwards_extra_arguments_to_maturin() {
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env_remove("RUSTC_WRAPPER")
         .env_remove("SOLDR_RUSTC_WRAPPER")
         .env_remove("ZCCACHE_DISABLE")
@@ -202,7 +200,7 @@ fn soldr_wheel_defaults_to_a_dev_host_wheel_with_no_floor_claim() {
     }
     let cache_root = unique_temp_dir("soldr-wheel-default");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     seed_cached_fake_maturin(&cache_root, &log_path);
 
     let output = isolated_soldr_command()
@@ -210,7 +208,6 @@ fn soldr_wheel_defaults_to_a_dev_host_wheel_with_no_floor_claim() {
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env_remove("CARGO")
         .env_remove("RUSTC")
         .env_remove("RUSTC_WRAPPER")

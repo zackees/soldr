@@ -250,8 +250,6 @@ fn remove_inherited_native_cache_env(cmd: &mut Command) {
         "SOLDR_EFFECTIVE_RUSTC_WRAPPER",
         "SOLDR_EFFECTIVE_RUSTC_WRAPPER_ORIGIN",
         "SOLDR_NATIVE_CACHE",
-        "SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER",
-        "SOLDR_TEST_ZCCACHE_BIN",
         "SOLDR_ZCCACHE_LOCAL_DIR",
         "ZCCACHE_CACHE_DIR",
     ] {
@@ -323,19 +321,11 @@ fn run_soldr_cargo_build(project: &Path, env_overrides: &[(&str, &str)]) -> std:
     let mut cmd = Command::new(soldr_bin());
     cmd.current_dir(project);
     remove_inherited_native_cache_env(&mut cmd);
-    // Hermetic cache root per test. The fake-zccache seam never starts an
-    // embedded daemon, so keep job lifetime: command lifetime now correctly
-    // requires a complete embedded checkpoint and would reject this
-    // intentionally daemon-free fixture.
+    // Hermetic cache root per test. Cacheable work remains on Soldr's normal
+    // embedded-daemon route; no external zccache test executable is used.
     cmd.env("SOLDR_CACHE_DIR", unique_cache_dir());
     cmd.env("SOLDR_CACHE_LIFECYCLE", "job");
     cmd.env_remove("SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS");
-    let fake_zccache = install_fake_zccache();
-    cmd.env("SOLDR_TEST_ZCCACHE_BIN", &fake_zccache.bin);
-    cmd.env(
-        "SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER",
-        &fake_zccache.down_marker,
-    );
     cmd.env_remove("SOLDR_BUILD_CACHE_MODE");
     cmd.env_remove("SOLDR_TARGET_CACHE_MODE");
     for (k, v) in env_overrides {

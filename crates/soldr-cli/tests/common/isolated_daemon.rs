@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
 
 /// Place a test daemon at a route-local executable path and configure the
 /// exact production endpoint names derived from that path.
@@ -15,6 +16,81 @@ pub(crate) fn configure_isolated_daemon_client(command: &mut Command, source: &P
     let executable = isolated_daemon_executable(source, root);
     super::scrub_outer_soldr_env(command);
     configure_direct_daemon_endpoints(command, &executable);
+}
+
+/// A foreground daemon configured for one integration-test cache root.
+///
+/// Tests that exercise cacheable compiler traffic need a real embedded service;
+/// they must not replace it with an externally executed fake zccache binary.
+pub(crate) struct IsolatedDaemon {
+    child: Option<Child>,
+    source: PathBuf,
+    root: PathBuf,
+    home: PathBuf,
+}
+
+impl IsolatedDaemon {
+    pub(crate) fn spawn(source: &Path, root: &Path, home: &Path) -> Self {
+        let mut command = isolated_daemon_command(source, root);
+        command
+            .args(["--foreground", "--idle-timeout-secs", "60"])
+            .env("SOLDR_CACHE_DIR", root)
+            .env("HOME", home)
+            .env("USERPROFILE", home)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let child = command.spawn().expect("spawn isolated soldr-daemon");
+        let daemon = Self {
+            child: Some(child),
+            source: source.to_path_buf(),
+            root: root.to_path_buf(),
+            home: home.to_path_buf(),
+        };
+        daemon.wait_until_ready();
+        daemon
+    }
+
+    pub(crate) fn configure_client(&self, command: &mut Command) {
+        configure_isolated_daemon_client(command, &self.source, &self.root);
+        command
+            .env("SOLDR_CACHE_DIR", &self.root)
+            .env("HOME", &self.home)
+            .env("USERPROFILE", &self.home);
+    }
+
+    fn wait_until_ready(&self) {
+        let deadline = Instant::now() + Duration::from_secs(90);
+        while Instant::now() < deadline {
+            let mut status = Command::new(super::soldr_bin());
+            self.configure_client(&mut status);
+            let output = status.args(["daemon", "status", "--json"]).output();
+            if output.is_ok_and(|output| output.status.success()) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("isolated daemon never became ready under {}", self.root.display());
+    }
+}
+
+impl Drop for IsolatedDaemon {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let mut stop = Command::new(super::soldr_bin());
+            self.configure_client(&mut stop);
+            let _ = stop.args(["daemon", "stop"]).output();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < deadline {
+                if child.try_wait().ok().flatten().is_some() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }
 
 pub(crate) fn isolated_daemon_control_endpoint(source: &Path, root: &Path) -> PathBuf {
