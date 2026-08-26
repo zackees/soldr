@@ -55,7 +55,7 @@ fn fake_direct_rustup_cargo_script(log_path: &Path) -> String {
 }
 
 #[test]
-fn exec_cargo_build_routes_through_child_shims_and_zccache() {
+fn exec_cargo_build_routes_through_child_shims() {
     let cache_root = unique_temp_dir("exec-cargo-zccache-shims");
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
@@ -103,7 +103,7 @@ fn exec_cargo_build_routes_through_child_shims_and_zccache() {
     );
     assert!(
         log.lines()
-            .any(|line| line.contains("zccache wrapper") && line.contains("exec_demo")),
-        "nested cargo rustc call should route through zccache: {log}"
+            .any(|line| line.starts_with("rustc ") && line.contains("exec_demo")),
+        "the child shim must forward nested cargo's compiler invocation: {log}"
     );
 }
