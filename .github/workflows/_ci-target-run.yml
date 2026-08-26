@@ -194,9 +194,28 @@ jobs:
           rustc_bin=$("$SOLDR_BIN" rustup which rustc)
           test -f "$cargo_bin"
           test -f "$rustc_bin"
+          # soldr#2879: also export the CHANNEL, not just the two absolute
+          # paths.
+          #
+          # `CARGO`/`RUSTC` pin what this job runs directly. They do not pin
+          # what the soldr children spawned by fixtures resolve: those walk
+          # ancestors for a `rust-toolchain.toml`, find none under the OS temp
+          # dir, and fall back to whatever `rustup` calls default -- the
+          # image's `stable`. The whole test tree sets `SOLDR_ALLOW_UNPINNED`
+          # (soldr#1766) so nothing complains about it.
+          #
+          # That is how three darwin tests came to strip with `stable`'s
+          # `rust-objcopy`, whose `@rpath/libLLVM.dylib` is absent on the
+          # image, while this job had installed and verified 1.95.0.
+          # `probe_direct_toolchain_binary` bails out when RUSTUP_TOOLCHAIN is
+          # set, so exporting it routes every child through rustup on the
+          # channel this job actually provisioned.
+          channel=$(python .github/scripts/toolchain_ensure_channel.py "$TOOLCHAIN_ENSURE_JSON")
+          test -n "$channel"
           {
             echo "CARGO=$cargo_bin"
             echo "RUSTC=$rustc_bin"
+            echo "RUSTUP_TOOLCHAIN=$channel"
           } >> "$GITHUB_ENV"
 
       - name: Verify pinned Rust toolchain
