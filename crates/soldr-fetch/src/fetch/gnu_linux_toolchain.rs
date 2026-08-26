@@ -9,6 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::core::{SoldrError, SoldrPaths};
+use crate::platform::host::facts::{HostArch, HostOs};
 
 pub const GNU_LINUX_TOOLCHAIN_VERSION: &str = "gcc-13.3.0-glibc-2.17-1";
 pub const GNU_LINUX_GLIBC_BASELINE: &str = "2.17";
@@ -45,6 +46,52 @@ impl GnuLinuxToolchainTarget {
 
     pub const fn supports_glibc_floor(self) -> bool {
         true
+    }
+}
+
+/// The host triple every catalogue GNU/Linux bundle is built to **run** on.
+///
+/// soldr#2874: the slug names the *target* shape, not the host shape. Both
+/// bundles -- `linux-x64-gnu` and `linux-arm64-gnu` -- are produced by
+/// `soldr-toolchain/recipes/_gnu_linux_toolchain.py`, which records
+/// `host_triple: x86_64-unknown-linux-gnu` for both. `linux-arm64-gnu` is an
+/// x86_64-hosted *cross* compiler that emits ARM64; it is not an ARM64-hosted
+/// native one. Selecting it by target shape alone puts an x86_64 ELF on an
+/// ARM64 runner, where it dies with `Exec format error (os error 8)`.
+pub const GNU_LINUX_TOOLCHAIN_HOST_TRIPLE: &str = "x86_64-unknown-linux-gnu";
+
+/// Whether this host can execute the catalogue bundle's compilers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BundleHostFitness {
+    /// The bundle's compiler executables run here.
+    Runnable,
+    /// A Linux host of the wrong architecture -- an x86_64 ELF on ARM64.
+    /// This is soldr#2874's `Exec format error (os error 8)`.
+    WrongArch,
+    /// Not a Linux host at all, so a Linux ELF cannot be executed.
+    /// soldr#2437 already stops this earlier with its own message; this arm
+    /// exists so the fitness question has one answer rather than two owners.
+    WrongOs,
+}
+
+impl BundleHostFitness {
+    pub const fn is_runnable(self) -> bool {
+        matches!(self, Self::Runnable)
+    }
+}
+
+/// Can the catalogue GNU/Linux bundle's compilers execute on `(os, arch)`?
+///
+/// Pure on purpose. The host it has to answer for -- native ARM64 Linux --
+/// is not the host soldr's tests run on, and a `cfg!`-driven answer could
+/// only ever be checked by running on the machine that has the bug.
+pub fn bundle_host_fitness(os: HostOs, arch: HostArch) -> BundleHostFitness {
+    if os != HostOs::Linux {
+        return BundleHostFitness::WrongOs;
+    }
+    match arch {
+        HostArch::X86_64 => BundleHostFitness::Runnable,
+        _ => BundleHostFitness::WrongArch,
     }
 }
 
