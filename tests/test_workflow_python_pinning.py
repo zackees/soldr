@@ -67,17 +67,10 @@ RATCHET = frozenset(
         ("baseline-zero-deps.yml", "build-soldr"),
         ("baseline-zero-deps.yml", "docker-baseline"),
         ("benchmark-stats.yml", "gate"),
-        # `lint` installs uv but still calls its nine guard scripts with a bare
-        # `python3`. It is ubuntu-only so the blast radius is small, and pinning
-        # it changes the job every PR depends on -- worth doing, not worth doing
-        # in a release-lane fix.
-        ("ci.yml", "windows-e2e-policy"),
-        ("ci.yml", "wheel-cross-policy"),
         ("cross-compile-all-targets.yml", "bootstrap-and-linux-x86"),
         ("cross-compile-all-targets.yml", "cross-compile"),
         ("docker-linux-cross-smoke.yml", "smoke"),
         ("perf-matrix.yml", "gate"),
-        ("setup-soldr-action.yml", "smoke"),
     }
 )
 

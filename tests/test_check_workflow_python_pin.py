@@ -307,3 +307,97 @@ jobs:
 """,
     )
     assert guard.unpinned_jobs(tmp_path) == set()
+
+
+# ------------------- per-invocation routing, not counting -------------------
+#
+# soldr#2763: the predicate compared the NUMBER of routed calls against the
+# number of script paths. Both directions of that were wrong, and both are
+# reachable from ordinary workflow edits.
+
+
+def test_a_wrapped_command_is_still_pinned(guard):
+    r"""A trailing backslash is a formatting choice, not a pinning one.
+
+    Asserted against the helper with an explicit string rather than through a
+    YAML fixture: PyYAML normalizes a continuation inside a block scalar, so a
+    fixture-shaped version of this test passes whether or not the folding
+    exists and proves nothing. The real `setup-soldr-action.yml` reaches the
+    helper with the script on its own line, which is the case that matters.
+    """
+    # Built by joining rather than written as one literal: the payload ends a
+    # line with a backslash, which is exactly the character most likely to be
+    # mangled by whatever edits this file next, and a mangled version passes
+    # vacuously.
+    backslash = chr(92)
+    wrapped = "\n".join(
+        [
+            "uv run --no-project --python 3.13 python " + backslash,
+            "  .github/scripts/one.py",
+        ]
+    )
+    assert wrapped.endswith("py")
+    assert backslash + "\n" in wrapped, "fixture lost its line continuation"
+    assert guard.unrouted_script_invocations(wrapped) == []
+
+
+def test_an_unrelated_routed_call_does_not_cover_a_bare_one(guard, tmp_path):
+    """The false negative: one routed call, one bare call, counts agree.
+
+    A job that runs pytest through the pinned interpreter and a repo script
+    through whatever `python3` means had one of each. The counts compared
+    equal and the job was reported pinned -- while the script it actually
+    cares about ran unpinned.
+    """
+    write_workflow(
+        tmp_path,
+        "release.yml",
+        f"""
+jobs:
+  build:
+    steps:
+      - uses: {SETUP_UV}
+      - run: uv run --no-project --with pytest python -m pytest tests/ -q
+      - run: python3 .github/scripts/one.py
+""",
+    )
+    assert guard.unpinned_jobs(tmp_path) == {("release.yml", "build")}
+
+
+def test_the_routing_must_precede_the_script_on_its_own_line(guard, tmp_path):
+    """`uv run` later in the block does not retroactively pin an earlier call."""
+    write_workflow(
+        tmp_path,
+        "release.yml",
+        f"""
+jobs:
+  build:
+    steps:
+      - uses: {SETUP_UV}
+      - run: |
+          python3 .github/scripts/one.py
+          uv run --python 3.13 python .github/scripts/two.py
+""",
+    )
+    assert guard.unpinned_jobs(tmp_path) == {("release.yml", "build")}
+
+
+def test_the_unrouted_list_names_the_offending_line(guard):
+    """The helper is the diagnosis, so it has to say which call is bare."""
+    unrouted = guard.unrouted_script_invocations(
+        "uv run --python 3.13 python .github/scripts/ok.py\n"
+        "python3 .github/scripts/bad.py\n"
+    )
+    assert len(unrouted) == 1
+    assert "bad.py" in unrouted[0]
+
+
+def test_two_scripts_on_one_routed_line_are_not_double_counted(guard):
+    """One line, one verdict -- an argument that happens to be a path is not
+    a second invocation."""
+    assert (
+        guard.unrouted_script_invocations(
+            "uv run --python 3.13 python .github/scripts/a.py --plan ci/b.py\n"
+        )
+        == []
+    )

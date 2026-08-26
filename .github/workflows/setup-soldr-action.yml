@@ -92,7 +92,7 @@ jobs:
           # Printed because the bash version IS the thing under test on the
           # macOS leg -- a green run means little if it silently used bash 5.
           bash --version | head -1
-          uv run --no-project --with pytest python -m pytest \
+          uv run --no-project --python 3.13 --with pytest python -m pytest \
             tests/test_install_sh_smoke.py -q
 
       - name: Verify setup-soldr pin matches v0
@@ -104,11 +104,13 @@ jobs:
         continue-on-error: true
         run: |
           set -uo pipefail
-          if command -v python3 >/dev/null 2>&1; then
-            python3 .github/scripts/verify_setup_soldr_pin.py
-          else
-            python .github/scripts/verify_setup_soldr_pin.py
-          fi
+          # soldr#2763: the `command -v python3` fallback existed because this
+          # workflow had no interpreter it could count on. The uv step above
+          # supplies one on every leg -- including the macOS runner, whose
+          # `python3` is whatever the image ships -- so the branch is gone
+          # rather than being converted twice.
+          uv run --no-project --python 3.13 python \
+            .github/scripts/verify_setup_soldr_pin.py
           status=$?
           if [[ $status -ne 0 ]]; then
             echo "::warning title=setup-soldr pin stale::Pin in .github/workflows/setup-soldr-action.yml does not match @v0 — non-blocking; bump out-of-band."
