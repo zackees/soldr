@@ -267,12 +267,23 @@ fn windows_stop_start_is_immediately_status_ready() {
         home_root: home_root.clone(),
     };
 
+    // soldr#2883: this must exceed soldr's own route-start budget, or the
+    // wrapper fires first with a bare "timed out after 90s" and swallows the
+    // launcher's more precise attribution -- the exact failure mode that
+    // budget's comment describes for a too-tight client bound.
+    //
+    // 90s was safe while the route budget was 60s, because it could never be
+    // reached. Once the budget moved to 180s to stop clipping real work on
+    // windows-gnu, 90s became the binding bound: the very next run passed at
+    // 89.786s, 0.2s inside it. So the three nest deliberately now --
+    // route 180s < this 240s < nextest's 300s tier for this test.
+    const DAEMON_START_WAIT: Duration = Duration::from_secs(240);
     let mut generations = Vec::new();
     for (args, timeout) in [
-        (&["daemon", "start"][..], Duration::from_secs(90)),
+        (&["daemon", "start"][..], DAEMON_START_WAIT),
         (&["daemon", "status", "--json"][..], Duration::from_secs(15)),
         (&["daemon", "stop"][..], Duration::from_secs(15)),
-        (&["daemon", "start"][..], Duration::from_secs(90)),
+        (&["daemon", "start"][..], DAEMON_START_WAIT),
         (&["daemon", "status", "--json"][..], Duration::from_secs(15)),
     ] {
         let output = run_soldr_with_timeout(args, &cache_root, &home_root, &workspace, timeout);

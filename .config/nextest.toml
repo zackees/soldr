@@ -118,9 +118,12 @@ platform = { target = "cfg(unix)" }
 run-wrapper = "timeout-diagnostics"
 
 # 300s: real-rustc end-to-end compiles through the session bridge, plus the
-# Windows long-path publication cases.
+# Windows long-path publication cases -- plus (soldr#2883)
+# `windows_stop_start_is_immediately_status_ready`, whose broker route start
+# is legitimately slow on windows-gnu: measured at 89.8s against the 90s the
+# fixture allows it, so the bounds have to nest rather than race.
 [[profile.default.overrides]]
-filter = 'test(=session_endpoint_serves_real_compile_via_mux) + test(=session_compile_e2e_real_rustc_through_the_bridge) + test(=session_client_disconnect_mid_compile_aborts_without_reply) + test(=windows_long_path_publication_survives_fresh_worktree_reuse) + test(=windows_deep_cache_root_keeps_staged_linker_path_short) + test(=env_dedup_micro_benchmark) + test(=cargo_test_recovers_after_daemon_stop_without_herd_spawning) + test(=graceful_daemon_restart_serves_the_next_build_warm) + test(=hard_killed_daemon_loses_at_most_one_save_batch)'
+filter = 'test(=session_endpoint_serves_real_compile_via_mux) + test(=session_compile_e2e_real_rustc_through_the_bridge) + test(=session_client_disconnect_mid_compile_aborts_without_reply) + test(=windows_long_path_publication_survives_fresh_worktree_reuse) + test(=windows_deep_cache_root_keeps_staged_linker_path_short) + test(=env_dedup_micro_benchmark) + test(=cargo_test_recovers_after_daemon_stop_without_herd_spawning) + test(=graceful_daemon_restart_serves_the_next_build_warm) + test(=hard_killed_daemon_loses_at_most_one_save_batch) + test(=windows_stop_start_is_immediately_status_ready)'
 slow-timeout = { period = "60s", terminate-after = 5, grace-period = "30s" }
 
 # 240s: daemon single-instance races, which spin up two daemons and wait for
