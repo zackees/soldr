@@ -413,7 +413,25 @@ fn ci_test_preserves_scope_and_exposes_incompatible_overrides_as_domains_or_erro
     // An explicit host-plan override must never silently share the stable
     // target tree. The native surface rejects it diagnostically; callers that
     // need an additional domain use the explicit cargo front door.
-    let overridden = explain_plan(&["--target", "aarch64-unknown-linux-gnu"]);
+    //
+    // The triple is chosen against the host rather than hard-coded. It used to
+    // be a literal `aarch64-unknown-linux-gnu`, which is a *foreign* target on
+    // every lane except the one where it is the host — and there it collided
+    // with the assertion directly above, which requires an explicit host
+    // target to be accepted. The two cannot both hold for the same triple, so
+    // the aarch64 Linux target-run lane failed with "target override must not
+    // silently reuse host artifacts" while doing exactly the right thing.
+    let foreign = soldr_cli::core::CANONICAL_TARGETS
+        .iter()
+        .copied()
+        .find(|candidate| *candidate != host)
+        .expect("the canonical list has more than one target");
+    assert_ne!(
+        foreign, host,
+        "the override case needs a target that is NOT the host, or it tests \
+         the accepted-host path above instead"
+    );
+    let overridden = explain_plan(&["--target", foreign]);
     assert!(
         !overridden.status.success(),
         "target override must not silently reuse host artifacts"
