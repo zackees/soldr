@@ -127,7 +127,7 @@ pub(crate) fn build_env_inputs(
     });
     if let Some(default) = cargo_profile_debug_default {
         if !vars.iter().any(|(name, _)| name == default.env_var) {
-            vars.push((default.env_var.to_string(), "false".to_string()));
+            vars.push((default.env_var.to_string(), default.value.to_string()));
         }
         vars.sort_by(|a, b| a.0.cmp(&b.0));
     }
