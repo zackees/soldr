@@ -8,6 +8,11 @@ use std::time::{Duration, Instant};
 /// endpoint generation is still retiring.
 pub const STATUS_RETIRING_RETRY_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Explicit start waits longer than an ordinary status query because a route
+/// can pass the broker's session-endpoint probe before its control endpoint is
+/// accepting requests on a heavily loaded host.
+pub const START_STATUS_READY_TIMEOUT: Duration = Duration::from_secs(30);
+
 fn retiring_endpoint_error(error: &crate::daemon::client::ClientError) -> bool {
     matches!(error, crate::daemon::client::ClientError::Io(io)
         if matches!(io.kind(), ErrorKind::BrokenPipe | ErrorKind::ConnectionReset | ErrorKind::UnexpectedEof | ErrorKind::WouldBlock))

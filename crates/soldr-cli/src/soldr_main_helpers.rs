@@ -191,7 +191,7 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
                 &sock,
                 &ready_route.backend_pipe,
                 &ready_route.daemon_version,
-                crate::daemon::lifecycle::STATUS_RETIRING_RETRY_TIMEOUT,
+                crate::daemon::lifecycle::START_STATUS_READY_TIMEOUT,
             )
             .map_err(|err| {
                 SoldrError::Other(format!(
