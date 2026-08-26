@@ -25,6 +25,7 @@ this file.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -33,6 +34,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CROSS_BUILD = REPO_ROOT / ".github" / "workflows" / "_ci-cross-build-linux.yml"
 TARGET_RUN = REPO_ROOT / ".github" / "workflows" / "_ci-target-run.yml"
+CI = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 
 # Cargo's profile-override spelling: CARGO_PROFILE_<PROFILE>_<KEY>, with the
 # profile name uppercased and `-` folded to `_`.
@@ -72,23 +74,47 @@ def test_the_override_is_scoped_to_windows_gnu(cross_build_steps: list[dict]) ->
     assert "inputs.target" in condition, condition
 
 
-def test_no_other_target_is_caught_by_the_condition(
-    cross_build_steps: list[dict],
-) -> None:
-    # `contains(inputs.target, 'pc-windows-gnu')` must not also match the msvc
-    # triples, which is easy to get wrong by shortening the needle to
-    # `windows`.
-    condition = find_step(cross_build_steps, OVERRIDE).get("if", "")
-    for other in (
-        "x86_64-pc-windows-msvc",
-        "aarch64-pc-windows-msvc",
-        "x86_64-unknown-linux-gnu",
-        "aarch64-apple-darwin",
-    ):
-        assert other not in condition
-    # The literal the condition tests for must not be a prefix of an msvc
-    # triple either.
-    assert "pc-windows-gnu" not in "x86_64-pc-windows-msvc"
+def cross_built_targets() -> list[str]:
+    """Every target `ci.yml` actually hands to the cross-build workflow.
+
+    Read rather than hard-coded: a new triple must be evaluated against the
+    condition automatically, or this test only ever checks the targets that
+    existed when it was written.
+    """
+    doc = yaml.safe_load(CI.read_text(encoding="utf-8"))
+    targets = [
+        job["with"]["target"]
+        for job in doc["jobs"].values()
+        if isinstance(job, dict)
+        and str(job.get("uses", "")).endswith("_ci-cross-build-linux.yml")
+        and isinstance(job.get("with"), dict)
+        and "target" in job["with"]
+    ]
+    assert targets, "found no cross-build jobs in ci.yml"
+    return targets
+
+
+def test_the_condition_selects_gnu_windows_targets_and_no_others() -> None:
+    """Evaluate the real predicate against the real target list.
+
+    `contains(inputs.target, 'pc-windows-gnu')` is a substring test, and the
+    obvious wrong shortening — `'windows'` — silently also matches all three
+    msvc triples. So this applies the actual needle to the actual targets
+    instead of asserting on the condition's text.
+    """
+    steps = yaml.safe_load(CROSS_BUILD.read_text(encoding="utf-8"))
+    steps = next(iter(steps["jobs"].values()))["steps"]
+    condition = find_step(steps, OVERRIDE).get("if", "")
+    match = re.search(r"contains\(\s*inputs\.target\s*,\s*'([^']+)'\s*\)", condition)
+    assert match, f"condition is not a recognisable contains(): {condition!r}"
+    needle = match.group(1)
+
+    selected = [t for t in cross_built_targets() if needle in t]
+    expected = [t for t in cross_built_targets() if t.endswith("-pc-windows-gnu")]
+    assert (
+        selected == expected
+    ), f"needle {needle!r} selects {selected}, expected exactly {expected}"
+    assert selected, "no windows-gnu target is being cross-built at all"
 
 
 def test_the_reason_travels_with_the_override(cross_build_steps: list[dict]) -> None:
