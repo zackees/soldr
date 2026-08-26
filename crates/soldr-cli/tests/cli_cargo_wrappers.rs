@@ -250,7 +250,7 @@ fn assert_zccache_did_not_wrap_rustdoc(log: &str, rustdoc: &Path) {
 fn cargo_front_door_uses_real_tool_overrides_before_path_probe() {
     let cache_root = unique_temp_dir("cargo-real-tool-overrides");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     let shim_dir = unique_temp_dir("cargo-shim-dir");
     let shim_cargo = fake_script_path(&shim_dir, "cargo");
     write_fake_script(
@@ -291,7 +291,7 @@ fn cargo_front_door_uses_real_tool_overrides_before_path_probe() {
 fn cargo_front_door_keeps_cache_enabled_for_non_build_subcommands() {
     let cache_root = unique_temp_dir("cargo-non-build-no-cache");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     let output = isolated_soldr_command()
         .args(["cargo", "metadata"])
         .env("SOLDR_CACHE_DIR", &cache_root)
@@ -320,7 +320,7 @@ fn cargo_front_door_keeps_cache_enabled_for_non_build_subcommands() {
 fn cargo_front_door_detects_build_after_global_cargo_options() {
     let cache_root = unique_temp_dir("cargo-global-options-cache");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     let output = isolated_soldr_command()
         .args(["cargo", "--manifest-path", "demo/Cargo.toml", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
@@ -351,7 +351,7 @@ fn cargo_front_door_detects_build_after_global_cargo_options() {
 fn cargo_miri_keeps_inner_rustc_wrapped_by_policy() {
     let cache_root = unique_temp_dir("cargo-miri-zccache-policy");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_cargo_miri_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_cargo_miri_toolchain(&log_path);
     let output = isolated_soldr_command()
         .args(["cargo", "miri"])
         .env("SOLDR_CACHE_DIR", &cache_root)
@@ -381,7 +381,7 @@ fn cargo_miri_keeps_inner_rustc_wrapped_by_policy() {
 fn cargo_clippy_routes_workspace_clippy_driver_through_zccache() {
     let cache_root = unique_temp_dir("cargo-clippy-clippy-driver-zccache");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache, clippy_driver) = install_fake_clippy_toolchain(&log_path);
+    let (cargo, rustc, _zccache, clippy_driver) = install_fake_clippy_toolchain(&log_path);
     let output = isolated_soldr_command()
         .args(["cargo", "clippy"])
         .env("SOLDR_CACHE_DIR", &cache_root)
@@ -433,7 +433,7 @@ fn direct_rustc_like_commands_route_through_zccache_with_and_without_global_flag
             let cache_root = unique_temp_dir(&format!("direct-{tool}-{label}-zccache"));
             let log_path = cache_root.join("tool.log");
             let source_path = write_rustc_like_source(&cache_root);
-            let (rustup, rustc, clippy_driver, zccache, tool_dir) =
+            let (rustup, rustc, clippy_driver, _zccache, tool_dir) =
                 install_fake_direct_rustc_like_toolchain(&log_path);
             let compiler = if tool == "rustc" {
                 rustc.as_path()
@@ -497,7 +497,7 @@ fn direct_rustc_like_cache_disable_modes_remain_direct() {
             let cache_root = unique_temp_dir(&format!("direct-{tool}-{label}-direct"));
             let log_path = cache_root.join("tool.log");
             let source_path = write_rustc_like_source(&cache_root);
-            let (rustup, rustc, clippy_driver, zccache, tool_dir) =
+            let (rustup, rustc, clippy_driver, _zccache, tool_dir) =
                 install_fake_direct_rustc_like_toolchain(&log_path);
 
             let mut args = prefix_args;
@@ -557,7 +557,7 @@ fn direct_rustc_non_cacheable_print_probe_stays_direct() {
     ] {
         let cache_root = unique_temp_dir(&format!("direct-rustc-print-{label}"));
         let log_path = cache_root.join("tool.log");
-        let (rustup, rustc, clippy_driver, zccache, tool_dir) =
+        let (rustup, rustc, clippy_driver, _zccache, tool_dir) =
             install_fake_direct_rustc_like_toolchain(&log_path);
 
         let output = isolated_soldr_command()
@@ -655,7 +655,7 @@ fn cargo_doc_keeps_rustc_wrapped_but_rustdoc_direct() {
         let cache_root = unique_temp_dir(&format!("cargo-doc-rustdoc-policy-{label}"));
         let log_path = cache_root.join("tool.log");
         let source_path = write_rustdoc_source(&cache_root);
-        let (rustup, cargo, rustc, rustdoc, zccache) =
+        let (rustup, cargo, rustc, rustdoc, _zccache) =
             install_fake_cargo_doc_toolchain(&log_path, &source_path);
 
         let output = isolated_soldr_command()
@@ -709,7 +709,7 @@ fn cargo_doc_tests_keep_rustc_wrapped_but_rustdoc_direct() {
     let cache_root = unique_temp_dir("cargo-doctest-rustdoc-policy");
     let log_path = cache_root.join("tool.log");
     let source_path = write_rustdoc_source(&cache_root);
-    let (rustup, cargo, rustc, rustdoc, zccache) =
+    let (rustup, cargo, rustc, rustdoc, _zccache) =
         install_fake_cargo_doc_toolchain(&log_path, &source_path);
 
     let output = isolated_soldr_command()
@@ -1108,7 +1108,7 @@ fn cargo_fmt_routes_rustfmt_through_zccache_formatter() {
         let cache_root = unique_temp_dir(&format!("cargo-fmt-zccache-{label}"));
         let log_path = cache_root.join("tool.log");
         let source_path = write_rustfmt_source(&cache_root);
-        let (rustup, cargo, rustc, _rustfmt, zccache) =
+        let (rustup, cargo, rustc, _rustfmt, _zccache) =
             install_fake_cargo_fmt_toolchain(&log_path, &source_path);
 
         let output = isolated_soldr_command()
@@ -1157,7 +1157,7 @@ fn cargo_fmt_no_cache_leaves_rustfmt_direct() {
     let cache_root = unique_temp_dir("cargo-fmt-no-cache-direct");
     let log_path = cache_root.join("tool.log");
     let source_path = write_rustfmt_source(&cache_root);
-    let (rustup, cargo, rustc, _rustfmt, zccache) =
+    let (rustup, cargo, rustc, _rustfmt, _zccache) =
         install_fake_cargo_fmt_toolchain(&log_path, &source_path);
 
     let output = isolated_soldr_command()
@@ -1212,7 +1212,7 @@ fn cargo_front_door_preserves_jobserver_fds_into_managed_zccache_wrapper() {
     }
     let cache_root = unique_temp_dir("cargo-jobserver-fds");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_jobserver_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_jobserver_toolchain(&log_path);
     let output = isolated_soldr_command()
         .args(["cargo", "test", "--no-run"])
         .env("SOLDR_CACHE_DIR", &cache_root)
@@ -1247,7 +1247,7 @@ fn cargo_front_door_preserves_jobserver_fds_into_managed_zccache_wrapper() {
 fn cache_enabled_zccache_build_completes_under_60_seconds() {
     let cache_root = unique_temp_dir("cargo-zccache-timing");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
 
     let started = Instant::now();
     let output = isolated_soldr_command()
@@ -1288,7 +1288,7 @@ fn managed_zccache_honors_explicit_cache_dir_override_when_trusted() {
     let cache_root = unique_temp_dir("cargo-explicit-zccache-dir");
     let user_zccache_dir = cache_root.join("user-zccache");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     let output = isolated_soldr_command()
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
@@ -1321,7 +1321,7 @@ fn nested_soldr_ignores_inherited_managed_zccache_cache_dir() {
     let child_cache_root = unique_temp_dir("cargo-child-managed-zccache-dir");
     let parent_zccache_dir = parent_cache_root.join("cache").join("zccache");
     let log_path = child_cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     let output = isolated_soldr_command()
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &child_cache_root)
@@ -1355,7 +1355,7 @@ fn nested_soldr_ignores_inherited_managed_zccache_cache_dir() {
 fn managed_zccache_injects_normalized_path_remap_by_default() {
     let cache_root = unique_temp_dir("cargo-normalized-remap");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     let repo_root = unique_temp_dir("cargo-normalized-remap-repo");
     let nested = repo_root.join("crates").join("demo");
     fs::create_dir_all(repo_root.join(".git")).expect("failed to create fake git root");
@@ -1399,7 +1399,7 @@ fn managed_zccache_injects_normalized_path_remap_by_default() {
 fn cargo_front_door_uses_custom_rustc_wrapper_from_env_var() {
     let cache_root = unique_temp_dir("cargo-custom-wrapper");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     let wrapper = install_fake_wrapper(&log_path, "sccache");
     let output = isolated_soldr_command()
         .args(["cargo", "build"])
@@ -1463,7 +1463,7 @@ fn custom_sccache_wrapper_preserves_caller_sccache_dir() {
     let cache_root = unique_temp_dir("cargo-custom-wrapper-preserve-sccache-dir");
     let caller_sccache_dir = unique_temp_dir("caller-sccache-dir");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     let wrapper = install_fake_wrapper(&log_path, "sccache");
     let output = isolated_soldr_command()
         .args(["cargo", "build"])
@@ -1504,7 +1504,7 @@ fn custom_sccache_wrapper_preserves_caller_sccache_dir() {
 fn empty_rustc_wrapper_override_disables_wrapper_injection() {
     let cache_root = unique_temp_dir("cargo-wrapper-disabled");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     let output = isolated_soldr_command()
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
@@ -1543,7 +1543,7 @@ fn empty_rustc_wrapper_override_disables_wrapper_injection() {
 fn no_cache_bypasses_wrapper_and_zccache() {
     let cache_root = unique_temp_dir("cargo-no-cache-fake");
     let log_path = cache_root.join("tool.log");
-    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let (cargo, rustc, _zccache) = install_fake_toolchain(&log_path);
     let output = isolated_soldr_command()
         .args(["--no-cache", "cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
