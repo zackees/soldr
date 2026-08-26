@@ -87,7 +87,7 @@
       "gate": "hard",
       "covers": [
         "zccache compile service stays embedded in soldr-daemon",
-        "soldr zccache uses the gated in-process entry point",
+        "soldr zccache uses Soldr-owned compatibility adapters only",
         "standalone zccache-daemon spawn paths remain unreachable",
         "runtime packaging declares no standalone zccache binaries"
       ],

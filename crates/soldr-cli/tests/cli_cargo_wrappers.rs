@@ -223,7 +223,6 @@ fn cargo_front_door_uses_real_tool_overrides_before_path_probe() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-
     let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
     assert!(
         log.contains("cargo wrapper="),
@@ -1193,10 +1192,11 @@ fn cache_enabled_zccache_build_completes_under_60_seconds() {
     );
 
     let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    let routed = log
+        .lines()
+        .any(|l| l.contains("cache=1 ") && !l.contains("wrapper= rustc="));
     assert!(
-        log.lines()
-            .any(|line| line.contains("cache=1 ") && !line.contains("wrapper= rustc="))
-            && log.contains("rustc --crate-name demo"),
+        routed && log.contains("rustc --crate-name demo"),
         "timed build should route through Soldr's compiler shim and embedded service: {log}"
     );
 }

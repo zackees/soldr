@@ -1,4 +1,4 @@
-//! Gate tests for the in-process `soldr zccache` surface (soldr#1593).
+//! Gate tests for the Soldr-owned `soldr zccache` compatibility surface.
 
 #![allow(clippy::print_stdout)]
 
@@ -26,7 +26,7 @@ impl EntryEnv {
             .env("ZCCACHE_CACHE_DIR", self.cache_dir.path())
             .env("ZCCACHE_DAEMON_NAMESPACE", &self.namespace)
             .output()
-            .expect("run in-process soldr zccache entrypoint")
+            .expect("run Soldr-owned zccache compatibility command")
     }
 }
 
@@ -59,21 +59,22 @@ fn status_subcommand_is_refused() {
 }
 
 #[test]
-fn cache_root_passes_through_in_process() {
+fn cache_root_uses_soldr_owned_resolution() {
     let output = EntryEnv::new("cacheroot").run(&["cache-root", "--json"]);
     let text = combined(&output);
     assert!(output.status.success(), "output: {text}");
 }
 
 #[test]
-fn session_end_passes_through_in_process() {
-    let output = EntryEnv::new("sessionend").run(&["session-end", "soldr-gate-test-session"]);
+fn session_end_routes_to_native_soldr_command() {
+    let output =
+        EntryEnv::new("sessionend").run(&["session-end", "00000000-0000-0000-0000-000000000001"]);
     let text = combined(&output);
     assert!(output.status.success(), "output: {text}");
 }
 
 #[test]
-fn version_flag_passes_through_in_process() {
+fn version_flag_is_served_by_soldr() {
     let output = EntryEnv::new("version").run(&["--version"]);
     let text = combined(&output);
     assert!(output.status.success(), "output: {text}");
