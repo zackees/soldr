@@ -12,6 +12,9 @@
 //! `use soldr_cli::core::*` / `soldr_cli::fetch::*` /
 //! `soldr_cli::cache_lib::*` imports unchanged.
 
+// Cross-target `--lib` checks intentionally leave host-only CLI paths unused.
+// The retired external-cache lifecycle is guarded by an architecture-specific
+// source lint, so it cannot hide behind this allowance.
 #![allow(dead_code, unused_imports)]
 
 /// Neutral host-platform facade (#2493): the single selection site lives
@@ -182,6 +185,7 @@ mod broker_launcher;
 pub(crate) mod broker_lease;
 pub(crate) mod broker_server;
 pub mod broker_spawn;
+pub(crate) mod build_cache_session;
 pub mod build_from_source_cmd;
 /// soldr#1790 — always-on hierarchical per-build XML log
 /// (`<soldr root>/logs/builds/<timestamp>-<cwd-slug>.xml`). See the
@@ -308,7 +312,6 @@ pub mod wrapper_identity;
 pub mod wrapper_target;
 pub mod zccache;
 pub mod zccache_compat;
-pub mod zccache_lifecycle;
 
 // #1490 Phase 2 facade (mechanics rule M3): every module that was
 // ever a `mod` in soldr-cli stays reachable as `soldr_cli::<name>` /

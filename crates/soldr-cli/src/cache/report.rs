@@ -8,7 +8,7 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use super::{print_json, zccache_output_snippet, EMBEDDED_ZCCACHE_VERSION};
+use super::{output_snippet, print_json, EMBEDDED_ZCCACHE_VERSION};
 
 #[derive(Serialize)]
 pub(super) struct CacheReportOutput {
@@ -293,11 +293,11 @@ pub(super) fn zccache_analyze_failure_note(
     stderr: &[u8],
 ) -> String {
     let mut note = format!("rollups: zccache analyze exited with status {status_code:?}");
-    if let Some(stderr) = zccache_output_snippet(stderr) {
+    if let Some(stderr) = output_snippet(stderr) {
         note.push_str("; stderr: ");
         note.push_str(&stderr);
     }
-    if let Some(stdout) = zccache_output_snippet(stdout) {
+    if let Some(stdout) = output_snippet(stdout) {
         note.push_str("; stdout: ");
         note.push_str(&stdout);
     }

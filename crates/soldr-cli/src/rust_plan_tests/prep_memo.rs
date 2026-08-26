@@ -430,8 +430,8 @@ fn prep_memo_wire_roundtrip_preserves_fields() {
 /// self-skips on Windows where they cannot execute.
 mod end_to_end {
     use super::*;
+    use crate::build_cache_session::BuildCacheSession;
     use crate::rust_plan::maybe_prepare_rust_artifact_plan;
-    use crate::zccache::ZccacheBuildSession;
     use crate::TARGET_CACHE_MODE_ENV_VAR;
     use std::path::Path;
     use std::sync::Mutex;
@@ -511,9 +511,8 @@ mod end_to_end {
 
             let cache_dir = base.join("cache");
             std::fs::create_dir_all(cache_dir.join("logs")).unwrap();
-            let session = ZccacheBuildSession {
+            let session = BuildCacheSession {
                 cache_dir: cache_dir.clone(),
-                cache_dir_env: true,
                 session_id: "session-memo-e2e".to_string(),
                 session_log_path: cache_dir.join("logs/last-session.log"),
                 journal_path: cache_dir.join("logs/last-session.jsonl"),
