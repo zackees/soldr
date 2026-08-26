@@ -105,6 +105,36 @@ jobs:
         shell: bash
         run: bash .github/scripts/setup_ci_swap.sh
 
+      # soldr#2883: windows-gnu is the one target that cannot put debug info
+      # anywhere except inside the executable.
+      #
+      #   $ rustc --print split-debuginfo --target x86_64-pc-windows-gnu
+      #   off
+      #   $ rustc --print split-debuginfo --target x86_64-pc-windows-msvc
+      #   packed
+      #
+      # MSVC writes a `.pdb` sidecar, which the nextest archive does not
+      # carry, so its target-run binaries ship with no debug info at all.
+      # GNU has no sidecar to write, so `debug = "line-tables-only"` lands
+      # DWARF in every PE. Measured on one CI run of the same commit:
+      #
+      #   msvc test archive   248,561,683 B     gnu   3,491,930,139 B  (14x)
+      #   msvc per-test floor       0.020 s     gnu           0.421 s  (21x)
+      #
+      # Windows pays that size twice over -- the broker copies the daemon
+      # image per route and the OS loads it per process -- which is what put
+      # `daemon start` past its 60s route budget while the msvc lane ran the
+      # same test in 20.6s.
+      #
+      # Dropping it here makes windows-gnu match what windows-msvc already
+      # ships rather than being uniquely burdened. Every other target keeps
+      # soldr#1168's line tables, and this override touches only this lane.
+      - name: Keep DWARF out of windows-gnu images (soldr#2883)
+        if: contains(inputs.target, 'pc-windows-gnu')
+        shell: bash
+        run: |
+          echo "CARGO_PROFILE_CI_NEXTEST_DEBUG=false" >> "$GITHUB_ENV"
+
       # soldr#1698: use an empty job-local cache so Stage B/C's first Windows
       # invocation is provably cold and the forced repeat is provably warm.
       # This keeps the embedded zccache wrapper active; it is not a bypass.
