@@ -27,6 +27,32 @@ The important product rule is that users should think in terms of `soldr cargo .
 
 soldr can delegate to Cargo, but it should not try to replace Cargo's flags, profiles, or dependency model.
 
+### The `ci-test` orchestration exception
+
+`soldr ci-test` is a deliberately narrow exception to the usual rule that
+Cargo owns orchestration. It freezes one prescribed host-validation DAG so CI
+cannot accidentally compile the same test profile twice under superficially
+different commands. Cargo remains the freshness authority and Soldr remains
+the per-rustc cache; `ci-test` only fixes the order, scope, target directories,
+and compatibility boundaries between them.
+
+Compatible stable host work shares one target tree. Clippy subsumes a separate
+`soldr cargo check`, and Nextest performs the sole test-profile build before
+running tests. The frozen resource policy defaults Cargo and Soldr compiler
+work to one job and one Nextest test process; callers
+may override those three explicit limits with `CARGO_BUILD_JOBS`, `SOLDR_JOBS`,
+and `NEXTEST_TEST_THREADS`. Doctests remain a rustdoc execution family. Dylint is the
+explicit exception: its exact pinned nightly uses separate nightly-keyed
+library, workspace-analysis, and UI-test trees and never contaminates the
+stable project target. The Dylint domain self-provisions the catalogue-pinned
+frontend, linker, and matching prebuilt driver before any lint stage starts.
+Dependency-policy tools do not execute the compiler.
+
+The command rejects target, toolchain, profile, target-directory, and manifest
+overrides that would create an undeclared compile domain. Use
+`soldr ci-test --explain-plan --format json` to inspect the versioned plan, or
+the explicit `soldr cargo ...` surface when a different domain is intentional.
+
 ---
 
 ## Core Principles

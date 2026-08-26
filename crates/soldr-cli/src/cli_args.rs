@@ -29,6 +29,7 @@ cc                     Compile C with a catalogue-backed toolchain\n  \
 c++                    Compile C++ with a catalogue-backed toolchain\n  \
 rustc                  Compile Rust source via the pinned toolchain\n  \
 lint                   Run Soldr's unified Rust and dependency lint suites\n  \
+ci-test                Run the prescribed host-validation DAG\n  \
 rustfmt                Format Rust source via the pinned toolchain\n  \
 clippy-driver          Run the clippy linter via the pinned toolchain\n  \
 rustup                 Drop-in passthrough to the system rustup binary\n\n\
@@ -308,6 +309,21 @@ pub(crate) enum Commands {
     Lint {
         /// Suite selector (`rust`, `deps`, `ci`, or `all`). Rust/deps/all
         /// accept cargo scope flags; `ci` accepts only `--format json|human`.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Execute Soldr's frozen host-validation DAG
+    ///
+    /// `soldr ci-test` is the CI-oriented orchestration exception to Soldr's
+    /// normal per-rustc boundary: it freezes the host compiler domains and
+    /// schedules fmt, policy checks, clippy, Dylint, nextest, doctests, and
+    /// dependency policy stages. Use `--explain-plan --format json` to inspect
+    /// its versioned plan without invoking compiler work.
+    CiTest {
+        /// `--explain-plan [--format human|json]` or host-scope flags
+        /// (`--package`, `--features`, `--all-features`,
+        /// `--no-default-features`). Target/toolchain/profile overrides are
+        /// rejected rather than silently creating a different compile domain.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },

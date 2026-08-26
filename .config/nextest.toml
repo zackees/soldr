@@ -77,8 +77,12 @@ test-group = 'soldr-runtime'
 # soldr#2737 promoted `cli_cargo_basic` from a per-test entry to the whole
 # binary: 19 of its 21 tests drive `isolated_soldr_command`, so it has the
 # same profile as the three binaries above rather than being a mixed bag with
-# a few cold builds in it. Three separate rounds had already added its tests
-# one at a time (soldr#2696, then two more timing out at 120s on
+# a few cold builds in it. `cli_dylint_wrapper` has the same shape: its fake
+# compiler chains still cold-start isolated Soldr front doors, and the
+# prescribed `soldr ci-test` run measured two of them at 121s when they raced
+# each other versus 63-78s in isolation (soldr#2867). Three separate rounds
+# had already added the `cli_cargo_basic` tests one at a time (soldr#2696,
+# then two more timing out at 120s on
 # job 97088274620) -- that drip was the signal. The subsumed per-test entry
 # for `cargo_without_timeout_allows_progress_cpu_and_lock_waits` is gone with
 # it. The remaining `test(=...)` entries stay per-test on purpose: they live
@@ -97,7 +101,7 @@ test-group = 'soldr-runtime'
 max-threads = 1
 
 [[profile.default.overrides]]
-filter = 'binary(cli_cargo_basic) + binary(cli_cargo_linker) + binary(cli_cargo_run_trampoline) + binary(cli_cargo_wrappers) + test(=cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled) + test(=cargo_front_door_forces_msvc_target_even_with_polluted_path) + test(=exec_cargo_build_routes_through_child_shims_and_zccache)'
+filter = 'binary(cli_cargo_basic) + binary(cli_cargo_linker) + binary(cli_cargo_run_trampoline) + binary(cli_cargo_wrappers) + binary(cli_dylint_wrapper) + test(=cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled) + test(=cargo_front_door_forces_msvc_target_even_with_polluted_path) + test(=exec_cargo_build_routes_through_child_shims_and_zccache)'
 test-group = 'soldr-cargo-cold-builds'
 threads-required = "num-cpus"
 
@@ -145,6 +149,15 @@ threads-required = "num-cpus"
 # child still executing, and the run passed on a quieter runner).
 [[profile.default.overrides]]
 filter = 'test(=cargo_fmt_routes_rustfmt_through_zccache_formatter)'
+slow-timeout = { period = "60s", terminate-after = 4, grace-period = "30s" }
+
+# 240s: this binary drives fake compiler chains through isolated Soldr homes.
+# The ci-test cold proof measured the two competing front doors at 121s each;
+# after reserving the cold-build group, the longest single front door still
+# crossed the default boundary at 123s. Keep the usual 60s diagnostics while
+# allowing the same four-period budget as the other multi-front-door fixtures.
+[[profile.default.overrides]]
+filter = 'binary(cli_dylint_wrapper)'
 slow-timeout = { period = "60s", terminate-after = 4, grace-period = "30s" }
 
 # 240s: the `toolchain link` pair and the cargo-fmt home-boundary test, for
