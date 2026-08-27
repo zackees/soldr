@@ -192,6 +192,13 @@ pub(crate) fn classify_descendant(
     if is_proven_non_build_command(verb, argv) {
         return NestedCargoDecision::Ignore;
     }
+    if is_soldr_lzma_syslib_helper(argv) {
+        // `blessed_build::lzma_override` injects this complete, target-scoped
+        // quartet before a dependency's helper Cargo invocation. The helper
+        // owns an isolated syslib build, but Cargo carries that isolation in
+        // environment/config state the process monitor cannot otherwise read.
+        return NestedCargoDecision::AllowIsolatedTarget;
+    }
 
     // Unknown Cargo verbs can be workspace aliases or plugins that compile.
     // Reject them instead of treating a spelling we do not understand as proof
@@ -258,6 +265,21 @@ fn is_proven_non_build_command(verb: &str, argv: &[String]) -> bool {
     ) || (verb == "metadata" && argv.iter().any(|arg| arg == "--no-deps"))
 }
 
+fn is_soldr_lzma_syslib_helper(argv: &[String]) -> bool {
+    let config_values = argv
+        .windows(2)
+        .filter_map(|pair| (pair[0] == "--config").then_some(pair[1].as_str()))
+        .collect::<Vec<_>>();
+    [
+        ".lzma.rustc-link-lib=",
+        ".lzma.rustc-link-search=",
+        ".lzma.metadata_root=",
+        ".lzma.metadata_include=",
+    ]
+    .iter()
+    .all(|suffix| config_values.iter().any(|value| value.contains(suffix)))
+}
+
 fn canonical_existing_path(path: &Path) -> Option<PathBuf> {
     std::fs::canonicalize(path).ok()
 }
@@ -303,6 +325,26 @@ mod tests {
                 "argv={command:?}"
             );
         }
+    }
+
+    #[test]
+    fn soldr_lzma_syslib_helper_is_permitted_without_target_spelling() {
+        let command = argv(&[
+            "cargo",
+            "build",
+            "--config",
+            "target.aarch64-unknown-linux-musl.lzma.rustc-link-lib=[static=lzma]",
+            "--config",
+            "target.aarch64-unknown-linux-musl.lzma.rustc-link-search=[/tmp/lzma/lib]",
+            "--config",
+            "target.aarch64-unknown-linux-musl.lzma.metadata_root=/tmp/lzma",
+            "--config",
+            "target.aarch64-unknown-linux-musl.lzma.metadata_include=/tmp/lzma/include",
+        ]);
+        assert_eq!(
+            classify_descendant("cargo", &command, Some(Path::new("/repo")), None),
+            NestedCargoDecision::AllowIsolatedTarget
+        );
     }
 
     #[test]
