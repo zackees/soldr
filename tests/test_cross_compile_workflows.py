@@ -703,9 +703,9 @@ def test_mac_x64_distribution_uses_pinned_setup_soldr_on_intel() -> None:
     # assertion follows the logic rather than being dropped.
     assert _matrix_binary_source_prepares_gnu_linux()
     assert (
-        "uses: zackees/setup-soldr@68ce266ed86b75ccfb332b084ba1a64d619bfe53" in release
+        "uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771" in release
     )
-    assert "version: 0.9.6" in release
+    assert "version: 0.9.10" in release
     assert "cross-targets: ${{ matrix.setup_target }}" in release
     assert "target-wheel-hook" in release
     # soldr#2469 step 2.2: the GitHub gate delegates both release lookup
@@ -781,9 +781,9 @@ def test_release_wheels_use_setup_soldr_target_hooks_without_zig_or_xwin() -> No
 
     assert _matrix_binary_source_prepares_gnu_linux()
     assert (
-        "uses: zackees/setup-soldr@68ce266ed86b75ccfb332b084ba1a64d619bfe53" in release
+        "uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771" in release
     )
-    assert "version: 0.9.6" in release
+    assert "version: 0.9.10" in release
     assert "cross-targets: ${{ matrix.setup_target }}" in release
     assert ".github/scripts/prepare_release_wheel.py" in release
     assert '--runner-os "$RUNNER_OS"' in release
