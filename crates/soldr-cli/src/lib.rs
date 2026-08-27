@@ -178,6 +178,7 @@ mod broker_control_transport;
 /// soldr#2388: container-safe broker/session socket identity (graceful fallback
 /// when the OS provides no `/etc/machine-id`).
 pub mod broker_identity;
+pub(crate) mod broker_policy;
 mod broker_launcher;
 pub(crate) mod broker_lease;
 pub(crate) mod broker_server;
