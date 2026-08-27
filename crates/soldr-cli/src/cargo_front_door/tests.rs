@@ -572,6 +572,7 @@ fn cargo_wait_none_outlives_simulated_former_default() {
         "fake Cargo without deadline",
         None,
         Duration::from_millis(100),
+        None,
     )
     .expect("unset timeout must let the child finish");
     assert!(status.success());
@@ -586,6 +587,7 @@ fn cargo_wait_none_outlives_simulated_former_default() {
         "fake Cargo with explicit deadline",
         Some(simulated_former_default),
         Duration::from_millis(100),
+        None,
     )
     .expect_err("the same child must be killed by an explicit deadline");
     assert!(

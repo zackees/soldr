@@ -14,6 +14,7 @@
 //! invocations inherit tracing.
 
 use std::io::Write;
+use std::path::Path;
 use std::process::{Child, Command, ExitStatus};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -185,6 +186,7 @@ pub(crate) fn run_observed_inheriting_stdio(
     context: &str,
     timeout: Option<std::time::Duration>,
     heartbeat: std::time::Duration,
+    outer_target: Option<&Path>,
 ) -> Result<ExitStatus, crate::core::SoldrError> {
     use running_process::{
         CommandSpec, EventCategory, NativeProcess, ObserverConfig, ProcessConfig, StderrMode,
@@ -242,6 +244,8 @@ pub(crate) fn run_observed_inheriting_stdio(
     });
 
     let started = Instant::now();
+    let mut next_heartbeat = heartbeat;
+    let mut nested_guard = super::nested_cargo_guard::NestedCargoMonitor::new(pid, outer_target);
     let code = loop {
         let elapsed = started.elapsed();
         if let Some(limit) = timeout {
@@ -257,16 +261,37 @@ pub(crate) fn run_observed_inheriting_stdio(
                 )));
             }
         }
-        let slice = timeout
-            .map(|limit| limit.saturating_sub(elapsed).min(heartbeat))
-            .unwrap_or(heartbeat);
+        if let Some(finding) = nested_guard.as_mut().and_then(|guard| guard.poll()) {
+            let diagnostic = finding.diagnostic(pid);
+            eprintln!("soldr: {diagnostic}");
+            if let Some(path) = finding.write_record(pid, outer_target) {
+                eprintln!("soldr:   record: {}", path.display());
+            }
+            let _ = process.kill();
+            let _ = process.wait(Some(std::time::Duration::from_secs(5)));
+            let _ = process.close();
+            drop(pump);
+            return Err(crate::core::SoldrError::Other(diagnostic));
+        }
+        let heartbeat_remaining = next_heartbeat.saturating_sub(elapsed);
+        let mut slice = super::nested_cargo_guard::SCAN_INTERVAL.min(heartbeat_remaining);
+        if let Some(limit) = timeout {
+            slice = slice.min(limit.saturating_sub(elapsed));
+        }
+        if slice.is_zero() {
+            slice = std::time::Duration::from_millis(1);
+        }
         match process.wait(Some(slice)) {
             Ok(code) => break code,
             Err(running_process::ProcessError::Timeout) => {
-                eprintln!(
-                    "soldr: {context} still running after {}s (--debug observed)",
-                    started.elapsed().as_secs()
-                );
+                let elapsed = started.elapsed();
+                if !heartbeat.is_zero() && elapsed >= next_heartbeat {
+                    eprintln!(
+                        "soldr: {context} still running after {}s (--debug observed)",
+                        elapsed.as_secs()
+                    );
+                    next_heartbeat = next_heartbeat.saturating_add(heartbeat);
+                }
             }
             Err(err) => {
                 let _ = process.close();

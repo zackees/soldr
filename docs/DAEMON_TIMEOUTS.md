@@ -35,6 +35,17 @@ A marker whose writing process has already exited is ignored, so a
 Soldr-spawned build script that outlives its parent and re-enters Soldr is not
 reported as re-entrancy.
 
+A second guard covers direct nested Cargo builds that never enter Soldr at all
+(soldr#2924). Cargo sets `$CARGO` to the real toolchain executable inside test
+and build-script processes, so `Command::new($CARGO)` bypasses the
+`IN_SOLDR_PID` entry guard. The Cargo front door now watches its descendant tree
+and rejects a build-like nested Cargo without a provably distinct
+`--target-dir`, then kills the observed tree and writes a redacted record under
+`<soldr root>/logs/nested-cargo/`. Use an explicit different `--target-dir` for
+isolated nested builds. `SOLDR_NESTED_CARGO=allow` is the narrow emergency
+permit for orchestration that isolates its target through an env-only setting
+the cross-platform process observer cannot inspect.
+
 `SOLDR_REENTRANCY_GUARD=off` disables the check. It is emergency-only — for
 unblocking a false positive while you report it, not a supported
 configuration, and it should never be committed to a workflow. Any other

@@ -305,7 +305,7 @@ fn ensure_stable_broker_ready(diagnostics_eligible: bool) -> Result<(), String> 
         });
         if let Some(instance) = instance {
             // soldr#2549: the broker is a stable, long-lived singleton for its
-            // user-home endpoint. A package-version or image-digest mismatch is
+            // user-home endpoint. Outside the exact known-bad exception below,
             // a loud diagnostic condition, never a lifecycle action — this path
             // must not stop, kill, replace, or stage over a live broker. The
             // running Soldr image still gets a closely-aligned daemon: the
@@ -471,8 +471,8 @@ fn stable_broker_is_ready(runtime: &tokio::runtime::Runtime, endpoint: &str) -> 
 /// drift apart.
 pub(crate) const BROKER_REMOVE_COMMAND: &str = "soldr broker remove";
 
-/// Render the mismatch diagnostic. soldr#2549 makes this the *only* response to
-/// an identity mismatch: loud, actionable, and free of any lifecycle action.
+/// Render the mismatch diagnostic for identities outside the known-bad
+/// retirement exception: loud, actionable, and free of lifecycle action.
 pub(crate) fn broker_image_mismatch_warning(observed: &str, expected: &str) -> String {
     format!(
         "soldr: warning: the running broker was started from a different Soldr image\n\
