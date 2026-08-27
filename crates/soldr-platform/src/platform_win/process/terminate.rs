@@ -86,14 +86,27 @@ pub fn terminate_tree(child: &mut Child) -> io::Result<TreeKill> {
         // which is the evidence. The constraint applies to remembered pids,
         // whose snapshot has since gone stale.
         best_effort_terminate(&untracked);
-        verified &= request_termination(&mut known);
     }
 
+    // Kill the direct cargo/cmd child promptly. Its descendants may become
+    // unreachable in a later process snapshot when that happens, which is why
+    // their query handles were retained above; those handles remain bound to
+    // the original processes and let the following terminate requests and
+    // FILETIME verification finish without relying on parent links. In the
+    // diagnostic-capture path this also closes the root side of an inherited
+    // stderr pipe before reaping the child.
     child.kill()?;
 
+    // The retained records are identity-confirmed even though the root may
+    // already be gone, so request their termination only after the root kill.
+    // Do this even if retaining another fresh descendant already downgraded the
+    // proof: every tracked handle is still safe to terminate, and a failed
+    // query for one sibling must not strand the rest.
+    request_tracked_after_root(&mut verified, || request_termination(&mut known));
     if !verified {
-        // The snapshot failed, so descendants (if any) were never named. Report
-        // the weaker guarantee rather than claiming a tree kill we did not do.
+        // The snapshot or a query/identity/terminate request failed, so report
+        // the weaker guarantee rather than claiming a tree kill we did not
+        // prove.
         return Ok(TreeKill::ProcessKilled);
     }
 
@@ -307,6 +320,14 @@ fn request_termination(known: &mut [TrackedDescendant]) -> bool {
         }
     }
     complete
+}
+
+/// Request every identity-confirmed descendant even when another descendant
+/// already made the final claim weaker. This keeps termination and proof
+/// separate: a failed proof never authorises `TreeKilled`, but it also never
+/// abandons a safe retained-handle termination request.
+fn request_tracked_after_root(verified: &mut bool, request: impl FnOnce() -> bool) {
+    *verified &= request();
 }
 
 /// All identity-confirmed descendants must report a non-zero exit FILETIME

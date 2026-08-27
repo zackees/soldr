@@ -88,6 +88,68 @@ fn spawn_cmd_with_ping_grandchild() -> (std::process::Child, Vec<u32>) {
     }
 }
 
+/// The cargo diagnostic-capture shape: `cmd` launches `ping`, which inherits
+/// an open stderr pipe.  A root-only kill leaves the reader blocked until the
+/// ping's natural timeout, so EOF is a concrete proof that the descendant was
+/// actually terminated rather than merely becoming unreachable in a snapshot.
+#[allow(clippy::zombie_processes)]
+fn spawn_cmd_with_ping_grandchild_and_stderr_pipe(
+) -> (
+    std::process::Child,
+    Vec<u32>,
+    std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>>,
+) {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    let mut child = Command::new("cmd")
+        .args(["/C", "ping -n 30 127.0.0.1 > nul"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn cmd wrapper with stderr pipe");
+    let root = child.id();
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let descendants = loop {
+        let found = descendants_of(root).expect("snapshot");
+        if !found.is_empty() {
+            break found;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("ping grandchild never appeared under cmd pid {root}");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+
+    let mut stderr = child.stderr.take().expect("piped stderr");
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = sender.send(stderr.read_to_end(&mut bytes).map(|_| bytes));
+    });
+    (child, descendants, receiver)
+}
+
+/// Keep the test fixture from leaking its intentionally long-lived `ping` on
+/// an assertion failure. Production returns the weaker result in that case;
+/// the test still must leave the runner clean before it reports the failure.
+fn cleanup_piped_cmd_tree(
+    child: &mut std::process::Child,
+    descendants: &[u32],
+    stderr_closed: &std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>>,
+) {
+    let _ = child.kill();
+    let _ = child.wait();
+    for pid in descendants {
+        let _ = signal_pid(*pid, true);
+    }
+    let _ = stderr_closed.recv_timeout(std::time::Duration::from_secs(2));
+}
+
 /// Pins the negative result that shaped this module.
 ///
 /// The obvious explanation for soldr#2605 is that a grandchild becomes
@@ -201,6 +263,47 @@ fn a_real_grandchild_tree_is_killed_whole() {
 }
 
 #[test]
+fn a_real_grandchild_with_inherited_stderr_pipe_is_killed_whole() {
+    use std::time::{Duration, Instant};
+
+    let (mut child, grandchildren, stderr_closed) =
+        spawn_cmd_with_ping_grandchild_and_stderr_pipe();
+    let started = Instant::now();
+
+    match terminate_tree(&mut child) {
+        Ok(TreeKill::TreeKilled) => {}
+        Ok(other) => {
+            cleanup_piped_cmd_tree(&mut child, &grandchildren, &stderr_closed);
+            panic!("terminate tree returned {other:?}");
+        }
+        Err(error) => {
+            cleanup_piped_cmd_tree(&mut child, &grandchildren, &stderr_closed);
+            panic!("terminate tree failed: {error}");
+        }
+    }
+    let _ = child.wait();
+    if started.elapsed() > VERIFY_BUDGET {
+        cleanup_piped_cmd_tree(&mut child, &grandchildren, &stderr_closed);
+        panic!("tree verification exceeded its fixed two-second budget");
+    }
+    match stderr_closed.recv_timeout(VERIFY_BUDGET) {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => {
+            cleanup_piped_cmd_tree(&mut child, &grandchildren, &stderr_closed);
+            panic!("read inherited stderr pipe: {error}");
+        }
+        Err(error) => {
+            cleanup_piped_cmd_tree(&mut child, &grandchildren, &stderr_closed);
+            panic!("the inherited stderr pipe did not close after tree termination: {error}");
+        }
+    }
+    if grandchildren.iter().any(|pid| is_alive(*pid)) {
+        cleanup_piped_cmd_tree(&mut child, &grandchildren, &stderr_closed);
+        panic!("a ping grandchild still holds the inherited stderr pipe");
+    }
+}
+
+#[test]
 fn query_only_and_terminate_only_accesses_avoid_synchronize() {
     assert_eq!(PROCESS_QUERY_LIMITED_INFORMATION, 0x1000);
     assert_eq!(PROCESS_TERMINATE, 0x0001);
@@ -260,6 +363,21 @@ fn an_unqueryable_fresh_descendant_is_still_terminated_best_effort() {
     let mut requested = Vec::new();
     terminate_pids_leaves_first(&[200, 300], |pid| requested.push(pid));
     assert_eq!(requested, vec![300, 200]);
+}
+
+#[test]
+fn an_unqueryable_sibling_does_not_skip_tracked_termination() {
+    let mut verified = false;
+    let mut requested = 0;
+    request_tracked_after_root(&mut verified, || {
+        requested += 1;
+        true
+    });
+    assert_eq!(requested, 1, "tracked descendants must still be terminated");
+    assert!(
+        !verified,
+        "the unqueryable sibling still prevents a verified tree-killed claim"
+    );
 }
 
 #[test]
