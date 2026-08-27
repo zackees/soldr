@@ -264,6 +264,7 @@ impl SoldrZccacheService {
         &self,
         req: CompileRequest,
     ) -> Result<CompileResponseBody, EmbeddedServiceError> {
+        let ci_test_report = crate::ci_test_report::prepare(&req);
         let (compiler, rustc_args) = split_compiler_and_args(&req.args)?;
         let cwd: NormalizedPath = std::path::PathBuf::from(req.cwd).into();
         // Kept for the failure path: `cwd` is moved into the request below,
@@ -277,7 +278,6 @@ impl SoldrZccacheService {
         if let Some(notice) = crate::amalgamation::compile_notice(&req.args, &compile_cwd) {
             eprintln!("{notice}");
         }
-
         let audit = default_audit_context();
         let zreq = ZccacheCompileRequest {
             audit,
@@ -305,6 +305,9 @@ impl SoldrZccacheService {
             &req.args,
             &compile_cwd,
         );
+        if let Some(report) = ci_test_report {
+            crate::ci_test_report::record(report, encode_cache_outcome(zresp.cache_outcome));
+        }
         Ok(CompileResponseBody {
             exit_code: zresp.exit_code,
             stdout: zresp.stdout,
