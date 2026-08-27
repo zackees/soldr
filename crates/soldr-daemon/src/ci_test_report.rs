@@ -52,9 +52,7 @@ pub(crate) fn prepare(request: &CompileRequest) -> Option<PreparedReport> {
             .find(|(key, _)| key == name)
             .map(|(_, value)| value)
     };
-    let Some(path) = env(REPORT_PATH_ENV) else {
-        return None;
-    };
+    let path = env(REPORT_PATH_ENV)?;
     Some(PreparedReport {
         path: PathBuf::from(path),
         stage: env(STAGE_ENV).cloned().unwrap_or_else(|| "unknown".into()),
