@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from conftest import load_script_module
@@ -17,12 +18,25 @@ def test_docker_context_is_small_because_image_copies_no_source() -> None:
     assert perf_local.DOCKER_CONTEXT == "docker/cook-shared-cache"
 
 
-def test_docker_image_bootstraps_with_published_soldr_0_8_29() -> None:
+def test_docker_image_bootstraps_with_amalgamation_safe_published_soldr() -> None:
     dockerfile = (Path(__file__).parents[1] / perf_local.DOCKERFILE).read_text(
         encoding="utf-8"
     )
 
-    assert "ARG SOLDR_BOOTSTRAP_VERSION=0.8.29" in dockerfile
+    bootstrap = re.search(
+        r"^ARG SOLDR_BOOTSTRAP_VERSION=(\d+)\.(\d+)\.(\d+)$", dockerfile, re.M
+    )
+    assert bootstrap, (
+        "Docker bootstrap version must remain an explicit published SemVer pin"
+    )
+    version = tuple(map(int, bootstrap.groups()))
+    assert version >= (0, 9, 6), (
+        "Soldr 0.9.6 is the minimum bootstrap carrying zccache's "
+        "amalgamation-exclusive admission gate; older bootstraps can OOM an 8 GiB runner"
+    )
+    assert version == (0, 9, 10), (
+        "keep the bootstrap on the repository's current published release"
+    )
     assert '"soldr==${SOLDR_BOOTSTRAP_VERSION}"' in dockerfile
     assert "/opt/soldr-bootstrap/bin/soldr --version" in dockerfile
     for profile in (
