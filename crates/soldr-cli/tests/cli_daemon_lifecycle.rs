@@ -192,9 +192,9 @@ impl Daemon {
             String::from_utf8_lossy(&start.stdout),
             String::from_utf8_lossy(&start.stderr)
         );
-        // A cold embedded-zccache initialization can take ~25 seconds in
-        // the shared Docker development runner. Keep the fixture bounded,
-        // but do not misclassify that cold start as a multicall failure.
+        // A cold embedded-zccache initialization has a separate 45-second
+        // broker route-readiness bound. Keep this post-start fixture wait
+        // bounded, but do not misclassify that cold start as a multicall failure.
         let deadline = Instant::now() + Duration::from_secs(40);
         assert!(
             wait_for_ready(&cache_root, &home_root, deadline),

@@ -640,19 +640,12 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 );
             }
 
-            // soldr#1368: `soldr zccache <args>` runs the compiled-in
-            // zccache CLI trampoline that ships alongside soldr — no
-            // managed-binary download. The trampoline forwards straight
-            // into `zccache::cli::commands::run()`.
-            if crate_name == "zccache" && matches!(version, VersionSpec::Latest) {
-                let status = crate::zccache_entry::run_with_args(tool_args);
-                guarded_exit(if status == std::process::ExitCode::SUCCESS {
-                    0
-                } else if status == std::process::ExitCode::from(2) {
-                    2
-                } else {
-                    1
-                });
+            // soldr#2898: `soldr zccache <args>` is a reserved embedded surface.
+            // No standalone binary is resolved, downloaded, or invoked.
+            // The compatibility forms route directly
+            // into Soldr-owned compatibility handlers.
+            if crate_name == "zccache" {
+                guarded_exit(crate::zccache_compat::run(tool_args, version).await?);
             }
 
             // Issue #412: when the user typed a verb that LOOKS like

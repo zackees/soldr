@@ -49,13 +49,13 @@ pub(crate) struct ReadyRoute {
     pub(crate) daemon_version: String,
 }
 
-/// Short budget for smoothing broker-to-route startup. Broker-unreachable
-/// errors return immediately; an existing broker gets a bounded window to
-/// launch or reconnect the requested daemon partition.
-/// Overridable for tests via `SOLDR_SESSION_ATTEMPT_BUDGET_MS`.
+/// Broker-unreachable errors return immediately; an existing broker gets the
+/// bounded `BrokerDeadlines::route_ceiling` window to launch or reconnect the
+/// requested daemon partition. Its default is 120 seconds and it is configured
+/// by `SOLDR_ROUTE_ACQUIRE_CEILING_MS`.
 /// Mandatory SESSION compile hot path: relay client → broker → daemon.
 /// A missing broker fails immediately; an existing broker gets the bounded
-/// [`session_attempt_budget`] to provide the requested route. Every terminal
+/// route-acquisition ceiling to provide the requested route. Every terminal
 /// infrastructure error is hard because there is no legacy acquisition path.
 pub fn session_hot_path(rustc_argv: &[String]) -> SessionHotPathOutcome {
     let service_name = match crate::daemon::backend_handle_adoption::broker_service_name() {

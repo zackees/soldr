@@ -73,13 +73,13 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Setup soldr build cache
-        uses: zackees/setup-soldr@68ce266ed86b75ccfb332b084ba1a64d619bfe53
+        uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771
         with:
           # soldr#1799: pin the soldr that builds us -- the action's default
           # (0.8.23) predates #1820 and GCs live target/ artifacts after every
           # build, so the next build recompiles the world. See
           # tests/test_setup_soldr_version_pins.py.
-          version: 0.9.6
+          version: 0.9.10
           toolchain: 1.95.0
           # soldr#2451: `cache: false` alone does NOT gate setup-soldr's
           # soldr-mini / build-cache / target-cache reuse layers, and this

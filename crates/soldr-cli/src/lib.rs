@@ -307,7 +307,7 @@ pub mod wrapper_identity;
 /// `tests/cli_wrapper_perf.rs` can drive it in-process (issue #474).
 pub mod wrapper_target;
 pub mod zccache;
-pub mod zccache_entry;
+pub mod zccache_compat;
 pub mod zccache_lifecycle;
 
 // #1490 Phase 2 facade (mechanics rule M3): every module that was

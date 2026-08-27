@@ -157,15 +157,13 @@ validates liveness, reclaims the stale socket, and overwrites the claims during
 startup. Successor-owned cleanup avoids a check-then-unlink race in which an
 older or idle-timed-out daemon could remove a live successor's endpoint.
 
-The in-process `soldr zccache <args>` entrypoint
-(`crates/soldr-cli/src/zccache_entry.rs`) passes through only the daemon-free
-subcommands — `rust-plan`, `session-end`, `stop`, `cache-root` (plus
-`--help` / `--version`) — and hard-errors everything else, pointing at the
-embedded equivalents (`soldr status`, `soldr cache`, `soldr cargo <verb>`).
-As defense-in-depth it exports `ZCCACHE_NO_SPAWN=1` (upstream guard
-zackees/zccache#982) so even an allowlisted subcommand can never spawn.
-Embedded parity for the refused subcommands is tracked in
-zackees/zccache#905.
+`soldr zccache <args>` is a Soldr-owned compatibility surface implemented by
+`crates/soldr-cli/src/zccache_compat.rs`, never an upstream CLI pass-through.
+It adapts `cache-root`, `session-end`, and `stop` to Soldr's cache root,
+session-end command, and daemon stop command; `rust-plan` is retired because
+Soldr owns artifact-plan save/restore around `soldr cargo <verb>`. Version
+selectors and unknown subcommands are refused. No upstream zccache CLI or
+standalone zccache executable is resolved, downloaded, or invoked.
 
 The daemon is also the primary cache-retention owner. One daemon maps to one
 exact `SoldrPaths` root and persists its five-minute pressure / 24-hour age
