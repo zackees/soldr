@@ -48,9 +48,9 @@ zstd = { workspace = true }
 # released amalgamated crate. The exact pin must have matching prebuilt
 # assets in the soldr-toolchain catalogue before it can move.
 # soldr#1368: there is no longer a separately-downloaded managed zccache
-# binary. soldr#1592 exposes the compiled-in CLI by materializing the main
-# `soldr` executable under the `zccache` multicall name.
-zccache = { version = "=1.13.12", default-features = false, features = ["cli"] }
+# binary. The formatter API is daemon-free; Soldr owns the child-process
+# policy and never enables zccache's standalone CLI.
+zccache = { version = "=1.13.13", default-features = false, features = ["formatter", "gha"] }
 
 # libc powers the daemon's Unix-only PID-liveness probe (kill(pid, 0))
 # and detached spawn (setsid). On Windows the equivalent
