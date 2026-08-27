@@ -5,9 +5,10 @@ crossed the repository's 1,500-line hard ceiling.
 
 | File | Covers |
 |---|---|
+| `events.rs` | lifecycle event serialization and attribution |
+| `journal_hygiene.rs` | lifecycle journal rotation and recovery |
 | `pid_liveness.rs` | `pid_is_live` against real and reaped PIDs (Unix only) |
-| `spawn_image.rs` | daemon image resolution, and which env vars cross the spawn boundary |
-| `spawn_lock.rs` | spawn-lock acquisition, contention, release, and stale-daemon displacement |
+| `root_acquire.rs` | daemon-root ownership and contention |
 
 Each file retains the `mod` wrapper it had while inline, so the move is a pure
 relocation with no reindentation. The one edit was `use super::*` →

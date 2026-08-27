@@ -1,24 +1,23 @@
 # `lifecycle`
 
-Daemon process lifecycle: spawning a detached daemon, resolving which binary
-image to spawn, the spawn lock that keeps two racing wrappers from starting two
-daemons, route-claim liveness checks, and displacement of a stale-version daemon.
+Daemon process lifecycle: route-claim liveness checks, the ownership and
+displacement policy for stale daemon generations, and structured lifecycle
+events. The stable broker owns daemon process creation.
 
 `mod.rs` was formerly `lifecycle.rs`. It was converted to a directory when it
 crossed the repository's 1,500-line hard ceiling.
 
 | File | Holds |
 |---|---|
-| `mod.rs` | spawn paths, image resolution, spawn lock, route-claim liveness, displacement |
-| `spawn_env.rs` | what environment a spawned daemon inherits |
+| `mod.rs` | route-claim liveness, ownership, displacement, and lifecycle events |
+| `spawn_env.rs` | the environment forwarded to a broker-launched daemon |
 | `tests/` | the three former inline test modules, one file each |
 
 ## Spawn environment
 
-`spawn_env.rs` exists because all three spawn paths — `spawn_detached_inner`,
-`spawn_detached_self_inner`, and the Windows `merged_windows_environment_block`
-— compose the child environment identically, and that composition is a distinct
-concern from the spawning itself.
+`spawn_env.rs` supplies the narrow environment overlay that the stable broker
+uses when it launches a daemon generation. Composition remains separate from
+the broker's process-creation boundary.
 
 The baseline deliberately is *not* the caller's environment: on Windows it comes
 from `CreateEnvironmentBlock`, on Unix it is rebuilt from the passwd entry. A
