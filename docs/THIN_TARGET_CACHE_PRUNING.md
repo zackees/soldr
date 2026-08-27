@@ -170,7 +170,9 @@ target/<profile>/deps/*.{so,dll,dylib}          proc-macro bytes
 target/<profile>/deps/*.{dwo,pdb}               split debug-info / pdb
 target/<profile>/deps/*.dSYM/                   macOS debug bundles
 target/<profile>/build/*/build-script-build*    compiled build-script binary
-target/<profile>/{examples,doc,tests}/          unless explicitly opted in
+target/<profile>/{examples,doc,tests}/          always — test/doc/example
+                                                products are never cacheable
+                                                (soldr#2931, no opt-in exists)
 target/<profile>/<bin>                          final binary, unless opted in
 ```
 

@@ -23,6 +23,37 @@ You get, for free:
 
 The rest of this document explains how and why that works.
 
+## Cache Ownership And Priority
+
+Cache admission is decided by **the stability of the artifact's identity key
+relative to its size**. Cache what invalidates rarely; never persist what
+invalidates on every edit. The gradient, from most to least cacheable:
+
+| Artifact class | Invalidates when | Owner |
+|---|---|---|
+| Toolchain / SDK / catalogue downloads | pinned version bumps (rare, explicit) | setup-state cache (content-pinned + sha256) |
+| External dependency compilation | `Cargo.lock` / recipe changes | **soldr cook** (Tier 1) |
+| Per-compilation-unit compiler outputs | that unit's input hash changes | **zccache store** (Tier 2, content-addressed) |
+| Workspace linked products — final binaries and especially **test executables** | **any** workspace source edit | **nothing** (Tier 3 — never cached) |
+
+**Linked test products are never cacheable** — test binaries, benches,
+examples built for tests, doctest products, test debug sidecars, and
+test-specific incremental state. They are the most volatile artifacts a
+workspace produces (every source edit re-links them) and the largest (each
+integration-test file is its own executable statically linking the full
+dependency graph). Classification is by contents, not by whether GitHub calls
+the store a "cache" or an "artifact". A same-run transport bundle used to
+execute cross-built tests on their target is not a cache, but it must stay
+compact, single-extraction, and budgeted.
+
+Lesson learned (soldr#2931): this repo's suite reached ~110 linked test
+binaries and a 3.3 GB compressed nextest archive that exhausted a hosted
+runner's disk, while a guard *required* that archive to be warm-cacheable at
+zero misses. Every individual decision on the way there was locally
+reasonable; the missing piece was this ownership table to check against. When
+adding a cache layer, name its tier first — if the payload contains linked
+test products, the answer is no.
+
 ## How GitHub Actions Cache Scoping Actually Works
 
 A workflow run in GitHub Actions can restore caches from a limited set of scopes, and **not from arbitrary sibling branches**. For any given run, GitHub will consider caches in this order:

@@ -624,8 +624,15 @@ jobs:
           # target/<triple>/debug tree just for target-run smoke tests.
           # ci-nextest preserves soldr#1168's line-table-only debug info
           # so archived-test failures still have file:line backtraces.
-          # soldr#1703 — archive every test binary. Size regressions must be
-          # handled by compression or sharding, never by deleting coverage.
+          # soldr#1703 established that coverage is never deleted; soldr#2931
+          # bounds how it ships. The archive must preserve complete coverage —
+          # the union of replay partitions executes every test — inside an
+          # explicit byte budget. Size regressions are handled by cutting
+          # duplicate static links (test-target consolidation, soldr#2934) and
+          # pruning image contents, NOT by compression/sharding alone: sharding
+          # multiplies transport (every shard downloads the full archive), and
+          # compression already failed to contain the 3.3 GB windows-gnu
+          # payload that exhausted a hosted runner.
           soldr cargo nextest archive \
             --cargo-profile "$ci_profile" \
             --target "$target" \
