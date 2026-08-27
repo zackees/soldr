@@ -373,8 +373,7 @@ async fn real_rustc_hit_survives_full_and_ci_save_load_relocation() {
         .channel
         .expect("repository rust-toolchain.toml must declare a channel");
     let rustc = crate::test_support::rustc_from_env_or_path();
-    let compiler_version =
-        probe_working_compiler(&rustc).unwrap_or_else(|error| panic!("{error}"));
+    let compiler_version = probe_working_compiler(&rustc).unwrap_or_else(|error| panic!("{error}"));
     eprintln!(
         "using verified compiler {}: {}",
         rustc.display(),
