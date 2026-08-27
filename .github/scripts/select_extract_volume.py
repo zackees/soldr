@@ -334,13 +334,7 @@ def main(argv: list[str] | None = None) -> int:
     for line in lines:
         print(f"target-run volume env: {line}")
     if args.github_env is not None:
-        # newline="" so the "\n" below is written verbatim. A text stream on a
-        # Windows runner would translate it to CRLF, appending a stray \r to
-        # the *value* of every variable written here -- and these values are
-        # paths that later steps hand to nextest and to `mkdir`. The sibling
-        # failure in nextest_reuse_extraction.py is the same bug one layer
-        # over, where the trailing \r reached nextest's argument parser.
-        with args.github_env.open("a", encoding="utf-8", newline="") as stream:
+        with args.github_env.open("a", encoding="utf-8") as stream:
             for line in lines:
                 stream.write(line + "\n")
     return 0
