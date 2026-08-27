@@ -171,7 +171,7 @@ pub(crate) async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), 
             crate::daemon::lifecycle::preflight_displace_stale_daemon(&paths);
             // Not the SESSION path's 30s: an explicit `daemon start` on a cold
             // root legitimately covers image staging (a multi-hundred-MB
-            // copy), spawn, and the broker launcher's own 25s readiness
+            // copy), spawn, and the broker launcher's own 45s readiness
             // window. On slow hosts (emulated ARM target-run lanes) the whole
             // chain measures ~32s — real bounded work, not a hang — and a 30s
             // client budget fired first with a generic timeout, masking the
