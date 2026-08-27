@@ -1,14 +1,19 @@
 //! Catalogue-driven nightly selection for Dylint and its nested commands.
+//!
+//! This file answers *which nightly, and who chose it*, and stops there. Once a
+//! [`DylintToolchainPlan`] is settled, locating and validating the matching
+//! `dylint-driver` binary — the binary-or-exit gate, the catalogue fetch, and
+//! the `PATH` / `LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH` the driver needs to load
+//! the nightly's `rustc_private` libraries — belongs to `dylint_driver.rs`,
+//! split out under soldr#2945 when the provenance work pushed this file past
+//! the hard 1,000-line ceiling in `.github/scripts/loc_ceiling.py`.
 
 use serde::Deserialize;
 use std::{
     collections::BTreeMap,
-    io::Read,
     path::{Path, PathBuf},
-    process::Stdio,
     time::{Duration, SystemTime},
 };
-use wait_timeout::ChildExt;
 
 use crate::core::{
     command_output_with_timeout, suppress_windows_console_window, SoldrError, SoldrPaths,
@@ -160,314 +165,8 @@ impl DylintToolchainPlan {
         command.env(COMPILER_COMMIT_ENV_VAR, &self.compiler_commit);
         command.env(CACHE_IDENTITY_ENV_VAR, self.cache_identity());
         command.env(PREPARED_IDENTITY_ENV_VAR, self.cache_identity());
-        apply_dylint_driver_path(command);
+        crate::dylint_driver::apply_dylint_driver_path(command);
     }
-}
-
-/// Refuse to launch cargo-dylint unless its exact toolchain driver already
-/// exists and answers the bounded version probe. Upstream cargo-dylint builds
-/// this driver automatically when it is absent or stale; preflighting the same
-/// version signal is what makes Soldr's binary-or-exit policy cover the driver,
-/// not just the two CLI executables.
-pub(crate) fn require_prebuilt_driver(
-    plan: &DylintToolchainPlan,
-    paths: &SoldrPaths,
-) -> Result<PathBuf, SoldrError> {
-    let driver_dir = driver_root(paths).join(qualified_driver_channel(plan)?);
-    let driver = ["dylint-driver", "dylint-driver.exe", "dylint-driver.cmd"]
-        .into_iter()
-        .map(|name| driver_dir.join(name))
-        .find(|candidate| candidate.is_file())
-        .ok_or_else(|| {
-            unavailable_driver_error(plan, &driver_dir, "no driver binary at that path")
-        })?;
-
-    let mut command = std::process::Command::new(&driver);
-    command
-        .arg("-V")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    apply_driver_runtime_environment(&mut command, plan)?;
-    suppress_windows_console_window(&mut command);
-    let mut child = command.spawn().map_err(|error| {
-        unavailable_driver_error(
-            plan,
-            &driver_dir,
-            &format!("version probe could not start: {error}"),
-        )
-    })?;
-    let status = match child.wait_timeout(Duration::from_secs(2)) {
-        Err(error) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(unavailable_driver_error(
-                plan,
-                &driver_dir,
-                &format!("version probe failed: {error}"),
-            ));
-        }
-        Ok(Some(status)) => status,
-        Ok(None) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(unavailable_driver_error(
-                plan,
-                &driver_dir,
-                "version probe exceeded the 2-second deadline",
-            ));
-        }
-    };
-    let mut stdout = String::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        pipe.read_to_string(&mut stdout).map_err(|error| {
-            unavailable_driver_error(
-                plan,
-                &driver_dir,
-                &format!("version probe output failed: {error}"),
-            )
-        })?;
-    }
-    if !status.success() {
-        return Err(unavailable_driver_error(
-            plan,
-            &driver_dir,
-            &format!("version probe exited with {status}"),
-        ));
-    }
-    let expected = crate::fetch::known_tools::lookup_by_crate("cargo-dylint")
-        .and_then(|spec| spec.pinned_version)
-        .ok_or_else(|| SoldrError::Other("cargo-dylint must have a registry pin".into()))?;
-    let actual = dylint_driver_version(&stdout);
-    if actual != Some(expected) {
-        return Err(unavailable_driver_error(
-            plan,
-            &driver_dir,
-            &format!("driver version is {actual:?}, expected {expected:?}"),
-        ));
-    }
-    Ok(driver)
-}
-
-/// Where cargo-dylint keeps its per-toolchain drivers. An explicit
-/// `DYLINT_DRIVER_PATH` always wins; otherwise soldr owns the location.
-fn driver_root(paths: &SoldrPaths) -> PathBuf {
-    std::env::var_os("DYLINT_DRIVER_PATH")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| paths.root.join("dylint").join("drivers"))
-}
-
-/// cargo-dylint's driver directory name: `<nightly>-<host triple>`.
-fn qualified_driver_channel(plan: &DylintToolchainPlan) -> Result<String, SoldrError> {
-    if is_fully_qualified_nightly(&plan.channel) {
-        return Ok(plan.channel.clone());
-    }
-    Ok(format!(
-        "{}-{}",
-        plan.channel,
-        TargetTriple::host()?.triple()
-    ))
-}
-
-fn apply_driver_runtime_environment(
-    command: &mut std::process::Command,
-    plan: &DylintToolchainPlan,
-) -> Result<(), SoldrError> {
-    apply_driver_runtime_environment_impl(command, plan)
-}
-
-fn dylint_toolchain_dirs(plan: &DylintToolchainPlan) -> Result<(PathBuf, PathBuf), SoldrError> {
-    let rustc = resolve_toolchain_binary_for_channel("rustc", Some(&plan.channel))?;
-    let bin_dir = rustc
-        .parent()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| SoldrError::Other("Dylint rustc has no parent directory".into()))?;
-    let toolchain_root = bin_dir
-        .parent()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| SoldrError::Other("Dylint rustc has no toolchain root".into()))?;
-    Ok((bin_dir, toolchain_root))
-}
-
-fn apply_driver_runtime_environment_impl(
-    command: &mut std::process::Command,
-    plan: &DylintToolchainPlan,
-) -> Result<(), SoldrError> {
-    match crate::platform::host::facts::os() {
-        crate::platform::host::facts::HostOs::Windows => {
-            let (bin_dir, _) = dylint_toolchain_dirs(plan)?;
-            prepend_command_path(command, "PATH", &bin_dir)
-        }
-        crate::platform::host::facts::HostOs::Linux => {
-            let (_, toolchain_root) = dylint_toolchain_dirs(plan)?;
-            prepend_command_path(command, "LD_LIBRARY_PATH", &toolchain_root.join("lib"))?;
-            Ok(())
-        }
-        crate::platform::host::facts::HostOs::MacOs => {
-            let (_, toolchain_root) = dylint_toolchain_dirs(plan)?;
-            prepend_command_path(command, "DYLD_LIBRARY_PATH", &toolchain_root.join("lib"))?;
-            Ok(())
-        }
-    }
-}
-
-fn prepend_command_path(
-    command: &mut std::process::Command,
-    key: &str,
-    directory: &Path,
-) -> Result<(), SoldrError> {
-    let existing = std::env::var_os(key);
-    let paths = std::iter::once(directory.to_path_buf()).chain(
-        existing
-            .as_deref()
-            .map(std::env::split_paths)
-            .into_iter()
-            .flatten(),
-    );
-    let joined = std::env::join_paths(paths)
-        .map_err(|error| SoldrError::Other(format!("failed to construct Dylint {key}: {error}")))?;
-    command.env(key, joined);
-    Ok(())
-}
-
-/// Resolve a missing driver from soldr-toolchain before cargo-dylint can
-/// trigger its implicit source-build fallback.
-///
-/// Binary-or-exit stays the default (soldr#2432/#2484). soldr#2945 adds the
-/// escape hatch the nested wrapper guard already honoured — the *same*
-/// variable, so a user who sets it once is not stopped twice by two guards
-/// that disagree about which switch turns them off.
-pub(crate) async fn ensure_prebuilt_driver(
-    plan: &DylintToolchainPlan,
-    paths: &SoldrPaths,
-) -> Result<(), SoldrError> {
-    if require_prebuilt_driver(plan, paths).is_ok() {
-        return Ok(());
-    }
-    let version = crate::fetch::known_tools::lookup_by_crate("cargo-dylint")
-        .and_then(|spec| spec.pinned_version)
-        .ok_or_else(|| SoldrError::Other("cargo-dylint must have a registry pin".into()))?;
-    let root = driver_root(paths);
-    let fetched = crate::fetch::ensure_dylint_driver(paths, version, &plan.channel, &root).await;
-    let outcome = match fetched {
-        Ok(_) => require_prebuilt_driver(plan, paths).map(|_| ()),
-        // A catalogue/transport failure is just as much "no driver" as a
-        // catalogue miss, and the opt-in below covers both.
-        Err(error) => Err(error),
-    };
-    match outcome {
-        Ok(()) => Ok(()),
-        // The opt-in is `wrapper.rs`'s, deliberately: the front door and the
-        // nested-driver-build guard behind it are released by one switch.
-        Err(error) if crate::wrapper::allow_dylint_driver_build() => {
-            eprintln!("{}", driver_source_build_warning(plan, version, &error));
-            Ok(())
-        }
-        Err(error) => Err(error),
-    }
-}
-
-fn dylint_driver_version(stdout: &str) -> Option<&str> {
-    stdout
-        .split_whitespace()
-        .last()
-        .filter(|value| !value.is_empty())
-}
-
-fn host_triple_or_unknown() -> String {
-    TargetTriple::host()
-        .map(|target| target.triple())
-        .unwrap_or_else(|_| "unknown-host".to_string())
-}
-
-/// The catalogue asset that would satisfy this plan:
-/// `dylint-driver <version>-<dated nightly>` for the host triple.
-fn missing_driver_asset(plan: &DylintToolchainPlan, version: &str) -> String {
-    format!(
-        "dylint-driver {version}-{} for {}",
-        crate::dylint_libraries::canonical_channel(&plan.channel),
-        host_triple_or_unknown()
-    )
-}
-
-/// soldr#2945: this diagnostic used to open with "Dylint v6.0.3 is not built
-/// for this machine" and close by advising the reader to "select a Dylint
-/// version that provides <host> prebuilts". Both were usually false. Dylint
-/// 6.0.3 publishes driver assets for all eight supported triples; what is
-/// actually missing is a driver for the *nightly* that was selected, and the
-/// fix depends entirely on which tier selected it. So the message leads with
-/// the channel and its provenance, names the exact asset it looked for and the
-/// path it looked at, and blames neither the host nor the Dylint version.
-fn unavailable_driver_error(
-    plan: &DylintToolchainPlan,
-    driver_dir: &Path,
-    reason: &str,
-) -> SoldrError {
-    let version = crate::fetch::known_tools::lookup_by_crate("cargo-dylint")
-        .and_then(|spec| spec.pinned_version)
-        .unwrap_or("unknown");
-    SoldrError::Other(format!(
-        "no usable Dylint driver for {channel} (channel selected from {provenance}). \
-         Cause: {reason}. Missing asset: {asset}; expected on disk under {directory}. \
-         Soldr will not build the driver from source unless asked (binary-or-exit, \
-         soldr#2432/#2484). Corrective action: select a nightly the catalogue publishes a \
-         Dylint v{version} driver for — when the channel came from the lint libraries that \
-         means re-pinning every `rust-toolchain.toml` under \
-         workspace.metadata.dylint.libraries — or point DYLINT_DRIVER_PATH at a directory \
-         that already holds a v{version} driver for {channel}, or set \
-         {opt_in}=1 to permit a one-time driver source build.",
-        channel = plan.channel,
-        provenance = plan.provenance.describe(),
-        asset = missing_driver_asset(plan, version),
-        directory = driver_dir.display(),
-        opt_in = crate::wrapper::ALLOW_DYLINT_DRIVER_BUILD_ENV_VAR,
-    ))
-}
-
-/// The loud counterpart to [`unavailable_driver_error`] for the opt-in path.
-/// A driver source build is not a small thing — it installs `rustc-dev` for
-/// the nightly and takes minutes — so proceeding silently would be worse than
-/// the refusal it replaces.
-fn driver_source_build_warning(
-    plan: &DylintToolchainPlan,
-    version: &str,
-    reason: &SoldrError,
-) -> String {
-    format!(
-        "soldr: WARNING: no prebuilt Dylint driver for {channel} (channel selected from \
-         {provenance}); proceeding because {opt_in} is set. Missing asset: {asset} ({reason}). \
-         cargo-dylint will now build the driver from source: that installs the rustc-dev \
-         component for {channel} and takes minutes, and Soldr does not cache the result. \
-         Unset {opt_in} to restore the binary-or-exit default (soldr#2432/#2484).",
-        channel = plan.channel,
-        provenance = plan.provenance.describe(),
-        opt_in = crate::wrapper::ALLOW_DYLINT_DRIVER_BUILD_ENV_VAR,
-        asset = missing_driver_asset(plan, version),
-    )
-}
-
-/// Give the dylint driver cargo-dylint builds a stable soldr-owned
-/// home instead of the tool's own unmanaged default (normally
-/// `~/.dylint_drivers` or wherever `$DYLINT_DRIVER_PATH` happens to
-/// point). A fixed path means warm runs reuse the already-built
-/// driver and CI caches have something deterministic to restore.
-/// Respects an explicit caller-set `DYLINT_DRIVER_PATH` — soldr never
-/// clobbers a user override.
-fn apply_dylint_driver_path(command: &mut std::process::Command) {
-    if std::env::var_os("DYLINT_DRIVER_PATH").is_some() {
-        return;
-    }
-    let Ok(paths) = crate::core::SoldrPaths::new() else {
-        return;
-    };
-    let driver_dir = paths.root.join("dylint").join("drivers");
-    if std::fs::create_dir_all(&driver_dir).is_err() {
-        // Best-effort: if the directory cannot be created, fall back
-        // to the tool's own default rather than pointing at a
-        // nonexistent path.
-        return;
-    }
-    command.env("DYLINT_DRIVER_PATH", driver_dir);
 }
 
 pub(crate) fn write_success_marker(plan: &DylintToolchainPlan) -> Result<(), SoldrError> {
@@ -708,7 +407,10 @@ fn qualify_toolchain_name(channel: &str) -> Result<String, SoldrError> {
     Ok(format!("{channel}-{host}"))
 }
 
-fn is_fully_qualified_nightly(channel: &str) -> bool {
+/// `pub(crate)` for `dylint_driver`, which derives cargo-dylint's
+/// `<nightly>-<host triple>` driver directory name from the same predicate
+/// (soldr#2945 split).
+pub(crate) fn is_fully_qualified_nightly(channel: &str) -> bool {
     channel
         .strip_prefix("nightly-")
         .and_then(|value| value.get(10..))

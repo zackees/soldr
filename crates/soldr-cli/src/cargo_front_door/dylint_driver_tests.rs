@@ -19,7 +19,7 @@ fn missing_dylint_driver_fails_before_tool_launch() {
         "0123456789abcdef".to_string(),
     );
 
-    let error = crate::dylint_toolchain::require_prebuilt_driver(&plan, &paths)
+    let error = crate::dylint_driver::require_prebuilt_driver(&plan, &paths)
         .expect_err("an absent driver must fail before cargo-dylint launches");
 
     let message = error.to_string();

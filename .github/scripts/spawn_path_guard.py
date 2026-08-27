@@ -67,9 +67,11 @@ ALLOWLIST: dict[str, tuple[int, str]] = {
         "prescribed ci-test DAG children; every command is a frozen soldr "
         "re-exec and sibling process trees are cancelled on failure",
     ),
-    "crates/soldr-cli/src/dylint_toolchain.rs": (
+    "crates/soldr-cli/src/dylint_driver.rs": (
         1,
-        "dylint driver bootstrap through the managed nightly toolchain",
+        "dylint driver bootstrap through the managed nightly toolchain "
+        "(moved out of dylint_toolchain.rs by the soldr#2945 line-ceiling "
+        "split; same single version-probe child, unchanged)",
     ),
     "crates/soldr-cli/src/gc/holding_process.rs": (
         1,

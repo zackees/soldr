@@ -1,7 +1,16 @@
 //! Unit coverage split from `dylint_toolchain.rs` for the soldr#2493 1,000-line
 //! production-source ceiling.
+//!
+//! Also covers the driver half that soldr#2945 moved out to `dylint_driver.rs`
+//! for the same ceiling: those tests share this module's `EnvVarGuard` /
+//! `sample_plan` scaffolding, so duplicating it into a second test file would
+//! have bought nothing but a second copy to keep in sync.
 
 use super::*;
+
+use crate::dylint_driver::{
+    driver_source_build_warning, dylint_driver_version, unavailable_driver_error,
+};
 
 const COMMIT: &str = "31a9463c6e2794a59ce57a8f37abc6966afc2a58";
 

@@ -36,7 +36,7 @@ pub(crate) async fn run(args: &[String]) -> Result<i32, SoldrError> {
     );
 
     eprintln!("soldr: dylint prepare: verifying the prebuilt driver");
-    crate::dylint_toolchain::ensure_prebuilt_driver(&plan, &paths).await?;
+    crate::dylint_driver::ensure_prebuilt_driver(&plan, &paths).await?;
     let plan = crate::dylint_toolchain::prepare_resolved(plan)?;
     println!(
         "soldr: dylint ready on channel {} — the next `soldr cargo dylint` run starts warm",
