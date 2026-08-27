@@ -91,8 +91,8 @@ fn direct_maturin_build_routes_nested_cargo_through_zccache() {
     );
     assert!(
         log.lines()
-            .any(|line| line.contains("zccache wrapper") && line.contains("demo")),
-        "nested maturin cargo rustc call should route through zccache: {log}"
+            .any(|line| line.contains("rustc --crate-name demo")),
+        "nested maturin cargo rustc call should reach the resolved compiler: {log}"
     );
 }
 

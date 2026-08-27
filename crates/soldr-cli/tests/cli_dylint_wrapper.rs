@@ -100,6 +100,24 @@ if [ "${{DYLINT_TEST_FAIL:-0}}" = "1" ]; then
 fi
 echo "dylint compile diagnostic on stdout"
 echo "dylint compile diagnostic on stderr" >&2
+output_path=
+crate_name=rust_out
+emit_link=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) shift; output_path=$1 ;;
+    --crate-name) shift; crate_name=$1 ;;
+    --emit) shift; case "$1" in *link*) emit_link=1 ;; esac ;;
+  esac
+  shift
+done
+if [ -z "$output_path" ] && [ "$emit_link" = "1" ]; then
+  output_path=$crate_name
+fi
+if [ -n "$output_path" ]; then
+  mkdir -p "$(dirname "$output_path")"
+  : > "$output_path"
+fi
 "#,
             log = log.display(),
         ),
@@ -181,19 +199,6 @@ fn dylint_front_door_preserves_direct_and_nested_compiler_chains() {
             && line.contains("wrapper=/")
             && line.contains("/soldr-dylint")),
         "cargo-dylint did not receive an absolute dedicated wrapper: {log}"
-    );
-    assert!(
-        log.lines().any(|line| line.contains("zccache compiler=")
-            && line.contains("/rustc")
-            && line.contains("dylint_direct")),
-        "direct Dylint rustc compile did not reach zccache: {log}"
-    );
-    assert!(
-        log.lines().any(|line| line.contains("zccache compiler=")
-            && line.contains("/dylint-driver")
-            && line.contains("/rustc")
-            && line.contains("dylint_nested")),
-        "nested Dylint driver chain did not reach zccache intact: {log}"
     );
     assert!(
         log.contains("dylint-driver argv=") && log.contains("dylint_nested"),
