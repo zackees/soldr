@@ -47,8 +47,8 @@ suspect it whenever a "hang" reproduces only under nesting.
 | Bound | Default | Override | Notes |
 |---|---:|---|---|
 | Broker front-door readiness | 5 s | — | Active control + SESSION socket probes; log text is not readiness |
-| Broker daemon-route acquisition | 45 s | — | One broker-owned child; the launcher watches early exit |
-| SESSION route attempt | 30 s | `SOLDR_SESSION_ATTEMPT_BUDGET_MS` | A distinct caller budget; includes just-in-time daemon-route readiness and can expire before the launcher's 45 s bound |
+| Broker daemon-route acquisition | 120 s | `SOLDR_ROUTE_ACQUIRE_CEILING_MS` | The outer route ceiling enforced by `BrokerDeadlines`; the launcher uses a 45 s readiness window inside it and watches early exit |
+| Explicit `soldr daemon start` route wait | 180 s | — | A deliberate lifecycle command gets its own wider caller budget for image staging, spawn, and readiness; it is distinct from the normal SESSION route ceiling |
 | Status / shutdown reply | 2 s | — | Health handshakes should be immediate |
 | Cache flush reply | 5 min | — | Large index/LTO flushes may be slow |
 | Compile reply | 30 min | `SOLDR_COMPILE_REPLY_TIMEOUT_SECS` | Shorten for diagnostic fail-fast behavior |
