@@ -105,8 +105,7 @@ fn session_endpoint_serves_real_compile_via_mux() {
                 .expect("read rust-toolchain.toml")
                 .channel
                 .expect("rust-toolchain.toml declares a channel");
-            let rustc = zccache::test_support::find_rustc()
-                .expect("Rust compiler prerequisite failed: no rustc on PATH");
+            let rustc = crate::test_support::rustc_from_env_or_path();
 
             let temp = tempfile::tempdir().expect("tempdir");
             let project = temp.path().join("workspace");
@@ -140,7 +139,7 @@ fn session_endpoint_serves_real_compile_via_mux() {
                 value: pinned,
             });
             let start = running_process::broker::protocol_v2::SessionStart {
-                program: rustc.as_path().display().to_string(),
+                program: rustc.display().to_string(),
                 args,
                 cwd: project.display().to_string(),
                 env,

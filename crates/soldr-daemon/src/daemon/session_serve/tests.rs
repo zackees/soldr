@@ -97,8 +97,7 @@ fn session_compile_e2e_real_rustc_through_the_bridge() {
                 .expect("read rust-toolchain.toml")
                 .channel
                 .expect("rust-toolchain.toml declares a channel");
-            let rustc = zccache::test_support::find_rustc()
-                .expect("Rust compiler prerequisite failed: no rustc on PATH");
+            let rustc = crate::test_support::rustc_from_env_or_path();
 
             let temp = tempfile::tempdir().expect("tempdir");
             let project = temp.path().join("workspace");
@@ -134,7 +133,7 @@ fn session_compile_e2e_real_rustc_through_the_bridge() {
                 value: pinned,
             });
             let start = super::SessionStart {
-                program: rustc.as_path().display().to_string(),
+                program: rustc.display().to_string(),
                 args,
                 cwd: project.display().to_string(),
                 env,
@@ -205,8 +204,7 @@ fn session_client_disconnect_mid_compile_aborts_without_reply() {
                 .expect("read rust-toolchain.toml")
                 .channel
                 .expect("rust-toolchain.toml declares a channel");
-            let rustc = zccache::test_support::find_rustc()
-                .expect("Rust compiler prerequisite failed: no rustc on PATH");
+            let rustc = crate::test_support::rustc_from_env_or_path();
 
             // A fresh isolated root guarantees a COLD compile — a real rustc
             // spawn, not an instant zccache hit — so the client-disconnect
@@ -243,7 +241,7 @@ fn session_client_disconnect_mid_compile_aborts_without_reply() {
                 value: pinned,
             });
             let start = super::SessionStart {
-                program: rustc.as_path().display().to_string(),
+                program: rustc.display().to_string(),
                 args,
                 cwd: project.display().to_string(),
                 env,

@@ -24,6 +24,8 @@ pub use soldr_core::{core, self_relocate};
 pub(crate) mod amalgamation;
 pub(crate) mod compile_limit;
 mod compiler_exit;
+#[cfg(test)]
+mod test_support;
 pub mod daemon;
 pub(crate) mod oom_evidence;
 pub mod zccache_embedded;

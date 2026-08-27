@@ -35,7 +35,6 @@ zccache = { version = "=1.13.13", default-features = false }
 
 [dev-dependencies]
 filetime = { workspace = true }
-zccache = { version = "=1.13.13", default-features = false, features = ["test-support"] }
 
 [features]
 # Opt-in tokio-console support for the daemon and embedded zccache
