@@ -299,11 +299,17 @@ def main(argv: list[str] | None = None) -> int:
     extract_dir = extract_root / args.name
     extract_root.mkdir(parents=True, exist_ok=True)
 
-    # nextest owns the creation of `--extract-to`. Handing it a directory that
-    # already has content from a previous attempt is how an extraction turns
-    # into a half-merged tree, so the slot is cleared here and left absent.
+    # `--extract-to` must name a directory that already EXISTS: nextest
+    # canonicalizes the destination before it writes, so an absent path fails
+    # the extraction outright with
+    #   error canonicalizing destination directory `<dir>`
+    #   No such file or directory (os error 2)
+    # rather than being created on demand. It must also be empty -- handing
+    # nextest content left by a previous attempt is how an extraction turns
+    # into a half-merged tree -- so the slot is cleared and then recreated.
     if extract_dir.exists():
         shutil.rmtree(extract_dir, ignore_errors=True)
+    extract_dir.mkdir(parents=True, exist_ok=True)
 
     temp_dir: Path | None = None
     if args.redirect_temp:

@@ -124,8 +124,14 @@ class MainTests(unittest.TestCase):
             self.assertIn("NEXTEST_EXTRACT_ROOT=", exported)
             self.assertIn("NEXTEST_EXTRACT_DIR=", exported)
             self.assertTrue((root / "soldr-ci").is_dir())
-            # nextest owns creating `--extract-to`; the slot must be left free.
-            self.assertFalse((root / "soldr-ci" / "nextest-archive").exists())
+            # `--extract-to` must already exist: nextest canonicalizes the
+            # destination before writing, so an absent path fails the whole
+            # extraction with `No such file or directory (os error 2)`.
+            extract_dir = root / "soldr-ci" / "nextest-archive"
+            self.assertTrue(extract_dir.is_dir())
+            # ...and it must be empty, or the extraction half-merges into
+            # whatever a previous attempt left behind.
+            self.assertEqual(list(extract_dir.iterdir()), [])
 
     def test_a_stale_extraction_directory_is_cleared(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -134,7 +140,10 @@ class MainTests(unittest.TestCase):
             stale.mkdir(parents=True)
             (stale / "leftover.bin").write_bytes(b"x")
             select_extract_volume.main(["--root", str(root)])
-            self.assertFalse(stale.exists())
+            # Cleared, then recreated empty -- not removed. nextest needs the
+            # destination to exist, and needs it to hold nothing.
+            self.assertTrue(stale.is_dir())
+            self.assertEqual(list(stale.iterdir()), [])
 
 
 if __name__ == "__main__":
