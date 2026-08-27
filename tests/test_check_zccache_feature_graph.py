@@ -3,7 +3,8 @@ from __future__ import annotations
 import subprocess
 from unittest.mock import patch
 
-from ci import check_zccache_feature_graph
+# `ci/` is an intentional namespace package; pylint does not resolve it.
+from ci import check_zccache_feature_graph  # pylint: disable=import-error
 
 
 def completed(returncode: int, stdout: str = "", stderr: str = ""):
@@ -21,7 +22,7 @@ def test_normal_tree_without_sevenz_passes() -> None:
         "_run",
         return_value=completed(0, "soldr-cli v0.9.10\n`-- zccache v1.13.13\n"),
     ):
-        assert check_zccache_feature_graph._check_no_normal_sevenz("soldr") == []
+        assert not check_zccache_feature_graph._check_no_normal_sevenz("soldr")
 
 
 def test_normal_tree_with_sevenz_fails() -> None:
