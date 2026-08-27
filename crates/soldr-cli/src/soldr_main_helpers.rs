@@ -169,14 +169,17 @@ pub(crate) async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), 
                 &installed.definition.service_name,
             );
             crate::daemon::lifecycle::preflight_displace_stale_daemon(&paths);
-            // Not the SESSION path's 30s: an explicit `daemon start` on a cold
-            // root legitimately covers image staging (a multi-hundred-MB
-            // copy), spawn, and the broker launcher's own 45s readiness
-            // window. On slow hosts (emulated ARM target-run lanes) the whole
-            // chain measures ~32s — real bounded work, not a hang — and a 30s
-            // client budget fired first with a generic timeout, masking the
+            // Normal SESSION route acquisition remains bounded by
+            // `BrokerDeadlines::route_ceiling`: 120s by default, configurable
+            // with `SOLDR_ROUTE_ACQUIRE_CEILING_MS`. This explicit `daemon
+            // start` command has a separate enclosing caller safeguard because
+            // a cold root legitimately covers image staging (a multi-hundred-MB
+            // copy), spawn, and the broker launcher's own 45s readiness window.
+            // On slow hosts (emulated ARM target-run lanes) the whole chain
+            // measures ~32s — real bounded work, not a hang. Formerly, a 30s
+            // caller budget fired first with a generic timeout, masking the
             // launcher's more precise attribution. This is a deliberate
-            // lifecycle command, not a compile hot path, so the wider bound
+            // lifecycle command, not a compile hot path, so the wider safeguard
             // costs nothing when healthy and still fails fast enough when not.
             //
             // soldr#2883: 60s was still too tight for windows-gnu, which is
@@ -189,7 +192,8 @@ pub(crate) async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), 
             // `command_dispatch` holding the whole span and
             // `broker_stage_image`/`broker_spawn_wait` each finishing in about
             // a second. That is the budget clipping real, bounded work — the
-            // same shape that raised it from 30s, one lane slower.
+            // same shape that raised the former explicit-start caller safeguard
+            // from 30s, one lane slower.
             //
             // Deliberately not sized to the measurement plus epsilon: 65s
             // observed against a 60s bound is the failure, so a 70s bound
