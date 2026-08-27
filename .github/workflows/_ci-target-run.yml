@@ -382,8 +382,14 @@ jobs:
           # values with spaces need no quoting convention; a `while read`
           # loop rather than `mapfile` because macOS runners ship bash 3.2.
           reuse_args=()
+          # Strip a trailing CR defensively. `read` removes the \n and leaves
+          # the \r, so one CRLF writer upstream turns every flag into
+          # `--binaries-metadata\r` and nextest rejects it with a
+          # "a similar argument exists" tip that does not name the real cause.
+          # The producer now emits LF explicitly; this keeps a future one from
+          # reintroducing the failure on Windows only.
           while IFS= read -r reuse_arg; do
-            reuse_args+=("$reuse_arg")
+            reuse_args+=("${reuse_arg%$'\r'}")
           done < <(python .github/scripts/nextest_reuse_extraction.py \
             --extract-dir "$NEXTEST_EXTRACT_DIR" \
             --archive "$archive")

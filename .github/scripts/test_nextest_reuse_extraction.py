@@ -128,5 +128,46 @@ class MainTests(unittest.TestCase):
         self.assertEqual(status, 0)
 
 
+class NewlineTests(unittest.TestCase):
+    def test_flags_are_written_with_lf_even_on_a_crlf_stream(self) -> None:
+        """soldr#2933: the workflow reads these one-per-argument with a bash
+                `while IFS= read -r` loop, which strips the
+         and leaves the
+        .
+                A text-mode stdout on a Windows runner therefore handed nextest
+                `--binaries-metadata
+        `, and it died with a "a similar argument
+                exists" tip that never names the real cause. Every Windows
+                target-run lane failed on it.
+
+                The stream here is opened with default newline translation on
+                purpose -- that is the condition being defended against.
+        """
+        import sys
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            extract = _extraction(root)
+            out = root / "flags.txt"
+            original = sys.stdout
+            with out.open("w", encoding="utf-8") as stream:
+                sys.stdout = stream
+                try:
+                    status = nextest_reuse_extraction.main(
+                        [
+                            "--extract-dir",
+                            str(extract),
+                            "--archive",
+                            str(root / "tests.tar.zst"),
+                        ]
+                    )
+                finally:
+                    sys.stdout = original
+            self.assertEqual(status, 0)
+            written = out.read_bytes()
+            self.assertNotIn(b"\r", written)
+            self.assertIn(b"--binaries-metadata\n", written)
+
+
 if __name__ == "__main__":
     unittest.main()

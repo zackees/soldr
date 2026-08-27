@@ -173,8 +173,24 @@ def main(argv: list[str] | None = None) -> int:
 
     flags, reason = resolve(args.extract_dir, args.archive, allow_reuse=reuse_enabled())
     print(f"nextest extraction: {reason}", file=sys.stderr)
+    # LF, never CRLF -- and `reconfigure` rather than writing "\n", because a
+    # text-mode stream on Windows translates the \n on the way out no matter
+    # how it was produced.
+    #
+    # These lines are read one-per-argument by a bash `while IFS= read -r`
+    # loop in the workflow. `read` strips the \n and leaves the \r, so under
+    # the default translation nextest was handed `--binaries-metadata\r`:
+    #   error: unexpected argument '--binaries-metadata\n' found
+    #   tip: a similar argument exists: '--binaries-metadata'
+    # That killed every Windows target-run lane, and the value lines would
+    # have carried a trailing \r into a path even if the flag had parsed.
+    try:
+        sys.stdout.reconfigure(newline="\n")  # type: ignore[union-attr]
+    except (AttributeError, ValueError):  # pragma: no cover - non-TextIO stdout
+        pass
     for flag in flags:
-        print(flag)
+        sys.stdout.write(f"{flag}\n")
+    sys.stdout.flush()
     return 0
 
 
