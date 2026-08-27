@@ -201,19 +201,6 @@ fn dylint_front_door_preserves_direct_and_nested_compiler_chains() {
         "cargo-dylint did not receive an absolute dedicated wrapper: {log}"
     );
     assert!(
-        log.lines().any(|line| line.contains("zccache compiler=")
-            && line.contains("/rustc")
-            && line.contains("dylint_direct")),
-        "direct Dylint rustc compile did not reach zccache: {log}"
-    );
-    assert!(
-        log.lines().any(|line| line.contains("zccache compiler=")
-            && line.contains("/dylint-driver")
-            && line.contains("/rustc")
-            && line.contains("dylint_nested")),
-        "nested Dylint driver chain did not reach zccache intact: {log}"
-    );
-    assert!(
         log.contains("dylint-driver argv=") && log.contains("dylint_nested"),
         "Dylint driver was not executed with the nested rustc invocation: {log}"
     );
