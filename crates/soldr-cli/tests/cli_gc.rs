@@ -48,36 +48,6 @@ fn soldr_command(soldr_bin: &Path) -> Command {
     command
 }
 
-fn wait_for_daemon_ready(soldr_bin: &Path, cache_root: &Path, timeout: Duration) {
-    let deadline = Instant::now() + timeout;
-    let mut delay = Duration::from_millis(25);
-    loop {
-        let status = soldr_command(soldr_bin)
-            .args(["daemon", "status", "--json"])
-            .env("SOLDR_CACHE_DIR", cache_root)
-            .env_remove(soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR)
-            .output()
-            .expect("query daemon status");
-        if status.status.success()
-            && serde_json::from_slice::<Value>(&status.stdout)
-                .ok()
-                .and_then(|body| body["running"].as_bool())
-                .unwrap_or(false)
-        {
-            return;
-        }
-        let now = Instant::now();
-        assert!(
-            now < deadline,
-            "daemon did not become ready within {timeout:?}; last stdout: {}; last stderr: {}",
-            String::from_utf8_lossy(&status.stdout),
-            String::from_utf8_lossy(&status.stderr)
-        );
-        std::thread::sleep(delay.min(deadline.saturating_duration_since(now)));
-        delay = (delay * 2).min(Duration::from_secs(1));
-    }
-}
-
 #[test]
 fn gc_summary_surfaces_the_linked_worktree_total() {
     // soldr#2134 wants merged-worktree targets reclaimed eagerly. Deleting
@@ -467,6 +437,7 @@ fn daemon_target_touch_lines(cache_root: &Path) -> String {
 #[test]
 fn gc_list_json_reports_built_project_target_dir() {
     let cache_root = unique_temp_dir("gc-list-build");
+    let home_root = unique_temp_dir("gc-list-build-home");
     let project_dir = unique_temp_dir("gc-list-project");
     // #323 slice 2: sandbox CARGO_HOME so the registry_src walker
     // doesn't see the developer's real `~/.cargo` and inject
@@ -485,6 +456,11 @@ fn gc_list_json_reports_built_project_target_dir() {
 
     let soldr_bin = common::soldr_bin();
     let cargo = rustup_which("cargo");
+    let daemon = common::isolated_daemon::IsolatedDaemon::spawn(
+        &common::soldr_daemon_bin(),
+        &cache_root,
+        &home_root,
+    );
 
     // soldr#2785: run from the fixture project, not the inherited cwd.
     // These tests execute with cargo's cwd inside this checkout, and the
@@ -502,30 +478,15 @@ fn gc_list_json_reports_built_project_target_dir() {
     // totals 151/209/280). The fixture project lives under the OS temp dir,
     // whose ancestors carry no such manifest, so the gate is false and the
     // probe never runs.
-    let start = soldr_command(&soldr_bin)
-        .current_dir(&project_dir)
-        .args(["daemon", "start"])
-        .env("SOLDR_CACHE_DIR", &cache_root)
-        // A dogfooded outer `soldr cargo test` exports its installed
-        // daemon image. This fixture must start the daemon built beside
-        // CARGO_BIN_EXE_soldr so its IPC protocol matches the test binary.
-        .env_remove(soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR)
-        .output()
-        .expect("start daemon for wrapper target registry");
-    assert!(
-        start.status.success(),
-        "daemon start failed: {}",
-        String::from_utf8_lossy(&start.stderr)
-    );
-    wait_for_daemon_ready(&soldr_bin, &cache_root, Duration::from_secs(45));
-
     let mut build_command = Command::new(&cargo);
-    common::scrub_outer_soldr_env(&mut build_command);
+    daemon.configure_client(&mut build_command);
     let build = build_command
         .args(["build", "--quiet"])
         .current_dir(&project_dir)
         .env("RUSTC_WRAPPER", &soldr_bin)
         .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("HOME", &home_root)
+        .env("USERPROFILE", &home_root)
         .env_remove(soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR)
         .env("ZCCACHE_DISABLE", "1")
         .env("SOLDR_CACHE_ENABLED", "0")
@@ -571,10 +532,14 @@ fn gc_list_json_reports_built_project_target_dir() {
     let json: Value = loop {
         attempts += 1;
         let child_started = Instant::now();
-        let output = soldr_command(&soldr_bin)
+        let mut gc_command = soldr_command(&soldr_bin);
+        daemon.configure_client(&mut gc_command);
+        let output = gc_command
             .current_dir(&project_dir)
             .args(["gc", "list", "--json"])
             .env("SOLDR_CACHE_DIR", &cache_root)
+            .env("HOME", &home_root)
+            .env("USERPROFILE", &home_root)
             .env_remove(soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR)
             .env("CARGO_HOME", &sandbox_cargo_home)
             .env("RUSTUP_HOME", &sandbox_rustup_home)

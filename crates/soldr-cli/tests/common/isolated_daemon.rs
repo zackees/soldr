@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use serde_json::Value;
+
 /// Place a test daemon at a route-local executable path and configure the
 /// exact production endpoint names derived from that path.
 pub(crate) fn isolated_daemon_command(source: &Path, root: &Path) -> Command {
@@ -65,7 +67,13 @@ impl IsolatedDaemon {
             let mut status = Command::new(super::soldr_bin());
             self.configure_client(&mut status);
             let output = status.args(["daemon", "status", "--json"]).output();
-            if output.is_ok_and(|output| output.status.success()) {
+            if output.is_ok_and(|output| {
+                output.status.success()
+                    && serde_json::from_slice::<Value>(&output.stdout)
+                        .ok()
+                        .and_then(|body| body["running"].as_bool())
+                        .unwrap_or(false)
+            }) {
                 return;
             }
             std::thread::sleep(Duration::from_millis(50));
