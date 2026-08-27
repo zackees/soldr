@@ -100,6 +100,24 @@ if [ "${{DYLINT_TEST_FAIL:-0}}" = "1" ]; then
 fi
 echo "dylint compile diagnostic on stdout"
 echo "dylint compile diagnostic on stderr" >&2
+output_path=
+crate_name=rust_out
+emit_link=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) shift; output_path=$1 ;;
+    --crate-name) shift; crate_name=$1 ;;
+    --emit) shift; case "$1" in *link*) emit_link=1 ;; esac ;;
+  esac
+  shift
+done
+if [ -z "$output_path" ] && [ "$emit_link" = "1" ]; then
+  output_path=$crate_name
+fi
+if [ -n "$output_path" ]; then
+  mkdir -p "$(dirname "$output_path")"
+  : > "$output_path"
+fi
 "#,
             log = log.display(),
         ),
