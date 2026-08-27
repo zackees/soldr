@@ -13,15 +13,17 @@ fn fake_rust_analyzer_script(log_path: &Path) -> String {
 }
 
 fn fake_rust_analyzer_nested_cargo_script(log_path: &Path) -> String {
+    let output_dir = fake_rustc_output_dir(log_path);
     format!(
         "#!/bin/sh\n\
          echo \"cargo args=$* wrapper=${{RUSTC_WRAPPER:-}} rustc=${{RUSTC:-}} cache=${{SOLDR_CACHE_ENABLED:-}} child_shims=${{SOLDR_CHILD_SHIMS_ACTIVE:-}}\" >> \"{0}\"\n\
          if [ -n \"${{RUSTC_WRAPPER:-}}\" ]; then\n\
-           \"$RUSTC_WRAPPER\" \"$RUSTC\" --crate-name ra_demo --emit dep-info,link\n\
+           \"$RUSTC_WRAPPER\" \"$RUSTC\" --crate-name ra_demo --emit dep-info,link -o \"{1}/ra_demo\" --out-dir \"{1}\"\n\
          else\n\
-           \"$RUSTC\" --crate-name ra_demo --emit dep-info,link\n\
+           \"$RUSTC\" --crate-name ra_demo --emit dep-info,link -o \"{1}/ra_demo\" --out-dir \"{1}\"\n\
          fi\n",
-        log_path.display()
+        log_path.display(),
+        output_dir.display()
     )
 }
 
@@ -92,7 +94,7 @@ fn rust_analyzer_spawned_cargo_routes_through_child_shims_and_zccache() {
     );
     assert!(
         log.lines()
-            .any(|line| line.contains("zccache wrapper") && line.contains("ra_demo")),
-        "rust-analyzer-spawned cargo rustc call should route through zccache: {log}"
+            .any(|line| line.starts_with("rustc ") && line.contains("--crate-name ra_demo")),
+        "rust-analyzer-spawned cargo should reach the compiler through Soldr's embedded route: {log}"
     );
 }
