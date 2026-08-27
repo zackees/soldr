@@ -101,10 +101,16 @@ jobs:
       # soldr#1799: pin the soldr that builds us. This prevents action-default
       # drift from changing build or catalogue behavior between lanes.
       - name: Setup pinned soldr toolchain
-        uses: zackees/setup-soldr@68ce266ed86b75ccfb332b084ba1a64d619bfe53
+        uses: zackees/setup-soldr@5f1f68dcb8377818413c28ce52214261ae8ff771
         with:
-          version: 0.9.6
+          version: 0.9.10
           toolchain: 1.95.0
+          # Provision the ci-test Dylint foundation once, separately from
+          # the stable source-driver target tree used by the prescribed DAG.
+          ci-tests: true
+          dylint-toolchain: nightly-2026-05-28
+          cargo-dylint-version: 6.0.1
+          dylint-link-version: 6.0.1
           # soldr#2451: disable every setup-soldr reuse layer, not just the
           # `cache` umbrella (soldr-mini / solo-toolchain / build-cache each
           # ignore it). This lane builds + tests the soldr under test, so it
