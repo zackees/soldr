@@ -160,11 +160,11 @@ fn check_shape_preserves_scope_and_private_marker() {
         "--config=build.jobs=2",
     ]))
     .unwrap();
-    let plan = DylintToolchainPlan {
-        channel: "nightly-2099-01-02".into(),
-        compiler_release: "1.99.0-nightly".into(),
-        compiler_commit: "0123456789abcdef".into(),
-    };
+    let plan = DylintToolchainPlan::identity(
+        "nightly-2099-01-02".into(),
+        "1.99.0-nightly".into(),
+        "0123456789abcdef".into(),
+    );
     let built = build_check_args(&parsed, &plan, Path::new("isolated-target"));
     assert_eq!(built[0], "+nightly-2099-01-02");
     assert_eq!(built[1], DYLINT_DEPENDENCY_COOK_FLAG);

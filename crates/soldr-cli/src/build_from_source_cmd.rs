@@ -46,8 +46,7 @@ use std::time::Duration;
 
 use crate::binaries::resolve_toolchain_binary;
 use crate::core::{
-    run_installer_command, suppress_windows_console_window, InstallerWatchdogConfig, SoldrError,
-    SoldrPaths, TargetTriple,
+    suppress_windows_console_window, InstallerWatchdogConfig, SoldrError, SoldrPaths, TargetTriple,
 };
 use crate::fetch::known_tools;
 
@@ -456,7 +455,7 @@ fn run_cargo_install_attempt(
     plan: &BuildPlan,
 ) -> Result<std::process::ExitStatus, SoldrError> {
     forbid_source_build_tripwire("build-from-source cargo install")?;
-    run_installer_command(
+    crate::exit_guard::run_child_command(
         command,
         &format!(
             "build-from-source: cargo install {}@{} --target {}",

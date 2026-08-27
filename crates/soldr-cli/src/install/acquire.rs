@@ -9,8 +9,7 @@ use std::path::{Path, PathBuf};
 use crate::binaries::resolve_toolchain_binary;
 use crate::build_from_source_cmd::apply_source_build_cache_wrapper;
 use crate::core::{
-    run_installer_command, suppress_windows_console_window, InstallerWatchdogConfig, SoldrError,
-    SoldrPaths,
+    suppress_windows_console_window, InstallerWatchdogConfig, SoldrError, SoldrPaths,
 };
 
 use super::cache;
@@ -237,7 +236,7 @@ pub(crate) fn cargo_install_from_path(
     apply_source_build_cache_wrapper(&mut command);
     suppress_windows_console_window(&mut command);
 
-    let status = run_installer_command(
+    let status = crate::exit_guard::run_child_command(
         &mut command,
         &format!("install: cargo install --path {}", source_dir.display()),
         "install",

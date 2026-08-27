@@ -2757,11 +2757,11 @@ fn dylint_smoke_failure_never_calls_source_build() {
 fn missing_dylint_driver_fails_before_tool_launch() {
     let temp = tempfile::tempdir().unwrap();
     let paths = SoldrPaths::with_root(temp.path().join("soldr"));
-    let plan = crate::dylint_toolchain::DylintToolchainPlan {
-        channel: "nightly-2026-05-28".to_string(),
-        compiler_release: "1.96.0-nightly".to_string(),
-        compiler_commit: "0123456789abcdef".to_string(),
-    };
+    let plan = crate::dylint_toolchain::DylintToolchainPlan::identity(
+        "nightly-2026-05-28".to_string(),
+        "1.96.0-nightly".to_string(),
+        "0123456789abcdef".to_string(),
+    );
 
     let error = crate::dylint_toolchain::require_prebuilt_driver(&plan, &paths)
         .expect_err("an absent driver must fail before cargo-dylint launches");
@@ -2775,12 +2775,27 @@ fn missing_dylint_driver_fails_before_tool_launch() {
         message.contains("nightly-2026-05-28"),
         "unexpected error: {message}"
     );
+    // soldr#2945: the diagnostic names the missing asset and refuses to blame
+    // the host or the Dylint version, which publishes drivers for every
+    // supported triple. What is missing is a driver for *this nightly*.
     assert!(
-        message.contains("Dylint v6.0.3 is not built for this machine"),
+        message.contains("no usable Dylint driver for nightly-2026-05-28"),
         "unexpected error: {message}"
     );
     assert!(
+        message.contains("dylint-driver 6.0.3-nightly-2026-05-28"),
+        "unexpected error: {message}"
+    );
+    assert!(
+        !message.contains("is not built for this machine"),
+        "the driver gate must not blame the host: {message}"
+    );
+    assert!(
         message.contains("Corrective action:"),
+        "unexpected error: {message}"
+    );
+    assert!(
+        message.contains("SOLDR_ALLOW_DYLINT_DRIVER_BUILD"),
         "unexpected error: {message}"
     );
 }

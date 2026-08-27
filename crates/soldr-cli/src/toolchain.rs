@@ -3,8 +3,7 @@
 //! Extracted from `main.rs` as part of issue #339.
 
 use crate::core::{
-    run_installer_command, suppress_windows_console_window, InstallerWatchdogConfig, SoldrError,
-    SoldrPaths,
+    suppress_windows_console_window, InstallerWatchdogConfig, SoldrError, SoldrPaths,
 };
 use crate::{
     apply_implicit_toolchain_homes, resolve_toolchain_binary, resolve_toolchain_binary_for_channel,
@@ -941,7 +940,7 @@ fn run_toolchain_command(
     command: &mut std::process::Command,
     context: &str,
 ) -> Result<std::process::ExitStatus, SoldrError> {
-    run_installer_command(
+    crate::exit_guard::run_child_command(
         command,
         context,
         "toolchain-prepare",

@@ -374,11 +374,13 @@ impl StageCommandFactory {
             cache_enabled,
             cargo_build_jobs,
             soldr_jobs,
-            dylint: crate::dylint_toolchain::DylintToolchainPlan {
-                channel: dylint_domain.toolchain.clone(),
+            // Reconstructed from the frozen plan document rather than
+            // re-derived, so it carries no precedence tier (soldr#2945).
+            dylint: crate::dylint_toolchain::DylintToolchainPlan::identity(
+                dylint_domain.toolchain.clone(),
                 compiler_release,
                 compiler_commit,
-            },
+            ),
             dylint_bin_dirs: Vec::new(),
             dylint_env: Vec::new(),
             ci_test_report_path,

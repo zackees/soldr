@@ -50,6 +50,42 @@ pub(crate) fn spoke() -> bool {
     SPOKE.load(Ordering::Relaxed)
 }
 
+/// Run a child through the installer watchdog, recording that soldr has
+/// delegated its output before the child can write a word.
+///
+/// soldr#2946. `run_installer_command` pipes the child's stdout and stderr
+/// and *tees* them to soldr's own — so a child that explains its failure has
+/// explained it to the terminal, through soldr. That is precisely the
+/// "delegated" case this module exists to recognise, and the four call sites
+/// were not recording it. The visible cost was a rustup panic being reported
+/// as soldr's fault:
+///
+/// ```text
+/// component target should be known
+/// note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+/// soldr: exiting 101 — soldr emitted no diagnostic and ran no child process, …
+/// soldr: this is a fault in soldr itself, not a compile error in your project
+/// ```
+///
+/// Two lines of rustup's own diagnostic, immediately above soldr claiming
+/// there weren't any and that no child ran. The reader is then sent to file
+/// a soldr bug for what was a corrupted rustup component manifest.
+///
+/// Marking happens *before* the spawn, not after: the module's contract is
+/// that under-calling costs a spurious warning while over-calling costs only
+/// a missed one, so a child that dies before writing anything should still
+/// suppress the annotation — soldr did hand off, and the exit code is the
+/// child's.
+pub(crate) fn run_child_command(
+    command: &mut std::process::Command,
+    context: &str,
+    phase: &str,
+    config: crate::core::InstallerWatchdogConfig,
+) -> Result<std::process::ExitStatus, crate::core::SoldrError> {
+    mark_spoke();
+    crate::core::run_installer_command(command, context, phase, config)
+}
+
 /// Should an exit with `code` be annotated, given whether anything spoke?
 ///
 /// Split out as a pure function so the policy is unit-testable without
@@ -130,5 +166,21 @@ mod tests {
         // the initial value.
         mark_spoke();
         assert!(spoke());
+    }
+
+    #[test]
+    fn a_child_that_explained_itself_is_not_blamed_on_soldr() {
+        // soldr#2946. `run_installer_command` tees the child's stdout and
+        // stderr to soldr's own, so a child that printed its failure has
+        // explained it to the terminal *through* soldr. Before
+        // `run_child_command` marked, rustup could panic with two lines of
+        // its own diagnostic and soldr would still append "emitted no
+        // diagnostic and ran no child process ... this is a fault in soldr
+        // itself" — sending the reader to file a soldr bug for a corrupted
+        // rustup component manifest.
+        //
+        // 101 specifically, because that is Rust's panic exit code and the
+        // exact status the misreported rustup failure carried.
+        assert!(!needs_annotation(101, true));
     }
 }

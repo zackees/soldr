@@ -66,7 +66,10 @@ def test_every_dylint_nightly_pin_agrees():
     missing = [str(p) for p, c in pins.items() if c is None]
     assert not missing, f"no channel pinned in: {missing}"
 
-    distinct = sorted(set(pins.values()))
+    # `missing` above already proved every value is a str, but the checker
+    # cannot see that across the assert, and `sorted` on `str | None` is a
+    # type error rather than a style nit.
+    distinct = sorted({channel for channel in pins.values() if channel is not None})
     assert len(distinct) == 1, (
         "Dylint nightly pins disagree, so at least one has no prebuilt driver:\n"
         + "\n".join(
@@ -77,8 +80,19 @@ def test_every_dylint_nightly_pin_agrees():
 
 
 def test_ci_test_reads_and_requires_one_exact_dylint_nightly():
+    """soldr#2945 moved the read, not the requirement.
+
+    The per-lint `rust-toolchain.toml` loop that used to live in `plan.rs` is
+    now the one shared, glob-aware reader in `dylint_libraries.rs` — which is
+    the whole point of that change, since `plan.rs` was the *only* caller that
+    got the answer right. ci-test still consumes it and still refuses an env
+    override that names a different nightly.
+    """
     plan = (
         REPO_ROOT / "crates" / "soldr-cli" / "src" / "ci_test" / "plan.rs"
+    ).read_text(encoding="utf-8")
+    libraries = (
+        REPO_ROOT / "crates" / "soldr-cli" / "src" / "dylint_libraries.rs"
     ).read_text(encoding="utf-8")
     host_workflow = (
         REPO_ROOT / ".github" / "workflows" / "_build-and-test.yml"
@@ -86,9 +100,10 @@ def test_ci_test_reads_and_requires_one_exact_dylint_nightly():
 
     assert host_workflow.count("- name: Run prescribed host validation") == 1
     assert 'ci-test --target "${{ inputs.target }}"' in host_workflow
-    assert 'join("rust-toolchain.toml")' in plan
-    assert "Dylint toolchain pins disagree" in plan
-    assert "six lint manifests pinned to" in plan
+    assert 'join("rust-toolchain.toml")' in libraries
+    assert "conflicting Dylint library toolchain pins" in libraries
+    assert "dylint_libraries::pinned_channel" in plan
+    assert "lint manifests pinned to" in plan
 
 
 def test_ci_test_dylint_domains_share_nightly_keyed_target_directories():

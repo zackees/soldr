@@ -126,6 +126,17 @@ impl EnvVarGuard {
         }
         Self { key, previous }
     }
+
+    /// The precedence tests need a *known-absent* variable, not merely an
+    /// unset-by-default one: a developer with `RUSTUP_TOOLCHAIN` exported
+    /// would otherwise silently exercise a different tier.
+    fn unset(key: &'static str) -> Self {
+        let previous = std::env::var_os(key);
+        unsafe {
+            std::env::remove_var(key);
+        }
+        Self { key, previous }
+    }
 }
 
 impl Drop for EnvVarGuard {
@@ -140,11 +151,11 @@ impl Drop for EnvVarGuard {
 }
 
 fn sample_plan() -> DylintToolchainPlan {
-    DylintToolchainPlan {
-        channel: "nightly-2026-01-18".to_string(),
-        compiler_release: "1.94.0-nightly".to_string(),
-        compiler_commit: COMMIT.to_string(),
-    }
+    DylintToolchainPlan::identity(
+        "nightly-2026-01-18".to_string(),
+        "1.94.0-nightly".to_string(),
+        COMMIT.to_string(),
+    )
 }
 
 /// Creates `rustup_home/toolchains/<channel>-<anything>` so
@@ -394,5 +405,170 @@ fn apply_to_command_never_touches_build_profile_or_injects_args() {
         command.get_args().count(),
         0,
         "apply_to_command must not inject any CLI args (e.g. --release/--profile)"
+    );
+}
+
+// -----------------------------------------------------------------
+// soldr#2945 — channel precedence and the driver-gate diagnostic.
+// -----------------------------------------------------------------
+
+/// A workspace shaped like this repo: a stable root pin, and lint libraries
+/// declared through a glob that pin a nightly.
+fn library_workspace(library_channel: &str) -> tempfile::TempDir {
+    let temp = tempfile::tempdir().expect("workspace tempdir");
+    std::fs::write(
+        temp.path().join("Cargo.toml"),
+        "[workspace]\nmembers=[]\n[workspace.metadata.dylint]\nlibraries=[{path='dylints/*'}]\n",
+    )
+    .expect("write workspace manifest");
+    std::fs::write(
+        temp.path().join("rust-toolchain.toml"),
+        "[toolchain]\nchannel='1.95.0'\n",
+    )
+    .expect("write root manifest");
+    let lint = temp.path().join("dylints").join("ban_something");
+    std::fs::create_dir_all(&lint).expect("create lint dir");
+    std::fs::write(
+        lint.join("rust-toolchain.toml"),
+        format!("[toolchain]\nchannel='{library_channel}'\n"),
+    )
+    .expect("write lint manifest");
+    temp
+}
+
+/// The defect: this workspace's lint libraries pin `nightly-2026-05-28`, but
+/// the resolver read the *root* `1.95.0` and derived a nightly nobody has ever
+/// published a driver for. Libraries now sit above the root manifest, and both
+/// the explicit argument and the environment still sit above them.
+#[test]
+fn channel_precedence_is_explicit_then_environment_then_libraries_then_root() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+    let _retained = EnvVarGuard::unset(TOOLCHAIN_ENV_VAR);
+    let _configured = EnvVarGuard::unset(CONFIGURED_TOOLCHAIN_ENV_VAR);
+    let _rustup = EnvVarGuard::unset("RUSTUP_TOOLCHAIN");
+    let workspace = library_workspace("nightly-2026-05-28");
+
+    let requested =
+        requested_toolchain_channel(None, workspace.path()).expect("resolve from libraries");
+    assert_eq!(requested.channel.as_deref(), Some("nightly-2026-05-28"));
+    assert_eq!(requested.provenance, ChannelProvenance::LintLibraries);
+
+    let _env = EnvVarGuard::set(TOOLCHAIN_ENV_VAR, "nightly-2026-01-18");
+    let requested =
+        requested_toolchain_channel(None, workspace.path()).expect("resolve from environment");
+    assert_eq!(requested.channel.as_deref(), Some("nightly-2026-01-18"));
+    assert_eq!(requested.provenance, ChannelProvenance::Environment);
+
+    let requested = requested_toolchain_channel(Some("nightly-2026-02-02"), workspace.path())
+        .expect("resolve from the explicit argument");
+    assert_eq!(requested.channel.as_deref(), Some("nightly-2026-02-02"));
+    assert_eq!(requested.provenance, ChannelProvenance::Explicit);
+}
+
+/// Tiers 4 and 5 are not dead code — they are the whole answer for a workspace
+/// with no lint libraries to read.
+#[test]
+fn a_workspace_without_lint_libraries_still_falls_back_to_root_then_map() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+    let _retained = EnvVarGuard::unset(TOOLCHAIN_ENV_VAR);
+    let _configured = EnvVarGuard::unset(CONFIGURED_TOOLCHAIN_ENV_VAR);
+    let _rustup = EnvVarGuard::unset("RUSTUP_TOOLCHAIN");
+
+    let temp = tempfile::tempdir().expect("workspace tempdir");
+    std::fs::write(temp.path().join("Cargo.toml"), "[workspace]\nmembers=[]\n")
+        .expect("write workspace manifest");
+    assert_eq!(
+        crate::dylint_libraries::pinned_channel(temp.path()).expect("read pins"),
+        None,
+        "a workspace with no lint libraries must not claim authority"
+    );
+
+    std::fs::write(
+        temp.path().join("rust-toolchain.toml"),
+        "[toolchain]\nchannel='1.95.0'\n",
+    )
+    .expect("write root manifest");
+    let requested =
+        requested_toolchain_channel(None, temp.path()).expect("resolve from the root manifest");
+    assert_eq!(requested.channel.as_deref(), Some("1.95.0"));
+    assert_eq!(requested.provenance, ChannelProvenance::RootManifest);
+
+    std::fs::remove_file(temp.path().join("rust-toolchain.toml")).expect("remove root manifest");
+    let requested =
+        requested_toolchain_channel(None, temp.path()).expect("resolve with nothing pinned");
+    assert_eq!(requested.channel, None);
+    assert_eq!(requested.provenance, ChannelProvenance::VersionMap);
+}
+
+/// The old text said "Dylint v6.0.3 is not built for this machine" and told
+/// the reader to pick a Dylint version with prebuilts for their host. Dylint
+/// 6.0.3 ships a driver for every supported triple; the nightly is what was
+/// wrong. The replacement has to say so, and say who chose the nightly.
+#[test]
+fn driver_diagnostic_names_the_provenance_and_the_missing_asset() {
+    let plan = sample_plan().with_provenance(ChannelProvenance::LintLibraries);
+    let driver_dir = Path::new("/soldr/dylint/drivers/nightly-2026-01-18-host");
+    let reason = "no driver binary at that path";
+    let message = unavailable_driver_error(&plan, driver_dir, reason).to_string();
+
+    assert!(
+        message.contains("no usable Dylint driver for nightly-2026-01-18"),
+        "{message}"
+    );
+    assert!(
+        message.contains("workspace.metadata.dylint.libraries"),
+        "the diagnostic must name the tier that chose the channel: {message}"
+    );
+    assert!(
+        message.contains("dylint-driver 6.0.3-nightly-2026-01-18"),
+        "{message}"
+    );
+    assert!(message.contains("/soldr/dylint/drivers/"), "{message}");
+    assert!(message.contains("DYLINT_DRIVER_PATH"), "{message}");
+    assert!(
+        message.contains(crate::wrapper::ALLOW_DYLINT_DRIVER_BUILD_ENV_VAR),
+        "{message}"
+    );
+    assert!(
+        !message.contains("is not built for this machine"),
+        "the driver gate must stop blaming the host: {message}"
+    );
+}
+
+/// The opt-in is off by default (binary-or-exit, soldr#2432/#2484) and, when
+/// on, must say loudly what it just allowed.
+#[test]
+fn the_driver_build_opt_in_is_off_by_default_and_warns_when_set() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+    {
+        let _env = EnvVarGuard::unset(crate::wrapper::ALLOW_DYLINT_DRIVER_BUILD_ENV_VAR);
+        assert!(!crate::wrapper::allow_dylint_driver_build());
+    }
+    {
+        let _env = EnvVarGuard::set(crate::wrapper::ALLOW_DYLINT_DRIVER_BUILD_ENV_VAR, "0");
+        assert!(!crate::wrapper::allow_dylint_driver_build());
+    }
+    let _env = EnvVarGuard::set(crate::wrapper::ALLOW_DYLINT_DRIVER_BUILD_ENV_VAR, "1");
+    assert!(crate::wrapper::allow_dylint_driver_build());
+
+    let plan = sample_plan().with_provenance(ChannelProvenance::LintLibraries);
+    let warning = driver_source_build_warning(
+        &plan,
+        "6.0.3",
+        &SoldrError::Other("catalogue has no asset row".into()),
+    );
+    assert!(warning.contains("WARNING"), "{warning}");
+    assert!(warning.contains("nightly-2026-01-18"), "{warning}");
+    assert!(
+        warning.contains("dylint-driver 6.0.3-nightly-2026-01-18"),
+        "{warning}"
+    );
+    assert!(
+        warning.contains("rustc-dev"),
+        "the warning must state the real cost of a driver source build: {warning}"
+    );
+    assert!(
+        warning.contains(crate::wrapper::ALLOW_DYLINT_DRIVER_BUILD_ENV_VAR),
+        "{warning}"
     );
 }

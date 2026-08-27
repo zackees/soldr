@@ -215,6 +215,11 @@ pub(crate) mod daemon_status_render;
 pub mod docker_cross;
 pub mod doctor;
 mod dylint_cook;
+/// soldr#2945 — the one reader of the nightly a workspace's Dylint lint
+/// libraries declare, glob expansion included. `dylint_toolchain`,
+/// `dylint_cook`, and `ci_test::plan` all resolve the Dylint channel through
+/// it instead of each deriving or hard-coding its own answer.
+pub(crate) mod dylint_libraries;
 pub(crate) mod dylint_prepare;
 pub mod dylint_toolchain;
 /// soldr#938 — `soldr env --target` subcommand implementation.
