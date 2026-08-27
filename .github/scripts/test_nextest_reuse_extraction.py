@@ -130,18 +130,13 @@ class MainTests(unittest.TestCase):
 
 class NewlineTests(unittest.TestCase):
     def test_flags_are_written_with_lf_even_on_a_crlf_stream(self) -> None:
-        """soldr#2933: the workflow reads these one-per-argument with a bash
-                `while IFS= read -r` loop, which strips the
-         and leaves the
-        .
-                A text-mode stdout on a Windows runner therefore handed nextest
-                `--binaries-metadata
-        `, and it died with a "a similar argument
-                exists" tip that never names the real cause. Every Windows
-                target-run lane failed on it.
+        """soldr#2933: Git Bash reads these records one argument at a time.
 
-                The stream here is opened with default newline translation on
-                purpose -- that is the condition being defended against.
+        Its ``while IFS= read -r`` loop strips ``\n`` but leaves ``\r``.
+        A Windows text-mode writer therefore handed nextest
+        ``--binaries-metadata\r`` and produced an opaque flag-parse error.
+        This real TextIO stream retains default newline translation so the
+        producer's LF-only contract is exercised.
         """
         import sys
 
