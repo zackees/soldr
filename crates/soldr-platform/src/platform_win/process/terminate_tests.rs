@@ -372,3 +372,15 @@ fn identity_is_pid_and_creation_time_together() {
         "unreadable start proves nothing, so it cannot prove sameness"
     );
 }
+
+#[test]
+fn observed_handle_wait_is_bounded_without_wraparound() {
+    use std::time::Duration;
+
+    assert_eq!(bounded_wait_millis(Duration::from_millis(25)), 25);
+    assert_eq!(
+        bounded_wait_millis(Duration::from_millis(u64::MAX)),
+        u32::MAX,
+        "a huge duration must stay bounded instead of wrapping into a short wait"
+    );
+}

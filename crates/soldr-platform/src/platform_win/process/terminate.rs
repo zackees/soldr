@@ -288,7 +288,46 @@ fn terminate_descendant(pid: u32, root: u32, expected_start: Option<u64>) {
     }
     // A missing time means the process already exited or refuses the query.
     // Terminating is then either a no-op or impossible; neither harms.
-    let _ = signal_pid(pid, true);
+    // Keep a waitable handle through the terminate request.  A PID snapshot
+    // alone only tells us what a later enumeration happened to observe; the
+    // process handle is the kernel's identity-preserving completion evidence.
+    // This is deliberately bounded to one verification poll: a stuck process
+    // still returns the weaker `ProcessKilled` result within VERIFY_BUDGET.
+    let _ = terminate_and_observe(pid, VERIFY_POLL);
+}
+
+/// Request termination and observe completion through the same process handle.
+fn terminate_and_observe(pid: u32, wait: std::time::Duration) -> io::Result<bool> {
+    use std::os::windows::raw::HANDLE;
+    #[allow(clippy::upper_case_acronyms)]
+    type DWORD = u32;
+    #[allow(clippy::upper_case_acronyms)]
+    type BOOL = i32;
+    const PROCESS_TERMINATE: DWORD = 0x0001;
+    const SYNCHRONIZE: DWORD = 0x0010_0000;
+    const WAIT_OBJECT_0: DWORD = 0;
+    extern "system" {
+        fn OpenProcess(desired_access: DWORD, inherit: BOOL, pid: DWORD) -> HANDLE;
+        fn TerminateProcess(h: HANDLE, exit_code: DWORD) -> BOOL;
+        fn WaitForSingleObject(h: HANDLE, milliseconds: DWORD) -> DWORD;
+        fn CloseHandle(h: HANDLE) -> BOOL;
+    }
+    let handle = unsafe { OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, 0, pid) };
+    if handle.is_null() {
+        return Ok(true);
+    }
+    unsafe {
+        let _ = TerminateProcess(handle, 1);
+        let observed = WaitForSingleObject(handle, bounded_wait_millis(wait))
+            == WAIT_OBJECT_0;
+        CloseHandle(handle);
+        Ok(observed)
+    }
+}
+
+/// Convert a Rust duration to the Win32 bounded-wait argument without wrap.
+fn bounded_wait_millis(wait: std::time::Duration) -> u32 {
+    wait.as_millis().min(u128::from(u32::MAX)) as u32
 }
 
 /// Every transitive descendant of `root`, ordered parents before children.
