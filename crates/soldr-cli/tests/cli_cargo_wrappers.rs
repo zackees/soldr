@@ -13,6 +13,7 @@ use std::{
 };
 
 fn fake_cargo_doc_script(log_path: &Path, source_path: &Path, rustdoc: &Path) -> String {
+    let output_dir = fake_rustc_output_dir(log_path);
     if matches!(
         soldr_platform::host::facts::os(),
         soldr_platform::host::facts::HostOs::Windows
@@ -24,10 +25,10 @@ fn fake_cargo_doc_script(log_path: &Path, source_path: &Path, rustdoc: &Path) ->
              echo cargo %* wrapper=%RUSTC_WRAPPER% rustc=%RUSTC% rustdoc=%rustdoc% env_rustdoc=%RUSTDOC% cache=%SOLDR_CACHE_ENABLED%>>\"{0}\"\n\
              if \"%~1\"==\"doc\" (\n\
                if defined RUSTC_WRAPPER (\n\
-                 call \"%RUSTC_WRAPPER%\" \"%RUSTC%\" --crate-name doc_demo --emit dep-info,link \"{1}\"\n\
+                 call \"%RUSTC_WRAPPER%\" \"%RUSTC%\" --crate-name doc_demo --emit dep-info,link \"{1}\" -o \"{3}\\doc_demo\" --out-dir \"{3}\"\n\
                  if errorlevel 1 exit /b 1\n\
                ) else (\n\
-                 call \"%RUSTC%\" --crate-name doc_demo --emit dep-info,link \"{1}\"\n\
+                 call \"%RUSTC%\" --crate-name doc_demo --emit dep-info,link \"{1}\" -o \"{3}\\doc_demo\" --out-dir \"{3}\"\n\
                  if errorlevel 1 exit /b 1\n\
                )\n\
                call \"%rustdoc%\" \"{1}\"\n\
@@ -35,10 +36,10 @@ fn fake_cargo_doc_script(log_path: &Path, source_path: &Path, rustdoc: &Path) ->
              )\n\
              if \"%~1\"==\"test\" if \"%~2\"==\"--doc\" (\n\
                if defined RUSTC_WRAPPER (\n\
-                 call \"%RUSTC_WRAPPER%\" \"%RUSTC%\" --crate-name doctest_demo --emit dep-info,link \"{1}\"\n\
+                 call \"%RUSTC_WRAPPER%\" \"%RUSTC%\" --crate-name doctest_demo --emit dep-info,link \"{1}\" -o \"{3}\\doctest_demo\" --out-dir \"{3}\"\n\
                  if errorlevel 1 exit /b 1\n\
                ) else (\n\
-                 call \"%RUSTC%\" --crate-name doctest_demo --emit dep-info,link \"{1}\"\n\
+                 call \"%RUSTC%\" --crate-name doctest_demo --emit dep-info,link \"{1}\" -o \"{3}\\doctest_demo\" --out-dir \"{3}\"\n\
                  if errorlevel 1 exit /b 1\n\
                )\n\
                call \"%rustdoc%\" \"{1}\"\n\
@@ -48,7 +49,8 @@ fn fake_cargo_doc_script(log_path: &Path, source_path: &Path, rustdoc: &Path) ->
              exit /b 1\n",
             log_path.display(),
             source_path.display(),
-            rustdoc.display()
+            rustdoc.display(),
+            output_dir.display()
         )
     } else {
         format!(
@@ -58,9 +60,9 @@ fn fake_cargo_doc_script(log_path: &Path, source_path: &Path, rustdoc: &Path) ->
              run_doc_compile() {{\n\
                crate_name=\"$1\"\n\
                if [ -n \"${{RUSTC_WRAPPER:-}}\" ]; then\n\
-                 \"$RUSTC_WRAPPER\" \"$RUSTC\" --crate-name \"$crate_name\" --emit dep-info,link \"{1}\" || exit $?\n\
+                 \"$RUSTC_WRAPPER\" \"$RUSTC\" --crate-name \"$crate_name\" --emit dep-info,link \"{1}\" -o \"{3}/$crate_name\" --out-dir \"{3}\" || exit $?\n\
                else\n\
-                 \"$RUSTC\" --crate-name \"$crate_name\" --emit dep-info,link \"{1}\" || exit $?\n\
+                 \"$RUSTC\" --crate-name \"$crate_name\" --emit dep-info,link \"{1}\" -o \"{3}/$crate_name\" --out-dir \"{3}\" || exit $?\n\
                fi\n\
                \"$rustdoc\" \"{1}\"\n\
              }}\n\
@@ -76,12 +78,14 @@ fn fake_cargo_doc_script(log_path: &Path, source_path: &Path, rustdoc: &Path) ->
              exit 1\n",
             log_path.display(),
             source_path.display(),
-            rustdoc.display()
+            rustdoc.display(),
+            output_dir.display()
         )
     }
 }
 
 fn fake_cargo_miri_script(log_path: &Path) -> String {
+    let output_dir = fake_rustc_output_dir(log_path);
     if matches!(
         soldr_platform::host::facts::os(),
         soldr_platform::host::facts::HostOs::Windows
@@ -91,15 +95,16 @@ fn fake_cargo_miri_script(log_path: &Path) -> String {
              echo cargo miri wrapper=%RUSTC_WRAPPER% rustc=%RUSTC% cache=%SOLDR_CACHE_ENABLED% session=%ZCCACHE_SESSION_ID%>>\"{0}\"\n\
              if \"%~1\"==\"miri\" (\n\
                if defined RUSTC_WRAPPER (\n\
-                 call \"%RUSTC_WRAPPER%\" \"%RUSTC%\" --crate-name miri_demo --emit metadata,link\n\
+                 call \"%RUSTC_WRAPPER%\" \"%RUSTC%\" --crate-name miri_demo --emit metadata,link -o \"{1}\\miri_demo\" --out-dir \"{1}\"\n\
                ) else (\n\
-                 call \"%RUSTC%\" --crate-name miri_demo --emit metadata,link\n\
+                 call \"%RUSTC%\" --crate-name miri_demo --emit metadata,link -o \"{1}\\miri_demo\" --out-dir \"{1}\"\n\
                )\n\
                exit /b %ERRORLEVEL%\n\
              )\n\
              echo unsupported fake cargo miri invocation %* 1>&2\n\
              exit /b 1\n",
-            log_path.display()
+            log_path.display(),
+            output_dir.display()
         )
     } else {
         format!(
@@ -107,15 +112,16 @@ fn fake_cargo_miri_script(log_path: &Path) -> String {
              echo \"cargo miri wrapper=${{RUSTC_WRAPPER:-}} rustc=${{RUSTC:-}} cache=${{SOLDR_CACHE_ENABLED:-}} session=${{ZCCACHE_SESSION_ID:-}}\" >> \"{0}\"\n\
              if [ \"$1\" = \"miri\" ]; then\n\
                if [ -n \"${{RUSTC_WRAPPER:-}}\" ]; then\n\
-                 \"$RUSTC_WRAPPER\" \"$RUSTC\" --crate-name miri_demo --emit metadata,link\n\
+                 \"$RUSTC_WRAPPER\" \"$RUSTC\" --crate-name miri_demo --emit metadata,link -o \"{1}/miri_demo\" --out-dir \"{1}\"\n\
                else\n\
-                 \"$RUSTC\" --crate-name miri_demo --emit metadata,link\n\
+                 \"$RUSTC\" --crate-name miri_demo --emit metadata,link -o \"{1}/miri_demo\" --out-dir \"{1}\"\n\
                fi\n\
                exit $?\n\
              fi\n\
              echo \"unsupported fake cargo miri invocation: $*\" >&2\n\
              exit 1\n",
-            log_path.display()
+            log_path.display(),
+            output_dir.display()
         )
     }
 }
@@ -131,6 +137,7 @@ fn install_fake_cargo_doc_toolchain(
         .to_path_buf();
     let rustdoc = fake_script_path(&tool_dir, "rustdoc");
     let zccache = fake_script_path(&tool_dir, "zccache");
+    write_fake_script(&rustc, &fake_rustc_script(log_path));
     write_fake_script(
         &cargo,
         &fake_cargo_doc_script(log_path, source_path, &rustdoc),
@@ -138,7 +145,6 @@ fn install_fake_cargo_doc_toolchain(
     write_fake_script(&zccache, &fake_zccache_script(log_path));
     (rustup, cargo, rustc, rustdoc, zccache)
 }
-
 fn install_fake_cargo_miri_toolchain(log_path: &Path) -> (PathBuf, PathBuf, PathBuf) {
     let (cargo, rustc, zccache) = install_fake_toolchain(log_path);
     write_fake_script(&cargo, &fake_cargo_miri_script(log_path));
@@ -332,19 +338,13 @@ fn cargo_clippy_routes_workspace_clippy_driver_through_zccache() {
         .env_remove("SOLDR_BUILD_CACHE_MODE")
         .output()
         .expect("failed to run soldr cargo clippy with fake tools");
-
     assert!(
         output.status.success(),
         "cargo clippy front door failed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-
     let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
-    assert!(
-        log.contains("cargo wrapper=") && log.contains("workspace_wrapper="),
-        "fake cargo should model Cargo's nested workspace wrapper: {log}"
-    );
     assert!(
         log.contains("cargo wrapper=") && log.contains("workspace_wrapper="),
         "cargo clippy should retain Soldr-owned compiler shim routing: {log}"
@@ -353,38 +353,39 @@ fn cargo_clippy_routes_workspace_clippy_driver_through_zccache() {
 
 #[test]
 fn direct_rustc_like_commands_route_through_zccache_with_and_without_global_flags() {
+    let cache_root = unique_temp_dir("direct-rustc-like-zccache");
+    let home_root = cache_root.join("home");
+    let _broker = BrokerHomeGuard::new(&cache_root, &home_root);
+    let daemon_executable = common::isolated_daemon::isolated_daemon_executable(
+        &common::soldr_daemon_bin(),
+        &cache_root,
+    );
+    let daemon_start = isolated_soldr_command()
+        .args(["daemon", "start"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("HOME", &home_root)
+        .env("USERPROFILE", &home_root)
+        .env(
+            soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR,
+            &daemon_executable,
+        )
+        .output()
+        .expect("start broker-owned daemon for direct compiler routes");
+    assert!(
+        daemon_start.status.success(),
+        "broker-owned daemon start failed for direct compiler routes\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&daemon_start.stdout),
+        String::from_utf8_lossy(&daemon_start.stderr)
+    );
     for tool in ["rustc", "clippy-driver"] {
         for (label, prefix_args) in [
             ("plain", vec![tool]),
             ("global-zccache", vec!["--zccache", "system", tool]),
         ] {
-            let cache_root = unique_temp_dir(&format!("direct-{tool}-{label}-zccache"));
-            let home_root = cache_root.join("home");
-            let output_dir = cache_root.join("out");
+            let case_root = cache_root.join(format!("{tool}-{label}"));
+            let output_dir = case_root.join("out");
             fs::create_dir_all(&output_dir).expect("create direct compiler output directory");
-            let source_path = write_rustc_like_source(&cache_root);
-            let _broker = BrokerHomeGuard::new(&cache_root, &home_root);
-            let daemon_executable = common::isolated_daemon::isolated_daemon_executable(
-                &common::soldr_daemon_bin(),
-                &cache_root,
-            );
-            let daemon_start = isolated_soldr_command()
-                .args(["daemon", "start"])
-                .env("SOLDR_CACHE_DIR", &cache_root)
-                .env("HOME", &home_root)
-                .env("USERPROFILE", &home_root)
-                .env(
-                    soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR,
-                    &daemon_executable,
-                )
-                .output()
-                .expect("start broker-owned daemon for direct compiler route");
-            assert!(
-                daemon_start.status.success(),
-                "broker-owned daemon start failed for direct {tool} route {label}\\nstdout:\\n{}\\nstderr:\\n{}",
-                String::from_utf8_lossy(&daemon_start.stdout),
-                String::from_utf8_lossy(&daemon_start.stderr)
-            );
+            let source_path = write_rustc_like_source(&case_root);
             let mut args = prefix_args;
             args.extend([
                 "--crate-name",
@@ -401,7 +402,7 @@ fn direct_rustc_like_commands_route_through_zccache_with_and_without_global_flag
                 .arg(&output_dir)
                 .arg(&source_path);
             let output = command
-                .current_dir(&cache_root)
+                .current_dir(&case_root)
                 .env("SOLDR_CACHE_DIR", &cache_root)
                 .env("HOME", &home_root)
                 .env("USERPROFILE", &home_root)
@@ -420,7 +421,6 @@ fn direct_rustc_like_commands_route_through_zccache_with_and_without_global_flag
                 .env("SOLDR_SESSION_DEBUG", "1")
                 .output()
                 .unwrap_or_else(|_| panic!("failed to run direct {tool} route {label}"));
-
             assert!(
                 output.status.success(),
                 "direct {tool} route {label} failed\nstdout:\n{}\nstderr:\n{}",
@@ -430,7 +430,7 @@ fn direct_rustc_like_commands_route_through_zccache_with_and_without_global_flag
 
             assert!(
                 String::from_utf8_lossy(&output.stderr).contains("SESSION compile served"),
-                "direct {tool} should complete through the brokered embedded-cache session\nstdout:\n{}\nstderr:\n{}",
+                "direct {tool} should complete through the embedded-cache session\nstdout:\n{}\nstderr:\n{}",
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );

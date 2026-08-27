@@ -4,6 +4,7 @@ use common::*;
 use std::path::Path;
 
 fn fake_exec_nested_cargo_script(log_path: &Path) -> String {
+    let output_dir = fake_rustc_output_dir(log_path);
     if matches!(
         soldr_platform::host::facts::os(),
         soldr_platform::host::facts::HostOs::Windows
@@ -12,23 +13,25 @@ fn fake_exec_nested_cargo_script(log_path: &Path) -> String {
             "@echo off\n\
              echo cargo wrapper=%RUSTC_WRAPPER% rustc=%RUSTC% cache=%SOLDR_CACHE_ENABLED% child_shims=%SOLDR_CHILD_SHIMS_ACTIVE%>>\"{0}\"\n\
              if defined RUSTC_WRAPPER (\n\
-               call \"%RUSTC_WRAPPER%\" \"%RUSTC%\" --crate-name exec_demo --emit dep-info,link\n\
+               call \"%RUSTC_WRAPPER%\" \"%RUSTC%\" --crate-name exec_demo --emit dep-info,link -o \"{1}\\exec_demo\" --out-dir \"{1}\"\n\
              ) else (\n\
-               call \"%RUSTC%\" --crate-name exec_demo --emit dep-info,link\n\
+               call \"%RUSTC%\" --crate-name exec_demo --emit dep-info,link -o \"{1}\\exec_demo\" --out-dir \"{1}\"\n\
              )\n\
              exit /b %ERRORLEVEL%\n",
-            log_path.display()
+            log_path.display(),
+            output_dir.display()
         )
     } else {
         format!(
             "#!/bin/sh\n\
              echo \"cargo wrapper=${{RUSTC_WRAPPER:-}} rustc=${{RUSTC:-}} cache=${{SOLDR_CACHE_ENABLED:-}} child_shims=${{SOLDR_CHILD_SHIMS_ACTIVE:-}}\" >> \"{0}\"\n\
              if [ -n \"${{RUSTC_WRAPPER:-}}\" ]; then\n\
-               \"$RUSTC_WRAPPER\" \"$RUSTC\" --crate-name exec_demo --emit dep-info,link\n\
+               \"$RUSTC_WRAPPER\" \"$RUSTC\" --crate-name exec_demo --emit dep-info,link -o \"{1}/exec_demo\" --out-dir \"{1}\"\n\
              else\n\
-               \"$RUSTC\" --crate-name exec_demo --emit dep-info,link\n\
+               \"$RUSTC\" --crate-name exec_demo --emit dep-info,link -o \"{1}/exec_demo\" --out-dir \"{1}\"\n\
              fi\n",
-            log_path.display()
+            log_path.display(),
+            output_dir.display()
         )
     }
 }

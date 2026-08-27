@@ -512,7 +512,17 @@ pub(crate) fn write_fake_script(path: &Path, body: &str) {
     }
 }
 
+pub(crate) fn fake_rustc_output_dir(log_path: &Path) -> PathBuf {
+    let output_dir = log_path
+        .parent()
+        .expect("fake tool log should have a parent")
+        .join("rustc-output");
+    fs::create_dir_all(&output_dir).expect("failed to create fake rustc output directory");
+    output_dir
+}
+
 pub(crate) fn fake_cargo_script(log_path: &Path) -> String {
+    let output_dir = fake_rustc_output_dir(log_path);
     if matches!(
         soldr_platform::host::facts::os(),
         soldr_platform::host::facts::HostOs::Windows
@@ -539,12 +549,13 @@ pub(crate) fn fake_cargo_script(log_path: &Path) -> String {
              for /f \"tokens=1,* delims==\" %%A in ('set CARGO_TARGET_ 2^>nul') do @echo cargo_target_env %%A=%%B>>\"{0}\"\n\
              for /f \"tokens=1,* delims==\" %%A in ('set CARGO_PROFILE_ 2^>nul') do @echo cargo_profile_env %%A=%%B>>\"{0}\"\n\
              if defined RUSTC_WRAPPER (\n\
-             call \"%RUSTC_WRAPPER%\" \"%RUSTC%\" --crate-name demo --emit dep-info,link\n\
+             call \"%RUSTC_WRAPPER%\" \"%RUSTC%\" --crate-name demo --emit dep-info,link -o \"{1}\\demo\" --out-dir \"{1}\"\n\
              ) else (\n\
-             call \"%RUSTC%\" --crate-name demo --emit dep-info,link\n\
+             call \"%RUSTC%\" --crate-name demo --emit dep-info,link -o \"{1}\\demo\" --out-dir \"{1}\"\n\
              )\n\
              exit /b %ERRORLEVEL%\n",
-            log_path.display()
+            log_path.display(),
+            output_dir.display()
         )
     } else {
         format!(
@@ -579,16 +590,18 @@ pub(crate) fn fake_cargo_script(log_path: &Path) -> String {
              log_cargo_target_envs\n\
              log_cargo_profile_envs\n\
              if [ -n \"${{RUSTC_WRAPPER:-}}\" ]; then\n\
-               \"$RUSTC_WRAPPER\" \"$RUSTC\" --crate-name demo --emit dep-info,link\n\
+               \"$RUSTC_WRAPPER\" \"$RUSTC\" --crate-name demo --emit dep-info,link -o \"{1}/demo\" --out-dir \"{1}\"\n\
              else\n\
-               \"$RUSTC\" --crate-name demo --emit dep-info,link\n\
+               \"$RUSTC\" --crate-name demo --emit dep-info,link -o \"{1}/demo\" --out-dir \"{1}\"\n\
              fi\n",
-            log_path.display()
+            log_path.display(),
+            output_dir.display()
         )
     }
 }
 
 pub(crate) fn fake_cargo_clippy_script(log_path: &Path, clippy_driver: &Path) -> String {
+    let output_dir = fake_rustc_output_dir(log_path);
     if matches!(
         soldr_platform::host::facts::os(),
         soldr_platform::host::facts::HostOs::Windows
@@ -598,16 +611,17 @@ pub(crate) fn fake_cargo_clippy_script(log_path: &Path, clippy_driver: &Path) ->
              echo cargo wrapper=%RUSTC_WRAPPER% workspace_wrapper={1} rustc=%RUSTC% cache=%SOLDR_CACHE_ENABLED% session=%ZCCACHE_SESSION_ID% zccache_dir=%ZCCACHE_CACHE_DIR%>>\"{0}\"\n\
              if \"%~1\"==\"clippy\" (\n\
                if defined RUSTC_WRAPPER (\n\
-                 call \"%RUSTC_WRAPPER%\" \"{1}\" \"%RUSTC%\" --crate-name demo --crate-type lib --emit metadata,dep-info src/lib.rs\n\
+                 call \"%RUSTC_WRAPPER%\" \"{1}\" \"%RUSTC%\" --crate-name demo --crate-type lib --emit metadata,dep-info src/lib.rs -o \"{2}\\libdemo.rmeta\" --out-dir \"{2}\"\n\
                ) else (\n\
-                 call \"{1}\" \"%RUSTC%\" --crate-name demo --crate-type lib --emit metadata,dep-info src/lib.rs\n\
+                 call \"{1}\" \"%RUSTC%\" --crate-name demo --crate-type lib --emit metadata,dep-info src/lib.rs -o \"{2}\\libdemo.rmeta\" --out-dir \"{2}\"\n\
                )\n\
                exit /b %ERRORLEVEL%\n\
              )\n\
              echo unsupported fake cargo invocation %* 1>&2\n\
              exit /b 1\n",
             log_path.display(),
-            clippy_driver.display()
+            clippy_driver.display(),
+            output_dir.display()
         )
     } else {
         format!(
@@ -615,21 +629,23 @@ pub(crate) fn fake_cargo_clippy_script(log_path: &Path, clippy_driver: &Path) ->
              echo \"cargo wrapper=${{RUSTC_WRAPPER:-}} workspace_wrapper={1} rustc=${{RUSTC:-}} cache=${{SOLDR_CACHE_ENABLED:-}} session=${{ZCCACHE_SESSION_ID:-}} zccache_dir=${{ZCCACHE_CACHE_DIR:-}}\" >> \"{0}\"\n\
              if [ \"$1\" = \"clippy\" ]; then\n\
                if [ -n \"${{RUSTC_WRAPPER:-}}\" ]; then\n\
-                 \"$RUSTC_WRAPPER\" \"{1}\" \"$RUSTC\" --crate-name demo --crate-type lib --emit metadata,dep-info src/lib.rs\n\
+                 \"$RUSTC_WRAPPER\" \"{1}\" \"$RUSTC\" --crate-name demo --crate-type lib --emit metadata,dep-info src/lib.rs -o \"{2}/libdemo.rmeta\" --out-dir \"{2}\"\n\
                else\n\
-                 \"{1}\" \"$RUSTC\" --crate-name demo --crate-type lib --emit metadata,dep-info src/lib.rs\n\
+                 \"{1}\" \"$RUSTC\" --crate-name demo --crate-type lib --emit metadata,dep-info src/lib.rs -o \"{2}/libdemo.rmeta\" --out-dir \"{2}\"\n\
                fi\n\
                exit $?\n\
              fi\n\
              echo \"unsupported fake cargo invocation: $*\" >&2\n\
              exit 1\n",
             log_path.display(),
-            clippy_driver.display()
+            clippy_driver.display(),
+            output_dir.display()
         )
     }
 }
 
 pub(crate) fn fake_cargo_with_jobserver_script(log_path: &Path) -> String {
+    let output_dir = fake_rustc_output_dir(log_path);
     format!(
         "#!/bin/sh\n\
          echo \"cargo wrapper=${{RUSTC_WRAPPER:-}} rustc=${{RUSTC:-}} cache=${{SOLDR_CACHE_ENABLED:-}} session=${{ZCCACHE_SESSION_ID:-}} zccache_dir=${{ZCCACHE_CACHE_DIR:-}}\" >> \"{}\"\n\
@@ -638,8 +654,9 @@ pub(crate) fn fake_cargo_with_jobserver_script(log_path: &Path) -> String {
          export CARGO_MAKEFLAGS='-j --jobserver-fds=3,4'\n\
          export SOLDR_TEST_JOBSERVER_READ_FD=3\n\
          export SOLDR_TEST_JOBSERVER_WRITE_FD=4\n\
-         \"$RUSTC_WRAPPER\" \"$RUSTC\" --crate-name demo --emit dep-info,link\n",
-        log_path.display()
+         \"$RUSTC_WRAPPER\" \"$RUSTC\" --crate-name demo --emit dep-info,link -o \"{1}/demo\" --out-dir \"{1}\"\n",
+        log_path.display(),
+        output_dir.display()
     )
 }
 
@@ -650,13 +667,36 @@ pub(crate) fn fake_rustc_script(log_path: &Path) -> String {
     ) {
         format!(
             "@echo off\n\
+             setlocal EnableDelayedExpansion\n\
              if \"%~1\"==\"-Vv\" (\n\
-               echo rustc 1.0.0-test\n\
-               echo host: x86_64-pc-windows-msvc\n\
-               echo release: 1.0.0-test\n\
-               exit /b 0\n\
+                echo rustc 1.0.0-test\n\
+                echo host: x86_64-pc-windows-msvc\n\
+                echo release: 1.0.0-test\n\
+                exit /b 0\n\
              )\n\
-             echo rustc %*>>\"{}\"\n",
+             echo rustc %*>>\"{}\"\n\
+             set \"all_args=%*\"\n\
+             call :materialize_outputs %*\n\
+             exit /b 0\n\
+             :materialize_outputs\n\
+             if \"%~1\"==\"\" exit /b 0\n\
+             if \"%~1\"==\"--crate-name\" (\n\
+               set \"crate_name=%~2\"\n\
+               shift\n\
+             )\n\
+             if \"%~1\"==\"-o\" (\n\
+               call :materialize_one \"%~2\"\n\
+               if not \"!all_args:dep-info=!\"==\"!all_args!\" (\n\
+                 for %%D in (\"%~2\") do call :materialize_one \"%%~dpD!crate_name!.d\"\n\
+               )\n\
+               shift\n\
+             )\n\
+             shift\n\
+             goto materialize_outputs\n\
+             :materialize_one\n\
+             for %%D in (\"%~1\") do if not exist \"%%~dpD\" mkdir \"%%~dpD\"\n\
+             type nul > \"%~1\"\n\
+             exit /b 0\n",
             log_path.display()
         )
     } else {
@@ -668,7 +708,26 @@ pub(crate) fn fake_rustc_script(log_path: &Path) -> String {
                echo 'release: 1.0.0-test'\n\
                exit 0\n\
              fi\n\
-             echo \"rustc $*\" >> \"{}\"\n",
+             echo \"rustc $*\" >> \"{}\"\n\
+             all_args=$*\n\
+             output_path=\n\
+             output_dir=\n\
+             crate_name=unknown\n\
+             while [ \"$#\" -gt 0 ]; do\n\
+               case \"$1\" in\n\
+                 -o) shift; output_path=$1 ;;\n\
+                 --out-dir) shift; output_dir=$1 ;;\n\
+                 --crate-name) shift; crate_name=$1 ;;\n\
+               esac\n\
+               shift\n\
+             done\n\
+             if [ -n \"$output_path\" ]; then\n\
+               mkdir -p \"$(dirname \"$output_path\")\"\n\
+               : > \"$output_path\"\n\
+               case \"$all_args\" in\n\
+                 *dep-info*) : > \"${{output_dir:-$(dirname \"$output_path\")}}/$crate_name.d\" ;;\n\
+               esac\n\
+             fi\n",
             log_path.display()
         )
     }
