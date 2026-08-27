@@ -207,6 +207,45 @@ fn issue_2549_same_version_old_image_broker_is_never_replaced_automatically() {
     );
 }
 
+/// soldr#2920: the one reviewed automatic exception is a live broker from the
+/// exact known-bad 0.9.0 generation when the caller is strictly newer.
+#[test]
+fn issue_2920_known_bad_older_broker_is_replaced_once() {
+    let home = common::unique_temp_dir("broker-known-bad-old-version");
+    let old_instance = format!("soldr-0.9.0-{}", "0".repeat(64));
+    let mut incumbent = spawn_simulated_old_image_broker(&home, &old_instance);
+    let before = wait_for_broker_instance(&home, &old_instance);
+
+    let front_door = front_door(&home)
+        .status()
+        .expect("run front door against known-bad broker");
+    let incumbent_exit = wait_for_child(&mut incumbent, Instant::now() + Duration::from_secs(15));
+    let after = broker_status(&home);
+    let log = spawn_log(&home);
+    stop_broker(&home);
+
+    assert!(
+        before.contains(&old_instance),
+        "last old-broker status:\n{before}"
+    );
+    assert!(
+        front_door.success(),
+        "front door must recover from the known-bad broker"
+    );
+    assert!(
+        incumbent_exit.is_some(),
+        "known-bad broker was not retired\n{log}"
+    );
+    assert!(
+        !after.contains(&old_instance),
+        "the replacement must not report the known-bad identity:\n{after}\n{log}"
+    );
+    assert!(
+        log.contains("stable endpoint bound at"),
+        "exactly one replacement broker must be staged and started:\n{log}"
+    );
+}
+
 /// soldr#2554: `soldr env --json` against a broker started by a different
 /// Soldr image must stay byte-clean JSON on stdout, with no soldr#2549
 /// mismatch warning on stderr either — a caller that merges the two streams

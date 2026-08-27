@@ -255,7 +255,7 @@ fn run_broker_status(json: bool) -> Result<(), SoldrError> {
 /// broker re-adopts each live daemon through its deterministic protobuf claim.
 fn run_broker_stop() -> Result<(), SoldrError> {
     let socket_path = broker_control_socket_path()?;
-    let Some(broker_pid) = stop_verified_broker(&socket_path, "stop")? else {
+    let Some(broker_pid) = stop_verified_broker(&socket_path, "stop", None)? else {
         println!("soldr broker: not running (nothing to stop)");
         return Ok(());
     };
@@ -267,7 +267,11 @@ fn run_broker_stop() -> Result<(), SoldrError> {
 /// `broker remove`. Returns `Ok(None)` when nothing is bound at `socket_path`,
 /// or the stopped broker's PID. `operation` only names the caller in
 /// diagnostics.
-fn stop_verified_broker(socket_path: &str, operation: &str) -> Result<Option<u32>, SoldrError> {
+fn stop_verified_broker(
+    socket_path: &str,
+    operation: &str,
+    expected_instance: Option<&str>,
+) -> Result<Option<u32>, SoldrError> {
     use running_process::broker::backend_lifecycle::verify_pid::{
         force_kill_pid, signal_terminate,
     };
@@ -275,6 +279,15 @@ fn stop_verified_broker(socket_path: &str, operation: &str) -> Result<Option<u32
     let Some(snapshot) = broker_status_snapshot(socket_path, operation)? else {
         return Ok(None);
     };
+    if let Some(expected_instance) = expected_instance {
+        if snapshot
+            .get("broker_instance")
+            .and_then(serde_json::Value::as_str)
+            != Some(expected_instance)
+        {
+            return Ok(None);
+        }
+    }
     let broker_pid = snapshot
         .get("broker_pid")
         .and_then(serde_json::Value::as_u64)
@@ -425,7 +438,7 @@ fn run_broker_remove() -> Result<(), SoldrError> {
         }
     }
 
-    let Some(broker_pid) = stop_verified_broker(&socket_path, "remove")? else {
+    let Some(broker_pid) = stop_verified_broker(&socket_path, "remove", None)? else {
         // The broker exited between the diagnostic probe and the stop request.
         println!("soldr broker: not running (nothing to remove)");
         return Ok(());
@@ -458,6 +471,26 @@ fn run_broker_remove() -> Result<(), SoldrError> {
 /// still hold a sharing lock on the executable for a short window after the
 /// process it backed has exited, so a first `PermissionDenied` is retried
 /// briefly rather than reported as a failed removal.
+pub(crate) fn retire_known_bad_broker(
+    socket_path: &str,
+    expected_instance: &str,
+    image: &std::path::Path,
+) -> Result<bool, SoldrError> {
+    let Some(_broker_pid) =
+        stop_verified_broker(socket_path, "known-bad retirement", Some(expected_instance))?
+    else {
+        return Ok(false);
+    };
+    crate::broker_spawn::retire_admission_endpoint(socket_path).map_err(SoldrError::Other)?;
+    remove_staged_broker_image(image).map_err(|error| {
+        SoldrError::Other(format!(
+            "soldr broker: stopped known-bad broker but could not remove staged image {}: {error}",
+            image.display()
+        ))
+    })?;
+    Ok(true)
+}
+
 fn remove_staged_broker_image(image: &std::path::Path) -> std::io::Result<bool> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {

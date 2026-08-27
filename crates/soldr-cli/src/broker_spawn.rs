@@ -258,10 +258,12 @@ fn ensure_stable_broker_ready(diagnostics_eligible: bool) -> Result<(), String> 
     let observed_instance = broker_instance_at(&runtime, &endpoint.bind_endpoint);
     crate::startup_trace::phase(crate::startup_trace::phase::BROKER_ADMIN_PROBE);
     if let Some(observed) = observed_instance {
-        if diagnostics_eligible {
+        if !known_bad_broker_needs_retirement(&observed) && diagnostics_eligible {
             warn_on_broker_image_mismatch(&observed);
         }
-        return Ok(());
+        if !known_bad_broker_needs_retirement(&observed) {
+            return Ok(());
+        }
     }
 
     let resurrection_deadline = Instant::now() + RESURRECTION_WAIT_TIMEOUT;
@@ -311,10 +313,26 @@ fn ensure_stable_broker_ready(diagnostics_eligible: bool) -> Result<(), String> 
             // stable broker launches (or adopts) a matching daemon generation
             // behind itself and the prior daemon drains under daemon lifecycle
             // policy. Operators recover deliberately with `soldr broker remove`.
-            if diagnostics_eligible {
-                warn_on_broker_image_mismatch(&instance);
+            if known_bad_broker_needs_retirement(&instance) {
+                lease.check_fence().map_err(|error| error.to_string())?;
+                let retired = crate::broker_cmd::retire_known_bad_broker(
+                    &endpoint.bind_endpoint,
+                    &instance,
+                    &endpoint.executable_path,
+                )
+                .map_err(|error| error.to_string())?;
+                if !retired {
+                    if diagnostics_eligible {
+                        warn_on_broker_image_mismatch(&instance);
+                    }
+                    return Ok(());
+                }
+            } else {
+                if diagnostics_eligible {
+                    warn_on_broker_image_mismatch(&instance);
+                }
+                return Ok(());
             }
-            return Ok(());
         }
         if admission_endpoint_accepts_connections(&endpoint.bind_endpoint) {
             // A listener that accepts connections but cannot answer admin
@@ -476,6 +494,37 @@ fn warn_on_broker_image_mismatch(observed: &str) {
         return;
     }
     eprintln!("{}", broker_image_mismatch_warning(observed, &expected));
+}
+
+/// The sole automatic-retirement exception. All malformed, same-version, and
+/// newer identities remain warning-only until a separately reviewed incident
+/// adds another exact known-bad version.
+fn known_bad_broker_needs_retirement(observed: &str) -> bool {
+    let Ok(expected) = crate::broker_server::broker_image_instance_id() else {
+        return false;
+    };
+    known_bad_broker_is_older_than_client(observed, &expected)
+}
+
+fn known_bad_broker_is_older_than_client(observed: &str, expected: &str) -> bool {
+    let Some(observed) = parse_broker_instance(observed) else {
+        return false;
+    };
+    let Some(expected) = parse_broker_instance(expected) else {
+        return false;
+    };
+    observed == semver::Version::new(0, 9, 0) && observed < expected
+}
+
+fn parse_broker_instance(value: &str) -> Option<semver::Version> {
+    let value = value.strip_prefix("soldr-")?;
+    let (version, digest) = value.rsplit_once('-')?;
+    (digest.len() == 64
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')))
+    .then_some(())?;
+    semver::Version::parse(version).ok()
 }
 
 fn wait_for_existing_broker(runtime: &tokio::runtime::Runtime, endpoint: &str) -> Option<String> {
@@ -979,6 +1028,29 @@ mod tests {
         // Never promise a lifecycle action the front door no longer performs.
         for forbidden in ["replacing", "restarting", "stopping the broker"] {
             assert!(!warning.contains(forbidden), "{warning}");
+        }
+    }
+
+    #[test]
+    fn known_bad_retirement_policy_is_strict_and_one_directional() {
+        let digest = "0".repeat(64);
+        let client = format!("soldr-0.9.1-{}", "1".repeat(64));
+        assert!(known_bad_broker_is_older_than_client(
+            &format!("soldr-0.9.0-{digest}"),
+            &client
+        ));
+        for observed in [
+            format!("soldr-0.9.1-{digest}"),
+            format!("soldr-0.9.2-{digest}"),
+            format!("soldr-0.8.9-{digest}"),
+            "soldr-0.9.0-not-a-digest".into(),
+            format!("soldr-0.9.0-{}", "A".repeat(64)),
+            "not-a-broker-instance".into(),
+        ] {
+            assert!(
+                !known_bad_broker_is_older_than_client(&observed, &client),
+                "must remain warning-only: {observed}"
+            );
         }
     }
 
