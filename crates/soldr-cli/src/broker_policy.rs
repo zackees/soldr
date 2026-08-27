@@ -16,10 +16,7 @@ pub(crate) enum BrokerInstanceDecision {
 ///
 /// Identity syntax is deliberately strict: `soldr-<semver>-<64 lowercase hex>`.
 /// Any malformed identity is fail-closed and remains warning-only.
-pub(crate) fn classify_broker_instance(
-    observed: &str,
-    expected: &str,
-) -> BrokerInstanceDecision {
+pub(crate) fn classify_broker_instance(observed: &str, expected: &str) -> BrokerInstanceDecision {
     let Some(observed) = parse_broker_instance(observed) else {
         return BrokerInstanceDecision::WarnOnly;
     };
