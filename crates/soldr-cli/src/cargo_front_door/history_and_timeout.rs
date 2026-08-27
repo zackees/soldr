@@ -104,7 +104,7 @@ fn retry_timed_out_cargo_without_cache(
     // The nested soldr invocation inherits the explicit timeout that caused
     // this retry and has recursion disabled above. The outer supervisor must
     // not add a second, implicit deadline of its own.
-    wait_for_cargo_child(&mut child, "soldr no-cache cargo retry", None)
+    wait_for_cargo_child(&mut child, "soldr no-cache cargo retry", None, None)
 }
 
 use build_session::{new_build_record, persist_build_session_end_fallback};
@@ -725,12 +725,14 @@ fn wait_for_cargo_child(
     child: &mut std::process::Child,
     context: &str,
     timeout: Option<Duration>,
+    outer_target: Option<&Path>,
 ) -> Result<std::process::ExitStatus, SoldrError> {
     wait_for_cargo_child_with_heartbeat(
         child,
         context,
         timeout,
         Duration::from_secs(CARGO_WAIT_HEARTBEAT_SECS),
+        outer_target,
     )
 }
 
@@ -739,8 +741,12 @@ fn wait_for_cargo_child_with_heartbeat(
     context: &str,
     timeout: Option<Duration>,
     heartbeat: Duration,
+    outer_target: Option<&Path>,
 ) -> Result<std::process::ExitStatus, SoldrError> {
     let start = Instant::now();
+    let mut next_heartbeat = heartbeat;
+    let mut nested_guard =
+        nested_cargo_guard::NestedCargoMonitor::new(child.id(), outer_target);
     loop {
         let elapsed = start.elapsed();
         if let Some(timeout) = timeout {
@@ -748,9 +754,27 @@ fn wait_for_cargo_child_with_heartbeat(
                 return Err(cargo_timeout_error(child, context, timeout));
             }
         }
-        let wait_for = timeout
-            .map(|timeout| timeout.saturating_sub(elapsed).min(heartbeat))
-            .unwrap_or(heartbeat);
+        if let Some(finding) = nested_guard.as_mut().and_then(|guard| guard.poll()) {
+            let diagnostic = finding.diagnostic(child.id());
+            eprintln!("soldr: {diagnostic}");
+            if let Some(path) = finding.write_record(child.id(), outer_target) {
+                eprintln!("soldr:   record: {}", path.display());
+            }
+            let kill = kill_cargo_process_tree(child)
+                .map(str::to_string)
+                .unwrap_or_else(|error| format!("kill failed: {error}"));
+            let _ = child.wait_timeout(Duration::from_secs(KILLED_CARGO_REAP_TIMEOUT_SECS));
+            return Err(SoldrError::Other(format!("{diagnostic}; {kill}")));
+        }
+
+        let heartbeat_remaining = next_heartbeat.saturating_sub(elapsed);
+        let mut wait_for = nested_cargo_guard::SCAN_INTERVAL.min(heartbeat_remaining);
+        if let Some(timeout) = timeout {
+            wait_for = wait_for.min(timeout.saturating_sub(elapsed));
+        }
+        if wait_for.is_zero() {
+            wait_for = Duration::from_millis(1);
+        }
         match child
             .wait_timeout(wait_for)
             .map_err(|err| SoldrError::Other(format!("wait on {context} failed: {err}")))?
@@ -761,15 +785,16 @@ fn wait_for_cargo_child_with_heartbeat(
                 return Ok(status);
             }
             None => {
+                let elapsed = start.elapsed();
                 if let Some(timeout) = timeout {
-                    if start.elapsed() >= timeout {
+                    if elapsed >= timeout {
                         return Err(cargo_timeout_error(child, context, timeout));
                     }
                 }
-                eprintln!(
-                    "{}",
-                    cargo_wait_heartbeat_message(context, start.elapsed(), timeout)
-                );
+                if !heartbeat.is_zero() && elapsed >= next_heartbeat {
+                    eprintln!("{}", cargo_wait_heartbeat_message(context, elapsed, timeout));
+                    next_heartbeat = next_heartbeat.saturating_add(heartbeat);
+                }
             }
         }
     }

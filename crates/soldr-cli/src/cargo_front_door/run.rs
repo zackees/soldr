@@ -587,9 +587,10 @@ pub(crate) async fn run_cargo_front_door(
     // Everything above is pure soldr overhead the user pays before Cargo
     // starts. Emit the breakdown here so the total excludes Cargo itself.
     profile.finish_labeled("cargo front door", "pre_spawn_tail");
+    let nested_cargo_target_dir = cache_plan.target_dir_for_hooks(args);
     let cargo_run_result: CargoRunResult = if capture_cargo_artifacts {
-        let target_dir = cache_plan
-            .target_dir_for_hooks(args)
+        let target_dir = nested_cargo_target_dir
+            .clone()
             .unwrap_or_else(|| disk::cargo_disk_space_probe_path(args));
         run_command_capturing_cargo_json(&mut command, &target_dir, cargo_wait_timeout)
             .map(|(status, captured, paths)| (status, Some(captured), Some(paths)))
@@ -603,8 +604,12 @@ pub(crate) async fn run_cargo_front_door(
         // Windows keeps the observed inherited-stdio spawn under --debug
         // instead: its descendant discovery is the Job Object wired at
         // spawn, so a post-hoc attach observes nothing there.
-        run_command_capturing_diagnostic_tail(&mut command, cargo_wait_timeout)
-            .map(|(status, captured)| (status, Some(captured), None))
+        run_command_capturing_diagnostic_tail(
+            &mut command,
+            cargo_wait_timeout,
+            nested_cargo_target_dir.as_deref(),
+        )
+        .map(|(status, captured)| (status, Some(captured), None))
     } else {
         // soldr#2546 slice 2: under --debug on a terminal, builds run
         // inherited-stdio through the running-process observer
@@ -612,8 +617,12 @@ pub(crate) async fn run_cargo_front_door(
         // descendants without touching cargo's TTY output. The JSON
         // artifact-capture mode above keeps its load-bearing pipe
         // plumbing and observes via the same post-hoc attach.
-        run_command_inheriting_stdio(&mut command, cargo_wait_timeout)
-            .map(|status| (status, None, None))
+        run_command_inheriting_stdio(
+            &mut command,
+            cargo_wait_timeout,
+            nested_cargo_target_dir.as_deref(),
+        )
+        .map(|status| (status, None, None))
     };
     // soldr#2302: cargo exited — drain + stop the per-unit tail before the tail
     // summary prints, on both the success and error paths.

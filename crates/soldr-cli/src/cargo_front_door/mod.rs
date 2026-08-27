@@ -48,6 +48,7 @@ mod host_tooling;
 mod inputs;
 mod line_endings;
 mod log_summary;
+mod nested_cargo_guard;
 pub(crate) mod no_cache_detach;
 mod profile_debug;
 mod strip_diagnostics;
