@@ -222,7 +222,7 @@ fn surviving_descendants(root: u32, known: &[(u32, u64)]) -> Option<Vec<u32>> {
     Some(live_descendants(
         &reachable,
         known,
-        |pid| crate::process::inspect::is_alive(pid),
+        crate::process::inspect::is_alive,
         creation_time,
     ))
 }

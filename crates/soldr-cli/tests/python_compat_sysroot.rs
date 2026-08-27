@@ -11,7 +11,14 @@ use soldr_cli::pyo3_detect::{resolve_policy, BuildShape, DetectedPyo3, PlanMode,
 fn test_bundle() -> Vec<u8> {
     let encoder = zstd::stream::Encoder::new(Vec::new(), 1).expect("zstd encoder");
     let mut archive = tar::Builder::new(encoder);
-    let payload = b"python import library";
+    // The syslib download cache is SHA-addressed and shared across test runs.
+    // Unique bytes force this fixture to exercise the HTTP asset path it
+    // asserts instead of reusing a bundle left by an earlier invocation.
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_nanos();
+    let payload = format!("python import library-{}-{nonce}", std::process::id()).into_bytes();
     let mut header = tar::Header::new_gnu();
     header.set_size(payload.len() as u64);
     header.set_mode(0o644);

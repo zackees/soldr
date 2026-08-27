@@ -39,11 +39,9 @@ pub fn crlf_checkout_setting(workspace_root: &Path) -> Option<CrlfCheckoutSettin
     {
         return None;
     }
-    if run_git(
-        &repo_root,
-        ["config", "--type=bool", "--get", "core.autocrlf"],
-    )
-    .is_some_and(|value| value.trim() == "true")
+    if raw_autocrlf
+        .as_deref()
+        .is_some_and(git_config_boolean_is_true)
     {
         return Some(CrlfCheckoutSetting::AutoCrlf);
     }
@@ -52,6 +50,13 @@ pub fn crlf_checkout_setting(workspace_root: &Path) -> Option<CrlfCheckoutSettin
     eol.trim()
         .eq_ignore_ascii_case("crlf")
         .then_some(CrlfCheckoutSetting::CoreEol)
+}
+
+fn git_config_boolean_is_true(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "true" | "yes" | "on" | "1"
+    )
 }
 
 /// Walk up from `start` looking for a `.git` directory **or** file.
