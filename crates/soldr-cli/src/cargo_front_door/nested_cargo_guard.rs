@@ -225,11 +225,11 @@ fn is_cargo_name(value: &str) -> bool {
 }
 
 fn cargo_verb(argv: &[String]) -> Option<&str> {
-    let args = argv
-        .first()
-        .is_some_and(|value| is_cargo_name(value))
-        .then(|| &argv[1..])
-        .unwrap_or(argv);
+    let args = if argv.first().is_some_and(|value| is_cargo_name(value)) {
+        &argv[1..]
+    } else {
+        argv
+    };
     super::subcommand::first_cargo_subcommand(args)
 }
 
