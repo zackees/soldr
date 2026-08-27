@@ -163,7 +163,9 @@ def evaluate(
         f"  required floor  : {_gib(floor_bytes)}",
     ]
     if archive is not None and archive_bytes is not None:
-        details.append(f"  archive         : {archive.as_posix()} {_gib(archive_bytes)}")
+        details.append(
+            f"  archive         : {archive.as_posix()} {_gib(archive_bytes)}"
+        )
     elif archive is not None:
         details.append(f"  archive         : {archive.as_posix()} (unreadable)")
     body = "\n".join(details)

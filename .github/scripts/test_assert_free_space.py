@@ -38,9 +38,7 @@ class FloorTests(unittest.TestCase):
         self.assertEqual(floor, 20 * GIB)
 
     def test_no_archive_leaves_the_absolute_floor_alone(self) -> None:
-        self.assertEqual(
-            assert_free_space.required_floor(10 * GIB, None, 4), 10 * GIB
-        )
+        self.assertEqual(assert_free_space.required_floor(10 * GIB, None, 4), 10 * GIB)
 
     def test_a_zero_multiple_disables_archive_scaling(self) -> None:
         self.assertEqual(
@@ -58,9 +56,7 @@ class NearestExistingTests(unittest.TestCase):
 
     def test_an_existing_path_is_its_own_nearest(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
-            self.assertEqual(
-                assert_free_space.nearest_existing(Path(raw)), Path(raw)
-            )
+            self.assertEqual(assert_free_space.nearest_existing(Path(raw)), Path(raw))
 
 
 class EvaluateTests(unittest.TestCase):
@@ -108,9 +104,7 @@ class EvaluateTests(unittest.TestCase):
             raise OSError("device disappeared")
 
         with tempfile.TemporaryDirectory() as raw:
-            with mock.patch.object(
-                assert_free_space.shutil, "disk_usage", unreadable
-            ):
+            with mock.patch.object(assert_free_space.shutil, "disk_usage", unreadable):
                 verdict = assert_free_space.evaluate(Path(raw), floor_bytes=1)
         self.assertFalse(verdict.ok)
         self.assertIn("unreadable volume is treated as a failure", verdict.message)
@@ -121,7 +115,12 @@ class MainTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             self.assertEqual(
                 assert_free_space.main(
-                    ["--path", str(Path(raw) / "nextest-archive"), "--min-free-gib", "0"]
+                    [
+                        "--path",
+                        str(Path(raw) / "nextest-archive"),
+                        "--min-free-gib",
+                        "0",
+                    ]
                 ),
                 0,
             )

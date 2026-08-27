@@ -165,9 +165,7 @@ def render_markdown(summary: dict, top: int) -> str:
     )
     lines.append(f"| Extracted total | {extracted / GIB:.2f} GiB |")
     if summary["extracted_over_archive"] is not None:
-        lines.append(
-            f"| Extracted / archive | {summary['extracted_over_archive']}x |"
-        )
+        lines.append(f"| Extracted / archive | {summary['extracted_over_archive']}x |")
     lines.append(f"| Files extracted | {summary['file_count']} |")
     lines.append(f"| Test binaries | {summary['test_binary_count']} |")
     lines.append(

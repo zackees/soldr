@@ -171,9 +171,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--archive", type=Path, required=True)
     args = parser.parse_args(argv)
 
-    flags, reason = resolve(
-        args.extract_dir, args.archive, allow_reuse=reuse_enabled()
-    )
+    flags, reason = resolve(args.extract_dir, args.archive, allow_reuse=reuse_enabled())
     print(f"nextest extraction: {reason}", file=sys.stderr)
     for flag in flags:
         print(flag)

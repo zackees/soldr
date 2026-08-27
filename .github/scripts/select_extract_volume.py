@@ -80,18 +80,18 @@ def volume_identity(path: Path) -> str:
     if drive:
         return drive
     try:
-        probe = Path(path).resolve()
-        device = probe.stat().st_dev
+        current = Path(path).resolve()
+        device = current.stat().st_dev
     except OSError:
         return str(path)
-    while probe.parent != probe:
+    while current.parent != current:
         try:
-            if probe.parent.stat().st_dev != device:
+            if current.parent.stat().st_dev != device:
                 break
         except OSError:
             break
-        probe = probe.parent
-    return probe.as_posix()
+        current = current.parent
+    return current.as_posix()
 
 
 def probe(root: Path, min_total: int = MIN_PLAUSIBLE_TOTAL_BYTES) -> Volume | None:
@@ -278,7 +278,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     windows = os.name == "nt"
-    roots = candidate_roots(args.workspace, args.runner_temp, args.root, windows=windows)
+    roots = candidate_roots(
+        args.workspace, args.runner_temp, args.root, windows=windows
+    )
     min_total = 0 if args.root is not None else MIN_PLAUSIBLE_TOTAL_BYTES
     measured = [v for v in (probe(root, min_total) for root in roots) if v]
     for volume in sorted(measured, key=lambda item: item.identity):

@@ -259,9 +259,7 @@ def collect_steps(workflow_dir: pathlib.Path) -> list[PersistedStep]:
     return found
 
 
-def _classify(
-    workflow: str, job: str, index: int, step: dict
-) -> list[PersistedStep]:
+def _classify(workflow: str, job: str, index: int, step: dict) -> list[PersistedStep]:
     uses = step.get("uses")
     if not isinstance(uses, str):
         return []
@@ -314,7 +312,9 @@ def manifest_problems(manifest: dict) -> list[str]:
     tiers = manifest.get("tiers")
     exceptions = manifest.get("exceptions")
     if not isinstance(tiers, dict) or not isinstance(exceptions, dict):
-        problems.append("R1 manifest must declare object-valued 'tiers' and 'exceptions'")
+        problems.append(
+            "R1 manifest must declare object-valued 'tiers' and 'exceptions'"
+        )
         return problems
     vocabulary = set(tiers) | set(exceptions)
 
@@ -464,9 +464,7 @@ def is_broad_target_restore(step: PersistedStep) -> bool:
         return "full" in step.text.lower()
     if step.mechanism != "actions/cache":
         return False
-    return any(
-        line.strip() in BROAD_TARGET_PATHS for line in step.text.splitlines()
-    )
+    return any(line.strip() in BROAD_TARGET_PATHS for line in step.text.splitlines())
 
 
 def cook_ordering_problems(steps: list[PersistedStep]) -> list[str]:
@@ -481,7 +479,11 @@ def cook_ordering_problems(steps: list[PersistedStep]) -> list[str]:
     for (workflow, job), job_steps in sorted(jobs.items()):
         ordered = sorted(job_steps, key=lambda s: s.index)
         cook = next(
-            (s for s in ordered if s.mechanism in {"setup-soldr/cook", "setup-soldr:cook"}),
+            (
+                s
+                for s in ordered
+                if s.mechanism in {"setup-soldr/cook", "setup-soldr:cook"}
+            ),
             None,
         )
         if cook is None:

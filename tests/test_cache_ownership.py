@@ -85,9 +85,7 @@ def seed(tmp_path: Path, workflows: dict[str, str], entries: list[dict]) -> list
     for name, body in workflows.items():
         (workflow_dir / name).write_text(body, encoding="utf-8")
     manifest_path = tmp_path / "cache-ownership.json"
-    manifest_path.write_text(
-        json.dumps(minimal_manifest(entries)), encoding="utf-8"
-    )
+    manifest_path.write_text(json.dumps(minimal_manifest(entries)), encoding="utf-8")
     return guard.check(manifest_path, workflow_dir)
 
 
