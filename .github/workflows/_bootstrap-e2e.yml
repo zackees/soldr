@@ -260,6 +260,13 @@ jobs:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/bootstrap-e2e-${{ inputs.target }}
           SOLDR_CACHE_LIFECYCLE: command
           SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
+          # This fixture deliberately invokes the third-party project's
+          # toolchain Cargo from an outer Soldr Cargo test tree. Its target is
+          # isolated by this step's CARGO_TARGET_DIR, but Cargo communicates
+          # that value to the helper through environment state the process-tree
+          # guard cannot inspect. Scope the documented explicit permit to this
+          # orchestration step only (soldr#2924).
+          SOLDR_NESTED_CARGO: allow
           ZCCACHE_CACHE_DIR: ${{ runner.temp }}/bootstrap-e2e-${{ inputs.target }}/cache/zccache
         run: |
           Write-Host "Using isolated bootstrap SOLDR_CACHE_DIR=$env:SOLDR_CACHE_DIR"

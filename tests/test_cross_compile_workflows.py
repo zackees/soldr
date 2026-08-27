@@ -632,6 +632,10 @@ def test_external_zccache_bootstraps_get_exclusive_service_access() -> None:
     assert 'CARGO_BUILD_JOBS: "1"' in bootstrap
     assert 'SOLDR_JOBS: "1"' in bootstrap
     assert "Enlarge swap (OOM headroom)" in bootstrap
+    # The bootstrap fixture deliberately invokes its own toolchain Cargo from
+    # a Soldr-managed test tree. Its target lives in CARGO_TARGET_DIR (which
+    # the process observer cannot inspect), so this is the one scoped permit.
+    assert "SOLDR_NESTED_CARGO: allow" in bootstrap
     lint_job = _job_block(ci, "lint")
     assert "CARGO_BUILD_JOBS" not in lint_job
     assert "SOLDR_JOBS" not in lint_job
