@@ -18,6 +18,11 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
+// A cold embedded-zccache startup can exceed the old 25-second budget on
+// emulated macOS x86 runners. Keep this bounded, while leaving enough room for
+// the daemon to publish its authenticated route claim.
+const DAEMON_ROUTE_READINESS_TIMEOUT: Duration = Duration::from_secs(45);
+
 pub(crate) struct SoldrBackendLauncher {
     placed_images: Mutex<HashMap<String, PlacedImage>>,
     route_deadlines: Mutex<HashMap<String, std::time::Instant>>,
@@ -273,7 +278,7 @@ impl BackendLauncher for SoldrBackendLauncher {
             &request.key.service_name,
             &request.key.service_version,
             &endpoint,
-            Duration::from_secs(25),
+            DAEMON_ROUTE_READINESS_TIMEOUT,
             || child.try_wait(),
             |latest_result| {
                 self.report_progress(request, "readiness-probe", latest_result.to_string());
