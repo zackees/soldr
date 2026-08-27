@@ -104,7 +104,13 @@ fn retry_timed_out_cargo_without_cache(
     // The nested soldr invocation inherits the explicit timeout that caused
     // this retry and has recursion disabled above. The outer supervisor must
     // not add a second, implicit deadline of its own.
-    wait_for_cargo_child(&mut child, "soldr no-cache cargo retry", None, None)
+    wait_for_cargo_child(
+        &mut child,
+        "soldr no-cache cargo retry",
+        None,
+        None,
+        false,
+    )
 }
 
 use build_session::{new_build_record, persist_build_session_end_fallback};
@@ -726,6 +732,7 @@ fn wait_for_cargo_child(
     context: &str,
     timeout: Option<Duration>,
     outer_target: Option<&Path>,
+    guard_enabled: bool,
 ) -> Result<std::process::ExitStatus, SoldrError> {
     wait_for_cargo_child_with_heartbeat_guarded(
         child,
@@ -733,6 +740,7 @@ fn wait_for_cargo_child(
         timeout,
         Duration::from_secs(CARGO_WAIT_HEARTBEAT_SECS),
         outer_target,
+        guard_enabled,
     )
 }
 
@@ -742,7 +750,14 @@ fn wait_for_cargo_child_with_heartbeat(
     timeout: Option<Duration>,
     heartbeat: Duration,
 ) -> Result<std::process::ExitStatus, SoldrError> {
-    wait_for_cargo_child_with_heartbeat_guarded(child, context, timeout, heartbeat, None)
+    wait_for_cargo_child_with_heartbeat_guarded(
+        child,
+        context,
+        timeout,
+        heartbeat,
+        None,
+        false,
+    )
 }
 
 fn wait_for_cargo_child_with_heartbeat_guarded(
@@ -751,11 +766,12 @@ fn wait_for_cargo_child_with_heartbeat_guarded(
     timeout: Option<Duration>,
     heartbeat: Duration,
     outer_target: Option<&Path>,
+    guard_enabled: bool,
 ) -> Result<std::process::ExitStatus, SoldrError> {
     let start = Instant::now();
     let mut next_heartbeat = heartbeat;
     let mut nested_guard =
-        nested_cargo_guard::NestedCargoMonitor::new(child.id(), outer_target);
+        nested_cargo_guard::NestedCargoMonitor::new(child.id(), outer_target, guard_enabled);
     loop {
         let elapsed = start.elapsed();
         if let Some(timeout) = timeout {

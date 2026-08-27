@@ -335,6 +335,12 @@ pub(crate) async fn run_cargo_front_door(
     profile.mark("cook_hydrate");
 
     let cargo_subcommand = first_cargo_subcommand(args);
+    // Phase one of #2924 scopes direct-Cargo detection to test-owned trees.
+    // Test binaries commonly invoke helpers that build auxiliary fixtures, and
+    // they are the shape that can wait behind the still-running outer Cargo
+    // lock. Build-script Cargo helpers need a stronger target/lock identity
+    // primitive before they can be judged without breaking cross builds.
+    let nested_cargo_guard_enabled = matches!(cargo_subcommand, Some("t" | "test" | "nextest"));
     let pyo3_build = matches!(
         cargo_subcommand,
         Some(
@@ -595,8 +601,13 @@ pub(crate) async fn run_cargo_front_door(
         let target_dir = cache_plan
             .target_dir_for_hooks(args)
             .unwrap_or_else(|| disk::cargo_disk_space_probe_path(args));
-        run_command_capturing_cargo_json(&mut command, &target_dir, cargo_wait_timeout)
-            .map(|(status, captured, paths)| (status, Some(captured), Some(paths)))
+        run_command_capturing_cargo_json(
+            &mut command,
+            &target_dir,
+            cargo_wait_timeout,
+            nested_cargo_guard_enabled,
+        )
+        .map(|(status, captured, paths)| (status, Some(captured), Some(paths)))
     } else if capture_for_diagnostics && !debug_trace::observed_spawn_required() {
         // soldr#2546 slice 3: the diagnostic-tail capture observes
         // descendants by attaching the monitor to the spawned pid
@@ -611,6 +622,7 @@ pub(crate) async fn run_cargo_front_door(
             &mut command,
             cargo_wait_timeout,
             nested_cargo_target_dir.as_deref(),
+            nested_cargo_guard_enabled,
         )
         .map(|(status, captured)| (status, Some(captured), None))
     } else {
@@ -624,6 +636,7 @@ pub(crate) async fn run_cargo_front_door(
             &mut command,
             cargo_wait_timeout,
             nested_cargo_target_dir.as_deref(),
+            nested_cargo_guard_enabled,
         )
         .map(|status| (status, None, None))
     };

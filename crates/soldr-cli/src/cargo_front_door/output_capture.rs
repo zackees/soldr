@@ -55,7 +55,13 @@ fn retry_zthreads_without_flag(
     configure_cargo_child_for_timeout(&mut command);
     let mut child = debug_trace::spawn_traced(&mut command, "soldr -Zthreads fallback")
         .map_err(|err| SoldrError::Other(format!("spawn -Zthreads fallback failed: {err}")))?;
-    let status = wait_for_cargo_child(&mut child, "soldr -Zthreads fallback", None, None)?;
+    let status = wait_for_cargo_child(
+        &mut child,
+        "soldr -Zthreads fallback",
+        None,
+        None,
+        false,
+    )?;
     Ok(status
         .code()
         .unwrap_or(if status.success() { 0 } else { 1 }))
@@ -89,6 +95,7 @@ fn run_command_capturing_cargo_json(
     command: &mut std::process::Command,
     target_dir: &Path,
     timeout: Option<Duration>,
+    nested_cargo_guard_enabled: bool,
 ) -> Result<(std::process::ExitStatus, String, Vec<String>), SoldrError> {
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
@@ -106,6 +113,7 @@ fn run_command_capturing_cargo_json(
         "cargo JSON capture",
         timeout,
         Some(target_dir),
+        nested_cargo_guard_enabled,
     )?;
     if let Some(observation) = observation {
         observation.finish();
@@ -269,6 +277,7 @@ fn run_command_inheriting_stdio(
     command: &mut std::process::Command,
     timeout: Option<Duration>,
     outer_target: Option<&Path>,
+    nested_cargo_guard_enabled: bool,
 ) -> Result<std::process::ExitStatus, SoldrError> {
     if debug_trace::enabled() {
         // soldr#2546 slice 2: under --debug the inherited-stdio mode runs
@@ -281,12 +290,19 @@ fn run_command_inheriting_stdio(
             timeout,
             Duration::from_secs(CARGO_WAIT_HEARTBEAT_SECS),
             outer_target,
+            nested_cargo_guard_enabled,
         );
     }
     configure_cargo_child_for_timeout(command);
     let mut child = debug_trace::spawn_traced(command, "cargo")
         .map_err(|err| SoldrError::Other(format!("spawn cargo failed: {err}")))?;
-    wait_for_cargo_child(&mut child, "cargo", timeout, outer_target)
+    wait_for_cargo_child(
+        &mut child,
+        "cargo",
+        timeout,
+        outer_target,
+        nested_cargo_guard_enabled,
+    )
 }
 
 /// Run cargo with both streams tee'd to the user's stdout/stderr AND
@@ -303,6 +319,7 @@ fn run_command_capturing_diagnostic_tail(
     command: &mut std::process::Command,
     timeout: Option<Duration>,
     outer_target: Option<&Path>,
+    nested_cargo_guard_enabled: bool,
 ) -> Result<(std::process::ExitStatus, String), SoldrError> {
     command.stderr(std::process::Stdio::piped());
     // stdout stays inherited — we don't need its bytes.
@@ -325,6 +342,7 @@ fn run_command_capturing_diagnostic_tail(
         "cargo diagnostic capture",
         timeout,
         outer_target,
+        nested_cargo_guard_enabled,
     )?;
     if let Some(observation) = observation {
         observation.finish();

@@ -187,7 +187,9 @@ pub(crate) fn run_observed_inheriting_stdio(
     timeout: Option<std::time::Duration>,
     heartbeat: std::time::Duration,
 ) -> Result<ExitStatus, crate::core::SoldrError> {
-    run_observed_inheriting_stdio_with_nested_guard(command, context, timeout, heartbeat, None)
+    run_observed_inheriting_stdio_with_nested_guard(
+        command, context, timeout, heartbeat, None, false,
+    )
 }
 
 pub(crate) fn run_observed_inheriting_stdio_with_nested_guard(
@@ -196,6 +198,7 @@ pub(crate) fn run_observed_inheriting_stdio_with_nested_guard(
     timeout: Option<std::time::Duration>,
     heartbeat: std::time::Duration,
     outer_target: Option<&Path>,
+    nested_cargo_guard_enabled: bool,
 ) -> Result<ExitStatus, crate::core::SoldrError> {
     use running_process::{
         CommandSpec, EventCategory, NativeProcess, ObserverConfig, ProcessConfig, StderrMode,
@@ -254,7 +257,11 @@ pub(crate) fn run_observed_inheriting_stdio_with_nested_guard(
 
     let started = Instant::now();
     let mut next_heartbeat = heartbeat;
-    let mut nested_guard = super::nested_cargo_guard::NestedCargoMonitor::new(pid, outer_target);
+    let mut nested_guard = super::nested_cargo_guard::NestedCargoMonitor::new(
+        pid,
+        outer_target,
+        nested_cargo_guard_enabled,
+    );
     let code = loop {
         let elapsed = started.elapsed();
         if let Some(limit) = timeout {
