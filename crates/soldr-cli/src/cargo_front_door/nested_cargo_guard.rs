@@ -1,14 +1,17 @@
 //! Detect direct nested Cargo builds that can self-lock behind their parent Cargo.
 
 use std::collections::HashSet;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use sysinfo::{Pid, System};
 
 pub(crate) const PERMIT_ENV: &str = "SOLDR_NESTED_CARGO";
 pub(crate) const PERMIT_VALUE: &str = "allow";
-pub(crate) const SCAN_INTERVAL: Duration = Duration::from_millis(250);
+// The fallback scanner is only used where an observer cannot expose an attached
+// Cargo tree (notably Windows capture paths). One second keeps the documented
+// eager-fail budget while avoiding a full system table refresh four times/sec.
+pub(crate) const SCAN_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NestedCargoDecision {
@@ -100,7 +103,7 @@ impl NestedCargoMonitor {
         }
         Some(Self {
             root: Pid::from_u32(root_pid),
-            outer_target: outer_target.map(normalize_path),
+            outer_target: outer_target.and_then(canonical_existing_path),
             system: System::new(),
         })
     }
@@ -186,23 +189,26 @@ pub(crate) fn classify_descendant(
     let Some(verb) = cargo_verb(argv) else {
         return NestedCargoDecision::Ignore;
     };
-    if verb == "metadata" && argv.iter().any(|arg| arg == "--no-deps") {
-        return NestedCargoDecision::Ignore;
-    }
-    if !is_build_like(verb) {
+    if is_proven_non_build_command(verb, argv) {
         return NestedCargoDecision::Ignore;
     }
 
-    let Some(outer_target) = outer_target.map(normalize_path) else {
+    // Unknown Cargo verbs can be workspace aliases or plugins that compile.
+    // Reject them instead of treating a spelling we do not understand as proof
+    // that no target lock will be acquired.
+    let Some(outer_target) = outer_target.and_then(canonical_existing_path) else {
         return NestedCargoDecision::Reject;
     };
     let Some(target) = cargo_target_dir(argv) else {
         return NestedCargoDecision::Reject;
     };
     let target = if target.is_absolute() {
-        normalize_path(&target)
+        target
     } else {
-        normalize_path(&cwd.unwrap_or_else(|| Path::new(".")).join(target))
+        cwd.unwrap_or_else(|| Path::new(".")).join(target)
+    };
+    let Some(target) = canonical_existing_path(&target) else {
+        return NestedCargoDecision::Reject;
     };
     if paths_equal(&target, &outer_target) {
         NestedCargoDecision::Reject
@@ -219,36 +225,19 @@ fn is_cargo_name(value: &str) -> bool {
 }
 
 fn cargo_verb(argv: &[String]) -> Option<&str> {
-    const VALUE_FLAGS: &[&str] = &[
-        "--color",
-        "--config",
-        "--jobs",
-        "-j",
-        "--manifest-path",
-        "--target-dir",
-        "--lockfile-path",
-        "-Z",
-    ];
-    let mut index = usize::from(argv.first().is_some_and(|value| is_cargo_name(value)));
-    while index < argv.len() {
-        let arg = argv[index].as_str();
-        if arg.starts_with('+') || arg.starts_with('-') {
-            if VALUE_FLAGS.contains(&arg) {
-                index = index.saturating_add(2);
-            } else {
-                index = index.saturating_add(1);
-            }
-            continue;
-        }
-        return Some(arg);
-    }
-    None
+    let args = argv
+        .first()
+        .is_some_and(|value| is_cargo_name(value))
+        .then(|| &argv[1..])
+        .unwrap_or(argv);
+    super::subcommand::first_cargo_subcommand(args)
 }
 
 fn cargo_target_dir(argv: &[String]) -> Option<PathBuf> {
-    let mut index = 0usize;
-    while index < argv.len() {
-        let arg = &argv[index];
+    for (index, arg) in argv.iter().enumerate() {
+        if arg == "--" {
+            break;
+        }
         if let Some(value) = arg.strip_prefix("--target-dir=") {
             return (!value.is_empty()).then(|| PathBuf::from(value));
         }
@@ -258,41 +247,19 @@ fn cargo_target_dir(argv: &[String]) -> Option<PathBuf> {
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from);
         }
-        index = index.saturating_add(1);
     }
     None
 }
 
-fn is_build_like(verb: &str) -> bool {
+fn is_proven_non_build_command(verb: &str, argv: &[String]) -> bool {
     matches!(
         verb,
-        "b" | "build"
-            | "c"
-            | "check"
-            | "t"
-            | "test"
-            | "clippy"
-            | "r"
-            | "run"
-            | "bench"
-            | "doc"
-            | "rustc"
-            | "fix"
-    )
+        "version" | "help" | "locate-project" | "verify-project"
+    ) || (verb == "metadata" && argv.iter().any(|arg| arg == "--no-deps"))
 }
 
-fn normalize_path(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                let _ = normalized.pop();
-            }
-            other => normalized.push(other.as_os_str()),
-        }
-    }
-    normalized
+fn canonical_existing_path(path: &Path) -> Option<PathBuf> {
+    std::fs::canonicalize(path).ok()
 }
 
 fn paths_equal(left: &Path, right: &Path) -> bool {
@@ -313,12 +280,17 @@ mod tests {
     }
 
     #[test]
-    fn build_like_nested_cargo_without_isolation_is_rejected() {
+    fn build_like_alias_and_global_option_nested_cargo_without_isolation_are_rejected() {
         for command in [
             argv(&["cargo", "build", "-p", "mock-agent"]),
             argv(&["cargo.exe", "test", "--workspace"]),
             argv(&["cargo", "--color", "always", "check"]),
             argv(&["cargo", "clippy", "--all-targets"]),
+            argv(&["cargo", "-Z", "unstable-options", "-C", "/work", "build"]),
+            // Unknown commands can be aliases or plugins that compile, so a
+            // safe guard must not allow an alias merely because it cannot
+            // decode its expansion without launching Cargo.
+            argv(&["cargo", "ci"]),
         ] {
             assert_eq!(
                 classify_descendant(
@@ -379,23 +351,76 @@ mod tests {
     }
 
     #[test]
-    fn explicit_distinct_target_is_allowed_but_same_target_is_rejected() {
-        let outer = Path::new("/repo/target");
+    fn separator_arguments_cannot_forge_target_isolation() {
         assert_eq!(
             classify_descendant(
                 "cargo",
-                &argv(&["cargo", "build", "--target-dir", "/tmp/isolated"]),
+                &argv(&["cargo", "run", "--", "--target-dir", "/tmp/isolated"]),
                 Some(Path::new("/repo")),
-                Some(outer)
+                Some(Path::new("/repo/target"))
+            ),
+            NestedCargoDecision::Reject
+        );
+    }
+
+    #[test]
+    fn explicit_distinct_existing_target_is_allowed_but_same_or_unknown_target_is_rejected() {
+        let root = tempfile::tempdir().expect("temp root");
+        let outer = root.path().join("target");
+        let isolated = root.path().join("isolated");
+        std::fs::create_dir_all(&outer).expect("outer target");
+        std::fs::create_dir_all(&isolated).expect("isolated target");
+        assert_eq!(
+            classify_descendant(
+                "cargo",
+                &argv(&[
+                    "cargo",
+                    "build",
+                    "--target-dir",
+                    isolated.to_str().expect("utf8 path"),
+                ]),
+                Some(root.path()),
+                Some(&outer)
             ),
             NestedCargoDecision::AllowIsolatedTarget
         );
         assert_eq!(
             classify_descendant(
                 "cargo",
-                &argv(&["cargo", "build", "--target-dir=/repo/target"]),
-                Some(Path::new("/repo")),
-                Some(outer)
+                &argv(&[
+                    "cargo",
+                    "build",
+                    "--target-dir",
+                    outer.to_str().expect("utf8 path"),
+                ]),
+                Some(root.path()),
+                Some(&outer)
+            ),
+            NestedCargoDecision::Reject
+        );
+        // An existing lexical alias of the same directory must not authorize
+        // a nested Cargo merely because its spelling differs.
+        let lexical_alias = root.path().join("target").join("..").join("target");
+        assert_eq!(
+            classify_descendant(
+                "cargo",
+                &argv(&[
+                    "cargo",
+                    "build",
+                    "--target-dir",
+                    lexical_alias.to_str().expect("utf8 path"),
+                ]),
+                Some(root.path()),
+                Some(&outer)
+            ),
+            NestedCargoDecision::Reject
+        );
+        assert_eq!(
+            classify_descendant(
+                "cargo",
+                &argv(&["cargo", "build", "--target-dir", "not-created-yet"]),
+                Some(root.path()),
+                Some(&outer)
             ),
             NestedCargoDecision::Reject
         );

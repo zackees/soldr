@@ -199,6 +199,34 @@ impl CargoCachePlan {
             .or_else(|| super::resolve_target_dir_for_hooks(args))
     }
 
+    /// Return the outer Cargo target only when Soldr can prove its identity.
+    ///
+    /// The nested-Cargo guard must never accept a descendant just because its
+    /// `--target-dir` differs from a guessed `<cwd>/target`: Cargo config or a
+    /// `--manifest-path` can change that default. The artifact plan already
+    /// resolves Cargo's effective target; absent that plan, only an explicit
+    /// argv or environment target is trustworthy enough to authorize an
+    /// isolated nested build.
+    pub(crate) fn target_dir_for_nested_cargo_guard(
+        &self,
+        args: &[String],
+    ) -> Option<std::path::PathBuf> {
+        self.rust_artifact_plan
+            .as_ref()
+            .map(|plan| std::path::PathBuf::from(&plan.target_dir))
+            .or_else(|| {
+                super::disk::cargo_arg_value(args, "--target-dir")
+                    .map(|value| super::disk::absolutize_path(std::path::PathBuf::from(value)))
+            })
+            .or_else(|| {
+                std::env::var_os("CARGO_TARGET_DIR").and_then(|value| {
+                    let value = value.to_string_lossy().trim().to_string();
+                    (!value.is_empty())
+                        .then(|| super::disk::absolutize_path(std::path::PathBuf::from(value)))
+                })
+            })
+    }
+
     pub(crate) fn restore_rust_artifacts(&self) -> Result<RustPlanRestoreOutcome, SoldrError> {
         let Some(plan) = self.rust_artifact_plan.as_ref() else {
             return Ok(RustPlanRestoreOutcome::NotAttempted);
@@ -329,6 +357,23 @@ mod tests {
     use std::sync::Mutex;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn nested_cargo_guard_refuses_to_guess_manifest_or_config_target() {
+        let _guard = ENV_LOCK.lock().expect("environment lock");
+        let _target = EnvGuard::remove("CARGO_TARGET_DIR");
+        let plan = CargoCachePlan {
+            cache_enabled_for_cargo: false,
+            rustc_wrapper: None,
+            rust_artifact_plan: None,
+        };
+        let args = vec![
+            "build".to_string(),
+            "--manifest-path".to_string(),
+            "elsewhere/Cargo.toml".to_string(),
+        ];
+        assert!(plan.target_dir_for_nested_cargo_guard(&args).is_none());
+    }
 
     struct EnvGuard {
         key: &'static str,

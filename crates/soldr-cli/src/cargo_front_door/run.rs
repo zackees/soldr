@@ -587,7 +587,7 @@ pub(crate) async fn run_cargo_front_door(
     // Everything above is pure soldr overhead the user pays before Cargo
     // starts. Emit the breakdown here so the total excludes Cargo itself.
     profile.finish_labeled("cargo front door", "pre_spawn_tail");
-    let nested_cargo_target_dir = cache_plan.target_dir_for_hooks(args);
+    let nested_cargo_target_dir = cache_plan.target_dir_for_nested_cargo_guard(args);
     let cargo_run_result: CargoRunResult = if capture_cargo_artifacts {
         let target_dir = nested_cargo_target_dir
             .clone()
