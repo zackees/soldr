@@ -186,6 +186,15 @@ pub(crate) fn run_observed_inheriting_stdio(
     context: &str,
     timeout: Option<std::time::Duration>,
     heartbeat: std::time::Duration,
+) -> Result<ExitStatus, crate::core::SoldrError> {
+    run_observed_inheriting_stdio_with_nested_guard(command, context, timeout, heartbeat, None)
+}
+
+pub(crate) fn run_observed_inheriting_stdio_with_nested_guard(
+    command: &mut Command,
+    context: &str,
+    timeout: Option<std::time::Duration>,
+    heartbeat: std::time::Duration,
     outer_target: Option<&Path>,
 ) -> Result<ExitStatus, crate::core::SoldrError> {
     use running_process::{

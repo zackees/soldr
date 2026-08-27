@@ -727,7 +727,7 @@ fn wait_for_cargo_child(
     timeout: Option<Duration>,
     outer_target: Option<&Path>,
 ) -> Result<std::process::ExitStatus, SoldrError> {
-    wait_for_cargo_child_with_heartbeat(
+    wait_for_cargo_child_with_heartbeat_guarded(
         child,
         context,
         timeout,
@@ -737,6 +737,15 @@ fn wait_for_cargo_child(
 }
 
 fn wait_for_cargo_child_with_heartbeat(
+    child: &mut std::process::Child,
+    context: &str,
+    timeout: Option<Duration>,
+    heartbeat: Duration,
+) -> Result<std::process::ExitStatus, SoldrError> {
+    wait_for_cargo_child_with_heartbeat_guarded(child, context, timeout, heartbeat, None)
+}
+
+fn wait_for_cargo_child_with_heartbeat_guarded(
     child: &mut std::process::Child,
     context: &str,
     timeout: Option<Duration>,

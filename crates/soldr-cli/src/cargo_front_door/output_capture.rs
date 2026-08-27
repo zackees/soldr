@@ -275,7 +275,7 @@ fn run_command_inheriting_stdio(
         // through the running-process observer so the timeline records
         // descendants (rustc, build scripts) rather than only the direct
         // cargo child. running-process owns containment for this spawn.
-        return debug_trace::run_observed_inheriting_stdio(
+        return debug_trace::run_observed_inheriting_stdio_with_nested_guard(
             command,
             "cargo",
             timeout,

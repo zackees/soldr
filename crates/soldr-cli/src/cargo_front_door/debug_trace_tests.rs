@@ -119,7 +119,6 @@ fn observed_spawn_round_trips_non_unicode_argv() {
         "non-unicode fixture",
         Some(std::time::Duration::from_secs(30)),
         std::time::Duration::from_secs(10),
-        None,
     )
     .expect("observed spawn must run the fixture");
     assert!(status.success(), "fixture exited nonzero");
@@ -187,7 +186,6 @@ fn observed_spawn_round_trips_non_unicode_env() {
         "non-unicode env fixture",
         Some(std::time::Duration::from_secs(30)),
         std::time::Duration::from_secs(10),
-        None,
     )
     .expect("observed spawn must run the fixture");
     assert!(status.success(), "fixture exited nonzero");
