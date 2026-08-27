@@ -256,17 +256,40 @@ def test_the_dead_pointer_is_no_longer_printed() -> None:
     )
 
 
-def test_both_failure_paths_explain_both_reports() -> None:
+def test_the_evidence_path_explains_both_reports() -> None:
     """A warm miss is usually a *cold* publication failure, so the cold report
-    is as load-bearing as the warm one. Asserting both are explained on both
-    exit paths keeps a later edit from quietly dropping one."""
+    is as load-bearing as the warm one. Neither may be quietly dropped.
+
+    soldr#2937 collapsed what used to be two verdict-rendering exit paths into
+    one evidence path: the shell no longer decides whether a miss is a
+    regression (that moved to `evaluate_warm_result`, where it is testable
+    without paying 40 minutes to find out it was wrong), so there is one block
+    that emits evidence rather than two that each emitted a verdict. This
+    asserts the same thing the two-path version did -- both reports get
+    explained, together -- against the shape the harness now has.
+    """
     source = harness_source()
     for report_name in ("/tmp/cold-report.json", "/tmp/warm-report.json"):
         assert (
             source.count(f"explain_report cold {report_name}")
             + source.count(f"explain_report warm {report_name}")
-            == 2
+            == 1
         ), report_name
+
+    # Both explanations live in the same block, so an edit cannot keep one and
+    # silently drop the other onto a path that never runs.
+    cold_at = source.index("explain_report cold /tmp/cold-report.json")
+    warm_at = source.index("explain_report warm /tmp/warm-report.json")
+    between = source[min(cold_at, warm_at) : max(cold_at, warm_at)]
+    assert "\nif " not in between and "\nfi" not in between, (
+        "the cold and warm explanations drifted onto different branches"
+    )
+
+    # And that block must still fire on both conditions the old pair covered:
+    # a warm miss, and a warm run that recorded no hits at all.
+    guard = source[:cold_at].rsplit("\nif ", 1)[-1]
+    assert "warm_misses != 0" in guard, guard
+    assert "warm_hits <= 0" in guard, guard
 
 
 def test_the_explainer_runs_before_the_docker_check() -> None:
