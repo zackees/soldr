@@ -15,9 +15,16 @@ be tested without the host facility.
 When the behavior itself belongs to the operating system, use a native
 behavioral integration test instead. Examples include filesystem attributes,
 path handling, mapped executables, reparse points, and process lifetime rules.
-Put each contract in a dedicated file under `crates/<crate>/tests/`, gate the
-whole test binary (`#![cfg(windows)]`, for example), and explain the assumption
-and its failure mode in module documentation. Use deterministic fixtures where
+Put each contract in a dedicated **module**, prefer adding it to an existing
+test target under `crates/<crate>/tests/` rather than creating a new top-level
+file, gate the module (`#[cfg(windows)]`, for example — or the whole binary
+with `#![cfg(windows)]` when the target is host-specific end to end), and
+explain the assumption and its failure mode in module documentation. Every
+top-level file in `tests/` is compiled as its own executable statically
+linking the full soldr graph; that per-file fan-out is how the suite reached
+~110 linked binaries and a 3.3 GB CI archive (soldr#2931). Reserve a new test
+target for a genuinely new domain; soldr#2934 tracks the module-based
+category layout. Use deterministic fixtures where
 possible and print an explicit skip reason when a test genuinely depends on
 host-installed tooling.
 
@@ -75,6 +82,9 @@ When a change relies on host behavior:
 - gate the complete integration-test binary for the host it requires;
 - run the suite with `soldr cargo nextest run` and avoid unbounded
   environmental waits;
-- preserve the complete, unfiltered archive and target-run path; and
+- preserve complete target-run coverage — the union of replay partitions must
+  still execute every test — within the archive's explicit byte/disk budget
+  (soldr#2931: linked test products are ephemeral transport, never cached, and
+  the bundle must stay compact and single-extraction); and
 - validate host failures by test name, comparing known runner flakes against
   `main` before changing a nextest budget.

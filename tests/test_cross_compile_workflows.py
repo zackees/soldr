@@ -260,7 +260,10 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
         assert "\n            --filter " not in workflow
     assert "ARCHIVE_FILTER" not in cache_roundtrip
     assert '"-E"' not in cache_roundtrip
-    assert "archive every test binary" in cross
+    # soldr#2931: the comment now pins coverage-with-a-budget, not
+    # archive-everything-and-compress. The union of replay partitions must
+    # still execute every test; the archive itself is budgeted.
+    assert "the union of replay partitions executes every test" in cross
     assert "--profile target-run" in target_run
     assert "target/nextest/target-run/junit.xml" in target_run
     assert "target_run_summary.py" in target_run

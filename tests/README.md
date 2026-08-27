@@ -23,6 +23,11 @@ Linux Docker. It forces the warm pass with `cargo clean` and a soldr cache
 daemon restart, then fails unless the warm zccache report has positive hits
 and zero misses.
 
+> **Superseded (soldr#2931):** the invariant this check enforces — the full
+> linked test archive must be warm-cacheable — has been inverted: linked test
+> products are never cacheable. The check is scheduled for retirement or
+> rewrite under soldr#2937; do not extend it.
+
 ## Layout
 
 - `test_setup_soldr_action.py` — exercises `resolve_setup.py` end-to-end
