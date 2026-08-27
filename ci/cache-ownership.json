@@ -1,0 +1,503 @@
+{
+  "schema_version": 1,
+  "policy_issue": "soldr#2931",
+  "implemented_by": "soldr#2937",
+  "guard": ".github/scripts/check_cache_ownership.py",
+  "comment": "Ownership manifest for everything this repository persists between or across CI runs. Cache admission is decided by the stability of an artifact's identity key relative to its size, NOT by whether GitHub happens to call the store a 'cache' or an 'artifact'. Every persisting step in .github/workflows/ must be classified here. Adding a store means amending this file in the same PR, so the edge shows up in review rather than as one line in a workflow nobody diffs.",
+  "tiers": {
+    "cook": "Tier 1. External dependency compilation plus build-script / native (cc-rs, bindgen) outputs. The identity key is the locked dependency graph, which moves rarely relative to its size, so the entry is durable and worth persisting across runs. Swatinem/rust-cache belongs here: it prunes workspace-member artifacts, examples and target/*/incremental before saving, so what survives is the dependency graph.",
+    "zccache-unit": "Tier 2. Per-compilation-unit, content-addressed compiler outputs held by the embedded zccache service. Safe by construction: the key IS the hash of the compiler inputs, so a stale entry cannot be served. Durable, and deliberately still live in normal lanes -- soldr#2931 bans persisting LINKED products and bulk target/ snapshots, not content-addressed per-unit caching.",
+    "none": "Tier 3. Everything else. Not admitted to any cross-run reusable compiler/dependency store. Run-scoped uploads (logs, diagnostics, benchmark rows, wheels kept for inspection) live here: they are retained for humans and are never restored into a later build. Linked TEST products are permanently Tier 3 -- test binaries, benches, examples built for tests, doctest products, test debug sidecars and test-specific incremental state may not enter cook, an rlib cache, a broad target/ cache, a compiler-cache archive, or any other cross-run reusable store."
+  },
+  "exceptions": {
+    "release-deliverable": "The shipped output. Its lifetime is the release, not a build; it is uploaded to be published, never restored into a compile.",
+    "pinned-immutable-download": "A third-party download pinned to an exact, immutable version (rustup toolchain, xwin MSVC CRT+SDK slice, Apple SDK 14.5, crates.io registry sources). The identity key is the version string and the bytes never change under it, so the entry is as stable as a key can be.",
+    "dylint-foundation": "The ci-test Dylint foundation: cargo-dylint / dylint-link plus the one exact nightly every lint manifest declares. Keyed on that nightly, and required by contract to never reuse or invalidate the stable target tree (CLAUDE.md, ci-test verb).",
+    "cache-experiment": "The cache is the subject under test. These workflows measure cold/warm behaviour, cook sizing, target-cache slices or parent-cache sharing, so the guard cannot constrain what they persist without destroying the measurement. Listed explicitly in experiment_workflows.",
+    "same-run-transport": "A bundle handed from one job to another INSIDE one workflow run via upload-artifact/download-artifact. Not a cache: it is keyed by run id, never restored into a later run, and discarded on retention expiry. This is the only sanctioned way a linked test archive may be moved to a target-run lane -- it must be compact and budgeted, and it must never be written to a cross-run store.",
+    "bootstrap-driver-binary": "The host bootstrap `soldr` that DRIVES a lane (spawns the broker, prepares blessed SDKs). Keyed on the exact commit SHA, so the key is maximally stable; one binary, no test products. It is the compiler for the lane, not an output under test. Beyond the four exceptions named in soldr#2931; recorded here because the class exists in-tree and needed a name."
+  },
+  "durable_tiers": ["cook", "zccache-unit"],
+  "experiment_workflows": [
+    "baseline-zero-deps.yml",
+    "cache-delta-experiment.yml",
+    "cook-size-gate.yml",
+    "dylint-cache-acceptance.yml",
+    "dylint-cook-acceptance.yml",
+    "nextest-cacheability.yml",
+    "parent-cache-bench.yml",
+    "perf-cold-warm.yml",
+    "perf-matrix.yml",
+    "thin-v2-verify.yml"
+  ],
+  "setup_soldr_layers": {
+    "comment": "setup-soldr provisions several independent reuse layers. Each is gated on its own input, NOT on the `cache` umbrella (soldr#2451) -- which is why this repo's self-build lanes spell out `false` for all of them: this repo IS soldr and no self-build lane may restore a prebuilt soldr binary. Only layers a workflow turns ON get an entry below.",
+    "cache": {
+      "tier": "zccache-unit",
+      "rationale": "The action's own zccache compiler store under `cache-dir`. Content-addressed per unit."
+    },
+    "build-cache": {
+      "tier": "zccache-unit",
+      "rationale": "zccache compiler store keyed on toolchain + commit. Content-addressed per unit; disabled in every self-build lane here."
+    },
+    "target-cache:thin": {
+      "tier": "cook",
+      "rationale": "thin-v2 slice bundle. Dependency-scoped by construction: `assert_thin_manifest.py` fails the gate if the manifest re-lists a dropped transient/debug category, so linked test products cannot enter it."
+    },
+    "target-cache:full": {
+      "tier": "none",
+      "rationale": "A bulk snapshot of the whole target/ directory, test binaries and incremental state included. Banned in normal lanes; no workflow in this repo selects it."
+    },
+    "target-cache:off": {
+      "tier": "none",
+      "rationale": "Nothing is persisted."
+    },
+    "cargo-registry-cache": {
+      "tier": "pinned-immutable-download",
+      "rationale": "crates.io source tarballs, immutable under their version. Disabled in every self-build lane here."
+    },
+    "cook": {
+      "tier": "cook",
+      "rationale": "The `setup-soldr/cook` subaction: prebuilt external-dependency and build-script outputs under target/<triple>/<profile>/build/*/out/."
+    },
+    "soldr-mini-cache": {
+      "tier": "pinned-immutable-download",
+      "rationale": "A prebuilt, released soldr binary keyed on its version. Disabled in every self-build lane here (soldr#2451)."
+    },
+    "solo-toolchain-cache": {
+      "tier": "pinned-immutable-download",
+      "rationale": "A pinned Rust toolchain under the action's managed RUSTUP_HOME. Disabled in every self-build lane here."
+    },
+    "ci-tests": {
+      "tier": "dylint-foundation",
+      "rationale": "Provisions cargo-dylint / dylint-link plus the exact declared nightly for the ci-test Dylint plan."
+    }
+  },
+  "entries": [
+    {
+      "id": "bootstrap-e2e-rustup-toolchain",
+      "workflow": "_bootstrap-e2e.yml",
+      "step": "Cache rustup 1.95.0 in ~/.rustup",
+      "mechanism": "actions/cache",
+      "tier": "pinned-immutable-download",
+      "rationale": "The 1.95.0 toolchain tree, keyed on the exact version; immutable bytes under an immutable key."
+    },
+    {
+      "id": "bootstrap-e2e-rust-cache",
+      "workflow": "_bootstrap-e2e.yml",
+      "step": "Restore cargo + target caches",
+      "mechanism": "Swatinem/rust-cache",
+      "tier": "cook",
+      "rationale": "Dependency graph + cargo registry for the bootstrap build; rust-cache prunes workspace members, examples and incremental before saving."
+    },
+    {
+      "id": "bootstrap-e2e-soldr-binary-upload",
+      "workflow": "_bootstrap-e2e.yml",
+      "step": "actions/upload-artifact (soldr-<target>)",
+      "mechanism": "actions/upload-artifact",
+      "tier": "none",
+      "rationale": "The smoke-tested binary retained for inspection; nothing downloads it into a later build."
+    },
+    {
+      "id": "bootstrap-e2e-build-logs",
+      "workflow": "_bootstrap-e2e.yml",
+      "step": "Upload build log artifacts",
+      "mechanism": "actions/upload-artifact",
+      "tier": "none",
+      "rationale": "Run-scoped diagnostics for humans; never restored."
+    },
+    {
+      "id": "build-and-test-rustup-toolchain",
+      "workflow": "_build-and-test.yml",
+      "step": "Cache rustup 1.95.0 in ~/.rustup",
+      "mechanism": "actions/cache",
+      "tier": "pinned-immutable-download",
+      "rationale": "Same immutable, version-keyed toolchain tree as the bootstrap template."
+    },
+    {
+      "id": "build-and-test-dylint-foundation",
+      "workflow": "_build-and-test.yml",
+      "step": "Setup pinned soldr toolchain (ci-tests: true)",
+      "mechanism": "setup-soldr:ci-tests",
+      "tier": "dylint-foundation",
+      "rationale": "Provisions the ci-test Dylint foundation once, on its own nightly, separate from the stable target tree."
+    },
+    {
+      "id": "build-and-test-rust-cache",
+      "workflow": "_build-and-test.yml",
+      "step": "Restore cargo + target caches",
+      "mechanism": "Swatinem/rust-cache",
+      "tier": "cook",
+      "rationale": "The `ws-dev-<target>` dependency namespace so the ci-test plan does not recompile ~700 dependencies per run."
+    },
+    {
+      "id": "build-and-test-build-logs",
+      "workflow": "_build-and-test.yml",
+      "step": "Upload build log artifacts",
+      "mechanism": "actions/upload-artifact",
+      "tier": "none",
+      "rationale": "Run-scoped build XML + compile journals for toolchain-home and recompile-storm triage."
+    },
+    {
+      "id": "cross-build-xwin-sdk",
+      "workflow": "_ci-cross-build-linux.yml",
+      "step": "Cache MSVC CRT+SDK (via XWIN_CACHE_DIR)",
+      "mechanism": "actions/cache",
+      "tier": "pinned-immutable-download",
+      "rationale": "The xwin CRT+SDK slice, keyed on MANAGED_XWIN_CACHE_VERSION; the bytes never change under that key."
+    },
+    {
+      "id": "cross-build-apple-sdk-x86-64",
+      "workflow": "_ci-cross-build-linux.yml",
+      "step": "Cache Apple SDK (x86_64)",
+      "mechanism": "actions/cache",
+      "tier": "pinned-immutable-download",
+      "rationale": "Apple SDK 14.5 darwin-x86_64 slice, keyed on the catalogue version and shape."
+    },
+    {
+      "id": "cross-build-apple-sdk-aarch64",
+      "workflow": "_ci-cross-build-linux.yml",
+      "step": "Cache Apple SDK (aarch64)",
+      "mechanism": "actions/cache",
+      "tier": "pinned-immutable-download",
+      "rationale": "Apple SDK 14.5 darwin-aarch64 slice, keyed on the catalogue version and shape."
+    },
+    {
+      "id": "cross-build-rust-cache",
+      "workflow": "_ci-cross-build-linux.yml",
+      "step": "Restore cargo + target caches",
+      "mechanism": "Swatinem/rust-cache",
+      "tier": "cook",
+      "rationale": "`cross-build-<target>-v7` dependency namespace; restored BEFORE the cook step so cook is never overwritten by a bulk snapshot."
+    },
+    {
+      "id": "cross-build-bootstrap-artifact-download",
+      "workflow": "_ci-cross-build-linux.yml",
+      "step": "Download shared bootstrap soldr artifact",
+      "mechanism": "actions/download-artifact",
+      "tier": "same-run-transport",
+      "rationale": "Receives the one bootstrap driver built earlier in the same run, instead of every cross lane rebuilding it."
+    },
+    {
+      "id": "cross-build-bootstrap-binary-cache",
+      "workflow": "_ci-cross-build-linux.yml",
+      "step": "Restore cached bootstrap soldr binaries",
+      "mechanism": "actions/cache",
+      "tier": "bootstrap-driver-binary",
+      "rationale": "Fallback path for manual callers with no bootstrap artifact; keyed on the exact commit SHA, one binary, no test products."
+    },
+    {
+      "id": "cross-build-cook",
+      "workflow": "_ci-cross-build-linux.yml",
+      "step": "Restore cooked dependency cache",
+      "mechanism": "setup-soldr/cook",
+      "tier": "cook",
+      "rationale": "Prebuilt external-dependency and cc-rs build-script outputs for the (profile, triple) shape under test."
+    },
+    {
+      "id": "cross-build-test-transport",
+      "workflow": "_ci-cross-build-linux.yml",
+      "step": "Upload artifact",
+      "mechanism": "actions/upload-artifact",
+      "tier": "same-run-transport",
+      "rationale": "Carries dist/package/ plus the linked nextest archive to the same run's target-run lane. Legal ONLY as transport: it is run-keyed and must never be written to a cross-run store.",
+      "notes": "Compactness/size budget for this bundle is owned by the lane itself (soldr#2931 phases 3-4), not by check_cache_ownership.py."
+    },
+    {
+      "id": "cross-build-build-logs",
+      "workflow": "_ci-cross-build-linux.yml",
+      "step": "Upload build log artifacts",
+      "mechanism": "actions/upload-artifact",
+      "tier": "none",
+      "rationale": "Run-scoped logs and archived compile journals; never restored."
+    },
+    {
+      "id": "target-run-cross-build-artifact",
+      "workflow": "_ci-target-run.yml",
+      "step": "Download cross-build artifact",
+      "mechanism": "actions/download-artifact",
+      "tier": "same-run-transport",
+      "rationale": "The receiving half of cross-build-test-transport: cross-built products executed on a native runner in the same run."
+    },
+    {
+      "id": "target-run-pep517-rust-cache",
+      "workflow": "_ci-target-run.yml",
+      "step": "Restore cargo + target caches for wheel build",
+      "mechanism": "Swatinem/rust-cache",
+      "tier": "cook",
+      "rationale": "`pep517-<target>-ci-release-v2` dependency namespace for the PEP 517 follow-up wheel build."
+    },
+    {
+      "id": "target-run-pep517-logs",
+      "workflow": "_ci-target-run.yml",
+      "step": "Upload PEP 517 Soldr logs",
+      "mechanism": "actions/upload-artifact",
+      "tier": "none",
+      "rationale": "Run-scoped daemon smoke logs."
+    },
+    {
+      "id": "target-run-diagnostics",
+      "workflow": "_ci-target-run.yml",
+      "step": "Upload target-run diagnostics",
+      "mechanism": "actions/upload-artifact",
+      "tier": "none",
+      "rationale": "Run-scoped toolchain-ensure/doctor JSON for triage."
+    },
+    {
+      "id": "ci-pep517-rust-cache",
+      "workflow": "ci.yml",
+      "step": "Restore cargo + target caches for wheel build",
+      "mechanism": "Swatinem/rust-cache",
+      "tier": "cook",
+      "rationale": "`pep517-<name>-ci-release-v2` dependency namespace for the Windows PEP 517 platform smoke."
+    },
+    {
+      "id": "ci-pep517-logs",
+      "workflow": "ci.yml",
+      "step": "Upload PEP 517 Soldr logs",
+      "mechanism": "actions/upload-artifact",
+      "tier": "none",
+      "rationale": "Run-scoped daemon smoke logs."
+    },
+    {
+      "id": "ci-bootstrap-rustup-toolchain",
+      "workflow": "ci.yml",
+      "step": "Cache rustup 1.95.0 in ~/.rustup",
+      "mechanism": "actions/cache",
+      "tier": "pinned-immutable-download",
+      "rationale": "Version-keyed, immutable toolchain tree shared with the other soldr workflows."
+    },
+    {
+      "id": "ci-bootstrap-binary-cache",
+      "workflow": "ci.yml",
+      "step": "Restore cached bootstrap soldr binary",
+      "mechanism": "actions/cache",
+      "tier": "bootstrap-driver-binary",
+      "rationale": "The ci-bootstrap driver keyed on the exact commit SHA (deliberately not hashFiles, which misses submodule content)."
+    },
+    {
+      "id": "ci-bootstrap-rust-cache",
+      "workflow": "ci.yml",
+      "step": "Restore cargo + target caches for bootstrap build",
+      "mechanism": "Swatinem/rust-cache",
+      "tier": "cook",
+      "rationale": "`bootstrap-soldr-linux-gnu-ci-bootstrap-v2` dependency namespace, used only on a bootstrap cache miss."
+    },
+    {
+      "id": "ci-bootstrap-artifact-upload",
+      "workflow": "ci.yml",
+      "step": "Upload bootstrap soldr artifact",
+      "mechanism": "actions/upload-artifact",
+      "tier": "same-run-transport",
+      "rationale": "Fans the single bootstrap driver out to every cross lane in the same run."
+    },
+    {
+      "id": "ci-wheel-bootstrap-artifact-download",
+      "workflow": "ci.yml",
+      "step": "Download shared bootstrap soldr artifact",
+      "mechanism": "actions/download-artifact",
+      "tier": "same-run-transport",
+      "rationale": "Receiving half of ci-bootstrap-artifact-upload for the `soldr wheel` lane."
+    },
+    {
+      "id": "ci-wheel-rust-cache",
+      "workflow": "ci.yml",
+      "step": "Restore cargo + target caches for the wheel build",
+      "mechanism": "Swatinem/rust-cache",
+      "tier": "cook",
+      "rationale": "`wheel-cross-<target>-release-v1` dependency namespace for the cross wheel build."
+    },
+    {
+      "id": "ci-wheel-upload",
+      "workflow": "ci.yml",
+      "step": "Upload the wheel for inspection",
+      "mechanism": "actions/upload-artifact",
+      "tier": "none",
+      "rationale": "A CI wheel kept for inspection; the shipped wheel is built by release-auto.yml."
+    },
+    {
+      "id": "benchmark-stats-rustup-toolchain",
+      "workflow": "benchmark-stats.yml",
+      "step": "Cache rustup 1.95.0 in ~/.rustup",
+      "mechanism": "actions/cache",
+      "tier": "pinned-immutable-download",
+      "rationale": "Version-keyed, immutable toolchain tree."
+    },
+    {
+      "id": "benchmark-stats-zccache",
+      "workflow": "benchmark-stats.yml",
+      "step": "Setup soldr build cache (cache: true)",
+      "mechanism": "setup-soldr:cache",
+      "tier": "zccache-unit",
+      "rationale": "Content-addressed per-unit compiler store; the trend job builds the commit under test through the released wrapper."
+    },
+    {
+      "id": "benchmark-stats-canary-output",
+      "workflow": "benchmark-stats.yml",
+      "step": "Upload canary output as workflow artifact",
+      "mechanism": "actions/upload-artifact",
+      "tier": "none",
+      "rationale": "Measurement rows published to Pages; never restored into a build."
+    },
+    {
+      "id": "cross-all-bootstrap-upload",
+      "workflow": "cross-compile-all-targets.yml",
+      "step": "Upload bootstrap-soldr artifact",
+      "mechanism": "actions/upload-artifact",
+      "tier": "same-run-transport",
+      "rationale": "One bootstrap driver built once and consumed by every cross job in the same run."
+    },
+    {
+      "id": "cross-all-bootstrap-download",
+      "workflow": "cross-compile-all-targets.yml",
+      "step": "Download bootstrap soldr",
+      "mechanism": "actions/download-artifact",
+      "tier": "same-run-transport",
+      "rationale": "Receiving half of cross-all-bootstrap-upload."
+    },
+    {
+      "id": "cross-all-release-archives",
+      "workflow": "cross-compile-all-targets.yml",
+      "step": "Upload linux-x86 archive / Upload archive",
+      "mechanism": "actions/upload-artifact",
+      "tier": "release-deliverable",
+      "rationale": "The per-target shipped `.tar.zst`; its lifetime is the release, not a build."
+    },
+    {
+      "id": "cross-all-stats",
+      "workflow": "cross-compile-all-targets.yml",
+      "step": "Upload per-target stats / Download all stats / Upload summary",
+      "mechanism": "actions/upload-artifact",
+      "tier": "none",
+      "rationale": "Timing rows and the rolled-up summary; reporting only."
+    },
+    {
+      "id": "cross-stress-result-rows",
+      "workflow": "cross-compile-stress.yml",
+      "step": "Upload result row / Download result rows",
+      "mechanism": "actions/upload-artifact",
+      "tier": "none",
+      "rationale": "One JSON row per matrix cell, merged into a report; nothing is compiled from them."
+    },
+    {
+      "id": "release-archive-upload",
+      "workflow": "release-auto.yml",
+      "step": "*",
+      "mechanism": "actions/upload-artifact",
+      "tier": "release-deliverable",
+      "rationale": "`release-soldr-<target>` archives and `pypi-soldr-<target>` wheels staged for publication."
+    },
+    {
+      "id": "release-artifact-downloads",
+      "workflow": "release-auto.yml",
+      "step": "*",
+      "mechanism": "actions/download-artifact",
+      "tier": "release-deliverable",
+      "rationale": "Smoke, checksum and publish jobs re-download the staged deliverables inside the same run."
+    },
+    {
+      "id": "setup-soldr-action-runtime-state",
+      "workflow": "setup-soldr-action.yml",
+      "step": "setup (cache: true)",
+      "mechanism": "setup-soldr:cache",
+      "tier": "zccache-unit",
+      "rationale": "The action's own runtime state under a `cache-dir` deliberately disjoint from the soldr build under test."
+    },
+    {
+      "id": "setup-soldr-action-target-cache",
+      "workflow": "setup-soldr-action.yml",
+      "step": "setup (target-cache: true)",
+      "mechanism": "setup-soldr:target-cache",
+      "tier": "cook",
+      "rationale": "Default thin-v2 slice: dependency-scoped, with assert_thin_manifest.py failing the gate if a dropped transient/debug category reappears."
+    },
+    {
+      "id": "setup-soldr-action-dogfood-zccache",
+      "workflow": "setup-soldr-action.yml",
+      "step": "Restore dogfood build cache",
+      "mechanism": "actions/cache",
+      "tier": "zccache-unit",
+      "rationale": "The zccache store for the dogfood build. Content-addressed per unit -- exactly the store soldr#2931 keeps live; the ban is on linked products and bulk target/ snapshots."
+    },
+    {
+      "id": "vcpkg-bundle-upload",
+      "workflow": "vcpkg-windows-refresh.yml",
+      "step": "Upload artifact",
+      "mechanism": "actions/upload-artifact",
+      "tier": "release-deliverable",
+      "rationale": "A triplet bundle staged for the rolling `vcpkg-bundles-latest` GitHub release."
+    },
+    {
+      "id": "vcpkg-bundle-download",
+      "workflow": "vcpkg-windows-refresh.yml",
+      "step": "Download all artifacts",
+      "mechanism": "actions/download-artifact",
+      "tier": "release-deliverable",
+      "rationale": "The publish job collects the staged bundles before uploading them to the release."
+    },
+    {
+      "id": "baseline-zero-deps-experiment",
+      "workflow": "baseline-zero-deps.yml",
+      "step": "*",
+      "mechanism": "*",
+      "tier": "cache-experiment",
+      "rationale": "Measures the zero-dependency baseline build; what it caches is part of the measurement."
+    },
+    {
+      "id": "cache-delta-experiment",
+      "workflow": "cache-delta-experiment.yml",
+      "step": "*",
+      "mechanism": "*",
+      "tier": "cache-experiment",
+      "rationale": "Compares today's single-layer cache against a layered alternative; the cache IS the subject under test."
+    },
+    {
+      "id": "dylint-cache-acceptance-experiment",
+      "workflow": "dylint-cache-acceptance.yml",
+      "step": "*",
+      "mechanism": "*",
+      "tier": "cache-experiment",
+      "rationale": "Acceptance for the Dylint foundation cache."
+    },
+    {
+      "id": "dylint-cook-acceptance-experiment",
+      "workflow": "dylint-cook-acceptance.yml",
+      "step": "*",
+      "mechanism": "*",
+      "tier": "cache-experiment",
+      "rationale": "Acceptance for cook behaviour under the Dylint plan."
+    },
+    {
+      "id": "parent-cache-bench-experiment",
+      "workflow": "parent-cache-bench.yml",
+      "step": "*",
+      "mechanism": "*",
+      "tier": "cache-experiment",
+      "rationale": "Measures parent-cache (path-remap) sharing between worktrees."
+    },
+    {
+      "id": "perf-cold-warm-experiment",
+      "workflow": "perf-cold-warm.yml",
+      "step": "*",
+      "mechanism": "*",
+      "tier": "cache-experiment",
+      "rationale": "Cold/warm demo: it deliberately seeds and purges its own cache namespace."
+    },
+    {
+      "id": "perf-matrix-experiment",
+      "workflow": "perf-matrix.yml",
+      "step": "*",
+      "mechanism": "*",
+      "tier": "cache-experiment",
+      "rationale": "The perf sweep; cache state is an independent variable of the measurement."
+    },
+    {
+      "id": "thin-v2-verify-experiment",
+      "workflow": "thin-v2-verify.yml",
+      "step": "*",
+      "mechanism": "*",
+      "tier": "cache-experiment",
+      "rationale": "Verifier for the thin-v2 target-cache slice itself."
+    }
+  ]
+}

@@ -10,8 +10,9 @@
 //! tests on Linux CI lanes too.
 //!
 //! The acceptance test for the issue is in
-//! `tests/msvc_host_discovery_windows.rs` (separate integration
-//! binary so the env-mutation it does cannot race other tests).
+//! `tests/toolchain_env/msvc_host_discovery_windows.rs` (an
+//! integration test, so nextest runs its env-mutation in a process
+//! of its own and it cannot race other tests).
 
 use super::*;
 

@@ -1,7 +1,7 @@
 //! soldr#2794: the CRT linkage is the caller's policy, not soldr's plumbing.
 //!
 //! Everything here is driven through arguments rather than the process
-//! environment. `tests/env_lock_lint.rs` requires each mutated variable to sit
+//! environment. `tests/guards/env_lock_lint.rs` requires each mutated variable to sit
 //! under one barrier, and `RUSTFLAGS` already has two; keeping the decision
 //! logic pure means these tests cannot participate in that race at all.
 
@@ -195,7 +195,7 @@ fn another_targets_rustflags_are_not_borrowed() {
 /// Asserting that here rather than through the real function keeps this test
 /// off the process environment, which is what the module header requires:
 /// `RUSTFLAGS` is already mutated under two other test barriers, and
-/// `tests/env_lock_lint.rs` wants one barrier per variable.
+/// `tests/guards/env_lock_lint.rs` wants one barrier per variable.
 #[test]
 fn a_config_preference_cannot_change_the_decision() {
     let config_says_static = "-C target-feature=+crt-static";

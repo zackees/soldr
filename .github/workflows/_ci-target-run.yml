@@ -234,11 +234,46 @@ jobs:
             echo "- Package manager: \`$package_manager_version\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # soldr#2933 (phase 1 of soldr#2931): name the volume, before anything
+      # writes to it.
+      #
+      # Run 33065541438 killed `target-run x86_64-pc-windows-gnu (1-of-3)`
+      # with a raw `os error 112`. The lane did not run out of disk; it ran
+      # out of the *wrong* disk. `cargo-nextest` decompressed the 3.3 GiB
+      # archive into `C:\Users\runneradmin\AppData\Local\Temp\nextest-archive-*`
+      # because nothing had ever told it where to put it, `C:` began the job
+      # with 31.03 GiB free, and `D:` sat at 143.61 GiB free from the first
+      # step to the last without being touched once.
+      #
+      # This step makes the choice explicit and states it in the log: probe
+      # every volume, take the roomiest writable one, create the extraction
+      # root there, and export it. `--redirect-temp` moves TMP/TEMP/TMPDIR
+      # onto the same volume when they are not already there, because the
+      # isolated-home tests build their sandboxes in temp (soldr#2734) and
+      # that is the allocation that actually exhausted C:.
+      #
+      # POSIX runners are unaffected in substance -- their candidates all
+      # resolve to one volume, so the "largest" volume is the one they were
+      # already using and the temp redirect is skipped -- but they still get
+      # the path printed rather than inferred.
+      - name: Select the archive extraction volume (soldr#2933)
+        shell: bash
+        run: >-
+          python .github/scripts/select_extract_volume.py
+          --workspace "$GITHUB_WORKSPACE"
+          --runner-temp "$RUNNER_TEMP"
+          --name "nextest-archive-${{ matrix.replay.label }}"
+          --redirect-temp
+          --github-env "$GITHUB_ENV"
+
       # soldr#2734: the only reading of runner disk anywhere in this lane.
       # soldr#2699 pinned the warn/block thresholds together at 1 GiB so the
       # watchdog never prunes mid-run, which also means soldr says nothing
       # until the disk is effectively gone -- a shard exhausted it and three
       # tests died on a raw `os error 112` with no clue where it went.
+      #
+      # Runs after the volume selection above so the temp reading reflects the
+      # volume the shard will actually use, not the one it was handed.
       - name: Report free disk space (before)
         if: always()
         shell: bash
@@ -288,21 +323,78 @@ jobs:
 
           archive="artifact/${{ inputs.artifact_name }}-tests.tar.zst"
           test -f "$archive"
+
+          # soldr#2933: fail on the disk, at the disk. `report_free_space.py`
+          # is deliberately incapable of failing (soldr#2734), which is why
+          # run 33065541438's exhaustion surfaced as three unrelated-looking
+          # test failures carrying `Os { code: 112, kind: StorageFull }`
+          # instead of as itself. This guard states a floor and refuses to
+          # start below it, naming the path, the volume, the free bytes and
+          # the archive size. The floor tracks the archive (4x compressed)
+          # because debug test binaries decompress several times over, so a
+          # constant would silently stop being enough as the archive grows.
+          python .github/scripts/assert_free_space.py \
+            --label pre-extract \
+            --path "$NEXTEST_EXTRACT_DIR" \
+            --archive "$archive" \
+            --archive-multiple 4 \
+            --min-free-gib 20
+
+          # soldr#2933: this is the *only* extraction in the shard.
+          #
+          # `--archive-file` decompresses the whole archive into a fresh
+          # directory on every invocation, and this step used it twice -- once
+          # to list, once to run -- so a 3.3 GiB archive was inflated twice per
+          # shard across three shards. `--extract-to` names a destination on
+          # the volume chosen above and leaves it in place afterwards, so the
+          # inventory pass doubles as the extraction and the execution pass
+          # below consumes what it produced.
           "$NEXTEST_BIN" nextest list \
             --archive-file "$archive" \
+            --extract-to "$NEXTEST_EXTRACT_DIR" \
             --workspace-remap "$GITHUB_WORKSPACE" \
             --profile target-run \
             --partition "$REPLAY_PARTITION" \
             --message-format json-pretty > "$NEXTEST_LIST_JSON"
+
+          # The reading that the original failure needed and did not have:
+          # what the extraction actually cost, measured immediately after it
+          # landed and before a single test starts allocating.
+          python .github/scripts/assert_free_space.py \
+            --label post-extract \
+            --path "$NEXTEST_EXTRACT_DIR" \
+            --min-free-gib 10
+
           python .github/scripts/target_run_summary.py \
             --target '${{ inputs.target }} (${{ matrix.replay.label }})' \
             --partition "$REPLAY_PARTITION" \
             --output "$TARGET_RUN_SUMMARY" \
             --list-json "$NEXTEST_LIST_JSON"
 
+          # soldr#2933: the execution pass consumes the extraction instead of
+          # decompressing the archive a second time. The helper emits nextest's
+          # documented reuse-build flags (`--binaries-metadata`,
+          # `--cargo-metadata`, `--target-dir-remap`) when it finds the
+          # metadata inside the extraction, and otherwise falls back to
+          # `--archive-file` + `--extract-to` + `--extract-overwrite` aimed at
+          # the same directory -- degraded to one re-extraction, but still on
+          # the volume that was chosen on purpose. One argument per line so
+          # values with spaces need no quoting convention; a `while read`
+          # loop rather than `mapfile` because macOS runners ship bash 3.2.
+          reuse_args=()
+          while IFS= read -r reuse_arg; do
+            reuse_args+=("$reuse_arg")
+          done < <(python .github/scripts/nextest_reuse_extraction.py \
+            --extract-dir "$NEXTEST_EXTRACT_DIR" \
+            --archive "$archive")
+          if [ "${#reuse_args[@]}" -eq 0 ]; then
+            echo "nextest_reuse_extraction.py emitted no flags" >&2
+            exit 1
+          fi
+
           set +e
           "$NEXTEST_BIN" nextest run \
-            --archive-file "$archive" \
+            "${reuse_args[@]}" \
             --workspace-remap "$GITHUB_WORKSPACE" \
             --profile target-run \
             --partition "$REPLAY_PARTITION" \
@@ -322,6 +414,29 @@ jobs:
             exit "$run_status"
           fi
           exit "$summary_status"
+
+      # soldr#2931 wants the RED evidence for why this archive reached 3.3 GiB
+      # compressed, and soldr#2933 is where it gets collected. The tarball
+      # size alone is compatible with every explanation -- a few enormous
+      # binaries, hundreds of medium ones, duplicated static linking across
+      # every integration test, or debug info that compresses well and
+      # extracts enormously -- and those call for completely different fixes.
+      # This prints the actual distribution to the step summary.
+      #
+      # Non-fatal by construction: the helper returns 0 for every failure
+      # mode. `assert_free_space.py` above is the step that is allowed to turn
+      # this lane red; a byte census is not.
+      - name: Attribute nextest archive bytes (soldr#2931)
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: >-
+          python .github/scripts/nextest_archive_bytes.py
+          --extract-dir "${NEXTEST_EXTRACT_DIR:-}"
+          --archive "artifact/${{ inputs.artifact_name }}-tests.tar.zst"
+          --top 30
+          --json "$RUNNER_TEMP/nextest-archive-bytes.json"
+          --summary "$GITHUB_STEP_SUMMARY"
 
       # Taken with `always()` on purpose: the reading that matters most is
       # the one after a run that just failed (soldr#2734).
@@ -392,6 +507,7 @@ jobs:
             ${{ runner.temp }}/soldr-toolchain-link.json
             ${{ runner.temp }}/nextest-list.json
             ${{ runner.temp }}/target-run-summary.json
+            ${{ runner.temp }}/nextest-archive-bytes.json
             target/nextest/target-run/junit.xml
           if-no-files-found: ignore
           retention-days: 7

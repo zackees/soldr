@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shlex
 from pathlib import Path
 from typing import Any
@@ -8,6 +9,11 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GUARDRAILS_PATH = REPO_ROOT / "contracts" / "zccache-integration-guardrails.v1.json"
 DOCS_PATH = REPO_ROOT / "docs" / "ZCCACHE_INTEGRATION_GUARDRAILS.md"
+CLI_TESTS_DIR = REPO_ROOT / "crates" / "soldr-cli" / "tests"
+
+# `-E 'test(/^<module>::/)'` -- the nextest filter form that narrows a category
+# target back down to one module (soldr#2934).
+NEXTEST_MODULE_FILTER = re.compile(r"^test\(/\^(?P<module>[A-Za-z0-9_]+)::/\)$")
 
 REQUIRED_GUARDRAIL_IDS = {
     "embedded-runtime-topology",
@@ -88,24 +94,74 @@ def test_guardrail_test_files_exist() -> None:
             ), f"{guardrail['id']} references missing path: {rel_path}"
 
 
+def _harness_tokens(command: str) -> list[str] | None:
+    """Tokens for a command that runs cargo's test harness, else ``None``."""
+    if " cargo test " in command or " cargo nextest run " in command:
+        return shlex.split(command)
+    return None
+
+
+def _module_filter(tokens: list[str], test_index: int) -> str | None:
+    """The single test module a ``--test <category>`` invocation narrows to.
+
+    Handles both runner spellings: nextest's ``-E 'test(/^<module>::/)'``
+    expression and plain ``cargo test``'s positional ``<module>::`` substring
+    filter. Returns ``None`` when the invocation does not narrow at all.
+    """
+    if "-E" in tokens:
+        index = tokens.index("-E")
+        if index + 1 >= len(tokens):
+            return None
+        match = NEXTEST_MODULE_FILTER.match(tokens[index + 1])
+        return match.group("module") if match else None
+
+    for token in tokens[test_index + 2 :]:
+        if token == "--":
+            break
+        if token.startswith("-"):
+            continue
+        if "::" in token:
+            return token.split("::", 1)[0]
+    return None
+
+
 def test_rust_validation_command_targets_exist() -> None:
     contract = _guardrails()
 
+    checked_targets = 0
     for validation in contract["validation_commands"]:
         command = validation["command"]
-        if " cargo test " not in command:
+        tokens = _harness_tokens(command)
+        if tokens is None:
             continue
 
-        tokens = shlex.split(command)
         if "--test" in tokens:
             index = tokens.index("--test")
             assert index + 1 < len(tokens), f"{validation['id']} has a bare --test flag"
             target = tokens[index + 1]
-            path = REPO_ROOT / "crates" / "soldr-cli" / "tests" / f"{target}.rs"
-            assert path.is_file(), (
+            # soldr#2934 grouped the soldr-cli integration tests into category
+            # targets: a directory of module files with a `main.rs` entrypoint,
+            # not a single top-level `<target>.rs`.
+            main_rs = CLI_TESTS_DIR / target / "main.rs"
+            assert main_rs.is_file(), (
                 f"{validation['id']} references missing cargo test target: {target} "
-                f"({path.relative_to(REPO_ROOT)})"
+                f"({main_rs.relative_to(REPO_ROOT)})"
             )
+
+            # A category target is far wider than the guardrail it stands for,
+            # so every command must also name the module it actually owns.
+            module = _module_filter(tokens, index)
+            assert module is not None, (
+                f"{validation['id']} selects the whole `{target}` target; add a "
+                "module filter (nextest: -E 'test(/^<module>::/)', cargo test: "
+                "a positional `<module>::`) so the guardrail stays targeted"
+            )
+            module_rs = CLI_TESTS_DIR / target / f"{module}.rs"
+            assert module_rs.is_file(), (
+                f"{validation['id']} filters on missing test module: {module} "
+                f"({module_rs.relative_to(REPO_ROOT)})"
+            )
+            checked_targets += 1
 
         if "--lib" in tokens:
             lib_path = REPO_ROOT / "crates" / "soldr-cli" / "src" / "lib.rs"
@@ -113,6 +169,11 @@ def test_rust_validation_command_targets_exist() -> None:
                 f"{validation['id']} requires missing cargo lib target: "
                 f"{lib_path.relative_to(REPO_ROOT)}"
             )
+
+    # Keeps the check from silently going vacuous: it previously matched only
+    # `cargo test` while every contract command used `cargo nextest run`, so it
+    # validated nothing at all.
+    assert checked_targets, "no --test guardrail command was validated"
 
 
 def test_guardrail_docs_cover_every_id_and_command() -> None:

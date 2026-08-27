@@ -27,7 +27,9 @@ on:
       # uniquely, so removal is the honest fix. Same reasoning as the
       # two dead inputs below.
       # soldr#1218 — `run_fetch_test` input removed. It gated a
-      # dedicated `cargo test --test fetch_crgx` step that duplicated
+      # dedicated `cargo test --test fetch_tools fetch_crgx::` step (then
+      # spelled `--test fetch_crgx`, before soldr#2934 grouped the
+      # soldr-cli integration tests into category targets) that duplicated
       # what `Run CLI smoke tests` already covers via `--tests`. The
       # separate step never actually skipped the fetch — smoke tests
       # ran it unconditionally regardless of this toggle.

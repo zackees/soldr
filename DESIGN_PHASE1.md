@@ -31,9 +31,9 @@ Over time, crgx's fetch logic gets absorbed into soldr-fetch and zccache's cache
 - Tool dispatch: `soldr <tool>[@version] [args...]` via clap `external_subcommand`
 - Removed incorrect `Build` and `Run` subcommands from prior skeleton
 
-### Integration Test (`crates/soldr-cli/tests/fetch_crgx.rs`)
+### Integration Test (`crates/soldr-cli/tests/fetch_tools/fetch_crgx.rs`)
 - `fetch_crgx_and_run`: downloads crgx, verifies binary runs, verifies cache hit
-- Run with: `cargo test -p soldr-fetch --test fetch_crgx`
+- Run with: `cargo test -p soldr-cli --test fetch_tools fetch_crgx::`
 
 ## Bootstrap Chain (Proven)
 
@@ -65,7 +65,7 @@ cargo build --workspace
 cargo test --workspace --lib
 
 # Integration test (fetches crgx from GitHub, requires network)
-cargo test -p soldr-fetch --test fetch_crgx
+cargo test -p soldr-cli --test fetch_tools fetch_crgx::
 
 # Use the CLI directly
 cargo run -p soldr-cli -- crgx --help

@@ -52,7 +52,7 @@
 //! Only the blessed `soldr build` surface triggers the prefetch —
 //! `soldr cargo build` (the explicit legacy passthrough) and every
 //! other soldr command spawn no fetch subprocess. That property is
-//! pinned by `tests/cli_build_fetch_overlap.rs`.
+//! pinned by `tests/broker/cli_build_fetch_overlap.rs`.
 
 use std::path::Path;
 use std::process::Stdio;

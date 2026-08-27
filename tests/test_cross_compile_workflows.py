@@ -43,7 +43,12 @@ def _assert_no_narrowing(command: str) -> None:
 
 def test_windows_behavior_contract_reaches_native_target_runners() -> None:
     behavioral_test = (
-        REPO_ROOT / "crates" / "soldr-cli" / "tests" / "windows_delete_semantics.rs"
+        REPO_ROOT
+        / "crates"
+        / "soldr-cli"
+        / "tests"
+        / "cache_gc"
+        / "windows_delete_semantics.rs"
     ).read_text(encoding="utf-8")
     expected_tests = [
         "read_only_files_do_not_block_a_recursive_delete",
@@ -103,7 +108,15 @@ def test_windows_behavior_contract_reaches_native_target_runners() -> None:
     assert replay.index(archive_assignment) < replay.index(archive_check)
     assert replay.index(archive_check) < replay.index(list_command)
     assert replay.index(list_command) < replay.index(run_command)
-    assert replay.count('--archive-file "$archive"') == 2
+    # soldr#2933: exactly ONE decompression per shard. This assertion used to
+    # require 2 -- it encoded the bug. `nextest list` and `nextest run` each
+    # re-inflated the whole 3.3 GiB archive into a fresh temp dir, so a lane
+    # paid six decompressions across three shards and exhausted the runner's
+    # C: volume (`os error 112`) while D: sat at 143 GiB free. The list pass is
+    # now the single extraction, aimed at an explicitly chosen volume, and the
+    # run pass consumes it.
+    assert replay.count('--archive-file "$archive"') == 1
+    assert '--extract-to "$NEXTEST_EXTRACT_DIR"' in replay
     assert "--no-fail-fast" not in replay
     list_invocation = replay[replay.index(list_command) : replay.index(run_command)]
     run_invocation = replay[replay.index(run_command) :]

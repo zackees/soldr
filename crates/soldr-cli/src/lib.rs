@@ -304,7 +304,7 @@ pub mod wrapper;
 pub mod wrapper_identity;
 /// `wrapper_target` holds the wrapper hot-path target-registry routing
 /// extracted out of `wrapper.rs` so integration tests under
-/// `tests/cli_wrapper_perf.rs` can drive it in-process (issue #474).
+/// `tests/cargo_front_door/cli_wrapper_perf.rs` can drive it in-process (issue #474).
 pub mod wrapper_target;
 pub mod zccache;
 pub mod zccache_compat;
