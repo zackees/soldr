@@ -107,12 +107,23 @@ pub(crate) fn try_run_trampoline(args: &[String]) -> Result<TrampolineDecision, 
             log_fall_through(&reason);
             Ok(TrampolineDecision::FellThrough(Box::new(plan)))
         }
+        FastPathOutcome::StaleSource(path) => {
+            eprintln!(
+                "soldr warning: {} changed contents after its mtime moved behind the built binary; Cargo may run a stale artifact. Touch the source or run `soldr cargo clean -p <package>` before retrying.",
+                path.display()
+            );
+            Ok(TrampolineDecision::FellThrough(Box::new(plan)))
+        }
     }
 }
 
 enum FastPathOutcome {
     Hit(PathBuf, Vec<String>),
     FallThrough(String),
+    /// A recorded source changed even though its timestamp is older than the
+    /// built binary. Cargo's mtime-only freshness check can accept that binary,
+    /// so this must be a visible warning rather than an ordinary fall-through.
+    StaleSource(PathBuf),
 }
 
 fn try_fast_path(
@@ -249,6 +260,14 @@ fn try_fast_path(
             }
         };
         if entry.content_hash.is_empty() || actual_hash != entry.content_hash {
+            if !entry.content_hash.is_empty()
+                && actual_hash != entry.content_hash
+                && mtime
+                    .zip(bin_mtime)
+                    .is_some_and(|(source, binary)| source < binary)
+            {
+                return FastPathOutcome::StaleSource(path.to_path_buf());
+            }
             return FastPathOutcome::FallThrough(format!(
                 "source {} content mismatch (sidecar={}, on-disk={})",
                 entry.path, entry.content_hash, actual_hash,
