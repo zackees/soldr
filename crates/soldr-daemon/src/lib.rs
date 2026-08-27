@@ -22,6 +22,7 @@ pub use soldr_core::{core, self_relocate};
 
 /// soldr#2023 — the daemon's single resolution of the compile limit.
 pub(crate) mod amalgamation;
+pub(crate) mod ci_test_report;
 pub(crate) mod compile_limit;
 mod compiler_exit;
 pub mod daemon;

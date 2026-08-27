@@ -77,3 +77,24 @@ fn parallel_failure_cancels_the_sibling_process_tree() {
         "the sibling process tree was not canceled promptly"
     );
 }
+
+#[test]
+fn report_summary_groups_repeated_normalized_identities() {
+    let directory = tempfile::tempdir().expect("report directory");
+    let path = directory.path().join("events.jsonl");
+    std::fs::write(
+        &path,
+        concat!(
+            "{\"identity\":{\"digest\":\"same\"}}\n",
+            "{\"identity\":{\"digest\":\"other\"}}\n",
+            "{\"identity\":{\"digest\":\"same\"}}\n"
+        ),
+    )
+    .expect("write report");
+    let report = summarize_compiler_report(&path).expect("read report");
+    assert_eq!(report.compiler_executions, 3);
+    assert_eq!(report.unique_identities, 2);
+    assert_eq!(report.duplicate_executions, 1);
+    assert_eq!(report.duplicates[0].identity.digest, "same");
+    assert_eq!(report.duplicates[0].executions, 2);
+}

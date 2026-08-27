@@ -1,5 +1,7 @@
 use super::model::{CiTestPlan, Stage};
 use crate::core::SoldrError;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::time::Duration;
@@ -318,6 +320,7 @@ struct StageCommandFactory {
     dylint: crate::dylint_toolchain::DylintToolchainPlan,
     dylint_bin_dirs: Vec<PathBuf>,
     dylint_env: Vec<(String, String)>,
+    ci_test_report_path: PathBuf,
 }
 
 impl StageCommandFactory {
@@ -347,6 +350,21 @@ impl StageCommandFactory {
         let soldr_jobs = plan.resource_limits.soldr_jobs.clone().ok_or_else(|| {
             SoldrError::Other("soldr ci-test: plan has no Soldr job limit".into())
         })?;
+        let paths = crate::core::SoldrPaths::new()?;
+        let report_dir = paths.cache.join("logs").join("ci-test");
+        std::fs::create_dir_all(&report_dir)?;
+        let ci_test_report_path = report_dir.join(format!(
+            "compiler-events-{}-{}.jsonl",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+        ));
+        eprintln!(
+            "soldr ci-test: compiler-unit report will be written to {}",
+            ci_test_report_path.display()
+        );
         Ok(Self {
             soldr: crate::current_soldr_binary()?,
             trust_inherited_soldr_env,
@@ -363,6 +381,7 @@ impl StageCommandFactory {
             },
             dylint_bin_dirs: Vec::new(),
             dylint_env: Vec::new(),
+            ci_test_report_path,
         })
     }
 
@@ -395,6 +414,8 @@ impl StageCommandFactory {
         command.current_dir(&stage.working_directory);
         command.env("CARGO_BUILD_JOBS", &self.cargo_build_jobs);
         command.env("SOLDR_JOBS", &self.soldr_jobs);
+        command.env("SOLDR_CI_TEST_REPORT_PATH", &self.ci_test_report_path);
+        command.env("SOLDR_CI_TEST_STAGE", &stage.name);
         if stage.domain.starts_with("dylint-") {
             for (key, value) in &self.dylint_env {
                 command.env(key, value);
@@ -437,6 +458,116 @@ impl StageCommandFactory {
                 ))
             })
     }
+}
+
+impl Drop for StageCommandFactory {
+    fn drop(&mut self) {
+        let Ok(report) = summarize_compiler_report(&self.ci_test_report_path) else {
+            eprintln!(
+                "soldr ci-test: compiler-unit report has no compiler events (all units may be Fresh): {}",
+                self.ci_test_report_path.display()
+            );
+            return;
+        };
+        let summary_path = self.ci_test_report_path.with_extension("summary.json");
+        if let Err(error) = write_compiler_run_report(&summary_path, &report) {
+            eprintln!(
+                "warning: soldr ci-test: could not write compiler-unit summary {}: {error}",
+                summary_path.display()
+            );
+        }
+        eprintln!(
+            "soldr ci-test: compiler-unit report: {} executions, {} identities, {} duplicate executions; {}",
+            report.compiler_executions,
+            report.unique_identities,
+            report.duplicate_executions,
+            summary_path.display()
+        );
+        if report.duplicate_executions != 0 {
+            for duplicate in report.duplicates {
+                eprintln!(
+                    "warning: soldr ci-test: duplicate compiler identity {} executed {} times: {}",
+                    duplicate.identity.digest,
+                    duplicate.executions,
+                    serde_json::to_string(&duplicate.identity).unwrap_or_default()
+                );
+            }
+        }
+    }
+}
+
+fn summarize_compiler_report(path: &std::path::Path) -> std::io::Result<CompilerRunReport> {
+    let contents = std::fs::read_to_string(path)?;
+    let mut groups: BTreeMap<String, Vec<CompilerEvent>> = BTreeMap::new();
+    for line in contents.lines() {
+        if let Ok(event) = serde_json::from_str::<CompilerEvent>(line) {
+            groups
+                .entry(event.identity.digest.clone())
+                .or_default()
+                .push(event);
+        }
+    }
+    let compiler_executions = groups.values().map(Vec::len).sum();
+    let duplicates: Vec<DuplicateCompilerIdentity> = groups
+        .values()
+        .filter(|events| events.len() > 1)
+        .map(|events| DuplicateCompilerIdentity {
+            identity: events[0].identity.clone(),
+            executions: events.len(),
+            stages: events
+                .iter()
+                .filter_map(|event| event.stage.clone())
+                .collect(),
+        })
+        .collect();
+    let duplicate_executions = duplicates
+        .iter()
+        .map(|duplicate| duplicate.executions.saturating_sub(1))
+        .sum();
+    Ok(CompilerRunReport {
+        schema_version: 1,
+        compiler_executions,
+        unique_identities: groups.len(),
+        duplicate_executions,
+        duplicates,
+    })
+}
+
+fn write_compiler_run_report(
+    path: &std::path::Path,
+    report: &CompilerRunReport,
+) -> std::io::Result<()> {
+    let json = serde_json::to_vec_pretty(report).map_err(std::io::Error::other)?;
+    std::fs::write(path, json)
+}
+
+#[derive(Debug, Serialize)]
+struct CompilerRunReport {
+    schema_version: u32,
+    compiler_executions: usize,
+    unique_identities: usize,
+    duplicate_executions: usize,
+    duplicates: Vec<DuplicateCompilerIdentity>,
+}
+
+#[derive(Debug, Serialize)]
+struct DuplicateCompilerIdentity {
+    identity: CompilerIdentity,
+    executions: usize,
+    stages: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct CompilerEvent {
+    stage: Option<String>,
+    identity: CompilerIdentity,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct CompilerIdentity {
+    digest: String,
+    #[serde(flatten)]
+    fields: BTreeMap<String, serde_json::Value>,
 }
 
 fn prepend_command_path(command: &mut Command, prefixes: &[PathBuf]) -> Result<(), SoldrError> {
