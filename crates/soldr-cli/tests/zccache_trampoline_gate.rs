@@ -2,7 +2,7 @@
 
 #![allow(clippy::print_stdout)]
 
-use std::process::{Command, Output};
+use std::process::Output;
 
 use serde_json::Value;
 
@@ -10,6 +10,7 @@ mod common;
 
 struct EntryEnv {
     cache_dir: tempfile::TempDir,
+    home_dir: tempfile::TempDir,
     namespace: String,
 }
 
@@ -17,6 +18,7 @@ impl EntryEnv {
     fn new(tag: &str) -> Self {
         Self {
             cache_dir: tempfile::tempdir().expect("create temp cache dir"),
+            home_dir: tempfile::tempdir().expect("create temp home dir"),
             namespace: format!("soldr-gate-{tag}-{}", std::process::id()),
         }
     }
@@ -26,13 +28,15 @@ impl EntryEnv {
     }
 
     fn run_spec(&self, spec: &str, args: &[&str]) -> Output {
-        Command::new(common::soldr_bin())
+        common::isolated_soldr_command()
             .arg(spec)
             .args(args)
             // Keep every compatibility probe inside this test's Soldr-owned
             // root.  `ZCCACHE_CACHE_DIR` below is an inherited upstream
             // sentinel: the command must not adopt it as the daemon root.
             .env("SOLDR_CACHE_DIR", self.cache_dir.path())
+            .env("HOME", self.home_dir.path())
+            .env("USERPROFILE", self.home_dir.path())
             .env("ZCCACHE_CACHE_DIR", self.cache_dir.path())
             .env("ZCCACHE_DAEMON_NAMESPACE", &self.namespace)
             .output()
@@ -55,7 +59,10 @@ fn spawning_subcommand_is_refused_with_embedded_hint() {
     let text = combined(&output);
     assert!(!output.status.success(), "output: {text}");
     assert_eq!(output.status.code(), Some(2), "output: {text}");
-    assert!(text.contains("embedded") && text.contains("soldr"), "output: {text}");
+    assert!(
+        text.contains("embedded") && text.contains("soldr"),
+        "output: {text}"
+    );
     assert!(!text.contains("upstream"), "output: {text}");
 }
 
@@ -64,7 +71,10 @@ fn status_subcommand_is_refused() {
     let output = EntryEnv::new("status").run(&["status"]);
     let text = combined(&output);
     assert_eq!(output.status.code(), Some(2), "output: {text}");
-    assert!(text.contains("embedded") && text.contains("soldr status"), "output: {text}");
+    assert!(
+        text.contains("embedded") && text.contains("soldr status"),
+        "output: {text}"
+    );
     assert!(!text.contains("fetch"), "output: {text}");
 }
 
@@ -78,7 +88,11 @@ fn cache_root_uses_soldr_owned_resolution() {
     assert_eq!(json["owner"], "soldr");
     let root = json["cache_root"].as_str().expect("cache root string");
     assert!(root.contains("zccache"), "root: {root}");
-    assert_ne!(root, env.cache_dir.path().to_string_lossy(), "must ignore inherited ZCCACHE_CACHE_DIR");
+    assert_ne!(
+        root,
+        env.cache_dir.path().to_string_lossy(),
+        "must ignore inherited ZCCACHE_CACHE_DIR"
+    );
 }
 
 #[test]
@@ -100,13 +114,14 @@ fn session_end_id_json_routes_to_native_soldr_command() {
 
 #[test]
 fn session_end_legacy_positional_id_remains_a_native_alias() {
-    let output = EntryEnv::new("sessionend-positional").run(&[
-        "session-end",
-        "00000000-0000-0000-0000-000000000002",
-    ]);
+    let output = EntryEnv::new("sessionend-positional")
+        .run(&["session-end", "00000000-0000-0000-0000-000000000002"]);
     let text = combined(&output);
     assert!(output.status.success(), "output: {text}");
-    assert!(text.contains("session-end: 00000000-0000-0000-0000-000000000002"), "output: {text}");
+    assert!(
+        text.contains("session-end: 00000000-0000-0000-0000-000000000002"),
+        "output: {text}"
+    );
     assert!(!text.contains("upstream"), "output: {text}");
 }
 
@@ -123,12 +138,18 @@ fn help_and_no_args_are_reserved_without_fetching() {
     let help = env.run(&["--help"]);
     let help_text = combined(&help);
     assert!(help.status.success(), "output: {help_text}");
-    assert!(help_text.contains("compatibility commands"), "output: {help_text}");
+    assert!(
+        help_text.contains("compatibility commands"),
+        "output: {help_text}"
+    );
 
     let bare = env.run(&[]);
     let bare_text = combined(&bare);
     assert_eq!(bare.status.code(), Some(2), "output: {bare_text}");
-    assert!(bare_text.contains("compatibility commands"), "output: {bare_text}");
+    assert!(
+        bare_text.contains("compatibility commands"),
+        "output: {bare_text}"
+    );
     assert!(!bare_text.contains("fetch"), "output: {bare_text}");
 }
 
@@ -137,26 +158,43 @@ fn version_selector_is_rejected_without_external_resolution() {
     let output = EntryEnv::new("selector").run_spec("zccache@1.2.3", &["cache-root"]);
     let text = combined(&output);
     assert_eq!(output.status.code(), Some(2), "output: {text}");
-    assert!(text.contains("version selectors are unsupported"), "output: {text}");
+    assert!(
+        text.contains("version selectors are unsupported"),
+        "output: {text}"
+    );
     assert!(text.contains("embedded in soldr"), "output: {text}");
     assert!(!text.contains("fetch"), "output: {text}");
 }
 
 #[test]
 fn retired_and_unsupported_forms_have_migration_guidance() {
-    for args in [["rust-plan"].as_slice(), ["unknown-upstream-command"].as_slice()] {
+    for args in [
+        ["rust-plan"].as_slice(),
+        ["unknown-upstream-command"].as_slice(),
+    ] {
         let output = EntryEnv::new("retired").run(args);
         let text = combined(&output);
-        assert_eq!(output.status.code(), Some(2), "args={args:?} output: {text}");
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "args={args:?} output: {text}"
+        );
         assert!(text.contains("soldr cargo"), "args={args:?} output: {text}");
-        assert!(!text.contains("upstream"), "args={args:?} output: {text}");
+        assert!(!text.contains("fetch"), "args={args:?} output: {text}");
     }
 }
 
 #[test]
-fn no_spawn_guard_leaves_no_daemon_runtime_copy() {
+fn stop_targets_soldr_daemon_and_leaves_no_upstream_runtime_copy() {
     let env = EntryEnv::new("nospawn");
-    let _ = env.run(&["stop"]);
+    let stop = env.run(&["stop"]);
+    let text = combined(&stop);
+    assert!(stop.status.success(), "output: {text}");
+    assert!(
+        text.contains("soldr-daemon: not running") || text.contains("soldr-daemon: stopped"),
+        "stop must report the Soldr daemon target, not an inherited upstream endpoint: {text}"
+    );
+    assert!(!text.contains("zccache-daemon"), "output: {text}");
     let mut stack = vec![env.cache_dir.path().to_path_buf()];
     while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
