@@ -156,14 +156,27 @@ fn a_real_grandchild_tree_is_killed_whole() {
 
     let (mut child, grandchildren) = spawn_cmd_with_ping_grandchild();
     let root = child.id();
+    let grandchild = *grandchildren.first().expect("ping grandchild");
+    // Open this query-only handle before termination. It remains bound to the
+    // original ping process even after the pid becomes reusable, so its exit
+    // FILETIME is the same proof production relies on.
+    let observed = TrackedDescendant::open(grandchild).expect("open query handle");
+    let started = Instant::now();
 
-    // `ProcessKilled` is the truthful result when the production verification
-    // budget expires with a live descendant. This test's invariant is stronger
-    // and different: the descendant must eventually be gone. Keep the
-    // production two-second bound strict, then give only this real-process
-    // fixture time to observe asynchronous Windows reaping.
-    terminate_tree(&mut child).expect("terminate tree");
+    assert_eq!(
+        terminate_tree(&mut child).expect("terminate tree"),
+        TreeKill::TreeKilled
+    );
     let _ = child.wait();
+    assert!(
+        started.elapsed() <= VERIFY_BUDGET,
+        "tree verification exceeded its fixed two-second budget"
+    );
+    assert_ne!(
+        observed.times().expect("query retained handle").exited,
+        0,
+        "the pre-opened grandchild handle must report its exit FILETIME"
+    );
 
     // Poll: TerminateProcess is asynchronous, so a pid can linger briefly.
     // `is_alive` reads the exit code rather than merely opening a handle --
@@ -187,200 +200,77 @@ fn a_real_grandchild_tree_is_killed_whole() {
     }
 }
 
-/// A sweep that could not look must not read as a sweep that found nothing
-/// (soldr#2806).
-///
-/// `surviving_descendants` used to map a failed `CreateToolhelp32Snapshot` to
-/// an empty vector, and an empty vector is the success condition -- so a
-/// snapshot that could not be taken returned `TreeKilled`: a *verified* kill
-/// that verified nothing. `terminate_tree`'s initial enumeration already
-/// refuses to do this and says why, so the verification loop doing the opposite
-/// was an asymmetry rather than a judgement call.
-///
-/// Pure, because the failure it guards is a transient Windows API error this
-/// host does not reproduce -- `CreateToolhelp32Snapshot` returns
-/// `ERROR_BAD_LENGTH` when the process list shifts under it, which is likelier
-/// on the loaded runner where soldr#2806 was seen.
 #[test]
-fn a_failed_snapshot_is_not_an_empty_tree() {
-    assert_eq!(classify_sweep(None), Sweep::Unknown);
-    assert_eq!(classify_sweep(Some(Vec::new())), Sweep::Clear);
-    assert_ne!(
-        classify_sweep(None),
-        classify_sweep(Some(Vec::new())),
-        "could-not-enumerate and nothing-survived must stay distinct: only the          second may end the verification loop with TreeKilled"
-    );
-}
-
-#[test]
-fn a_sweep_that_finds_survivors_names_them() {
+fn query_only_and_terminate_only_accesses_avoid_synchronize() {
+    assert_eq!(PROCESS_QUERY_LIMITED_INFORMATION, 0x1000);
+    assert_eq!(PROCESS_TERMINATE, 0x0001);
     assert_eq!(
-        classify_sweep(Some(vec![200, 300])),
-        Sweep::Survivors(vec![200, 300])
-    );
-}
-
-// ---- soldr#2806: the orphaned grandchild ----------------------------------
-
-/// The gap this fix closes, and the exact boundary of the negative result
-/// pinned by `a_dead_root_still_exposes_its_grandchildren` above.
-///
-/// That test proves the walk survives a **dead root**, and it does: entries
-/// keep their `th32ParentProcessID`, and `collect_descendants` matches edges by
-/// parent pid, so `root` never has to be a node for its own children to be
-/// found. Its fixture is `cmd -> ping` where `ping`'s parent *is* the root, so
-/// "its parent dies" and "the root dies" are the same event there.
-///
-/// One level deeper they are not. With `root -> A -> B`, an `A` that has exited
-/// is absent from the snapshot entirely: nothing has `ppid == root`, and `B`'s
-/// edge names a pid that is not a node, so there is no way to bridge it. The
-/// walk returns empty while `B` runs on.
-///
-/// This is **not** the failure recorded in soldr#2806 -- that one was a failed
-/// snapshot reported as an empty tree, fixed in #2812. It is a second way the
-/// same verification can conclude "clean" over a live descendant, found while
-/// checking whether #2806 was fully closed.
-#[test]
-fn the_walk_cannot_bridge_a_dead_intermediate() {
-    // root 100 -> A 200 -> B 300, with A exited and so absent from the snapshot.
-    let orphaned = vec![(300u32, 200u32)];
-    assert!(
-        collect_descendants(&orphaned, 100).is_empty(),
-        "nothing has ppid == root, and B's parent is not a node to walk through"
-    );
-
-    // A direct child of a dead root is still found -- the case the negative
-    // result above pins, kept here so the boundary is visible in one place.
-    let direct = vec![(300u32, 100u32)];
-    assert_eq!(collect_descendants(&direct, 100), vec![300]);
-
-    // With the intermediate alive the same walk finds both.
-    let intact = vec![(200u32, 100u32), (300u32, 200u32)];
-    assert_eq!(collect_descendants(&intact, 100), vec![200, 300]);
-}
-
-#[test]
-fn remembered_start_times_are_looked_up_by_pid() {
-    let known = vec![(200u32, 10u64), (300u32, 42u64)];
-    assert_eq!(recorded_start(&known, 200), Some(10));
-    assert_eq!(recorded_start(&known, 300), Some(42));
-    assert_eq!(
-        recorded_start(&known, 999),
-        None,
-        "a pid that was never remembered carries no identity to check"
-    );
-}
-
-/// The behaviour the whole change rests on: a descendant the walk can no
-/// longer reach is still checked, because it is still remembered.
-///
-/// Written against injected probes rather than a real tree -- the shape it
-/// describes (a dead intermediate, an orphan still running) is the one that
-/// takes a loaded CI host to produce naturally.
-#[test]
-fn a_remembered_pid_the_walk_lost_is_still_reported_alive() {
-    let known = vec![(300u32, 10u64)];
-    let survivors = live_descendants(
-        // The walk reaches nothing: the intermediate has exited.
-        &[],
-        &known,
-        |pid| pid == 300,
-        |_| Some(10),
+        PROCESS_QUERY_LIMITED_INFORMATION & SYNCHRONIZE,
+        0,
+        "the retained identity handle must work under a token that denies SYNCHRONIZE"
     );
     assert_eq!(
-        survivors,
-        vec![300],
-        "an orphan is exactly what the verification sweep must not miss"
+        PROCESS_TERMINATE & SYNCHRONIZE,
+        0,
+        "the termination request must not require a waitable handle"
     );
 }
 
 #[test]
-fn a_remembered_pid_that_has_died_is_not_a_survivor() {
-    let known = vec![(300u32, 10u64)];
-    assert!(live_descendants(&[], &known, |_| false, |_| Some(10)).is_empty());
-}
-
-/// A recycled pid must not keep the sweep from reporting `Clear`, and must not
-/// be handed to `terminate_descendant`.
-#[test]
-fn a_remembered_pid_now_held_by_a_stranger_is_not_a_survivor() {
-    let known = vec![(300u32, 10u64)];
-    let survivors = live_descendants(
-        &[],
-        &known,
-        // Something is alive at that pid...
-        |pid| pid == 300,
-        // ...but it started later, so it is not the process we tracked.
-        |_| Some(99),
-    );
-    assert!(
-        survivors.is_empty(),
-        "a stranger holding a recycled pid is not our descendant"
-    );
+fn query_only_handle_and_successful_terminate_can_prove_completion() {
+    let before = ProcessTimes {
+        created: 10,
+        exited: 0,
+    };
+    let after = ProcessTimes {
+        created: 10,
+        exited: 99,
+    };
+    assert!(is_same_process(10, Some(before.created)));
+    assert!(completion_proven(10, Some(after), terminate_request_succeeded(true)));
 }
 
 #[test]
-fn reachable_and_remembered_are_both_checked_without_duplication() {
-    let known = vec![(300u32, 10u64)];
-    let survivors = live_descendants(&[200, 300], &known, |_| true, |_| Some(10));
-    assert_eq!(survivors, vec![200, 300]);
-}
-
-/// The hole an earlier draft of this change had, kept as a regression test.
-///
-/// That draft treated an unreadable creation time as "same process", on the
-/// reasoning `terminate_descendant` already applies to a *fresh* pid. It does
-/// not carry over to a remembered one: a pid we can no longer identify has, as
-/// far as we can prove, been handed to somebody else -- and a wrong answer here
-/// terminates that somebody. Reporting `ProcessKilled` instead of `TreeKilled`
-/// is the cheaper mistake, and is the claim this module already falls back to.
-#[test]
-fn a_remembered_pid_whose_identity_cannot_be_read_is_not_a_survivor() {
-    let known = vec![(300u32, 10u64)];
-    let survivors = live_descendants(
-        &[],
-        &known,
-        // Something is alive at that pid...
-        |pid| pid == 300,
-        // ...but its creation time cannot be read, so it cannot be shown to be
-        // the descendant we recorded.
-        |_| None,
-    );
-    assert!(
-        survivors.is_empty(),
-        "an unprovable identity must not authorise a kill"
-    );
-}
-
-/// A pid the walk still reaches needs no recorded identity: the snapshot it
-/// came from is itself the evidence, which is why the two sources differ.
-#[test]
-fn a_reachable_pid_needs_no_recorded_identity() {
-    let survivors = live_descendants(&[200], &[], |_| true, |_| None);
-    assert_eq!(survivors, vec![200]);
+fn a_false_terminate_bool_prevents_tree_killed() {
+    assert!(!completion_proven(
+        10,
+        Some(ProcessTimes {
+            created: 10,
+            exited: 99,
+        }),
+        terminate_request_succeeded(false)
+    ));
 }
 
 #[test]
-fn identity_is_pid_and_creation_time_together() {
-    assert!(is_same_process(10, Some(10)));
-    assert!(
-        !is_same_process(10, Some(11)),
-        "same pid, different start: a recycled pid, not our descendant"
-    );
-    assert!(
-        !is_same_process(10, None),
-        "unreadable start proves nothing, so it cannot prove sameness"
-    );
+fn query_or_identity_failure_prevents_tree_killed() {
+    assert!(!completion_proven(10, None, true));
+    assert!(!completion_proven(
+        10,
+        Some(ProcessTimes {
+            created: 11,
+            exited: 99,
+        }),
+        true
+    ));
 }
 
 #[test]
-fn observed_handle_wait_is_bounded_without_wraparound() {
-    use std::time::Duration;
+fn an_unqueryable_fresh_descendant_is_still_terminated_best_effort() {
+    let mut requested = Vec::new();
+    terminate_pids_leaves_first(&[200, 300], |pid| requested.push(pid));
+    assert_eq!(requested, vec![300, 200]);
+}
 
-    assert_eq!(bounded_wait_millis(Duration::from_millis(25)), 25);
-    assert_eq!(
-        bounded_wait_millis(Duration::from_millis(u64::MAX)),
-        u32::MAX,
-        "a huge duration must stay bounded instead of wrapping into a short wait"
-    );
+#[test]
+fn pid_reuse_is_a_new_identity_even_with_the_same_pid() {
+    let original = ProcessTimes {
+        created: 10,
+        exited: 50,
+    };
+    let recycled = ProcessTimes {
+        created: 99,
+        exited: 0,
+    };
+    assert!(!completion_proven(original.created, Some(recycled), true));
 }
