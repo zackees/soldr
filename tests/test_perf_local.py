@@ -26,19 +26,28 @@ def test_docker_image_bootstraps_with_amalgamation_safe_published_soldr() -> Non
     bootstrap = re.search(
         r"^ARG SOLDR_BOOTSTRAP_VERSION=(\d+)\.(\d+)\.(\d+)$", dockerfile, re.M
     )
-    assert bootstrap, (
-        "Docker bootstrap version must remain an explicit published SemVer pin"
-    )
+    assert (
+        bootstrap
+    ), "Docker bootstrap version must remain an explicit published SemVer pin"
     version = tuple(map(int, bootstrap.groups()))
     assert version >= (0, 9, 6), (
         "Soldr 0.9.6 is the minimum bootstrap carrying zccache's "
         "amalgamation-exclusive admission gate; older bootstraps can OOM an 8 GiB runner"
     )
-    assert version == (0, 9, 10), (
-        "keep the bootstrap on the repository's current published release"
-    )
+    assert version == (
+        0,
+        9,
+        10,
+    ), "keep the bootstrap on the repository's current published release"
     assert '"soldr==${SOLDR_BOOTSTRAP_VERSION}"' in dockerfile
     assert "/opt/soldr-bootstrap/bin/soldr --version" in dockerfile
+    assert (
+        'ENV SOLDR_CACHE_DIR="/root/.soldr/bootstrap-v${SOLDR_BOOTSTRAP_VERSION}"'
+        in dockerfile
+    ), (
+        "The persistent bootstrap cache/runtime root must be scoped by the explicit "
+        "published bootstrap version, so a retained older daemon cannot service it."
+    )
     for profile in (
         "DEV",
         "TEST",

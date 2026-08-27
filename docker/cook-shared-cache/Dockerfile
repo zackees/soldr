@@ -91,6 +91,12 @@ RUN python3 -m venv /opt/soldr-bootstrap \
     && test "$(/opt/soldr-bootstrap/bin/soldr --version)" = \
        "soldr ${SOLDR_BOOTSTRAP_VERSION}"
 
+# The bootstrap's daemon and embedded-cache state live on the persistent
+# `/root/.soldr` volume. Scope that state by the published bootstrap version:
+# otherwise a daemon restored from an older image can service the new bootstrap
+# through the shared socket/cache route and silently bypass its newer
+# amalgamation-admission policy.
+ENV SOLDR_CACHE_DIR="/root/.soldr/bootstrap-v${SOLDR_BOOTSTRAP_VERSION}"
 ENV PATH="/opt/soldr-bootstrap/bin:${PATH}"
 
 # CARGO_HOME explicit so the `soldr-perf-cargo-home` named volume mount
