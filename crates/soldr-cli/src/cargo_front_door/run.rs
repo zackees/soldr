@@ -589,8 +589,11 @@ pub(crate) async fn run_cargo_front_door(
     profile.finish_labeled("cargo front door", "pre_spawn_tail");
     let nested_cargo_target_dir = cache_plan.target_dir_for_nested_cargo_guard(args);
     let cargo_run_result: CargoRunResult = if capture_cargo_artifacts {
-        let target_dir = nested_cargo_target_dir
-            .clone()
+        // Artifact capture remains best-effort and may use the normal hook
+        // resolver. The nested-Cargo guard below is deliberately stricter:
+        // an unproven outer target must never authorize an inner target.
+        let target_dir = cache_plan
+            .target_dir_for_hooks(args)
             .unwrap_or_else(|| disk::cargo_disk_space_probe_path(args));
         run_command_capturing_cargo_json(&mut command, &target_dir, cargo_wait_timeout)
             .map(|(status, captured, paths)| (status, Some(captured), Some(paths)))
