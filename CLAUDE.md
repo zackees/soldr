@@ -62,7 +62,7 @@ uv run maturin build --release         # Build wheel
 
 ## Architecture
 
-**Internal workspace split (#1490).** The 2026-05 monocrate collapse is being reversed into `publish = false` internal crates (the zccache pattern, no amalgamation): all five phases have landed: `soldr-core`, `soldr-fetch`, `soldr-cache`, and `soldr-daemon` are extracted, with `soldr-cli` as the facade + `[[bin]]` crate. soldr publishes no crates, so workspace membership has no external surface — the old `monocrate_guard.rs` test was deleted with the split. `crates/soldr-cli/tests/no_timed_test_guard.rs` walks every workspace crate under `crates/`.
+**Internal workspace split (#1490).** The 2026-05 monocrate collapse is being reversed into `publish = false` internal crates (the zccache pattern, no amalgamation): all five phases have landed: `soldr-core`, `soldr-fetch`, `soldr-cache`, and `soldr-daemon` are extracted, with `soldr-cli` as the facade + `[[bin]]` crate. soldr publishes no crates, so workspace membership has no external surface — the old `monocrate_guard.rs` test was deleted with the split. `crates/soldr-cli/tests/guards/no_timed_test_guard.rs` walks every workspace crate under `crates/`.
 
 - **`crates/soldr-core`** — foundation crate: shared types, config (`~/.soldr/config.toml`), target triple resolution (MSVC default on Windows at runtime), error types, the daemon wire schema (`core::wire`), Windows Defender exclusion plumbing (`defender`), and `self_relocate`. No I/O beyond config files. soldr-cli re-exports all of it at the old paths (`soldr_cli::core`, `soldr_cli::defender`, …), so consumers are unchanged.
 - **`crates/soldr-fetch`** — Binary resolution (re-exported as `soldr_cli::fetch`; `build.rs` + `embed/` live with it since `OUT_DIR` is per-crate). Ships several sub-modules:
@@ -245,7 +245,7 @@ comparison. That is too fragile a mechanism for finding this class.
   (`[workspace.package].rust-version`). The MSRV and the pinned toolchain are
   the same version — soldr does not support building on an older compiler, so
   "will this still build on the MSRV?" is never a reason to avoid a newer std
-  API. Guarded by `crates/soldr-cli/tests/msrv_doc_matches_manifest.rs`.
+  API. Guarded by `crates/soldr-cli/tests/guards/msrv_doc_matches_manifest.rs`.
 - Python >=3.10 (for PyPI distribution via Maturin)
 - uv for Python dependency management
 - Workspace dependencies shared in root `Cargo.toml`
@@ -258,7 +258,7 @@ When opening a release PR, **three files must be bumped in lockstep** or every C
 2. `package.json` — top-level `"version"`.
 3. `Cargo.lock` — the `soldr-cli` package's `version` field. Refresh with a no-op build (`soldr cargo build -p soldr-cli`) AFTER bumping `Cargo.toml`, then `git add Cargo.lock` so the new version is committed alongside the other two.
 
-The regression guard at `crates/soldr-cli/tests/version_lockstep.rs` reads all three files and asserts they match — `soldr cargo test -p soldr-cli --test version_lockstep` (or any full `cargo test` run) fails the build if any of the three drifts. The same test runs on every PR via the `Lint` job.
+The regression guard at `crates/soldr-cli/tests/guards/version_lockstep.rs` reads all three files and asserts they match — `soldr cargo test -p soldr-cli --test guards version_lockstep::` (or any full `cargo test` run) fails the build if any of the three drifts. The same test runs on every PR via the `Lint` job.
 
 A pre-merge `cargo metadata --frozen` would also catch the trap (it refuses to run when the lockfile is stale relative to manifests) but adds a separate workflow. The in-tree test covers the same ground with no CI plumbing.
 
@@ -287,7 +287,7 @@ worker.
 Do not move the pin ahead of a published zccache release. Besides the crate,
 Soldr release staging needs all six platform support archives. Run
 `.github/scripts/check_zccache_asset.py` before updating the exact dependency;
-`crates/soldr-cli/tests/version_lockstep.rs` enforces manifest/lock agreement
+`crates/soldr-cli/tests/guards/version_lockstep.rs` enforces manifest/lock agreement
 and the single-codegen profile for the amalgamated crate.
 
 ## Updating the external zccache and running-process pins
@@ -361,9 +361,9 @@ The repo builds itself through soldr so every contributor populates and hits the
 See `docs/CONTRIBUTING_TESTS.md` for the portable/native test boundary and how
 platform behavioral tests reach the target-run lanes.
 
-- **Linked test products are never cached, and test-target fan-out is a real cost (soldr#2931)**: test executables invalidate on every workspace source edit and each top-level file under `crates/*/tests/` links the full soldr graph into its own binary — ~110 of them produced a 3.3 GB nextest archive that exhausted a CI runner. Never wire a workflow, cache layer, or guard that persists test binaries (or benches/examples/doctest products/test incremental state) into a cross-run store; the cache hierarchy is cook → per-unit zccache → nothing (see `docs/CI_CACHE.md` § Cache Ownership And Priority). Prefer adding new tests as modules of an existing test target over new top-level files; soldr#2934 tracks the category consolidation.
+- **Linked test products are never cached, and test-target fan-out is a real cost (soldr#2931)**: test executables invalidate on every workspace source edit and each top-level file under `crates/*/tests/` links the full soldr graph into its own binary — ~110 of them produced a 3.3 GB nextest archive that exhausted a CI runner. Never wire a workflow, cache layer, or guard that persists test binaries (or benches/examples/doctest products/test incremental state) into a cross-run store; the cache hierarchy is cook → per-unit zccache → nothing (see `docs/CI_CACHE.md` § Cache Ownership And Priority). Prefer adding new tests as modules of an existing test target over new top-level files; soldr#2934 consolidated the soldr-cli integration tests into eight category targets (`broker`, `daemon`, `cargo_front_door`, `cache_gc`, `cook_dylint`, `fetch_tools`, `toolchain_env`, `guards`), each a directory of module files behind one `main.rs`. Selecting a single module is `--test <category>` plus a filter — `-E 'test(/^<module>::/)'` under nextest, a positional `<module>::` under plain `cargo test`.
 - **Tests are plain `#[test]`; timeouts belong to nextest (soldr#2493)**: Write ordinary `#[test]` functions. Per-test wall-clock budgets are configured in `.config/nextest.toml` as `slow-timeout = { period, terminate-after }` — the default is `60s × 2 = 120s`, and the twelve tests that need longer carry `[[profile.default.overrides]]` entries keyed by `test(=name)`. **Run the suite with `soldr cargo nextest run`, not `soldr cargo test`**: under plain `cargo test` nothing bounds a hung test at all.
-- **Why the `timed_test!` watchdog was removed**: it ran each body on a worker thread and called `std::process::abort()` on expiry. Two failures no tuning fixes. (1) *The diagnostic was invisible.* The banner went through `eprintln!`, which libtest captures; a captured buffer is only printed when libtest reports a result, and `abort()` guarantees that never happens — CI saw a bare `signal: 6, SIGABRT`. The macro's own docs told you to re-run with `--nocapture`, useless for a failure that already happened. (2) *The blast radius was the whole binary.* `abort()` killed every other test in the process; in soldr#2517's Linux lane a 60 s test's expiry killed a 120 s test that was 60 s in and blameless. nextest runs each test in its own process, so a timeout names one test, preserves its captured output, and kills only that test. `crates/soldr-cli/tests/no_timed_test_guard.rs` fails the build if `timed_test` reappears anywhere under `crates/`.
+- **Why the `timed_test!` watchdog was removed**: it ran each body on a worker thread and called `std::process::abort()` on expiry. Two failures no tuning fixes. (1) *The diagnostic was invisible.* The banner went through `eprintln!`, which libtest captures; a captured buffer is only printed when libtest reports a result, and `abort()` guarantees that never happens — CI saw a bare `signal: 6, SIGABRT`. The macro's own docs told you to re-run with `--nocapture`, useless for a failure that already happened. (2) *The blast radius was the whole binary.* `abort()` killed every other test in the process; in soldr#2517's Linux lane a 60 s test's expiry killed a 120 s test that was 60 s in and blameless. nextest runs each test in its own process, so a timeout names one test, preserves its captured output, and kills only that test. `crates/soldr-cli/tests/guards/no_timed_test_guard.rs` fails the build if `timed_test` reappears anywhere under `crates/`.
 - **What nextest does *not* do**: there is no thread-stack dump on timeout. On Unix it sends `SIGTERM`, waits `grace-period`, then `SIGKILL`; on Windows it kills the job object with no grace window. If stack dumps are ever wanted, the `SIGTERM` window is the hook.
 - **Triaging a red lane that shows a timeout**: nextest prints `TIMEOUT [> Ns] <crate>::<binary> <test_name>` and retains that test's output.
   1. Take the test name from the `TIMEOUT` line — it is the test that blew its budget, and no longer takes any other test down with it.

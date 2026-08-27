@@ -31,7 +31,7 @@ run_step "Build workspace" "${CARGO[@]}" build --workspace
 # unbounded -- a hung test would sit until the caller gives up.
 run_step "Run library tests" "${CARGO[@]}" nextest run --workspace --lib
 run_step "Run CLI smoke tests" "${CARGO[@]}" nextest run -p soldr-cli --tests
-run_step "Run fetch integration test" "${CARGO[@]}" nextest run -p soldr-cli --test fetch_crgx
+run_step "Run fetch integration test" "${CARGO[@]}" nextest run -p soldr-cli --test fetch_tools -E 'test(/^fetch_crgx::/)'
 run_step "Install Python dev tools" ./install
 run_step "Run Python wrapper tests" uv run --no-sync pytest -n auto tests -v --durations=0
 

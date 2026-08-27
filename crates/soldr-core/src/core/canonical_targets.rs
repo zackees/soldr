@@ -26,8 +26,9 @@
 //!
 //! The workspace metadata block is **kept** (`Cargo.toml`
 //! `[workspace.metadata.soldr]`) as the project-pinned form. A unit
-//! test in `tests/canonical_targets_parity.rs` asserts the two
-//! lists agree byte-for-byte at build time so they cannot drift.
+//! test in `crates/soldr-cli/tests/guards/canonical_targets_parity.rs`
+//! asserts the two lists agree byte-for-byte at build time so they
+//! cannot drift.
 
 /// Soldr's canonical 9-target list. Order is stable — callers may
 /// iterate it deterministically.

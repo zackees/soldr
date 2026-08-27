@@ -22,18 +22,22 @@ with `#![cfg(windows)]` when the target is host-specific end to end), and
 explain the assumption and its failure mode in module documentation. Every
 top-level file in `tests/` is compiled as its own executable statically
 linking the full soldr graph; that per-file fan-out is how the suite reached
-~110 linked binaries and a 3.3 GB CI archive (soldr#2931). Reserve a new test
-target for a genuinely new domain; soldr#2934 tracks the module-based
-category layout. Use deterministic fixtures where
+~110 linked binaries and a 3.3 GB CI archive (soldr#2931). soldr#2934 collapsed
+the `crates/soldr-cli` half of that fan-out into eight category test binaries —
+`broker`, `daemon`, `cargo_front_door`, `cache_gc`, `cook_dylint`,
+`fetch_tools`, `toolchain_env`, `guards` — each a `tests/<category>/main.rs`
+that declares its sibling files as modules. Add a new contract as a module in
+the category it belongs to; reserve a new category (and therefore a new linked
+binary) for a genuinely new domain. Use deterministic fixtures where
 possible and print an explicit skip reason when a test genuinely depends on
 host-installed tooling.
 
-`crates/soldr-cli/tests/windows_delete_semantics.rs` is the reference example:
-it pins Windows deletion behavior that had previously been inferred from a
-different API. Executable Rust tests are plain `#[test]` functions; per-test
-timeouts come from cargo-nextest (`.config/nextest.toml`), and the workspace
-guard in `crates/soldr-cli/tests/no_timed_test_guard.rs` keeps the removed
-`timed_test!` watchdog from returning (soldr#2493).
+`crates/soldr-cli/tests/cache_gc/windows_delete_semantics.rs` is the reference
+example: it pins Windows deletion behavior that had previously been inferred
+from a different API. Executable Rust tests are plain `#[test]` functions;
+per-test timeouts come from cargo-nextest (`.config/nextest.toml`), and the
+workspace guard in `crates/soldr-cli/tests/guards/no_timed_test_guard.rs` keeps
+the removed `timed_test!` watchdog from returning (soldr#2493).
 
 On Unix hosts, Nextest runs each test through
 `.github/scripts/nextest_timeout_wrapper.py`. When Nextest's per-test timeout
@@ -45,6 +49,50 @@ Other Unix hosts still get termination and output draining but currently lack
 a thread dumper. Windows Nextest timeouts kill their job object immediately,
 so the graceful hook cannot run there; output captured before termination is
 still retained by Nextest.
+
+## Naming a failing test (soldr#2934)
+
+Since the category consolidation, a `crates/soldr-cli` integration test's full
+ID is:
+
+```
+<category_binary>::<module>::<test_name>
+```
+
+for example `cargo_front_door::cli_cargo_wrappers::cargo_fmt_routes_rustfmt_through_zccache_formatter`.
+The `<module>` segment is the file the test lives in — the same name it used to
+have as a standalone test binary. Tests in `crates/soldr-daemon/tests/` and
+`crates/soldr-cache/tests/` did not move and keep one binary per file; unit
+tests inside a crate's `src/` are named by their full module path
+(`daemon::session_serve::tests::<test_name>`).
+
+Nextest's failure and timeout lines print the binary and the test name in two
+pieces — `TIMEOUT [> Ns] <crate>::<binary> <module>::<test_name>` — so the
+module prefix appears on the name side, not the binary side. Reproduce a single
+test with `soldr cargo nextest run --test <category_binary> -E
+'test(=<module>::<test_name>)'`.
+
+Triage is otherwise unchanged: take the name from the failing line, ask whether
+that test can even reach your change, **rerun the failed job before blaming the
+PR** (these lanes time out on `main` too under runner contention), and diff a
+red lane against `main` *by test name*, not by lane name. Only raise a budget
+when the test is legitimately long.
+
+Two consequences for `.config/nextest.toml`, which grants extended budgets and
+test-group membership through filtersets:
+
+- `binary(<old_file_name>)` no longer selects anything. The equivalent is
+  `binary(<category>) & test(/^<module>::/)` — `test(/.../)` is nextest's regex
+  matcher and `^` anchors the module prefix to the start of the test name.
+- `test(=<test_name>)` no longer selects anything. It must be written
+  module-qualified: `test(=<module>::<test_name>)`.
+
+**Nextest does not error on a filter that matches nothing.** It is silently
+ignored, the test drops back to the default 60s × 2 budget, and the regression
+surfaces later as a bogus `TIMEOUT` with nothing pointing at the config. So
+whenever a test is renamed or moves between modules, re-verify every filter that
+names it with `cargo nextest list -E '<filter>'`; an empty selection means the
+filter is dead.
 
 ## How native tests reach CI
 
@@ -86,5 +134,9 @@ When a change relies on host behavior:
   still execute every test — within the archive's explicit byte/disk budget
   (soldr#2931: linked test products are ephemeral transport, never cached, and
   the bundle must stay compact and single-extraction); and
-- validate host failures by test name, comparing known runner flakes against
-  `main` before changing a nextest budget.
+- validate host failures by test name — now `<category_binary>::<module>::<test_name>`
+  — comparing known runner flakes against `main` before changing a nextest
+  budget; and
+- if the change renames a test or moves it between modules, re-verify every
+  `.config/nextest.toml` filter that names it (a filter matching nothing is
+  silently ignored, not an error — see "Naming a failing test" above).

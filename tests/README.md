@@ -19,14 +19,30 @@ uv run --no-sync pytest tests/test_nextest_archive_cacheability.py --cacheabilit
 
 That check runs `ci/assert_nextest_archive_cacheability.py`, which builds
 the full `soldr cargo nextest archive --workspace` path twice in
-Linux Docker. It forces the warm pass with `cargo clean` and a soldr cache
-daemon restart, then fails unless the warm zccache report has positive hits
-and zero misses.
+Linux Docker, forcing the warm pass with `cargo clean` and a soldr cache
+daemon restart.
 
-> **Superseded (soldr#2931):** the invariant this check enforces — the full
-> linked test archive must be warm-cacheable — has been inverted: linked test
-> products are never cacheable. The check is scheduled for retirement or
-> rewrite under soldr#2937; do not extend it.
+**What it asserts (soldr#2937, phase 5 of soldr#2931).** On the warm rebuild,
+*dependency* compilation units must hit the compiler cache. Test-harness
+**link** products are reported with their miss counts and are explicitly not
+required to be hits.
+
+This replaced the soldr#1391 invariant, which required the full **linked** test
+archive to be warm-cacheable at positive hits and zero misses. soldr#2931
+inverted that: cache admission follows the stability of an artifact's identity
+key relative to its size, and a linked test product has the least stable key
+and one of the largest sizes in the build, so it is never cacheable. The old
+rule was asking the store to carry exactly what the policy forbids.
+
+The verdict itself lives in `evaluate_warm_result` and is unit-tested without
+Docker in `test_nextest_archive_cacheability.py` — a 40-minute acceptance is
+the worst possible place to discover a classification bug.
+
+Repository-wide, the same policy is enforced statically by
+`.github/scripts/check_cache_ownership.py` against the ownership manifest
+`ci/cache-ownership.json`, which classifies every persisted artifact class in
+this repo as `cook`, `zccache-unit`, `none`, or a named exception. That guard
+runs in the `Lint` job on every PR; see `test_cache_ownership.py`.
 
 ## Layout
 

@@ -12,27 +12,27 @@
     {
       "id": "rust-embedded-runtime-topology",
       "gate": "hard",
-      "command": "soldr --no-cache cargo nextest run -p soldr-cli --test no_standalone_spawn_lint"
+      "command": "soldr --no-cache cargo nextest run -p soldr-cli --test guards -E 'test(/^no_standalone_spawn_lint::/)'"
     },
     {
       "id": "rust-zccache-entry",
       "gate": "hard",
-      "command": "soldr --no-cache cargo nextest run -p soldr-cli --test zccache_trampoline_gate"
+      "command": "soldr --no-cache cargo nextest run -p soldr-cli --test cargo_front_door -E 'test(/^zccache_trampoline_gate::/)'"
     },
     {
       "id": "rust-wrapper-env",
       "gate": "hard",
-      "command": "soldr --no-cache cargo nextest run -p soldr-cli --test cli_cargo_wrappers"
+      "command": "soldr --no-cache cargo nextest run -p soldr-cli --test cargo_front_door -E 'test(/^cli_cargo_wrappers::/)'"
     },
     {
       "id": "rust-rust-plan",
       "gate": "hard",
-      "command": "soldr --no-cache cargo nextest run -p soldr-cli --test cli_rust_plan"
+      "command": "soldr --no-cache cargo nextest run -p soldr-cli --test cargo_front_door -E 'test(/^cli_rust_plan::/)'"
     },
     {
       "id": "rust-cache-cli",
       "gate": "hard",
-      "command": "soldr --no-cache cargo nextest run -p soldr-cli --test cli_cache"
+      "command": "soldr --no-cache cargo nextest run -p soldr-cli --test cache_gc -E 'test(/^cli_cache::/)'"
     },
     {
       "id": "rust-cache-session",
@@ -47,17 +47,17 @@
     {
       "id": "rust-native-cache-integration",
       "gate": "hard",
-      "command": "soldr --no-cache cargo nextest run -p soldr-cli --test cli_cargo_native_cc"
+      "command": "soldr --no-cache cargo nextest run -p soldr-cli --test cargo_front_door -E 'test(/^cli_cargo_native_cc::/)'"
     },
     {
       "id": "rust-wrapper-perf",
       "gate": "hard",
-      "command": "soldr --no-cache cargo nextest run -p soldr-cli --test cli_wrapper_perf"
+      "command": "soldr --no-cache cargo nextest run -p soldr-cli --test cargo_front_door -E 'test(/^cli_wrapper_perf::/)'"
     },
     {
       "id": "rust-watchdog-lint",
       "gate": "hard",
-      "command": "soldr --no-cache cargo nextest run -p soldr-cli --test no_timed_test_guard"
+      "command": "soldr --no-cache cargo nextest run -p soldr-cli --test guards -E 'test(/^no_timed_test_guard::/)'"
     },
     {
       "id": "python-setup-contracts",
@@ -92,8 +92,8 @@
         "runtime packaging declares no standalone zccache binaries"
       ],
       "test_files": [
-        "crates/soldr-cli/tests/no_standalone_spawn_lint.rs",
-        "crates/soldr-cli/tests/zccache_trampoline_gate.rs",
+        "crates/soldr-cli/tests/guards/no_standalone_spawn_lint.rs",
+        "crates/soldr-cli/tests/cargo_front_door/zccache_trampoline_gate.rs",
         "contracts/zccache-runtime.v1.json",
         "tests/test_zccache_runtime_contract.py"
       ],
@@ -115,7 +115,7 @@
         "embedded compile-stat session baselines and summaries"
       ],
       "test_files": [
-        "crates/soldr-cli/tests/cli_cargo_wrappers.rs",
+        "crates/soldr-cli/tests/cargo_front_door/cli_cargo_wrappers.rs",
         "crates/soldr-cli/src/cargo_front_door/cache_plan.rs",
         "crates/soldr-cli/src/cache/session.rs"
       ],
@@ -136,7 +136,7 @@
         "embedded compile counts drive warm-save decisions"
       ],
       "test_files": [
-        "crates/soldr-cli/tests/cli_rust_plan.rs",
+        "crates/soldr-cli/tests/cargo_front_door/cli_rust_plan.rs",
         "crates/soldr-cli/src/rust_plan_tests",
         "crates/soldr-cli/src/cargo_front_door/cache_plan.rs"
       ],
@@ -154,7 +154,7 @@
         "SOLDR_CACHE_ENABLED=0 reaches cargo"
       ],
       "test_files": [
-        "crates/soldr-cli/tests/cli_cargo_wrappers.rs",
+        "crates/soldr-cli/tests/cargo_front_door/cli_cargo_wrappers.rs",
         "crates/soldr-cli/src/cargo_front_door/cache_plan.rs"
       ],
       "validation_command_ids": [
@@ -172,7 +172,7 @@
         "daemon-down diagnostics remain bounded"
       ],
       "test_files": [
-        "crates/soldr-cli/tests/cli_cache.rs",
+        "crates/soldr-cli/tests/cache_gc/cli_cache.rs",
         "crates/soldr-cli/src/cache/session.rs",
         "crates/soldr-cli/src/cargo_front_door/cache_plan.rs"
       ],
@@ -238,7 +238,7 @@
       ],
       "test_files": [
         ".github/workflows/perf-cold-warm.yml",
-        "crates/soldr-cli/tests/cli_cargo_wrappers.rs"
+        "crates/soldr-cli/tests/cargo_front_door/cli_cargo_wrappers.rs"
       ],
       "validation_command_ids": [
         "rust-wrapper-env",
@@ -306,7 +306,7 @@
         "--no-cache disables native cache"
       ],
       "test_files": [
-        "crates/soldr-cli/tests/cli_cargo_native_cc.rs",
+        "crates/soldr-cli/tests/cargo_front_door/cli_cargo_native_cc.rs",
         "crates/soldr-cli/src/native_cc_tests.rs",
         "crates/soldr-cli/src/cargo_front_door/cache_plan.rs"
       ],
@@ -325,9 +325,9 @@
         "embedded-runtime contract tests remain discoverable"
       ],
       "test_files": [
-        "crates/soldr-cli/tests/no_timed_test_guard.rs",
-        "crates/soldr-cli/tests/no_standalone_spawn_lint.rs",
-        "crates/soldr-cli/tests/zccache_trampoline_gate.rs",
+        "crates/soldr-cli/tests/guards/no_timed_test_guard.rs",
+        "crates/soldr-cli/tests/guards/no_standalone_spawn_lint.rs",
+        "crates/soldr-cli/tests/cargo_front_door/zccache_trampoline_gate.rs",
         "crates/soldr-cli/src/cargo_front_door/cache_plan.rs"
       ],
       "validation_command_ids": [

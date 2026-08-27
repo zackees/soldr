@@ -771,7 +771,8 @@ pub enum LifecycleOutcome {
 /// Every field is skipped when absent, so a record carrying no details
 /// serializes byte-identically to the pre-soldr#1808 three-field shape --
 /// including for the substring-matching reader in
-/// `tests/cli_daemon_lifecycle.rs`, which looks for `"event":"spawn"`.
+/// `crates/soldr-cli/tests/daemon/cli_daemon_lifecycle.rs`, which looks
+/// for `"event":"spawn"`.
 #[derive(Serialize, Default, Clone, Debug, PartialEq, Eq)]
 pub struct LifecycleDetails {
     /// OS-observed process that requested the transition.

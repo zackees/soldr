@@ -32,8 +32,8 @@ bench/cook_in_docker.sh cargo test --workspace
 bench/cook_in_docker.sh cargo clippy --workspace -- -D warnings
 
 # Run a single integration test by name.
-bench/cook_in_docker.sh cargo test --workspace --test daemon_cook_index \
-    -- --include-ignored cook_record_then_lookup_round_trips
+bench/cook_in_docker.sh cargo test --workspace --test cook_dylint \
+    -- --include-ignored daemon_cook_index::cook_record_then_lookup_round_trips
 ```
 
 `bench/cook_in_docker.sh` builds the
@@ -156,7 +156,7 @@ regressions in future workflow edits.
 
 ## The container marker
 
-Every integration test in `crates/soldr-cli/tests/daemon_cook_index.rs` (and the
+Every integration test in `crates/soldr-cli/tests/cook_dylint/daemon_cook_index.rs` (and the
 equivalent tests in PRs 2 and 3) starts with:
 
 ```rust

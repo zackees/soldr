@@ -13,6 +13,39 @@ WRAPPER = REPO_ROOT / ".github" / "scripts" / "nextest_timeout_wrapper.py"
 CONFIG = REPO_ROOT / ".config" / "nextest.toml"
 
 
+def _filter_expressions(config: str) -> str:
+    """Just the `filter = ` lines of a nextest config, comments excluded.
+
+    soldr#2934's header comment quotes retired filters (`binary(cli_broker_routes)`)
+    as examples of what no longer resolves, so scanning the whole file both
+    satisfies membership assertions from prose and invents missing binaries.
+    """
+
+    return "\n".join(
+        line for line in config.splitlines() if line.lstrip().startswith("filter =")
+    )
+
+
+def _module_alternation(expressions: str, binary: str) -> set[str]:
+    """Modules a `binary(<binary>) & test(/^(a|b)::/)` conjunct selects.
+
+    soldr#2934 collapsed the per-file `binary(x) + binary(y)` unions into one
+    module alternation inside a category binary, so membership -- not order,
+    and not the literal text between terms -- is what these assertions pin.
+    Also accepts the single-module spelling `test(/^a::/)`.
+    """
+
+    import re
+
+    pattern = re.compile(
+        rf"binary\({re.escape(binary)}\) & test\(/\^\(?([A-Za-z0-9_|]+?)\)?::/\)"
+    )
+    modules: set[str] = set()
+    for match in pattern.finditer(expressions):
+        modules.update(match.group(1).split("|"))
+    return modules
+
+
 def _start_wrapper(child: str, env: dict[str, str]) -> subprocess.Popen[str]:
     """Return a live wrapper so the test can inject SIGTERM before waiting."""
 
@@ -163,29 +196,44 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
     assert 'run-wrapper = "timeout-diagnostics"' in config
     assert 'platform = { target = "cfg(unix)" }' in config
     assert 'platform = { host = "cfg(unix)" }' not in config
+    filters = _filter_expressions(config)
     assert "[test-groups.soldr-runtime]" in config
-    assert "binary(cli_broker_resurrection) + binary(cli_broker_routes)" in config
     # Three override blocks, one group. The count is the point: broker
     # cold-start tests must land in the SAME group, because separate
     # one-thread groups still run concurrently and contend for the bounded
     # route-start path (soldr#2336).
     assert config.count("test-group = 'soldr-runtime'") == 3
-    assert "test(=gc_list_json_reports_built_project_target_dir)" in config
     runtime_overrides = [
         block
         for block in config.split("[[profile.default.overrides]]")[1:]
         if "test-group = 'soldr-runtime'" in block
     ]
     assert len(runtime_overrides) == 3
-    runtime_members = "".join(runtime_overrides)
+    runtime_members = _filter_expressions("".join(runtime_overrides))
+    # soldr#2934: `binary(cli_broker_resurrection) + binary(cli_broker_routes)`
+    # is now one alternation inside the `broker` binary, and the two
+    # `cli_build_*` binaries that used to be asserted separately are members of
+    # the same alternation. Same claim as before: these all share ONE group.
+    broker_modules = _module_alternation(runtime_members, "broker")
+    for broker_module in (
+        "cli_broker_resurrection",
+        "cli_broker_routes",
+        "cli_build_alias_parity",
+        "cli_build_fetch_overlap",
+    ):
+        assert broker_module in broker_modules, runtime_members
+    assert (
+        "test(=cli_gc::gc_list_json_reports_built_project_target_dir)"
+        in runtime_members
+    )
     for cold_start_test in (
-        "test(=toolchain_link_writes_every_routed_tool_into_shim_dir)",
-        "test(=toolchain_link_is_idempotent_when_rerun_with_same_soldr_binary)",
-        # soldr#2729: the other two members of the same binary, measured
+        "test(=cli_toolchain::toolchain_link_writes_every_routed_tool_into_shim_dir)",
+        "test(=cli_toolchain::toolchain_link_is_idempotent_when_rerun_with_same_soldr_binary)",
+        # soldr#2729: the other two members of the same module, measured
         # timing out on `main` itself once the first pair was treated.
-        "test(=toolchain_link_emits_schema_v1_json_payload)",
-        "test(=toolchain_link_force_overwrites_user_modified_shim)",
-        "test(=cargo_fmt_host_toolchain_does_not_mix_in_managed_rustup_home)",
+        "test(=cli_toolchain::toolchain_link_emits_schema_v1_json_payload)",
+        "test(=cli_toolchain::toolchain_link_force_overwrites_user_modified_shim)",
+        "test(=cli_toolchain_home_boundary::cargo_fmt_host_toolchain_does_not_mix_in_managed_rustup_home)",
     ):
         assert cold_start_test in runtime_members
     # soldr#2729: group membership alone is not the whole treatment. The four
@@ -199,14 +247,14 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
         # override marker leaves each block carrying the *next* one's
         # leading comment, which mentions toolchain_link too.
         if "terminate-after = 4" in block
-        and "filter = 'test(=toolchain_link_writes" in block
+        and "filter = 'test(=cli_toolchain::toolchain_link_writes" in block
     ]
     assert len(budget_overrides) == 1
     for linked in (
-        "test(=toolchain_link_writes_every_routed_tool_into_shim_dir)",
-        "test(=toolchain_link_is_idempotent_when_rerun_with_same_soldr_binary)",
-        "test(=toolchain_link_emits_schema_v1_json_payload)",
-        "test(=toolchain_link_force_overwrites_user_modified_shim)",
+        "test(=cli_toolchain::toolchain_link_writes_every_routed_tool_into_shim_dir)",
+        "test(=cli_toolchain::toolchain_link_is_idempotent_when_rerun_with_same_soldr_binary)",
+        "test(=cli_toolchain::toolchain_link_emits_schema_v1_json_payload)",
+        "test(=cli_toolchain::toolchain_link_force_overwrites_user_modified_shim)",
     ):
         assert linked in budget_overrides[0]
 
@@ -218,41 +266,56 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
     ]
     assert len(cold_overrides) == 1
     cold_override = cold_overrides[0]
+    cold_filter = _filter_expressions(cold_override)
     # Per member, not as one contiguous literal. The literal also pinned the
     # order and pinned that nothing sat between the terms, so soldr#2887 broke
     # this test by *adding* `binary(cli_dylint_wrapper)` in the middle -- a
     # legitimate edit failing a guard that was only meant to check membership.
     # What the reservation cares about is which members are in it, which the
     # loop below states and the exclusions further down still pin.
-    for cold_binary in (
-        "binary(cli_cargo_basic)",
-        "binary(cli_cargo_linker)",
-        "binary(cli_cargo_run_trampoline)",
-        "binary(cli_cargo_wrappers)",
-        "binary(cli_dylint_wrapper)",
-        "test(=cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled)",
+    #
+    # soldr#2934: those five `binary(...)` terms are now one module alternation
+    # inside the `cargo_front_door` binary.
+    cold_modules = _module_alternation(cold_filter, "cargo_front_door")
+    for cold_module in (
+        "cli_cargo_basic",
+        "cli_cargo_linker",
+        "cli_cargo_run_trampoline",
+        "cli_cargo_wrappers",
+        "cli_dylint_wrapper",
     ):
-        assert cold_binary in cold_override, cold_override
-    # soldr#2737: `cli_cargo_basic` is binary-scoped because 19 of its 21
-    # tests drive `isolated_soldr_command`. Its per-test entry is subsumed and
-    # must not come back alongside the binary one -- two entries covering the
-    # same tests is how the list stopped being readable.
+        assert cold_module in cold_modules, cold_filter
     assert (
-        "test(=cargo_without_timeout_allows_progress_cpu_and_lock_waits)"
-        not in cold_override
-    )
-    # These stay per-test on purpose: they live in binaries that are not
+        "test(=cli_rust_plan::cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled)"
+        in cold_filter
+    ), cold_filter
+    # soldr#2737: `cli_cargo_basic` is scoped as a whole unit because 19 of its
+    # 21 tests drive `isolated_soldr_command`. Its per-test entry is subsumed
+    # and must not come back alongside the module one -- two entries covering
+    # the same tests is how the list stopped being readable. Both spellings are
+    # excluded: post-soldr#2934 a bare `test(=...)` would match nothing at all,
+    # which is the silent failure this file exists to catch.
+    for subsumed in (
+        "test(=cargo_without_timeout_allows_progress_cpu_and_lock_waits)",
+        "test(=cli_cargo_basic::cargo_without_timeout_allows_progress_cpu_and_lock_waits)",
+    ):
+        assert subsumed not in cold_filter
+    # These stay per-test on purpose: they live in modules that are not
     # predominantly cold front doors (soldr#2697, soldr#2720).
     for cold_member in (
-        "test(=cargo_front_door_forces_msvc_target_even_with_polluted_path)",
-        "test(=exec_cargo_build_routes_through_child_shims_and_zccache)",
+        "test(=cli_wrapper::cargo_front_door_forces_msvc_target_even_with_polluted_path)",
+        "test(=cli_exec::exec_cargo_build_routes_through_child_shims)",
     ):
-        assert cold_member in cold_override
+        assert cold_member in cold_filter
+    # soldr#2934 repaired `exec_cargo_build_routes_through_child_shims_and_zccache`,
+    # a name that existed nowhere in the tree, so this reservation had silently
+    # not been in effect. Keep the dead suffix from creeping back.
+    assert "exec_cargo_build_routes_through_child_shims_and_zccache" not in cold_filter
     assert 'threads-required = "num-cpus"' in cold_override
-    assert "binary(cli_build_alias_parity)" in config
-    assert "binary(cli_build_fetch_overlap)" in config
-    for binary in (
-        "agent_worktree_share",
+    # The daemon-lifecycle and worktree units are likewise modules now, so the
+    # claim "this unit is still named by some filter" is spelled per binary.
+    daemon_modules = _module_alternation(filters, "daemon")
+    for module in (
         "cli_daemon_builds",
         "cli_daemon_flush_caches",
         "cli_daemon_lifecycle",
@@ -261,14 +324,17 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
         "daemon_cache_maintenance",
         "daemon_stall_harness",
     ):
-        assert f"binary({binary})" in config
+        assert module in daemon_modules, filters
+    assert "agent_worktree_share" in _module_alternation(filters, "cache_gc"), filters
     # nextest hard-validates binary names in filter expressions, so a filter
     # naming a deleted test binary fails EVERY `nextest run` at config-parse
     # time (exit 96) -- this is how the whole CI matrix went red when
     # cli_daemon_tombstone and session_multiprocess_smoke were removed
-    # without updating the config (soldr#2553 fallout).
+    # without updating the config (soldr#2553 fallout). Since soldr#2934 the
+    # stale reference would be a module name rather than a `binary(...)` term,
+    # so the name must not appear at all.
     for deleted in ("cli_daemon_tombstone", "session_multiprocess_smoke"):
-        assert f"binary({deleted})" not in config
+        assert deleted not in config
     assert config.count('threads-required = "num-cpus"') == 2
     # Every raised budget must carry the explicit grace period.
     #
@@ -286,9 +352,10 @@ def test_nextest_config_wraps_unix_tests_with_a_bounded_grace_period() -> None:
         ), f"a raised budget with no explicit grace period:\n{block}"
     # Kept beside it: the count still makes an addition deliberate rather than
     # incidental. 9 = the default profile + eight measured per-test override
-    # blocks. Newest: soldr#2887's `binary(cli_dylint_wrapper)` block, whose
-    # two fake-dylint front doors the prescribed `soldr ci-test` run measured
-    # at 121s each when they raced.
+    # blocks. Newest: soldr#2887's `cli_dylint_wrapper` block (now spelled
+    # `binary(cargo_front_door) & test(/^cli_dylint_wrapper::/)`), whose two
+    # fake-dylint front doors the prescribed `soldr ci-test` run measured at
+    # 121s each when they raced.
     assert config.count('grace-period = "30s"') == 9
 
 
@@ -296,18 +363,29 @@ def test_every_binary_named_in_nextest_filters_is_a_real_test_target() -> None:
     """Deleting a test file without updating nextest.toml breaks ALL lanes.
 
     Generalizes the soldr#2553 lesson beyond the two names it burned us with:
-    every `binary(NAME)` in a filter must resolve to `crates/*/tests/NAME.rs`
+    every `binary(NAME)` in a filter must resolve to a real cargo test target
     (or a `[[bench]]`/example target), so the mismatch fails here in the fast
     Lint job with the offending name, not as exit-96 in every nextest lane.
+
+    Two target shapes exist since soldr#2934: a standalone
+    `crates/*/tests/NAME.rs` file, and a `crates/*/tests/NAME/` directory whose
+    `main.rs` links its sibling modules into one binary. `common/` and
+    `fixtures/` carry no `main.rs` and are correctly not targets.
+
+    Only `filter = ` lines are scanned. soldr#2934's header comment quotes
+    `binary(cli_broker_routes)` as an example of a term that no longer
+    resolves, and prose is not a filter.
     """
     import re
 
     config = CONFIG.read_text(encoding="utf-8")
-    named = set(re.findall(r"binary\(([A-Za-z0-9_-]+)\)", config))
+    named = set(re.findall(r"binary\(([A-Za-z0-9_-]+)\)", _filter_expressions(config)))
     assert named, "expected at least one binary() filter in nextest.toml"
-    test_targets = {path.stem for path in REPO_ROOT.glob("crates/*/tests/*.rs")} | {
-        path.stem for path in REPO_ROOT.glob("crates/*/benches/*.rs")
-    }
+    test_targets = (
+        {path.stem for path in REPO_ROOT.glob("crates/*/tests/*.rs")}
+        | {path.parent.name for path in REPO_ROOT.glob("crates/*/tests/*/main.rs")}
+        | {path.stem for path in REPO_ROOT.glob("crates/*/benches/*.rs")}
+    )
     missing = sorted(named - test_targets)
     assert not missing, (
         f"nextest.toml filters name test binaries that do not exist: {missing}; "
@@ -323,12 +401,17 @@ def _terminate_after_budget_secs(config: str, test_name: str) -> int:
     nextest's bound is `period x terminate-after`; the grace period is what it
     waits after SIGTERM, not extra runtime. Blocks are scanned in file order and
     the last match wins, matching nextest's own override precedence.
+
+    `test_name` may be matched bare or module-qualified: since soldr#2934 the
+    soldr-cli integration tests are modules of a category binary, so libtest
+    reports them as `<module>::<test_name>` and the filters spell them that way.
     """
     import re
 
+    exact = re.compile(rf"test\(=(?:[A-Za-z0-9_]+::)?{re.escape(test_name)}\)")
     budget: int | None = None
     for block in config.split("[[profile.default.overrides]]")[1:]:
-        if f"test(={test_name})" not in block:
+        if not exact.search(block):
             continue
         match = re.search(
             r'slow-timeout\s*=\s*\{[^}]*period\s*=\s*"(\d+)s"[^}]*'
@@ -365,7 +448,12 @@ def test_the_cache_maintenance_fixture_deadline_fits_two_cold_daemon_starts() ->
 
     test_name = "prod_dev_daemons_and_manual_orphan_maintenance_are_isolated"
     fixture = (
-        REPO_ROOT / "crates" / "soldr-cli" / "tests" / "daemon_cache_maintenance.rs"
+        REPO_ROOT
+        / "crates"
+        / "soldr-cli"
+        / "tests"
+        / "daemon"
+        / "daemon_cache_maintenance.rs"
     )
     source = fixture.read_text(encoding="utf-8")
     body = source.split(f"fn {test_name}", 1)

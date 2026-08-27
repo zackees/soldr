@@ -72,6 +72,16 @@ pub(crate) struct CiTestPlan {
     pub(crate) subsumed_steps: Vec<SubsumedStep>,
     pub(crate) cook: CookDecision,
     pub(crate) resource_limits: ResourceLimits,
+    /// Integration-test *link targets* in the workspace, and the count above
+    /// which planning shouts (soldr#2936).
+    ///
+    /// Additive fields on schema v1: a v1 consumer reads the payload it always
+    /// read, so the version does not move. They are on the plan rather than
+    /// computed by the renderer because the census is a planning observation —
+    /// `--explain-plan --format json` has to report the same number the
+    /// warning was derived from.
+    pub(crate) test_target_count: u64,
+    pub(crate) test_target_warn_threshold: u64,
     pub(crate) dylint_target_trees: DylintTargetTrees,
     /// Counts are intentionally present before Phase 6 enforces them. Cargo
     /// remains freshness authority, so explain mode cannot invent outcomes.
