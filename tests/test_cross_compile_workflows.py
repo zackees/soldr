@@ -617,6 +617,9 @@ def test_all_miss_cross_builds_bound_compile_concurrency() -> None:
     wheel_job = _job_block(ci, "wheel-cross-verify")
     assert 'CARGO_BUILD_JOBS: "1"' in cross_job
     assert 'SOLDR_JOBS: "1"' in cross_job
+    # Cross-target syslib helpers invoke Cargo through target-specific
+    # environment/config state, not a descendant --target-dir spelling.
+    assert "SOLDR_NESTED_CARGO: allow" in cross_job
     assert "Enlarge swap (OOM headroom)" in cross_job
     assert "CARGO_BUILD_JOBS: ${{ matrix.jobs }}" in wheel_job
     assert "SOLDR_JOBS: ${{ matrix.jobs }}" in wheel_job

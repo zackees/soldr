@@ -87,6 +87,11 @@ jobs:
       # unit and needs exclusive service access on the hosted runner.
       CARGO_BUILD_JOBS: "1"
       SOLDR_JOBS: "1"
+      # Cross builds intentionally invoke target-toolchain Cargo helpers from
+      # selected dependency build scripts. Their target isolation lives in the
+      # blessed environment/config surface rather than a descendant argv
+      # --target-dir, so authorize this controlled CI orchestration only.
+      SOLDR_NESTED_CARGO: allow
       # Keep the developer-facing profile default responsive while reducing
       # LLVM worker fan-out for this memory-constrained CI-only build.
       CARGO_PROFILE_CI_NEXTEST_CODEGEN_UNITS: "4"
