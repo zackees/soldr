@@ -118,9 +118,25 @@ def shell_command_prefix(line: str, script_start: int) -> str:
             quote = char
         elif char == ";":
             command_start = index + 1
-        elif char in {"&", "|"} and line[index + 1 : index + 2] == char:
-            command_start = index + 2
-            index += 1
+        elif char == "|":
+            # `|`, `||`, and `|&` all start a fresh shell command. The latter
+            # pipes stderr too; it is still a pipeline, not a redirection.
+            command_start = index + 1
+            if line[index + 1 : index + 2] in {"|", "&"}:
+                command_start = index + 2
+                index += 1
+        elif char == "&":
+            next_char = line[index + 1 : index + 2]
+            previous_char = line[index - 1 : index]
+            # `2>&1`, `>&1`, and `&> log` are redirections, not a command
+            # boundary. Every other ampersand is either `&&` or a background
+            # command separator and must not let its left command certify the
+            # next script.
+            if previous_char not in {">", "<"} and next_char != ">":
+                command_start = index + 1
+                if next_char == "&":
+                    command_start = index + 2
+                    index += 1
         index += 1
     return line[command_start:script_start]
 

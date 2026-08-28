@@ -213,7 +213,7 @@ jobs:
     assert guard.unpinned_jobs(tmp_path) == {("release.yml", "build")}
 
 
-@pytest.mark.parametrize("separator", ["&&", ";"])
+@pytest.mark.parametrize("separator", ["&&", ";", "|", "&"])
 def test_shell_command_boundaries_bind_each_script_to_its_own_uv_run(
     guard, tmp_path, separator
 ):
@@ -234,6 +234,21 @@ jobs:
 """,
     )
     assert guard.unpinned_jobs(tmp_path) == {("release.yml", "bare")}
+
+
+def test_redirection_is_not_a_shell_command_boundary(guard, tmp_path):
+    write_workflow(
+        tmp_path,
+        "release.yml",
+        f"""
+jobs:
+  redirected:
+    steps:
+      - uses: {SETUP_UV}
+      - run: 2>&1 uv run --python 3.13 ci/one.py
+""",
+    )
+    assert guard.unpinned_jobs(tmp_path) == set()
 
 
 @pytest.mark.parametrize("separator", ["&&", ";"])
