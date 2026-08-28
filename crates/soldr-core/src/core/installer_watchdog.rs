@@ -170,12 +170,124 @@ pub fn run_installer_command(
     phase: &str,
     config: InstallerWatchdogConfig,
 ) -> Result<ExitStatus, SoldrError> {
+    match run_installer_command_inner(
+        command,
+        context,
+        phase,
+        config,
+        InstallerCommandMode::Forward,
+    )? {
+        InstallerCommandResult::Forward(status) => Ok(status),
+        InstallerCommandResult::Captured(_) => unreachable!("forwarding mode must not capture"),
+    }
+}
+
+/// Run an installer-shaped command under the long-progress watchdog and
+/// capture both streams for a caller which needs a machine-readable result.
+///
+/// Normal installer commands forward progress to the terminal, whereas a
+/// manager lookup needs its stdout to be its resolved path. Both modes use the
+/// same spawn/watchdog path, so a lookup waiting behind the manager lock gets
+/// heartbeats and the installer safety ceiling instead of the generic silence
+/// timeout.
+pub fn run_installer_command_output(
+    command: &mut Command,
+    context: &str,
+    phase: &str,
+    config: InstallerWatchdogConfig,
+) -> Result<std::process::Output, SoldrError> {
+    match run_installer_command_inner(
+        command,
+        context,
+        phase,
+        config,
+        InstallerCommandMode::Capture,
+    )? {
+        InstallerCommandResult::Captured(output) => Ok(output),
+        InstallerCommandResult::Forward(_) => unreachable!("capture mode must not forward"),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum InstallerCommandMode {
+    Forward,
+    Capture,
+}
+
+enum InstallerCommandResult {
+    Forward(ExitStatus),
+    Captured(std::process::Output),
+}
+
+enum InstallerPipeReaders {
+    Forward {
+        stdout: Option<mpsc::Receiver<std::io::Result<()>>>,
+        stderr: Option<mpsc::Receiver<std::io::Result<()>>>,
+    },
+    Capture {
+        stdout: Option<mpsc::Receiver<std::io::Result<Vec<u8>>>>,
+        stderr: Option<mpsc::Receiver<std::io::Result<Vec<u8>>>>,
+    },
+}
+
+fn run_installer_command_inner(
+    command: &mut Command,
+    context: &str,
+    phase: &str,
+    config: InstallerWatchdogConfig,
+    mode: InstallerCommandMode,
+) -> Result<InstallerCommandResult, SoldrError> {
     configure_installer_process_tree(command);
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command
         .spawn()
         .map_err(|err| SoldrError::Other(format!("failed to invoke {context}: {err}")))?;
     let (progress_tx, progress_rx) = mpsc::channel();
+    let readers = match mode {
+        InstallerCommandMode::Forward => installer_forwarding_readers(&mut child, &progress_tx),
+        InstallerCommandMode::Capture => InstallerPipeReaders::Capture {
+            stdout: child
+                .stdout
+                .take()
+                .map(|pipe| capture_pipe_async(pipe, progress_tx.clone())),
+            stderr: child
+                .stderr
+                .take()
+                .map(|pipe| capture_pipe_async(pipe, progress_tx.clone())),
+        },
+    };
+    drop(progress_tx);
+
+    let cpu_probe = ProcessTreeCpuProbe::new(child.id());
+    // A killed installer can leave a descendant holding a copied pipe
+    // descriptor. Propagating the watchdog error drops `readers`, detaches the
+    // forwarding/capture threads, and avoids turning that useful diagnosis
+    // into an unbounded join on the descendant.
+    let status =
+        wait_for_child_with_watchdog(&mut child, context, phase, &config, &progress_rx, cpu_probe)?;
+
+    match readers {
+        InstallerPipeReaders::Forward { stdout, stderr } => {
+            wait_for_pipe_drain(stdout, context, "stdout")?;
+            wait_for_pipe_drain(stderr, context, "stderr")?;
+            Ok(InstallerCommandResult::Forward(status))
+        }
+        InstallerPipeReaders::Capture { stdout, stderr } => {
+            let stdout = wait_for_capture(stdout, context, "stdout")?;
+            let stderr = wait_for_capture(stderr, context, "stderr")?;
+            Ok(InstallerCommandResult::Captured(std::process::Output {
+                status,
+                stdout,
+                stderr,
+            }))
+        }
+    }
+}
+
+fn installer_forwarding_readers(
+    child: &mut Child,
+    progress_tx: &mpsc::Sender<()>,
+) -> InstallerPipeReaders {
     // soldr#2304 x soldr#2554: machine-readable verbs (env --json) set the
     // internal quiet marker; child installer output must not corrupt their
     // parseable payload, so both streams tee to a sink instead of the
@@ -209,66 +321,10 @@ pub fn run_installer_command(
             tee_pipe_async(pipe, std::io::stderr(), progress_tx.clone())
         }
     });
-    drop(progress_tx);
-
-    let cpu_probe = ProcessTreeCpuProbe::new(child.id());
-    let result =
-        wait_for_child_with_watchdog(&mut child, context, phase, &config, &progress_rx, cpu_probe);
-    match result {
-        Ok(status) => {
-            wait_for_pipe_drain(stdout_reader, context, "stdout")?;
-            wait_for_pipe_drain(stderr_reader, context, "stderr")?;
-            Ok(status)
-        }
-        // A killed installer can leave a descendant holding a copied pipe
-        // descriptor. Do not turn a diagnosed watchdog failure into an
-        // unbounded join on that descendant; dropping the handles detaches the
-        // forwarding threads and returns the useful error immediately.
-        Err(error) => Err(error),
+    InstallerPipeReaders::Forward {
+        stdout: stdout_reader,
+        stderr: stderr_reader,
     }
-}
-
-/// Run an installer-shaped command under the long-progress watchdog and
-/// capture both streams for a caller which needs a machine-readable result.
-///
-/// This is deliberately separate from [`run_installer_command`]: normal
-/// installer commands continue forwarding progress to the terminal, whereas
-/// a manager lookup needs its stdout to be its resolved path. Both paths use
-/// the same watchdog, so a lookup waiting behind the manager lock gets
-/// heartbeats and the installer safety ceiling instead of the generic silence
-/// timeout.
-pub fn run_installer_command_output(
-    command: &mut Command,
-    context: &str,
-    phase: &str,
-    config: InstallerWatchdogConfig,
-) -> Result<std::process::Output, SoldrError> {
-    configure_installer_process_tree(command);
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command
-        .spawn()
-        .map_err(|err| SoldrError::Other(format!("failed to invoke {context}: {err}")))?;
-    let (progress_tx, progress_rx) = mpsc::channel();
-    let stdout_reader = child
-        .stdout
-        .take()
-        .map(|pipe| capture_pipe_async(pipe, progress_tx.clone()));
-    let stderr_reader = child
-        .stderr
-        .take()
-        .map(|pipe| capture_pipe_async(pipe, progress_tx.clone()));
-    drop(progress_tx);
-
-    let cpu_probe = ProcessTreeCpuProbe::new(child.id());
-    let status =
-        wait_for_child_with_watchdog(&mut child, context, phase, &config, &progress_rx, cpu_probe)?;
-    let stdout = wait_for_capture(stdout_reader, context, "stdout")?;
-    let stderr = wait_for_capture(stderr_reader, context, "stderr")?;
-    Ok(std::process::Output {
-        status,
-        stdout,
-        stderr,
-    })
 }
 
 fn tee_pipe_async<R, W>(
