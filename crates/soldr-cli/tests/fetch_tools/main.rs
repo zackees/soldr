@@ -17,4 +17,5 @@ mod embed_first_resolver;
 mod fetch_crgx;
 mod manifest_lookup;
 mod manifest_lookup_disable;
+mod manifest_lookup_env;
 mod manifest_lookup_url_override;

@@ -231,7 +231,8 @@ async fn fetch_managed_llvm(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
 }
 
 async fn catalogue_entry_for_asset(asset: &LlvmAsset) -> Result<ManifestEntry, SoldrError> {
-    catalogue_entry_from_index(manifest_lookup::get_or_fetch().await, asset)
+    let index = manifest_lookup::get_or_fetch().await;
+    catalogue_entry_from_index(index.as_ref(), asset)
 }
 
 fn catalogue_entry_from_index(

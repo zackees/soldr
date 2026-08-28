@@ -33,10 +33,11 @@
 //! }
 //! ```
 //!
-//! The index is fetched at most once per soldr process and cached in a
-//! process-wide [`OnceLock`]. Any failure — HTTP error, parse error,
-//! timeout, network — degrades silently to an empty index so the
-//! resolver falls back to the live GitHub Releases API. The integrity
+//! Resolved catalogue configurations are cached in a bounded, process-wide
+//! LRU. A miss is single-flight, so concurrent callers share one fetch and a
+//! configuration change cannot inherit another configuration's result. Any
+//! failure degrades to an empty index so the resolver falls back to the live
+//! GitHub Releases API. The integrity
 //! invariant ("a hit MUST sha256-verify against the manifest's pin") is
 //! the same trust posture as `apple_sdk` / `zig`: a mismatched download
 //! is a hard error regardless of `SOLDR_TRUST_MODE`.
@@ -59,8 +60,8 @@
 //! `(owner, repo, tag, asset)` lookup before falling back to the live
 //! GitHub Releases API.
 
-use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::collections::VecDeque;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use super::catalogue_model::{
@@ -127,8 +128,9 @@ pub async fn fetch_verified_catalogue_asset(
     tag: &str,
     asset: &str,
 ) -> Result<Vec<u8>, SoldrError> {
-    let entry = get_or_fetch()
-        .await
+    let config = ResolvedCatalogueConfig::from_env();
+    let initial = get_or_fetch_for(config.clone()).await;
+    let entry = initial
         .lookup(owner, repo, tag, asset)
         .cloned()
         .ok_or_else(|| {
@@ -145,16 +147,28 @@ pub async fn fetch_verified_catalogue_asset(
     // but CDN edges can briefly serve generations from opposite sides of that
     // commit. Refetch both objects once with cache-busters and require the new
     // catalogue digest; unverified bytes are never returned.
-    let refreshed = match get_or_fetch().await.source {
+    let refreshed = match (&config, initial.source) {
         // Once a v2 generation supplied the pin, only a refreshed v2
         // generation may replace it.  Never turn a CDN mismatch into a v1
         // request, which could mix publication generations.
-        CatalogueSource::CanonicalV2 => {
-            fetch_v2_index_from(&cache_busted_url(&resolve_catalogue_v2_url())).await?
+        (ResolvedCatalogueConfig::CanonicalV2 { v2_url, .. }, CatalogueSource::CanonicalV2) => {
+            fetch_v2_index_from(&cache_busted_url(v2_url)).await?
         }
-        CatalogueSource::LegacyV1 => {
-            fetch_v1_index_from(&cache_busted_url(&resolve_catalogue_url())).await?
+        (
+            ResolvedCatalogueConfig::CanonicalV2 {
+                fallback_v1_url, ..
+            }
+            | ResolvedCatalogueConfig::LegacyV1 {
+                v1_url: fallback_v1_url,
+            },
+            CatalogueSource::LegacyV1,
+        ) => fetch_v1_index_from(&cache_busted_url(fallback_v1_url)).await?,
+        (ResolvedCatalogueConfig::Disabled, _) => {
+            return Err(SoldrError::Other(
+                "disabled catalogue cannot refresh a verified asset".to_string(),
+            ));
         }
+        (_, CatalogueSource::CanonicalV2) => unreachable!("only canonical config yields v2"),
     };
     let refreshed_entry = refreshed.lookup(owner, repo, tag, asset).ok_or_else(|| {
         SoldrError::Other(format!(
@@ -166,38 +180,128 @@ pub async fn fetch_verified_catalogue_asset(
     std::fs::read(refreshed.path()).map_err(SoldrError::from)
 }
 
-/// Parsed catalogues, keyed by the configuration that produced them.
+/// Maximum number of resolved catalogue configurations retained per process.
 ///
-/// soldr#2951: this used to be a bare `OnceLock<ManifestIndex>`, which cached
-/// *the first catalogue any caller asked for* and then served it to every
-/// later caller regardless of which URL they asked about. An explicit
-/// `SOLDR_TOOLCHAIN_CATALOGUE_URL` set after the first fetch was silently
-/// discarded, and so was `SOLDR_TOOLCHAIN_MANIFEST_DISABLE` -- the disable
-/// check sat *after* the cache read, so a populated cache satisfied it.
-/// A config knob that silently does nothing is the worst shape one can have,
-/// because the caller cannot tell.
-///
-/// Keying on the resolved configuration fixes that, and incidentally removes
-/// the reason the old design needed one process per test.
-static MANIFEST_CACHE: OnceLock<Mutex<HashMap<String, &'static ManifestIndex>>> = OnceLock::new();
+/// A normal invocation uses one configuration; the small bound protects a
+/// long-lived embedding from caller-selected URL growth without turning an
+/// override into a one-shot setting.
+const MANIFEST_CACHE_CAPACITY: usize = 8;
 
-fn manifest_cache() -> &'static Mutex<HashMap<String, &'static ManifestIndex>> {
-    MANIFEST_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+/// An immutable, complete catalogue decision captured from the process
+/// environment once per operation.
+///
+/// The same value controls both cache identity and every request performed for
+/// it. In particular, the canonical form keeps the v2 endpoint *and* its v1
+/// fallback, so a concurrent environment change cannot make a cache entry for
+/// one configuration fetch from another origin.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ResolvedCatalogueConfig {
+    Disabled,
+    LegacyV1 {
+        v1_url: String,
+    },
+    CanonicalV2 {
+        v2_url: String,
+        fallback_v1_url: String,
+    },
 }
 
-/// The configuration a cached catalogue belongs to.
+impl ResolvedCatalogueConfig {
+    fn from_env() -> Self {
+        if disabled_via_env() {
+            Self::Disabled
+        } else if has_legacy_catalogue_url_override() {
+            Self::LegacyV1 {
+                v1_url: resolve_catalogue_url(),
+            }
+        } else {
+            Self::CanonicalV2 {
+                v2_url: resolve_catalogue_v2_url(),
+                fallback_v1_url: resolve_catalogue_url(),
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct ManifestCache {
+    /// Least-recently-used entry is at the front; most-recently-used at back.
+    ready: VecDeque<(ResolvedCatalogueConfig, Arc<ManifestIndex>)>,
+}
+
+impl ManifestCache {
+    fn get(&mut self, config: &ResolvedCatalogueConfig) -> Option<Arc<ManifestIndex>> {
+        let position = self.ready.iter().position(|(key, _)| key == config)?;
+        let entry = self
+            .ready
+            .remove(position)
+            .expect("position came from the cache");
+        let result = Arc::clone(&entry.1);
+        self.ready.push_back(entry);
+        Some(result)
+    }
+
+    fn insert(&mut self, config: ResolvedCatalogueConfig, index: Arc<ManifestIndex>) {
+        if self.ready.len() == MANIFEST_CACHE_CAPACITY {
+            self.ready.pop_front();
+        }
+        self.ready.push_back((config, index));
+    }
+}
+
+#[cfg(test)]
+mod manifest_cache_tests {
+    use super::*;
+
+    fn config(number: usize) -> ResolvedCatalogueConfig {
+        ResolvedCatalogueConfig::LegacyV1 {
+            v1_url: format!("https://example.invalid/catalogue-{number}.json"),
+        }
+    }
+
+    #[test]
+    fn ready_lru_evicts_oldest_and_promotes_hits() {
+        let mut cache = ManifestCache::default();
+        for number in 0..=MANIFEST_CACHE_CAPACITY {
+            cache.insert(config(number), Arc::new(ManifestIndex::empty()));
+        }
+
+        assert_eq!(cache.ready.len(), MANIFEST_CACHE_CAPACITY);
+        assert!(
+            cache.get(&config(0)).is_none(),
+            "the ninth distinct configuration must evict the oldest ready entry"
+        );
+
+        // Config 1 is retained but currently oldest. A hit must promote it so
+        // the next miss evicts config 2 instead.
+        assert!(cache.get(&config(1)).is_some());
+        cache.insert(
+            config(MANIFEST_CACHE_CAPACITY + 1),
+            Arc::new(ManifestIndex::empty()),
+        );
+
+        assert_eq!(cache.ready.len(), MANIFEST_CACHE_CAPACITY);
+        assert!(
+            cache.get(&config(1)).is_some(),
+            "a ready hit must promote it"
+        );
+        assert!(
+            cache.get(&config(2)).is_none(),
+            "the untouched oldest entry must be evicted after promotion"
+        );
+    }
+}
+
+/// Parsed catalogues, keyed by their immutable resolved configuration.
 ///
-/// Disabled is its own key rather than a URL, because "disabled" is not a
-/// place you can fetch from and must never be satisfied by a URL's entry.
-fn cache_key() -> String {
-    if disabled_via_env() {
-        return "<disabled>".to_string();
-    }
-    if has_legacy_catalogue_url_override() {
-        resolve_catalogue_url()
-    } else {
-        resolve_catalogue_v2_url()
-    }
+/// The async mutex deliberately stays held across the uncommon network fetch.
+/// That makes a miss single-flight without Loading/Notify state, and the ready
+/// cache is bounded so neither caller-selected URLs nor results leak for the
+/// lifetime of a long-lived process.
+static MANIFEST_CACHE: OnceLock<tokio::sync::Mutex<ManifestCache>> = OnceLock::new();
+
+fn manifest_cache() -> &'static tokio::sync::Mutex<ManifestCache> {
+    MANIFEST_CACHE.get_or_init(|| tokio::sync::Mutex::new(ManifestCache::default()))
 }
 
 /// True when [`MANIFEST_DISABLE_ENV_VAR`] is set to a truthy value.
@@ -264,20 +368,23 @@ pub fn resolve_catalogue_v2_url() -> String {
 /// the rest of the process makes no further network calls and the
 /// resolver falls through to the live GitHub Releases API.
 ///
-/// Returns a reference to the cached [`ManifestIndex`].
-pub async fn get_or_fetch() -> &'static ManifestIndex {
-    // soldr#2951: keyed on the resolved configuration, so a later caller with
-    // a different `SOLDR_TOOLCHAIN_CATALOGUE_URL` -- or with the catalogue
-    // disabled -- is not served the first caller's index.
-    let key = cache_key();
-    if let Some(cached) = manifest_cache()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .get(key.as_str())
-    {
+/// Returns the cached [`ManifestIndex`] for the configuration resolved at this
+/// call boundary.
+pub async fn get_or_fetch() -> Arc<ManifestIndex> {
+    get_or_fetch_for(ResolvedCatalogueConfig::from_env()).await
+}
+
+async fn get_or_fetch_for(config: ResolvedCatalogueConfig) -> Arc<ManifestIndex> {
+    // Hold one global async lock through the rare fetch. This intentionally
+    // serializes distinct cold configurations too: it provides single-flight
+    // behavior without a Loading/Notify state machine and the hot path remains
+    // a bounded in-memory lookup.
+    let mut cache = manifest_cache().lock().await;
+    if let Some(cached) = cache.get(&config) {
         return cached;
     }
-    let fetched = if disabled_via_env() {
+
+    let fetched = if matches!(config, ResolvedCatalogueConfig::Disabled) {
         ManifestIndex::empty()
     } else {
         // soldr#2132: retry before giving up. Falling back to an empty index
@@ -285,7 +392,13 @@ pub async fn get_or_fetch() -> &'static ManifestIndex {
         // and makes every later syslib lookup report "not yet ingested" -- so
         // a single truncated response body must not be enough to trigger it.
         // That is what failed two lanes of the v0.8.30 release build.
-        match super::retry::with_backoff("the soldr-toolchain catalogue", fetch_once).await {
+        let retry_config = config.clone();
+        match super::retry::with_backoff("the soldr-toolchain catalogue", move || {
+            let attempt_config = retry_config.clone();
+            async move { fetch_once(&attempt_config).await }
+        })
+        .await
+        {
             Ok(index) => index,
             Err(err) => {
                 // soldr#2132 item 4. This used to be `.unwrap_or_else(|_|
@@ -310,18 +423,9 @@ pub async fn get_or_fetch() -> &'static ManifestIndex {
             }
         }
     };
-    // The index is leaked so the `&'static` return survives the lock guard.
-    // Bounded by the number of *distinct* configurations a process uses,
-    // which is one in every real run and a handful in tests. Concurrent
-    // callers under a tokio runtime may each fetch and leak; the first
-    // insertion wins and the others' copies are identical, which is the same
-    // tradeoff the `OnceLock` made rather than pulling in
-    // `tokio::sync::OnceCell` for this.
-    let leaked: &'static ManifestIndex = Box::leak(Box::new(fetched));
-    let mut cache = manifest_cache()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    cache.entry(key).or_insert(leaked)
+    let index = Arc::new(fetched);
+    cache.insert(config, Arc::clone(&index));
+    index
 }
 
 /// One-shot fetch of the catalogue, used by [`get_or_fetch`] on a
@@ -330,14 +434,18 @@ pub async fn get_or_fetch() -> &'static ManifestIndex {
 /// along with its origin and refresh workflow. Failures degrade
 /// silently to an empty index so the resolver falls through to the
 /// live GitHub Releases API.
-async fn fetch_once() -> Result<ManifestIndex, SoldrError> {
-    // This override is intentionally *only* a v1 override.  Existing
-    // air-gapped and test callers must not have their explicit URL
-    // reinterpreted as a v2 endpoint.
-    if has_legacy_catalogue_url_override() {
-        return fetch_v1_index_from(&resolve_catalogue_url()).await;
-    }
-    let v2_url = resolve_catalogue_v2_url();
+async fn fetch_once(config: &ResolvedCatalogueConfig) -> Result<ManifestIndex, SoldrError> {
+    // A legacy override is intentionally v1-only. The resolved URL is passed
+    // in rather than read again so it cannot change after cache identity was
+    // chosen.
+    let (v2_url, fallback_v1_url) = match config {
+        ResolvedCatalogueConfig::LegacyV1 { v1_url } => return fetch_v1_index_from(v1_url).await,
+        ResolvedCatalogueConfig::CanonicalV2 {
+            v2_url,
+            fallback_v1_url,
+        } => (v2_url, fallback_v1_url),
+        ResolvedCatalogueConfig::Disabled => return Ok(ManifestIndex::empty()),
+    };
     let safe_v2_url = super::stream_download::safe_asset_url(&v2_url);
     let client = super::stream_download::control_http_client("the soldr-toolchain catalogue")?;
     let resp = super::stream_download::send_control_request_with_timeout(
@@ -347,9 +455,7 @@ async fn fetch_once() -> Result<ManifestIndex, SoldrError> {
     )
     .await?;
     match resp.status().as_u16() {
-        status if should_fallback_to_v1(status) => {
-            fetch_v1_index_from(&resolve_catalogue_url()).await
-        }
+        status if should_fallback_to_v1(status) => fetch_v1_index_from(fallback_v1_url).await,
         status if (200..300).contains(&status) => {
             let body = super::stream_download::read_control_text(
                 resp,
@@ -533,19 +639,7 @@ fn print_catalogue_error(url: &str, reason: &str, json: bool) {
     }
 }
 
-// NOTE: there is still no `reset_cache_for_tests` helper, and it is no
-// longer needed. The cache is keyed on the resolved configuration
-// (soldr#2951), so a test that sets `SOLDR_TOOLCHAIN_CATALOGUE_URL` to its
-// own one-shot server gets its own entry, and one that disables the
-// catalogue gets the `<disabled>` entry -- in any binary, under any runner.
-//
-// The previous note said a fresh cache required "their own integration test
-// binary (cargo's default is one binary per `tests/*.rs` file)". soldr#2934
-// consolidated those per-file binaries into category targets and made that
-// premise false, at which point `cargo test --test fetch_tools` began
-// failing two of these tests. CI never saw it, because nextest runs every
-// test in its own process. A contract that depends on the build layout is
-// only as durable as the layout; this one now depends on the key instead.
-//
-// The unit tests below still operate entirely on the pure `from_json` /
-// `lookup` APIs and never touch the process-wide cache.
+// Tests that mutate catalogue environment variables live in the consolidated
+// fetch-tools target and serialize through a shared RAII scope. They exercise
+// the production cache directly; no reset hook or process-layout assumption is
+// required.

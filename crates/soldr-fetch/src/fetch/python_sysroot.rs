@@ -115,14 +115,13 @@ async fn resolve_python_version_for_slug(slug: &str) -> Result<String, SoldrErro
     if let Some(version) = requested_python_version() {
         return Ok(version);
     }
-    newest_catalogue_version_for_slug(manifest_lookup::get_or_fetch().await, slug).ok_or_else(
-        || {
-            SoldrError::Other(format!(
-                "no published Python compatibility bundle for target slug {slug}; \
+    let index = manifest_lookup::get_or_fetch().await;
+    newest_catalogue_version_for_slug(index.as_ref(), slug).ok_or_else(|| {
+        SoldrError::Other(format!(
+            "no published Python compatibility bundle for target slug {slug}; \
              set {PYTHON_VERSION_ENV_VAR} to request an exact catalogue version"
-            ))
-        },
-    )
+        ))
+    })
 }
 
 /// Ensure a Python sysroot is materialized for the given target triple.
