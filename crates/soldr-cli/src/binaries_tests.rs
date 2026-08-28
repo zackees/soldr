@@ -4,9 +4,6 @@
 use super::*;
 use crate::{EnvVarGuard, TEST_PROCESS_ENV_LOCK};
 
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
-
 #[test]
 fn managed_wrapper_shim_has_compiler_identity() {
     let root = tempfile::tempdir().expect("tempdir");
@@ -127,11 +124,7 @@ fn channel_scoped_lookup_uses_the_installer_watchdog_not_generic_silence() {
         ),
     )
     .expect("fake manager script");
-    let mut permissions = std::fs::metadata(&manager)
-        .expect("manager metadata")
-        .permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(&manager, permissions).expect("make manager executable");
+    crate::platform::fs::permissions::make_executable(&manager).expect("make manager executable");
 
     let _manager = EnvVarGuard::set(TEST_RUSTUP_BIN_ENV_VAR, &manager);
     let _timeout = EnvVarGuard::set(crate::core::COMMAND_OUTPUT_TIMEOUT_ENV_VAR, "1");
