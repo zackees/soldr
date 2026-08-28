@@ -59,7 +59,8 @@
 //! `(owner, repo, tag, asset)` lookup before falling back to the live
 //! GitHub Releases API.
 
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use super::catalogue_model::{
@@ -165,7 +166,39 @@ pub async fn fetch_verified_catalogue_asset(
     std::fs::read(refreshed.path()).map_err(SoldrError::from)
 }
 
-static MANIFEST_CACHE: OnceLock<ManifestIndex> = OnceLock::new();
+/// Parsed catalogues, keyed by the configuration that produced them.
+///
+/// soldr#2951: this used to be a bare `OnceLock<ManifestIndex>`, which cached
+/// *the first catalogue any caller asked for* and then served it to every
+/// later caller regardless of which URL they asked about. An explicit
+/// `SOLDR_TOOLCHAIN_CATALOGUE_URL` set after the first fetch was silently
+/// discarded, and so was `SOLDR_TOOLCHAIN_MANIFEST_DISABLE` -- the disable
+/// check sat *after* the cache read, so a populated cache satisfied it.
+/// A config knob that silently does nothing is the worst shape one can have,
+/// because the caller cannot tell.
+///
+/// Keying on the resolved configuration fixes that, and incidentally removes
+/// the reason the old design needed one process per test.
+static MANIFEST_CACHE: OnceLock<Mutex<HashMap<String, &'static ManifestIndex>>> = OnceLock::new();
+
+fn manifest_cache() -> &'static Mutex<HashMap<String, &'static ManifestIndex>> {
+    MANIFEST_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The configuration a cached catalogue belongs to.
+///
+/// Disabled is its own key rather than a URL, because "disabled" is not a
+/// place you can fetch from and must never be satisfied by a URL's entry.
+fn cache_key() -> String {
+    if disabled_via_env() {
+        return "<disabled>".to_string();
+    }
+    if has_legacy_catalogue_url_override() {
+        resolve_catalogue_url()
+    } else {
+        resolve_catalogue_v2_url()
+    }
+}
 
 /// True when [`MANIFEST_DISABLE_ENV_VAR`] is set to a truthy value.
 /// `1`, `true`, `yes` (case-insensitive) all count; empty / unset /
@@ -233,7 +266,15 @@ pub fn resolve_catalogue_v2_url() -> String {
 ///
 /// Returns a reference to the cached [`ManifestIndex`].
 pub async fn get_or_fetch() -> &'static ManifestIndex {
-    if let Some(cached) = MANIFEST_CACHE.get() {
+    // soldr#2951: keyed on the resolved configuration, so a later caller with
+    // a different `SOLDR_TOOLCHAIN_CATALOGUE_URL` -- or with the catalogue
+    // disabled -- is not served the first caller's index.
+    let key = cache_key();
+    if let Some(cached) = manifest_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(key.as_str())
+    {
         return cached;
     }
     let fetched = if disabled_via_env() {
@@ -269,13 +310,18 @@ pub async fn get_or_fetch() -> &'static ManifestIndex {
             }
         }
     };
-    // OnceLock::get_or_init isn't async, so we set explicitly. The
-    // first set wins; concurrent callers under a tokio runtime will
-    // re-fetch redundantly but the result they store is identical, and
-    // the set is atomic. Acceptable tradeoff vs. pulling in a
-    // tokio::sync::OnceCell just for this.
-    let _ = MANIFEST_CACHE.set(fetched);
-    MANIFEST_CACHE.get().expect("just set above")
+    // The index is leaked so the `&'static` return survives the lock guard.
+    // Bounded by the number of *distinct* configurations a process uses,
+    // which is one in every real run and a handful in tests. Concurrent
+    // callers under a tokio runtime may each fetch and leak; the first
+    // insertion wins and the others' copies are identical, which is the same
+    // tradeoff the `OnceLock` made rather than pulling in
+    // `tokio::sync::OnceCell` for this.
+    let leaked: &'static ManifestIndex = Box::leak(Box::new(fetched));
+    let mut cache = manifest_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache.entry(key).or_insert(leaked)
 }
 
 /// One-shot fetch of the catalogue, used by [`get_or_fetch`] on a
@@ -487,10 +533,19 @@ fn print_catalogue_error(url: &str, reason: &str, json: bool) {
     }
 }
 
-// NOTE: there is intentionally no `reset_cache_for_tests` helper.
-// `OnceLock` has no public reset, and tests that need a fresh cache
-// must run in their own integration test binary (cargo's default is
-// one binary per `tests/*.rs` file). The unit tests below operate
-// entirely on the pure `from_json` / `lookup` APIs and never touch
-// the process-wide cache. Tests under `tests/manifest_lookup_*.rs`
-// exercise the cache one-shot per binary.
+// NOTE: there is still no `reset_cache_for_tests` helper, and it is no
+// longer needed. The cache is keyed on the resolved configuration
+// (soldr#2951), so a test that sets `SOLDR_TOOLCHAIN_CATALOGUE_URL` to its
+// own one-shot server gets its own entry, and one that disables the
+// catalogue gets the `<disabled>` entry -- in any binary, under any runner.
+//
+// The previous note said a fresh cache required "their own integration test
+// binary (cargo's default is one binary per `tests/*.rs` file)". soldr#2934
+// consolidated those per-file binaries into category targets and made that
+// premise false, at which point `cargo test --test fetch_tools` began
+// failing two of these tests. CI never saw it, because nextest runs every
+// test in its own process. A contract that depends on the build layout is
+// only as durable as the layout; this one now depends on the key instead.
+//
+// The unit tests below still operate entirely on the pure `from_json` /
+// `lookup` APIs and never touch the process-wide cache.
