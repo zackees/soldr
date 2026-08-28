@@ -445,6 +445,24 @@ fn library_workspace(library_channel: &str) -> tempfile::TempDir {
     temp
 }
 
+fn inherited_library_workspace(root_channel: Option<&str>) -> tempfile::TempDir {
+    let temp = tempfile::tempdir().expect("workspace tempdir");
+    std::fs::write(
+        temp.path().join("Cargo.toml"),
+        "[workspace]\nmembers=[]\n[workspace.metadata.dylint]\nlibraries=[{path='dylints/inherited'}]\n",
+    )
+    .expect("write workspace manifest");
+    std::fs::create_dir_all(temp.path().join("dylints/inherited")).expect("create lint dir");
+    if let Some(channel) = root_channel {
+        std::fs::write(
+            temp.path().join("rust-toolchain.toml"),
+            format!("[toolchain]\nchannel='{channel}'\n"),
+        )
+        .expect("write root manifest");
+    }
+    temp
+}
+
 /// The defect: this workspace's lint libraries pin `nightly-2026-05-28`, but
 /// the resolver read the *root* `1.95.0` and derived a nightly nobody has ever
 /// published a driver for. Libraries now sit above the root manifest, and both
@@ -474,6 +492,83 @@ fn channel_precedence_is_explicit_then_environment_then_libraries_then_root() {
     assert_eq!(requested.provenance, ChannelProvenance::Explicit);
 }
 
+#[test]
+fn all_inherit_accepts_a_dated_nightly_root_with_root_provenance() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+    let _retained = EnvVarGuard::unset(TOOLCHAIN_ENV_VAR);
+    let _configured = EnvVarGuard::unset(CONFIGURED_TOOLCHAIN_ENV_VAR);
+    let _rustup = EnvVarGuard::unset("RUSTUP_TOOLCHAIN");
+    let workspace = inherited_library_workspace(Some("nightly-2026-05-28"));
+
+    let requested = requested_toolchain_channel(None, workspace.path())
+        .expect("dated nightly inherited from the root must resolve");
+    assert_eq!(requested.channel.as_deref(), Some("nightly-2026-05-28"));
+    assert_eq!(requested.provenance, ChannelProvenance::RootManifest);
+}
+
+#[test]
+fn all_inherit_rejects_root_channels_without_a_publishable_driver() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+    let _retained = EnvVarGuard::unset(TOOLCHAIN_ENV_VAR);
+    let _configured = EnvVarGuard::unset(CONFIGURED_TOOLCHAIN_ENV_VAR);
+    let _rustup = EnvVarGuard::unset("RUSTUP_TOOLCHAIN");
+
+    for channel in ["1.95.0", "nightly"] {
+        let workspace = inherited_library_workspace(Some(channel));
+        let error = match requested_toolchain_channel(None, workspace.path()) {
+            Err(error) => error.to_string(),
+            Ok(_) => panic!("an inherited non-dated-nightly cannot have a driver"),
+        };
+        assert!(error.contains("dylints/inherited"), "{error}");
+        assert!(error.contains(channel), "{error}");
+        assert!(
+            error.contains("published only for dated nightly"),
+            "{error}"
+        );
+        assert!(error.contains("impossible driver"), "{error}");
+    }
+}
+
+#[test]
+fn all_inherit_rejects_a_missing_root_channel_before_resolution() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+    let _retained = EnvVarGuard::unset(TOOLCHAIN_ENV_VAR);
+    let _configured = EnvVarGuard::unset(CONFIGURED_TOOLCHAIN_ENV_VAR);
+    let _rustup = EnvVarGuard::unset("RUSTUP_TOOLCHAIN");
+    let workspace = inherited_library_workspace(None);
+
+    let error = match requested_toolchain_channel(None, workspace.path()) {
+        Err(error) => error.to_string(),
+        Ok(_) => panic!("an inherited missing root channel cannot have a driver"),
+    };
+    assert!(error.contains("dylints/inherited"), "{error}");
+    assert!(error.contains("has no [toolchain].channel"), "{error}");
+    assert!(
+        error.contains("published only for dated nightly"),
+        "{error}"
+    );
+}
+
+#[test]
+fn explicit_and_environment_channels_precede_invalid_inherited_roots() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+    let _retained = EnvVarGuard::unset(TOOLCHAIN_ENV_VAR);
+    let _configured = EnvVarGuard::unset(CONFIGURED_TOOLCHAIN_ENV_VAR);
+    let _rustup = EnvVarGuard::unset("RUSTUP_TOOLCHAIN");
+    let workspace = inherited_library_workspace(Some("1.95.0"));
+
+    let _env = EnvVarGuard::set(TOOLCHAIN_ENV_VAR, "nightly-2026-01-18");
+    let requested = requested_toolchain_channel(None, workspace.path())
+        .expect("environment must precede library inheritance validation");
+    assert_eq!(requested.channel.as_deref(), Some("nightly-2026-01-18"));
+    assert_eq!(requested.provenance, ChannelProvenance::Environment);
+
+    let requested = requested_toolchain_channel(Some("nightly-2026-02-02"), workspace.path())
+        .expect("explicit argument must precede library inheritance validation");
+    assert_eq!(requested.channel.as_deref(), Some("nightly-2026-02-02"));
+    assert_eq!(requested.provenance, ChannelProvenance::Explicit);
+}
+
 /// Tiers 4 and 5 are not dead code — they are the whole answer for a workspace
 /// with no lint libraries to read.
 #[test]
@@ -487,8 +582,8 @@ fn a_workspace_without_lint_libraries_still_falls_back_to_root_then_map() {
     std::fs::write(temp.path().join("Cargo.toml"), "[workspace]\nmembers=[]\n")
         .expect("write workspace manifest");
     assert_eq!(
-        crate::dylint_libraries::pinned_channel(temp.path()).expect("read pins"),
-        None,
+        crate::dylint_libraries::toolchain_state(temp.path()).expect("read pins"),
+        crate::dylint_libraries::LibraryToolchainState::NoLibraries,
         "a workspace with no lint libraries must not claim authority"
     );
 

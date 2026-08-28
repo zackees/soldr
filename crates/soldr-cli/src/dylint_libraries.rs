@@ -33,16 +33,25 @@ use std::path::{Path, PathBuf};
 
 use crate::core::{read_rust_toolchain_manifest, SoldrError};
 
-/// The single nightly every Dylint library in a workspace agrees on, plus the
-/// directories that declared it (for diagnostics).
+/// What one scan of the workspace's declared Dylint libraries found.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct LibraryToolchain {
-    /// The channel exactly as the libraries spell it — the string is handed
-    /// straight to rustup and to the driver-asset lookup, so it is never
-    /// normalized here.
-    pub(crate) channel: String,
-    /// Workspace-relative library directories, `/`-separated and sorted.
-    pub(crate) libraries: Vec<String>,
+pub(crate) enum LibraryToolchainState {
+    /// No declared library directories matched, so callers retain their
+    /// historical root-manifest/version-map fallback.
+    NoLibraries,
+    /// Every declared library inherits the workspace root toolchain.
+    InheritRoot {
+        /// Workspace-relative library directories, `/`-separated and sorted.
+        libraries: Vec<String>,
+    },
+    /// Every declared library pins the same toolchain.
+    Pinned {
+        /// The channel exactly as the libraries spell it. It is handed
+        /// straight to rustup and driver-asset lookup, never normalized here.
+        channel: String,
+        /// Workspace-relative library directories, `/`-separated and sorted.
+        libraries: Vec<String>,
+    },
 }
 
 /// Reduce a channel to the identity the Dylint driver is keyed on: a dated
@@ -56,24 +65,13 @@ pub(crate) fn canonical_channel(channel: &str) -> &str {
         .unwrap_or(channel)
 }
 
-/// The nightly the workspace's Dylint libraries declare, or `None` when they
-/// declare none.
+/// Classify the workspace's Dylint library toolchains in one directory scan.
 ///
-/// `None` covers two states that are the same as far as a caller is concerned,
-/// and neither is an error:
-///
-/// * the workspace lists no Dylint libraries (a consumer repo with no lints);
-/// * every listed library omits its own `rust-toolchain.toml`, so each one
-///   *inherits* the workspace root's — the root is then already the right
-///   answer and the caller's next tier reads it.
-///
-/// Errors are reserved for the states a caller cannot paper over: a declared
-/// library that is not on disk, libraries pinned to different nightlies (only
-/// one of which could have a driver), and a workspace where some libraries pin
-/// a nightly while others inherit a different root channel.
-pub(crate) fn pinned_channel(
-    workspace_root: &Path,
-) -> Result<Option<LibraryToolchain>, SoldrError> {
+/// A declared library that is not on disk, conflicting pins, and mixed
+/// pinned/inherited libraries remain errors. All-inherit is deliberately a
+/// distinct state from no libraries: callers must validate that the inherited
+/// root channel is a dated nightly for which a Dylint driver can be published.
+pub(crate) fn toolchain_state(workspace_root: &Path) -> Result<LibraryToolchainState, SoldrError> {
     let mut pinned: Vec<(String, String)> = Vec::new();
     let mut inheriting: Vec<String> = Vec::new();
     for directory in library_directories(workspace_root)? {
@@ -96,7 +94,13 @@ pub(crate) fn pinned_channel(
         }
     }
     if pinned.is_empty() {
-        return Ok(None);
+        return Ok(if inheriting.is_empty() {
+            LibraryToolchainState::NoLibraries
+        } else {
+            LibraryToolchainState::InheritRoot {
+                libraries: inheriting,
+            }
+        });
     }
     if !inheriting.is_empty() {
         return Err(SoldrError::Other(format!(
@@ -122,10 +126,55 @@ pub(crate) fn pinned_channel(
         )));
     }
     let channel = pinned[0].1.clone();
-    Ok(Some(LibraryToolchain {
+    Ok(LibraryToolchainState::Pinned {
         channel,
         libraries: pinned.into_iter().map(|(directory, _)| directory).collect(),
-    }))
+    })
+}
+
+/// Resolve and validate the root channel inherited by the named libraries.
+///
+/// This check deliberately happens before toolchain-map or catalogue access:
+/// Dylint publishes drivers only for dated nightlies, so asking the network for
+/// a stable, undated, or absent inherited channel can only produce a misleading
+/// missing-driver error (soldr#2973).
+pub(crate) fn inherited_root_channel(
+    workspace_root: &Path,
+    libraries: &[String],
+) -> Result<String, SoldrError> {
+    let manifest = read_rust_toolchain_manifest(workspace_root)?;
+    let names = libraries.join(", ");
+    let Some(channel) = manifest.channel else {
+        return Err(SoldrError::Other(format!(
+            "Dylint libraries {names} inherit the workspace root toolchain, but {} has no \
+             [toolchain].channel. Dylint drivers are published only for dated nightly channels; \
+             pin the root or every library to nightly-YYYY-MM-DD (soldr#2973).",
+            workspace_root.join("rust-toolchain.toml").display()
+        )));
+    };
+    if !is_dated_nightly(&channel) {
+        return Err(SoldrError::Other(format!(
+            "Dylint libraries {names} inherit the workspace root toolchain `{channel}`, but \
+             Dylint drivers are published only for dated nightly channels. Pin the root or every \
+             library to nightly-YYYY-MM-DD instead of requesting an impossible driver \
+             (soldr#2973)."
+        )));
+    }
+    Ok(channel)
+}
+
+pub(crate) fn is_dated_nightly(channel: &str) -> bool {
+    let Some(value) = channel.strip_prefix("nightly-") else {
+        return false;
+    };
+    let Some(date) = value.get(..10) else {
+        return false;
+    };
+    let valid_date_shape = date.as_bytes().iter().enumerate().all(|(index, byte)| {
+        matches!(index, 4 | 7) && *byte == b'-' || !matches!(index, 4 | 7) && byte.is_ascii_digit()
+    });
+    let suffix = &value[10..];
+    valid_date_shape && (suffix.is_empty() || suffix.starts_with('-') && suffix.len() > 1)
 }
 
 /// `dir-a (nightly-…), dir-b (nightly-…)` — every library named with the
@@ -321,12 +370,14 @@ mod tests {
             6,
             "expected the six lint directories, got {directories:?}"
         );
-        let pinned = pinned_channel(temp.path())
-            .expect("read library pins")
-            .expect("libraries are declared");
-        assert_eq!(pinned.channel, "nightly-2026-05-28");
+        let LibraryToolchainState::Pinned { channel, libraries } =
+            toolchain_state(temp.path()).expect("read library pins")
+        else {
+            panic!("libraries must report their shared pin");
+        };
+        assert_eq!(channel, "nightly-2026-05-28");
         assert_eq!(
-            pinned.libraries,
+            libraries,
             vec![
                 "dylints/ban_platform_cfg_outside_boundary",
                 "dylints/ban_raw_env_flag",
@@ -369,7 +420,7 @@ mod tests {
                 ("dylints/lint-b", "nightly-2026-04-17"),
             ],
         );
-        let error = pinned_channel(temp.path())
+        let error = toolchain_state(temp.path())
             .expect_err("disagreeing pins must not resolve")
             .to_string();
         assert!(error.contains("conflicting"), "{error}");
@@ -397,20 +448,27 @@ mod tests {
                 ),
             ],
         );
-        let pinned = pinned_channel(temp.path())
-            .expect("host-qualified pins must agree")
-            .expect("libraries are declared");
-        assert_eq!(pinned.channel, "nightly-2026-05-28");
+        let LibraryToolchainState::Pinned { channel, .. } =
+            toolchain_state(temp.path()).expect("host-qualified pins must agree")
+        else {
+            panic!("libraries must report their shared pin");
+        };
+        assert_eq!(channel, "nightly-2026-05-28");
     }
 
     /// `ci/fixtures/dylint-cache` is exactly this shape: one library with no
     /// `rust-toolchain.toml` of its own, pinned at the workspace root it
-    /// inherits from. The libraries have nothing to add, so the root stays the
-    /// authority and this must not become an error.
+    /// inherits from. The scan must preserve that state so callers validate
+    /// the root instead of confusing it with a workspace that has no lints.
     #[test]
-    fn libraries_that_all_inherit_the_root_manifest_report_none() {
+    fn libraries_that_all_inherit_report_the_named_libraries() {
         let temp = workspace("{path='lint'}", &[("lint", "")]);
-        assert_eq!(pinned_channel(temp.path()).expect("read pins"), None);
+        assert_eq!(
+            toolchain_state(temp.path()).expect("read pins"),
+            LibraryToolchainState::InheritRoot {
+                libraries: vec!["lint".into()]
+            }
+        );
     }
 
     /// Half-pinned is the state nobody can serve: one driver gets fetched, and
@@ -424,7 +482,7 @@ mod tests {
                 ("dylints/lint-b", ""),
             ],
         );
-        let error = pinned_channel(temp.path())
+        let error = toolchain_state(temp.path())
             .expect_err("a half-pinned workspace must not resolve")
             .to_string();
         assert!(
@@ -441,7 +499,7 @@ mod tests {
     #[test]
     fn a_declared_library_that_does_not_exist_is_reported() {
         let temp = workspace("{path='dylints/missing'}", &[]);
-        let error = pinned_channel(temp.path())
+        let error = toolchain_state(temp.path())
             .expect_err("an absent library must not be silently skipped")
             .to_string();
         assert!(error.contains("does not exist"), "{error}");
@@ -449,24 +507,36 @@ mod tests {
     }
 
     #[test]
-    fn a_workspace_without_dylint_libraries_reports_none() {
+    fn a_workspace_without_dylint_libraries_reports_no_libraries() {
         let temp = tempfile::tempdir().expect("workspace tempdir");
         std::fs::write(temp.path().join("Cargo.toml"), "[workspace]\nmembers=[]\n")
             .expect("write workspace manifest");
-        assert_eq!(pinned_channel(temp.path()).expect("read pins"), None);
+        assert_eq!(
+            toolchain_state(temp.path()).expect("read pins"),
+            LibraryToolchainState::NoLibraries
+        );
 
         // An empty declaration, and a glob that matches nothing, are the same
         // state: nothing to be the authority.
         let empty = workspace("", &[]);
-        assert_eq!(pinned_channel(empty.path()).expect("read pins"), None);
+        assert_eq!(
+            toolchain_state(empty.path()).expect("read pins"),
+            LibraryToolchainState::NoLibraries
+        );
         let unmatched = workspace("{path='dylints/*'}", &[]);
-        assert_eq!(pinned_channel(unmatched.path()).expect("read pins"), None);
+        assert_eq!(
+            toolchain_state(unmatched.path()).expect("read pins"),
+            LibraryToolchainState::NoLibraries
+        );
     }
 
     #[test]
-    fn a_workspace_without_a_manifest_reports_none() {
+    fn a_workspace_without_a_manifest_reports_no_libraries() {
         let temp = tempfile::tempdir().expect("workspace tempdir");
-        assert_eq!(pinned_channel(temp.path()).expect("read pins"), None);
+        assert_eq!(
+            toolchain_state(temp.path()).expect("read pins"),
+            LibraryToolchainState::NoLibraries
+        );
     }
 
     #[test]
