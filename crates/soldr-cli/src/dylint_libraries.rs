@@ -128,6 +128,52 @@ pub(crate) fn pinned_channel(
     }))
 }
 
+/// Refuse the one inheritance that can never resolve (soldr#2973).
+///
+/// [`pinned_channel`] returns `None` both when a workspace has no lint
+/// libraries and when it has some that all inherit the root. The caller's next
+/// tiers *derive* a nightly, which is the right answer for the first case and
+/// only sometimes right for the second:
+///
+/// * root pins a dated nightly — inheriting is sound, and a driver exists for
+///   it. `ci/fixtures/dylint-cache` is exactly this and must keep working.
+/// * root pins a stable release (this workspace's own `1.95.0`) — no Dylint
+///   driver has ever existed for a stable channel, so the version map turns it
+///   into some *other* nightly and the run dies at the driver gate naming a
+///   channel nobody chose. That is soldr#2945 reached by a second route.
+///
+/// `inherited_is_nightly` is passed in rather than recomputed because the
+/// predicate lives with the resolver in `dylint_toolchain`, and two spellings
+/// of "is this a dated nightly" is how the original bug got its second route.
+pub(crate) fn reject_underivable_inheritance(
+    workspace_root: &Path,
+    inherited: Option<&str>,
+    inherited_is_nightly: bool,
+) -> Result<(), SoldrError> {
+    if inherited_is_nightly {
+        return Ok(());
+    }
+    let libraries = library_directories(workspace_root)?;
+    if libraries.is_empty() {
+        return Ok(());
+    }
+    let root = match inherited {
+        Some(channel) => format!("the workspace root pins `{channel}`"),
+        None => "the workspace root pins no channel".to_string(),
+    };
+    Err(SoldrError::Other(format!(
+        "this workspace declares {} Dylint library director{} but none of them pins a nightly, \
+         and {root} — not a dated nightly. Dylint builds one driver per library toolchain and \
+         drivers exist only for dated nightlies, so inheriting this channel cannot resolve: \
+         soldr would derive some other nightly from it and then fail at the driver gate naming a \
+         channel nothing asked for (soldr#2945/soldr#2973). Give each library under \
+         workspace.metadata.dylint.libraries its own rust-toolchain.toml pinning the nightly its \
+         lints are built against, or pin the workspace root to that nightly so they inherit it.",
+        libraries.len(),
+        if libraries.len() == 1 { "y" } else { "ies" },
+    )))
+}
+
 /// `dir-a (nightly-…), dir-b (nightly-…)` — every library named with the
 /// channel it declares, because "they disagree" without saying which is not
 /// an actionable diagnostic.
@@ -411,6 +457,60 @@ mod tests {
     fn libraries_that_all_inherit_the_root_manifest_report_none() {
         let temp = workspace("{path='lint'}", &[("lint", "")]);
         assert_eq!(pinned_channel(temp.path()).expect("read pins"), None);
+    }
+
+    /// soldr#2973. `ci/fixtures/dylint-cache` is this exact shape — one
+    /// unpinned library under a root that pins a *nightly* — and it resolves,
+    /// so the guard must stay out of the way. This is the case a first attempt
+    /// at the fix broke.
+    #[test]
+    fn an_inherited_nightly_root_is_left_alone() {
+        let temp = workspace("{path='lint'}", &[("lint", "")]);
+        reject_underivable_inheritance(temp.path(), Some("nightly-2026-05-28"), true)
+            .expect("inheriting a dated nightly is sound and must not be rejected");
+    }
+
+    /// The half that cannot work: no Dylint driver has ever existed for a
+    /// stable channel, so deriving from one produces a nightly nobody chose
+    /// and the failure surfaces at the driver gate blaming that channel.
+    #[test]
+    fn an_inherited_stable_root_is_refused_and_says_why() {
+        let temp = workspace(
+            "{path='dylints/*'}",
+            &[("dylints/a", ""), ("dylints/b", "")],
+        );
+        let error = reject_underivable_inheritance(temp.path(), Some("1.95.0"), false)
+            .expect_err("inheriting a stable root can never resolve a driver");
+        let message = error.to_string();
+        assert!(
+            message.contains("2 Dylint library directories"),
+            "{message}"
+        );
+        assert!(message.contains("`1.95.0`"), "{message}");
+        assert!(message.contains("soldr#2973"), "{message}");
+    }
+
+    /// A root with no channel at all lands on the version map, which is the
+    /// same derivation by another name.
+    #[test]
+    fn an_unpinned_root_beneath_libraries_is_refused_too() {
+        let temp = workspace("{path='lint'}", &[("lint", "")]);
+        let error = reject_underivable_inheritance(temp.path(), None, false)
+            .expect_err("no root channel plus libraries still derives");
+        assert!(
+            error.to_string().contains("pins no channel"),
+            "{}",
+            error.to_string()
+        );
+    }
+
+    /// A workspace with no lint libraries is the one case where deriving is
+    /// genuinely the best available answer, and must keep working.
+    #[test]
+    fn a_workspace_without_libraries_may_still_derive() {
+        let temp = workspace("", &[]);
+        reject_underivable_inheritance(temp.path(), Some("1.95.0"), false)
+            .expect("no libraries means nothing to inherit; derivation is allowed");
     }
 
     /// Half-pinned is the state nobody can serve: one driver gets fetched, and

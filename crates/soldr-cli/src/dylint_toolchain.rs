@@ -671,6 +671,14 @@ struct RequestedChannel {
 /// gate. Tiers 4 and 5 survive as the answer for a workspace with no lint
 /// libraries to read, which is the only situation where a derivation is the
 /// best available guess.
+///
+/// soldr#2973 closed the gap between that sentence and the code. Tier 3 also
+/// returns `None` when libraries exist but every one of them *inherits*, which
+/// used to fall straight through to a derivation. That is fine when the
+/// inherited root channel is itself a dated nightly — `ci/fixtures/dylint-cache`
+/// depends on it — and unservable when the root pins stable, because no driver
+/// can exist for a stable channel. Tiers 4/5 now reject the second case rather
+/// than deriving a nightly nobody chose.
 fn requested_toolchain_channel(
     requested_channel: Option<&str>,
     workspace_root: &Path,
@@ -703,7 +711,15 @@ fn requested_toolchain_channel(
         });
     }
     let manifest = crate::core::read_rust_toolchain_manifest(workspace_root)?;
-    Ok(match manifest.channel {
+    let inherited = manifest.channel;
+    // soldr#2973: tiers 4/5 derive, and deriving is only right when there are
+    // no lint libraries to read. Libraries that all *inherit* reach here too.
+    crate::dylint_libraries::reject_underivable_inheritance(
+        workspace_root,
+        inherited.as_deref(),
+        inherited.as_deref().is_some_and(is_dated_nightly),
+    )?;
+    Ok(match inherited {
         Some(channel) => RequestedChannel {
             channel: Some(channel),
             provenance: ChannelProvenance::RootManifest,
