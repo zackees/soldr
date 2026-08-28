@@ -290,10 +290,13 @@ pub const MAX_CACHED_CONFIGS: usize = 8;
 ///
 /// Distinct configurations serialise against each other too. Acceptable: a
 /// fetch is rare, and there is exactly one configuration in every real run.
-static CATALOGUE_CACHE: OnceLock<tokio::sync::Mutex<Vec<(CatalogueConfig, Arc<ManifestIndex>)>>> =
-    OnceLock::new();
+/// Most-recently-used first, so eviction is `truncate` and a hit is a
+/// `remove` + `insert(0)`.
+type CatalogueEntries = Vec<(CatalogueConfig, Arc<ManifestIndex>)>;
 
-fn catalogue_cache() -> &'static tokio::sync::Mutex<Vec<(CatalogueConfig, Arc<ManifestIndex>)>> {
+static CATALOGUE_CACHE: OnceLock<tokio::sync::Mutex<CatalogueEntries>> = OnceLock::new();
+
+fn catalogue_cache() -> &'static tokio::sync::Mutex<CatalogueEntries> {
     CATALOGUE_CACHE.get_or_init(|| tokio::sync::Mutex::new(Vec::new()))
 }
 
