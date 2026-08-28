@@ -837,8 +837,8 @@ fn ensure_installed(plan: &DylintToolchainPlan) -> Result<(), SoldrError> {
             let code = crate::toolchain::rustup_component_add(&plan.channel, component)?;
             if code != 0 {
                 return Err(SoldrError::Other(format!(
-                    "rustup failed to add {component} to {} (exit {code})",
-                    plan.channel
+                    "rustup failed to add {component} to {} (exit {code}). If rustup output above says `detected conflict`, run `soldr rustup toolchain uninstall {}` then rerun `soldr dylint`.",
+                    plan.channel, plan.channel
                 )));
             }
         }
