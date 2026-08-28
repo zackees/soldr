@@ -38,17 +38,26 @@ CHANNEL = re.compile(r'^\s*channel\s*=\s*"(nightly-\d{4}-\d{2}-\d{2})"', re.MULT
 
 
 def released_targets(repo_root: Path) -> list[str]:
-    payload = json.loads((repo_root / "ci" / "canonical-targets.json").read_text(encoding="utf-8"))
+    payload: object = json.loads(
+        (repo_root / "ci" / "canonical-targets.json").read_text(encoding="utf-8")
+    )
+    if not isinstance(payload, dict):
+        raise ValueError("canonical targets is not an object")
     targets = payload.get("targets")
     if not isinstance(targets, list):
         raise ValueError("canonical targets has no targets list")
-    triples = [
-        entry.get("triple")
-        for entry in targets
-        if isinstance(entry, dict)
-        and isinstance(entry.get("triple"), str)
-        and entry.get("release", {}).get("status") == "included"
-    ]
+    triples: list[str] = []
+    for entry in targets:
+        if not isinstance(entry, dict):
+            continue
+        triple = entry.get("triple")
+        release = entry.get("release")
+        if (
+            isinstance(triple, str)
+            and isinstance(release, dict)
+            and release.get("status") == "included"
+        ):
+            triples.append(triple)
     if not triples:
         raise ValueError("canonical targets has no released triples")
     return sorted(triples)
