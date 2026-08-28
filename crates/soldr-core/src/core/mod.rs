@@ -172,24 +172,47 @@ pub fn command_output_with_timeout(
     command: &mut Command,
     context: &str,
 ) -> Result<Output, SoldrError> {
-    command_output_with_timeout_inner(command, context, command_output_timeout(), true)
+    command_output_with_timeout_inner(
+        command,
+        context,
+        command_output_timeout(),
+        CommandOutputTimeout::Inactivity,
+        true,
+    )
 }
 
 /// Run a command through soldr's sanctioned output-capture containment with a
-/// caller-selected timeout. This is for small host probes whose timeout is a
-/// protocol property rather than user-configurable build policy.
+/// caller-selected **wall-clock** deadline. This is for small host probes whose
+/// timeout is a protocol property rather than user-configurable build policy.
+/// Unlike [`command_output_with_timeout`], output does not extend this bound.
 pub fn command_output_with_timeout_duration(
     command: &mut Command,
     context: &str,
     timeout: Duration,
 ) -> Result<Output, SoldrError> {
-    command_output_with_timeout_inner(command, context, timeout, false)
+    command_output_with_timeout_inner(
+        command,
+        context,
+        timeout,
+        CommandOutputTimeout::WallClock,
+        false,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum CommandOutputTimeout {
+    /// The user-configurable command setting measures a quiet interval.
+    Inactivity,
+    /// Bounded host probes must finish within their caller-provided deadline,
+    /// even if a wedged child keeps writing progress-like output.
+    WallClock,
 }
 
 fn command_output_with_timeout_inner(
     command: &mut Command,
     context: &str,
     timeout: Duration,
+    timeout_kind: CommandOutputTimeout,
     suggest_timeout_override: bool,
 ) -> Result<Output, SoldrError> {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -217,21 +240,33 @@ fn command_output_with_timeout_inner(
         {
             Some(status) => break status,
             None => {
-                let silent_for = started
-                    .elapsed()
-                    .saturating_sub(Duration::from_millis(last_output.load(Ordering::Relaxed)));
-                if silent_for < timeout {
+                let elapsed = started.elapsed();
+                let timed_out = match timeout_kind {
+                    CommandOutputTimeout::Inactivity => {
+                        let silent_for = elapsed.saturating_sub(Duration::from_millis(
+                            last_output.load(Ordering::Relaxed),
+                        ));
+                        silent_for >= timeout
+                    }
+                    CommandOutputTimeout::WallClock => elapsed >= timeout,
+                };
+                if !timed_out {
                     continue;
                 }
                 let kill_result = child.kill();
                 let reap_result = child
                     .wait_timeout(Duration::from_secs(KILLED_COMMAND_OUTPUT_REAP_TIMEOUT_SECS));
                 let timeout_secs = timeout.as_secs();
-                let elapsed_secs = started.elapsed().as_secs();
-                let mut message = format!(
-                    "{context} produced no output for {timeout_secs} seconds \
-                     ({elapsed_secs}s elapsed)"
-                );
+                let elapsed_secs = elapsed.as_secs();
+                let mut message = match timeout_kind {
+                    CommandOutputTimeout::Inactivity => format!(
+                        "{context} produced no output for {timeout_secs} seconds \
+                         ({elapsed_secs}s elapsed)"
+                    ),
+                    CommandOutputTimeout::WallClock => {
+                        format!("{context} timed out after {timeout_secs} seconds")
+                    }
+                };
                 if suggest_timeout_override {
                     message.push_str(&format!(
                         " (set {COMMAND_OUTPUT_TIMEOUT_ENV_VAR} to override)"
@@ -371,6 +406,30 @@ mod tests {
             message.contains("produced no output for 1 seconds"),
             "the timeout must measure post-drain silence: {message}"
         );
+        assert!(message.contains("killed child process"), "{message}");
+        assert!(message.contains("reaped child process"), "{message}");
+    }
+
+    /// The caller-selected probe deadline is deliberately different from the
+    /// generic output-inactivity budget: a wedged host probe that keeps
+    /// printing must still be contained within the declared wall-clock bound.
+    #[test]
+    fn explicit_duration_timeout_stops_a_chatty_child_and_reaps_it() {
+        let mut command = chatty_command(30, 1);
+        let started = Instant::now();
+        let error = command_output_with_timeout_duration(
+            &mut command,
+            "chatty bounded probe",
+            Duration::from_secs(1),
+        )
+        .expect_err("a bounded probe must not let continuing output extend its deadline");
+
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "a chatty child must still be stopped at the explicit deadline"
+        );
+        let message = error.to_string();
+        assert!(message.contains("timed out after 1 seconds"), "{message}");
         assert!(message.contains("killed child process"), "{message}");
         assert!(message.contains("reaped child process"), "{message}");
     }
