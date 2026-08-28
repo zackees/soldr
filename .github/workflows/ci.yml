@@ -825,6 +825,8 @@ jobs:
     needs: e2e-macos-x64-build
     if: ${{ needs.e2e-macos-x64-build.result == 'success' }}
     runs-on: ubuntu-24.04
+    # 15m queue bound, plus interpreter setup and polling/diagnostic headroom.
+    timeout-minutes: 20
     permissions:
       actions: read
       contents: read
