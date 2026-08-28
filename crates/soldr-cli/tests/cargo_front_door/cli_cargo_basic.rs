@@ -11,6 +11,7 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+use wait_timeout::ChildExt;
 
 #[test]
 fn cargo_front_door_runs_real_cargo() {
@@ -507,45 +508,64 @@ fn fake_long_running_cargo_script(mode: &str, log_path: &Path, lock_path: &Path)
     }
 }
 
-fn fake_always_slow_cargo_script(log_path: &Path, ready_path: Option<&Path>) -> String {
+fn fake_always_slow_cargo_script(log_path: &Path) -> String {
     if matches!(
         soldr_platform::host::facts::os(),
         soldr_platform::host::facts::HostOs::Windows
     ) {
-        let ready = ready_path.map_or_else(String::new, |path| {
-            format!("type nul > \"{}\"\n", path.display())
-        });
         format!(
-            "@echo off\necho cargo %*>>\"{0}\"\nif \"%~1\"==\"metadata\" exit /b 0\n{1}ping -n 6 127.0.0.1 >nul\nexit /b 0\n",
+            "@echo off\necho cargo %*>>\"{0}\"\nif \"%~1\"==\"metadata\" exit /b 0\nping -n 6 127.0.0.1 >nul\nexit /b 0\n",
             log_path.display(),
-            ready,
         )
     } else {
-        let ready =
-            ready_path.map_or_else(String::new, |path| format!(": > \"{}\"\n", path.display()));
         format!(
-            "#!/bin/sh\necho \"cargo $*\" >> \"{0}\"\n[ \"${{1:-}}\" = metadata ] && exit 0\n{1}sleep 5\nexit 0\n",
+            "#!/bin/sh\necho \"cargo $*\" >> \"{0}\"\n[ \"${{1:-}}\" = metadata ] && exit 0\nsleep 5\nexit 0\n",
             log_path.display(),
-            ready,
         )
     }
 }
 
-/// Cold target-run workers can spend several seconds setting up Soldr before
-/// they ever spawn Cargo.  This only bounds the test observer; it is not the
-/// Cargo wall-clock timeout under test.
-const FAKE_CARGO_STARTUP_OBSERVATION_BUDGET: Duration = Duration::from_secs(30);
+/// This bounds the whole test fixture, including a cold Soldr front door. The
+/// Cargo product timeout under test remains four seconds.
+const CARGO_TIMEOUT_TEST_EXECUTION_BUDGET: Duration = Duration::from_secs(90);
 
-fn wait_for_fake_cargo_ready(ready_path: &Path, label: &str) {
-    let deadline = Instant::now() + FAKE_CARGO_STARTUP_OBSERVATION_BUDGET;
-    while !ready_path.is_file() {
-        if Instant::now() >= deadline {
-            panic!(
-                "{label}: pre-child startup never reached fake Cargo's ready phase within {}s; the Cargo timeout under test has not started",
-                FAKE_CARGO_STARTUP_OBSERVATION_BUDGET.as_secs()
-            );
-        }
-        std::thread::sleep(Duration::from_millis(25));
+fn wait_for_timeout_test_completion(
+    mut child: std::process::Child,
+    label: &str,
+) -> std::process::Output {
+    if child
+        .wait_timeout(CARGO_TIMEOUT_TEST_EXECUTION_BUDGET)
+        .expect("wait for soldr timeout fixture")
+        .is_none()
+    {
+        let _ = child.kill();
+        let output = child
+            .wait_with_output()
+            .expect("collect outer-timeout fixture output");
+        panic!(
+            "{label}: outer test execution exceeded {:?}; stdout:\n{}\nstderr:\n{}",
+            CARGO_TIMEOUT_TEST_EXECUTION_BUDGET,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+    child
+        .wait_with_output()
+        .expect("collect soldr timeout fixture output")
+}
+
+fn assert_startup_phases_in_order(stderr: &str, expected: &[&str]) {
+    let phases: Vec<&str> = stderr
+        .lines()
+        .filter_map(|line| line.strip_prefix("soldr front-door: startup phase="))
+        .filter_map(|line| line.split_whitespace().next())
+        .collect();
+    let mut phases = phases.into_iter();
+    for expected_phase in expected {
+        assert!(
+            phases.any(|phase| phase == *expected_phase),
+            "missing ordered startup phase {expected_phase:?}; trace: {stderr}"
+        );
     }
 }
 
@@ -676,7 +696,7 @@ fn cargo_invalid_timeout_fails_before_spawning_cargo() {
     let log_path = root.join("cargo.log");
     fs::create_dir_all(&tool_dir).expect("tool dir");
     let cargo = fake_script_path(&tool_dir, "cargo");
-    write_fake_script(&cargo, &fake_always_slow_cargo_script(&log_path, None));
+    write_fake_script(&cargo, &fake_always_slow_cargo_script(&log_path));
 
     for value in ["", "invalid", "-1", "18446744073709551616"] {
         let output = common::isolated_soldr_command()
@@ -947,7 +967,6 @@ fn cargo_timeout_during_no_cache_retry_does_not_recurse() {
     let cache_root = root.join("soldr-cache");
     let log_path = root.join("cargo.log");
     let fake_tool_log = root.join("fake-toolchain.log");
-    let ready_path = root.join("fake-cargo-ready");
     fs::create_dir_all(workspace.join("src")).expect("workspace src");
     fs::create_dir_all(&tool_dir).expect("tool dir");
     fs::write(
@@ -958,10 +977,7 @@ fn cargo_timeout_during_no_cache_retry_does_not_recurse() {
     fs::write(workspace.join("src/lib.rs"), "pub fn ok() {}\n").expect("source");
     let cargo = fake_script_path(&tool_dir, "cargo");
     let (_unused_cargo, rustc, _zccache) = install_fake_toolchain(&fake_tool_log);
-    write_fake_script(
-        &cargo,
-        &fake_always_slow_cargo_script(&log_path, Some(&ready_path)),
-    );
+    write_fake_script(&cargo, &fake_always_slow_cargo_script(&log_path));
 
     let mut command = common::isolated_soldr_command();
     command
@@ -970,17 +986,17 @@ fn cargo_timeout_during_no_cache_retry_does_not_recurse() {
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
         .env("SOLDR_CARGO_WAIT_TIMEOUT_SECS", "4")
+        .env("SOLDR_STARTUP_TRACE", "1")
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env_remove("ZCCACHE_DISABLE")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let child = command
-        .spawn()
-        .expect("spawn soldr cargo build with retry timeout");
-    wait_for_fake_cargo_ready(&ready_path, "initial timed-out cargo attempt");
-    let output = child
-        .wait_with_output()
-        .expect("wait for soldr cargo build with retry timeout");
+    let output = wait_for_timeout_test_completion(
+        command
+            .spawn()
+            .expect("spawn soldr cargo build with retry timeout"),
+        "timed-out cargo retry attempt",
+    );
 
     assert!(
         !output.status.success(),
@@ -1025,7 +1041,6 @@ fn cargo_explicit_timeout_retry_can_be_disabled() {
     let cache_root = root.join("soldr-cache");
     let log_path = root.join("cargo.log");
     let fake_tool_log = root.join("fake-toolchain.log");
-    let ready_path = root.join("fake-cargo-ready");
     fs::create_dir_all(workspace.join("src")).expect("workspace src");
     fs::create_dir_all(&tool_dir).expect("tool dir");
     fs::write(
@@ -1036,10 +1051,7 @@ fn cargo_explicit_timeout_retry_can_be_disabled() {
     fs::write(workspace.join("src/lib.rs"), "pub fn ok() {}\n").expect("source");
     let cargo = fake_script_path(&tool_dir, "cargo");
     let (_unused_cargo, rustc, _zccache) = install_fake_toolchain(&fake_tool_log);
-    write_fake_script(
-        &cargo,
-        &fake_always_slow_cargo_script(&log_path, Some(&ready_path)),
-    );
+    write_fake_script(&cargo, &fake_always_slow_cargo_script(&log_path));
 
     let mut command = common::isolated_soldr_command();
     command
@@ -1049,20 +1061,24 @@ fn cargo_explicit_timeout_retry_can_be_disabled() {
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
         .env("SOLDR_CARGO_WAIT_TIMEOUT_SECS", "4")
         .env("SOLDR_NO_CARGO_TIMEOUT_RETRY", "1")
+        .env("SOLDR_STARTUP_TRACE", "1")
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env_remove("ZCCACHE_DISABLE")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let child = command
-        .spawn()
-        .expect("spawn soldr cargo build with retry disabled");
-    wait_for_fake_cargo_ready(&ready_path, "retry-disabled timed-out cargo attempt");
-    let output = child
-        .wait_with_output()
-        .expect("wait for soldr cargo build with retry disabled");
+    let output = wait_for_timeout_test_completion(
+        command
+            .spawn()
+            .expect("spawn soldr cargo build with retry disabled"),
+        "retry-disabled timed-out cargo attempt",
+    );
 
     assert!(!output.status.success(), "explicit timeout must fail");
     let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("timed out after 4 seconds"),
+        "the unchanged four-second Cargo timeout must fire: {stderr}"
+    );
     assert!(
         !stderr.contains("retrying timed-out cargo run without cache"),
         "retry opt-out must be honored: {stderr}"
@@ -1072,6 +1088,15 @@ fn cargo_explicit_timeout_retry_can_be_disabled() {
         log.lines().filter(|line| *line == "cargo build").count(),
         1,
         "retry opt-out must leave exactly one build attempt: {log}"
+    );
+    assert_startup_phases_in_order(
+        &stderr,
+        &[
+            "cargo_front_door_entered",
+            "cargo_front_door_toolchain_resolved",
+            "cargo_front_door_pre_spawn",
+            "command_dispatch",
+        ],
     );
     let abort_log = fs::read_to_string(cache_root.join("logs/cargo-aborts.jsonl"))
         .expect("timeout should be logged");

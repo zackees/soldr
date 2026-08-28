@@ -85,6 +85,12 @@ pub mod phase {
     /// cost.
     pub const COMMAND_DISPATCH: &str = "command_dispatch";
 
+    // Cargo front door. These opt-in diagnostics distinguish slow pre-Cargo
+    // setup from the timeout that begins only after Cargo is spawned.
+    pub const CARGO_FRONT_DOOR_ENTERED: &str = "cargo_front_door_entered";
+    pub const CARGO_FRONT_DOOR_TOOLCHAIN_RESOLVED: &str = "cargo_front_door_toolchain_resolved";
+    pub const CARGO_FRONT_DOOR_PRE_SPAWN: &str = "cargo_front_door_pre_spawn";
+
     // Broker readiness (`broker_spawn::ensure_stable_broker_ready`).
     pub const BROKER_ENDPOINT_RESOLVE: &str = "broker_endpoint_resolve";
     pub const BROKER_OWNER_DIRECTORIES: &str = "broker_owner_directories";
