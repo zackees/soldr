@@ -27,7 +27,7 @@ def container_path(path: Path) -> str:
     return path.as_posix()
 
 
-def workspace_test_plan(*, repo: Path, target: Path, bootstrap: Path) -> list[Step]:
+def workspace_test_plan(*, target: Path, bootstrap: Path) -> list[Step]:
     """Return the ordered bootstrap-to-source validation handoff."""
     source = target / "debug" / "soldr"
     source_text = container_path(source)
@@ -63,11 +63,11 @@ def run_step(step: Step, *, repo: Path) -> None:
 
 def cleanup(steps: list[Step], *, repo: Path, preserve_primary: bool) -> None:
     """Run all source-route cleanup steps without hiding a test failure."""
-    failures: list[Exception] = []
+    failures: list[subprocess.CalledProcessError | OSError] = []
     for step in steps:
         try:
             run_step(step, repo=repo)
-        except Exception as error:
+        except (subprocess.CalledProcessError, OSError) as error:
             failures.append(error)
             print(f"cleanup failed: {' '.join(step.argv)}", file=sys.stderr)
     if failures and not preserve_primary:
@@ -81,9 +81,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--bootstrap", type=Path, default=Path("/opt/soldr-bootstrap/bin/soldr"))
     args = parser.parse_args(argv)
 
-    plan = workspace_test_plan(
-        repo=args.repo.resolve(), target=args.target, bootstrap=args.bootstrap
-    )
+    plan = workspace_test_plan(target=args.target, bootstrap=args.bootstrap)
     setup, source_start, validation, teardown = plan[:3], plan[3], plan[4], plan[5:]
     for step in setup:
         run_step(step, repo=args.repo.resolve())

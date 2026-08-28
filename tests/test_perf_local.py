@@ -67,7 +67,6 @@ def test_bosn_workspace_test_hands_off_from_bootstrap_to_source() -> None:
     )
 
     plan = handoff.workspace_test_plan(
-        repo=Path("/repo"),
         target=Path("/target"),
         bootstrap=Path("/opt/soldr-bootstrap/bin/soldr"),
     )
@@ -94,7 +93,6 @@ def test_bosn_workspace_test_cleans_up_source_route_after_validation_failure(
         "bosn_workspace_test_failure",
     )
     plan = handoff.workspace_test_plan(
-        repo=Path("/repo"),
         target=Path("/target"),
         bootstrap=Path("/opt/soldr-bootstrap/bin/soldr"),
     )
@@ -124,7 +122,6 @@ def test_bosn_workspace_test_cleans_up_source_route_after_start_failure(
         "bosn_workspace_test_start_failure",
     )
     plan = handoff.workspace_test_plan(
-        repo=Path("/repo"),
         target=Path("/target"),
         bootstrap=Path("/opt/soldr-bootstrap/bin/soldr"),
     )
@@ -154,7 +151,6 @@ def test_bosn_workspace_test_preserves_validation_error_when_cleanup_fails(
         "bosn_workspace_test_cleanup_failure",
     )
     plan = handoff.workspace_test_plan(
-        repo=Path("/repo"),
         target=Path("/target"),
         bootstrap=Path("/opt/soldr-bootstrap/bin/soldr"),
     )
@@ -165,6 +161,38 @@ def test_bosn_workspace_test_preserves_validation_error_when_cleanup_fails(
         calls.append(argv)
         if argv in (plan[4].argv, plan[5].argv):
             raise subprocess.CalledProcessError(101, argv)
+
+    monkeypatch.setattr(handoff, "workspace_test_plan", lambda **_: plan)
+    monkeypatch.setattr(handoff, "run_step", fake_run)
+
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        handoff.main([])
+
+    assert error.value.cmd == plan[4].argv
+    assert calls == [step.argv for step in plan]
+
+
+def test_bosn_workspace_test_preserves_validation_error_when_cleanup_launch_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A teardown launch error must not hide validation's primary failure."""
+    handoff = load_script_module(
+        Path(__file__).parents[1] / "ci" / "bosn_workspace_test.py",
+        "bosn_workspace_test_cleanup_oserror",
+    )
+    plan = handoff.workspace_test_plan(
+        target=Path("/target"),
+        bootstrap=Path("/opt/soldr-bootstrap/bin/soldr"),
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(step: object, *, repo: Path) -> None:
+        argv = step.argv
+        calls.append(argv)
+        if argv == plan[4].argv:
+            raise subprocess.CalledProcessError(101, argv)
+        if argv == plan[5].argv:
+            raise FileNotFoundError("source cache shutdown unavailable")
 
     monkeypatch.setattr(handoff, "workspace_test_plan", lambda **_: plan)
     monkeypatch.setattr(handoff, "run_step", fake_run)
