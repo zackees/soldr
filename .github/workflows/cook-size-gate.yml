@@ -120,7 +120,7 @@ jobs:
 
       - name: Prepare zccache fixture path dependencies
         run: >-
-          uv run --no-project python
+          uv run --no-project --python 3.13 python
           soldr/.github/scripts/prepare_cook_fixture.py
           --fixture zccache-fixture
 

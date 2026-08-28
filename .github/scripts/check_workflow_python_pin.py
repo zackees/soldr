@@ -64,6 +64,8 @@ SCRIPT_PATTERN = re.compile(r"(?:\.github/scripts|ci)/[\w./-]+\.py")
 # `unrouted_script_invocations` below, not by counting.
 SETUP_PYTHON_PATTERN = re.compile(r"actions/setup-python")
 SETUP_UV_PATTERN = re.compile(r"astral-sh/setup-uv")
+UV_RUN_PATTERN = re.compile(r"\buv\s+run\b")
+UV_PYTHON_313_PATTERN = re.compile(r"--python(?:=|\s+)3\.13(?:\s|$)")
 
 # Jobs running repo Python under an unpinned interpreter as of soldr#2763.
 # Entries are `(workflow file, job id)`. Shrink this list; never grow it.
@@ -116,6 +118,22 @@ def unrouted_script_invocations(runs: str) -> list[str]:
     return unrouted
 
 
+def unversioned_uv_script_invocations(runs: str) -> list[str]:
+    """Repo scripts routed through uv without an explicit Python 3.13 pin."""
+    joined = CONTINUATION_PATTERN.sub(" ", runs)
+    unversioned = []
+    for line in joined.splitlines():
+        for script in SCRIPT_PATTERN.finditer(line):
+            prefix = line[: script.start()]
+            invocations = list(UV_RUN_PATTERN.finditer(prefix))
+            if invocations and not UV_PYTHON_313_PATTERN.search(
+                prefix[invocations[-1].end() :]
+            ):
+                unversioned.append(line.strip())
+                break
+    return unversioned
+
+
 def job_run_text(job: dict) -> str:
     """Every `run:` body in the job, joined."""
     return "\n".join(
@@ -161,8 +179,10 @@ def job_pins_interpreter(job: dict) -> bool:
         return True
     if not SETUP_UV_PATTERN.search(uses):
         return False
-    # Every repo-script invocation must go through `uv run`, not merely one.
-    if unrouted_script_invocations(job_run_text(job)):
+    # Every repo-script invocation must select uv's explicit 3.13 interpreter,
+    # not merely an unrelated routed call in the same job.
+    runs = job_run_text(job)
+    if unrouted_script_invocations(runs) or unversioned_uv_script_invocations(runs):
         return False
     # ...and uv must exist before the first step that uses it.
     #

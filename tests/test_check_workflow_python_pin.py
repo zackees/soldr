@@ -128,6 +128,22 @@ jobs:
     assert guard.unpinned_jobs(tmp_path) == set()
 
 
+def test_setup_uv_requires_an_explicit_python_313_for_a_repo_script(guard, tmp_path):
+    """The runner interpreter remains ambiguous without an explicit version."""
+    write_workflow(
+        tmp_path,
+        "release.yml",
+        f"""
+jobs:
+  build:
+    steps:
+      - uses: {SETUP_UV}
+      - run: uv run --no-project .github/scripts/stage_release_binaries.py
+""",
+    )
+    assert guard.unpinned_jobs(tmp_path) == {("release.yml", "build")}
+
+
 def test_setup_uv_does_not_pin_a_bare_python3_call(guard, tmp_path):
     """The distinction the loose version of this guard got wrong.
 
