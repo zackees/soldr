@@ -249,49 +249,6 @@ impl ManifestCache {
     }
 }
 
-#[cfg(test)]
-mod manifest_cache_tests {
-    use super::*;
-
-    fn config(number: usize) -> ResolvedCatalogueConfig {
-        ResolvedCatalogueConfig::LegacyV1 {
-            v1_url: format!("https://example.invalid/catalogue-{number}.json"),
-        }
-    }
-
-    #[test]
-    fn ready_lru_evicts_oldest_and_promotes_hits() {
-        let mut cache = ManifestCache::default();
-        for number in 0..=MANIFEST_CACHE_CAPACITY {
-            cache.insert(config(number), Arc::new(ManifestIndex::empty()));
-        }
-
-        assert_eq!(cache.ready.len(), MANIFEST_CACHE_CAPACITY);
-        assert!(
-            cache.get(&config(0)).is_none(),
-            "the ninth distinct configuration must evict the oldest ready entry"
-        );
-
-        // Config 1 is retained but currently oldest. A hit must promote it so
-        // the next miss evicts config 2 instead.
-        assert!(cache.get(&config(1)).is_some());
-        cache.insert(
-            config(MANIFEST_CACHE_CAPACITY + 1),
-            Arc::new(ManifestIndex::empty()),
-        );
-
-        assert_eq!(cache.ready.len(), MANIFEST_CACHE_CAPACITY);
-        assert!(
-            cache.get(&config(1)).is_some(),
-            "a ready hit must promote it"
-        );
-        assert!(
-            cache.get(&config(2)).is_none(),
-            "the untouched oldest entry must be evicted after promotion"
-        );
-    }
-}
-
 /// Parsed catalogues, keyed by their immutable resolved configuration.
 ///
 /// The async mutex deliberately stays held across the uncommon network fetch.
@@ -643,3 +600,46 @@ fn print_catalogue_error(url: &str, reason: &str, json: bool) {
 // fetch-tools target and serialize through a shared RAII scope. They exercise
 // the production cache directly; no reset hook or process-layout assumption is
 // required.
+
+#[cfg(test)]
+mod manifest_cache_tests {
+    use super::*;
+
+    fn config(number: usize) -> ResolvedCatalogueConfig {
+        ResolvedCatalogueConfig::LegacyV1 {
+            v1_url: format!("https://example.invalid/catalogue-{number}.json"),
+        }
+    }
+
+    #[test]
+    fn ready_lru_evicts_oldest_and_promotes_hits() {
+        let mut cache = ManifestCache::default();
+        for number in 0..=MANIFEST_CACHE_CAPACITY {
+            cache.insert(config(number), Arc::new(ManifestIndex::empty()));
+        }
+
+        assert_eq!(cache.ready.len(), MANIFEST_CACHE_CAPACITY);
+        assert!(
+            cache.get(&config(0)).is_none(),
+            "the ninth distinct configuration must evict the oldest ready entry"
+        );
+
+        // Config 1 is retained but currently oldest. A hit must promote it so
+        // the next miss evicts config 2 instead.
+        assert!(cache.get(&config(1)).is_some());
+        cache.insert(
+            config(MANIFEST_CACHE_CAPACITY + 1),
+            Arc::new(ManifestIndex::empty()),
+        );
+
+        assert_eq!(cache.ready.len(), MANIFEST_CACHE_CAPACITY);
+        assert!(
+            cache.get(&config(1)).is_some(),
+            "a ready hit must promote it"
+        );
+        assert!(
+            cache.get(&config(2)).is_none(),
+            "the untouched oldest entry must be evicted after promotion"
+        );
+    }
+}
