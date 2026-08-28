@@ -4,9 +4,10 @@
 The source tree can be correct while the last released wheel is still broken
 (soldr#2972).  This deliberately installs PyPI's exact binary distribution
 into a fresh virtualenv and gives Soldr, Cargo, and Rustup private homes before
-asking the published executable to prepare and list Dylint.  The nightly comes
-from the same lint-library helper that validates published driver assets; it
-is not derived from the stable compiler.
+asking the published executable to prepare and run one Dylint library against
+a disposable one-crate package.  The nightly comes from the same lint-library
+helper that validates published driver assets; it is not derived from the
+stable compiler.
 
 Without ``--expected-version`` the script monitors PyPI's latest release.
 Release automation supplies its just-published exact version instead.
@@ -48,6 +49,7 @@ PYPI_JSON = f"https://pypi.org/pypi/{PYPI_PROJECT}/json"
 PRESERVED_SOLDR_ENV = {"SOLDR_GITHUB_TOKEN"}
 SCRUB_PREFIXES = ("CARGO_", "DYLINT_", "RUSTUP_", "RUSTC_", "ZCCACHE_")
 SCRUB_EXACT = {"CARGO", "RUSTC", "RUSTDOC", "RUSTFLAGS", "RUSTDOCFLAGS"}
+PROBE_LINT = "ban_raw_env_flag"
 
 
 class PublishedDylintSmokeError(RuntimeError):
@@ -199,6 +201,47 @@ def installed_version(soldr: Path, *, env: dict[str, str], cwd: Path) -> str:
     return normalized_version(version)
 
 
+def minimal_probe_manifest(state_root: Path) -> Path:
+    """Create the tiny checked crate so the smoke never builds Soldr itself."""
+
+    probe = state_root / "driver-probe"
+    source = probe / "src"
+    source.mkdir(parents=True, exist_ok=True)
+    manifest = probe / "Cargo.toml"
+    manifest.write_text(
+        "[package]\n"
+        'name = "soldr_published_dylint_probe"\n'
+        'version = "0.0.0"\n'
+        'edition = "2021"\n'
+        "\n[workspace]\n",
+        encoding="utf-8",
+    )
+    (source / "lib.rs").write_text("pub fn probe() {}\n", encoding="utf-8")
+    return manifest
+
+
+def driver_probe_command(soldr: Path, *, repo_root: Path, manifest: Path) -> list[str]:
+    """Run one lint on the disposable crate through the published front door.
+
+    cargo-dylint 6 removed the old ``--list`` option.  Its ``list`` subcommand
+    only discovers libraries (and reports them ``<unbuilt>``), so it cannot
+    prove that Soldr's prepared driver loaded.  A selected library plus an
+    explicit small manifest both executes that driver and avoids checking this
+    repository's workspace.
+    """
+
+    return [
+        str(soldr),
+        "dylint",
+        "--manifest-path",
+        str(manifest),
+        "--path",
+        str(repo_root / "dylints"),
+        "--pattern",
+        PROBE_LINT,
+    ]
+
+
 def smoke(*, version: str, repo_root: Path, venv: Path, state_root: Path) -> None:
     """Install exactly one PyPI version and exercise its real Dylint boundary."""
 
@@ -231,7 +274,12 @@ def smoke(*, version: str, repo_root: Path, venv: Path, state_root: Path) -> Non
         raise PublishedDylintSmokeError(
             f"published soldr dylint prepare did not report authoritative channel {expected_channel}:\n{prepared_output}"
         )
-    run([str(soldr), "dylint", "--list"], env=env, cwd=repo_root)
+    manifest = minimal_probe_manifest(state_root)
+    run(
+        driver_probe_command(soldr, repo_root=repo_root, manifest=manifest),
+        env=env,
+        cwd=repo_root,
+    )
     print(
         f"published Dylint smoke passed: soldr {version}, channel {expected_channel}, binary {soldr}"
     )

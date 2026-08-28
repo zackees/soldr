@@ -86,7 +86,7 @@ def test_isolated_environment_overrides_all_user_tool_homes(
         assert name not in env
 
 
-def test_smoke_installs_exact_wheel_and_proves_version_channel_and_list(
+def test_smoke_installs_exact_wheel_and_proves_version_channel_and_driver(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo = tmp_path / "repo"
@@ -127,7 +127,37 @@ def test_smoke_installs_exact_wheel_and_proves_version_channel_and_list(
         "--only-binary=:all:",
         "soldr==0.9.11",
     ]
-    assert calls[-1] == [str(venv / "Scripts" / "soldr.exe"), "dylint", "--list"]
+    assert calls[-1] == [
+        str(venv / "Scripts" / "soldr.exe"),
+        "dylint",
+        "--manifest-path",
+        str(state / "driver-probe" / "Cargo.toml"),
+        "--path",
+        str(repo / "dylints"),
+        "--pattern",
+        "ban_raw_env_flag",
+    ]
+
+
+def test_driver_probe_rejects_removed_list_flag_and_targets_only_one_lint(
+    tmp_path: Path,
+) -> None:
+    command = smoke.driver_probe_command(
+        tmp_path / "soldr.exe",
+        repo_root=tmp_path / "repo",
+        manifest=tmp_path / "probe" / "Cargo.toml",
+    )
+
+    assert "--list" not in command
+    assert command[:2] == [str(tmp_path / "soldr.exe"), "dylint"]
+    assert command[2:] == [
+        "--manifest-path",
+        str(tmp_path / "probe" / "Cargo.toml"),
+        "--path",
+        str(tmp_path / "repo" / "dylints"),
+        "--pattern",
+        "ban_raw_env_flag",
+    ]
 
 
 def test_smoke_rejects_wrong_binary_version_or_channel(
