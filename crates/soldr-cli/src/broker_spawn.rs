@@ -416,6 +416,8 @@ fn ensure_stable_broker_ready(diagnostics_eligible: bool) -> Result<(), String> 
         let ready =
             wait_for_stable_broker(&runtime, &endpoint.bind_endpoint, Some((&lease, child)));
         crate::startup_trace::phase(crate::startup_trace::phase::BROKER_SPAWN_WAIT);
+        #[cfg(debug_assertions)]
+        let ready = test_mark_replacement_ready_after_wait(ready);
         ready
     })();
     lease.release();
@@ -486,6 +488,35 @@ fn wait_for_stable_broker(
         }
         std::thread::sleep(POLL_INTERVAL);
     }
+}
+
+/// Debug-fixture synchronization for the known-bad retirement race. The marker
+/// is deliberately emitted only after the spawned replacement has answered
+/// STATUS through [`wait_for_stable_broker`]; lease acquisition, image staging,
+/// and a `start`/spawn call are all too early to prove a replacement owns the
+/// route. Production builds do not contain this seam.
+#[cfg(debug_assertions)]
+fn test_mark_replacement_ready_after_wait(ready: Result<(), String>) -> Result<(), String> {
+    let path = std::env::var_os("SOLDR_TEST_KNOWN_BAD_REPLACEMENT_READY_FILE")
+        .map(std::path::PathBuf::from);
+    write_test_replacement_ready_marker(ready, path.as_deref())
+}
+
+#[cfg(debug_assertions)]
+fn write_test_replacement_ready_marker(
+    ready: Result<(), String>,
+    path: Option<&std::path::Path>,
+) -> Result<(), String> {
+    ready?;
+    if let Some(path) = path {
+        std::fs::write(path, b"ready\n").map_err(|error| {
+            format!(
+                "could not write known-bad replacement readiness marker {}: {error}",
+                path.display()
+            )
+        })?;
+    }
+    Ok(())
 }
 
 /// soldr#2549: readiness is liveness. Any broker that answers admin STATUS at

@@ -9,6 +9,39 @@ use super::*;
 static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
+fn replacement_ready_marker_is_emitted_only_after_wait_success() {
+    const MARKER_ENV: &str = "SOLDR_TEST_KNOWN_BAD_REPLACEMENT_READY_FILE";
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+    let root = tempfile::tempdir().expect("tempdir");
+    let marker = root.path().join("replacement-ready");
+    let _marker_env = crate::EnvVarGuard::remove(MARKER_ENV);
+
+    test_mark_replacement_ready_after_wait(Ok(())).expect("unconfigured marker is a no-op");
+    assert!(
+        !marker.exists(),
+        "a successful replacement must not create a marker without its test-only env"
+    );
+
+    let _marker_env = crate::EnvVarGuard::set(MARKER_ENV, &marker);
+    let error = test_mark_replacement_ready_after_wait(Err(
+        "stable broker did not answer readiness".to_string(),
+    ))
+    .expect_err("failed wait must not mark replacement readiness");
+    assert!(error.contains("did not answer readiness"), "{error}");
+    assert!(
+        !marker.exists(),
+        "a lease/stage/spawn attempt must not masquerade as a ready replacement"
+    );
+
+    test_mark_replacement_ready_after_wait(Ok(()))
+        .expect("successful readiness may publish marker");
+    assert_eq!(
+        std::fs::read_to_string(&marker).expect("read replacement marker"),
+        "ready\n"
+    );
+}
+
+#[test]
 fn broker_spawn_env_preserves_soldr_and_endpoint_resolver_inputs() {
     use std::ffi::OsString;
 
