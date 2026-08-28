@@ -72,8 +72,12 @@ fn catalogue_url_override_env_var_works() {
         let url = spawn_one_shot_json_server(body).await;
         std::env::set_var("SOLDR_TOOLCHAIN_CATALOGUE_URL", &url);
 
-        // Drive the production fetcher end-to-end. The OnceLock cache
-        // is fresh because this is the binary's first call.
+        // Drive the production fetcher end-to-end. soldr#2951: the cache is
+        // keyed on the resolved catalogue URL, so this one-shot server gets
+        // its own entry no matter what any sibling test in this binary
+        // fetched first. The previous comment here claimed the cache was
+        // "fresh because this is the binary's first call" -- true only while
+        // every `tests/*.rs` file was its own binary, which soldr#2934 ended.
         let idx = get_or_fetch().await;
         assert_eq!(
             idx.entries.len(),
@@ -96,7 +100,38 @@ fn catalogue_url_override_env_var_works() {
         let idx2 = get_or_fetch().await;
         assert!(
             std::ptr::eq(idx, idx2),
-            "process-wide OnceLock must return the same cached reference"
+            "the same catalogue URL must return the same cached reference"
+        );
+
+        // soldr#2951 RED: a *different* URL must not be served the first
+        // one's index. Before the cache was keyed, this returned the entry
+        // above and the override was silently discarded -- which is the
+        // production bug, not merely a test artefact.
+        let other_body = r#"{
+            "schema_version": 1,
+            "entries": [
+                {
+                    "owner": "second-owner",
+                    "repo": "second-repo",
+                    "tag": "v0.0.2",
+                    "asset": "second-asset.zip",
+                    "url": "https://example.invalid/second.zip",
+                    "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+                }
+            ]
+        }"#
+        .to_string();
+        let other_url = spawn_one_shot_json_server(other_body).await;
+        std::env::set_var("SOLDR_TOOLCHAIN_CATALOGUE_URL", &other_url);
+        let idx3 = get_or_fetch().await;
+        assert_eq!(
+            idx3.entries.len(),
+            1,
+            "a new catalogue URL must be fetched, not served from the old key"
+        );
+        assert_eq!(
+            idx3.entries[0].owner, "second-owner",
+            "the second URL's catalogue must win; serving the first one back              is the soldr#2951 bug"
         );
 
         std::env::remove_var("SOLDR_TOOLCHAIN_CATALOGUE_URL");
