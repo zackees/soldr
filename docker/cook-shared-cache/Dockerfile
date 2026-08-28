@@ -79,8 +79,11 @@ RUN rustup default 1.95.0 \
     && rustup component add rustfmt clippy
 
 # Bootstrap current source with a known, previously published Soldr. Keep
-# this isolated from the warm runner volumes as immutable image state.
-ARG SOLDR_BOOTSTRAP_VERSION=0.8.29
+# this isolated from the warm runner volumes as immutable image state. The
+# bootstrap must include zccache's amalgamation admission gate (Soldr 0.9.6+):
+# this image invokes it to compile current Soldr before the current source can
+# provide that protection itself.
+ARG SOLDR_BOOTSTRAP_VERSION=0.9.10
 RUN python3 -m venv /opt/soldr-bootstrap \
     && /opt/soldr-bootstrap/bin/pip install --disable-pip-version-check \
        "soldr==${SOLDR_BOOTSTRAP_VERSION}" \
@@ -88,6 +91,12 @@ RUN python3 -m venv /opt/soldr-bootstrap \
     && test "$(/opt/soldr-bootstrap/bin/soldr --version)" = \
        "soldr ${SOLDR_BOOTSTRAP_VERSION}"
 
+# The bootstrap's daemon and embedded-cache state live on the persistent
+# `/root/.soldr` volume. Scope that state by the published bootstrap version:
+# otherwise a daemon restored from an older image can service the new bootstrap
+# through the shared socket/cache route and silently bypass its newer
+# amalgamation-admission policy.
+ENV SOLDR_CACHE_DIR="/root/.soldr/bootstrap-v${SOLDR_BOOTSTRAP_VERSION}"
 ENV PATH="/opt/soldr-bootstrap/bin:${PATH}"
 
 # CARGO_HOME explicit so the `soldr-perf-cargo-home` named volume mount

@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import re
+import subprocess
 from pathlib import Path
+from typing import Protocol
+
+import pytest
 
 from conftest import load_script_module
 
@@ -13,18 +18,39 @@ def load_module():
 perf_local = load_module()
 
 
+class StepLike(Protocol):  # pylint: disable=too-few-public-methods
+    """Minimal command shape observed by the Bosn handoff test doubles."""
+
+    argv: list[str]
+
+
 def test_docker_context_is_small_because_image_copies_no_source() -> None:
     assert perf_local.DOCKER_CONTEXT == "docker/cook-shared-cache"
 
 
-def test_docker_image_bootstraps_with_published_soldr_0_8_29() -> None:
-    dockerfile = (Path(__file__).parents[1] / perf_local.DOCKERFILE).read_text(
-        encoding="utf-8"
-    )
+def test_docker_image_bootstraps_with_amalgamation_safe_published_soldr() -> None:
+    dockerfile = (Path(__file__).parents[1] / perf_local.DOCKERFILE).read_text(encoding="utf-8")
 
-    assert "ARG SOLDR_BOOTSTRAP_VERSION=0.8.29" in dockerfile
+    bootstrap = re.search(r"^ARG SOLDR_BOOTSTRAP_VERSION=(\d+)\.(\d+)\.(\d+)$", dockerfile, re.M)
+    assert bootstrap, "Docker bootstrap version must remain an explicit published SemVer pin"
+    version = tuple(map(int, bootstrap.groups()))
+    assert version >= (0, 9, 6), (
+        "Soldr 0.9.6 is the minimum bootstrap carrying zccache's "
+        "amalgamation-exclusive admission gate; older bootstraps can OOM an 8 GiB runner"
+    )
+    assert version == (
+        0,
+        9,
+        10,
+    ), "keep the bootstrap on the repository's current published release"
     assert '"soldr==${SOLDR_BOOTSTRAP_VERSION}"' in dockerfile
     assert "/opt/soldr-bootstrap/bin/soldr --version" in dockerfile
+    assert (
+        'ENV SOLDR_CACHE_DIR="/root/.soldr/bootstrap-v${SOLDR_BOOTSTRAP_VERSION}"' in dockerfile
+    ), (
+        "The persistent bootstrap cache/runtime root must be scoped by the explicit "
+        "published bootstrap version, so a retained older daemon cannot service it."
+    )
     for profile in (
         "DEV",
         "TEST",
@@ -39,6 +65,150 @@ def test_docker_image_bootstraps_with_published_soldr_0_8_29() -> None:
         assert f"CARGO_PROFILE_{profile}_CODEGEN_UNITS=256" in dockerfile
         assert f"CARGO_PROFILE_{profile}_INCREMENTAL=true" in dockerfile
         assert f"CARGO_PROFILE_{profile}_DEBUG=0" in dockerfile
+
+
+def test_bosn_workspace_test_hands_off_from_bootstrap_to_source() -> None:
+    handoff = load_script_module(
+        Path(__file__).parents[1] / "ci" / "bosn_workspace_test.py",
+        "bosn_workspace_test",
+    )
+
+    plan = handoff.workspace_test_plan(
+        target=Path("/target"),
+        bootstrap=Path("/opt/soldr-bootstrap/bin/soldr"),
+    )
+
+    assert [step.argv for step in plan] == [
+        ["/opt/soldr-bootstrap/bin/soldr", "cargo", "build", "-p", "soldr-cli", "--bin", "soldr"],
+        ["/opt/soldr-bootstrap/bin/soldr", "cache", "shutdown", "--shutdown-timeout-seconds", "30"],
+        ["/opt/soldr-bootstrap/bin/soldr", "broker", "remove"],
+        ["/target/debug/soldr", "daemon", "start"],
+        ["/target/debug/soldr", "cargo", "test", "--workspace"],
+        ["/target/debug/soldr", "cache", "shutdown", "--shutdown-timeout-seconds", "30"],
+        ["/target/debug/soldr", "broker", "remove"],
+    ]
+    validation = plan[4]
+    assert validation.env["SOLDR_RUSTC_WRAPPER"] == "/target/debug/soldr"
+    assert validation.env["CARGO_TARGET_DIR"] == "/target"
+
+
+def test_bosn_workspace_test_cleans_up_source_route_after_validation_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handoff = load_script_module(
+        Path(__file__).parents[1] / "ci" / "bosn_workspace_test.py",
+        "bosn_workspace_test_failure",
+    )
+    plan = handoff.workspace_test_plan(
+        target=Path("/target"),
+        bootstrap=Path("/opt/soldr-bootstrap/bin/soldr"),
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(step: StepLike, *, repo: Path) -> None:
+        argv = step.argv
+        calls.append(argv)
+        if argv == plan[4].argv:
+            raise subprocess.CalledProcessError(101, argv)
+
+    monkeypatch.setattr(handoff, "workspace_test_plan", lambda **_: plan)
+    monkeypatch.setattr(handoff, "run_step", fake_run)
+
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        handoff.main([])
+
+    assert error.value.cmd == plan[4].argv
+    assert calls == [step.argv for step in plan]
+
+
+def test_bosn_workspace_test_cleans_up_source_route_after_start_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handoff = load_script_module(
+        Path(__file__).parents[1] / "ci" / "bosn_workspace_test.py",
+        "bosn_workspace_test_start_failure",
+    )
+    plan = handoff.workspace_test_plan(
+        target=Path("/target"),
+        bootstrap=Path("/opt/soldr-bootstrap/bin/soldr"),
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(step: StepLike, *, repo: Path) -> None:
+        argv = step.argv
+        calls.append(argv)
+        if argv == plan[3].argv:
+            raise subprocess.CalledProcessError(101, argv)
+
+    monkeypatch.setattr(handoff, "workspace_test_plan", lambda **_: plan)
+    monkeypatch.setattr(handoff, "run_step", fake_run)
+
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        handoff.main([])
+
+    assert error.value.cmd == plan[3].argv
+    assert calls == [step.argv for step in plan[:4]] + [step.argv for step in plan[5:]]
+
+
+def test_bosn_workspace_test_preserves_validation_error_when_cleanup_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handoff = load_script_module(
+        Path(__file__).parents[1] / "ci" / "bosn_workspace_test.py",
+        "bosn_workspace_test_cleanup_failure",
+    )
+    plan = handoff.workspace_test_plan(
+        target=Path("/target"),
+        bootstrap=Path("/opt/soldr-bootstrap/bin/soldr"),
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(step: StepLike, *, repo: Path) -> None:
+        argv = step.argv
+        calls.append(argv)
+        if argv in (plan[4].argv, plan[5].argv):
+            raise subprocess.CalledProcessError(101, argv)
+
+    monkeypatch.setattr(handoff, "workspace_test_plan", lambda **_: plan)
+    monkeypatch.setattr(handoff, "run_step", fake_run)
+
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        handoff.main([])
+
+    assert error.value.cmd == plan[4].argv
+    assert calls == [step.argv for step in plan]
+
+
+def test_bosn_workspace_test_preserves_validation_error_when_cleanup_launch_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A teardown launch error must not hide validation's primary failure."""
+    handoff = load_script_module(
+        Path(__file__).parents[1] / "ci" / "bosn_workspace_test.py",
+        "bosn_workspace_test_cleanup_oserror",
+    )
+    plan = handoff.workspace_test_plan(
+        target=Path("/target"),
+        bootstrap=Path("/opt/soldr-bootstrap/bin/soldr"),
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(step: StepLike, *, repo: Path) -> None:
+        argv = step.argv
+        calls.append(argv)
+        if argv == plan[4].argv:
+            raise subprocess.CalledProcessError(101, argv)
+        if argv == plan[5].argv:
+            raise FileNotFoundError("source cache shutdown unavailable")
+
+    monkeypatch.setattr(handoff, "workspace_test_plan", lambda **_: plan)
+    monkeypatch.setattr(handoff, "run_step", fake_run)
+
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        handoff.main([])
+
+    assert error.value.cmd == plan[4].argv
+    assert calls == [step.argv for step in plan]
 
 
 def test_dockerfile_digest_changes_with_content(tmp_path: Path) -> None:
@@ -138,9 +308,7 @@ def test_runner_storage_budget_is_a_hard_ceiling() -> None:
     assert perf_local.runner_over_budget(perf_local.RUNNER_VOLUME_BUDGET_BYTES + 1)
 
 
-def test_activity_marker_lives_in_soldr_state_not_the_checkout(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_activity_marker_lives_in_soldr_state_not_the_checkout(tmp_path: Path, monkeypatch) -> None:
     state = tmp_path / "state"
     checkout = tmp_path / "checkout"
     monkeypatch.setattr(perf_local, "GC_STATE_DIR", state)
@@ -183,9 +351,7 @@ def test_create_command_uses_one_named_runner_and_persistent_volumes(
     assert command[-3:] == ["tail", "-f", "/dev/null"]
 
 
-def test_create_command_enables_ptrace_only_when_requested(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_create_command_enables_ptrace_only_when_requested(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv(perf_local.PTRACE_ENV, "1")
     runner = perf_local.runner_for(tmp_path)
     command = perf_local.create_command(runner, "sha256:image")
@@ -256,9 +422,7 @@ def test_runner_match_requires_schema_image_and_source_root(tmp_path: Path) -> N
     info = {"Config": {"Labels": dict(labels)}}
     assert perf_local.runner_matches(info, labels)
 
-    stale = {
-        "Config": {"Labels": {**labels, f"{perf_local.LABEL_PREFIX}.image-id": "old"}}
-    }
+    stale = {"Config": {"Labels": {**labels, f"{perf_local.LABEL_PREFIX}.image-id": "old"}}}
     assert not perf_local.runner_matches(stale, labels)
     assert not perf_local.runner_matches({"Config": {"Labels": None}}, labels)
 
@@ -277,9 +441,7 @@ def test_exec_command_reuses_runner_and_changes_only_workdir(tmp_path: Path) -> 
         "test",
         "--workspace",
     ]
-    assert perf_local.exec_command(runner, ["cargo", "check"], "/repo", tty=True)[
-        :3
-    ] == [
+    assert perf_local.exec_command(runner, ["cargo", "check"], "/repo", tty=True)[:3] == [
         "docker",
         "exec",
         "-it",
