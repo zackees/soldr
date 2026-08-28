@@ -446,10 +446,10 @@ async fn fetch_once(config: &ResolvedCatalogueConfig) -> Result<ManifestIndex, S
         } => (v2_url, fallback_v1_url),
         ResolvedCatalogueConfig::Disabled => return Ok(ManifestIndex::empty()),
     };
-    let safe_v2_url = super::stream_download::safe_asset_url(&v2_url);
+    let safe_v2_url = super::stream_download::safe_asset_url(v2_url);
     let client = super::stream_download::control_http_client("the soldr-toolchain catalogue")?;
     let resp = super::stream_download::send_control_request_with_timeout(
-        super::stream_download::get_request(&client, &v2_url),
+        super::stream_download::get_request(&client, v2_url),
         &safe_v2_url,
         MANIFEST_FETCH_TIMEOUT,
     )
