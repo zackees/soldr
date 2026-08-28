@@ -6,6 +6,7 @@ import importlib.util
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Protocol
 
 SCRIPT = Path(__file__).parents[1] / ".github" / "scripts" / "target_run_queue_watchdog.py"
 SPEC = importlib.util.spec_from_file_location("target_run_queue_watchdog", SCRIPT)
@@ -19,6 +20,13 @@ PREFIX = "target-run x86_64-apple-darwin"
 
 
 BASE = datetime(2026, 8, 28, 5, 0, tzinfo=UTC)
+
+
+class WatchVerdict(Protocol):
+    """The watchdog result fields exercised by this test module."""
+
+    ok: bool
+    message: str
 
 
 def job(
@@ -35,7 +43,9 @@ def job(
     }
 
 
-def run(sequence: list[list[dict[str, object]]], *, grace: float = 30, now: datetime) -> object:
+def run(
+    sequence: list[list[dict[str, object]]], *, grace: float = 30, now: datetime
+) -> WatchVerdict:
     responses = iter(sequence)
     return watchdog.watch_for_start(
         lambda: next(responses),
