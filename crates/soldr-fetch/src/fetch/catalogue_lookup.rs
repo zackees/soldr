@@ -294,6 +294,26 @@ pub const MAX_CACHED_CONFIGS: usize = 8;
 /// `remove` + `insert(0)`.
 type CatalogueEntries = Vec<(CatalogueConfig, Arc<ManifestIndex>)>;
 
+fn promote_cached(
+    entries: &mut CatalogueEntries,
+    config: &CatalogueConfig,
+) -> Option<Arc<ManifestIndex>> {
+    let position = entries.iter().position(|(cached, _)| cached == config)?;
+    let hit = entries.remove(position);
+    let index = Arc::clone(&hit.1);
+    entries.insert(0, hit);
+    Some(index)
+}
+
+fn insert_cached(
+    entries: &mut CatalogueEntries,
+    config: CatalogueConfig,
+    index: Arc<ManifestIndex>,
+) {
+    entries.insert(0, (config, index));
+    entries.truncate(MAX_CACHED_CONFIGS);
+}
+
 static CATALOGUE_CACHE: OnceLock<tokio::sync::Mutex<CatalogueEntries>> = OnceLock::new();
 
 fn catalogue_cache() -> &'static tokio::sync::Mutex<CatalogueEntries> {
@@ -380,20 +400,16 @@ pub async fn get_or_fetch() -> Arc<ManifestIndex> {
 /// cannot end up with a second, different one.
 async fn get_or_fetch_for(config: &CatalogueConfig) -> Arc<ManifestIndex> {
     let mut cache = catalogue_cache().lock().await;
-    if let Some(position) = cache.iter().position(|(cached, _)| cached == config) {
+    if let Some(index) = promote_cached(&mut cache, config) {
         // Move-to-front: with `MAX_CACHED_CONFIGS` this small, recency is the
         // only eviction signal worth keeping, and it costs one `Vec` shuffle
         // on a path that is already holding a lock.
-        let hit = cache.remove(position);
-        let index = Arc::clone(&hit.1);
-        cache.insert(0, hit);
         return index;
     }
     // The lock is deliberately held across this await; see [`CATALOGUE_CACHE`]
     // for the re-entry invariant that makes it safe.
     let index = Arc::new(fetch_for(config).await);
-    cache.insert(0, (config.clone(), Arc::clone(&index)));
-    cache.truncate(MAX_CACHED_CONFIGS);
+    insert_cached(&mut cache, config.clone(), Arc::clone(&index));
     index
 }
 
@@ -669,5 +685,64 @@ fn print_catalogue_error(url: &str, reason: &str, json: bool) {
 // integration test binary"; soldr#2934 consolidated per-file binaries into
 // category targets and made that premise false.
 //
-// The unit tests below still operate entirely on the pure `from_json` /
-// `lookup` APIs and never touch the process-wide cache.
+// The cache unit test below uses a fresh local `CatalogueEntries` value and
+// never touches the process-wide cache.
+
+#[cfg(test)]
+mod lru_tests {
+    use super::*;
+
+    fn config(number: usize) -> CatalogueConfig {
+        CatalogueConfig::LegacyV1 {
+            url: format!("https://catalogue.invalid/{number}.json"),
+        }
+    }
+
+    #[test]
+    fn true_lru_evicts_oldest_and_promotes_hits() {
+        let configs: Vec<_> = (0..MAX_CACHED_CONFIGS + 2).map(config).collect();
+        let indexes: Vec<_> = configs
+            .iter()
+            .map(|_| Arc::new(ManifestIndex::empty()))
+            .collect();
+        let mut entries = CatalogueEntries::new();
+
+        for position in 0..MAX_CACHED_CONFIGS {
+            insert_cached(
+                &mut entries,
+                configs[position].clone(),
+                Arc::clone(&indexes[position]),
+            );
+        }
+
+        let promoted = promote_cached(&mut entries, &configs[0]).expect("oldest is resident");
+        assert!(Arc::ptr_eq(&promoted, &indexes[0]));
+
+        insert_cached(
+            &mut entries,
+            configs[MAX_CACHED_CONFIGS].clone(),
+            Arc::clone(&indexes[MAX_CACHED_CONFIGS]),
+        );
+        assert!(
+            promote_cached(&mut entries, &configs[1]).is_none(),
+            "the untouched oldest entry must be evicted"
+        );
+        let promoted = promote_cached(&mut entries, &configs[0])
+            .expect("the promoted oldest entry must remain resident");
+        assert!(Arc::ptr_eq(&promoted, &indexes[0]));
+
+        insert_cached(
+            &mut entries,
+            configs[MAX_CACHED_CONFIGS + 1].clone(),
+            Arc::clone(&indexes[MAX_CACHED_CONFIGS + 1]),
+        );
+        assert!(
+            promote_cached(&mut entries, &configs[2]).is_none(),
+            "the next untouched oldest entry must be evicted"
+        );
+        let promoted = promote_cached(&mut entries, &configs[0])
+            .expect("the promoted entry must survive the next eviction");
+        assert!(Arc::ptr_eq(&promoted, &indexes[0]));
+        assert_eq!(entries.len(), MAX_CACHED_CONFIGS);
+    }
+}
