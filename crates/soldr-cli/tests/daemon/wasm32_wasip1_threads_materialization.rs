@@ -132,11 +132,11 @@ fn managed_wasm_command_artifact_survives_daemon_restart_and_fresh_target() {
         stat(&new_session(&cache_root, &before_warm), "hits") >= cold_misses,
         "fresh target after daemon restart must restore the cold managed outputs"
     );
+    let warm_outcomes = journal_outcomes(&journal_lines(&cache_root)[cold_journal_len..]);
     assert!(
-        journal_lines(&cache_root)[cold_journal_len..]
-            .iter()
-            .any(|line| line.contains("\"cached\":true")),
-        "warm build must record a managed embedded cache hit in the compile journal"
+        warm_outcomes.iter().any(|outcome| is_cache_hit(outcome)),
+        "warm build must record a managed embedded cache hit in newly appended \
+         compile-journal records; outcomes: {warm_outcomes:?}"
     );
 
     guard.stop_and_assert_exited();
@@ -334,6 +334,36 @@ fn journal_lines(cache_root: &Path) -> Vec<String> {
         .collect()
 }
 
+/// Extract the schema-owned `outcome` field from a known-new JSONL tail.
+///
+/// The journal is the embedded service's authoritative cache record. Its
+/// schema has no `cached` boolean: the current zccache journal records `hit`,
+/// `miss`, `error`, `cached_error`, `link_hit`, or `link_miss` in `outcome`.
+fn journal_outcomes(lines: &[String]) -> Vec<String> {
+    #[derive(serde::Deserialize)]
+    struct CompileJournalRecord {
+        outcome: String,
+    }
+
+    lines
+        .iter()
+        .map(|line| {
+            serde_json::from_str::<CompileJournalRecord>(line)
+                .unwrap_or_else(|error| {
+                    panic!("parse newly appended compile journal record: {error}")
+                })
+                .outcome
+        })
+        .collect()
+}
+
+/// Both compiler and linker cache restores materialize outputs into the fresh
+/// target tree. This matches the journal's public classification used by the
+/// build-log cache summary (`hit` and `link_hit` are cache hits).
+fn is_cache_hit(outcome: &str) -> bool {
+    matches!(outcome, "hit" | "link_hit")
+}
+
 fn assert_success(output: &Output, operation: &str) {
     assert!(
         output.status.success(),
@@ -341,4 +371,22 @@ fn assert_success(output: &Output, operation: &str) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
+}
+
+#[test]
+fn journal_outcomes_use_the_schema_owned_cache_classification() {
+    let lines = vec![
+        r#"{"outcome":"miss"}"#.to_owned(),
+        r#"{"outcome":"link_hit"}"#.to_owned(),
+        r#"{"outcome":"error"}"#.to_owned(),
+    ];
+    let outcomes = journal_outcomes(&lines);
+
+    assert_eq!(
+        outcomes,
+        vec!["miss".to_owned(), "link_hit".to_owned(), "error".to_owned()]
+    );
+    assert!(is_cache_hit(&outcomes[1]));
+    assert!(!is_cache_hit(&outcomes[0]));
+    assert!(!is_cache_hit(&outcomes[2]));
 }
