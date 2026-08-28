@@ -420,22 +420,6 @@
       "rationale": "The zccache store for the dogfood build. Content-addressed per unit -- exactly the store soldr#2931 keeps live; the ban is on linked products and bulk target/ snapshots."
     },
     {
-      "id": "vcpkg-bundle-upload",
-      "workflow": "vcpkg-windows-refresh.yml",
-      "step": "Upload artifact",
-      "mechanism": "actions/upload-artifact",
-      "tier": "release-deliverable",
-      "rationale": "A triplet bundle staged for the rolling `vcpkg-bundles-latest` GitHub release."
-    },
-    {
-      "id": "vcpkg-bundle-download",
-      "workflow": "vcpkg-windows-refresh.yml",
-      "step": "Download all artifacts",
-      "mechanism": "actions/download-artifact",
-      "tier": "release-deliverable",
-      "rationale": "The publish job collects the staged bundles before uploading them to the release."
-    },
-    {
       "id": "baseline-zero-deps-experiment",
       "workflow": "baseline-zero-deps.yml",
       "step": "*",

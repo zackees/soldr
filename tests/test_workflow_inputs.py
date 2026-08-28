@@ -1,146 +1,36 @@
-"""Workflow inputs must be honored, not decorative (soldr#1664).
+"""Reusable workflow inputs must be honored, not decorative.
 
-Two defects motivated these tests:
-
-* `vcpkg-windows-refresh.yml` advertised a `triplets` input but the
-  matrix hard-coded both values, so scoping an expensive Windows port
-  build did nothing.
-* `_build-and-test.yml` declared `shared_key` as `required: true` while
-  the body keyed its cache from `inputs.target` instead, so every caller
-  maintained a value that was read by nothing.
+`_build-and-test.yml` once declared `shared_key` as `required: true` while
+the body keyed its cache from `inputs.target` instead, so every caller
+maintained a value that was read by nothing.
 
 The guard below is generic: any `workflow_call` input that no job body
-references fails, which catches the next one of these rather than only
-re-checking the two that were reported.
+references fails, which catches the next one rather than only re-checking
+the originally reported input.
 """
 
 from __future__ import annotations
 
-import json
 import re
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
-from conftest import load_script_module
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
-SCRIPT = REPO_ROOT / ".github" / "scripts" / "vcpkg_triplet_matrix.py"
 
 
-def _load_script():
-    """Import the resolver by path.
+def test_obsolete_vcpkg_refresh_surface_is_absent() -> None:
+    """soldr#2814: no weekly producer or unconsumed bundle contract remains."""
+    for relative_path in (
+        ".github/workflows/vcpkg-windows-refresh.yml",
+        ".github/vcpkg-pin.txt",
+        ".github/scripts/vcpkg_triplet_matrix.py",
+    ):
+        assert not (REPO_ROOT / relative_path).exists(), relative_path
 
-    `.github/scripts/` is not a package and is not on `sys.path`, and
-    inserting it would put a mid-file import after module-level code —
-    which isort rejects. Loading by spec keeps every import at the top.
-    """
-    return load_script_module(SCRIPT, "vcpkg_triplet_matrix")
-
-
-_resolver = _load_script()
-SUPPORTED_TRIPLETS = _resolver.SUPPORTED_TRIPLETS
-build_matrix = _resolver.build_matrix
-parse_triplets = _resolver.parse_triplets
-
-# ── the triplets input ───────────────────────────────────────────────
-
-
-def test_empty_input_means_every_supported_triplet() -> None:
-    # `schedule` runs supply no workflow_dispatch inputs, so the empty
-    # case must reproduce the previous hard-coded matrix exactly.
-    assert parse_triplets("") == list(SUPPORTED_TRIPLETS)
-    assert parse_triplets("   ") == list(SUPPORTED_TRIPLETS)
-
-
-def test_single_triplet_scopes_the_build() -> None:
-    # The whole point of the issue: asking for one must not build both.
-    assert parse_triplets("x64-windows-static-md") == ["x64-windows-static-md"]
-
-
-def test_whitespace_and_duplicates_are_normalised() -> None:
-    assert parse_triplets(" arm64-windows-static-md , x64-windows-static-md ") == [
-        "arm64-windows-static-md",
-        "x64-windows-static-md",
-    ]
-    # Order the operator wrote is preserved, duplicates collapse.
-    assert parse_triplets("x64-windows-static-md,x64-windows-static-md") == [
-        "x64-windows-static-md"
-    ]
-
-
-def test_stray_separators_are_tolerated() -> None:
-    assert parse_triplets("x64-windows-static-md,,") == ["x64-windows-static-md"]
-
-
-def test_unknown_triplet_is_rejected_naming_every_offender() -> None:
-    # Ignoring a typo would look like a successful refresh that quietly
-    # skipped a bundle, which is worse than failing.
-    with pytest.raises(ValueError) as excinfo:
-        parse_triplets("x64-windows-static-md,x86-windows,not-a-triplet")
-    message = str(excinfo.value)
-    assert "x86-windows" in message
-    assert "not-a-triplet" in message
-    # ...and it says what IS allowed.
-    assert "x64-windows-static-md" in message
-
-
-def test_matrix_shape_matches_what_the_workflow_consumes() -> None:
-    # `strategy.matrix: ${{ fromJSON(...) }}` needs the key to be the
-    # matrix dimension name used as `matrix.triplet`.
-    assert build_matrix("x64-windows-static-md") == {
-        "triplet": ["x64-windows-static-md"]
-    }
-
-
-def test_script_is_runnable_and_emits_github_output(tmp_path: Path) -> None:
-    out = tmp_path / "github_output"
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(SCRIPT),
-            "--triplets",
-            "arm64-windows-static-md",
-            "--output",
-            str(out),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
-    written = out.read_text(encoding="utf-8").strip()
-    assert written.startswith("matrix=")
-    assert json.loads(written.removeprefix("matrix=")) == {
-        "triplet": ["arm64-windows-static-md"]
-    }
-
-
-def test_script_exits_nonzero_on_an_unknown_triplet() -> None:
-    result = subprocess.run(
-        [sys.executable, str(SCRIPT), "--triplets", "nonsense"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 1
-    assert "unknown triplet" in result.stderr
-
-
-def test_refresh_workflow_actually_consumes_the_triplets_input() -> None:
-    text = (WORKFLOWS / "vcpkg-windows-refresh.yml").read_text(encoding="utf-8")
-    assert "inputs.triplets" in text, (
-        "the `triplets` input is declared but never read — that is exactly "
-        "the soldr#1664 defect"
-    )
-    assert (
-        "fromJSON(needs.resolve-matrix.outputs.matrix)" in text
-    ), "the build matrix must come from the resolver, not a hard-coded list"
-
-
-# ── no dead required inputs ──────────────────────────────────────────
+    for workflow_path in WORKFLOWS.glob("*.yml"):
+        assert "vcpkg" not in workflow_path.read_text(encoding="utf-8").lower()
 
 
 def _declared_workflow_call_inputs(text: str) -> list[str]:
@@ -193,8 +83,8 @@ def test_every_declared_input_is_referenced(workflow: str) -> None:
     assert not unused, (
         f"{workflow} declares workflow_call input(s) {unused} that no job body "
         f"reads. A `required: true` input that is read by nothing forces every "
-        f"caller to maintain a value for nothing — soldr#1664. Either use it, "
-        f"or remove it and drop the argument from its callers."
+        f"caller to maintain a value for nothing. Either use it, or remove it "
+        "and drop the argument from its callers."
     )
 
 
@@ -207,5 +97,5 @@ def test_build_and_test_callers_no_longer_pass_shared_key() -> None:
             continue
         assert "shared_key" not in text, (
             f"{path.name} still passes `shared_key` to _build-and-test.yml, "
-            f"which no longer declares it (soldr#1664)"
+            "which no longer declares it (soldr#1664)"
         )
