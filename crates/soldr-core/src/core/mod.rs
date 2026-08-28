@@ -42,7 +42,7 @@ pub use canonical_targets::{canonical_targets, is_canonical, CANONICAL_TARGETS};
 pub use env_flag::{flag, flag_value, foreign_flag, foreign_flag_value, is_off_value};
 pub use installer_watchdog::{
     installer_safety_timeout, installer_stall_timeout, run_installer_command,
-    InstallerWatchdogConfig, DEFAULT_INSTALLER_SAFETY_TIMEOUT_SECS,
+    run_installer_command_output, InstallerWatchdogConfig, DEFAULT_INSTALLER_SAFETY_TIMEOUT_SECS,
     DEFAULT_INSTALLER_STALL_TIMEOUT_SECS, INSTALLER_SAFETY_TIMEOUT_ENV_VAR,
     INSTALLER_STALL_TIMEOUT_ENV_VAR,
 };

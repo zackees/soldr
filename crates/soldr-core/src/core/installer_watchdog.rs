@@ -228,6 +228,49 @@ pub fn run_installer_command(
     }
 }
 
+/// Run an installer-shaped command under the long-progress watchdog and
+/// capture both streams for a caller which needs a machine-readable result.
+///
+/// This is deliberately separate from [`run_installer_command`]: normal
+/// installer commands continue forwarding progress to the terminal, whereas
+/// a manager lookup needs its stdout to be its resolved path. Both paths use
+/// the same watchdog, so a lookup waiting behind the manager lock gets
+/// heartbeats and the installer safety ceiling instead of the generic silence
+/// timeout.
+pub fn run_installer_command_output(
+    command: &mut Command,
+    context: &str,
+    phase: &str,
+    config: InstallerWatchdogConfig,
+) -> Result<std::process::Output, SoldrError> {
+    configure_installer_process_tree(command);
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|err| SoldrError::Other(format!("failed to invoke {context}: {err}")))?;
+    let (progress_tx, progress_rx) = mpsc::channel();
+    let stdout_reader = child
+        .stdout
+        .take()
+        .map(|pipe| capture_pipe_async(pipe, progress_tx.clone()));
+    let stderr_reader = child
+        .stderr
+        .take()
+        .map(|pipe| capture_pipe_async(pipe, progress_tx.clone()));
+    drop(progress_tx);
+
+    let cpu_probe = ProcessTreeCpuProbe::new(child.id());
+    let status =
+        wait_for_child_with_watchdog(&mut child, context, phase, &config, &progress_rx, cpu_probe)?;
+    let stdout = wait_for_capture(stdout_reader, context, "stdout")?;
+    let stderr = wait_for_capture(stderr_reader, context, "stderr")?;
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
 fn tee_pipe_async<R, W>(
     mut pipe: R,
     mut terminal: W,
@@ -256,6 +299,30 @@ where
     done_rx
 }
 
+fn capture_pipe_async<R>(
+    mut pipe: R,
+    progress: mpsc::Sender<()>,
+) -> mpsc::Receiver<std::io::Result<Vec<u8>>>
+where
+    R: Read + Send + 'static,
+{
+    let (done_tx, done_rx) = mpsc::channel();
+    let _ = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let mut buffer = [0_u8; 8192];
+        let result = (|| loop {
+            let read = pipe.read(&mut buffer)?;
+            if read == 0 {
+                return Ok(bytes);
+            }
+            bytes.extend_from_slice(&buffer[..read]);
+            let _ = progress.send(());
+        })();
+        let _ = done_tx.send(result);
+    });
+    done_rx
+}
+
 fn wait_for_pipe_drain(
     reader: Option<mpsc::Receiver<std::io::Result<()>>>,
     context: &str,
@@ -276,6 +343,29 @@ fn wait_for_pipe_drain(
                 ))
             }),
         None => Ok(()),
+    }
+}
+
+fn wait_for_capture(
+    reader: Option<mpsc::Receiver<std::io::Result<Vec<u8>>>>,
+    context: &str,
+    pipe_name: &str,
+) -> Result<Vec<u8>, SoldrError> {
+    match reader {
+        Some(receiver) => receiver
+            .recv_timeout(PIPE_DRAIN_TIMEOUT)
+            .map_err(|_| {
+                SoldrError::Other(format!(
+                    "{context}: {pipe_name} remained open for {} seconds after the installer exited; a descendant may still be running",
+                    PIPE_DRAIN_TIMEOUT.as_secs()
+                ))
+            })?
+            .map_err(|err| {
+                SoldrError::Other(format!(
+                    "failed to capture {pipe_name} from {context}: {err}"
+                ))
+            }),
+        None => Ok(Vec::new()),
     }
 }
 
@@ -536,6 +626,21 @@ mod tests {
         }
     }
 
+    fn delayed_path_command() -> Command {
+        if is_windows_test_host() {
+            let mut command = Command::new("powershell.exe");
+            command.args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Seconds 2; Write-Output C:\\toolchains\\nightly\\bin\\rustc.exe",
+            ]);
+            command
+        } else {
+            unix_shell("sleep 2; printf '%s\\n' /toolchains/nightly/bin/rustc")
+        }
+    }
+
     // Both hosts' budgets carry wide contention margins (soldr#2565): the
     // old 1s-gap/1.5s-stall Windows pairing and the 0.3s-child/0.25s-stall
     // unix pairing each left well under half a budget of slack, and loaded
@@ -595,6 +700,35 @@ mod tests {
             InstallerWatchdogConfig::for_test(test_stall_timeout(), test_safety_timeout()),
         );
         assert!(result.unwrap().success());
+    }
+
+    #[test]
+    fn captured_manager_lookup_can_wait_past_the_short_command_silence_budget() {
+        // This only changes the generic command setting. The lookup itself
+        // deliberately uses the installer watchdog below, and therefore must
+        // survive two seconds of lock-shaped silence before returning a path.
+        let _lock = crate::test_util::TEST_PROCESS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let prior = std::env::var_os(super::super::COMMAND_OUTPUT_TIMEOUT_ENV_VAR);
+        std::env::set_var(super::super::COMMAND_OUTPUT_TIMEOUT_ENV_VAR, "1");
+        let mut command = delayed_path_command();
+        let output = run_installer_command_output(
+            &mut command,
+            "manager lookup",
+            "manager-which",
+            InstallerWatchdogConfig::for_test(Duration::from_secs(3), Duration::from_secs(5)),
+        )
+        .expect("installer watchdog must not apply the generic one-second silence budget");
+        match prior {
+            Some(value) => std::env::set_var(super::super::COMMAND_OUTPUT_TIMEOUT_ENV_VAR, value),
+            None => std::env::remove_var(super::super::COMMAND_OUTPUT_TIMEOUT_ENV_VAR),
+        }
+        assert!(output.status.success(), "{output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("rustc"),
+            "captured lookup output was lost: {output:?}"
+        );
     }
 
     #[test]

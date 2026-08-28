@@ -2,6 +2,10 @@
 //! production-source ceiling.
 
 use super::*;
+use crate::{EnvVarGuard, TEST_PROCESS_ENV_LOCK};
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 #[test]
 fn managed_wrapper_shim_has_compiler_identity() {
@@ -101,6 +105,46 @@ fn rustup_resolution_failure_appends_ci_guidance() {
     assert!(rendered.contains("setup-soldr action path"));
     assert!(rendered.contains("soldr bootstrap"));
     assert!(rendered.contains("SOLDR_NO_BOOTSTRAP"));
+}
+
+#[test]
+fn channel_scoped_lookup_uses_the_installer_watchdog_not_generic_silence() {
+    if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Linux {
+        return;
+    }
+    let _lock = TEST_PROCESS_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let root = tempfile::tempdir().expect("tempdir");
+    let manager = root.path().join("fake-manager");
+    let resolved = root.path().join("delayed-rustc");
+    std::fs::write(&resolved, b"stub compiler").expect("resolved file");
+    std::fs::write(
+        &manager,
+        format!(
+            "#!/bin/sh\nsleep 2\nprintf '%s\\n' '{}'\n",
+            resolved.display()
+        ),
+    )
+    .expect("fake manager script");
+    let mut permissions = std::fs::metadata(&manager)
+        .expect("manager metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&manager, permissions).expect("make manager executable");
+
+    let _manager = EnvVarGuard::set(TEST_RUSTUP_BIN_ENV_VAR, &manager);
+    let _timeout = EnvVarGuard::set(crate::core::COMMAND_OUTPUT_TIMEOUT_ENV_VAR, "1");
+    let _cache = EnvVarGuard::set(TOOLCHAIN_BIN_CACHE_ENV_VAR, "off");
+    let result = resolve_toolchain_binary_with_optional_channel(
+        "rustc",
+        Some("nightly-manager-lock-test"),
+        None,
+    );
+    assert_eq!(
+        result.expect("lookup must survive two seconds of manager-lock silence"),
+        resolved
+    );
 }
 
 #[test]

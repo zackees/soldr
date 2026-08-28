@@ -167,15 +167,38 @@ fn sample_plan() -> DylintToolchainPlan {
     )
 }
 
-/// Creates `rustup_home/toolchains/<channel>-<anything>` so
-/// `is_toolchain_installed_at`'s prefix-scan fallback matches
-/// regardless of the actual host triple compiled into the test
-/// binary.
+/// Creates a complete filesystem-shaped toolchain without spawning the
+/// manager. The readiness predicate deliberately needs more than a directory:
+/// the authoritative channel manifest and compiler must both be present.
 fn stub_installed_toolchain(rustup_home: &Path, channel: &str) {
     let dir = rustup_home
         .join("toolchains")
         .join(format!("{channel}-stub-triple"));
-    std::fs::create_dir_all(dir).expect("create stub toolchain dir");
+    write_ready_toolchain(&dir);
+}
+
+fn write_ready_toolchain(dir: &Path) {
+    std::fs::create_dir_all(dir.join("bin")).expect("create stub bin dir");
+    std::fs::create_dir_all(dir.join("lib/rustlib")).expect("create stub manifest dir");
+    std::fs::write(
+        dir.join("bin")
+            .join(crate::platform::executable::name::native("rustc")),
+        b"stub compiler",
+    )
+    .expect("write stub compiler");
+    std::fs::write(
+        dir.join(TOOLCHAIN_CHANNEL_MANIFEST),
+        b"manifest-version = '2'\n",
+    )
+    .expect("write stub manifest");
+}
+
+fn stub_partial_toolchain(rustup_home: &Path, channel: &str) -> PathBuf {
+    let dir = rustup_home
+        .join("toolchains")
+        .join(format!("{channel}-stub-triple"));
+    std::fs::create_dir_all(&dir).expect("create partial toolchain dir");
+    dir
 }
 
 #[test]
@@ -203,8 +226,8 @@ fn prepared_marker_accepts_fully_qualified_toolchain_directory() {
     let rustup_home = tempfile::tempdir().expect("rustup home tempdir");
     let mut plan = sample_plan();
     plan.channel.push_str("-x86_64-unknown-linux-gnu");
-    std::fs::create_dir_all(rustup_home.path().join("toolchains").join(&plan.channel))
-        .expect("create fully-qualified toolchain dir");
+    let directory = rustup_home.path().join("toolchains").join(&plan.channel);
+    write_ready_toolchain(&directory);
 
     write_prepared_marker_at(soldr_root.path(), "1.94", &plan).expect("write marker");
 
@@ -296,6 +319,112 @@ fn prepared_marker_rejected_when_toolchain_dir_missing() {
         SystemTime::now(),
     );
     assert_eq!(loaded, None);
+}
+
+#[test]
+fn dylint_readiness_matrix_requires_manifest_and_compiler() {
+    let rustup_home = tempfile::tempdir().expect("manager home tempdir");
+    let channel = "nightly-2026-01-18";
+    assert_eq!(
+        dylint_toolchain_readiness_at(rustup_home.path(), channel),
+        DylintToolchainReadiness::Missing
+    );
+
+    let partial = stub_partial_toolchain(rustup_home.path(), channel);
+    let expect_partial =
+        |missing: &[&str]| match dylint_toolchain_readiness_at(rustup_home.path(), channel) {
+            DylintToolchainReadiness::Partial {
+                missing: actual, ..
+            } => {
+                assert_eq!(actual, missing)
+            }
+            other => panic!("expected partial readiness, got {other:?}"),
+        };
+    expect_partial(&[TOOLCHAIN_CHANNEL_MANIFEST, "bin/rustc"]);
+
+    std::fs::create_dir_all(partial.join("bin")).expect("compiler parent");
+    let compiler = partial
+        .join("bin")
+        .join(crate::platform::executable::name::native("rustc"));
+    std::fs::write(&compiler, b"stub compiler").expect("compiler");
+    expect_partial(&[TOOLCHAIN_CHANNEL_MANIFEST]);
+
+    std::fs::create_dir_all(partial.join("lib/rustlib")).expect("manifest parent");
+    std::fs::write(
+        partial.join(TOOLCHAIN_CHANNEL_MANIFEST),
+        b"manifest-version = '2'\n",
+    )
+    .expect("manifest");
+    assert!(matches!(
+        dylint_toolchain_readiness_at(rustup_home.path(), channel),
+        DylintToolchainReadiness::Ready { .. }
+    ));
+
+    std::fs::remove_file(&compiler).expect("remove compiler");
+    expect_partial(&["bin/rustc"]);
+}
+
+#[test]
+fn prepared_marker_rejects_a_partial_toolchain() {
+    let soldr_root = tempfile::tempdir().expect("soldr root tempdir");
+    let manager_home = tempfile::tempdir().expect("manager home tempdir");
+    let plan = sample_plan();
+    stub_partial_toolchain(manager_home.path(), &plan.channel);
+    write_prepared_marker_at(soldr_root.path(), "1.94", &plan).expect("write marker");
+
+    assert_eq!(
+        load_prepared_marker_from(
+            soldr_root.path(),
+            manager_home.path(),
+            "1.94",
+            Duration::from_secs(60 * 60),
+            SystemTime::now(),
+        ),
+        None,
+        "a warm marker must not bypass the same partial-toolchain check as the cold path"
+    );
+}
+
+#[test]
+fn manager_exit_zero_but_partial_toolchain_fails_without_deleting_it() {
+    let manager_home = tempfile::tempdir().expect("manager home tempdir");
+    let channel = "nightly-2026-01-18";
+    let partial = manager_home
+        .path()
+        .join("toolchains")
+        .join(format!("{channel}-stub-triple"));
+    let error = ensure_dylint_toolchain_ready_at(manager_home.path(), channel, || {
+        std::fs::create_dir_all(&partial).expect("fake manager leaves partial dir");
+        Ok(0)
+    })
+    .expect_err("an exit-zero manager must not bless a partial tree")
+    .to_string();
+
+    assert!(
+        partial.is_dir(),
+        "the Dylint path must not delete shared state"
+    );
+    assert!(error.contains(&format!("{channel}-stub-triple")), "{error}");
+    assert!(error.contains(TOOLCHAIN_CHANNEL_MANIFEST), "{error}");
+    let manager = ["rust", "up"].concat();
+    assert!(
+        error.contains(&format!(
+            "soldr {manager} toolchain uninstall {channel}-stub-triple"
+        )),
+        "{error}"
+    );
+    assert!(error.contains(&partial.display().to_string()), "{error}");
+}
+
+#[test]
+fn clean_manager_install_is_accepted_after_readiness_recheck() {
+    let manager_home = tempfile::tempdir().expect("manager home tempdir");
+    let channel = "nightly-2026-01-18";
+    ensure_dylint_toolchain_ready_at(manager_home.path(), channel, || {
+        stub_installed_toolchain(manager_home.path(), channel);
+        Ok(0)
+    })
+    .expect("a clean install must pass the same readiness predicate");
 }
 
 #[test]
