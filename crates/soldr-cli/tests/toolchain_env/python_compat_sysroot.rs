@@ -4,14 +4,18 @@ use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use crate::common::catalogue_env::CatalogueEnvGuard;
 use soldr_cli::core::SoldrPaths;
 use soldr_cli::fetch::{manifest_lookup, syslib_common, trust};
 use soldr_cli::pyo3_detect::{resolve_policy, BuildShape, DetectedPyo3, PlanMode, PolicyInput};
 
-fn test_bundle() -> Vec<u8> {
+fn test_bundle(unique: &str) -> Vec<u8> {
     let encoder = zstd::stream::Encoder::new(Vec::new(), 1).expect("zstd encoder");
     let mut archive = tar::Builder::new(encoder);
-    let payload = b"python import library";
+    // Make the content address specific to this fixture root. A stale ambient
+    // object from a previous regression run can therefore never mask a write
+    // that ignores the explicitly injected `SoldrPaths` below.
+    let payload = format!("python import library-{unique}").into_bytes();
     let mut header = tar::Header::new_gnu();
     header.set_size(payload.len() as u64);
     header.set_mode(0o644);
@@ -108,21 +112,42 @@ fn serve_fixture(bundle: Vec<u8>) -> (String, Arc<Mutex<Vec<String>>>, thread::J
 
 #[test]
 fn compatibility_sysroot_uses_catalogue_sha_and_target_row() {
-    let bundle = test_bundle();
+    let root = tempfile::tempdir().expect("temp root");
+    let env = CatalogueEnvGuard::acquire();
+    let bundle = test_bundle(&root.path().display().to_string());
+    let bundle_sha256 = trust::sha256_of(&bundle);
     let (origin, requests, server) = serve_fixture(bundle);
     let catalogue_url = format!("{origin}/catalogue.v1.json");
-    std::env::set_var(
+    env.set(
         manifest_lookup::TOOLCHAIN_CATALOGUE_URL_ENV_VAR,
         &catalogue_url,
     );
-    std::env::set_var(syslib_common::SYSLIB_ASSET_ORIGIN_ENV_VAR, &origin);
+    env.set(syslib_common::SYSLIB_ASSET_ORIGIN_ENV_VAR, &origin);
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("runtime");
-    let root = tempfile::tempdir().expect("temp root");
     let paths = SoldrPaths::with_root(root.path().to_path_buf());
+    let injected_asset = paths
+        .cache
+        .join("catalogue-v2")
+        .join("assets")
+        .join(&bundle_sha256);
+    let ambient_asset = SoldrPaths::new()
+        .expect("ambient paths")
+        .cache
+        .join("catalogue-v2")
+        .join("assets")
+        .join(&bundle_sha256);
+    assert_ne!(
+        injected_asset, ambient_asset,
+        "fixture root must be distinct from the caller's Soldr cache root"
+    );
+    assert!(
+        !ambient_asset.exists(),
+        "the unique fixture object must not already exist in the caller's Soldr cache"
+    );
     let mut no_pyo3_plan = resolve_policy(PolicyInput {
         host: "x86_64-unknown-linux-gnu".into(),
         target: "x86_64-pc-windows-msvc".into(),
@@ -149,12 +174,13 @@ fn compatibility_sysroot_uses_catalogue_sha_and_target_row() {
         raw_dylib_disabled: false,
     });
     assert_eq!(compatibility_plan.mode, PlanMode::CompatibilitySysroot);
-    let result = runtime.block_on(compatibility_plan.materialize_compatibility(&paths));
-
-    std::env::remove_var(manifest_lookup::TOOLCHAIN_CATALOGUE_URL_ENV_VAR);
-    std::env::remove_var(syslib_common::SYSLIB_ASSET_ORIGIN_ENV_VAR);
+    runtime
+        .block_on(compatibility_plan.materialize_compatibility(&paths))
+        .expect("first materialization");
+    runtime
+        .block_on(compatibility_plan.materialize_compatibility(&paths))
+        .expect("warm materialization");
     server.join().expect("fixture server");
-    result.expect("materialized sysroot");
     assert_eq!(
         compatibility_plan
             .env
@@ -167,6 +193,14 @@ fn compatibility_sysroot_uses_catalogue_sha_and_target_row() {
         .get("PYO3_CROSS_LIB_DIR")
         .expect("compatibility lib dir");
     assert!(std::path::Path::new(lib_dir).join("python3.lib").is_file());
+    assert!(
+        injected_asset.is_file(),
+        "catalogue asset must remain below the explicitly injected Soldr cache root"
+    );
+    assert!(
+        !ambient_asset.exists(),
+        "explicit SoldrPaths must prevent transport writes to the caller's real Soldr cache"
+    );
     assert_eq!(
         *requests.lock().expect("request log"),
         [

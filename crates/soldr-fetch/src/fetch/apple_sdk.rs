@@ -335,7 +335,7 @@ async fn fetch_managed_sdk(
         selection.shape.catalogue_slug()
     );
 
-    let downloaded = manifest_lookup::materialize_catalogue_entry(&entry).await?;
+    let downloaded = manifest_lookup::materialize_catalogue_entry(paths, &entry).await?;
     let digest = downloaded.sha256();
     eprintln!(
         "soldr: trust: verified Apple SDK {}/{} sha256={digest}",

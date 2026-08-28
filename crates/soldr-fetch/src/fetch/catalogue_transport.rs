@@ -13,7 +13,7 @@ use url::Url;
 
 use super::catalogue_lookup::MANIFEST_FETCH_TIMEOUT;
 use super::catalogue_model::{AssetTransport, ManifestEntry, Part};
-use crate::core::SoldrError;
+use crate::core::{SoldrError, SoldrPaths};
 /// Materialize either catalogue transport through the one blessed asset
 /// streaming boundary.  A part is deliberately one request: catalogue parts
 /// are already immutable content-addressed chunks, so applying the legacy
@@ -22,9 +22,10 @@ use crate::core::SoldrError;
 /// each logical part is one request and the process-wide Bulk pool limits
 /// all assets together.  Direct assets still use the legacy Range path.
 pub(crate) async fn materialize_catalogue_entry(
+    paths: &SoldrPaths,
     entry: &ManifestEntry,
 ) -> Result<super::stream_download::DownloadedAsset, SoldrError> {
-    let cache = catalogue_cache_root()?;
+    let cache = catalogue_cache_root(paths)?;
     let object = cache.join("assets").join(&entry.sha256);
     if let Some(asset) = cached_asset(&object, &entry.sha256, entry.size_bytes)? {
         return Ok(asset);
@@ -450,11 +451,12 @@ pub(crate) fn retry_after(error: &SoldrError) -> Option<Duration> {
     Some(Duration::from_secs(seconds).min(MAX_MULTIPART_RETRY_AFTER))
 }
 
-/// Content-addressed persistent cache below `SOLDR_CACHE_DIR/cache`.  Cached
-/// bytes are never trusted by their filename: every reuse hashes the file and
-/// checks its exact advertised length before returning it to an archive reader.
-fn catalogue_cache_root() -> Result<PathBuf, SoldrError> {
-    let root = crate::core::SoldrPaths::new()?.cache.join("catalogue-v2");
+/// Content-addressed persistent cache below the caller's [`SoldrPaths::cache`].
+/// Cached bytes are never trusted by their filename: every reuse hashes the
+/// file and checks its exact advertised length before returning it to an
+/// archive reader.
+fn catalogue_cache_root(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
+    let root = paths.cache.join("catalogue-v2");
     std::fs::create_dir_all(root.join("assets"))?;
     std::fs::create_dir_all(root.join("parts"))?;
     Ok(root)

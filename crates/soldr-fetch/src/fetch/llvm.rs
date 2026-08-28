@@ -192,7 +192,7 @@ async fn fetch_managed_llvm(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
         asset.plat_arch,
     );
 
-    let downloaded = manifest_lookup::materialize_catalogue_entry(&entry).await?;
+    let downloaded = manifest_lookup::materialize_catalogue_entry(paths, &entry).await?;
 
     // Integrity check is mandatory — the upstream archive is large
     // (~95 MiB) and a tampered blob would silently install a hostile

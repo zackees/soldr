@@ -88,7 +88,7 @@ async fn try_manifest_first(
     // download.
     let download_started_at_ms = current_unix_ms();
     let download_started = std::time::Instant::now();
-    let downloaded = manifest_lookup::materialize_catalogue_entry(matched_entry).await?;
+    let downloaded = manifest_lookup::materialize_catalogue_entry(paths, matched_entry).await?;
     let binary_path = archive::extract_catalogue_asset_with_pin(
         paths,
         cache_name,
