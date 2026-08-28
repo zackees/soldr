@@ -116,7 +116,7 @@ pub async fn ensure_syslib_bundle(
         eprintln!("soldr: fetching syslib {lib}/{version}/{slug} from {resolved_url}...");
     }
 
-    let downloaded = manifest_lookup::materialize_catalogue_entry(&entry).await?;
+    let downloaded = manifest_lookup::materialize_catalogue_entry(paths, &entry).await?;
     let digest = downloaded.sha256();
     if !crate::core::quiet::diagnostics_suppressed() {
         eprintln!("soldr: trust: verified syslib {lib}/{version}/{slug} sha256={digest}");

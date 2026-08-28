@@ -32,8 +32,9 @@ use soldr_cli::fetch::manifest_lookup::{
     MANIFEST_DISABLE_ENV_VAR, TOOLCHAIN_CATALOGUE_URL_ENV_VAR, TOOLCHAIN_CATALOGUE_V2_URL_ENV_VAR,
     TOOLCHAIN_ORIGIN_ENV_VAR,
 };
+use soldr_cli::fetch::syslib_common::SYSLIB_ASSET_ORIGIN_ENV_VAR;
 
-/// Every variable the production configuration snapshot reads.
+/// Every catalogue or syslib origin override the fixture tree mutates.
 ///
 /// Completeness matters twice: a name missing here is a name whose prior value
 /// is never restored, and also one a test can leave set for the next test in
@@ -43,6 +44,7 @@ pub(crate) const CATALOGUE_ENV_VARS: &[&str] = &[
     TOOLCHAIN_CATALOGUE_URL_ENV_VAR,
     TOOLCHAIN_CATALOGUE_V2_URL_ENV_VAR,
     TOOLCHAIN_ORIGIN_ENV_VAR,
+    SYSLIB_ASSET_ORIGIN_ENV_VAR,
 ];
 
 static CATALOGUE_ENV_LOCK: Mutex<()> = Mutex::new(());
