@@ -128,6 +128,52 @@ jobs:
     assert guard.unpinned_jobs(tmp_path) == set()
 
 
+def test_setup_uv_requires_an_explicit_python_313_for_a_repo_script(guard, tmp_path):
+    write_workflow(
+        tmp_path,
+        "cook.yml",
+        f"""
+jobs:
+  cook:
+    steps:
+      - uses: {SETUP_UV}
+      - run: uv run --no-project python .github/scripts/prepare_cook_fixture.py
+""",
+    )
+    assert guard.unpinned_jobs(tmp_path) == {("cook.yml", "cook")}
+
+
+def test_release_scripts_require_setup_uv_and_no_project(guard, tmp_path):
+    """The release-specific soldr#2763 contract belongs in this guard.
+
+    `setup-python` correctly pins ordinary workflow jobs, but the release
+    surface must use its isolated uv front door for every repository script.
+    """
+    write_workflow(
+        tmp_path,
+        "release-auto.yml",
+        f"""
+jobs:
+  release:
+    steps:
+      - uses: {SETUP_PYTHON}
+      - run: python3 .github/scripts/stage_release_binaries.py
+  missing-no-project:
+    steps:
+      - uses: {SETUP_UV}
+      - run: uv run --python 3.13 python .github/scripts/publish.py
+  compliant:
+    steps:
+      - uses: {SETUP_UV}
+      - run: uv run --no-project --python 3.13 python .github/scripts/verify.py
+""",
+    )
+    assert guard.unpinned_jobs(tmp_path) == {
+        ("release-auto.yml", "release"),
+        ("release-auto.yml", "missing-no-project"),
+    }
+
+
 def test_setup_uv_does_not_pin_a_bare_python3_call(guard, tmp_path):
     """The distinction the loose version of this guard got wrong.
 
@@ -165,6 +211,67 @@ jobs:
 """,
     )
     assert guard.unpinned_jobs(tmp_path) == {("release.yml", "build")}
+
+
+@pytest.mark.parametrize("separator", ["&&", ";", "|", "&"])
+def test_shell_command_boundaries_bind_each_script_to_its_own_uv_run(
+    guard, tmp_path, separator
+):
+    """A routed command cannot certify a later bare command on the same line."""
+    write_workflow(
+        tmp_path,
+        "release.yml",
+        f"""
+jobs:
+  routed:
+    steps:
+      - uses: {SETUP_UV}
+      - run: uv run --python 3.13 ci/one.py {separator} uv run --python 3.13 ci/two.py
+  bare:
+    steps:
+      - uses: {SETUP_UV}
+      - run: uv run --python 3.13 ci/one.py {separator} python3 ci/two.py
+""",
+    )
+    assert guard.unpinned_jobs(tmp_path) == {("release.yml", "bare")}
+
+
+def test_redirection_is_not_a_shell_command_boundary(guard, tmp_path):
+    write_workflow(
+        tmp_path,
+        "release.yml",
+        f"""
+jobs:
+  redirected:
+    steps:
+      - uses: {SETUP_UV}
+      - run: 2>&1 uv run --python 3.13 ci/one.py
+""",
+    )
+    assert guard.unpinned_jobs(tmp_path) == set()
+
+
+@pytest.mark.parametrize("separator", ["&&", ";"])
+def test_release_flags_do_not_cross_shell_command_boundaries(
+    guard, tmp_path, separator
+):
+    """A release script must carry its own Python and isolation flags."""
+    write_workflow(
+        tmp_path,
+        "release-auto.yml",
+        f"""
+jobs:
+  compliant:
+    steps:
+      - uses: {SETUP_UV}
+      - run: uv run --no-project --python 3.13 ci/one.py {separator} uv run --no-project --python 3.13 ci/two.py
+  inherited-flags:
+    steps:
+      - uses: {SETUP_UV}
+      - run: uv run --no-project --python 3.13 ci/one.py {separator} uv run python ci/two.py
+""",
+    )
+    assert guard.unpinned_jobs(tmp_path) == {("release-auto.yml", "inherited-flags")}
 
 
 def test_a_container_job_is_not_flagged(guard, tmp_path):

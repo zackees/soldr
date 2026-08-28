@@ -64,6 +64,10 @@ SCRIPT_PATTERN = re.compile(r"(?:\.github/scripts|ci)/[\w./-]+\.py")
 # `unrouted_script_invocations` below, not by counting.
 SETUP_PYTHON_PATTERN = re.compile(r"actions/setup-python")
 SETUP_UV_PATTERN = re.compile(r"astral-sh/setup-uv")
+UV_RUN_PATTERN = re.compile(r"\buv\s+run\b")
+UV_PYTHON_313_PATTERN = re.compile(r"--python(?:=|\s+)3\.13(?=\s|$)")
+UV_NO_PROJECT_PATTERN = re.compile(r"--no-project(?=\s|$)")
+RELEASE_WORKFLOW = "release-auto.yml"
 
 # Jobs running repo Python under an unpinned interpreter as of soldr#2763.
 # Entries are `(workflow file, job id)`. Shrink this list; never grow it.
@@ -89,6 +93,54 @@ BASELINE: frozenset[tuple[str, str]] = frozenset(
 CONTINUATION_PATTERN = re.compile(r"\\s*\n\s*")
 
 
+def shell_command_prefix(line: str, script_start: int) -> str:
+    """Return the shell command segment immediately before a script path.
+
+    A prior ``uv run`` on a compound shell line cannot route a later command:
+    ``uv run ... ci/one.py && python3 ci/two.py`` still executes the second
+    script under the runner's Python. Keep quote-aware handling here so a
+    separator in an argument is not mistaken for shell syntax.
+    """
+    command_start = 0
+    quote: str | None = None
+    escaped = False
+    index = 0
+    while index < script_start:
+        char = line[index]
+        if escaped:
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif quote:
+            if char == quote:
+                quote = None
+        elif char in {"'", '"'}:
+            quote = char
+        elif char == ";":
+            command_start = index + 1
+        elif char == "|":
+            # `|`, `||`, and `|&` all start a fresh shell command. The latter
+            # pipes stderr too; it is still a pipeline, not a redirection.
+            command_start = index + 1
+            if line[index + 1 : index + 2] in {"|", "&"}:
+                command_start = index + 2
+                index += 1
+        elif char == "&":
+            next_char = line[index + 1 : index + 2]
+            previous_char = line[index - 1 : index]
+            # `2>&1`, `>&1`, and `&> log` are redirections, not a command
+            # boundary. Every other ampersand is either `&&` or a background
+            # command separator and must not let its left command certify the
+            # next script.
+            if previous_char not in {">", "<"} and next_char != ">":
+                command_start = index + 1
+                if next_char == "&":
+                    command_start = index + 2
+                    index += 1
+        index += 1
+    return line[command_start:script_start]
+
+
 def unrouted_script_invocations(runs: str) -> list[str]:
     """Repo-script invocations in `runs` that are not routed through `uv run`.
 
@@ -103,17 +155,42 @@ def unrouted_script_invocations(runs: str) -> list[str]:
       backslash did not match a single-line pattern, so wrapping a long
       command for readability made a correctly pinned job report as unpinned.
 
-    Continuations are folded first, then each line carrying a script path must
-    have `uv run` ahead of it on that same line.
+    Continuations are folded first, then each shell command carrying a script
+    path must have `uv run` ahead of it in that same command segment.
     """
     joined = CONTINUATION_PATTERN.sub(" ", runs)
     unrouted = []
     for line in joined.splitlines():
         for match in SCRIPT_PATTERN.finditer(line):
-            if "uv run" not in line[: match.start()]:
+            if "uv run" not in shell_command_prefix(line, match.start()):
                 unrouted.append(line.strip())
                 break
     return unrouted
+
+
+def uv_script_invocations_missing_option(
+    runs: str, option: re.Pattern[str]
+) -> list[str]:
+    """Return routed repo-script lines missing an option on their own ``uv run``.
+
+    The option must occur after the last ``uv run`` before a script path. This
+    keeps an earlier, unrelated ``uv run --python 3.13`` from certifying a
+    later invocation, just as ``unrouted_script_invocations`` keeps it from
+    certifying a bare Python call.
+    """
+    joined = CONTINUATION_PATTERN.sub(" ", runs)
+    missing = []
+    for line in joined.splitlines():
+        for match in SCRIPT_PATTERN.finditer(line):
+            prefix = shell_command_prefix(line, match.start())
+            invocations = list(UV_RUN_PATTERN.finditer(prefix))
+            if not invocations:
+                continue
+            options = prefix[invocations[-1].end() :]
+            if not option.search(options):
+                missing.append(line.strip())
+                break
+    return missing
 
 
 def job_run_text(job: dict) -> str:
@@ -139,7 +216,7 @@ def job_runs_repo_python(job: dict) -> bool:
     return bool(SCRIPT_PATTERN.search(job_run_text(job)))
 
 
-def job_pins_interpreter(job: dict) -> bool:
+def job_pins_interpreter(job: dict, *, release_job: bool = False) -> bool:
     """Does `job` fix which Python runs its repo scripts?
 
     Three ways, and the third is the one that is easy to get wrong:
@@ -148,21 +225,37 @@ def job_pins_interpreter(job: dict) -> bool:
       cannot vary with the runner image.
     * `actions/setup-python` -- prepends its interpreter to PATH, so a later
       bare `python3` resolves to the pinned one.
-    * `astral-sh/setup-uv` -- **only for invocations routed through `uv run`**.
+    * `astral-sh/setup-uv` -- **only for invocations routed through
+      `uv run --python 3.13`**.
       Installing uv does not change what `python3` means, so a job that sets up
       uv and then runs `python3 script.py` is exactly as exposed as one that set
-      up nothing at all. Two jobs in this repo were in that state when the guard
-      was written, and a check keyed on the setup step alone called them safe.
+    up nothing at all. Two jobs in this repo were in that state when the guard
+    was written, and a check keyed on the setup step alone called them safe.
+    Release jobs must additionally use `--no-project`; their wheel/release
+    environment must not be influenced by a checked-out project.
     """
-    if job.get("container"):
+    if job.get("container") and not release_job:
         return True
     uses = job_uses_text(job)
-    if SETUP_PYTHON_PATTERN.search(uses):
+    if SETUP_PYTHON_PATTERN.search(uses) and not release_job:
         return True
     if not SETUP_UV_PATTERN.search(uses):
         return False
+    runs = job_run_text(job)
     # Every repo-script invocation must go through `uv run`, not merely one.
-    if unrouted_script_invocations(job_run_text(job)):
+    if unrouted_script_invocations(runs):
+        return False
+    # Pin each uv-managed interpreter explicitly. `uv run` otherwise chooses
+    # an available interpreter, which is deliberately not a release contract.
+    if uv_script_invocations_missing_option(runs, UV_PYTHON_313_PATTERN):
+        return False
+    # Release auto is the source of soldr#2763: it must be self-contained and
+    # never inherit a repository project/environment by accident. Keep this
+    # policy here, beside the general workflow guard, rather than in a second
+    # release-only test with a divergent parser and job list.
+    if release_job and uv_script_invocations_missing_option(
+        runs, UV_NO_PROJECT_PATTERN
+    ):
         return False
     # ...and uv must exist before the first step that uses it.
     #
@@ -205,7 +298,9 @@ def unpinned_jobs(workflow_dir: pathlib.Path) -> set[tuple[str, str]]:
         for job_id, job in (document.get("jobs") or {}).items():
             if not isinstance(job, dict):
                 continue
-            if job_runs_repo_python(job) and not job_pins_interpreter(job):
+            if job_runs_repo_python(job) and not job_pins_interpreter(
+                job, release_job=path.name == RELEASE_WORKFLOW
+            ):
                 found.add((path.name, str(job_id)))
     return found
 
@@ -231,7 +326,7 @@ def main() -> int:
         print()
         print(
             "Pin it: add `actions/setup-python`, or add `astral-sh/setup-uv` and\n"
-            "invoke the script as `uv run --python <version> <script>`. Setting up\n"
+            "invoke the script as `uv run --python 3.13 <script>`. Setting up\n"
             "uv without routing the call through `uv run` does not count -- it\n"
             "leaves `python3` meaning whatever the runner image ships, which\n"
             "differs per platform and drifts without notice (soldr#2763)."
