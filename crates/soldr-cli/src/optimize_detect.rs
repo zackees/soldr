@@ -4,7 +4,13 @@
 //! unit-tested in isolation. Action-layer dispatch lives in
 //! `optimize_windows.rs`.
 
-use std::path::PathBuf;
+use std::{
+    path::{Path, PathBuf},
+    process::{Command, Output, Stdio},
+    time::Duration,
+};
+
+use wait_timeout::ChildExt;
 
 pub(crate) use crate::defender::find_powershell;
 
@@ -97,22 +103,68 @@ pub(crate) struct InstalledTools {
     pub(crate) fsutil_devdrv_supported: bool,
 }
 
-/// Detect tools relevant to the optimize subcommand. Runs side-effect-
-/// free helper queries; safe to call without elevation.
-pub(crate) fn detect_tools(platform: Platform) -> InstalledTools {
+/// Whether the optimize caller needs live host-tool status. Dry-run callers
+/// only need a plan, so querying Defender or Dev Drive would turn a
+/// side-effect-free preview into an unbounded availability dependency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolDetectionMode {
+    DryRun,
+    Live,
+}
+
+/// Keep advisory Windows probes well below the test-process timeout. A failed
+/// probe is deliberately indistinguishable from an unavailable feature: the
+/// action layer can still explain that no live Defender exclusion was applied.
+const TOOL_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+trait ToolProbe {
+    fn find_powershell(&self) -> Option<PathBuf>;
+    fn query_defender_status(&self, powershell: &Path) -> DefenderStatus;
+    fn fsutil_devdrv_is_supported(&self) -> bool;
+}
+
+struct SystemToolProbe;
+
+impl ToolProbe for SystemToolProbe {
+    fn find_powershell(&self) -> Option<PathBuf> {
+        find_powershell()
+    }
+
+    fn query_defender_status(&self, powershell: &Path) -> DefenderStatus {
+        query_defender_status(powershell)
+    }
+
+    fn fsutil_devdrv_is_supported(&self) -> bool {
+        fsutil_devdrv_is_supported()
+    }
+}
+
+/// Detect tools relevant to the optimize subcommand. Live detection runs
+/// bounded, side-effect-free helper queries; dry-run detection intentionally
+/// invokes no child process at all.
+pub(crate) fn detect_tools(platform: Platform, mode: ToolDetectionMode) -> InstalledTools {
+    detect_tools_with_probe(platform, mode, &SystemToolProbe)
+}
+
+fn detect_tools_with_probe(
+    platform: Platform,
+    mode: ToolDetectionMode,
+    probe: &impl ToolProbe,
+) -> InstalledTools {
     if !matches!(
         platform,
         Platform::Windows10 | Platform::Windows11Pre22H2 | Platform::Windows11Post22H2
-    ) {
+    ) || mode == ToolDetectionMode::DryRun
+    {
         return InstalledTools::default();
     }
-    let powershell = find_powershell();
+    let powershell = probe.find_powershell();
     let defender = powershell
         .as_ref()
-        .map(|ps| query_defender_status(ps))
+        .map(|ps| probe.query_defender_status(ps))
         .unwrap_or_default();
     let fsutil_devdrv_supported =
-        matches!(platform, Platform::Windows11Post22H2) && fsutil_devdrv_is_supported();
+        matches!(platform, Platform::Windows11Post22H2) && probe.fsutil_devdrv_is_supported();
     InstalledTools {
         powershell,
         defender_present: defender.present,
@@ -127,14 +179,16 @@ pub(crate) struct DefenderStatus {
     pub(crate) active: bool,
 }
 
-fn query_defender_status(powershell: &std::path::Path) -> DefenderStatus {
-    let output = std::process::Command::new(powershell)
+fn query_defender_status(powershell: &Path) -> DefenderStatus {
+    let output = probe_command_output(
+        Command::new(powershell)
         .args([
             "-NoProfile",
             "-Command",
             "Get-MpComputerStatus | Select-Object AntivirusEnabled, RealTimeProtectionEnabled | ConvertTo-Json -Compress",
-        ])
-        .output();
+        ]),
+        "Get-MpComputerStatus",
+    );
     let Ok(output) = output else {
         return DefenderStatus::default();
     };
@@ -168,9 +222,10 @@ pub(crate) fn parse_defender_status_json(stdout: &str) -> DefenderStatus {
 }
 
 fn fsutil_devdrv_is_supported() -> bool {
-    let output = std::process::Command::new("fsutil")
-        .args(["devdrv", "query"])
-        .output();
+    let output = probe_command_output(
+        Command::new("fsutil").args(["devdrv", "query"]),
+        "fsutil devdrv query",
+    );
     let Ok(output) = output else {
         return false;
     };
@@ -185,6 +240,48 @@ fn fsutil_devdrv_is_supported() -> bool {
         String::from_utf8_lossy(&output.stderr)
     );
     !combined.to_ascii_lowercase().contains("invalid parameter")
+}
+
+/// Run a small host-status probe with bounded wait and no background pipe
+/// readers. On timeout we kill and reap before returning, so a hung Windows
+/// service cannot keep an optimize invocation (or its test process) alive.
+fn probe_command_output(command: &mut Command, context: &str) -> Result<Output, String> {
+    probe_command_output_with_timeout(command, context, TOOL_PROBE_TIMEOUT)
+}
+
+fn probe_command_output_with_timeout(
+    command: &mut Command,
+    context: &str,
+    timeout: Duration,
+) -> Result<Output, String> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|err| format!("failed to invoke {context}: {err}"))?;
+    match child
+        .wait_timeout(timeout)
+        .map_err(|err| format!("wait on {context} failed: {err}"))?
+    {
+        Some(_) => child
+            .wait_with_output()
+            .map_err(|err| format!("collect {context} output failed: {err}")),
+        None => {
+            let kill_result = child.kill();
+            let reap_result = child.wait();
+            Err(format!(
+                "{context} timed out after {} seconds; {}{}",
+                timeout.as_secs(),
+                match kill_result {
+                    Ok(()) => "killed child process",
+                    Err(err) => return Err(format!("{context} timed out; kill failed: {err}")),
+                },
+                match reap_result {
+                    Ok(_) => "; reaped child process".to_string(),
+                    Err(err) => format!("; reap failed: {err}"),
+                }
+            ))
+        }
+    }
 }
 
 /// Detect whether soldr is currently running inside a CI environment.
@@ -224,6 +321,33 @@ fn env_truthy(key: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{cell::Cell, time::Instant};
+
+    struct RecordingProbe {
+        powershell_calls: Cell<u8>,
+        defender_calls: Cell<u8>,
+        dev_drive_calls: Cell<u8>,
+    }
+
+    impl ToolProbe for RecordingProbe {
+        fn find_powershell(&self) -> Option<PathBuf> {
+            self.powershell_calls.set(self.powershell_calls.get() + 1);
+            Some(PathBuf::from("powershell"))
+        }
+
+        fn query_defender_status(&self, _powershell: &Path) -> DefenderStatus {
+            self.defender_calls.set(self.defender_calls.get() + 1);
+            DefenderStatus {
+                present: true,
+                active: true,
+            }
+        }
+
+        fn fsutil_devdrv_is_supported(&self) -> bool {
+            self.dev_drive_calls.set(self.dev_drive_calls.get() + 1);
+            true
+        }
+    }
 
     #[test]
     fn defender_status_parses_object_form() {
@@ -253,6 +377,77 @@ mod tests {
         let parsed = parse_defender_status_json("");
         assert!(!parsed.present);
         assert!(!parsed.active);
+    }
+
+    #[test]
+    fn dry_run_detection_does_not_spawn_status_or_dev_drive_probes() {
+        let probe = RecordingProbe {
+            powershell_calls: Cell::new(0),
+            defender_calls: Cell::new(0),
+            dev_drive_calls: Cell::new(0),
+        };
+
+        let tools = detect_tools_with_probe(
+            Platform::Windows11Post22H2,
+            ToolDetectionMode::DryRun,
+            &probe,
+        );
+
+        assert!(tools.powershell.is_none());
+        assert!(!tools.defender_present);
+        assert!(!tools.defender_active);
+        assert!(!tools.fsutil_devdrv_supported);
+        assert_eq!(probe.powershell_calls.get(), 0);
+        assert_eq!(probe.defender_calls.get(), 0);
+        assert_eq!(probe.dev_drive_calls.get(), 0);
+    }
+
+    #[test]
+    fn live_detection_queries_status_and_dev_drive_once() {
+        let probe = RecordingProbe {
+            powershell_calls: Cell::new(0),
+            defender_calls: Cell::new(0),
+            dev_drive_calls: Cell::new(0),
+        };
+
+        let tools =
+            detect_tools_with_probe(Platform::Windows11Post22H2, ToolDetectionMode::Live, &probe);
+
+        assert!(tools.defender_present);
+        assert!(tools.defender_active);
+        assert!(tools.fsutil_devdrv_supported);
+        assert_eq!(probe.powershell_calls.get(), 1);
+        assert_eq!(probe.defender_calls.get(), 1);
+        assert_eq!(probe.dev_drive_calls.get(), 1);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn timed_out_probe_is_killed_and_reaped_without_background_pipe_readers() {
+        let temp = tempfile::tempdir().expect("temporary probe directory");
+        let pid_file = temp.path().join("probe.pid");
+        let script = format!("echo $$ > '{}'; exec sleep 30", pid_file.display());
+        let started = Instant::now();
+        let error = probe_command_output_with_timeout(
+            Command::new("sh").args(["-c", &script]),
+            "blocking test probe",
+            Duration::from_millis(50),
+        )
+        .expect_err("blocking probe must time out");
+
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "probe timeout was not bounded"
+        );
+        assert!(error.contains("timed out after 0 seconds"));
+        let pid = std::fs::read_to_string(&pid_file)
+            .expect("blocking child must have started")
+            .trim()
+            .to_owned();
+        assert!(
+            !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+            "the timed-out child must be reaped before the probe returns"
+        );
     }
 
     #[test]

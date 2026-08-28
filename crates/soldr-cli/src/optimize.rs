@@ -21,7 +21,9 @@ use crate::defender::{apply_exclusions, current_exclusion_list, is_admin};
 use crate::optimize_windows::{relaunch_elevated, ELEVATED_HELPER_FLAG};
 
 use crate::defender::find_powershell;
-use crate::optimize_detect::{detect_ci, detect_platform, detect_tools, Platform};
+use crate::optimize_detect::{
+    detect_ci, detect_platform, detect_tools, Platform, ToolDetectionMode,
+};
 
 /// Filename of the soldr-owned tracking file recording which paths
 /// soldr added to Defender's exclusion list. Stored in `~/.soldr/`.
@@ -316,9 +318,16 @@ pub(crate) fn run_optimize(args: OptimizeArgs) -> Result<i32, SoldrError> {
         return Ok(0);
     }
 
-    let tools = detect_tools(platform);
+    let tools = detect_tools(
+        platform,
+        if args.dry_run {
+            ToolDetectionMode::DryRun
+        } else {
+            ToolDetectionMode::Live
+        },
+    );
 
-    if !tools.defender_present {
+    if !args.dry_run && !tools.defender_present {
         let mut output = base_output(platform, scope, args.undo, args.dry_run);
         output.defender_present = false;
         output.defender_active = false;
@@ -327,10 +336,15 @@ pub(crate) fn run_optimize(args: OptimizeArgs) -> Result<i32, SoldrError> {
         return Ok(0);
     }
 
-    let Some(powershell) = tools.powershell.clone().or_else(find_powershell) else {
-        return Err(SoldrError::Other(
-            "PowerShell not found on PATH. Install PowerShell (pwsh or powershell.exe) or run the helper manually.".into(),
-        ));
+    let powershell = if args.dry_run {
+        PathBuf::new()
+    } else {
+        let Some(powershell) = tools.powershell.clone().or_else(find_powershell) else {
+            return Err(SoldrError::Other(
+                "PowerShell not found on PATH. Install PowerShell (pwsh or powershell.exe) or run the helper manually.".into(),
+            ));
+        };
+        powershell
     };
 
     // Build per-scope path lists.
@@ -393,7 +407,11 @@ pub(crate) fn run_optimize(args: OptimizeArgs) -> Result<i32, SoldrError> {
             OptimizeScope::All => None,
             other => Some(other),
         };
-        let existing = current_exclusion_list(&powershell);
+        let existing = if args.dry_run {
+            Vec::new()
+        } else {
+            current_exclusion_list(&powershell)
+        };
         let to_remove = filter_undo_entries(&managed, &existing, scope_filter);
 
         let plan: Vec<PathAction> = to_remove
