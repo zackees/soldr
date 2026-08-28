@@ -176,6 +176,7 @@ def test_release_scripts_use_pinned_uv_without_bare_python():
         "publish",
         "verify_github_release",
         "publish-pypi",
+        "smoke-published-dylint",
         "publish-npm",
         "release-completeness",
     ],
