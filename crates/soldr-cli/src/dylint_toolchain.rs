@@ -17,9 +17,14 @@ use std::{
 
 use crate::core::{
     command_output_with_timeout, suppress_windows_console_window, SoldrError, SoldrPaths,
-    TargetTriple,
 };
 use crate::dylint_libraries::is_dated_nightly;
+#[cfg(test)]
+use crate::dylint_toolchain_readiness::TOOLCHAIN_CHANNEL_MANIFEST;
+use crate::dylint_toolchain_readiness::{
+    dylint_toolchain_readiness_at, ensure_dylint_toolchain_ready_at,
+    partial_dylint_toolchain_error, DylintToolchainReadiness,
+};
 use crate::{apply_implicit_toolchain_homes, resolve_toolchain_binary_for_channel, rustup_binary};
 
 pub(crate) const TOOLCHAIN_ENV_VAR: &str = "SOLDR_DYLINT_TOOLCHAIN";
@@ -336,6 +341,20 @@ fn plan_from_environment_identity(
 fn plan_from_installed_explicit_nightly(
     channel: &str,
 ) -> Result<Option<DylintToolchainPlan>, SoldrError> {
+    let manager_home = dylint_manager_home()?;
+    match dylint_toolchain_readiness_at(&manager_home, channel) {
+        DylintToolchainReadiness::Missing => return Ok(None),
+        DylintToolchainReadiness::Partial {
+            qualified,
+            directory,
+            missing,
+        } => {
+            return Err(partial_dylint_toolchain_error(
+                &qualified, &directory, &missing,
+            ))
+        }
+        DylintToolchainReadiness::Ready { .. } => {}
+    }
     if resolve_toolchain_binary_for_channel(concat!("rust", "c"), Some(channel)).is_err() {
         return Ok(None);
     }
@@ -498,7 +517,10 @@ fn load_prepared_marker_from(
     }
     let contents = std::fs::read_to_string(&path).ok()?;
     let plan = parse_marker_identity(contents.lines().next()?)?;
-    if !is_toolchain_installed_at(rustup_home, &plan.channel) {
+    if !matches!(
+        dylint_toolchain_readiness_at(rustup_home, &plan.channel),
+        DylintToolchainReadiness::Ready { .. }
+    ) {
         return None;
     }
     Some(plan)
@@ -536,28 +558,6 @@ fn parse_marker_identity(line: &str) -> Option<DylintToolchainPlan> {
 /// any directory whose name starts with `<channel>-` if the host triple
 /// cannot be determined, so an unusual host doesn't spuriously miss a
 /// perfectly good warm cache.
-fn is_toolchain_installed_at(rustup_home: &Path, channel: &str) -> bool {
-    let toolchains_dir = rustup_home.join("toolchains");
-    if toolchains_dir.join(channel).is_dir() {
-        return true;
-    }
-    if let Ok(triple) = TargetTriple::host() {
-        if toolchains_dir
-            .join(format!("{channel}-{}", triple.triple()))
-            .is_dir()
-        {
-            return true;
-        }
-    }
-    let Ok(entries) = std::fs::read_dir(&toolchains_dir) else {
-        return false;
-    };
-    let prefix = format!("{channel}-");
-    entries.filter_map(Result::ok).any(|entry| {
-        entry.file_name().to_string_lossy().starts_with(&prefix) && entry.path().is_dir()
-    })
-}
-
 /// Production entry point for persisting the warm-path marker after a
 /// successful cold-path prepare. Best-effort by contract — callers must
 /// not fail the run on a write error, only log it.
@@ -821,19 +821,11 @@ fn validate_identity(channel: &str, identity: &NightlyIdentity) -> Result<(), So
 }
 
 fn ensure_installed(plan: &DylintToolchainPlan) -> Result<(), SoldrError> {
+    let manager_home = dylint_manager_home()?;
+    ensure_dylint_toolchain_ready_at(&manager_home, &plan.channel, || {
+        crate::toolchain::rustup_toolchain_install_with_profile(&plan.channel, Some("minimal"))
+    })?;
     let installed = installed_components(&plan.channel).unwrap_or_default();
-    if resolve_toolchain_binary_for_channel(concat!("rust", "c"), Some(&plan.channel)).is_err() {
-        let code = crate::toolchain::rustup_toolchain_install_with_profile(
-            &plan.channel,
-            Some("minimal"),
-        )?;
-        if code != 0 {
-            return Err(SoldrError::Other(format!(
-                "rustup failed to install {} (exit {code})",
-                plan.channel
-            )));
-        }
-    }
     for component in REQUIRED_COMPONENTS {
         if !installed.iter().any(|line| line.starts_with(component)) {
             let code = crate::toolchain::rustup_component_add(&plan.channel, component)?;
@@ -846,6 +838,12 @@ fn ensure_installed(plan: &DylintToolchainPlan) -> Result<(), SoldrError> {
         }
     }
     Ok(())
+}
+
+fn dylint_manager_home() -> Result<PathBuf, SoldrError> {
+    crate::core::resolve_rustup_home().ok_or_else(|| {
+        SoldrError::Other("could not resolve manager home while preparing Dylint".into())
+    })
 }
 
 fn installed_components(channel: &str) -> Result<Vec<String>, SoldrError> {

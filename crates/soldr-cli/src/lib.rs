@@ -229,6 +229,7 @@ pub(crate) mod dylint_driver;
 pub(crate) mod dylint_libraries;
 pub(crate) mod dylint_prepare;
 pub mod dylint_toolchain;
+pub(crate) mod dylint_toolchain_readiness;
 /// soldr#938 — `soldr env --target` subcommand implementation.
 pub mod env_cmd;
 /// soldr#1059 — `soldr exec <cmd>` PATH-prepend wrapper.

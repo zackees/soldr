@@ -2,8 +2,8 @@
 //! `main.rs` as part of issue #339.
 
 use crate::core::{
-    command_output_with_timeout, suppress_windows_console_window, SoldrError, SoldrPaths,
-    TargetTriple,
+    command_output_with_timeout, run_installer_command_output, suppress_windows_console_window,
+    InstallerWatchdogConfig, SoldrError, SoldrPaths, TargetTriple,
 };
 use crate::fetch::VersionSpec;
 use crate::{
@@ -257,7 +257,19 @@ fn resolve_toolchain_binary_with_optional_channel(
         Some(channel) => format!("rustup which --toolchain {channel} {tool}"),
         None => format!("rustup which {tool}"),
     };
-    let output = command_output_with_timeout(&mut command, &context);
+    // A channel-scoped manager lookup can wait behind an in-flight install
+    // lock. It normally returns in milliseconds, but its worst case is the
+    // install duration; use the installer watchdog while retaining captured
+    // stdout as the resolved path. Unscoped lookups remain short probes.
+    let output = match channel {
+        Some(_) => run_installer_command_output(
+            &mut command,
+            &context,
+            "manager-which",
+            InstallerWatchdogConfig::from_env(crate::toolchain::TOOLCHAIN_COMMAND_TIMEOUT_ENV_VAR),
+        ),
+        None => command_output_with_timeout(&mut command, &context),
+    };
 
     match output {
         Ok(output) if output.status.success() => {
