@@ -8,6 +8,7 @@
 #![allow(dead_code, unused_imports)]
 
 pub(crate) mod isolated_daemon;
+pub(crate) mod manifest_env;
 
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};

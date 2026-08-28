@@ -1,18 +1,18 @@
-//! Shared process-environment scope for catalogue lookup integration tests.
+//! Shared process-environment scope for catalogue integration tests.
 //!
-//! `SOLDR_MANIFEST_DISABLE` and the catalogue URL variables are read by
-//! production code, so the tests must serialize mutations across this
-//! consolidated integration binary and restore the caller's environment even
-//! when an assertion panics.
+//! Catalogue and syslib origin overrides are read by production code, so
+//! callers must serialize mutations within their consolidated test binary and
+//! restore the caller's environment even when an assertion panics.
 
 use std::ffi::OsString;
 use std::sync::{Mutex, MutexGuard};
 
-const MANIFEST_ENV_VARS: [&str; 4] = [
+const MANIFEST_ENV_VARS: [&str; 5] = [
     "SOLDR_MANIFEST_DISABLE",
     "SOLDR_TOOLCHAIN_CATALOGUE_URL",
     "SOLDR_TOOLCHAIN_CATALOGUE_V2_URL",
     "SOLDR_TOOLCHAIN_ORIGIN",
+    "SOLDR_SYSLIB_ASSET_ORIGIN",
 ];
 
 static MANIFEST_ENV_LOCK: Mutex<()> = Mutex::new(());

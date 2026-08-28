@@ -71,7 +71,7 @@ use super::catalogue_model::{
 use super::catalogue_transport::{
     cache_busted_url, materialize_catalogue_entry, verify_catalogue_asset_sha256,
 };
-use crate::core::SoldrError;
+use crate::core::{SoldrError, SoldrPaths};
 
 /// soldr#988 Phase 2 — default origin of the v1 catalogue document
 /// published by `zackees/soldr-toolchain`. The full URL we fetch is
@@ -123,6 +123,7 @@ pub const MANIFEST_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 /// SHA-256 pin. This is used for small metadata objects (for example the
 /// Rust nightly-version map) that are published beside the catalogue.
 pub async fn fetch_verified_catalogue_asset(
+    paths: &SoldrPaths,
     owner: &str,
     repo: &str,
     tag: &str,
@@ -138,7 +139,7 @@ pub async fn fetch_verified_catalogue_asset(
                 "catalogue has no asset row for {owner}/{repo} {tag}/{asset}"
             ))
         })?;
-    let downloaded = materialize_catalogue_entry(&entry).await?;
+    let downloaded = materialize_catalogue_entry(paths, &entry).await?;
     if verify_catalogue_asset_sha256(&entry, downloaded.sha256()).is_ok() {
         return std::fs::read(downloaded.path()).map_err(SoldrError::from);
     }
@@ -175,7 +176,7 @@ pub async fn fetch_verified_catalogue_asset(
             "refreshed catalogue has no asset row for {owner}/{repo} {tag}/{asset}"
         ))
     })?;
-    let refreshed = materialize_catalogue_entry(refreshed_entry).await?;
+    let refreshed = materialize_catalogue_entry(paths, refreshed_entry).await?;
     verify_catalogue_asset_sha256(refreshed_entry, refreshed.sha256())?;
     std::fs::read(refreshed.path()).map_err(SoldrError::from)
 }

@@ -10,7 +10,7 @@
 
 use std::time::Duration;
 
-use crate::manifest_lookup_env::{lock, EnvScope};
+use crate::common::manifest_env::{lock, EnvScope};
 
 #[test]
 fn manifest_disable_env_var_bypasses_lookup() {

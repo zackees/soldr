@@ -139,7 +139,7 @@ pub async fn ensure_xwin_cache(
         "soldr: fetching xwin-cache v{MANAGED_XWIN_CACHE_VERSION} for {target_triple} from {resolved_url}..."
     );
 
-    let downloaded = manifest_lookup::materialize_catalogue_entry(&entry).await?;
+    let downloaded = manifest_lookup::materialize_catalogue_entry(paths, &entry).await?;
 
     let digest = downloaded.sha256();
     if digest != expected_sha256 {

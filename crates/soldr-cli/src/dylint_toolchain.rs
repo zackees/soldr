@@ -274,7 +274,9 @@ async fn resolve_plan_inner(
         // environment that merely happened to already know its identity.
         return Ok(plan.with_provenance(requested.provenance));
     }
+    let paths = crate::core::SoldrPaths::new()?;
     let bytes = crate::fetch::fetch_verified_catalogue_asset(
+        &paths,
         "zackees",
         "soldr-toolchain",
         "assets",

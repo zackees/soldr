@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use crate::manifest_lookup_env::{lock, EnvScope};
+use crate::common::manifest_env::{lock, EnvScope};
 use soldr_cli::fetch::manifest_lookup::get_or_fetch;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
