@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import subprocess
 from pathlib import Path
+from typing import Protocol
 
 import pytest
 
@@ -15,6 +16,12 @@ def load_module():
 
 
 perf_local = load_module()
+
+
+class StepLike(Protocol):
+    """Minimal command shape observed by the Bosn handoff test doubles."""
+
+    argv: list[str]
 
 
 def test_docker_context_is_small_because_image_copies_no_source() -> None:
@@ -98,7 +105,7 @@ def test_bosn_workspace_test_cleans_up_source_route_after_validation_failure(
     )
     calls: list[list[str]] = []
 
-    def fake_run(step: object, *, repo: Path) -> None:
+    def fake_run(step: StepLike, *, repo: Path) -> None:
         argv = step.argv
         calls.append(argv)
         if argv == plan[4].argv:
@@ -127,7 +134,7 @@ def test_bosn_workspace_test_cleans_up_source_route_after_start_failure(
     )
     calls: list[list[str]] = []
 
-    def fake_run(step: object, *, repo: Path) -> None:
+    def fake_run(step: StepLike, *, repo: Path) -> None:
         argv = step.argv
         calls.append(argv)
         if argv == plan[3].argv:
@@ -156,7 +163,7 @@ def test_bosn_workspace_test_preserves_validation_error_when_cleanup_fails(
     )
     calls: list[list[str]] = []
 
-    def fake_run(step: object, *, repo: Path) -> None:
+    def fake_run(step: StepLike, *, repo: Path) -> None:
         argv = step.argv
         calls.append(argv)
         if argv in (plan[4].argv, plan[5].argv):
@@ -186,7 +193,7 @@ def test_bosn_workspace_test_preserves_validation_error_when_cleanup_launch_fail
     )
     calls: list[list[str]] = []
 
-    def fake_run(step: object, *, repo: Path) -> None:
+    def fake_run(step: StepLike, *, repo: Path) -> None:
         argv = step.argv
         calls.append(argv)
         if argv == plan[4].argv:
