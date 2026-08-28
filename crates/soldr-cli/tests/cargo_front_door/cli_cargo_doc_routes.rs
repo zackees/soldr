@@ -26,8 +26,13 @@ fn fake_cargo_doc_script(log_path: &Path, source_path: &Path, rustdoc: &Path) ->
             "@echo off\n\
              set \"rustdoc=%RUSTDOC%\"\n\
              if not defined RUSTDOC set \"rustdoc={2}\"\n\
+             if \"%~1\"==\"metadata\" (\n\
+               echo {{}}\n\
+               exit /b 0\n\
+             )\n\
              echo cargo %* wrapper=%RUSTC_WRAPPER% rustc=%RUSTC% rustdoc=%rustdoc% env_rustdoc=%RUSTDOC% cache=%SOLDR_CACHE_ENABLED%>>\"{0}\"\n\
              if \"%~1\"==\"doc\" (\n\
+               echo cargo-doc phase=route-ready>>\"{0}\"\n\
                echo cargo-doc phase=before-wrapper>>\"{0}\"\n\
                if /I \"%SOLDR_TEST_CARGO_DOC_HOLD_PHASE%\"==\"before-wrapper\" (\n\
                  echo cargo-doc phase=before-wrapper hold-descendant=spawned>>\"{0}\"\n\
@@ -75,6 +80,10 @@ fn fake_cargo_doc_script(log_path: &Path, source_path: &Path, rustdoc: &Path) ->
         format!(
             "#!/bin/sh\n\
              rustdoc=\"${{RUSTDOC:-{2}}}\"\n\
+             if [ \"$1\" = \"metadata\" ]; then\n\
+               echo '{{}}'\n\
+               exit 0\n\
+             fi\n\
              echo \"cargo $* wrapper=${{RUSTC_WRAPPER:-}} rustc=${{RUSTC:-}} rustdoc=$rustdoc env_rustdoc=${{RUSTDOC:-}} cache=${{SOLDR_CACHE_ENABLED:-}}\" >> \"{0}\"\n\
              doc_phase() {{\n\
                echo \"cargo-doc phase=$1\" >> \"{0}\"\n\
@@ -98,6 +107,7 @@ fn fake_cargo_doc_script(log_path: &Path, source_path: &Path, rustdoc: &Path) ->
                doc_phase after-rustdoc\n\
              }}\n\
              if [ \"$1\" = \"doc\" ]; then\n\
+               doc_phase route-ready\n\
                run_doc_compile doc_demo\n\
                exit $?\n\
              fi\n\
@@ -146,11 +156,21 @@ fn write_rustdoc_source(cache_root: &Path) -> PathBuf {
     source_path
 }
 // The old `.output()` call delegated every route's liveness to Nextest's
-// generic 120-second deadline. Keep a separate startup observation window for
-// the real Soldr front door, then give every fixture phase its own short,
-// named deadline once fake Cargo has accepted the route.
-const CARGO_DOC_ROUTE_STARTUP_BUDGET: Duration = Duration::from_secs(30);
-const CARGO_DOC_ROUTE_NORMAL_PHASE_BUDGET: Duration = Duration::from_secs(15);
+// generic 120-second deadline. The fake Cargo route-ready line is the stable
+// hand-off from front-door startup to fixture work; each later fixture state
+// has its own budget, while the injected-hold budget begins only after its
+// child marker proves the descendant exists.
+// Before fake Cargo can accept `doc`, the real front door may contend with
+// parallel test routes while it resolves toolchain/bootstrap state. This is
+// deliberately the only cold-start allowance; every post-ready route stage
+// below remains independently bounded.
+const CARGO_DOC_ROUTE_STARTUP_BUDGET: Duration = Duration::from_secs(90);
+const CARGO_DOC_ROUTE_READY_BUDGET: Duration = Duration::from_secs(15);
+// The wrapper phase can cold-start a nested Soldr/daemon generation before
+// fake Cargo can observe `after-wrapper`; it is intentionally distinct from
+// both the front-door startup and the injected descendant's 2-second hold.
+const CARGO_DOC_ROUTE_WRAPPER_BUDGET: Duration = Duration::from_secs(60);
+const CARGO_DOC_ROUTE_RUSTDOC_BUDGET: Duration = Duration::from_secs(15);
 const CARGO_DOC_ROUTE_HOLD_PHASE_BUDGET: Duration = Duration::from_secs(2);
 const CARGO_DOC_ROUTE_REAP_BUDGET: Duration = Duration::from_secs(5);
 const CARGO_DOC_ROUTE_POLL: Duration = Duration::from_millis(25);
@@ -163,8 +183,9 @@ struct CargoDocRouteOutput {
 }
 
 struct CargoDocRouteTimeout {
+    phase: CargoDocRoutePhase,
     phase_markers: Vec<String>,
-    elapsed: Duration,
+    phase_elapsed: Duration,
     diagnostics: String,
 }
 
@@ -182,7 +203,42 @@ struct CargoDocRoute<'a> {
     rustc: &'a Path,
     rustup: &'a Path,
     hold_phase: Option<&'a str>,
-    phase_budget: Duration,
+}
+
+struct CargoDocRouteProcess<'a> {
+    label: &'a str,
+    pid: u32,
+    log_path: &'a Path,
+}
+
+struct CargoDocRouteTimeoutContext<'a> {
+    process: CargoDocRouteProcess<'a>,
+    started: Instant,
+    phase_started: Instant,
+    phase: CargoDocRoutePhase,
+    stdout: &'a Receiver<std::io::Result<Vec<u8>>>,
+    stderr: &'a Receiver<std::io::Result<Vec<u8>>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CargoDocRoutePhase {
+    Startup,
+    RouteReady,
+    Wrapper,
+    Rustdoc,
+    InjectedHoldReady,
+}
+
+impl CargoDocRoutePhase {
+    fn budget(self) -> Duration {
+        match self {
+            Self::Startup => CARGO_DOC_ROUTE_STARTUP_BUDGET,
+            Self::RouteReady => CARGO_DOC_ROUTE_READY_BUDGET,
+            Self::Wrapper => CARGO_DOC_ROUTE_WRAPPER_BUDGET,
+            Self::Rustdoc => CARGO_DOC_ROUTE_RUSTDOC_BUDGET,
+            Self::InjectedHoldReady => CARGO_DOC_ROUTE_HOLD_PHASE_BUDGET,
+        }
+    }
 }
 
 fn spawn_route_pipe_drain<R>(mut pipe: R) -> Receiver<std::io::Result<Vec<u8>>>
@@ -224,6 +280,52 @@ fn cargo_doc_phase_markers(log: &str) -> Vec<String> {
         .collect()
 }
 
+fn cargo_doc_route_phase(
+    markers: &[String],
+    hold_phase: Option<&str>,
+) -> Result<CargoDocRoutePhase, String> {
+    let has_ready = markers.iter().any(|marker| marker == "route-ready");
+    let has_wrapper = markers.iter().any(|marker| {
+        marker == "before-wrapper"
+            || marker == "after-wrapper"
+            || marker.starts_with("before-wrapper ")
+    });
+    let has_rustdoc = markers.iter().any(|marker| {
+        marker == "before-rustdoc"
+            || marker == "after-rustdoc"
+            || marker.starts_with("before-rustdoc ")
+    });
+
+    if (has_wrapper || has_rustdoc) && !has_ready {
+        return Err(format!(
+            "fixture advanced to wrapper/rustdoc without the required route-ready marker: {markers:?}"
+        ));
+    }
+    if has_rustdoc && !has_wrapper {
+        return Err(format!(
+            "fixture advanced to rustdoc without a wrapper transition: {markers:?}"
+        ));
+    }
+    if let Some(hold_phase) = hold_phase {
+        let hold_marker = format!("{hold_phase} hold-descendant=");
+        if markers
+            .iter()
+            .any(|marker| marker.starts_with(&hold_marker))
+        {
+            return Ok(CargoDocRoutePhase::InjectedHoldReady);
+        }
+    }
+    if has_rustdoc {
+        Ok(CargoDocRoutePhase::Rustdoc)
+    } else if has_wrapper {
+        Ok(CargoDocRoutePhase::Wrapper)
+    } else if has_ready {
+        Ok(CargoDocRoutePhase::RouteReady)
+    } else {
+        Ok(CargoDocRoutePhase::Startup)
+    }
+}
+
 fn diagnostic_tail(text: &str) -> String {
     let mut lines: Vec<_> = text.lines().rev().take(12).collect();
     lines.reverse();
@@ -231,17 +333,28 @@ fn diagnostic_tail(text: &str) -> String {
 }
 
 fn route_diagnostics(
-    label: &str,
-    pid: u32,
-    elapsed: Duration,
+    context: &CargoDocRouteTimeoutContext<'_>,
     phase_markers: &[String],
     stdout: &[u8],
     stderr: &[u8],
-    log_path: &Path,
 ) -> String {
+    let CargoDocRouteTimeoutContext {
+        process:
+            CargoDocRouteProcess {
+                label,
+                pid,
+                log_path,
+            },
+        started,
+        phase_started,
+        phase,
+        ..
+    } = context;
     let log = read_route_log(log_path);
     format!(
-        "route={label} child_pid={pid} elapsed={elapsed:?} phase_markers={phase_markers:?}\nstdout_tail:\n{}\nstderr_tail:\n{}\nfixture_log_tail:\n{}",
+        "route={label} child_pid={pid} elapsed={:?} phase_elapsed={:?} expired_phase={phase:?} phase_markers={phase_markers:?}\nstdout_tail:\n{}\nstderr_tail:\n{}\nfixture_log_tail:\n{}",
+        started.elapsed(),
+        phase_started.elapsed(),
         diagnostic_tail(&String::from_utf8_lossy(stdout)),
         diagnostic_tail(&String::from_utf8_lossy(stderr)),
         diagnostic_tail(&log),
@@ -272,6 +385,42 @@ fn reap_route_child(
     }
 }
 
+fn timeout_cargo_doc_route(
+    child: &mut std::process::Child,
+    context: CargoDocRouteTimeoutContext<'_>,
+) -> Result<CargoDocRouteResult, String> {
+    use soldr_platform::process::terminate::{terminate_tree, TreeKill};
+
+    let label = context.process.label;
+    let pid = context.process.pid;
+    let log_path = context.process.log_path;
+    let phase_started = context.phase_started;
+    let phase = context.phase;
+    let stdout = context.stdout;
+    let stderr = context.stderr;
+
+    let tree_kill = terminate_tree(child).map_err(|error| {
+        format!("route {label} child pid {pid} tree termination failed: {error}")
+    })?;
+    let status = reap_route_child(child, label, pid)?;
+    let drain_deadline = Instant::now() + CARGO_DOC_ROUTE_REAP_BUDGET;
+    let stdout = receive_route_pipe(stdout, drain_deadline, label, pid, "stdout")?;
+    let stderr = receive_route_pipe(stderr, drain_deadline, label, pid, "stderr")?;
+    let phase_markers = cargo_doc_phase_markers(&read_route_log(log_path));
+    let diagnostics = route_diagnostics(&context, &phase_markers, &stdout, &stderr);
+    if tree_kill != TreeKill::TreeKilled {
+        return Err(format!(
+            "route {label} timed out in {phase:?} but tree cleanup was not verified ({tree_kill:?}); child status {status:?}\n{diagnostics}"
+        ));
+    }
+    Ok(CargoDocRouteResult::TimedOut(CargoDocRouteTimeout {
+        phase,
+        phase_markers,
+        phase_elapsed: phase_started.elapsed(),
+        diagnostics,
+    }))
+}
+
 fn run_cargo_doc_route(route: CargoDocRoute<'_>) -> Result<CargoDocRouteResult, String> {
     let CargoDocRoute {
         label,
@@ -282,7 +431,6 @@ fn run_cargo_doc_route(route: CargoDocRoute<'_>) -> Result<CargoDocRouteResult, 
         rustc,
         rustup,
         hold_phase,
-        phase_budget,
     } = route;
     let mut command = isolated_soldr_command();
     command
@@ -322,47 +470,59 @@ fn run_cargo_doc_route(route: CargoDocRoute<'_>) -> Result<CargoDocRouteResult, 
     let stdout = spawn_route_pipe_drain(child.stdout.take().expect("piped route stdout"));
     let stderr = spawn_route_pipe_drain(child.stderr.take().expect("piped route stderr"));
     let started = Instant::now();
-    let startup_deadline = started + CARGO_DOC_ROUTE_STARTUP_BUDGET;
-    let mut phase_deadline = None;
-    let mut phase_count = 0;
-
+    let mut phase = CargoDocRoutePhase::Startup;
+    let mut phase_started = started;
+    let mut phase_deadline = phase_started + phase.budget();
     loop {
         let markers = cargo_doc_phase_markers(&read_route_log(log_path));
-        if markers.len() > phase_count {
-            phase_count = markers.len();
-            phase_deadline = Some(Instant::now() + phase_budget);
-        }
-        let deadline = phase_deadline.unwrap_or(startup_deadline);
-        if Instant::now() >= deadline {
-            use soldr_platform::process::terminate::{terminate_tree, TreeKill};
-
-            let tree_kill = terminate_tree(&mut child).map_err(|error| {
-                format!("route {label} child pid {pid} tree termination failed: {error}")
-            })?;
-            let status = reap_route_child(&mut child, label, pid)?;
-            let drain_deadline = Instant::now() + CARGO_DOC_ROUTE_REAP_BUDGET;
-            let stdout = receive_route_pipe(&stdout, drain_deadline, label, pid, "stdout")?;
-            let stderr = receive_route_pipe(&stderr, drain_deadline, label, pid, "stderr")?;
-            let phase_markers = cargo_doc_phase_markers(&read_route_log(log_path));
-            let diagnostics = route_diagnostics(
-                label,
-                pid,
-                started.elapsed(),
-                &phase_markers,
-                &stdout,
-                &stderr,
-                log_path,
-            );
-            if tree_kill != TreeKill::TreeKilled {
+        let observed_phase = match cargo_doc_route_phase(&markers, hold_phase) {
+            Ok(phase) => phase,
+            Err(error) => {
+                let timed_out = timeout_cargo_doc_route(
+                    &mut child,
+                    CargoDocRouteTimeoutContext {
+                        process: CargoDocRouteProcess {
+                            label,
+                            pid,
+                            log_path,
+                        },
+                        started,
+                        phase_started,
+                        phase,
+                        stdout: &stdout,
+                        stderr: &stderr,
+                    },
+                )?;
+                let CargoDocRouteResult::TimedOut(timeout) = timed_out else {
+                    unreachable!("timeout cleanup always returns TimedOut");
+                };
                 return Err(format!(
-                    "route {label} timed out but tree cleanup was not verified ({tree_kill:?}); child status {status:?}\n{diagnostics}"
+                    "route {label} child pid {pid} had an invalid fixture phase transition: {error}\n{}",
+                    timeout.diagnostics
                 ));
             }
-            return Ok(CargoDocRouteResult::TimedOut(CargoDocRouteTimeout {
-                phase_markers,
-                elapsed: started.elapsed(),
-                diagnostics,
-            }));
+        };
+        if observed_phase != phase {
+            phase = observed_phase;
+            phase_started = Instant::now();
+            phase_deadline = phase_started + phase.budget();
+        }
+        if Instant::now() >= phase_deadline {
+            return timeout_cargo_doc_route(
+                &mut child,
+                CargoDocRouteTimeoutContext {
+                    process: CargoDocRouteProcess {
+                        label,
+                        pid,
+                        log_path,
+                    },
+                    started,
+                    phase_started,
+                    phase,
+                    stdout: &stdout,
+                    stderr: &stderr,
+                },
+            );
         }
 
         match child.try_wait() {
@@ -402,6 +562,60 @@ fn assert_cargo_doc_phase_order(label: &str, markers: &[String], diagnostics: &s
         };
         cursor += position + 1;
     }
+}
+
+#[test]
+fn cargo_doc_route_phase_rejects_wrapper_without_route_ready() {
+    let markers = vec!["before-wrapper".to_string()];
+    let error = cargo_doc_route_phase(&markers, None)
+        .expect_err("wrapper work without route-ready must remain a startup failure");
+    assert!(
+        error.contains("route-ready"),
+        "missing ready diagnostic should name the phase boundary: {error}"
+    );
+}
+
+#[test]
+fn cargo_doc_route_phase_tracks_wrapper_then_rustdoc() {
+    let ready = vec!["route-ready".to_string()];
+    assert_eq!(
+        cargo_doc_route_phase(&ready, None).expect("route-ready state"),
+        CargoDocRoutePhase::RouteReady
+    );
+    let wrapper = vec!["route-ready".to_string(), "before-wrapper".to_string()];
+    assert_eq!(
+        cargo_doc_route_phase(&wrapper, None).expect("wrapper state"),
+        CargoDocRoutePhase::Wrapper
+    );
+    let rustdoc = vec![
+        "route-ready".to_string(),
+        "before-wrapper".to_string(),
+        "after-wrapper".to_string(),
+        "before-rustdoc".to_string(),
+    ];
+    assert_eq!(
+        cargo_doc_route_phase(&rustdoc, None).expect("rustdoc state"),
+        CargoDocRoutePhase::Rustdoc
+    );
+}
+
+#[test]
+fn cargo_doc_route_hold_budget_waits_for_matching_descendant_marker() {
+    let before_marker = vec!["route-ready".to_string(), "before-wrapper".to_string()];
+    assert_eq!(
+        cargo_doc_route_phase(&before_marker, Some("before-wrapper"))
+            .expect("wrapper state before descendant"),
+        CargoDocRoutePhase::Wrapper
+    );
+    let ready = vec![
+        "route-ready".to_string(),
+        "before-wrapper".to_string(),
+        "before-wrapper hold-descendant=2718".to_string(),
+    ];
+    let phase = cargo_doc_route_phase(&ready, Some("before-wrapper"))
+        .expect("matching descendant marker starts hold phase");
+    assert_eq!(phase, CargoDocRoutePhase::InjectedHoldReady);
+    assert_eq!(phase.budget(), CARGO_DOC_ROUTE_HOLD_PHASE_BUDGET);
 }
 
 fn expected_link_shim_path(dir: &Path, tool: &str) -> PathBuf {
@@ -478,7 +692,6 @@ fn cargo_doc_keeps_rustc_wrapped_but_rustdoc_direct() {
             rustc: &rustc,
             rustup: &rustup,
             hold_phase: None,
-            phase_budget: CARGO_DOC_ROUTE_NORMAL_PHASE_BUDGET,
         })
         .unwrap_or_else(|error| panic!("failed to run soldr doc route {label}: {error}"));
         let CargoDocRouteResult::Completed(output) = result else {
@@ -527,12 +740,7 @@ fn cargo_doc_keeps_rustc_wrapped_but_rustdoc_direct() {
 /// the process tree, reaps the root, and both inherited pipes reach EOF; the
 /// background sleep/ping is therefore a concrete no-surviving-descendant
 /// proof rather than merely a short wall-clock assertion.
-fn assert_cargo_doc_held_phase(
-    label: &str,
-    args: &[&str],
-    hold_phase: &str,
-    phase_budget: Duration,
-) {
+fn assert_cargo_doc_held_phase(label: &str, args: &[&str], hold_phase: &str) {
     let cache_root = unique_temp_dir(&format!("cargo-doc-held-phase-{label}"));
     let log_path = cache_root.join("tool.log");
     let source_path = write_rustdoc_source(&cache_root);
@@ -548,13 +756,18 @@ fn assert_cargo_doc_held_phase(
         rustc: &rustc,
         rustup: &rustup,
         hold_phase: Some(hold_phase),
-        phase_budget,
     })
     .unwrap_or_else(|error| panic!("held cargo-doc route {label} was not cleaned up: {error}"));
     let CargoDocRouteResult::TimedOut(timeout) = result else {
         panic!("held cargo-doc route {label} unexpectedly completed");
     };
 
+    assert_eq!(
+        timeout.phase,
+        CargoDocRoutePhase::InjectedHoldReady,
+        "route {label} should start its short deadline only after the held child marker\n{}",
+        timeout.diagnostics
+    );
     assert!(
         timeout
             .phase_markers
@@ -569,35 +782,24 @@ fn assert_cargo_doc_held_phase(
         timeout.diagnostics
     );
     assert!(
-        timeout.elapsed
-            < CARGO_DOC_ROUTE_STARTUP_BUDGET
-                + phase_budget
+        timeout.phase_elapsed
+            < CARGO_DOC_ROUTE_HOLD_PHASE_BUDGET
                 + CARGO_DOC_ROUTE_REAP_BUDGET
                 + Duration::from_secs(5),
-        "route {label} exceeded its startup + held-phase + cleanup budget ({:?})\n{}",
-        timeout.elapsed,
+        "route {label} exceeded its hold-marker + cleanup budget ({:?})\n{}",
+        timeout.phase_elapsed,
         timeout.diagnostics
     );
 }
 
 #[test]
 fn cargo_doc_route_deadline_kills_wrapper_hold_tree() {
-    assert_cargo_doc_held_phase(
-        "cargo-doc",
-        &["cargo", "doc"],
-        "before-wrapper",
-        CARGO_DOC_ROUTE_HOLD_PHASE_BUDGET,
-    );
+    assert_cargo_doc_held_phase("cargo-doc", &["cargo", "doc"], "before-wrapper");
 }
 
 #[test]
 fn bare_doc_route_deadline_kills_rustdoc_hold_tree() {
-    assert_cargo_doc_held_phase(
-        "bare-doc",
-        &["doc"],
-        "before-rustdoc",
-        CARGO_DOC_ROUTE_NORMAL_PHASE_BUDGET,
-    );
+    assert_cargo_doc_held_phase("bare-doc", &["doc"], "before-rustdoc");
 }
 
 #[test]
