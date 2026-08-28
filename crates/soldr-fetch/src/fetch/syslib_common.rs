@@ -90,9 +90,9 @@ pub async fn ensure_syslib_bundle(
         return Ok(sysroot);
     }
 
-    // Resolve sha256 from the toolchain catalogue. The catalogue is
-    // process-cached; the first call inside soldr's run fetches the
-    // document, subsequent ones hit the OnceLock.
+    // Resolve sha256 from the toolchain catalogue. The catalogue is cached
+    // per resolved configuration (soldr#2951); the first call under a given
+    // configuration fetches the document, subsequent ones hit that entry.
     let source_path = format!("{lib}/{version}/{slug}/bundle.tar.zst");
     let entry = match catalogue_entry_for_source_path(&source_path, &url).await {
         Some(entry) => entry,

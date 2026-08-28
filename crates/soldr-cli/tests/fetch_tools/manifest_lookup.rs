@@ -1,10 +1,11 @@
 //! Integration tests for `fetch::manifest_lookup` (the pure-parser
 //! lookups and the sha256-pin invariant). The env-var-driven contracts
-//! live in their own binaries — `manifest_lookup_disable.rs` (for
+//! live in sibling modules — `manifest_lookup_disable.rs` (for
 //! `SOLDR_MANIFEST_DISABLE`) and `manifest_lookup_url_override.rs`
-//! (for `SOLDR_MANIFEST_URL`) — because the manifest module caches its
-//! result in a process-wide `OnceLock` and cross-test env-var ordering
-//! would otherwise race.
+//! (for the catalogue URL overrides). Those mutate process environment
+//! and serialise on `common::catalogue_env::CatalogueEnvGuard`;
+//! nothing in *this* module reads the environment or the process-wide
+//! catalogue cache, so it needs no barrier.
 //!
 //! Covers the #856 spec bullets:
 //!
@@ -56,10 +57,11 @@ async fn spawn_one_shot_payload_server(body: Vec<u8>) -> String {
     url
 }
 
-/// Build a fresh single-threaded tokio runtime for one test. Per-test
-/// runtimes keep the `OnceLock` cache inside `manifest_lookup` honest
-/// — each integration test gets its own test binary (cargo's default),
-/// so the cache is fresh for the one HTTP round trip we exercise.
+/// Build a fresh single-threaded tokio runtime for one test.
+///
+/// Nothing here touches the process-wide catalogue cache — the tests below
+/// drive the pure `from_json` / `lookup` APIs and a direct download — so the
+/// runtime is per-test only to keep each test's failure self-contained.
 fn rt() -> Runtime {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
