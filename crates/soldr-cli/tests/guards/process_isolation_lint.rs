@@ -100,7 +100,7 @@ fn integration_tests_do_not_claim_per_file_process_isolation() {
     let root = common::workspace_root().join("crates/soldr-cli/tests");
     if !root.is_dir() {
         eprintln!(
-            "process_isolation_lint: skipping â€” integration-test sources absent at {}",
+            "process_isolation_lint: skipping - integration-test sources absent at {}",
             root.display()
         );
         return;
