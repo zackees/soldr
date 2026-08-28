@@ -36,7 +36,7 @@ pub(crate) async fn freeze(
             root.join("rust-toolchain.toml").display()
         ))
     })?;
-    let nightly = resolve_pinned_dylint_plan(&root, &host).await?;
+    let nightly = resolve_dylint_plan(&root, &host).await?;
     let target_root = cargo_target_root(&root)?;
     let stable_target = target_root.join(&host);
     let config = cargo_config_paths(&root);
@@ -487,23 +487,32 @@ fn wrapper_identity(cache_enabled: bool) -> String {
 /// soldr#2945: the per-lint `rust-toolchain.toml` loop this used to run —
 /// keyed on the hard-coded `DYLINTS` name list — is now the shared, glob-aware
 /// reader in `crate::dylint_libraries`, which reads
-/// `workspace.metadata.dylint.libraries` and reports disagreeing pins itself.
+/// `workspace.metadata.dylint.libraries`, distinguishes no libraries from
+/// all-inherit, and reports disagreeing pins itself.
 /// `DYLINTS` survives only because the stage graph above still names one build
 /// and one UI-test stage per lint. Only the env-override refusal below is
 /// ci-test-specific.
-async fn resolve_pinned_dylint_plan(
+async fn resolve_dylint_plan(
     root: &Path,
     host: &str,
 ) -> Result<crate::dylint_toolchain::DylintToolchainPlan, SoldrError> {
-    let Some(libraries) = crate::dylint_libraries::pinned_channel(root)? else {
-        return Err(SoldrError::Other(format!(
-            "soldr ci-test: {} declares no Dylint libraries under \
-             workspace.metadata.dylint.libraries",
-            root.join("Cargo.toml").display()
-        )));
+    let (channel, libraries) = match crate::dylint_libraries::toolchain_state(root)? {
+        crate::dylint_libraries::LibraryToolchainState::NoLibraries => {
+            return Err(SoldrError::Other(format!(
+                "soldr ci-test: {} declares no Dylint libraries under \
+                 workspace.metadata.dylint.libraries",
+                root.join("Cargo.toml").display()
+            )));
+        }
+        crate::dylint_libraries::LibraryToolchainState::InheritRoot { libraries } => {
+            let channel = crate::dylint_libraries::inherited_root_channel(root, &libraries)?;
+            (channel, libraries)
+        }
+        crate::dylint_libraries::LibraryToolchainState::Pinned { channel, libraries } => {
+            (channel, libraries)
+        }
     };
-    let library_count = libraries.libraries.len();
-    let pinned = libraries.channel;
+    let library_count = libraries.len();
     // ci-test is deliberately stricter than the `soldr dylint` front door.
     // There, an explicit `+toolchain` or SOLDR_DYLINT_TOOLCHAIN is a developer
     // poking at one lint and is honoured. Here the plan is a frozen,
@@ -519,16 +528,16 @@ async fn resolve_pinned_dylint_plan(
         let Some(override_channel) = non_empty_env(key) else {
             continue;
         };
-        if canonical_channel(&override_channel, host) != canonical_channel(&pinned, host) {
+        if canonical_channel(&override_channel, host) != canonical_channel(&channel, host) {
             return Err(SoldrError::Other(format!(
-                "soldr ci-test: configured Dylint toolchain {override_channel} ({key}) conflicts with the {library_count} lint manifests pinned to {pinned}"
+                "soldr ci-test: configured Dylint toolchain {override_channel} ({key}) conflicts with the {library_count} lint libraries resolved to {channel}"
             )));
         }
     }
-    let plan = crate::dylint_toolchain::resolve_plan(Some(&pinned), root).await?;
-    if canonical_channel(&plan.channel, host) != canonical_channel(&pinned, host) {
+    let plan = crate::dylint_toolchain::resolve_plan(Some(&channel), root).await?;
+    if canonical_channel(&plan.channel, host) != canonical_channel(&channel, host) {
         return Err(SoldrError::Other(format!(
-            "soldr ci-test: configured Dylint toolchain {} conflicts with the {library_count} lint manifests pinned to {pinned}",
+            "soldr ci-test: configured Dylint toolchain {} conflicts with the {library_count} lint libraries resolved to {channel}",
             plan.channel
         )));
     }

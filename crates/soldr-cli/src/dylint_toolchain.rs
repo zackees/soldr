@@ -19,6 +19,7 @@ use crate::core::{
     command_output_with_timeout, suppress_windows_console_window, SoldrError, SoldrPaths,
     TargetTriple,
 };
+use crate::dylint_libraries::is_dated_nightly;
 use crate::{apply_implicit_toolchain_homes, resolve_toolchain_binary_for_channel, rustup_binary};
 
 pub(crate) const TOOLCHAIN_ENV_VAR: &str = "SOLDR_DYLINT_TOOLCHAIN";
@@ -660,17 +661,20 @@ struct RequestedChannel {
 /// 1. an explicit `+toolchain` / `--toolchain` argument,
 /// 2. the environment (`SOLDR_DYLINT_TOOLCHAIN`, the
 ///    `SOLDR_DYLINT_CONFIGURED_*` identity triple, `RUSTUP_TOOLCHAIN`),
-/// 3. **the workspace's Dylint lint libraries**,
-/// 4. the workspace root `rust-toolchain.toml`,
+/// 3. **the workspace's Dylint lint libraries** (their shared pin, or a dated
+///    nightly deliberately inherited from the root),
+/// 4. the workspace root `rust-toolchain.toml` when no lint libraries exist,
 /// 5. the version -> nightly map.
 ///
 /// Tier 3 is the fix. Dylint builds one driver per *library* toolchain, so
 /// when a workspace has lint libraries they are the authority — deriving a
 /// nightly from the root's stable channel (tiers 4 + 5) produced a channel for
 /// which no driver had ever been published, and the run died at the driver
-/// gate. Tiers 4 and 5 survive as the answer for a workspace with no lint
-/// libraries to read, which is the only situation where a derivation is the
-/// best available guess.
+/// gate. Libraries that all inherit may use a dated-nightly root, but a stable,
+/// undated, or missing root is rejected before map/catalogue access because no
+/// driver can be published for it. Tiers 4 and 5 otherwise survive only for a
+/// workspace with no lint libraries to read, where derivation remains the best
+/// available guess.
 fn requested_toolchain_channel(
     requested_channel: Option<&str>,
     workspace_root: &Path,
@@ -696,11 +700,23 @@ fn requested_toolchain_channel(
             });
         }
     }
-    if let Some(pinned) = crate::dylint_libraries::pinned_channel(workspace_root)? {
-        return Ok(RequestedChannel {
-            channel: Some(pinned.channel),
-            provenance: ChannelProvenance::LintLibraries,
-        });
+    match crate::dylint_libraries::toolchain_state(workspace_root)? {
+        crate::dylint_libraries::LibraryToolchainState::Pinned { channel, .. } => {
+            return Ok(RequestedChannel {
+                channel: Some(channel),
+                provenance: ChannelProvenance::LintLibraries,
+            });
+        }
+        crate::dylint_libraries::LibraryToolchainState::InheritRoot { libraries } => {
+            return Ok(RequestedChannel {
+                channel: Some(crate::dylint_libraries::inherited_root_channel(
+                    workspace_root,
+                    &libraries,
+                )?),
+                provenance: ChannelProvenance::RootManifest,
+            });
+        }
+        crate::dylint_libraries::LibraryToolchainState::NoLibraries => {}
     }
     let manifest = crate::core::read_rust_toolchain_manifest(workspace_root)?;
     Ok(match manifest.channel {
@@ -713,20 +729,6 @@ fn requested_toolchain_channel(
             provenance: ChannelProvenance::VersionMap,
         },
     })
-}
-
-fn is_dated_nightly(channel: &str) -> bool {
-    let Some(value) = channel.strip_prefix("nightly-") else {
-        return false;
-    };
-    let Some(date) = value.get(..10) else {
-        return false;
-    };
-    let valid_date_shape = date.as_bytes().iter().enumerate().all(|(index, byte)| {
-        matches!(index, 4 | 7) && *byte == b'-' || !matches!(index, 4 | 7) && byte.is_ascii_digit()
-    });
-    let suffix = &value[10..];
-    valid_date_shape && (suffix.is_empty() || suffix.starts_with('-') && suffix.len() > 1)
 }
 
 fn select_explicit_from_map(

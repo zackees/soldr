@@ -102,8 +102,8 @@ def test_ci_test_reads_and_requires_one_exact_dylint_nightly():
     assert 'ci-test --target "${{ inputs.target }}"' in host_workflow
     assert 'join("rust-toolchain.toml")' in libraries
     assert "conflicting Dylint library toolchain pins" in libraries
-    assert "dylint_libraries::pinned_channel" in plan
-    assert "lint manifests pinned to" in plan
+    assert "dylint_libraries::toolchain_state" in plan
+    assert "lint libraries resolved to" in plan
 
 
 def test_ci_test_dylint_domains_share_nightly_keyed_target_directories():

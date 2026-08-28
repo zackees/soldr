@@ -86,6 +86,41 @@ fn conflicting_custom_lint_toolchains_are_actionable() {
 }
 
 #[test]
+fn inherited_custom_lint_toolchain_requires_a_dated_nightly_root() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    std::fs::create_dir_all(root.join("lint-a")).unwrap();
+    std::fs::write(
+        root.join(concat!("Car", "go.toml")),
+        "[workspace]\nmembers=[]\n[workspace.metadata.dylint]\nlibraries=[{path='lint-a'}]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("rust-toolchain.toml"),
+        "[toolchain]\nchannel='1.95.0'\n",
+    )
+    .unwrap();
+
+    let error = configured_library_toolchain(root).unwrap_err().to_string();
+    assert!(error.contains("lint-a"), "{error}");
+    assert!(error.contains("1.95.0"), "{error}");
+    assert!(
+        error.contains("published only for dated nightly"),
+        "{error}"
+    );
+
+    std::fs::write(
+        root.join("rust-toolchain.toml"),
+        "[toolchain]\nchannel='nightly-2026-05-28'\n",
+    )
+    .unwrap();
+    assert_eq!(
+        configured_library_toolchain(root).unwrap().as_deref(),
+        Some("nightly-2026-05-28")
+    );
+}
+
+#[test]
 fn warm_marker_requires_real_dependency_payload() {
     let temp = tempfile::tempdir().unwrap();
     std::fs::write(temp.path().join(MARKER_NAME), "{}").unwrap();

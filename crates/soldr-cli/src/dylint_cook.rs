@@ -695,13 +695,18 @@ fn normalize_path(path: &Path) -> String {
 /// `read_rust_toolchain_manifest`'s missing-file default, found no
 /// requirements, and silently fell through to the root *stable* channel — the
 /// conflict branch below it could therefore never be reached. The glob-aware
-/// read now lives in one place and is shared with `dylint_toolchain` and
-/// `ci_test::plan`.
+/// read now lives in one place, preserves the all-inherit state for validation,
+/// and is shared with `dylint_toolchain` and `ci_test::plan`.
 fn configured_library_toolchain(root: &Path) -> Result<Option<String>, SoldrError> {
-    if let Some(pinned) = crate::dylint_libraries::pinned_channel(root)? {
-        return Ok(Some(pinned.channel));
+    match crate::dylint_libraries::toolchain_state(root)? {
+        crate::dylint_libraries::LibraryToolchainState::NoLibraries => {
+            Ok(read_rust_toolchain_manifest(root)?.channel)
+        }
+        crate::dylint_libraries::LibraryToolchainState::InheritRoot { libraries } => Ok(Some(
+            crate::dylint_libraries::inherited_root_channel(root, &libraries)?,
+        )),
+        crate::dylint_libraries::LibraryToolchainState::Pinned { channel, .. } => Ok(Some(channel)),
     }
-    Ok(read_rust_toolchain_manifest(root)?.channel)
 }
 
 fn lock_target(target: &Path) -> Result<File, SoldrError> {
