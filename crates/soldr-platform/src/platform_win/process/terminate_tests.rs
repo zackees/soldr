@@ -214,10 +214,9 @@ fn a_real_grandchild_tree_is_killed_whole() {
     // grandchild is gone, not merely the root -- a kill that reaches only the
     // direct child is precisely the outcome that left `ping` holding the
     // inherited stderr pipe for its full sleep.
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     let (mut child, grandchildren) = spawn_cmd_with_ping_grandchild();
-    let root = child.id();
     let grandchild = *grandchildren.first().expect("ping grandchild");
     // Open this query-only handle before termination. It remains bound to the
     // original ping process even after the pid becomes reusable, so its exit
@@ -240,26 +239,10 @@ fn a_real_grandchild_tree_is_killed_whole() {
         "the pre-opened grandchild handle must report its exit FILETIME"
     );
 
-    // Poll: TerminateProcess is asynchronous, so a pid can linger briefly.
-    // `is_alive` reads the exit code rather than merely opening a handle --
-    // a terminated process stays openable while any handle survives, so a
-    // handle-existence check would report the kill as failed.
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        let survivors: Vec<u32> = grandchildren
-            .iter()
-            .copied()
-            .filter(|pid| is_alive(*pid))
-            .collect();
-        if survivors.is_empty() {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "descendants {survivors:?} of cmd pid {root} outlived the tree kill"
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    // Do not reopen `grandchild` by PID here: after the retained original
+    // handle has proved its exit, that PID may already name an unrelated
+    // process. The retained handle plus exit FILETIME is the identity-correct
+    // completion proof; the pure PID-reuse regression below covers that rule.
 }
 
 #[test]
