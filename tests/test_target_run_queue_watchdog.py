@@ -22,8 +22,8 @@ PREFIX = "target-run x86_64-apple-darwin"
 BASE = datetime(2026, 8, 28, 5, 0, tzinfo=UTC)
 
 
-class WatchVerdict(Protocol):
-    """The watchdog result fields exercised by this test module."""
+class WatchVerdict(Protocol):  # pylint: disable=too-few-public-methods
+    """Attribute-only watchdog result view used by this test module."""
 
     ok: bool
     message: str
