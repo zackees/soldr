@@ -82,7 +82,7 @@ ALLOWLIST: dict[str, tuple[int, str]] = {
         "shim self-verification child (spawns the materialized shim once)",
     ),
     "crates/soldr-core/src/core/installer_watchdog.rs": (
-        2,
+        1,
         "watchdog-supervised installer children (rustup/toolchain installs)",
     ),
     "crates/soldr-core/src/core/mod.rs": (
