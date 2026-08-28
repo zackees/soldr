@@ -2,8 +2,8 @@
 """Run Cargo commands in one recycled Docker runner with warm volumes.
 
 A ``soldr-perf-local-<slug>-<hash>`` container mounts the repository's shared
-git root at ``/repo``. Linked worktrees below that root reuse the same runner
-by changing only the ``docker exec`` working directory. Cargo target state,
+git root read-only at ``/repo``. Linked worktrees below that root reuse the
+same runner by changing only the ``docker exec`` working directory. Cargo target state,
 Toolchain home, Soldr home, uv cache, and the Python environment live in named
 volumes and survive runner resets.
 
@@ -58,6 +58,7 @@ GC_MAX_AGE_SECS = 24 * 60 * 60
 MAX_RUNNER_GROUPS = 3
 GC_STATE_DIR = Path.home() / ".soldr" / "perf-local-gc"
 RUNNER_VOLUME_BUDGET_BYTES = 50 * (1 << 30)
+DEBUG_TRACE_RELATIVE = Path(".perf-local") / "debug-trace"
 
 # The global names this script used before per-root isolation. These are NOT
 # dead: `bench/cook_in_docker.sh` mounts soldr-perf-target and
@@ -425,27 +426,31 @@ def retain_debug_trace(runner: Runner) -> None:
     """Copy the smoke run's process-trace JSONL out of the runner (soldr#2546).
 
     Dev-built soldr roots at ``~/.soldr-dev`` inside the container; the
-    timelines land under ``logs/debug-trace/``. They are copied to
-    ``.perf-local/debug-trace/`` in the repository mount so the host can keep
-    them as run artifacts. Best-effort: a smoke that spawned no traced child
-    simply retains nothing.
+    timelines land under ``logs/debug-trace/``. The checkout is mounted
+    read-only, so this explicit smoke-debug-only path copies them to
+    ``.perf-local/debug-trace/`` on the host after the command completes.
+    Best-effort: a smoke that spawned no traced child simply retains nothing.
     """
-    script = (
-        "mkdir -p /repo/.perf-local/debug-trace && "
-        "for d in /root/.soldr-dev/logs/debug-trace /root/.soldr/logs/debug-trace; do "
-        '  if [ -d "$d" ]; then cp -f "$d"/*.jsonl /repo/.perf-local/debug-trace/ 2>/dev/null || true; fi; '
-        "done && ls /repo/.perf-local/debug-trace/ | tail -5"
-    )
-    copied = subprocess.run(
-        ["docker", "exec", runner.container, "sh", "-c", script],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if copied.returncode == 0 and copied.stdout.strip():
+    output_dir = debug_trace_output_dir(runner)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for source_dir in (
+        "/root/.soldr-dev/logs/debug-trace",
+        "/root/.soldr/logs/debug-trace",
+    ):
+        exists = subprocess.run(
+            ["docker", "exec", runner.container, "test", "-d", source_dir],
+            check=False,
+        )
+        if exists.returncode == 0:
+            subprocess.run(
+                ["docker", "cp", f"{runner.container}:{source_dir}/.", str(output_dir)],
+                check=False,
+            )
+    retained = sorted(output_dir.glob("*.jsonl"))
+    if retained:
         print(
             "smoke-debug: process timelines retained in .perf-local/debug-trace/ "
-            f"(latest: {copied.stdout.strip().splitlines()[-1]})"
+            f"(latest: {retained[-1].name})"
         )
     else:
         print("smoke-debug: no process timelines were produced by this run")
@@ -465,6 +470,11 @@ def shared_source_root(repo_root: Path) -> Path:
         if common.name == ".git":
             return common.parent
     return repo_root.resolve()
+
+
+def debug_trace_output_dir(runner: Runner) -> Path:
+    """The only checkout-relative output written by the managed runner."""
+    return runner.source_root / DEBUG_TRACE_RELATIVE
 
 
 def container_workdir(source_root: Path, repo_root: Path) -> str:
@@ -594,8 +604,8 @@ def create_command(runner: Runner, image_id: str) -> list[str]:
         command.extend(["--label", f"{key}={value}"])
     command.extend(
         [
-            "-v",
-            f"{runner.source_root.resolve()}:/repo",
+            "--mount",
+            f"type=bind,source={runner.source_root.resolve()},target=/repo,readonly",
             "-v",
             f"{runner.soldr_home}:/root/.soldr",
             "-v",

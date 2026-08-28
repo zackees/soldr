@@ -336,7 +336,9 @@ def test_create_command_uses_one_named_runner_and_persistent_volumes(
 
     assert command[:4] == ["docker", "create", "--name", runner.container]
     assert "--init" in command
-    assert f"{tmp_path.resolve()}:/repo" in command
+    source_mount = f"type=bind,source={tmp_path.resolve()},target=/repo,readonly"
+    assert command[command.index("--mount") + 1] == source_mount
+    assert f"{tmp_path.resolve()}:/repo" not in command
     assert f"{runner.target}:/target" in command
     assert f"{runner.cargo_home}:/root/.cargo" in command
     assert f"{runner.soldr_home}:/root/.soldr" in command
@@ -457,6 +459,36 @@ def test_smoke_debug_traces_and_retains_timelines() -> None:
         "ci/smoke_local.sh",
     ]
     assert callable(perf_local.retain_debug_trace)
+
+
+def test_debug_trace_is_the_only_checkout_relative_managed_output(tmp_path: Path) -> None:
+    runner = perf_local.runner_for(tmp_path)
+    assert perf_local.debug_trace_output_dir(runner) == tmp_path / ".perf-local" / "debug-trace"
+
+
+def test_debug_trace_retention_uses_explicit_host_copy(tmp_path: Path, monkeypatch) -> None:
+    runner = perf_local.runner_for(tmp_path)
+    output_dir = perf_local.debug_trace_output_dir(runner)
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        if argv[:2] == ["docker", "cp"]:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "trace.jsonl").write_text("{}\n", encoding="utf-8")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(perf_local.subprocess, "run", fake_run)
+    perf_local.retain_debug_trace(runner)
+
+    assert (output_dir / "trace.jsonl").is_file()
+    assert [
+        "docker",
+        "cp",
+        f"{runner.container}:/root/.soldr-dev/logs/debug-trace/.",
+        str(output_dir),
+    ] in calls
+    assert all("/repo/.perf-local" not in argument for call in calls for argument in call)
 
 
 def test_smoke_command_runs_the_complete_repository_pipeline() -> None:
