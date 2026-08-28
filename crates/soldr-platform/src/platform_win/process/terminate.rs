@@ -34,8 +34,8 @@ pub enum TreeKill {
 /// So the guarantee is strengthened where it can be: enumerate in-process,
 /// kill leaves-first, then re-enumerate and re-kill until the tree is empty or
 /// the budget expires. A verified kill beats an unverified one regardless of
-/// which mechanism let the descendant escape, and `surviving_descendants` lets
-/// callers name whatever is left instead of reporting a silent success.
+/// which mechanism let the descendant escape, and retained process handles
+/// make completion evidence survive later snapshot changes.
 pub fn terminate_tree(child: &mut Child) -> io::Result<TreeKill> {
     let root = child.id();
 
@@ -43,8 +43,10 @@ pub fn terminate_tree(child: &mut Child) -> io::Result<TreeKill> {
     // Windows cannot recycle `root` out from under the walk.
     let enumerated = descendants_of(root);
 
-    // Every descendant ever seen, with the creation time it had when first
-    // seen.
+    // Every descendant ever seen, with a query-only handle retained until the
+    // verification budget expires. A retained handle stays attached to the
+    // original process after it exits, so its FILETIMEs prove completion even
+    // if its parent disappears from a later snapshot or its pid is recycled.
     //
     // soldr#2806, second half: each sweep re-derives reachability from a fresh
     // snapshot, and a process that has exited is no longer in that snapshot. So
@@ -69,13 +71,12 @@ pub fn terminate_tree(child: &mut Child) -> io::Result<TreeKill> {
     // a stranger gets killed. It is still terminated below and still found by
     // the walk while it remains reachable; only the after-the-link-is-gone
     // guarantee is given up, which is the honest trade.
-    let mut known: Vec<(u32, u64)> = enumerated
-        .iter()
-        .flatten()
-        .filter_map(|pid| creation_time(*pid).map(|started| (*pid, started)))
-        .collect();
+    let mut known = Vec::new();
+    let mut verified = enumerated.is_some();
 
     if let Some(descendants) = &enumerated {
+        let untracked = retain_snapshot(descendants, &mut known);
+        verified &= untracked.is_empty();
         // Leaves first. Killing a parent before its child is exactly the
         // orphaning this function exists to avoid -- and while the snapshot
         // already pins the set, bottom-up also stops a shell from spawning one
@@ -84,16 +85,28 @@ pub fn terminate_tree(child: &mut Child) -> io::Result<TreeKill> {
         // No identity constraint: these came from a snapshot taken moments ago,
         // which is the evidence. The constraint applies to remembered pids,
         // whose snapshot has since gone stale.
-        for pid in descendants.iter().rev() {
-            terminate_descendant(*pid, root, None);
-        }
+        best_effort_terminate(&untracked);
     }
 
+    // Kill the direct cargo/cmd child promptly. Its descendants may become
+    // unreachable in a later process snapshot when that happens, which is why
+    // their query handles were retained above; those handles remain bound to
+    // the original processes and let the following terminate requests and
+    // FILETIME verification finish without relying on parent links. In the
+    // diagnostic-capture path this also closes the root side of an inherited
+    // stderr pipe before reaping the child.
     child.kill()?;
 
-    if enumerated.is_none() {
-        // The snapshot failed, so descendants (if any) were never named. Report
-        // the weaker guarantee rather than claiming a tree kill we did not do.
+    // The retained records are identity-confirmed even though the root may
+    // already be gone, so request their termination only after the root kill.
+    // Do this even if retaining another fresh descendant already downgraded the
+    // proof: every tracked handle is still safe to terminate, and a failed
+    // query for one sibling must not strand the rest.
+    request_tracked_after_root(&mut verified, || request_termination(&mut known));
+    if !verified {
+        // The snapshot or a query/identity/terminate request failed, so report
+        // the weaker guarantee rather than claiming a tree kill we did not
+        // prove.
         return Ok(TreeKill::ProcessKilled);
     }
 
@@ -103,54 +116,248 @@ pub fn terminate_tree(child: &mut Child) -> io::Result<TreeKill> {
     // whatever is still standing until nothing is, or the budget expires.
     let deadline = std::time::Instant::now() + VERIFY_BUDGET;
     loop {
-        let sweep = classify_sweep(surviving_descendants(root, &known));
-        let survivors = match sweep {
-            Sweep::Clear => return Ok(TreeKill::TreeKilled),
-            // The snapshot failed, so this sweep saw nothing -- which is not the
-            // same as nothing being there. Retry within the budget; on expiry
-            // report the weaker guarantee, exactly as the enumeration above
-            // does when it cannot name the set.
-            Sweep::Unknown => Vec::new(),
-            Sweep::Survivors(pids) => pids,
+        let sweep = descendants_of(root);
+        let descendants = match sweep {
+            Some(descendants) => descendants,
+            // A failed snapshot proves nothing. Do not let a later empty
+            // snapshot erase that failure: a verified kill requires every
+            // snapshot used for verification to have succeeded.
+            None => return Ok(TreeKill::ProcessKilled),
         };
         // A shell can spawn one more child in the window before its own
-        // termination lands, so the set grows as well as shrinks.
-        remember(&mut known, &survivors);
+        // termination lands, so retain and terminate each newly observed pid.
+        let untracked = retain_snapshot(&descendants, &mut known);
+        verified &= untracked.is_empty();
+        best_effort_terminate(&untracked);
+        verified &= request_termination(&mut known);
+        if !verified {
+            return Ok(TreeKill::ProcessKilled);
+        }
+        if all_exited(&known) {
+            return Ok(TreeKill::TreeKilled);
+        }
         if std::time::Instant::now() >= deadline {
             // Out of budget with survivors still live, or never able to look.
             // Say so: the whole point of soldr#2605 is that this case used to
             // report success.
             return Ok(TreeKill::ProcessKilled);
         }
-        for pid in survivors.iter().rev() {
-            terminate_descendant(*pid, root, recorded_start(&known, *pid));
-        }
         std::thread::sleep(VERIFY_POLL);
     }
 }
 
-/// Track any pid not already known, stamping it with its creation time.
-///
-/// A pid whose creation time cannot be read is skipped, for the reason
-/// `terminate_tree` gives: an identity that was never captured cannot be
-/// checked later.
-fn remember(known: &mut Vec<(u32, u64)>, pids: &[u32]) {
-    for pid in pids {
-        if known.iter().any(|(tracked, _)| tracked == pid) {
-            continue;
+const PROCESS_TERMINATE: u32 = 0x0001;
+const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+const SYNCHRONIZE: u32 = 0x0010_0000;
+
+/// FILETIMEs read from one retained query-only process handle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProcessTimes {
+    created: u64,
+    exited: u64,
+}
+
+/// A descendant identity which cannot be confused with a later PID reuse.
+struct TrackedDescendant {
+    pid: u32,
+    created: u64,
+    query_handle: windows_sys::Win32::Foundation::HANDLE,
+    termination_requested: bool,
+}
+
+impl TrackedDescendant {
+    fn open(pid: u32) -> io::Result<Self> {
+        let query_handle = open_process(pid, PROCESS_QUERY_LIMITED_INFORMATION)?;
+        let times = match process_times(query_handle) {
+            Ok(times) => times,
+            Err(error) => {
+                // SAFETY: `query_handle` was opened above and has not been
+                // moved into a TrackedDescendant yet.
+                unsafe { windows_sys::Win32::Foundation::CloseHandle(query_handle) };
+                return Err(error);
+            }
+        };
+        Ok(Self {
+            pid,
+            created: times.created,
+            query_handle,
+            termination_requested: false,
+        })
+    }
+
+    /// Read both identity and completion evidence from the original handle.
+    fn times(&self) -> io::Result<ProcessTimes> {
+        let times = process_times(self.query_handle)?;
+        if !is_same_process(self.created, Some(times.created)) {
+            return Err(io::Error::other("process identity changed"));
         }
-        if let Some(started) = creation_time(*pid) {
-            known.push((*pid, started));
+        Ok(times)
+    }
+
+    fn request_termination(&mut self) -> io::Result<()> {
+        // Query immediately before opening the terminate-only handle. This
+        // rejects an inaccessible or replaced identity instead of claiming a
+        // tree kill based on a stale PID.
+        if self.times()?.exited != 0 {
+            self.termination_requested = true;
+            return Ok(());
         }
+        let terminate_handle = open_process(self.pid, PROCESS_TERMINATE)?;
+        let terminated = unsafe {
+            windows_sys::Win32::System::Threading::TerminateProcess(terminate_handle, 1)
+        };
+        let terminate_error = (terminated == 0).then(io::Error::last_os_error);
+        // SAFETY: the handle came from `open_process` and is not used again.
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(terminate_handle) };
+        if let Some(error) = terminate_error {
+            return Err(error);
+        }
+        self.termination_requested = true;
+        Ok(())
     }
 }
 
-/// The creation time captured for `pid`, or `None` if it is not remembered.
-fn recorded_start(known: &[(u32, u64)], pid: u32) -> Option<u64> {
-    known
-        .iter()
-        .find(|(tracked, _)| *tracked == pid)
-        .map(|(_, started)| *started)
+impl Drop for TrackedDescendant {
+    fn drop(&mut self) {
+        // SAFETY: `query_handle` was obtained by OpenProcess and is retained
+        // exclusively by this record until it is dropped.
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.query_handle) };
+    }
+}
+
+/// Open a deliberately narrow process handle. Query handles never request
+/// SYNCHRONIZE: restricted/job-object tokens commonly grant query access while
+/// denying the combined TERMINATE | SYNCHRONIZE shape that broke #2929.
+fn open_process(pid: u32, access: u32) -> io::Result<windows_sys::Win32::Foundation::HANDLE> {
+    let handle = unsafe {
+        windows_sys::Win32::System::Threading::OpenProcess(access, 0, pid)
+    };
+    if handle.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(handle)
+}
+
+/// Capture creation and exit FILETIMEs using an already-open query handle.
+fn process_times(handle: windows_sys::Win32::Foundation::HANDLE) -> io::Result<ProcessTimes> {
+    use windows_sys::Win32::Foundation::FILETIME;
+
+    // SAFETY: FILETIME is plain-old-data.
+    let mut created: FILETIME = unsafe { std::mem::zeroed() };
+    // SAFETY: FILETIME is plain-old-data.
+    let mut exited: FILETIME = unsafe { std::mem::zeroed() };
+    // SAFETY: FILETIME is plain-old-data.
+    let mut kernel: FILETIME = unsafe { std::mem::zeroed() };
+    // SAFETY: FILETIME is plain-old-data.
+    let mut user: FILETIME = unsafe { std::mem::zeroed() };
+    let ok = unsafe {
+        windows_sys::Win32::System::Threading::GetProcessTimes(
+            handle,
+            &mut created,
+            &mut exited,
+            &mut kernel,
+            &mut user,
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(ProcessTimes {
+        created: filetime_value(created),
+        exited: filetime_value(exited),
+    })
+}
+
+fn filetime_value(time: windows_sys::Win32::Foundation::FILETIME) -> u64 {
+    (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime)
+}
+
+/// Retain a query handle for each fresh snapshot identity. Pids which cannot
+/// be opened or queried are returned for best-effort termination; they still
+/// make the final result `ProcessKilled`, because no retained handle can prove
+/// their identity or exit.
+fn retain_snapshot(pids: &[u32], known: &mut Vec<TrackedDescendant>) -> Vec<u32> {
+    let mut untracked = Vec::new();
+    for pid in pids {
+        match TrackedDescendant::open(*pid) {
+            Ok(tracked) => {
+                if !known
+                    .iter()
+                    .any(|prior| prior.pid == tracked.pid && prior.created == tracked.created)
+                {
+                    known.push(tracked);
+                }
+            }
+            Err(_) => untracked.push(*pid),
+        }
+    }
+    untracked
+}
+
+/// Preserve the old fresh-snapshot behaviour for a descendant that cannot be
+/// queried: still request termination, but never call that request proof.
+fn best_effort_terminate(pids: &[u32]) {
+    terminate_pids_leaves_first(pids, |pid| {
+        let _ = signal_pid(pid, true);
+    });
+}
+
+/// Injected solely to pin the leaves-first best-effort path without requiring
+/// an ACL-shaped Windows process fixture in every test run.
+fn terminate_pids_leaves_first(pids: &[u32], mut terminate: impl FnMut(u32)) {
+    for pid in pids.iter().rev() {
+        terminate(*pid);
+    }
+}
+
+/// Request each observed process stop, leaves first. A failed open or a false
+/// BOOL from TerminateProcess makes a verified tree kill impossible.
+fn request_termination(known: &mut [TrackedDescendant]) -> bool {
+    let mut complete = true;
+    for tracked in known.iter_mut().rev() {
+        if !tracked.termination_requested && tracked.request_termination().is_err() {
+            complete = false;
+        }
+    }
+    complete
+}
+
+/// Request every identity-confirmed descendant even when another descendant
+/// already made the final claim weaker. This keeps termination and proof
+/// separate: a failed proof never authorises `TreeKilled`, but it also never
+/// abandons a safe retained-handle termination request.
+fn request_tracked_after_root(verified: &mut bool, request: impl FnOnce() -> bool) {
+    *verified &= request();
+}
+
+/// All identity-confirmed descendants must report a non-zero exit FILETIME
+/// through their retained query handles before the strong result is allowed.
+fn all_exited(known: &[TrackedDescendant]) -> bool {
+    known.iter().all(|tracked| {
+        completion_proven(
+            tracked.created,
+            tracked.times().ok(),
+            tracked.termination_requested,
+        )
+    })
+}
+
+fn terminate_request_succeeded(result: bool) -> bool {
+    result
+}
+
+/// Pure completion rule used by the retained-handle loop and deterministic
+/// tests. No missing query, changed creation time, failed terminate request,
+/// or zero exit FILETIME may become `TreeKilled`.
+fn completion_proven(
+    expected_created: u64,
+    observed: Option<ProcessTimes>,
+    termination_succeeded: bool,
+) -> bool {
+    termination_succeeded
+        && observed.is_some_and(|times| {
+            is_same_process(expected_created, Some(times.created)) && times.exited != 0
+        })
 }
 
 /// Is the process at `pid` now the same one whose identity we captured?
@@ -170,126 +377,12 @@ fn is_same_process(recorded: u64, current: Option<u64>) -> bool {
     current == Some(recorded)
 }
 
-/// What one verification sweep established.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Sweep {
-    /// The tree was enumerated and nothing was left alive.
-    Clear,
-    /// The tree was enumerated and these are still alive.
-    Survivors(Vec<u32>),
-    /// The tree could not be enumerated, so this sweep proves nothing.
-    Unknown,
-}
-
-/// Classify a sweep, keeping "could not look" distinct from "nothing there".
-///
-/// soldr#2806: these used to collapse. `surviving_descendants` mapped a failed
-/// `CreateToolhelp32Snapshot` to an empty vector, and an empty vector is the
-/// success condition -- so a snapshot that could not be taken returned
-/// `TreeKilled`, a *verified* kill that verified nothing. The initial
-/// enumeration in `terminate_tree` already refuses to do this and says why; the
-/// verification loop did not, which is the asymmetry rather than a judgement
-/// call.
-///
-/// `CreateToolhelp32Snapshot` fails transiently with `ERROR_BAD_LENGTH` when
-/// the process list changes underneath it -- likelier on a loaded runner, which
-/// is where soldr#2806 was seen and where this host never reproduces it.
-fn classify_sweep(enumerated: Option<Vec<u32>>) -> Sweep {
-    match enumerated {
-        None => Sweep::Unknown,
-        Some(pids) if pids.is_empty() => Sweep::Clear,
-        Some(pids) => Sweep::Survivors(pids),
-    }
-}
-
 /// How long `terminate_tree` keeps re-killing before admitting descendants
 /// survived. Bounded so a wedged descendant cannot hang the caller.
 const VERIFY_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Gap between verification sweeps.
 const VERIFY_POLL: std::time::Duration = std::time::Duration::from_millis(25);
-
-/// Descendants of `root` that are still alive, parents before children.
-///
-/// `None` when the process list could not be snapshotted -- distinct from
-/// `Some(vec![])`, which means the tree really is empty (soldr#2806).
-///
-/// Private on purpose: the cross-platform facade exports only the four
-/// termination entry points, and adding a fifth would oblige Linux and macOS
-/// to grow an equivalent for a diagnostic only Windows needs today.
-fn surviving_descendants(root: u32, known: &[(u32, u64)]) -> Option<Vec<u32>> {
-    let reachable = descendants_of(root)?;
-    Some(live_descendants(
-        &reachable,
-        known,
-        |pid| crate::process::inspect::is_alive(pid),
-        creation_time,
-    ))
-}
-
-/// Which candidates are still alive *and* still the processes we tracked.
-///
-/// Split from the snapshot for the same reason `collect_descendants` is: the
-/// judgement is here, and it has to be testable without spawning a real tree.
-/// The probes are injected so a test can describe a host -- including the case
-/// that matters, a remembered pid the walk can no longer reach.
-///
-/// The two sources are **not** treated alike, and that asymmetry is the point:
-///
-/// - `reachable` came from a snapshot taken moments ago, which is itself the
-///   evidence that these are descendants. Liveness is all that is asked.
-/// - `known` is a memory of a snapshot that has since gone stale, so a pid from
-///   it must still prove it holds the same process. Windows recycles pids, and
-///   a recycled one would otherwise be reported as a survivor -- blocking
-///   `Clear` forever and aiming a kill at a stranger.
-fn live_descendants(
-    reachable: &[u32],
-    known: &[(u32, u64)],
-    alive: impl Fn(u32) -> bool,
-    started_now: impl Fn(u32) -> Option<u64>,
-) -> Vec<u32> {
-    let mut survivors: Vec<u32> = reachable.iter().copied().filter(|pid| alive(*pid)).collect();
-    for (pid, recorded) in known {
-        if survivors.contains(pid) || !alive(*pid) {
-            continue;
-        }
-        if is_same_process(*recorded, started_now(*pid)) {
-            survivors.push(*pid);
-        }
-    }
-    survivors
-}
-
-/// Terminate one descendant, refusing pids that cannot belong to the root tree.
-///
-/// Between the snapshot and this call a descendant may exit and Windows may
-/// hand its pid to an unrelated process. Creation time settles it: a real
-/// descendant cannot have started before its ancestor, so a candidate that
-/// predates `root` is a recycled pid and is left alone. `taskkill` performed no
-/// such check.
-fn terminate_descendant(pid: u32, root: u32, expected_start: Option<u64>) {
-    if pid == root || pid == 0 {
-        return;
-    }
-    let current_start = creation_time(pid);
-    // A remembered pid must still prove its identity. Windows recycles pids,
-    // and `known` outlives the processes in it, so without this the kill can
-    // land on whatever holds the pid now (soldr#2806). Callers pass `None` for
-    // pids taken from a fresh snapshot, where the snapshot is the evidence.
-    if let Some(recorded) = expected_start {
-        if !is_same_process(recorded, current_start) {
-            return;
-        }
-    }
-    if let (Some(child_started), Some(root_started)) = (current_start, creation_time(root)) {
-        if child_started < root_started {
-            return;
-        }
-    }
-    // A missing time means the process already exited or refuses the query.
-    // Terminating is then either a no-op or impossible; neither harms.
-    let _ = signal_pid(pid, true);
-}
 
 /// Every transitive descendant of `root`, ordered parents before children.
 ///
@@ -355,39 +448,6 @@ fn collect_descendants(edges: &[(u32, u32)], root: u32) -> Vec<u32> {
         }
     }
     ordered
-}
-
-/// Process creation time as a raw FILETIME, or `None` if it cannot be read.
-fn creation_time(pid: u32) -> Option<u64> {
-    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HANDLE};
-    use windows_sys::Win32::System::Threading::{
-        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
-
-    // SAFETY: QUERY_LIMITED_INFORMATION is the least-privilege right that still
-    // permits GetProcessTimes; a null return is checked.
-    let handle: HANDLE = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-    if handle.is_null() {
-        return None;
-    }
-
-    // SAFETY: FILETIME is plain-old-data.
-    let mut created: FILETIME = unsafe { std::mem::zeroed() };
-    // SAFETY: as above.
-    let mut exited: FILETIME = unsafe { std::mem::zeroed() };
-    // SAFETY: as above.
-    let mut kernel: FILETIME = unsafe { std::mem::zeroed() };
-    // SAFETY: as above.
-    let mut user: FILETIME = unsafe { std::mem::zeroed() };
-    // SAFETY: `handle` is open and all four out-params are owned locals.
-    let ok = unsafe { GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user) };
-    // SAFETY: `handle` came from OpenProcess above and is not used after.
-    unsafe { CloseHandle(handle) };
-
-    if ok == 0 {
-        return None;
-    }
-    Some((u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
 }
 
 /// Terminate a single PID (`TerminateProcess` - the Windows equivalent of
