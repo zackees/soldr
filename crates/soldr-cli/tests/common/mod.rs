@@ -7,6 +7,10 @@
 //! working under `-D warnings`.
 #![allow(dead_code, unused_imports)]
 
+/// soldr#2951 — the single barrier for the soldr-toolchain catalogue
+/// environment variables. See the module doc for why it is deliberately not
+/// `TEST_PROCESS_ENV_LOCK`.
+pub(crate) mod catalogue_env;
 pub(crate) mod isolated_daemon;
 
 use std::process::Command;

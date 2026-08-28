@@ -231,7 +231,10 @@ async fn fetch_managed_llvm(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
 }
 
 async fn catalogue_entry_for_asset(asset: &LlvmAsset) -> Result<ManifestEntry, SoldrError> {
-    catalogue_entry_from_index(manifest_lookup::get_or_fetch().await, asset)
+    // soldr#2951: `get_or_fetch` hands back an `Arc`, which needs a binding
+    // before it can be reborrowed as the `&ManifestIndex` parameter.
+    let index = manifest_lookup::get_or_fetch().await;
+    catalogue_entry_from_index(&index, asset)
 }
 
 fn catalogue_entry_from_index(
