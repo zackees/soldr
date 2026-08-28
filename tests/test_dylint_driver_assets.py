@@ -18,7 +18,7 @@ import re
 from pathlib import Path
 
 import pytest
-from conftest import DYLINT_NIGHTLY, load_script_module
+from conftest import DYLINT_NIGHTLY, RELEASE_INCLUDED_TRIPLES, load_script_module
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = REPO_ROOT / ".github" / "scripts"
@@ -37,19 +37,11 @@ RELEASE_COMPLETENESS = load_script_module(
     SCRIPTS / "release_completeness.py", "release_completeness"
 )
 
-# The eight triples soldr ships. Spelled out rather than derived so that a
-# contract edit which silently drops one from the release set fails here
-# instead of quietly shrinking the guard's coverage.
-EXPECTED_TRIPLES = [
-    "x86_64-pc-windows-msvc",
-    "aarch64-pc-windows-msvc",
-    "x86_64-apple-darwin",
-    "aarch64-apple-darwin",
-    "x86_64-unknown-linux-gnu",
-    "aarch64-unknown-linux-gnu",
-    "x86_64-unknown-linux-musl",
-    "aarch64-unknown-linux-musl",
-]
+# Spelled out rather than derived from the contract, so a contract edit that
+# silently drops one from the release set fails here instead of quietly
+# shrinking the guard's coverage. Shared with the target-removal guard
+# (soldr#2469) via conftest so both have to answer for a change.
+EXPECTED_TRIPLES = RELEASE_INCLUDED_TRIPLES
 
 VERSION = "6.0.3"
 CHANNEL = "nightly-2026-05-28"
