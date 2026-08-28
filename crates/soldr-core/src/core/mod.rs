@@ -195,7 +195,7 @@ fn command_output_with_timeout_inner(
                 Err(err) => message.push_str(&format!("; kill failed: {err}")),
             }
             match reap_result {
-                Ok(Some(_)) => {}
+                Ok(Some(_)) => message.push_str("; reaped child process"),
                 Ok(None) => message.push_str(&format!(
                     "; process did not exit within {KILLED_COMMAND_OUTPUT_REAP_TIMEOUT_SECS} seconds after kill"
                 )),
@@ -276,18 +276,16 @@ mod tests {
         assert_eq!(command_output_timeout_from_str("not-a-number"), None);
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn explicit_timeout_drains_pipe_filling_child_then_kills_and_reaps_it() {
-        let temp = tempfile::tempdir().expect("temporary command directory");
-        let pid_file = temp.path().join("child.pid");
-        let script = format!(
-            "echo $$ > '{}'; dd if=/dev/zero bs=1024 count=256 2>/dev/null; while :; do :; done",
-            pid_file.display()
-        );
+        if crate::platform::host::facts::os() != crate::platform::host::facts::HostOs::Linux {
+            return;
+        }
+
+        let script = "dd if=/dev/zero bs=1024 count=256 2>/dev/null; while :; do :; done";
         let started = std::time::Instant::now();
         let error = command_output_with_timeout_duration(
-            Command::new("sh").args(["-c", &script]),
+            Command::new("sh").args(["-c", script]),
             "pipe-filling test child",
             Duration::from_secs(1),
         )
@@ -297,14 +295,10 @@ mod tests {
             started.elapsed() < Duration::from_secs(3),
             "pipe filling must not prevent the bounded timeout"
         );
-        assert!(error.to_string().contains("timed out after 1 seconds"));
-        let pid = std::fs::read_to_string(&pid_file)
-            .expect("child must record its pid")
-            .trim()
-            .to_owned();
-        assert!(
-            !std::path::Path::new(&format!("/proc/{pid}")).exists(),
-            "the timed-out child must be reaped before returning"
+        assert_eq!(
+            error.to_string(),
+            "pipe-filling test child timed out after 1 seconds; killed child process; reaped child process",
+            "the sanctioned helper must report that timeout cleanup killed and reaped the child"
         );
     }
 }
