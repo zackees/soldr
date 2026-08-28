@@ -375,10 +375,19 @@ mod tests {
         assert!(message.contains("reaped child process"), "{message}");
     }
 
+    /// Host dispatch goes through `platform::host::facts`, never `cfg!`:
+    /// `.github/scripts/platform_cfg_boundary_ratchet.py` and the
+    /// `ban_platform_cfg_outside_boundary` lint both reject a raw host `cfg`
+    /// here, and a test is not exempt from the boundary its production code
+    /// keeps.
+    fn host_is_windows() -> bool {
+        crate::platform::host::facts::os() == crate::platform::host::facts::HostOs::Windows
+    }
+
     /// A shell that prints, sleeps, prints again -- outliving the budget while
     /// never being silent for it.
     fn chatty_command(chunks: usize, gap_secs: u64) -> Command {
-        if cfg!(windows) {
+        if host_is_windows() {
             let mut command = Command::new("cmd");
             command.arg("/C").arg(format!(
                 "for /L %i in (1,1,{chunks}) do @(echo tick & timeout /T {gap_secs} /NOBREAK >nul) & echo done"
@@ -411,7 +420,7 @@ mod tests {
     #[test]
     fn a_silent_command_still_expires_and_names_the_silence() {
         let _guard = EnvGuard::set(COMMAND_OUTPUT_TIMEOUT_ENV_VAR, "1");
-        let mut command = if cfg!(windows) {
+        let mut command = if host_is_windows() {
             let mut c = Command::new("cmd");
             c.arg("/C").arg("timeout /T 30 /NOBREAK >nul");
             c
