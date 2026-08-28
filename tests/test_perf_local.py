@@ -18,7 +18,7 @@ def load_module():
 perf_local = load_module()
 
 
-class StepLike(Protocol):
+class StepLike(Protocol):  # pylint: disable=too-few-public-methods
     """Minimal command shape observed by the Bosn handoff test doubles."""
 
     argv: list[str]
