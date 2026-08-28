@@ -21,5 +21,6 @@ mod multicall_bin_layout;
 mod no_panicking_argv_collection;
 mod no_standalone_spawn_lint;
 mod no_timed_test_guard;
+mod process_isolation_lint;
 mod phase5_contract;
 mod version_lockstep;

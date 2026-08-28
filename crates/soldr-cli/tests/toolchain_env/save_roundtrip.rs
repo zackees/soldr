@@ -1255,8 +1255,7 @@ fn load_restores_executable_bit_for_cache_files() {
     );
 }
 
-// `tests/*.rs` is one test binary per file, so the split module lives in a
-// subdirectory (which cargo does not treat as a target) and is reached with
-// an explicit `#[path]`.
+// The category target is `main.rs`; keep this split implementation in a
+// subdirectory and reach it through an explicit `#[path]`.
 #[path = "../save_roundtrip/symlinks.rs"]
 mod symlinks;
