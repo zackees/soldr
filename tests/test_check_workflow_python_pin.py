@@ -128,6 +128,52 @@ jobs:
     assert guard.unpinned_jobs(tmp_path) == set()
 
 
+def test_setup_uv_requires_an_explicit_python_313_for_a_repo_script(guard, tmp_path):
+    write_workflow(
+        tmp_path,
+        "cook.yml",
+        f"""
+jobs:
+  cook:
+    steps:
+      - uses: {SETUP_UV}
+      - run: uv run --no-project python .github/scripts/prepare_cook_fixture.py
+""",
+    )
+    assert guard.unpinned_jobs(tmp_path) == {("cook.yml", "cook")}
+
+
+def test_release_scripts_require_setup_uv_and_no_project(guard, tmp_path):
+    """The release-specific soldr#2763 contract belongs in this guard.
+
+    `setup-python` correctly pins ordinary workflow jobs, but the release
+    surface must use its isolated uv front door for every repository script.
+    """
+    write_workflow(
+        tmp_path,
+        "release-auto.yml",
+        f"""
+jobs:
+  release:
+    steps:
+      - uses: {SETUP_PYTHON}
+      - run: python3 .github/scripts/stage_release_binaries.py
+  missing-no-project:
+    steps:
+      - uses: {SETUP_UV}
+      - run: uv run --python 3.13 python .github/scripts/publish.py
+  compliant:
+    steps:
+      - uses: {SETUP_UV}
+      - run: uv run --no-project --python 3.13 python .github/scripts/verify.py
+""",
+    )
+    assert guard.unpinned_jobs(tmp_path) == {
+        ("release-auto.yml", "release"),
+        ("release-auto.yml", "missing-no-project"),
+    }
+
+
 def test_setup_uv_does_not_pin_a_bare_python3_call(guard, tmp_path):
     """The distinction the loose version of this guard got wrong.
 
