@@ -401,31 +401,17 @@ mod tests {
 
     #[test]
     fn embed_lookup_is_fast() {
-        // Cold-start path: zstd decompress + parse + first lookup
-        // must amortize to sub-250ms for 10k lookups (25µs/lookup),
-        // with the decompression paid exactly once via OnceLock.
-        //
-        // Threshold sized for the slowest GHA tier (musl debug builds
-        // on shared ubuntu-24.04 hosted runners can take ~80-180ms).
-        // Tightening below this trades coverage on those runners for
-        // a noisier perf assertion; the test exists to catch O(N)
-        // regressions in lookup, not to gate µs-level perf — that's
-        // what the criterion benches in this crate do.
-        // One wall-clock sample of both costs at once made this flaky: it
-        // failed a Windows target-run lane at 0.6s of contention, which says
-        // nothing about lookup complexity. The two costs are now measured
-        // separately, and the repeatable one is sampled more than once.
+        // Initialization must still parse the embedded blob, but cold zstd
+        // decompression + serde parsing is a one-shot wall-clock sample. It
+        // is scheduler-contended on target-run workers and cannot be sampled
+        // again, so it is intentionally not a unit-test gate; measure it in a
+        // dedicated performance environment instead. Keep the repeatable O(N)
+        // lookup guard below instead.
         let budget = std::time::Duration::from_millis(250);
 
-        // Cold start is paid exactly once (OnceLock), so it gets exactly one
-        // measurement -- there is no second sample to take.
-        let cold_started = std::time::Instant::now();
+        // Initialize once so this test still verifies the embedded data is
+        // available before exercising its lookup index.
         let m = embedded_manifest().expect("embedded blob must parse");
-        let cold = cold_started.elapsed();
-        assert!(
-            cold < budget,
-            "embedded-manifest cold start (decompress + parse) took {cold:?}, expected < {budget:?}"
-        );
 
         // Per-lookup cost, best of three. This is the O(N) guard, and a real
         // regression makes every round slow -- so taking the minimum drops
