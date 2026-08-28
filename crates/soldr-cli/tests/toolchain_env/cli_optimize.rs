@@ -19,6 +19,22 @@ fn isolated_soldr_home() -> PathBuf {
     unique_temp_dir("soldr-optimize-home")
 }
 
+/// Put a responsive `pwsh` ahead of the host installation so the live
+/// Defender-status preflight is deterministic. The action and existing-list
+/// seams remain responsible for proving Add/Remove behavior.
+fn active_defender_pwsh_path(soldr_home: &Path) -> std::ffi::OsString {
+    let fake_tools = soldr_home.join("fake-tools");
+    fs::create_dir_all(&fake_tools).expect("create fake PowerShell directory");
+    fs::write(
+        fake_tools.join("pwsh.cmd"),
+        "@echo off\r\necho {\"AntivirusEnabled\":true,\"RealTimeProtectionEnabled\":true}\r\n",
+    )
+    .expect("write responsive PowerShell status fixture");
+    let inherited_path = std::env::var_os("PATH").expect("PATH must be set");
+    std::env::join_paths(std::iter::once(fake_tools).chain(std::env::split_paths(&inherited_path)))
+        .expect("prepend responsive fake PowerShell to PATH")
+}
+
 #[test]
 fn optimize_dry_run_json_runs_end_to_end_on_current_platform() {
     let soldr_home = isolated_soldr_home();
@@ -144,6 +160,7 @@ fn optimize_invokes_add_mppreference_with_admin_seam() {
     let defender_log = soldr_home.join("defender.log");
     let existing_excl = soldr_home.join("existing.txt");
     fs::write(&existing_excl, "").expect("write existing exclusion stub");
+    let path = active_defender_pwsh_path(&soldr_home);
 
     let workspace = soldr_home.join("ws");
     fs::create_dir_all(&workspace).expect("workspace dir");
@@ -160,6 +177,7 @@ fn optimize_invokes_add_mppreference_with_admin_seam() {
         .env("SOLDR_TEST_ASSUME_ADMIN", "1")
         .env("SOLDR_TEST_DEFENDER_LOG", &defender_log)
         .env("SOLDR_TEST_DEFENDER_EXISTING", &existing_excl)
+        .env("PATH", path)
         .env_remove("GITHUB_ACTIONS")
         .env_remove("CI")
         .env_remove("BUILDKITE")
@@ -252,6 +270,7 @@ fn optimize_undo_only_removes_managed_paths() {
     fs::write(&existing_path, &existing_body).expect("existing list");
 
     let defender_log = soldr_home.join("defender.log");
+    let path = active_defender_pwsh_path(&soldr_home);
 
     let output = Command::new(common::soldr_bin())
         .args(["optimize", "--undo", "--scope", "global", "--json"])
@@ -260,6 +279,7 @@ fn optimize_undo_only_removes_managed_paths() {
         .env("SOLDR_TEST_ASSUME_ADMIN", "1")
         .env("SOLDR_TEST_DEFENDER_LOG", &defender_log)
         .env("SOLDR_TEST_DEFENDER_EXISTING", &existing_path)
+        .env("PATH", path)
         .env_remove("GITHUB_ACTIONS")
         .env_remove("CI")
         .env_remove("BUILDKITE")
@@ -329,6 +349,80 @@ fn defender_exclusions_check_returns_dry_run_json() {
     assert_eq!(json["dry_run"], true);
     assert_eq!(json["undo"], false);
     assert_eq!(json["scope"], "all");
+}
+
+#[test]
+fn defender_exclusions_check_skips_a_blocking_status_probe_in_a_real_project() {
+    if !matches!(
+        soldr_platform::host::facts::os(),
+        soldr_platform::host::facts::HostOs::Windows
+    ) {
+        return;
+    }
+
+    let soldr_home = isolated_soldr_home();
+    let workspace = soldr_home.join("workspace");
+    let source = workspace.join("src");
+    fs::create_dir_all(&source).expect("create test project source directory");
+    fs::write(
+        workspace.join("Cargo.toml"),
+        "[package]\nname = \"defender-dry-run-probe\"\nversion = \"0.0.1\"\nedition = \"2021\"\n",
+    )
+    .expect("write test project manifest");
+    fs::write(source.join("lib.rs"), "pub fn fixture() {}\n").expect("write test project source");
+
+    let fake_tools = soldr_home.join("fake-tools");
+    fs::create_dir_all(&fake_tools).expect("create fake tool directory");
+    let sentinel = soldr_home.join("blocking-status-probe-spawned.txt");
+    fs::write(
+        fake_tools.join("pwsh.cmd"),
+        format!(
+            "@echo off\r\necho spawned>\"{}\"\r\n:loop\r\ngoto loop\r\n",
+            sentinel.display()
+        ),
+    )
+    .expect("write blocking status probe");
+    let inherited_path = std::env::var_os("PATH").expect("PATH must be set");
+    let path = std::env::join_paths(
+        std::iter::once(fake_tools).chain(std::env::split_paths(&inherited_path)),
+    )
+    .expect("prepend fake PowerShell to PATH");
+
+    let output = Command::new(common::soldr_bin())
+        .args(["defender-exclusions", "check", "--json"])
+        .current_dir(&workspace)
+        .env("SOLDR_CACHE_DIR", &soldr_home)
+        .env("PATH", path)
+        .env_remove("GITHUB_ACTIONS")
+        .env_remove("CI")
+        .env_remove("BUILDKITE")
+        .env_remove("CIRCLECI")
+        .env_remove("TRAVIS")
+        .env_remove("JENKINS_URL")
+        .output()
+        .expect("run defender-exclusions check against blocking status probe");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "dry-run check must return its plan\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    let json: Value = serde_json::from_str(&stdout)
+        .expect("dry-run check against a real project must produce JSON");
+    assert_eq!(json["dry_run"], true);
+    assert_eq!(json["scope"], "all");
+    assert!(
+        json["actions"]
+            .as_array()
+            .is_some_and(|actions| !actions.is_empty()),
+        "the normal planner must produce a non-empty plan: {json}"
+    );
+    assert!(
+        !sentinel.exists(),
+        "dry-run check must not spawn the blocking PowerShell status probe"
+    );
 }
 
 #[test]
